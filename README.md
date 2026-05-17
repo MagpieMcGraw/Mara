@@ -31,30 +31,9 @@ Odin on PATH to compile it. From the repo root:
 odin build .
 ```
 
-That produces `Mara.exe` (Windows) or `Mara` (Linux) in the repo root.
+Mara uses clang and lld to build it's executables. For the windows build, I placed these in the tools folder so you don't have to download LLVM. For the linux build, I recommend you download them via the package manager.
 
-### Windows
-
-Everything else (clang, lld) ships in [`tools/`](tools/). Nothing to install.
-
-### Linux
-
-System packages required (Fedora examples — Debian/Ubuntu names in parens):
-
-```
-sudo dnf install clang lld SDL2-devel    # (apt: clang lld libsdl2-dev)
-```
-
-Mara invokes system `clang` and `ld.lld` via PATH. The `tools/*.exe` in this
-repo are Windows-only and harmlessly ignored on Linux. No precompiled libs
-or extra build steps needed — Mara resolves foreign blocks like
-`foreign static_lib "open_gl"` by looking for a precompiled `.lib` (Windows)
-or `.a` (Linux/macOS) under `code/<binding>/`. If neither exists but a
-matching `.c` source is there, Mara compiles it into a static lib alongside
-on the first build — subsequent builds find the cached artifact and skip
-the compile step. On Linux this means the first build of a project that
-uses `open_gl` produces `code/Open_GL/open_gl.a` automatically; later builds
-reuse it.
+I also recommend grabbing SDL3-devel if you want to build the test project.
 
 ## Using Mara
 
