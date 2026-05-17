@@ -177,7 +177,7 @@ foreign static_lib "opengl32" prefix gl {
 // `get_proc` is the platform's `void *(name)` proc-address function,
 // e.g. sdl.GL_GetProcAddress. Structural function-type so any module
 // (SDL2, SDL3, GLFW, …) with a matching-shaped function can satisfy it.
-foreign static_lib "open_gl.o" {
+foreign static_lib "open_gl" {
     fun gl_load(get_proc: fun(cstring) -> ^byte)
     // Convenience: compile a shader from a single source string.
     // Returns shader id on success, 0 on failure (error printed to stdout).
@@ -187,7 +187,7 @@ foreign static_lib "open_gl.o" {
     fun gl_link_program(vs: u32, fs: u32) -> u32
 }
 
-foreign static_lib "open_gl.o" prefix gl {
+foreign static_lib "open_gl" prefix gl {
     // Shaders
     fun CreateShader(type: GL_Shader_Type) -> u32
     fun ShaderSource(shader: u32, count: i32, strings: ^byte, lengths: ^byte)

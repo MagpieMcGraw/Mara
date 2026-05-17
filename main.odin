@@ -23,6 +23,13 @@ NATIVE_EXE_EXT :: ".exe" when ODIN_OS == .Windows else ""
 // so the "bundled" name is just `clang` and we resolve through PATH at exec.
 CLANG_BIN :: "clang.exe" when ODIN_OS == .Windows else "clang"
 
+// Static-library extension per target. Used when a `foreign static_lib "name"`
+// block names a bare identifier (no extension) — Mara looks in code/<binding>/
+// for `name<STATIC_LIB_EXT>` and passes it to the linker as a file input.
+// Falls back to `-l<name>` if no bundled file exists, so system libs still
+// work without the user spelling out their extension.
+STATIC_LIB_EXT :: ".lib" when ODIN_OS == .Windows else ".a"
+
 // ---------------------------------------------------------------------------
 // Stage 1: discovery — find every .mara file the compiler can see
 // ---------------------------------------------------------------------------
@@ -229,6 +236,28 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
         os.exit(1)
     }
 
+    // Look for a bundled static lib `<name><STATIC_LIB_EXT>` under code/* —
+    // bare-name foreign references that match get passed directly as a file
+    // input. Returns ("", false) if no matching file is present, in which
+    // case the caller should fall back to `-l<name>` so the linker can find
+    // a system library.
+    try_resolve_bundled_lib :: proc(name: string, compiler_dir: string) -> (string, bool) {
+        filename := strings.concatenate({name, STATIC_LIB_EXT})
+        code_base, _ := filepath.join({compiler_dir, "code"})
+        loose_path, _ := filepath.join({code_base, filename})
+        if os.exists(loose_path) { return loose_path, true }
+        ldh, lerr := os.open(code_base)
+        if lerr != nil { return "", false }
+        defer os.close(ldh)
+        entries, _ := os.read_dir(ldh, -1, context.allocator)
+        for entry in entries {
+            if entry.type != .Directory { continue }
+            sub_path, _ := filepath.join({code_base, entry.name, filename})
+            if os.exists(sub_path) { return sub_path, true }
+        }
+        return "", false
+    }
+
     if web {
         all_libs: map[string]bool
         for _, cs in checked.functions {
@@ -276,7 +305,15 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
                 resolved := resolve_foreign_file(lib, compiler_dir)
                 strings.write_string(src_b, " ")
                 strings.write_string(src_b, resolved)
+            } else if bundled, ok := try_resolve_bundled_lib(lib, compiler_dir); ok {
+                // Bare name with a bundled OS-specific static lib (e.g. `open_gl`
+                // resolves to code/Open_GL/open_gl.lib on Windows or
+                // code/Open_GL/open_gl.a on Linux).
+                strings.write_string(src_b, " ")
+                strings.write_string(src_b, bundled)
             } else {
+                // Bare name with no bundled match — let the linker find it in
+                // system paths via `-l<name>` (e.g. SDL3, kernel32).
                 append(native_libs, lib)
             }
         }
