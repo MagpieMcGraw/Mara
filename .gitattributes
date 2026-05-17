@@ -1,0 +1,14 @@
+# GitHub Linguist hints — controls the language breakdown shown on the repo page.
+
+# SDL headers are bundled here so foreign blocks can be type-checked offline;
+# they're upstream SDL code, not part of Mara. Excluding them keeps the
+# language bar honest. `code/SDL/sdl.mara` and `code/SDL2/sdl2.mara` (the
+# actual bindings written in Mara) live one level up and stay counted.
+code/SDL/include/**     linguist-vendored
+code/SDL2/include/**    linguist-vendored
+
+# GitHub Linguist doesn't have an entry for Mara, so `.mara` files default
+# to "other" and don't appear in the breakdown. Tagging them surfaces a
+# proper "Mara" segment (without a registered color, GitHub falls back to
+# a default gray).
+*.mara                  linguist-language=Mara
