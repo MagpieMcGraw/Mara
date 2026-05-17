@@ -255,24 +255,42 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
         os.exit(1)
     }
 
-    // Look for a bundled static lib `<name><STATIC_LIB_EXT>` under code/* —
-    // bare-name foreign references that match get passed directly as a file
-    // input. Returns ("", false) if no matching file is present, in which
-    // case the caller should fall back to `-l<name>` so the linker can find
-    // a system library.
+    // Look for a bundled lib backing for a bare-name foreign reference under
+    // code/*. Two file forms are accepted, in priority order:
+    //
+    //   1. <name><STATIC_LIB_EXT>   — precompiled static lib (open_gl.lib /
+    //                                  open_gl.a). Fastest at build time;
+    //                                  caller-maintained.
+    //   2. <name>.c                 — C source. Clang compiles + links it as
+    //                                  part of the same invocation that
+    //                                  produces the exe. No precompile step
+    //                                  needed; great for cross-platform repos
+    //                                  that don't want to ship per-OS binaries.
+    //
+    // Returns ("", false) if neither form is present, in which case the caller
+    // falls back to `-l<name>` so the linker can find a system library.
     try_resolve_bundled_lib :: proc(name: string, compiler_dir: string) -> (string, bool) {
-        filename := strings.concatenate({name, STATIC_LIB_EXT})
+        candidates := [2]string{
+            strings.concatenate({name, STATIC_LIB_EXT}),
+            strings.concatenate({name, ".c"}),
+        }
         code_base, _ := filepath.join({compiler_dir, "code"})
-        loose_path, _ := filepath.join({code_base, filename})
-        if os.exists(loose_path) { return loose_path, true }
-        ldh, lerr := os.open(code_base)
-        if lerr != nil { return "", false }
-        defer os.close(ldh)
-        entries, _ := os.read_dir(ldh, -1, context.allocator)
-        for entry in entries {
-            if entry.type != .Directory { continue }
-            sub_path, _ := filepath.join({code_base, entry.name, filename})
-            if os.exists(sub_path) { return sub_path, true }
+
+        // Check loose code/ first, then each subfolder, for each candidate
+        // shape. Static lib wins over .c if both exist (use the precompiled
+        // one — faster).
+        for filename in candidates {
+            loose_path, _ := filepath.join({code_base, filename})
+            if os.exists(loose_path) { return loose_path, true }
+            ldh, lerr := os.open(code_base)
+            if lerr != nil { continue }
+            entries, _ := os.read_dir(ldh, -1, context.allocator)
+            os.close(ldh)
+            for entry in entries {
+                if entry.type != .Directory { continue }
+                sub_path, _ := filepath.join({code_base, entry.name, filename})
+                if os.exists(sub_path) { return sub_path, true }
+            }
         }
         return "", false
     }

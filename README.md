@@ -46,21 +46,13 @@ sudo dnf install clang lld SDL2-devel    # (apt: clang lld libsdl2-dev)
 ```
 
 Mara invokes system `clang` and `ld.lld` via PATH. The `tools/*.exe` in this
-repo are Windows-only and harmlessly ignored on Linux.
-
-One extra step on the first Linux build — produce the Linux flavor of the
-bundled OpenGL helper:
-
-```
-cd code/Open_GL
-clang -c open_gl.c -o open_gl.o
-ar rcs open_gl.a open_gl.o
-rm open_gl.o
-```
-
-(`code/Open_GL/open_gl.lib` is the Windows static lib of the same source,
-already in the repo; `.a` is the Linux equivalent and gitignored, so each
-machine builds its own.)
+repo are Windows-only and harmlessly ignored on Linux. No precompiled libs
+or extra build steps needed — Mara resolves foreign blocks like
+`foreign static_lib "open_gl"` by looking for a precompiled `.lib` (Windows)
+or `.a` (Linux/macOS) under `code/<binding>/`, then falling back to compiling
+the matching `.c` source on the fly via clang. For Linux this means the
+`.c` falls through and clang compiles it as part of the build — slightly
+slower than a precompiled lib but zero per-platform setup.
 
 ## Using Mara
 
