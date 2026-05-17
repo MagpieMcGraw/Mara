@@ -1,0 +1,16 @@
+module test_method_value_recv_fail
+
+// Expected to FAIL type checking: alloc takes a ^Self receiver, but the
+// qualifier `arena` is a value (Arena_Basic, not ^Arena_Basic). Mara does not
+// auto-take-address for method calls (matches test_param_passthrough_fail).
+// The diagnostic should point the user at writing `&arena` or using a
+// `^Arena_Basic` local — not silently splice in a `&`.
+
+use mara.memory
+
+main :: fun() -> i64 {
+	arena : Arena_Basic = Arena_Basic(1 * KB)
+	buf : []byte = arena.alloc(32)  // arena is a value — alloc wants ^Self
+	print(buf.len)
+	return 0
+}

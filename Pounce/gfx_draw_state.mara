@@ -1,0 +1,228 @@
+module gfx
+
+use mara.math
+gl :: use mara.open_gl
+
+use object
+use camera
+
+MAX_BATCHES              :: 16
+MAX_INSTANCES_PER_BATCH  :: 512
+
+Mesh_Batch :: struct {
+    mesh_id:        i64
+    instances:      [MAX_INSTANCES_PER_BATCH]Instance
+    instance_count: u32
+}
+
+// DrawCommand for MultiDrawIndirect
+DrawCommand :: struct {
+    index_count:    u32
+    instance_count: u32
+    first_index:    u32
+    base_vertex:    i32
+    base_instance:  u32
+}
+
+// DrawState bundles everything needed for one MDI draw call
+DrawState :: struct {
+	// Shader and texture
+	shader: u32,
+	texture: u32,
+
+	// Reference to VAO state (for dynamic mesh access)
+	vao_state: ^VAO_State,
+
+	// OpenGL resources
+	command_buffer: u32,
+
+	// Per-mesh batches (one instance array per mesh type)
+	batches: [MAX_BATCHES]Mesh_Batch
+	batch_count: i64
+
+	// Total capacity across all batches
+	instance_capacity: i64,
+
+	// Draw commands (owned by this DrawState)
+	commands: [256]DrawCommand,
+	command_count: i64,
+}
+
+// Create a draw state
+draw_state_create :: fun(
+	shader: u32,
+	vao_state: ^VAO_State,
+	max_instances: i64,
+	max_commands: isize,) -> DrawState
+{
+	// Create persistent command buffer for MDI
+	command_buffer: u32
+	gl.GenBuffers(1, &command_buffer)
+	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, command_buffer)
+	gl.BufferData(gl.DRAW_INDIRECT_BUFFER,
+				  max_commands * size_of(DrawCommand),
+				  nil,
+				  gl.DYNAMIC_DRAW)
+	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
+
+	return DrawState{
+		shader = shader,
+		vao_state = vao_state,
+		command_buffer = command_buffer,
+		instance_capacity = max_instances,
+		command_count = 0,
+	}
+}
+
+draw_state_bind :: fun(state: ^DrawState) {
+	gl.UseProgram(state.shader)
+	gl.ActiveTexture(gl.TEXTURE0)
+	gl.BindTexture(gl.TEXTURE_2D_ARRAY, state.texture)
+}
+
+get_or_create_batch :: fun(state: ^DrawState, mesh_id: i64) -> ^Mesh_Batch {
+    for i in 0..state.batch_count {
+        if state.batches[i].mesh_id == mesh_id {
+            return &state.batches[i]
+        }
+    }
+    if state.batch_count >= MAX_BATCHES {
+        crash("DrawState batch limit (16) exceeded")
+    }
+    batch := &state.batches[state.batch_count]
+    batch.mesh_id = mesh_id
+    batch.instance_count = 0
+    state.batch_count += 1
+    return batch
+}
+
+draw_state_append :: fun(
+	state: ^DrawState,
+	objects: []Object,
+	visuals: []Visual,
+	camera: Camera,
+	highlight_state: ^DrawState = nil)
+{
+	if objects.len == 0 do return // empty array
+	if visuals.len == 0 do return // empty array
+
+	for i in 0..objects.len {
+		if not objects[i].exists do continue
+
+		// FOR NOW ASSUMING DIRECT MAPPING FROM OBJ TO VIS
+		obj := objects[i]
+		vis := visuals[i]
+		mesh_id := visuals[i].mesh.index
+
+		// Get or create batch for this mesh
+		batch := get_or_create_batch(state, mesh_id)
+
+		mvp := opengl_create_mvp_matrix(
+			obj.pos,
+			obj.dir,
+			obj.scale,
+			camera.view_mx, camera.proj_mx,
+		)
+		instance := Instance{
+			mvp_matrix = mvp,
+			tex_coords = vis.texture.uv,
+			color = vis.color,
+			layer = vis.texture.layer,
+		}
+		batch.instances[i] = instance
+
+		if highlight_state != nil and obj.highlighted {
+			highlight_batch := get_or_create_batch(highlight_state, mesh_id)
+			// Fixed offset gives consistent outline thickness
+			highlight_scale := obj.scale + 0.3
+			highlight_mvp := opengl_create_mvp_matrix(
+				obj.pos,
+				obj.dir,
+				highlight_scale,
+				camera.view_mx, camera.proj_mx
+			)
+			highlight_batch.instances[i] = Instance{
+				mvp_matrix = highlight_mvp,
+				tex_coords = vis.texture.uv,
+				color = {0, 1, 0},  // bright green
+				layer = vis.texture.layer,
+			}
+		}
+	}
+}
+
+draw_state_reset :: fun(state: ^DrawState) {
+    for i in 0..state.batch_count {
+        state.batches[i].instance_count = 0
+    }
+    state.batch_count = 0
+    state.command_count = 0
+}
+
+// Render draw state using MultiDrawIndirect
+// Uploads each batch's instances sequentially, then issues one MDI call
+draw_state_render :: fun(state: ^DrawState) {	
+	vao_info := state.vao_state
+	gl.BindBuffer(gl.ARRAY_BUFFER, vao_info.instance_vbo)
+
+	gpu_offset: isize = 0
+	state.command_count = 0
+	for i in 0..state.batch_count {
+	    batch := &state.batches[i]
+	    if batch.instance_count == 0 do continue
+	    if batch.mesh_id not in 0..vao_info.mesh_count do continue
+	    if state.command_count > 255 do break
+	    mesh := vao_info.meshes[batch.mesh_id]
+	    state.commands[state.command_count] = DrawCommand{
+	        index_count    = mesh.index_count,
+	        instance_count = batch.instance_count,
+	        first_index    = mesh.first_index,
+	        base_vertex    = mesh.base_vertex,
+	        base_instance  = u32(gpu_offset),
+	    }
+	    state.command_count += 1
+	    bytes := batch.instance_count * size_of(Instance)
+	    gl.BufferSubData(gl.ARRAY_BUFFER,
+	                     gpu_offset * size_of(Instance),
+	                     isize(bytes),
+	                     &batch.instances[0])
+	    gpu_offset += isize(batch.instance_count)
+	}
+
+	// Upload command data
+	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, state.command_buffer)
+	gl.BufferSubData(gl.DRAW_INDIRECT_BUFFER, 0,
+					 isize(state.command_count) * size_of(DrawCommand),
+					 &state.commands[0])
+
+	// ONE DRAW CALL FOR EVERYTHING
+	draw_state_bind(state)
+	gl.BindVertexArray(vao_info.vao)
+	gl.MultiDrawElementsIndirect(
+		gl.TRIANGLES,
+		gl.UNSIGNED_INT,
+		nil,                         // offset (0 = start of buffer)
+		i32(state.command_count),    // draw count
+		0,                           // stride (0 = tightly packed)
+	)
+
+	gl.BindVertexArray(0)
+	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
+}
+
+// Create MVP matrix from transform and camera
+opengl_create_mvp_matrix :: fun(
+	pos: Vec3
+	dir: Quat,
+	scale_factors: Vec3,
+	view_mx, proj_mx: Mat4) -> Mat4
+{
+	rotation := mat4_from_quaternion(dir)
+	translation := mat4_translate(pos)
+	scale := mat4_scale(scale_factors)
+
+	model := (translation * (rotation * scale))
+	mv_matrix := view_mx * model
+	mvp_matrix := proj_mx * mv_matrix
+	return mvp_matrix
+}

@@ -1,0 +1,9 @@
+module test
+
+test_args :: fun() {
+	print("arg count:")
+	print(context.args.len)
+	for arg in context.args {
+		print(arg)
+	}
+}

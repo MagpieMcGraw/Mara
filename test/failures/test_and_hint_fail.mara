@@ -1,0 +1,15 @@
+module test_and_hint_fail
+
+// Demonstrates the novice-trap hint:
+//   `if x and y == 0`  parses as  `x and (y == 0)`,
+// not the intended `(x == 0) and (y == 0)`. With `x` being numeric and
+// the right side a comparison, the checker emits a targeted hint
+// suggesting the corrected form.
+
+test_and_hint_fail :: fun() {
+    x : i64 = 0
+    y : i64 = 0
+    if x and y == 0 {
+        print("both zero")
+    }
+}

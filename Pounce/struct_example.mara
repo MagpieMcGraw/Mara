@@ -1,0 +1,51 @@
+module example
+
+Arena_Example :: struct {
+	base: []byte
+	capacity: i64
+	offset: i64
+	current_mark: i64
+
+	ctor :: fun(a: ^Self, cap: i64) {
+		a.base = sys_alloc(cap)
+		a.capacity = cap
+		a.offset = 0
+		a.current_mark = -1
+	}
+
+	mark :: fun(a: ^Self) {
+		prev := a.current_mark
+		off := a.offset
+
+		a.base[off : off+8] = prev
+		a.current_mark = off
+		a.offset = off + 8
+	}
+
+	alloc :: fun(a: ^Self, size: i64) -> []byte {
+		off := a.offset
+		end := off + size
+
+		if end > a.capacity {
+			print_oom(a, off, size)
+			crash()
+		}
+
+		result := a.base[off : end]
+		a.offset = end
+		return result
+	}
+
+	reset :: fun(a: ^Self) {
+		cm := a.current_mark
+
+		prev : i64 = a.base[cm : cm+8]
+
+		a.offset = cm
+		a.current_mark = prev
+	}
+
+	print_oom :: fun(a: ^Self, off, size: i64) {
+		print(oom_string, a.capacity, off, size)
+	}
+}

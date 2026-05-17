@@ -1,0 +1,25 @@
+module mara.array
+
+Array :: struct(item: $T, n: i64 = 256) {
+	cap : i64 = n
+	len : i64 = 0
+	using items: [n]item
+}
+
+overload + add
+add :: dispatch {
+	add_array
+	add_element
+}
+
+// Append all elements from a slice in place.
+add_array :: fun(dst: ^Array($T), src: []$T) {
+	dst[dst.len:] = src
+	dst.len += src.len
+}
+
+// Append a single element to a slice in place.
+add_element :: fun(dst: ^[]$T, src: $T) {
+	dst[dst.len] = src
+	dst.len += 1
+}

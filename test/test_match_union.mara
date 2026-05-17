@@ -1,0 +1,58 @@
+module test_match_union
+
+// Exercises the robust match codegen paths on a payload-bearing union:
+//   - ident subject (the fast path preserved by the refactor)
+//   - field-access subject (union-typed struct field)
+//   - union parameter subject
+
+Shape :: union(tag i32) {
+    Circle = 1 {
+        radius: i32
+    }
+    Rect = 2 {
+        w: i32
+        h: i32
+    }
+}
+
+Wrapper :: struct {
+    s: Shape
+}
+
+test_match_ident :: fun() {
+    s: Shape = Circle{radius = 7}
+    match s {
+    Circle c
+        print(c.radius)
+    Rect r
+        print(r.w)
+    }
+}
+
+test_match_field :: fun() {
+    w: Wrapper
+    w.s = Rect{w = 12, h = 34}
+    match w.s {
+    Circle c
+        print(c.radius)
+    Rect r
+        print(r.w)
+        print(r.h)
+    }
+}
+
+report :: fun(s: Shape) {
+    match s {
+    Circle c
+        print(c.radius)
+    Rect r
+        print(r.w)
+    }
+}
+
+test_match_union :: fun() {
+    test_match_ident()
+    test_match_field()
+    s: Shape = Circle{radius = 99}
+    report(s)
+}

@@ -1,0 +1,412 @@
+module mara.os
+
+// DANGER BELOW
+read_cstring :: fun(cap: i64, src: ^byte) -> [, 0]utf8 {
+	cstring : [, 0]utf8 = slice_from_ptr(src, cap)
+	for utf8_byte, i in cstring {
+		if utf8_byte == 0 do return cstring[:i]
+	}
+	return cstring
+}
+
+// NEVER CALL THIS FUNCTION
+sys_alloc :: fun(cap: i64) -> []byte {
+	#if #native {
+		raw := vm_reserve(cap)
+		vm_commit(raw, cap)
+    	return slice_from_ptr(raw, cap)
+	}
+	#if #web {
+		return slice_from_ptr(malloc(usize(cap)), cap)
+	}
+}
+
+// File_Id is the public token for an open file. Treat it as opaque — flow it
+// from file_open_* through file_read / file_write / file_close without
+// inspecting the bits. The kernel checks validity on every syscall, so the
+// only enforced rule is "use the value file_open_* handed you, don't
+// manufacture one."
+//
+// The underlying representation is platform-native: distinct i64 on Windows
+// (pointer-sized HANDLE) and distinct i32 on Linux (fd is int). User code
+// sees one type name and one set of operations across platforms; only the
+// wrappers and platform-specific bindings know what's underneath.
+// Defined inside each platform's #if block so the underlying matches the
+// kernel ABI exactly — no widening at the boundary.
+
+#if #web {
+	// emcc auto-links libc, so malloc/free resolve without a port flag.
+	foreign static_lib "emscripten" {
+	    fun malloc(size: usize) -> ^byte
+	    fun free(ptr: ^byte)
+	    fun emscripten_set_main_loop(callback: fun(), fps: i64, simulate_infinite_loop: i64)
+	    fun emscripten_set_main_loop_arg(callback: fun(^byte), arg: ^byte, fps: i64, simulate_infinite_loop: i64)
+	    fun emscripten_cancel_main_loop()
+	}
+}
+
+#if #windows {
+	// Win32 platform layer — file I/O, virtual memory, dynamic library loading.
+	// All foreign calls go directly to kernel32.dll (statically linked at build
+	// time); no C glue file needed.
+	//
+	// Type notes:
+	//   Win32 HANDLE is a pointer-sized opaque token. The kernel uses it as
+	//   an index into a per-process handle table; user mode never derefs it.
+	//   We expose file handles as `File_Id :: distinct i64` and bind the
+	//   relevant kernel32 entry points with i64 in the HANDLE slots — same
+	//   bits at the ABI level (both pointer and i64 return in RAX on x64),
+	//   no ptr↔int conversion needed in user-facing code. INVALID_HANDLE_VALUE
+	//   ((HANDLE)-1 in C) becomes plain `-1` here.
+	//
+	//   Module handles (HMODULE from LoadLibraryA) and function-pointer
+	//   results from GetProcAddress stay as `^byte` for now — they're truly
+	//   pointer-typed and the call sites cast them at use. Could become
+	//   Module_Id / Symbol_Addr distinct types later if it'd help.
+
+	// ---------------------------------------------------------------------------
+	// CreateFileA flag constants
+	// ---------------------------------------------------------------------------
+
+	// dwDesiredAccess
+	GENERIC_READ  :: 0x80000000
+	GENERIC_WRITE :: 0x40000000
+
+	// dwShareMode
+	FILE_SHARE_READ  :: 0x00000001
+	FILE_SHARE_WRITE :: 0x00000002
+
+	// dwCreationDisposition
+	CREATE_NEW        :: 1   // fail if file exists
+	CREATE_ALWAYS     :: 2   // truncate or create
+	OPEN_EXISTING     :: 3   // fail if file does not exist
+	OPEN_ALWAYS       :: 4   // open or create
+	TRUNCATE_EXISTING :: 5   // open and truncate; fail if missing
+
+	// dwFlagsAndAttributes
+	FILE_ATTRIBUTE_NORMAL :: 0x80
+
+	// ---------------------------------------------------------------------------
+	// VirtualAlloc / VirtualFree flags
+	// ---------------------------------------------------------------------------
+
+	// flAllocationType — combinable via OR
+	MEM_RESERVE :: 0x2000
+	MEM_COMMIT  :: 0x1000
+
+	// dwFreeType
+	MEM_RELEASE :: 0x8000
+
+	// flProtect
+	PAGE_NOACCESS  :: 0x01
+	PAGE_READWRITE :: 0x04
+
+	// ---------------------------------------------------------------------------
+	// Virtual memory
+	// ---------------------------------------------------------------------------
+
+	// Reserve a virtual address range without committing physical pages.
+	// Touching uncommitted bytes traps; commit them first with vm_commit.
+	// Caller must release with vm_release.
+	vm_reserve :: fun(size: i64) -> ^byte {
+		return VirtualAlloc(nil, usize(size), MEM_RESERVE, PAGE_NOACCESS)
+	}
+
+	// Commit physical pages for the [base, base+size) range. Returns 1 on
+	// success, 0 on failure (typically out-of-memory). The range must lie
+	// inside something previously returned by vm_reserve.
+	vm_commit :: fun(base: ^byte, size: i64) -> i64 {
+		if VirtualAlloc(base, usize(size), MEM_COMMIT, PAGE_READWRITE) == nil do return 0
+		return 1
+	}
+
+	// Release a reserved (and possibly committed) range. `base` must be
+	// exactly the pointer returned by vm_reserve; partial releases are
+	// not supported.
+	vm_release :: fun(base: ^byte) {
+		VirtualFree(base, usize(0), MEM_RELEASE)
+	}
+
+	// ---------------------------------------------------------------------------
+	// File I/O
+	// ---------------------------------------------------------------------------
+
+	// Pointer-sized opaque token. Win32 HANDLE is `void *` — fits in i64 on
+	// x64 (and Win32 on x86 isn't a target we'd compile for in 2026).
+	File_Id :: distinct i64
+
+	// Win32 sentinel for "no valid handle" — what CreateFileA returns on
+	// failure ((HANDLE)-1 in C). Typed as File_Id so equality against the
+	// CreateFileA result doesn't need an explicit unwrap.
+	INVALID_HANDLE_VALUE :: File_Id(-1)
+
+	// "No template file" sentinel for CreateFileA's hTemplateFile slot.
+	NO_FILE :: File_Id(0)
+
+	// Open a file for reading. Returns (id, true) on success; the (id, false)
+	// branch carries an unspecified File_Id — don't use it.
+	file_open_read :: fun(path: cstring) -> (File_Id, bool) {
+		id := CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+		if id == INVALID_HANDLE_VALUE do return NO_FILE, false
+		return id, true
+	}
+
+	// Open a file for writing, creating it if missing and truncating if present.
+	file_open_write :: fun(path: cstring) -> (File_Id, bool) {
+		id := CreateFileA(path, GENERIC_WRITE, 0, nil, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+		if id == INVALID_HANDLE_VALUE do return NO_FILE, false
+		return id, true
+	}
+
+	file_close :: fun(id: File_Id) {
+		CloseHandle(id)
+	}
+
+	// File size in bytes. Returns (size, true) on success; (_, false) if the
+	// query failed (e.g. the handle was closed under us).
+	file_size :: fun(id: File_Id) -> (i64, bool) {
+		size: i64 = 0
+		if not bool(GetFileSizeEx(id, &size)) do return 0, false
+		return size, true
+	}
+
+	// Read up to buf.cap bytes into buf. Returns (data, true) where data is a
+	// slice into buf covering the bytes actually read (data.len = 0 means EOF).
+	// Returns (empty slice, false) on error. The returned slice shares storage
+	// with buf — caller doesn't own a separate buffer. buf is `^[]byte` because
+	// the bytes are written through FFI; the slice header itself is unchanged.
+	file_read :: fun(id: File_Id, buf: ^[]byte) -> ([]byte, bool) {
+		read: u32 = 0
+		if not bool(ReadFile(id, &buf[0], u32(buf.len), &read, nil)) do return buf[0:0], false
+		return buf[0:i64(read)], true
+	}
+
+	// Write data to the file. Returns (n, true) where n is bytes written, or
+	// (_, false) on error. Win32 may write fewer bytes than requested under
+	// disk-full / pipe conditions; compare n against data.len for partial-write
+	// detection. data is `^[]byte` for symmetry with file_read — WriteFile only
+	// reads, but passing `&data[0]` still trips the immutable-param address
+	// check, so the contract is `^[]byte` either way.
+	file_write :: fun(id: File_Id, data: ^[]byte) -> (i64, bool) {
+		written: u32 = 0
+		if not bool(WriteFile(id, &data[0], u32(data.len), &written, nil)) do return 0, false
+		return i64(written), true
+	}
+
+	file_delete :: fun(path: cstring) -> bool {
+		return bool(DeleteFileA(path))
+	}
+
+	// ---------------------------------------------------------------------------
+	// Dynamic library loading (dlopen-equivalent)
+	// ---------------------------------------------------------------------------
+
+	// Load a DLL by name. Returns nil on failure. Win32's search order applies —
+	// pass a full path to bypass it. Caller must release with free_library.
+	load_library :: fun(name: cstring) -> ^byte {
+	return LoadLibraryA(name)
+	}
+
+	// Look up a symbol in a loaded module. Returns nil if the symbol does not
+	// exist. Cast the returned ^byte to the appropriate function pointer type
+	// at the call site.
+	find_symbol :: fun(mod: ^byte, name: cstring) -> ^byte {
+	return GetProcAddress(mod, name)
+	}
+
+	free_library :: fun(mod: ^byte) {
+	FreeLibrary(mod)
+	}
+
+	// ---------------------------------------------------------------------------
+	// kernel32 bindings
+	// ---------------------------------------------------------------------------
+	// Static-linked: clang resolves the symbols against kernel32.lib at link
+	// time. No dynamic_lib needed — kernel32.dll is implicitly loaded into every
+	// Win32 process at startup. BOOL is i32 (Win32 zero/non-zero), not Mara bool.
+
+	foreign static_lib "kernel32" {
+		// HANDLE-typed slots are bound as File_Id directly — same bits at the
+		// ABI level (distinct lowers to its base i64 in IR), but the type
+		// checker keeps stray i64s and other handle kinds out of these slots.
+		fun CreateFileA(
+			name: cstring,
+			access: u32,
+			share: u32,
+			security: ^byte,            // LPSECURITY_ATTRIBUTES — actual pointer; pass nil
+			disposition: u32,
+			flags: u32,
+			template: File_Id) -> File_Id  // HANDLE hTemplateFile / return — pass File_Id(0) for none
+
+		fun ReadFile(
+			h: File_Id,
+			buf: ^byte,
+			bytes_to_read: u32,
+			bytes_read_out: ^u32,
+			overlapped: ^byte) -> i32
+
+		fun WriteFile(
+			h: File_Id,
+			buf: ^byte,
+			bytes_to_write: u32,
+			bytes_written_out: ^u32,
+			overlapped: ^byte) -> i32
+
+		fun CloseHandle(h: File_Id) -> i32
+		fun GetFileSizeEx(h: File_Id, size_out: ^i64) -> i32
+		fun DeleteFileA(name: cstring) -> i32
+
+		fun LoadLibraryA(name: cstring) -> ^byte
+		fun GetProcAddress(mod: ^byte, name: cstring) -> ^byte
+		fun FreeLibrary(mod: ^byte) -> i32
+
+		fun VirtualAlloc(
+			addr:       ^byte,        // LPVOID — pass nil to let the system choose
+			size:       usize,
+			alloc_type: u32,          // MEM_RESERVE / MEM_COMMIT (or both via OR)
+			protect:    u32) -> ^byte // PAGE_* flags
+
+		fun VirtualFree(
+			addr:      ^byte,
+			size:      usize,         // 0 with MEM_RELEASE
+			free_type: u32) -> i32
+	}
+}
+
+#if #linux {
+	// Linux platform layer — file I/O via libc syscalls. Mirrors the
+	// Windows API surface (file_open_read/write, file_close, file_size,
+	// file_read, file_write, file_delete) so user code is identical
+	// across targets.
+	//
+	// Modern glibc has dlopen/dlsym/dlclose in libc.so; older systems
+	// and musl require -ldl. Add a "dl" foreign block if a target
+	// system needs that split.
+
+	// 32-bit fd. Linux file descriptors are `int`, not pointer-sized.
+	File_Id :: distinct i32
+
+	// "No fd" sentinel for the failure branches of multi-return. Doubles
+	// as the placeholder File_Id we hand back when ok=false; the caller
+	// has agreed not to inspect it.
+	NO_FILE    :: File_Id(0)
+	BAD_FILE   :: File_Id(-1)
+
+	// ---------------------------------------------------------------------------
+	// open(2) flags
+	// ---------------------------------------------------------------------------
+
+	// access mode — exactly one of:
+	O_RDONLY :: 0x0000
+	O_WRONLY :: 0x0001
+	O_RDWR   :: 0x0002
+
+	// creation flags — OR with access mode:
+	O_CREAT  :: 0x0040
+	O_EXCL   :: 0x0080
+	O_TRUNC  :: 0x0200
+
+	// Default mode for created files: rw-r--r--. mode_t is u32 on Linux.
+	DEFAULT_MODE :: 0o644
+
+	// ---------------------------------------------------------------------------
+	// File I/O
+	// ---------------------------------------------------------------------------
+
+	// Open a file for reading. Returns (id, true) on success; the (id, false)
+	// branch carries an unspecified File_Id — don't use it.
+	file_open_read :: fun(path: cstring) -> (File_Id, bool) {
+		id := open(path, O_RDONLY, 0)
+		if id == BAD_FILE do return NO_FILE, false
+		return id, true
+	}
+
+	// Open a file for writing, creating it if missing and truncating if present.
+	file_open_write :: fun(path: cstring) -> (File_Id, bool) {
+		id := open(path, O_WRONLY | O_CREAT | O_TRUNC, DEFAULT_MODE)
+		if id == BAD_FILE do return NO_FILE, false
+		return id, true
+	}
+
+	file_close :: fun(id: File_Id) {
+		close(id)
+	}
+
+	// File size in bytes via fstat. Returns (size, true) on success;
+	// (_, false) if the query failed.
+	file_size :: fun(id: File_Id) -> (i64, bool) {
+		st : Stat
+		if fstat(id, &st) < 0 do return 0, false
+		return st.size, true
+	}
+
+	// Read up to buf.cap bytes into buf. Returns (data, true) where data is a
+	// slice into buf covering the bytes actually read (data.len = 0 means EOF).
+	// Returns (empty slice, false) on error. POSIX read() returns ssize_t
+	// directly with -1 for error, so the bool branch is just sign of n.
+	file_read :: fun(id: File_Id, buf: []byte) -> ([]byte, bool) {
+		n := read(id, &buf[0], usize(buf.len))
+		if n < 0 do return buf[0:0], false
+		return buf[0:n], true
+	}
+
+	// Write data to the file. Returns (n, true) where n is bytes written, or
+	// (_, false) on error. POSIX may write fewer bytes than requested under
+	// signal interruption / pipe-full / disk-full conditions; compare n
+	// against data.len for partial-write detection.
+	file_write :: fun(id: File_Id, data: []byte) -> (i64, bool) {
+		n := write(id, &data[0], usize(data.len))
+		if n < 0 do return 0, false
+		return n, true
+	}
+
+	file_delete :: fun(path: cstring) -> bool {
+		return unlink(path) == 0
+	}
+
+	// ---------------------------------------------------------------------------
+	// Stat structure (Linux x86_64 — verify per kernel ABI)
+	// ---------------------------------------------------------------------------
+
+	// Subset of struct stat. Layout matches glibc's x86_64 stat as of recent
+	// kernels; musl and 32-bit targets differ. Production-grade code should
+	// switch to statx(2) with an explicit field mask.
+	Stat :: struct {
+		dev:     u64
+		ino:     u64
+		nlink:   u64
+		mode:    u32
+		uid:     u32
+		gid:     u32
+		_pad0:   u32
+		rdev:    u64
+		size:    i64
+		blksize: i64
+		blocks:  i64
+		atime:   i64
+		atime_n: i64
+		mtime:   i64
+		mtime_n: i64
+		ctime:   i64
+		ctime_n: i64
+		_pad1:   [3]i64
+	}
+
+	// ---------------------------------------------------------------------------
+	// libc bindings
+	// ---------------------------------------------------------------------------
+	// Static-linked: clang resolves against libc at link time. ssize_t is i64
+	// on 64-bit Linux; size_t is usize. mode_t is u32. fd is int = i32.
+	// File_Id is distinct i32, lowers to i32 in IR, matching libc's int — so
+	// the foreign declarations bind File_Id directly in the fd slots and the
+	// wrappers don't need any conversion.
+
+	foreign static_lib "c" {
+		fun open(path: cstring, flags: i32, mode: u32) -> File_Id
+		fun close(fd: File_Id) -> i32
+		fun read(fd: File_Id, buf: ^byte, n: usize) -> i64
+		fun write(fd: File_Id, buf: ^byte, n: usize) -> i64
+		fun unlink(path: cstring) -> i32
+		fun fstat(fd: File_Id, out: ^Stat) -> i32
+	}
+}

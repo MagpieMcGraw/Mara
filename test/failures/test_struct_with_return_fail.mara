@@ -1,0 +1,14 @@
+module test_struct_with_return_fail
+
+// Expected to FAIL type checking: struct and class scopes declare
+// a data layout. They cannot have a return type — their "return" is
+// their own struct instance. The parser allows the syntax so the
+// checker can give a precise error, but it must be rejected.
+
+Widget :: class(n: i64) -> i64 {
+    x := n
+}
+
+main :: fun() -> i64 {
+    return 0
+}

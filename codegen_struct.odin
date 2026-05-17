@@ -1,0 +1,1680 @@
+package mara
+
+import "core:fmt"
+import "core:strconv"
+import "core:strings"
+
+// ---------------------------------------------------------------------------
+// Struct, union, and field access codegen
+// Reads directly from checked.funs (Type_Scope) — no shadow Struct_Def.
+// ---------------------------------------------------------------------------
+
+
+// Result of resolving a using-promoted field through an embedded struct
+Using_Path :: struct {
+    outer_index:    int,          // index of the using field in the outer struct
+    outer_llvm:     string,       // LLVM type name of the outer struct (%class.Outer)
+    inner_st:       ^Scope_Body, // checked type of the embedded struct
+    inner_index:    int,          // index of the target field in the inner struct
+    inner_ir_type:  string,       // LLVM type of the target field
+    inner_signed:   bool,         // signedness of the target field
+}
+
+// Search through using-promoted fields in a struct definition.
+// Returns path info if found, ok=false if not.
+resolve_using_field :: proc(g: ^Codegen, st: ^Scope_Body, field_name: string) -> (Using_Path, bool) {
+    for &f, fi in st.fields {
+        if !f.is_using { continue }
+        ft := field_ir_type(&f)
+        if !strings.has_prefix(ft, "%class.") { continue }
+        inner_name := ft[len("%class."):]
+        inner_st, inner_ok := lookup_struct(g, inner_name)
+        if !inner_ok { continue }
+        inner_idx := struct_field_index(inner_st, field_name)
+        if inner_idx >= 0 {
+            inner_f := &inner_st.fields[inner_idx]
+            return Using_Path{
+                outer_index   = fi,
+                outer_llvm    = struct_llvm_name(st.name),
+                inner_st      = inner_st,
+                inner_index   = inner_idx,
+                inner_ir_type = field_ir_type(inner_f),
+                inner_signed  = field_is_signed(inner_f),
+            }, true
+        }
+    }
+    return {}, false
+}
+
+// (Removed: struct_field_index, struct_field_type, struct_field_info — moved to codegen.odin as helpers on ^Type_Scope)
+
+// Handle VLA struct allocation: the entire struct is bump-allocated on the scope arena
+// as one contiguous block (fixed header + variable-length array data).
+gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Expr, vla_size_expr: Expr, span: Span = {}) {
+    skey := struct_key(st)
+    llvm_name := struct_llvm_name(skey)
+    loc := format_location(span.file, span.line, span.col)
+
+    // Find the VLA field and compute sizes
+    vla_field_idx := -1
+    vla_fa: ^Type_Fixed_Array
+    for &f, i in st.fields {
+        if fa, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok && fa.is_vla {
+            vla_field_idx = i
+            vla_fa = fa
+            break
+        }
+    }
+
+    // No VLA field — fixed-size struct being arena-allocated via `var`
+    if vla_field_idx < 0 {
+        total := struct_byte_size(st, g.checked)
+        data_ptr := emit_arena_bump(g, total, name, loc)
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", data_ptr, total)
+        // Initialize cap field for array classes
+        if st.is_array_class {
+            cap_fi := ac_cap_field_index(st)
+            if cap_fi >= 0 {
+                cap_val := st.array_cap
+                if ac_is_utf8(st) { cap_val -= 1 }
+                cap_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, data_ptr, cap_fi)
+                emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
+            }
+        }
+        g.all_vars[name] = Struct_Var{
+            alloca      = data_ptr,
+            struct_name = skey,
+        }
+        // Explicit `---`: alloca only, skip everything else.
+        if _, is_uninit := value.(^Expr_Uninit); is_uninit {
+            return
+        }
+        // Handle value initialization for var array classes (special-case
+        // string/array literal init that array-class structs accept).
+        if str_lit, str_ok := value.(^Expr_String); str_ok && st.is_array_class && ac_is_utf8(st) {
+            gen_array_class_string_init(g, name, st, str_lit)
+            return
+        }
+        if _, al_ok := value.(^Expr_Array); al_ok && st.is_array_class {
+            gen_array_class_literal_init(g, name, st, value)
+            return
+        }
+        // Generic value: route through the unified struct-store primitive.
+        // Handles literals (with constructor + defaults + overrides), ident
+        // copies, field-access copies, struct-returning calls (NRVO into the
+        // arena slot), pure-struct constructor calls, and overloaded binary
+        // ops. Before this, big-struct decls like `quad := primitive_quad()`
+        // silently dropped the RHS, leaving the local zero-initialized.
+        if value != nil {
+            gen_store_struct_into(g, data_ptr, st, value)
+            return
+        }
+        // No value: call the struct's init function to apply defaults.
+        if init_fn, has_init := g.checked.functions[st.name]; has_init {
+            if init_fn.type_ != nil && len(init_fn.type_.params) > 0 {
+                arg_strs: [dynamic]string
+                for &param in init_fn.type_.params {
+                    pt := llvm_type_from_checker(param.type_)
+                    if param.default_value != nil {
+                        val := gen_expr(g, param.default_value, pt)
+                        append(&arg_strs, fmt.tprintf("%s %s", pt, val))
+                    } else {
+                        append(&arg_strs, fmt.tprintf("%s zeroinitializer", pt))
+                    }
+                }
+                append(&arg_strs, fmt.tprintf("ptr %s", data_ptr))
+                args_joined := strings.join(arg_strs[:], ", ")
+                emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(", args_joined, ")"}))
+            } else {
+                emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", data_ptr, ")"}))
+            }
+        }
+        return
+    }
+
+    // Compute fixed header size (all fields except the VLA, which is [0 x T] in the struct type)
+    header_size := struct_byte_size(st, g.checked) // This uses [0 x T] for the VLA field
+
+    // Evaluate the per-variable VLA size expression to get runtime element count
+    size_val := gen_expr(g, vla_size_expr)
+
+    // Compute VLA array bytes: count * elem_size (+ 1 for sentinel if needed)
+    elem_type := llvm_type_from_checker(vla_fa.elem)
+    elem_size := elem_byte_size(elem_type)
+    array_count := size_val
+    if vla_fa.has_sentinel {
+        array_count = fresh_tmp(g)
+        emit(g, "  %s = add i64 %s, 1", array_count, size_val)
+    }
+    array_bytes: string
+    if elem_size == 1 {
+        array_bytes = array_count
+    } else {
+        array_bytes = fresh_tmp(g)
+        emit(g, "  %s = mul i64 %s, %d", array_bytes, array_count, elem_size)
+    }
+
+    // Total allocation: header + array data
+    total_bytes := fresh_tmp(g)
+    emit(g, "  %s = add i64 %d, %s", total_bytes, header_size, array_bytes)
+
+    // Allocate from scope arena
+    data_ptr := emit_arena_bump_runtime(g, total_bytes, name, loc)
+
+    // Zero-initialize
+    emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %s, i1 false)", data_ptr, total_bytes)
+
+    // Store cap into the struct's cap field (if present)
+    cap_fi := ac_cap_field_index(st)
+    if cap_fi >= 0 {
+        cap_gep := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, data_ptr, cap_fi)
+        emit(g, "  store i64 %s, ptr %s", size_val, cap_gep)
+    }
+
+    // Register as struct variable with runtime VLA capacity
+    g.all_vars[name] = Struct_Var{
+        alloca      = data_ptr,
+        struct_name = skey,
+        vla_cap     = size_val,
+    }
+}
+
+// Handle: name : ClassName = { field: value, ... }
+gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Expr) {
+    skey := struct_key(st)
+    llvm_name := struct_llvm_name(skey)
+
+    // Alloca if variable doesn't exist yet, or if re-declared with a different struct type
+    existing_sv, already_exists := get_struct(g, name)
+    needs_alloca := !already_exists || existing_sv.struct_name != skey
+    if needs_alloca {
+        alloca_name := fmt.tprintf("%%%s", name)
+        if already_exists && existing_sv.struct_name != skey {
+            // Re-declaration with different struct type — use a fresh name for the alloca
+            alloca_name = fresh_tmp(g)
+        }
+        emit(g, "  %s = alloca %s", alloca_name, llvm_name)
+        g.all_vars[name] = Struct_Var{
+            alloca = alloca_name,
+            struct_name = skey,
+        }
+        // Always zero-init struct allocas (ensures null ptrs, zero ints, etc.)
+        total := struct_byte_size(st, g.checked)
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", alloca_name, total)
+
+        // Initialize cap field for array classes
+        if st.is_array_class {
+            cap_fi := ac_cap_field_index(st)
+            if cap_fi >= 0 {
+                cap_val := st.array_cap
+                if ac_is_utf8(st) { cap_val -= 1 }
+                cap_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, alloca_name, cap_fi)
+                emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
+            }
+        }
+        // Initialize cap fields for nested array class fields
+        emit_nested_ac_cap_init(g, alloca_name, st)
+    }
+
+    sv, _ := get_struct(g, name)
+
+    // Explicit `---` initializer: alloca only, no constructor / defaults.
+    // The user opts out of automatic construction and takes responsibility
+    // for initializing the value before reading it.
+    if _, is_uninit := value.(^Expr_Uninit); is_uninit {
+        return
+    }
+
+    if value != nil {
+        // All RHS shapes funnel through the unified struct store primitive,
+        // which handles literals (with constructor / defaults / overrides),
+        // ident-to-ident copies, field-access copies, struct-returning call
+        // NRVO, pure-struct constructor calls, and overloaded binary ops.
+        gen_store_struct_into(g, sv.alloca, st, value)
+        return
+    }
+
+    // Bare declaration `x : Struct` — call the struct's init function so
+    // its defaults apply (and any imperative body statements run). For a
+    // paramized struct, pass its own param defaults as constructor args.
+    //
+    // Structs without an emitted init function (hardcoded Context, Args,
+    // any foreign types) stay zero-initialized from the alloca-time memset
+    // above. By construction they have no field defaults to apply.
+    if init_fn, has_init := g.checked.functions[st.name]; has_init {
+        if init_fn.type_ != nil && len(init_fn.type_.params) > 0 {
+            arg_strs: [dynamic]string
+            for &param in init_fn.type_.params {
+                pt := llvm_type_from_checker(param.type_)
+                if param.default_value != nil {
+                    val := gen_expr(g, param.default_value, pt)
+                    append(&arg_strs, fmt.tprintf("%s %s", pt, val))
+                } else {
+                    append(&arg_strs, fmt.tprintf("%s zeroinitializer", pt))
+                }
+            }
+            append(&arg_strs, fmt.tprintf("ptr %s", sv.alloca))
+            args_joined := strings.join(arg_strs[:], ", ")
+            emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(", args_joined, ")"}))
+        } else {
+            emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", sv.alloca, ")"}))
+        }
+    }
+}
+
+// Apply the named fields of a struct literal onto a struct at base_ptr.
+// Used both for bare struct-literal rvalues (`x : Foo = { a: 1 }`) and for
+// `{...}` overrides attached to a call (`x : Foo = Foo() { a: 1 }`). Handles
+// scalar fields, embedded (`using`) struct fields, fixed-array fields, and
+// aggregate (slice) fields. Unknown field names are silently skipped — the
+// type checker has already reported them.
+apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: ^Scope_Body, llvm_name: string, base_ptr: string) {
+    for field, pos in lit.fields {
+        // Positional literals (`Foo{a, b, c}`) carry empty field names; map
+        // each entry to the struct field at the same index.
+        idx: int
+        if lit.positional {
+            if pos >= len(st.fields) { break }
+            idx = pos
+        } else {
+            idx = struct_field_index(st, field.name)
+            if idx < 0 { continue }
+        }
+        f := &st.fields[idx]
+        ft := field_ir_type(f)
+        // Embedded struct field (`using` promoted): GEP into region, store inner fields.
+        if f.is_using && strings.has_prefix(ft, "%class.") {
+            inner_name := ft[len("%class."):]
+            inner_st, inner_ok := lookup_struct(g, inner_name)
+            if inner_ok {
+                embed_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", embed_gep, llvm_name, base_ptr, idx)
+                inner_llvm := struct_llvm_name(inner_name)
+                if inner_lit, il_ok := field.value.(^Expr_Struct_Literal); il_ok {
+                    for inner_field in inner_lit.fields {
+                        inner_idx := struct_field_index(inner_st, inner_field.name)
+                        if inner_idx < 0 { continue }
+                        inner_ft := field_ir_type(&inner_st.fields[inner_idx])
+                        inner_val := gen_expr(g, inner_field.value, inner_ft)
+                        inner_gep := fresh_tmp(g)
+                        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", inner_gep, inner_llvm, embed_gep, inner_idx)
+                        emit(g, "  store %s %s, ptr %s", inner_ft, inner_val, inner_gep)
+                    }
+                } else if ident2, id2_ok := field.value.(^Expr_Ident); id2_ok {
+                    if src_sv, src_ok := get_struct(g, ident2.name); src_ok {
+                        for &inner_f, inner_i in inner_st.fields {
+                            inner_ft := field_ir_type(&inner_f)
+                            src_gep := fresh_tmp(g)
+                            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", src_gep, inner_llvm, src_sv.alloca, inner_i)
+                            tmp_val := fresh_tmp(g)
+                            emit(g, "  %s = load %s, ptr %s", tmp_val, inner_ft, src_gep)
+                            dst_gep := fresh_tmp(g)
+                            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", dst_gep, inner_llvm, embed_gep, inner_i)
+                            emit(g, "  store %s %s, ptr %s", inner_ft, tmp_val, dst_gep)
+                        }
+                    }
+                }
+                continue
+            }
+        }
+        // Fixed-array field.
+        acap := field_array_cap(f)
+        if acap > 0 {
+            data_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", data_gep, llvm_name, base_ptr, idx)
+            gen_array_field_store(g, data_gep, acap, field_array_elem(f), field.value)
+            continue
+        }
+        // Aggregate field (e.g. []byte = { ptr, i64, i64 }): memcpy from source.
+        // For slice fields, route through gen_slice_value_ptr so fixed-array /
+        // array-literal / array-class sources get coerced to a slice header
+        // automatically — caller writes `Mesh_Data{verts, inds}` without
+        // explicit `[:]`.
+        if strings.has_prefix(ft, "{ ") {
+            src_ptr: string
+            if _, is_slice := f.type_.(^Type_Slice); is_slice {
+                src_ptr = gen_slice_value_ptr(g, field.value)
+            } else {
+                src_ptr = gen_expr(g, field.value, ft)
+            }
+            gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, base_ptr, idx)
+            size := checker_type_byte_size(f.type_)
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", gep, src_ptr, size)
+            continue
+        }
+        // Scalar field.
+        val := gen_expr(g, field.value, ft)
+        gep := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, base_ptr, idx)
+        emit(g, "  store %s %s, ptr %s", ft, val, gep)
+    }
+}
+
+// Handle: &obj.field — return pointer to field (GEP without load)
+gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
+    // Try unified address chain first
+    if chain, chain_ok := build_address_chain(g, e); chain_ok {
+        return emit_address_chain(g, &chain)
+    }
+    // Helper: given a resolved struct type and base pointer, GEP to the named field
+    field_gep :: proc(g: ^Codegen, st: ^Scope_Body, base_ptr: string, field: string) -> string {
+        llvm_n := struct_llvm_name(struct_key(st))
+        idx := struct_field_index(st, field)
+        if idx >= 0 {
+            gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_n, base_ptr, idx)
+            return gep
+        }
+        // Try using-promoted field (two-level GEP)
+        up, up_ok := resolve_using_field(g, st, field)
+        if up_ok {
+            gep1 := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep1, llvm_n, base_ptr, up.outer_index)
+            gep2 := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
+            return gep2
+        }
+        return "null"
+    }
+
+    // Case 1: direct ident — struct var or pointer-to-struct (auto-deref)
+    if ident, ok := e.expr.(^Expr_Ident); ok {
+        // Desugared ident (namespace-match shorthand): swap in the desugared
+        // expression and re-enter so the relevant case below picks it up.
+        if ident.desugared != nil {
+            new_e := new_clone(Expr_Field_Access{expr = ident.desugared, field = e.field, span = e.span, type_ = e.type_})
+            return gen_field_address(g, new_e)
+        }
+        st, base_ptr, found := resolve_struct_for_field(g, ident.name, ident.type_, ident.span)
+        if !found { return "null" }
+        return field_gep(g, st, base_ptr, e.field)
+    }
+
+    // Case 2: chained field access — e.g. &events.dropfile.name
+    if inner_fa, inner_ok := e.expr.(^Expr_Field_Access); inner_ok {
+        gen_field_access(g, inner_fa)
+        if fr, fr_ok := claim_field_struct(g); fr_ok {
+            if inner_st, isd_ok := lookup_struct(g, fr.struct_name); isd_ok {
+                return field_gep(g, inner_st, fr.alloca, e.field)
+            }
+        }
+    }
+
+    return "null"
+}
+
+// Resolve a struct definition and base pointer for field access.
+// Handles both direct struct vars and pointer-to-struct (auto-deref).
+// Returns (type_struct, base_ptr, ok)
+resolve_struct_for_field :: proc(g: ^Codegen, ident_name: string, ident_type: Type = nil, span: Span = {}) -> (^Scope_Body, string, bool) {
+    // Context global: load from @__mara_context (accessible from any function)
+    if ident_name == "context" {
+        if st, st_ok := lookup_struct(g, "Context"); st_ok {
+            ctx_ptr := fresh_tmp(g)
+            emit_raw(g, strings.concatenate({"  ", ctx_ptr, " = load ptr, ptr @__mara_context"}))
+            return st, ctx_ptr, true
+        }
+    }
+    // Direct struct variable
+    if sv, sv_ok := get_struct(g, ident_name); sv_ok {
+        if st, st_ok := lookup_struct(g, sv.struct_name); st_ok {
+            return st, sv.alloca, true
+        }
+    }
+    // Pointer to struct (auto-deref): use typed AST annotation
+    ptr_struct_name := ""
+    if pt, pt_ok := ident_type.(^Type_Ptr); pt_ok {
+        if sd := as_struct_body(pt.elem); sd != nil {
+            ptr_struct_name = sd.name
+        }
+    }
+    if ptr_struct_name != "" {
+        if st, st_ok := lookup_struct(g, ptr_struct_name); st_ok {
+            alloca_name, _ := get_scalar(g, ident_name)
+            loaded_ptr := fresh_tmp(g)
+            emit(g, "  %s = load ptr, ptr %s", loaded_ptr, alloca_name)
+            // Null pointer check before auto-deref field access
+            emit_null_check(g, loaded_ptr, ident_name, span)
+            return st, loaded_ptr, true
+        }
+    }
+    return nil, "", false
+}
+
+// Handle: obj.field (read)
+gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
+    // Function reference: game.test_print → @mara_Mega_test_print
+    if rf, rf_ok := e.resolved.(Resolved_Func); rf_ok {
+        ir_name := mara_fn_name(g, rf.name)
+        if fir, fir_ok := foreign_ir_name(g, rf.name); fir_ok {
+            ir_name = fir
+        }
+        return ir_name
+    }
+    // Compile-time constant (e.g. fixed-array .len / .cap).
+    // Handled early so it works for both direct ident (arr.len) and
+    // chained access (obj.arr.len) without walking the address chain.
+    #partial switch r in e.resolved {
+    case Resolved_Enum_Variant:
+        return fmt.tprintf("%d", r.value)
+    case Resolved_Union_Variant:
+        return fmt.tprintf("%d", r.tag_value)
+    case Resolved_Constant:
+        return fmt.tprintf("%d", r.int_value)
+    }
+    // .tag accessor on a union value: GEP to field 0 + load with the tag IR
+    // type. Same load shape match codegen does to drive arm dispatch — see
+    // gen_union_match in codegen_match.odin.
+    if r, r_ok := e.resolved.(Resolved_Union_Tag); r_ok {
+        ut, ut_ok := g.checked.table.unions[r.union_name]
+        if !ut_ok { return "0" }
+        union_ptr, ptr_ok := union_subject_ptr(g, e.expr, ut)
+        if !ptr_ok { return "0" }
+        tag_ir := union_tag_ir_type(ut)
+        llvm_name := union_llvm_name(r.union_name)
+        tag_ptr := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, llvm_name, union_ptr)
+        tag_val := fresh_tmp(g)
+        emit(g, "  %s = load %s, ptr %s", tag_val, tag_ir, tag_ptr)
+        return tag_val
+    }
+    // .pad accessor: read the typed padding between tag and payload. The pad
+    // sits at byte offset tag_bytes within the union's first IR field (the
+    // tag-area byte array, when pad > 0). We GEP from the union pointer in i8
+    // units to that offset and load with the pad's IR type.
+    if r, r_ok := e.resolved.(Resolved_Union_Pad); r_ok {
+        ut, ut_ok := g.checked.table.unions[r.union_name]
+        if !ut_ok { return "0" }
+        union_ptr, ptr_ok := union_subject_ptr(g, e.expr, ut)
+        if !ptr_ok { return "0" }
+        tag_bytes := ir_type_byte_size(union_tag_ir_type(ut))
+        pad_ir := llvm_type_from_checker(ut.tag_pad)
+        pad_ptr := fresh_tmp(g)
+        emit(g, "  %s = getelementptr i8, ptr %s, i32 %d", pad_ptr, union_ptr, tag_bytes)
+        pad_val := fresh_tmp(g)
+        emit(g, "  %s = load %s, ptr %s", pad_val, pad_ir, pad_ptr)
+        return pad_val
+    }
+    // Try unified address chain first — handles chained access efficiently
+    if chain, chain_ok := build_address_chain(g, e); chain_ok {
+        addr := emit_address_chain(g, &chain)
+        switch chain.final_kind {
+        case .Scalar:
+            return emit_load(g, chain.final_type, addr)
+        case .Struct:
+            set_field_result(g, Struct_Var{alloca = addr, struct_name = chain.struct_name})
+            return addr
+        case .Array:
+            av := Array_Var{
+                alloca    = addr,
+                capacity  = chain.array_cap,
+                elem_type = chain.array_elem,
+            }
+            set_field_result(g, av)
+            return addr
+        case .Slice:
+            // Determine elem type / sentinel from the last step's field def.
+            // The chain says .Slice — if we can't recover the slice descriptor
+            // from the last step, the chain was built with incomplete info.
+            if len(chain.steps) == 0 {
+                codegen_fatal(g, e.span, "address chain ended at .Slice with no steps — cannot determine elem type")
+            }
+            sf, sf_ok := chain.steps[len(chain.steps)-1].(Step_Field)
+            if !sf_ok {
+                codegen_fatal(g, e.span, "address chain ended at .Slice but last step is not a field — cannot determine elem type")
+            }
+            sl, sl_ok := sf.field_def.type_.(^Type_Slice)
+            if !sl_ok {
+                codegen_fatal(g, e.span, "address chain ended at .Slice but last field type is not Type_Slice")
+            }
+            elem_t := llvm_type_from_checker(sl.elem)
+            sentinel := sl.has_sentinel
+            _, utf8 := sl.elem.(Type_Utf8)
+            set_field_result(g, Slice_Var{alloca = addr, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
+            return addr
+        }
+    }
+
+    // Walk through the expression to find the root variable and struct type
+    ident, ok := e.expr.(^Expr_Ident)
+    if !ok {
+        // Handle chained field access: r.pos.x → gen inner access, use temp_field_result
+        if inner_fa, inner_ok := e.expr.(^Expr_Field_Access); inner_ok {
+            inner_val := gen_field_access(g, inner_fa)
+            // Check if inner access produced an array result (e.g. for swizzle on struct array field)
+            if ar, ar_ok := claim_field_array(g); ar_ok {
+                // Swizzle on array field: arr.x, arr.xy etc.
+                if is_swizzle_field(e.field, ar.capacity) {
+                    if len(e.field) == 1 {
+                        // Single-component swizzle: if element is itself an array, produce a pointer
+                        // to the inner array (for chained swizzle like data.x.xyz)
+                        inner_cap, inner_elem, is_nested := parse_array_ir_type(ar.elem_type)
+                        if is_nested {
+                            idx := swizzle_char_to_index(e.field[0])
+                            arr_type := array_var_type(&ar)
+                            gep := fresh_tmp(g)
+                            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, ar.alloca, idx)
+                            set_field_result(g, Array_Var{
+                                alloca    = gep,
+                                capacity  = inner_cap,
+                                elem_type = inner_elem,
+                            })
+                            return gep
+                        }
+                        return gen_swizzle_read_single(g, &ar, e.field)
+                    } else {
+                        return gen_swizzle_read_multi(g, &ar, e.field)
+                    }
+                }
+            }
+            // Check if inner access produced a slice result (e.g. a.base.ptr)
+            if sv, sv_ok := claim_field_slice(g); sv_ok {
+                if e.field == "ptr" {
+                    ptr_gep := fresh_tmp(g)
+                    emit_slice_gep(g, ptr_gep, sv.alloca, 0)
+                    ptr_val := fresh_tmp(g)
+                    emit(g, "  %s = load ptr, ptr %s", ptr_val, ptr_gep)
+                    return ptr_val
+                }
+                if e.field == "len" {
+                    len_gep := fresh_tmp(g)
+                    emit_slice_gep(g, len_gep, sv.alloca, 1)
+                    len_val := fresh_tmp(g)
+                    emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
+                    return len_val
+                }
+                if e.field == "cap" {
+                    cap_gep := fresh_tmp(g)
+                    emit_slice_gep(g, cap_gep, sv.alloca, 2)
+                    cap_val := fresh_tmp(g)
+                    emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+                    return cap_val
+                }
+            }
+            // Check if inner access produced a struct result
+            if fr, fr_ok := claim_field_struct(g); fr_ok {
+                if inner_st, isd_ok := lookup_struct(g, fr.struct_name); isd_ok {
+                    inner_llvm := struct_llvm_name(fr.struct_name)
+                    idx := struct_field_index(inner_st, e.field)
+                    if idx >= 0 {
+                        f := &inner_st.fields[idx]
+                        ft := field_ir_type(f)
+                        gep := fresh_tmp(g)
+                        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, inner_llvm, fr.alloca, idx)
+                        // Array field in chained access
+                        acap := field_array_cap(f)
+                        aelem := field_array_elem(f)
+                        if acap > 0 {
+                            set_field_result(g, Array_Var{
+                                alloca    = gep,
+                                capacity  = acap,
+                                elem_type = aelem,
+                                is_utf8   = aelem == "i8",
+                            })
+                            return gep
+                        }
+                        // Slice field in chained access
+                        if ft == SLICE_IR_TYPE {
+                            elem_t := "i8"
+                            sentinel := false
+                            utf8 := false
+                            if sl, sl_ok := f.type_.(^Type_Slice); sl_ok {
+                                elem_t = llvm_type_from_checker(sl.elem)
+                                sentinel = sl.has_sentinel
+                                _, utf8 = sl.elem.(Type_Utf8)
+                            }
+                            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
+                            return gep
+                        }
+                        // Sub-struct field in chained access
+                        if strings.has_prefix(ft, "%class.") {
+                            sub_name := ft[len("%class."):]
+                            set_field_result(g, Struct_Var{alloca = gep, struct_name = sub_name})
+                            return gep
+                        }
+                        val := fresh_tmp(g)
+                        emit(g, "  %s = load %s, ptr %s", val, ft, gep)
+                        return val
+                    }
+                }
+            }
+            return inner_val
+        }
+        // Handle indexed expression: rot_mx[2].xyz → index into array, then swizzle
+        if idx_expr, idx_ok := e.expr.(^Expr_Index); idx_ok {
+            ptr := gen_index_address(g, idx_expr)
+            // Check type annotation on the index expression to determine element type
+            idx_type := distinct_base(expr_type(idx_expr))
+            if fa, fa_ok := idx_type.(^Type_Fixed_Array); fa_ok {
+                elem_t := llvm_type_from_checker(fa.elem)
+                utf8 := false
+                if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
+                ar := Array_Var{
+                    alloca    = ptr,
+                    capacity  = fa.size,
+                    elem_type = elem_t,
+                    is_utf8   = utf8,
+                }
+                // Swizzle on indexed array element
+                if is_swizzle_field(e.field, ar.capacity) {
+                    if len(e.field) == 1 {
+                        return gen_swizzle_read_single(g, &ar, e.field)
+                    } else {
+                        return gen_swizzle_read_multi(g, &ar, e.field)
+                    }
+                }
+                // Non-swizzle scalar field on indexed array element.
+                codegen_fatal(g, e.span, "field '.%s' on array element is not a valid swizzle and not a struct field", e.field)
+            }
+            // Struct element of an array or slice — GEP into the field and
+            // resolve to a scalar / sub-array / sub-struct / sub-slice result.
+            // (Without this branch the outer .field was silently dropped and
+            // the entire element got loaded as the expression's value.)
+            if sd := as_scope_body(idx_type); sd != nil {
+                inner_llvm := struct_llvm_name(struct_key(sd))
+                fidx := struct_field_index(sd, e.field)
+                if fidx >= 0 {
+                    f := &sd.fields[fidx]
+                    ft := field_ir_type(f)
+                    gep := fresh_tmp(g)
+                    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, inner_llvm, ptr, fidx)
+                    // Fixed-array field
+                    acap := field_array_cap(f)
+                    aelem := field_array_elem(f)
+                    if acap > 0 {
+                        set_field_result(g, Array_Var{
+                            alloca    = gep,
+                            capacity  = acap,
+                            elem_type = aelem,
+                            is_utf8   = aelem == "i8",
+                        })
+                        return gep
+                    }
+                    // Slice field
+                    if ft == SLICE_IR_TYPE {
+                        elem_t := "i8"
+                        sentinel := false
+                        utf8 := false
+                        if sl, sl_ok := f.type_.(^Type_Slice); sl_ok {
+                            elem_t = llvm_type_from_checker(sl.elem)
+                            sentinel = sl.has_sentinel
+                            _, utf8 = sl.elem.(Type_Utf8)
+                        }
+                        set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
+                        return gep
+                    }
+                    // Sub-struct field
+                    if strings.has_prefix(ft, "%class.") {
+                        sub_name := ft[len("%class."):]
+                        set_field_result(g, Struct_Var{alloca = gep, struct_name = sub_name})
+                        return gep
+                    }
+                    // Scalar field — load and return
+                    val := fresh_tmp(g)
+                    emit(g, "  %s = load %s, ptr %s", val, ft, gep)
+                    return val
+                }
+            }
+            codegen_fatal(g, e.span, "field access '.%s' on indexed element of unknown shape", e.field)
+        }
+        codegen_fatal(g, e.span, "field access target must be a variable")
+    }
+
+    // Check resolved annotation on the node (populated by type checker)
+    #partial switch r in e.resolved {
+    case Resolved_Enum_Variant:
+        return fmt.tprintf("%d", r.value)
+    case Resolved_Union_Variant:
+        return fmt.tprintf("%d", r.tag_value)
+    case Resolved_Constant:
+        return fmt.tprintf("%d", r.int_value)
+    }
+
+    // Array swizzle read: arr.x, arr.xy, arr.rgba, etc.
+    if av, av_ok := get_array(g, ident.name); av_ok {
+        if is_swizzle_field(e.field, av.capacity) {
+            if len(e.field) == 1 {
+                // Single-component swizzle: if element is itself an array, produce a pointer
+                // to the inner array (for chained swizzle like data.x.xyz)
+                inner_cap, inner_elem, is_nested := parse_array_ir_type(av.elem_type)
+                if is_nested {
+                    idx := swizzle_char_to_index(e.field[0])
+                    arr_type := array_var_type(&av)
+                    gep := fresh_tmp(g)
+                    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, av.alloca, idx)
+                    set_field_result(g, Array_Var{
+                        alloca    = gep,
+                        capacity  = inner_cap,
+                        elem_type = inner_elem,
+                    })
+                    return gep
+                }
+                return gen_swizzle_read_single(g, &av, e.field)
+            } else {
+                return gen_swizzle_read_multi(g, &av, e.field)
+            }
+        }
+    }
+
+    // Slice field access: sl.ptr, sl.len, sl.cap
+    if sv, sv_ok := get_slice(g, ident.name); sv_ok {
+        if e.field == "ptr" {
+            return gen_slice_ptr(g, ident.name)
+        }
+        if e.field == "len" {
+            return gen_slice_len(g, ident.name)
+        }
+        if e.field == "cap" {
+            raw_cap := gen_slice_cap(g, ident.name)
+            if sv.has_sentinel {
+                // Sentinel slot is hidden from .cap (consistent with cap() builtin).
+                result := fresh_tmp(g)
+                emit(g, "  %s = sub i64 %s, 1", result, raw_cap)
+                return result
+            }
+            return raw_cap
+        }
+    }
+
+    st, base_ptr, found := resolve_struct_for_field(g, ident.name, ident.type_, ident.span)
+    if !found {
+        codegen_fatal(g, e.span, "'%s' is not a struct or pointer to struct", ident.name)
+    }
+
+    st_llvm := struct_llvm_name(struct_key(st))
+    idx := struct_field_index(st, e.field)
+    if idx >= 0 {
+        f := &st.fields[idx]
+        ft := field_ir_type(f)
+        gep := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+        // If the field is an embedded struct (using), return its pointer (it's already a value in memory)
+        if f.is_using && strings.has_prefix(ft, "%class.") {
+            inner_name := ft[len("%class."):]
+            set_field_result(g, Struct_Var{alloca = gep, struct_name = inner_name})
+            return gep
+        }
+        // Array field — register as Array_Var and return data pointer
+        acap := field_array_cap(f)
+        aelem := field_array_elem(f)
+        if acap > 0 {
+            set_field_result(g, Array_Var{
+                alloca    = gep,
+                capacity  = acap,
+                elem_type = aelem,
+                is_utf8   = aelem == "i8",
+            })
+            return gep
+        }
+        // Slice field — register as Slice_Var with the field's real element type.
+        if ft == SLICE_IR_TYPE {
+            elem_t := "i8"
+            sentinel := false
+            utf8 := false
+            if sl, sl_ok := f.type_.(^Type_Slice); sl_ok {
+                elem_t = llvm_type_from_checker(sl.elem)
+                sentinel = sl.has_sentinel
+                _, utf8 = sl.elem.(Type_Utf8)
+            }
+            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
+            return gep
+        }
+        // If the field is a sub-struct (not using), register for chained access
+        if strings.has_prefix(ft, "%class.") {
+            inner_name := ft[len("%class."):]
+            set_field_result(g, Struct_Var{alloca = gep, struct_name = inner_name})
+            return gep
+        }
+        val := fresh_tmp(g)
+        emit(g, "  %s = load %s, ptr %s", val, ft, gep)
+        return val
+    }
+
+    // Try using-promoted field (two-level GEP)
+    up, up_ok := resolve_using_field(g, st, e.field)
+    if up_ok {
+        gep1 := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep1, st_llvm, base_ptr, up.outer_index)
+        gep2 := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
+        val := fresh_tmp(g)
+        emit(g, "  %s = load %s, ptr %s", val, up.inner_ir_type, gep2)
+        return val
+    }
+
+    codegen_fatal(g, e.span, "class '%s' has no field '%s'", struct_key(st), e.field)
+}
+
+// Resolve an expression to a struct type + pointer for chained field assignment.
+// Handles Expr_Ident (direct or pointer-to-struct) and Expr_Field_Access (chained).
+resolve_lhs_struct :: proc(g: ^Codegen, expr: Expr) -> (^Scope_Body, string, bool) {
+    // Unified address chain handles multi-step lvalues like `obj.arr[i].field = val`
+    // that the per-shape cases below don't cover.
+    if chain, chain_ok := build_address_chain(g, expr); chain_ok {
+        if chain.final_kind == .Struct && chain.struct_name != "" {
+            if st, st_ok := lookup_struct(g, chain.struct_name); st_ok {
+                ptr := emit_address_chain(g, &chain)
+                return st, ptr, true
+            }
+        }
+    }
+    #partial switch e in expr {
+    case ^Expr_Ident:
+        return resolve_struct_for_field(g, e.name, e.type_, e.span)
+    case ^Expr_Index:
+        // Array class index: arr_class[i].field = value
+        ident, ident_ok := e.expr.(^Expr_Ident)
+        if !ident_ok { return nil, "", false }
+        if sv, sv_ok := get_struct(g, ident.name); sv_ok {
+            st, st_ok := lookup_struct(g, sv.struct_name)
+            if st_ok && st.is_array_class {
+                st_llvm := struct_llvm_name(sv.struct_name)
+                ac_arr_idx := ac_array_field_index(st)
+                ac_elem := ac_elem_ir_type(st)
+                idx_raw := gen_expr(g, e.index)
+                idx := ensure_i64(g, idx_raw, e.index)
+                arr_cap := ac_cap_str(g, st, &sv)
+                emit_bounds_check(g, idx, arr_cap, ident.name, e.span)
+                arr_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", arr_gep, st_llvm, sv.alloca, ac_arr_idx)
+                elem_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", elem_gep, ac_arr_type(st), arr_gep, idx)
+                if strings.has_prefix(ac_elem, "%class.") {
+                    inner_name := ac_elem[len("%class."):]
+                    if inner_st, isd_ok := lookup_struct(g, inner_name); isd_ok {
+                        return inner_st, elem_gep, true
+                    }
+                }
+            }
+        }
+        return nil, "", false
+    }
+    return nil, "", false
+}
+
+// Parse an LLVM array type string like "[512 x i1]" into capacity and element type.
+parse_array_ir_type :: proc(ir_type: string) -> (cap: int, elem: string, ok: bool) {
+    if !strings.has_prefix(ir_type, "[") { return 0, "", false }
+    rest := ir_type[1:]  // "512 x i1]"
+    x_idx := strings.index(rest, " x ")
+    if x_idx < 0 { return 0, "", false }
+    cap_str := rest[:x_idx]
+    elem_str := strings.trim_right(rest[x_idx+3:], "]")
+    n, n_ok := strconv.parse_int(cap_str)
+    if !n_ok { return 0, "", false }
+    return n, elem_str, true
+}
+
+// Store a value into an array field of a struct.
+// data_ptr: GEP to the [N x T] data in the struct
+// array_cap/array_elem: the array metadata for this field
+// value:    the RHS expression
+//
+// Thin wrapper over the unified gen_store_array_into. Kept for callers that
+// already have raw capacity + elem_type rather than checker metadata.
+gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, array_elem: string, value: Expr) {
+    gen_store_array_into(g, data_ptr, array_cap, array_elem, value)
+}
+
+// Single point of truth for "store an array value into a destination pointer".
+// Handles every RHS shape that can produce a fixed-array value:
+//   - nil         → memset zero
+//   - {} literal  → memset zero
+//   - array literal [a, b, c] → memset (if undersized) + per-element stores
+//   - struct literal with array_values (distinct fixed-array structs like Quat) → memset + per-elem
+//   - string literal (utf8 arrays)        → memset + memcpy bytes
+//   - compiler intrinsic (#caller_name)   → memset + memcpy bytes
+//   - ident referring to another array    → loop element copy
+//   - swizzle field access (a.xy → temp)  → per-element copy from swizzle result
+//   - array-returning function call       → NRVO via gen_call_into_array
+//   - fallback expression                 → gen_expr + memcpy from claim_call_result
+gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, has_sentinel: bool = false) {
+    alloc_cap := capacity
+    if has_sentinel { alloc_cap += 1 }
+    arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
+    ebs := elem_byte_size(elem_type, g.checked)
+    total_bytes := alloc_cap * ebs
+
+    if value == nil {
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        return
+    }
+
+    // Empty struct literal `{}` — zero the array.
+    if sl, ok := value.(^Expr_Struct_Literal); ok && len(sl.fields) == 0 && sl.array_values == nil {
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        return
+    }
+
+    // String literal targeting a utf8 array.
+    if str_lit, ok := value.(^Expr_String); ok {
+        global_name, byte_len := get_string_literal(g, str_lit.value)
+        src_ptr := fresh_tmp(g)
+        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, byte_len, global_name)
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, byte_len)
+        return
+    }
+
+    // Compiler intrinsic (#caller_name etc.) — produces a string literal.
+    if intrinsic, ok := value.(^Expr_Compiler_Intrinsic); ok {
+        global_name, byte_len := get_string_literal(g, intrinsic.resolved_value)
+        src_ptr := fresh_tmp(g)
+        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, byte_len, global_name)
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, byte_len)
+        return
+    }
+
+    // Bare array literal [a, b, c].
+    if arr_lit, ok := value.(^Expr_Array); ok {
+        if len(arr_lit.elements) < alloc_cap {
+            emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        }
+        for elem, i in arr_lit.elements {
+            val := gen_expr(g, elem, elem_type)
+            gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, dst_ptr, i)
+            emit(g, "  store %s %s, ptr %s", elem_type, val, gep)
+        }
+        return
+    }
+
+    // Distinct-fixed-array struct literal (Quat{...} etc.) — array_values has
+    // per-slot exprs, nil meaning zero-fill.
+    if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        for elem, i in sl.array_values {
+            if elem == nil { continue }
+            val := gen_expr(g, elem, elem_type)
+            gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, dst_ptr, i)
+            emit(g, "  store %s %s, ptr %s", elem_type, val, gep)
+        }
+        return
+    }
+
+    // Ident referring to another array variable — element-wise loop copy.
+    if ident, ok := value.(^Expr_Ident); ok {
+        if src, src_ok := get_array(g, ident.name); src_ok {
+            src_type := array_var_type(&src)
+            cond_label := fresh_label(g, "copy.cond")
+            body_label := fresh_label(g, "copy.body")
+            end_label  := fresh_label(g, "copy.end")
+            idx_ptr := fresh_tmp(g)
+            emit(g, "  %s = alloca i64", idx_ptr)
+            emit(g, "  store i64 0, ptr %s", idx_ptr)
+            emit(g, "  br label %%%s", cond_label)
+            emit(g, "%s:", cond_label)
+            idx := fresh_tmp(g)
+            emit(g, "  %s = load i64, ptr %s", idx, idx_ptr)
+            cmp := fresh_tmp(g)
+            emit(g, "  %s = icmp slt i64 %s, %d", cmp, idx, src.capacity)
+            emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, body_label, end_label)
+            emit(g, "%s:", body_label)
+            idx2 := fresh_tmp(g)
+            emit(g, "  %s = load i64, ptr %s", idx2, idx_ptr)
+            src_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", src_gep, src_type, src.alloca, idx2)
+            val := fresh_tmp(g)
+            emit(g, "  %s = load %s, ptr %s", val, elem_type, src_gep)
+            dst_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", dst_gep, arr_type, dst_ptr, idx2)
+            emit(g, "  store %s %s, ptr %s", elem_type, val, dst_gep)
+            next := fresh_tmp(g)
+            emit(g, "  %s = add i64 %s, 1", next, idx2)
+            emit(g, "  store i64 %s, ptr %s", next, idx_ptr)
+            emit(g, "  br label %%%s", cond_label)
+            emit(g, "%s:", end_label)
+            return
+        }
+    }
+
+    // Multi-component swizzle field access (a.xy → temp array).
+    if fa, ok := value.(^Expr_Field_Access); ok {
+        gen_field_access(g, fa)
+        if sr, sr_ok := claim_swizzle_result(g); sr_ok {
+            src_arr_type := array_var_type(&sr)
+            count := sr.capacity
+            for i := 0; i < count; i += 1 {
+                src_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, sr.alloca, i)
+                val := fresh_tmp(g)
+                emit(g, "  %s = load %s, ptr %s", val, elem_type, src_gep)
+                dst_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, arr_type, dst_ptr, i)
+                emit(g, "  store %s %s, ptr %s", elem_type, val, dst_gep)
+            }
+            return
+        }
+    }
+
+    // Array-returning function call: NRVO directly into dst_ptr.
+    if call, ok := value.(^Expr_Call); ok {
+        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_array_cap > 0 {
+            // Build an Array_Var pointing at dst_ptr and route through the
+            // existing array NRVO path.
+            dst := Array_Var{alloca = dst_ptr, capacity = info.ret_array_cap, elem_type = info.ret_array_elem}
+            gen_call_into_array(g, call, &dst, &info)
+            return
+        }
+    }
+
+    // Fallback for unrecognised RHS shapes: zero the destination. Matches
+    // the legacy gen_array_field_store behavior so callers higher up the
+    // call chain still see their own call_result for parameter passing.
+    // (Expressions like `obj.pos = other.pos + a + b` flow through here as
+    // an Expr_Binary; gen_binary will handle the chain elsewhere.)
+    emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+}
+
+// Initialize cap fields for an array-class struct AND any nested array-class
+// fields after a memset-zero. Used by gen_store_struct_into in the paths that
+// zero-init the destination before writing fields.
+init_array_class_caps :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_Body) {
+    if st.is_array_class {
+        cap_fi := ac_cap_field_index(st)
+        if cap_fi >= 0 {
+            cap_val := st.array_cap
+            if ac_is_utf8(st) { cap_val -= 1 }
+            llvm_name := struct_llvm_name(struct_key(st))
+            cap_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, base_ptr, cap_fi)
+            emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
+        }
+    }
+    emit_nested_ac_cap_init(g, base_ptr, st)
+}
+
+// Single point of truth for "store a struct-typed value into a destination
+// pointer". Replaces the duplicated dispatch logic that used to live in
+// gen_struct_assign (local var), gen_field_assign (obj.f = ...),
+// gen_deref_assign (p^ = ...), and gen_struct_store_at (array element).
+//
+// Handles every RHS shape that can produce a struct value:
+//   - struct literal (with optional constructor / defaults / field overrides)
+//   - struct ident (memcpy from src var)
+//   - struct field-access (memcpy from src field address)
+//   - pure-struct constructor call Foo() — zero-arg variant (routes through init)
+//   - pure-struct positional constructor Foo(a, b, c) — inline field stores
+//   - regular struct-returning function call — NRVO direct into dst
+//   - overloaded binary operator returning a struct
+//   - fallback expression (memcpy from result pointer)
+//
+// Call.overrides (the `{...}` block after a constructor call) are applied last
+// for every call shape, matching the rule "{} always happens after the
+// constructor".
+gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, value: Expr) {
+    llvm_name := struct_llvm_name(struct_key(st))
+    total := struct_byte_size(st, g.checked)
+
+    if lit, ok := value.(^Expr_Struct_Literal); ok {
+        // Zero-init first, run the struct's init function to apply defaults
+        // (and any imperative body), then layer the literal's explicit field
+        // assignments on top. `{0}` (lit.zero_init) skips the constructor —
+        // the zero memset stands alone. Structs without an init function
+        // stay zero (no defaults to apply by construction).
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
+        init_array_class_caps(g, dst_ptr, st)
+        if !lit.zero_init {
+            if _, has_init := g.checked.functions[st.name]; has_init {
+                emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
+            }
+        }
+        apply_struct_literal_fields(g, lit, st, llvm_name, dst_ptr)
+        return
+    }
+
+    if ident, ok := value.(^Expr_Ident); ok {
+        if src_sv, sv_ok := get_struct(g, ident.name); sv_ok {
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_sv.alloca, total)
+            return
+        }
+    }
+
+    if fa, ok := value.(^Expr_Field_Access); ok {
+        src_ptr := gen_field_address(g, fa)
+        if src_ptr != "null" {
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, total)
+            return
+        }
+    }
+
+    if call, ok := value.(^Expr_Call); ok {
+        resolved_name := call_resolved_name(call)
+
+        // Check the NRVO path FIRST: if this resolves to a function that
+        // returns a struct, write into dst_ptr directly. This must come
+        // before the constructor checks because every struct's auto-generated
+        // init function looks like a "zero-arg constructor with init"
+        // pattern; without this ordering, calls like `o.inner = make_inner()`
+        // would be misclassified as `Inner()` constructor calls.
+        if info, info_ok := lookup_fun_info(g, resolved_name); info_ok && info.ret_struct != "" {
+            gen_call_into_struct(g, call, dst_ptr, &info)
+            if call.overrides != nil {
+                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
+            }
+            return
+        }
+
+        _, is_pure_struct := g.checked.table.structs[st.name]
+        _, is_function_call := g.checked.functions[resolved_name]
+        _, has_init := g.checked.functions[st.name]
+
+        // Pure-struct zero-arg constructor `Foo()`: route through init function.
+        if is_pure_struct && len(call.args) == 0 && has_init {
+            emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
+            if call.overrides != nil {
+                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
+            }
+            return
+        }
+
+        // Pure-struct positional constructor `Foo(a, b, c)`: inline field stores
+        // by position + defaults for unprovided trailing fields.
+        if is_pure_struct && !is_function_call {
+            emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
+            init_array_class_caps(g, dst_ptr, st)
+            for arg, i in call.args {
+                if i >= len(st.fields) { break }
+                field := &st.fields[i]
+                ft := field_ir_type(field)
+                val := gen_expr(g, arg, ft)
+                gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, dst_ptr, i)
+                emit(g, "  store %s %s, ptr %s", ft, val, gep)
+            }
+            for fi := len(call.args); fi < len(st.fields); fi += 1 {
+                field := &st.fields[fi]
+                if field.default_value != nil {
+                    ft := field_ir_type(field)
+                    val := gen_expr(g, field.default_value, ft)
+                    gep := fresh_tmp(g)
+                    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, dst_ptr, fi)
+                    emit(g, "  store %s %s, ptr %s", ft, val, gep)
+                }
+            }
+            if call.overrides != nil {
+                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
+            }
+            return
+        }
+    }
+
+    if bin, ok := value.(^Expr_Binary); ok {
+        if _, rf_ok := bin.overload_fn.?; rf_ok {
+            result_ptr := gen_binary(g, bin)
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, result_ptr, total)
+            return
+        }
+    }
+
+    // Fallback: evaluate the expression and expect a pointer back, then memcpy.
+    src_ptr := gen_expr(g, value, llvm_name)
+    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, total)
+}
+
+// Thin wrapper over gen_store_struct_into for callers that have a struct name
+// rather than a Scope_Body. Kept as the migration target for callers that
+// still use the old name.
+gen_struct_store_at :: proc(g: ^Codegen, dst_ptr: string, struct_name: string, value: Expr) {
+    st, st_ok := lookup_struct(g, struct_name)
+    if !st_ok {
+        codegen_fatal(g, {}, "gen_struct_store_at: unknown struct '%s'", struct_name)
+    }
+    if value == nil {
+        // Bare "store nothing" — same effect as the old fallback: zero + cap init.
+        total := struct_byte_size(st, g.checked)
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
+        init_array_class_caps(g, dst_ptr, st)
+        return
+    }
+    gen_store_struct_into(g, dst_ptr, st, value)
+}
+
+// After zero-initializing a struct, re-initialize cap fields for any nested array classes.
+// This handles cases like `obj.field = {}` where the field's struct type contains array class members.
+emit_nested_ac_cap_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_Body) {
+    st_llvm := struct_llvm_name(struct_key(st))
+    for &f, fi in st.fields {
+        inner_sd := as_struct_body(f.type_)
+        if inner_sd == nil { continue }
+        inner_checked, ic_ok := lookup_struct(g, inner_sd.name)
+        if !ic_ok { continue }
+        field_gep := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", field_gep, st_llvm, base_ptr, fi)
+        if inner_checked.is_array_class {
+            cap_fi := ac_cap_field_index(inner_checked)
+            if cap_fi >= 0 {
+                cap_val := inner_checked.array_cap
+                if ac_is_utf8(inner_checked) { cap_val -= 1 }
+                inner_llvm := struct_llvm_name(struct_key(inner_checked))
+                cap_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, inner_llvm, field_gep, cap_fi)
+                emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
+            }
+        }
+        // Recurse for deeply nested structs
+        emit_nested_ac_cap_init(g, field_gep, inner_checked)
+    }
+}
+
+// Handle: obj.field = value (write)
+// Write to a slice's `.len` / `.cap` through its header pointer. Slices are
+// reference types, so any path that produces the header alloca pointer can
+// also feed this — ident slice vars, slice fields, indexed slice elements.
+gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string, value: Expr, span: Span) {
+    field_idx := 0
+    switch field {
+    case "len": field_idx = 1
+    case "cap": field_idx = 2
+    case:
+        codegen_fatal(g, span, "cannot assign to slice field '.%s' (only .len and .cap)", field)
+    }
+    gep := fresh_tmp(g)
+    emit_slice_gep(g, gep, slice_hdr_ptr, field_idx)
+    val := gen_expr(g, value, "i64")
+    emit(g, "  store i64 %s, ptr %s", val, gep)
+}
+
+gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
+    fa_expr := s.target.(^Expr_Field_Access)
+    st: ^Scope_Body
+    base_ptr: string
+    found: bool
+
+    ident, ident_ok := fa_expr.expr.(^Expr_Ident)
+    if ident_ok {
+        // context.scope_allocator = AllocatorType — compiler generates new() call at main setup
+        if g.context_enabled && ident.name == "context" && fa_expr.field == "scope_allocator" {
+            return // no-op: arena initialization is done in main setup
+        }
+
+        // Array swizzle write: arr.x = val, arr.xy = [a, b]
+        if av, av_ok := get_array(g, ident.name); av_ok {
+            if is_swizzle_field(fa_expr.field, av.capacity) {
+                if len(fa_expr.field) == 1 {
+                    gen_swizzle_write_single(g, &av, fa_expr.field, s.value)
+                } else {
+                    gen_swizzle_write_multi(g, &av, fa_expr.field, s.value)
+                }
+                return
+            }
+        }
+
+        // Slice field write: slice_var.len = N, slice_var.cap = N
+        if slv, slv_ok := get_slice(g, ident.name); slv_ok {
+            gen_slice_field_store(g, slv.alloca, fa_expr.field, s.value, s.span)
+            return
+        }
+
+        st, base_ptr, found = resolve_struct_for_field(g, ident.name, ident.type_, ident.span)
+        if !found {
+            if is_array(g, ident.name) {
+                codegen_fatal(g, s.span, "'%s' is an array — '.%s' is not a valid swizzle (use xyzw/rgba, indices 0-3)", ident.name, fa_expr.field)
+            } else {
+                codegen_fatal(g, s.span, "'%s' has no field '%s' (not a struct or array)", ident.name, fa_expr.field)
+            }
+        }
+    } else {
+        // Try chained field access that ends at an array (for swizzle writes like mvp.data.x.xyz = ...)
+        if inner_fa, inner_ok := fa_expr.expr.(^Expr_Field_Access); inner_ok {
+            gen_field_access(g, inner_fa)
+            if ar, ar_ok := claim_field_array(g); ar_ok {
+                if is_swizzle_field(fa_expr.field, ar.capacity) {
+                    if len(fa_expr.field) == 1 {
+                        gen_swizzle_write_single(g, &ar, fa_expr.field, s.value)
+                    } else {
+                        gen_swizzle_write_multi(g, &ar, fa_expr.field, s.value)
+                    }
+                    return
+                }
+            }
+            // Slice field write via chained access: obj.slice_field.len = N
+            if slv, slv_ok := claim_field_slice(g); slv_ok {
+                gen_slice_field_store(g, slv.alloca, fa_expr.field, s.value, s.span)
+                return
+            }
+        }
+        // Slice field write via index: arr[i].len = N where arr[i] is a slice.
+        // The element address IS the slice header — gen_index_address gives it.
+        if idx_expr, idx_ok := fa_expr.expr.(^Expr_Index); idx_ok {
+            idx_type := distinct_base(expr_type(idx_expr))
+            if _, is_slice := idx_type.(^Type_Slice); is_slice {
+                slice_hdr_ptr := gen_index_address(g, idx_expr)
+                gen_slice_field_store(g, slice_hdr_ptr, fa_expr.field, s.value, s.span)
+                return
+            }
+        }
+        // Chained field access: obj.inner.field = value
+        st, base_ptr, found = resolve_lhs_struct(g, fa_expr.expr)
+        if !found {
+            codegen_fatal(g, s.span, "field assignment target must be a struct or pointer to struct")
+        }
+    }
+
+    st_llvm := struct_llvm_name(struct_key(st))
+    idx := struct_field_index(st, fa_expr.field)
+    if idx >= 0 {
+        f := &st.fields[idx]
+        ft := field_ir_type(f)
+        // Array field — dispatch to array store helper
+        acap := field_array_cap(f)
+        if acap > 0 {
+            data_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", data_gep, st_llvm, base_ptr, idx)
+            gen_array_field_store(g, data_gep, acap, field_array_elem(f), s.value)
+            return
+        }
+        // Union field — emit tag + payload stores directly into the field GEP
+        if ut, ut_ok := f.type_.(^Type_Union); ut_ok {
+            gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+            emit_union_literal_store(g, ut, s.value, gep)
+            return
+        }
+        // Struct field — delegate to the unified struct store primitive.
+        // Handles every RHS shape (literal, ident, field access, call with
+        // NRVO, constructor, overloaded binary) in one place.
+        if field_sd := as_struct_body(f.type_); field_sd != nil {
+            if checked_field_st, cs_ok := lookup_struct(g, field_sd.name); cs_ok {
+                gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+                gen_store_struct_into(g, gep, checked_field_st, s.value)
+                return
+            }
+        }
+        // Slice field — slice IR is `{ ptr, i64 }`; a scalar store of that
+        // type from a `ptr` value would be invalid IR (same shape as the
+        // struct bug). Route through gen_store_slice_into.
+        if _, sl_ok := f.type_.(^Type_Slice); sl_ok {
+            gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+            gen_store_slice_into(g, gep, s.value)
+            return
+        }
+        val := gen_expr(g, s.value, ft)
+        gep := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+        emit(g, "  store %s %s, ptr %s", ft, val, gep)
+        // After zero-init of a struct field, reinitialize cap fields for nested array classes
+        if val == "zeroinitializer" {
+            if field_sd := as_struct_body(f.type_); field_sd != nil {
+                if field_checked, fc_ok := lookup_struct(g, field_sd.name); fc_ok {
+                    // Handle direct array class
+                    if field_checked.is_array_class {
+                        cap_fi := ac_cap_field_index(field_checked)
+                        if cap_fi >= 0 {
+                            cap_val := field_checked.array_cap
+                            if ac_is_utf8(field_checked) { cap_val -= 1 }
+                            inner_llvm := struct_llvm_name(struct_key(field_checked))
+                            cap_gep := fresh_tmp(g)
+                            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, inner_llvm, gep, cap_fi)
+                            emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
+                        }
+                    }
+                    // Handle nested structs containing array classes
+                    emit_nested_ac_cap_init(g, gep, field_checked)
+                }
+            }
+        }
+        return
+    }
+
+    // Try using-promoted field (two-level GEP)
+    up, up_ok := resolve_using_field(g, st, fa_expr.field)
+    if up_ok {
+        val := gen_expr(g, s.value, up.inner_ir_type)
+        gep1 := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep1, st_llvm, base_ptr, up.outer_index)
+        gep2 := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
+        emit(g, "  store %s %s, ptr %s", up.inner_ir_type, val, gep2)
+        return
+    }
+
+    codegen_fatal(g, s.span, "class '%s' has no field '%s'", struct_key(st), fa_expr.field)
+}
+
+gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
+    un := s.target.(^Expr_Unary)
+    ptr_val := gen_expr(g, un.operand)
+
+    // Null pointer check before dereference-assign
+    deref_name := "ptr"
+    if ident, ok := un.operand.(^Expr_Ident); ok {
+        deref_name = ident.name
+    }
+    emit_null_check(g, ptr_val, deref_name, s.span)
+
+    // Struct deref-assign: aggregates aren't a single LLVM scalar, so a
+    // `store %class.X X, ptr P` form is invalid. Delegate to the unified
+    // struct store primitive, which handles every RHS shape (including
+    // struct-returning function calls — see test_deref_from_call).
+    if sd := as_struct_body(s.target_type); sd != nil {
+        if checked_st, cs_ok := lookup_struct(g, sd.name); cs_ok {
+            gen_store_struct_into(g, ptr_val, checked_st, s.value)
+            return
+        }
+    }
+
+    val := gen_expr(g, s.value)
+
+    // Determine the store type from the typed AST annotation
+    store_type := "i64"
+    if s.target_type != nil && !is_untyped(s.target_type) {
+        store_type = llvm_type_from_checker(s.target_type)
+    }
+
+    // Convert value to target type if needed
+    val_type := expr_ir_type(g, s.value)
+    if val_type != store_type {
+        val = emit_type_convert(g, val, val_type, store_type)
+    }
+
+    emit(g, "  store %s %s, ptr %s", store_type, val, ptr_val)
+}
+
+// ---------------------------------------------------------------------------
+// Array swizzle codegen (xyzw / rgba)
+// ---------------------------------------------------------------------------
+
+// Single-component swizzle read: arr.x → scalar
+gen_swizzle_read_single :: proc(g: ^Codegen, av: ^Array_Var, field: string) -> string {
+    idx := swizzle_char_to_index(field[0])
+    arr_type := array_var_type(av)
+    gep := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, av.alloca, idx)
+    val := fresh_tmp(g)
+    emit(g, "  %s = load %s, ptr %s", val, av.elem_type, gep)
+    return val
+}
+
+// Multi-component swizzle read: arr.xy → new temp array
+gen_swizzle_read_multi :: proc(g: ^Codegen, av: ^Array_Var, field: string) -> string {
+    count := len(field)
+    elem_type := av.elem_type
+    tmp_arr_type := fmt.tprintf("[%d x %s]", count, elem_type)
+
+    // Allocate temp array
+    data_name := fmt.tprintf("%%__swizzle_%d.data", g.tmp_counter)
+    g.tmp_counter += 1
+    emit(g, "  %s = alloca %s", data_name, tmp_arr_type)
+
+    // Copy each swizzled element from source
+    src_arr_type := array_var_type(av)
+    for i := 0; i < count; i += 1 {
+        idx := swizzle_char_to_index(field[i])
+        src_gep := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, av.alloca, idx)
+        val := fresh_tmp(g)
+        emit(g, "  %s = load %s, ptr %s", val, elem_type, src_gep)
+        dst_gep := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, tmp_arr_type, data_name, i)
+        emit(g, "  store %s %s, ptr %s", elem_type, val, dst_gep)
+    }
+
+    // Register as temp swizzle result so assignment codegen can adopt it
+    set_swizzle_result(g, Array_Var{
+        alloca    = data_name,
+        capacity  = count,
+        elem_type = elem_type,
+    })
+
+    return data_name
+}
+
+// Single-component swizzle write: arr.x = value
+gen_swizzle_write_single :: proc(g: ^Codegen, av: ^Array_Var, field: string, value: Expr) {
+    idx := swizzle_char_to_index(field[0])
+    val := gen_expr(g, value, av.elem_type)
+    arr_type := array_var_type(av)
+    gep := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, av.alloca, idx)
+    emit(g, "  store %s %s, ptr %s", av.elem_type, val, gep)
+}
+
+// Multi-component swizzle write: arr.xy = [a, b] or arr.xy = other
+gen_swizzle_write_multi :: proc(g: ^Codegen, av: ^Array_Var, field: string, value: Expr) {
+    dst_arr_type := array_var_type(av)
+
+    // Case 1: RHS is an array literal — gen each element directly
+    if arr_lit, arr_ok := value.(^Expr_Array); arr_ok {
+        for i := 0; i < len(field); i += 1 {
+            dst_idx := swizzle_char_to_index(field[i])
+            if i < len(arr_lit.elements) {
+                elem_val := gen_expr(g, arr_lit.elements[i], av.elem_type)
+                gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, dst_arr_type, av.alloca, dst_idx)
+                emit(g, "  store %s %s, ptr %s", av.elem_type, elem_val, gep)
+            }
+        }
+        return
+    }
+
+    // Case 2: RHS is a named array variable
+    if ident, id_ok := value.(^Expr_Ident); id_ok {
+        if src_av, nav_ok := get_array(g, ident.name); nav_ok {
+            src_arr_type := array_var_type(&src_av)
+            for i := 0; i < len(field); i += 1 {
+                dst_idx := swizzle_char_to_index(field[i])
+                src_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, src_av.alloca, i)
+                elem := fresh_tmp(g)
+                emit(g, "  %s = load %s, ptr %s", elem, av.elem_type, src_gep)
+                dst_gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, dst_arr_type, av.alloca, dst_idx)
+                emit(g, "  store %s %s, ptr %s", av.elem_type, elem, dst_gep)
+            }
+            return
+        }
+    }
+
+    // Case 3: RHS is an expression that produces a swizzle result (e.g. another swizzle)
+    gen_expr(g, value, av.elem_type)
+    if sr, sr_ok := claim_swizzle_result(g); sr_ok {
+        src_arr_type := array_var_type(&sr)
+        for i := 0; i < len(field); i += 1 {
+            dst_idx := swizzle_char_to_index(field[i])
+            src_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, sr.alloca, i)
+            elem := fresh_tmp(g)
+            emit(g, "  %s = load %s, ptr %s", elem, av.elem_type, src_gep)
+            dst_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, dst_arr_type, av.alloca, dst_idx)
+            emit(g, "  store %s %s, ptr %s", av.elem_type, elem, dst_gep)
+        }
+        return
+    }
+
+    codegen_fatal(g, {}, "multi-component swizzle write requires array source")
+}
+
+// ---------------------------------------------------------------------------
+// Union codegen
+// ---------------------------------------------------------------------------
+
+gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr) {
+    ukey := union_key(ut)
+    llvm_name := union_llvm_name(ukey)
+
+    // Alloca if variable doesn't exist yet
+    if _, already_exists := get_union(g, name); !already_exists {
+        alloca_name := fmt.tprintf("%%%s", name)
+        emit(g, "  %s = alloca %s", alloca_name, llvm_name)
+        g.all_vars[name] = Union_Var{
+            alloca = alloca_name,
+            union_name  = ukey,
+        }
+    }
+
+    uv, _ := get_union(g, name)
+    emit_union_literal_store(g, ut, value, uv.alloca)
+}
+
+// Emit the tag+payload store sequence for a union literal at `union_ptr`.
+// `union_ptr` must point at storage laid out as the union's LLVM type
+// (i.e. `%union.X = type { tag, [N x i8] }`). Used by both direct union
+// variable assignment and struct-field assignment where the field type
+// is a union.
+emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, union_ptr: string) {
+    ukey := union_key(ut)
+    llvm_name := union_llvm_name(ukey)
+    tag_ir := union_tag_ir_type(ut)
+
+    lit, ok := value.(^Expr_Struct_Literal)
+    if !ok || lit.name == "" {
+        codegen_fatal(g, {}, "union assignment requires named struct literal")
+    }
+
+    tag, tag_ok := ut.tag_map[lit.name]
+    if !tag_ok {
+        codegen_fatal(g, lit.span, "'%s' is not a variant of union '%s'", lit.name, ukey)
+    }
+
+    // Store tag at field 0
+    tag_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, llvm_name, union_ptr)
+    emit(g, "  store %s %d, ptr %s", tag_ir, tag, tag_ptr)
+
+    // Get payload pointer (field 1)
+    payload_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 1", payload_ptr, llvm_name, union_ptr)
+
+    // Fill payload fields using the variant's struct layout
+    variant_struct_name := ut.variant_structs[lit.name]
+    vst, vst_ok := lookup_struct(g, variant_struct_name)
+    if !vst_ok { return }
+    vst_llvm := struct_llvm_name(variant_struct_name)
+
+    for field in lit.fields {
+        idx := struct_field_index(vst, field.name)
+        if idx < 0 { continue }
+        ft := field_ir_type(&vst.fields[idx])
+        val := gen_expr(g, field.value, ft)
+        gep := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, vst_llvm, payload_ptr, idx)
+        emit(g, "  store %s %s, ptr %s", ft, val, gep)
+    }
+    // Fill in defaults for variant fields (skip for {0} zero-init)
+    if !lit.zero_init {
+        for &sdf, sdf_i in vst.fields {
+            if sdf.default_value == nil { continue }
+            provided := false
+            for field in lit.fields {
+                if field.name == sdf.name { provided = true; break }
+            }
+            if !provided {
+                sdf_ft := field_ir_type(&sdf)
+                val := gen_expr(g, sdf.default_value, sdf_ft)
+                gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, vst_llvm, payload_ptr, sdf_i)
+                emit(g, "  store %s %s, ptr %s", sdf_ft, val, gep)
+            }
+        }
+    }
+}

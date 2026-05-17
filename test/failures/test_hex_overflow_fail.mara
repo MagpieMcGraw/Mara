@@ -1,0 +1,12 @@
+module test_hex_overflow_fail
+
+// Should fail with three Hex_Overflow diagnostics — well-formed hex literals
+// that exceed i64 max (0x7FFFFFFFFFFFFFFF). Mara stores integer literals as
+// i64, so anything above this needs a future u64 / arbitrary-precision tier.
+
+main :: fun() -> i64 {
+	a := 0x8000000000000000   // i64 max + 1 — top bit set, 16 hex digits
+	b := 0xFFFFFFFFFFFFFFFF   // u64 max — would be (HANDLE)-1 on Win32
+	c := 0x1_0000000000000000 // 2^64, 17 hex digits with separator
+	return 0
+}

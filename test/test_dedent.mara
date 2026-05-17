@@ -1,0 +1,23 @@
+module test_dedent
+
+use mara.memory
+
+main :: fun() -> i64 {
+    print(">>>> START <<<<")
+
+    // Reproduce the dump format-string layout exactly
+    print("
+            === Arena out of memory ===
+
+            Arena capacity: % bytes
+            Bytes used:     % bytes
+            Bytes free:     % bytes
+
+            Failed allocation: %, % bytes in %
+
+            --- All allocations (most recent first) ---
+            ", 1, 2, 3, "x", 5, "y")
+
+    print(">>>> END <<<<")
+    return 0
+}

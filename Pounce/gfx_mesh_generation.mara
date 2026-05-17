@@ -1,0 +1,154 @@
+module gfx
+
+use mara.math
+
+// Orientation: Z forward, X right, Y up
+
+// Quad facing +Z (forward), 1x1 centered at origin
+primitive_quad :: fun(storage: ^[]byte) -> Mesh_Data {
+    verts := take([4]Vertex, storage)
+    inds := take([6]u32, storage)
+
+    verts[0] = Vertex{position = [-0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
+    verts[1] = Vertex{position = [ 0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 0.0]}
+    verts[2] = Vertex{position = [ 0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 1.0]}
+    verts[3] = Vertex{position = [-0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 1.0]}
+
+    // Two triangles, CCW winding
+    inds[0] = 0
+    inds[1] = 1
+    inds[2] = 2
+    inds[3] = 0
+    inds[4] = 2
+    inds[5] = 3
+
+    mesh := Mesh_Data{verts, inds}
+    return mesh
+}
+
+// Cube 1x1x1 centered at origin
+primitive_cube :: fun(storage: ^[]byte) -> Mesh_Data {
+
+    verts := take([24]Vertex, storage)
+    inds := take([36]u32, storage)
+
+    // +Z face (front)
+    verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
+    verts[1]  = Vertex{position = [ 0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [1.0, 0.0]}
+    verts[2]  = Vertex{position = [ 0.5,  0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [1.0, 1.0]}
+    verts[3]  = Vertex{position = [-0.5,  0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 1.0]}
+
+    // -Z face (back)
+    verts[4]  = Vertex{position = [ 0.5, -0.5, -0.5], normal = [0.0, 0.0, -1.0], uv = [0.0, 0.0]}
+    verts[5]  = Vertex{position = [-0.5, -0.5, -0.5], normal = [0.0, 0.0, -1.0], uv = [1.0, 0.0]}
+    verts[6]  = Vertex{position = [-0.5,  0.5, -0.5], normal = [0.0, 0.0, -1.0], uv = [1.0, 1.0]}
+    verts[7]  = Vertex{position = [ 0.5,  0.5, -0.5], normal = [0.0, 0.0, -1.0], uv = [0.0, 1.0]}
+
+    // +X face (right)
+    verts[8]  = Vertex{position = [ 0.5, -0.5,  0.5], normal = [1.0, 0.0, 0.0], uv = [0.0, 0.0]}
+    verts[9]  = Vertex{position = [ 0.5, -0.5, -0.5], normal = [1.0, 0.0, 0.0], uv = [1.0, 0.0]}
+    verts[10] = Vertex{position = [ 0.5,  0.5, -0.5], normal = [1.0, 0.0, 0.0], uv = [1.0, 1.0]}
+    verts[11] = Vertex{position = [ 0.5,  0.5,  0.5], normal = [1.0, 0.0, 0.0], uv = [0.0, 1.0]}
+
+    // -X face (left)
+    verts[12] = Vertex{position = [-0.5, -0.5, -0.5], normal = [-1.0, 0.0, 0.0], uv = [0.0, 0.0]}
+    verts[13] = Vertex{position = [-0.5, -0.5,  0.5], normal = [-1.0, 0.0, 0.0], uv = [1.0, 0.0]}
+    verts[14] = Vertex{position = [-0.5,  0.5,  0.5], normal = [-1.0, 0.0, 0.0], uv = [1.0, 1.0]}
+    verts[15] = Vertex{position = [-0.5,  0.5, -0.5], normal = [-1.0, 0.0, 0.0], uv = [0.0, 1.0]}
+
+    // +Y face (top)
+    verts[16] = Vertex{position = [-0.5,  0.5,  0.5], normal = [0.0, 1.0, 0.0], uv = [0.0, 0.0]}
+    verts[17] = Vertex{position = [ 0.5,  0.5,  0.5], normal = [0.0, 1.0, 0.0], uv = [1.0, 0.0]}
+    verts[18] = Vertex{position = [ 0.5,  0.5, -0.5], normal = [0.0, 1.0, 0.0], uv = [1.0, 1.0]}
+    verts[19] = Vertex{position = [-0.5,  0.5, -0.5], normal = [0.0, 1.0, 0.0], uv = [0.0, 1.0]}
+
+    // -Y face (bottom)
+    verts[20] = Vertex{position = [-0.5, -0.5, -0.5], normal = [0.0, -1.0, 0.0], uv = [0.0, 0.0]}
+    verts[21] = Vertex{position = [ 0.5, -0.5, -0.5], normal = [0.0, -1.0, 0.0], uv = [1.0, 0.0]}
+    verts[22] = Vertex{position = [ 0.5, -0.5,  0.5], normal = [0.0, -1.0, 0.0], uv = [1.0, 1.0]}
+    verts[23] = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, -1.0, 0.0], uv = [0.0, 1.0]}
+
+    // Indices for each face (CCW winding)
+    for face in 0..6 {
+        base_v := u32(face * 4)
+        base_i := face * 6
+        inds[base_i + 0] = base_v + 0
+        inds[base_i + 1] = base_v + 1
+        inds[base_i + 2] = base_v + 2
+        inds[base_i + 3] = base_v + 0
+        inds[base_i + 4] = base_v + 2
+        inds[base_i + 5] = base_v + 3
+    }
+
+    mesh := Mesh_Data{verts, inds}
+    return mesh
+}
+
+// Sphere with given subdivisions, radius 0.5 centered at origin
+primitive_sphere :: fun(subdivisions: i64, storage: ^[]byte) -> Mesh_Data {
+    rings := subdivisions
+    sectors := subdivisions * 2
+
+    n_verts := (rings + 1) * (sectors + 1)
+    n_inds  := rings * sectors * 6
+
+    verts : []Vertex = take([]Vertex(n_verts), storage)
+    inds  : []u32    = take([]u32(n_inds), storage)
+
+    vi := 0
+    for r in 0..rings + 1 {
+        phi := 3.14159265 * f32(r) / f32(rings)
+        y := 0.5 * cos(phi)
+        ring_radius := 0.5 * sin(phi)
+
+        for s in 0..sectors + 1 {
+            theta := 6.28318531 * f32(s) / f32(sectors)
+            x := ring_radius * sin(theta)
+            z := ring_radius * cos(theta)
+
+            // radius 0.5 → unit normal is 2 * position
+            nx := x * 2.0
+            ny := y * 2.0
+            nz := z * 2.0
+
+            u_coord := f32(s) / f32(sectors)
+            v_coord := f32(r) / f32(rings)
+
+            verts[vi] = Vertex{position = [x, y, z], normal = [nx, ny, nz], uv = [u_coord, v_coord]}
+            vi += 1
+        }
+    }
+
+    ii := 0
+    for r in 0..rings {
+        for s in 0..sectors {
+            cur := u32(r * (sectors + 1) + s)
+            next := cur + u32(sectors + 1)
+
+            inds[ii + 0] = cur
+            inds[ii + 1] = next
+            inds[ii + 2] = cur + 1
+            inds[ii + 3] = cur + 1
+            inds[ii + 4] = next
+            inds[ii + 5] = next + 1
+            ii += 6
+        }
+    }
+
+    return Mesh_Data{verts, inds}
+}
+
+primitives_init :: fun(vao: ^VAO_State) {
+    storage: []byte(1<<24)
+    quad := primitive_quad(&storage)
+    cube := primitive_cube(&storage)
+    sphere := primitive_sphere(32, &storage)
+    vao_add_mesh(vao, &quad)
+    vao_add_mesh(vao, &cube)
+    vao_add_mesh(vao, &sphere)
+
+    // meshes : []Mesh_Data(12)
+    // &meshes + primitive_quad2()
+    // &meshes + primitive_quad3()
+    // vao_add_mesh(vao, &meshes[0])
+}

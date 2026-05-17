@@ -1,0 +1,53 @@
+module mara.time
+
+sdl :: use mara.sdl
+use mara.math
+
+Timer :: struct {
+	counter: u64 = time_now()
+	seconds: f64 = 0.016
+}
+
+Fixed_Timer :: struct {
+	tally: 		f64 = 0
+	step: 		f64 = 0.01
+	limit: 		f64 = 0.25
+}
+
+one_step :: fun(fixed : ^Fixed_Timer) -> bool {
+	if fixed.tally >= fixed.step {
+		fixed.tally -= fixed.step
+		return true
+	}
+	return false
+}
+
+time_now :: fun() -> u64 {
+	return sdl.GetPerformanceCounter()
+}
+
+time_since :: fun(last: u64) -> (f64, u64) {
+    now := sdl.GetPerformanceCounter()
+    seconds := f64(now - last) / f64(sdl.GetPerformanceFrequency())
+    return seconds, now
+}
+
+tally_up :: fun(frame : ^time.Timer, fixed: ^Fixed_Timer) {
+	frame.seconds, frame.counter = time_since(frame.counter)
+	fixed.tally += min(fixed.limit, frame.seconds)
+}
+
+sleep :: fun(work: time.Timer, fps: f64) {
+	work.seconds, _ = time_since(work.counter)
+	sleep_time := 1.0 / fps - work.seconds
+	if sleep_time > 0 do delay_ns(seconds_to_ns(sleep_time))
+}
+
+seconds_to_ns :: fun (seconds: f64) -> u64 {
+	return u64(seconds * 1000000000)
+}
+
+delay_ns :: fun(nanoseconds: u64) {
+	//sdl.DelayNS(nanoseconds)
+	sdl.Delay(u32(nanoseconds / 1000000))
+}

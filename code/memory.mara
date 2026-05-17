@@ -1,0 +1,168 @@
+module mara.memory
+
+use mara.os
+
+KB :: 1 << 10
+MB :: 1 << 20
+GB :: 1 << 30
+
+// ---------------------------------------------------------------------------
+// Arena_Basic — pure bump allocation with mark/reset, no per-alloc overhead.
+//
+// Memory layout:
+//   [mark0_backlink | ...allocs... | mark1_backlink | ...allocs... ]
+//
+// Each mark writes 8 bytes (prev_mark offset). No debug headers.
+
+Arena_Basic :: class(cap: i64) {
+	base: []byte = sys_alloc(cap)
+	capacity: i64 = cap
+	offset: i64 = 0
+	current_mark: i64 = -1
+
+	mark :: fun(a: ^Self) {
+		prev := a.current_mark
+		off := a.offset
+
+		a.base[off : off+8] = prev
+		a.current_mark = off
+		a.offset = off + 8
+	}
+
+	alloc :: fun(a: ^Self, size: i64) -> []byte {
+		off := a.offset
+		end := off + size
+
+		if end > a.capacity {
+			print_oom(a, off, size)
+			crash()
+		}
+
+		result := a.base[off : end]
+		a.offset = end
+		return result
+	}
+
+	reset :: fun(a: ^Self) {
+		cm := a.current_mark
+
+		prev : i64 = a.base[cm : cm+8]
+
+		a.offset = cm
+		a.current_mark = prev
+	}
+
+	print_oom :: fun(a: ^Self, off, size: i64) {
+		print(oom_string, a.capacity, off, size)
+	}
+}
+
+Arena_Debug :: class(cap: i64) {
+	base: []byte = sys_alloc(cap)
+	capacity: i64 = cap
+	offset: i64 = 0
+	current_mark: i64 = -1
+	last_alloc: i64
+
+	mark :: fun(a: ^Self) {
+		prev := a.current_mark
+		off := a.offset
+
+		a.base[off] = prev
+		a.base[off+8] = a.last_alloc
+
+		a.current_mark = off
+		a.offset = off + 16
+	}
+
+	AllocHeader :: class{
+		prev: i64
+		size: i64
+		name: ^byte
+		span: ^byte
+	}
+	HEADER_SIZE :: size_of(AllocHeader)
+
+	alloc :: fun(
+		a: ^Self,
+		size: i64,
+		name: ^byte = #caller_name,
+		span: ^byte = #caller_span) -> []byte
+	{
+		off := a.offset
+		cap := a.capacity
+		end := off + HEADER_SIZE + size
+
+		if end > cap {
+			dump(a, size, name, span)
+			crash()
+		}
+
+		h : AllocHeader = { prev = a.last_alloc, size = size, name = name, span = span }
+		a.base[off] = h
+
+		data_off := off + HEADER_SIZE
+		result := a.base[data_off : data_off+size]
+		a.last_alloc = off
+		a.offset = end
+		return result
+	}
+
+	reset :: fun(a: ^Self) {
+		cm := a.current_mark
+
+		prev : i64 = a.base[cm]
+		saved_last : i64 = a.base[cm+8]
+
+		a.offset = cm
+		a.last_alloc = saved_last
+		a.current_mark = prev
+	}
+
+	dump :: fun(
+		a: ^Self,
+		failed_size: i64,
+		failed_name: ^byte,
+		failed_span: ^byte)
+	{
+		print(oom_string_debug,
+		a.capacity, a.offset, a.capacity - a.offset,
+		failed_name, failed_size, failed_span)
+
+		pos := a.last_alloc
+		for pos > 0 {
+			h : AllocHeader = a.base[pos]
+			print("  %, % bytes in %", h.name, h.size, h.span)
+			pos = h.prev
+		}
+	}
+}
+
+oom_string :: "
+=== Arena out of memory ===
+Capacity:  % bytes
+Used:      % bytes
+Requested: % bytes
+"
+
+oom_string_debug :: "
+=== Arena out of memory ===
+
+Arena capacity: % bytes
+Bytes used:     % bytes
+Bytes free:     % bytes
+
+Failed allocation: %, % bytes in %
+
+--- All allocations (most recent first) ---
+"
+
+print_size :: fun(size: i64) {
+	if size >= MB {
+		print_float(f64(size) / f64(MB))
+		print_cstr(" MB")
+	else
+		print_float(f64(size) / f64(KB))
+		print_cstr(" KB")
+	}
+}

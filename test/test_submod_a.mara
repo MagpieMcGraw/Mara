@@ -1,0 +1,12 @@
+module test_submod.a
+
+// Submodule "a" of "test_submod" — defines a type and a function that the
+// `use test_submod` consumer site picks up via the submodule-collection rule.
+
+Subthing :: struct {
+    value: i64
+}
+
+make_subthing :: fun(v: i64) -> Subthing {
+    return Subthing{value = v}
+}

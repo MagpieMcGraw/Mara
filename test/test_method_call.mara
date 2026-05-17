@@ -1,0 +1,28 @@
+module test_method_call
+
+// Verify obj.method(...) prepends the qualifier as the receiver when the
+// resolved method's first param is the owning struct (Self / ^Self).
+// Previously the value-qualified branch in resolve_qualified_call found the
+// method but dropped the qualifier, producing "expects 2 args, got 1".
+
+use mara.memory
+
+test_method_call :: fun() {
+	print("=== test_method_call ===")
+
+	arena : Arena_Basic = Arena_Basic(1 * KB)
+	ap : ^Arena_Basic = &arena
+
+	// Method call through a pointer-typed local. ap.alloc(32) should
+	// type-check as alloc(ap, 32) — the qualifier prepended as the
+	// ^Self receiver.
+	buf : []byte = ap.alloc(32)
+	print(buf.len)  // expect 32
+
+	// Second call to confirm bump-allocation advances offset and the
+	// receiver-prepend stays correct across calls.
+	buf2 : []byte = ap.alloc(64)
+	print(buf2.len)  // expect 64
+
+	print("=== test_method_call passed ===")
+}

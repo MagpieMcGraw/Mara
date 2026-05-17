@@ -1,0 +1,17 @@
+module test_immutable_param_fail
+
+// Should fail: writing to a non-^ struct parameter must be rejected.
+
+Thing :: class {
+	count: i64 = 0
+	total: i64 = 0
+}
+
+bad_write :: fun(t: Thing) {
+	t.count = 5
+}
+
+test_immutable_param_fail :: fun() {
+	x : Thing
+	bad_write(x)
+}

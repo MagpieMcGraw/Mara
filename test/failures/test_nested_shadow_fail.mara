@@ -1,0 +1,11 @@
+module test_nested_shadow_fail
+
+// Should fail: inner scope shadows outer-scope local.
+
+test_nested_shadow_fail :: fun() {
+	x := 1
+	if x > 0 {
+		x := 2
+		print(x)
+	}
+}

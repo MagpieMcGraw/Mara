@@ -1,0 +1,16 @@
+module test_take_stack_source_fail
+
+// Should fail: take's storage is a local stack array — the view would not
+// outlive a returning pointer.
+
+Pair :: struct {
+    a: i64
+    b: i64
+}
+
+test_take_stack_source_fail :: fun() {
+    buf : [200]byte
+    sl : []byte = buf[:]
+    p : Pair = take(Pair, &sl)
+    p.a = 5
+}

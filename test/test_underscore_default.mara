@@ -1,0 +1,32 @@
+module test_underscore_default
+
+// `_` at a positional arg slot uses the parameter's declared default value.
+// Mixes freely with explicit args and trailing-omission defaults.
+
+with_two :: fun(a: i64 = 10, b: i64 = 20) -> i64 {
+	return a + b
+}
+
+with_three :: fun(a: i64, b: i64 = 5, c: i64 = 7) -> i64 {
+	return a * 100 + b * 10 + c
+}
+
+test_underscore_default :: fun() {
+	// All explicit
+	print(with_two(1, 2))     // 3
+
+	// `_` on first param, explicit on second
+	print(with_two(_, 2))     // 12 (10 + 2)
+
+	// Explicit first, `_` second
+	print(with_two(1, _))     // 21 (1 + 20)
+
+	// Both `_`
+	print(with_two(_, _))     // 30 (10 + 20)
+
+	// Required first arg, `_` for middle, explicit for last
+	print(with_three(1, _, 9))   // 159 (1*100 + 5*10 + 9)
+
+	// Required first, `_` for both trailing
+	print(with_three(2, _, _))   // 257 (2*100 + 5*10 + 7)
+}

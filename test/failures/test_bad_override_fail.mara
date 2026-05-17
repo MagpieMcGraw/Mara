@@ -1,0 +1,14 @@
+module test_bad_override_fail
+
+Point :: struct {
+	x: i64
+	y: i64
+}
+
+test_bad_override_fail :: fun() {
+	// Should fail: 'w' is not a field of Point
+	p : Point = Point() { w = 5 }
+
+	// Should fail: x expects i64 but gets a bool
+	q : Point = Point() { x = true }
+}

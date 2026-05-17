@@ -1,0 +1,31 @@
+module test_desugar
+
+use mara.array
+use mara.string
+
+test_desugar :: fun() {
+	// Array class index read
+	buf : Array(i64) = [10, 20, 30, 40, 50]
+	print(buf[0])
+	print(buf[2])
+
+	// Array class index write
+	buf[1] = 99
+	print(buf[1])
+
+	// String (also array class)
+	msg : String = "hello"
+	print(msg)
+
+	// Concat via operator overloading (uses slice assign internally)
+	s2 : String = "world"
+	&s2 + "!"
+	print(s2)
+
+	// Array class via pointer (auto-deref)
+	arr : Array(i64) = [1, 2, 3]
+	p : ^Array(i64) = &arr
+	print(p[0])
+	p[1] = 42
+	print(p[1])
+}

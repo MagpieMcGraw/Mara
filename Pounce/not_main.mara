@@ -1,0 +1,20 @@
+module Pounce
+
+use mara.memory
+use mara.os
+
+main :: fun() {
+	// Load config to determine memory size
+	//config := config_load("config.txt")
+
+    context.scope_allocator = Arena_Debug(192 * MB)
+
+	// when casting to megastruct, consider alignment
+	memory_block : []byte(50 * MB)
+
+	// Run game until it says stop
+	running := true
+	for running {
+		running = game_run(&memory_block)
+	}
+}

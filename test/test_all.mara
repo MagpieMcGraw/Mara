@@ -1,0 +1,14 @@
+module test_all
+
+use mara.math
+
+test_all :: fun() {
+    // basic broadcast
+    a, b, c := all 42
+    print(a)
+    print(b)
+    print(c)
+
+    // typed broadcast with distinct type
+    x, y : Mat4 = all mat4_identity()
+}

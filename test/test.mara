@@ -1,0 +1,64 @@
+module test
+
+use test_io_arrow
+use test_desugar
+use test_nested_defs
+use test_context_arena
+use test_all
+use test_struct_init
+use test_match_union
+use test_union_pad
+use test_multiline_str
+use test_arr_len
+use test_struct_arr_minimal
+use test_multi_return
+use test_fn_type
+use test_byte_view
+use test_take_binding
+use test_underscore_default
+use test_hex_literals
+use test_match_namespace
+use test_match_indexed
+use test_shape_match
+use test_method_call
+use test_distinct_construct
+use test_type_name_arg
+use test_take_basic
+use test_take_runtime
+use test_submod_check
+use test_in_range
+use mara.memory
+
+main :: fun() -> i64 {
+	context.scope_allocator = Arena_Basic
+
+	test_args()
+	test_desugar()
+	test_io_arrow()
+	test_nested_defs()
+	test_context_arena()
+	test_all()
+	test_struct_init()
+	test_match_union()
+	test_union_pad()
+	test_multiline_str()
+	test_arr_len()
+	test_struct_arr_minimal()
+	test_multi_return()
+	test_fn_type()
+	test_byte_view()
+	test_take_binding()
+	test_underscore_default()
+	test_hex_literals()
+	test_match_namespace()
+	test_match_indexed()
+	test_shape_match()
+	test_method_call()
+	test_distinct_construct()
+	test_type_name_arg()
+	test_take_basic()
+	test_take_runtime()
+	test_submod()
+	test_in_range()
+	return 0
+}

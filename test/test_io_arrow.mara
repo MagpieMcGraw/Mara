@@ -1,0 +1,34 @@
+module test_io_arrow
+
+// Void function — no arrow, no return type
+greet :: fun() {
+	print("hello from greet")
+}
+
+// Void function — also valid
+greet2 :: fun() {
+	print("hello from greet2")
+}
+
+// Arrowless return type with params
+add :: fun(a: i64, b: i64) i64 {
+	return a + b
+}
+
+// Arrow return type (backward compat)
+mul :: fun(a: i64, b: i64) -> i64 {
+	return a * b
+}
+
+// No-param arrowless return type
+get_value :: fun() i64 {
+	return 42
+}
+
+test_io_arrow :: fun() {
+	greet()
+	greet2()
+	print(add(3, 4))
+	print(mul(5, 6))
+	print(get_value())
+}

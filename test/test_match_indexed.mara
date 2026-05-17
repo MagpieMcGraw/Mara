@@ -1,0 +1,48 @@
+module test_match_indexed
+
+// Flat namespace match with indexed predicates: each arm is a regular
+// bool expression, including `arr[Variant]` lookups against a bool array
+// indexed by an enum. No special sub-block syntax — the indexing is part
+// of the predicate expression itself.
+
+Color :: union(tag u8) {
+	Red    = 0
+	Green  = 1
+	Blue   = 2
+	Yellow = 3
+}
+
+Events :: struct {
+	quit:   bool
+	colors: [4 Color]bool
+}
+
+test_match_indexed :: fun() {
+	// Indexed predicates inside a namespace match. Bare `colors[X]` resolves
+	// as `e.colors[X]` via the namespace shorthand. Each arm is independent.
+	e: Events
+	e.quit          = true
+	e.colors[Green] = true
+	e.colors[Blue]  = true
+	// Should print 99, 12, 13 — quit fires, then Green and Blue from colors.
+	match e {
+	quit            do print(99)
+	colors[Red]     do print(11)
+	colors[Green]   do print(12)
+	colors[Blue]    do print(13)
+	colors[Yellow]  do print(14)
+	}
+
+	// Multi-statement arm body — the field-path arm-start detector finds the
+	// next `colors[Yellow]` arm even after a multi-line indented body.
+	more: Events
+	more.colors[Red]    = true
+	more.colors[Yellow] = true
+	match more {
+	colors[Red]
+		print(81)
+		print(82)
+	colors[Green]   do print(83)
+	colors[Yellow]  do print(84)
+	}
+}

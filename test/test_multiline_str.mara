@@ -1,0 +1,16 @@
+module test_multiline_str
+
+// Format-string mode + multi-line dedent: source-indented format string, but
+// the runtime value starts at column 0 because the closing `"` defines the
+// strip amount and the leading newline is dropped.
+
+test_multiline_str :: fun() {
+    cap := 1024
+    used := 768
+    print("
+        === test fmt ===
+        Capacity:  % bytes
+        Used:      % bytes
+        Free:      % bytes
+        ", cap, used, cap - used)
+}

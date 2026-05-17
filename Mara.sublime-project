@@ -1,0 +1,19 @@
+{
+    "folders": [
+        {
+            "path": ".",
+            "folder_exclude_patterns": [
+                ".claude",
+                ".git"
+            ],
+            "file_exclude_patterns": [
+                "*.exe",
+                "*.ll",
+                "*.tokens",
+                "*.obj",
+                "*.pdb",
+                "*.sublime-workspace"
+            ]
+        }
+    ]
+}

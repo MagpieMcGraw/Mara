@@ -1,0 +1,36 @@
+module swap_test
+use mara.memory
+use mara.sdl
+use mara.open_gl
+
+main :: fun() -> i64 {
+	context.scope_allocator = Arena_Basic
+	sdl.Init(Video)
+	GL_SetAttribute(ContextProfileMask, Core)
+	GL_SetAttribute(ContextMajorVersion, 4)
+	GL_SetAttribute(ContextMinorVersion, 5)
+	w := CreateWindow("swap test", 400, 300, OpenGL)
+	ctx := GL_CreateContext(w)
+	GL_MakeCurrent(w, ctx)
+	gl_load(GL_GetProcAddress)
+
+	running := true
+	for running {
+		e: Event
+		for PollEvent(&e) {
+			match e {
+			Quit
+				running = false
+			KeyDown key
+				print("KEY DOWN ", i64(key.scancode))
+			else  // ignore other event variants
+			}
+		}
+		ClearColor(0.5, 0.5, 0.5, 1.0)
+		Clear(COLOR_BUFFER_BIT)
+		GL_SwapWindow(w)
+	}
+	sdl.DestroyWindow(w)
+	sdl.Quit()
+	return 0
+}

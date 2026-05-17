@@ -1,0 +1,39 @@
+module test_match_strict_fail
+
+// Strict-default match: missing variants must be reported as type errors.
+// `else` is the only opt-out; without it, every variant of an enum/union
+// subject must have an arm. Should fail with two missing-variant errors:
+//   - 'Yellow' missing in match-on-enum
+//   - 'Rect' missing in match-on-union
+
+Color :: union(tag u8) {
+	Red    = 0
+	Green  = 1
+	Blue   = 2
+	Yellow = 3
+}
+
+Shape :: union(tag i32) {
+	Circle = 1 { radius: i32 }
+	Rect   = 2 { w: i32, h: i32 }
+}
+
+main :: fun() -> i64 {
+	c: Color = Red
+	match c {
+	Red
+		print(1)
+	Green
+		print(2)
+	Blue
+		print(3)
+	}
+
+	s: Shape = Circle{radius = 7}
+	match s {
+	Circle c
+		print(c.radius)
+	}
+
+	return 0
+}

@@ -1,0 +1,31 @@
+module test_take_binding
+
+use mara.memory
+
+Megastruct :: class {
+	x: i64 = 0
+	y: i64 = 0
+}
+
+write_one :: fun(g: ^Megastruct) {
+	g.x = 11
+	g.y = 22
+}
+
+// Mutates the caller's bytes via a take-bound view.
+run :: fun(memory: ^[]byte) {
+	game : Megastruct = take(Megastruct, memory)
+	write_one(&game)
+	game.x = 33
+}
+
+test_take_binding :: fun() {
+	buf : []byte(64)
+	run(&buf)
+
+	// Read back through a regular pointer view — the take binding inside run()
+	// must have written into buf's storage, not a private copy.
+	view : ^Megastruct = &buf[0]
+	print(view.x)  // expect 33
+	print(view.y)  // expect 22
+}

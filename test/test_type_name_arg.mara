@@ -1,0 +1,32 @@
+module test_type_name_arg
+
+// Verify primitive type keywords flow through expression-context calls.
+// `Array(byte, 64)`, `Array(i64, 16)`, `Array(bool, 8)` — same pattern as
+// `Array(Player, 64)` for user-defined types, just with type-keyword args.
+
+use mara.array
+
+test_type_name_arg :: fun() {
+	print("=== test_type_name_arg ===")
+
+	// byte: previously failed at parse with "unexpected token Byte 'byte'"
+	bytes := Array(byte, 64)
+	print(bytes.cap)   // expect 64
+
+	// i64: previously failed with "expected '(' after type keyword 'i64'"
+	ints := Array(i64, 16)
+	print(ints.cap)    // expect 16
+
+	// bool: same parse error before
+	flags := Array(bool, 8)
+	print(flags.cap)   // expect 8
+
+	// Other primitives — round out coverage so the case list doesn't drift.
+	u32s := Array(u32, 4)
+	print(u32s.cap)    // expect 4
+
+	f32s := Array(f32, 2)
+	print(f32s.cap)    // expect 2
+
+	print("=== test_type_name_arg passed ===")
+}

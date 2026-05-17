@@ -1,0 +1,72 @@
+module event
+
+use mara.sdl
+use mara.string
+
+Keyboard :: struct {
+    pressed: [512 Scancode]bool
+    held:    [512 Scancode]bool
+}
+
+Mouse :: struct {
+    pressed: [6]bool
+    held:    [6]bool
+    x, y, xrel, yrel, wheel: f32
+}
+
+Dropfile :: struct {
+    was_dropped: bool
+    name: String
+}
+
+Event_State :: struct {
+    quit: bool
+    keyboard: Keyboard
+    mouse: Mouse
+    dropfile: Dropfile
+}
+
+process :: fun(events: ^Event_State) {
+    events.quit = false
+    events.keyboard.pressed = {}
+    events.mouse.pressed = {}
+    events.dropfile = {}
+
+    events.mouse.xrel = 0
+    events.mouse.yrel = 0
+    events.mouse.wheel = 0
+
+    e: Event
+    for bool(PollEvent(&e)) {
+        match e {
+        Quit
+            events.quit = true
+
+        KeyDown key
+            events.keyboard.pressed[key.scancode] = true
+            events.keyboard.held[key.scancode] = true
+        KeyUp key
+            events.keyboard.held[key.scancode] = false
+
+        MouseMotion
+            events.mouse.xrel += e.xrel
+            events.mouse.yrel += e.yrel
+            events.mouse.x = e.x
+            events.mouse.y = e.y
+        MouseButtonDown
+            events.mouse.pressed[e.button] = true
+            events.mouse.held[e.button] = true
+        MouseButtonUp
+            events.mouse.pressed[e.button] = false
+            events.mouse.held[e.button] = false
+        MouseWheel
+            events.mouse.wheel += e.y
+
+        DropFile
+            events.dropfile.was_dropped = true
+            &events.dropfile.name + e.data
+        else
+        	print(e.tag)
+        }
+    }
+}

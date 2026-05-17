@@ -1,0 +1,46 @@
+module test_fn_type
+
+// Regression test for the `fn name` nominal function type.
+//
+// `fn <function-name>` in a type position produces a nominal function type
+// extracted from a named function or function-valued binding. This lets
+// callers decouple from the exact function by going through an alias:
+//
+//     frame := game_run             // frame : fn game_run
+//     step  : fn frame = game_run   // typed through the alias
+//
+// Each `fn X` is distinct, so unrelated functions with the same shape are
+// not interchangeable just because their parameter/return types line up.
+
+// Simulates a game-loop style callback.
+tfn_game_run :: fun(frame_count: i64) -> i64 {
+    return frame_count + 1
+}
+
+// Parameter typed via `fn tfn_game_run` — `cb` accepts values of that
+// exact nominal function type (the function itself, or an alias of it).
+tfn_run_three :: fun(cb: fn tfn_game_run, start: i64) -> i64 {
+    a := cb(start)
+    b := cb(a)
+    c := cb(b)
+    return c
+}
+
+test_fn_type :: fun() {
+    // Call site: pass the actual function by name.
+    result := tfn_run_three(tfn_game_run, 0)
+    print(result)                                 // expect 3
+
+    // Local alias of the function — inherits its nominal type.
+    local_frame := tfn_game_run
+    print(local_frame(10))                        // expect 11
+
+    // Pass the alias into a `fn tfn_game_run` parameter.
+    print(tfn_run_three(local_frame, 100))        // expect 103
+
+    // `fn local_frame` is the same nominal type as `fn tfn_game_run`,
+    // so it also satisfies the parameter.
+    step : fn local_frame = tfn_game_run
+    print(step(41))                               // expect 42
+    print(tfn_run_three(step, 200))               // expect 203
+}

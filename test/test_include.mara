@@ -1,0 +1,11 @@
+module test_include
+
+use mara.math
+
+test_use :: fun() {
+    v : Vec3 = [1, 2, 3]
+    print(v)
+
+    m := mat4_identity()
+    print("done")
+}

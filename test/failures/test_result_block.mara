@@ -1,0 +1,27 @@
+module test_result_block
+
+// Test result blocks: explicit return value declarations
+
+make_pair :: fun(a: i64, b: i64) {
+    result {
+        x : i64 = a
+        y : i64 = b
+    }
+}
+
+add_one :: fun(v: i64) {
+    result {
+        out : i64 = v + 1
+    }
+}
+
+test_result_block :: fun() {
+    // Multi-return via result block
+    x, y := make_pair(10, 20)
+    print(x)
+    print(y)
+
+    // Single return via result block
+    z := add_one(41)
+    print(z)
+}

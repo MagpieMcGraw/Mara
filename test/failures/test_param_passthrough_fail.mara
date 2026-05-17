@@ -1,0 +1,18 @@
+module test_param_passthrough_fail
+
+// Probe: can a non-^ struct param be laundered through a ^T-taking function?
+
+Thing :: class {
+	count: i64 = 0
+}
+
+mutator :: fun(t: ^Thing) {
+	t.count = 99
+}
+
+launder :: fun(t: Thing) {
+	mutator(&t)  // taking address of an immutable param
+}
+
+test_param_passthrough_fail :: fun() {
+}

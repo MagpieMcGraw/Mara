@@ -1,0 +1,10 @@
+module test_override_on_nonstruct_fail
+
+// Should fail: add() returns i64, not a struct — override {...} doesn't apply.
+add :: fun(a: i64, b: i64) i64 {
+	return a + b
+}
+
+test_override_on_nonstruct_fail :: fun() {
+	x : i64 = add(1, 2) { foo = 5 }
+}

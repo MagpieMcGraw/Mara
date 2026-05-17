@@ -1,0 +1,420 @@
+module mara.sdl
+
+// SDL3 bindings for Mara
+
+Init_Flags :: union(tag u32) {
+    Audio    = 16
+    Video    = 32
+    Joystick = 512
+    Haptic   = 4096
+    Gamepad  = 8192
+    Events   = 16384
+    Sensor   = 32768
+    Camera   = 65536
+}
+
+Scancode :: union(tag u32) {
+    Unknown  = 0
+    A        = 4
+    B        = 5
+    C        = 6
+    D        = 7
+    E        = 8
+    F        = 9
+    G        = 10
+    H        = 11
+    I        = 12
+    J        = 13
+    K        = 14
+    L        = 15
+    M        = 16
+    N        = 17
+    O        = 18
+    P        = 19
+    Q        = 20
+    R        = 21
+    S        = 22
+    T        = 23
+    U        = 24
+    V        = 25
+    W        = 26
+    X        = 27
+    Y        = 28
+    Z        = 29
+    Num1     = 30
+    Num2     = 31
+    Num3     = 32
+    Num4     = 33
+    Num5     = 34
+    Num6     = 35
+    Num7     = 36
+    Num8     = 37
+    Num9     = 38
+    Num0     = 39
+    Return   = 40
+    Escape   = 41
+    Backspace = 42
+    Tab      = 43
+    Space    = 44
+    Right    = 79
+    Left     = 80
+    Down     = 81
+    Up       = 82
+}
+
+// ---------------------------------------------------------------------------
+// SDL_Event union — tagged by event type, inline variant definitions.
+// SDL3 lays out the event header as: u32 type (0..3), u32 reserved (4..7),
+// u64 timestamp (8..15), then variant fields. Mirroring that here:
+// `pad 4` reserves 4 bytes after the u32 tag so the payload starts at byte 8,
+// matching SDL3's timestamp position. Total size = 128 = sizeof(SDL_Event).
+// ---------------------------------------------------------------------------
+
+Event :: union(tag u32, pad u32, size 128) {
+    Quit = 256 {
+        timestamp: u64
+    }
+    Terminating = 257 {
+        timestamp: u64
+    }
+    WindowShown = 514 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowHidden = 515 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowExposed = 516 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowMoved = 517 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowResized = 518 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowMinimized = 521 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowMaximized = 522 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowRestored = 523 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowMouseEnter = 524 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowMouseLeave = 525 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowFocusGained = 526 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowFocusLost = 527 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowCloseRequested = 528 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    KeyDown = 768 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        scancode: Scancode
+        key: u32
+        mod: u16
+        raw: u16
+        down: u8
+        repeat: u8
+    }
+    KeyUp = 769 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        scancode: Scancode
+        key: u32
+        mod: u16
+        raw: u16
+        down: u8
+        repeat: u8
+    }
+    MouseMotion = 1024 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        state: u32
+        x: f32
+        y: f32
+        xrel: f32
+        yrel: f32
+    }
+    MouseButtonDown = 1025 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        button: u8
+        down: u8
+        clicks: u8
+        padding: u8
+        x: f32
+        y: f32
+    }
+    MouseButtonUp = 1026 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        button: u8
+        down: u8
+        clicks: u8
+        padding: u8
+        x: f32
+        y: f32
+    }
+    MouseWheel = 1027 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        x: f32
+        y: f32
+        direction: i32
+        mouse_x: f32
+        mouse_y: f32
+        integer_x: i32
+        integer_y: i32
+    }
+    DropFile = 4096 {
+        timestamp: u64
+        windowID: u32
+        x: f32
+        y: f32
+        source: ^byte
+        data: ^byte
+    }
+    DropText = 4097 {
+        timestamp: u64
+        windowID: u32
+        x: f32
+        y: f32
+        source: ^byte
+        data: ^byte
+    }
+    DropBegin = 4098 {
+        timestamp: u64
+        windowID: u32
+        x: f32
+        y: f32
+        source: ^byte
+        data: ^byte
+    }
+    DropComplete = 4099 {
+        timestamp: u64
+        windowID: u32
+        x: f32
+        y: f32
+        source: ^byte
+        data: ^byte
+    }
+    DropPosition = 4100 {
+        timestamp: u64
+        windowID: u32
+        x: f32
+        y: f32
+        source: ^byte
+        data: ^byte
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SDL_FRect — used for render operations
+// ---------------------------------------------------------------------------
+
+SDL_FRect :: struct {
+    x: f32
+    y: f32
+    w: f32
+    h: f32
+}
+
+// ---------------------------------------------------------------------------
+// SDL functions
+// ---------------------------------------------------------------------------
+// SDL Window flags
+WindowFlags :: union(tag u32) {
+    Fullscreen         = 1
+    OpenGL             = 2
+    Occluded           = 4
+    Hidden             = 8
+    Borderless         = 16
+    Resizable          = 32
+    Minimized          = 64
+    Maximized          = 128
+    MouseGrabbed       = 256
+    InputFocus         = 512
+    MouseFocus         = 1024
+    HighPixelDensity   = 8192
+    MouseCapture       = 16384
+    MouseRelativeMode  = 32768
+    AlwaysOnTop        = 65536
+    Utility            = 131072
+    Tooltip            = 262144
+    PopupMenu          = 524288
+    KeyboardGrabbed    = 1048576
+    Vulkan             = 268435456
+    Metal              = 536870912
+}
+
+// SDL GL attributes
+GLattr :: union(tag i32) {
+    RedSize            = 0
+    GreenSize          = 1
+    BlueSize           = 2
+    AlphaSize          = 3
+    BufferSize         = 4
+    DoubleBuffer       = 5
+    DepthSize          = 6
+    StencilSize        = 7
+    AccumRedSize       = 8
+    AccumGreenSize     = 9
+    AccumBlueSize      = 10
+    AccumAlphaSize     = 11
+    Stereo             = 12
+    MultisampleBuffers = 13
+    MultisampleSamples = 14
+    ContextMajorVersion = 17
+    ContextMinorVersion = 18
+    ContextProfileMask  = 21
+}
+
+GLprofile :: union(tag i32) {
+    Core          = 1
+    Compatibility = 2
+    ES            = 4
+}
+
+// ---------------------------------------------------------------------------
+// Opaque handle types
+// ---------------------------------------------------------------------------
+Window    :: distinct ^byte
+Renderer  :: distinct ^byte
+GLContext :: distinct ^byte
+IOStream  :: distinct ^byte
+
+// ---------------------------------------------------------------------------
+// Filesystem types
+// ---------------------------------------------------------------------------
+
+IOWhence :: union(tag i32) {
+    Set = 0
+    Cur = 1
+    End = 2
+}
+
+PathType :: union(tag u32) {
+    None      = 0
+    File      = 1
+    Directory = 2
+    Other     = 3
+}
+
+PathInfo :: struct {
+    type:        PathType
+    size:        u64
+    create_time: i64
+    modify_time: i64
+    access_time: i64
+}
+
+// MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
+foreign dynamic_lib "SDL3" prefix SDL_ {
+    fun Init(flags: Init_Flags) -> bool
+    fun SetHint(name: cstring, value: cstring) -> bool
+    fun CreateWindow(title: cstring, w: i32, h: i32, flags: WindowFlags) -> Window
+    fun DestroyWindow(window: Window)
+    fun PollEvent(event: ^Event) -> bool
+    fun Delay(ms: u32)
+    fun Quit()
+    fun CreateRenderer(window: Window, name: cstring) -> Renderer
+    fun DestroyRenderer(renderer: Renderer)
+    fun SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> bool
+    fun RenderClear(renderer: Renderer) -> bool
+    fun RenderFillRect(renderer: Renderer, rect: ^byte) -> bool
+    fun RenderPresent(renderer: Renderer) -> bool
+    fun GL_SetAttribute(attr: GLattr, value: i32) -> bool
+    fun GL_CreateContext(window: Window) -> GLContext
+    fun GL_MakeCurrent(window: Window, context: GLContext) -> bool
+    fun GL_DestroyContext(context: GLContext) -> bool
+    fun GL_SetSwapInterval(interval: i32) -> bool
+    fun GL_SwapWindow(window: Window) -> bool
+    fun GL_GetProcAddress(name: cstring) -> ^byte
+    fun GetTicks() -> u32
+    fun GetTicksNS() -> u64
+    fun GetPerformanceCounter() -> u64
+    fun GetPerformanceFrequency() -> u64
+    fun DelayNS(ns: u64)
+    fun DelayPrecise(ns: u64)
+    fun GetError() -> cstring
+
+    // Memory
+    fun malloc(size: usize) -> ^byte
+
+    // Filesystem — IOStream
+    fun IOFromFile(file: cstring, mode: cstring) -> IOStream
+    fun CloseIO(context: IOStream) -> bool
+    fun ReadIO(context: IOStream, ptr: ^byte, size: usize) -> usize
+    fun WriteIO(context: IOStream, ptr: ^byte, size: usize) -> usize
+    fun SeekIO(context: IOStream, offset: i64, whence: IOWhence) -> i64
+    fun TellIO(context: IOStream) -> i64
+    fun GetIOSize(context: IOStream) -> i64
+    fun FlushIO(context: IOStream) -> bool
+    fun LoadFile(file: cstring, datasize: ^usize) -> ^byte
+    fun SaveFile(file: cstring, data: ^byte, datasize: usize) -> bool
+
+    // Filesystem — paths & metadata
+    fun GetBasePath() -> cstring
+    fun GetPrefPath(org: cstring, app: cstring) -> cstring
+    fun GetCurrentDirectory() -> cstring
+    fun CreateDirectory(path: cstring) -> bool
+    fun RemovePath(path: cstring) -> bool
+    fun RenamePath(oldpath: cstring, newpath: cstring) -> bool
+    fun CopyFile(oldpath: cstring, newpath: cstring) -> bool
+    fun GetPathInfo(path: cstring, info: ^PathInfo) -> bool
+}

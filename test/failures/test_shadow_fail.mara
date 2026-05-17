@@ -1,0 +1,9 @@
+module test_shadow_fail
+
+// Should fail: same-scope redeclaration of x.
+
+test_shadow_fail :: fun() {
+	x := 1
+	x := 2
+	print(x)
+}

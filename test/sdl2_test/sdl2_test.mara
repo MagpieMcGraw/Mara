@@ -1,0 +1,39 @@
+module sdl2_test
+use mara.memory
+use mara.sdl2
+use mara.open_gl
+
+main :: fun() -> i64 {
+	context.scope_allocator = Arena_Basic
+	sdl2.Init(Video)
+
+	GL_SetAttribute(ContextProfileMask, Core)
+	GL_SetAttribute(ContextMajorVersion, 4)
+	GL_SetAttribute(ContextMinorVersion, 5)
+
+	w := CreateWindow("sdl2 test", 200, 200, 800, 600, OpenGL | Resizable)
+	ctx := GL_CreateContext(w)
+	GL_MakeCurrent(w, ctx)
+	gl_load(GL_GetProcAddress)
+
+	running := true
+	for running {
+		e: Event
+		for PollEvent(&e) != 0 {
+			match e {
+			Quit
+				running = false
+			KeyDown key
+				print("KEY DOWN ", i64(key.scancode))
+			else  // ignore other event variants
+			}
+		}
+		ClearColor(0.85, 0.80, 0.70, 1.0)
+		Clear(COLOR_BUFFER_BIT)
+		GL_SwapWindow(w)
+	}
+	GL_DeleteContext(ctx)
+	sdl2.DestroyWindow(w)
+	sdl2.Quit()
+	return 0
+}

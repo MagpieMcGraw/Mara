@@ -1,0 +1,14 @@
+module leak_test
+
+// File B in module `leak_test`. Does NOT use `mara.memory`, so it
+// must not see `Arena_Basic`. With per-file privacy in `check_module`
+// trying to use `Arena_Basic` here would fail to type-check.
+//
+// File B can still see `a_helper` from File A — defined names are
+// public to the whole module. To re-test the leak, swap the body
+// for `a : Arena_Basic = Arena_Basic(1024)` and the build must fail
+// at this file with "undefined function 'Arena_Basic'".
+b_helper :: fun() {
+    print("b_helper from leak_test_b")
+    a_helper()  // sibling-defined name — public, must resolve
+}

@@ -1,0 +1,191 @@
+module gfx
+
+use mara.math
+gl :: use mara.open_gl
+
+// Instance data for instanced rendering
+Instance :: struct {
+    mvp_matrix: Mat4
+    tex_coords: [4]f32
+    color: [3]f32
+    layer: u32
+}
+
+// Vertex data for meshes
+Vertex :: struct {
+    position: [3]f32
+    normal:   [3]f32
+    uv:       [2]f32
+}
+
+// Mesh_Data represents raw mesh data (no OpenGL resources)
+Mesh_Data :: struct {
+    vertices: []Vertex
+    indices:  []u32
+}
+
+// VAO_Mesh holds info about where geometry is in the VBO/EBO
+VAO_Mesh :: struct {
+    first_index: u32
+    index_count: u32
+    base_vertex: i32
+}
+
+MAX_VAO_MESHES :: 512
+
+// VAO_State tracks the state of a unified VAO buffer for incremental updates
+VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
+    vao:            u32
+    vertex_vbo:     u32
+    ebo:            u32
+    instance_vbo:   u32
+
+    // Current offsets (where next geometry will be written)
+    vertex_offset:  i64
+    index_offset:   i64
+
+    // Capacity (pre-allocated sizes)
+    max_vertices := max_v
+    max_indices := max_ind
+    max_instances := max_ins
+
+    // Mesh tracking
+    meshes:         [MAX_VAO_MESHES]VAO_Mesh
+    mesh_count:     i64
+
+    // Create OpenGL objects
+    gl.GenVertexArrays(1, &vao)
+    gl.GenBuffers(1, &vertex_vbo)
+    gl.GenBuffers(1, &ebo)
+    gl.GenBuffers(1, &instance_vbo)
+
+    gl.BindVertexArray(vao)
+
+    // Pre-allocate vertex buffer (no data yet)
+    gl.BindBuffer(gl.ARRAY_BUFFER, vertex_vbo)
+    gl.BufferData(gl.ARRAY_BUFFER,
+                  isize(max_vertices * size_of(Vertex)),
+                  nil,
+                  gl.STATIC_DRAW)
+
+    // Pre-allocate index buffer (no data yet)
+    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
+    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER,
+                  isize(max_indices * size_of(u32)),
+                  nil,
+                  gl.STATIC_DRAW)
+
+    // Vertex attributes (per-vertex)
+    // Position (location 0)
+    gl.EnableVertexAttribArray(0)
+    gl.VertexAttribPointer(0, 3, gl.FLOAT, 0, size_of(Vertex), 0)
+
+    // Normal (location 6)
+    gl.EnableVertexAttribArray(6)
+    gl.VertexAttribPointer(6, 3, gl.FLOAT, 0, size_of(Vertex), size_of([3]f32))
+
+    // UV (location 8)
+    gl.EnableVertexAttribArray(8)
+    gl.VertexAttribPointer(8, 2, gl.FLOAT, 0, size_of(Vertex),
+                            size_of([3]f32) + size_of([3]f32))
+
+    // Setup instance buffer
+    gl.BindBuffer(gl.ARRAY_BUFFER, instance_vbo)
+    gl.BufferData(gl.ARRAY_BUFFER,
+                  isize(max_instances * size_of(Instance)),
+                  nil,
+                  gl.DYNAMIC_DRAW)
+
+    // Instance attributes (per-instance)
+    stride :: size_of(Instance)
+
+    // MVP Matrix (locations 1-4) - each column is a vec4
+    for i in 0..4 {
+        loc := u32(1 + i)
+        offset := i * size_of(Vec4)
+        gl.EnableVertexAttribArray(loc)
+        gl.VertexAttribPointer(loc, 4, gl.FLOAT, 0, stride, usize(offset))
+        gl.VertexAttribDivisor(loc, 1)
+    }
+
+    // Texture coords (location 5)
+    gl.EnableVertexAttribArray(5)
+    gl.VertexAttribPointer(5, 4, gl.FLOAT, 0, stride, size_of(Mat4))
+    gl.VertexAttribDivisor(5, 1)
+
+    // Color (location 7) - vec3
+    gl.EnableVertexAttribArray(7)
+    gl.VertexAttribPointer(7, 3, gl.FLOAT, 0, stride,
+                            size_of(Mat4) + size_of([4]f32))
+    gl.VertexAttribDivisor(7, 1)
+
+    // Layer (location 10) - uint, texture array layer index
+    gl.EnableVertexAttribArray(10)
+    gl.VertexAttribIPointer(10, 1, gl.UNSIGNED_INT, stride,
+                            size_of(Mat4) + size_of([4]f32) + size_of([3]f32))
+    gl.VertexAttribDivisor(10, 1)
+
+    gl.BindVertexArray(0)
+
+}
+
+
+
+// Add geometry to the VAO, returns the mesh index
+// Returns 0 on error (not enough space)
+vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i64 {
+    vertex_count := len(geom.vertices)
+    index_count := len(geom.indices)
+
+    // Check if we have space
+    if state.vertex_offset + vertex_count > state.max_vertices {
+        print("VAO: Not enough vertex space!")
+        return 0
+    }
+    if state.index_offset + index_count > state.max_indices {
+        print("VAO: Not enough index space!")
+        return 0
+    }
+
+    // Create mesh info
+    mesh : VAO_Mesh
+    mesh.first_index = u32(state.index_offset)
+    mesh.index_count = u32(index_count)
+    mesh.base_vertex = i32(state.vertex_offset)
+
+    // Upload vertex data at current offset
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vertex_vbo)
+    gl.BufferSubData(gl.ARRAY_BUFFER,
+                     isize(state.vertex_offset * size_of(Vertex)),
+                     isize(vertex_count * size_of(Vertex)),
+                     &geom.vertices[0])
+
+    // Upload index data at current offset
+    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.ebo)
+    gl.BufferSubData(gl.ELEMENT_ARRAY_BUFFER,
+                     isize(state.index_offset * size_of(u32)),
+                     isize(index_count * size_of(u32)),
+                     &geom.indices[0])
+
+    // Update offsets
+    state.vertex_offset += vertex_count
+    state.index_offset += index_count
+
+    // Add to mesh list and return index
+    if state.mesh_count >= MAX_VAO_MESHES {
+        print("VAO: Mesh limit reached!")
+        return 0
+    }
+    mesh_index := state.mesh_count
+    state.meshes[mesh_index] = mesh
+    state.mesh_count += 1
+
+    return mesh_index
+}
+
+// Reset VAO state for reloading - clears offsets and mesh list but keeps GL resources
+vao_reset :: fun(state: ^VAO_State) {
+    state.vertex_offset = 0
+    state.index_offset = 0
+    state.mesh_count = 0
+}

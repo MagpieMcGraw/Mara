@@ -1,0 +1,57 @@
+module test_draw
+
+use mara.math
+use mara.open_gl
+
+// Minimal "filled colored quad" renderer — one shader, one VAO, one VBO holding
+// a unit-quad TRIANGLE_STRIP. Each draw_quad call sets uniforms and issues a
+// single DrawArrays. Coordinates are pixel-space with origin at the top-left;
+// the vertex shader maps them to clip space using u_screen.
+
+// Desktop GL 4.5 Core: `#version 330 core` for these simple shaders.
+QUAD_VS :: "#version 330 core\nlayout(location=0) in vec2 a_pos;\nuniform vec2 u_pos;\nuniform vec2 u_size;\nuniform vec2 u_screen;\nvoid main() {\n  vec2 pixel = u_pos + a_pos * u_size;\n  vec2 ndc = (pixel / u_screen) * 2.0 - 1.0;\n  ndc.y = -ndc.y;\n  gl_Position = vec4(ndc, 0.0, 1.0);\n}\n"
+QUAD_FS :: "#version 330 core\nuniform vec3 u_color;\nout vec4 frag_color;\nvoid main() {\n  frag_color = vec4(u_color, 1.0);\n}\n"
+
+Quad_Renderer :: struct {
+	program:  u32
+	vao:      u32
+	vbo:      u32
+	u_pos:    i32
+	u_size:   i32
+	u_screen: i32
+	u_color:  i32
+}
+
+quad_init :: fun(r: ^Quad_Renderer) {
+	vs := gl_compile_shader(VERTEX_SHADER, QUAD_VS)
+	fs := gl_compile_shader(FRAGMENT_SHADER, QUAD_FS)
+	r.program = gl_link_program(vs, fs)
+	DeleteShader(vs)
+	DeleteShader(fs)
+
+	r.u_pos    = GetUniformLocation(r.program, "u_pos")
+	r.u_size   = GetUniformLocation(r.program, "u_size")
+	r.u_screen = GetUniformLocation(r.program, "u_screen")
+	r.u_color  = GetUniformLocation(r.program, "u_color")
+
+	// Unit quad as a TRIANGLE_STRIP: (0,0), (1,0), (0,1), (1,1).
+	verts : [8]f32 = [8]f32{0, 0, 1, 0, 0, 1, 1, 1}
+
+	GenVertexArrays(1, &r.vao)
+	BindVertexArray(r.vao)
+	GenBuffers(1, &r.vbo)
+	BindBuffer(ARRAY_BUFFER, r.vbo)
+	BufferData(ARRAY_BUFFER, 32, &verts[0], STATIC_DRAW)
+	EnableVertexAttribArray(0)
+	VertexAttribPointer(0, 2, FLOAT, 0, 8, 0)
+}
+
+draw_quad :: fun(r: ^Quad_Renderer, screen_w: f32, screen_h: f32, x: f32, y: f32, w: f32, h: f32, color: Vec3) {
+	UseProgram(r.program)
+	BindVertexArray(r.vao)
+	Uniform2f(r.u_screen, screen_w, screen_h)
+	Uniform2f(r.u_pos, x, y)
+	Uniform2f(r.u_size, w, h)
+	Uniform3f(r.u_color, color.x, color.y, color.z)
+	DrawArrays(TRIANGLE_STRIP, 0, 4)
+}

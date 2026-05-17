@@ -1,0 +1,11 @@
+module main_leak
+
+// File B in the main package `main_leak`. Does NOT use `mara.memory`.
+// With per-file privacy in `check_program`, `Arena_Basic` must not be
+// visible here. To re-test the leak, swap the body for
+// `a : Arena_Basic = Arena_Basic(1024)` and the build must fail with
+// "undefined function 'Arena_Basic'".
+b_helper :: fun() {
+    print("b_helper from main_b")
+    a_helper()  // sibling-defined name — public, must resolve
+}

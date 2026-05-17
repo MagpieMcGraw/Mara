@@ -1,0 +1,52 @@
+module object
+
+use mara.math
+use mara.string
+
+use asset
+
+Object :: struct {
+	dir := QUAT_IDENTITY
+
+	pos: Vec3
+	scale: Vec3
+	accel: Vec3
+	tracking_offset: Vec3 // used to follow other objects
+
+	speed, turn_speed : f32
+
+	exists := true     // used by Array to track active items
+	highlighted: bool // draw with highlight effect (wireframe overlay)
+}
+
+obj_get_directions :: fun(dir: Quat) -> (fwd, up, right : Vec3) {
+	rot_mx := mat4_from_quaternion(dir)
+	fwd.xyz = rot_mx[2].xyz
+	up.xyz = rot_mx[1].xyz
+	right.xyz = rot_mx[0].xyz
+	return fwd, up, right
+}
+
+obj_face :: fun(dir: Quat) -> Quat {
+	default_up : Vec3 = [0, 1, 0]
+	rotation_quat := quat_angle_axis(to_radians(180), default_up)
+	new_dir := dir * rotation_quat
+	return new_dir
+}
+
+obj_track_other :: fun(obj: ^Object, other_obj: Object) {
+	fwd, up, right := obj_get_directions(other_obj.dir)
+	z_off := fwd  * obj.tracking_offset.z
+	y_off := up * obj.tracking_offset.y
+	x_off := right * obj.tracking_offset.x
+	obj.pos = other_obj.pos + z_off + y_off + x_off
+}
+
+Visual :: struct {
+	texture: Texture
+	mesh: Mesh
+	texture_index: u32
+	color: [3]f32
+	font: String       // for glyph resolution
+	resolve: bool      // enable automatic asset resolution
+}

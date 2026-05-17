@@ -1,0 +1,28 @@
+module test_submod_check
+
+// Verify the submodule-collection rule: `use test_submod` pulls in every
+// module whose declared name starts with `test_submod.` — here that's
+// `test_submod.a` (Subthing, make_subthing) and `test_submod.b` (mark).
+// Both names are flat-visible at the consumer site.
+
+use test_submod
+
+test_submod :: fun() {
+    print("=== test_submod ===")
+
+    s := make_subthing(5)
+    print(s.value)              // 5
+
+    print(mark(s.value))        // 5042
+
+    // Both names came in through a single `use test_submod`.
+    // Synth-scope qualified access: `test_submod` exists as an empty
+    // namespace scope (no `test_submod` file declares it; only the
+    // submodules `test_submod.a` and `test_submod.b` do). Submodules
+    // are registered as members of the synth, so chained access works.
+    s2 := test_submod.a.make_subthing(7)
+    print(s2.value)             // 7
+    print(test_submod.b.mark(s2.value))  // 7042
+
+    print("=== test_submod passed ===")
+}

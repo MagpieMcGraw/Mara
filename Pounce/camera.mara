@@ -1,0 +1,234 @@
+module camera
+
+use mara.memory
+use mara.math
+
+use object
+
+Camera :: class(w, h, fovy : f32) {
+	using obj: Object
+	proj_mx, ortho_mx, view_mx : Mat4 = all mat4_identity()
+	window_w, window_h := w, h
+	fov_x, fov_y, near_plane, far_plane : f32
+}
+
+// Camera :: struct {
+// 	using obj: Object,
+// 	proj_mx,
+// 	ortho_mx,
+// 	view_mx: linalg.Matrix4f32,
+// 	w_width,
+// 	w_height: i32,
+// 	fov_y,
+// 	fov_x,
+// 	near_plane,
+// 	far_plane: f32,
+// }
+
+// camera_create :: proc(w_width, w_height, fovy: i32) -> Camera
+// {
+// 	camera: Camera
+
+// 	camera.speed = 50  // Slower speed for space flight
+// 	camera.turn_speed = 0.2  // Slower rotation
+// 	camera.pos = linalg.Vector3f32{0, 0, 512}
+// 	camera.dir = linalg.QUATERNIONF32_IDENTITY
+
+// 	camera.w_width = w_width
+// 	camera.w_height = w_height
+// 	camera.near_plane = 0.1
+// 	camera.far_plane = 50000
+
+// 	aspect_ratio := cast(f32)w_width / cast(f32)w_height
+// 	camera.fov_y = math.to_radians(f32(fovy))
+// 	camera.fov_x = camera.fov_y * aspect_ratio
+
+// 	camera.proj_mx = linalg.matrix4_perspective(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane, false)
+
+// 	// Orthographic projection for 2D rendering (origin at center, Y up)
+// 	half_w := f32(w_width) / 2
+// 	half_h := f32(w_height) / 2
+// 	camera.ortho_mx = linalg.matrix_ortho3d_f32(-half_w, half_w, -half_h, half_h, -1, 1)
+
+// 	translation_mx := linalg.matrix4_translate(camera.pos)
+// 	rotation_mx := linalg.matrix4_from_quaternion(camera.dir)
+// 	camera.view_mx = linalg.matrix_mul(rotation_mx, translation_mx)
+
+// 	return camera
+// }
+
+// camera_look_down :: proc(camera: ^Camera) {
+// 	camera.dir *= linalg.quaternion_angle_axis(
+// 	math.to_radians(f32(180)), linalg.Vector3f32{0, 1, 0})
+// }
+
+// camera_align_with_gravity :: proc(camera: ^Camera) {
+// 	camera.dir = linalg.quaternion_from_forward_and_up_f32({0, 1, 0}, {0, 0, 1})
+// }
+
+// camera_move :: proc(events: ^Event_State, loop_time: f32, camera: ^Camera) {
+// 	direction: linalg.Vector3f32
+// 	speed: f32 = 500
+
+// 	fwd, up, right := obj_get_directions(camera.dir)
+
+// 	if events.keyboard.held[sdl.Scancode.W] {
+// 		direction += fwd
+// 	}
+// 	if events.keyboard.held[sdl.Scancode.S] {
+// 		direction -= fwd
+// 	}
+// 	if events.keyboard.held[sdl.Scancode.A] {
+// 		direction -= right
+// 	}
+// 	if events.keyboard.held[sdl.Scancode.D] {
+// 		direction += right
+// 	}
+// 	if events.keyboard.held[sdl.Scancode.Q] {
+// 		direction += up
+// 	}
+// 	if events.keyboard.held[sdl.Scancode.Z] {
+// 		direction -= up
+// 	}
+
+// 	if events.keyboard.held[sdl.Scancode.LSHIFT] {
+// 		speed *= 0.2
+// 	}
+
+// 	if events.keyboard.held[sdl.Scancode.LCTRL] {
+// 		speed *= 5.0
+// 	}
+
+// 	move_this_frame := speed * loop_time * direction
+// 	camera.accel += move_this_frame
+// }
+
+// camera_turn_flying :: proc(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
+// 	sensitivity: f32 = 0.005
+// 	turn_speed: f32 = 0.5  // Faster turn speed for direct mode
+// 	x_rot := turn_speed * f32(xrel) * sensitivity
+// 	y_rot := turn_speed * f32(yrel) * sensitivity
+// 	z_rot := turn_speed * f32(zrel) * 5 * sensitivity
+
+// 	// Get camera's local axes
+// 	camera_fwd, camera_up, camera_right := obj_get_directions(camera.dir)
+
+// 	// Directly apply rotation (no momentum)
+// 	yaw_quat := linalg.quaternion_angle_axis(x_rot, camera_up)
+// 	camera.dir = yaw_quat * camera.dir
+
+// 	// Recalculate after yaw
+// 	camera_fwd, camera_up, camera_right = obj_get_directions(camera.dir)
+
+// 	pitch_quat := linalg.quaternion_angle_axis(y_rot, camera_right)
+// 	camera.dir = pitch_quat * camera.dir
+
+// 	// Roll
+// 	if z_rot != 0 {
+// 		camera_fwd, _, _ = obj_get_directions(camera.dir)
+// 		roll_quat := linalg.quaternion_angle_axis(z_rot, camera_fwd)
+// 		camera.dir = roll_quat * camera.dir
+// 	}
+// }
+
+// // Walking camera - constrained to ground-based movement
+// // Yaw always around world up, no roll, maintains upright orientation
+// camera_turn_walking :: proc(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
+// 	if xrel == 0 && yrel == 0 do return
+
+// 	sensitivity: f32 = 0.01
+// 	x_rot := camera.turn_speed * f32(xrel) * sensitivity
+// 	y_rot := camera.turn_speed * f32(yrel) * sensitivity
+
+// 	// World up axis for yaw (always stays upright)
+// 	world_up := linalg.Vector3f32{0, 0, 1}
+
+// 	// Yaw around world up (horizontal turning, unaffected by pitch)
+// 	if xrel != 0 {
+// 		yaw_quat := linalg.quaternion_angle_axis(x_rot, world_up)
+// 		camera.dir = yaw_quat * camera.dir
+// 	}
+
+// 	// Pitch around camera's local right axis (look up/down)
+// 	if yrel != 0 {
+// 		_, _, camera_right := obj_get_directions(camera.dir)
+// 		pitch_quat := linalg.quaternion_angle_axis(y_rot, camera_right)
+// 		camera.dir = pitch_quat * camera.dir
+// 	}
+// }
+
+// camera_update :: proc(camera: ^Camera, loop_time: f32) {
+// 	physics_resolution: f32 = 0.001
+// 	physics_this_frame := loop_time / physics_resolution
+
+// 	damping_factor: f32 = 0.99
+// 	camera.accel *= math.pow(damping_factor, physics_this_frame)
+// 	camera.pos += (camera.accel * loop_time)
+
+// 	translation_mx := linalg.matrix4_translate(-camera.pos)
+// 	rotation_mx := linalg.transpose(linalg.matrix4_from_quaternion(camera.dir))
+// 	camera.view_mx = linalg.matrix_mul(rotation_mx, translation_mx)
+// }
+
+// camera_update_size :: proc(camera: ^Camera, w_width, w_height: i32) {
+// 	if w_width == camera.w_width && w_height == camera.w_height {
+// 		return
+// 	}
+
+// 	camera.w_width = w_width
+// 	camera.w_height = w_height
+
+// 	aspect_ratio := cast(f32)w_width / cast(f32)w_height
+// 	camera.fov_x = camera.fov_y * aspect_ratio
+
+// 	camera.proj_mx = linalg.matrix4_perspective(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane, false)
+
+// 	// Update orthographic projection for 2D rendering
+// 	half_w := f32(w_width) / 2
+// 	half_h := f32(w_height) / 2
+// 	camera.ortho_mx = linalg.matrix_ortho3d_f32(-half_w, half_w, -half_h, half_h, -1, 1)
+// }
+
+// // Project world position to screen pixels (origin at center, +x right, +y up)
+// // Returns screen x, y in pixels from center, and ok=false if behind camera
+// world_to_screen :: proc(world_pos: linalg.Vector3f32, camera: ^Camera) -> (x, y: f32, ok: bool) {
+// 	// Transform to clip space
+// 	pos4 := linalg.Vector4f32{world_pos.x, world_pos.y, world_pos.z, 1}
+// 	view_pos := linalg.mul(camera.view_mx, pos4)
+// 	clip_pos := linalg.mul(camera.proj_mx, view_pos)
+
+// 	// Check if behind camera (w <= 0 means behind or at camera plane)
+// 	if clip_pos.w <= 0 {
+// 		return 0, 0, false
+// 	}
+
+// 	// Perspective divide to NDC (-1 to 1)
+// 	ndc_x := clip_pos.x / clip_pos.w
+// 	ndc_y := clip_pos.y / clip_pos.w
+
+// 	// Convert to pixels from center
+// 	x = ndc_x * f32(camera.w_width) / 2
+// 	y = ndc_y * f32(camera.w_height) / 2
+
+// 	return x, y, true
+// }
+
+// mouse_ray :: proc(mouse_x, mouse_y: i32, camera: ^Camera) -> linalg.Vector3f32 {
+// 	// mouse x and y needs to be in the range of 1 to -1
+// 	x := (2 * f32(mouse_x)) / f32(camera.w_width) - 1
+// 	y := 1 - (2 * f32(mouse_y)) / f32(camera.w_height)
+
+// 	// create mouse ray, apply inverse projection
+// 	mouse := linalg.Vector4f32{x, y, 0, 0}
+// 	inv_projection := linalg.matrix4_inverse(camera.proj_mx)
+// 	unprojected := linalg.mul(inv_projection, mouse)
+
+// 	// we have to write 1, 0 into the mouse ray
+// 	adjusted := linalg.Vector4f32{unprojected.x, unprojected.y, 1, 0}
+
+// 	// apply inverted view matrix to mouse ray
+// 	inv_view := linalg.matrix4_inverse(camera.view_mx)
+// 	ray := linalg.normalize(linalg.mul(inv_view, adjusted))
+
+// 	return linalg.Vector3f32{ray.x, ray.y, ray.z}
+// }

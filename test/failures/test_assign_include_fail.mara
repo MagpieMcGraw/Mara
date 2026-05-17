@@ -1,0 +1,7 @@
+module test_assign_include_fail
+
+// `name := use path` is now a parse error. Modules are comptime —
+// the only honest spelling is `name :: use path`. Bare `use path`
+// (parser sugar) still works for flatten-style includes; this test
+// exists to keep that distinction enforced.
+m := use mara.math

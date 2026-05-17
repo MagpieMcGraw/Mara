@@ -1,0 +1,15 @@
+module test_class_param_leak_fail
+
+// Should fail: class constructor params must not be visible as bare names
+// inside method bodies. Methods access state via Self / their explicit receiver.
+
+Counter :: class(seed: i64) {
+	value: i64 = seed
+
+	read :: fun(c: ^Self) -> i64 {
+		return seed  // bare reference to class param — should be undefined here
+	}
+}
+
+test_class_param_leak_fail :: fun() {
+}

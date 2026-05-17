@@ -1,0 +1,249 @@
+module mara.open_gl
+
+// ---------------------------------------------------------------------------
+// OpenGL constants — split into typed enums per semantic group
+// ---------------------------------------------------------------------------
+
+GL_Type :: union(tag u32) {
+    BYTE           = 5120
+    UNSIGNED_BYTE  = 5121
+    SHORT          = 5122
+    UNSIGNED_SHORT = 5123
+    INT            = 5124
+    UNSIGNED_INT   = 5125
+    FLOAT          = 5126
+    DOUBLE         = 5130
+}
+
+GL_Draw_Mode :: union(tag u32) {
+    POINTS         = 0
+    LINES          = 1
+    LINE_LOOP      = 2
+    LINE_STRIP     = 3
+    TRIANGLES      = 4
+    TRIANGLE_STRIP = 5
+    TRIANGLE_FAN   = 6
+}
+
+GL_Buffer_Target :: union(tag u32) {
+    ARRAY_BUFFER         = 34962
+    ELEMENT_ARRAY_BUFFER = 34963
+    DRAW_INDIRECT_BUFFER = 36671
+}
+
+GL_Buffer_Usage :: union(tag u32) {
+    STREAM_DRAW  = 35040
+    STATIC_DRAW  = 35044
+    DYNAMIC_DRAW = 35048
+}
+
+GL_Clear_Mask :: union(tag u32) {
+    DEPTH_BUFFER_BIT   = 256
+    STENCIL_BUFFER_BIT = 1024
+    COLOR_BUFFER_BIT   = 16384
+}
+
+GL_Capability :: union(tag u32) {
+    DEPTH_TEST    = 2929
+    CULL_FACE     = 2884
+    BLEND         = 3042
+    SCISSOR_TEST  = 3089
+}
+
+GL_Blend_Factor :: union(tag u32) {
+    ZERO                = 0
+    ONE                 = 1
+    SRC_ALPHA           = 770
+    ONE_MINUS_SRC_ALPHA = 771
+}
+
+GL_Texture_Target :: union(tag u32) {
+    TEXTURE_2D       = 3553
+    TEXTURE_2D_ARRAY = 35866
+}
+
+GL_Texture_Unit :: union(tag u32) {
+    TEXTURE0 = 33984
+    TEXTURE1 = 33985
+    TEXTURE2 = 33986
+    TEXTURE3 = 33987
+}
+
+GL_Tex_Param :: union(tag u32) {
+    TEXTURE_MIN_FILTER = 10241
+    TEXTURE_MAG_FILTER = 10240
+    TEXTURE_WRAP_S     = 10242
+    TEXTURE_WRAP_T     = 10243
+}
+
+GL_Tex_Filter :: union(tag u32) {
+    NEAREST                = 9728
+    LINEAR                 = 9729
+    NEAREST_MIPMAP_NEAREST = 9984
+    LINEAR_MIPMAP_LINEAR   = 9987
+}
+
+GL_Tex_Wrap :: union(tag u32) {
+    CLAMP_TO_EDGE = 33071
+    REPEAT        = 10497
+}
+
+GL_Tex_Format :: union(tag u32) {
+    RED   = 6403
+    RGB   = 6407
+    RGBA  = 6408
+    RGBA8 = 32856
+    RGB8  = 32849
+}
+
+GL_Shader_Type :: union(tag u32) {
+    FRAGMENT_SHADER = 35632
+    VERTEX_SHADER   = 35633
+}
+
+GL_Shader_Param :: union(tag u32) {
+    COMPILE_STATUS  = 35713
+    LINK_STATUS     = 35714
+    INFO_LOG_LENGTH = 35716
+}
+
+GL_Face :: union(tag u32) {
+    FRONT          = 1028
+    BACK           = 1029
+    FRONT_AND_BACK = 1032
+}
+
+GL_Winding :: union(tag u32) {
+    CW  = 2304
+    CCW = 2305
+}
+
+GL_Depth_Func :: union(tag u32) {
+    NEVER    = 512
+    LESS     = 513
+    EQUAL    = 514
+    LEQUAL   = 515
+    GREATER  = 516
+    NOTEQUAL = 517
+    GEQUAL   = 518
+    ALWAYS   = 519
+}
+
+GL_Polygon_Mode :: union(tag u32) {
+    POINT = 6912
+    LINE  = 6913
+    FILL  = 6914
+}
+
+// ---------------------------------------------------------------------------
+// GL 1.1 functions — available directly from opengl32.lib (Windows)
+// ---------------------------------------------------------------------------
+
+foreign static_lib "opengl32" prefix gl {
+    fun Enable(cap: GL_Capability)
+    fun Disable(cap: GL_Capability)
+    fun Clear(mask: GL_Clear_Mask)
+    fun ClearColor(r: f32, g: f32, b: f32, a: f32)
+    fun Viewport(x: i32, y: i32, w: i32, h: i32)
+    fun BlendFunc(sfactor: GL_Blend_Factor, dfactor: GL_Blend_Factor)
+    fun CullFace(mode: GL_Face)
+    fun DepthMask(flag: u32)
+    fun DrawArrays(mode: GL_Draw_Mode, first: i32, count: i32)
+    fun DrawElements(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: ^byte)
+    fun BindTexture(target: GL_Texture_Target, texture: u32)
+    fun TexParameteri(target: GL_Texture_Target, pname: GL_Tex_Param, param: i32)
+    fun GetError() -> u32
+    fun GenTextures(n: i32, textures: ^byte)
+    fun DeleteTextures(n: i32, textures: ^byte)
+    fun TexImage2D(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
+    fun DepthFunc(func: GL_Depth_Func)
+    fun PolygonMode(face: GL_Face, mode: GL_Polygon_Mode)
+    fun LineWidth(width: f32)
+    fun Scissor(x: i32, y: i32, width: i32, height: i32)
+    fun FrontFace(mode: GL_Winding)
+}
+
+// ---------------------------------------------------------------------------
+// Modern GL functions (3.0+) — loaded at runtime via open_gl.c.
+// open_gl.c keeps function pointers populated by gl_load() and exposes
+// thin wrappers under the standard `gl*` symbol names. Compiled from
+// source on every build (rather than a prebuilt open_gl.lib) so changes
+// to the C side don't need a manual rebuild step.
+// gl_load takes the platform's proc-address function as a parameter, so
+// open_gl.c has no link-time dependency on a specific windowing lib.
+// ---------------------------------------------------------------------------
+
+// Loader — no prefix (custom C function, not an OpenGL symbol).
+// `get_proc` is the platform's `void *(name)` proc-address function,
+// e.g. sdl.GL_GetProcAddress. Structural function-type so any module
+// (SDL2, SDL3, GLFW, …) with a matching-shaped function can satisfy it.
+foreign static_lib "open_gl.o" {
+    fun gl_load(get_proc: fun(cstring) -> ^byte)
+    // Convenience: compile a shader from a single source string.
+    // Returns shader id on success, 0 on failure (error printed to stdout).
+    fun gl_compile_shader(type: GL_Shader_Type, src: cstring) -> u32
+    // Convenience: link vertex+fragment shaders into a program.
+    // Returns program id on success, 0 on failure (error printed to stdout).
+    fun gl_link_program(vs: u32, fs: u32) -> u32
+}
+
+foreign static_lib "open_gl.o" prefix gl {
+    // Shaders
+    fun CreateShader(type: GL_Shader_Type) -> u32
+    fun ShaderSource(shader: u32, count: i32, strings: ^byte, lengths: ^byte)
+    fun CompileShader(shader: u32)
+    fun DeleteShader(shader: u32)
+
+    // Programs
+    fun CreateProgram() -> u32
+    fun AttachShader(program: u32, shader: u32)
+    fun LinkProgram(program: u32)
+    fun DeleteProgram(program: u32)
+    fun UseProgram(program: u32)
+
+    // Uniforms
+    fun GetUniformLocation(program: u32, name: cstring) -> i32
+    fun Uniform1f(location: i32, v0: f32)
+    fun Uniform1i(location: i32, v0: i32)
+    fun Uniform2f(location: i32, v0: f32, v1: f32)
+    fun Uniform3f(location: i32, v0: f32, v1: f32, v2: f32)
+    fun UniformMatrix4fv(location: i32, count: i32, transpose: u32, value: ^byte)
+
+    // VAOs
+    fun GenVertexArrays(n: i32, arrays: ^byte)
+    fun BindVertexArray(array: u32)
+
+    // Buffers
+    fun GenBuffers(n: i32, buffers: ^byte)
+    fun BindBuffer(target: GL_Buffer_Target, buffer: u32)
+    fun BufferData(target: GL_Buffer_Target, size: isize, data: ^byte, usage: GL_Buffer_Usage)   // GLsizeiptr
+    fun BufferSubData(target: GL_Buffer_Target, offset: isize, size: isize, data: ^byte)         // GLintptr, GLsizeiptr
+
+    // Vertex attributes
+    fun EnableVertexAttribArray(index: u32)
+    fun VertexAttribPointer(index: u32, size: i32, type: GL_Type, normalized: u32, stride: i32, pointer: usize)   // pointer is uintptr_t cast
+    fun VertexAttribIPointer(index: u32, size: i32, type: GL_Type, stride: i32, pointer: usize)
+    fun VertexAttribDivisor(index: u32, divisor: u32)
+
+    // Texture
+    fun ActiveTexture(texture: GL_Texture_Unit)
+    fun TexImage3D(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, depth: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
+    fun TexSubImage3D(target: GL_Texture_Target, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
+    fun GenerateMipmap(target: GL_Texture_Target)
+
+    // Shader info
+    fun GetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^byte)
+    fun GetShaderInfoLog(shader: u32, bufSize: i32, length: ^byte, infoLog: ^byte)
+    fun GetProgramiv(program: u32, pname: GL_Shader_Param, params: ^byte)
+    fun GetProgramInfoLog(program: u32, bufSize: i32, length: ^byte, infoLog: ^byte)
+
+    // Shader management
+    fun DetachShader(program: u32, shader: u32)
+
+    // Cleanup
+    fun DeleteVertexArrays(n: i32, arrays: ^byte)
+    fun DeleteBuffers(n: i32, buffers: ^byte)
+
+    // Multi-draw indirect
+    fun MultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: ^byte, drawcount: i32, stride: i32)
+}

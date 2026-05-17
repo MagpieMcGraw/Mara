@@ -1,0 +1,11 @@
+module leak_consumer
+
+// Consumer module — the main package. Imports `leak_test` so the
+// multi-file `leak_test` module loads via `check_module`, which is
+// where per-file privacy is now enforced.
+use leak_test
+
+main :: fun() {
+    a_helper()
+    b_helper()
+}

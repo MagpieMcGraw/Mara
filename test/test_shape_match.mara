@@ -1,0 +1,30 @@
+module test_shape_match
+
+// Verify that ~T in a function param accepts any structurally-compatible type.
+// Both Arena_Basic and Arena_Debug expose a `capacity` field; a function
+// written against ~Arena_Basic should monomorphize per concrete arena type at
+// the call site, so passing either works without rewriting the function.
+
+use mara.memory
+
+// Reads the capacity field through a pointer to any arena-shaped value. The
+// type checker re-checks the body at each monomorphization, so only types
+// whose shape provides .capacity satisfy this slot.
+arena_cap :: fun(a: ^~Arena_Basic) -> i64 {
+	return a.capacity
+}
+
+test_shape_match :: fun() {
+	print("=== test_shape_match ===")
+
+	basic : Arena_Basic = Arena_Basic(4 * KB)
+	dbg   : Arena_Debug = Arena_Debug(4 * KB)
+
+	// Two separate ~Arena_Basic monomorphizations — one for Arena_Basic,
+	// one for Arena_Debug. Demonstrates the "fresh anonymous shape match"
+	// (no binder equality) semantics: the same function works for both.
+	print(arena_cap(&basic))  // expect 4096
+	print(arena_cap(&dbg))    // expect 4096
+
+	print("=== test_shape_match passed ===")
+}

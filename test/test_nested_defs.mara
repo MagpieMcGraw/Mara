@@ -1,0 +1,18 @@
+module test_nested_defs
+
+Outer :: struct {
+	some_value : i64 = 25
+
+	Inner :: struct {
+		other_value : i64 = 35
+
+		Innermost :: struct {
+			deep_value : i64 = 47
+		}
+	}
+}
+
+test_nested_defs :: fun () {
+	nested : Outer
+	print(nested.Inner.Innermost.deep_value)
+}

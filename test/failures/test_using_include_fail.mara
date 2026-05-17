@@ -1,0 +1,8 @@
+module test_using_include_fail
+
+// `using` before `include` is now a parse error. User-visible
+// using-use was dropped: file-level privacy makes flat-rebinding
+// of module exports unnecessary. Bare `use path` still flattens
+// (parser convenience); `name :: use path` provides qualified
+// access. The explicit `using` keyword form is gone.
+using mathy :: use mara.math

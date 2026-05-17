@@ -1,0 +1,15 @@
+module test_class_no_ctor_args_fail
+
+// Expected to FAIL type checking: Arena_Basic has a required ctor arg `cap`
+// with no default, so declaring a field of that type without supplying
+// arguments is unresolvable ("use defaults" semantics has no defaults to use).
+
+use mara.memory
+
+Host :: struct {
+    buf: Arena_Basic
+}
+
+main :: fun() -> i64 {
+    return 0
+}

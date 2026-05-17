@@ -1,0 +1,34 @@
+module test_multi_return
+
+// Reproduction: multi-return with a struct mixed in.
+// Historical workaround: return just the struct. This tests that (Struct, bool)
+// tuple returns work correctly now.
+
+Info :: struct {
+    size:        u64
+    create_time: i64
+}
+
+// Returns (struct, bool) — the case that used to fail codegen.
+stat :: fun(ok_in: bool) -> (Info, bool) {
+    i : Info
+    i.size = u64(42)
+    i.create_time = 1234
+    return i, ok_in
+}
+
+// Returns (scalar, bool) — known-working baseline.
+scale :: fun(x: i64) -> (i64, bool) {
+    return x * 2, x > 0
+}
+
+test_multi_return :: fun() {
+    info, ok := stat(true)
+    print(i64(info.size))        // expect 42
+    print(i64(info.create_time)) // expect 1234
+    if ok { print(1) }           // expect 1
+
+    doubled, pos := scale(21)
+    print(doubled)               // expect 42
+    if pos { print(1) }          // expect 1
+}

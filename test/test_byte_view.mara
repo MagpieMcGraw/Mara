@@ -1,0 +1,78 @@
+module test_byte_view
+
+use mara.memory
+
+// Small payload struct to view a byte buffer as.
+View_Payload :: struct {
+    initialized: bool
+    counter: i64
+    label: u8
+}
+
+// Holder so we can exercise struct-field-init stamping.
+Holder :: struct {
+    payload: ^View_Payload
+}
+
+// Function-arg site: parameter typed as ^T, called with &buf[i].
+take_payload :: fun(p: ^View_Payload) {
+    p.counter = 555
+    print(p.counter)
+}
+
+// Slice path: parameter is ^[]byte (mutable view) so we can take &memory[i].
+view_through_slice :: fun(memory: ^[]byte) {
+    p : ^View_Payload = &memory[0]
+    p.counter = 99
+    print(p.counter)
+
+    // Offset into the slice.
+    q : ^View_Payload = &memory[100]
+    q.counter = 7
+    print(q.counter)
+
+    // Reassignment site: `q = &memory[200]` after declaration.
+    q = &memory[200]
+    q.counter = 17
+    print(q.counter)
+
+    // Function-arg site.
+    take_payload(&memory[150])
+}
+
+// Return site: function returns ^T built from &buf[i].
+return_view :: fun(memory: ^[]byte) -> ^View_Payload {
+    return &memory[50]
+}
+
+test_byte_view :: fun() {
+    // Fixed [N]byte source: capacity is compile-time, ann widens ^byte → ^View_Payload.
+    buf : var Array(byte, 256)
+    p : ^View_Payload = &buf[0]
+    p.counter = 42
+    p.label = u8(7)
+    print(p.counter)
+    print(i64(p.label))
+
+    // Offset into the same buffer, leaving room for the struct.
+    q : ^View_Payload = &buf[100]
+    q.counter = 13
+    print(q.counter)
+
+    // Slice path covers reassignment + function-arg sites. Use a sized slice
+    // (with real cap) rather than coercing the array class — `^[]byte` callees
+    // need an actual slice header to point at.
+    slice_buf : []byte(256)
+    view_through_slice(&slice_buf)
+
+    // Return site: pointer comes back from a function.
+    r := return_view(&slice_buf)
+    r.counter = 31
+    print(r.counter)
+
+    // Struct-field-init site: the literal's `payload = &buf[60]` is stamped
+    // in check_struct_literal_fields.
+    h := Holder { payload = &buf[60] }
+    h.payload.counter = 91
+    print(h.payload.counter)
+}

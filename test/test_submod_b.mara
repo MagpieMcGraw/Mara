@@ -1,0 +1,9 @@
+module test_submod.b
+
+// Sibling submodule "b". Independent of "a" — `use test_submod` collects
+// both, but neither has implicit access to the other. If "b" needed
+// types from "a" it would need its own `use test_submod.a`.
+
+mark :: fun(x: i64) -> i64 {
+    return x * 1000 + 42
+}

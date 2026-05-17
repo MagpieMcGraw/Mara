@@ -1,0 +1,394 @@
+module mara.sdl2
+
+// SDL2 bindings for Mara — surface mirrors code/SDL/sdl.mara (SDL3) where
+// possible, with SDL2-specific API adjustments inline. Major differences:
+//
+//   - SDL_Event is 56 bytes on x64 (SDL3 is 128).
+//   - Event header is `Uint32 type + Uint32 timestamp` (no reserved). Mara
+//     union tag MUST be u32; each variant starts with `timestamp: u32`.
+//   - Window events come through ONE Window=512 variant carrying an `event`
+//     byte that picks the subtype (Shown, Hidden, Resized, ...). SDL3 broke
+//     these out into separate top-level event types.
+//   - SDL_KeyboardEvent has a nested `SDL_Keysym { scancode, sym, mod }` rather
+//     than flat fields. We inline the keysym fields with explicit padding.
+//   - SDL_MouseMotionEvent / SDL_MouseButtonEvent use Sint32 x/y coordinates;
+//     SDL3 uses float.
+//   - SDL_DropEvent is much smaller — just `type, timestamp, file:char*, windowID`.
+//   - SDL_CreateWindow takes (title, x, y, w, h, flags) — six args; SDL3 dropped
+//     x and y (window manager places).
+//   - SDL_GL_DeleteContext (SDL2) vs SDL_GL_DestroyContext (SDL3).
+//   - SDL_PollEvent returns i64 (1 if event available, 0 if not); SDL3 returns
+//     bool. We declare it `i64` so callers compare against 0.
+//   - SDL_RWops replaces SDL_IOStream; SDL2 lacks several SDL3 path APIs
+//     (GetPathInfo, CreateDirectory, RenamePath, CopyFile). Filesystem-using
+//     stdlib modules (os.mara) need SDL3 today.
+
+Init_Flags :: union(tag u32) {
+    Timer          = 1
+    Audio          = 16
+    Video          = 32
+    Joystick       = 512
+    Haptic         = 4096
+    GameController = 8192
+    Events         = 16384
+    Sensor         = 32768
+}
+
+Scancode :: union(tag u32) {
+    Unknown   = 0
+    A         = 4
+    B         = 5
+    C         = 6
+    D         = 7
+    E         = 8
+    F         = 9
+    G         = 10
+    H         = 11
+    I         = 12
+    J         = 13
+    K         = 14
+    L         = 15
+    M         = 16
+    N         = 17
+    O         = 18
+    P         = 19
+    Q         = 20
+    R         = 21
+    S         = 22
+    T         = 23
+    U         = 24
+    V         = 25
+    W         = 26
+    X         = 27
+    Y         = 28
+    Z         = 29
+    Num1      = 30
+    Num2      = 31
+    Num3      = 32
+    Num4      = 33
+    Num5      = 34
+    Num6      = 35
+    Num7      = 36
+    Num8      = 37
+    Num9      = 38
+    Num0      = 39
+    Return    = 40
+    Escape    = 41
+    Backspace = 42
+    Tab       = 43
+    Space     = 44
+    Right     = 79
+    Left      = 80
+    Down      = 81
+    Up        = 82
+}
+
+// SDL_WindowEventID — values for the `event` byte inside the Window variant.
+WindowEventID :: union(tag u8) {
+    None        = 0
+    Shown       = 1
+    Hidden      = 2
+    Exposed     = 3
+    Moved       = 4
+    Resized     = 5
+    SizeChanged = 6
+    Minimized   = 7
+    Maximized   = 8
+    Restored    = 9
+    Enter       = 10
+    Leave       = 11
+    FocusGained = 12
+    FocusLost   = 13
+    Close       = 14
+    TakeFocus   = 15
+    HitTest     = 16
+}
+
+// ---------------------------------------------------------------------------
+// SDL_Event union — 56 bytes total on x64.
+// 4-byte u32 tag covers Uint32 type. Variant payloads start with timestamp:u32
+// (offset 4) — SDL2's event header is `Uint32 type + Uint32 timestamp` with
+// no reserved field.
+// ---------------------------------------------------------------------------
+
+Event :: union(tag u32, size 56) {
+    Quit = 256 {
+        timestamp: u32
+    }
+    Window = 512 {
+        timestamp: u32
+        windowID:  u32
+        event:     u8     // WindowEventID
+        padding1:  u8
+        padding2:  u8
+        padding3:  u8
+        data1:     i32
+        data2:     i32
+    }
+    KeyDown = 768 {
+        timestamp: u32
+        windowID:  u32
+        state:     u8     // SDL_PRESSED / SDL_RELEASED (always Pressed for KeyDown)
+        repeat:    u8     // non-zero if this is an OS key-repeat
+        padding2:  u8
+        padding3:  u8
+        // Inlined SDL_Keysym (16 bytes): scancode, sym, mod, unused
+        scancode:  Scancode
+        sym:       u32
+        mod:       u16
+        keysym_padding: u16  // C alignment between Uint16 mod and Uint32 unused
+        unused:    u32
+    }
+    KeyUp = 769 {
+        timestamp: u32
+        windowID:  u32
+        state:     u8
+        repeat:    u8
+        padding2:  u8
+        padding3:  u8
+        scancode:  Scancode
+        sym:       u32
+        mod:       u16
+        keysym_padding: u16
+        unused:    u32
+    }
+    MouseMotion = 1024 {
+        timestamp: u32
+        windowID:  u32
+        which:     u32
+        state:     u32
+        x:         i32
+        y:         i32
+        xrel:      i32
+        yrel:      i32
+    }
+    MouseButtonDown = 1025 {
+        timestamp: u32
+        windowID:  u32
+        which:     u32
+        button:    u8
+        state:     u8
+        clicks:    u8
+        padding1:  u8
+        x:         i32
+        y:         i32
+    }
+    MouseButtonUp = 1026 {
+        timestamp: u32
+        windowID:  u32
+        which:     u32
+        button:    u8
+        state:     u8
+        clicks:    u8
+        padding1:  u8
+        x:         i32
+        y:         i32
+    }
+    MouseWheel = 1027 {
+        timestamp: u32
+        windowID:  u32
+        which:     u32
+        x:         i32     // amount scrolled horizontally
+        y:         i32     // amount scrolled vertically
+        direction: u32
+        preciseX:  f32
+        preciseY:  f32
+        mouseX:    i32     // SDL >= 2.26
+        mouseY:    i32
+    }
+    DropFile = 4096 {
+        timestamp: u32
+        file:      ^byte   // SDL allocates with SDL_malloc; user must SDL_free
+        windowID:  u32
+    }
+    DropText = 4097 {
+        timestamp: u32
+        file:      ^byte
+        windowID:  u32
+    }
+    DropBegin = 4098 {
+        timestamp: u32
+        file:      ^byte
+        windowID:  u32
+    }
+    DropComplete = 4099 {
+        timestamp: u32
+        file:      ^byte
+        windowID:  u32
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SDL_Rect — used for render operations. SDL2 ints, SDL3 has SDL_FRect floats.
+// ---------------------------------------------------------------------------
+
+SDL_Rect :: struct {
+    x: i32
+    y: i32
+    w: i32
+    h: i32
+}
+
+// ---------------------------------------------------------------------------
+// Window flags
+// ---------------------------------------------------------------------------
+
+WindowFlags :: union(tag u32) {
+    Fullscreen        = 1
+    OpenGL            = 2
+    // Shown=4 omitted — SDL_WINDOW_SHOWN is informational only per SDL2 docs;
+    // windows are shown by default unless Hidden is set. Removing it avoids
+    // ambiguity with WindowEventID.Shown which is what users actually need
+    // (the event-byte subtype inside the Window event variant).
+    Hidden            = 8
+    Borderless        = 16
+    Resizable         = 32
+    Minimized         = 64
+    Maximized         = 128
+    InputGrabbed      = 256
+    InputFocus        = 512
+    MouseFocus        = 1024
+    FullscreenDesktop = 4097
+    Foreign           = 2048
+    AllowHighDpi      = 8192
+    MouseCapture      = 16384
+    AlwaysOnTop       = 32768
+    SkipTaskbar       = 65536
+    Utility           = 131072
+    Tooltip           = 262144
+    PopupMenu         = 524288
+    Vulkan            = 268435456
+    Metal             = 2097152
+}
+
+// SDL_WINDOWPOS_CENTERED / _UNDEFINED magic values.
+WindowPos :: union(tag i32) {
+    Centered  = 805240832  // 0x2FFF0000
+    Undefined = 536805376  // 0x1FFF0000
+}
+
+// SDL GL attributes
+GLattr :: union(tag i32) {
+    RedSize             = 0
+    GreenSize           = 1
+    BlueSize            = 2
+    AlphaSize           = 3
+    BufferSize          = 4
+    DoubleBuffer        = 5
+    DepthSize           = 6
+    StencilSize         = 7
+    AccumRedSize        = 8
+    AccumGreenSize      = 9
+    AccumBlueSize       = 10
+    AccumAlphaSize      = 11
+    Stereo              = 12
+    MultisampleBuffers  = 13
+    MultisampleSamples  = 14
+    AcceleratedVisual   = 15
+    RetainedBacking     = 16
+    ContextMajorVersion = 17
+    ContextMinorVersion = 18
+    ContextEgl          = 19
+    ContextFlags        = 20
+    ContextProfileMask  = 21
+    ShareWithCurrent    = 22
+    FramebufferSRGBCapable = 23
+    ContextReleaseBehavior = 24
+    ContextResetNotification = 25
+    ContextNoError      = 26
+    Floatbuffers        = 27
+}
+
+GLprofile :: union(tag i32) {
+    Core          = 1
+    Compatibility = 2
+    ES            = 4
+}
+
+// SDL_RendererFlags — for SDL_CreateRenderer's third arg.
+RendererFlags :: union(tag u32) {
+    Software      = 1
+    Accelerated   = 2
+    PresentVsync  = 4
+    TargetTexture = 8
+}
+
+// ---------------------------------------------------------------------------
+// Opaque handle types
+// ---------------------------------------------------------------------------
+Window    :: distinct ^byte
+Renderer  :: distinct ^byte
+GLContext :: distinct ^byte
+RWops     :: distinct ^byte
+Texture   :: distinct ^byte
+
+// ---------------------------------------------------------------------------
+// Foreign declarations
+// ---------------------------------------------------------------------------
+
+// MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
+foreign static_lib "SDL2" prefix SDL_ {
+    fun Init(flags: Init_Flags) -> i32
+    fun Quit()
+    fun SetHint(name: cstring, value: cstring) -> i32  // SDL_bool, i32-sized
+    fun GetError() -> cstring
+    fun GetRevision() -> cstring
+
+    // Windowing — note SDL2's CreateWindow has six args (x, y included).
+    fun CreateWindow(title: cstring, x: WindowPos, y: WindowPos, w: i32, h: i32, flags: WindowFlags) -> Window
+    fun DestroyWindow(window: Window)
+
+    // Events
+    fun PollEvent(event: ^Event) -> i32  // 1 if event present, 0 otherwise
+    fun PumpEvents()
+    fun WaitEvent(event: ^Event) -> i32
+
+    // Timing
+    fun Delay(ms: u32)
+    fun GetTicks() -> u32               // Uint32 milliseconds (rolls over after ~49 days)
+    fun GetTicks64() -> u64              // SDL >= 2.0.18 — preferred over GetTicks
+    fun GetPerformanceCounter() -> u64
+    fun GetPerformanceFrequency() -> u64
+
+    // OpenGL
+    fun GL_SetAttribute(attr: GLattr, value: i32) -> i32   // value heterogeneous (GLprofile, version i64, …) — pass via i32
+    fun GL_GetAttribute(attr: GLattr, value: ^i32) -> i32
+    fun GL_CreateContext(window: Window) -> GLContext
+    fun GL_MakeCurrent(window: Window, context: GLContext) -> i32
+    fun GL_DeleteContext(context: GLContext)              // SDL2 spelling (SDL3 renamed to DestroyContext)
+    fun GL_SetSwapInterval(interval: i32) -> i32
+    fun GL_GetSwapInterval() -> i32
+    fun GL_SwapWindow(window: Window)
+    fun GL_GetProcAddress(name: cstring) -> ^byte
+
+    // Renderer (SDL2's 2D renderer — index=-1 to auto-pick driver)
+    fun CreateRenderer(window: Window, index: i32, flags: RendererFlags) -> Renderer
+    fun DestroyRenderer(renderer: Renderer)
+    fun SetRenderDrawColor(renderer: Renderer, r: u8, g: u8, b: u8, a: u8) -> i32
+    fun RenderClear(renderer: Renderer) -> i32
+    fun RenderFillRect(renderer: Renderer, rect: ^SDL_Rect) -> i32
+    fun RenderDrawRect(renderer: Renderer, rect: ^SDL_Rect) -> i32
+    fun RenderDrawLine(renderer: Renderer, x1: i32, y1: i32, x2: i32, y2: i32) -> i32
+    fun RenderDrawPoint(renderer: Renderer, x: i32, y: i32) -> i32
+    fun RenderPresent(renderer: Renderer)
+
+    // Filesystem — RWops (SDL2's IO stream type)
+    fun RWFromFile(file: cstring, mode: cstring) -> RWops
+    fun RWclose(context: RWops) -> i32
+    fun RWread(context: RWops, ptr: ^byte, size: usize, count: usize) -> usize
+    fun RWwrite(context: RWops, ptr: ^byte, size: usize, count: usize) -> usize
+    fun RWseek(context: RWops, offset: i64, whence: i32) -> i64
+    fun RWtell(context: RWops) -> i64
+    fun RWsize(context: RWops) -> i64
+    fun LoadFile(file: cstring, datasize: ^usize) -> ^byte
+
+    // Filesystem — paths
+    fun GetBasePath() -> cstring
+    fun GetPrefPath(org: cstring, app: cstring) -> cstring
+
+    // Memory (SDL allocator — needed when freeing SDL-allocated strings like DropFile.file).
+    // malloc is also useful as the platform-agnostic allocator when targeting web,
+    // since LoadLibrary/VirtualAlloc don't exist there but SDL2's allocator does.
+    fun malloc(size: i32) -> ^byte
+    fun free(mem: ^byte)
+}

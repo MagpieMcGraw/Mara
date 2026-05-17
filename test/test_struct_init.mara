@@ -1,0 +1,54 @@
+module test_struct_init
+
+Point :: struct {
+	x: i64
+	y: i64
+	z: i64 = 42
+}
+
+test_struct_init :: fun() {
+	// Bare declaration — should call init
+	a : Point
+	print(a.x)
+	print(a.y)
+	print(a.z)
+
+	// Constructor call with no args — should also call init
+	b : Point = Point()
+	print(b.x)
+	print(b.y)
+	print(b.z)
+
+	// Override on bare constructor — z stays 42 (from init), x and y overridden
+	c : Point = Point() { x = 7, y = 8 }
+	print(c.x)
+	print(c.y)
+	print(c.z)
+
+	// Override overrides a defaulted field — z becomes 100
+	d : Point = Point() { z = 100 }
+	print(d.x)
+	print(d.y)
+	print(d.z)
+
+	// Implicit form — `{...}` alone is shorthand for `Point() {...}`.
+	// Should behave identically to the explicit form: z stays 42, x=5.
+	e : Point = { x = 5 }
+	print(e.x)
+	print(e.y)
+	print(e.z)
+
+	// Type inference — `:=` with a constructor call. Type of `f` should be
+	// inferred as Point. Init runs, so z=42.
+	f := Point()
+	print(f.x)
+	print(f.y)
+	print(f.z)
+
+	// Inference with override — type inferred from callee, init runs, then
+	// overrides apply. x=9, z=42.
+	g := Point() { x = 9 }
+	print(g.x)
+	print(g.y)
+	print(g.z)
+}

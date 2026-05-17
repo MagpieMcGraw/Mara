@@ -1,0 +1,28 @@
+# Build artifacts
+*.exe
+*.pdb
+*.obj
+*.o
+*.ll
+# Bundled toolchain — vendored, not build output
+!tools/*.exe
+# emcc web build output
+*.html
+*.js
+*.wasm
+
+# Per-user Claude settings
+**/settings.local.json
+
+# Claude runtime state (worktrees, plans, etc.)
+.claude/
+
+# Sublime workspace — churns on every open; project file stays tracked
+Mara.sublime-workspace
+
+# Personal scratch
+Pounce/Warlock.odin
+
+# Backup of the pre-publish history. Kept on disk locally for reference;
+# never goes upstream.
+.git.backup-history/

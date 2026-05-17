@@ -1,0 +1,21 @@
+module test_field_leak_fail
+
+// Should fail: `base` is a field of Arena-like, bare access from a method body
+// must not resolve to the field. User must write `a.base`.
+
+Thing :: class {
+	cap: i64 = 16
+	count: i64 = 0
+
+	// Bare field access from a method body must error — no class-field leak.
+	read :: fun(a: ^Self) -> i64 {
+		return cap
+	}
+
+	write :: fun(a: ^Self, v: i64) {
+		count = v
+	}
+}
+
+test_field_leak_fail :: fun() {
+}

@@ -1,0 +1,27 @@
+module mara.string
+
+use mara.os
+
+// String :: struct(n: i64 = 256) {
+// 	cap: i64 = n
+// 	len: i64 = 0
+// 	using bytes: [n, 0]utf8
+// }
+
+String :: type([, 0]utf8(128))
+
+overload + add
+add :: dispatch {
+	add_string
+	add_cstring
+}
+
+// Append all elements from a slice in place.
+add_string :: fun(dst: ^String, src: String) {
+	dst[dst.len:] = src
+	dst.len += src.len
+}
+
+add_cstring :: fun(dst: ^String, src: ^byte) {
+	dst + os.read_cstring(dst.cap, src)
+}

@@ -1,0 +1,154 @@
+module Pounce
+
+use mara.os
+use mara.memory
+use mara.math
+use mara.string
+use mara.time
+use mara.open_gl
+use mara.sdl
+
+use gfx
+use event
+use object
+use camera
+use perf
+use asset
+use test_draw
+
+COLOR_RED 		:: Vec3{0.9, 0.2, 0.2}
+COLOR_ORANGE  	:: Vec3{0.95, 0.5, 0.1}
+COLOR_YELLOW  	:: Vec3{0.95, 0.85, 0.1}
+COLOR_GREEN   	:: Vec3{0.2, 0.75, 0.2}
+COLOR_TEAL    	:: Vec3{0.1, 0.7, 0.7}
+COLOR_BLUE    	:: Vec3{0.2, 0.4, 0.9}
+COLOR_PURPLE  	:: Vec3{0.6, 0.2, 0.8}
+COLOR_MAGENTA 	:: [3]f32{0.9, 0.2, 0.6}
+
+
+
+Player :: struct {
+	x, y: i64
+	size  := 50
+	color := COLOR_RED
+}
+
+Timers :: struct {
+	work  : time.Timer
+	frame : time.Timer
+	fixed : time.Fixed_Timer
+}
+
+// Megastruct - this is the actual game data
+Megastruct :: struct {
+	initialized: bool
+	running: bool
+
+	// Platform handles
+	window: sdl.Window
+	gl_context: sdl.GLContext
+
+	timers: Timers
+
+	fps := 60.9
+	frame_counter := 0
+
+	// Input
+	using events: Event_State,
+
+	//camera: Camera,
+	mouse_look: bool,
+
+	// Rendering
+	quad:   Quad_Renderer
+	player: Player
+	
+	VAO: VAO_State = ---
+}
+
+game_init :: fun(game: ^Megastruct) {
+	game^ = Megastruct{}
+
+	init_err := sdl.Init(Video)
+
+	GL_SetAttribute(ContextProfileMask, .Core)
+	GL_SetAttribute(ContextMajorVersion, 4)
+	GL_SetAttribute(ContextMinorVersion, 5)
+
+	game.window = CreateWindow("Pounce!", 960, 540,
+		OpenGL | Resizable)
+
+	game.gl_context = GL_CreateContext(game.window)
+	GL_MakeCurrent(game.window, game.gl_context)
+	gl_load(GL_GetProcAddress)
+
+	quad_init(&game.quad)
+	game.player.x = 455
+	game.player.y = 270
+
+	// testing the gfx
+	game.VAO = VAO_State()
+	gfx.primitives_init(&game.VAO)
+
+	game.running = true
+	game.initialized = true
+}
+
+game_events :: fun() {
+	// so far we do nothing
+}
+
+game_update :: fun(dt: f64) {
+	// so far we do nothing
+}
+
+game_draw :: fun(game: ^Megastruct) {
+	ClearColor(0.85, 0.80, 0.70, 1.0)
+	Clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
+	p := &game.player
+	draw_quad(&game.quad, 960.0, 540.0,
+		f32(p.x), f32(p.y), f32(p.size), f32(p.size), p.color)
+	GL_SwapWindow(game.window)
+}
+
+game_run :: fun(memory: ^[]byte) -> bool {
+	game := take(Megastruct, &memory[0])
+	if not game.initialized do game_init(&game)
+
+	timer := &game.timers
+	timer.work.counter = time_now()
+
+	big_array : [50 * MB]byte
+
+	quit_msg : String
+	&quit_msg + "Escaping..."
+
+	process(&game.events)
+	match game.events {
+		quit 					do game.running = false
+		dropfile.was_dropped
+			print("dropepd file: ", dropfile.name)
+		keyboard.pressed[W] 	do game.player.y -= 50
+		keyboard.pressed[A] 	do game.player.x -= 50
+		keyboard.pressed[S]		do game.player.y += 50
+		keyboard.pressed[D] 	do game.player.x += 50
+		keyboard.pressed[P]		do print("Printing!")
+		keyboard.pressed[Escape]
+			print(quit_msg)
+			game.running = false
+	}
+
+	tally_up(&timer.frame, &timer.fixed)
+	for one_step(&timer.fixed) do game_update(timer.fixed.step)
+	sleep(timer.work, game.fps)
+
+	game_draw(&game)
+
+	if not game.running do game_end(game)
+	return game.running
+}
+
+game_end :: fun(game: Megastruct) {
+	sdl.DestroyWindow(game.window)
+	sdl.Quit()
+}

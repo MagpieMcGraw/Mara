@@ -1,0 +1,12 @@
+module leak_test
+
+// File A in module `leak_test`. Brings in `mara.memory` privately.
+// `Arena_Basic` should be visible to this file ONLY — file B (also
+// in module `leak_test`) must not see it through some sibling-use leak.
+use mara.memory
+
+a_helper :: fun() {
+    print("a_helper from leak_test_a")
+    a : Arena_Basic = Arena_Basic(1024)
+    print("arena allocated")
+}
