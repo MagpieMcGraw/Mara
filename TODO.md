@@ -10,8 +10,6 @@ Arbitrary-precision compile-time numeric literals. Mara now stores number litera
 
 Dynamic arena: if we allocate past the cap, commit more virtual memory. If we free to below the cap, decommit up to the cap. Allow users to manually commit more, some may want to comntrol the timing of the commit. Also allow modifying the cap at runtime?
 
-Generic functions: if a function doesn't care about the type of what it's operating on, it could be generic without relying on comptime monomorphization. This would especially apply to arrays, which just work on memory offsets, and don't care about the specifics of the objects stored in the arrays. Type checking should still check that such a function takes arguments of compatible types.
-
 Modules are not structs. See register_and_check_declarations vs register scope defs for examples.
 Unify declaration parsing across params, struct fields, and statement-level decls. Today `parse_typed_param_group` lives in its own function and has historically diverged from the multi-decl machinery used by `try_parse_assign` — multi-name groups with shared defaults, the `:=` inferred-type form, and similar features had to be added to params separately. The clean refactor: extract a single `parse_decl_list` that returns `[]Scope_Binding` (name, type_expr, default_value, modifiers) and have params, struct field extraction, and statement-level declarations all consume it. Each context whitelists modifiers (`var` for params, `let` for locals, `using` for fields). This is pure refactor — no syntax changes — and would close the divergence permanently so future multi-assign features land everywhere at once.
 

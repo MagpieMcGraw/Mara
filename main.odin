@@ -501,7 +501,7 @@ main :: proc() {
     out_ext := ".html" if args.web else NATIVE_EXE_EXT
     out_name := strings.concatenate({args.pkg_name, out_ext})
 
-    perf_timer_mark(&perf, "link")
+    perf_timer_mark(&perf, "clang")
     if args.web {
         if !link_web(ll_path, out_name, checked) { return }
     } else {

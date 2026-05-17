@@ -4,27 +4,6 @@ use mara.math
 
 // Orientation: Z forward, X right, Y up
 
-// Quad facing +Z (forward), 1x1 centered at origin
-primitive_quad :: fun(storage: ^[]byte) -> Mesh_Data {
-    verts := take([4]Vertex, storage)
-    inds := take([6]u32, storage)
-
-    verts[0] = Vertex{position = [-0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
-    verts[1] = Vertex{position = [ 0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 0.0]}
-    verts[2] = Vertex{position = [ 0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 1.0]}
-    verts[3] = Vertex{position = [-0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 1.0]}
-
-    // Two triangles, CCW winding
-    inds[0] = 0
-    inds[1] = 1
-    inds[2] = 2
-    inds[3] = 0
-    inds[4] = 2
-    inds[5] = 3
-
-    mesh := Mesh_Data{verts, inds}
-    return mesh
-}
 
 // Cube 1x1x1 centered at origin
 primitive_cube :: fun(storage: ^[]byte) -> Mesh_Data {
@@ -138,6 +117,30 @@ primitive_sphere :: fun(subdivisions: i64, storage: ^[]byte) -> Mesh_Data {
     return Mesh_Data{verts, inds}
 }
 
+// Quad facing +Z (forward), 1x1 centered at origin
+
+
+primitive_quad :: fun(storage: ^[]byte) -> Mesh_Data {
+    verts := take([4]Vertex, storage)
+    inds := take([6]u32, storage)
+
+    verts[0] = Vertex{position = [-0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
+    verts[1] = Vertex{position = [ 0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 0.0]}
+    verts[2] = Vertex{position = [ 0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 1.0]}
+    verts[3] = Vertex{position = [-0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 1.0]}
+
+    // Two triangles, CCW winding
+    inds[0] = 0
+    inds[1] = 1
+    inds[2] = 2
+    inds[3] = 0
+    inds[4] = 2
+    inds[5] = 3
+
+    mesh := Mesh_Data{verts, inds}
+    return mesh
+}
+
 primitives_init :: fun(vao: ^VAO_State) {
     storage: []byte(1<<24)
     quad := primitive_quad(&storage)
@@ -146,9 +149,4 @@ primitives_init :: fun(vao: ^VAO_State) {
     vao_add_mesh(vao, &quad)
     vao_add_mesh(vao, &cube)
     vao_add_mesh(vao, &sphere)
-
-    // meshes : []Mesh_Data(12)
-    // &meshes + primitive_quad2()
-    // &meshes + primitive_quad3()
-    // vao_add_mesh(vao, &meshes[0])
 }
