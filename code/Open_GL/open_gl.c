@@ -1,5 +1,19 @@
-#include <stddef.h>
-#include <stdio.h>
+// No system headers needed — this file declares everything it uses (GL types,
+// printf forward-decl, NULL). That way Mara's auto-compile path can produce
+// the static lib on a fresh clone without depending on glibc-devel / MSVC SDK
+// headers being installed. The printf symbol still resolves at link time from
+// libc.so.6 (Linux) / ucrt.dll (Windows), both of which are part of the OS.
+//
+// User-authored .c files in foreign blocks can use whatever headers they like
+// — clang's normal search path is unchanged. This restriction applies only to
+// the bundled bindings shipped with Mara.
+
+// ---------------------------------------------------------------------------
+// Stand-ins for the two libc pieces we'd otherwise pull from headers
+// ---------------------------------------------------------------------------
+
+extern int printf(const char *fmt, ...);
+#define NULL ((void*)0)
 
 // ---------------------------------------------------------------------------
 // GL types — inline-typedef'd rather than pulled from <GL/gl.h>, which on
@@ -19,8 +33,11 @@ typedef int           GLint;
 typedef float         GLfloat;
 typedef unsigned char GLboolean;
 typedef char          GLchar;
-typedef ptrdiff_t     GLsizeiptr;
-typedef ptrdiff_t     GLintptr;
+// GLsizeiptr / GLintptr are pointer-sized signed integers (8 bytes on every
+// 64-bit target Mara cares about). `long long` is 64 bits everywhere; using
+// it directly avoids needing <stddef.h> for ptrdiff_t.
+typedef long long     GLsizeiptr;
+typedef long long     GLintptr;
 
 // Function pointer types
 typedef GLuint (*PFN_glCreateShader)(GLenum type);
