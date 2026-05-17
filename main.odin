@@ -211,6 +211,25 @@ emscripten_port_flag :: proc(lib: string) -> (flag: string, ok: bool) {
     }
 }
 
+// Translate well-known cross-platform system-library names whose system
+// linker convention differs by OS. Foreign blocks can use the Windows name
+// (the historical first target) and Mara silently emits the equivalent
+// `-l<name>` on Linux/macOS. Keep entries narrow — only true cross-platform
+// libs that have a stable counterpart, not "Windows-specific symbol that
+// happens to exist on Linux too."
+translate_system_lib :: proc(name: string) -> string {
+    when ODIN_OS == .Linux {
+        switch name {
+        case "opengl32": return "GL"  // Windows opengl32.lib -> Linux libGL.so
+        }
+    } else when ODIN_OS == .Darwin {
+        switch name {
+        case "opengl32": return "GL"  // macOS also exposes libGL (Frameworks would be better)
+        }
+    }
+    return name
+}
+
 build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_Flags {
     lib_flags_b:    strings.Builder
     extra_inputs_b: strings.Builder
@@ -313,8 +332,10 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
                 strings.write_string(src_b, bundled)
             } else {
                 // Bare name with no bundled match — let the linker find it in
-                // system paths via `-l<name>` (e.g. SDL3, kernel32).
-                append(native_libs, lib)
+                // system paths via `-l<name>` (e.g. SDL3, kernel32). Translate
+                // well-known cross-platform libs whose name differs per OS
+                // (e.g. Windows "opengl32" -> Linux "GL").
+                append(native_libs, translate_system_lib(lib))
             }
         }
     }
