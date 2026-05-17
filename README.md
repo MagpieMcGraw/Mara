@@ -49,10 +49,12 @@ Mara invokes system `clang` and `ld.lld` via PATH. The `tools/*.exe` in this
 repo are Windows-only and harmlessly ignored on Linux. No precompiled libs
 or extra build steps needed — Mara resolves foreign blocks like
 `foreign static_lib "open_gl"` by looking for a precompiled `.lib` (Windows)
-or `.a` (Linux/macOS) under `code/<binding>/`, then falling back to compiling
-the matching `.c` source on the fly via clang. For Linux this means the
-`.c` falls through and clang compiles it as part of the build — slightly
-slower than a precompiled lib but zero per-platform setup.
+or `.a` (Linux/macOS) under `code/<binding>/`. If neither exists but a
+matching `.c` source is there, Mara compiles it into a static lib alongside
+on the first build — subsequent builds find the cached artifact and skip
+the compile step. On Linux this means the first build of a project that
+uses `open_gl` produces `code/Open_GL/open_gl.a` automatically; later builds
+reuse it.
 
 ## Using Mara
 

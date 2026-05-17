@@ -211,6 +211,57 @@ emscripten_port_flag :: proc(lib: string) -> (flag: string, ok: bool) {
     }
 }
 
+// Compile a C source into a precompiled static lib next to it. Used by the
+// foreign-block resolver: a foreign `static_lib "foo"` block with no
+// existing `foo.lib` / `foo.a` but with a `foo.c` sibling triggers this to
+// produce the missing static lib once, after which subsequent builds use
+// the cached output directly.
+//
+// Returns true on success. Prints a diagnostic and returns false on failure;
+// the caller decides whether to abort or fall through.
+//
+// Two steps regardless of OS:
+//   1. clang -c <c_path> -o <c_path>.o
+//   2. Wrap the object into a static lib:
+//        Windows: lld-link /lib /out:<lib_path> <obj_path>   (bundled lld-link)
+//        POSIX:   ar rcs <lib_path> <obj_path>               (system binutils)
+// The intermediate .o is deleted after the archive succeeds.
+compile_c_to_static_lib :: proc(c_path, lib_path, compiler_dir: string) -> bool {
+    obj_path := strings.concatenate({c_path[:len(c_path)-2], ".o"})
+
+    // ---- Step 1: compile .c to .o
+    compile_cmd: string
+    when ODIN_OS == .Windows {
+        clang_path, _ := filepath.join({compiler_dir, "tools", CLANG_BIN})
+        inner_c := strings.concatenate({`"`, clang_path, `" -c "`, c_path, `" -o "`, obj_path, `"`})
+        compile_cmd = strings.concatenate({`"`, inner_c, `"`})
+    } else {
+        compile_cmd = strings.concatenate({CLANG_BIN, ` -c "`, c_path, `" -o "`, obj_path, `"`})
+    }
+    if libc.system(strings.clone_to_cstring(compile_cmd)) != 0 {
+        fmt.printf("Error: clang failed to compile '%s'\n", c_path)
+        return false
+    }
+
+    // ---- Step 2: wrap .o into static lib
+    archive_cmd: string
+    when ODIN_OS == .Windows {
+        lld_path, _ := filepath.join({compiler_dir, "tools", "lld-link.exe"})
+        inner_a := strings.concatenate({`"`, lld_path, `" /lib /out:"`, lib_path, `" "`, obj_path, `"`})
+        archive_cmd = strings.concatenate({`"`, inner_a, `"`})
+    } else {
+        archive_cmd = strings.concatenate({`ar rcs "`, lib_path, `" "`, obj_path, `"`})
+    }
+    if libc.system(strings.clone_to_cstring(archive_cmd)) != 0 {
+        fmt.printf("Error: archive creation failed for '%s'\n", lib_path)
+        return false
+    }
+
+    // Best-effort cleanup of the intermediate object; harmless if it fails.
+    os.remove(obj_path)
+    return true
+}
+
 // Translate well-known cross-platform system-library names whose system
 // linker convention differs by OS. Foreign blocks can use the Windows name
 // (the historical first target) and Mara silently emits the equivalent
@@ -256,40 +307,51 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     }
 
     // Look for a bundled lib backing for a bare-name foreign reference under
-    // code/*. Two file forms are accepted, in priority order:
+    // code/*. Returns the path to a static lib usable as a linker input, or
+    // ("", false) if no match exists (caller falls back to `-l<name>`).
     //
-    //   1. <name><STATIC_LIB_EXT>   — precompiled static lib (open_gl.lib /
-    //                                  open_gl.a). Fastest at build time;
-    //                                  caller-maintained.
-    //   2. <name>.c                 — C source. Clang compiles + links it as
-    //                                  part of the same invocation that
-    //                                  produces the exe. No precompile step
-    //                                  needed; great for cross-platform repos
-    //                                  that don't want to ship per-OS binaries.
-    //
-    // Returns ("", false) if neither form is present, in which case the caller
-    // falls back to `-l<name>` so the linker can find a system library.
+    // Resolution per directory: if `<name><STATIC_LIB_EXT>` already exists,
+    // use it. Otherwise, if `<name>.c` exists, compile it into a static lib
+    // alongside (one-time cost; subsequent builds find the cached lib on the
+    // first branch). The `.c` -> `.lib`/`.a` compile uses bundled clang on
+    // Windows and system clang on Linux.
     try_resolve_bundled_lib :: proc(name: string, compiler_dir: string) -> (string, bool) {
-        candidates := [2]string{
-            strings.concatenate({name, STATIC_LIB_EXT}),
-            strings.concatenate({name, ".c"}),
-        }
+        lib_name := strings.concatenate({name, STATIC_LIB_EXT})
+        c_name   := strings.concatenate({name, ".c"})
         code_base, _ := filepath.join({compiler_dir, "code"})
 
-        // Check loose code/ first, then each subfolder, for each candidate
-        // shape. Static lib wins over .c if both exist (use the precompiled
-        // one — faster).
-        for filename in candidates {
-            loose_path, _ := filepath.join({code_base, filename})
-            if os.exists(loose_path) { return loose_path, true }
-            ldh, lerr := os.open(code_base)
-            if lerr != nil { continue }
-            entries, _ := os.read_dir(ldh, -1, context.allocator)
-            os.close(ldh)
-            for entry in entries {
-                if entry.type != .Directory { continue }
-                sub_path, _ := filepath.join({code_base, entry.name, filename})
-                if os.exists(sub_path) { return sub_path, true }
+        // Per-directory check: returns the static-lib path if a `.lib`/`.a`
+        // is present, OR if a `.c` exists that can be compiled into one.
+        check :: proc(dir: string, lib_name, c_name, compiler_dir: string) -> (string, bool) {
+            lib_path, _ := filepath.join({dir, lib_name})
+            if os.exists(lib_path) { return lib_path, true }
+            c_path, _ := filepath.join({dir, c_name})
+            if os.exists(c_path) {
+                if compile_c_to_static_lib(c_path, lib_path, compiler_dir) {
+                    return lib_path, true
+                }
+                // Compile failed — abort. Falling through to `-l<name>` would
+                // hide the real error behind a confusing linker complaint.
+                fmt.printf("Error: failed to build static lib from '%s'\n", c_path)
+                os.exit(1)
+            }
+            return "", false
+        }
+
+        // Check code/ root first
+        if path, ok := check(code_base, lib_name, c_name, compiler_dir); ok {
+            return path, true
+        }
+        // Then each subfolder (one level deep)
+        ldh, lerr := os.open(code_base)
+        if lerr != nil { return "", false }
+        defer os.close(ldh)
+        entries, _ := os.read_dir(ldh, -1, context.allocator)
+        for entry in entries {
+            if entry.type != .Directory { continue }
+            sub, _ := filepath.join({code_base, entry.name})
+            if path, ok := check(sub, lib_name, c_name, compiler_dir); ok {
+                return path, true
             }
         }
         return "", false
