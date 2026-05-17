@@ -355,21 +355,29 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     }
 }
 
-// Native link step: invoke bundled clang as the driver. Clang handles all
-// the platform-specific glue (MSVC + Windows SDK lookup on Windows, libc /
+// Native link step: invoke clang as the driver. Clang handles all the
+// platform-specific glue (MSVC + Windows SDK lookup on Windows, libc /
 // crt files on Linux), so this command shape is nearly identical across
 // targets — only the executable name and output extension differ per OS.
 //
-// -fuse-ld=lld points clang at our bundled lld-link.exe instead of letting
-// it search for MSVC's link.exe; -Wno-override-module silences the warning
-// our IR module's target triple triggers.
+// On Windows we use the bundled tools/clang.exe so users don't need to
+// install LLVM separately. On Linux we use system clang via PATH (i.e.,
+// `dnf install clang`) — bundling a Linux LLVM toolchain isn't a goal yet.
+//
+// -fuse-ld=lld points clang at lld-link.exe (bundled on Windows; lld via
+// PATH on Linux). -Wno-override-module silences the warning our IR
+// module's target triple triggers.
 link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compiler_dir: string) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
     b: strings.Builder
-    clang_path, _ := filepath.join({compiler_dir, "tools", CLANG_BIN})
-    strings.write_byte(&b, '"'); strings.write_string(&b, clang_path); strings.write_byte(&b, '"')
+    when ODIN_OS == .Windows {
+        clang_path, _ := filepath.join({compiler_dir, "tools", CLANG_BIN})
+        strings.write_byte(&b, '"'); strings.write_string(&b, clang_path); strings.write_byte(&b, '"')
+    } else {
+        strings.write_string(&b, CLANG_BIN)  // bare `clang`; resolved via PATH
+    }
     strings.write_string(&b, " ")
     strings.write_string(&b, ll_path)
     strings.write_string(&b, lf.extra_inputs)
