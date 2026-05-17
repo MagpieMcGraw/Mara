@@ -393,6 +393,73 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 
 	// ---------------------------------------------------------------------------
+	// mmap flags (Linux x86_64)
+	// ---------------------------------------------------------------------------
+
+	// prot — memory protection bits, combinable via OR.
+	PROT_NONE  :: 0x0      // no access; touching the page traps
+	PROT_READ  :: 0x1
+	PROT_WRITE :: 0x2
+
+	// flags — exactly one of MAP_PRIVATE / MAP_SHARED, plus optional bits.
+	// MAP_ANONYMOUS is Linux-specific (0x20); macOS uses 0x1000.
+	MAP_PRIVATE   :: 0x02
+	MAP_ANONYMOUS :: 0x20
+
+	// ---------------------------------------------------------------------------
+	// Virtual memory
+	// ---------------------------------------------------------------------------
+
+	// Reserve a virtual address range with no access. Touching the bytes traps;
+	// commit them first with vm_commit. Equivalent to Windows VirtualAlloc with
+	// MEM_RESERVE + PAGE_NOACCESS.
+	vm_reserve :: fun(size: i64) -> ^byte {
+		// mmap returns MAP_FAILED = (void*)-1 on failure, not nil — so the
+		// caller's nil-check doesn't catch a failed reserve. In practice this
+		// only fires on real OOM, and the subsequent vm_commit's mprotect call
+		// would fail anyway, reporting failure cleanly through that path.
+		return mmap(nil, usize(size), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+	}
+
+	// Commit physical pages for [base, base+size). The range must lie inside
+	// something previously returned by vm_reserve. Returns 1 on success, 0 on
+	// failure (typically out-of-memory or bad alignment).
+	vm_commit :: fun(base: ^byte, size: i64) -> i64 {
+		if mprotect(base, usize(size), PROT_READ | PROT_WRITE) != 0 do return 0
+		return 1
+	}
+
+	// No-op for now. munmap requires (addr, length) and we don't track length
+	// at the vm_reserve boundary (Windows VirtualFree with MEM_RELEASE didn't
+	// either — the kernel remembered). Arenas live until process exit; the OS
+	// reclaims everything then. Revisit when arena dynamic resize / pool reuse
+	// needs real release.
+	vm_release :: fun(base: ^byte) {
+	}
+
+	// ---------------------------------------------------------------------------
+	// Dynamic library loading (dlopen / dlsym / dlclose)
+	// ---------------------------------------------------------------------------
+	// Modern glibc (>= 2.34) ships dlopen et al. in libc.so. Older systems and
+	// musl require linking -ldl. If a target system breaks here, split these
+	// declarations into their own `foreign static_lib "dl" { ... }` block.
+
+	RTLD_LAZY :: 0x1
+	RTLD_NOW  :: 0x2
+
+	load_library :: fun(name: cstring) -> ^byte {
+		return dlopen(name, RTLD_NOW)
+	}
+
+	find_symbol :: fun(mod: ^byte, name: cstring) -> ^byte {
+		return dlsym(mod, name)
+	}
+
+	free_library :: fun(mod: ^byte) {
+		dlclose(mod)
+	}
+
+	// ---------------------------------------------------------------------------
 	// libc bindings
 	// ---------------------------------------------------------------------------
 	// Static-linked: clang resolves against libc at link time. ssize_t is i64
@@ -408,5 +475,15 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun write(fd: File_Id, buf: ^byte, n: usize) -> i64
 		fun unlink(path: cstring) -> i32
 		fun fstat(fd: File_Id, out: ^Stat) -> i32
+
+		// Virtual memory
+		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte
+		fun mprotect(addr: ^byte, len: usize, prot: i32) -> i32
+		fun munmap(addr: ^byte, len: usize) -> i32
+
+		// Dynamic library loading
+		fun dlopen(name: cstring, flags: i32) -> ^byte
+		fun dlsym(handle: ^byte, name: cstring) -> ^byte
+		fun dlclose(handle: ^byte) -> i32
 	}
 }
