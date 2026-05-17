@@ -24,15 +24,43 @@ Main feature of Mara is stack-like memory allocation. Everything in Mara lives u
 
 ## Building the compiler
 
-The Mara compiler is written in [Odin](https://odin-lang.org/). To rebuild
-it from source you need Odin on PATH; everything else (clang, lld) ships in
-[`tools/`](tools/).
+The Mara compiler is written in [Odin](https://odin-lang.org/). You need
+Odin on PATH to compile it. From the repo root:
 
 ```
 odin build .
 ```
 
-Windows only. Linux version coming soon. Codebase should be cross platform already, but haven't tested yet.
+That produces `Mara.exe` (Windows) or `Mara` (Linux) in the repo root.
+
+### Windows
+
+Everything else (clang, lld) ships in [`tools/`](tools/). Nothing to install.
+
+### Linux
+
+System packages required (Fedora examples — Debian/Ubuntu names in parens):
+
+```
+sudo dnf install clang lld SDL2-devel    # (apt: clang lld libsdl2-dev)
+```
+
+Mara invokes system `clang` and `ld.lld` via PATH. The `tools/*.exe` in this
+repo are Windows-only and harmlessly ignored on Linux.
+
+One extra step on the first Linux build — produce the Linux flavor of the
+bundled OpenGL helper:
+
+```
+cd code/Open_GL
+clang -c open_gl.c -o open_gl.o
+ar rcs open_gl.a open_gl.o
+rm open_gl.o
+```
+
+(`code/Open_GL/open_gl.lib` is the Windows static lib of the same source,
+already in the repo; `.a` is the Linux equivalent and gitignored, so each
+machine builds its own.)
 
 ## Using Mara
 

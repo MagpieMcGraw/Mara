@@ -403,14 +403,11 @@ link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compil
     strings.write_string(&b, ll_path)
     strings.write_string(&b, lf.extra_inputs)
     strings.write_string(&b, ` -o "`); strings.write_string(&b, exe_name); strings.write_byte(&b, '"')
-    strings.write_string(&b, " -Wno-override-module")
-    when ODIN_OS == .Windows {
-        // Force lld so clang doesn't go hunting for MSVC's link.exe. The
-        // bundled tools/lld-link.exe lives next to tools/clang.exe so this
-        // resolves without any LLVM install. On Linux clang's default ld
-        // (system binutils) works fine; no -fuse-ld needed.
-        strings.write_string(&b, " -fuse-ld=lld")
-    }
+    // Always use lld for consistency across platforms. Windows finds
+    // tools/lld-link.exe next to tools/clang.exe (bundled in this repo);
+    // Linux/macOS expect `ld.lld` on PATH via the system `lld` package
+    // (`dnf install lld` / `apt install lld`).
+    strings.write_string(&b, " -Wno-override-module -fuse-ld=lld")
     for path in lf.native_search {
         strings.write_string(&b, ` "-L`); strings.write_string(&b, path); strings.write_byte(&b, '"')
     }
