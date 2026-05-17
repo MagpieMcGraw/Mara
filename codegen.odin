@@ -2678,8 +2678,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     // Write to file
     result := strings.to_string(final)
-    ok := os.write_entire_file(output_path, transmute([]u8)result)
-    if !ok {
+    werr := os.write_entire_file(output_path, transmute([]u8)result)
+    if werr != nil {
         fmt.printf("Error: could not write '%s'\n", output_path)
         return false
     }

@@ -71,13 +71,13 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
         dh, err := os.open(dir)
         if err != nil { return }
         defer os.close(dh)
-        entries, _ := os.read_dir(dh, -1)
+        entries, _ := os.read_dir(dh, -1, context.allocator)
         for entry in entries {
-            if entry.is_dir { continue }
+            if entry.type == .Directory { continue }
             if !strings.has_suffix(entry.name, ".mara") { continue }
-            path := filepath.join({dir, entry.name})
-            data, ok := os.read_entire_file(path)
-            if !ok { continue }
+            path, _ := filepath.join({dir, entry.name})
+            data, rerr := os.read_entire_file_from_path(path, context.allocator)
+            if rerr != nil { continue }
             pkg := extract_package_name(string(data))
             if pkg == "" { continue }
             if pkg not_in out^ { out^[pkg] = {} }
@@ -86,14 +86,15 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
     }
 
     if compiler_dir != "" {
-        code_dir := filepath.join({compiler_dir, "code"})
+        code_dir, _ := filepath.join({compiler_dir, "code"})
         scan_dir(code_dir, &result)
         if dh, err := os.open(code_dir); err == nil {
             defer os.close(dh)
-            entries, _ := os.read_dir(dh, -1)
+            entries, _ := os.read_dir(dh, -1, context.allocator)
             for entry in entries {
-                if !entry.is_dir { continue }
-                scan_dir(filepath.join({code_dir, entry.name}), &result)
+                if entry.type != .Directory { continue }
+                sub, _ := filepath.join({code_dir, entry.name})
+                scan_dir(sub, &result)
             }
         }
     }
@@ -116,8 +117,8 @@ lex_all_files :: proc(files: map[string][dynamic]string) -> map[string][dynamic]
     result: map[string][dynamic]^[dynamic]Token
     for module, paths in files {
         for path in paths {
-            data, ok := os.read_entire_file(path)
-            if !ok {
+            data, rerr := os.read_entire_file_from_path(path, context.allocator)
+            if rerr != nil {
                 fmt.printf("Error: could not read '%s'\n", path)
                 os.exit(1)
             }
@@ -211,16 +212,16 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     compiler_dir := get_compiler_dir()
 
     resolve_foreign_file :: proc(name: string, compiler_dir: string) -> string {
-        code_base := filepath.join({compiler_dir, "code"})
-        loose_path := filepath.join({code_base, name})
+        code_base, _  := filepath.join({compiler_dir, "code"})
+        loose_path, _ := filepath.join({code_base, name})
         if os.exists(loose_path) { return loose_path }
         ldh, lerr := os.open(code_base)
         if lerr == nil {
             defer os.close(ldh)
-            lentries, _ := os.read_dir(ldh, -1)
+            lentries, _ := os.read_dir(ldh, -1, context.allocator)
             for lentry in lentries {
-                if !lentry.is_dir { continue }
-                sub_path := filepath.join({code_base, lentry.name, name})
+                if lentry.type != .Directory { continue }
+                sub_path, _ := filepath.join({code_base, lentry.name, name})
                 if os.exists(sub_path) { return sub_path }
             }
         }
@@ -296,14 +297,15 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     }
     collect(static_libs, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir)
 
-    code_base := filepath.join({compiler_dir, "code"})
+    code_base, _ := filepath.join({compiler_dir, "code"})
     ldh, lerr := os.open(code_base)
     if lerr == nil {
         defer os.close(ldh)
-        lentries, _ := os.read_dir(ldh, -1)
+        lentries, _ := os.read_dir(ldh, -1, context.allocator)
         for lentry in lentries {
-            if !lentry.is_dir { continue }
-            append(&native_search, filepath.join({code_base, lentry.name}))
+            if lentry.type != .Directory { continue }
+            sub, _ := filepath.join({code_base, lentry.name})
+            append(&native_search, sub)
         }
     }
 
@@ -329,7 +331,7 @@ link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compil
     if !lf.ok { return false }
 
     b: strings.Builder
-    clang_path := filepath.join({compiler_dir, "tools", CLANG_BIN})
+    clang_path, _ := filepath.join({compiler_dir, "tools", CLANG_BIN})
     strings.write_byte(&b, '"'); strings.write_string(&b, clang_path); strings.write_byte(&b, '"')
     strings.write_string(&b, " ")
     strings.write_string(&b, ll_path)
@@ -431,7 +433,7 @@ parse_args :: proc() -> CLI_Args {
         args.pkg_name = positional[2]
     } else {
         // Infer pkg name from cwd.
-        cwd := os.get_current_directory()
+        cwd, _ := os.get_working_directory(context.allocator)
         args.pkg_name = filepath.base(cwd)
     }
     args.ok = true

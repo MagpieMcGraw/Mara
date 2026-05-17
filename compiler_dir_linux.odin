@@ -7,7 +7,7 @@ import "core:path/filepath"
 // to the real path of the running binary on Linux — works regardless of how
 // the process was invoked.
 get_compiler_dir :: proc() -> string {
-    if exe_path, err := os.read_link("/proc/self/exe"); err == nil {
+    if exe_path, err := os.read_link("/proc/self/exe", context.allocator); err == nil {
         dir := filepath.dir(exe_path)
         if dir != "" { return dir }
     }
