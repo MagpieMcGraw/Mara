@@ -306,8 +306,9 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	O_EXCL   :: 0x0080
 	O_TRUNC  :: 0x0200
 
-	// Default mode for created files: rw-r--r--. mode_t is u32 on Linux.
-	DEFAULT_MODE :: 0o644
+	// Default mode for created files: rw-r--r-- (octal 0o644 = decimal 420).
+	// Mara's lexer doesn't recognize `0o` octal prefixes today; using decimal.
+	DEFAULT_MODE :: 420
 
 	// ---------------------------------------------------------------------------
 	// File I/O
@@ -344,7 +345,9 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// slice into buf covering the bytes actually read (data.len = 0 means EOF).
 	// Returns (empty slice, false) on error. POSIX read() returns ssize_t
 	// directly with -1 for error, so the bool branch is just sign of n.
-	file_read :: fun(id: File_Id, buf: []byte) -> ([]byte, bool) {
+	// `buf` is `^[]byte` because the bytes are written through FFI; Mara's
+	// immutable-param address-check rejects `&buf[0]` on a by-value slice.
+	file_read :: fun(id: File_Id, buf: ^[]byte) -> ([]byte, bool) {
 		n := read(id, &buf[0], usize(buf.len))
 		if n < 0 do return buf[0:0], false
 		return buf[0:n], true
@@ -353,8 +356,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Write data to the file. Returns (n, true) where n is bytes written, or
 	// (_, false) on error. POSIX may write fewer bytes than requested under
 	// signal interruption / pipe-full / disk-full conditions; compare n
-	// against data.len for partial-write detection.
-	file_write :: fun(id: File_Id, data: []byte) -> (i64, bool) {
+	// against data.len for partial-write detection. `data` is `^[]byte` for
+	// symmetry with file_read — write() only reads, but passing `&data[0]`
+	// still trips the immutable-param address check, so the contract is
+	// `^[]byte` either way.
+	file_write :: fun(id: File_Id, data: ^[]byte) -> (i64, bool) {
 		n := write(id, &data[0], usize(data.len))
 		if n < 0 do return 0, false
 		return n, true
