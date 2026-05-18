@@ -724,15 +724,39 @@ main :: proc() {
         return
     }
 
+    // Modules with their own `main` are "host-like" — their code belongs in
+    // their own binary, not embedded in another. Compute once for the codegen
+    // filter below.
+    host_modules: [dynamic]string
+    for pkg_name, prog in programs {
+        if pkg_has_main(prog) {
+            append(&host_modules, pkg_name)
+        }
+    }
+
     // Per-binary codegen + link.
     for pkg_name, i in args.pkg_names {
         pkg_shared := shared_packages[i]
 
-        // Build the "other main packages" list so codegen knows to skip the
-        // other binaries' functions when emitting this one.
+        // Build the "skip these modules" list for this binary's codegen.
+        // Two reasons to skip a module's code:
+        //   (1) it's another build target — has its own binary.
+        //   (2) it has `main` somewhere — host-like, code belongs in that host
+        //       binary, not in a DLL that happens to `use` it.
+        // Both conditions exclude the target itself.
         others: [dynamic]string
+        seen: map[string]bool
         for other in args.pkg_names {
-            if other != pkg_name { append(&others, other) }
+            if other != pkg_name && !seen[other] {
+                append(&others, other)
+                seen[other] = true
+            }
+        }
+        for m in host_modules {
+            if m != pkg_name && !seen[m] {
+                append(&others, m)
+                seen[m] = true
+            }
         }
 
         perf_timer_mark(&perf, "codegen")

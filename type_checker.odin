@@ -6630,14 +6630,32 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
 
     c.modules_in_progress[module_name] = true
 
-    // Create isolated env for this module
+    // Create isolated env for this module. is_module_scope=true means the
+    // env lookup walker stops here when looking up unqualified names —
+    // module locals don't leak into sibling modules' lookup chains. But
+    // we DO want module bodies to see the build-wide globals (context,
+    // Context, std, nil), which live in c.top_env (root) and otherwise
+    // sit on the other side of the is_module_scope barrier. Copy them in
+    // so the module's own functions can reference `context.X` etc., same
+    // as a main package's file_env can.
     mod_env := new(Type_Env)
     mod_env.is_module_scope = true
 
-    // Register nil
-    nil_type := new(Type_Ptr)
-    nil_type.elem = Type_Any{}
-    type_env_set(mod_env, "nil", nil_type)
+    if c.top_env != nil {
+        for name in ([]string{"context", "Context", "std", "nil"}) {
+            if t, ok := c.top_env.types[name]; ok {
+                type_env_set(mod_env, name, t)
+            }
+        }
+    }
+
+    // If `nil` wasn't in c.top_env yet (early in setup), register a fresh
+    // null-pointer type so the module body's nil literals still type-check.
+    if _, has_nil := mod_env.types["nil"]; !has_nil {
+        nil_type := new(Type_Ptr)
+        nil_type.elem = Type_Any{}
+        type_env_set(mod_env, "nil", nil_type)
+    }
 
     // Create module-struct upfront so it can own top-level declarations
     // during registration. Dispatch groups / operator overloads filled after
@@ -7411,35 +7429,6 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
     nil_type.elem = Type_Any{}
     type_env_set(env, "nil", nil_type)
 
-    // Pre-register stubs in c.checked_modules for every parsed module that
-    // contains `main`. Why: a DLL package may `use host_pkg` as an explicit
-    // signal of which host it pairs with (so the scope_allocator scan above
-    // follows the edge to find the layout declaration). At Pass 1+2 time,
-    // the DLL's `use host_pkg` would otherwise trigger check_module on the
-    // host — which has its own env that doesn't inherit `context` from root,
-    // and would either re-mutate the AST (if the host is also a main_package
-    // being built in this invocation) or fail to type-check the host's
-    // context-using body. Stubbing short-circuits check_module to a no-op
-    // for these "main-like" modules. The host's actual processing happens
-    // via the main-package path when it's in main_packages.
-    for pkg_name, prog in programs {
-        has_main := false
-        for stmt in prog^ {
-            if fn_stmt, ok := stmt.(^Stmt_Scope); ok && fn_stmt.name == "main" {
-                has_main = true
-                break
-            }
-        }
-        if !has_main { continue }
-        if _, already := c.checked_modules[pkg_name]; already { continue }
-        stub := new(Type_Scope)
-        stub.name = pkg_name
-        stub.kind = .Struct
-        stub.scope = new(Type_Env)
-        stub.scope.is_module_scope = true
-        c.checked_modules[pkg_name] = stub
-    }
-
     // Phase 1: Scope-based checking of every main package, in turn.
     // Imports reached from any of them go through check_module which caches
     // results in c.checked_modules — so a stdlib AST that's used by two
@@ -7453,6 +7442,15 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
     for prog, i in main_programs {
         pkg := main_packages[i]
         c.current_package = pkg
+
+        // If this package was already processed via check_module (because an
+        // earlier main_package `use`d it and triggered the full check), don't
+        // walk its AST a second time — the per-file processing below would
+        // re-mutate state set during the check_module path. The earlier path
+        // produced an equivalent result; just leave it.
+        if _, already_checked := c.checked_modules[pkg]; already_checked {
+            continue
+        }
 
         main_files_by_src: map[string][dynamic]Stmt
         main_file_order: [dynamic]string
@@ -7502,6 +7500,21 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
         // Pass 2: type-check function bodies per-file under the file's env.
         for src in main_file_order {
             check_bodies(&c, main_files_by_src[src], main_file_envs[src])
+        }
+
+        // Register a synthetic module-struct so `use this_pkg` from another
+        // main_package short-circuits in check_module instead of re-walking.
+        // Scope intentionally empty for now — main packages don't currently
+        // expose their public symbols this way (callers reference them
+        // through root env / flat-name table). The struct exists only so
+        // c.checked_modules has a non-nil entry to satisfy the cache check.
+        if _, already := c.checked_modules[pkg]; !already {
+            mod_struct := new(Type_Scope)
+            mod_struct.name = pkg
+            mod_struct.kind = .Struct
+            mod_struct.scope = new(Type_Env)
+            mod_struct.scope.is_module_scope = true
+            c.checked_modules[pkg] = mod_struct
         }
     }
 
