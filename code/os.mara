@@ -197,6 +197,44 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return bool(DeleteFileA(path))
 	}
 
+	// Copy `src` to `dst`. Overwrites `dst` if it exists. Returns false on
+	// failure (source missing, destination locked, etc.). Used by hot-reload
+	// loops to copy a freshly-built DLL into a uniquely-named file the host
+	// can LoadLibraryA — the original on disk stays unlocked so the build can
+	// overwrite it for the next reload.
+	copy_file :: fun(src: cstring, dst: cstring) -> bool {
+		return bool(CopyFileA(src, dst, 0))  // 0 = overwrite if exists
+	}
+
+	// Last-write time of a file, as Windows' 100-nanosecond FILETIME packed
+	// into i64 (low DWORD in lo 32 bits, high DWORD in hi 32 bits). Returns 0
+	// if the query fails — caller comparing against a previous value will
+	// see a "change" and react safely. Used to poll for DLL rebuild events
+	// without a directory watcher.
+	file_mtime :: fun(path: cstring) -> i64 {
+		data : WIN32_FILE_ATTRIBUTE_DATA
+		if not bool(GetFileAttributesExA(path, 0, &data)) do return 0
+		lo : i64 = i64(data.last_write_low)
+		hi : i64 = i64(data.last_write_high) << 32
+		return lo | hi
+	}
+
+	// Memory layout matches WIN32_FILE_ATTRIBUTE_DATA exactly: DWORD attributes
+	// followed by three FILETIMEs (each a pair of DWORDs) followed by file
+	// size's two DWORDs. Declared as nine consecutive u32s so the natural-
+	// alignment doesn't insert padding between the DWORD and FILETIME slots.
+	WIN32_FILE_ATTRIBUTE_DATA :: struct {
+		attributes:         u32
+		creation_low:       u32
+		creation_high:      u32
+		last_access_low:    u32
+		last_access_high:   u32
+		last_write_low:     u32
+		last_write_high:    u32
+		size_high:          u32
+		size_low:           u32
+	}
+
 	// ---------------------------------------------------------------------------
 	// Dynamic library loading (dlopen-equivalent)
 	// ---------------------------------------------------------------------------
@@ -255,6 +293,12 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun CloseHandle(h: File_Id) -> i32
 		fun GetFileSizeEx(h: File_Id, size_out: ^i64) -> i32
 		fun DeleteFileA(name: cstring) -> i32
+		fun CopyFileA(src: cstring, dst: cstring, fail_if_exists: i32) -> i32
+
+		// info_level: GetFileExInfoStandard = 0 (the only documented value).
+		// Fills the supplied WIN32_FILE_ATTRIBUTE_DATA with attributes +
+		// FILETIMEs + size.
+		fun GetFileAttributesExA(name: cstring, info_level: i32, out: ^byte) -> i32
 
 		fun LoadLibraryA(name: cstring) -> ^byte
 		fun GetProcAddress(mod: ^byte, name: cstring) -> ^byte
@@ -368,6 +412,48 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	file_delete :: fun(path: cstring) -> bool {
 		return unlink(path) == 0
+	}
+
+	// Copy `src` to `dst` via streaming read+write. Less efficient than
+	// sendfile(2) but uses APIs already bound; suitable for occasional
+	// hot-reload-style copies. Returns false on any I/O error.
+	copy_file :: fun(src: cstring, dst: cstring) -> bool {
+		src_id, src_ok := file_open_read(src)
+		if not src_ok do return false
+		dst_id, dst_ok := file_open_write(dst)
+		if not dst_ok {
+			close(src_id)
+			return false
+		}
+		buf : [512]byte
+		buf_slice : []byte = buf[:]
+		ok := true
+		done := false
+		for not done {
+			data, read_ok := file_read(src_id, &buf_slice)
+			if not read_ok { ok = false; done = true; continue }
+			if data.len == 0 { done = true; continue }  // EOF
+			_, write_ok := file_write(dst_id, &data)
+			if not write_ok { ok = false; done = true }
+		}
+		close(src_id)
+		close(dst_id)
+		return ok
+	}
+
+	// Last-write time as i64 (Linux's st_mtime is already a 64-bit signed
+	// seconds-since-epoch). Returns 0 on failure so callers comparing
+	// against a previous value see a "change" and react safely.
+	file_mtime :: fun(path: cstring) -> i64 {
+		id, ok := file_open_read(path)
+		if not ok do return 0
+		st : Stat
+		if fstat(id, &st) < 0 {
+			close(id)
+			return 0
+		}
+		close(id)
+		return st.mtime
 	}
 
 	// ---------------------------------------------------------------------------

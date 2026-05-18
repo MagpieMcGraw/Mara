@@ -3,23 +3,47 @@ module not_main
 use mara.memory
 use mara.os
 
-main :: fun() {
-	// Load config to determine memory size
-	//config := config_load("config.txt")
+// Hot-reload host. Loads `Pounce.dll` via an under-the-hood copy so the
+// build can keep overwriting the source. Polls the source file's mtime
+// each frame; on change, frees the current handle, makes a fresh copy,
+// re-loads, and re-resolves `game_run`.
+DLL_SRC  :: "Pounce.dll"
+DLL_COPY :: "Pounce_loaded.dll"
 
+main :: fun() -> i64 {
     context.scope_allocator = Arena_Debug(192 * MB)
 
-    library := os.load_library("Pounce.dll")
-    function := os.find_symbol(library, "game_run")
+    // Initial load: copy source out from under the build, load the copy.
+    if not os.copy_file(DLL_SRC, DLL_COPY) {
+        print("startup: failed to copy ", DLL_SRC, " -> ", DLL_COPY)
+        return 1
+    }
+    handle := os.load_library(DLL_COPY)
+    game_run_ptr := os.find_symbol(handle, "game_run")
+    game_run : fn(^Context, ^[]byte -> bool) = game_run_ptr
+    last_mtime := os.file_mtime(DLL_SRC)
 
-    game_run : fn(^Context, ^[]byte -> bool) = function
+    // Game state lives here, owned by the host across DLL reloads.
+    memory_block : []byte(50 * MB)
 
-	// when casting to megastruct, consider alignment
-	memory_block : []byte(50 * MB)
-
-	// Run game until it says stop
-	running := true
-	for running {
-		running = game_run(&context, &memory_block)
-	}
+    running := true
+    for running {
+        // Hot-reload poll: if the source DLL's mtime changed, the build
+        // overwrote it. Unload the current copy, refresh, reload.
+        cur_mtime := os.file_mtime(DLL_SRC)
+        if cur_mtime != last_mtime {
+            os.free_library(handle)
+            if not os.copy_file(DLL_SRC, DLL_COPY) {
+                print("reload: copy failed; staying on old code")
+            else
+                handle = os.load_library(DLL_COPY)
+                game_run_ptr = os.find_symbol(handle, "game_run")
+                game_run = game_run_ptr
+                last_mtime = cur_mtime
+                print("reloaded ", DLL_SRC)
+            }
+        }
+        running = game_run(&context, &memory_block)
+    }
+    return 0
 }
