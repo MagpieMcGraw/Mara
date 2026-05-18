@@ -4511,27 +4511,35 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // Stmt_Assign / Stmt_Multi_Return_Assign nodes stored on s.checked,
             // then run the existing per-assign logic on them. Codegen and
             // dump iterate s.checked the same way.
-            if len(s.init_values) == 1 && len(s.names) > 1 {
-                // Multi-return destructure: x, y := call()
-                mra := new(Stmt_Multi_Return_Assign)
-                mra.span = s.span
-                mra.type_expr = s.type_expr
-                for n in s.names { append(&mra.names, n) }
-                for v in s.init_values { append(&mra.values, v) }
-                append(&s.checked, Stmt(mra))
-            } else {
-                // Parallel or single-name: one Stmt_Assign per name
-                for name, i in s.names {
-                    a := new(Stmt_Assign)
-                    a.name = name
-                    a.span = s.span
-                    a.type_expr = s.type_expr
-                    a.is_var = s.is_var
-                    a.is_using = s.is_using
-                    a.is_decl = true
-                    a.slice_cap_expr = s.slice_cap_expr
-                    if i < len(s.init_values) { a.value = s.init_values[i] }
-                    append(&s.checked, Stmt(a))
+            //
+            // Multi-package builds run the checker once per package, and a
+            // shared AST node (e.g. a stdlib decl reached from two packages)
+            // would hit this code twice. Skip the synthesis if s.checked is
+            // already populated — the prior run did it and the desugared
+            // statements still apply.
+            if len(s.checked) == 0 {
+                if len(s.init_values) == 1 && len(s.names) > 1 {
+                    // Multi-return destructure: x, y := call()
+                    mra := new(Stmt_Multi_Return_Assign)
+                    mra.span = s.span
+                    mra.type_expr = s.type_expr
+                    for n in s.names { append(&mra.names, n) }
+                    for v in s.init_values { append(&mra.values, v) }
+                    append(&s.checked, Stmt(mra))
+                } else {
+                    // Parallel or single-name: one Stmt_Assign per name
+                    for name, i in s.names {
+                        a := new(Stmt_Assign)
+                        a.name = name
+                        a.span = s.span
+                        a.type_expr = s.type_expr
+                        a.is_var = s.is_var
+                        a.is_using = s.is_using
+                        a.is_decl = true
+                        a.slice_cap_expr = s.slice_cap_expr
+                        if i < len(s.init_values) { a.value = s.init_values[i] }
+                        append(&s.checked, Stmt(a))
+                    }
                 }
             }
             register_and_check_declarations(c, s.checked, env, owner, public_env)
@@ -7181,6 +7189,13 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
 check_program :: proc(programs: map[string]^Program, main_package: string,
                       compiler_dir: string = "", search_dir: string = "", web: bool = false,
                       shared: bool = false,
+                      // host_package: when building a DLL alongside an exe, the
+                      // exe's package name. The DLL inherits its Context layout
+                      // (specifically, the scope_allocator type) from the host's
+                      // `context.scope_allocator = X` line — both sides need the
+                      // same layout for the per-call ctx handover to interpret
+                      // memory consistently. Empty for single-package builds.
+                      host_package: string = "",
                       target_os: Target_OS = .Windows) -> ^Checked_Program {
     table := new(SymbolTable)
     env := new(Type_Env)       // heap-allocated so it outlives check_program
@@ -7234,25 +7249,43 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
             c.table.scope_allocator_name = val_ident.name
         }
     }
-    for stmt in program^ {
+    // Decide which program to scan for `context.scope_allocator = X`. In a
+    // multi-package build, the DLL inherits Context layout from the host's
+    // declaration. Single-package builds scan their own program; shared-only
+    // single-package builds (no host given) fall back to scanning any top-level
+    // fn so the user can declare the type in a stub.
+    alloc_scan_program := program
+    if host_package != "" && host_package != main_package {
+        if host_prog, ok := programs[host_package]; ok {
+            alloc_scan_program = host_prog
+        }
+    }
+    for stmt in alloc_scan_program^ {
         if fn_stmt, ok := stmt.(^Stmt_Scope); ok {
-            // Shared (DLL/SO) builds have no `main`; allow `context.scope_allocator = ...`
-            // to live in any top-level function (typically an #expose init).
-            if fn_stmt.name != "main" && !c.target_shared { continue }
+            // For the host's program, only main carries the scope_allocator
+            // declaration; for single-package shared builds with no host,
+            // allow it in any top-level fn.
+            if fn_stmt.name != "main" && !(c.target_shared && host_package == "") { continue }
             for body_stmt in fn_stmt.body {
                 if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target != nil {
                     scan_allocator(&c, a.target, a.value)
                 }
             }
-            // Any `#expose` in shared mode implies the host will pass a real
-            // Context — so the scope_allocator is reachable from within the
-            // DLL even if no `context.scope_allocator = X` line appears. Lets
-            // big-array auto-promotion compile inside the DLL. The allocator
-            // *type* still needs to be declared somewhere in the package for
-            // codegen to know Context's layout; the absence is diagnosed later
-            // with a clear error.
-            if c.target_shared && fn_stmt.is_exposed {
+        }
+    }
+
+    // #expose-presence scan: always on the current package, regardless of where
+    // the scope_allocator declaration lives. Any `#expose` in shared mode
+    // implies the host will pass a real Context at runtime — so arena-using
+    // constructs (`var`, big fixed arrays) are allowed inside the DLL even
+    // without a local declaration. Gated separately from has_scope_allocator:
+    // that flag still requires the type to be resolvable (which inheritance
+    // from the host now provides).
+    if c.target_shared {
+        for stmt in program^ {
+            if fn_stmt, ok := stmt.(^Stmt_Scope); ok && fn_stmt.is_exposed {
                 c.table.context_expected_at_runtime = true
+                break
             }
         }
     }

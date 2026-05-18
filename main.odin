@@ -550,7 +550,7 @@ link_web :: proc(ll_path, exe_name: string, checked: ^Checked_Program) -> bool {
 // ---------------------------------------------------------------------------
 
 CLI_Args :: struct {
-    pkg_name:     string,
+    pkg_names:    [dynamic]string,  // one or more packages to build, in given order
     search_dir:   string,
     compiler_dir: string,
     web:          bool,
@@ -565,7 +565,7 @@ parse_args :: proc() -> CLI_Args {
     args.search_dir   = "."
 
     if len(os.args) < 2 {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-dump]")
+        fmt.println("Usage: mara build [package-name [package-name ...]] [-web] [-shared] [-dump]")
         return args
     }
 
@@ -579,16 +579,20 @@ parse_args :: proc() -> CLI_Args {
 
     // positional[0] is the exe name itself. positional[1] should be "build".
     if len(positional) < 2 || positional[1] != "build" {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-dump]")
+        fmt.println("Usage: mara build [package-name [package-name ...]] [-web] [-shared] [-dump]")
         return args
     }
 
     if len(positional) >= 3 {
-        args.pkg_name = positional[2]
+        // Collect every package name after `build`. Discover/lex/parse run once
+        // over the shared file table; type-check + codegen + link iterate.
+        for i := 2; i < len(positional); i += 1 {
+            append(&args.pkg_names, positional[i])
+        }
     } else {
-        // Infer pkg name from cwd.
+        // Infer single pkg name from cwd.
         cwd, _ := os.get_working_directory(context.allocator)
-        args.pkg_name = filepath.base(cwd)
+        append(&args.pkg_names, filepath.base(cwd))
     }
     args.ok = true
     return args
@@ -608,8 +612,20 @@ main :: proc() {
     perf_timer_begin(&perf, "discover")
 
     files := discover_all_files(args.compiler_dir, args.search_dir)
-    if args.pkg_name not_in files {
-        fmt.printf("Error: no files found for module '%s'\n", args.pkg_name)
+
+    // Validate up front that every requested package was discovered, so the
+    // user gets one clean error block rather than partial-build noise.
+    missing := false
+    for pkg_name in args.pkg_names {
+        if pkg_name not_in files {
+            if !missing {
+                fmt.println("Error: no files found for the following modules:")
+                missing = true
+            }
+            fmt.printf("  %s\n", pkg_name)
+        }
+    }
+    if missing {
         fmt.println("Available modules:")
         for name in files { fmt.printf("  %s\n", name) }
         return
@@ -620,58 +636,108 @@ main :: proc() {
 
     perf_timer_mark(&perf, "parse")
     programs, parse_errors := parse_all_files(tokens)
-    if main_errs, has := parse_errors[args.pkg_name]; has {
-        fmt.printf("Found %d parse error(s) in '%s'. Aborting.\n", main_errs, args.pkg_name)
-        return
-    }
     // Non-main parse errors are deferred — the offending modules will fail
     // type-checking if they're actually imported, with a clearer message
     // than a cryptic parse-error dump at the top of the build.
 
-    perf_timer_mark(&perf, "type check")
     target_os: Target_OS = .Windows
     when ODIN_OS == .Linux  { target_os = .Linux  }
     when ODIN_OS == .Darwin { target_os = .Mac    }
-    checked := check_program(programs, args.pkg_name,
-                             compiler_dir = args.compiler_dir,
-                             search_dir   = args.search_dir,
-                             web          = args.web,
-                             shared       = args.shared,
-                             target_os    = target_os)
-    if checked.errors > 0 {
-        fmt.printf("Found %d type error(s). Aborting.\n", checked.errors)
-        return
+
+    // Per-package build mode detection: a package with a top-level `main`
+    // becomes an executable; a package without becomes a DLL. The `-shared`
+    // CLI flag still works as a force-all-shared override (e.g. for testing
+    // a DLL build of a package that happens to have main).
+    pkg_has_main :: proc(program: ^Program) -> bool {
+        for stmt in program^ {
+            if scope, ok := stmt.(^Stmt_Scope); ok && scope.name == "main" {
+                return true
+            }
+        }
+        return false
     }
 
-    if args.dump {
-        dump_checked_program("checked_dump.txt", checked)
-        return
+    // Find the host package (the one with main) among the requested set, so
+    // DLL packages can inherit Context layout from it. Multiple-main is fine —
+    // each is its own host for its own build — but cross-package inheritance
+    // only fires when exactly one host is identified.
+    host_pkg := ""
+    multiple_hosts := false
+    for pkg_name in args.pkg_names {
+        if pkg_has_main(programs[pkg_name]) {
+            if host_pkg != "" { multiple_hosts = true }
+            host_pkg = pkg_name
+        }
     }
+    if multiple_hosts { host_pkg = "" }
 
-    perf_timer_mark(&perf, "codegen")
-    ll_path := "output.ll"
-    if !generate_program(ll_path, checked, web = args.web, shared = args.shared) {
-        fmt.println("Code generation failed.")
-        return
-    }
+    // Phase 1+2+3 multi-package: type-check + codegen + link iterate per
+    // package; DLL packages additionally inherit Context layout from the host
+    // package via `host_package` passed to check_program.
+    for pkg_name in args.pkg_names {
+        if main_errs, has := parse_errors[pkg_name]; has {
+            fmt.printf("Found %d parse error(s) in '%s'. Aborting.\n", main_errs, pkg_name)
+            return
+        }
 
-    // Output extension: .html for web, .dll/.so for shared, native exe otherwise.
-    out_ext: string
-    switch {
-    case args.web:                                    out_ext = ".html"
-    case args.shared && ODIN_OS == .Windows:          out_ext = ".dll"
-    case args.shared:                                 out_ext = ".so"  // Linux / Mac
-    case:                                             out_ext = NATIVE_EXE_EXT
-    }
-    out_name := strings.concatenate({args.pkg_name, out_ext})
+        // Force-all-shared (CLI flag) wins; otherwise detect per package.
+        pkg_shared := args.shared || !pkg_has_main(programs[pkg_name])
 
-    perf_timer_mark(&perf, "clang")
-    if args.web {
-        if !link_web(ll_path, out_name, checked) { return }
-    } else {
-        if !link_native(ll_path, out_name, checked, args.compiler_dir, args.shared) { return }
+        // DLL packages inherit Context layout from the host. Single-package
+        // builds (no host_pkg, or building the host itself) keep the existing
+        // self-scanning behaviour.
+        inherit_from := ""
+        if pkg_shared && host_pkg != "" && host_pkg != pkg_name {
+            inherit_from = host_pkg
+        }
+
+        perf_timer_mark(&perf, "type check")
+        checked := check_program(programs, pkg_name,
+                                 compiler_dir = args.compiler_dir,
+                                 search_dir   = args.search_dir,
+                                 web          = args.web,
+                                 shared       = pkg_shared,
+                                 host_package = inherit_from,
+                                 target_os    = target_os)
+        if checked.errors > 0 {
+            fmt.printf("Found %d type error(s) in '%s'. Aborting.\n", checked.errors, pkg_name)
+            return
+        }
+
+        if args.dump {
+            dump_path := strings.concatenate({pkg_name, "_checked_dump.txt"}) if len(args.pkg_names) > 1 else "checked_dump.txt"
+            dump_checked_program(dump_path, checked)
+            continue
+        }
+
+        perf_timer_mark(&perf, "codegen")
+        // Per-package IR file so multi-package builds don't clobber each
+        // other's output and the user can inspect either one.
+        ll_path := strings.concatenate({pkg_name, ".ll"}) if len(args.pkg_names) > 1 else "output.ll"
+        if !generate_program(ll_path, checked, web = args.web, shared = pkg_shared) {
+            fmt.printf("Code generation failed for '%s'.\n", pkg_name)
+            return
+        }
+
+        // Output extension: .html for web, .dll/.so for shared, native exe otherwise.
+        out_ext: string
+        switch {
+        case args.web:                                    out_ext = ".html"
+        case pkg_shared && ODIN_OS == .Windows:           out_ext = ".dll"
+        case pkg_shared:                                  out_ext = ".so"  // Linux / Mac
+        case:                                             out_ext = NATIVE_EXE_EXT
+        }
+        out_name := strings.concatenate({pkg_name, out_ext})
+
+        perf_timer_mark(&perf, "clang")
+        if args.web {
+            if !link_web(ll_path, out_name, checked) { return }
+        } else {
+            if !link_native(ll_path, out_name, checked, args.compiler_dir, pkg_shared) { return }
+        }
+
+        fmt.printf("Compiled package '%s' -> %s\n", pkg_name, out_name)
     }
 
     perf_timer_end(&perf)
-    fmt.printf("Compiled package '%s' -> %s\n", args.pkg_name, out_name)
 }

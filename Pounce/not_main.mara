@@ -1,4 +1,4 @@
-module Pounce
+module not_main
 
 use mara.memory
 use mara.os
