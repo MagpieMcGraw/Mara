@@ -7186,16 +7186,18 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
     }
 }
 
-check_program :: proc(programs: map[string]^Program, main_package: string,
+// Type-check one or more main packages in a single pass. Imports reached
+// from any main package are processed exactly once via c.checked_modules,
+// so two main packages that both `use mara.memory` walk that AST once.
+// Each main_package contributes its top-level functions under its own
+// flat-name prefix; codegen filters per binary by prefix.
+//
+// `shared_packages` is the per-package shared-flag (true => DLL, false =>
+// exe). When omitted, each package is treated as non-shared. Length must
+// match main_packages.
+check_program :: proc(programs: map[string]^Program, main_packages: []string,
                       compiler_dir: string = "", search_dir: string = "", web: bool = false,
-                      shared: bool = false,
-                      // host_package: when building a DLL alongside an exe, the
-                      // exe's package name. The DLL inherits its Context layout
-                      // (specifically, the scope_allocator type) from the host's
-                      // `context.scope_allocator = X` line — both sides need the
-                      // same layout for the per-call ctx handover to interpret
-                      // memory consistently. Empty for single-package builds.
-                      host_package: string = "",
+                      shared_packages: []bool = nil,
                       target_os: Target_OS = .Windows) -> ^Checked_Program {
     table := new(SymbolTable)
     env := new(Type_Env)       // heap-allocated so it outlives check_program
@@ -7210,12 +7212,32 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     c.compiler_dir = compiler_dir
     c.search_dir = search_dir
     c.target_web    = web
-    c.target_shared = shared
+    // target_shared is true if ANY main package is a DLL. Used to relax the
+    // "scope_allocator must live in main" rule (so DLLs can declare it in any
+    // top-level fn). Per-binary linkage decisions happen at codegen time.
+    any_shared := false
+    for sb in shared_packages {
+        if sb { any_shared = true; break }
+    }
+    c.target_shared = any_shared
     c.target_os     = target_os
 
-    program, prog_ok := programs[main_package]
-    if !prog_ok {
-        check_error(&c, {}, "no parsed program for main package '%s'", main_package)
+    // Resolve every main package's parsed program up front so the rest of the
+    // pass can iterate without re-doing lookups (and so missing-package errors
+    // surface here in one block).
+    main_programs: [dynamic]^Program
+    for pkg, i in main_packages {
+        prog, prog_ok := programs[pkg]
+        if !prog_ok {
+            check_error(&c, {}, "no parsed program for main package '%s'", pkg)
+            checked.errors = c.errors
+            return checked
+        }
+        append(&main_programs, prog)
+        _ = i
+    }
+    if len(main_programs) == 0 {
+        check_error(&c, {}, "check_program called with no main packages")
         checked.errors = c.errors
         return checked
     }
@@ -7249,43 +7271,28 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
             c.table.scope_allocator_name = val_ident.name
         }
     }
-    // Decide which program to scan for `context.scope_allocator = X`. In a
-    // multi-package build, the DLL inherits Context layout from the host's
-    // declaration. Single-package builds scan their own program; shared-only
-    // single-package builds (no host given) fall back to scanning any top-level
-    // fn so the user can declare the type in a stub.
-    alloc_scan_program := program
-    if host_package != "" && host_package != main_package {
-        if host_prog, ok := programs[host_package]; ok {
-            alloc_scan_program = host_prog
-        }
-    }
-    for stmt in alloc_scan_program^ {
-        if fn_stmt, ok := stmt.(^Stmt_Scope); ok {
-            // For the host's program, only main carries the scope_allocator
-            // declaration; for single-package shared builds with no host,
-            // allow it in any top-level fn.
-            if fn_stmt.name != "main" && !(c.target_shared && host_package == "") { continue }
-            for body_stmt in fn_stmt.body {
-                if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target != nil {
-                    scan_allocator(&c, a.target, a.value)
+    // Scope_allocator scan: walk every main package's top-level fns looking
+    // for `context.scope_allocator = X`. The host (the package with `main`)
+    // is normally where it lives, but in single-package shared builds (no
+    // host) it may live in any top-level fn so the user can declare it in a
+    // stub. The first non-empty declaration wins; if multiple packages
+    // declare the same allocator type that's fine, conflicting declarations
+    // is user error.
+    for prog in main_programs {
+        for stmt in prog^ {
+            if fn_stmt, ok := stmt.(^Stmt_Scope); ok {
+                if fn_stmt.name != "main" && !c.target_shared { continue }
+                for body_stmt in fn_stmt.body {
+                    if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target != nil {
+                        scan_allocator(&c, a.target, a.value)
+                    }
                 }
-            }
-        }
-    }
-
-    // #expose-presence scan: always on the current package, regardless of where
-    // the scope_allocator declaration lives. Any `#expose` in shared mode
-    // implies the host will pass a real Context at runtime — so arena-using
-    // constructs (`var`, big fixed arrays) are allowed inside the DLL even
-    // without a local declaration. Gated separately from has_scope_allocator:
-    // that flag still requires the type to be resolvable (which inheritance
-    // from the host now provides).
-    if c.target_shared {
-        for stmt in program^ {
-            if fn_stmt, ok := stmt.(^Stmt_Scope); ok && fn_stmt.is_exposed {
-                c.table.context_expected_at_runtime = true
-                break
+                // #expose in shared mode flips context_expected_at_runtime so
+                // arena-using code inside the DLL compiles without a local
+                // scope_allocator declaration (the host provides it).
+                if c.target_shared && fn_stmt.is_exposed {
+                    c.table.context_expected_at_runtime = true
+                }
             }
         }
     }
@@ -7348,82 +7355,73 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     nil_type.elem = Type_Any{}
     type_env_set(env, "nil", nil_type)
 
-    // Phase 1: Scope-based checking of the main program.
-    // This does register-then-check, so all top-level declarations are
-    // visible before any function body is checked.
+    // Phase 1: Scope-based checking of every main package, in turn.
+    // Imports reached from any of them go through check_module which caches
+    // results in c.checked_modules — so a stdlib AST that's used by two
+    // main packages is processed exactly once.
     c.top_env = env
-    c.current_package = main_package
 
-    // Per-file scoping (matches check_module): each .mara file in the
-    // main package gets its own file_env (parent = main package env).
-    // Defined names (functions, structs, types, foreigns, constants)
-    // register into the package env via public_env — visible to all
-    // files. Include-introduced names register into the originating
-    // file's file_env, staying private to that file. Lookup chain
-    // inside a function body: body -> file_env -> package_env -> STOP
-    // (package env is_module_scope=true).
-    main_files_by_src: map[string][dynamic]Stmt
-    main_file_order: [dynamic]string
-    for stmt in program^ {
-        src := stmt_span(stmt).file
-        if _, exists := main_files_by_src[src]; !exists {
-            main_files_by_src[src] = make([dynamic]Stmt)
-            append(&main_file_order, src)
+    // Per-file scoping is per-package: each .mara file in a main package
+    // gets its own file_env (parent = root env). Defined names register
+    // into the package env (visible to all of the package's files) via
+    // public_env; include-introduced names stay file-private.
+    for prog, i in main_programs {
+        pkg := main_packages[i]
+        c.current_package = pkg
+
+        main_files_by_src: map[string][dynamic]Stmt
+        main_file_order: [dynamic]string
+        for stmt in prog^ {
+            src := stmt_span(stmt).file
+            if _, exists := main_files_by_src[src]; !exists {
+                main_files_by_src[src] = make([dynamic]Stmt)
+                append(&main_file_order, src)
+            }
+            bucket := &main_files_by_src[src]
+            append(bucket, stmt)
         }
-        bucket := &main_files_by_src[src]
-        append(bucket, stmt)
-    }
 
-    main_file_envs: map[string]^Type_Env
-    for src in main_file_order {
-        fe := new(Type_Env)
-        fe.parent = env
-        main_file_envs[src] = fe
-    }
+        main_file_envs: map[string]^Type_Env
+        for src in main_file_order {
+            fe := new(Type_Env)
+            fe.parent = env
+            main_file_envs[src] = fe
+        }
 
-    // Pass 1a: pre-register names across all files (see check_module for
-    // the rationale). Mirrors the multi-file ordering fix for the main
-    // package — Pounce.mara + not_main.mara are one main package across
-    // two files, so the same forward-reference issue applies.
-    for src in main_file_order {
-        register_type_names(&c, main_files_by_src[src], main_file_envs[src], nil, env)
-    }
+        // Pass 1a: pre-register names across all files in this package.
+        for src in main_file_order {
+            register_type_names(&c, main_files_by_src[src], main_file_envs[src], nil, env)
+        }
 
-    // Pass 1b: register declarations per-file. Defined names go to env
-    // via public_env; include names land in the per-file env (private).
-    for src in main_file_order {
-        register_and_check_declarations(&c, main_files_by_src[src], main_file_envs[src], nil, env)
-    }
+        // Pass 1b: register declarations per-file.
+        for src in main_file_order {
+            register_and_check_declarations(&c, main_files_by_src[src], main_file_envs[src], nil, env)
+        }
 
-    // Pass 1.5: register main package's top-level constants in
-    // c.table.constants so body-check-time lookups (self-module qualification
-    // `<MainPkg>.X`, format-string detection, ambiguity tracking) can find
-    // them. Imported modules already populate this table during check_module
-    // (via extract_module_into_checked); the main package didn't, leaving a
-    // gap where constants weren't reachable during phase 2.
-    for src in main_file_order {
-        register_main_top_level_constants(&c, main_files_by_src[src], main_package)
-    }
+        // Pass 1.5: register main package's top-level constants in
+        // c.table.constants so body-check-time lookups can find them.
+        for src in main_file_order {
+            register_main_top_level_constants(&c, main_files_by_src[src], pkg)
+        }
 
-    // Pass 2a: resolve struct signatures across ALL files before any Pass
-    // 2b body-check runs (see check_module for the same rationale). The
-    // per-file check_bodies does Phase 2a internally; this earlier loop
-    // populates fields so that body checks in one file can see structs
-    // declared in another file.
-    for src in main_file_order {
-        for stmt in main_files_by_src[src] {
-            if sc, ok := stmt.(^Stmt_Scope); ok && sc.kind == .Struct {
-                check_scope_body(&c, sc, main_file_envs[src], signature_only = true)
+        // Pass 2a: resolve struct signatures across this package's files
+        // before any Pass 2b body-check runs.
+        for src in main_file_order {
+            for stmt in main_files_by_src[src] {
+                if sc, ok := stmt.(^Stmt_Scope); ok && sc.kind == .Struct {
+                    check_scope_body(&c, sc, main_file_envs[src], signature_only = true)
+                }
             }
         }
+
+        // Pass 2: type-check function bodies per-file under the file's env.
+        for src in main_file_order {
+            check_bodies(&c, main_files_by_src[src], main_file_envs[src])
+        }
     }
 
-    // Pass 2: type-check function bodies per-file under the file's env.
-    for src in main_file_order {
-        check_bodies(&c, main_files_by_src[src], main_file_envs[src])
-    }
-
-    // Validate scope allocator API after all types are resolved
+    // Validate scope allocator API after all types are resolved (once,
+    // across all main packages — the allocator type is global to the build).
     if c.table.has_scope_allocator {
         validate_scope_allocator(&c)
     }
@@ -7437,8 +7435,13 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         }
     }
 
-    // Extract functions, foreign declarations, and globals from the program.
-    extract_main_program_stmts(&c, checked, program^, env, main_package)
+    // Extract functions, foreign declarations, and globals from each main
+    // package's program. Each contributes to checked.functions under its own
+    // flat-name prefix; codegen filters per binary at emit time.
+    for prog, i in main_programs {
+        c.current_package = main_packages[i]
+        extract_main_program_stmts(&c, checked, prog^, env, main_packages[i])
+    }
 
     // Phase 2.5: Extract monomorphized generic functions into checked.functions.
     for mangled_name, tmpl_name in c.table.mono_fun_cache {
@@ -7478,15 +7481,18 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         checked.functions[flat_key] = cf
     }
 
-    // Phase 3: Validate program structure — require fun main(),
-    // no bare executable statements.
-    found_main := false
-    validate_top_level_stmts(&c, program^, &found_main)
+    // Phase 3: Validate each main package's program structure. Exe packages
+    // (non-shared) must define fun main(); DLL packages can rely on #expose
+    // and don't require main.
+    for prog, i in main_programs {
+        pkg_is_shared := false
+        if i < len(shared_packages) { pkg_is_shared = shared_packages[i] }
 
-    // DLL/SO builds expose their entry points via `#expose`; the host owns
-    // the process and provides its own main. Skip the requirement.
-    if !found_main && !c.target_shared {
-        check_error(&c, {}, "program must define fun main()")
+        found_main := false
+        validate_top_level_stmts(&c, prog^, &found_main)
+        if !found_main && !pkg_is_shared {
+            check_error(&c, {}, "package '%s' must define fun main()", main_packages[i])
+        }
     }
 
     checked.errors = c.errors

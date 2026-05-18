@@ -646,8 +646,7 @@ main :: proc() {
 
     // Per-package build mode detection: a package with a top-level `main`
     // becomes an executable; a package without becomes a DLL. The `-shared`
-    // CLI flag still works as a force-all-shared override (e.g. for testing
-    // a DLL build of a package that happens to have main).
+    // CLI flag still works as a force-all-shared override.
     pkg_has_main :: proc(program: ^Program) -> bool {
         for stmt in program^ {
             if scope, ok := stmt.(^Stmt_Scope); ok && scope.name == "main" {
@@ -657,64 +656,57 @@ main :: proc() {
         return false
     }
 
-    // Find the host package (the one with main) among the requested set, so
-    // DLL packages can inherit Context layout from it. Multiple-main is fine —
-    // each is its own host for its own build — but cross-package inheritance
-    // only fires when exactly one host is identified.
-    host_pkg := ""
-    multiple_hosts := false
-    for pkg_name in args.pkg_names {
-        if pkg_has_main(programs[pkg_name]) {
-            if host_pkg != "" { multiple_hosts = true }
-            host_pkg = pkg_name
-        }
-    }
-    if multiple_hosts { host_pkg = "" }
-
-    // Phase 1+2+3 multi-package: type-check + codegen + link iterate per
-    // package; DLL packages additionally inherit Context layout from the host
-    // package via `host_package` passed to check_program.
+    // Abort early on any parse errors in the requested packages.
     for pkg_name in args.pkg_names {
         if main_errs, has := parse_errors[pkg_name]; has {
             fmt.printf("Found %d parse error(s) in '%s'. Aborting.\n", main_errs, pkg_name)
             return
         }
+    }
 
-        // Force-all-shared (CLI flag) wins; otherwise detect per package.
-        pkg_shared := args.shared || !pkg_has_main(programs[pkg_name])
+    // Per-package shared flag (parallel to args.pkg_names).
+    shared_packages: [dynamic]bool
+    for pkg_name in args.pkg_names {
+        append(&shared_packages, args.shared || !pkg_has_main(programs[pkg_name]))
+    }
 
-        // DLL packages inherit Context layout from the host. Single-package
-        // builds (no host_pkg, or building the host itself) keep the existing
-        // self-scanning behaviour.
-        inherit_from := ""
-        if pkg_shared && host_pkg != "" && host_pkg != pkg_name {
-            inherit_from = host_pkg
-        }
+    // Single check_program over the union of all requested packages. Shared
+    // imports are walked exactly once; Context layout is decided once and
+    // inherited by every package.
+    perf_timer_mark(&perf, "type check")
+    checked := check_program(programs, args.pkg_names[:],
+                             compiler_dir    = args.compiler_dir,
+                             search_dir      = args.search_dir,
+                             web             = args.web,
+                             shared_packages = shared_packages[:],
+                             target_os       = target_os)
+    if checked.errors > 0 {
+        fmt.printf("Found %d type error(s). Aborting.\n", checked.errors)
+        return
+    }
 
-        perf_timer_mark(&perf, "type check")
-        checked := check_program(programs, pkg_name,
-                                 compiler_dir = args.compiler_dir,
-                                 search_dir   = args.search_dir,
-                                 web          = args.web,
-                                 shared       = pkg_shared,
-                                 host_package = inherit_from,
-                                 target_os    = target_os)
-        if checked.errors > 0 {
-            fmt.printf("Found %d type error(s) in '%s'. Aborting.\n", checked.errors, pkg_name)
-            return
-        }
+    if args.dump {
+        dump_checked_program("checked_dump.txt", checked)
+        return
+    }
 
-        if args.dump {
-            dump_path := strings.concatenate({pkg_name, "_checked_dump.txt"}) if len(args.pkg_names) > 1 else "checked_dump.txt"
-            dump_checked_program(dump_path, checked)
-            continue
+    // Per-binary codegen + link.
+    for pkg_name, i in args.pkg_names {
+        pkg_shared := shared_packages[i]
+
+        // Build the "other main packages" list so codegen knows to skip the
+        // other binaries' functions when emitting this one.
+        others: [dynamic]string
+        for other in args.pkg_names {
+            if other != pkg_name { append(&others, other) }
         }
 
         perf_timer_mark(&perf, "codegen")
         // Per-package IR file so multi-package builds don't clobber each
-        // other's output and the user can inspect either one.
+        // other's output.
         ll_path := strings.concatenate({pkg_name, ".ll"}) if len(args.pkg_names) > 1 else "output.ll"
-        if !generate_program(ll_path, checked, web = args.web, shared = pkg_shared) {
+        if !generate_program(ll_path, checked, web = args.web, shared = pkg_shared,
+                             target_package = pkg_name, other_main_packages = others[:]) {
             fmt.printf("Code generation failed for '%s'.\n", pkg_name)
             return
         }

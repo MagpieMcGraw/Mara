@@ -2102,7 +2102,18 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 // back native/web invocations don't carry stale state.
 @(private) word_size_is_32: bool
 
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> bool {
+// target_package + other_main_packages: per-binary filter for multi-package
+// builds. Functions whose flat name starts with `<other>_` (for some other
+// main package) are skipped — they belong to that other binary. Everything
+// else (target's own functions, stdlib `mara_*`, monomorphized generics)
+// gets emitted. Empty target_package emits everything (legacy single-pkg).
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, target_package: string = "", other_main_packages: []string = nil) -> bool {
+    fn_belongs_to_other :: proc(fn_name: string, others: []string) -> bool {
+        for other in others {
+            if strings.has_prefix(fn_name, fmt.tprintf("%s_", other)) { return true }
+        }
+        return false
+    }
     g := Codegen{}
     g.checked = checked
     g.web = web
@@ -2228,10 +2239,13 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         declared_fns[fn_name] = true
     }
 
-    // Phase 1: Emit non-main function definitions (preserving AST order)
+    // Phase 1: Emit non-main function definitions (preserving AST order).
+    // In multi-package builds skip functions owned by another main package —
+    // they belong in that other binary, not this one.
     g.out = fn_builder
     for fn_name in checked.function_order {
         if fn_name == "main" { continue }
+        if fn_belongs_to_other(fn_name, other_main_packages) { continue }
         if cf, cf_ok := checked.functions[fn_name]; cf_ok {
             gen_scope_def(&g, &cf)
         }
@@ -2245,6 +2259,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     defer delete(mono_names)
     for fn_name in checked.functions {
         if strings.contains(fn_name, "__") && fn_name not_in declared_fns {
+            if fn_belongs_to_other(fn_name, other_main_packages) { continue }
             append(&mono_names, fn_name)
         }
     }
