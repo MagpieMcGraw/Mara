@@ -109,6 +109,7 @@ game_draw :: fun(game: ^Megastruct) {
 	GL_SwapWindow(game.window)
 }
 
+#expose
 game_run :: fun(ctx: ^Context, memory: ^[]byte) -> bool {
 	game := take(Megastruct, &memory[0])
 	if not game.initialized do game_init(&game)

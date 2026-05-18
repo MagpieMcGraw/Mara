@@ -9,6 +9,11 @@ main :: fun() {
 
     context.scope_allocator = Arena_Debug(192 * MB)
 
+    library := os.load_library("Pounce.dll")
+    function := os.find_symbol(library, "game_run")
+
+    game_run : fn(^Context, ^[]byte -> bool) = function
+
 	// when casting to megastruct, consider alignment
 	memory_block : []byte(50 * MB)
 

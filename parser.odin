@@ -2705,12 +2705,40 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         return tp
     }
 
-    // Nominal function type: fn game_run — the type belonging to a named function.
-    // Optionally qualified: fn sdl.init. Every fn type is distinct (nominal), even
-    // when shapes match — identity flows from the function's definition, not its shape.
+    // Function types — two forms after `fn`:
+    //   fn name              — nominal type tied to a named function
+    //   fn(T1, T2 -> R)      — structural; arrow inside the parens, return
+    //                          after it. `fn(T)` is void-return; `fn(-> R)`
+    //                          is no-param; `fn()` is void-void.
     if current_kind(p) == .Fn {
         start := token_span(current(p))
         advance(p) // consume 'fn'
+
+        if current_kind(p) == .Left_Paren {
+            advance(p) // consume '('
+            params: [dynamic]Type_Expr
+            ret: Type_Expr
+            // Params (optional). Stop at -> or ).
+            if current_kind(p) != .Arrow && current_kind(p) != .Right_Paren {
+                append(&params, parse_type_expr(p))
+                for current_kind(p) == .Comma {
+                    advance(p) // consume ','
+                    append(&params, parse_type_expr(p))
+                }
+            }
+            if current_kind(p) == .Arrow {
+                advance(p) // consume '->'
+                ret = parse_type_expr(p)
+            }
+            expect(p, .Right_Paren)
+            fe := new(Type_Func_Expr)
+            fe.params = params
+            fe.return_type = ret
+            fe.span = start
+            return fe
+        }
+
+        // Nominal: fn name (optionally qualified).
         name_tok := expect(p, .Identifier)
         name := name_tok.text
         if current_kind(p) == .Dot && peek_kind(p) == .Identifier {

@@ -664,6 +664,28 @@ main :: proc() {
         }
     }
 
+    // A build needs at least one package with `main` (the host that will own
+    // the process). DLL packages auto-detect from main-presence, but a
+    // hostless build is almost always a mistake — the DLLs have nowhere to
+    // be called from and the user's compiler experience falls into broken
+    // states like "missing scope_allocator." Pass `-shared` to override
+    // when you really want a hostless DLL build (e.g. test/dll_smoke).
+    if !args.shared {
+        any_main := false
+        for pkg_name in args.pkg_names {
+            if pkg_has_main(programs[pkg_name]) { any_main = true; break }
+        }
+        if !any_main {
+            if len(args.pkg_names) == 1 {
+                fmt.printf("Error: package '%s' has no `main`. DLL builds need a host package with `main` in the same build (e.g. `mara build host_pkg %s`), or pass `-shared` to build a hostless DLL.\n",
+                    args.pkg_names[0], args.pkg_names[0])
+            } else {
+                fmt.println("Error: none of the requested packages define `main`. A multi-package build needs at least one host package with `main`; pass `-shared` if you really want a hostless DLL build.")
+            }
+            return
+        }
+    }
+
     // Per-package shared flag (parallel to args.pkg_names).
     shared_packages: [dynamic]bool
     for pkg_name in args.pkg_names {

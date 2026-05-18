@@ -2975,6 +2975,15 @@ types_name_equal :: proc(a: Type, b: Type) -> bool {
 
 types_incompatible :: proc(a: Type, b: Type) -> bool {
     if is_any(a) || is_any(b) { return false }
+    // Allow `^byte → fn(...)` for raw-pointer-to-function-pointer assignments.
+    // This is the unsafe coercion that lets `game_run : fn(...) = find_symbol(...)`
+    // work. The type annotation IS the user's assertion of the function's
+    // shape; codegen lowers it as a no-op since `ptr` is `ptr` in LLVM IR.
+    if ts, ok := a.(^Type_Scope); ok && ts.kind == .Fun {
+        if pt, p_ok := b.(^Type_Ptr); p_ok {
+            if _, byte_ok := pt.elem.(Type_Byte); byte_ok { return false }
+        }
+    }
     return !types_equal(a, b)
 }
 
