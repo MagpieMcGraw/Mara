@@ -16,6 +16,13 @@ use perf
 use asset
 use test_draw
 
+// Declares the host this DLL pairs with: standalone `mara build Pounce`
+// follows this edge to find not_main's `context.scope_allocator = ...`
+// declaration. Multi-package builds (`mara build not_main Pounce`) reach
+// not_main directly as a main package; this import is redundant there but
+// harmless.
+use not_main
+
 COLOR_RED 		:: Vec3{0.9, 0.2, 0.2}
 COLOR_ORANGE  	:: Vec3{0.95, 0.5, 0.1}
 COLOR_YELLOW  	:: Vec3{0.95, 0.85, 0.1}

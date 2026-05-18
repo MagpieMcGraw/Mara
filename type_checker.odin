@@ -7280,15 +7280,53 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
             c.table.scope_allocator_name = val_ident.name
         }
     }
-    // Scope_allocator scan: walk EVERY parsed module's top-level fns
-    // looking for `context.scope_allocator = X`. Not just the main
-    // package(s) being built — also sibling modules that were discovered
-    // but aren't in this build target. This is what lets you rebuild a
-    // DLL alone (`mara build Pounce`) while a host file (`not_main.mara`)
-    // lives next to it: the scan finds the host's declaration in passing
-    // and the DLL inherits Context layout from it. First non-empty
-    // declaration wins.
-    for _, prog in programs {
+    // Scope_allocator scan: walk every main package's `main` function plus
+    // the `main`s of every module reachable transitively via `use`/`include`.
+    // This is the explicit-import path: a DLL package that wants to inherit
+    // its Context layout from a host says `use <host>`, and the import edge
+    // pulls that host into the scan closure. Sibling files that aren't
+    // imported don't influence layout — no "load whatever happens to be
+    // parsed" spookiness.
+    scan_visited: map[string]bool
+    scan_queue: [dynamic]string
+    for pkg in main_packages {
+        if pkg not_in scan_visited {
+            scan_visited[pkg] = true
+            append(&scan_queue, pkg)
+        }
+    }
+    qi := 0
+    for qi < len(scan_queue) {
+        pkg := scan_queue[qi]
+        qi += 1
+        prog, ok := programs[pkg]
+        if !ok { continue }
+        for stmt in prog^ {
+            // Bare `use path` / `include path` lower to Stmt_Decl whose
+            // init value is an Expr_Include; aliased `name :: use path`
+            // becomes Stmt_Define. Both forms count as edges.
+            if decl, is_decl := stmt.(^Stmt_Decl); is_decl {
+                for v in decl.init_values {
+                    if inc, is_inc := v.(^Expr_Include); is_inc {
+                        if inc.path not_in scan_visited {
+                            scan_visited[inc.path] = true
+                            append(&scan_queue, inc.path)
+                        }
+                    }
+                }
+            } else if def, is_def := stmt.(^Stmt_Define); is_def {
+                if inc, is_inc := def.value.(^Expr_Include); is_inc {
+                    if inc.path not_in scan_visited {
+                        scan_visited[inc.path] = true
+                        append(&scan_queue, inc.path)
+                    }
+                }
+            }
+        }
+    }
+    for pkg, _ in scan_visited {
+        prog, ok := programs[pkg]
+        if !ok { continue }
         for stmt in prog^ {
             if fn_stmt, ok := stmt.(^Stmt_Scope); ok {
                 if fn_stmt.name != "main" && !c.target_shared { continue }
@@ -7372,6 +7410,35 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
     nil_type := new(Type_Ptr)
     nil_type.elem = Type_Any{}
     type_env_set(env, "nil", nil_type)
+
+    // Pre-register stubs in c.checked_modules for every parsed module that
+    // contains `main`. Why: a DLL package may `use host_pkg` as an explicit
+    // signal of which host it pairs with (so the scope_allocator scan above
+    // follows the edge to find the layout declaration). At Pass 1+2 time,
+    // the DLL's `use host_pkg` would otherwise trigger check_module on the
+    // host — which has its own env that doesn't inherit `context` from root,
+    // and would either re-mutate the AST (if the host is also a main_package
+    // being built in this invocation) or fail to type-check the host's
+    // context-using body. Stubbing short-circuits check_module to a no-op
+    // for these "main-like" modules. The host's actual processing happens
+    // via the main-package path when it's in main_packages.
+    for pkg_name, prog in programs {
+        has_main := false
+        for stmt in prog^ {
+            if fn_stmt, ok := stmt.(^Stmt_Scope); ok && fn_stmt.name == "main" {
+                has_main = true
+                break
+            }
+        }
+        if !has_main { continue }
+        if _, already := c.checked_modules[pkg_name]; already { continue }
+        stub := new(Type_Scope)
+        stub.name = pkg_name
+        stub.kind = .Struct
+        stub.scope = new(Type_Env)
+        stub.scope.is_module_scope = true
+        c.checked_modules[pkg_name] = stub
+    }
 
     // Phase 1: Scope-based checking of every main package, in turn.
     // Imports reached from any of them go through check_module which caches
