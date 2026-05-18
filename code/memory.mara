@@ -22,7 +22,9 @@ Arena_Basic :: class(cap: i64) {
 
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
-		off := a.offset
+		// Align to 16 — the backlink store is an unaligned i64 write otherwise,
+		// and subsequent allocs need a 16-aligned base for typed views.
+		off := (a.offset + 15) & -16
 
 		a.base[off : off+8] = prev
 		a.current_mark = off
@@ -30,7 +32,7 @@ Arena_Basic :: class(cap: i64) {
 	}
 
 	alloc :: fun(a: ^Self, size: i64) -> []byte {
-		off := a.offset
+		off := (a.offset + 15) & -16
 		end := off + size
 
 		if end > a.capacity {
@@ -66,7 +68,7 @@ Arena_Debug :: class(cap: i64) {
 
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
-		off := a.offset
+		off := (a.offset + 15) & -16
 
 		a.base[off] = prev
 		a.base[off+8] = a.last_alloc
@@ -89,7 +91,7 @@ Arena_Debug :: class(cap: i64) {
 		name: ^byte = #caller_name,
 		span: ^byte = #caller_span) -> []byte
 	{
-		off := a.offset
+		off := (a.offset + 15) & -16
 		cap := a.capacity
 		end := off + HEADER_SIZE + size
 

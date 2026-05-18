@@ -136,7 +136,15 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     data_name = emit_arena_bump(g, total_bytes, s.name, loc)
                 } else {
                     data_name = fmt.tprintf("%%%s.data", s.name)
-                    emit(g, "  %s = alloca [%d x %s]", data_name, alloc_cap, elem_t)
+                    // Byte buffers default to align 1, but `take(T, storage)` carves
+                    // typed regions out of them and needs the data ptr to satisfy
+                    // T's alignment. Over-align to 16 (covers every scalar type and
+                    // SSE vectors); take's per-call padding handles the cursor side.
+                    if elem_t == "i8" {
+                        emit(g, "  %s = alloca [%d x i8], align 16", data_name, alloc_cap)
+                    } else {
+                        emit(g, "  %s = alloca [%d x %s]", data_name, alloc_cap, elem_t)
+                    }
                 }
                 alloca_name := fmt.tprintf("%%%s", s.name)
                 emit_slice_alloca(g, alloca_name)

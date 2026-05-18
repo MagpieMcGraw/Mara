@@ -875,31 +875,48 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take) -> string {
     cursor := fresh_tmp(g)
     emit(g, "  %s = load i64, ptr %s", cursor, len_gep)
 
-    // Compute typed_ptr = &storage.data[cursor] (GEP by i8 to step bytes).
-    typed_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", typed_ptr, data_ptr, cursor)
-
-    // Advance amount differs between forms:
-    //   fixed:   sizeof(resolved_type)              (compile-time int)
-    //   slice:   count_expr_runtime * sizeof(elem)  (runtime mul)
-    // For the slice form, also stash count_runtime for the header init below.
+    // Round cursor up to the take type's alignment. The data ptr is
+    // over-aligned at the storage's source (sys_alloc gives page alignment;
+    // stack `[]byte(N)` allocas get align 16) so a cursor that is a multiple
+    // of `type_align` lands typed_ptr on a properly aligned address. Padding
+    // bytes between old cursor and aligned cursor are simply wasted — the
+    // contract is "take advances len; you don't get to address the gap."
+    // Skip the math when type_align <= 1 (byte takes need no padding).
     advance_amount: string
     count_runtime: string
     elem_size: int
+    type_align: int
     if e.count_expr != nil {
         // Runtime-counted slice: resolved_type is []T; elem is T.
         sl, _ := distinct_base(e.resolved_type).(^Type_Slice)
         elem_ir := llvm_type_from_checker(sl.elem)
         elem_size = elem_byte_size(elem_ir, g.checked)
+        type_align = elem_alignment(elem_ir, g.checked)
         count_runtime = gen_expr(g, e.count_expr)
         advance_amount = fresh_tmp(g)
         emit(g, "  %s = mul i64 %s, %d", advance_amount, count_runtime, elem_size)
     } else {
-        elem_size = elem_byte_size(llvm_type_from_checker(e.resolved_type), g.checked)
+        elem_ir := llvm_type_from_checker(e.resolved_type)
+        elem_size = elem_byte_size(elem_ir, g.checked)
+        type_align = elem_alignment(elem_ir, g.checked)
         advance_amount = fmt.tprintf("%d", elem_size)
     }
+    aligned_cursor := cursor
+    if type_align > 1 {
+        bumped := fresh_tmp(g)
+        emit(g, "  %s = add i64 %s, %d", bumped, cursor, type_align - 1)
+        aligned_cursor = fresh_tmp(g)
+        // Mask is -type_align (e.g. -8 = 0xFFFFFFFFFFFFFFF8), the two's-complement
+        // pattern that clears the low log2(align) bits. LLVM accepts signed decimals.
+        emit(g, "  %s = and i64 %s, %d", aligned_cursor, bumped, -type_align)
+    }
+
+    // Compute typed_ptr = &storage.data[aligned_cursor] (GEP by i8 to step bytes).
+    typed_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", typed_ptr, data_ptr, aligned_cursor)
+
     new_len := fresh_tmp(g)
-    emit(g, "  %s = add i64 %s, %s", new_len, cursor, advance_amount)
+    emit(g, "  %s = add i64 %s, %s", new_len, aligned_cursor, advance_amount)
 
     // Bounds check: new_len must not exceed cap. Take in a loop or take from
     // a too-small buffer triggers this rather than silently walking past the
@@ -1354,7 +1371,10 @@ gen_byte_target_write :: proc(g: ^Codegen, s: ^Stmt_Assign, buf_expr: Expr, offs
         emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", elem_ptr, val, val_size)
     } else {
         val := gen_expr(g, s.value)
-        emit(g, "  store %s %s, ptr %s", val_ir_type, val, elem_ptr)
+        // `align 1` — the offset is user-chosen so the address could be anything.
+        // Lying here (omitting the annotation, which defaults to natural alignment)
+        // would let LLVM optimize as if `&buf[off]` were aligned to sizeof(T).
+        emit(g, "  store %s %s, ptr %s, align 1", val_ir_type, val, elem_ptr)
     }
 }
 
@@ -1378,7 +1398,9 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
     } else {
         val := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", val, target_ir_type, elem_ptr)
+        // `align 1` on the byte-buffer load (offset user-chosen); the store
+        // into the local alloca stays natural since the alloca is aligned.
+        emit(g, "  %s = load %s, ptr %s, align 1", val, target_ir_type, elem_ptr)
         emit(g, "  %s = alloca %s", alloca_name, target_ir_type)
         emit(g, "  store %s %s, ptr %s", target_ir_type, val, alloca_name)
         g.all_vars[name] = Scalar_Var{alloca_name}

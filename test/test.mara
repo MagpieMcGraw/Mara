@@ -25,6 +25,8 @@ use test_distinct_construct
 use test_type_name_arg
 use test_take_basic
 use test_take_runtime
+use test_take_alignment
+use test_arena_alignment
 use test_submod_check
 use test_in_range
 use mara.memory
@@ -58,6 +60,8 @@ main :: fun() -> i64 {
 	test_type_name_arg()
 	test_take_basic()
 	test_take_runtime()
+	test_take_alignment()
+	test_arena_alignment()
 	test_submod()
 	test_in_range()
 	return 0

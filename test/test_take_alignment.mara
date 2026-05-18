@@ -1,0 +1,59 @@
+module test_take_alignment
+
+// take(T, storage) must round the cursor up to T's alignment before carving,
+// so the returned typed_ptr is valid for typed loads/stores. Mixing a single-
+// byte take with an 8-aligned take is the cheapest way to observe it: without
+// alignment math the second take would land at offset 1.
+
+Pair :: struct {
+    a: i64
+    b: i64
+}
+
+run :: fun(memory: ^[]byte) {
+    print("=== test_take_alignment ===")
+
+    flag : u8 = take(u8, memory)
+    flag = 42
+
+    // Pair has alignment 8. Cursor is 1 after the u8; aligned up to 8.
+    // Advance by sizeof(Pair) = 16 → final cursor = 24.
+    p : Pair = take(Pair, memory)
+    p.a = 100
+    p.b = 200
+
+    print(flag)        // 42
+    print(p.a)         // 100
+    print(p.b)         // 200
+    print(memory.len)  // 24  (1 byte + 7 pad + 16 pair)
+
+    // Runtime-counted form aligns the same way. Storage already at 24;
+    // 24 is i64-aligned, no extra padding. Advance 3*8 = 24 → 48.
+    nums : []i64 = take([]i64(3), memory)
+    nums[0] = 10
+    nums[1] = 20
+    nums[2] = 30
+
+    print(nums[0])     // 10
+    print(nums[2])     // 30
+    print(memory.len)  // 48
+
+    // Now make the runtime form actually pad: take a u8, then []i64.
+    sentinel : u8 = take(u8, memory)
+    sentinel = 7
+    // Cursor 49 → aligned to 56 → +16 → 72.
+    more : []i64 = take([]i64(2), memory)
+    more[0] = 1
+    more[1] = 2
+
+    print(sentinel)    // 7
+    print(more[1])     // 2
+    print(memory.len)  // 72
+
+    print("=== test_take_alignment passed ===")
+}
+
+test_take_alignment :: fun() {
+    buf : []byte(256)
+    run(&buf)
+}
