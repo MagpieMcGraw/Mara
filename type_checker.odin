@@ -7280,14 +7280,15 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
             c.table.scope_allocator_name = val_ident.name
         }
     }
-    // Scope_allocator scan: walk every main package's top-level fns looking
-    // for `context.scope_allocator = X`. The host (the package with `main`)
-    // is normally where it lives, but in single-package shared builds (no
-    // host) it may live in any top-level fn so the user can declare it in a
-    // stub. The first non-empty declaration wins; if multiple packages
-    // declare the same allocator type that's fine, conflicting declarations
-    // is user error.
-    for prog in main_programs {
+    // Scope_allocator scan: walk EVERY parsed module's top-level fns
+    // looking for `context.scope_allocator = X`. Not just the main
+    // package(s) being built — also sibling modules that were discovered
+    // but aren't in this build target. This is what lets you rebuild a
+    // DLL alone (`mara build Pounce`) while a host file (`not_main.mara`)
+    // lives next to it: the scan finds the host's declaration in passing
+    // and the DLL inherits Context layout from it. First non-empty
+    // declaration wins.
+    for _, prog in programs {
         for stmt in prog^ {
             if fn_stmt, ok := stmt.(^Stmt_Scope); ok {
                 if fn_stmt.name != "main" && !c.target_shared { continue }
@@ -7296,11 +7297,19 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
                         scan_allocator(&c, a.target, a.value)
                     }
                 }
-                // #expose in shared mode flips context_expected_at_runtime so
-                // arena-using code inside the DLL compiles without a local
-                // scope_allocator declaration (the host provides it).
-                if c.target_shared && fn_stmt.is_exposed {
+            }
+        }
+    }
+
+    // #expose-presence scan: limited to packages actually being built (the
+    // flag affects compile-time gates for THIS binary's body, not sibling
+    // modules' decisions).
+    for prog in main_programs {
+        for stmt in prog^ {
+            if fn_stmt, ok := stmt.(^Stmt_Scope); ok && fn_stmt.is_exposed {
+                if c.target_shared {
                     c.table.context_expected_at_runtime = true
+                    break
                 }
             }
         }

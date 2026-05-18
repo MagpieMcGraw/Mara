@@ -664,23 +664,35 @@ main :: proc() {
         }
     }
 
-    // A build needs at least one package with `main` (the host that will own
-    // the process). DLL packages auto-detect from main-presence, but a
-    // hostless build is almost always a mistake — the DLLs have nowhere to
-    // be called from and the user's compiler experience falls into broken
-    // states like "missing scope_allocator." Pass `-shared` to override
-    // when you really want a hostless DLL build (e.g. test/dll_smoke).
-    if !args.shared {
-        any_main := false
-        for pkg_name in args.pkg_names {
-            if pkg_has_main(programs[pkg_name]) { any_main = true; break }
+    // A build needs at least one entry point — either a `main` (this build
+    // produces a host exe) or an `#expose` function (this build produces
+    // a DLL meant to be loaded from a host). A package with neither is
+    // typically a user mistake; bail with a hint. Sibling modules with
+    // `main` don't need to be in the build target — the scope_allocator
+    // scan walks all parsed modules — so rebuilding just the DLL
+    // (`mara build Pounce`) Just Works as long as the host's source file
+    // lives in the same discovered folder.
+    pkg_has_expose :: proc(program: ^Program) -> bool {
+        for stmt in program^ {
+            if scope, ok := stmt.(^Stmt_Scope); ok && scope.is_exposed {
+                return true
+            }
         }
-        if !any_main {
+        return false
+    }
+    if !args.shared {
+        any_entry := false
+        for pkg_name in args.pkg_names {
+            if pkg_has_main(programs[pkg_name]) || pkg_has_expose(programs[pkg_name]) {
+                any_entry = true
+                break
+            }
+        }
+        if !any_entry {
             if len(args.pkg_names) == 1 {
-                fmt.printf("Error: package '%s' has no `main`. DLL builds need a host package with `main` in the same build (e.g. `mara build host_pkg %s`), or pass `-shared` to build a hostless DLL.\n",
-                    args.pkg_names[0], args.pkg_names[0])
+                fmt.printf("Error: package '%s' has no `main` and no `#expose` function. Add an entry point, or pass `-shared` to build an empty DLL.\n", args.pkg_names[0])
             } else {
-                fmt.println("Error: none of the requested packages define `main`. A multi-package build needs at least one host package with `main`; pass `-shared` if you really want a hostless DLL build.")
+                fmt.println("Error: none of the requested packages define `main` or any `#expose` functions. Add an entry point somewhere, or pass `-shared` to build empty DLLs.")
             }
             return
         }
