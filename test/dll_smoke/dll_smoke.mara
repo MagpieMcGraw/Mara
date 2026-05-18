@@ -1,0 +1,24 @@
+module dll_smoke
+
+// Inline form: decorator on the same line as the decl.
+#expose add :: fun(ctx: ^Context, a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+// Above-line form: decorator on its own line, then the decl on the next line.
+#expose
+greeting :: fun(ctx: ^Context) -> i64 {
+    print("hello from the dll")
+    return 0
+}
+
+// Unmarked function — must NOT get dllexport linkage and stays under its
+// mangled name. Used internally; the host can't reach it directly.
+internal_helper :: fun(x: i64) -> i64 {
+    return x * 2
+}
+
+#expose
+call_helper :: fun(ctx: ^Context, x: i64) -> i64 {
+    return internal_helper(x)
+}

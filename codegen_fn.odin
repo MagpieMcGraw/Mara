@@ -126,9 +126,24 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
 
     params_joined := strings.join(param_strs[:], ", ")
     ir_name := mara_fn_name(g, cf.name)
-    fn_header := strings.concatenate({"define ", ret_type, " ", ir_name, "(", params_joined, ") {"})
+    // `#expose` → dllexport linkage so the symbol is visible in the DLL/SO's
+    // export table. The linker still produces a regular static lib otherwise.
+    linkage := ""
+    if cf.ast != nil && cf.ast.is_exposed {
+        linkage = "dllexport "
+    }
+    fn_header := strings.concatenate({"define ", linkage, ret_type, " ", ir_name, "(", params_joined, ") {"})
     emit_raw(g, fn_header)
     emit(g, "entry:")
+
+    // `#expose` entry points hand the host's Context pointer through their
+    // first param; stash it into @__mara_context so internal Mara calls
+    // inside the DLL read the host's globals. Validated at type-check time:
+    // first param is `^Context`. Use %<name>.arg directly (before the normal
+    // per-param alloca dance, which would also write %<name>).
+    if cf.ast != nil && cf.ast.is_exposed && len(cf.params) > 0 {
+        emit(g, "  store ptr %%%s.arg, ptr @__mara_context", cf.params[0].name)
+    }
 
     // Save and reset codegen state for this function
     old_all_vars := g.all_vars

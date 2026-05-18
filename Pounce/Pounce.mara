@@ -25,8 +25,6 @@ COLOR_BLUE    	:: Vec3{0.2, 0.4, 0.9}
 COLOR_PURPLE  	:: Vec3{0.6, 0.2, 0.8}
 COLOR_MAGENTA 	:: [3]f32{0.9, 0.2, 0.6}
 
-
-
 Player :: struct {
 	x, y: i64
 	size  := 50
@@ -111,7 +109,7 @@ game_draw :: fun(game: ^Megastruct) {
 	GL_SwapWindow(game.window)
 }
 
-game_run :: fun(memory: ^[]byte) -> bool {
+game_run :: fun(ctx: ^Context, memory: ^[]byte) -> bool {
 	game := take(Megastruct, &memory[0])
 	if not game.initialized do game_init(&game)
 

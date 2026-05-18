@@ -15,6 +15,6 @@ main :: fun() {
 	// Run game until it says stop
 	running := true
 	for running {
-		running = game_run(&memory_block)
+		running = game_run(&context, &memory_block)
 	}
 }

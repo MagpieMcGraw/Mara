@@ -420,20 +420,8 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
         }
     }
 
-    // Dynamic-foreign libs are LoadLibrary'd at runtime, so they must NOT be
-    // handed to the linker — that would re-introduce the import-table
-    // conflict the dynamic_lib mechanism exists to avoid.
-    dynamic_libs: map[string]bool
-    for _, cs in checked.functions {
-        if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign && fo.is_dynamic {
-            dynamic_libs[fo.library] = true
-        }
-    }
-    static_libs: map[string]bool
-    for lib in checked.foreign_libs {
-        if !dynamic_libs[lib] { static_libs[lib] = true }
-    }
-    collect(static_libs, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir)
+    // Every foreign lib is static_lib now — hand them all to the linker.
+    collect(checked.foreign_libs, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir)
 
     code_base, _ := filepath.join({compiler_dir, "code"})
     ldh, lerr := os.open(code_base)
@@ -468,7 +456,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
 // -fuse-ld=lld points clang at lld-link.exe (bundled on Windows; lld via
 // PATH on Linux). -Wno-override-module silences the warning our IR
 // module's target triple triggers.
-link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compiler_dir: string) -> bool {
+link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
@@ -488,6 +476,12 @@ link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compil
     // Linux/macOS expect `ld.lld` on PATH via the system `lld` package
     // (`dnf install lld` / `apt install lld`).
     strings.write_string(&b, " -Wno-override-module -fuse-ld=lld")
+    // Shared mode: build a DLL/SO instead of an executable. clang's `-shared`
+    // works across platforms — lld produces a .dll on Windows and a .so on
+    // Linux. No entry-point symbol required (DllMain stub is auto-generated).
+    if shared {
+        strings.write_string(&b, " -shared")
+    }
     for path in lf.native_search {
         strings.write_string(&b, ` "-L`); strings.write_string(&b, path); strings.write_byte(&b, '"')
     }
@@ -560,6 +554,7 @@ CLI_Args :: struct {
     search_dir:   string,
     compiler_dir: string,
     web:          bool,
+    shared:       bool,    // -shared — emit a .dll/.so instead of an executable
     dump:         bool,
     ok:           bool,
 }
@@ -570,20 +565,21 @@ parse_args :: proc() -> CLI_Args {
     args.search_dir   = "."
 
     if len(os.args) < 2 {
-        fmt.println("Usage: mara build [package-name] [-web] [-dump]")
+        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-dump]")
         return args
     }
 
     positional: [dynamic]string
     for arg in os.args {
-        if arg == "-web"  { args.web  = true; continue }
-        if arg == "-dump" { args.dump = true; continue }
+        if arg == "-web"    { args.web    = true; continue }
+        if arg == "-shared" { args.shared = true; continue }
+        if arg == "-dump"   { args.dump   = true; continue }
         append(&positional, arg)
     }
 
     // positional[0] is the exe name itself. positional[1] should be "build".
     if len(positional) < 2 || positional[1] != "build" {
-        fmt.println("Usage: mara build [package-name] [-web] [-dump]")
+        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-dump]")
         return args
     }
 
@@ -640,6 +636,7 @@ main :: proc() {
                              compiler_dir = args.compiler_dir,
                              search_dir   = args.search_dir,
                              web          = args.web,
+                             shared       = args.shared,
                              target_os    = target_os)
     if checked.errors > 0 {
         fmt.printf("Found %d type error(s). Aborting.\n", checked.errors)
@@ -653,19 +650,26 @@ main :: proc() {
 
     perf_timer_mark(&perf, "codegen")
     ll_path := "output.ll"
-    if !generate_program(ll_path, checked, web = args.web) {
+    if !generate_program(ll_path, checked, web = args.web, shared = args.shared) {
         fmt.println("Code generation failed.")
         return
     }
 
-    out_ext := ".html" if args.web else NATIVE_EXE_EXT
+    // Output extension: .html for web, .dll/.so for shared, native exe otherwise.
+    out_ext: string
+    switch {
+    case args.web:                                    out_ext = ".html"
+    case args.shared && ODIN_OS == .Windows:          out_ext = ".dll"
+    case args.shared:                                 out_ext = ".so"  // Linux / Mac
+    case:                                             out_ext = NATIVE_EXE_EXT
+    }
     out_name := strings.concatenate({args.pkg_name, out_ext})
 
     perf_timer_mark(&perf, "clang")
     if args.web {
         if !link_web(ll_path, out_name, checked) { return }
     } else {
-        if !link_native(ll_path, out_name, checked, args.compiler_dir) { return }
+        if !link_native(ll_path, out_name, checked, args.compiler_dir, args.shared) { return }
     }
 
     perf_timer_end(&perf)

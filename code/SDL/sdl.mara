@@ -364,7 +364,7 @@ PathInfo :: struct {
 }
 
 // MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
-foreign dynamic_lib "SDL3" prefix SDL_ {
+foreign static_lib "SDL3" prefix SDL_ {
     fun Init(flags: Init_Flags) -> bool
     fun SetHint(name: cstring, value: cstring) -> bool
     fun CreateWindow(title: cstring, w: i32, h: i32, flags: WindowFlags) -> Window

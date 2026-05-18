@@ -237,6 +237,7 @@ Codegen :: struct {
     // Web build (wasm32-unknown-emscripten): adjusts size_t-shaped libc decls
     // (strlen returns i32 on wasm32, not i64), among other target tweaks.
     web: bool,
+    shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
 }
 
 // Look up a foreign function's IR name (link_name or fallback to fn_name).
@@ -256,20 +257,6 @@ is_foreign_fn :: proc(g: ^Codegen, fn_name: string) -> bool {
     if !ok { return false }
     _, is_foreign := cs.origin.(Origin_Foreign)
     return is_foreign
-}
-
-// Check whether any foreign declaration in the program has the given C
-// symbol as its link_name. Used by emit_dynamic_loader to decide whether
-// to inject hard-coded declares for LoadLibraryA / GetProcAddress (the
-// loader bootstrap only injects them when the user's stdlib hasn't
-// already bound them).
-has_foreign_link_name :: proc(checked: ^Checked_Program, link_name: string) -> bool {
-    for _, cs in checked.functions {
-        if fo, ok := cs.origin.(Origin_Foreign); ok && fo.link_name == link_name {
-            return true
-        }
-    }
-    return false
 }
 
 // Get a fresh temporary: %1, %2, etc.
@@ -772,6 +759,13 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
 // Names are already flat (e.g., "sdl_Init") from flatten_for_codegen.
 mara_fn_name :: proc(g: ^Codegen, name: string) -> string {
     if name == "main" { return "@main" }
+    // `#expose fun foo` → unmangled `@foo` so a DLL host can call
+    // GetProcAddress("foo") directly without knowing Mara's flat-naming rule.
+    // Mara-internal call sites resolve to the same symbol, so callers in the
+    // same package stay wired up.
+    if cs, ok := g.checked.functions[name]; ok && cs.ast != nil && cs.ast.is_exposed {
+        return fmt.tprintf("@%s", cs.ast.name)
+    }
     // IR symbols are prefixed with "mara_" to namespace them against system
     // libraries. flat names from stdlib modules (`mara.math`) already include
     // it via make_flat_name's dot→underscore conversion; user-module flats
@@ -1917,6 +1911,17 @@ emit_arena_bump_runtime :: proc(g: ^Codegen, size_val: string, name: string = "<
 // arena_alloc(a: ^Arena, size: int, name: ^byte, span: ^byte) -> []byte
 // Returns the data pointer. Emits OOM check as safety net (arena_alloc crashes first).
 emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<alloc>", loc: string = "<unknown>") -> string {
+    // Deferred check: only fires if some code actually wants the arena. A
+    // shared-build DLL with `#expose` fn(s) but no `context.scope_allocator
+    // = X` declaration reaches here with no allocator name. Tell the user
+    // what to add; suppressed for DLLs that never touch the arena.
+    if g.arena_alloc_name == "" {
+        if g.shared {
+            codegen_fatal(g, {},
+                "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `context.scope_allocator = ArenaType(<args>)` somewhere in this module to specify the Context layout (must match the host's allocator type)")
+        }
+        codegen_fatal(g, {}, "arena allocation requested but no scope_allocator declared")
+    }
     arena_ptr := get_context_arena_ptr(g)
     // Alloca for the sret slice result { ptr, i64 }
     tmp_slice := fresh_tmp(g)
@@ -2090,141 +2095,6 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     append(&g.struct_decls, type_decl)
 }
 
-// emit_dynamic_loader writes the runtime-load infrastructure for foreign
-// blocks declared as `dynamic_lib`. Each library is opened once via
-// LoadLibraryA, and each declared function's address is stored into a
-// per-function `@__dyn_<linkname>_fp` global. The generated
-// `@__mara_load_dynamic_libs()` proc is called from @main's entry block
-// before any user code runs.
-//
-// Layout in the IR:
-//   declare ptr @LoadLibraryA(ptr)
-//   declare ptr @GetProcAddress(ptr, ptr)
-//
-//   @.dyn_lib_SDL3   = private constant [N x i8] c"SDL3.dll\00"
-//   @.dyn_sym_SDL_Init = private constant [M x i8] c"SDL_Init\00"
-//   @__dyn_SDL_Init_fp = internal global ptr null
-//
-//   define internal void @__mara_load_dynamic_libs() {
-//   entry:
-//     %h_SDL3 = call ptr @LoadLibraryA(ptr @.dyn_lib_SDL3)
-//     %p1 = call ptr @GetProcAddress(ptr %h_SDL3, ptr @.dyn_sym_SDL_Init)
-//     store ptr %p1, ptr @__dyn_SDL_Init_fp
-//     ...
-//     ret void
-//   }
-emit_dynamic_loader :: proc(out: ^strings.Builder, checked: ^Checked_Program, web: bool = false) {
-    // On web, dynamic_lib collapses to static linking: emscripten doesn't have
-    // LoadLibraryA/GetProcAddress, and library symbols (SDL2, etc.) are baked
-    // into the wasm at link time via the port table. So we skip the entire
-    // loader infrastructure — no globals, no @__mara_load_dynamic_libs, no
-    // call sites loading function pointers (those are also web-gated below).
-    if web { return }
-    // Group dynamic foreign functions by library. Walk checked.functions in
-    // sorted order so lib_order and the per-library function lists are
-    // deterministic — map iteration is hash-seeded otherwise.
-    by_lib: map[string][dynamic]Origin_Foreign
-    lib_order: [dynamic]string
-    fn_keys: [dynamic]string
-    defer delete(fn_keys)
-    for k in checked.functions { append(&fn_keys, k) }
-    slice.sort(fn_keys[:])
-    for k in fn_keys {
-        cs := checked.functions[k]
-        fo, is_foreign := cs.origin.(Origin_Foreign)
-        if !is_foreign || !fo.is_dynamic { continue }
-        if fo.library not_in by_lib {
-            by_lib[fo.library] = make([dynamic]Origin_Foreign)
-            append(&lib_order, fo.library)
-        }
-        funs := &by_lib[fo.library]
-        append(funs, fo)
-    }
-    if len(by_lib) == 0 { return }
-
-    // Platform-specific loader symbols + library naming:
-    //   Windows: LoadLibraryA / GetProcAddress from kernel32. `SDL3` → `SDL3.dll`.
-    //   Linux:   dlopen / dlsym  from libdl/libc.   `SDL3` → `libSDL3.so`.
-    // dlopen needs a flags arg; we pass RTLD_NOW (2) so unresolved symbols
-    // surface immediately rather than at first-use.
-    when ODIN_OS == .Linux {
-        loader_open_name  :: "dlopen"
-        loader_open_decl  :: "declare ptr @dlopen(ptr, i32)"
-        loader_sym_name   :: "dlsym"
-        loader_sym_decl   :: "declare ptr @dlsym(ptr, ptr)"
-        lib_prefix        :: "lib"
-        lib_suffix        :: ".so"
-    } else {
-        loader_open_name  :: "LoadLibraryA"
-        loader_open_decl  :: "declare ptr @LoadLibraryA(ptr)"
-        loader_sym_name   :: "GetProcAddress"
-        loader_sym_decl   :: "declare ptr @GetProcAddress(ptr, ptr)"
-        lib_prefix        :: ""
-        lib_suffix        :: ".dll"
-    }
-
-    // The loader's two functions are bound here if the user's stdlib doesn't
-    // already declare them (kernel32 binding on Windows, libc/libdl on Linux).
-    strings.write_string(out, "; Dynamic foreign libraries\n")
-    if !has_foreign_link_name(checked, loader_open_name) {
-        strings.write_string(out, loader_open_decl)
-        strings.write_byte(out, '\n')
-    }
-    if !has_foreign_link_name(checked, loader_sym_name) {
-        strings.write_string(out, loader_sym_decl)
-        strings.write_byte(out, '\n')
-    }
-    strings.write_byte(out, '\n')
-
-    // String constants for lib names + symbol names; fn-pointer globals.
-    // Each symbol appears in exactly one library (link_name is globally unique
-    // — see make_foreign_checked_scope), so the symbol identifiers don't need
-    // a per-library prefix. The library remains a property used to pick the
-    // right loader target.
-    for lib in lib_order {
-        lib_filename := strings.concatenate({lib_prefix, lib, lib_suffix})
-        strings.write_string(out, fmt.tprintf("@.dyn_lib_%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n",
-            lib, len(lib_filename) + 1, lib_filename))
-        for fo in by_lib[lib] {
-            sym := fo.link_name
-            strings.write_string(out, fmt.tprintf("@.dyn_sym_%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n",
-                sym, len(sym) + 1, sym))
-            strings.write_string(out, fmt.tprintf("@__dyn_%s_fp = internal global ptr null\n", sym))
-        }
-    }
-    strings.write_byte(out, '\n')
-
-    // Loader function
-    strings.write_string(out, "define internal void @__mara_load_dynamic_libs() {\n")
-    strings.write_string(out, "entry:\n")
-    tmp := 1
-    for lib in lib_order {
-        lib_filename_len := len(lib_prefix) + len(lib) + len(lib_suffix) + 1  // +1 for NUL
-        name_ptr := fmt.tprintf("%%t%d", tmp); tmp += 1
-        strings.write_string(out, fmt.tprintf("  %s = getelementptr [%d x i8], ptr @.dyn_lib_%s, i64 0, i64 0\n",
-            name_ptr, lib_filename_len, lib))
-        handle := fmt.tprintf("%%h_%s", lib)
-        when ODIN_OS == .Linux {
-            // dlopen(name, RTLD_NOW=2)
-            strings.write_string(out, fmt.tprintf("  %s = call ptr @dlopen(ptr %s, i32 2)\n", handle, name_ptr))
-        } else {
-            strings.write_string(out, fmt.tprintf("  %s = call ptr @LoadLibraryA(ptr %s)\n", handle, name_ptr))
-        }
-        for fo in by_lib[lib] {
-            sym := fo.link_name
-            sym_ptr := fmt.tprintf("%%t%d", tmp); tmp += 1
-            strings.write_string(out, fmt.tprintf("  %s = getelementptr [%d x i8], ptr @.dyn_sym_%s, i64 0, i64 0\n",
-                sym_ptr, len(sym) + 1, sym))
-            proc_addr := fmt.tprintf("%%t%d", tmp); tmp += 1
-            strings.write_string(out, fmt.tprintf("  %s = call ptr @%s(ptr %s, ptr %s)\n",
-                proc_addr, loader_sym_name, handle, sym_ptr))
-            strings.write_string(out, fmt.tprintf("  store ptr %s, ptr @__dyn_%s_fp\n", proc_addr, sym))
-        }
-    }
-    strings.write_string(out, "  ret void\n")
-    strings.write_string(out, "}\n\n")
-}
-
 // Module-local target flag, set at the start of generate_program. Read by
 // llvm_type_from_checker (and similar context-free helpers) so word-sized
 // types (usize/isize) emit the right width without threading `web` through
@@ -2232,19 +2102,20 @@ emit_dynamic_loader :: proc(out: ^strings.Builder, checked: ^Checked_Program, we
 // back native/web invocations don't carry stale state.
 @(private) word_size_is_32: bool
 
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false) -> bool {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> bool {
     g := Codegen{}
     g.checked = checked
     g.web = web
+    g.shared = shared
     word_size_is_32 = web
 
-    // Context system: scope allocator setup (if user set context.scope_allocator in main)
-    g.context_enabled = checked.table.has_scope_allocator
-    if g.context_enabled {
+    // Context system: scope allocator setup. Enabled when either:
+    //   - the user declared `context.scope_allocator = X` (has_scope_allocator), OR
+    //   - we're in shared mode and there's at least one `#expose` fn (host
+    //     will pass a Context at runtime).
+    g.context_enabled = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
+    if g.context_enabled && checked.table.scope_allocator_type != nil {
         alloc_type := checked.table.scope_allocator_type
-        if alloc_type == nil {
-            codegen_fatal(&g, {}, "scope_allocator_type not resolved by type checker")
-        }
         // Find the arena (the struct that holds the bump offset / base buffer).
         //
         // Two forms supported:
@@ -2292,7 +2163,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     // Patch Context's arena field with the real arena type (checker used Type_Any placeholder)
-    if g.context_enabled {
+    if g.context_enabled && checked.table.scope_allocator_type != nil {
         if ctx_st, ctx_ok := checked.table.funs["Context"]; ctx_ok {
             alloc_type := checked.table.scope_allocator_type
             arena_type: Type
@@ -2385,7 +2256,12 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     fn_builder = g.out
 
-    // Phase 2: Emit @main from user's fn main()
+    // Phase 2: Emit @main from user's fn main(). Skipped in shared (DLL) mode —
+    // the binary has no entry point; each #expose function does its own ctx
+    // handover into @__mara_context on entry, so there's nothing for a single
+    // init function to do.
+    if !g.shared {
+
     g.out = main_builder
     g.tmp_counter = 0
     g.all_vars = {}
@@ -2400,20 +2276,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
     emit_raw(&g, "entry:")
 
-    // Dynamic foreign blocks: load libs and resolve symbols before any user
-    // code runs. Skipped if no dynamic_lib block exists.
-    has_dynamic_foreign := false
-    for _, cs in checked.functions {
-        if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign && fo.is_dynamic {
-            has_dynamic_foreign = true
-            break
-        }
-    }
-    // On web, dynamic_lib collapses to static linking — no loader to call.
-    if has_dynamic_foreign && !g.web {
-        emit_raw(&g, "  call void @__mara_load_dynamic_libs()")
-    }
-
     // Context: backed by a real LLVM global so it survives main returning.
     // Required for web builds where emscripten owns the main loop —
     // emscripten_set_main_loop_arg returns to JS, the rAF callback runs
@@ -2423,13 +2285,13 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // check). Native is unaffected: same global lifetime, same fields.
     {
         ctx_alloca := "@__mara_context_storage"
-        g.ctx_alloca = ctx_alloca
         emit_raw(&g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_context"}))
+        g.ctx_alloca = ctx_alloca
 
         // Register 'context' as a struct var so field access works normally
         g.all_vars["context"] = Struct_Var{alloca = ctx_alloca, struct_name = "Context"}
 
-        // Arena init (if scope allocator is active)
+        // Arena init (if scope allocator is active).
         if g.context_enabled {
             arena_ptr := fresh_tmp(&g)
             emit_raw(&g, strings.concatenate({"  ", arena_ptr, " = getelementptr %class.Context, ptr ", ctx_alloca, ", i32 0, i32 0"}))
@@ -2529,10 +2391,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // Enable alloca hoisting for main body
     begin_alloca_hoist(&g)
 
-    // Emit the user's main body
-    // Note: we don't push_scope for Main_Body — the process exits at the end
-    // of main anyway, so there's no need to reset the arena. Inner scopes
-    // (if/for/match within main) still get their own push/pop as needed.
+    // Emit the user's main body.
     if main_cf, main_ok := checked.functions["main"]; main_ok {
         has_ret := false
         for s in main_cf.body {
@@ -2563,6 +2422,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     main_builder = g.out
+
+    }  // end `if !g.shared` (Phase 2 — @main / web wrapper)
 
     // Assemble final module
     final: strings.Builder
@@ -2646,7 +2507,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         cs := checked.functions[k]
         fo, is_foreign := cs.origin.(Origin_Foreign)
         if !is_foreign { continue }
-        if fo.is_dynamic && !g.web { continue }
         ret_type := "void"
         if cs.return_type != nil && !is_untyped(cs.return_type) {
             ret_type = llvm_type_from_checker(cs.return_type)
@@ -2661,12 +2521,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         strings.write_byte(&final, '\n')
     }
     strings.write_byte(&final, '\n')
-
-    // Dynamic foreign libraries: emit name-strings, fn-pointer globals, and
-    // the @__mara_load_dynamic_libs loader. Skipped if no dynamic_lib block.
-    if has_dynamic_foreign {
-        emit_dynamic_loader(&final, checked, g.web)
-    }
 
     // Function definitions
     strings.write_string(&final, strings.to_string(fn_builder))

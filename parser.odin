@@ -482,6 +482,7 @@ Stmt_Scope :: struct {
     has_parens:     bool,      // true if fun was written with parens: fun() vs fun
     is_intrinsic:   bool,      // body was `{ @llvm.<name> }` — compiler generates body at call sites
     intrinsic_name: string,    // LLVM intrinsic mnemonic (e.g. "llvm.sqrt.f32"); set when is_intrinsic is true
+    is_exposed:    bool,      // `#expose fun ...` — DLL entry point: dllexport linkage, unmangled symbol name
     span:           Span,
 }
 
@@ -588,7 +589,6 @@ Foreign_Fun :: struct {
 Stmt_Foreign :: struct {
     library:    string,              // e.g. "SDL2"
     prefix:     string,              // link prefix: prefix SDL_ → C symbol = "SDL_" + name
-    is_dynamic: bool,                // dynamic_lib: load via LoadLibrary/GetProcAddress at runtime
     decls:      [dynamic]Foreign_Fun,
     span:       Span,
 }
@@ -997,6 +997,25 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
         if peek_kind(p, 1) == .If {
             advance(p) // consume '#'
             return parse_if(p, is_comptime = true)
+        }
+        // `#expose name :: fun ...` — decorator that marks a top-level fun for
+        // DLL export (dllexport linkage + unmangled symbol). The decorator can
+        // sit on the same line as the decl or on its own line above it; we
+        // skip newlines between them so both styles parse identically.
+        if peek_kind(p, 1) == .Identifier && peek_token(p, 1).text == "expose" {
+            hash_tok := current(p)
+            advance(p) // consume '#'
+            advance(p) // consume 'expose'
+            skip_newlines(p)
+            inner := parse_stmt(p)
+            scope, ok := inner.(^Stmt_Scope)
+            if !ok || scope.kind != .Fun {
+                fmt.printf("[%s] Parse error: `#expose` must precede a `name :: fun(...)` declaration\n", error_prefix(hash_tok))
+                p.errors += 1
+                return inner
+            }
+            scope.is_exposed = true
+            return scope
         }
         // Fall through to the expression-statement path below.
     case .Match:    return parse_match(p)
@@ -1625,21 +1644,17 @@ parse_foreign :: proc(p: ^Parser) -> Stmt {
     start := token_span(current(p))
     advance(p) // consume 'foreign'
 
-    // New syntax (required):
-    //   foreign static_lib "name" [prefix Foo_] { ... }
-    //   foreign dynamic_lib "name" [prefix Foo_] { ... }
+    // Syntax: foreign static_lib "name" [prefix Foo_] { ... }
     //
-    // static_lib: linker resolves via -l<name> at link time (current default).
-    // dynamic_lib: codegen emits LoadLibrary + GetProcAddress at startup so the
-    //              symbols never enter the executable's import table — lets
-    //              two SDLs (or any colliding libs) coexist in the same exe.
-    is_dynamic := false
+    // The linker resolves the library via the import lib at link time; Windows
+    // / the loader handle DLL load + symbol resolution at process load. If a
+    // user wants runtime loading (plugin systems, "don't crash if libfoo isn't
+    // installed"), they call mara.os.load_library + find_symbol themselves.
     kind_tok := current(p)
-    if kind_tok.kind == .Identifier && (kind_tok.text == "static_lib" || kind_tok.text == "dynamic_lib") {
-        is_dynamic = kind_tok.text == "dynamic_lib"
+    if kind_tok.kind == .Identifier && kind_tok.text == "static_lib" {
         advance(p)
     } else {
-        fmt.printf("[%s] Parse error: foreign block needs `static_lib` or `dynamic_lib`, got `%s`\n", error_prefix(kind_tok), kind_tok.text)
+        fmt.printf("[%s] Parse error: foreign block needs `static_lib`, got `%s`\n", error_prefix(kind_tok), kind_tok.text)
         p.errors += 1
     }
 
@@ -1691,7 +1706,6 @@ parse_foreign :: proc(p: ^Parser) -> Stmt {
     stmt := new(Stmt_Foreign)
     stmt.library = lib_tok.text
     stmt.prefix = prefix
-    stmt.is_dynamic = is_dynamic
     stmt.decls = decls
     stmt.span = start
     return stmt

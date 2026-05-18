@@ -1031,12 +1031,12 @@ Checked_Param :: struct {
 // Where this function comes from. Codegen branches on the variant:
 //   Source    → emit a normal function body in IR
 //   Intrinsic → emit a call to the LLVM intrinsic with `llvm_name`
-//   Foreign   → emit `declare`s and call the external symbol; dynamic_lib
-//               funs additionally route through the LoadLibrary loader
+//   Foreign   → emit `declare`s and call the external symbol via static
+//               import lib (the linker writes the DLL/SO dep into the binary)
 //
-// Foreign-only metadata (library, link_name, prefix, is_dynamic) lives in
-// the Foreign variant rather than on Checked_Scope itself, so source funs
-// don't carry empty fields they never use.
+// Foreign-only metadata (library, link_name, prefix) lives in the Foreign
+// variant rather than on Checked_Scope itself, so source funs don't carry
+// empty fields they never use.
 Function_Origin :: union {
     Origin_Source,
     Origin_Intrinsic,
@@ -1053,7 +1053,6 @@ Origin_Foreign :: struct {
     library:    string,                // "kernel32", "SDL3", etc.
     link_name:  string,                // C symbol name (prefix + decl name)
     prefix:     string,                // foreign-block prefix, kept for re-emission/diagnostics
-    is_dynamic: bool,                  // codegen via LoadLibrary/GetProcAddress instead of static link
 }
 
 // A fully resolved function: signature, parameter names, body AST, and the
@@ -1133,6 +1132,14 @@ SymbolTable :: struct {
     scope_allocator_type: ^Type_Scope,     // resolved allocator fun (Arena_Basic, Arena_Debug, etc.)
     scope_allocator_args: [dynamic]Expr, // constructor args from Arena_Basic(192 * MB)
 
+    // Shared (DLL/SO) build with `#expose` fn(s) present: the host promises
+    // to pass a real Context at runtime, so arena-using constructs (`var`,
+    // big-array auto-promotion) are permitted inside the DLL without a local
+    // `context.scope_allocator = X` declaration. Gated separately from
+    // has_scope_allocator so the *codegen* path still requires the type to
+    // be declared (errors at codegen if arena calls would be emitted).
+    context_expected_at_runtime: bool,
+
     // Root type environment (top-level scope)
     root_env: ^Type_Env,
 }
@@ -1147,6 +1154,7 @@ Checker :: struct {
     errors:          int,
     current_package: string,
     target_web:      bool,                // -web build flag, drives #web / #native intrinsics
+    target_shared:   bool,                // -shared build flag — package compiles to a DLL/SO; no `main` required
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
     type_params:     map[string]Type,
     top_env:         ^Type_Env,
@@ -1482,6 +1490,12 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             }
             if dt, ok := c.table.distinct_types[flat]; ok {
                 return dt
+            }
+            // Bare-name fallback for compiler-synthesized globals like
+            // `Context` and `Args` — they're registered in c.table.funs
+            // without a package prefix and would otherwise miss the lookup.
+            if st, ok := c.table.funs[t.name]; ok {
+                return st
             }
             // Check active generic type parameters (during generic function body checking)
             if tp, tp_ok := c.type_params[t.name]; tp_ok {
@@ -4591,7 +4605,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     append(&gi.type_args, Type_Const_Value{value = ta.size, span = ta.span})
                     s.type_expr = gi
                 }
-                if !c.table.has_scope_allocator {
+                if !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                     check_error(c, s.span,
                         "'var' requires a scope allocator. Set up in main:\n\n    include mara.memory\n    context.scope_allocator = Arena_Basic")
                 }
@@ -4697,7 +4711,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 base_ann := distinct_base(ann_type)
                 if fa, ok := base_ann.(^Type_Fixed_Array); ok {
                     total_bytes := fa.size * checker_type_byte_size(fa.elem)
-                    if total_bytes >= 1024 && !c.table.has_scope_allocator {
+                    if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                         check_error(c, s.span,
                             "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    context.scope_allocator = Arena_Basic",
                             s.name, total_bytes)
@@ -4827,7 +4841,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     check_array_assign(c, s.span, s.name, fa, val_type)
                     // Big-array check: require scope allocator for large stack arrays
                     total_bytes := fa.size * checker_type_byte_size(fa.elem)
-                    if total_bytes >= 1024 && !c.table.has_scope_allocator {
+                    if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                         check_error(c, s.span,
                             "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    context.scope_allocator = Arena_Basic",
                             s.name, total_bytes)
@@ -6754,7 +6768,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
 // type error pointing at both definition sites. SDL2/SDL3 dual support is
 // not provided — projects that genuinely need to load both versions must
 // rename one side via `prefix`.
-make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Scope, library, prefix: string, is_dynamic: bool) -> Checked_Scope {
+make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Scope, library, prefix: string) -> Checked_Scope {
     ln := decl.name
     if prefix != "" {
         ln = strings.concatenate({prefix, decl.name})
@@ -6779,7 +6793,6 @@ make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Sco
             library    = library,
             link_name  = ln,
             prefix     = prefix,
-            is_dynamic = is_dynamic,
         },
         span        = decl.span,
     }
@@ -6802,10 +6815,6 @@ extract_nested_foreigns_into_checked :: proc(c: ^Checker, body: [dynamic]Stmt, m
     for stmt in body {
         #partial switch s in stmt {
         case ^Stmt_Foreign:
-            if s.is_dynamic && c.target_web {
-                check_error(c, s.span, "foreign dynamic_lib `%s` is not supported under -web; use #if #native to provide a static_lib alternative", s.library)
-                continue
-            }
             checked.foreign_libs[s.library] = true
             for decl in s.decls {
                 ff_key := make_flat_name(struct_flat_name, decl.name)
@@ -6818,7 +6827,7 @@ extract_nested_foreigns_into_checked :: proc(c: ^Checker, body: [dynamic]Stmt, m
                 }
                 ft, ft_ok := ft_raw.(^Type_Scope)
                 if !ft_ok { continue }
-                checked.functions[ff_key] = make_foreign_checked_scope(c, decl, ft, s.library, s.prefix, s.is_dynamic)
+                checked.functions[ff_key] = make_foreign_checked_scope(c, decl, ft, s.library, s.prefix)
             }
         case ^Stmt_Scope:
             if s.kind == .Struct {
@@ -6872,20 +6881,13 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
                 append(&checked.function_order, flat_key)
             }
         case ^Stmt_Foreign:
-            // Web has no LoadLibrary equivalent — emscripten links statically.
-            // Wrap in `#if #native { foreign dynamic_lib ... } else { foreign static_lib ... }`
-            // when bindings need to cover both targets.
-            if s.is_dynamic && c.target_web {
-                check_error(c, s.span, "foreign dynamic_lib `%s` is not supported under -web; use #if #native to provide a static_lib alternative", s.library)
-                continue
-            }
             checked.foreign_libs[s.library] = true
             for decl in s.decls {
                 fun_type_raw, _ := type_env_get(mod_env, decl.name)
                 ft, ft_ok := fun_type_raw.(^Type_Scope)
                 if !ft_ok { continue }
                 ff_key := make_flat_name(module_name, decl.name)
-                checked.functions[ff_key] = make_foreign_checked_scope(c, decl, ft, s.library, s.prefix, s.is_dynamic)
+                checked.functions[ff_key] = make_foreign_checked_scope(c, decl, ft, s.library, s.prefix)
                 // Owner attachment is handled by register_and_check_declarations.
             }
         case ^Stmt_If:
@@ -7068,13 +7070,6 @@ extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts
                 append(&checked.function_order, fn_key)
             }
         case ^Stmt_Foreign:
-            // Web has no LoadLibrary equivalent — emscripten links statically.
-            // Wrap in `#if #native { foreign dynamic_lib ... } else { foreign static_lib ... }`
-            // when bindings need to cover both targets.
-            if s.is_dynamic && c.target_web {
-                check_error(c, s.span, "foreign dynamic_lib `%s` is not supported under -web; use #if #native to provide a static_lib alternative", s.library)
-                continue
-            }
             checked.foreign_libs[s.library] = true
             for decl in s.decls {
                 fun_type_raw, _ := type_env_get(env, decl.name)
@@ -7084,7 +7079,7 @@ extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts
                 if main_package != "" {
                     ff_key = make_flat_name(main_package, decl.name)
                 }
-                checked.functions[ff_key] = make_foreign_checked_scope(c, decl, ft, s.library, s.prefix, s.is_dynamic)
+                checked.functions[ff_key] = make_foreign_checked_scope(c, decl, ft, s.library, s.prefix)
             }
         case ^Stmt_If:
             if !s.is_comptime { continue }
@@ -7134,6 +7129,27 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                     check_error(c, s.span, "fun main() must take no parameters")
                 }
             }
+            // `#expose fun foo(ctx: ^Context, ...)` — DLL entry points must
+            // take a Context pointer as their first param. Each call stores it
+            // into the DLL's @__mara_context, so internal Mara code inside the
+            // DLL sees the host's context. Skipping the param means the global
+            // is never populated and the first internal `context.X` access
+            // dereferences null.
+            if s.is_exposed {
+                ok := false
+                if len(s.typed_params) > 0 {
+                    first := s.typed_params[0]
+                    pt := resolve_type_expr(first.type_expr, c, s.span)
+                    if ptr, is_ptr := pt.(^Type_Ptr); is_ptr {
+                        if ts, is_scope := ptr.elem.(^Type_Scope); is_scope && ts.name == "Context" {
+                            ok = true
+                        }
+                    }
+                }
+                if !ok {
+                    check_error(c, s.span, "#expose function '%s' must take `ctx: ^Context` as its first parameter", s.name)
+                }
+            }
         case ^Stmt_If:
             if !s.is_comptime {
                 check_error(c, s.span, "executable statements must be inside fun main()")
@@ -7164,6 +7180,7 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
 
 check_program :: proc(programs: map[string]^Program, main_package: string,
                       compiler_dir: string = "", search_dir: string = "", web: bool = false,
+                      shared: bool = false,
                       target_os: Target_OS = .Windows) -> ^Checked_Program {
     table := new(SymbolTable)
     env := new(Type_Env)       // heap-allocated so it outlives check_program
@@ -7177,8 +7194,9 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     c.programs = programs
     c.compiler_dir = compiler_dir
     c.search_dir = search_dir
-    c.target_web = web
-    c.target_os  = target_os
+    c.target_web    = web
+    c.target_shared = shared
+    c.target_os     = target_os
 
     program, prog_ok := programs[main_package]
     if !prog_ok {
@@ -7217,11 +7235,24 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         }
     }
     for stmt in program^ {
-        if fn_stmt, ok := stmt.(^Stmt_Scope); ok && fn_stmt.name == "main" {
+        if fn_stmt, ok := stmt.(^Stmt_Scope); ok {
+            // Shared (DLL/SO) builds have no `main`; allow `context.scope_allocator = ...`
+            // to live in any top-level function (typically an #expose init).
+            if fn_stmt.name != "main" && !c.target_shared { continue }
             for body_stmt in fn_stmt.body {
                 if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target != nil {
                     scan_allocator(&c, a.target, a.value)
                 }
+            }
+            // Any `#expose` in shared mode implies the host will pass a real
+            // Context — so the scope_allocator is reachable from within the
+            // DLL even if no `context.scope_allocator = X` line appears. Lets
+            // big-array auto-promotion compile inside the DLL. The allocator
+            // *type* still needs to be declared somewhere in the package for
+            // codegen to know Context's layout; the absence is diagnosed later
+            // with a clear error.
+            if c.target_shared && fn_stmt.is_exposed {
+                c.table.context_expected_at_runtime = true
             }
         }
     }
@@ -7273,6 +7304,10 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         ctx_type.field_map["args"] = field_idx
         c.table.funs["Context"] = ctx_type
         type_env_set(env, "context", ctx_type)
+        // Also expose `Context` (the type) by name so users can write
+        // `ctx: ^Context` in source — required to annotate the first param
+        // of a `#expose` function in a DLL build.
+        type_env_set(env, "Context", ctx_type)
     }
 
     // Register nil as a built-in null pointer literal
@@ -7415,7 +7450,9 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     found_main := false
     validate_top_level_stmts(&c, program^, &found_main)
 
-    if !found_main {
+    // DLL/SO builds expose their entry points via `#expose`; the host owns
+    // the process and provides its own main. Skip the requirement.
+    if !found_main && !c.target_shared {
         check_error(&c, {}, "program must define fun main()")
     }
 

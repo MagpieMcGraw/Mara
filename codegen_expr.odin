@@ -100,22 +100,6 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 if rf, rf_ok := e.resolved.(Resolved_Func); rf_ok {
                     fn_name = rf.name
                 }
-                // Dynamic foreign: on native, the symbol isn't in the import
-                // table — load the value from the @__dyn_<linkname>_fp global
-                // that @__mara_load_dynamic_libs populated at startup. On web,
-                // dynamic_lib collapses to static linking, so the symbol IS in
-                // the import table; its IR-level @link_name is its address
-                // directly.
-                if cs, ok := g.checked.functions[fn_name]; ok {
-                    if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign && fo.is_dynamic {
-                        if g.web {
-                            return strings.concatenate({"@", fo.link_name})
-                        }
-                        tmp := fresh_tmp(g)
-                        emit(g, "  %s = load ptr, ptr @__dyn_%s_fp", tmp, fo.link_name)
-                        return tmp
-                    }
-                }
                 ir_name := mara_fn_name(g, fn_name)
                 if fir, fir_ok := foreign_ir_name(g, fn_name); fir_ok {
                     ir_name = fir
@@ -1034,27 +1018,6 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             ret_type := "void"
             if !is_untyped(cs.return_type) && cs.return_type != nil {
                 ret_type = llvm_type_from_checker(cs.return_type)
-            }
-            // Dynamic foreign blocks resolve via a function-pointer global populated
-            // by __mara_load_dynamic_libs() at startup. Indirect call through the
-            // pointer instead of a direct symbol reference, so SDL2 + SDL3 (or any
-            // colliding-name libs) can coexist in the same exe. The fp global is
-            // namespaced by library to avoid collisions for symbols that exist
-            // in both libs (e.g. SDL_GetBasePath exported by both SDL2 and SDL3).
-            // On web, that machinery doesn't exist (no LoadLibraryA on wasm) — the
-            // emscripten port table baked the symbol in at link time, so a plain
-            // direct call to the link_name resolves.
-            if fo.is_dynamic && !g.web {
-                fp := fresh_tmp(g)
-                emit(g, "  %s = load ptr, ptr @__dyn_%s_fp", fp, call_name)
-                if ret_type == "void" {
-                    emit(g, "  call void %s(%s)", fp, args_joined)
-                    return "0"
-                } else {
-                    tmp := fresh_tmp(g)
-                    emit(g, "  %s = call %s %s(%s)", tmp, ret_type, fp, args_joined)
-                    return tmp
-                }
             }
             if ret_type == "void" {
                 emit(g, "  call void @%s(%s)", call_name, args_joined)
