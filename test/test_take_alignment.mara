@@ -54,6 +54,6 @@ run :: fun(memory: ^[:]byte) {
 }
 
 test_take_alignment :: fun() {
-    buf : [:]byte(256)
+    buf : [..256]byte
     run(&buf)
 }

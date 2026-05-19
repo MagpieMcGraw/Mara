@@ -18,7 +18,7 @@ Holder :: struct {
 
 main :: fun() -> i64 {
 	// Direct [:]byte path (regression check)
-	buf : [:]byte(64)
+	buf : [..64]byte
 	buf[0:8]   = i64(42)
 	buf[8:16]  = i64(7)
 	buf[16:24] = i64(123)

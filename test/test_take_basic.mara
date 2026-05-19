@@ -43,6 +43,6 @@ test_take_basic :: fun() {
     // Sized slice — fresh cursor (len=0, cap=256). Coercing a fixed array
     // `[256]byte` to `[:]byte` would instead produce a populated view
     // (len=cap=256), which would put take past the end of the buffer.
-    buf : [:]byte(256)
+    buf : [..256]byte
     run(&buf)
 }

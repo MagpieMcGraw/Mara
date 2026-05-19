@@ -44,6 +44,6 @@ run :: fun(storage: ^[:]byte, n: i64) {
 }
 
 test_take_runtime :: fun() {
-    storage : [:]byte(1024)
+    storage : [..1024]byte
     run(&storage, 3)
 }

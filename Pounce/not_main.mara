@@ -43,7 +43,7 @@ main :: fun() -> i64 {
     last_mtime := os.file_mtime(DLL_SRC)
 
     // Game state lives here, owned by the host across DLL reloads.
-    memory_block : [:]byte(50 * MB)
+    memory_block : [..50 * MB]byte
 
     win, ctx = create_window()
     memory_block[0] = win

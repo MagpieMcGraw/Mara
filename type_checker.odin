@@ -2675,8 +2675,16 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if !ok { return false }
         return types_equal(va.elem, vb.elem)
     case ^Type_Partial_Array:
-        // Partial arrays are nominally typed by (size, elem, sentinel).
-        // Coercion to [:]T is handled in the slice case above.
+        // Partial arrays coerce to [:]T (slice view) and to [N]T (fixed array)
+        // by element type. The first 24 bytes of a partial array's layout
+        // match a slice header, so `^[..N]T` flows safely into `^[:]T` param
+        // slots — cursor mutations propagate back through the aliased memory.
+        if sl, sl_ok := b.(^Type_Slice); sl_ok {
+            return types_equal(va.elem, sl.elem) && va.has_sentinel == sl.has_sentinel
+        }
+        if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
+            return types_equal(va.elem, fa.elem)
+        }
         if pa, ok := b.(^Type_Partial_Array); ok {
             return va.size == pa.size && types_equal(va.elem, pa.elem) &&
                    va.has_sentinel == pa.has_sentinel

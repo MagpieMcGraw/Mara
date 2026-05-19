@@ -62,7 +62,7 @@ test_byte_view :: fun() {
     // Slice path covers reassignment + function-arg sites. Use a sized slice
     // (with real cap) rather than coercing the array class — `^[:]byte` callees
     // need an actual slice header to point at.
-    slice_buf : [:]byte(256)
+    slice_buf : [..256]byte
     view_through_slice(&slice_buf)
 
     // Return site: pointer comes back from a function.

@@ -20,7 +20,7 @@ run :: fun(memory: ^[:]byte) {
 }
 
 test_take_binding :: fun() {
-	buf : [:]byte(64)
+	buf : [..64]byte
 	run(&buf)
 
 	// Read back through a regular pointer view — the take binding inside run()
