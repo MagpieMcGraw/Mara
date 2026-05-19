@@ -6968,11 +6968,23 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
             // scopes are now always extracted so every construction path goes
             // through a generated init function.
             cf, cf_ok := extract_checked_scope(s, mod_env, c.table)
-            if cf_ok {
+            // `main` is special — it's the program entry point, only meaningful
+            // when extracted via extract_main_program_stmts (which registers it
+            // under the bare key "main", consumed by the @main codegen wrapper).
+            // Skip it when walked as a regular module here.
+            if cf_ok && s.name != "main" {
                 flat_key := make_flat_name(module_name, s.name)
+                // Dedup: a main package can also be imported as a module by
+                // another main package, in which case the same function gets
+                // walked twice — once here, once via extract_main_program_stmts.
+                // Same content either way; just don't add to function_order
+                // twice or codegen emits the function definition twice.
+                _, already := checked.functions[flat_key]
                 cf.name = flat_key
                 checked.functions[flat_key] = cf
-                append(&checked.function_order, flat_key)
+                if !already {
+                    append(&checked.function_order, flat_key)
+                }
             }
         case ^Stmt_Foreign:
             checked.foreign_libs[s.library] = true
@@ -7159,9 +7171,17 @@ extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts
                 if s.name != "main" && main_package != "" {
                     fn_key = make_flat_name(main_package, s.name)
                 }
+                // Dedup: if this main package was also walked as an imported
+                // module (when another main package's `use` brought it in),
+                // its non-main functions are already in function_order under
+                // the same flat key. See the matching guard in
+                // extract_module_into_checked.
+                _, already := checked.functions[fn_key]
                 cf.name = fn_key
                 checked.functions[fn_key] = cf
-                append(&checked.function_order, fn_key)
+                if !already {
+                    append(&checked.function_order, fn_key)
+                }
             }
         case ^Stmt_Foreign:
             checked.foreign_libs[s.library] = true
@@ -9329,8 +9349,14 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     // Skip if this is a function-value variable (indirect call) — leave resolution nil
     // so codegen knows to emit an indirect call through the pointer.
     if resolution == nil {
-        // Only annotate if this is an actual declared function, not a variable holding a fun value
-        if e.name in c.declared_funs {
+        // Only annotate if env actually bound `e.name` to a declared function.
+        // A local variable with `fn(args -> ret)` annotation has a structural
+        // fun_type whose .name is empty, so it must NOT be promoted to a
+        // direct call even when a same-named declared function exists in
+        // c.declared_funs (the local shadows). Without this, a load-and-call
+        // through a function-pointer variable gets miscodegen'd as a direct
+        // call to a global that doesn't exist in this binary.
+        if e.name in c.declared_funs && fun_type.name != "" {
             home, home_ok, ambiguous_owners := resolve_fn_home_with_ambiguity(c, env, e.name)
             if !home_ok && len(ambiguous_owners) > 1 {
                 owner_list := strings.join(ambiguous_owners[:], ", ")
