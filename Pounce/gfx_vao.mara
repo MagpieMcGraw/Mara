@@ -20,8 +20,8 @@ Vertex :: struct {
 
 // Mesh_Data represents raw mesh data (no OpenGL resources)
 Mesh_Data :: struct {
-    vertices: []Vertex
-    indices:  []u32
+    vertices: [:]Vertex
+    indices:  [:]u32
 }
 
 // VAO_Mesh holds info about where geometry is in the VBO/EBO

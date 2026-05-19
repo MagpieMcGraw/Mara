@@ -8,7 +8,7 @@ Pair :: struct {
     b: i64
 }
 
-run :: fun(memory: ^[]byte) -> Pair {
+run :: fun(memory: ^[:]byte) -> Pair {
     p : Pair = take(Pair, memory)
     return p
 }

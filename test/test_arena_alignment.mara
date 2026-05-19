@@ -14,15 +14,15 @@ test_arena_alignment :: fun() {
     ap : ^Arena_Basic = &arena
 
     // First alloc starts at offset=0 (already 16-aligned).
-    a : []byte = ap.alloc(1)
+    a : [:]byte = ap.alloc(1)
     print(arena.offset)  // 1
 
     // Second alloc rounds up: (1 + 15) & -16 = 16, then advances by 8.
-    b : []byte = ap.alloc(8)
+    b : [:]byte = ap.alloc(8)
     print(arena.offset)  // 24
 
     // Third alloc rounds 24 up to 32, then advances by 16.
-    c : []byte = ap.alloc(16)
+    c : [:]byte = ap.alloc(16)
     print(arena.offset)  // 48
 
     // Touch the slices so they're not optimized away.

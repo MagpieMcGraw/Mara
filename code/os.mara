@@ -1,8 +1,8 @@
 module mara.os
 
 // DANGER BELOW
-read_cstring :: fun(cap: i64, src: ^byte) -> [, 0]utf8 {
-	cstring : [, 0]utf8 = slice_from_ptr(src, cap)
+read_cstring :: fun(cap: i64, src: ^byte) -> [:, 0]utf8 {
+	cstring : [:, 0]utf8 = slice_from_ptr(src, cap)
 	for utf8_byte, i in cstring {
 		if utf8_byte == 0 do return cstring[:i]
 	}
@@ -10,7 +10,7 @@ read_cstring :: fun(cap: i64, src: ^byte) -> [, 0]utf8 {
 }
 
 // NEVER CALL THIS FUNCTION
-sys_alloc :: fun(cap: i64) -> []byte {
+sys_alloc :: fun(cap: i64) -> [:]byte {
 	#if #native {
 		raw := vm_reserve(cap)
 		vm_commit(raw, cap)
@@ -173,9 +173,9 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Read up to buf.cap bytes into buf. Returns (data, true) where data is a
 	// slice into buf covering the bytes actually read (data.len = 0 means EOF).
 	// Returns (empty slice, false) on error. The returned slice shares storage
-	// with buf — caller doesn't own a separate buffer. buf is `^[]byte` because
+	// with buf — caller doesn't own a separate buffer. buf is `^[:]byte` because
 	// the bytes are written through FFI; the slice header itself is unchanged.
-	file_read :: fun(id: File_Id, buf: ^[]byte) -> ([]byte, bool) {
+	file_read :: fun(id: File_Id, buf: ^[:]byte) -> ([:]byte, bool) {
 		read: u32 = 0
 		if not bool(ReadFile(id, &buf[0], u32(buf.len), &read, nil)) do return buf[0:0], false
 		return buf[0:i64(read)], true
@@ -184,10 +184,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Write data to the file. Returns (n, true) where n is bytes written, or
 	// (_, false) on error. Win32 may write fewer bytes than requested under
 	// disk-full / pipe conditions; compare n against data.len for partial-write
-	// detection. data is `^[]byte` for symmetry with file_read — WriteFile only
+	// detection. data is `^[:]byte` for symmetry with file_read — WriteFile only
 	// reads, but passing `&data[0]` still trips the immutable-param address
-	// check, so the contract is `^[]byte` either way.
-	file_write :: fun(id: File_Id, data: ^[]byte) -> (i64, bool) {
+	// check, so the contract is `^[:]byte` either way.
+	file_write :: fun(id: File_Id, data: ^[:]byte) -> (i64, bool) {
 		written: u32 = 0
 		if not bool(WriteFile(id, &data[0], u32(data.len), &written, nil)) do return 0, false
 		return i64(written), true
@@ -389,9 +389,9 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// slice into buf covering the bytes actually read (data.len = 0 means EOF).
 	// Returns (empty slice, false) on error. POSIX read() returns ssize_t
 	// directly with -1 for error, so the bool branch is just sign of n.
-	// `buf` is `^[]byte` because the bytes are written through FFI; Mara's
+	// `buf` is `^[:]byte` because the bytes are written through FFI; Mara's
 	// immutable-param address-check rejects `&buf[0]` on a by-value slice.
-	file_read :: fun(id: File_Id, buf: ^[]byte) -> ([]byte, bool) {
+	file_read :: fun(id: File_Id, buf: ^[:]byte) -> ([:]byte, bool) {
 		n := read(id, &buf[0], usize(buf.len))
 		if n < 0 do return buf[0:0], false
 		return buf[0:n], true
@@ -400,11 +400,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Write data to the file. Returns (n, true) where n is bytes written, or
 	// (_, false) on error. POSIX may write fewer bytes than requested under
 	// signal interruption / pipe-full / disk-full conditions; compare n
-	// against data.len for partial-write detection. `data` is `^[]byte` for
+	// against data.len for partial-write detection. `data` is `^[:]byte` for
 	// symmetry with file_read — write() only reads, but passing `&data[0]`
 	// still trips the immutable-param address check, so the contract is
-	// `^[]byte` either way.
-	file_write :: fun(id: File_Id, data: ^[]byte) -> (i64, bool) {
+	// `^[:]byte` either way.
+	file_write :: fun(id: File_Id, data: ^[:]byte) -> (i64, bool) {
 		n := write(id, &data[0], usize(data.len))
 		if n < 0 do return 0, false
 		return n, true
@@ -426,7 +426,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 			return false
 		}
 		buf : [512]byte
-		buf_slice : []byte = buf[:]
+		buf_slice : [:]byte = buf[:]
 		ok := true
 		done := false
 		for not done {

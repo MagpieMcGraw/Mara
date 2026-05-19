@@ -19,5 +19,5 @@ Font :: struct {
     layer: u32,
     offset_x, offset_y: i32,  // Position within atlas layer
 	//info: stbtt.fontinfo,
-	//packed_chars: []stbtt.packedchar,
+	//packed_chars: [:]stbtt.packedchar,
 }

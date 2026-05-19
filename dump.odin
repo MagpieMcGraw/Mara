@@ -652,7 +652,10 @@ type_expr_str :: proc(te: Type_Expr) -> string {
     case ^Type_Pointer:
         return fmt.tprintf("^%s", type_expr_str(v.elem))
     case ^Type_Slice_Expr:
-        return fmt.tprintf("[]%s", type_expr_str(v.elem))
+        if v.has_sentinel {
+            return fmt.tprintf("[:, %d]%s", v.sentinel, type_expr_str(v.elem))
+        }
+        return fmt.tprintf("[:]%s", type_expr_str(v.elem))
     case ^Type_Tuple_Expr:
         b: strings.Builder
         strings.write_string(&b, "(")

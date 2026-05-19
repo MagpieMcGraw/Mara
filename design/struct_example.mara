@@ -1,7 +1,7 @@
 module example
 
 Arena_Example :: struct {
-	base: []byte
+	base: [:]byte
 	capacity: i64
 	offset: i64
 	current_mark: i64
@@ -22,7 +22,7 @@ Arena_Example :: struct {
 		a.offset = off + 8
 	}
 
-	alloc :: fun(a: ^Self, size: i64) -> []byte {
+	alloc :: fun(a: ^Self, size: i64) -> [:]byte {
 		off := a.offset
 		end := off + size
 

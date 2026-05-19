@@ -15,7 +15,7 @@ GB :: 1 << 30
 // Each mark writes 8 bytes (prev_mark offset). No debug headers.
 
 Arena_Basic :: class(cap: i64) {
-	base: []byte = sys_alloc(cap)
+	base: [:]byte = sys_alloc(cap)
 	capacity: i64 = cap
 	offset: i64 = 0
 	current_mark: i64 = -1
@@ -31,7 +31,7 @@ Arena_Basic :: class(cap: i64) {
 		a.offset = off + 8
 	}
 
-	alloc :: fun(a: ^Self, size: i64) -> []byte {
+	alloc :: fun(a: ^Self, size: i64) -> [:]byte {
 		off := (a.offset + 15) & -16
 		end := off + size
 
@@ -60,7 +60,7 @@ Arena_Basic :: class(cap: i64) {
 }
 
 Arena_Debug :: class(cap: i64) {
-	base: []byte = sys_alloc(cap)
+	base: [:]byte = sys_alloc(cap)
 	capacity: i64 = cap
 	offset: i64 = 0
 	current_mark: i64 = -1
@@ -89,7 +89,7 @@ Arena_Debug :: class(cap: i64) {
 		a: ^Self,
 		size: i64,
 		name: ^byte = #caller_name,
-		span: ^byte = #caller_span) -> []byte
+		span: ^byte = #caller_span) -> [:]byte
 	{
 		off := (a.offset + 15) & -16
 		cap := a.capacity

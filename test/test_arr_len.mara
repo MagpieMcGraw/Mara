@@ -17,7 +17,7 @@ test_arr_len :: fun() {
     print(fa.cap)   // expect 8
 
     // --- Slice over the fixed array: .len == .cap ----------------------
-    sl : []i64 = fa[0 : 4]
+    sl : [:]i64 = fa[0 : 4]
     print(sl.len)   // expect 4
     print(sl.cap)   // expect 4
 

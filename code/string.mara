@@ -8,7 +8,7 @@ use mara.os
 // 	using bytes: [n, 0]utf8
 // }
 
-String :: type([, 0]utf8(128))
+String :: type([:, 0]utf8(128))
 
 overload + add
 add :: dispatch {

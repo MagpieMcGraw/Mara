@@ -10,7 +10,7 @@ Pair :: struct {
 
 test_take_stack_source_fail :: fun() {
     buf : [200]byte
-    sl : []byte = buf[:]
+    sl : [:]byte = buf[:]
     p : Pair = take(Pair, &sl)
     p.a = 5
 }

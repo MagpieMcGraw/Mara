@@ -66,7 +66,7 @@ Megastruct :: struct {
 	VAO: VAO_State = ---
 }
 
-game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
+game_init :: fun(game: ^Megastruct, memory: ^[:]byte) {
 	game^ = Megastruct{}
 	game.window = memory[0]
 	game.gl_context = memory[8]
@@ -108,7 +108,7 @@ game_draw :: fun(game: ^Megastruct) {
 }
 
 #expose
-game_run :: fun(ctx: ^Context, memory: ^[]byte, reload: bool) -> bool {
+game_run :: fun(ctx: ^Context, memory: ^[:]byte, reload: bool) -> bool {
 	game := take(Megastruct, &memory[16])
 	if not game.initialized do game_init(&game, memory)
 	if reload do game_reload(&game)

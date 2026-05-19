@@ -13,13 +13,13 @@ add :: dispatch {
 }
 
 // Append all elements from a slice in place.
-add_array :: fun(dst: ^Array($T), src: []$T) {
+add_array :: fun(dst: ^Array($T), src: [:]$T) {
 	dst[dst.len:] = src
 	dst.len += src.len
 }
 
 // Append a single element to a slice in place.
-add_element :: fun(dst: ^[]$T, src: $T) {
+add_element :: fun(dst: ^[:]$T, src: $T) {
 	dst[dst.len] = src
 	dst.len += 1
 }
