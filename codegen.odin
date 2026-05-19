@@ -13,23 +13,25 @@ import "core:os"
 //           if/else, for loops, functions, print() builtin.
 // ---------------------------------------------------------------------------
 
-// LLVM IR type for a slice value: { data_ptr, len, cap }.
+// LLVM IR type for a slice value: { len, cap, data_ptr }.
 // `len` is the cursor (amount of valid/used data, starts at 0 for fresh slices).
 // `cap` is the total capacity of the underlying region.
-SLICE_IR_TYPE :: "{ ptr, i64, i64 }"
+// Ordering chosen so partial-array variants nest as prefixes — `{len, [N x T]}`,
+// `{len, cap, [N x T]}`, `{len, cap, ptr, [N x T]}` all share leading fields.
+SLICE_IR_TYPE :: "{ i64, i64, ptr }"
 
 // Slice header field positions. Partial arrays share these for their first
 // 24 bytes; the elements field follows at PARTIAL_ELEMENTS_FIELD. To swap
 // the layout, update SLICE_IR_TYPE, the SLICE constant below, and the
 // partial_array_ir_type helper — all live here.
-Slice_Fields :: struct { ptr, len, cap: int }
-SLICE :: Slice_Fields{ptr = 0, len = 1, cap = 2}
+Slice_Fields :: struct { len, cap, ptr: int }
+SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 3
 
 // Build the LLVM IR type for a `[..N]T` partial array. `cap` includes the
 // sentinel slot if applicable; caller must pre-add the +1.
 partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
-    return strings.concatenate({"{ ptr, i64, i64, [", fmt.tprintf("%d", cap), " x ", elem_ir, "] }"})
+    return strings.concatenate({"{ i64, i64, ptr, [", fmt.tprintf("%d", cap), " x ", elem_ir, "] }"})
 }
 
 // Info about a scalar variable in codegen (simple alloca)
@@ -1980,15 +1982,15 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     } else {
         emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", i64 ", size_val, ", ptr ", tmp_slice, ")"}))
     }
-    // Extract raw data pointer (field 0 of the returned slice)
+    // Extract raw data pointer from the returned slice header
     data_ptr_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", data_ptr_ptr, " = getelementptr ", SLICE_IR_TYPE, ", ptr ", tmp_slice, ", i32 0, i32 0"}))
+    emit_slice_gep(g, data_ptr_ptr, tmp_slice, SLICE.ptr)
     data_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", data_ptr, " = load ptr, ptr ", data_ptr_ptr}))
 
-    // Check the slice capacity (field 2) — a zero-cap return means OOM
+    // Check the slice capacity — a zero-cap return means OOM
     cap_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", cap_ptr, " = getelementptr ", SLICE_IR_TYPE, ", ptr ", tmp_slice, ", i32 0, i32 2"}))
+    emit_slice_gep(g, cap_ptr, tmp_slice, SLICE.cap)
     cap_val := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", cap_val, " = load i64, ptr ", cap_ptr}))
     is_oom := fresh_tmp(g)
@@ -2456,14 +2458,14 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         elem_ptr := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", buf_ptr, ", i64 0, i64 ", cur_i}))
         data_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", data_ptr, " = getelementptr ", SLICE_IR_TYPE, ", ptr ", elem_ptr, ", i32 0, i32 0"}))
+        emit_slice_gep(&g, data_ptr, elem_ptr, SLICE.ptr)
         emit_raw(&g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))
         // buf[i].len = strlen, buf[i].cap = strlen (argv strings are fully-populated views)
         slen_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", slen_ptr, " = getelementptr ", SLICE_IR_TYPE, ", ptr ", elem_ptr, ", i32 0, i32 1"}))
+        emit_slice_gep(&g, slen_ptr, elem_ptr, SLICE.len)
         emit_raw(&g, strings.concatenate({"  store i64 ", str_len, ", ptr ", slen_ptr}))
         scap_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", scap_ptr, " = getelementptr ", SLICE_IR_TYPE, ", ptr ", elem_ptr, ", i32 0, i32 2"}))
+        emit_slice_gep(&g, scap_ptr, elem_ptr, SLICE.cap)
         emit_raw(&g, strings.concatenate({"  store i64 ", str_len, ", ptr ", scap_ptr}))
         // i++
         next_i := fresh_tmp(&g)
