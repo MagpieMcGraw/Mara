@@ -57,7 +57,8 @@ primitive_sphere :: fun(subdivisions: i64, storage: ^[]byte) -> Mesh_Data {
 }
 
 // Cube 1x1x1 centered at origin
-primitive_cube :: fun() -> [24]Vertex, [36]u32 {
+primitive_cube :: fun()
+-> [24]Vertex, [36]u32 {
     verts : [24]Vertex
     inds : [36]u32
 
@@ -113,7 +114,8 @@ primitive_cube :: fun() -> [24]Vertex, [36]u32 {
 }
 
 // Orientation: Z forward, X right, Y up
-primitive_quad :: fun()	-> verts: [4]Vertex, inds: [6]u32 {
+primitive_quad :: fun()	->
+verts: [4]Vertex, inds: [6]u32 {
     verts[0] = Vertex{position = [-0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
     verts[1] = Vertex{position = [ 0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 0.0]}
     verts[2] = Vertex{position = [ 0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 1.0]}
@@ -127,7 +129,6 @@ primitive_quad :: fun()	-> verts: [4]Vertex, inds: [6]u32 {
     inds[4] = 2
     inds[5] = 3
 
-    //mesh := Mesh_Data{verts, inds}
     return verts, inds
 }
 

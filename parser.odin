@@ -1160,14 +1160,23 @@ parse_typed_param_loop :: proc(p: ^Parser, typed_params: ^[dynamic]Scope_Binding
 //   positional multi:      -> Type1, Type2
 //   named multi:           -> name: Type, name: Type   (populates return_bindings)
 //   parenthesized:         -> (...)  — single or multi, named or not — goes through parse_type_expr
+//
+// Newlines are tolerated between `)` and `->` and between `->` and the type,
+// so wide signatures can wrap. We peek past newlines for an arrow or type
+// starter; if neither follows, the position is restored so the trailing
+// newline stays available for the caller's body parser.
 parse_optional_return_type :: proc(p: ^Parser) -> Type_Expr {
+    saved := p.pos
+    for current_kind(p) == .Newline { advance(p) }
     if current_kind(p) == .Arrow {
         advance(p) // consume '->'
+        skip_newlines(p)
         return parse_return_type_clause(p)
     }
     if can_start_type_expr(p) {
         return parse_type_expr(p)
     }
+    p.pos = saved
     return nil
 }
 
@@ -1425,7 +1434,10 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
             // fun($T: type) -> T { body } or fun($T: type) T { body }
             // Also: fun() -> Type, Type ... { body } — multi-return goes
             // through parse_return_type_clause so it can build a tuple.
-            if current_kind(p) == .Arrow { advance(p) } // consume optional '->'
+            if current_kind(p) == .Arrow {
+                advance(p) // consume optional '->'
+                skip_newlines(p) // allow newline between -> and the return type
+            }
             return_type := parse_return_type_clause(p)
             for dp in p.dollar_params {
                 already_exists := false
