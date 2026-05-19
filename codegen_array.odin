@@ -293,7 +293,8 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     // and [N]byte fixed arrays (Array(byte, N) reaches here post-desugar as a
     // Type_Fixed_Array). Special enough — and unrelated to the regular
     // address-chain shape — that it stays an explicit early branch.
-    if is_byte_slice(s.target_type) || is_byte_fixed_array(s.target_type) {
+    if is_byte_slice(s.target_type) || is_byte_fixed_array(s.target_type) ||
+       is_byte_partial_array(s.target_type) {
         gen_byte_target_write(g, s, ix.expr, ix.index)
         return
     }

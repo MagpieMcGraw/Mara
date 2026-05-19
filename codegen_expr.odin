@@ -2025,6 +2025,10 @@ is_utf8_array_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if sl, sl_ok := t.(^Type_Slice); sl_ok {
         if _, utf8_ok := sl.elem.(Type_Utf8); utf8_ok { return true }
     }
+    // Check utf8 partial array — same shape for print purposes.
+    if pa, pa_ok := t.(^Type_Partial_Array); pa_ok {
+        if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok { return true }
+    }
     // Check codegen-level vars (for idents that may not have full type info)
     if ident, id_ok := expr.(^Expr_Ident); id_ok {
         if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.is_utf8 { return true }

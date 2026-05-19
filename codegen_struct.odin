@@ -1486,9 +1486,17 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         }
         // Slice field write via index: arr[i].len = N where arr[i] is a slice.
         // The element address IS the slice header — gen_index_address gives it.
+        // Same path covers `arr[i]: [..N]T` partial arrays: their first 24
+        // bytes are layout-compatible with a slice header, and the field
+        // store hits the same offsets.
         if idx_expr, idx_ok := fa_expr.expr.(^Expr_Index); idx_ok {
             idx_type := distinct_base(expr_type(idx_expr))
             if _, is_slice := idx_type.(^Type_Slice); is_slice {
+                slice_hdr_ptr := gen_index_address(g, idx_expr)
+                gen_slice_field_store(g, slice_hdr_ptr, fa_expr.field, s.value, s.span)
+                return
+            }
+            if _, is_pa := idx_type.(^Type_Partial_Array); is_pa {
                 slice_hdr_ptr := gen_index_address(g, idx_expr)
                 gen_slice_field_store(g, slice_hdr_ptr, fa_expr.field, s.value, s.span)
                 return

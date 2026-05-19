@@ -2948,10 +2948,23 @@ is_byte_array_class :: proc(t: Type) -> bool {
     return is_byte
 }
 
+// True when a type is a byte-element partial array [..N]byte. Auto-derefs ^Ptr.
+// Distinct aliases unwrap so `^String`-style mutable buffer params register too.
+is_byte_partial_array :: proc(t: Type) -> bool {
+    cur := t
+    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
+    if dt, ok := cur.(^Type_Distinct); ok { cur = dt.base_type }
+    pa, ok := cur.(^Type_Partial_Array)
+    if !ok { return false }
+    _, is_byte := pa.elem.(Type_Byte)
+    return is_byte
+}
+
 // True when a type is any byte-addressable buffer — shares the same
 // reinterpret read/write semantics as []byte.
 is_byte_buffer :: proc(t: Type) -> bool {
-    return is_byte_slice(t) || is_byte_fixed_array(t) || is_byte_array_class(t)
+    return is_byte_slice(t) || is_byte_fixed_array(t) || is_byte_array_class(t) ||
+           is_byte_partial_array(t)
 }
 
 // True when an expression is an index into a byte slice (e.g. mem[0]).
@@ -6082,6 +6095,12 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     if is_byte_slice(target_type) {
         solid_val_type := solidify_type(val_type)
         s.assign_value_type = solid_val_type
+        return
+    }
+
+    // Byte partial-array reinterpret write: same semantics as []byte slice.
+    if is_byte_partial_array(target_type) {
+        s.assign_value_type = solidify_type(val_type)
         return
     }
 

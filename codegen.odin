@@ -830,6 +830,13 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
         } else if ut, ut_ok := p.type_.(^Type_Union); ut_ok {
             append(&info.param_types, "ptr")
             append(&info.param_structs, union_key(ut))
+        } else if _, pa_ok := partial_through_distinct_and_ptr(p.type_); pa_ok {
+            // Partial-array param: same fat-pointer-ref ABI as slices. Mark
+            // with SLICE_IR_TYPE so the call-site uses gen_slice_param_arg,
+            // which passes a pointer to the partial-array's header. The
+            // function declaration receives `ptr` (set in codegen_fn.odin).
+            append(&info.param_types, SLICE_IR_TYPE)
+            append(&info.param_structs, "")
         } else {
             append(&info.param_types, llvm_type_from_checker(p.type_))
             append(&info.param_structs, "")
