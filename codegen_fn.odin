@@ -8,7 +8,7 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 
 // Unwrap a parameter type that ultimately resolves to a slice. Slices are
-// reference types in Mara, so `s: []T`, `s: String` (distinct slice), and
+// reference types in Mara, so `s: [:]T`, `s: String` (distinct slice), and
 // `s: ^String` (or `^DistinctSlice`) all bind to the same fat-pointer-ref
 // shape. Returns the underlying Type_Slice (and ok) for whichever wrapper
 // applies; returns false for non-slice types.
@@ -17,6 +17,19 @@ slice_through_distinct_and_ptr :: proc(t: Type) -> (^Type_Slice, bool) {
     if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
     if dt, ok := cur.(^Type_Distinct); ok { cur = dt.base_type }
     if sl, ok := cur.(^Type_Slice); ok { return sl, true }
+    return nil, false
+}
+
+// Same as slice_through_distinct_and_ptr but for partial-array params. The
+// first 24 bytes of a partial array's layout match a slice header, so the
+// fat-pointer-ref ABI works identically: `dst: ^String` where String is a
+// `type([..N, 0]utf8)` partial array binds as a Slice_Var with the same
+// access shape as a slice param.
+partial_through_distinct_and_ptr :: proc(t: Type) -> (^Type_Partial_Array, bool) {
+    cur := t
+    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
+    if dt, ok := cur.(^Type_Distinct); ok { cur = dt.base_type }
+    if pa, ok := cur.(^Type_Partial_Array); ok { return pa, true }
     return nil, false
 }
 
@@ -91,8 +104,12 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         } else if _, sl_ok := slice_through_distinct_and_ptr(p.type_); sl_ok {
             // Slice param: pass by pointer to the slice header (fat pointer is
             // inherently a reference type — cursor mutations propagate to caller).
-            // Same lowering for `s: []T`, `s: String` (distinct slice), and
+            // Same lowering for `s: [:]T`, `s: String` (distinct slice), and
             // `s: ^String` (explicit pointer, same ABI).
+            append(&param_strs, fmt.tprintf("ptr %%%s.arg", p.name))
+        } else if _, pa_ok := partial_through_distinct_and_ptr(p.type_); pa_ok {
+            // Partial-array param: same ABI as slice (first 24 bytes match).
+            // `s: ^String` where String is `type([..N, 0]utf8)` binds here.
             append(&param_strs, fmt.tprintf("ptr %%%s.arg", p.name))
         } else {
             pt := llvm_type_from_checker(p.type_)
@@ -285,7 +302,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         } else if sl, sl_ok := slice_through_distinct_and_ptr(p.type_); sl_ok {
             // Slice param: %name.arg is a ptr to the caller's slice header.
             // Bind directly — no alloca/store; mutations propagate. Handles
-            // plain Slice (`s: []T`), distinct slice (`s: String`), and
+            // plain Slice (`s: [:]T`), distinct slice (`s: String`), and
             // ^Slice / ^DistinctSlice (`dst: ^String`) — all collapse to the
             // same fat-pointer-ref shape since slices are reference types.
             // Must come before the ^Type_Ptr branch so `^String` doesn't get
@@ -297,6 +314,18 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 elem_type    = elem_t,
                 is_utf8      = sl_utf8,
                 has_sentinel = sl.has_sentinel,
+            }
+        } else if pa, pa_ok := partial_through_distinct_and_ptr(p.type_); pa_ok {
+            // Partial-array param via pointer: same fat-pointer-ref ABI as
+            // slice. First 24 bytes of the partial-array layout match a
+            // slice header — codegen accesses ptr/len/cap identically.
+            elem_t := llvm_type_from_checker(pa.elem)
+            _, pa_utf8 := pa.elem.(Type_Utf8)
+            g.all_vars[p.name] = Slice_Var{
+                alloca       = fmt.tprintf("%%%s.arg", p.name),
+                elem_type    = elem_t,
+                is_utf8      = pa_utf8,
+                has_sentinel = pa.has_sentinel,
             }
         } else if pt, pt_ok := p.type_.(^Type_Ptr); pt_ok {
             if as_struct_body(pt.elem) != nil {
