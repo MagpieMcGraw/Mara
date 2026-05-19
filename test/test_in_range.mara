@@ -4,7 +4,7 @@ module test_in_range
 // Parser desugars to (x >= a) and (x < b), so iteration count
 // (b - a) matches "number of values that satisfy `in`".
 
-check :: fun(label: [:, 0]utf8, x: i64, lo: i64, hi: i64) {
+check :: fun(label: [, 0]utf8, x: i64, lo: i64, hi: i64) {
     if x in lo..hi {
         print(label, "in")
     else
@@ -12,7 +12,7 @@ check :: fun(label: [:, 0]utf8, x: i64, lo: i64, hi: i64) {
     }
 }
 
-check_not :: fun(label: [:, 0]utf8, x: i64, lo: i64, hi: i64) {
+check_not :: fun(label: [, 0]utf8, x: i64, lo: i64, hi: i64) {
     if x not in lo..hi {
         print(label, "out")
     else

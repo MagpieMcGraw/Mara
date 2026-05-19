@@ -13,7 +13,7 @@ write_one :: fun(g: ^Megastruct) {
 }
 
 // Mutates the caller's bytes via a take-bound view.
-run :: fun(memory: ^[:]byte) {
+run :: fun(memory: ^[]byte) {
 	game : Megastruct = take(Megastruct, memory)
 	write_one(&game)
 	game.x = 33

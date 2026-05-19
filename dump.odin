@@ -653,9 +653,9 @@ type_expr_str :: proc(te: Type_Expr) -> string {
         return fmt.tprintf("^%s", type_expr_str(v.elem))
     case ^Type_Slice_Expr:
         if v.has_sentinel {
-            return fmt.tprintf("[:, %d]%s", v.sentinel, type_expr_str(v.elem))
+            return fmt.tprintf("[, %d]%s", v.sentinel, type_expr_str(v.elem))
         }
-        return fmt.tprintf("[:]%s", type_expr_str(v.elem))
+        return fmt.tprintf("[]%s", type_expr_str(v.elem))
     case ^Type_Partial_Array_Expr:
         size_str: string
         if v.size_name != "" {

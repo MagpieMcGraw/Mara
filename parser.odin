@@ -2797,10 +2797,11 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
     if current_kind(p) == .Left_Bracket {
         start := token_span(current(p))
         advance(p) // consume '['
-        // Slice type: [:]T — colon between brackets
-        // Sentinel slice: [:, 0]T — colon then comma then sentinel
-        if current_kind(p) == .Colon {
-            advance(p) // consume ':'
+        // Slice type: []T — empty brackets. Since partial arrays share the
+        // first 24 bytes of slice layout, []T flows through to either form
+        // at the IR level.
+        // Sentinel slice: [, 0]T — comma immediately after '['.
+        if current_kind(p) == .Right_Bracket || current_kind(p) == .Comma {
             has_sentinel := false
             sentinel_val := 0
             if current_kind(p) == .Comma {

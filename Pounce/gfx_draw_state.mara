@@ -98,8 +98,8 @@ get_or_create_batch :: fun(state: ^DrawState, mesh_id: i64) -> ^Mesh_Batch {
 
 draw_state_append :: fun(
 	state: ^DrawState,
-	objects: [:]Object,
-	visuals: [:]Visual,
+	objects: []Object,
+	visuals: []Visual,
 	camera: Camera,
 	highlight_state: ^DrawState = nil)
 {

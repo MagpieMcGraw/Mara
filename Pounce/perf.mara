@@ -16,7 +16,7 @@ Performance_Timer :: struct {
 
 // Call once at the start of a timing session with the first phase name.
 perf_timer_begin :: fun(
-	first_phase: [:, 0]utf8) -> Performance_Timer
+	first_phase: [, 0]utf8) -> Performance_Timer
 {
 	timer: Performance_Timer
     timer.count = 0
@@ -28,7 +28,7 @@ perf_timer_begin :: fun(
 }
 
 // End the current phase, record its time, and start timing next_phase.
-perf_timer_mark :: fun(timer: ^Performance_Timer, next_phase: [:, 0]utf8) {
+perf_timer_mark :: fun(timer: ^Performance_Timer, next_phase: [, 0]utf8) {
     seconds, now := time_since(timer.phase_start)
 
     if timer.count < MAX_PERF_PHASES {

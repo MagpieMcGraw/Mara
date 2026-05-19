@@ -6,7 +6,7 @@ use mara.math
 
 
 // Cube 1x1x1 centered at origin
-primitive_cube :: fun(storage: ^[:]byte) -> Mesh_Data {
+primitive_cube :: fun(storage: ^[]byte) -> Mesh_Data {
 
     verts := take([24]Vertex, storage)
     inds := take([36]u32, storage)
@@ -64,15 +64,15 @@ primitive_cube :: fun(storage: ^[:]byte) -> Mesh_Data {
 }
 
 // Sphere with given subdivisions, radius 0.5 centered at origin
-primitive_sphere :: fun(subdivisions: i64, storage: ^[:]byte) -> Mesh_Data {
+primitive_sphere :: fun(subdivisions: i64, storage: ^[]byte) -> Mesh_Data {
     rings := subdivisions
     sectors := subdivisions * 2
 
     n_verts := (rings + 1) * (sectors + 1)
     n_inds  := rings * sectors * 6
 
-    verts : [:]Vertex = take([:]Vertex(n_verts), storage)
-    inds  : [:]u32    = take([:]u32(n_inds), storage)
+    verts := take([]Vertex(n_verts), storage)
+    inds  := take([]u32(n_inds), storage)
 
     vi := 0
     for r in 0..rings + 1 {
@@ -120,7 +120,7 @@ primitive_sphere :: fun(subdivisions: i64, storage: ^[:]byte) -> Mesh_Data {
 // Quad facing +Z (forward), 1x1 centered at origin
 
 
-primitive_quad :: fun(storage: ^[:]byte) -> Mesh_Data {
+primitive_quad :: fun(storage: ^[]byte) -> Mesh_Data {
     verts := take([4]Vertex, storage)
     inds := take([6]u32, storage)
 

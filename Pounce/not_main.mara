@@ -39,7 +39,7 @@ main :: fun() -> i64 {
     }
     handle := os.load_library(DLL_COPY)
     game_run_ptr := os.find_symbol(handle, "game_run")
-    game_run : fn(^Context, ^[:]byte, bool -> bool) = game_run_ptr
+    game_run : fn(^Context, ^[]byte, bool -> bool) = game_run_ptr
     last_mtime := os.file_mtime(DLL_SRC)
 
     // Game state lives here, owned by the host across DLL reloads.

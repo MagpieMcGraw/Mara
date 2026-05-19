@@ -10,7 +10,7 @@ Pair :: struct {
     b: i64
 }
 
-run :: fun(memory: ^[:]byte) {
+run :: fun(memory: ^[]byte) {
     print("=== test_take_alignment ===")
 
     flag : u8 = take(u8, memory)
@@ -29,7 +29,7 @@ run :: fun(memory: ^[:]byte) {
 
     // Runtime-counted form aligns the same way. Storage already at 24;
     // 24 is i64-aligned, no extra padding. Advance 3*8 = 24 → 48.
-    nums : [:]i64 = take([:]i64(3), memory)
+    nums : []i64 = take([]i64(3), memory)
     nums[0] = 10
     nums[1] = 20
     nums[2] = 30
@@ -38,11 +38,11 @@ run :: fun(memory: ^[:]byte) {
     print(nums[2])     // 30
     print(memory.len)  // 48
 
-    // Now make the runtime form actually pad: take a u8, then [:]i64.
+    // Now make the runtime form actually pad: take a u8, then []i64.
     sentinel : u8 = take(u8, memory)
     sentinel = 7
     // Cursor 49 → aligned to 56 → +16 → 72.
-    more : [:]i64 = take([:]i64(2), memory)
+    more : []i64 = take([]i64(2), memory)
     more[0] = 1
     more[1] = 2
 

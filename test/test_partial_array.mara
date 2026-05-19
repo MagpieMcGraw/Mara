@@ -19,8 +19,8 @@ test_partial_array :: fun() {
 	print(storage[1])
 	print(storage[2])
 
-	// Sub-slice from partial array — should produce a [:]i64 view.
-	sl : [:]i64 = storage[0:3]
+	// Sub-slice from partial array — should produce a []i64 view.
+	sl : []i64 = storage[0:3]
 	print(sl.len)
 	print(sl[0])
 	print(sl[2])

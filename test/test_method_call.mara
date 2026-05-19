@@ -16,12 +16,12 @@ test_method_call :: fun() {
 	// Method call through a pointer-typed local. ap.alloc(32) should
 	// type-check as alloc(ap, 32) — the qualifier prepended as the
 	// ^Self receiver.
-	buf : [:]byte = ap.alloc(32)
+	buf : []byte = ap.alloc(32)
 	print(buf.len)  // expect 32
 
 	// Second call to confirm bump-allocation advances offset and the
 	// receiver-prepend stays correct across calls.
-	buf2 : [:]byte = ap.alloc(64)
+	buf2 : []byte = ap.alloc(64)
 	print(buf2.len)  // expect 64
 
 	print("=== test_method_call passed ===")

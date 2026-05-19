@@ -1,13 +1,13 @@
 module test_take_wrong_source_fail
 
-// Should fail: take's storage must be a [:]byte slice, not some other type.
+// Should fail: take's storage must be a []byte slice, not some other type.
 
 Pair :: struct {
     a: i64
     b: i64
 }
 
-run :: fun(nums: ^[:]i64) {
+run :: fun(nums: ^[]i64) {
     p : Pair = take(Pair, nums)
     p.a = 5
 }

@@ -12,7 +12,7 @@ Pair :: struct {
     b: i64
 }
 
-run :: fun(memory: ^[:]byte) {
+run :: fun(memory: ^[]byte) {
     print("=== test_take_basic ===")
 
     // Carve a Pair from the front of memory.
@@ -41,7 +41,7 @@ run :: fun(memory: ^[:]byte) {
 
 test_take_basic :: fun() {
     // Sized slice — fresh cursor (len=0, cap=256). Coercing a fixed array
-    // `[256]byte` to `[:]byte` would instead produce a populated view
+    // `[256]byte` to `[]byte` would instead produce a populated view
     // (len=cap=256), which would put take past the end of the buffer.
     buf : [..256]byte
     run(&buf)

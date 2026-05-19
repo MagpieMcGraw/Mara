@@ -10,7 +10,7 @@ use mara.memory
 
 main :: fun() -> i64 {
 	arena : Arena_Basic = Arena_Basic(1 * KB)
-	buf : [:]byte = arena.alloc(32)  // arena is a value — alloc wants ^Self
+	buf : []byte = arena.alloc(32)  // arena is a value — alloc wants ^Self
 	print(buf.len)
 	return 0
 }

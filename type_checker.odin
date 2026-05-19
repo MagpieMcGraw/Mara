@@ -2807,9 +2807,9 @@ type_name :: proc(t: Type) -> string {
         return fmt.tprintf("[%d]%s", v.size, type_name(v.elem))
     case ^Type_Slice:
         if v.has_sentinel {
-            return fmt.tprintf("[:, %d]%s", v.sentinel, type_name(v.elem))
+            return fmt.tprintf("[, %d]%s", v.sentinel, type_name(v.elem))
         }
-        return fmt.tprintf("[:]%s", type_name(v.elem))
+        return fmt.tprintf("[]%s", type_name(v.elem))
     case ^Type_Partial_Array:
         if v.has_sentinel {
             return fmt.tprintf("[..%d, %d]%s", v.size, v.sentinel, type_name(v.elem))
@@ -6237,7 +6237,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             }
         } else if rhs_sl, rhs_sl_ok := val_type.(^Type_Slice); rhs_sl_ok {
             if types_incompatible(fa.elem, rhs_sl.elem) {
-                check_error(c, s.span, "cannot slice-assign [:]%s into [%d]%s",
+                check_error(c, s.span, "cannot slice-assign []%s into [%d]%s",
                     type_name(rhs_sl.elem), fa.size, type_name(fa.elem))
             }
         } else if !is_any(val_type) {
