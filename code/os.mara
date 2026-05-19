@@ -426,7 +426,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 			return false
 		}
 		buf : [512]byte
-		buf_slice : []byte = buf[]
+		buf_slice : []byte = buf[:]
 		ok := true
 		done := false
 		for not done {

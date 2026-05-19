@@ -1150,15 +1150,89 @@ parse_typed_param_loop :: proc(p: ^Parser, typed_params: ^[dynamic]Scope_Binding
 // Parse an optional `-> Type` or bare `Type` return clause. Returns nil
 // Type_Expr if neither is present. Used after every parameter list — function
 // definitions, foreign-block prototypes, lambda signatures.
+//
+// After `->`, supports four shapes:
+//   single:                -> Type
+//   positional multi:      -> Type1, Type2
+//   named multi:           -> name: Type, name: Type   (populates return_bindings)
+//   parenthesized:         -> (...)  — single or multi, named or not — goes through parse_type_expr
 parse_optional_return_type :: proc(p: ^Parser) -> Type_Expr {
     if current_kind(p) == .Arrow {
         advance(p) // consume '->'
-        return parse_type_expr(p)
+        return parse_return_type_clause(p)
     }
     if can_start_type_expr(p) {
         return parse_type_expr(p)
     }
     return nil
+}
+
+parse_return_type_clause :: proc(p: ^Parser) -> Type_Expr {
+    start := token_span(current(p))
+
+    // Named multi-return detection: `name:` or `name, name (:|,)`
+    is_named := false
+    if current_kind(p) == .Identifier {
+        if peek_kind(p, 1) == .Colon {
+            is_named = true
+        } else if peek_kind(p, 1) == .Comma && peek_kind(p, 2) == .Identifier &&
+                  (peek_kind(p, 3) == .Colon || peek_kind(p, 3) == .Comma) {
+            is_named = true
+        }
+    }
+
+    if is_named {
+        clear(&p.return_bindings)
+        elems: [dynamic]Type_Expr
+        parse_named_return_group(p, &elems)
+        for current_kind(p) == .Comma {
+            advance(p)
+            skip_newlines(p)
+            parse_named_return_group(p, &elems)
+        }
+        tt := new(Type_Tuple_Expr)
+        tt.elems = elems
+        tt.span = start
+        return tt
+    }
+
+    // Positional: parse first type, then optional comma for multi-return
+    first := parse_type_expr(p)
+    if current_kind(p) != .Comma {
+        return first
+    }
+    elems: [dynamic]Type_Expr
+    append(&elems, first)
+    for current_kind(p) == .Comma {
+        advance(p)
+        skip_newlines(p)
+        append(&elems, parse_type_expr(p))
+    }
+    tt := new(Type_Tuple_Expr)
+    tt.elems = elems
+    tt.span = start
+    return tt
+}
+
+parse_named_return_group :: proc(p: ^Parser, elems: ^[dynamic]Type_Expr) {
+    names: [dynamic]string
+    defer delete(names)
+    append(&names, expect(p, .Identifier).text)
+    for current_kind(p) == .Comma {
+        if peek_kind(p, 1) == .Identifier && (peek_kind(p, 2) == .Comma || peek_kind(p, 2) == .Colon) {
+            advance(p)
+            skip_newlines(p)
+            append(&names, expect(p, .Identifier).text)
+        } else {
+            break
+        }
+    }
+    expect(p, .Colon)
+    type_expr := parse_type_expr(p)
+    for pname in names {
+        append(elems, type_expr)
+        append(&p.return_bindings, Scope_Binding{name = pname, type_expr = type_expr})
+    }
 }
 
 parse_typed_param_group :: proc(p: ^Parser, typed_params: ^[dynamic]Scope_Binding, allow_defaults: bool) {
@@ -1345,8 +1419,10 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
 
         if current_kind(p) == .Arrow || can_start_type_expr(p) {
             // fun($T: type) -> T { body } or fun($T: type) T { body }
+            // Also: fun() -> Type, Type ... { body } — multi-return goes
+            // through parse_return_type_clause so it can build a tuple.
             if current_kind(p) == .Arrow { advance(p) } // consume optional '->'
-            return_type := parse_type_expr(p)
+            return_type := parse_return_type_clause(p)
             for dp in p.dollar_params {
                 already_exists := false
                 for gp in generic_params { if gp.name == dp.name { already_exists = true; break } }
@@ -1971,7 +2047,9 @@ parse_match :: proc(p: ^Parser) -> Stmt {
     // Strict-default: every match on an enum/union must cover all variants
     // (or use `else` as an explicit opt-out). The previous `match all` opt-in
     // form is gone — exhaustiveness is the default, not a mode.
+    p.no_struct_lit = true
     subject := parse_expr(p)
+    p.no_struct_lit = false
     skip_newlines(p)
     expect(p, .Left_Brace)
     skip_newlines(p)
@@ -3091,34 +3169,16 @@ is_struct_literal :: proc(p: ^Parser) -> bool {
             return true
         }
     }
-    // Positional: `{ expr , ... }` — accept only if a top-level comma appears
-    // before the matching `}`. The comma requirement keeps single-statement
-    // blocks (e.g. `if x { foo() }`) from being misread as a positional literal.
+    // Positional: `{ expr , ... }` or `{ expr }` (single value) — accept any
+    // content starting with an expression-shaped token. Control-flow contexts
+    // (if/for) set p.no_struct_lit to disambiguate from their body `{}`, so a
+    // single-expression block can't be misread here. Standalone `{...}` in
+    // expression position is always a struct literal in Mara — there's no
+    // block-as-expression syntax.
     #partial switch next_kind {
     case .Number, .String, .Char, .True, .False, .Identifier,
          .Left_Bracket, .Left_Paren, .Minus, .Ampersand, .Caret, .Bang:
-        // Scan forward from `offset` for a top-level comma before the matching
-        // right brace. Respect nesting so commas inside sub-expressions don't
-        // trigger a false positive.
-        depth := 0
-        i := offset
-        for {
-            k := peek_kind(p, i)
-            #partial switch k {
-            case .EOF:
-                return false
-            case .Left_Brace, .Left_Paren, .Left_Bracket:
-                depth += 1
-            case .Right_Paren, .Right_Bracket:
-                depth -= 1
-            case .Right_Brace:
-                if depth == 0 { return false }
-                depth -= 1
-            case .Comma:
-                if depth == 0 { return true }
-            }
-            i += 1
-        }
+        return true
     }
     return false
 }
