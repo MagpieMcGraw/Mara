@@ -142,7 +142,6 @@ primitive_quad :: fun(storage: ^[]byte) -> Mesh_Data {
 }
 
 primitives_init :: fun(vao: ^VAO_State) {
-	print("prim")
     storage: []byte(1<<24)
     quad := primitive_quad(&storage)
     cube := primitive_cube(&storage)

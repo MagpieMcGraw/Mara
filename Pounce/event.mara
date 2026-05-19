@@ -24,6 +24,7 @@ Event_State :: struct {
     keyboard: Keyboard
     mouse: Mouse
     dropfile: Dropfile
+    window_in_focus : bool
 }
 
 process :: fun(events: ^Event_State) {
@@ -61,6 +62,11 @@ process :: fun(events: ^Event_State) {
             events.mouse.held[e.button] = false
         MouseWheel
             events.mouse.wheel += e.y
+
+        WindowFocusGained
+        	events.window_in_focus = true
+        WindowFocusLost
+        	events.window_in_focus = false
 
         DropFile
             events.dropfile.was_dropped = true

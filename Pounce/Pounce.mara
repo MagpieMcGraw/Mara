@@ -70,7 +70,8 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game^ = Megastruct{}
 	game.window = memory[0]
 	game.gl_context = memory[8]
-	// an extra gl load just in case
+
+	// dll needs to gl load its own functions
 	gl_load(GL_GetProcAddress)
 
 	quad_init(&game.quad)
@@ -138,7 +139,8 @@ game_run :: fun(ctx: ^Context, memory: ^[]byte, reload: bool) -> bool {
 
 	tally_up(&timer.frame, &timer.fixed)
 	for one_step(&timer.fixed) do game_update(timer.fixed.step)
-	sleep(timer.work, game.fps)
+	use_fps := if game.events.window_in_focus do game.fps else 2.0
+	sleep(timer.work, use_fps)
 
 	game_draw(&game)
 
