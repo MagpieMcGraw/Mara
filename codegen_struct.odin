@@ -606,21 +606,21 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             if sv, sv_ok := claim_field_slice(g); sv_ok {
                 if e.field == "ptr" {
                     ptr_gep := fresh_tmp(g)
-                    emit_slice_gep(g, ptr_gep, sv.alloca, 0)
+                    emit_slice_gep(g, ptr_gep, sv.alloca, SLICE.ptr)
                     ptr_val := fresh_tmp(g)
                     emit(g, "  %s = load ptr, ptr %s", ptr_val, ptr_gep)
                     return ptr_val
                 }
                 if e.field == "len" {
                     len_gep := fresh_tmp(g)
-                    emit_slice_gep(g, len_gep, sv.alloca, 1)
+                    emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
                     len_val := fresh_tmp(g)
                     emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
                     return len_val
                 }
                 if e.field == "cap" {
                     cap_gep := fresh_tmp(g)
-                    emit_slice_gep(g, cap_gep, sv.alloca, 2)
+                    emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
                     cap_val := fresh_tmp(g)
                     emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
                     return cap_val
@@ -1359,10 +1359,10 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
             emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", hdr_ptr, st_llvm, base_ptr, fi)
             data_ptr := emit_struct_backing_gep(g, st_llvm, base_ptr, backing_field_idx, st.backing_bytes, backing_offset)
             ptr_gep := fresh_tmp(g)
-            emit_slice_gep(g, ptr_gep, hdr_ptr, 0)
+            emit_slice_gep(g, ptr_gep, hdr_ptr, SLICE.ptr)
             emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
             cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, hdr_ptr, 2)
+            emit_slice_gep(g, cap_gep, hdr_ptr, SLICE.cap)
             emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
 
             backing_offset += field_size
@@ -1386,10 +1386,10 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
                     slot_offset := backing_offset + i * slot_bytes
                     data_ptr := emit_struct_backing_gep(g, st_llvm, base_ptr, backing_field_idx, st.backing_bytes, slot_offset)
                     ptr_gep := fresh_tmp(g)
-                    emit_slice_gep(g, ptr_gep, slot_hdr, 0)
+                    emit_slice_gep(g, ptr_gep, slot_hdr, SLICE.ptr)
                     emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
                     cap_gep := fresh_tmp(g)
-                    emit_slice_gep(g, cap_gep, slot_hdr, 2)
+                    emit_slice_gep(g, cap_gep, slot_hdr, SLICE.cap)
                     emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
                 }
 

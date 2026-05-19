@@ -907,7 +907,7 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             // Slice field: load field 1 (len cursor) from the slice header.
             if sv, sv_ok := claim_field_slice(g); sv_ok {
                 len_gep := fresh_tmp(g)
-                emit_slice_gep(g, len_gep, sv.alloca, 1)
+                emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
                 len_val := fresh_tmp(g)
                 emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
                 return len_val
@@ -939,7 +939,7 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             gen_field_access(g, fa)
             if sv, sv_ok := claim_field_slice(g); sv_ok {
                 cap_gep := fresh_tmp(g)
-                emit_slice_gep(g, cap_gep, sv.alloca, 2)
+                emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
                 cap_val := fresh_tmp(g)
                 emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
                 if sv.has_sentinel {
@@ -1203,11 +1203,11 @@ emit_escape_storage_args :: proc(g: ^Codegen, arg_strs: ^[dynamic]string, info: 
         if pool != "" {
             // Carve `total_bytes` from pool: data + len → ptr; len += total.
             data_gep := fresh_tmp(g)
-            emit_slice_gep(g, data_gep, pool, 0)
+            emit_slice_gep(g, data_gep, pool, SLICE.ptr)
             base := fresh_tmp(g)
             emit(g, "  %s = load ptr, ptr %s", base, data_gep)
             len_gep := fresh_tmp(g)
-            emit_slice_gep(g, len_gep, pool, 1)
+            emit_slice_gep(g, len_gep, pool, SLICE.len)
             cur := fresh_tmp(g)
             emit(g, "  %s = load i64, ptr %s", cur, len_gep)
             ptr = fresh_tmp(g)

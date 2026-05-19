@@ -289,7 +289,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         // Slice: iterate over valid data only — bound by len (cursor), not cap.
         data_ptr = slice_var_data_ptr(g, &sv)
         len_gep := fresh_tmp(g)
-        emit_slice_gep(g, len_gep, sv.alloca, 1)
+        emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
         len_val := fresh_tmp(g)
         emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
         length_val = len_val

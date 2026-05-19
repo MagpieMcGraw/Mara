@@ -149,13 +149,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 alloca_name := fmt.tprintf("%%%s", s.name)
                 emit_slice_alloca(g, alloca_name)
                 ptr_gep := fresh_tmp(g)
-                emit_slice_gep(g, ptr_gep, alloca_name, 0)
+                emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
                 emit(g, "  store ptr %s, ptr %s", data_name, ptr_gep)
                 len_gep := fresh_tmp(g)
-                emit_slice_gep(g, len_gep, alloca_name, 1)
+                emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
                 emit(g, "  store i64 0, ptr %s", len_gep)
                 cap_gep := fresh_tmp(g)
-                emit_slice_gep(g, cap_gep, alloca_name, 2)
+                emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
                 emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
                 // Sized slice of a slice-bearing struct: allocate a sibling
                 // pool whose bytes are carved by each `&slice + call()` for
@@ -177,13 +177,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         pool_alloca = fmt.tprintf("%%%s.pool", s.name)
                         emit_slice_alloca(g, pool_alloca)
                         p_ptr_gep := fresh_tmp(g)
-                        emit_slice_gep(g, p_ptr_gep, pool_alloca, 0)
+                        emit_slice_gep(g, p_ptr_gep, pool_alloca, SLICE.ptr)
                         emit(g, "  store ptr %s, ptr %s", pool_data, p_ptr_gep)
                         p_len_gep := fresh_tmp(g)
-                        emit_slice_gep(g, p_len_gep, pool_alloca, 1)
+                        emit_slice_gep(g, p_len_gep, pool_alloca, SLICE.len)
                         emit(g, "  store i64 0, ptr %s", p_len_gep)
                         p_cap_gep := fresh_tmp(g)
-                        emit_slice_gep(g, p_cap_gep, pool_alloca, 2)
+                        emit_slice_gep(g, p_cap_gep, pool_alloca, SLICE.cap)
                         emit(g, "  store i64 %d, ptr %s", pool_bytes, p_cap_gep)
                     }
                 }
@@ -224,13 +224,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 alloca_name := fmt.tprintf("%%%s", s.name)
                 emit_slice_alloca(g, alloca_name)
                 ptr_gep := fresh_tmp(g)
-                emit_slice_gep(g, ptr_gep, alloca_name, 0)
+                emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
                 emit(g, "  store ptr null, ptr %s", ptr_gep)
                 len_gep := fresh_tmp(g)
-                emit_slice_gep(g, len_gep, alloca_name, 1)
+                emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
                 emit(g, "  store i64 0, ptr %s", len_gep)
                 cap_gep := fresh_tmp(g)
-                emit_slice_gep(g, cap_gep, alloca_name, 2)
+                emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
                 emit(g, "  store i64 0, ptr %s", cap_gep)
                 g.all_vars[s.name] = Slice_Var{alloca = alloca_name, elem_type = elem_t, is_utf8 = sl_utf8, has_sentinel = sl_sentinel}
                 return
@@ -248,7 +248,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             cap_n := pa.size
             alloc_cap := cap_n
             if pa.has_sentinel { alloc_cap += 1 }
-            ir_type := strings.concatenate({"{ ptr, i64, i64, [", fmt.tprintf("%d", alloc_cap), " x ", elem_t, "] }"})
+            ir_type := partial_array_ir_type(elem_t, alloc_cap)
             alloca_name := fmt.tprintf("%%%s", s.name)
             elem_bytes := elem_byte_size(elem_t, g.checked)
             total_bytes := alloc_cap * elem_bytes
@@ -268,15 +268,15 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             }
             // Initialise header: ptr → elements, len → 0, cap → N.
             elements_ptr := fresh_tmp(g)
-            emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 3, i32 0"}))
+            emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
             ptr_gep := fresh_tmp(g)
-            emit_slice_gep(g, ptr_gep, alloca_name, 0)
+            emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
             emit(g, "  store ptr %s, ptr %s", elements_ptr, ptr_gep)
             len_gep := fresh_tmp(g)
-            emit_slice_gep(g, len_gep, alloca_name, 1)
+            emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
             emit(g, "  store i64 0, ptr %s", len_gep)
             cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, alloca_name, 2)
+            emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
             emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
             g.all_vars[s.name] = Slice_Var{
                 alloca       = alloca_name,

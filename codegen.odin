@@ -18,6 +18,20 @@ import "core:os"
 // `cap` is the total capacity of the underlying region.
 SLICE_IR_TYPE :: "{ ptr, i64, i64 }"
 
+// Slice header field positions. Partial arrays share these for their first
+// 24 bytes; the elements field follows at PARTIAL_ELEMENTS_FIELD. To swap
+// the layout, update SLICE_IR_TYPE, the SLICE constant below, and the
+// partial_array_ir_type helper — all live here.
+Slice_Fields :: struct { ptr, len, cap: int }
+SLICE :: Slice_Fields{ptr = 0, len = 1, cap = 2}
+PARTIAL_ELEMENTS_FIELD :: 3
+
+// Build the LLVM IR type for a `[..N]T` partial array. `cap` includes the
+// sentinel slot if applicable; caller must pre-add the +1.
+partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
+    return strings.concatenate({"{ ptr, i64, i64, [", fmt.tprintf("%d", cap), " x ", elem_ir, "] }"})
+}
+
 // Info about a scalar variable in codegen (simple alloca)
 Scalar_Var :: struct {
     alloca: string, // %varname
@@ -718,11 +732,11 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             }
             // current_ptr: { ptr, i64 len, i64 cap }*
             data_gep := fresh_tmp(g)
-            emit_slice_gep(g, data_gep, current_ptr, 0)
+            emit_slice_gep(g, data_gep, current_ptr, SLICE.ptr)
             data_ptr := fresh_tmp(g)
             emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
             cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, current_ptr, 2)
+            emit_slice_gep(g, cap_gep, current_ptr, SLICE.cap)
             cap_val := fresh_tmp(g)
             emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
             idx_raw := gen_expr(g, s.index_expr)
@@ -1478,7 +1492,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
         } else if v.has_sentinel {
             alloc_size += 1
         }
-        return strings.concatenate({"{ ptr, i64, i64, [", fmt.tprintf("%d", alloc_size), " x ", elem_t, "] }"})
+        return partial_array_ir_type(elem_t, alloc_size)
     case ^Type_Enum:
         if v.tag_type != "" { return tag_type_to_ir(v.tag_type) }
         return "i64"
