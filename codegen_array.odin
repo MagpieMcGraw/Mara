@@ -1407,6 +1407,27 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
     }
 }
 
+// Byte-buffer reinterpret read into a struct field: obj.field = buf[lo:hi] or obj.field = buf[off].
+// Memcpys `size_of(field)` bytes from the byte-buffer source into the field GEP.
+// Scalar fields use load+store (align 1 on the load; natural alignment at the GEP).
+gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: string, idx: int, f: ^Struct_Type_Field, buf_expr: Expr, offset_expr: Expr, span: Span) {
+    ft := field_ir_type(f)
+    field_size := checker_type_byte_size(f.type_)
+    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, field_size, "read", span)
+    if !ok {
+        codegen_fatal(g, span, "byte buffer read source must be a byte slice or [N]byte")
+    }
+    gep := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+    if as_struct_body(f.type_) != nil {
+        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", gep, elem_ptr, field_size)
+    } else {
+        val := fresh_tmp(g)
+        emit(g, "  %s = load %s, ptr %s, align 1", val, ft, elem_ptr)
+        emit(g, "  store %s %s, ptr %s", ft, val, gep)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Array class codegen
 // ---------------------------------------------------------------------------

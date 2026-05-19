@@ -161,10 +161,21 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     g.current_ret_type = ret_type
 
     // Register sret pointer for struct-returning functions
+    g.nrvo_var = ""
     if ret_struct_name != "" {
         g.all_vars["__sret"] = Struct_Var{
             alloca = "%sret",
             struct_name = ret_struct_name,
+        }
+        // NRVO: if every `return X` returns the same named local, alias that
+        // local to %sret. The body writes directly into the caller's slot —
+        // no callee alloca, no memcpy at return. Mirrors the array path below.
+        g.nrvo_var = find_nrvo_candidate(cf.body[:])
+        if g.nrvo_var != "" {
+            g.all_vars[g.nrvo_var] = Struct_Var{
+                alloca      = "%sret",
+                struct_name = ret_struct_name,
+            }
         }
         // Sibling-storage escape: each escape local is aliased to its hidden
         // %<name>.storage param. The body's `verts : [4]T` declaration finds
@@ -235,8 +246,9 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         }
     }
 
-    // Register sret pointer for array-returning functions
-    g.nrvo_var = ""
+    // Register sret pointer for array-returning functions. (nrvo_var was
+    // cleared above before the struct sret block; struct and array returns
+    // are mutually exclusive, so only one branch sets it.)
     if ret_array_cap > 0 {
         g.all_vars["__sret"] = Array_Var{
             alloca    = "%sret",

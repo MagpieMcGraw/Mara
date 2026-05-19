@@ -68,23 +68,34 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
 
     // No VLA field — fixed-size struct being arena-allocated via `var`
     if vla_field_idx < 0 {
-        total := struct_byte_size(st, g.checked)
-        data_ptr := emit_arena_bump(g, total, name, loc)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", data_ptr, total)
-        // Initialize cap field for array classes
-        if st.is_array_class {
-            cap_fi := ac_cap_field_index(st)
-            if cap_fi >= 0 {
-                cap_val := st.array_cap
-                if ac_is_utf8(st) { cap_val -= 1 }
-                cap_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, data_ptr, cap_fi)
-                emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
+        data_ptr: string
+        // NRVO: if this is the function's NRVO candidate (pre-registered as
+        // Struct_Var aliased to %sret in codegen_fn.odin), reuse that slot
+        // instead of allocating a fresh one. Caller has already memset'd it.
+        if g.nrvo_var == name {
+            if existing_sv, ok := get_struct(g, name); ok && existing_sv.alloca == "%sret" {
+                data_ptr = existing_sv.alloca
             }
         }
-        g.all_vars[name] = Struct_Var{
-            alloca      = data_ptr,
-            struct_name = skey,
+        if data_ptr == "" {
+            total := struct_byte_size(st, g.checked)
+            data_ptr = emit_arena_bump(g, total, name, loc)
+            emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", data_ptr, total)
+            // Initialize cap field for array classes
+            if st.is_array_class {
+                cap_fi := ac_cap_field_index(st)
+                if cap_fi >= 0 {
+                    cap_val := st.array_cap
+                    if ac_is_utf8(st) { cap_val -= 1 }
+                    cap_gep := fresh_tmp(g)
+                    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, data_ptr, cap_fi)
+                    emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
+                }
+            }
+            g.all_vars[name] = Struct_Var{
+                alloca      = data_ptr,
+                struct_name = skey,
+            }
         }
         // Explicit `---`: alloca only, skip everything else.
         if _, is_uninit := value.(^Expr_Uninit); is_uninit {
@@ -108,6 +119,9 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
         // silently dropped the RHS, leaving the local zero-initialized.
         if value != nil {
             gen_store_struct_into(g, data_ptr, st, value)
+            if !value_is_nrvo_call(g, value) {
+                emit_nested_sized_slice_init(g, data_ptr, st)
+            }
             return
         }
         // No value: call the struct's init function to apply defaults.
@@ -130,6 +144,7 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", data_ptr, ")"}))
             }
         }
+        emit_nested_sized_slice_init(g, data_ptr, st)
         return
     }
 
@@ -217,6 +232,10 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         }
         // Initialize cap fields for nested array class fields
         emit_nested_ac_cap_init(g, alloca_name, st)
+        // Sized-slice fields are NOT init'd here — the struct's auto-init
+        // function (called below for bare decls) and gen_store_struct_into
+        // (called for literals/copies) both memcpy zeros over the slice
+        // headers. Defer to after those, see two sites below.
     }
 
     sv, _ := get_struct(g, name)
@@ -234,6 +253,14 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         // ident-to-ident copies, field-access copies, struct-returning call
         // NRVO, pure-struct constructor calls, and overloaded binary ops.
         gen_store_struct_into(g, sv.alloca, st, value)
+        // After literal/copy paths have written their fields, lay down backing
+        // storage and slice-header init for any sized-slice fields. The literal
+        // path zero-memsets first and may call the init function, both of which
+        // would clobber an earlier init. Skip when the value is an NRVO-returning
+        // call — the callee already wrote correct headers into our slot.
+        if !value_is_nrvo_call(g, value) {
+            emit_nested_sized_slice_init(g, sv.alloca, st)
+        }
         return
     }
 
@@ -263,6 +290,10 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
             emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", sv.alloca, ")"}))
         }
     }
+    // Init sized-slice fields AFTER the struct init function has run — the
+    // init function memcpys zeros over field positions (including slice
+    // headers), so this has to land last to win.
+    emit_nested_sized_slice_init(g, sv.alloca, st)
 }
 
 // Apply the named fields of a struct literal onto a struct at base_ptr.
@@ -527,7 +558,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             if !sf_ok {
                 codegen_fatal(g, e.span, "address chain ended at .Slice but last step is not a field — cannot determine elem type")
             }
-            sl, sl_ok := sf.field_def.type_.(^Type_Slice)
+            sl, sl_ok := distinct_base(sf.field_def.type_).(^Type_Slice)
             if !sl_ok {
                 codegen_fatal(g, e.span, "address chain ended at .Slice but last field type is not Type_Slice")
             }
@@ -1263,6 +1294,119 @@ emit_nested_ac_cap_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_Body) 
     }
 }
 
+// If `t` is a sized-slice type (distinct alias wrapping a slice with a default
+// cap, e.g. `String :: type([, 0]utf8(128))`), return (cap_n, slice, true).
+sized_slice_info :: proc(g: ^Codegen, t: Type) -> (int, ^Type_Slice, bool) {
+    dt, is_distinct := t.(^Type_Distinct)
+    if !is_distinct { return 0, nil, false }
+    sl, is_slice := dt.base_type.(^Type_Slice)
+    if !is_slice { return 0, nil, false }
+    if dt.default_cap_expr == nil { return 0, nil, false }
+    n, n_ok := codegen_const_eval_int(g, dt.default_cap_expr)
+    if !n_ok { return 0, nil, false }
+    return n, sl, true
+}
+
+// True when `value` is a call to a struct-returning function that NRVO's its
+// return. The callee then constructs directly into the caller's sret slot,
+// including writing sized-slice headers, so any caller-side re-init would
+// just store the same values back.
+value_is_nrvo_call :: proc(g: ^Codegen, value: Expr) -> bool {
+    call, ok := value.(^Expr_Call)
+    if !ok { return false }
+    info, info_ok := lookup_fun_info(g, call_resolved_name(call))
+    if !info_ok { return false }
+    return info.uses_struct_nrvo
+}
+
+// GEP to the position `offset` within the struct's hidden trailing backing
+// buffer (field index = len(st.fields)). Returns a pointer suitable for use
+// as a slice's data field.
+emit_struct_backing_gep :: proc(g: ^Codegen, st_llvm: string, base_ptr: string, backing_field_idx: int, backing_size: int, offset: int) -> string {
+    backing_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", backing_ptr, st_llvm, base_ptr, backing_field_idx)
+    if offset == 0 { return backing_ptr }
+    offset_ptr := fresh_tmp(g)
+    backing_arr_type := fmt.tprintf("[%d x i8]", backing_size)
+    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", offset_ptr, backing_arr_type, backing_ptr, offset)
+    return offset_ptr
+}
+
+// After a struct alloca's memset-zero, walk its fields and initialize slice
+// headers for any sized-slice-typed field (direct or inside a fixed-array
+// field). The data pointer for each slice points at a slot within the
+// struct's own hidden trailing backing buffer, so the backing rides along
+// with the struct on sret/memcpy.
+//
+// Recurses into nested struct fields (their backing is in their own layout).
+//
+// Caveat: a downstream memcpy of the struct copies the slice headers verbatim,
+// so the data pointers still reference the SOURCE's backing — pointers are
+// only correct under in-place / RVO construction. Reaching after a copy is
+// undefined until copy semantics are addressed (see project_pointer_ref_mutable).
+emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_Body) {
+    st_llvm := struct_llvm_name(struct_key(st))
+    backing_field_idx := len(st.fields)
+    backing_offset := 0
+    for &f, fi in st.fields {
+        if cap_n, sl, ok := sized_slice_info(g, f.type_); ok {
+            alloc_cap := cap_n
+            if sl.has_sentinel { alloc_cap += 1 }
+            elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
+            field_size := alloc_cap * elem_bytes
+
+            hdr_ptr := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", hdr_ptr, st_llvm, base_ptr, fi)
+            data_ptr := emit_struct_backing_gep(g, st_llvm, base_ptr, backing_field_idx, st.backing_bytes, backing_offset)
+            ptr_gep := fresh_tmp(g)
+            emit_slice_gep(g, ptr_gep, hdr_ptr, 0)
+            emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
+            cap_gep := fresh_tmp(g)
+            emit_slice_gep(g, cap_gep, hdr_ptr, 2)
+            emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
+
+            backing_offset += field_size
+            continue
+        }
+        if fa, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok {
+            if cap_n, sl, ok := sized_slice_info(g, fa.elem); ok {
+                alloc_cap := cap_n
+                if sl.has_sentinel { alloc_cap += 1 }
+                elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
+                slot_bytes := alloc_cap * elem_bytes
+
+                arr_ptr := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", arr_ptr, st_llvm, base_ptr, fi)
+                arr_type := strings.concatenate({"[", fmt.tprintf("%d", fa.size), " x ", SLICE_IR_TYPE, "]"})
+
+                for i in 0..<fa.size {
+                    slot_hdr := fresh_tmp(g)
+                    emit_raw(g, strings.concatenate({"  ", slot_hdr, " = getelementptr ", arr_type, ", ptr ", arr_ptr, ", i64 0, i64 ", fmt.tprintf("%d", i)}))
+
+                    slot_offset := backing_offset + i * slot_bytes
+                    data_ptr := emit_struct_backing_gep(g, st_llvm, base_ptr, backing_field_idx, st.backing_bytes, slot_offset)
+                    ptr_gep := fresh_tmp(g)
+                    emit_slice_gep(g, ptr_gep, slot_hdr, 0)
+                    emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
+                    cap_gep := fresh_tmp(g)
+                    emit_slice_gep(g, cap_gep, slot_hdr, 2)
+                    emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
+                }
+
+                backing_offset += fa.size * slot_bytes
+                continue
+            }
+        }
+        if inner_sd := as_struct_body(f.type_); inner_sd != nil {
+            inner_checked, ic_ok := lookup_struct(g, inner_sd.name)
+            if !ic_ok { continue }
+            field_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", field_gep, st_llvm, base_ptr, fi)
+            emit_nested_sized_slice_init(g, field_gep, inner_checked)
+        }
+    }
+}
+
 // Handle: obj.field = value (write)
 // Write to a slice's `.len` / `.cap` through its header pointer. Slices are
 // reference types, so any path that produces the header alloca pointer can
@@ -1362,6 +1506,16 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if idx >= 0 {
         f := &st.fields[idx]
         ft := field_ir_type(f)
+        // Byte-buffer reinterpret read: obj.field = mem[lo:hi] or obj.field = mem[off].
+        // Memcpys field-sized bytes from the source into the field GEP.
+        if sl_expr, ok := s.value.(^Expr_Slice); ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
+            gen_byte_target_field_read(g, st_llvm, base_ptr, idx, f, sl_expr.expr, sl_expr.low, s.span)
+            return
+        }
+        if idx_expr, ok := s.value.(^Expr_Index); ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
+            gen_byte_target_field_read(g, st_llvm, base_ptr, idx, f, idx_expr.expr, idx_expr.index, s.span)
+            return
+        }
         // Array field — dispatch to array store helper
         acap := field_array_cap(f)
         if acap > 0 {

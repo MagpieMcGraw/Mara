@@ -1,0 +1,29 @@
+module test_sized_slice_field
+
+use mara.memory
+use mara.string
+
+Holder :: struct {
+	name:  String
+	count: i64
+}
+
+main :: fun() -> i64 {
+	context.scope_allocator = Arena_Basic(1 * MB)
+
+	// Sanity: local String works
+	s : String
+	&s + "world"
+	print(s)
+	print(s.len)
+
+	// Struct field test
+	h := Holder{0}
+	h.count = 42
+	&h.name + "hello"
+	print(h.name)
+	print(h.name.len)
+	print(h.count)
+
+	return 0
+}

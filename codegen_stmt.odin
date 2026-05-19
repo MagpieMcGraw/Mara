@@ -868,8 +868,9 @@ gen_return_struct :: proc(g: ^Codegen, s: Stmt_Return, sret_sv: Struct_Var) {
         // local fixed arrays), and embedded structs all behave correctly.
         gen_store_struct_into(g, sret_ptr, sret_st, lit)
     } else if ident, id_ok := ret_val.(^Expr_Ident); id_ok {
-        // Case B: returning a struct variable
-        if src_sv, sv_ok := get_struct(g, ident.name); sv_ok {
+        // Case B: returning a struct variable. Skip the self-copy when the
+        // local is NRVO-aliased to sret (already constructed in place).
+        if src_sv, sv_ok := get_struct(g, ident.name); sv_ok && src_sv.alloca != sret_ptr {
             emit_struct_copy(g, sret_st, sret_llvm, src_sv.alloca, sret_ptr)
         }
     } else if call, call_ok := ret_val.(^Expr_Call); call_ok {

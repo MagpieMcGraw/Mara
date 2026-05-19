@@ -109,6 +109,11 @@ Scope_Body :: struct {
     elem_type:      Type,    // element type of the array field (set when is_array_class)
     array_cap:      int,     // capacity of the array field (set when is_array_class)
     has_vla_field:  bool,    // true if any field is a VLA (struct must be arena-allocated)
+    backing_bytes:  int,     // size of hidden trailing buffer for sized-slice fields' backing
+                             // storage. Computed by codegen at register-struct time so the
+                             // backing rides along with the struct on sret/memcpy — slice
+                             // headers point at &struct.backing[offset] using the struct's
+                             // own address (correct under RVO; stale after a downstream copy).
 
     // Associated definitions (scoped :: defs).
     // Values point to the actual Type the bare name resolves to — read
@@ -571,6 +576,14 @@ add_struct_uninit_fields :: proc(env: ^Type_Env, var_name: string, st: ^Scope_Bo
     for &f in st.fields {
         if provided != nil && f.name in provided { continue }
         if f.default_value != nil { continue }
+        // Sized-slice fields (`field : String` where `String :: type([,0]utf8(128))`)
+        // are auto-initialized by codegen — backing storage and header set up at
+        // the parent struct's alloca. Don't mark them as uninit-on-read.
+        if dt, ok := f.type_.(^Type_Distinct); ok {
+            if _, sl_ok := dt.base_type.(^Type_Slice); sl_ok && dt.default_cap_expr != nil {
+                continue
+            }
+        }
         base := distinct_base(f.type_)
         is_ref := false
         if _, is_ptr := base.(^Type_Ptr); is_ptr { is_ref = true }
@@ -2691,7 +2704,9 @@ type_name :: proc(t: Type) -> string {
         return fmt.tprintf("[]%s", type_name(v.elem))
     case ^Type_Enum:        return v.name
     case ^Type_Union:       return v.name
-    case ^Type_Distinct:    return fmt.tprintf("distinct %s", v.name)
+    case ^Type_Distinct:
+        if v.is_alias { return v.name }
+        return fmt.tprintf("distinct %s", v.name)
     case Type_Const_Int:    return fmt.tprintf("const_%d", v.value)
     case Type_Runtime_Size: return "vla"
     case Type_Any:          return "any"
@@ -2788,25 +2803,33 @@ is_infer :: proc(t: Type) -> bool {
     return false
 }
 
-// True when a type is a byte slice ([]byte).
+// True when a type is a byte slice ([]byte). Auto-derefs one level of ^Ptr
+// so `^[]byte` (the "mutable slice" parameter shape) is recognized too —
+// codegen already binds it as a Slice_Var via slice_through_distinct_and_ptr.
 is_byte_slice :: proc(t: Type) -> bool {
-    sl, ok := t.(^Type_Slice)
+    cur := t
+    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
+    sl, ok := cur.(^Type_Slice)
     if !ok { return false }
     _, is_byte := sl.elem.(Type_Byte)
     return is_byte
 }
 
-// True when a type is a byte-element fixed array [N]byte.
+// True when a type is a byte-element fixed array [N]byte. Auto-derefs ^Ptr.
 is_byte_fixed_array :: proc(t: Type) -> bool {
-    fa, ok := t.(^Type_Fixed_Array)
+    cur := t
+    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
+    fa, ok := cur.(^Type_Fixed_Array)
     if !ok { return false }
     _, is_byte := fa.elem.(Type_Byte)
     return is_byte
 }
 
-// True when a type is a byte-element array class, e.g. Array(byte, N).
+// True when a type is a byte-element array class, e.g. Array(byte, N). Auto-derefs ^Ptr.
 is_byte_array_class :: proc(t: Type) -> bool {
-    sd := as_scope_body(t)
+    cur := t
+    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
+    sd := as_scope_body(cur)
     if sd == nil || !sd.is_array_class { return false }
     _, is_byte := sd.elem_type.(Type_Byte)
     return is_byte
@@ -4806,7 +4829,25 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 _, val_is_array := s.value.(^Expr_Array)
                 _, val_is_struct_lit := s.value.(^Expr_Struct_Literal)
                 if ann_is_distinct && !val_is_array && !val_is_struct_lit {
-                    if types_incompatible(ann_type, val_type) {
+                    // Byte-buffer reinterpret read overrides the nominal type
+                    // match — `win : sdl.Window = mem[0]` reads sizeof(Window)
+                    // bytes regardless of the distinct wrapper.
+                    is_byte_read := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
+                    if is_byte_read {
+                        if sl, ok := s.value.(^Expr_Slice); ok {
+                            if low_num, low_ok := const_eval_int(sl.low); low_ok {
+                                if high_num, high_ok := const_eval_int(sl.high); high_ok {
+                                    span_size := high_num - low_num
+                                    ann_size := checker_type_byte_size(ann_type)
+                                    if span_size != ann_size {
+                                        check_error(c, s.span,
+                                            "byte buffer read: %s is %d bytes, but slice span is %d bytes",
+                                            type_name(ann_type), ann_size, span_size)
+                                    }
+                                }
+                            }
+                        }
+                    } else if types_incompatible(ann_type, val_type) {
                         check_error(c, s.span, "cannot assign %s to variable '%s' of type %s",
                             type_name(val_type), s.name, type_name(ann_type))
                     }
@@ -6095,7 +6136,25 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                 field_key := strings.concatenate({ident.name, ".", fa_expr.field})
                 mark_initialized(env, field_key)
             }
-            if types_incompatible(ft, val_type) {
+            if is_byte_buffer(val_type) {
+                // Byte buffer reinterpret read via slice: obj.field = mem[lo:hi]
+                field_size := checker_type_byte_size(ft)
+                if sl, ok := s.value.(^Expr_Slice); ok {
+                    if low_num, low_ok := const_eval_int(sl.low); low_ok {
+                        if high_num, high_ok := const_eval_int(sl.high); high_ok {
+                            span_size := high_num - low_num
+                            if span_size != field_size {
+                                check_error(c, s.span,
+                                    "byte buffer read: %s is %d bytes, but slice span is %d bytes",
+                                    type_name(ft), field_size, span_size)
+                            }
+                        }
+                    }
+                }
+            } else if is_byte_buffer_index_read(s.value) {
+                // Byte buffer reinterpret read via index: obj.field = mem[off]
+                // Size comes from field type; bounds checked at runtime
+            } else if types_incompatible(ft, val_type) {
                 check_error(c, s.span, "cannot assign %s to field '%s' of type %s",
                     type_name(val_type), fa_expr.field, type_name(ft))
             }

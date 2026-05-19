@@ -1,0 +1,46 @@
+module test_field_byte_read
+
+use mara.memory
+
+Window :: type ^byte
+
+Pair :: struct {
+	a: i64
+	b: i64
+}
+
+Holder :: struct {
+	count:  i64
+	flag:   i64
+	pair:   Pair
+	window: Window
+}
+
+main :: fun() -> i64 {
+	// Direct []byte path (regression check)
+	buf : []byte(64)
+	buf[0:8]   = i64(42)
+	buf[8:16]  = i64(7)
+	buf[16:24] = i64(123)
+	buf[24:32] = i64(456)
+
+	h : Holder = ---
+	h.count = buf[0]
+	h.flag  = buf[8:16]
+	h.pair  = buf[16:32]
+
+	print(h.count)
+	print(h.flag)
+	print(h.pair.a)
+	print(h.pair.b)
+
+	// Distinct-aliased pointer via annotated decl from byte buffer
+	w : Window = buf[0]
+	print(i64(w))
+
+	// Distinct-aliased pointer via field assign from byte buffer
+	h.window = buf[8:16]
+	print(i64(h.window))
+
+	return 0
+}

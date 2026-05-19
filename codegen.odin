@@ -167,6 +167,11 @@ Fun_Info :: struct {
     // hidden trailing argument after %sret. The callee aliases the local
     // to that argument directly.
     escape_locals:    [dynamic]Escape_Local,
+    // True for struct-returning fns whose body has find_nrvo_candidate hit:
+    // the callee constructs directly into %sret, so any caller-side
+    // sized-slice header re-init after the call would be a redundant
+    // write-of-same-values.
+    uses_struct_nrvo: bool,
 }
 
 // Control-flow scope tracking for the context system (automatic arena mark/reset).
@@ -837,6 +842,7 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
     // so the returned slice pointers stay valid past the function's frame.
     if info.ret_struct != "" {
         analyze_escape_locals(g, &cf, &info)
+        info.uses_struct_nrvo = find_nrvo_candidate(cf.body[:]) != ""
     }
 
     // Cache and return
@@ -1814,6 +1820,9 @@ struct_byte_size_sd :: proc(sd: ^Scope_Body, checked: ^Checked_Program = nil) ->
         }
         offset += elem_byte_size(ft, checked)
     }
+    // Hidden trailing buffer for sized-slice fields' backing storage.
+    // Always byte-typed so no alignment bump needed.
+    offset += sd.backing_bytes
     // Pad to struct alignment
     if offset % max_align != 0 {
         offset += max_align - (offset % max_align)
@@ -2040,9 +2049,41 @@ register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
     for &f in sd.fields {
         append(&field_types, field_ir_type(&f))
     }
+    // Hidden trailing buffer holds backing storage for any sized-slice fields
+    // (direct or in fixed-array fields). Sized as i8 bytes regardless of slice
+    // elem type — alignment is owner's problem once slice headers point at offsets.
+    sd.backing_bytes = compute_struct_backing(g, sd)
+    if sd.backing_bytes > 0 {
+        append(&field_types, fmt.tprintf("[%d x i8]", sd.backing_bytes))
+    }
     fields_joined := strings.join(field_types[:], ", ")
     type_decl := strings.concatenate({llvm_name, " = type { ", fields_joined, " }"})
     append(&g.struct_decls, type_decl)
+}
+
+// Sum of bytes needed to back this struct's own sized-slice fields.
+// Direct field: alloc_cap * elem_bytes. Fixed-array field [N]Slice: N * that.
+// Nested struct fields have their backing in their own layout — not counted here.
+compute_struct_backing :: proc(g: ^Codegen, sd: ^Scope_Body) -> int {
+    total := 0
+    for &f in sd.fields {
+        if cap_n, sl, ok := sized_slice_info(g, f.type_); ok {
+            alloc_cap := cap_n
+            if sl.has_sentinel { alloc_cap += 1 }
+            elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
+            total += alloc_cap * elem_bytes
+            continue
+        }
+        if fa, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok {
+            if cap_n, sl, ok := sized_slice_info(g, fa.elem); ok {
+                alloc_cap := cap_n
+                if sl.has_sentinel { alloc_cap += 1 }
+                elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
+                total += fa.size * alloc_cap * elem_bytes
+            }
+        }
+    }
+    return total
 }
 
 register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
