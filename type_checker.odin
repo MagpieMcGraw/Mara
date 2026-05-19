@@ -5877,6 +5877,29 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
 check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: ^Scope_Body, span: Span, env: ^Type_Env) {
     // Positional form (`Foo{a, b, c}`): match entries to struct fields by index.
     if lit.positional {
+        // Multi-return spread: `Foo{call()}` where call returns a tuple whose
+        // shape matches Foo's fields one-to-one (with normal compatibility,
+        // including array→slice coercion). Codegen detects the same pattern
+        // and routes the call's sret args into temps then into the struct.
+        if len(lit.fields) == 1 && len(st.fields) > 1 {
+            single_val := lit.fields[0].value
+            single_type := check_expr(c, single_val, env)
+            if tup, tup_ok := single_type.(^Type_Tuple); tup_ok && len(tup.elems) == len(st.fields) {
+                all_ok := true
+                for sf, i in st.fields {
+                    if types_incompatible(sf.type_, tup.elems[i]) {
+                        all_ok = false
+                        break
+                    }
+                }
+                if all_ok {
+                    lit.is_spread = true
+                    return
+                }
+            }
+            // Fall through to the regular positional path so the user gets a
+            // useful error if the tuple shape doesn't match the struct.
+        }
         if len(lit.fields) > len(st.fields) {
             check_error(c, span, "class '%s' has %d fields, got %d positional values",
                 st.name, len(st.fields), len(lit.fields))
@@ -8120,19 +8143,24 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 }
             }
         }
-        // Regular struct literal: check each field value
-        for field in e.fields {
-            check_expr(c, field.value, env)
-        }
-        // Return the struct type if the literal has a name and it's a known struct
+        // Named struct literal: run the full field-matching check (positional vs
+        // named, multi-return spread, types). Without this, `x := Foo{call()}`
+        // with no annotation would skip the structural check and is_spread
+        // never gets set by the spread-detection branch.
         if e.name != "" {
             flat := resolve_type_name(c, e.name, "", env)
             if st, ok := c.table.structs[flat]; ok {
+                check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return st
             }
             if st, ok := c.table.funs[flat]; ok {
+                check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return st
             }
+        }
+        // Anonymous struct literal: just check each field value.
+        for field in e.fields {
+            check_expr(c, field.value, env)
         }
         return Type_Error{}
     case ^Expr_Field_Access:

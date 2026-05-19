@@ -275,6 +275,10 @@ Expr_Struct_Literal :: struct {
     fields:     [dynamic]Struct_Field,
     positional: bool,                 // true if the fields list was parsed as positional values (name == "")
     zero_init:  bool,                 // true for {0} — explicit zero-init, no defaults
+    // Multi-return spread: `Foo{call()}` where call's tuple matches Foo's fields
+    // one-to-one. Set by the type checker; codegen materializes temps for the
+    // call's sret slots and fills each struct field from the corresponding temp.
+    is_spread:  bool,
     // Inline type expression for typed array literals like `[3]f32{0.9, 0.2, 0.6}`.
     // When set, name is "" and the checker resolves type_expr to determine the
     // literal's type rather than looking up name.

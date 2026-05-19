@@ -303,6 +303,53 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
 // aggregate (slice) fields. Unknown field names are silently skipped — the
 // type checker has already reported them.
 apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: ^Scope_Body, llvm_name: string, base_ptr: string) {
+    // Multi-return spread: `Foo{call()}` where call returns a tuple matching
+    // Foo's fields. Emit the call (results land in g.tuple_result_ptrs as
+    // sret-filled temps), then materialize each struct field from the
+    // corresponding temp. Slice fields auto-coerce from array temps by
+    // synthesising a slice header that points at the temp's storage.
+    if lit.is_spread {
+        call, call_ok := lit.fields[0].value.(^Expr_Call)
+        if !call_ok {
+            codegen_fatal(g, lit.span, "is_spread set but lit.fields[0] is not a call")
+        }
+        info, info_ok := lookup_fun_info(g, call_resolved_name(call))
+        if !info_ok || info.ret_tuple == nil {
+            codegen_fatal(g, lit.span, "spread call has no tuple return info")
+        }
+        ret_tuple := info.ret_tuple
+        gen_call(g, call)
+        for sf, i in st.fields {
+            if i >= len(ret_tuple.elems) { break }
+            src_ptr := g.tuple_result_ptrs[i]
+            src_sem := distinct_base(ret_tuple.elems[i])
+            dst_field_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", dst_field_gep, llvm_name, base_ptr, i)
+            // Slice field + array tuple element: build slice header at the field
+            // pointing at the temp's storage. Array's compile-time size is the
+            // slice's len/cap (the function fully filled it).
+            if _, sl_ok := sf.type_.(^Type_Slice); sl_ok {
+                if fa, fa_ok := src_sem.(^Type_Fixed_Array); fa_ok {
+                    ptr_gep := fresh_tmp(g)
+                    emit_slice_gep(g, ptr_gep, dst_field_gep, SLICE.ptr)
+                    emit(g, "  store ptr %s, ptr %s", src_ptr, ptr_gep)
+                    len_gep := fresh_tmp(g)
+                    emit_slice_gep(g, len_gep, dst_field_gep, SLICE.len)
+                    emit(g, "  store i64 %d, ptr %s", fa.size, len_gep)
+                    cap_gep := fresh_tmp(g)
+                    emit_slice_gep(g, cap_gep, dst_field_gep, SLICE.cap)
+                    emit(g, "  store i64 %d, ptr %s", fa.size, cap_gep)
+                    continue
+                }
+            }
+            // Direct copy: same shape on both sides.
+            size := checker_type_byte_size(sf.type_)
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_field_gep, src_ptr, size)
+        }
+        clear(&g.tuple_result_ptrs)
+        clear(&g.tuple_result_types)
+        return
+    }
     for field, pos in lit.fields {
         // Positional literals (`Foo{a, b, c}`) carry empty field names; map
         // each entry to the struct field at the same index.
