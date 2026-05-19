@@ -760,9 +760,9 @@ main :: proc() {
         }
 
         perf_timer_mark(&perf, "codegen")
-        // Per-package IR file so multi-package builds don't clobber each
-        // other's output.
-        ll_path := strings.concatenate({pkg_name, ".ll"}) if len(args.pkg_names) > 1 else "output.ll"
+        // Per-package IR file — keeps multi-package builds from clobbering
+        // each other, and keeps single-package builds easy to identify.
+        ll_path := strings.concatenate({pkg_name, ".ll"})
         if !generate_program(ll_path, checked, web = args.web, shared = pkg_shared,
                              target_package = pkg_name, other_main_packages = others[:]) {
             fmt.printf("Code generation failed for '%s'.\n", pkg_name)
