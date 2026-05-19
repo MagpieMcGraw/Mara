@@ -834,12 +834,15 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
     for val, i in s.values {
         resolved_type := distinct_base(g.ret_tuple.elems[i])
         elem_type := llvm_type_from_checker(g.ret_tuple.elems[i])
-        // Array/fixed-array returns: memcpy from alloca to sret
+        sret_ptr := fmt.tprintf("%%sret.%d", i)
+        // Array/fixed-array returns: memcpy from alloca to sret. When the
+        // local's alloca IS the sret slot (named-return NRVO), the memcpy is
+        // a self-copy — skip it. LLVM memcpy with overlapping src/dst is UB.
         if fa, fa_ok := resolved_type.(^Type_Fixed_Array); fa_ok {
             if ident, id_ok := val.(^Expr_Ident); id_ok {
                 if av, av_ok := get_array(g, ident.name); av_ok {
+                    if av.alloca == sret_ptr { continue }
                     arr_size := fa.size * checker_type_byte_size(fa.elem)
-                    sret_ptr := fmt.tprintf("%%sret.%d", i)
                     emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", sret_ptr, av.alloca, arr_size)
                     continue
                 }
@@ -848,7 +851,6 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
         // Struct returns: field-wise copy from src alloca to sret (can't use
         // `store %struct %ptr` — the value operand must be a struct, not a ptr).
         if sd := as_struct_body(resolved_type); sd != nil {
-            sret_ptr := fmt.tprintf("%%sret.%d", i)
             struct_llvm := struct_llvm_name(sd.name)
             if lit, lit_ok := val.(^Expr_Struct_Literal); lit_ok {
                 emit_struct_literal_into(g, sd, struct_llvm, sret_ptr, lit)
@@ -856,6 +858,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
             }
             if ident, id_ok := val.(^Expr_Ident); id_ok {
                 if src_sv, sv_ok := get_struct(g, ident.name); sv_ok {
+                    if src_sv.alloca == sret_ptr { continue }
                     emit_struct_copy(g, sd, struct_llvm, src_sv.alloca, sret_ptr)
                     continue
                 }
@@ -872,7 +875,6 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
         // `store { ptr, i64 } <alloca-ptr>, ptr %sret.N` which is invalid IR
         // (alloca-ptr is `ptr`, not the slice descriptor value).
         if _, sl_ok := resolved_type.(^Type_Slice); sl_ok {
-            sret_ptr := fmt.tprintf("%%sret.%d", i)
             src: string
             if ident, id_ok := val.(^Expr_Ident); id_ok {
                 if sv, sv_ok := get_slice(g, ident.name); sv_ok {
@@ -882,11 +884,12 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
             if src == "" {
                 src = gen_expr(g, val, elem_type)
             }
+            if src == sret_ptr { continue }
             emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 24, i1 false)", sret_ptr, src)
             continue
         }
         v := gen_expr(g, val, elem_type)
-        emit(g, "  store %s %s, ptr %%sret.%d", elem_type, v, i)
+        emit(g, "  store %s %s, ptr %s", elem_type, v, sret_ptr)
     }
     emit_ret_void(g)
 }

@@ -226,31 +226,27 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     old_ret_tuple := g.ret_tuple
     g.ret_tuple = ret_tuple
 
-    // Register named return bindings as local variables (e.g. fun() -> (fwd, up: Vec3))
+    // Register named return bindings as local variables (e.g. fun() -> (fwd, up: Vec3)).
+    // NRVO: the binding's alloca IS the sret slot, so writes go directly into
+    // the caller's slot. gen_return_tuple detects the self-copy at return and skips it.
     if ret_tuple != nil && cf.ast != nil && len(cf.ast.return_bindings) > 0 {
         for rb, i in cf.ast.return_bindings {
             if i >= len(ret_tuple.elems) { break }
             rb_type := distinct_base(ret_tuple.elems[i])
+            sret_slot := fmt.tprintf("%%sret.%d", i)
             if fa, fa_ok := rb_type.(^Type_Fixed_Array); fa_ok {
                 elem_t := llvm_type_from_checker(fa.elem)
-                arr_type := fmt.tprintf("[%d x %s]", fa.size, elem_t)
-                data_name := fmt.tprintf("%%%s.data", rb.name)
-                emit(g, "  %s = alloca %s", data_name, arr_type)
-                emit(g, "  store %s zeroinitializer, ptr %s", arr_type, data_name)
                 utf8 := false
                 if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
                 g.all_vars[rb.name] = Array_Var{
-                    alloca    = data_name,
+                    alloca    = sret_slot,
                     capacity  = fa.size,
                     elem_type = elem_t,
                     is_utf8   = utf8,
                 }
             } else if sd := as_struct_body(rb_type); sd != nil {
-                alloca_name := fmt.tprintf("%%%s", rb.name)
-                stype := struct_llvm_name(sd.name)
-                emit(g, "  %s = alloca %s", alloca_name, stype)
                 g.all_vars[rb.name] = Struct_Var{
-                    alloca      = alloca_name,
+                    alloca      = sret_slot,
                     struct_name = sd.name,
                 }
             } else {
