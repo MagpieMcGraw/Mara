@@ -54,6 +54,45 @@ find_nrvo_candidate :: proc(body: []Stmt) -> string {
     return candidate
 }
 
+// Multi-return version: per-position NRVO candidate. Returns one name per
+// position (or "" if that position can't NRVO). Same shape contract as the
+// single-position helper: every return must use an Expr_Ident at position i,
+// and every return must use the same name for that position.
+find_nrvo_candidates :: proc(body: []Stmt, n_positions: int) -> [dynamic]string {
+    candidates: [dynamic]string
+    for _ in 0..<n_positions { append(&candidates, "") }
+    blocked: [dynamic]bool
+    defer delete(blocked)
+    for _ in 0..<n_positions { append(&blocked, false) }
+    found_any := false
+    for s in body {
+        ret, ok := s.(Stmt_Return)
+        if !ok { continue }
+        if len(ret.values) != n_positions {
+            // Shape mismatch — block all positions for safety.
+            for i in 0..<n_positions { candidates[i] = ""; blocked[i] = true }
+            return candidates
+        }
+        for i in 0..<n_positions {
+            if blocked[i] { continue }
+            ident, id_ok := ret.values[i].(^Expr_Ident)
+            if !id_ok {
+                candidates[i] = ""
+                blocked[i] = true
+                continue
+            }
+            if !found_any {
+                candidates[i] = ident.name
+            } else if candidates[i] != ident.name {
+                candidates[i] = ""
+                blocked[i] = true
+            }
+        }
+        found_any = true
+    }
+    return candidates
+}
+
 gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // Foreigns and intrinsics have no body to emit — foreign calls dispatch
     // through their `declare` and link_name; intrinsic calls expand inline at
@@ -255,6 +294,30 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 emit(g, "  %s = alloca %s", alloca_name, ir_t)
                 emit(g, "  store %s 0, ptr %s", ir_t, alloca_name)
                 g.all_vars[rb.name] = Scalar_Var{alloca = alloca_name}
+            }
+        }
+    } else if ret_tuple != nil {
+        // Positional multi-return NRVO: if every `return v0, v1, ...` uses the
+        // same identifier at each position, alias that local to %sret.<i>.
+        // Mirrors the single-return NRVO path below. Currently only fixed-array
+        // positions are NRVO'd — other shapes still take the alloca+copy route
+        // through gen_return_tuple.
+        candidates := find_nrvo_candidates(cf.body[:], len(ret_tuple.elems))
+        defer delete(candidates)
+        for cand, i in candidates {
+            if cand == "" { continue }
+            rb_type := distinct_base(ret_tuple.elems[i])
+            sret_slot := fmt.tprintf("%%sret.%d", i)
+            if fa, fa_ok := rb_type.(^Type_Fixed_Array); fa_ok {
+                elem_t := llvm_type_from_checker(fa.elem)
+                utf8 := false
+                if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
+                g.all_vars[cand] = Array_Var{
+                    alloca    = sret_slot,
+                    capacity  = fa.size,
+                    elem_type = elem_t,
+                    is_utf8   = utf8,
+                }
             }
         }
     }
