@@ -100,7 +100,11 @@ Arena_Debug :: class(cap: i64) {
 			crash()
 		}
 
-		h : AllocHeader = { prev = a.last_alloc, size = size, name = name, span = span }
+		h : AllocHeader = {
+			prev = a.last_alloc,
+			size = size,
+			name = name,
+			span = span }
 		a.base[off] = h
 
 		data_off := off + HEADER_SIZE

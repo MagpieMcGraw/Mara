@@ -3,12 +3,31 @@ module not_main
 use mara.memory
 use mara.os
 
+use mara.sdl
+use mara.open_gl
+
 // Hot-reload host. Loads `Pounce.dll` via an under-the-hood copy so the
 // build can keep overwriting the source. Polls the source file's mtime
 // each frame; on change, frees the current handle, makes a fresh copy,
 // re-loads, and re-resolves `game_run`.
 DLL_SRC  :: "Pounce.dll"
 DLL_COPY :: "Pounce_loaded.dll"
+
+create_window :: fun() -> (Window, GLContext) {
+	init_err := sdl.Init(Video)
+
+	sdl.GL_SetAttribute(ContextProfileMask, .Core)
+	sdl.GL_SetAttribute(ContextMajorVersion, 4)
+	sdl.GL_SetAttribute(ContextMinorVersion, 5)
+
+	window = sdl.CreateWindow("Not main...", 960, 540,
+		OpenGL | Resizable)
+
+	gl_context = sdl.GL_CreateContext(window)
+	sdl.GL_MakeCurrent(window, gl_context)
+	gl_load(GL_GetProcAddress)
+	return window, gl_context
+}
 
 main :: fun() -> i64 {
     context.scope_allocator = Arena_Debug(192 * MB)
@@ -20,11 +39,16 @@ main :: fun() -> i64 {
     }
     handle := os.load_library(DLL_COPY)
     game_run_ptr := os.find_symbol(handle, "game_run")
-    game_run : fn(^Context, ^[]byte -> bool) = game_run_ptr
+    game_run : fn(^Context, ^[]byte, bool -> bool) = game_run_ptr
     last_mtime := os.file_mtime(DLL_SRC)
 
     // Game state lives here, owned by the host across DLL reloads.
     memory_block : []byte(50 * MB)
+
+    win, ctx = create_window()
+    memory_block[0] = win
+    memory_block[8] = ctx
+    reload := false
 
     running := true
     for running {
@@ -41,9 +65,10 @@ main :: fun() -> i64 {
                 game_run = game_run_ptr
                 last_mtime = cur_mtime
                 print("reloaded ", DLL_SRC)
+                reload = true
             }
         }
-        running = game_run(&context, &memory_block)
+        running = game_run(&context, &memory_block, reload)
     }
     return 0
 }

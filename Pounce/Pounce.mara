@@ -16,11 +16,6 @@ use perf
 use asset
 use test_draw
 
-// Declares the host this DLL pairs with: standalone `mara build Pounce`
-// follows this edge to find not_main's `context.scope_allocator = ...`
-// declaration. Multi-package builds (`mara build not_main Pounce`) reach
-// not_main directly as a main package; this import is redundant there but
-// harmless.
 use not_main
 
 COLOR_RED 		:: Vec3{0.9, 0.2, 0.2}
@@ -71,20 +66,11 @@ Megastruct :: struct {
 	VAO: VAO_State = ---
 }
 
-game_init :: fun(game: ^Megastruct) {
+game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game^ = Megastruct{}
-
-	init_err := sdl.Init(Video)
-
-	GL_SetAttribute(ContextProfileMask, .Core)
-	GL_SetAttribute(ContextMajorVersion, 4)
-	GL_SetAttribute(ContextMinorVersion, 5)
-
-	game.window = CreateWindow("Pounce!", 960, 540,
-		OpenGL | Resizable)
-
-	game.gl_context = GL_CreateContext(game.window)
-	GL_MakeCurrent(game.window, game.gl_context)
+	game.window = memory[0]
+	game.gl_context = memory[8]
+	// an extra gl load just in case
 	gl_load(GL_GetProcAddress)
 
 	quad_init(&game.quad)
@@ -97,6 +83,10 @@ game_init :: fun(game: ^Megastruct) {
 
 	game.running = true
 	game.initialized = true
+}
+
+game_reload :: fun(game: ^Megastruct) {
+	gl_load(GL_GetProcAddress)
 }
 
 game_events :: fun() {
@@ -117,9 +107,10 @@ game_draw :: fun(game: ^Megastruct) {
 }
 
 #expose
-game_run :: fun(ctx: ^Context, memory: ^[]byte) -> bool {
-	game := take(Megastruct, &memory[0])
-	if not game.initialized do game_init(&game)
+game_run :: fun(ctx: ^Context, memory: ^[]byte, reload: bool) -> bool {
+	game := take(Megastruct, &memory[16])
+	if not game.initialized do game_init(&game, memory)
+	if reload do game_reload(&game)
 
 	timer := &game.timers
 	timer.work.counter = time_now()
@@ -139,6 +130,7 @@ game_run :: fun(ctx: ^Context, memory: ^[]byte) -> bool {
 		keyboard.pressed[S]		do game.player.y += 50
 		keyboard.pressed[D] 	do game.player.x += 50
 		keyboard.pressed[P]		do print("Printing!")
+		keyboard.pressed[T]		do print("T T Testing!")
 		keyboard.pressed[Escape]
 			print(quit_msg)
 			game.running = false

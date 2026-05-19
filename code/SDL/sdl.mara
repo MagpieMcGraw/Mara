@@ -333,9 +333,9 @@ GLprofile :: union(tag i32) {
 // ---------------------------------------------------------------------------
 // Opaque handle types
 // ---------------------------------------------------------------------------
-Window    :: distinct ^byte
+Window    :: type ^byte
 Renderer  :: distinct ^byte
-GLContext :: distinct ^byte
+GLContext :: type ^byte
 IOStream  :: distinct ^byte
 
 // ---------------------------------------------------------------------------

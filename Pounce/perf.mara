@@ -15,12 +15,16 @@ Performance_Timer :: struct {
 }
 
 // Call once at the start of a timing session with the first phase name.
-perf_timer_begin :: fun(timer: ^Performance_Timer, first_phase: [, 0]utf8) {
+perf_timer_begin :: fun(
+	first_phase: [, 0]utf8) -> Performance_Timer
+{
+	timer: Performance_Timer
     timer.count = 0
     timer.total_start = time_now()
     timer.phase_start = timer.total_start
     timer.names[0].len = 0
     &timer.names[0] + first_phase
+    return timer
 }
 
 // End the current phase, record its time, and start timing next_phase.
