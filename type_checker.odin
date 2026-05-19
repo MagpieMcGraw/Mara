@@ -24,7 +24,8 @@ Type :: union {
     ^Type_Ptr,
     ^Type_Scope,        // unified scope type: data struct/class (kind=.Struct) or callable fun (kind=.Fun)
     ^Type_Fixed_Array,
-    ^Type_Slice,      // []T — slice (view into array: {ptr, cap})
+    ^Type_Slice,      // [:]T — slice (view into array: {ptr, len, cap})
+    ^Type_Partial_Array, // [..N]T — partial array (value with inline storage + cursor)
     ^Type_Enum,
     ^Type_Union,
     ^Type_Tuple,      // (int, string) — tuple for multi-return
@@ -79,8 +80,21 @@ Type_Fixed_Array :: struct {
 
 Type_Slice :: struct {
     elem:         Type,
-    has_sentinel: bool,   // true for [, 0]T sentinel-terminated slices
+    has_sentinel: bool,   // true for [:, 0]T sentinel-terminated slices
     sentinel:     int,    // sentinel value (e.g. 0 for null-terminated)
+}
+
+// [..N]T — partial array. IR layout: {ptr, len, cap, elements: [N x T]}, with
+// ptr initialised to &elements at decl time. First 24 bytes match Type_Slice's
+// {ptr, len, cap} shape so partial arrays can flow through `^[]T` (umbrella)
+// without monomorphization. Pinned in practice: moving the value breaks ptr.
+Type_Partial_Array :: struct {
+    size:         int,
+    elem:         Type,
+    is_vla:       bool,       // true for variable-length partial arrays (runtime size)
+    size_expr:    Expr,       // AST expression for runtime size (VLA only)
+    has_sentinel: bool,
+    sentinel:     int,
 }
 
 Struct_Type_Field :: struct {
@@ -1599,6 +1613,48 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         sl.has_sentinel = t.has_sentinel
         sl.sentinel = t.sentinel
         return sl
+    case ^Type_Partial_Array_Expr:
+        elem := resolve_type_expr(t.elem, c, span, env = env)
+        pa := new(Type_Partial_Array)
+        pa.elem = elem
+        pa.has_sentinel = t.has_sentinel
+        pa.sentinel = t.sentinel
+        if t.size_expr != nil {
+            if c != nil {
+                if val, comptime_ok := evaluate_comptime_int(c, t.size_expr); comptime_ok {
+                    pa.size = int(val)
+                    return pa
+                }
+                pa.is_vla = true
+                pa.size_expr = t.size_expr
+                return pa
+            }
+            return Type_Error{}
+        }
+        if t.size_name != "" {
+            if c != nil {
+                if const_expr, found := c.table.constants[t.size_name]; found {
+                    if _, i_val, ok := extract_constant_value(const_expr); ok {
+                        pa.size = int(i_val)
+                        return pa
+                    }
+                    check_error(c, span, "partial-array size constant '%s' is not a compile-time integer", t.size_name)
+                    return Type_Error{}
+                }
+                pa.is_vla = true
+                pa.size_expr = new_clone(Expr_Ident{name = t.size_name, span = span})
+                return pa
+            }
+            if const_values != nil {
+                if val, found := const_values[t.size_name]; found {
+                    pa.size = val
+                    return pa
+                }
+            }
+            return Type_Error{}
+        }
+        pa.size = t.size
+        return pa
     case ^Type_Tuple_Expr:
         tt := new(Type_Tuple)
         for e in t.elems {
@@ -1844,6 +1900,34 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
         sl.has_sentinel = t.has_sentinel
         sl.sentinel = t.sentinel
         return sl
+    case ^Type_Partial_Array_Expr:
+        elem := resolve_type_expr_with_subst(t.elem, c, span, subst)
+        pa := new(Type_Partial_Array)
+        pa.elem = elem
+        pa.has_sentinel = t.has_sentinel
+        pa.sentinel = t.sentinel
+        if t.size_name != "" {
+            if val, found := subst[t.size_name]; found {
+                if cv, ok := val.(Type_Const_Int); ok {
+                    pa.size = cv.value
+                } else if rt, ok := val.(Type_Runtime_Size); ok {
+                    pa.is_vla = true
+                    pa.size_expr = rt.expr
+                }
+            } else if c != nil {
+                if const_expr, found2 := c.table.constants[t.size_name]; found2 {
+                    if _, i_val, ok := extract_constant_value(const_expr); ok {
+                        pa.size = int(i_val)
+                    }
+                }
+            }
+        } else if t.size_expr != nil {
+            pa.is_vla = true
+            pa.size_expr = t.size_expr
+        } else {
+            pa.size = t.size
+        }
+        return pa
     case ^Type_Tuple_Expr:
         tt := new(Type_Tuple)
         for e in t.elems {
@@ -2004,6 +2088,10 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual:
         } else if fa, ok := actual.(^Type_Fixed_Array); ok {
             // Fixed arrays are compatible with slices for inference
             infer_type_params(subst, t.elem, fa.elem, c)
+        }
+    case ^Type_Partial_Array_Expr:
+        if pa, ok := actual.(^Type_Partial_Array); ok {
+            infer_type_params(subst, t.elem, pa.elem, c)
         }
     case ^Type_Generic_Instance:
         // e.g., Array(T) matched against Array__int__256 (a monomorphized struct)
@@ -2571,17 +2659,29 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Note: we don't compare size here — arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
-        // Implicit coercion: []T is compatible with [N]T (slice ← array)
+        // Implicit coercion: [:]T is compatible with [N]T (slice ← array)
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
             return types_equal(va.elem, fa.elem)
         }
-        // Implicit coercion: []T is compatible with array class of T
+        // Implicit coercion: [:]T is compatible with array class of T
         if sd := as_scope_body(b); sd != nil && sd.is_array_class {
             return types_equal(va.elem, sd.elem_type)
+        }
+        // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view)
+        if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
+            return types_equal(va.elem, pa.elem) && va.has_sentinel == pa.has_sentinel
         }
         vb, ok := b.(^Type_Slice)
         if !ok { return false }
         return types_equal(va.elem, vb.elem)
+    case ^Type_Partial_Array:
+        // Partial arrays are nominally typed by (size, elem, sentinel).
+        // Coercion to [:]T is handled in the slice case above.
+        if pa, ok := b.(^Type_Partial_Array); ok {
+            return va.size == pa.size && types_equal(va.elem, pa.elem) &&
+                   va.has_sentinel == pa.has_sentinel
+        }
+        return false
     case ^Type_Enum:
         // Enums are compatible with int, infer_int, numeric integer types, and the same enum
         if _, ok := b.(Type_Int); ok { return true }
@@ -2702,6 +2802,11 @@ type_name :: proc(t: Type) -> string {
             return fmt.tprintf("[:, %d]%s", v.sentinel, type_name(v.elem))
         }
         return fmt.tprintf("[:]%s", type_name(v.elem))
+    case ^Type_Partial_Array:
+        if v.has_sentinel {
+            return fmt.tprintf("[..%d, %d]%s", v.size, v.sentinel, type_name(v.elem))
+        }
+        return fmt.tprintf("[..%d]%s", v.size, type_name(v.elem))
     case ^Type_Enum:        return v.name
     case ^Type_Union:       return v.name
     case ^Type_Distinct:
@@ -2899,7 +3004,7 @@ checker_struct_byte_size :: proc(st: ^Type_Scope) -> int {
 checker_type_alignment :: proc(t: Type) -> int {
     switch v in t {
     case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float,
-         Type_CString, ^Type_Ptr, ^Type_Slice,
+         Type_CString, ^Type_Ptr, ^Type_Slice, ^Type_Partial_Array,
          ^Type_Enum, ^Type_Union, ^Type_Tuple,
          Type_Const_Int, Type_Runtime_Size,
          Type_Any, Type_Error:
@@ -3023,6 +3128,11 @@ checker_type_byte_size :: proc(t: Type) -> int {
     case Type_C8, Type_Utf8, Type_Byte, Type_Bool:
         return 1
     case ^Type_Slice:      return 24 // { ptr, i64, i64 } = 8 + 8 + 8
+    case ^Type_Partial_Array:
+        // {ptr, i64, i64, [N x T]} — 24 bytes header + N * sizeof(elem) backing
+        total := v.size
+        if v.has_sentinel { total += 1 }
+        return 24 + total * checker_type_byte_size(v.elem)
     case ^Type_Scope:      return checker_struct_byte_size(v)
     case ^Type_Fixed_Array:
         total := v.size
@@ -5326,6 +5436,8 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         case ^Type_Fixed_Array:
             elem_type = ct.elem
         case ^Type_Slice:
+            elem_type = ct.elem
+        case ^Type_Partial_Array:
             elem_type = ct.elem
         case ^Type_Scope:
             if ct.is_array_class {
@@ -8404,6 +8516,19 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         check_error(c, e.span, "slice type %s has no field '%s'", type_name(obj_type), e.field)
         return Type_Error{}
     }
+    // Partial array field access: pa.ptr, pa.len, pa.cap — shape matches slice.
+    if pa, ok := obj_type.(^Type_Partial_Array); ok {
+        if e.field == "ptr" {
+            pt := new(Type_Ptr)
+            pt.elem = pa.elem
+            return pt
+        }
+        if e.field == "len" || e.field == "cap" {
+            return Type_Int{}
+        }
+        check_error(c, e.span, "partial array type %s has no field '%s'", type_name(obj_type), e.field)
+        return Type_Error{}
+    }
     if !is_any(obj_type) {
         check_error(c, e.span, "cannot access field '%s' on type %s", e.field, type_name(obj_type))
     }
@@ -9574,6 +9699,12 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
         return sl.elem
     }
 
+    // Partial array indexing — same as slice; the header has matching first
+    // 24 bytes so codegen can reuse the slice indexing path.
+    if pa, ok := target_type.(^Type_Partial_Array); ok {
+        return pa.elem
+    }
+
     // Array class → desugar to field access: buf[i] → buf.items[i]
     if sd := as_scope_body(target_type); sd != nil && sd.is_array_class {
         e.expr = desugar_array_field(e.expr, sd, e.span)
@@ -9610,6 +9741,8 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Env) -> Type {
         elem_type = fa.elem
     } else if sl, ok := target_type.(^Type_Slice); ok {
         elem_type = sl.elem
+    } else if pa, ok := target_type.(^Type_Partial_Array); ok {
+        elem_type = pa.elem
     } else if sd := as_scope_body(distinct_base(target_type)); sd != nil && sd.is_array_class {
         e.expr = desugar_array_field(e.expr, sd, e.span)
         elem_type = sd.elem_type

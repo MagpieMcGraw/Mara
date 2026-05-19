@@ -21,16 +21,17 @@ format_location :: proc(file: string, line: int, col: int) -> string {
 
 // Type annotation AST
 Type_Expr :: union {
-    Type_Name,              // int, f64, bool, string
-    Type_Of_Name,           // fn game_run — nominal type of a named function
-    ^Type_Array,            // [N]T — fixed-size array
-    ^Type_Pointer,          // ^T — pointer to T
-    ^Type_Slice_Expr,       // []T — slice (view into array)
-    ^Type_Tuple_Expr,       // (int, string) — tuple type for multi-return
-    ^Type_Generic_Instance, // Array(int), Map(string, int) — parameterized type
-    ^Type_Func_Expr,        // fun(int, int) -> int — function type
-    Type_Const_Value,       // 256 — compile-time integer value in generic args
-    Type_Const_Expr,        // runtime expression in generic args (e.g., String(n))
+    Type_Name,                  // int, f64, bool, string
+    Type_Of_Name,               // fn game_run — nominal type of a named function
+    ^Type_Array,                // [N]T — fixed-size array
+    ^Type_Pointer,              // ^T — pointer to T
+    ^Type_Slice_Expr,           // [:]T — slice (view into array)
+    ^Type_Partial_Array_Expr,   // [..N]T — partial array (inline storage + cursor)
+    ^Type_Tuple_Expr,           // (int, string) — tuple type for multi-return
+    ^Type_Generic_Instance,     // Array(int), Map(string, int) — parameterized type
+    ^Type_Func_Expr,            // fun(int, int) -> int — function type
+    Type_Const_Value,           // 256 — compile-time integer value in generic args
+    Type_Const_Expr,            // runtime expression in generic args (e.g., String(n))
 }
 
 Type_Name :: struct {
@@ -65,8 +66,22 @@ Type_Pointer :: struct {
 
 Type_Slice_Expr :: struct {
     elem:         Type_Expr, // element type
-    has_sentinel: bool,      // true for [, 0]T sentinel-terminated slices
+    has_sentinel: bool,      // true for [:, 0]T sentinel-terminated slices
     sentinel:     int,       // sentinel value (e.g. 0 for null-terminated)
+    span:         Span,
+}
+
+// [..N]T — partial array. Value type with inline backing storage and a cursor
+// (len). Layout at IR level: {ptr, len, cap, elements: [N x T]}, with ptr
+// initialised to &elements at decl time so the first 24 bytes are layout-
+// compatible with a slice header. See project_mara_slice_model for design.
+Type_Partial_Array_Expr :: struct {
+    size:         int,       // the N in [..N]T (0 when size_name or size_expr is set)
+    size_name:    string,    // identifier name when size is a constant reference
+    size_expr:    Expr,      // runtime expression for VLA-sized partial arrays
+    elem:         Type_Expr, // element type
+    has_sentinel: bool,      // true for [..N, 0]T sentinel-terminated partial arrays
+    sentinel:     int,
     span:         Span,
 }
 
@@ -1219,6 +1234,9 @@ type_expr_refs_name :: proc(te: Type_Expr, name: string) -> bool {
     case ^Type_Pointer:
         return type_expr_refs_name(t.elem, name)
     case ^Type_Slice_Expr:
+        return type_expr_refs_name(t.elem, name)
+    case ^Type_Partial_Array_Expr:
+        if t.size_name == name { return true }
         return type_expr_refs_name(t.elem, name)
     case ^Type_Tuple_Expr:
         for elem in t.elems {
@@ -2800,6 +2818,48 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
             ts.sentinel = sentinel_val
             ts.span = start
             return ts
+        }
+        // Partial array: [..N]T — value type, inline storage, cursor.
+        // Sentinel partial array: [..N, 0]T
+        if current_kind(p) == .Dot_Dot {
+            advance(p) // consume '..'
+            pa_size_val := 0
+            pa_size_name: string
+            pa_size_expr: Expr
+            if current_kind(p) == .Number && (peek_kind(p) == .Right_Bracket || peek_kind(p) == .Comma) {
+                pa_size_val = parse_int_token(advance(p).text)
+            } else if current_kind(p) == .Identifier && (peek_kind(p) == .Right_Bracket || peek_kind(p) == .Comma) {
+                pa_size_name = advance(p).text
+            } else {
+                pa_size_expr = parse_expr(p, 0)
+                if num, ok := pa_size_expr.(^Expr_Number); ok {
+                    pa_size_val = int(num.value)
+                    pa_size_expr = nil
+                } else if ident, ok := pa_size_expr.(^Expr_Ident); ok {
+                    pa_size_name = ident.name
+                    pa_size_expr = nil
+                }
+            }
+            pa_has_sentinel := false
+            pa_sentinel_val := 0
+            if current_kind(p) == .Comma {
+                advance(p)
+                skip_newlines(p)
+                sentinel_tok := expect(p, .Number)
+                pa_sentinel_val = parse_int_token(sentinel_tok.text)
+                pa_has_sentinel = true
+            }
+            expect(p, .Right_Bracket)
+            elem := parse_type_expr(p)
+            pa := new(Type_Partial_Array_Expr)
+            pa.size = pa_size_val
+            pa.size_name = pa_size_name
+            pa.size_expr = pa_size_expr
+            pa.elem = elem
+            pa.has_sentinel = pa_has_sentinel
+            pa.sentinel = pa_sentinel_val
+            pa.span = start
+            return pa
         }
         // Parse the array size — can be a number literal, identifier, or expression
         size_val := 0

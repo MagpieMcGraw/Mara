@@ -656,6 +656,17 @@ type_expr_str :: proc(te: Type_Expr) -> string {
             return fmt.tprintf("[:, %d]%s", v.sentinel, type_expr_str(v.elem))
         }
         return fmt.tprintf("[:]%s", type_expr_str(v.elem))
+    case ^Type_Partial_Array_Expr:
+        size_str: string
+        if v.size_name != "" {
+            size_str = v.size_name
+        } else {
+            size_str = fmt.tprintf("%d", v.size)
+        }
+        if v.has_sentinel {
+            return fmt.tprintf("[..%s, %d]%s", size_str, v.sentinel, type_expr_str(v.elem))
+        }
+        return fmt.tprintf("[..%s]%s", size_str, type_expr_str(v.elem))
     case ^Type_Tuple_Expr:
         b: strings.Builder
         strings.write_string(&b, "(")

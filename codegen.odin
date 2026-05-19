@@ -1463,6 +1463,15 @@ llvm_type_from_checker :: proc(t: Type) -> string {
         }
         return fmt.tprintf("[%d x %s]", alloc_size, elem_t)
     case ^Type_Slice:       return SLICE_IR_TYPE
+    case ^Type_Partial_Array:
+        elem_t := llvm_type_from_checker(v.elem)
+        alloc_size := v.size
+        if v.is_vla {
+            alloc_size = 0
+        } else if v.has_sentinel {
+            alloc_size += 1
+        }
+        return strings.concatenate({"{ ptr, i64, i64, [", fmt.tprintf("%d", alloc_size), " x ", elem_t, "] }"})
     case ^Type_Enum:
         if v.tag_type != "" { return tag_type_to_ir(v.tag_type) }
         return "i64"

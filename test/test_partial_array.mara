@@ -1,0 +1,29 @@
+module test_partial_array
+
+// Phase 2 smoke test for [..N]T partial array declarations.
+// Decl should allocate {ptr, len, cap, [N x T]} on the stack with ptr=&elements.
+
+test_partial_array :: fun() {
+	print("=== test_partial_array ===")
+
+	// Basic decl: cap is 16, len starts at 0.
+	storage : [..16]i64
+	print(storage.cap)
+	print(storage.len)
+
+	// Indexing through the inline storage.
+	storage[0] = 100
+	storage[1] = 200
+	storage[2] = 300
+	print(storage[0])
+	print(storage[1])
+	print(storage[2])
+
+	// Sub-slice from partial array — should produce a [:]i64 view.
+	sl : [:]i64 = storage[0:3]
+	print(sl.len)
+	print(sl[0])
+	print(sl[2])
+
+	print("=== test_partial_array passed ===")
+}

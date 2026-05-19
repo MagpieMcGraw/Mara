@@ -239,6 +239,73 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             return
         }
 
+        // Partial array declaration: `name : [..N]T`. Allocates a single
+        // structure {ptr, i64, i64, [N x T]} with ptr pre-set to &elements
+        // so the first 24 bytes are layout-compatible with a slice header.
+        if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
+            elem_t := llvm_type_from_checker(pa.elem)
+            _, pa_utf8 := pa.elem.(Type_Utf8)
+            cap_n := pa.size
+            alloc_cap := cap_n
+            if pa.has_sentinel { alloc_cap += 1 }
+            ir_type := strings.concatenate({"{ ptr, i64, i64, [", fmt.tprintf("%d", alloc_cap), " x ", elem_t, "] }"})
+            alloca_name := fmt.tprintf("%%%s", s.name)
+            elem_bytes := elem_byte_size(elem_t, g.checked)
+            total_bytes := alloc_cap * elem_bytes
+            loc := format_location(s.span.file, s.span.line, s.span.col)
+            if g.context_enabled && total_bytes >= 1024 {
+                // Big partial array: arena-bump the whole structure including
+                // header. The arena returns a pointer to a fresh region whose
+                // layout matches our IR type — initialize ptr/len/cap into it.
+                data_name := emit_arena_bump(g, total_bytes + 24, s.name, loc)
+                emit(g, "  %s = bitcast ptr %s to ptr", alloca_name, data_name)
+            } else {
+                if elem_t == "i8" {
+                    emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type, ", align 16"}))
+                } else {
+                    emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type}))
+                }
+            }
+            // Initialise header: ptr → elements, len → 0, cap → N.
+            elements_ptr := fresh_tmp(g)
+            emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 3, i32 0"}))
+            ptr_gep := fresh_tmp(g)
+            emit_slice_gep(g, ptr_gep, alloca_name, 0)
+            emit(g, "  store ptr %s, ptr %s", elements_ptr, ptr_gep)
+            len_gep := fresh_tmp(g)
+            emit_slice_gep(g, len_gep, alloca_name, 1)
+            emit(g, "  store i64 0, ptr %s", len_gep)
+            cap_gep := fresh_tmp(g)
+            emit_slice_gep(g, cap_gep, alloca_name, 2)
+            emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
+            g.all_vars[s.name] = Slice_Var{
+                alloca       = alloca_name,
+                elem_type    = elem_t,
+                is_utf8      = pa_utf8,
+                has_sentinel = pa.has_sentinel,
+            }
+            // Optional initial value: string literal into a byte/utf8 partial
+            // array. Mirrors the sized-slice path.
+            if s.value != nil {
+                if str_lit, str_ok := s.value.(^Expr_String); str_ok && elem_bytes == 1 {
+                    str_bytes := str_lit.value
+                    if len(str_bytes) > 0 {
+                        global, _ := get_string_literal(g, str_bytes)
+                        src_ptr := fresh_tmp(g)
+                        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, len(str_bytes)+1, global)
+                        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", elements_ptr, src_ptr, len(str_bytes))
+                    }
+                    emit(g, "  store i64 %d, ptr %s", len(str_bytes), len_gep)
+                    if pa.has_sentinel {
+                        term_ptr := fresh_tmp(g)
+                        emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", term_ptr, elements_ptr, len(str_bytes))
+                        emit(g, "  store i8 0, ptr %s", term_ptr)
+                    }
+                }
+            }
+            return
+        }
+
         // Function value or pointer type declaration
         if tf, ok := var_type.(^Type_Scope); ok && tf.kind == .Fun {
             if s.value == nil {
