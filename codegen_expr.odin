@@ -933,56 +933,11 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         }
     }
 
-    // Foreign function call (no @mara_ prefix, correct types)
-    // Use resolved flat name for lookup (e.name is source-level, may not match flat key)
+    // Foreign function call — apply .C ABI lowering per platform.
     foreign_lookup := call_resolved_name(e)
     if cs, ok := g.checked.functions[foreign_lookup]; ok {
         if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
-            arg_strs: [dynamic]string
-            for arg, i in e.args {
-                pt := "i64"
-                if i < len(cs.params) {
-                    pt = llvm_type_from_checker(cs.params[i].type_)
-                }
-                // utf8 array → cstring (ptr): pass data_ptr directly
-                if pt == "ptr" {
-                    if ident, id_ok := arg.(^Expr_Ident); id_ok {
-                        if av, av_ok := get_array(g, ident.name); av_ok {
-                            append(&arg_strs, fmt.tprintf("ptr %s", av.alloca))
-                            continue
-                        }
-                    }
-                }
-                val := gen_expr(g, arg, pt)
-                // Convert concrete-typed Mara values to the foreign type if needed
-                // (infer exprs already emitted in the correct type via target_type)
-                if !is_infer_expr(g, arg) {
-                    val_type := expr_ir_type(g, arg)
-                    if val_type != pt {
-                        val = emit_type_convert(g, val, val_type, pt)
-                    }
-                }
-                if pt == "ptr" && val == "0" {
-                    val = "null"
-                }
-                append(&arg_strs, fmt.tprintf("%s %s", pt, val))
-            }
-            args_joined := strings.join(arg_strs[:], ", ")
-            // Use link_name for the C symbol (may differ from Mara name due to link prefix)
-            call_name := fo.link_name
-            if call_name == "" { call_name = foreign_lookup }
-            ret_type := "void"
-            if !is_untyped(cs.return_type) && cs.return_type != nil {
-                ret_type = llvm_type_from_checker(cs.return_type)
-            }
-            if ret_type == "void" {
-                emit(g, "  call void @%s(%s)", call_name, args_joined)
-                return "0"
-            } else {
-                tmp := fresh_tmp(g)
-                emit(g, "  %s = call %s @%s(%s)", tmp, ret_type, call_name, args_joined)
-                return tmp
-            }
+            return gen_c_call(g, e, &cs, fo.link_name, foreign_lookup)
         }
     }
 
@@ -1135,6 +1090,153 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     }
 
     codegen_fatal(g, e.span, "call to unknown function '%s' — no fun_info and no function-pointer variable", lookup_name)
+}
+
+// Emit a foreign (.C convention) function call. Applies platform ABI lowering
+// (SysV / Win64) to each parameter and the return.
+//
+//   Direct arg, scalar     → existing primitive emission path
+//   Direct arg, aggregate  → load classified parts from the arg's struct memory
+//   Indirect arg           → ptr byval(<T>) %addr (caller provides the address)
+//   Direct return, scalar  → capture the SSA result
+//   Direct return, aggr.   → alloca slot + extract+store each part, return slot
+//   Indirect return        → alloca slot, pass as hidden sret first arg
+gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, foreign_lookup: string) -> string {
+    conv := Calling_Conv.C
+    if cs.type_ != nil { conv = cs.type_.calling_conv }
+    os := g.checked.target_os
+
+    arg_strs: [dynamic]string
+
+    // Return lowering: prepend hidden sret slot for Indirect, set ret_ir for Direct.
+    has_void_return := cs.return_type == nil || is_untyped(cs.return_type)
+    ret_low: Lowering
+    ret_ir := "void"
+    sret_slot := ""
+    if !has_void_return {
+        ret_low = classify_ret(cs.return_type, conv, os)
+        switch r in ret_low {
+        case Lowering_Direct:
+            ret_ir = direct_ir_for_return(r.parts[:])
+        case Lowering_Indirect:
+            ret_struct_ir := llvm_type_from_checker(cs.return_type)
+            sret_slot = fresh_tmp(g)
+            emit(g, "  %s = alloca %s", sret_slot, ret_struct_ir)
+            append(&arg_strs, fmt.tprintf("ptr sret(%s) %s", ret_struct_ir, sret_slot))
+        }
+    }
+
+    // Each user arg.
+    for arg_expr, i in e.args {
+        if i >= len(cs.params) {
+            // Variadic excess (not yet supported beyond best-effort scalar pass-through).
+            val := gen_expr(g, arg_expr)
+            append(&arg_strs, fmt.tprintf("i64 %s", val))
+            continue
+        }
+        pt := cs.params[i].type_
+        p_low := classify_arg(pt, conv, os)
+
+        switch pp in p_low {
+        case Lowering_Direct:
+            if is_aggregate(pt) {
+                emit_c_aggregate_direct_arg(g, arg_expr, pp.parts[:], &arg_strs)
+            } else {
+                emit_c_scalar_arg(g, arg_expr, pp.parts[0], &arg_strs)
+            }
+        case Lowering_Indirect:
+            arg_addr := gen_expr(g, arg_expr)
+            arg_struct_ir := llvm_type_from_checker(pt)
+            append(&arg_strs, fmt.tprintf("ptr byval(%s) %s", arg_struct_ir, arg_addr))
+        }
+    }
+
+    args_joined := strings.join(arg_strs[:], ", ")
+    call_name := link_name
+    if call_name == "" { call_name = foreign_lookup }
+
+    // Emit the call.
+    if has_void_return {
+        emit(g, "  call void @%s(%s)", call_name, args_joined)
+        return "0"
+    }
+    if sret_slot != "" {
+        emit(g, "  call void @%s(%s)", call_name, args_joined)
+        return sret_slot
+    }
+    tmp := fresh_tmp(g)
+    emit(g, "  %s = call %s @%s(%s)", tmp, ret_ir, call_name, args_joined)
+
+    // For Direct aggregate returns, materialize the SSA result into a memory
+    // slot so callers — which expect aggregate values via pointer — can use it.
+    if direct, ok := ret_low.(Lowering_Direct); ok {
+        if is_aggregate(cs.return_type) {
+            ret_struct_ir := llvm_type_from_checker(cs.return_type)
+            slot := fresh_tmp(g)
+            emit(g, "  %s = alloca %s", slot, ret_struct_ir)
+            if len(direct.parts) == 1 {
+                emit(g, "  store %s %s, ptr %s", direct.parts[0], tmp, slot)
+            } else {
+                for part, pi in direct.parts {
+                    offset := pi * 8
+                    ev := fresh_tmp(g)
+                    emit(g, "  %s = extractvalue %s %s, %d", ev, ret_ir, tmp, pi)
+                    if offset == 0 {
+                        emit(g, "  store %s %s, ptr %s", part, ev, slot)
+                    } else {
+                        gep := fresh_tmp(g)
+                        emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", gep, slot, offset)
+                        emit(g, "  store %s %s, ptr %s", part, ev, gep)
+                    }
+                }
+            }
+            return slot
+        }
+    }
+    return tmp
+}
+
+// Emit a scalar-typed C call argument. Preserves the legacy primitive paths:
+// utf8 array → cstring ptr, type conversion, ptr null sentinel.
+emit_c_scalar_arg :: proc(g: ^Codegen, arg_expr: Expr, pt: string, arg_strs: ^[dynamic]string) {
+    if pt == "ptr" {
+        if ident, id_ok := arg_expr.(^Expr_Ident); id_ok {
+            if av, av_ok := get_array(g, ident.name); av_ok {
+                append(arg_strs, fmt.tprintf("ptr %s", av.alloca))
+                return
+            }
+        }
+    }
+    val := gen_expr(g, arg_expr, pt)
+    if !is_infer_expr(g, arg_expr) {
+        val_type := expr_ir_type(g, arg_expr)
+        if val_type != pt {
+            val = emit_type_convert(g, val, val_type, pt)
+        }
+    }
+    if pt == "ptr" && val == "0" {
+        val = "null"
+    }
+    append(arg_strs, fmt.tprintf("%s %s", pt, val))
+}
+
+// Emit an aggregate-typed Direct C call argument: load each classified part
+// from the struct's memory at the corresponding eightbyte offset.
+emit_c_aggregate_direct_arg :: proc(g: ^Codegen, arg_expr: Expr, parts: []string, arg_strs: ^[dynamic]string) {
+    addr := gen_expr(g, arg_expr)
+    for part, i in parts {
+        offset := i * 8
+        gep: string
+        if offset == 0 {
+            gep = addr
+        } else {
+            gep = fresh_tmp(g)
+            emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", gep, addr, offset)
+        }
+        loaded := fresh_tmp(g)
+        emit(g, "  %s = load %s, ptr %s", loaded, part, gep)
+        append(arg_strs, fmt.tprintf("%s %s", part, loaded))
+    }
 }
 
 // Allocate sibling storage for each of a callee's escape locals and append
