@@ -1,5 +1,8 @@
 package mara
 
+import "core:fmt"
+import "core:strings"
+
 // =============================================================================
 // ABI calling convention and per-platform lowering.
 //
@@ -376,6 +379,69 @@ direct_single :: proc(ir: string) -> Lowering {
     parts: [dynamic]string
     append(&parts, ir)
     return Lowering_Direct{parts = parts}
+}
+
+// =============================================================================
+// IR emission helpers — consume Lowering, produce LLVM IR fragments.
+// =============================================================================
+
+// Build a `declare ret_ir @link_name(params...)` line for a foreign function,
+// applying the C calling convention for the given target OS.
+//
+// Lowering rules at the declaration:
+//   - Return Direct[1 part]   → `declare <part> @name(...)`
+//   - Return Direct[2 parts]  → `declare { p0, p1 } @name(...)` (SysV split aggr)
+//   - Return Indirect         → `declare void @name(ptr sret(<retty>) %sret, ...)`
+//   - Arg Direct[1 part]      → `<part>` (one positional arg)
+//   - Arg Direct[2 parts]     → `<p0>, <p1>` (two positional args)
+//   - Arg Indirect            → `ptr byval(<argty>)` (caller-allocated copy)
+build_c_declare :: proc(cs: ^Checked_Scope, link_name: string, os: Target_OS) -> string {
+    conv := Calling_Conv.C
+    if cs.type_ != nil { conv = cs.type_.calling_conv }
+
+    parts: [dynamic]string
+    defer delete(parts)
+
+    // Return lowering.
+    ret_ir := "void"
+    has_void_return := cs.return_type == nil || is_untyped(cs.return_type)
+    if !has_void_return {
+        ret_low := classify_ret(cs.return_type, conv, os)
+        switch r in ret_low {
+        case Lowering_Direct:
+            ret_ir = direct_ir_for_return(r.parts[:])
+        case Lowering_Indirect:
+            ret_struct_ir := llvm_type_from_checker(cs.return_type)
+            sret := strings.concatenate({"ptr sret(", ret_struct_ir, ")"})
+            append(&parts, sret)
+        }
+    }
+
+    // Argument lowering.
+    for p in cs.params {
+        plow := classify_arg(p.type_, conv, os)
+        switch pp in plow {
+        case Lowering_Direct:
+            for part in pp.parts {
+                append(&parts, part)
+            }
+        case Lowering_Indirect:
+            arg_struct_ir := llvm_type_from_checker(p.type_)
+            byval := strings.concatenate({"ptr byval(", arg_struct_ir, ")"})
+            append(&parts, byval)
+        }
+    }
+
+    params_joined := strings.join(parts[:], ", ")
+    return strings.concatenate({"declare ", ret_ir, " @", link_name, "(", params_joined, ")"})
+}
+
+// Render a Direct-return as its IR type. Single-part is just the type;
+// multi-part packs into an anonymous struct so LLVM splits across registers.
+direct_ir_for_return :: proc(parts: []string) -> string {
+    if len(parts) == 1 { return parts[0] }
+    joined := strings.join(parts, ", ")
+    return strings.concatenate({"{ ", joined, " }"})
 }
 
 // Natural alignment for a checker type. Mirrors C/LLVM rules.

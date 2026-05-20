@@ -2587,16 +2587,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         cs := checked.functions[k]
         fo, is_foreign := cs.origin.(Origin_Foreign)
         if !is_foreign { continue }
-        ret_type := "void"
-        if cs.return_type != nil && !is_untyped(cs.return_type) {
-            ret_type = llvm_type_from_checker(cs.return_type)
-        }
-        param_strs: [dynamic]string
-        for p in cs.params {
-            append(&param_strs, llvm_type_from_checker(p.type_))
-        }
-        params_joined := strings.join(param_strs[:], ", ")
-        decl_str := strings.concatenate({"declare ", ret_type, " @", fo.link_name, "(", params_joined, ")"})
+        decl_str := build_c_declare(&cs, fo.link_name, checked.target_os)
         strings.write_string(&final, decl_str)
         strings.write_byte(&final, '\n')
     }

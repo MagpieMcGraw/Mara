@@ -1117,6 +1117,10 @@ Checked_Program :: struct {
 
     // Compile-time constants: name -> resolved integer value (derived from table.constants)
     constant_values: map[string]int,
+
+    // Target platform — drives ABI lowering for .C-convention functions.
+    // Inherited from the checker; stamped at check completion.
+    target_os:      Target_OS,
 }
 
 // ---------------------------------------------------------------------------
@@ -7256,6 +7260,7 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
     c := Checker{ table = table }
     checked := new(Checked_Program)
     checked.table = table
+    checked.target_os = target_os
     c.checked = checked
     c.programs = programs
     c.compiler_dir = compiler_dir
