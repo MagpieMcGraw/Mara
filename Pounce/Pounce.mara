@@ -109,6 +109,8 @@ game_draw :: fun(game: ^Megastruct) {
 
 #expose
 game_run :: fun(ctx: ^Context, memory: ^[]byte, reload: bool) -> bool {
+	//context.scope_allocator = Arena_Debug(192 * MB)
+
 	game := take(Megastruct, &memory[16])
 	if not game.initialized do game_init(&game, memory)
 	if reload do game_reload(&game)
