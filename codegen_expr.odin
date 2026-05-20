@@ -58,8 +58,9 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         return fmt.tprintf("%d", int(e.value))
 
     case ^Expr_Ident:
-        // Null pointer literal
-        if e.name == "nil" {
+        // Null pointer literal — the only legal way to spell a null pointer
+        // in Mara source. Lowers to LLVM's `null` keyword unchanged.
+        if e.name == "void" {
             return "null"
         }
         // Type checker may have rewritten this ident into a richer expression

@@ -3869,7 +3869,7 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body,
     if is_sealed { return }
     append(&env.includes, mod_sd.scope)
     for name, t in mod_sd.scope.types {
-        if name == "nil" { continue }  // don't re-export nil
+        if name == "void" { continue }  // don't re-export the void null-pointer literal
         if tf, is_func := t.(^Type_Scope); is_func && (len(tf.params) > 0 || tf.has_parens) {
             c.declared_funs[name] = true
         }
@@ -6793,7 +6793,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // env lookup walker stops here when looking up unqualified names —
     // module locals don't leak into sibling modules' lookup chains. But
     // we DO want module bodies to see the build-wide globals (context,
-    // Context, std, nil), which live in c.top_env (root) and otherwise
+    // Context, std, void), which live in c.top_env (root) and otherwise
     // sit on the other side of the is_module_scope barrier. Copy them in
     // so the module's own functions can reference `context.X` etc., same
     // as a main package's file_env can.
@@ -6801,19 +6801,19 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_env.is_module_scope = true
 
     if c.top_env != nil {
-        for name in ([]string{"context", "Context", "std", "nil"}) {
+        for name in ([]string{"context", "Context", "std", "void"}) {
             if t, ok := c.top_env.types[name]; ok {
                 type_env_set(mod_env, name, t)
             }
         }
     }
 
-    // If `nil` wasn't in c.top_env yet (early in setup), register a fresh
-    // null-pointer type so the module body's nil literals still type-check.
-    if _, has_nil := mod_env.types["nil"]; !has_nil {
-        nil_type := new(Type_Ptr)
-        nil_type.elem = Type_Any{}
-        type_env_set(mod_env, "nil", nil_type)
+    // If `void` wasn't in c.top_env yet (early in setup), register a fresh
+    // null-pointer type so the module body's void literals still type-check.
+    if _, has_void := mod_env.types["void"]; !has_void {
+        void_type := new(Type_Ptr)
+        void_type.elem = Type_Any{}
+        type_env_set(mod_env, "void", void_type)
     }
 
     // Create module-struct upfront so it can own top-level declarations
@@ -7587,10 +7587,11 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
         type_env_set(env, "Context", ctx_type)
     }
 
-    // Register nil as a built-in null pointer literal
-    nil_type := new(Type_Ptr)
-    nil_type.elem = Type_Any{}
-    type_env_set(env, "nil", nil_type)
+    // Register `void` as the built-in null-pointer literal. Reads as
+    // "this pointer points into the void — no data to be read there".
+    void_type := new(Type_Ptr)
+    void_type.elem = Type_Any{}
+    type_env_set(env, "void", void_type)
 
     // Phase 1: Scope-based checking of every main package, in turn.
     // Imports reached from any of them go through check_module which caches

@@ -61,7 +61,7 @@ draw_state_create :: fun(
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, command_buffer)
 	gl.BufferData(gl.DRAW_INDIRECT_BUFFER,
 				  max_commands * size_of(DrawCommand),
-				  nil,
+				  void,
 				  gl.DYNAMIC_DRAW)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
 
@@ -101,7 +101,7 @@ draw_state_append :: fun(
 	objects: []Object,
 	visuals: []Visual,
 	camera: Camera,
-	highlight_state: ^DrawState = nil)
+	highlight_state: ^DrawState = void)
 {
 	if objects.len == 0 do return // empty array
 	if visuals.len == 0 do return // empty array
@@ -131,7 +131,7 @@ draw_state_append :: fun(
 		}
 		batch.instances[i] = instance
 
-		if highlight_state != nil and obj.highlighted {
+		if highlight_state != void and obj.highlighted {
 			highlight_batch := get_or_create_batch(highlight_state, mesh_id)
 			// Fixed offset gives consistent outline thickness
 			highlight_scale := obj.scale + 0.3
@@ -201,7 +201,7 @@ draw_state_render :: fun(state: ^DrawState) {
 	gl.MultiDrawElementsIndirect(
 		gl.TRIANGLES,
 		gl.UNSIGNED_INT,
-		nil,                         // offset (0 = start of buffer)
+		void,                         // offset (0 = start of buffer)
 		i32(state.command_count),    // draw count
 		0,                           // stride (0 = tightly packed)
 	)

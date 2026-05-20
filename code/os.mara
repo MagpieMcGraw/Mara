@@ -109,14 +109,14 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Touching uncommitted bytes traps; commit them first with vm_commit.
 	// Caller must release with vm_release.
 	vm_reserve :: fun(size: i64) -> ^byte {
-		return VirtualAlloc(nil, usize(size), MEM_RESERVE, PAGE_NOACCESS)
+		return VirtualAlloc(void, usize(size), MEM_RESERVE, PAGE_NOACCESS)
 	}
 
 	// Commit physical pages for the [base, base+size) range. Returns 1 on
 	// success, 0 on failure (typically out-of-memory). The range must lie
 	// inside something previously returned by vm_reserve.
 	vm_commit :: fun(base: ^byte, size: i64) -> i64 {
-		if VirtualAlloc(base, usize(size), MEM_COMMIT, PAGE_READWRITE) == nil do return 0
+		if VirtualAlloc(base, usize(size), MEM_COMMIT, PAGE_READWRITE) == void do return 0
 		return 1
 	}
 
@@ -146,14 +146,14 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Open a file for reading. Returns (id, true) on success; the (id, false)
 	// branch carries an unspecified File_Id — don't use it.
 	file_open_read :: fun(path: cstring) -> (File_Id, bool) {
-		id := CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+		id := CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, void, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return NO_FILE, false
 		return id, true
 	}
 
 	// Open a file for writing, creating it if missing and truncating if present.
 	file_open_write :: fun(path: cstring) -> (File_Id, bool) {
-		id := CreateFileA(path, GENERIC_WRITE, 0, nil, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+		id := CreateFileA(path, GENERIC_WRITE, 0, void, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return NO_FILE, false
 		return id, true
 	}
@@ -177,7 +177,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// the bytes are written through FFI; the slice header itself is unchanged.
 	file_read :: fun(id: File_Id, buf: ^[]byte) -> ([]byte, bool) {
 		read: u32 = 0
-		if not bool(ReadFile(id, &buf[0], u32(buf.len), &read, nil)) do return buf[0:0], false
+		if not bool(ReadFile(id, &buf[0], u32(buf.len), &read, void)) do return buf[0:0], false
 		return buf[0:i64(read)], true
 	}
 
@@ -189,7 +189,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// check, so the contract is `^[]byte` either way.
 	file_write :: fun(id: File_Id, data: ^[]byte) -> (i64, bool) {
 		written: u32 = 0
-		if not bool(WriteFile(id, &data[0], u32(data.len), &written, nil)) do return 0, false
+		if not bool(WriteFile(id, &data[0], u32(data.len), &written, void)) do return 0, false
 		return i64(written), true
 	}
 
@@ -239,13 +239,13 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// Dynamic library loading (dlopen-equivalent)
 	// ---------------------------------------------------------------------------
 
-	// Load a DLL by name. Returns nil on failure. Win32's search order applies —
+	// Load a DLL by name. Returns void on failure. Win32's search order applies —
 	// pass a full path to bypass it. Caller must release with free_library.
 	load_library :: fun(name: cstring) -> ^byte {
 	return LoadLibraryA(name)
 	}
 
-	// Look up a symbol in a loaded module. Returns nil if the symbol does not
+	// Look up a symbol in a loaded module. Returns void if the symbol does not
 	// exist. Cast the returned ^byte to the appropriate function pointer type
 	// at the call site.
 	find_symbol :: fun(mod: ^byte, name: cstring) -> ^byte {
@@ -271,7 +271,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 			name: cstring,
 			access: u32,
 			share: u32,
-			security: ^byte,            // LPSECURITY_ATTRIBUTES — actual pointer; pass nil
+			security: ^byte,            // LPSECURITY_ATTRIBUTES — actual pointer; pass void
 			disposition: u32,
 			flags: u32,
 			template: File_Id) -> File_Id  // HANDLE hTemplateFile / return — pass File_Id(0) for none
@@ -305,7 +305,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun FreeLibrary(mod: ^byte) -> i32
 
 		fun VirtualAlloc(
-			addr:       ^byte,        // LPVOID — pass nil to let the system choose
+			addr:       ^byte,        // LPVOID — pass void to let the system choose
 			size:       usize,
 			alloc_type: u32,          // MEM_RESERVE / MEM_COMMIT (or both via OR)
 			protect:    u32) -> ^byte // PAGE_* flags
@@ -506,11 +506,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	// commit them first with vm_commit. Equivalent to Windows VirtualAlloc with
 	// MEM_RESERVE + PAGE_NOACCESS.
 	vm_reserve :: fun(size: i64) -> ^byte {
-		// mmap returns MAP_FAILED = (void*)-1 on failure, not nil — so the
-		// caller's nil-check doesn't catch a failed reserve. In practice this
+		// mmap returns MAP_FAILED = (void*)-1 on failure, not void — so the
+		// caller's void-check doesn't catch a failed reserve. In practice this
 		// only fires on real OOM, and the subsequent vm_commit's mprotect call
 		// would fail anyway, reporting failure cleanly through that path.
-		return mmap(nil, usize(size), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+		return mmap(void, usize(size), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
 	}
 
 	// Commit physical pages for [base, base+size). The range must lie inside

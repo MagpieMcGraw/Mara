@@ -65,14 +65,14 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
     gl.BindBuffer(gl.ARRAY_BUFFER, vertex_vbo)
     gl.BufferData(gl.ARRAY_BUFFER,
                   isize(max_vertices * size_of(Vertex)),
-                  nil,
+                  void,
                   gl.STATIC_DRAW)
 
     // Pre-allocate index buffer (no data yet)
     gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
     gl.BufferData(gl.ELEMENT_ARRAY_BUFFER,
                   isize(max_indices * size_of(u32)),
-                  nil,
+                  void,
                   gl.STATIC_DRAW)
 
     // Vertex attributes (per-vertex)
@@ -93,7 +93,7 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
     gl.BindBuffer(gl.ARRAY_BUFFER, instance_vbo)
     gl.BufferData(gl.ARRAY_BUFFER,
                   isize(max_instances * size_of(Instance)),
-                  nil,
+                  void,
                   gl.DYNAMIC_DRAW)
 
     // Instance attributes (per-instance)
