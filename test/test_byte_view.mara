@@ -47,7 +47,7 @@ return_view :: fun(memory: ^[]byte) -> ^View_Payload {
 
 test_byte_view :: fun() {
     // Fixed [N]byte source: capacity is compile-time, ann widens ^byte → ^View_Payload.
-    buf : var Array(byte, 256)
+    buf : [..256]byte
     p : ^View_Payload = &buf[0]
     p.counter = 42
     p.label = u8(7)

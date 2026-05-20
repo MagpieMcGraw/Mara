@@ -3,8 +3,6 @@ module test_arr_len
 // Fixed arrays and slices are "always full" — for them, .len returns .cap.
 // Both names must work so generic code can prefer .len consistently.
 
-use mara.array
-
 Box :: struct {
     xs    : [4]i64
     bytes : [12]byte
