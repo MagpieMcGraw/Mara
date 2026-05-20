@@ -1434,6 +1434,55 @@ union_tag_ir_type :: proc(ut: ^Type_Union) -> string {
     return "i64"
 }
 
+// True when the union qualifies for niche layout: exactly two variants,
+// one with no fields (the "None" case) and one with a single pointer field
+// (the "Some" case). For such unions, the in-memory representation is just
+// a pointer — null for None, the live pointer for Some — instead of the
+// generic tag+payload form. The shape detection is structural, so any
+// user-defined union matching it gets the optimization too, not just
+// stdlib Maybe.
+is_niche_layout :: proc(g: ^Codegen, ut: ^Type_Union) -> bool {
+    if len(ut.variants) != 2 { return false }
+    has_empty := false
+    has_ptr   := false
+    for vname in ut.variants {
+        vst_name, ok := ut.variant_structs[vname]
+        if !ok { return false }
+        sd, sd_ok := lookup_struct(g, vst_name)
+        if !sd_ok { return false }
+        switch len(sd.fields) {
+        case 0:
+            has_empty = true
+        case 1:
+            if _, is_ptr := sd.fields[0].type_.(^Type_Ptr); is_ptr {
+                has_ptr = true
+            } else {
+                return false
+            }
+        case:
+            return false
+        }
+    }
+    return has_empty && has_ptr
+}
+
+// For a niche-laid-out union, returns the variant name carrying the pointer
+// field (the "Some" case) and the empty-payload variant (the "None" case).
+// Caller must have already verified is_niche_layout.
+niche_variants :: proc(g: ^Codegen, ut: ^Type_Union) -> (some_name: string, none_name: string) {
+    for vname in ut.variants {
+        vst_name := ut.variant_structs[vname]
+        if sd, ok := lookup_struct(g, vst_name); ok {
+            if len(sd.fields) == 1 {
+                some_name = vname
+            } else if len(sd.fields) == 0 {
+                none_name = vname
+            }
+        }
+    }
+    return
+}
+
 // Convert a Mara tag_type string (e.g. "u32", "i16") to LLVM IR integer type.
 tag_type_to_ir :: proc(tag: string) -> string {
     switch tag {
@@ -2130,6 +2179,17 @@ register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
 // while shifting the payload start to where the variants' natural alignment
 // expects it (e.g. SDL3's u64 timestamp at byte 8 with a u32 tag).
 register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
+    g.registered_structs[ukey] = true
+    llvm_name := union_llvm_name(ukey)
+
+    // Niche layout: single pointer slot, no tag. Identifies None via null
+    // and Some via a live pointer at the same offset.
+    if is_niche_layout(g, ut) {
+        type_decl := strings.concatenate({llvm_name, " = type { ptr }"})
+        append(&g.struct_decls, type_decl)
+        return
+    }
+
     tag_ir := union_tag_ir_type(ut)
     tag_bytes := ir_type_byte_size(tag_ir)
     pad_bytes := union_tag_pad_bytes(ut)
@@ -2152,8 +2212,6 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
             max_bytes = min_payload
         }
     }
-    g.registered_structs[ukey] = true
-    llvm_name := union_llvm_name(ukey)
     payload_str := fmt.tprintf("[%d x i8]", max_bytes)
     tag_field: string
     if pad_bytes > 0 {

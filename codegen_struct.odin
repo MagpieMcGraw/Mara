@@ -1737,6 +1737,26 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
         codegen_fatal(g, lit.span, "'%s' is not a variant of union '%s'", lit.name, ukey)
     }
 
+    // Niche layout: union storage is just a pointer. Some{value = p} writes
+    // p; None{} writes null. No tag, no separate payload region.
+    if is_niche_layout(g, ut) {
+        some_name, _ := niche_variants(g, ut)
+        if lit.name == some_name {
+            // Find the single pointer field and store its value at offset 0.
+            if len(lit.fields) > 0 {
+                val := gen_expr(g, lit.fields[0].value, "ptr")
+                emit(g, "  store ptr %s, ptr %s", val, union_ptr)
+            } else {
+                // Some{} with no fields — caller meant Some(zero); store null.
+                emit(g, "  store ptr null, ptr %s", union_ptr)
+            }
+        } else {
+            // None{} — store null sentinel.
+            emit(g, "  store ptr null, ptr %s", union_ptr)
+        }
+        return
+    }
+
     // Store tag at field 0
     tag_ptr := fresh_tmp(g)
     emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, llvm_name, union_ptr)
