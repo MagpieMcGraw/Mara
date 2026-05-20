@@ -306,6 +306,50 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
         os.exit(1)
     }
 
+    // Locate `<name>.c` under code/ (root or one-level subdir) and *always*
+    // re-compile it into a sibling `<name><STATIC_LIB_EXT>`, returning the
+    // resulting library path.
+    //
+    // Triggered by the explicit "force recompile" form of foreign blocks:
+    // `foreign static_lib "raylib.c"` says "treat this source as live —
+    // rebuild the static lib every link." Unlike try_resolve_bundled_lib
+    // (which caches forever), this overwrites any existing .lib on every
+    // build. Once the source is stable, switch the foreign block to the
+    // bare name (`"raylib"`) so subsequent builds reuse the cached output.
+    force_recompile_bundled_lib :: proc(c_name: string, compiler_dir: string) -> (string, bool) {
+        // Caller already checked the `.c` suffix; strip it for the lib name.
+        base := c_name[:len(c_name) - 2]
+        lib_name := strings.concatenate({base, STATIC_LIB_EXT})
+        code_base, _ := filepath.join({compiler_dir, "code"})
+
+        compile_in :: proc(dir, c_file, lib_name, compiler_dir: string) -> (string, bool) {
+            c_path, _ := filepath.join({dir, c_file})
+            if !os.exists(c_path) { return "", false }
+            lib_path, _ := filepath.join({dir, lib_name})
+            if !compile_c_to_static_lib(c_path, lib_path, compiler_dir) {
+                fmt.printf("Error: forced recompile of '%s' failed\n", c_path)
+                os.exit(1)
+            }
+            return lib_path, true
+        }
+
+        if path, ok := compile_in(code_base, c_name, lib_name, compiler_dir); ok {
+            return path, true
+        }
+        ldh, lerr := os.open(code_base)
+        if lerr != nil { return "", false }
+        defer os.close(ldh)
+        entries, _ := os.read_dir(ldh, -1, context.allocator)
+        for entry in entries {
+            if entry.type != .Directory { continue }
+            sub, _ := filepath.join({code_base, entry.name})
+            if path, ok := compile_in(sub, c_name, lib_name, compiler_dir); ok {
+                return path, true
+            }
+        }
+        return "", false
+    }
+
     // Look for a bundled lib backing for a bare-name foreign reference under
     // code/*. Returns the path to a static lib usable as a linker input, or
     // ("", false) if no match exists (caller falls back to `-l<name>`).
@@ -400,6 +444,20 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
         for lib in libs {
             if lib in seen^ { continue }
             seen^[lib] = true
+            // `.c` suffix = explicit "force recompile" form. Always rebuild
+            // the static lib from source, then hand the .lib to the linker.
+            // Same artifact the bare-name path would produce — so a user can
+            // iterate with `"raylib.c"` and switch to `"raylib"` once stable,
+            // reusing the freshly-built cache.
+            if strings.has_suffix(lib, ".c") {
+                if bundled, ok := force_recompile_bundled_lib(lib, compiler_dir); ok {
+                    strings.write_string(src_b, " ")
+                    strings.write_string(src_b, bundled)
+                    continue
+                }
+                fmt.printf("Error: foreign source '%s' not found under code/\n", lib)
+                os.exit(1)
+            }
             if is_foreign_file(lib) {
                 resolved := resolve_foreign_file(lib, compiler_dir)
                 strings.write_string(src_b, " ")
