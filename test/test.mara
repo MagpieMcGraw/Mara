@@ -31,6 +31,7 @@ use test_partial_array
 use test_named_returns
 use test_abi
 use test_defer
+use test_maybe
 use mara.memory
 
 main :: fun() -> i64 {
@@ -68,5 +69,6 @@ main :: fun() -> i64 {
 	test_named_returns()
 	test_abi()
 	test_defer()
+	test_maybe()
 	return 0
 }

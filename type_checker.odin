@@ -307,6 +307,16 @@ Generic_Template :: struct {
     home_package:   string,
 }
 
+// Parallel template for `Name :: union($T: type) { ... }`. Kept separate from
+// Generic_Template so the existing struct/fun monomorphization path stays
+// untouched; instantiate_generic_union handles unions independently.
+Generic_Union_Template :: struct {
+    name:           string,
+    generic_params: [dynamic]Generic_Param,
+    ast:            ^Stmt_Union_Def,
+    home_package:   string,
+}
+
 // ---------------------------------------------------------------------------
 // Resolved names — the result of name resolution
 // ---------------------------------------------------------------------------
@@ -1137,7 +1147,8 @@ SymbolTable :: struct {
     distinct_types: map[string]^Type_Distinct,
 
     // Generic templates (unified — data-type and callable)
-    generic_templates: map[string]Generic_Template,
+    generic_templates:       map[string]Generic_Template,
+    generic_union_templates: map[string]Generic_Union_Template,
 
     // Constants
     constants:       map[string]Expr,
@@ -1150,8 +1161,9 @@ SymbolTable :: struct {
     variant_to_enum: map[string]string,
 
     // Monomorphization cache
-    mono_cache:     map[string]^Type_Scope,         // unified: both data and callable monomorphizations
-    mono_fun_cache: map[string]string,
+    mono_cache:       map[string]^Type_Scope,        // unified: both data and callable monomorphizations
+    mono_union_cache: map[string]^Type_Union,        // monomorphized union templates (Maybe(int) -> ^Type_Union)
+    mono_fun_cache:   map[string]string,
     mono_fun_bodies: map[string][dynamic]Stmt,    // cloned AST bodies per monomorphization
     fun_asts:       map[string]^Stmt_Scope,         // bare name -> AST for auto-monomorphization
     fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
@@ -1654,6 +1666,17 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             }
             return instantiate_generic_struct(c, tmpl, type_args[:], span)
         }
+        // Generic union template: `Maybe(int)` / `Maybe(^Foo)`. Parallel path
+        // to generic structs — each (template, type-args) tuple monomorphizes
+        // to a concrete Type_Union, cached in mono_union_cache.
+        if utmpl_ptr, utmpl_ok := &c.table.generic_union_templates[t.name]; utmpl_ok {
+            if len(type_args) != len(utmpl_ptr.generic_params) {
+                check_error(c, span, "'%s' expects %d type argument(s), got %d",
+                    t.name, len(utmpl_ptr.generic_params), len(type_args))
+                return Type_Error{}
+            }
+            return instantiate_generic_union(c, utmpl_ptr, type_args[:], span)
+        }
         // Sized-slice on distinct slice alias: `String2(N)` where
         // `String2 :: distinct [, 0]utf8`. Return the distinct type; the
         // capacity is captured separately on Stmt_Decl.slice_cap_expr.
@@ -1778,9 +1801,32 @@ mangle_generic_name :: proc(base: string, type_args: []Type) -> string {
     defer delete(parts)
     append(&parts, base)
     for arg in type_args {
-        append(&parts, type_name(arg))
+        append(&parts, sanitize_for_identifier(type_name(arg)))
     }
     return strings.join(parts[:], "__")
+}
+
+// Mara type names like `^Box` or `[]Foo` contain characters LLVM rejects in
+// identifiers. Replace them with safe equivalents so mangled names are usable
+// as LLVM struct names.
+sanitize_for_identifier :: proc(s: string) -> string {
+    if strings.index_any(s, "^[]., ") < 0 {
+        return s
+    }
+    b: strings.Builder
+    strings.builder_init(&b)
+    for r in s {
+        switch r {
+        case '^': strings.write_string(&b, "ptr_")
+        case '[': strings.write_string(&b, "arr_")
+        case ']': // drop
+        case ',': strings.write_string(&b, "_")
+        case '.': strings.write_string(&b, "_")
+        case ' ': // drop
+        case:     strings.write_rune(&b, r)
+        }
+    }
+    return strings.to_string(b)
 }
 
 // Resolve a type expression with generic type parameter substitutions.
@@ -1991,6 +2037,76 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
     }
 
     return st
+}
+
+// Instantiate a generic union template with concrete type arguments. Mirrors
+// instantiate_generic_struct but produces a Type_Union — builds variant structs
+// with substituted field types, the tag enum, and registers everything into
+// c.table.unions / c.table.structs / c.table.enums under mangled names.
+instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, type_args: []Type, span: Span) -> ^Type_Union {
+    mangled := mangle_generic_name(tmpl.name, type_args)
+
+    // Cache check
+    if cached, ok := c.table.mono_union_cache[mangled]; ok {
+        return cached
+    }
+
+    // Substitution map
+    subst: map[string]Type
+    for param, i in tmpl.generic_params {
+        subst[param.name] = type_args[i]
+    }
+
+    s := tmpl.ast
+
+    ut := new(Type_Union)
+    ut.name = make_flat_name(tmpl.home_package, mangled)
+    ut.tag_type = s.tag_type
+    ut.min_size = s.min_size
+    if s.tag_pad != nil {
+        ut.tag_pad = resolve_type_expr_with_subst(s.tag_pad, c, span, &subst)
+    }
+
+    // Tag enum (Maybe__int_Tag, etc.). Variants registered into the global
+    // variant_to_enum map so the dot-shorthand and bare-name lookups work.
+    tag_enum_name := strings.concatenate({mangled, "_Tag"})
+    tag_et := new(Type_Enum)
+    tag_et.name = make_flat_name(tmpl.home_package, tag_enum_name)
+    tag_et.tag_type = s.tag_type
+    for vdef in s.variants {
+        tag_et.variants[vdef.name] = vdef.tag
+    }
+    c.table.enums[tag_et.name] = tag_et
+
+    // Variant structs with substituted field types.
+    for vdef in s.variants {
+        struct_name := strings.concatenate({mangled, "_", vdef.name})
+        vst := new(Type_Scope)
+        vst.name = make_flat_name(tmpl.home_package, struct_name)
+        vst.kind = .Struct
+        for field in vdef.fields {
+            ft := resolve_type_expr_with_subst(field.type_expr, c, span, &subst)
+            append(&vst.fields, Struct_Type_Field{
+                name          = field.name,
+                type_         = ft,
+                default_value = field.default_value,
+                is_using      = field.is_using,
+            })
+        }
+        build_field_map(&vst.sd)
+        c.table.structs[vst.name] = vst
+        append(&ut.variants, vdef.name)
+        ut.tag_map[vdef.name] = vdef.tag
+        ut.variant_structs[vdef.name] = vst.name
+    }
+
+    c.table.unions[ut.name] = ut
+    c.table.mono_union_cache[mangled] = ut
+    if c.top_env != nil {
+        type_env_set(c.top_env, mangled, ut)
+    }
+
+    return ut
 }
 
 // Infer generic type parameters by walking a type expression and actual type in parallel.
@@ -3851,6 +3967,21 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
     for stmt in stmts {
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
+            // Generic union: register as a template and skip concrete
+            // registration. Each `Maybe(int)` etc. instantiates the template
+            // via resolve_type_expr -> instantiate_generic_union.
+            if len(s.generic_params) > 0 {
+                if _, exists := c.table.generic_union_templates[s.name]; !exists {
+                    c.table.generic_union_templates[s.name] = Generic_Union_Template{
+                        name           = s.name,
+                        generic_params = s.generic_params,
+                        ast            = s,
+                        home_package   = c.current_package,
+                    }
+                }
+                c.pre_registered_stmts[rawptr(s)] = true
+                continue
+            }
             // Determine if pure-enum or data union (matches Phase 1b shape)
             has_data := false
             for vdef in s.variants {
@@ -4049,6 +4180,21 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
     for stmt in stmts {
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
+            // Generic union: registration happens in Pass 1a (template only).
+            // Each instantiation creates its own concrete Type_Union via
+            // instantiate_generic_union, so there's nothing to resolve here.
+            if len(s.generic_params) > 0 {
+                if _, exists := c.table.generic_union_templates[s.name]; !exists {
+                    c.table.generic_union_templates[s.name] = Generic_Union_Template{
+                        name           = s.name,
+                        generic_params = s.generic_params,
+                        ast            = s,
+                        home_package   = c.current_package,
+                    }
+                }
+                delete_key(&c.pre_registered_stmts, rawptr(s))
+                continue
+            }
             // Pre-registered by Pass 1a (multi-file module path): pure-enum
             // case is fully resolved at Pass 1a (no type refs); data-union
             // case still needs tag_pad and variant struct fields resolved.

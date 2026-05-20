@@ -1,0 +1,23 @@
+module mara.maybe
+
+// Generic optional type. Holds either `None` (nothing) or `Some{value: T}`
+// (a wrapped T). Constructed at the FFI boundary for nullable C-side returns
+// and usable anywhere in pure Mara code.
+//
+// Usage:
+//   m : Maybe(i64) = Some{value = 42}
+//   match m {
+//   None     return -1
+//   Some s   return s.value
+//   }
+//
+// For `Maybe(^T)` the compiler may collapse the representation to a single
+// nullable pointer (niche optimization) — None is the null bit pattern, Some
+// is the live pointer — so the wrapper costs nothing at runtime in the common
+// pointer-returning FFI case.
+Maybe :: union($T: type) {
+	None
+	Some {
+		value: T
+	}
+}
