@@ -1,0 +1,10 @@
+module test_empty_foreign
+
+// Empty foreign block: declares a link-only dependency on kernel32
+// without binding any symbols from it. Used by raylib-style bindings to
+// pull in system libs that raylib's own symbols transitively need.
+foreign static_lib "kernel32" {}
+
+main :: fun() -> i64 {
+	return 0
+}
