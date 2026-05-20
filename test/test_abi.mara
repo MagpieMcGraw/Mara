@@ -1,0 +1,49 @@
+module test_abi
+
+AbiVec3 :: struct {
+	x : f32
+	y : f32
+	z : f32
+}
+
+AbiColor :: struct {
+	r : u8
+	g : u8
+	b : u8
+	a : u8
+}
+
+foreign static_lib "abi_test" {
+	fun abi_test_int(x: i32) -> i32
+	fun abi_test_color(c: AbiColor) -> AbiColor
+	fun abi_test_vec3(v: AbiVec3) -> AbiVec3
+}
+
+test_abi :: fun() {
+	print("=== test_abi ===")
+
+	// Scalar round-trip: i32 in, i32 out.
+	n := abi_test_int(21)
+	print(n)  // expect 42
+
+	// Color: 4 bytes total → Direct as i32 on both Win64 and SysV.
+	c : AbiColor
+	c.r = 10
+	c.g = 20
+	c.b = 30
+	c.a = 40
+	c2 := abi_test_color(c)
+	print(i64(c2.r), i64(c2.g), i64(c2.b), i64(c2.a))  // expect 11 21 31 41
+
+	// Vec3: 12 bytes → Indirect (sret + byval) on Win64, Direct multi-part on SysV.
+	v : AbiVec3
+	v.x = 1.0
+	v.y = 2.0
+	v.z = 3.0
+	v2 := abi_test_vec3(v)
+	// Cast to f64 for printing — there's a pre-existing fpext gap when
+	// printing f32 field-access values directly.
+	print(f64(v2.x), f64(v2.y), f64(v2.z))  // expect 2 4 6
+
+	print("=== test_abi passed ===")
+}

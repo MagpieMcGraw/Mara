@@ -1152,6 +1152,21 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
     if call, ok := value.(^Expr_Call); ok {
         resolved_name := call_resolved_name(call)
 
+        // Foreign struct-returning call: must use .C ABI lowering at the call
+        // site (sret + byval + correct attribute order), so route through
+        // gen_call (which dispatches to gen_c_call) and memcpy the result.
+        // gen_call_into_struct's NRVO shape is Mara-internal and doesn't
+        // emit the C ABI attributes.
+        if cs, cs_ok := g.checked.functions[resolved_name]; cs_ok {
+            if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
+                result_ptr := gen_call(g, call)
+                if result_ptr != "0" {
+                    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, result_ptr, total)
+                }
+                return
+            }
+        }
+
         // Check the NRVO path FIRST: if this resolves to a function that
         // returns a struct, write into dst_ptr directly. This must come
         // before the constructor checks because every struct's auto-generated
