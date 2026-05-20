@@ -23,3 +23,5 @@ Figure out who owns the main package in multi module builds.
 Steal string formatting from python.
 
 Write build script for .c code in mara to test capabilities
+
+Generalize local variable escape analysis. Today the relocate-locals-to-caller-storage trick only fires when the construction is literally at the return site (`return StructLit{verts = v[:]}`). The variable-then-return form (`t := StructLit{...}; return t`) is rejected even though it's semantically identical. Fix: add a backward def-use walk from the return statement to the variable's defining assignment, then apply the existing escape analysis to whatever it finds. Bail on mutation between def and return (field assignment to t, passing &t to a function, deref-write through a pointer aliasing t). Handles straight-line code easily; control-flow merges (`if cond do t = A else t = B; return t`) need both branches' constructions relocated. Estimate ~150-250 lines, mostly the backward walk and the mutation-check predicate. Workaround in the meantime is inlining the construction at the return — one source line, no semantic difference.
