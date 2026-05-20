@@ -379,19 +379,6 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     gen_vla_struct_assign(g, s.name, checked_st, s.value, s.vla_size_expr, s.span)
                     return
                 }
-                // Array class special handling
-                if checked_st.is_array_class {
-                    // Array literal init: buf : Buffer = [1, 2, 3]
-                    if _, al_ok := s.value.(^Expr_Array); al_ok {
-                        gen_array_class_literal_init(g, s.name, checked_st, s.value)
-                        return
-                    }
-                    // String literal init for utf8 array class: buf : String = "hello"
-                    if str_lit, str_ok := s.value.(^Expr_String); str_ok && ac_is_utf8(checked_st) {
-                        gen_array_class_string_init(g, s.name, checked_st, str_lit)
-                        return
-                    }
-                }
                 // Overloaded binary returning this struct type — use the dispatch path
                 if bin, bin_ok := s.value.(^Expr_Binary); bin_ok {
                     if rf, rf_ok := bin.overload_fn.?; rf_ok {

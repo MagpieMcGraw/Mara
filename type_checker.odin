@@ -115,13 +115,6 @@ Scope_Body :: struct {
     fields:         [dynamic]Struct_Type_Field,
     field_map:      map[string]int,  // field name -> index into fields (for O(1) lookup)
 
-    // Array class metadata
-    is_array_class: bool,
-    array_field:    string,  // name of the fixed-array field (set when is_array_class)
-    len_field:      string,  // name of the len field (set when is_array_class)
-    cap_field:      string,  // name of the cap field (set when is_array_class, "" if none)
-    elem_type:      Type,    // element type of the array field (set when is_array_class)
-    array_cap:      int,     // capacity of the array field (set when is_array_class)
     has_vla_field:  bool,    // true if any field is a VLA (struct must be arena-allocated)
     backing_bytes:  int,     // size of hidden trailing buffer for sized-slice fields' backing
                              // storage. Computed by codegen at register-struct time so the
@@ -1302,51 +1295,6 @@ check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
     fmt.println()
 }
 
-// Validate array class constraints: must have exactly one fixed-array field
-// and a field named 'len' of type int.
-validate_array_class :: proc(c: ^Checker, st: ^Scope_Body, span: Span) {
-    array_field_name := ""
-    array_field_cap := 0
-    array_elem: Type = nil
-    len_found := false
-    cap_found := false
-
-    for f in st.fields {
-        if fa, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok {
-            if array_field_name != "" {
-                check_error(c, span, "array class '%s' has multiple array fields; exactly one is required", st.name)
-                return
-            }
-            array_field_name = f.name
-            array_field_cap = fa.size
-            array_elem = fa.elem
-        }
-        if f.name == "len" {
-            len_found = true
-        }
-        if f.name == "cap" {
-            cap_found = true
-        }
-    }
-
-    if array_field_name == "" {
-        check_error(c, span, "array class '%s' has no array field; exactly one fixed-array field is required", st.name)
-        return
-    }
-    if !len_found {
-        check_error(c, span, "array class '%s' has no 'len' field; a 'len: int' field is required", st.name)
-        return
-    }
-
-    st.array_field = array_field_name
-    st.len_field = "len"
-    if cap_found {
-        st.cap_field = "cap"
-    }
-    st.elem_type = array_elem
-    st.array_cap = array_field_cap
-}
-
 // Reject an uninitialized declaration whose type is a class that requires
 // ctor arguments without defaults.
 //
@@ -1370,19 +1318,6 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
     }
 }
 
-// Desugar an array class expression to access its underlying array field.
-// e.g., buf → buf.items (where items is the using-array field)
-// This lets normal fixed-array handling take over for indexing/slicing.
-desugar_array_field :: proc(expr: Expr, st: ^Scope_Body, span: Span) -> ^Expr_Field_Access {
-    fa := new_clone(Expr_Field_Access{
-        expr  = expr,
-        field = st.array_field,
-        span  = span,
-    })
-    fa_type: Type = new_clone(Type_Fixed_Array{size = st.array_cap, elem = st.elem_type})
-    set_expr_type(fa, fa_type)
-    return fa
-}
 
 // ---------------------------------------------------------------------------
 // Resolve a parser Type_Expr to a checker Type
@@ -2006,15 +1941,9 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
         append(&st.generic_args, arg)
     }
 
-    has_using_array := false
     tmpl_fields := tmpl.ast.fields if len(tmpl.ast.fields) > 0 else extract_fields_from_body(tmpl.ast.body)
     for field in tmpl_fields {
         ft := resolve_type_expr_with_subst(field.type_expr, c, span, &subst)
-        if field.is_using {
-            if _, fa_ok := ft.(^Type_Fixed_Array); fa_ok {
-                has_using_array = true
-            }
-        }
         // Check for VLA fields
         if fa, fa_ok := ft.(^Type_Fixed_Array); fa_ok && fa.is_vla {
             st.has_vla_field = true
@@ -2041,12 +1970,6 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
             default_value = dv,
             is_using = field.is_using,
         })
-    }
-
-    // Detect array class if applicable
-    if has_using_array {
-        st.is_array_class = true
-        validate_array_class(c, &st.sd, span)
     }
 
     // Cache and register
@@ -2112,35 +2035,6 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual:
                                 param_name := tmpl.generic_params[i].name
                                 if param_name not_in subst^ || subst[param_name] == nil {
                                     subst[param_name] = sd.generic_args[i]
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if sd.is_array_class && c != nil {
-                // Structural match: a manually defined array class (e.g. Mesh_Indices)
-                // can match a generic array class template (e.g. Array($T)).
-                // Infer type params from the struct's array class properties.
-                if tmpl, tmpl_ok := c.table.generic_templates[t.name]; tmpl_ok {
-                    // Check the template is itself an array class
-                    is_ac_template := false
-                    ac_fields := tmpl.ast.fields if len(tmpl.ast.fields) > 0 else extract_fields_from_body(tmpl.ast.body)
-                    for f in ac_fields {
-                        if f.is_using { is_ac_template = true; break }
-                    }
-                    if is_ac_template {
-                        // Infer type args: first type param → elem_type
-                        for arg_expr, i in t.type_args {
-                            if i < len(tmpl.generic_params) && !tmpl.generic_params[i].is_const {
-                                infer_type_params(subst, arg_expr, sd.elem_type, c)
-                            }
-                        }
-                        // Auto-capture const params (e.g. n → array_cap)
-                        for i := len(t.type_args); i < len(tmpl.generic_params); i += 1 {
-                            param := tmpl.generic_params[i]
-                            if param.is_const {
-                                if param.name not_in subst^ || subst[param.name] == nil {
-                                    subst[param.name] = Type_Const_Int{value = sd.array_cap}
                                 }
                             }
                         }
@@ -2621,21 +2515,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if _, bb := vb.elem.(Type_Byte); bb { return true }
         return types_equal(va.elem, vb.elem)
     case ^Type_Scope:
-        // Implicit coercion: array class → []T slice
-        if va.is_array_class {
-            if sl, sl_ok := b.(^Type_Slice); sl_ok {
-                return types_equal(va.elem_type, sl.elem)
-            }
-        }
         vb, ok := b.(^Type_Scope)
         if !ok { return false }
         // Nominal: if both have names, compare by name
         if va.name != "" && vb.name != "" {
             if va.name == vb.name { return true }
-            // Array class structural compatibility
-            if va.is_array_class && vb.is_array_class {
-                return types_equal(va.elem_type, vb.elem_type)
-            }
             return false
         }
         // Structural: compare params + return type (for anonymous/callable funs)
@@ -2662,10 +2546,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Implicit coercion: [:]T is compatible with [N]T (slice ← array)
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
             return types_equal(va.elem, fa.elem)
-        }
-        // Implicit coercion: [:]T is compatible with array class of T
-        if sd := as_scope_body(b); sd != nil && sd.is_array_class {
-            return types_equal(va.elem, sd.elem_type)
         }
         // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view)
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
@@ -2887,7 +2767,6 @@ is_error_type :: proc(t: Type) -> bool {
 is_array_type :: proc(t: Type) -> bool {
     if _, ok := t.(^Type_Fixed_Array); ok { return true }
     if _, ok := t.(^Type_Slice); ok { return true }
-    if sd := as_scope_body(t); sd != nil && sd.is_array_class { return true }
     return false
 }
 
@@ -2938,16 +2817,6 @@ is_byte_fixed_array :: proc(t: Type) -> bool {
     return is_byte
 }
 
-// True when a type is a byte-element array class, e.g. Array(byte, N). Auto-derefs ^Ptr.
-is_byte_array_class :: proc(t: Type) -> bool {
-    cur := t
-    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
-    sd := as_scope_body(cur)
-    if sd == nil || !sd.is_array_class { return false }
-    _, is_byte := sd.elem_type.(Type_Byte)
-    return is_byte
-}
-
 // True when a type is a byte-element partial array [..N]byte. Auto-derefs ^Ptr.
 // Distinct aliases unwrap so `^String`-style mutable buffer params register too.
 is_byte_partial_array :: proc(t: Type) -> bool {
@@ -2963,8 +2832,7 @@ is_byte_partial_array :: proc(t: Type) -> bool {
 // True when a type is any byte-addressable buffer — shares the same
 // reinterpret read/write semantics as []byte.
 is_byte_buffer :: proc(t: Type) -> bool {
-    return is_byte_slice(t) || is_byte_fixed_array(t) || is_byte_array_class(t) ||
-           is_byte_partial_array(t)
+    return is_byte_slice(t) || is_byte_fixed_array(t) || is_byte_partial_array(t)
 }
 
 // True when an expression is an index into a byte slice (e.g. mem[0]).
@@ -4995,16 +4863,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 check_ann := distinct_base(ann_type)
                 // Validate assignment compatibility (same as in check_assign)
                 if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 {
-                    // Array class: allow array literal or struct literal
-                    if sd.is_array_class {
-                        if _, al_ok := s.value.(^Expr_Array); al_ok {
-                            check_array_class_literal_assign(c, s.span, s.name, sd, val_type)
-                            s.var_type = distinct_base(ann_type)
-                            s.env_type = ann_type
-                            type_env_set(env, s.name, ann_type)
-                            continue
-                        }
-                    }
                     check_struct_literal_assign(c, s.span, s.value, sd, env)
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
@@ -5365,21 +5223,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if added_any_field {
         build_field_map(&ft.sd)
     }
-    // Array class detection
-    if ft.kind == .Struct {
-        has_using_array := false
-        for f in ft.fields {
-            if f.is_using {
-                if _, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok {
-                    has_using_array = true
-                }
-            }
-        }
-        if has_using_array {
-            ft.is_array_class = true
-            validate_array_class(c, &ft.sd, s.span)
-        }
-    }
     if len(ft.params) == 0 && len(s.typed_params) > 0 {
         for tp in s.typed_params {
             pt := resolve_type_expr(tp.type_expr, c, s.span, env=&child)
@@ -5461,18 +5304,8 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         case ^Type_Partial_Array:
             elem_type = ct.elem
         case ^Type_Scope:
-            if ct.is_array_class {
-                elem_type = ct.elem_type
-                // Desugar: rewrite collection from buf → buf.items,
-                // and set collection_len to buf.len
-                s.collection = desugar_array_field(s.collection, &ct.sd, s.span)
-                len_fa := new_clone(Expr_Field_Access{expr = s.collection.(^Expr_Field_Access).expr, field = ct.len_field, span = s.span})
-                set_expr_type(len_fa, Type_Int{})
-                s.collection_len = len_fa
-            } else {
-                check_error(c, s.span, "cannot iterate over struct type '%s'", ct.name)
-                elem_type = Type_Any{}
-            }
+            check_error(c, s.span, "cannot iterate over struct type '%s'", ct.name)
+            elem_type = Type_Any{}
         case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
              Type_CString, Type_C8, Type_Utf8, Type_Byte, Type_Numeric,
              ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Tuple, ^Type_Distinct,
@@ -5819,15 +5652,6 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
         // Literal assignment: delegate to structural check helpers (unwrap distinct)
         check_ann := distinct_base(ann_type)
         if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 {
-            if sd.is_array_class {
-                if _, al_ok := s.value.(^Expr_Array); al_ok {
-                    check_array_class_literal_assign(c, s.span, s.name, sd, val_type)
-                    s.var_type = distinct_base(ann_type)
-                    s.env_type = ann_type
-                    type_env_set(pub, s.name, ann_type)
-                    return
-                }
-            }
             check_struct_literal_assign(c, s.span, s.value, sd, env)
             s.var_type = distinct_base(ann_type)
             s.env_type = ann_type
@@ -6045,20 +5869,6 @@ check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixe
     }
 }
 
-check_array_class_literal_assign :: proc(c: ^Checker, span: Span, name: string, st: ^Scope_Body, val_type: Type) {
-    if fv, ok := val_type.(^Type_Fixed_Array); ok {
-        if types_incompatible(st.elem_type, fv.elem) {
-            check_error(c, span, "cannot assign [%d]%s to array class '%s' (element type %s)",
-                fv.size, type_name(fv.elem), st.name, type_name(st.elem_type))
-        } else if fv.size > st.array_cap {
-            check_error(c, span, "array literal has %d elements but array class '%s' has capacity %d",
-                fv.size, st.name, st.array_cap)
-        }
-    } else if !is_any(val_type) {
-        check_error(c, span, "cannot assign %s to array class '%s'", type_name(val_type), st.name)
-    }
-}
-
 check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     un := s.target.(^Expr_Unary)
     ptr_type := check_expr(c, un.operand, env)
@@ -6144,29 +5954,6 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
         }
     }
 
-    // Array class → desugar to field access: buf[i] = val → buf.items[i] = val
-    // Handles both direct and auto-deref (^ArrayClass) paths.
-    ac: ^Scope_Body = nil
-    if sd := as_scope_body(target_type); sd != nil && sd.is_array_class {
-        ac = sd
-    } else if pt, ok := target_type.(^Type_Ptr); ok {
-        if sd := as_scope_body(pt.elem); sd != nil && sd.is_array_class {
-            ac = sd
-        }
-    }
-    if ac != nil {
-        ix.expr = desugar_array_field(ix.expr, ac, s.span)
-        s.target_type = new_clone(Type_Fixed_Array{size = ac.array_cap, elem = ac.elem_type})
-        // Byte array-class reinterpret write: mirrors []byte.
-        if _, is_byte := ac.elem_type.(Type_Byte); is_byte {
-            s.assign_value_type = solidify_type(val_type)
-            return
-        }
-        if types_incompatible(ac.elem_type, val_type) {
-            check_error(c, s.span, "cannot assign %s to element of array class '%s'",
-                type_name(val_type), ac.name)
-        }
-    }
 }
 
 check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
@@ -6210,20 +5997,6 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             }
         }
         return
-    }
-
-    // Array class → desugar to field access: buf[lo:hi] = val → buf.items[lo:hi] = val
-    // Auto-deref: ^ArrayClass → ArrayClass
-    {
-        check_target := target_type
-        if pt, pt_ok := check_target.(^Type_Ptr); pt_ok {
-            check_target = pt.elem
-        }
-        if sd := as_scope_body(distinct_base(check_target)); sd != nil && sd.is_array_class {
-            sl.expr = desugar_array_field(sl.expr, sd, s.span)
-            target_type = new_clone(Type_Fixed_Array{size = sd.array_cap, elem = sd.elem_type})
-            s.target_type = target_type
-        }
     }
 
     // Byte fixed-array reinterpret write: buf[off:off+N] = value
@@ -8599,13 +8372,8 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             check_error(c, e.span, "len() expects 1 argument, got %d", len(args))
         } else {
             arg_type := check_expr(c, args[0], env)
-            // Array class: desugar len(buf) → buf.len
-            if sd := as_scope_body(arg_type); sd != nil && sd.is_array_class {
-                fa := new_clone(Expr_Field_Access{expr = args[0], field = sd.len_field, span = e.span})
-                set_expr_type(fa, Type_Int{})
-                e.desugared = fa
-            } else if !is_array_type(arg_type) && !is_any(arg_type) {
-                check_error(c, e.span, "len() requires array, slice, or array class, got %s", type_name(arg_type))
+            if !is_array_type(arg_type) && !is_any(arg_type) {
+                check_error(c, e.span, "len() requires array or slice, got %s", type_name(arg_type))
             }
         }
         return Type_Int{}, true
@@ -8614,21 +8382,8 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             check_error(c, e.span, "cap() expects 1 argument, got %d", len(args))
         } else {
             arg_type := check_expr(c, args[0], env)
-            // Array class: desugar cap(buf) → buf.cap field or compile-time constant
-            if sd := as_scope_body(arg_type); sd != nil && sd.is_array_class {
-                if sd.cap_field != "" {
-                    fa := new_clone(Expr_Field_Access{expr = args[0], field = sd.cap_field, span = e.span})
-                    set_expr_type(fa, Type_Int{})
-                    e.desugared = fa
-                } else {
-                    cap := sd.array_cap
-                    if _, utf8_ok := sd.elem_type.(Type_Utf8); utf8_ok { cap -= 1 }
-                    num := new_clone(Expr_Number{value = f64(cap), int_value = i64(cap), span = e.span})
-                    set_expr_type(num, Type_Int{})
-                    e.desugared = num
-                }
-            } else if !is_array_type(arg_type) && !is_any(arg_type) {
-                check_error(c, e.span, "cap() requires array, slice, or array class, got %s", type_name(arg_type))
+            if !is_array_type(arg_type) && !is_any(arg_type) {
+                check_error(c, e.span, "cap() requires array or slice, got %s", type_name(arg_type))
             }
         }
         return Type_Int{}, true
@@ -9743,20 +9498,6 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
         return pa.elem
     }
 
-    // Array class → desugar to field access: buf[i] → buf.items[i]
-    if sd := as_scope_body(target_type); sd != nil && sd.is_array_class {
-        e.expr = desugar_array_field(e.expr, sd, e.span)
-        return sd.elem_type
-    }
-
-    // Auto-deref: ^ArrayClass[i] → desugar (field access auto-derefs)
-    if pt, ok := target_type.(^Type_Ptr); ok {
-        if sd := as_scope_body(pt.elem); sd != nil && sd.is_array_class {
-            e.expr = desugar_array_field(e.expr, sd, e.span)
-            return sd.elem_type
-        }
-    }
-
     if !is_any(target_type) {
         check_error(c, e.span, "cannot index into %s", type_name(target_type))
     }
@@ -9781,9 +9522,6 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Env) -> Type {
         elem_type = sl.elem
     } else if pa, ok := target_type.(^Type_Partial_Array); ok {
         elem_type = pa.elem
-    } else if sd := as_scope_body(distinct_base(target_type)); sd != nil && sd.is_array_class {
-        e.expr = desugar_array_field(e.expr, sd, e.span)
-        elem_type = sd.elem_type
     } else if !is_any(target_type) {
         check_error(c, e.span, "cannot slice %s", type_name(target_type))
         return Type_Error{}

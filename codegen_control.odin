@@ -312,32 +312,6 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
         length_val = len_val
         elem_ir = sv.elem_type
-    } else if chain, chain_ok := build_address_chain(g, s.collection); chain_ok && chain.final_kind == .Struct {
-        // Array class via the address chain — works for any expression that
-        // resolves to an array-class struct. Most chained accesses are
-        // already desugared to `expr.buf` + collection_len by the type
-        // checker, so this primarily covers bare-ident array classes; using
-        // the chain keeps the resolution shape consistent with the other
-        // address-resolution sites.
-        ac_st, ac_ok := lookup_struct(g, chain.struct_name)
-        if !ac_ok || !ac_st.is_array_class {
-            codegen_fatal(g, s.span, "cannot iterate over struct '%s'", chain.struct_name)
-        }
-        ac_ptr := emit_address_chain(g, &chain)
-        st_llvm := struct_llvm_name(chain.struct_name)
-        elem_ir = ac_elem_ir_type(ac_st)
-        arr_gep := fresh_tmp(g)
-        arr_fi := ac_array_field_index(ac_st)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", arr_gep, st_llvm, ac_ptr, arr_fi)
-        data_ptr = arr_gep
-        use_array_gep = true
-        arr_type_str = fmt.tprintf("[%d x %s]", ac_st.array_cap, elem_ir)
-        len_gep := fresh_tmp(g)
-        len_fi := ac_len_field_index(ac_st)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", len_gep, st_llvm, ac_ptr, len_fi)
-        len_val := fresh_tmp(g)
-        emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
-        length_val = len_val
     } else {
         codegen_fatal(g, s.span, "unknown collection variable '%s'", coll_name)
     }

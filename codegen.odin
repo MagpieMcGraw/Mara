@@ -1319,13 +1319,6 @@ usable_cap :: proc(av: ^Array_Var) -> int {
     return av.capacity
 }
 
-// Check if an array class has utf8 element type.
-ac_is_utf8 :: proc(st: ^Scope_Body) -> bool {
-    if !st.is_array_class { return false }
-    _, ok := st.elem_type.(Type_Utf8)
-    return ok
-}
-
 // Codegen key for a struct type — names are already flat after flatten_for_codegen.
 struct_key_fun :: proc(st: ^Type_Scope) -> string {
     return st.name
@@ -1404,27 +1397,6 @@ field_array_elem :: proc(f: ^Struct_Type_Field) -> string {
         return llvm_type_from_checker(fa.elem)
     }
     return ""
-}
-
-// Get the LLVM field index of the array-class data field.
-ac_array_field_index :: proc(st: ^Scope_Body) -> int {
-    return struct_field_index(st, st.array_field)
-}
-
-// Get the LLVM field index of the array-class len field.
-ac_len_field_index :: proc(st: ^Scope_Body) -> int {
-    return struct_field_index(st, st.len_field)
-}
-
-// Get the LLVM field index of the array-class cap field. Returns -1 if no cap field.
-ac_cap_field_index :: proc(st: ^Scope_Body) -> int {
-    if st.cap_field == "" { return -1 }
-    return struct_field_index(st, st.cap_field)
-}
-
-// Get the LLVM element type for an array-class.
-ac_elem_ir_type :: proc(st: ^Scope_Body) -> string {
-    return llvm_type_from_checker(st.elem_type)
 }
 
 // Get the LLVM type name for a union, e.g. "%union.Shape"

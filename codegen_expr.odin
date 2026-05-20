@@ -694,50 +694,6 @@ gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
         // declare `name : []T(N)` (a sized slice) instead of `name : [N]T`.
         return emit_build_temp_slice(g, val, len_val, len_val)
     }
-    // Array class → slice coercion: extract data_ptr + len + cap into { ptr, i64, i64 }.
-    // Slice's len comes from the array-class's runtime len field (its cursor of
-    // populated elements); slice's cap comes from the array-class's cap field
-    // (the underlying storage size). Uses the address chain so this works for
-    // any expression that resolves to an array-class struct — bare `arr`,
-    // chained `obj.field`, indexed `arrs[i]`, deeper combinations.
-    if chain, ok := build_address_chain(g, arg); ok && chain.final_kind == .Struct {
-        if ac_st, ac_ok := lookup_struct(g, chain.struct_name); ac_ok && ac_st.is_array_class {
-            ac_ptr := emit_address_chain(g, &chain)
-            data_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", data_gep, struct_llvm_name(chain.struct_name), ac_ptr, ac_array_field_index(ac_st))
-            // Capacity: from cap field (or vla_cap / compile-time fallback)
-            cap_val: string
-            cap_fi := ac_cap_field_index(ac_st)
-            if cap_fi >= 0 {
-                cap_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, struct_llvm_name(chain.struct_name), ac_ptr, cap_fi)
-                cap_val = fresh_tmp(g)
-                emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
-            } else {
-                vla_cap := ""
-                if ident, id_ok := arg.(^Expr_Ident); id_ok {
-                    if stv, stv_ok := get_struct(g, ident.name); stv_ok {
-                        vla_cap = stv.vla_cap
-                    }
-                }
-                if vla_cap != "" {
-                    cap_val = vla_cap
-                } else {
-                    cap_val = fmt.tprintf("%d", ac_st.array_cap)
-                }
-            }
-            // Length: from runtime len field if present, else 0.
-            len_val := "0"
-            len_fi := ac_len_field_index(ac_st)
-            if len_fi >= 0 {
-                len_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", len_gep, struct_llvm_name(chain.struct_name), ac_ptr, len_fi)
-                len_val = fresh_tmp(g)
-                emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
-            }
-            return emit_build_temp_slice(g, data_gep, len_val, cap_val)
-        }
-    }
     // Existing slice var: the alloca pointer is already a ptr-to-header.
     if ident, id_ok := arg.(^Expr_Ident); id_ok {
         if sv, sv_ok := get_slice(g, ident.name); sv_ok {
@@ -1496,17 +1452,6 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                     emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
                     emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, av.alloca)
                     printed = true
-                } else if stv, stv_ok := get_struct(g, ident.name); stv_ok {
-                    // utf8 array class — GEP to the array data field, print with %s
-                    if ac_st, ac_ok := lookup_struct(g, stv.struct_name); ac_ok && ac_is_utf8(ac_st) {
-                        arr_gep := fresh_tmp(g)
-                        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", arr_gep, struct_llvm_name(stv.struct_name), stv.alloca, ac_array_field_index(ac_st))
-                        fmt_name, fmt_len := get_string_literal(g, "%s")
-                        fmt_ptr := fresh_tmp(g)
-                        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, arr_gep)
-                        printed = true
-                    }
                 } else if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.is_utf8 {
                     // utf8 slice — load data ptr, print with %s
                     data_ptr := slice_var_data_ptr(g, &sv)
@@ -1515,37 +1460,6 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                     emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
                     emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, data_ptr)
                     printed = true
-                }
-            } else if fa, fa_ok := arg_expr.(^Expr_Field_Access); fa_ok {
-                // Field access to utf8 array class — resolve address and GEP to array data
-                addr := gen_field_address(g, fa)
-                if addr != "null" {
-                    t := expr_type(arg_expr)
-                    if sd := as_struct_body(t); sd != nil && sd.is_array_class {
-                        arr_gep := fresh_tmp(g)
-                        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", arr_gep, struct_llvm_name(sd.name), addr, ac_array_field_index(sd))
-                        fmt_name, fmt_len := get_string_literal(g, "%s")
-                        fmt_ptr := fresh_tmp(g)
-                        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, arr_gep)
-                        printed = true
-                    }
-                }
-            } else if _, idx_ok := arg_expr.(^Expr_Index); idx_ok {
-                // Indexed access to a utf8 array-class element (e.g. names[i] where names: [N]String).
-                if chain, chain_ok := build_address_chain(g, arg_expr); chain_ok {
-                    if chain.final_kind == .Struct && chain.struct_name != "" {
-                        if sd, sd_ok := lookup_struct(g, chain.struct_name); sd_ok && sd.is_array_class && ac_is_utf8(sd) {
-                            addr := emit_address_chain(g, &chain)
-                            arr_gep := fresh_tmp(g)
-                            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", arr_gep, struct_llvm_name(sd.name), addr, ac_array_field_index(sd))
-                            fmt_name, fmt_len := get_string_literal(g, "%s")
-                            fmt_ptr := fresh_tmp(g)
-                            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, arr_gep)
-                            printed = true
-                        }
-                    }
                 }
             } else if _, str_ok := arg_expr.(^Expr_String); str_ok {
                 // Bare string literal in print — use old ptr path
@@ -1560,15 +1474,6 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
         } else if is_array_expr(g, arg_expr) {
             // Check if the expression is a non-utf8 array variable
             gen_print_array(g, arg_expr)
-        } else if is_array_class_expr(g, arg_expr) {
-            // Array class variable — print using len field
-            if ident, id_ok := arg_expr.(^Expr_Ident); id_ok {
-                if stv, stv_ok := get_struct(g, ident.name); stv_ok {
-                    if print_st, ps_ok := lookup_struct(g, stv.struct_name); ps_ok {
-                        gen_print_array_class(g, &stv, print_st)
-                    }
-                }
-            }
         } else if is_plain_struct_expr(g, arg_expr) {
             // Non-array-class struct — print fields
             if ident, id_ok := arg_expr.(^Expr_Ident); id_ok {
@@ -1671,22 +1576,11 @@ is_array_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     return false
 }
 
-is_array_class_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
-    if ident, ok := expr.(^Expr_Ident); ok {
-        if stv, stv_ok := get_struct(g, ident.name); stv_ok {
-            if st, st_ok := lookup_struct(g, stv.struct_name); st_ok {
-                return st.is_array_class
-            }
-        }
-    }
-    return false
-}
-
 is_plain_struct_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if ident, ok := expr.(^Expr_Ident); ok {
         if stv, stv_ok := get_struct(g, ident.name); stv_ok {
-            if st, st_ok := lookup_struct(g, stv.struct_name); st_ok {
-                return !st.is_array_class
+            if _, st_ok := lookup_struct(g, stv.struct_name); st_ok {
+                return true
             }
         }
     }
@@ -2017,10 +1911,6 @@ is_utf8_array_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if fa, fa_ok := t.(^Type_Fixed_Array); fa_ok {
         if _, utf8_ok := fa.elem.(Type_Utf8); utf8_ok { return true }
     }
-    // Check array class with utf8 elem type
-    if sd := as_struct_body(t); sd != nil && sd.is_array_class {
-        if _, utf8_ok := sd.elem_type.(Type_Utf8); utf8_ok { return true }
-    }
     // Check utf8 slice
     if sl, sl_ok := t.(^Type_Slice); sl_ok {
         if _, utf8_ok := sl.elem.(Type_Utf8); utf8_ok { return true }
@@ -2032,9 +1922,6 @@ is_utf8_array_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     // Check codegen-level vars (for idents that may not have full type info)
     if ident, id_ok := expr.(^Expr_Ident); id_ok {
         if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.is_utf8 { return true }
-        if stv, stv_ok := get_struct(g, ident.name); stv_ok {
-            if ac_st, ac_ok := lookup_struct(g, stv.struct_name); ac_ok && ac_is_utf8(ac_st) { return true }
-        }
     }
     return false
 }

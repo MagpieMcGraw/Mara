@@ -110,10 +110,6 @@ dump_checked_program :: proc(path: string, checked: ^Checked_Program) -> bool {
 dump_struct :: proc(b: ^strings.Builder, name: string, st: ^Type_Scope, base_indent: int = 1) {
     indent := make_indent(base_indent)
     fmt.sbprintf(b, "%s%s :: struct", indent, name)
-    if st.is_array_class {
-        fmt.sbprintf(b, " [array_class: cap=%d, elem=%s, array=%s, len=%s]",
-            st.array_cap, type_name(st.elem_type), st.array_field, st.len_field)
-    }
     if st.generic_base != "" {
         fmt.sbprintf(b, " [generic: %s(", st.generic_base)
         for arg, i in st.generic_args {

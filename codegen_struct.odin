@@ -81,17 +81,6 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
             total := struct_byte_size(st, g.checked)
             data_ptr = emit_arena_bump(g, total, name, loc)
             emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", data_ptr, total)
-            // Initialize cap field for array classes
-            if st.is_array_class {
-                cap_fi := ac_cap_field_index(st)
-                if cap_fi >= 0 {
-                    cap_val := st.array_cap
-                    if ac_is_utf8(st) { cap_val -= 1 }
-                    cap_gep := fresh_tmp(g)
-                    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, data_ptr, cap_fi)
-                    emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
-                }
-            }
             g.all_vars[name] = Struct_Var{
                 alloca      = data_ptr,
                 struct_name = skey,
@@ -99,16 +88,6 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
         }
         // Explicit `---`: alloca only, skip everything else.
         if _, is_uninit := value.(^Expr_Uninit); is_uninit {
-            return
-        }
-        // Handle value initialization for var array classes (special-case
-        // string/array literal init that array-class structs accept).
-        if str_lit, str_ok := value.(^Expr_String); str_ok && st.is_array_class && ac_is_utf8(st) {
-            gen_array_class_string_init(g, name, st, str_lit)
-            return
-        }
-        if _, al_ok := value.(^Expr_Array); al_ok && st.is_array_class {
-            gen_array_class_literal_init(g, name, st, value)
             return
         }
         // Generic value: route through the unified struct-store primitive.
@@ -180,14 +159,6 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
     // Zero-initialize
     emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %s, i1 false)", data_ptr, total_bytes)
 
-    // Store cap into the struct's cap field (if present)
-    cap_fi := ac_cap_field_index(st)
-    if cap_fi >= 0 {
-        cap_gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, data_ptr, cap_fi)
-        emit(g, "  store i64 %s, ptr %s", size_val, cap_gep)
-    }
-
     // Register as struct variable with runtime VLA capacity
     g.all_vars[name] = Struct_Var{
         alloca      = data_ptr,
@@ -219,19 +190,6 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         total := struct_byte_size(st, g.checked)
         emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", alloca_name, total)
 
-        // Initialize cap field for array classes
-        if st.is_array_class {
-            cap_fi := ac_cap_field_index(st)
-            if cap_fi >= 0 {
-                cap_val := st.array_cap
-                if ac_is_utf8(st) { cap_val -= 1 }
-                cap_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, alloca_name, cap_fi)
-                emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
-            }
-        }
-        // Initialize cap fields for nested array class fields
-        emit_nested_ac_cap_init(g, alloca_name, st)
         // Sized-slice fields are NOT init'd here — the struct's auto-init
         // function (called below for bare decls) and gen_store_struct_into
         // (called for literals/copies) both memcpy zeros over the slice
@@ -957,33 +915,6 @@ resolve_lhs_struct :: proc(g: ^Codegen, expr: Expr) -> (^Scope_Body, string, boo
     #partial switch e in expr {
     case ^Expr_Ident:
         return resolve_struct_for_field(g, e.name, e.type_, e.span)
-    case ^Expr_Index:
-        // Array class index: arr_class[i].field = value
-        ident, ident_ok := e.expr.(^Expr_Ident)
-        if !ident_ok { return nil, "", false }
-        if sv, sv_ok := get_struct(g, ident.name); sv_ok {
-            st, st_ok := lookup_struct(g, sv.struct_name)
-            if st_ok && st.is_array_class {
-                st_llvm := struct_llvm_name(sv.struct_name)
-                ac_arr_idx := ac_array_field_index(st)
-                ac_elem := ac_elem_ir_type(st)
-                idx_raw := gen_expr(g, e.index)
-                idx := ensure_i64(g, idx_raw, e.index)
-                arr_cap := ac_cap_str(g, st, &sv)
-                emit_bounds_check(g, idx, arr_cap, ident.name, e.span)
-                arr_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", arr_gep, st_llvm, sv.alloca, ac_arr_idx)
-                elem_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", elem_gep, ac_arr_type(st), arr_gep, idx)
-                if strings.has_prefix(ac_elem, "%class.") {
-                    inner_name := ac_elem[len("%class."):]
-                    if inner_st, isd_ok := lookup_struct(g, inner_name); isd_ok {
-                        return inner_st, elem_gep, true
-                    }
-                }
-            }
-        }
-        return nil, "", false
     }
     return nil, "", false
 }
@@ -1164,23 +1095,6 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
     emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
 }
 
-// Initialize cap fields for an array-class struct AND any nested array-class
-// fields after a memset-zero. Used by gen_store_struct_into in the paths that
-// zero-init the destination before writing fields.
-init_array_class_caps :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_Body) {
-    if st.is_array_class {
-        cap_fi := ac_cap_field_index(st)
-        if cap_fi >= 0 {
-            cap_val := st.array_cap
-            if ac_is_utf8(st) { cap_val -= 1 }
-            llvm_name := struct_llvm_name(struct_key(st))
-            cap_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, llvm_name, base_ptr, cap_fi)
-            emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
-        }
-    }
-    emit_nested_ac_cap_init(g, base_ptr, st)
-}
 
 // Single point of truth for "store a struct-typed value into a destination
 // pointer". Replaces the duplicated dispatch logic that used to live in
@@ -1211,7 +1125,6 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         // the zero memset stands alone. Structs without an init function
         // stay zero (no defaults to apply by construction).
         emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
-        init_array_class_caps(g, dst_ptr, st)
         if !lit.zero_init {
             if _, has_init := g.checked.functions[st.name]; has_init {
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
@@ -1270,7 +1183,6 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         // by position + defaults for unprovided trailing fields.
         if is_pure_struct && !is_function_call {
             emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
-            init_array_class_caps(g, dst_ptr, st)
             for arg, i in call.args {
                 if i >= len(st.fields) { break }
                 field := &st.fields[i]
@@ -1322,37 +1234,9 @@ gen_struct_store_at :: proc(g: ^Codegen, dst_ptr: string, struct_name: string, v
         // Bare "store nothing" — same effect as the old fallback: zero + cap init.
         total := struct_byte_size(st, g.checked)
         emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
-        init_array_class_caps(g, dst_ptr, st)
         return
     }
     gen_store_struct_into(g, dst_ptr, st, value)
-}
-
-// After zero-initializing a struct, re-initialize cap fields for any nested array classes.
-// This handles cases like `obj.field = {}` where the field's struct type contains array class members.
-emit_nested_ac_cap_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_Body) {
-    st_llvm := struct_llvm_name(struct_key(st))
-    for &f, fi in st.fields {
-        inner_sd := as_struct_body(f.type_)
-        if inner_sd == nil { continue }
-        inner_checked, ic_ok := lookup_struct(g, inner_sd.name)
-        if !ic_ok { continue }
-        field_gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", field_gep, st_llvm, base_ptr, fi)
-        if inner_checked.is_array_class {
-            cap_fi := ac_cap_field_index(inner_checked)
-            if cap_fi >= 0 {
-                cap_val := inner_checked.array_cap
-                if ac_is_utf8(inner_checked) { cap_val -= 1 }
-                inner_llvm := struct_llvm_name(struct_key(inner_checked))
-                cap_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, inner_llvm, field_gep, cap_fi)
-                emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
-            }
-        }
-        // Recurse for deeply nested structs
-        emit_nested_ac_cap_init(g, field_gep, inner_checked)
-    }
 }
 
 // If `t` is a sized-slice type (distinct alias wrapping a slice with a default
@@ -1624,27 +1508,6 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         gep := fresh_tmp(g)
         emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
         emit(g, "  store %s %s, ptr %s", ft, val, gep)
-        // After zero-init of a struct field, reinitialize cap fields for nested array classes
-        if val == "zeroinitializer" {
-            if field_sd := as_struct_body(f.type_); field_sd != nil {
-                if field_checked, fc_ok := lookup_struct(g, field_sd.name); fc_ok {
-                    // Handle direct array class
-                    if field_checked.is_array_class {
-                        cap_fi := ac_cap_field_index(field_checked)
-                        if cap_fi >= 0 {
-                            cap_val := field_checked.array_cap
-                            if ac_is_utf8(field_checked) { cap_val -= 1 }
-                            inner_llvm := struct_llvm_name(struct_key(field_checked))
-                            cap_gep := fresh_tmp(g)
-                            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", cap_gep, inner_llvm, gep, cap_fi)
-                            emit(g, "  store i64 %d, ptr %s", cap_val, cap_gep)
-                        }
-                    }
-                    // Handle nested structs containing array classes
-                    emit_nested_ac_cap_init(g, gep, field_checked)
-                }
-            }
-        }
         return
     }
 
