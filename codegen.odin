@@ -528,14 +528,17 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
                 return true
             }
             if strings.has_prefix(ft, "{ ") {
-                // Slice field — also capture elem type so a subsequent
-                // Step_Slice_Index has the type to GEP through.
+                // Slice OR partial-array field — both layouts share the first
+                // 24 bytes ({len, cap, ptr}), so the same chain end-state and
+                // subsequent .len/.cap/.ptr access work for both.
                 chain.final_type = ft
                 chain.final_kind = .Slice
                 chain.struct_name = ""
                 chain.array_cap = 0
                 if sl, sl_ok := distinct_base(f.type_).(^Type_Slice); sl_ok {
                     chain.array_elem = llvm_type_from_checker(sl.elem)
+                } else if pa, pa_ok := distinct_base(f.type_).(^Type_Partial_Array); pa_ok {
+                    chain.array_elem = llvm_type_from_checker(pa.elem)
                 } else {
                     return false
                 }
@@ -2392,19 +2395,15 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
             emit_raw(&g, strings.concatenate({"  call void ", new_ir, "(i64 ", alloc_size, ", ptr ", arena_ptr, ")"}))
         }
 
-        // Populate context.args (Args array class: { cap, len, [64 x { ptr, i64 }] })
-        // Args field index in Context: after arena (if present)
+        // Populate context.args — partial array {len, cap, ptr, [64 x slice]}
+        // embedded as a field of Context.
         args_field_idx := "1" if g.context_enabled else "0"
         ARGS_CAP :: "64"
+        pa_ir := partial_array_ir_type(SLICE_IR_TYPE, 64)
 
-        // GEP to the Args struct within Context
+        // GEP to the partial-array field within Context
         args_ptr := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", args_ptr, " = getelementptr %class.Context, ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
-
-        // Store cap = 64
-        cap_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", cap_ptr, " = getelementptr %class.Args, ptr ", args_ptr, ", i32 0, i32 0"}))
-        emit_raw(&g, strings.concatenate({"  store i64 ", ARGS_CAP, ", ptr ", cap_ptr}))
 
         // Compute effective len = min(argc, 64)
         argc_i64 := fresh_tmp(&g)
@@ -2414,16 +2413,26 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         argc_min := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", argc_min, " = select i1 ", argc_cmp, ", i64 ", argc_i64, ", i64 ", ARGS_CAP}))
 
-        // Store len
+        // Store len at field 0
         len_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", len_ptr, " = getelementptr %class.Args, ptr ", args_ptr, ", i32 0, i32 1"}))
+        emit_raw(&g, strings.concatenate({"  ", len_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 0"}))
         emit_raw(&g, strings.concatenate({"  store i64 ", argc_min, ", ptr ", len_ptr}))
 
-        // GEP to buf array
-        buf_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", buf_ptr, " = getelementptr %class.Args, ptr ", args_ptr, ", i32 0, i32 2"}))
+        // Store cap = 64 at field 1
+        cap_ptr := fresh_tmp(&g)
+        emit_raw(&g, strings.concatenate({"  ", cap_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 1"}))
+        emit_raw(&g, strings.concatenate({"  store i64 ", ARGS_CAP, ", ptr ", cap_ptr}))
 
-        // Loop: for i = 0; i < len; i++ — fill buf[i] = { argv[i], strlen(argv[i]) }
+        // GEP to elements storage (field 3) — also the value we store into ptr (field 2)
+        elements_ptr := fresh_tmp(&g)
+        emit_raw(&g, strings.concatenate({"  ", elements_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 3"}))
+
+        // Store ptr = &elements at field 2
+        ptr_field := fresh_tmp(&g)
+        emit_raw(&g, strings.concatenate({"  ", ptr_field, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 2"}))
+        emit_raw(&g, strings.concatenate({"  store ptr ", elements_ptr, ", ptr ", ptr_field}))
+
+        // Loop: for i = 0; i < len; i++ — fill elements[i] = { strlen, strlen, argv[i] }
         loop_i := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", loop_i, " = alloca i64"}))
         emit_raw(&g, strings.concatenate({"  store i64 0, ptr ", loop_i}))
@@ -2454,19 +2463,18 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         } else {
             emit_raw(&g, strings.concatenate({"  ", str_len, " = call i64 @strlen(ptr ", argv_i, ")"}))
         }
-        // buf[i].ptr = argv[i]
+        // elements[i] is a slice — write len, cap, ptr.
         elem_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", buf_ptr, ", i64 0, i64 ", cur_i}))
-        data_ptr := fresh_tmp(&g)
-        emit_slice_gep(&g, data_ptr, elem_ptr, SLICE.ptr)
-        emit_raw(&g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))
-        // buf[i].len = strlen, buf[i].cap = strlen (argv strings are fully-populated views)
+        emit_raw(&g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i64 0, i64 ", cur_i}))
         slen_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, slen_ptr, elem_ptr, SLICE.len)
         emit_raw(&g, strings.concatenate({"  store i64 ", str_len, ", ptr ", slen_ptr}))
         scap_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, scap_ptr, elem_ptr, SLICE.cap)
         emit_raw(&g, strings.concatenate({"  store i64 ", str_len, ", ptr ", scap_ptr}))
+        data_ptr := fresh_tmp(&g)
+        emit_slice_gep(&g, data_ptr, elem_ptr, SLICE.ptr)
+        emit_raw(&g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))
         // i++
         next_i := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", next_i, " = add i64 ", cur_i, ", 1"}))

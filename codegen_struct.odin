@@ -596,8 +596,9 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             return addr
         case .Slice:
             // Determine elem type / sentinel from the last step's field def.
-            // The chain says .Slice — if we can't recover the slice descriptor
-            // from the last step, the chain was built with incomplete info.
+            // .Slice covers both Type_Slice and Type_Partial_Array fields — they
+            // share the first 24 bytes of layout, so a Slice_Var pointing at
+            // the field's storage handles .len/.cap/.ptr reads for either.
             if len(chain.steps) == 0 {
                 codegen_fatal(g, e.span, "address chain ended at .Slice with no steps — cannot determine elem type")
             }
@@ -605,13 +606,20 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             if !sf_ok {
                 codegen_fatal(g, e.span, "address chain ended at .Slice but last step is not a field — cannot determine elem type")
             }
-            sl, sl_ok := distinct_base(sf.field_def.type_).(^Type_Slice)
-            if !sl_ok {
-                codegen_fatal(g, e.span, "address chain ended at .Slice but last field type is not Type_Slice")
+            elem_t := ""
+            sentinel := false
+            utf8 := false
+            if sl, sl_ok := distinct_base(sf.field_def.type_).(^Type_Slice); sl_ok {
+                elem_t = llvm_type_from_checker(sl.elem)
+                sentinel = sl.has_sentinel
+                _, utf8 = sl.elem.(Type_Utf8)
+            } else if pa, pa_ok := distinct_base(sf.field_def.type_).(^Type_Partial_Array); pa_ok {
+                elem_t = llvm_type_from_checker(pa.elem)
+                sentinel = pa.has_sentinel
+                _, utf8 = pa.elem.(Type_Utf8)
+            } else {
+                codegen_fatal(g, e.span, "address chain ended at .Slice but last field is neither Type_Slice nor Type_Partial_Array")
             }
-            elem_t := llvm_type_from_checker(sl.elem)
-            sentinel := sl.has_sentinel
-            _, utf8 := sl.elem.(Type_Utf8)
             set_field_result(g, Slice_Var{alloca = addr, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
             return addr
         }
@@ -888,15 +896,21 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             })
             return gep
         }
-        // Slice field — register as Slice_Var with the field's real element type.
-        if ft == SLICE_IR_TYPE {
+        // Slice OR partial-array field — both share the first 24 bytes
+        // ({len, cap, ptr}), so a Slice_Var pointing at the field's storage
+        // handles subsequent .len/.cap/.ptr reads for either shape.
+        if ft == SLICE_IR_TYPE || strings.has_prefix(ft, "{ i64, i64, ptr,") {
             elem_t := "i8"
             sentinel := false
             utf8 := false
-            if sl, sl_ok := f.type_.(^Type_Slice); sl_ok {
+            if sl, sl_ok := distinct_base(f.type_).(^Type_Slice); sl_ok {
                 elem_t = llvm_type_from_checker(sl.elem)
                 sentinel = sl.has_sentinel
                 _, utf8 = sl.elem.(Type_Utf8)
+            } else if pa, pa_ok := distinct_base(f.type_).(^Type_Partial_Array); pa_ok {
+                elem_t = llvm_type_from_checker(pa.elem)
+                sentinel = pa.has_sentinel
+                _, utf8 = pa.elem.(Type_Utf8)
             }
             set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
             return gep

@@ -7612,8 +7612,7 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
         }
     }
 
-    // Build Args array class: { cap: int, len: int, buf: [64][, 0]utf8 }
-    // and Context struct: { arena? , args: Args }
+    // Build Context struct: { arena? , args: [..64][, 0]utf8 }
     {
         ARGS_CAP :: 64
         // Element type: [, 0]utf8 sentinel-terminated slice
@@ -7622,27 +7621,11 @@ check_program :: proc(programs: map[string]^Program, main_packages: []string,
         arg_slice.has_sentinel = true
         arg_slice.sentinel = 0
 
-        // Args array class
-        args_type := new(Type_Scope)
-        args_type.name = "Args"
-        args_type.kind = .Struct
-        args_type.is_array_class = true
-        args_type.array_field = "buf"
-        args_type.len_field = "len"
-        args_type.cap_field = "cap"
-        args_type.elem_type = arg_slice
-        args_type.array_cap = ARGS_CAP
-        // Fields: { cap: int, len: int, buf: [64 x { ptr, i64 }] }
-        append(&args_type.fields, Struct_Type_Field{name = "cap", type_ = Type_Int{}})
-        args_type.field_map["cap"] = 0
-        append(&args_type.fields, Struct_Type_Field{name = "len", type_ = Type_Int{}})
-        args_type.field_map["len"] = 1
-        arr_field_type := new(Type_Fixed_Array)
-        arr_field_type.elem = arg_slice
-        arr_field_type.size = ARGS_CAP
-        append(&args_type.fields, Struct_Type_Field{name = "buf", type_ = arr_field_type})
-        args_type.field_map["buf"] = 2
-        c.table.funs["Args"] = args_type
+        // Args is a partial array: [..64][, 0]utf8 — header {len,cap,ptr}
+        // followed by inline [64 x slice] storage.
+        args_type := new(Type_Partial_Array)
+        args_type.size = ARGS_CAP
+        args_type.elem = arg_slice
 
         // Context struct
         ctx_type := new(Type_Scope)

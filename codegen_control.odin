@@ -242,16 +242,11 @@ gen_for_range :: proc(g: ^Codegen, s: ^Stmt_For) {
 gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     // Get collection variable name from the expression
     coll_name := ""
-    coll_fa: ^Expr_Field_Access  // set when collection is a field access (desugared array class)
+    coll_fa: ^Expr_Field_Access  // set when collection is a field access
     if ident, ok := s.collection.(^Expr_Ident); ok {
         coll_name = ident.name
     } else if fa, fa_ok := s.collection.(^Expr_Field_Access); fa_ok {
-        // Desugared array class: `args.buf` or `context.args.buf`
         coll_fa = fa
-        // Extract base name for simple cases
-        if ident, id_ok := fa.expr.(^Expr_Ident); id_ok {
-            coll_name = ident.name
-        }
     }
     if coll_name == "" && coll_fa == nil {
         codegen_fatal(g, s.span, "collection-for requires an identifier or field access")
@@ -264,8 +259,31 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     use_array_gep := false  // true for fixed arrays (need [N x T] GEP), false for pointer GEP
     arr_type_str := ""      // e.g. "[8 x i64]" for fixed array GEP
 
-    // Field access collection (desugared array class on a non-local, e.g. context.args)
-    if coll_name == "" && coll_fa != nil {
+    // Field access whose result is a partial array, e.g. `context.args`.
+    // Read len from field 0 and data ptr from field 2 of the partial-array
+    // header (shared layout with slice for the first 24 bytes).
+    resolved := false
+    if coll_fa != nil {
+        if pa, pa_ok := expr_type(coll_fa).(^Type_Partial_Array); pa_ok {
+            pa_ptr := gen_field_address(g, coll_fa)
+            pa_ir := llvm_type_from_checker(pa)
+            len_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", len_gep, pa_ir, pa_ptr, SLICE.len)
+            len_val := fresh_tmp(g)
+            emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
+            length_val = len_val
+            ptr_gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", ptr_gep, pa_ir, pa_ptr, SLICE.ptr)
+            data_val := fresh_tmp(g)
+            emit(g, "  %s = load ptr, ptr %s", data_val, ptr_gep)
+            data_ptr = data_val
+            elem_ir = llvm_type_from_checker(pa.elem)
+            resolved = true
+        }
+    }
+    if resolved {
+        // skip the dispatch below
+    } else if coll_name == "" && coll_fa != nil {
         // Resolve the array data pointer via address chain
         data_ptr = gen_field_address(g, coll_fa)
         elem_ir = llvm_type_from_checker(s.elem_type_)
