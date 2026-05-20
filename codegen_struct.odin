@@ -1475,8 +1475,8 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
 gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string, value: Expr, span: Span) {
     field_idx := 0
     switch field {
-    case "len": field_idx = 1
-    case "cap": field_idx = 2
+    case "len": field_idx = SLICE.len
+    case "cap": field_idx = SLICE.cap
     case:
         codegen_fatal(g, span, "cannot assign to slice field '.%s' (only .len and .cap)", field)
     }

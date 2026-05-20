@@ -45,7 +45,8 @@ ac_arr_type :: proc(ac_st: ^Scope_Body) -> string {
 // Slice IR helpers (emit_raw with strings.concatenate to avoid fmt brace issues)
 // ---------------------------------------------------------------------------
 
-// Slice fields: 0 = data ptr, 1 = len (cursor), 2 = cap (capacity).
+// GEP into a slice header by field index — see SLICE constants (codegen.odin)
+// for the canonical len/cap/ptr ordering.
 emit_slice_gep :: proc(g: ^Codegen, result: string, src: string, field: int) {
     field_suffix := ", i32 0, i32 0"
     switch field {
@@ -791,7 +792,7 @@ gen_slice_ptr :: proc(g: ^Codegen, name: string) -> string {
     return ptr_val
 }
 
-// Load the cursor / valid-data length (field 1) from a slice variable.
+// Load the cursor / valid-data length from a slice variable.
 gen_slice_len :: proc(g: ^Codegen, name: string) -> string {
     sv, _ := get_slice(g, name)
     len_gep := fresh_tmp(g)
@@ -968,7 +969,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take) -> string {
     return typed_ptr
 }
 
-// Load the total capacity (field 2) from a slice variable.
+// Load the total capacity from a slice variable.
 gen_slice_cap :: proc(g: ^Codegen, name: string) -> string {
     sv, _ := get_slice(g, name)
     cap_gep := fresh_tmp(g)
