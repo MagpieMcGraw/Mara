@@ -21,3 +21,5 @@ Figure out auto deref semantics. How often should we auto deref? And what's the 
 Figure out who owns the main package in multi module builds.
 
 Steal string formatting from python.
+
+Write build script for .c code in mara to test capabilities
