@@ -2039,10 +2039,12 @@ is_float_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
         // f32 (Type_Numeric Float) is NOT a "float expr" — it goes through
         // is_numeric_expr instead, which handles fpext float→double for printf
     }
-    // Check struct field access: obj.field where field type is double/float
+    // Check struct field access: obj.field where field type is double.
+    // float (f32) deliberately falls through — is_numeric_expr handles it
+    // and emits the fpext float→double needed for printf varargs.
     if fa, ok := expr.(^Expr_Field_Access); ok {
         ft := expr_ir_type(g, fa)
-        return ft == "double" || ft == "float"
+        return ft == "double"
     }
     // Check array index into a float array: arr[i] where arr is [N x double]
     if idx, ok := expr.(^Expr_Index); ok {

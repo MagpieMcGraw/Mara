@@ -41,9 +41,7 @@ test_abi :: fun() {
 	v.y = 2.0
 	v.z = 3.0
 	v2 := abi_test_vec3(v)
-	// Cast to f64 for printing — there's a pre-existing fpext gap when
-	// printing f32 field-access values directly.
-	print(f64(v2.x), f64(v2.y), f64(v2.z))  // expect 2 4 6
+	print(v2.x, v2.y, v2.z)  // expect 2 4 6
 
 	print("=== test_abi passed ===")
 }
