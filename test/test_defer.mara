@@ -1,0 +1,78 @@
+module test_defer
+
+// Basic defer: body runs on scope exit. Prints "body" then "deferred".
+defer_basic :: fun() {
+	defer print("deferred")
+	print("body")
+}
+
+// LIFO ordering: last-declared defer runs first. Prints "a" then "deferred-2" then "deferred-1".
+defer_lifo :: fun() {
+	defer print("deferred-1")
+	defer print("deferred-2")
+	print("a")
+}
+
+// Block form with multiple statements.
+defer_block :: fun() {
+	defer {
+		print("block-1")
+		print("block-2")
+	}
+	print("body")
+}
+
+// Defer + early return: defer must still fire before the function returns.
+// Prints "before", then "defer-on-return", then 42.
+defer_early_return :: fun(x: i64) -> i64 {
+	defer print("defer-on-return")
+	print("before")
+	if x > 0 {
+		return x + 41
+	}
+	return 0
+}
+
+// Defer inside an if-block: fires when the if-scope exits, not the function.
+// Prints "if-body" then "if-defer" then "after-if".
+defer_if_scope :: fun() {
+	if true {
+		defer print("if-defer")
+		print("if-body")
+	}
+	print("after-if")
+}
+
+// Defer inside a loop fires per-iteration (loop body is its own scope).
+// Prints "iter" 3 times each followed by "loop-defer", then "after-loop".
+defer_loop_iter :: fun() {
+	for i in 0..3 {
+		defer print("loop-defer")
+		print("iter")
+	}
+	print("after-loop")
+}
+
+// Defer + top-level break: defer fires before the break exits the loop body.
+// Prints "iter", "loop-defer", then "after-loop".
+defer_loop_break :: fun() {
+	for true {
+		defer print("loop-defer")
+		print("iter")
+		break
+	}
+	print("after-loop")
+}
+
+test_defer :: fun() {
+	print("=== test_defer ===")
+	defer_basic()
+	defer_lifo()
+	defer_block()
+	r := defer_early_return(1)
+	print(r)
+	defer_if_scope()
+	defer_loop_iter()
+	defer_loop_break()
+	print("=== test_defer passed ===")
+}

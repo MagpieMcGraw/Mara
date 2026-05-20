@@ -562,6 +562,17 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Handled by gen_for
     case Stmt_Continue:
         // Handled by gen_for
+    case ^Stmt_Defer:
+        // Register the defer body on the innermost scope. emit_scope_defers
+        // (called from pop_scope / emit_return_resets / emit_loop_exit) emits
+        // these in LIFO order on scope exit, before the arena reset.
+        if len(g.scope_stack) == 0 {
+            codegen_fatal(g, s.span, "defer outside of any scope")
+        }
+        top := &g.scope_stack[len(g.scope_stack) - 1]
+        block: [dynamic]Stmt
+        for st in s.body { append(&block, st) }
+        append(&top.deferred_blocks, block)
     case ^Stmt_Match:
         gen_match(g, s)
     case ^Stmt_Foreign:

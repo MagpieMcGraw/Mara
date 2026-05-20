@@ -386,6 +386,7 @@ Stmt :: union {
     Stmt_Return,
     Stmt_Break,
     Stmt_Continue,
+    ^Stmt_Defer,
     ^Stmt_Match,
     ^Stmt_Foreign,
     ^Stmt_Union_Def,
@@ -549,6 +550,16 @@ Stmt_Break :: struct {
 }
 
 Stmt_Continue :: struct {
+    span: Span,
+}
+
+// `defer <stmt>` or `defer { ... }` — registers a body of statements that run
+// on enclosing-scope exit (LIFO across multiple defers in the same scope).
+// Codegen appends body to the current Scope_Entry.deferred_blocks; the existing
+// pop_scope / emit_return_resets / emit_loop_exit machinery emits them before
+// arena reset.
+Stmt_Defer :: struct {
+    body: [dynamic]Stmt,
     span: Span,
 }
 
@@ -1008,6 +1019,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
     case .Return:   return parse_return(p)
     case .Break:    return parse_break(p)
     case .Continue: return parse_continue(p)
+    case .Defer:    return parse_defer(p)
     case .If:       return parse_if(p)
     case .Hash:
         // `#if` is a comptime if — the type checker evaluates the condition
@@ -1850,6 +1862,33 @@ parse_continue :: proc(p: ^Parser) -> Stmt {
     start := token_span(current(p))
     advance(p)
     return Stmt_Continue{span = start}
+}
+
+// `defer <stmt>` or `defer { ... }`. The body runs on enclosing-scope exit
+// (LIFO across defers in the same scope). Single-statement form is same-line;
+// block form may span lines.
+parse_defer :: proc(p: ^Parser) -> Stmt {
+    start := token_span(current(p))
+    advance(p) // consume 'defer'
+    body: [dynamic]Stmt
+
+    skip_newlines(p)
+    if current_kind(p) == .Left_Brace {
+        advance(p) // consume '{'
+        skip_newlines(p)
+        for current_kind(p) != .Right_Brace && current_kind(p) != .EOF {
+            append(&body, parse_stmt(p))
+            skip_separator(p)
+        }
+        expect(p, .Right_Brace)
+    } else {
+        append(&body, parse_stmt(p))
+    }
+
+    stmt := new(Stmt_Defer)
+    stmt.body = body
+    stmt.span = start
+    return stmt
 }
 
 
@@ -4067,6 +4106,10 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         return s
     case Stmt_Continue:
         return s
+    case ^Stmt_Defer:
+        c := new_clone(v^)
+        c.body = clone_stmts(v.body)
+        return c
     case ^Stmt_Match:
         c := new_clone(v^)
         c.subject = clone_expr(v.subject)

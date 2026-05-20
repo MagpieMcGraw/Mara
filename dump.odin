@@ -347,6 +347,13 @@ dump_stmt :: proc(b: ^strings.Builder, stmt: Stmt, depth: int) {
     case Stmt_Continue:
         fmt.sbprintf(b, "%scontinue\n", indent)
 
+    case ^Stmt_Defer:
+        fmt.sbprintf(b, "%sdefer {{\n", indent)
+        for child in s.body {
+            dump_stmt(b, child, depth + 1)
+        }
+        fmt.sbprintf(b, "%s}\n", indent)
+
     case ^Stmt_Match:
         fmt.sbprintf(b, "%smatch ", indent)
         dump_expr(b, s.subject)
@@ -877,6 +884,13 @@ dump_parse_stmt :: proc(b: ^strings.Builder, stmt: Stmt, depth: int) {
 
     case Stmt_Continue:
         fmt.sbprintf(b, "%scontinue\n", indent)
+
+    case ^Stmt_Defer:
+        fmt.sbprintf(b, "%sdefer {{\n", indent)
+        for child in s.body {
+            dump_parse_stmt(b, child, depth + 1)
+        }
+        fmt.sbprintf(b, "%s}\n", indent)
 
     case ^Stmt_Match:
         fmt.sbprintf(b, "%smatch ", indent)

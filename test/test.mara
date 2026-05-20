@@ -30,6 +30,7 @@ use test_in_range
 use test_partial_array
 use test_named_returns
 use test_abi
+use test_defer
 use mara.memory
 
 main :: fun() -> i64 {
@@ -66,5 +67,6 @@ main :: fun() -> i64 {
 	test_partial_array()
 	test_named_returns()
 	test_abi()
+	test_defer()
 	return 0
 }

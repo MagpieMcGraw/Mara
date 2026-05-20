@@ -5559,6 +5559,13 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
         case Stmt_Continue:
             // nothing to check
 
+        case ^Stmt_Defer:
+            // Body is checked in a child env so any declarations inside the
+            // defer stay scoped to the deferred block. At runtime the body
+            // executes on scope exit (LIFO across defers in the same scope).
+            child := type_env_child(env)
+            check_scope(c, s.body, &child)
+
         // Declarations were already fully handled in register_and_check_declarations
         case ^Stmt_Assign:
             // Complex LHS: dispatch on target kind. Simple reassignment falls
@@ -7621,6 +7628,7 @@ stmt_span :: proc(stmt: Stmt) -> Span {
     case Stmt_Return:       return s.span
     case Stmt_Break:        return s.span
     case Stmt_Continue:     return s.span
+    case ^Stmt_Defer:       return s.span
     case ^Stmt_Match:       return s.span
     case ^Stmt_Foreign:     return s.span
     case ^Stmt_Union_Def:     return s.span
