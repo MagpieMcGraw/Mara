@@ -2,12 +2,6 @@ module mara.string
 
 use mara.os
 
-// String :: struct(n: i64 = 256) {
-// 	cap: i64 = n
-// 	len: i64 = 0
-// 	using bytes: [n, 0]utf8
-// }
-
 String :: type [..128, 0]utf8
 
 overload + add
