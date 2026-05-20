@@ -6,15 +6,26 @@ import "core:fmt"
 // Block codegen helpers
 // ---------------------------------------------------------------------------
 
+// Top-level terminator: the statement emits its own branch (and any scope
+// cleanup) before yielding control. Subsequent statements at the same nesting
+// level would land in a dead block, so iteration must stop after one of these.
+stmt_is_terminator :: proc(s: Stmt) -> bool {
+    #partial switch _ in s {
+    case Stmt_Return, Stmt_Break, Stmt_Continue:
+        return true
+    }
+    return false
+}
+
 // Generate a basic block of statements. Returns true if the block was terminated
-// (by a return statement). Handles push/pop scope and emits a branch to
-// fallthrough_label when not terminated.
+// (by a return / break / continue at this level). Handles push/pop scope and
+// emits a branch to fallthrough_label when not terminated.
 gen_body_block :: proc(g: ^Codegen, stmts: []Stmt, scope_kind: Control_Scope_Kind, fallthrough_label: string) -> bool {
     push_scope(g, scope_kind, stmts)
     terminated := false
     for stmt in stmts {
         gen_stmt(g, stmt)
-        if _, ok := stmt.(Stmt_Return); ok {
+        if stmt_is_terminator(stmt) {
             terminated = true
             break
         }
@@ -23,49 +34,37 @@ gen_body_block :: proc(g: ^Codegen, stmts: []Stmt, scope_kind: Control_Scope_Kin
         pop_scope(g)
         emit(g, "  br label %%%s", fallthrough_label)
     } else {
-        // Return already emitted resets; just pop the stack entry
+        // Terminator already emitted scope cleanup; just drop the stack entry
         if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
     }
     return terminated
 }
 
-// Emit break/continue scope cleanup (defers + arena reset).
+// Emit defers + arena reset for every scope from the top of the stack down
+// to and including the innermost For_Body. Used by `break` / `continue` to
+// unwind any intervening if-then / if-else / match-arm scopes before jumping
+// out of the loop. The stack itself is not popped — the surrounding gen_*
+// helpers manage Scope_Entry lifecycle.
 emit_loop_exit :: proc(g: ^Codegen) {
-    if len(g.scope_stack) > 0 {
-        emit_scope_defers(g, &g.scope_stack[len(g.scope_stack) - 1])
-        if g.scope_stack[len(g.scope_stack) - 1].has_mark {
+    for i := len(g.scope_stack) - 1; i >= 0; i -= 1 {
+        emit_scope_defers(g, &g.scope_stack[i])
+        if g.context_enabled && g.scope_stack[i].has_mark {
             emit_arena_reset(g)
         }
+        if g.scope_stack[i].scope_kind == .For_Body {
+            return
+        }
     }
 }
 
-// Generate a loop body block with break/continue support.
+// Generate a loop body block with break/continue support. Pushes the loop's
+// branch targets onto the codegen-wide stack so nested break / continue (e.g.
+// inside an if-then or a match arm in the body) can reach them via gen_stmt.
 // Returns true if the block was terminated.
 gen_loop_body :: proc(g: ^Codegen, stmts: []Stmt, break_label: string, continue_label: string) -> bool {
-    push_scope(g, .For_Body, stmts)
-    terminated := false
-    for stmt in stmts {
-        if _, ok := stmt.(Stmt_Break); ok {
-            emit_loop_exit(g)
-            emit(g, "  br label %%%s", break_label)
-            terminated = true
-            break
-        }
-        if _, ok := stmt.(Stmt_Continue); ok {
-            emit_loop_exit(g)
-            emit(g, "  br label %%%s", continue_label)
-            terminated = true
-            break
-        }
-        gen_stmt(g, stmt)
-    }
-    if !terminated {
-        pop_scope(g)
-        emit(g, "  br label %%%s", continue_label)
-    } else {
-        if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
-    }
-    return terminated
+    append(&g.loop_label_stack, Loop_Labels{break_label = break_label, continue_label = continue_label})
+    defer pop(&g.loop_label_stack)
+    return gen_body_block(g, stmts, .For_Body, continue_label)
 }
 
 // ---------------------------------------------------------------------------

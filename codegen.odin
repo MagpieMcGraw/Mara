@@ -212,6 +212,15 @@ Scope_Entry :: struct {
     deferred_blocks: [dynamic][dynamic]Stmt,  // defer blocks (LIFO order: last block runs first, stmts within block run forward)
 }
 
+// Branch targets for the enclosing loop. Pushed by gen_loop_body, popped on
+// exit. gen_stmt reads the top entry when emitting `break` / `continue`, so
+// these statements work at any depth (inside if / match / etc.), not just at
+// the loop's top level.
+Loop_Labels :: struct {
+    break_label:    string,
+    continue_label: string,
+}
+
 Codegen :: struct {
     out:         strings.Builder,  // the IR text
     alloca_buf:  strings.Builder,  // hoisted allocas (entry block)
@@ -250,6 +259,7 @@ Codegen :: struct {
     arena_new_name:   string,                     // flat name for the arena new function
     arena_alloc_has_debug: bool,                  // true if alloc() takes name/span debug params
     scope_stack:      [dynamic]Scope_Entry,       // tracks active scopes for mark/reset
+    loop_label_stack: [dynamic]Loop_Labels,        // current loop's break/continue branch targets (innermost on top)
     ctx_alloca:       string,                     // LLVM tmp for Context alloca in @main
     // NRVO: name of variable aliased to sret (skipped in scope_has_big_values)
     nrvo_var:         string,

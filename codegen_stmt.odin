@@ -559,9 +559,23 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Function definitions are handled at top level, skip here
 
     case Stmt_Break:
-        // Handled by gen_for
+        // Branch to the innermost loop's end label, unwinding any intervening
+        // if/match/etc. scopes' defers + arena marks first. Works at any depth.
+        if len(g.loop_label_stack) == 0 {
+            codegen_fatal(g, s.span, "break outside of loop")
+        }
+        labels := g.loop_label_stack[len(g.loop_label_stack) - 1]
+        emit_loop_exit(g)
+        emit(g, "  br label %%%s", labels.break_label)
     case Stmt_Continue:
-        // Handled by gen_for
+        // Branch to the innermost loop's continue target (post clause or
+        // condition check), unwinding intervening scopes' cleanup first.
+        if len(g.loop_label_stack) == 0 {
+            codegen_fatal(g, s.span, "continue outside of loop")
+        }
+        labels := g.loop_label_stack[len(g.loop_label_stack) - 1]
+        emit_loop_exit(g)
+        emit(g, "  br label %%%s", labels.continue_label)
     case ^Stmt_Defer:
         // Register the defer body on the innermost scope. emit_scope_defers
         // (called from pop_scope / emit_return_resets / emit_loop_exit) emits

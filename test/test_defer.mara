@@ -64,6 +64,38 @@ defer_loop_break :: fun() {
 	print("after-loop")
 }
 
+// Break nested inside an if-then. Defer fires for both the if-scope and the
+// loop-scope on the way out. Prints "iter" 0, "if-defer", "loop-defer",
+// "after-loop". Subsequent iters never run.
+defer_break_in_if :: fun() {
+	for i in 0..5 {
+		defer print("loop-defer")
+		print("iter")
+		print(i)
+		if i == 0 {
+			defer print("if-defer")
+			break
+		}
+	}
+	print("after-loop")
+}
+
+// Continue nested inside an if-then. Defer fires for the if-scope and loop
+// scope each iteration that continues. Prints "iter" 0, "if-defer",
+// "loop-defer", "iter" 1, "loop-defer", "after-loop".
+defer_continue_in_if :: fun() {
+	for i in 0..2 {
+		defer print("loop-defer")
+		print("iter")
+		print(i)
+		if i == 0 {
+			defer print("if-defer")
+			continue
+		}
+	}
+	print("after-loop")
+}
+
 test_defer :: fun() {
 	print("=== test_defer ===")
 	defer_basic()
@@ -74,5 +106,7 @@ test_defer :: fun() {
 	defer_if_scope()
 	defer_loop_iter()
 	defer_loop_break()
+	defer_break_in_if()
+	defer_continue_in_if()
 	print("=== test_defer passed ===")
 }

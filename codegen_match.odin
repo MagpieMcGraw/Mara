@@ -55,21 +55,7 @@ gen_namespace_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
         emit(g, "  br i1 %s, label %%%s, label %%%s", bool_val, body_label, next_label)
 
         emit(g, "%s:", body_label)
-        push_scope(g, .Match_Arm, arm.body[:])
-        arm_terminated := false
-        for stmt in arm.body {
-            gen_stmt(g, stmt)
-            if _, ok := stmt.(Stmt_Return); ok {
-                arm_terminated = true
-                break
-            }
-        }
-        if !arm_terminated {
-            pop_scope(g)
-            emit(g, "  br label %%%s", next_label)
-        } else {
-            if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
-        }
+        gen_body_block(g, arm.body[:], .Match_Arm, next_label)
 
         restore_var_scope(g, &snap)
 
@@ -176,40 +162,12 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
                 }
             }
 
-            // Generate body, tracking block termination
-            push_scope(g, .Match_Arm, arm.body[:])
-            arm_terminated := false
-            for stmt in arm.body {
-                gen_stmt(g, stmt)
-                if _, ok := stmt.(Stmt_Return); ok {
-                    arm_terminated = true
-                    break
-                }
-            }
-
-            if !arm_terminated {
-                pop_scope(g)
-                emit(g, "  br label %%%s", end_label)
-            } else {
-                if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
-            }
+            // Generate body. gen_body_block handles scope push/pop and the
+            // terminator-stop logic (return / break / continue).
+            gen_body_block(g, arm.body[:], .Match_Arm, end_label)
         } else if arm.is_else {
             // Else (wildcard) arm — no binding, just emit body
-            push_scope(g, .Match_Arm, arm.body[:])
-            arm_terminated := false
-            for stmt in arm.body {
-                gen_stmt(g, stmt)
-                if _, ok := stmt.(Stmt_Return); ok {
-                    arm_terminated = true
-                    break
-                }
-            }
-            if !arm_terminated {
-                pop_scope(g)
-                emit(g, "  br label %%%s", end_label)
-            } else {
-                if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
-            }
+            gen_body_block(g, arm.body[:], .Match_Arm, end_label)
         }
 
         // Restore variable state after each arm
@@ -277,21 +235,7 @@ gen_value_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
 
         // Emit arm body block
         emit(g, "%s:", arm_body_labels[i])
-        push_scope(g, .Match_Arm, arm.body[:])
-        arm_terminated := false
-        for stmt in arm.body {
-            gen_stmt(g, stmt)
-            if _, ok := stmt.(Stmt_Return); ok {
-                arm_terminated = true
-                break
-            }
-        }
-        if !arm_terminated {
-            pop_scope(g)
-            emit(g, "  br label %%%s", end_label)
-        } else {
-            if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
-        }
+        gen_body_block(g, arm.body[:], .Match_Arm, end_label)
 
         // Restore variable state after each arm
         restore_var_scope(g, &vm_snap)
@@ -306,21 +250,7 @@ gen_value_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
     if has_else {
         else_arm := s.arms[len(s.arms) - 1]
         emit(g, "%s:", else_label)
-        push_scope(g, .Match_Arm, else_arm.body[:])
-        arm_terminated := false
-        for stmt in else_arm.body {
-            gen_stmt(g, stmt)
-            if _, ok := stmt.(Stmt_Return); ok {
-                arm_terminated = true
-                break
-            }
-        }
-        if !arm_terminated {
-            pop_scope(g)
-            emit(g, "  br label %%%s", end_label)
-        } else {
-            if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
-        }
+        gen_body_block(g, else_arm.body[:], .Match_Arm, end_label)
         // Restore after else arm
         restore_var_scope(g, &vm_snap)
     }
