@@ -18,8 +18,6 @@ When lexing, save file sizes, pass them on to the parser, to know roughly how mu
 
 Figure out auto deref semantics. How often should we auto deref? And what's the relation between pointers and mutability. This whole topics needs discussion.
 
-Should sized slices be treated as arrays? Should they have a relative pointer? And how would that interact with regular slices?
-
 Figure out who owns the main package in multi module builds.
 
-Implement pass by value to match the C ABI.
+Steal string formatting from python.
