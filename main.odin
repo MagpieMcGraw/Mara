@@ -229,14 +229,21 @@ emscripten_port_flag :: proc(lib: string) -> (flag: string, ok: bool) {
 compile_c_to_static_lib :: proc(c_path, lib_path, compiler_dir: string) -> bool {
     obj_path := strings.concatenate({c_path[:len(c_path)-2], ".o"})
 
+    // Pass -I <c_path's dir> so the source can `#include "neighbor.h"` against
+    // headers sitting next to it. Quoted-form includes (`#include "x.h"`) already
+    // resolve relative to the file doing the include, but for the wrapper-and-
+    // amalgamate pattern — and any future case where the .c reaches for sibling
+    // headers via plain names — having -I makes the lookup unambiguous.
+    c_dir := filepath.dir(c_path)
+
     // ---- Step 1: compile .c to .o
     compile_cmd: string
     when ODIN_OS == .Windows {
         clang_path, _ := filepath.join({compiler_dir, "tools", CLANG_BIN})
-        inner_c := strings.concatenate({`"`, clang_path, `" -c "`, c_path, `" -o "`, obj_path, `"`})
+        inner_c := strings.concatenate({`"`, clang_path, `" -c "`, c_path, `" -o "`, obj_path, `" -I "`, c_dir, `"`})
         compile_cmd = strings.concatenate({`"`, inner_c, `"`})
     } else {
-        compile_cmd = strings.concatenate({CLANG_BIN, ` -c "`, c_path, `" -o "`, obj_path, `"`})
+        compile_cmd = strings.concatenate({CLANG_BIN, ` -c "`, c_path, `" -o "`, obj_path, `" -I "`, c_dir, `"`})
     }
     if libc.system(strings.clone_to_cstring(compile_cmd)) != 0 {
         fmt.printf("Error: clang failed to compile '%s'\n", c_path)
