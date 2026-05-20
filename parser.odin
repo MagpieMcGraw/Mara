@@ -507,12 +507,13 @@ Stmt_Scope :: struct {
 }
 
 Stmt_Union_Def :: struct {
-    name:     string,
-    tag_type: string,                        // "" = default (i64), or "i32", "i16", etc.
-    min_size: int,                           // 0 = no minimum, otherwise minimum payload size in bytes
-    tag_pad:  Type_Expr,                     // type of padding between tag and payload (nil = none)
-    variants: [dynamic]Union_Variant_Def,    // variant definitions with fields
-    span:     Span,
+    name:           string,
+    tag_type:       string,                        // "" = default (i64), or "i32", "i16", etc.
+    min_size:       int,                           // 0 = no minimum, otherwise minimum payload size in bytes
+    tag_pad:        Type_Expr,                     // type of padding between tag and payload (nil = none)
+    variants:       [dynamic]Union_Variant_Def,    // variant definitions with fields
+    generic_params: [dynamic]Generic_Param,        // non-empty for `Name :: union($T: type) { ... }` — monomorphized per use
+    span:           Span,
 }
 
 Stmt_Distinct_Def :: struct {
@@ -1606,20 +1607,48 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
 parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt {
     advance(p) // consume 'union'
 
-    // Header options, all keyword-prefixed and comma-separated:
-    //   tag <type>   — discriminant type (e.g. `tag u32`); default i64
-    //   pad <type>   — typed padding between tag and payload (e.g. `pad u32`,
-    //                  reachable from user code via `value.pad`)
-    //   size <N>     — minimum total size in bytes
-    // Examples: union(tag u32) { ... }, union(tag u32, pad u32, size 128) { ... }
+    // Header options, all comma-separated:
+    //   $T: type      — generic type parameter (monomorphized per use)
+    //   $N: int = 256 — generic const parameter (currently unused on unions, kept for parity)
+    //   tag <type>    — discriminant type (e.g. `tag u32`); default i64
+    //   pad <type>    — typed padding between tag and payload (e.g. `pad u32`,
+    //                   reachable from user code via `value.pad`)
+    //   size <N>      — minimum total size in bytes
+    // Examples:
+    //   union(tag u32) { ... }
+    //   union($T: type) { None, Some { value: T } }
+    //   union($T: type, tag i8) { ... }
     min_size := 0
     tag_type := ""
     tag_pad: Type_Expr
+    generic_params: [dynamic]Generic_Param
     if current_kind(p) == .Left_Paren {
         advance(p) // consume '('
         for current_kind(p) != .Right_Paren && current_kind(p) != .EOF {
             tok := current(p)
-            if tok.kind == .Identifier && tok.text == "tag" {
+            if tok.kind == .Dollar {
+                advance(p) // consume '$'
+                gname_tok := expect(p, .Identifier)
+                expect(p, .Colon)
+                type_tok := expect(p, .Identifier) // "type", "int", "uint", etc.
+                if type_tok.text == "type" {
+                    append(&generic_params, Generic_Param{name = gname_tok.text, span = token_span(gname_tok)})
+                } else {
+                    gp := Generic_Param{
+                        name = gname_tok.text,
+                        span = token_span(gname_tok),
+                        is_const = true,
+                        const_type = type_tok.text,
+                    }
+                    if current_kind(p) == .Equals {
+                        advance(p) // consume '='
+                        val_tok := expect(p, .Number)
+                        gp.default_value = parse_int_token(val_tok.text)
+                        gp.has_default = true
+                    }
+                    append(&generic_params, gp)
+                }
+            } else if tok.kind == .Identifier && tok.text == "tag" {
                 advance(p)
                 if is_type_keyword(current_kind(p)) {
                     tag_type = current(p).text
@@ -1641,11 +1670,12 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
                         error_prefix(current(p)), current(p).text)
                 }
             } else {
-                fmt.printf("[%s] Parse error: union header takes `tag <type>`, `pad <type>`, `size <N>`; got `%s`\n",
+                fmt.printf("[%s] Parse error: union header takes `$T: type`, `tag <type>`, `pad <type>`, `size <N>`; got `%s`\n",
                     error_prefix(tok), tok.text)
                 advance(p) // skip unrecognized token to avoid infinite loop
             }
             if current_kind(p) == .Comma { advance(p) }
+            skip_newlines(p)
         }
         expect(p, .Right_Paren)
     }
@@ -1715,6 +1745,7 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
     union_stmt.min_size = min_size
     union_stmt.tag_pad = tag_pad
     union_stmt.variants = variant_defs
+    union_stmt.generic_params = generic_params
     union_stmt.span = start
     return union_stmt
 }
