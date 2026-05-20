@@ -166,6 +166,12 @@ Type_Scope :: struct {
 
     // Return type — data types return themselves, functions return their declared type
     return_type:    Type,
+
+    // ABI calling convention. Defaults to .Mara (zero value). Foreign declarations
+    // set this to .C so the codegen lowers the signature per the platform C ABI.
+    // See abi.odin for the classifier; phases 3+ consume this at signature /
+    // call-site emission time.
+    calling_conv:   Calling_Conv,
 }
 
 // Get the C-ified flat/mangled name of a named Type. Returns "" for
@@ -3702,6 +3708,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
             for decl in s.decls {
                 fun_type := new(Type_Scope)
                 fun_type.kind = .Fun
+                fun_type.calling_conv = .C
                 bare_name := decl.name
                 mangled := fmt.aprintf("%s_%s", st.name, bare_name)
                 fun_type.name = mangled
@@ -4376,6 +4383,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             for decl in s.decls {
                 fun_type := new(Type_Scope)
                 fun_type.kind = .Fun
+                fun_type.calling_conv = .C
                 fun_type.name = make_flat_name(c.current_package, decl.name)
                 for tp in decl.typed_params {
                     pt := resolve_type_expr(tp.type_expr, c, decl.span, env = env)
