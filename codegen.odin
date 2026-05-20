@@ -34,6 +34,18 @@ partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
     return strings.concatenate({"{ i64, i64, ptr, [", fmt.tprintf("%d", cap), " x ", elem_ir, "] }"})
 }
 
+// Open design note: partial arrays reuse the slice layout via pointer-pun on
+// the first 24 bytes, which lets one set of field-access codegen paths serve
+// both. Cost: shared code concentrates bugs (see the stale-index bug fixed
+// in gen_slice_field_store — it survived because there's no parallel
+// partial-array writer to disagree), and the address chain collapses both
+// into final_kind=.Slice, losing the distinction. The end-state handler in
+// gen_field_access has to re-discriminate via type cast to recover sentinel
+// / elem info. Fine while no behaviour needs to branch on slice-vs-partial-
+// array, but if per-shape features show up later, tag the chain (e.g.
+// .Slice_Header with a source enum) or split the kinds. Revisit when that
+// pressure appears.
+
 // Info about a scalar variable in codegen (simple alloca)
 Scalar_Var :: struct {
     alloca: string, // %varname
