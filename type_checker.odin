@@ -5602,20 +5602,15 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
             }
         }
     }
-    // `let` view bindings can't be returned: the binding is local to the
-    // function, even though the underlying memory belongs to the caller.
-    // Returning by-value would copy from the let'd memory (caller could read
-    // the source directly), and returning by-reference is already handled by
-    // the local-ref check via the source's provenance.
-    for val in s.values {
-        if ident, ok := val.(^Expr_Ident); ok {
-            if is_let_name(env, ident.name) {
-                check_error(c, s.span,
-                    "cannot return view binding '%s'; take bindings are scoped to the function",
-                    ident.name)
-            }
-        }
-    }
+    // Note: returning a take-bound view by value used to be rejected here as
+    // "view binding is scoped to the function." That was a redundancy concern
+    // (the caller could read the memory directly) dressed up as a safety rule.
+    // The actual dangling cases — returning `&local_view` or a struct whose
+    // slice fields point at local memory — are caught by is_local_ref and
+    // returns_locally_backed_struct above. A bare `return p` where p is a
+    // take-bound struct copies the bytes into the caller's sret slot just
+    // like any other by-value return; nothing dangles. So the blanket rule
+    // is gone.
 }
 
 check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {

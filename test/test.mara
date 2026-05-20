@@ -32,6 +32,7 @@ use test_named_returns
 use test_abi
 use test_defer
 use test_maybe
+use test_take_return
 use mara.memory
 
 main :: fun() -> i64 {
@@ -70,5 +71,6 @@ main :: fun() -> i64 {
 	test_abi()
 	test_defer()
 	test_maybe()
+	test_take_return()
 	return 0
 }
