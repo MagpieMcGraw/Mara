@@ -138,6 +138,12 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 if alloca_name, v_ok := get_scalar(g, ident.name); v_ok {
                     return alloca_name
                 }
+                // `&program` — the compiler-managed program global is stored
+                // at @__mara_program_storage; the address is the storage label.
+                // Used in cross-DLL handover (`game_run(&program, ...)`).
+                if ident.name == "program" {
+                    return "@__mara_program_storage"
+                }
             }
             // Address-of a field: emit GEP but don't load
             if fa, ok := e.operand.(^Expr_Field_Access); ok {

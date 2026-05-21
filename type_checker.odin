@@ -5347,6 +5347,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             if s.target != nil {
                 continue
             }
+            // `program = Program(...)` is a compiler-managed marker — Phase 0
+            // already extracted the arena type info; the assignment is a
+            // no-op at codegen, the storage gets synthesized in main's
+            // entry. Skip the regular type-check so the user can write the
+            // configuration line without satisfying a strict LHS type.
+            if s.name == "program" && !s.is_decl { continue }
             // Include expressions: scope-based resolution.
             // mara.X → look up X in std scope (stdlib modules)
             // bare Y → walk scope chain for sibling, lazy-load if not found
@@ -5412,7 +5418,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
                 if !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                     check_error(c, s.span,
-                        "'var' requires a scope allocator. Set up in main:\n\n    include mara.memory\n    context.scope_allocator = Arena_Basic")
+                        "'var' requires a scope allocator. Set up in main:\n\n    include mara.memory\n    program = Program(Arena_Basic)")
                 }
             }
 
@@ -5518,7 +5524,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     total_bytes := fa.size * checker_type_byte_size(fa.elem)
                     if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                         check_error(c, s.span,
-                            "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    context.scope_allocator = Arena_Basic",
+                            "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    program = Program(Arena_Basic)",
                             s.name, total_bytes)
                     }
                 }
@@ -5656,7 +5662,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     total_bytes := fa.size * checker_type_byte_size(fa.elem)
                     if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                         check_error(c, s.span,
-                            "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    context.scope_allocator = Arena_Basic",
+                            "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    program = Program(Arena_Basic)",
                             s.name, total_bytes)
                     }
                 } else if is_byte_buffer(val_type) {
@@ -7419,7 +7425,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_env.is_module_scope = true
 
     if c.top_env != nil {
-        for name in ([]string{"context", "Context", "std", "void"}) {
+        for name in ([]string{"program", "Program", "std", "void"}) {
             if t, ok := c.top_env.types[name]; ok {
                 type_env_set(mod_env, name, t)
             }
@@ -7832,7 +7838,7 @@ validate_scope_allocator :: proc(c: ^Checker) {
     name := c.table.scope_allocator_name
     if name == "" {
         check_error(c, {},
-            "context.scope_allocator requires an allocator fun (e.g. Arena_Basic)")
+            "program global requires an allocator type (e.g. `program = Program(Arena_Basic(<args>))`)")
         c.table.has_scope_allocator = false
         return
     }
@@ -7851,7 +7857,7 @@ validate_scope_allocator :: proc(c: ^Checker) {
     }
     if alloc_type == nil {
         check_error(c, {},
-            "context.scope_allocator: '%s' is not a known type", name)
+            "program scope allocator: '%s' is not a known type", name)
         c.table.has_scope_allocator = false
         return
     }
@@ -7865,7 +7871,7 @@ validate_scope_allocator :: proc(c: ^Checker) {
     for req in required_fns {
         if alloc_type.functions == nil || req not_in alloc_type.functions {
             check_error(c, {},
-                "context.scope_allocator: '%s' is missing required function '%s'", name, req)
+                "program scope allocator: '%s' is missing required function '%s'", name, req)
             c.table.has_scope_allocator = false
             return
         }
@@ -7973,13 +7979,13 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                     first := s.typed_params[0]
                     pt := resolve_type_expr(first.type_expr, c, s.span)
                     if ptr, is_ptr := pt.(^Type_Ptr); is_ptr {
-                        if ts, is_scope := ptr.elem.(^Type_Scope); is_scope && ts.name == "Context" {
+                        if ts, is_scope := ptr.elem.(^Type_Scope); is_scope && ts.name == "Program" {
                             ok = true
                         }
                     }
                 }
                 if !ok {
-                    check_error(c, s.span, "#expose function '%s' must take `ctx: ^Context` as its first parameter", s.name)
+                    check_error(c, s.span, "#expose function '%s' must take its first parameter as `^Program`", s.name)
                 }
             }
         case ^Stmt_If:
@@ -8054,21 +8060,39 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     c.std_fun = std_fun
     type_env_set(env, "std", std_fun)
 
-    // Phase 0: Pre-scan main's body for context.scope_allocator setup.
+    // Phase 0: Pre-scan main's body for `program = Program(...)` setup.
     // Must happen before package checking so big-array errors in imported
     // packages know whether a scope allocator is available.
-    scan_allocator :: proc(c: ^Checker, expr: Expr, value: Expr) {
-        fa, fa_ok := expr.(^Expr_Field_Access)
-        if !fa_ok { return }
-        ident, id_ok := fa.expr.(^Expr_Ident)
-        if !id_ok { return }
-        if ident.name != "context" || fa.field != "scope_allocator" { return }
+    //
+    // Two shapes accepted (both supplied by the shape-shortcut desugar at
+    // type-check time, but Phase 0 runs before desugar — so we peel the
+    // shapes here directly):
+    //
+    //   program = Program(Arena_Debug(50 * MB))   // shortcut form
+    //   program = Program(Arena_Debug)            // type-only; user assigns
+    //                                             //   to program.scope_allocator
+    //                                             //   later (not yet supported
+    //                                             //   in this scan)
+    //
+    // Bare `program = Program()` and `program : Program` mean the void
+    // default — no arena, allocation sites fail with a clear diagnostic.
+    scan_allocator :: proc(c: ^Checker, target: Expr, value: Expr) {
+        ident, id_ok := target.(^Expr_Ident)
+        if !id_ok || ident.name != "program" { return }
+        // Drill: `program = Program(<arena_ctor_or_type>)`.
+        outer_call, outer_ok := value.(^Expr_Call)
+        if !outer_ok || outer_call.name != "Program" { return }
+        if len(outer_call.args) == 0 { return } // Program() -> void default
+        // The arena spec is the first arg. Two valid shapes: another call
+        // (the shortcut form: Arena_Debug(50 * MB)) or a bare ident (just
+        // the type). Either way, the arena type's NAME is what we record.
+        arena_arg := outer_call.args[0]
         c.table.has_scope_allocator = true
-        if val_call, vc_ok := value.(^Expr_Call); vc_ok {
-            c.table.scope_allocator_name = val_call.name
-            c.table.scope_allocator_args = val_call.args
-        } else if val_ident, vi_ok := value.(^Expr_Ident); vi_ok {
-            c.table.scope_allocator_name = val_ident.name
+        if inner_call, ic_ok := arena_arg.(^Expr_Call); ic_ok {
+            c.table.scope_allocator_name = inner_call.name
+            c.table.scope_allocator_args = inner_call.args
+        } else if inner_ident, ii_ok := arena_arg.(^Expr_Ident); ii_ok {
+            c.table.scope_allocator_name = inner_ident.name
         }
     }
     // Scope_allocator scan: walk the main package plus the `main`s of every
@@ -8113,8 +8137,13 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
             if fn_stmt, ok := stmt.(^Stmt_Scope); ok {
                 if fn_stmt.name != "main" && !c.target_shared { continue }
                 for body_stmt in fn_stmt.body {
-                    if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target != nil {
-                        scan_allocator(&c, a.target, a.value)
+                    if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target == nil && !a.is_decl {
+                        // Bare-name reassignment: synthesise an Expr_Ident for
+                        // the LHS so scan_allocator can match against `program`.
+                        synth := new(Expr_Ident)
+                        synth.name = a.name
+                        synth.span = a.span
+                        scan_allocator(&c, synth, a.value)
                     }
                 }
             }
@@ -8147,25 +8176,32 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         args_type.size = ARGS_CAP
         args_type.elem = arg_slice
 
-        // Context struct
-        ctx_type := new(Type_Scope)
-        ctx_type.name = "Context"
-        ctx_type.kind = .Struct
+        // Program struct (the compiler-managed global). Shape mirrors the
+        // user's `Program` declaration in mara.core (a generic struct over
+        // `~Arena`). Here we synthesize a parallel type bound in env as
+        // `program` so allocation sites can resolve `program.scope_allocator`
+        // and `program.args` without depending on the user having loaded
+        // mara.core. The user's generic `Program` template stays in
+        // generic_templates under the bare name "Program" — separate path.
+        prog_type := new(Type_Scope)
+        prog_type.name = "Program"
+        prog_type.kind = .Struct
         field_idx := 0
         if c.table.has_scope_allocator {
-            append(&ctx_type.fields, Struct_Type_Field{name = "arena", type_ = Type_Any{}})
-            ctx_type.field_map["arena"] = field_idx
-            ctx_type.field_map["scope_allocator"] = field_idx
+            append(&prog_type.fields, Struct_Type_Field{name = "scope_allocator", type_ = Type_Any{}})
+            prog_type.field_map["scope_allocator"] = field_idx
             field_idx += 1
         }
-        append(&ctx_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
-        ctx_type.field_map["args"] = field_idx
-        c.table.funs["Context"] = ctx_type
-        type_env_set(env, "context", ctx_type)
-        // Also expose `Context` (the type) by name so users can write
-        // `ctx: ^Context` in source — required to annotate the first param
-        // of a `#expose` function in a DLL build.
-        type_env_set(env, "Context", ctx_type)
+        append(&prog_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
+        prog_type.field_map["args"] = field_idx
+        c.table.funs["Program"] = prog_type
+        type_env_set(env, "program", prog_type)
+        // Expose `Program` (the type name) for cross-DLL signatures like
+        // `game_run : fn(^Program, ...)`. The user's generic Program template
+        // also lives in c.table.generic_templates under the same bare name —
+        // env binding wins for type-expr lookups via resolve_type_expr, so
+        // `^Program` here resolves to the synthesized program-global type.
+        type_env_set(env, "Program", prog_type)
     }
 
     // Register `void` as the built-in null-pointer literal. Reads as

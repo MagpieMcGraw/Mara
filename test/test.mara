@@ -34,7 +34,7 @@ use test_take_return
 use mara.memory
 
 main :: fun() -> i64 {
-	context.scope_allocator = Arena_Basic
+	program = Program(Arena_Basic)
 
 	test_args()
 	test_io_arrow()

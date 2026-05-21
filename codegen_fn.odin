@@ -193,12 +193,12 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     emit(g, "entry:")
 
     // `#expose` entry points hand the host's Context pointer through their
-    // first param; stash it into @__mara_context so internal Mara calls
+    // first param; stash it into @__mara_program so internal Mara calls
     // inside the DLL read the host's globals. Validated at type-check time:
     // first param is `^Context`. Use %<name>.arg directly (before the normal
     // per-param alloca dance, which would also write %<name>).
     if cf.ast != nil && cf.ast.is_exposed && len(cf.params) > 0 {
-        emit(g, "  store ptr %%%s.arg, ptr @__mara_context", cf.params[0].name)
+        emit(g, "  store ptr %%%s.arg, ptr @__mara_program", cf.params[0].name)
     }
 
     // Save and reset codegen state for this function

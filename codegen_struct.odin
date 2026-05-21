@@ -461,11 +461,13 @@ gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
 // Handles both direct struct vars and pointer-to-struct (auto-deref).
 // Returns (type_struct, base_ptr, ok)
 resolve_struct_for_field :: proc(g: ^Codegen, ident_name: string, ident_type: Type = nil, span: Span = {}) -> (^Scope_Body, string, bool) {
-    // Context global: load from @__mara_context (accessible from any function)
-    if ident_name == "context" {
-        if st, st_ok := lookup_struct(g, "Context"); st_ok {
+    // Program global: load from @__mara_program (accessible from any function).
+    // `program` is the compiler-managed name; the synthesized Program struct
+    // sits in c.table.funs["Program"] and the env binds `program` (lowercase).
+    if ident_name == "program" {
+        if st, st_ok := lookup_struct(g, "Program"); st_ok {
             ctx_ptr := fresh_tmp(g)
-            emit_raw(g, strings.concatenate({"  ", ctx_ptr, " = load ptr, ptr @__mara_context"}))
+            emit_raw(g, strings.concatenate({"  ", ctx_ptr, " = load ptr, ptr @__mara_program"}))
             return st, ctx_ptr, true
         }
     }

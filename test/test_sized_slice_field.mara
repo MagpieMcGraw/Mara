@@ -9,7 +9,7 @@ Holder :: struct {
 }
 
 main :: fun() -> i64 {
-	context.scope_allocator = Arena_Basic(1 * MB)
+	program = Program(Arena_Basic(1 * MB))
 
 	// Sanity: local String works
 	s : String

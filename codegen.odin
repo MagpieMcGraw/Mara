@@ -2014,9 +2014,9 @@ scope_has_big_values :: proc(stmts: []Stmt, g: ^Codegen) -> bool {
 // Load the context's arena pointer (field 0 of Context struct).
 get_context_arena_ptr :: proc(g: ^Codegen) -> string {
     ctx_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", ctx_ptr, " = load ptr, ptr @__mara_context"}))
+    emit_raw(g, strings.concatenate({"  ", ctx_ptr, " = load ptr, ptr @__mara_program"}))
     arena_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", arena_ptr, " = getelementptr %class.Context, ptr ", ctx_ptr, ", i32 0, i32 0"}))
+    emit_raw(g, strings.concatenate({"  ", arena_ptr, " = getelementptr %class.Program, ptr ", ctx_ptr, ", i32 0, i32 0"}))
     return arena_ptr
 }
 
@@ -2054,7 +2054,7 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     if g.arena_alloc_name == "" {
         if g.shared {
             codegen_fatal(g, {},
-                "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `context.scope_allocator = ArenaType(<args>)` somewhere in this module to specify the Context layout (must match the host's allocator type)")
+                "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `program = Program(ArenaType(<args>))` somewhere in this module to specify the Context layout (must match the host's allocator type)")
         }
         codegen_fatal(g, {}, "arena allocation requested but no scope_allocator declared")
     }
@@ -2342,9 +2342,13 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         }
     }
 
-    // Patch Context's arena field with the real arena type (checker used Type_Any placeholder)
+    // Patch the synthesized Program global's scope_allocator field with the
+    // concrete arena type (checker stamped Type_Any as a placeholder; we now
+    // have the resolved allocator type from validate_scope_allocator). The
+    // LLVM struct layout reads the field types straight from this scope, so
+    // the patched type drives the global's storage size.
     if g.context_enabled && checked.table.scope_allocator_type != nil {
-        if ctx_st, ctx_ok := checked.table.funs["Context"]; ctx_ok {
+        if prog_st, prog_ok := checked.table.funs["Program"]; prog_ok {
             alloc_type := checked.table.scope_allocator_type
             arena_type: Type
             if inner_t, has_inner := alloc_type.types["Arena"]; has_inner {
@@ -2353,9 +2357,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
                 // Flat form: allocator type IS the arena type
                 arena_type = alloc_type
             }
-            // Field 0 is "arena" — replace its placeholder type
-            if len(ctx_st.fields) > 0 && ctx_st.fields[0].name == "arena" {
-                ctx_st.fields[0].type_ = arena_type
+            // Field 0 is "scope_allocator" — replace the Type_Any placeholder.
+            if len(prog_st.fields) > 0 && prog_st.fields[0].name == "scope_allocator" {
+                prog_st.fields[0].type_ = arena_type
             }
         }
     }
@@ -2438,7 +2442,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     // Phase 2: Emit @main from user's fn main(). Skipped in shared (DLL) mode —
     // the binary has no entry point; each #expose function does its own ctx
-    // handover into @__mara_context on entry, so there's nothing for a single
+    // handover into @__mara_program on entry, so there's nothing for a single
     // init function to do.
     if !g.shared {
 
@@ -2459,13 +2463,13 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // Context: backed by a real LLVM global so it survives main returning.
     // Required for web builds where emscripten owns the main loop —
     // emscripten_set_main_loop_arg returns to JS, the rAF callback runs
-    // after main's stack is gone, and any later @__mara_context load would
+    // after main's stack is gone, and any later @__mara_program load would
     // dereference a dangling stack pointer (manifests as arena.base.cap
     // reading 0 and the very first byte-buffer write tripping the bounds
     // check). Native is unaffected: same global lifetime, same fields.
     {
-        ctx_alloca := "@__mara_context_storage"
-        emit_raw(&g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_context"}))
+        ctx_alloca := "@__mara_program_storage"
+        emit_raw(&g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_program"}))
         g.ctx_alloca = ctx_alloca
 
         // Register 'context' as a struct var so field access works normally
@@ -2474,7 +2478,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         // Arena init (if scope allocator is active).
         if g.context_enabled {
             arena_ptr := fresh_tmp(&g)
-            emit_raw(&g, strings.concatenate({"  ", arena_ptr, " = getelementptr %class.Context, ptr ", ctx_alloca, ", i32 0, i32 0"}))
+            emit_raw(&g, strings.concatenate({"  ", arena_ptr, " = getelementptr %class.Program, ptr ", ctx_alloca, ", i32 0, i32 0"}))
             new_ir := mara_fn_name(&g, g.arena_new_name)
             alloc_size := "268435456"  // default 256 MB
             if checked.table.scope_allocator_args != nil && len(checked.table.scope_allocator_args) > 0 {
@@ -2492,7 +2496,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
         // GEP to the partial-array field within Context
         args_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", args_ptr, " = getelementptr %class.Context, ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
+        emit_raw(&g, strings.concatenate({"  ", args_ptr, " = getelementptr %class.Program, ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
 
         // Compute effective len = min(argc, 64)
         argc_i64 := fresh_tmp(&g)
@@ -2648,8 +2652,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     // Context global (always present — holds args, and arena when scope allocator is active)
     strings.write_string(&final, "; Context system\n")
-    strings.write_string(&final, "@__mara_context = internal global ptr null\n")
-    strings.write_string(&final, "@__mara_context_storage = internal global %class.Context zeroinitializer\n\n")
+    strings.write_string(&final, "@__mara_program = internal global ptr null\n")
+    strings.write_string(&final, "@__mara_program_storage = internal global %class.Program zeroinitializer\n\n")
 
     // External declarations
     strings.write_string(&final, "; External declarations\n")
