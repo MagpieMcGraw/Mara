@@ -814,7 +814,13 @@ gen_slice_len :: proc(g: ^Codegen, name: string) -> string {
 // The form is detected by the storage argument's type at the checker layer:
 //   ^[]byte -> cursor form
 //   ^byte   -> positional form
-gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take) -> string {
+// `dest_hdr` is an existing slice-header alloca to write into when supplied
+// — used by gen_take_decl to skip the fresh `take.hdr.N` alloca + later
+// memcpy when the destination is already NRVO-aliased to %sret. Empty
+// string means "allocate a fresh header" (the historical behaviour).
+// Only applies to the runtime-counted slice form; positional takes still
+// return a raw element pointer.
+gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> string {
     src_type := distinct_base(expr_type(e.storage))
 
     // Positional form: `take(T, &buf[i])` — view at the given address.
@@ -944,14 +950,19 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take) -> string {
 
     emit_typed_store_len(g, new_len, len_gep)
 
-    // Runtime-counted slice form: allocate a fresh slice header that points at
-    // typed_ptr with len=cap=count. The header is the caller-visible value;
+    // Runtime-counted slice form: write a slice header pointing at typed_ptr
+    // with len=cap=count. If the caller supplied `dest_hdr` (because `name`
+    // is NRVO-aliased to %sret), write into that slot directly. Otherwise
+    // allocate a fresh `take.hdr.N`. The header is the caller-visible value;
     // typed_ptr is the data it views into the caller's storage. gen_take_decl
-    // sees Type_Slice and binds a Slice_Var to this header.
+    // sees Type_Slice and binds a Slice_Var to whichever header we returned.
     if e.count_expr != nil {
-        hdr := fmt.tprintf("%%take.hdr.%d", g.tmp_counter)
-        g.tmp_counter += 1
-        emit_slice_alloca(g, hdr)
+        hdr := dest_hdr
+        if hdr == "" {
+            hdr = fmt.tprintf("%%take.hdr.%d", g.tmp_counter)
+            g.tmp_counter += 1
+            emit_slice_alloca(g, hdr)
+        }
         h_ptr_gep := fresh_tmp(g)
         emit_slice_gep(g, h_ptr_gep, hdr, SLICE.ptr)
         emit(g, "  store ptr %s, ptr %s", typed_ptr, h_ptr_gep)

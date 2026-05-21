@@ -674,7 +674,15 @@ codegen_const_eval_int :: proc(g: ^Codegen, e: Expr) -> (int, bool) {
 // advances storage's cursor and returns a typed pointer; we bind `name` so
 // that subsequent reads/writes go directly through that pointer (no copy).
 gen_take_decl :: proc(g: ^Codegen, name: string, e: ^Expr_Take) {
-    ptr := gen_expr_take(g, e)
+    // If `name` is already bound to a slice slot (e.g. NRVO pre-aliased
+    // it to %sret), let the runtime-counted take write its slice header
+    // straight into that slot. Saves one alloca + one 16-byte memcpy at
+    // return for leaf functions shaped `out := take(...); ...; return out`.
+    dest_hdr: string
+    if existing, ex_ok := get_slice(g, name); ex_ok {
+        dest_hdr = existing.alloca
+    }
+    ptr := gen_expr_take(g, e, dest_hdr)
     rt := distinct_base(e.resolved_type)
 
     // Fixed array: bind Array_Var whose data ptr is the take result.
