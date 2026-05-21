@@ -3839,16 +3839,20 @@ is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
     if _, ok := t.(^Type_Ptr); ok { is_ref = true }
     if _, ok := t.(^Type_Slice); ok { is_ref = true }
     // Struct values with ref fields: the struct's bytes are sret-copied at
-    // return, but the ref-content's targets can still dangle. Treat as
-    // ref-like — expr_provenance reports the max ref-field depth.
+    // return, but the ref-content can still dangle. Treat as ref-like for
+    // the depth check — EXCEPT when the value is a struct literal directly
+    // at the return site. Codegen's escape mechanism relocates the local
+    // backing storage of `return Foo{verts_uninit_local}` to the caller's
+    // sret region; static rejection here would block that legitimate
+    // pattern. Indirected forms (`t := Foo{verts}; return t`, or a call
+    // result) still go through the depth check.
     if !is_ref {
         if sd := as_struct_body(distinct_base(t)); sd != nil && struct_has_ref_field(sd) {
+            if _, lit_ok := e.(^Expr_Struct_Literal); lit_ok { return false }
             is_ref = true
         }
     }
     if !is_ref { return false }
-    // Reject when the data lives at our scope's depth or deeper — anything
-    // at `env.scope_depth` dies when the current frame pops.
     return expr_provenance(c, e, env).depth >= env.scope_depth
 }
 
@@ -3869,7 +3873,11 @@ returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> b
         if _, sl_ok := f.type_.(^Type_Slice); sl_ok { has_slice = true; break }
     }
     if !has_slice { return false }
-    // Direct call result: peek at the callee.
+    // Direct call result: callee returned a struct whose slice fields
+    // point into our frame because its own escape mechanism relocated
+    // them here. Re-returning that further would dangle. The depth-based
+    // laundering check is handled by is_local_ref (which treats structs
+    // with ref fields as ref-like, except for direct struct literals).
     if call, call_ok := e.(^Expr_Call); call_ok {
         return call_has_local_escape(c, call)
     }
