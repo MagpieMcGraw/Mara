@@ -369,13 +369,28 @@ Resolved_Func :: struct {
 // Type environment (scope chain)
 // ---------------------------------------------------------------------------
 
-// Where a pointer/slice variable's data lives (for static escape analysis).
-// Only .Stack is rejected at compile time. Runtime checks catch the rest.
-Provenance :: enum {
-    Unknown,  // can't determine statically — runtime check handles this
-    Stack,    // provably points to local stack memory (&local_var) — rejected at compile time
-    Param,    // came from a function parameter — allowed (caller's responsibility)
+// Where a pointer/slice's backing data lives, tracked as a stack-depth
+// integer. Lower depth = lives in an outer scope = outlives more inner
+// scopes. The return-from-function check is:
+//
+//     reject iff value.depth >= env.scope_depth
+//
+// i.e. data that lives in our frame (or any inner scope of it) can't
+// outlive us. Param refs are conventionally one shallower than our frame
+// (caller-owned). Globals / literals / external returns are depth 0,
+// outliving everything in the program.
+//
+// Encoded as a struct to leave headroom: a future sibling-region story
+// (multiple arenas at the same depth) can drop a region id alongside
+// `depth` without changing the rest of the analysis.
+Provenance :: struct {
+    depth: int,
 }
+
+PROV_GLOBAL  :: Provenance{depth = 0}                                    // outlives everything
+
+prov_local :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env.scope_depth} }
+prov_param :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env.scope_depth - 1} }
 
 Type_Env :: struct {
     types:       map[string]Type,
@@ -384,6 +399,7 @@ Type_Env :: struct {
     param_names: map[string]bool, // function parameter names (for escape analysis)
     let_names:   map[string]bool, // take-bound view names (storage aliased at source bytes); kept for legacy field name
     provenance:  map[string]Provenance, // where pointer/slice data lives
+    scope_depth: int,        // stack depth for escape analysis; module = 0, function body = 1+
     // Locals whose struct value has slice fields pointing into our frame's
     // sibling/pool buffers (set when bound from a call with escape locals).
     // Returning such a local would dangle once the frame pops.
@@ -671,7 +687,10 @@ first_uninit_field :: proc(env: ^Type_Env, var_name: string) -> Maybe(string) {
 }
 
 type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
-    return Type_Env{parent = parent, return_type = parent.return_type, fn_name = parent.fn_name}
+    // Inner blocks (if/for/match) inherit their parent's frame depth. Only
+    // function-body envs bump scope_depth — see the explicit bump in
+    // check_scope_body's `.Fun` path.
+    return Type_Env{parent = parent, return_type = parent.return_type, fn_name = parent.fn_name, scope_depth = parent.scope_depth}
 }
 
 // Walk up the env chain to find the enclosing function name (for #caller_name).
@@ -3265,7 +3284,7 @@ get_provenance :: proc(env: ^Type_Env, name: string) -> Provenance {
         if p, ok := cur.provenance[name]; ok { return p }
         cur = cur.parent
     }
-    return .Unknown
+    return PROV_GLOBAL
 }
 
 // Walk the env chain for the local-slice-backed flag — true means the named
@@ -3329,8 +3348,8 @@ set_provenance :: proc(env: ^Type_Env, name: string, p: Provenance) {
 // Catches the otherwise-laundered case where a stack-allocated buffer is
 // passed through one or more functions before being viewed:
 //   outer { storage : [..N]byte; return helper(&storage) }
-// Without this, helper's call result would be `.Unknown` and outer's
-// return would silently pass the static checker.
+// Without this, helper's call result would land at depth 0 (global-like)
+// and outer's return would silently pass the static checker.
 fun_return_param_index :: proc(c: ^Checker, scope: ^Stmt_Scope) -> int {
     if scope == nil { return -1 }
     if idx, ok := c.table.fun_return_param_idx[scope]; ok { return idx }
@@ -3405,7 +3424,7 @@ return_value_param_index :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope) ->
 // when `name` is declared exactly once with an initialiser AND never
 // reassigned afterwards. Any later `name = ...` reassignment makes the
 // origin ambiguous, so we return (nil, false) and let the caller fall
-// back to .Unknown — over-conservative, but never wrong.
+// back to depth 0 — over-conservative, but never wrong.
 find_local_init :: proc(stmts: []Stmt, name: string) -> (Expr, bool) {
     init: Expr
     decl_count := 0
@@ -3450,11 +3469,13 @@ lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
     return nil
 }
 
-// Determine the provenance of an expression (static analysis).
-// Tracks where a pointer/slice's backing memory lives:
-//   .Stack = provably points to local stack memory (rejected at compile time)
-//   .Param = came from a parameter (allowed — caller's responsibility)
-//   .Unknown = can't determine (allowed — conservative)
+// Determine the provenance of an expression as a stack-depth integer.
+// Lower depth = lives in an outer scope = outlives more.
+//   depth = 0           — global / literal / external (outlives the program)
+//   depth = N (0 < N)   — backing data lives in a scope at depth N
+// The return-from-function check is `depth >= env.scope_depth`. Within a
+// function body, locals are at env.scope_depth and refs from params are
+// (conservatively) at env.scope_depth - 1.
 expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
     // &x — address-of always points to the local copy, even for params.
     // Parameters are passed by value, so &param is a pointer to stack memory.
@@ -3462,12 +3483,12 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
         // &slice[i] / &arr[i] — the address points into the indexed thing's
         // storage, so provenance follows the source. For a param slice the
         // data pointer lives in the caller's memory (safe to return); for a
-        // local array it's still Stack (and rightly flagged on return).
+        // local array it's still local (and rightly flagged on return).
         if idx, idx_ok := unary.operand.(^Expr_Index); idx_ok {
             return expr_provenance(c, idx.expr, env)
         }
         if ident, id_ok := unary.operand.(^Expr_Ident); id_ok {
-            if is_global_var(c, ident.name) { return .Unknown }
+            if is_global_var(c, ident.name) { return PROV_GLOBAL }
             // `name : let T = src` aliases src's storage; &name returns src,
             // so the resulting pointer inherits src's provenance.
             if is_let_name(env, ident.name) { return get_provenance(env, ident.name) }
@@ -3476,19 +3497,19 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
             // address-of is a caller-owned pointer, not stack-local.
             if is_param(env, ident.name) {
                 t := expr_type(unary.operand)
-                if _, ok := t.(^Type_Slice); ok { return .Param }
-                if _, ok := t.(^Type_Ptr);   ok { return .Param }
+                if _, ok := t.(^Type_Slice); ok { return prov_param(env) }
+                if _, ok := t.(^Type_Ptr);   ok { return prov_param(env) }
             }
-            return .Stack // &local and &value_param are both stack addresses
+            return prov_local(env) // &local and &value_param are both at our depth
         }
         if fa, fa_ok := unary.operand.(^Expr_Field_Access); fa_ok {
             if ident, id_ok := fa.expr.(^Expr_Ident); id_ok {
-                if is_global_var(c, ident.name) { return .Unknown }
+                if is_global_var(c, ident.name) { return PROV_GLOBAL }
                 if is_let_name(env, ident.name) { return get_provenance(env, ident.name) }
-                return .Stack // &param.field and &local.field are both stack addresses
+                return prov_local(env) // &param.field and &local.field are both at our depth
             }
         }
-        return .Stack
+        return prov_local(env)
     }
     // arr[low:high] — slice of an array/slice. The resulting slice's data pointer
     // points into the source's memory, so inherit provenance from the source.
@@ -3498,14 +3519,14 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
     // Variable reference — look up its tracked provenance
     if ident, ok := e.(^Expr_Ident); ok {
         if is_param(env, ident.name) {
-            // Reference-type params (ptr, slice): data lives in caller's memory → Param
-            // Value-type params (int, struct, array): local copy on stack → Stack
+            // Reference-type params (ptr, slice): data lives in caller's frame.
+            // Value-type params (int, struct, array): local copy at our depth.
             t := expr_type(e)
-            if _, ok := t.(^Type_Ptr); ok { return .Param }
-            if _, ok := t.(^Type_Slice); ok { return .Param }
-            return .Stack
+            if _, ok := t.(^Type_Ptr); ok { return prov_param(env) }
+            if _, ok := t.(^Type_Slice); ok { return prov_param(env) }
+            return prov_local(env)
         }
-        if is_global_var(c, ident.name) { return .Unknown }
+        if is_global_var(c, ident.name) { return PROV_GLOBAL }
         return get_provenance(env, ident.name)
     }
     // Field access on a struct — the slice/ptr field's data could point anywhere.
@@ -3519,18 +3540,18 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
         }
         // A slice field's data pointer is independent of the struct's location.
         // e.g., arena.base — the struct is on the stack but the slice data is from vm_reserve.
-        // We can't trace through the slice data pointer statically, so Unknown.
-        return .Unknown
+        // We can't trace through the slice data pointer statically, so global.
+        return PROV_GLOBAL
     }
-    // Literals (array, struct, number, string) — always stack-allocated
-    if _, ok := e.(^Expr_Array); ok { return .Stack }
-    if _, ok := e.(^Expr_Struct_Literal); ok { return .Stack }
-    if _, ok := e.(^Expr_Number); ok { return .Stack }
-    if _, ok := e.(^Expr_String); ok { return .Stack }
+    // Literals (array, struct, number, string) — backing memory at our depth.
+    if _, ok := e.(^Expr_Array); ok { return prov_local(env) }
+    if _, ok := e.(^Expr_Struct_Literal); ok { return prov_local(env) }
+    if _, ok := e.(^Expr_Number); ok { return prov_local(env) }
+    if _, ok := e.(^Expr_String); ok { return prov_local(env) }
     // Function call — if the callee's return value tracks a single parameter
     // (e.g. `return take(T, storage)` where storage is a param), inherit the
     // provenance of the corresponding argument here. Otherwise fall through
-    // to Unknown. This closes the indirect-escape hole where a stack address
+    // to global. This closes the indirect-escape hole where a stack address
     // is laundered through one or more function calls before being viewed.
     if call, ok := e.(^Expr_Call); ok {
         if callee := lookup_callee_scope(c, call); callee != nil {
@@ -3539,9 +3560,9 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
                 return expr_provenance(c, call.args[idx], env)
             }
         }
-        return .Unknown
+        return PROV_GLOBAL
     }
-    return .Unknown
+    return PROV_GLOBAL
 }
 
 // Walk a function's body looking for a `return Foo{a, b}` where Foo has slice
@@ -3642,7 +3663,9 @@ is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
     if _, ok := t.(^Type_Ptr); ok { is_ref = true }
     if _, ok := t.(^Type_Slice); ok { is_ref = true }
     if !is_ref { return false }
-    return expr_provenance(c, e, env) == .Stack
+    // Reject when the data lives at our scope's depth or deeper — anything
+    // at `env.scope_depth` dies when the current frame pops.
+    return expr_provenance(c, e, env).depth >= env.scope_depth
 }
 
 // Check if returning `e` would leak slice fields whose backing is in our
@@ -5110,7 +5133,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 s.var_type = distinct_base(ann_type)
                 s.env_type = ann_type
                 type_env_set(env, s.name, ann_type)
-                set_provenance(env, s.name, .Stack) // uninitialized local is stack memory
+                set_provenance(env, s.name, prov_local(env)) // uninitialized local is at our depth
                 // Track uninitialized pointers/slices — reading before assignment is an error
                 base := distinct_base(ann_type)
                 if _, is_ptr := base.(^Type_Ptr); is_ptr {
@@ -5176,7 +5199,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
                     type_env_set(env, s.name, ann_type)
-                    set_provenance(env, s.name, .Stack) // struct literal is local
+                    set_provenance(env, s.name, prov_local(env)) // struct literal is local
                     // Track uninit ptr/slice fields not provided in the literal
                     if lit, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok {
                         provided: map[string]bool
@@ -5190,7 +5213,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
                     type_env_set(env, s.name, ann_type)
-                    set_provenance(env, s.name, .Stack) // union literal is local
+                    set_provenance(env, s.name, prov_local(env)) // union literal is local
                     continue
                 }
                 if fa, ok := check_ann.(^Type_Fixed_Array); ok {
@@ -5464,6 +5487,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     }
 
     child := type_env_child(parent_env)
+    // Function bodies open a new stack frame for escape analysis. Class
+    // bodies are just namespaces — fields don't live at a deeper depth.
+    if ft.kind == .Fun {
+        child.scope_depth = parent_env.scope_depth + 1
+    }
     // Top-level functions get Self / their own ft.types / ft.functions on the body
     // env directly. Methods reach the class's Self via parent walk-up. For classes,
     // these all live on ns_env above.
@@ -8325,9 +8353,10 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 "take requires ^[]byte (cursor form, pass &slice_var) or ^byte (positional form), got %s",
                 type_name(src_type))
         }
-        // Lifetime: storage must not point into local stack memory.
+        // Lifetime: storage must not point into our own frame (or deeper) —
+        // a slice carved from it would dangle after this function returns.
         src_prov := expr_provenance(c, e.storage, env)
-        if src_prov == .Stack {
+        if src_prov.depth >= env.scope_depth {
             check_error(c, e.span,
                 "take storage points into local stack memory, which would not outlive a returning view")
         }
