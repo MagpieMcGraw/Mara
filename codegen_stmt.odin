@@ -957,9 +957,17 @@ gen_return_struct :: proc(g: ^Codegen, s: Stmt_Return, sret_sv: Struct_Var) {
             emit_struct_copy(g, sret_st, sret_llvm, src_sv.alloca, sret_ptr)
         }
     } else if call, call_ok := ret_val.(^Expr_Call); call_ok {
-        // Case C: returning result of another struct-returning call
-        result_ptr := gen_call(g, call)
-        emit_struct_copy(g, sret_st, sret_llvm, result_ptr, sret_ptr)
+        // Case C: chained struct return. If the callee has a struct sret,
+        // forward our own sret directly — no intermediate alloca, no copy.
+        // Falls back to alloca+copy for foreign calls or anything else the
+        // Fun_Info path can't see.
+        cn := call_resolved_name(call)
+        if info, info_ok := lookup_fun_info(g, cn); info_ok && info.ret_struct != "" {
+            gen_call_into_struct(g, call, sret_ptr, &info)
+        } else {
+            result_ptr := gen_call(g, call)
+            emit_struct_copy(g, sret_st, sret_llvm, result_ptr, sret_ptr)
+        }
     }
     emit_ret_void(g)
 }
@@ -1029,9 +1037,23 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
     emit_ret_void(g)
 }
 
-// Slice return: copy { ptr, i64 } into sret.
+// Slice return: copy the slice header into sret.
 gen_return_slice :: proc(g: ^Codegen, s: Stmt_Return, sret_slv: Slice_Var) {
     ret_val := len(s.values) > 0 ? s.values[0] : nil
+
+    // Chained slice return: forward our sret directly to the callee. Slice
+    // returns share the void+sret ABI with structs, so gen_call_into_struct
+    // works as-is — the trailing `ptr %sret` arg lands in the callee's
+    // sret slot. Skips one alloca + one memcpy per chain layer.
+    if call, call_ok := ret_val.(^Expr_Call); call_ok {
+        cn := call_resolved_name(call)
+        if info, info_ok := lookup_fun_info(g, cn); info_ok && info.ret_slice_elem != "" {
+            gen_call_into_struct(g, call, sret_slv.alloca, &info)
+            emit_ret_void(g)
+            return
+        }
+    }
+
     src: string
     if ident, id_ok := ret_val.(^Expr_Ident); id_ok {
         if sv, sv_ok := get_slice(g, ident.name); sv_ok {

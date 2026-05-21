@@ -1,0 +1,55 @@
+module test_chained_rvo_helpers
+
+Pair :: struct {
+	x: i64
+	y: i64
+}
+
+level_c :: fun() -> Pair {
+	p : Pair
+	p.x = 10
+	p.y = 20
+	return p
+}
+
+level_b :: fun() -> Pair {
+	return level_c()
+}
+
+level_a :: fun() -> Pair {
+	return level_b()
+}
+
+// Same chain for slices.
+sl_c :: fun(storage: ^[]byte) -> []i64 {
+	out := take([]i64(3), storage)
+	out[0] = 100
+	out[1] = 200
+	out[2] = 300
+	return out
+}
+
+sl_b :: fun(storage: ^[]byte) -> []i64 {
+	return sl_c(storage)
+}
+
+sl_a :: fun(storage: ^[]byte) -> []i64 {
+	return sl_b(storage)
+}
+
+// Same chain for fixed arrays.
+arr_c :: fun() -> [3]i64 {
+	r : [3]i64
+	r[0] = 1
+	r[1] = 2
+	r[2] = 3
+	return r
+}
+
+arr_b :: fun() -> [3]i64 {
+	return arr_c()
+}
+
+arr_a :: fun() -> [3]i64 {
+	return arr_b()
+}

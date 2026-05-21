@@ -1,0 +1,22 @@
+module test_chained_rvo
+
+use test_chained_rvo_helpers
+
+main :: fun() -> i64 {
+	r := level_a()
+	print(r.x)
+	print(r.y)
+
+	storage : [..512]byte
+	sl := sl_a(&storage)
+	print(sl[0])
+	print(sl[1])
+	print(sl[2])
+
+	a := arr_a()
+	print(a[0])
+	print(a[1])
+	print(a[2])
+
+	return 0
+}
