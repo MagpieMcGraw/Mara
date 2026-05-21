@@ -3195,6 +3195,57 @@ types_incompatible :: proc(a: Type, b: Type) -> bool {
     return !types_equal(a, b)
 }
 
+// Shape shortcut: `p : Foo(Bar(args))` desugars to `p : Foo(Bar)` plus a
+// synthetic `{ field = Bar(args) }` struct literal pinned to s.init_values.
+// Fires only when:
+//   - The Stmt_Decl's type annotation is a Type_Generic_Instance.
+//   - The template is a known generic struct.
+//   - At a slot with a `~T` shape constraint, the type-arg is a
+//     Type_Const_Expr wrapping an Expr_Call.
+//   - The user hasn't supplied an init.
+// Idempotent — after the first run the args are Type_Name, so re-running
+// is a no-op. Multiple shape-constrained slots stack their bindings into
+// one literal.
+desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
+    if c == nil { return }
+    if len(s.init_values) != 0 { return }
+    gi, gi_ok := s.type_expr.(^Type_Generic_Instance)
+    if !gi_ok { return }
+    tmpl, tmpl_ok := c.table.generic_templates[gi.name]
+    if !tmpl_ok { return }
+    lit: ^Expr_Struct_Literal
+    for arg_i in 0..<len(gi.type_args) {
+        if arg_i >= len(tmpl.generic_params) { break }
+        param := tmpl.generic_params[arg_i]
+        if param.shape_constraint == "" { continue }
+        ce, ce_ok := gi.type_args[arg_i].(Type_Const_Expr)
+        if !ce_ok { continue }
+        call, call_ok := ce.expr.(^Expr_Call)
+        if !call_ok { continue }
+        tmpl_fields := tmpl.ast.fields
+        if len(tmpl_fields) == 0 {
+            tmpl_fields = extract_fields_from_body(tmpl.ast.body)
+        }
+        bound_any := false
+        for f in tmpl_fields {
+            tn, tn_ok := f.type_expr.(Type_Name)
+            if !tn_ok || tn.name != param.name { continue }
+            if lit == nil {
+                lit = new(Expr_Struct_Literal)
+                lit.span = s.span
+            }
+            append(&lit.fields, Struct_Field{name = f.name, value = call})
+            bound_any = true
+        }
+        if bound_any {
+            gi.type_args[arg_i] = Type_Name{name = call.name, span = ce.span}
+        }
+    }
+    if lit != nil {
+        append(&s.init_values, lit)
+    }
+}
+
 // Enforce a `name: ~Constraint` shape-constraint at generic instantiation.
 // The concrete `arg` must be a struct/class type that:
 //   - declares every method the constraint type declares (matched by name;
@@ -5149,6 +5200,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
             }
 
+            // Shape-shortcut: `p : Foo(Bar(args))` desugars in place to
+            // `p : Foo(Bar) = { field = Bar(args) }`. The actual work lives
+            // in desugar_shape_shortcut so the same transform fires from
+            // check_scope_body's early field-resolution pre-pass (which sees
+            // the decl before this branch runs). Idempotent: subsequent
+            // invocations see Type_Name and bail.
+            desugar_shape_shortcut(c, s)
+
             // Synth-and-delegate: expand Stmt_Decl into equivalent
             // Stmt_Assign / Stmt_Multi_Return_Assign nodes stored on s.checked,
             // then run the existing per-assign logic on them. Codegen and
@@ -5794,6 +5853,17 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.kind == .Struct {
         for p in ft.params {
             type_env_set(&child, p.name, p.type_)
+        }
+    }
+
+    // Shape-shortcut pre-pass: rewrite `p : Foo(Bar(args))` decls in the
+    // body to `p : Foo(Bar)` plus a synthesized init. Must precede the
+    // field-resolution loop below — that loop resolves each Stmt_Decl's
+    // type_expr and would otherwise hit the un-desugared Type_Const_Expr
+    // and fail the shape-constraint check with a "got vla" diagnostic.
+    for stmt in s.body {
+        if d, ok := stmt.(^Stmt_Decl); ok {
+            desugar_shape_shortcut(c, d)
         }
     }
 

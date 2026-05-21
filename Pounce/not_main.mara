@@ -34,8 +34,8 @@ create_window :: fun() -> (Window, GLContext) {
 main :: fun() -> i64 {
     context.scope_allocator = Arena_Debug(192 * MB)
 
-    p : Program(Arena_Debug)
-    p.scope_allocator = Arena_Debug(16 * MB)
+    p : Program(Arena_Debug(192 * MB))
+    //p.scope_allocator = Arena_Debug(16 * MB)
 
     // Initial load: copy source out from under the build, load the copy.
     if not os.copy_file(DLL_SRC, DLL_COPY) {

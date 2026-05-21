@@ -382,6 +382,20 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", gep, src_ptr, size)
             continue
         }
+        // Named-struct field (`%class.X`): the RHS is either a constructor
+        // call (gen_expr returns a ptr to its sret alloca) or another struct
+        // pointer (ident, field access, etc.). Either way the layout already
+        // lives at the source pointer, so memcpy by size into the field slot.
+        // Without this, the fallthrough scalar-store path would emit `store
+        // %class.X %ptr, ptr %dst` which LLVM rejects (struct value vs ptr).
+        if strings.has_prefix(ft, "%class.") {
+            src_ptr := gen_expr(g, field.value, ft)
+            gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, base_ptr, idx)
+            size := checker_type_byte_size(f.type_)
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", gep, src_ptr, size)
+            continue
+        }
         // Scalar field.
         val := gen_expr(g, field.value, ft)
         gep := fresh_tmp(g)
