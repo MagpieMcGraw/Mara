@@ -389,19 +389,30 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
             return "", false
         }
 
-        // Check code/ root first
+        // Check code/ root first (stdlib bundled libs)
         if path, ok := check(code_base, lib_name, c_name, compiler_dir); ok {
             return path, true
         }
-        // Then each subfolder (one level deep)
+        // Then each subfolder of code/ (one level deep, e.g. code/SDL/)
         ldh, lerr := os.open(code_base)
-        if lerr != nil { return "", false }
-        defer os.close(ldh)
-        entries, _ := os.read_dir(ldh, -1, context.allocator)
-        for entry in entries {
-            if entry.type != .Directory { continue }
-            sub, _ := filepath.join({code_base, entry.name})
-            if path, ok := check(sub, lib_name, c_name, compiler_dir); ok {
+        if lerr == nil {
+            defer os.close(ldh)
+            entries, _ := os.read_dir(ldh, -1, context.allocator)
+            for entry in entries {
+                if entry.type != .Directory { continue }
+                sub, _ := filepath.join({code_base, entry.name})
+                if path, ok := check(sub, lib_name, c_name, compiler_dir); ok {
+                    return path, true
+                }
+            }
+        }
+        // Finally, the user's current working directory — project-local C
+        // sources (e.g. a test fixture or a project-private helper) sit next
+        // to the .mara that consumes them instead of needing a slot under
+        // code/. Skip if cwd already happens to be code_base.
+        cwd, _ := os.get_working_directory(context.allocator)
+        if cwd != code_base {
+            if path, ok := check(cwd, lib_name, c_name, compiler_dir); ok {
                 return path, true
             }
         }
