@@ -1168,6 +1168,13 @@ SymbolTable :: struct {
     fun_asts:       map[string]^Stmt_Scope,         // bare name -> AST for auto-monomorphization
     fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
 
+    // Provenance propagation through call boundaries. For functions returning
+    // a ref type (slice/ptr), records the parameter index whose provenance
+    // the return value follows (-1 = doesn't track a single parameter).
+    // Computed lazily on first lookup; pending guards against cycles.
+    fun_return_param_idx:     map[^Stmt_Scope]int,
+    fun_return_param_pending: map[^Stmt_Scope]bool,
+
     // Config
     has_scope_allocator: bool,
     scope_allocator_name: string,        // bare name from source ("Arena_Basic")
@@ -3314,6 +3321,135 @@ set_provenance :: proc(env: ^Type_Env, name: string, p: Provenance) {
     env.provenance[name] = p
 }
 
+// For a function returning a ref-typed value, find the parameter index
+// whose provenance the return value follows. Returns -1 if the return
+// doesn't track a single parameter (constant, multiple sources, an opaque
+// callee, etc.). Result cached on the SymbolTable; cycles get -1.
+//
+// Catches the otherwise-laundered case where a stack-allocated buffer is
+// passed through one or more functions before being viewed:
+//   outer { storage : [..N]byte; return helper(&storage) }
+// Without this, helper's call result would be `.Unknown` and outer's
+// return would silently pass the static checker.
+fun_return_param_index :: proc(c: ^Checker, scope: ^Stmt_Scope) -> int {
+    if scope == nil { return -1 }
+    if idx, ok := c.table.fun_return_param_idx[scope]; ok { return idx }
+    if c.table.fun_return_param_pending[scope] { return -1 }
+    c.table.fun_return_param_pending[scope] = true
+    defer delete_key(&c.table.fun_return_param_pending, scope)
+
+    consensus := -2 // sentinel: haven't seen a return yet
+    fold_return_param_indices(c, scope, scope.body[:], &consensus)
+
+    if consensus == -2 { consensus = -1 }
+    c.table.fun_return_param_idx[scope] = consensus
+    return consensus
+}
+
+fold_return_param_indices :: proc(c: ^Checker, scope: ^Stmt_Scope, stmts: []Stmt, consensus: ^int) {
+    for s in stmts {
+        #partial switch v in s {
+        case Stmt_Return:
+            if len(v.values) == 0 { continue }
+            idx := return_value_param_index(c, v.values[0], scope)
+            if consensus^ == -2 { consensus^ = idx }
+            else if consensus^ != idx { consensus^ = -1 }
+        case ^Stmt_If:
+            fold_return_param_indices(c, scope, v.body[:], consensus)
+            fold_return_param_indices(c, scope, v.else_body[:], consensus)
+        case ^Stmt_Decl:
+            fold_return_param_indices(c, scope, v.checked[:], consensus)
+        }
+    }
+}
+
+// Compute the parameter index whose provenance `e` follows, evaluated in
+// fn_scope's context. -1 if no single param can be identified.
+return_value_param_index :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope) -> int {
+    if e == nil { return -1 }
+    // Parameter ident → that param's index.
+    if ident, ok := e.(^Expr_Ident); ok {
+        for p, i in fn_scope.typed_params {
+            if p.name == ident.name { return i }
+        }
+        // Local: trace back through its initialiser. Only follow the first
+        // declaration we find; multiple assignments mean we can't pin a
+        // single source, so be conservative.
+        init, found := find_local_init(fn_scope.body[:], ident.name)
+        if found {
+            return return_value_param_index(c, init, fn_scope)
+        }
+        return -1
+    }
+    // take(T, storage) — provenance follows the storage.
+    if t, ok := e.(^Expr_Take); ok {
+        return return_value_param_index(c, t.storage, fn_scope)
+    }
+    // Sub-slice — provenance follows the source.
+    if sl, ok := e.(^Expr_Slice); ok {
+        return return_value_param_index(c, sl.expr, fn_scope)
+    }
+    // Nested call — recurse into the callee, then map back to our caller's
+    // argument at the index the callee tracks.
+    if call, ok := e.(^Expr_Call); ok {
+        callee := lookup_callee_scope(c, call)
+        if callee == nil { return -1 }
+        callee_idx := fun_return_param_index(c, callee)
+        if callee_idx < 0 || callee_idx >= len(call.args) { return -1 }
+        return return_value_param_index(c, call.args[callee_idx], fn_scope)
+    }
+    return -1
+}
+
+// Find the initialiser of a local `name` in stmts. Returns (init, true)
+// when `name` is declared exactly once with an initialiser AND never
+// reassigned afterwards. Any later `name = ...` reassignment makes the
+// origin ambiguous, so we return (nil, false) and let the caller fall
+// back to .Unknown — over-conservative, but never wrong.
+find_local_init :: proc(stmts: []Stmt, name: string) -> (Expr, bool) {
+    init: Expr
+    decl_count := 0
+    reassign_count := 0
+    visit_name_assigns(stmts, name, &init, &decl_count, &reassign_count)
+    if decl_count != 1 || reassign_count != 0 { return nil, false }
+    return init, true
+}
+
+visit_name_assigns :: proc(stmts: []Stmt, name: string, init: ^Expr, decl_count, reassign_count: ^int) {
+    for s in stmts {
+        #partial switch v in s {
+        case ^Stmt_Assign:
+            if v.name != name { continue }
+            if v.is_decl {
+                decl_count^ += 1
+                if decl_count^ == 1 && v.value != nil { init^ = v.value }
+            } else {
+                reassign_count^ += 1
+            }
+        case ^Stmt_If:
+            visit_name_assigns(v.body[:], name, init, decl_count, reassign_count)
+            visit_name_assigns(v.else_body[:], name, init, decl_count, reassign_count)
+        case ^Stmt_Decl:
+            visit_name_assigns(v.checked[:], name, init, decl_count, reassign_count)
+        }
+    }
+}
+
+// Resolve a call to the callee's source AST, mirroring call_has_local_escape's
+// dispatch order: resolved name → source name → resolved_func name → stripped.
+lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
+    if scope, ok := c.table.fun_asts[call_resolved_name(call)]; ok { return scope }
+    if scope, ok := c.table.fun_asts[call.name]; ok { return scope }
+    if rf, rf_ok := call.resolved_func.?; rf_ok {
+        if scope, ok := c.table.fun_asts[rf.name]; ok { return scope }
+        n := rf.name
+        if idx := strings.last_index_byte(n, '_'); idx >= 0 {
+            if scope, ok := c.table.fun_asts[n[idx+1:]]; ok { return scope }
+        }
+    }
+    return nil
+}
+
 // Determine the provenance of an expression (static analysis).
 // Tracks where a pointer/slice's backing memory lives:
 //   .Stack = provably points to local stack memory (rejected at compile time)
@@ -3391,7 +3527,20 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
     if _, ok := e.(^Expr_Struct_Literal); ok { return .Stack }
     if _, ok := e.(^Expr_Number); ok { return .Stack }
     if _, ok := e.(^Expr_String); ok { return .Stack }
-    // Function calls — can't determine statically where the result points.
+    // Function call — if the callee's return value tracks a single parameter
+    // (e.g. `return take(T, storage)` where storage is a param), inherit the
+    // provenance of the corresponding argument here. Otherwise fall through
+    // to Unknown. This closes the indirect-escape hole where a stack address
+    // is laundered through one or more function calls before being viewed.
+    if call, ok := e.(^Expr_Call); ok {
+        if callee := lookup_callee_scope(c, call); callee != nil {
+            idx := fun_return_param_index(c, callee)
+            if idx >= 0 && idx < len(call.args) {
+                return expr_provenance(c, call.args[idx], env)
+            }
+        }
+        return .Unknown
+    }
     return .Unknown
 }
 

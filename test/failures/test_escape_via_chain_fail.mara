@@ -1,0 +1,25 @@
+module test_escape_via_chain_fail
+
+// Should fail: the stack buffer in `outer` passes through two function
+// boundaries (middle → leaf) before being viewed. Provenance has to chase
+// the parameter-tracking chain all the way back: leaf returns param 0,
+// middle returns leaf(storage) so middle also tracks param 0, outer passes
+// &storage (.Stack) as middle's first arg → outer's return is rejected.
+
+leaf :: fun(storage: ^[]byte) -> []i64 {
+	return take([]i64(3), storage)
+}
+
+middle :: fun(storage: ^[]byte) -> []i64 {
+	return leaf(storage)
+}
+
+outer :: fun() -> []i64 {
+	storage : [..512]byte
+	return middle(&storage)
+}
+
+test_escape_via_chain_fail :: fun() {
+	sl := outer()
+	print(sl[0])
+}
