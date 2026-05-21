@@ -2278,44 +2278,9 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 // back native/web invocations don't carry stale state.
 @(private) word_size_is_32: bool
 
-// target_package + other_main_packages: per-binary filter for multi-package
-// builds. Functions whose flat name belongs to some other main package are
-// skipped — they belong to that other binary. Everything else (target's own
-// functions, stdlib `mara_*`, monomorphized generics) gets emitted. Empty
-// target_package emits everything (legacy single-pkg).
-//
-// all_packages: every known package name (dotted form, as in the programs
-// map). Used to disambiguate prefix collisions — e.g. when both `test` and
-// `test_chained_rvo_helpers` exist, a function `test_chained_rvo_helpers_X`
-// belongs to the longer package, not the shorter one. Without this, a
-// naive starts-with check would mis-filter the function under `test`.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, target_package: string = "", other_main_packages: []string = nil, all_packages: []string = nil) -> bool {
-    // Build flat-form prefix tables once. Module names may be dotted
-    // (e.g. "mara.os" → flat prefix "mara_os_"); flatten matches make_flat_name.
-    flat_prefix :: proc(pkg: string) -> string {
-        flat, _ := strings.replace_all(pkg, ".", "_")
-        return strings.concatenate({flat, "_"})
-    }
-    all_flat: [dynamic]string
-    defer delete(all_flat)
-    for pkg in all_packages { append(&all_flat, flat_prefix(pkg)) }
-    others_flat: map[string]bool
-    defer delete(others_flat)
-    for pkg in other_main_packages { others_flat[flat_prefix(pkg)] = true }
-
-    fn_belongs_to_other :: proc(fn_name: string, all_flat: []string, others_flat: map[string]bool) -> bool {
-        // Find the longest known package prefix that owns this fn. The actual
-        // owning package is the LONGEST match; shorter prefixes that happen
-        // to overlap (e.g. "test_" overlapping "test_chained_rvo_") are not
-        // the owner. Then filter only if the owner is in `others`.
-        best := ""
-        for p in all_flat {
-            if len(p) <= len(best) { continue }
-            if strings.has_prefix(fn_name, p) { best = p }
-        }
-        if best == "" { return false }
-        return others_flat[best]
-    }
+// Emit LLVM IR for the checked program. Every visible function gets
+// emitted; the linker drops unreachable code.
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> bool {
     g := Codegen{}
     g.checked = checked
     g.web = web
@@ -2443,12 +2408,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     // Phase 1: Emit non-main function definitions (preserving AST order).
-    // In multi-package builds skip functions owned by another main package —
-    // they belong in that other binary, not this one.
     g.out = fn_builder
     for fn_name in checked.function_order {
         if fn_name == "main" { continue }
-        if fn_belongs_to_other(fn_name, all_flat[:], others_flat) { continue }
         if cf, cf_ok := checked.functions[fn_name]; cf_ok {
             gen_scope_def(&g, &cf)
         }
@@ -2462,7 +2424,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     defer delete(mono_names)
     for fn_name in checked.functions {
         if strings.contains(fn_name, "__") && fn_name not_in declared_fns {
-            if fn_belongs_to_other(fn_name, all_flat[:], others_flat) { continue }
             append(&mono_names, fn_name)
         }
     }
