@@ -839,8 +839,12 @@ main :: proc() {
         // Per-package IR file — keeps multi-package builds from clobbering
         // each other, and keeps single-package builds easy to identify.
         ll_path := strings.concatenate({pkg_name, ".ll"})
+        all_pkgs: [dynamic]string
+        defer delete(all_pkgs)
+        for p in programs { append(&all_pkgs, p) }
         if !generate_program(ll_path, checked, web = args.web, shared = pkg_shared,
-                             target_package = pkg_name, other_main_packages = others[:]) {
+                             target_package = pkg_name, other_main_packages = others[:],
+                             all_packages = all_pkgs[:]) {
             fmt.printf("Code generation failed for '%s'.\n", pkg_name)
             return
         }
