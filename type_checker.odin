@@ -1188,11 +1188,16 @@ SymbolTable :: struct {
     fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
 
     // Provenance propagation through call boundaries. For functions returning
-    // a ref type (slice/ptr), records the parameter index whose provenance
-    // the return value follows (-1 = doesn't track a single parameter).
+    // a ref type (slice/ptr), records the SET of parameter indices the return
+    // value could trace back to. A call's depth at the site is the max over
+    // depth(call.args[i]) for i in the set. Empty set = no tracked sources,
+    // depth defaults to 0 (globals / literals / external).
+    //
+    // The set captures the conditional case: when different control-flow
+    // paths assign different params, the union of contributors propagates.
     // Computed lazily on first lookup; pending guards against cycles.
-    fun_return_param_idx:     map[^Stmt_Scope]int,
-    fun_return_param_pending: map[^Stmt_Scope]bool,
+    fun_return_arg_set:     map[^Stmt_Scope][]int,
+    fun_return_arg_pending: map[^Stmt_Scope]bool,
 
     // Config
     has_scope_allocator: bool,
@@ -3350,131 +3355,192 @@ set_provenance :: proc(env: ^Type_Env, name: string, p: Provenance) {
 //   outer { storage : [..N]byte; return helper(&storage) }
 // Without this, helper's call result would land at depth 0 (global-like)
 // and outer's return would silently pass the static checker.
-fun_return_param_index :: proc(c: ^Checker, scope: ^Stmt_Scope) -> int {
-    if scope == nil { return -1 }
-    if idx, ok := c.table.fun_return_param_idx[scope]; ok { return idx }
-    if c.table.fun_return_param_pending[scope] { return -1 }
-    c.table.fun_return_param_pending[scope] = true
-    defer delete_key(&c.table.fun_return_param_pending, scope)
+fun_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
+    if scope == nil { return nil }
+    if set, ok := c.table.fun_return_arg_set[scope]; ok { return set }
+    if c.table.fun_return_arg_pending[scope] { return nil }
+    c.table.fun_return_arg_pending[scope] = true
+    defer delete_key(&c.table.fun_return_arg_pending, scope)
 
-    // Flow-sensitive walk: maintain per-local "currently tracks param N"
-    // through program order. At each return statement, evaluate the return
-    // expression against the current tracking. At if-branches, snapshot
-    // before, walk each branch independently, merge after (agreeing keys
-    // keep their value; disagreeing or one-sided keys collapse to -1).
+    // Flow-sensitive walk: each local carries a SET of parameter indices
+    // it could trace back to. Branch merges are unions — if one path
+    // assigns `out` from param 0 and another from param 1, post-join out
+    // tracks {0, 1}. Empty set = no tracked source (depth 0 at call sites).
     //
-    // Straight-line code: a later write to a local shadows earlier ones
-    // — the value at return is whatever the LAST write installed, not the
-    // union of all writes. Catches `out := take(s1); out = take(s2); return out`
-    // as "RPI = 1" instead of falsely treating it as untrackable.
-    tracking: map[string]int
-    defer delete(tracking)
-    consensus := -2 // sentinel: haven't seen a return yet
-    walk_for_return_indices(c, scope.body[:], scope, &tracking, &consensus)
+    // The set encoding captures both:
+    //   - straight-line reassignment, where the last write shadows
+    //     previous ones (set replaces, doesn't union, on sequential
+    //     writes);
+    //   - conditional reassignment, where different branches contribute
+    //     different params (set unions at the branch join).
+    tracking: map[string][dynamic]int
+    defer cleanup_arg_set_tracking(&tracking)
+    consensus: [dynamic]int
+    defer delete(consensus)
+    walk_for_return_arg_sets(c, scope.body[:], scope, &tracking, &consensus)
 
-    if consensus == -2 { consensus = -1 }
-    c.table.fun_return_param_idx[scope] = consensus
-    return consensus
+    final := arg_set_freeze(consensus[:])
+    c.table.fun_return_arg_set[scope] = final
+    return final
 }
 
-// Walk `stmts` in program order. Maintain `tracking` (per-local → param
-// index, or -1 untrackable). At each return, fold the return expression's
-// index into `consensus`.
-walk_for_return_indices :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Scope, tracking: ^map[string]int, consensus: ^int) {
+cleanup_arg_set_tracking :: proc(t: ^map[string][dynamic]int) {
+    for _, set in t^ { delete(set) }
+    delete(t^)
+}
+
+// Walk `stmts` in program order. `tracking[name]` is the current set of
+// param indices that `name` could trace back to. At each return, the
+// return expression's set is unioned into `consensus`.
+walk_for_return_arg_sets :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int, consensus: ^[dynamic]int) {
     for s in stmts {
         #partial switch v in s {
         case ^Stmt_Assign:
-            // Track only simple-name declarations and reassignments; skip
-            // field/index/deref assigns (those have v.target != nil).
             if v.value == nil || v.name == "" || v.target != nil { continue }
-            tracking^[v.name] = eval_expr_index(c, v.value, fn_scope, tracking)
+            new_set := eval_expr_arg_set(c, v.value, fn_scope, tracking)
+            // Sequential write: replace (shadows previous value at this name).
+            if existing, ok := tracking^[v.name]; ok { delete(existing) }
+            tracking^[v.name] = new_set
         case Stmt_Return:
             if len(v.values) == 0 { continue }
-            idx := eval_expr_index(c, v.values[0], fn_scope, tracking)
-            if consensus^ == -2 { consensus^ = idx }
-            else if consensus^ != idx { consensus^ = -1 }
+            set := eval_expr_arg_set(c, v.values[0], fn_scope, tracking)
+            for idx in set { append_unique(consensus, idx) }
+            delete(set)
         case ^Stmt_If:
-            pre := clone_int_map(tracking^)
-            walk_for_return_indices(c, v.body[:], fn_scope, tracking, consensus)
-            then_state := clone_int_map(tracking^)
-            // Reset for the else branch
-            clear(tracking)
-            for k, val in pre { tracking^[k] = val }
-            walk_for_return_indices(c, v.else_body[:], fn_scope, tracking, consensus)
-            merge_branch_tracking(tracking, then_state, pre)
-            delete(then_state)
-            delete(pre)
+            pre := clone_arg_set_tracking(tracking^)
+            walk_for_return_arg_sets(c, v.body[:], fn_scope, tracking, consensus)
+            then_state := move_arg_set_tracking(tracking)
+            // Reset to pre for else branch
+            tracking^ = clone_arg_set_tracking(pre)
+            walk_for_return_arg_sets(c, v.else_body[:], fn_scope, tracking, consensus)
+            // tracking now holds the else state; merge then into it.
+            merge_arg_set_branches(tracking, &then_state, pre)
+            cleanup_arg_set_tracking(&then_state)
+            cleanup_local_pre(pre)
         case ^Stmt_Decl:
-            walk_for_return_indices(c, v.checked[:], fn_scope, tracking, consensus)
+            walk_for_return_arg_sets(c, v.checked[:], fn_scope, tracking, consensus)
         }
     }
 }
 
-clone_int_map :: proc(m: map[string]int) -> map[string]int {
-    out: map[string]int
-    for k, val in m { out[k] = val }
+cleanup_local_pre :: proc(m: map[string][dynamic]int) {
+    m := m
+    for _, set in m { delete(set) }
+    delete(m)
+}
+
+clone_arg_set_tracking :: proc(m: map[string][dynamic]int) -> map[string][dynamic]int {
+    out: map[string][dynamic]int
+    for k, set in m {
+        cloned: [dynamic]int
+        for idx in set { append(&cloned, idx) }
+        out[k] = cloned
+    }
     return out
 }
 
-// Merge the then-branch result (then_state) into the else-branch result
-// (already in `target`), given the pre-if snapshot. For any key that the
-// two branches end with the same value, keep it; anything else collapses
-// to -1 (ambiguous after the join).
-merge_branch_tracking :: proc(target: ^map[string]int, then_state: map[string]int, pre: map[string]int) {
+// Take ownership of the maps contents into a fresh map; leave the source empty.
+move_arg_set_tracking :: proc(m: ^map[string][dynamic]int) -> map[string][dynamic]int {
+    out := m^
+    m^ = make(map[string][dynamic]int)
+    return out
+}
+
+// Union the then-branch state into the else-branch result (in `target`),
+// using `pre` to fill in keys that one branch didn't touch. Set semantics:
+// post-if set = union(then-effective set, else-effective set), where a
+// branch that didn't touch a key has that key's pre-if set as effective.
+merge_arg_set_branches :: proc(target: ^map[string][dynamic]int, then_state: ^map[string][dynamic]int, pre: map[string][dynamic]int) {
     keys: map[string]bool
     defer delete(keys)
-    for k in target^   { keys[k] = true }
-    for k in then_state { keys[k] = true }
+    for k in target^    { keys[k] = true }
+    for k in then_state^ { keys[k] = true }
     for k in pre        { keys[k] = true }
+
     for k in keys {
-        then_v: int = -1
-        if v, ok := then_state[k];  ok { then_v = v }
-        else if v, ok := pre[k];    ok { then_v = v }
-        else_v: int = -1
-        if v, ok := target^[k];     ok { else_v = v }
-        else if v, ok := pre[k];    ok { else_v = v }
-        target^[k] = then_v if then_v == else_v else -1
+        then_set: []int
+        if s, ok := then_state^[k]; ok { then_set = s[:] }
+        else if s, ok := pre[k];   ok { then_set = s[:] }
+        else_set: []int
+        if s, ok := target^[k]; ok { else_set = s[:] }
+        else if s, ok := pre[k]; ok { else_set = s[:] }
+
+        merged: [dynamic]int
+        for idx in then_set { append_unique(&merged, idx) }
+        for idx in else_set { append_unique(&merged, idx) }
+
+        if existing, ok := target^[k]; ok { delete(existing) }
+        target^[k] = merged
     }
 }
 
-// Evaluate an expression's source param index in the current tracking
-// context. Mirrors the old return_value_param_index but locals consult
-// `tracking` instead of re-scanning the whole body.
-eval_expr_index :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope, tracking: ^map[string]int) -> int {
-    if e == nil { return -1 }
+append_unique :: proc(arr: ^[dynamic]int, x: int) {
+    for v in arr { if v == x { return } }
+    append(arr, x)
+}
+
+// Freeze a [dynamic]int into a sorted, deduplicated []int suitable for
+// long-lived storage (the per-function cache). Returns nil for empty.
+arg_set_freeze :: proc(set: []int) -> []int {
+    if len(set) == 0 { return nil }
+    copy := make([]int, len(set))
+    for idx, i in set { copy[i] = idx }
+    slice.sort(copy)
+    // Dedup in place (already deduped by append_unique, but defensive).
+    n := 1
+    for i in 1..<len(copy) {
+        if copy[i] != copy[n-1] { copy[n] = copy[i]; n += 1 }
+    }
+    return copy[:n]
+}
+
+// Evaluate an expression's source arg-set in the current tracking context.
+eval_expr_arg_set :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int) -> [dynamic]int {
+    out: [dynamic]int
+    if e == nil { return out }
     if ident, ok := e.(^Expr_Ident); ok {
         for p, i in fn_scope.typed_params {
-            if p.name == ident.name { return i }
+            if p.name == ident.name { append(&out, i); return out }
         }
-        if idx, ok := tracking^[ident.name]; ok { return idx }
-        return -1
+        if existing, ok := tracking^[ident.name]; ok {
+            for idx in existing { append(&out, idx) }
+        }
+        return out
     }
     if t, ok := e.(^Expr_Take); ok {
-        return eval_expr_index(c, t.storage, fn_scope, tracking)
+        delete(out)
+        return eval_expr_arg_set(c, t.storage, fn_scope, tracking)
     }
     if sl, ok := e.(^Expr_Slice); ok {
-        return eval_expr_index(c, sl.expr, fn_scope, tracking)
+        delete(out)
+        return eval_expr_arg_set(c, sl.expr, fn_scope, tracking)
     }
     if lit, ok := e.(^Expr_Struct_Literal); ok {
-        consensus := -2
+        // Union over ref fields.
         for field, i in lit.fields {
             ft := struct_lit_field_type(c, lit, i)
             if ft == nil || !is_ref_type(ft) { continue }
-            idx := eval_expr_index(c, field.value, fn_scope, tracking)
-            if consensus == -2 { consensus = idx }
-            else if consensus != idx { consensus = -1 }
+            field_set := eval_expr_arg_set(c, field.value, fn_scope, tracking)
+            for idx in field_set { append_unique(&out, idx) }
+            delete(field_set)
         }
-        if consensus == -2 { return -1 }
-        return consensus
+        return out
     }
     if call, ok := e.(^Expr_Call); ok {
         callee := lookup_callee_scope(c, call)
-        if callee == nil { return -1 }
-        callee_idx := fun_return_param_index(c, callee)
-        if callee_idx < 0 || callee_idx >= len(call.args) { return -1 }
-        return eval_expr_index(c, call.args[callee_idx], fn_scope, tracking)
+        if callee == nil { return out }
+        callee_set := fun_return_arg_set(c, callee)
+        // For each callee arg index in the set, recurse into the matching
+        // call argument expression and union.
+        for ci in callee_set {
+            if ci < 0 || ci >= len(call.args) { continue }
+            arg_set := eval_expr_arg_set(c, call.args[ci], fn_scope, tracking)
+            for idx in arg_set { append_unique(&out, idx) }
+            delete(arg_set)
+        }
+        return out
     }
-    return -1
+    return out
 }
 
 // Resolve a struct literal's i-th literal field to its declared field type.
@@ -3618,21 +3684,61 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
         if max_depth >= 0 { return Provenance{depth = max_depth} }
         return PROV_GLOBAL
     }
-    // Function call — if the callee's return value tracks a single parameter
-    // (e.g. `return take(T, storage)` where storage is a param), inherit the
-    // provenance of the corresponding argument here. Otherwise fall through
-    // to global. This closes the indirect-escape hole where a stack address
-    // is laundered through one or more function calls before being viewed.
+    // Function call — the callee's return value depth bounds by the max
+    // depth of the arguments at the indices the callee can return from.
+    // Set encoding handles both straight-line (single tracked index) and
+    // conditional reassignment (union across branches). Empty set →
+    // PROV_GLOBAL (the function's return is rooted in literals/globals
+    // / external sources, none of which can dangle from the caller).
     if call, ok := e.(^Expr_Call); ok {
         if callee := lookup_callee_scope(c, call); callee != nil {
-            idx := fun_return_param_index(c, callee)
-            if idx >= 0 && idx < len(call.args) {
-                return expr_provenance(c, call.args[idx], env)
+            arg_set := fun_return_arg_set(c, callee)
+            max_d := 0
+            for ci in arg_set {
+                if ci < 0 || ci >= len(call.args) { continue }
+                d := expr_provenance(c, call.args[ci], env).depth
+                if d > max_d { max_d = d }
             }
+            return Provenance{depth = max_d}
         }
         return PROV_GLOBAL
     }
     return PROV_GLOBAL
+}
+
+// Emit the type error for a `return value` where `value` would dangle.
+// For calls, look up the callee's tracked arg-set and name the specific
+// parameter(s) bound to local data — turns a generic message into one
+// that points at exactly which argument is the problem.
+report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Env) {
+    if call, ok := val.(^Expr_Call); ok {
+        callee := lookup_callee_scope(c, call)
+        arg_set := fun_return_arg_set(c, callee) if callee != nil else nil
+        if callee != nil && len(arg_set) > 0 {
+            // Find which tracked args are local at the call site.
+            sb: strings.Builder
+            strings.builder_init(&sb)
+            defer strings.builder_destroy(&sb)
+            unsafe_count := 0
+            for ci in arg_set {
+                if ci < 0 || ci >= len(call.args) { continue }
+                if expr_provenance(c, call.args[ci], env).depth < env.scope_depth { continue }
+                if unsafe_count > 0 { strings.write_string(&sb, ", ") }
+                pname := callee.typed_params[ci].name if ci < len(callee.typed_params) else "?"
+                fmt.sbprintf(&sb, "parameter `%s`", pname)
+                unsafe_count += 1
+            }
+            if unsafe_count > 0 {
+                noun := "argument" if unsafe_count == 1 else "arguments"
+                check_error(c, span,
+                    "cannot return result of `%s(...)`: its return may reference local memory via %s — pass caller-rooted %s instead",
+                    call.name, strings.to_string(sb), noun)
+                return
+            }
+        }
+    }
+    check_error(c, span,
+        "cannot return local reference (memory freed on function return)")
 }
 
 // Walk a function's body looking for a `return Foo{a, b}` where Foo has slice
@@ -5844,8 +5950,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
     if c.current_package != "memory" {
         for val in s.values {
             if is_local_ref(c, val, env) {
-                check_error(c, s.span,
-                    "cannot return local reference (memory freed on function return)")
+                report_return_escape(c, val, s.span, env)
             }
             // Struct-with-slice-fields escape: a `return StructLit{local_arr,..}`
             // is OK (the compiler relocates storage to the caller's sret), but
