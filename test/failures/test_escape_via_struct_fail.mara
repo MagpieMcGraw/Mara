@@ -1,0 +1,25 @@
+module test_escape_via_struct_fail
+
+// Should fail: a stack buffer is laundered into the slice field of a
+// returned struct. The return type is `Holder`, not a slice — the old
+// is_local_ref ignored it because Holder isn't a ref type itself. The
+// depth-tracking analysis now flags structs containing ref fields and
+// computes the value's depth as the max over those fields.
+
+Holder :: struct {
+	sl: []i64
+}
+
+inner :: fun(storage: ^[]byte) -> Holder {
+	return Holder{take([]i64(3), storage)}
+}
+
+outer :: fun() -> Holder {
+	storage : [..512]byte
+	return inner(&storage)
+}
+
+test_escape_via_struct_fail :: fun() {
+	h := outer()
+	print(h.sl[0])
+}

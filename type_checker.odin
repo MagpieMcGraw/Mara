@@ -3391,14 +3391,11 @@ return_value_param_index :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope) ->
         for p, i in fn_scope.typed_params {
             if p.name == ident.name { return i }
         }
-        // Local: trace back through its initialiser. Only follow the first
-        // declaration we find; multiple assignments mean we can't pin a
-        // single source, so be conservative.
-        init, found := find_local_init(fn_scope.body[:], ident.name)
-        if found {
-            return return_value_param_index(c, init, fn_scope)
-        }
-        return -1
+        // Local: walk every assignment (declaration + reassignments) to
+        // `name`. The value at return time could be any of them, so the
+        // consensus param index is the one all writes agree on. Writes
+        // that disagree make the local's source ambiguous → -1.
+        return local_consensus_param_index(c, fn_scope.body[:], ident.name, fn_scope)
     }
     // take(T, storage) — provenance follows the storage.
     if t, ok := e.(^Expr_Take); ok {
@@ -3407,6 +3404,12 @@ return_value_param_index :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope) ->
     // Sub-slice — provenance follows the source.
     if sl, ok := e.(^Expr_Slice); ok {
         return return_value_param_index(c, sl.expr, fn_scope)
+    }
+    // Struct literal — for ref-bearing structs, the value's effective depth
+    // is the max over ref fields. If every ref field tracks the same param,
+    // return that index. Mixed sources → -1.
+    if lit, ok := e.(^Expr_Struct_Literal); ok {
+        return struct_literal_consensus_param_index(c, lit, fn_scope)
     }
     // Nested call — recurse into the callee, then map back to our caller's
     // argument at the index the callee tracks.
@@ -3420,38 +3423,78 @@ return_value_param_index :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope) ->
     return -1
 }
 
-// Find the initialiser of a local `name` in stmts. Returns (init, true)
-// when `name` is declared exactly once with an initialiser AND never
-// reassigned afterwards. Any later `name = ...` reassignment makes the
-// origin ambiguous, so we return (nil, false) and let the caller fall
-// back to depth 0 — over-conservative, but never wrong.
-find_local_init :: proc(stmts: []Stmt, name: string) -> (Expr, bool) {
-    init: Expr
-    decl_count := 0
-    reassign_count := 0
-    visit_name_assigns(stmts, name, &init, &decl_count, &reassign_count)
-    if decl_count != 1 || reassign_count != 0 { return nil, false }
-    return init, true
+// Walk every assignment to `name` in stmts; return the param index that
+// every write's source maps to. Writes that disagree (different params,
+// or any untrackable source) collapse to -1. Catches the reassignment-
+// laundering case where a local is repeatedly written from the same
+// parameter — the value at return still bounds by that parameter's depth.
+local_consensus_param_index :: proc(c: ^Checker, stmts: []Stmt, name: string, fn_scope: ^Stmt_Scope) -> int {
+    consensus := -2 // not yet seen any write
+    fold_assignment_indices(c, stmts, name, fn_scope, &consensus)
+    if consensus == -2 { return -1 }
+    return consensus
 }
 
-visit_name_assigns :: proc(stmts: []Stmt, name: string, init: ^Expr, decl_count, reassign_count: ^int) {
+fold_assignment_indices :: proc(c: ^Checker, stmts: []Stmt, name: string, fn_scope: ^Stmt_Scope, consensus: ^int) {
     for s in stmts {
         #partial switch v in s {
         case ^Stmt_Assign:
-            if v.name != name { continue }
-            if v.is_decl {
-                decl_count^ += 1
-                if decl_count^ == 1 && v.value != nil { init^ = v.value }
-            } else {
-                reassign_count^ += 1
-            }
+            if v.name != name || v.value == nil { continue }
+            idx := return_value_param_index(c, v.value, fn_scope)
+            if consensus^ == -2 { consensus^ = idx }
+            else if consensus^ != idx { consensus^ = -1 }
         case ^Stmt_If:
-            visit_name_assigns(v.body[:], name, init, decl_count, reassign_count)
-            visit_name_assigns(v.else_body[:], name, init, decl_count, reassign_count)
+            fold_assignment_indices(c, v.body[:], name, fn_scope, consensus)
+            fold_assignment_indices(c, v.else_body[:], name, fn_scope, consensus)
         case ^Stmt_Decl:
-            visit_name_assigns(v.checked[:], name, init, decl_count, reassign_count)
+            fold_assignment_indices(c, v.checked[:], name, fn_scope, consensus)
         }
     }
+}
+
+// Resolve a struct literal's i-th literal field to its declared field type.
+// For positional literals, that's the i-th struct field; for named, lookup
+// by name. Returns nil when the type isn't a known struct shape.
+struct_lit_field_type :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, lit_idx: int) -> Type {
+    sd := as_struct_body(distinct_base(lit.type_))
+    if sd == nil { return nil }
+    if lit.positional {
+        if lit_idx >= 0 && lit_idx < len(sd.fields) { return sd.fields[lit_idx].type_ }
+        return nil
+    }
+    name := lit.fields[lit_idx].name
+    for &f in sd.fields {
+        if f.name == name { return f.type_ }
+    }
+    return nil
+}
+
+is_ref_type :: proc(t: Type) -> bool {
+    bt := distinct_base(t)
+    if _, ok := bt.(^Type_Ptr);   ok { return true }
+    if _, ok := bt.(^Type_Slice); ok { return true }
+    return false
+}
+
+struct_has_ref_field :: proc(sd: ^Scope_Body) -> bool {
+    for &f in sd.fields {
+        if is_ref_type(f.type_) { return true }
+    }
+    return false
+}
+
+// Consensus param index across the ref fields of a struct literal.
+struct_literal_consensus_param_index :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fn_scope: ^Stmt_Scope) -> int {
+    consensus := -2
+    for field, i in lit.fields {
+        ft := struct_lit_field_type(c, lit, i)
+        if ft == nil || !is_ref_type(ft) { continue }
+        idx := return_value_param_index(c, field.value, fn_scope)
+        if consensus == -2 { consensus = idx }
+        else if consensus != idx { consensus = -1 }
+    }
+    if consensus == -2 { return -1 } // no ref fields
+    return consensus
 }
 
 // Resolve a call to the callee's source AST, mirroring call_has_local_escape's
@@ -3543,11 +3586,27 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
         // We can't trace through the slice data pointer statically, so global.
         return PROV_GLOBAL
     }
-    // Literals (array, struct, number, string) — backing memory at our depth.
+    // Literals (array, number, string) — backing memory at our depth.
     if _, ok := e.(^Expr_Array); ok { return prov_local(env) }
-    if _, ok := e.(^Expr_Struct_Literal); ok { return prov_local(env) }
     if _, ok := e.(^Expr_Number); ok { return prov_local(env) }
     if _, ok := e.(^Expr_String); ok { return prov_local(env) }
+    // Struct literal — for structs with ref fields, the value's effective
+    // depth is the max over the EXPLICITLY-ASSIGNED ref fields (those are
+    // what would dangle; the struct's bytes are sret-copied at return).
+    // Ref fields with no explicit value zero-init to null/empty — safe.
+    // So a `Megastruct{}` zero-init literal returns PROV_GLOBAL even if
+    // the type has slice fields.
+    if lit, ok := e.(^Expr_Struct_Literal); ok {
+        max_depth := -1
+        for field, i in lit.fields {
+            ft := struct_lit_field_type(c, lit, i)
+            if ft == nil || !is_ref_type(ft) { continue }
+            d := expr_provenance(c, field.value, env).depth
+            if d > max_depth { max_depth = d }
+        }
+        if max_depth >= 0 { return Provenance{depth = max_depth} }
+        return PROV_GLOBAL
+    }
     // Function call — if the callee's return value tracks a single parameter
     // (e.g. `return take(T, storage)` where storage is a param), inherit the
     // provenance of the corresponding argument here. Otherwise fall through
@@ -3662,6 +3721,14 @@ is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
     is_ref := false
     if _, ok := t.(^Type_Ptr); ok { is_ref = true }
     if _, ok := t.(^Type_Slice); ok { is_ref = true }
+    // Struct values with ref fields: the struct's bytes are sret-copied at
+    // return, but the ref-content's targets can still dangle. Treat as
+    // ref-like — expr_provenance reports the max ref-field depth.
+    if !is_ref {
+        if sd := as_struct_body(distinct_base(t)); sd != nil && struct_has_ref_field(sd) {
+            is_ref = true
+        }
+    }
     if !is_ref { return false }
     // Reject when the data lives at our scope's depth or deeper — anything
     // at `env.scope_depth` dies when the current frame pops.

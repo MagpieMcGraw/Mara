@@ -1,0 +1,22 @@
+module test_escape_via_reassign_fail
+
+// Should fail: the leaf reassigns `out` so the old find_local_init bailed
+// (multiple writes → -1 → no tracking → outer's call result depth 0).
+// The new local_consensus_param_index folds across every write to `out`
+// and accepts when every write tracks the same parameter.
+
+leaf :: fun(storage: ^[]byte) -> []i64 {
+	out := take([]i64(3), storage)
+	out = take([]i64(3), storage)
+	return out
+}
+
+outer :: fun() -> []i64 {
+	storage : [..512]byte
+	return leaf(&storage)
+}
+
+test_escape_via_reassign_fail :: fun() {
+	sl := outer()
+	print(sl[0])
+}
