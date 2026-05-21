@@ -19,3 +19,5 @@ Figure out auto deref semantics. How often should we auto deref? And what's the 
 Steal string formatting from python.
 
 Write build script for .c code in mara to test capabilities
+
+Should generic constructors take values? Should type only arguments even be allowed in generic struct constructors? A constructor is supposed to construct a ready to use struct, which implies that all values are intiialized.

@@ -1756,10 +1756,10 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         ft := new(Type_Scope)
         ft.kind = .Fun
         for p in t.params {
-            append(&ft.params, Struct_Type_Field{type_ = resolve_type_expr(p, c, span)})
+            append(&ft.params, Struct_Type_Field{type_ = resolve_type_expr(p, c, span, env = env)})
         }
         if t.return_type != nil {
-            ft.return_type = resolve_type_expr(t.return_type, c, span)
+            ft.return_type = resolve_type_expr(t.return_type, c, span, env = env)
         }
         return ft
     case Type_Of_Name:
@@ -3246,10 +3246,37 @@ desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
     }
 }
 
+// Compare two types under "Self substitution": occurrences of `ct_self`
+// inside `ct_type` correspond to occurrences of `arg_self` inside
+// `arg_type`. Walks pointers and slices recursively; bottoms out at
+// types_equal for everything else. Used by the shape-constraint method
+// signature check, where the constraint's `^Self` resolves to the
+// constraint's own scope and the concrete impl's `^Self` resolves to its
+// own scope — naively types_equal would never match them.
+self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope) -> bool {
+    if ts, ok := ct_type.(^Type_Scope); ok && ts == ct_self {
+        if ts2, ok2 := arg_type.(^Type_Scope); ok2 && ts2 == arg_self { return true }
+        return false
+    }
+    if pt1, ok := ct_type.(^Type_Ptr); ok {
+        pt2, ok2 := arg_type.(^Type_Ptr)
+        if !ok2 { return false }
+        return self_equivalent(pt1.elem, pt2.elem, ct_self, arg_self)
+    }
+    if sl1, ok := ct_type.(^Type_Slice); ok {
+        sl2, ok2 := arg_type.(^Type_Slice)
+        if !ok2 { return false }
+        return self_equivalent(sl1.elem, sl2.elem, ct_self, arg_self)
+    }
+    return types_equal(ct_type, arg_type)
+}
+
 // Enforce a `name: ~Constraint` shape-constraint at generic instantiation.
 // The concrete `arg` must be a struct/class type that:
-//   - declares every method the constraint type declares (matched by name;
-//     full signature equivalence is left to a later, structural pass);
+//   - declares every method the constraint type declares;
+//   - each shared method's signature is equivalent under Self substitution
+//     (param count + param types + return type, treating the receiver and
+//     any other Self occurrences as positionally compatible);
 //   - fits within the constraint's declared byte size (the constraint type
 //     reserves the budget explicitly, most commonly via a `size: [N]byte`
 //     filler field).
@@ -3283,11 +3310,55 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
             param.name, constraint_name, type_name(arg))
         return
     }
-    for fn_name in ct.functions {
-        if fn_name not_in arg_scope.functions {
+    for fn_name, ct_fn in ct.functions {
+        arg_fn, arg_has := arg_scope.functions[fn_name]
+        if !arg_has || arg_fn == nil {
             check_error(c, span,
                 "type '%s' does not satisfy `~%s`: missing method '%s'",
                 arg_scope.name, constraint_name, fn_name)
+            continue
+        }
+        // Extra trailing params on the concrete are fine — provided they
+        // all have defaults. A caller using the constraint's signature
+        // omits them, and Mara's default-arg lowering fills them in.
+        // Fewer params, or extras without defaults, breaks the API.
+        if len(arg_fn.params) < len(ct_fn.params) {
+            check_error(c, span,
+                "type '%s' does not satisfy `~%s`: method '%s' expects at least %d param(s), got %d",
+                arg_scope.name, constraint_name, fn_name, len(ct_fn.params), len(arg_fn.params))
+            continue
+        }
+        extras_ok := true
+        for i in len(ct_fn.params)..<len(arg_fn.params) {
+            if arg_fn.params[i].default_value == nil {
+                check_error(c, span,
+                    "type '%s' does not satisfy `~%s`: method '%s' has extra param '%s' without a default value",
+                    arg_scope.name, constraint_name, fn_name, arg_fn.params[i].name)
+                extras_ok = false
+            }
+        }
+        if !extras_ok { continue }
+        for i in 0..<len(ct_fn.params) {
+            ct_p  := ct_fn.params[i].type_
+            arg_p := arg_fn.params[i].type_
+            if !self_equivalent(ct_p, arg_p, ct, arg_scope) {
+                check_error(c, span,
+                    "type '%s' does not satisfy `~%s`: method '%s' param '%s' expected %s, got %s",
+                    arg_scope.name, constraint_name, fn_name,
+                    ct_fn.params[i].name, type_name(ct_p), type_name(arg_p))
+            }
+        }
+        // Return-type compatibility. Treat (nil, nil) as match — fns
+        // declared without a return type. Otherwise both must be present
+        // and Self-equivalent.
+        ct_ret  := ct_fn.return_type
+        arg_ret := arg_fn.return_type
+        if ct_ret == nil && arg_ret == nil { /* both void — ok */ }
+        else if ct_ret == nil || arg_ret == nil ||
+                !self_equivalent(ct_ret, arg_ret, ct, arg_scope) {
+            check_error(c, span,
+                "type '%s' does not satisfy `~%s`: method '%s' expected return %s, got %s",
+                arg_scope.name, constraint_name, fn_name, type_name(ct_ret), type_name(arg_ret))
         }
     }
     ct_size  := checker_struct_byte_size(ct)
