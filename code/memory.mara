@@ -31,12 +31,17 @@ Arena_Basic :: class(cap: i64) {
 		a.offset = off + 8
 	}
 
-	alloc :: fun(a: ^Self, size: i64) -> []byte {
+	alloc :: fun(
+		a: ^Self,
+		size: i64,
+		name: ^byte = #caller_name,
+		span: ^byte = #caller_span) -> []byte
+	{
 		off := (a.offset + 15) & -16
 		end := off + size
 
 		if end > a.capacity {
-			print_oom(a, off, size)
+			dump(a, size, name, span)
 			crash()
 		}
 
@@ -54,8 +59,15 @@ Arena_Basic :: class(cap: i64) {
 		a.current_mark = prev
 	}
 
-	print_oom :: fun(a: ^Self, off, size: i64) {
-		print(oom_string, a.capacity, off, size)
+	dump :: fun(
+		a: ^Self,
+		failed_size: i64,
+		failed_name: ^byte,
+		failed_span: ^byte)
+	{
+		print(oom_string,
+			a.capacity, a.offset, a.capacity - a.offset,
+			failed_name, failed_size, failed_span)
 	}
 }
 
@@ -131,10 +143,11 @@ Arena_Debug :: class(cap: i64) {
 		failed_name: ^byte,
 		failed_span: ^byte)
 	{
-		print(oom_string_debug,
-		a.capacity, a.offset, a.capacity - a.offset,
-		failed_name, failed_size, failed_span)
+		print(oom_string,
+			a.capacity, a.offset, a.capacity - a.offset,
+			failed_name, failed_size, failed_span)
 
+		print("--- All allocations (most recent first) ---")
 		pos := a.last_alloc
 		for pos > 0 {
 			h : AllocHeader = a.base[pos]
@@ -146,21 +159,12 @@ Arena_Debug :: class(cap: i64) {
 
 oom_string :: "
 === Arena out of memory ===
-Capacity:  % bytes
-Used:      % bytes
-Requested: % bytes
-"
-
-oom_string_debug :: "
-=== Arena out of memory ===
 
 Arena capacity: % bytes
 Bytes used:     % bytes
 Bytes free:     % bytes
 
 Failed allocation: %, % bytes in %
-
---- All allocations (most recent first) ---
 "
 
 print_size :: fun(size: i64) {
