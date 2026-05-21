@@ -866,7 +866,7 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                 len_gep := fresh_tmp(g)
                 emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
                 len_val := fresh_tmp(g)
-                emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
+                emit_typed_load_len(g, len_val, len_gep)
                 return len_val
             }
         }
@@ -898,7 +898,7 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                 cap_gep := fresh_tmp(g)
                 emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
                 cap_val := fresh_tmp(g)
-                emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+                emit_typed_load_cap(g, cap_val, cap_gep)
                 if sv.has_sentinel {
                     result := fresh_tmp(g)
                     emit(g, "  %s = sub i64 %s, 1", result, cap_val)
@@ -1268,12 +1268,12 @@ emit_escape_storage_args :: proc(g: ^Codegen, arg_strs: ^[dynamic]string, info: 
             len_gep := fresh_tmp(g)
             emit_slice_gep(g, len_gep, pool, SLICE.len)
             cur := fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", cur, len_gep)
+            emit_typed_load_len(g, cur, len_gep)
             ptr = fresh_tmp(g)
             emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", ptr, base, cur)
             next := fresh_tmp(g)
             emit(g, "  %s = add i64 %s, %d", next, cur, total_bytes)
-            emit(g, "  store i64 %s, ptr %s", next, len_gep)
+            emit_typed_store_len(g, next, len_gep)
         } else if g.context_enabled && total_bytes >= 1024 {
             name := fmt.tprintf("<%s.%s>", call_name, el.name)
             ptr = emit_arena_bump(g, total_bytes, name, loc)

@@ -269,7 +269,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             len_gep := fresh_tmp(g)
             emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", len_gep, pa_ir, pa_ptr, SLICE.len)
             len_val := fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
+            emit_typed_load_len(g, len_val, len_gep)
             length_val = len_val
             ptr_gep := fresh_tmp(g)
             emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", ptr_gep, pa_ir, pa_ptr, SLICE.ptr)
@@ -308,7 +308,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         len_gep := fresh_tmp(g)
         emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
         len_val := fresh_tmp(g)
-        emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
+        emit_typed_load_len(g, len_val, len_gep)
         length_val = len_val
         elem_ir = sv.elem_type
     } else {
@@ -384,10 +384,10 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             }
             g.all_vars[s.elem_var] = Struct_Var{elem_alloca, struct_name, ""}
         } else if is_slice_elem {
-            // Slice element: alloca { ptr, i64, i64 } + memcpy
+            // Slice element: alloca slice header + memcpy
             elem_alloca := fmt.tprintf("%%%s", s.elem_var)
             emit_slice_alloca(g, elem_alloca)
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 24, i1 false)", elem_alloca, elem_ptr)
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", elem_alloca, elem_ptr, slice_header_bytes)
             g.all_vars[s.elem_var] = Slice_Var{alloca = elem_alloca, elem_type = "i8", is_utf8 = is_utf8_slice}
         } else {
             // Scalar element: alloca + load + store

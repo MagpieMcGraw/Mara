@@ -35,6 +35,53 @@ emit_slice_store :: proc(g: ^Codegen, val: string, dst: string) {
     emit_raw(g, strings.concatenate({"  store ", SLICE_IR_TYPE, " ", val, ", ptr ", dst}))
 }
 
+// Store an i64 value (SSA name or literal like "0", "42") into the slot
+// addressed by `field_gep`, truncating to the layout's storage type if
+// narrower than i64. The caller does the GEP and passes the result here;
+// this lets sites that reuse the gep continue to do so.
+emit_typed_store_len :: proc(g: ^Codegen, val_i64: string, field_gep: string) {
+    if slice_layout.len_ir == "i64" {
+        emit(g, "  store i64 %s, ptr %s", val_i64, field_gep)
+        return
+    }
+    t := fresh_tmp(g)
+    emit(g, "  %s = trunc i64 %s to %s", t, val_i64, slice_layout.len_ir)
+    emit(g, "  store %s %s, ptr %s", slice_layout.len_ir, t, field_gep)
+}
+
+emit_typed_store_cap :: proc(g: ^Codegen, val_i64: string, field_gep: string) {
+    if slice_layout.cap_ir == "i64" {
+        emit(g, "  store i64 %s, ptr %s", val_i64, field_gep)
+        return
+    }
+    t := fresh_tmp(g)
+    emit(g, "  %s = trunc i64 %s to %s", t, val_i64, slice_layout.cap_ir)
+    emit(g, "  store %s %s, ptr %s", slice_layout.cap_ir, t, field_gep)
+}
+
+// Load len/cap from `field_gep` into a fresh SSA name. The returned name
+// is always i64-typed (zext'd from the layout's storage type if narrower)
+// so downstream arithmetic doesn't need to know the underlying width.
+emit_typed_load_len :: proc(g: ^Codegen, result_i64: string, field_gep: string) {
+    if slice_layout.len_ir == "i64" {
+        emit(g, "  %s = load i64, ptr %s", result_i64, field_gep)
+        return
+    }
+    raw := fresh_tmp(g)
+    emit(g, "  %s = load %s, ptr %s", raw, slice_layout.len_ir, field_gep)
+    emit(g, "  %s = zext %s %s to i64", result_i64, slice_layout.len_ir, raw)
+}
+
+emit_typed_load_cap :: proc(g: ^Codegen, result_i64: string, field_gep: string) {
+    if slice_layout.cap_ir == "i64" {
+        emit(g, "  %s = load i64, ptr %s", result_i64, field_gep)
+        return
+    }
+    raw := fresh_tmp(g)
+    emit(g, "  %s = load %s, ptr %s", raw, slice_layout.cap_ir, field_gep)
+    emit(g, "  %s = zext %s %s to i64", result_i64, slice_layout.cap_ir, raw)
+}
+
 // Slice args are passed by pointer-to-header — fat pointers are reference
 // types in Mara, so cursor / ptr mutations through them propagate to the
 // caller's slice. `val` must be a pointer to a slice descriptor alloca.
@@ -52,10 +99,10 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, ca
     emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, slice_alloca, SLICE.len)
-    emit(g, "  store i64 %s, ptr %s", len_val, len_gep)
+    emit_typed_store_len(g, len_val, len_gep)
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, slice_alloca, SLICE.cap)
-    emit(g, "  store i64 %s, ptr %s", cap_val, cap_gep)
+    emit_typed_store_cap(g, cap_val, cap_gep)
     return slice_alloca
 }
 
@@ -300,7 +347,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         cap_gep := fresh_tmp(g)
         emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
         cap_val := fresh_tmp(g)
-        emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+        emit_typed_load_cap(g, cap_val, cap_gep)
         emit_bounds_check(g, idx, cap_val, ident.name, s.span)
         // Load data pointer + GEP
         data_gep := fresh_tmp(g)
@@ -394,7 +441,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
             cap_val := fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+            emit_typed_load_cap(g, cap_val, cap_gep)
 
             dst_data_ptr  = data_ptr
             dst_capacity  = 0  // runtime
@@ -452,7 +499,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             len_gep := fresh_tmp(g)
             emit_slice_gep(g, len_gep, slv.alloca, SLICE.len)
             rhs_slice_len = fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", rhs_slice_len, len_gep)
+            emit_typed_load_len(g, rhs_slice_len, len_gep)
         }
         if !rhs_resolved {
             codegen_fatal(g, s.span, "'%s' is not an array or slice", rv.name)
@@ -677,7 +724,7 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
             slice_cap := fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", slice_cap, cap_gep)
+            emit_typed_load_cap(g, slice_cap, cap_gep)
             emit_bounds_check(g, idx, slice_cap, ident.name, e.span)
 
             data_gep := fresh_tmp(g)
@@ -702,7 +749,7 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
             slice_cap := fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", slice_cap, cap_gep)
+            emit_typed_load_cap(g, slice_cap, cap_gep)
             emit_bounds_check(g, idx, slice_cap, fa.field, e.span)
 
             data_gep := fresh_tmp(g)
@@ -749,7 +796,7 @@ gen_slice_len :: proc(g: ^Codegen, name: string) -> string {
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
     len_val := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
+    emit_typed_load_len(g, len_val, len_gep)
     return len_val
 }
 
@@ -826,7 +873,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take) -> string {
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
     cursor := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", cursor, len_gep)
+    emit_typed_load_len(g, cursor, len_gep)
 
     // Round cursor up to the take type's alignment. The data ptr is
     // over-aligned at the storage's source (sys_alloc gives page alignment;
@@ -877,7 +924,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take) -> string {
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
     cap_val := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+    emit_typed_load_cap(g, cap_val, cap_gep)
     overflow := fresh_tmp(g)
     emit(g, "  %s = icmp sgt i64 %s, %s", overflow, new_len, cap_val)
     fail_label := fresh_label(g, "take.fail")
@@ -895,7 +942,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take) -> string {
     emit(g, "  unreachable")
     emit(g, "%s:", ok_label)
 
-    emit(g, "  store i64 %s, ptr %s", new_len, len_gep)
+    emit_typed_store_len(g, new_len, len_gep)
 
     // Runtime-counted slice form: allocate a fresh slice header that points at
     // typed_ptr with len=cap=count. The header is the caller-visible value;
@@ -910,10 +957,10 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take) -> string {
         emit(g, "  store ptr %s, ptr %s", typed_ptr, h_ptr_gep)
         h_len_gep := fresh_tmp(g)
         emit_slice_gep(g, h_len_gep, hdr, SLICE.len)
-        emit(g, "  store i64 %s, ptr %s", count_runtime, h_len_gep)
+        emit_typed_store_len(g, count_runtime, h_len_gep)
         h_cap_gep := fresh_tmp(g)
         emit_slice_gep(g, h_cap_gep, hdr, SLICE.cap)
-        emit(g, "  store i64 %s, ptr %s", count_runtime, h_cap_gep)
+        emit_typed_store_cap(g, count_runtime, h_cap_gep)
         return hdr
     }
 
@@ -926,7 +973,7 @@ gen_slice_cap :: proc(g: ^Codegen, name: string) -> string {
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
     cap_val := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+    emit_typed_load_cap(g, cap_val, cap_gep)
     return cap_val
 }
 
@@ -939,7 +986,7 @@ gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
     slice_len := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", slice_len, len_gep)
+    emit_typed_load_len(g, slice_len, len_gep)
 
     // Get variable name for error message
     slice_name := "slice"
@@ -1041,7 +1088,7 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, src.alloca, SLICE.cap)
             end = fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", end, cap_gep)
+            emit_typed_load_cap(g, end, cap_gep)
         }
 
         new_cap := fresh_tmp(g)
@@ -1103,15 +1150,15 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
 
     sv, _ := get_slice(g, name)
 
-    // Copy whole slice header { ptr, len, cap } from source into destination.
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 24, i1 false)", sv.alloca, src)
+    // Copy whole slice header { len, cap, ptr } from source into destination.
+    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", sv.alloca, src, slice_header_bytes)
 }
 
 // Single point of truth for "store a slice value into a destination pointer".
 // Mirrors gen_store_struct_into / gen_store_array_into for slice IR
-// ({ ptr, i64, i64 }, 24 bytes). gen_expr on any slice-valued expression
-// returns a pointer to a slice descriptor, so almost every case is a 24-byte
-// memcpy.
+// ({ len, cap, ptr }, slice_header_bytes total). gen_expr on any slice-valued
+// expression returns a pointer to a slice descriptor, so almost every case is
+// a slice-header-sized memcpy.
 gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
     if value == nil {
         ptr_gep := fresh_tmp(g)
@@ -1119,14 +1166,14 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
         emit(g, "  store ptr null, ptr %s", ptr_gep)
         len_gep := fresh_tmp(g)
         emit_slice_gep(g, len_gep, dst_ptr, SLICE.len)
-        emit(g, "  store i64 0, ptr %s", len_gep)
+        emit_typed_store_len(g, "0", len_gep)
         cap_gep := fresh_tmp(g)
         emit_slice_gep(g, cap_gep, dst_ptr, SLICE.cap)
-        emit(g, "  store i64 0, ptr %s", cap_gep)
+        emit_typed_store_cap(g, "0", cap_gep)
         return
     }
     src := gen_expr(g, value)
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 24, i1 false)", dst_ptr, src)
+    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src, slice_header_bytes)
 }
 
 // Assign a slice-typed expression (e.g. alloc()) to a named variable.
@@ -1147,8 +1194,8 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
 
     sv, _ := get_slice(g, name)
 
-    // Copy whole slice header { ptr, len, cap } from source into destination.
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 24, i1 false)", sv.alloca, src)
+    // Copy whole slice header { len, cap, ptr } from source into destination.
+    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", sv.alloca, src, slice_header_bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,7 +1247,7 @@ resolve_byte_target :: proc(g: ^Codegen, expr: Expr, span: Span) -> (data_ptr: s
         cap_gep := fresh_tmp(g)
         emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
         cap_val := fresh_tmp(g)
-        emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+        emit_typed_load_cap(g, cap_val, cap_gep)
         return data_ptr, cap_val
     }
     resolve_array :: proc(g: ^Codegen, av: Array_Var) -> (string, string) {

@@ -153,10 +153,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 emit(g, "  store ptr %s, ptr %s", data_name, ptr_gep)
                 len_gep := fresh_tmp(g)
                 emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
-                emit(g, "  store i64 0, ptr %s", len_gep)
+                emit_typed_store_len(g, "0", len_gep)
                 cap_gep := fresh_tmp(g)
                 emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
-                emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
+                emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
                 // Sized slice of a slice-bearing struct: allocate a sibling
                 // pool whose bytes are carved by each `&slice + call()` for
                 // the call's escape locals. Pool size = sum of escape bytes
@@ -181,10 +181,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         emit(g, "  store ptr %s, ptr %s", pool_data, p_ptr_gep)
                         p_len_gep := fresh_tmp(g)
                         emit_slice_gep(g, p_len_gep, pool_alloca, SLICE.len)
-                        emit(g, "  store i64 0, ptr %s", p_len_gep)
+                        emit_typed_store_len(g, "0", p_len_gep)
                         p_cap_gep := fresh_tmp(g)
                         emit_slice_gep(g, p_cap_gep, pool_alloca, SLICE.cap)
-                        emit(g, "  store i64 %d, ptr %s", pool_bytes, p_cap_gep)
+                        emit_typed_store_cap(g, fmt.tprintf("%d", pool_bytes), p_cap_gep)
                     }
                 }
                 g.all_vars[s.name] = Slice_Var{
@@ -207,7 +207,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, len(str_bytes)+1, global)
                         emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", data_name, src_ptr, len(str_bytes))
                     }
-                    emit(g, "  store i64 %d, ptr %s", len(str_bytes), len_gep)
+                    emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
                     // Sentinel slices use a trailing \0; for printf-style consumers
                     // that walk the data pointer until a null, write it after the
                     // copied bytes so reading stops at the literal's end.
@@ -228,10 +228,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 emit(g, "  store ptr null, ptr %s", ptr_gep)
                 len_gep := fresh_tmp(g)
                 emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
-                emit(g, "  store i64 0, ptr %s", len_gep)
+                emit_typed_store_len(g, "0", len_gep)
                 cap_gep := fresh_tmp(g)
                 emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
-                emit(g, "  store i64 0, ptr %s", cap_gep)
+                emit_typed_store_cap(g, "0", cap_gep)
                 g.all_vars[s.name] = Slice_Var{alloca = alloca_name, elem_type = elem_t, is_utf8 = sl_utf8, has_sentinel = sl_sentinel}
                 return
             }
@@ -240,8 +240,9 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         }
 
         // Partial array declaration: `name : [..N]T`. Allocates a single
-        // structure {ptr, i64, i64, [N x T]} with ptr pre-set to &elements
-        // so the first 24 bytes are layout-compatible with a slice header.
+        // structure { len, cap, ptr, [N x T] } with ptr pre-set to &elements
+        // so the first slice_header_bytes are layout-compatible with a slice
+        // header.
         if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
             elem_t := llvm_type_from_checker(pa.elem)
             _, pa_utf8 := pa.elem.(Type_Utf8)
@@ -257,7 +258,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 // Big partial array: arena-bump the whole structure including
                 // header. The arena returns a pointer to a fresh region whose
                 // layout matches our IR type — initialize ptr/len/cap into it.
-                data_name := emit_arena_bump(g, total_bytes + 24, s.name, loc)
+                data_name := emit_arena_bump(g, total_bytes + slice_header_bytes, s.name, loc)
                 emit(g, "  %s = bitcast ptr %s to ptr", alloca_name, data_name)
             } else {
                 if elem_t == "i8" {
@@ -274,10 +275,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             emit(g, "  store ptr %s, ptr %s", elements_ptr, ptr_gep)
             len_gep := fresh_tmp(g)
             emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
-            emit(g, "  store i64 0, ptr %s", len_gep)
+            emit_typed_store_len(g, "0", len_gep)
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
-            emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
+            emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
             g.all_vars[s.name] = Slice_Var{
                 alloca       = alloca_name,
                 elem_type    = elem_t,
@@ -295,7 +296,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, len(str_bytes)+1, global)
                         emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", elements_ptr, src_ptr, len(str_bytes))
                     }
-                    emit(g, "  store i64 %d, ptr %s", len(str_bytes), len_gep)
+                    emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
                     if pa.has_sentinel {
                         term_ptr := fresh_tmp(g)
                         emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", term_ptr, elements_ptr, len(str_bytes))
@@ -880,7 +881,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
             emit_struct_copy(g, sd, struct_llvm, src_ptr, sret_ptr)
             continue
         }
-        // Slice returns: memcpy the slice descriptor (ptr + len + cap = 24 bytes).
+        // Slice returns: memcpy the slice descriptor (slice_header_bytes).
         // The single-slice-return path (gen_return_slice) does the same; this
         // mirrors it for slices as one element of a multi-return tuple. The
         // bare scalar fallback below would otherwise emit
@@ -897,7 +898,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
                 src = gen_expr(g, val, elem_type)
             }
             if src == sret_ptr { continue }
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 24, i1 false)", sret_ptr, src)
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", sret_ptr, src, slice_header_bytes)
             continue
         }
         v := gen_expr(g, val, elem_type)
@@ -1042,7 +1043,7 @@ gen_return_slice :: proc(g: ^Codegen, s: Stmt_Return, sret_slv: Slice_Var) {
         src = gen_expr(g, ret_val)
     }
     if src != "" {
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 24, i1 false)", sret_slv.alloca, src)
+        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", sret_slv.alloca, src, slice_header_bytes)
     }
     emit_ret_void(g)
 }

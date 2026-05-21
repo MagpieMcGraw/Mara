@@ -459,7 +459,7 @@ type_alignment :: proc(t: Type) -> int {
     case Type_Bool, Type_C8, Type_Utf8, Type_Byte:
         return 1
     case ^Type_Slice, ^Type_Partial_Array:
-        return 8
+        return slice_header_align
     case ^Type_Scope:
         if v.kind == .Struct {
             max_a := 1

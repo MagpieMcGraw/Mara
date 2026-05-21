@@ -293,10 +293,10 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
                     emit(g, "  store ptr %s, ptr %s", src_ptr, ptr_gep)
                     len_gep := fresh_tmp(g)
                     emit_slice_gep(g, len_gep, dst_field_gep, SLICE.len)
-                    emit(g, "  store i64 %d, ptr %s", fa.size, len_gep)
+                    emit_typed_store_len(g, fmt.tprintf("%d", fa.size), len_gep)
                     cap_gep := fresh_tmp(g)
                     emit_slice_gep(g, cap_gep, dst_field_gep, SLICE.cap)
-                    emit(g, "  store i64 %d, ptr %s", fa.size, cap_gep)
+                    emit_typed_store_cap(g, fmt.tprintf("%d", fa.size), cap_gep)
                     continue
                 }
             }
@@ -628,14 +628,14 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     len_gep := fresh_tmp(g)
                     emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
                     len_val := fresh_tmp(g)
-                    emit(g, "  %s = load i64, ptr %s", len_val, len_gep)
+                    emit_typed_load_len(g, len_val, len_gep)
                     return len_val
                 }
                 if e.field == "cap" {
                     cap_gep := fresh_tmp(g)
                     emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
                     cap_val := fresh_tmp(g)
-                    emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+                    emit_typed_load_cap(g, cap_val, cap_gep)
                     return cap_val
                 }
             }
@@ -857,7 +857,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         // Slice OR partial-array field — both share the first 24 bytes
         // ({len, cap, ptr}), so a Slice_Var pointing at the field's storage
         // handles subsequent .len/.cap/.ptr reads for either shape.
-        if ft == SLICE_IR_TYPE || strings.has_prefix(ft, "{ i64, i64, ptr,") {
+        if ft == SLICE_IR_TYPE || strings.has_prefix(ft, PARTIAL_ARRAY_HEADER_PREFIX) {
             elem_t := "i8"
             sentinel := false
             utf8 := false
@@ -1323,7 +1323,7 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
             emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, hdr_ptr, SLICE.cap)
-            emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
+            emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
 
             backing_offset += field_size
             continue
@@ -1350,7 +1350,7 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
                     emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
                     cap_gep := fresh_tmp(g)
                     emit_slice_gep(g, cap_gep, slot_hdr, SLICE.cap)
-                    emit(g, "  store i64 %d, ptr %s", alloc_cap, cap_gep)
+                    emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
                 }
 
                 backing_offset += fa.size * slot_bytes
@@ -1382,7 +1382,11 @@ gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string,
     gep := fresh_tmp(g)
     emit_slice_gep(g, gep, slice_hdr_ptr, field_idx)
     val := gen_expr(g, value, "i64")
-    emit(g, "  store i64 %s, ptr %s", val, gep)
+    if field == "len" {
+        emit_typed_store_len(g, val, gep)
+    } else {
+        emit_typed_store_cap(g, val, gep)
+    }
 }
 
 gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {

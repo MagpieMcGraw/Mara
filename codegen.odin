@@ -13,17 +13,62 @@ import "core:os"
 //           if/else, for loops, functions, print() builtin.
 // ---------------------------------------------------------------------------
 
-// LLVM IR type for a slice value: { len, cap, data_ptr }.
-// `len` is the cursor (amount of valid/used data, starts at 0 for fresh slices).
-// `cap` is the total capacity of the underlying region.
-// Ordering chosen so partial-array variants nest as prefixes — `{len, [N x T]}`,
-// `{len, cap, [N x T]}`, `{len, cap, ptr, [N x T]}` all share leading fields.
-SLICE_IR_TYPE :: "{ i64, i64, ptr }"
+// Slice / partial-array header layout.
+//
+// Slices and partial arrays share a { len, cap, ptr } header. Each field's
+// width is controlled by Slice_Layout so the layout can be retargeted
+// (16-byte slices on 64-bit, 32-bit ptr on embedded, etc.) without touching
+// every codegen site.
+//
+// Defaults are set at package init for 64-bit / i64 len+cap (slice = 24
+// bytes). `init_slice_layout` in generate_program updates ptr_size and the
+// derived strings for the actual target.
+Slice_Layout :: struct {
+    len_ir:   string,  // LLVM IR scalar for len  (e.g. "i64", "i32")
+    cap_ir:   string,  // LLVM IR scalar for cap
+    len_size: int,     // bytes
+    cap_size: int,     // bytes
+    ptr_size: int,     // bytes (target-dependent — 4 on wasm32 etc.)
+}
+
+slice_layout: Slice_Layout = {
+    len_ir   = "i32",
+    cap_ir   = "i32",
+    len_size = 4,
+    cap_size = 4,
+    ptr_size = 8,
+}
+
+// Derived strings and sizes. Set together with slice_layout in
+// init_slice_layout; defaults below cover the default 64-bit / i32+i32+ptr
+// case (16-byte header) so the type checker (which runs before
+// init_slice_layout) sees sensible values.
+SLICE_IR_TYPE:               string = "{ i32, i32, ptr }"
+PARTIAL_ARRAY_HEADER_PREFIX: string = "{ i32, i32, ptr,"
+slice_header_bytes:          int    = 16
+slice_header_align:          int    = 8
+
+// Update slice_layout and derived strings for the current target. Called
+// once per program at the top of generate_program after word_size_is_32
+// is set.
+init_slice_layout :: proc() {
+    slice_layout.ptr_size = 4 if word_size_is_32 else 8
+    SLICE_IR_TYPE = strings.concatenate({
+        "{ ", slice_layout.len_ir, ", ", slice_layout.cap_ir, ", ptr }",
+    })
+    PARTIAL_ARRAY_HEADER_PREFIX = strings.concatenate({
+        "{ ", slice_layout.len_ir, ", ", slice_layout.cap_ir, ", ptr,",
+    })
+    slice_header_bytes = slice_layout.len_size + slice_layout.cap_size + slice_layout.ptr_size
+    a := slice_layout.len_size
+    if slice_layout.cap_size > a { a = slice_layout.cap_size }
+    if slice_layout.ptr_size > a { a = slice_layout.ptr_size }
+    slice_header_align = a
+}
 
 // Slice header field positions. Partial arrays share these for their first
-// 24 bytes; the elements field follows at PARTIAL_ELEMENTS_FIELD. To swap
-// the layout, update SLICE_IR_TYPE, the SLICE constant below, and the
-// partial_array_ir_type helper — all live here.
+// `slice_header_bytes` bytes; the elements field follows at
+// PARTIAL_ELEMENTS_FIELD.
 Slice_Fields :: struct { len, cap, ptr: int }
 SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 3
@@ -31,7 +76,10 @@ PARTIAL_ELEMENTS_FIELD :: 3
 // Build the LLVM IR type for a `[..N]T` partial array. `cap` includes the
 // sentinel slot if applicable; caller must pre-add the +1.
 partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
-    return strings.concatenate({"{ i64, i64, ptr, [", fmt.tprintf("%d", cap), " x ", elem_ir, "] }"})
+    return strings.concatenate({
+        "{ ", slice_layout.len_ir, ", ", slice_layout.cap_ir, ", ptr, [",
+        fmt.tprintf("%d", cap), " x ", elem_ir, "] }",
+    })
 }
 
 // Open design note: partial arrays reuse the slice layout via pointer-pun on
@@ -765,7 +813,7 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, current_ptr, SLICE.cap)
             cap_val := fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", cap_val, cap_gep)
+            emit_typed_load_cap(g, cap_val, cap_gep)
             idx_raw := gen_expr(g, s.index_expr)
             idx := ensure_i64(g, idx_raw, s.index_expr)
             emit_bounds_check(g, idx, cap_val, s.name_hint, s.span)
@@ -1815,7 +1863,7 @@ elem_byte_size :: proc(elem_type: string, checked: ^Checked_Program = nil) -> in
     case "i16":         return 2
     case "i8":          return 1
     case "i1":          return 1
-    case SLICE_IR_TYPE: return 24 // slice = { data, len, cap }
+    case SLICE_IR_TYPE: return slice_header_bytes
     }
     // Handle embedded struct types like %class.Point
     if strings.has_prefix(elem_type, "%class.") {
@@ -1851,7 +1899,7 @@ elem_alignment :: proc(elem_type: string, checked: ^Checked_Program = nil) -> in
     case "i16":         return 2
     case "i8":          return 1
     case "i1":          return 1
-    case SLICE_IR_TYPE: return 8 // slice aligned by i64 (max of ptr-align and 8)
+    case SLICE_IR_TYPE: return slice_header_align
     }
     // Handle embedded struct types — alignment is max alignment of inner fields
     if strings.has_prefix(elem_type, "%class.") {
@@ -2038,7 +2086,7 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     cap_ptr := fresh_tmp(g)
     emit_slice_gep(g, cap_ptr, tmp_slice, SLICE.cap)
     cap_val := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", cap_val, " = load i64, ptr ", cap_ptr}))
+    emit_typed_load_cap(g, cap_val, cap_ptr)
     is_oom := fresh_tmp(g)
     emit(g, "  %s = icmp eq i64 %s, 0", is_oom, cap_val)
     ok_label := fresh_label(g, "arena.ok")
@@ -2247,6 +2295,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.web = web
     g.shared = shared
     word_size_is_32 = web
+    init_slice_layout()
 
     // Context system: scope allocator setup. Enabled when either:
     //   - the user declared `context.scope_allocator = X` (has_scope_allocator), OR
@@ -2468,12 +2517,12 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         // Store len at field 0
         len_ptr := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", len_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 0"}))
-        emit_raw(&g, strings.concatenate({"  store i64 ", argc_min, ", ptr ", len_ptr}))
+        emit_typed_store_len(&g, argc_min, len_ptr)
 
         // Store cap = 64 at field 1
         cap_ptr := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", cap_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 1"}))
-        emit_raw(&g, strings.concatenate({"  store i64 ", ARGS_CAP, ", ptr ", cap_ptr}))
+        emit_typed_store_cap(&g, ARGS_CAP, cap_ptr)
 
         // GEP to elements storage (field 3) — also the value we store into ptr (field 2)
         elements_ptr := fresh_tmp(&g)
@@ -2520,10 +2569,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         emit_raw(&g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i64 0, i64 ", cur_i}))
         slen_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, slen_ptr, elem_ptr, SLICE.len)
-        emit_raw(&g, strings.concatenate({"  store i64 ", str_len, ", ptr ", slen_ptr}))
+        emit_typed_store_len(&g, str_len, slen_ptr)
         scap_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, scap_ptr, elem_ptr, SLICE.cap)
-        emit_raw(&g, strings.concatenate({"  store i64 ", str_len, ", ptr ", scap_ptr}))
+        emit_typed_store_cap(&g, str_len, scap_ptr)
         data_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, data_ptr, elem_ptr, SLICE.ptr)
         emit_raw(&g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))

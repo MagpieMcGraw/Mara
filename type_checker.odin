@@ -3142,12 +3142,14 @@ checker_type_byte_size :: proc(t: Type) -> int {
     case Type_Numeric:     return v.bits / 8
     case Type_C8, Type_Utf8, Type_Byte, Type_Bool:
         return 1
-    case ^Type_Slice:      return 24 // { ptr, i64, i64 } = 8 + 8 + 8
+    case ^Type_Slice:      return slice_header_bytes
     case ^Type_Partial_Array:
-        // {ptr, i64, i64, [N x T]} — 24 bytes header + N * sizeof(elem) backing
+        // { len, cap, ptr, [N x T] } — slice_header_bytes for the header,
+        // followed by N * sizeof(elem) backing storage (plus sentinel slot
+        // if applicable).
         total := v.size
         if v.has_sentinel { total += 1 }
-        return 24 + total * checker_type_byte_size(v.elem)
+        return slice_header_bytes + total * checker_type_byte_size(v.elem)
     case ^Type_Scope:      return checker_struct_byte_size(v)
     case ^Type_Fixed_Array:
         total := v.size
