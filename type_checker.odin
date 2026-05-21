@@ -3357,99 +3357,124 @@ fun_return_param_index :: proc(c: ^Checker, scope: ^Stmt_Scope) -> int {
     c.table.fun_return_param_pending[scope] = true
     defer delete_key(&c.table.fun_return_param_pending, scope)
 
+    // Flow-sensitive walk: maintain per-local "currently tracks param N"
+    // through program order. At each return statement, evaluate the return
+    // expression against the current tracking. At if-branches, snapshot
+    // before, walk each branch independently, merge after (agreeing keys
+    // keep their value; disagreeing or one-sided keys collapse to -1).
+    //
+    // Straight-line code: a later write to a local shadows earlier ones
+    // — the value at return is whatever the LAST write installed, not the
+    // union of all writes. Catches `out := take(s1); out = take(s2); return out`
+    // as "RPI = 1" instead of falsely treating it as untrackable.
+    tracking: map[string]int
+    defer delete(tracking)
     consensus := -2 // sentinel: haven't seen a return yet
-    fold_return_param_indices(c, scope, scope.body[:], &consensus)
+    walk_for_return_indices(c, scope.body[:], scope, &tracking, &consensus)
 
     if consensus == -2 { consensus = -1 }
     c.table.fun_return_param_idx[scope] = consensus
     return consensus
 }
 
-fold_return_param_indices :: proc(c: ^Checker, scope: ^Stmt_Scope, stmts: []Stmt, consensus: ^int) {
+// Walk `stmts` in program order. Maintain `tracking` (per-local → param
+// index, or -1 untrackable). At each return, fold the return expression's
+// index into `consensus`.
+walk_for_return_indices :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Scope, tracking: ^map[string]int, consensus: ^int) {
     for s in stmts {
         #partial switch v in s {
+        case ^Stmt_Assign:
+            // Track only simple-name declarations and reassignments; skip
+            // field/index/deref assigns (those have v.target != nil).
+            if v.value == nil || v.name == "" || v.target != nil { continue }
+            tracking^[v.name] = eval_expr_index(c, v.value, fn_scope, tracking)
         case Stmt_Return:
             if len(v.values) == 0 { continue }
-            idx := return_value_param_index(c, v.values[0], scope)
+            idx := eval_expr_index(c, v.values[0], fn_scope, tracking)
             if consensus^ == -2 { consensus^ = idx }
             else if consensus^ != idx { consensus^ = -1 }
         case ^Stmt_If:
-            fold_return_param_indices(c, scope, v.body[:], consensus)
-            fold_return_param_indices(c, scope, v.else_body[:], consensus)
+            pre := clone_int_map(tracking^)
+            walk_for_return_indices(c, v.body[:], fn_scope, tracking, consensus)
+            then_state := clone_int_map(tracking^)
+            // Reset for the else branch
+            clear(tracking)
+            for k, val in pre { tracking^[k] = val }
+            walk_for_return_indices(c, v.else_body[:], fn_scope, tracking, consensus)
+            merge_branch_tracking(tracking, then_state, pre)
+            delete(then_state)
+            delete(pre)
         case ^Stmt_Decl:
-            fold_return_param_indices(c, scope, v.checked[:], consensus)
+            walk_for_return_indices(c, v.checked[:], fn_scope, tracking, consensus)
         }
     }
 }
 
-// Compute the parameter index whose provenance `e` follows, evaluated in
-// fn_scope's context. -1 if no single param can be identified.
-return_value_param_index :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope) -> int {
+clone_int_map :: proc(m: map[string]int) -> map[string]int {
+    out: map[string]int
+    for k, val in m { out[k] = val }
+    return out
+}
+
+// Merge the then-branch result (then_state) into the else-branch result
+// (already in `target`), given the pre-if snapshot. For any key that the
+// two branches end with the same value, keep it; anything else collapses
+// to -1 (ambiguous after the join).
+merge_branch_tracking :: proc(target: ^map[string]int, then_state: map[string]int, pre: map[string]int) {
+    keys: map[string]bool
+    defer delete(keys)
+    for k in target^   { keys[k] = true }
+    for k in then_state { keys[k] = true }
+    for k in pre        { keys[k] = true }
+    for k in keys {
+        then_v: int = -1
+        if v, ok := then_state[k];  ok { then_v = v }
+        else if v, ok := pre[k];    ok { then_v = v }
+        else_v: int = -1
+        if v, ok := target^[k];     ok { else_v = v }
+        else if v, ok := pre[k];    ok { else_v = v }
+        target^[k] = then_v if then_v == else_v else -1
+    }
+}
+
+// Evaluate an expression's source param index in the current tracking
+// context. Mirrors the old return_value_param_index but locals consult
+// `tracking` instead of re-scanning the whole body.
+eval_expr_index :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope, tracking: ^map[string]int) -> int {
     if e == nil { return -1 }
-    // Parameter ident → that param's index.
     if ident, ok := e.(^Expr_Ident); ok {
         for p, i in fn_scope.typed_params {
             if p.name == ident.name { return i }
         }
-        // Local: walk every assignment (declaration + reassignments) to
-        // `name`. The value at return time could be any of them, so the
-        // consensus param index is the one all writes agree on. Writes
-        // that disagree make the local's source ambiguous → -1.
-        return local_consensus_param_index(c, fn_scope.body[:], ident.name, fn_scope)
+        if idx, ok := tracking^[ident.name]; ok { return idx }
+        return -1
     }
-    // take(T, storage) — provenance follows the storage.
     if t, ok := e.(^Expr_Take); ok {
-        return return_value_param_index(c, t.storage, fn_scope)
+        return eval_expr_index(c, t.storage, fn_scope, tracking)
     }
-    // Sub-slice — provenance follows the source.
     if sl, ok := e.(^Expr_Slice); ok {
-        return return_value_param_index(c, sl.expr, fn_scope)
+        return eval_expr_index(c, sl.expr, fn_scope, tracking)
     }
-    // Struct literal — for ref-bearing structs, the value's effective depth
-    // is the max over ref fields. If every ref field tracks the same param,
-    // return that index. Mixed sources → -1.
     if lit, ok := e.(^Expr_Struct_Literal); ok {
-        return struct_literal_consensus_param_index(c, lit, fn_scope)
+        consensus := -2
+        for field, i in lit.fields {
+            ft := struct_lit_field_type(c, lit, i)
+            if ft == nil || !is_ref_type(ft) { continue }
+            idx := eval_expr_index(c, field.value, fn_scope, tracking)
+            if consensus == -2 { consensus = idx }
+            else if consensus != idx { consensus = -1 }
+        }
+        if consensus == -2 { return -1 }
+        return consensus
     }
-    // Nested call — recurse into the callee, then map back to our caller's
-    // argument at the index the callee tracks.
     if call, ok := e.(^Expr_Call); ok {
         callee := lookup_callee_scope(c, call)
         if callee == nil { return -1 }
         callee_idx := fun_return_param_index(c, callee)
         if callee_idx < 0 || callee_idx >= len(call.args) { return -1 }
-        return return_value_param_index(c, call.args[callee_idx], fn_scope)
+        return eval_expr_index(c, call.args[callee_idx], fn_scope, tracking)
     }
     return -1
-}
-
-// Walk every assignment to `name` in stmts; return the param index that
-// every write's source maps to. Writes that disagree (different params,
-// or any untrackable source) collapse to -1. Catches the reassignment-
-// laundering case where a local is repeatedly written from the same
-// parameter — the value at return still bounds by that parameter's depth.
-local_consensus_param_index :: proc(c: ^Checker, stmts: []Stmt, name: string, fn_scope: ^Stmt_Scope) -> int {
-    consensus := -2 // not yet seen any write
-    fold_assignment_indices(c, stmts, name, fn_scope, &consensus)
-    if consensus == -2 { return -1 }
-    return consensus
-}
-
-fold_assignment_indices :: proc(c: ^Checker, stmts: []Stmt, name: string, fn_scope: ^Stmt_Scope, consensus: ^int) {
-    for s in stmts {
-        #partial switch v in s {
-        case ^Stmt_Assign:
-            if v.name != name || v.value == nil { continue }
-            idx := return_value_param_index(c, v.value, fn_scope)
-            if consensus^ == -2 { consensus^ = idx }
-            else if consensus^ != idx { consensus^ = -1 }
-        case ^Stmt_If:
-            fold_assignment_indices(c, v.body[:], name, fn_scope, consensus)
-            fold_assignment_indices(c, v.else_body[:], name, fn_scope, consensus)
-        case ^Stmt_Decl:
-            fold_assignment_indices(c, v.checked[:], name, fn_scope, consensus)
-        }
-    }
 }
 
 // Resolve a struct literal's i-th literal field to its declared field type.
@@ -3481,20 +3506,6 @@ struct_has_ref_field :: proc(sd: ^Scope_Body) -> bool {
         if is_ref_type(f.type_) { return true }
     }
     return false
-}
-
-// Consensus param index across the ref fields of a struct literal.
-struct_literal_consensus_param_index :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fn_scope: ^Stmt_Scope) -> int {
-    consensus := -2
-    for field, i in lit.fields {
-        ft := struct_lit_field_type(c, lit, i)
-        if ft == nil || !is_ref_type(ft) { continue }
-        idx := return_value_param_index(c, field.value, fn_scope)
-        if consensus == -2 { consensus = idx }
-        else if consensus != idx { consensus = -1 }
-    }
-    if consensus == -2 { return -1 } // no ref fields
-    return consensus
 }
 
 // Resolve a call to the callee's source AST, mirroring call_has_local_escape's
