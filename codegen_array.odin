@@ -1105,6 +1105,24 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
 
 // Assign a slice expression to an inferred-type variable: x := arr[1:3]
 gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
+    // NRVO: if value is a slice-returning Mara call, route its sret
+    // straight to our dest's alloca. Same trick as gen_slice_from_expr.
+    if call, call_ok := value.(^Expr_Call); call_ok {
+        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_slice_elem != "" {
+            if _, slice_exists := get_slice(g, name); !slice_exists {
+                alloca_name := fmt.tprintf("%%%s.slice", name)
+                emit_slice_alloca(g, alloca_name)
+                g.all_vars[name] = Slice_Var{
+                    alloca    = alloca_name,
+                    elem_type = info.ret_slice_elem,
+                }
+            }
+            sv, _ := get_slice(g, name)
+            gen_call_into_struct(g, call, sv.alloca, &info)
+            return
+        }
+    }
+
     // Determine elem type from the source expression
     elem_t := "i64"
     utf8 := false
@@ -1177,8 +1195,32 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
 }
 
 // Assign a slice-typed expression (e.g. alloc()) to a named variable.
-// The expression must return a { ptr, i64, i64 } alloca.
+// The expression must return a { len, cap, ptr } alloca.
 gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: string, is_utf8: bool = false, has_sentinel: bool = false) {
+    // NRVO: if value is a slice-returning Mara call, route its sret
+    // straight to our dest's alloca. When `name` is the function's NRVO
+    // candidate, its alloca is %sret — so the inner call writes directly
+    // into the outer caller's slot. Saves one alloca + one 16-byte memcpy
+    // per assignment, and propagates through chains where each level
+    // modifies the result before returning.
+    if call, call_ok := value.(^Expr_Call); call_ok {
+        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_slice_elem != "" {
+            if _, slice_exists := get_slice(g, name); !slice_exists {
+                alloca_name := fmt.tprintf("%%%s.slice", name)
+                emit_slice_alloca(g, alloca_name)
+                g.all_vars[name] = Slice_Var{
+                    alloca       = alloca_name,
+                    elem_type    = elem_type,
+                    is_utf8      = is_utf8,
+                    has_sentinel = has_sentinel,
+                }
+            }
+            sv, _ := get_slice(g, name)
+            gen_call_into_struct(g, call, sv.alloca, &info)
+            return
+        }
+    }
+
     src := gen_expr(g, value)
 
     if _, slice_exists := get_slice(g, name); !slice_exists {

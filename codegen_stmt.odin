@@ -1064,7 +1064,10 @@ gen_return_slice :: proc(g: ^Codegen, s: Stmt_Return, sret_slv: Slice_Var) {
     } else if ret_val != nil {
         src = gen_expr(g, ret_val)
     }
-    if src != "" {
+    // Skip the self-copy when the local is NRVO-aliased to sret (the body
+    // already wrote the header in place). Mirrors gen_return_struct's
+    // alloca-comparison check.
+    if src != "" && src != sret_slv.alloca {
         emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", sret_slv.alloca, src, slice_header_bytes)
     }
     emit_ret_void(g)

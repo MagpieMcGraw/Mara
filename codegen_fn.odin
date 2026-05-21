@@ -259,6 +259,20 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             is_utf8      = ret_slice_utf8,
             has_sentinel = ret_slice_sentinel,
         }
+        // NRVO: if every `return X` returns the same named local, alias it
+        // to %sret. Body writes the slice header directly into the caller's
+        // slot — no fresh alloca, no memcpy at return. Mirrors the struct
+        // path above, and `s := slice_returning_call()` in the body routes
+        // the inner call's sret straight to this slot (see gen_slice_from_expr).
+        g.nrvo_var = find_nrvo_candidate(cf.body[:])
+        if g.nrvo_var != "" {
+            g.all_vars[g.nrvo_var] = Slice_Var{
+                alloca       = "%sret",
+                elem_type    = ret_slice_elem,
+                is_utf8      = ret_slice_utf8,
+                has_sentinel = ret_slice_sentinel,
+            }
+        }
     }
 
     // Register sret pointers for tuple-returning functions
