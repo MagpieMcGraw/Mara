@@ -1598,6 +1598,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case Type_Const_Int:    return "i64" // const generic param — should not appear in codegen
     case Type_Runtime_Size: return "i64" // runtime size — should not appear as field type
     case Type_Any:          return "i64" // default to i64 for untyped
+    case Type_Void:         return "{}"  // zero-sized struct — LLVM coalesces
     case Type_Error:        return "i64" // error recovery default
     case nil:               return "i64" // nil type (unresolved)
     }

@@ -15,7 +15,7 @@ Arena :: class {
 
 // this gets special cased in the compiler to let the user type
 // program.scope_allocator = Some_Arena(some_size)
-Program :: struct (ar_shape: ~Arena) {
+Program :: struct (ar_shape: ~Arena = void) {
 	scope_allocator: ar_shape
 	args: [..64][, 0]utf8
 }

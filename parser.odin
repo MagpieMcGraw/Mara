@@ -124,15 +124,18 @@ Scope_Binding :: struct {
 }
 
 Generic_Param :: struct {
-    name:             string,  // "T", "K", "V" for type params; "n", "cap" for const params
-    span:             Span,
-    is_const:         bool,    // true for value params (n: uint) vs type params ($T: type)
-    const_type:       string,  // "uint", "int", etc. — only when is_const
-    default_value:    int,     // default value for const params (only valid when has_default)
-    has_default:      bool,    // whether default_value is set
-    shape_constraint: string,  // for `name: ~T` shape-constrained type params: the constraint
-                               // type's name (e.g. "Arena"). Instantiation must satisfy T's
-                               // API + size budget. Empty for unconstrained type params.
+    name:               string,    // "T", "K", "V" for type params; "n", "cap" for const params
+    span:               Span,
+    is_const:           bool,      // true for value params (n: uint) vs type params ($T: type)
+    const_type:         string,    // "uint", "int", etc. — only when is_const
+    default_value:      int,       // default value for const params (only valid when has_default)
+    has_default:        bool,      // whether default_value is set
+    shape_constraint:   string,    // for `name: ~T` shape-constrained type params: the constraint
+                                   // type's name (e.g. "Arena"). Instantiation must satisfy T's
+                                   // API + size budget. Empty for unconstrained type params.
+    default_type_expr:  Type_Expr, // for type params (incl. ~T): default type when caller omits
+                                   // the arg. Stored as a Type_Expr so it resolves through the
+                                   // standard pipeline at instantiation time. nil when no default.
 }
 
 Union_Variant_Def :: struct {
@@ -1543,12 +1546,22 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
                 // type satisfying T's API + size budget binds at instantiation.
                 // `~T` here is the *declaration* — separate from `~T` at
                 // use-sites (which is rejected; see resolve_type_expr).
+                //
+                // An optional default like `name: ~T = void` (or any other
+                // type name) is parsed as an Expr in tp.default_value; we
+                // pluck the identifier out and stash it as a Type_Expr so
+                // the resolver can fill it in when the caller omits the
+                // type-arg (e.g. bare `Program` or `Program()` instantiation).
                 if tn.tilde {
-                    append(&generic_params, Generic_Param{
+                    gp := Generic_Param{
                         name             = tp.name,
                         span             = tn.span,
                         shape_constraint = tn.name,
-                    })
+                    }
+                    if id, id_ok := tp.default_value.(^Expr_Ident); id_ok {
+                        gp.default_type_expr = Type_Name{name = id.name, span = id.span}
+                    }
+                    append(&generic_params, gp)
                     continue
                 }
                 // Case 1: `name: $T` pattern — type was introduced via $ here.

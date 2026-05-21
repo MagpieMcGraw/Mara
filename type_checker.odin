@@ -33,6 +33,10 @@ Type :: union {
     Type_Const_Int,      // compile-time integer value — used as const generic param (e.g., n=256)
     Type_Runtime_Size,   // runtime-sized const generic param (e.g., String(n) where n is a variable)
     Type_Any,            // for opaque pointer elements only (ptr → ^Type_Ptr{elem=Type_Any{}})
+    Type_Void,           // zero-sized "nothing here" — used as the default for `~T`
+                         //   shape-constrained generic params. Satisfies any `~T`
+                         //   trivially; reading or method-calling a void value is
+                         //   a type error.
     Type_Error,       // error recovery — suppresses cascading type errors
 }
 
@@ -52,6 +56,7 @@ Type_Runtime_Size :: struct {
     expr: Expr,  // runtime expression for size (evaluated at codegen time)
 }
 Type_Any :: struct {}
+Type_Void :: struct {}
 Type_Error :: struct {}
 
 Type_Tuple :: struct {
@@ -1407,6 +1412,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         case "c8":     return Type_C8{}
         case "utf8":   return Type_Utf8{}
         case "byte":   return Type_Byte{}
+        case "void":   return Type_Void{}
         case "i8":     return Type_Numeric{kind = .Signed,   bits = 8}
         case "i16":    return Type_Numeric{kind = .Signed,   bits = 16}
         case "i32":    return Type_Numeric{kind = .Signed,   bits = 32}
@@ -1531,15 +1537,15 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                 return tp
             }
             // Generic struct with all-defaulted params: bare `String` -> `String(256)`
+            // or bare `Program` -> `Program(void)`.
             if tmpl, tmpl_ok := &c.table.generic_templates[t.name]; tmpl_ok {
                 all_defaulted := true
                 type_args: [dynamic]Type
                 for param in tmpl.generic_params {
                     if param.is_const && param.has_default {
                         append(&type_args, Type_Const_Int{value = param.default_value})
-                    } else if !param.is_const {
-                        all_defaulted = false
-                        break
+                    } else if !param.is_const && param.default_type_expr != nil {
+                        append(&type_args, resolve_type_expr(param.default_type_expr, c, span, env = env))
                     } else {
                         all_defaulted = false
                         break
@@ -1697,11 +1703,15 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         // Look up generic struct template
         if tmpl_ptr != nil {
             tmpl := tmpl_ptr
-            // Fill in missing const params from defaults
+            // Fill in missing params from defaults: const defaults stamp a
+            // Type_Const_Int, type defaults (incl. `~T = void`) resolve their
+            // stashed default_type_expr through the standard pipeline.
             for i := len(type_args); i < len(tmpl.generic_params); i += 1 {
                 param := tmpl.generic_params[i]
                 if param.is_const && param.has_default {
                     append(&type_args, Type_Const_Int{value = param.default_value})
+                } else if param.default_type_expr != nil {
+                    append(&type_args, resolve_type_expr(param.default_type_expr, c, span, env = env))
                 }
             }
             if len(type_args) != len(tmpl.generic_params) {
@@ -2802,6 +2812,10 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Matching Type_Any with Type_Any is OK (e.g. two opaque ptrs).
         if _, ok := b.(Type_Any); ok { return true }
         return false
+    case Type_Void:
+        // Void matches itself only.
+        _, ok := b.(Type_Void)
+        return ok
     case Type_Error:
         return true
     }
@@ -2894,6 +2908,7 @@ type_name :: proc(t: Type) -> string {
     case Type_Const_Int:    return fmt.tprintf("const_%d", v.value)
     case Type_Runtime_Size: return "vla"
     case Type_Any:          return "any"
+    case Type_Void:         return "void"
     case Type_Error:        return "<error>"
     }
     return "void"
@@ -3089,6 +3104,8 @@ checker_type_alignment :: proc(t: Type) -> int {
          Type_Const_Int, Type_Runtime_Size,
          Type_Any, Type_Error:
         return 8
+    case Type_Void:
+        return 1
     case Type_Numeric:
         switch v.bits {
         case 64: return 8
@@ -3282,6 +3299,12 @@ self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope)
 //     filler field).
 // Each shortcoming surfaces as its own diagnostic at `span`.
 check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, home_package: string, span: Span) {
+    // `void` is the universal subtype for shape constraints — used as the
+    // default type-arg when the user writes `p : Program` (no arena).
+    // Trivially satisfies any `~T` requirement (no API to miss, zero size
+    // to budget). Reads / method calls on the resulting void slot are
+    // gated separately (see field access and call sites).
+    if _, is_void := arg.(Type_Void); is_void { return }
     constraint_name := param.shape_constraint
     // Resolve the constraint type by name. The bare identifier in `~T` is
     // looked up against the home package of the template that declared the
@@ -3379,6 +3402,8 @@ checker_type_byte_size :: proc(t: Type) -> int {
          Type_Const_Int, Type_Runtime_Size,
          Type_Any, Type_Error, nil:
         return 8
+    case Type_Void:
+        return 0
     case Type_Numeric:     return v.bits / 8
     case Type_C8, Type_Utf8, Type_Byte, Type_Bool:
         return 1
@@ -6066,7 +6091,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
              Type_CString, Type_C8, Type_Utf8, Type_Byte, Type_Numeric,
              ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Tuple, ^Type_Distinct,
-             Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Error,
+             Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Void, Type_Error,
              nil:
             check_error(c, s.span, "cannot iterate over type '%s'", type_name(coll_type))
             elem_type = Type_Any{}
