@@ -124,12 +124,15 @@ Scope_Binding :: struct {
 }
 
 Generic_Param :: struct {
-    name:          string,  // "T", "K", "V" for type params; "n", "cap" for const params
-    span:          Span,
-    is_const:      bool,    // true for value params (n: uint) vs type params ($T: type)
-    const_type:    string,  // "uint", "int", etc. — only when is_const
-    default_value: int,     // default value for const params (only valid when has_default)
-    has_default:   bool,    // whether default_value is set
+    name:             string,  // "T", "K", "V" for type params; "n", "cap" for const params
+    span:             Span,
+    is_const:         bool,    // true for value params (n: uint) vs type params ($T: type)
+    const_type:       string,  // "uint", "int", etc. — only when is_const
+    default_value:    int,     // default value for const params (only valid when has_default)
+    has_default:      bool,    // whether default_value is set
+    shape_constraint: string,  // for `name: ~T` shape-constrained type params: the constraint
+                               // type's name (e.g. "Arena"). Instantiation must satisfy T's
+                               // API + size budget. Empty for unconstrained type params.
 }
 
 Union_Variant_Def :: struct {
@@ -503,9 +506,6 @@ Stmt_Scope :: struct {
     is_intrinsic:   bool,      // body was `{ @llvm.<name> }` — compiler generates body at call sites
     intrinsic_name: string,    // LLVM intrinsic mnemonic (e.g. "llvm.sqrt.f32"); set when is_intrinsic is true
     is_exposed:    bool,      // `#expose fun ...` — DLL entry point: dllexport linkage, unmangled symbol name
-    is_constraint: bool,      // `Name :: ~struct/~class { ... }` — interface-like shape. Cannot be constructed;
-                              //   field declarations of this type accept any concrete type that has the same
-                              //   methods (API) and fits in sizeof(this).
     span:           Span,
 }
 
@@ -1389,7 +1389,7 @@ collect_body_type_refs :: proc(body: [dynamic]Stmt, params: []Scope_Binding, ref
     }
 }
 
-parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind, is_constraint: bool = false) -> Stmt {
+parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind) -> Stmt {
     advance(p) // consume 'fun' / 'struct' / 'class'
 
     // Case 1: fun { ... } — data-type fun, no params
@@ -1401,7 +1401,6 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind,
         stmt.body = body
         stmt.is_intrinsic = is_intrinsic
         stmt.intrinsic_name = intrinsic_name
-        stmt.is_constraint = is_constraint
         stmt.span = start
         return stmt
     }
@@ -1471,7 +1470,6 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind,
             stmt.body = body
             stmt.is_intrinsic = is_intrinsic
             stmt.intrinsic_name = intrinsic_name
-            stmt.is_constraint = is_constraint
             stmt.has_parens = true
             stmt.span = start
             return stmt
@@ -1488,7 +1486,6 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind,
             stmt.body = body
             stmt.is_intrinsic = is_intrinsic
             stmt.intrinsic_name = intrinsic_name
-            stmt.is_constraint = is_constraint
             stmt.has_parens = true
             stmt.span = start
             return stmt
@@ -1507,7 +1504,6 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind,
         stmt.body = body
         stmt.is_intrinsic = is_intrinsic
         stmt.intrinsic_name = intrinsic_name
-        stmt.is_constraint = is_constraint
         stmt.has_parens = true
         stmt.span = start
         return stmt
@@ -1542,6 +1538,19 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind,
         promoted: [dynamic]Scope_Binding
         for tp in typed_params {
             if tn, ok := tp.type_expr.(Type_Name); ok {
+                // Case 0: `name: ~T` — shape-constrained type parameter.
+                // The `~` makes this an interface-shaped slot: any concrete
+                // type satisfying T's API + size budget binds at instantiation.
+                // `~T` here is the *declaration* — separate from `~T` at
+                // use-sites (which is rejected; see resolve_type_expr).
+                if tn.tilde {
+                    append(&generic_params, Generic_Param{
+                        name             = tp.name,
+                        span             = tn.span,
+                        shape_constraint = tn.name,
+                    })
+                    continue
+                }
                 // Case 1: `name: $T` pattern — type was introduced via $ here.
                 is_dollar := false
                 for dp in p.dollar_params {
@@ -1602,7 +1611,6 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind,
     stmt.body = body
     stmt.is_intrinsic = is_intrinsic
     stmt.intrinsic_name = intrinsic_name
-    stmt.is_constraint = is_constraint
     stmt.has_parens = true
     stmt.span = start
     return stmt
@@ -2493,20 +2501,6 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             return parse_scope_def(p, name_tok.text, start, .Fun), true
         case .Struct:
             return parse_scope_def(p, name_tok.text, start, .Struct), true
-        case .Tilde:
-            // `Name :: ~struct { ... }` / `Name :: ~class { ... }` — constraint
-            // (interface-like) shape. Cannot be constructed; declares a slot
-            // shape that other concrete types satisfy by having the same
-            // methods and fitting in this type's storage size.
-            advance(p) // consume '~'
-            if current_kind(p) != .Struct {
-                tok := current(p)
-                fmt.printf("[%s] Parse error: expected `struct` or `class` after `~`, got %v \"%s\"\n",
-                    error_prefix(tok), tok.kind, tok.text)
-                p.errors += 1
-                return nil, false
-            }
-            return parse_scope_def(p, name_tok.text, start, .Struct, is_constraint = true), true
         case .Union:    return parse_union_def_with_name(p, name_tok.text, start), true
         case .Dispatch: return parse_dispatch_def_with_name(p, name_tok.text, start), true
         case .Distinct:
