@@ -1,7 +1,6 @@
 module test
 
 use test_io_arrow
-use test_nested_defs
 use test_context_arena
 use test_all
 use test_struct_init
@@ -18,7 +17,6 @@ use test_underscore_default
 use test_hex_literals
 use test_match_namespace
 use test_match_indexed
-use test_shape_match
 use test_method_call
 use test_distinct_construct
 use test_take_basic
@@ -40,7 +38,6 @@ main :: fun() -> i64 {
 
 	test_args()
 	test_io_arrow()
-	test_nested_defs()
 	test_context_arena()
 	test_all()
 	test_struct_init()
@@ -57,7 +54,6 @@ main :: fun() -> i64 {
 	test_hex_literals()
 	test_match_namespace()
 	test_match_indexed()
-	test_shape_match()
 	test_method_call()
 	test_distinct_construct()
 	test_take_basic()

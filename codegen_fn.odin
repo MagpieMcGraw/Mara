@@ -103,6 +103,15 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     case Origin_Foreign:   return
     }
 
+    // Constraint types (`Name :: ~struct/~class { ... }`) are interface-shaped
+    // slot declarations — their methods and zero-init constructors are stubs
+    // that exist only to give the type-checker a signature to match against
+    // and a size budget to enforce. Concrete types dispatch to their own
+    // method implementations, so no caller ever runs these bodies. Skip
+    // emission entirely; the type still gets registered in the LLVM module
+    // for any containing struct's layout.
+    if cf.type_ != nil && cf.type_.is_constraint { return }
+
     // Determine return type — struct/array/tuple returns use void + sret param(s)
     ret_type := "i64"
     ret_struct_name := ""

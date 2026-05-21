@@ -104,7 +104,10 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
             return
         }
         // No value: call the struct's init function to apply defaults.
-        if init_fn, has_init := g.checked.functions[st.name]; has_init {
+        // Constraint types (`~struct/~class`) have no body emitted — their
+        // slot is just a size budget. The preceding memset already zeroed it,
+        // and a concrete assignment will overwrite it before any read. Skip.
+        if init_fn, has_init := g.checked.functions[st.name]; has_init && !(init_fn.type_ != nil && init_fn.type_.is_constraint) {
             if init_fn.type_ != nil && len(init_fn.type_.params) > 0 {
                 arg_strs: [dynamic]string
                 for &param in init_fn.type_.params {
@@ -229,7 +232,9 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     // Structs without an emitted init function (hardcoded Context, Args,
     // any foreign types) stay zero-initialized from the alloca-time memset
     // above. By construction they have no field defaults to apply.
-    if init_fn, has_init := g.checked.functions[st.name]; has_init {
+    // Constraint types have no emitted body — leave the slot at the zero
+    // state from the alloca-time memset; concrete assignment overwrites it.
+    if init_fn, has_init := g.checked.functions[st.name]; has_init && !(init_fn.type_ != nil && init_fn.type_.is_constraint) {
         if init_fn.type_ != nil && len(init_fn.type_.params) > 0 {
             arg_strs: [dynamic]string
             for &param in init_fn.type_.params {
@@ -1126,7 +1131,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         // stay zero (no defaults to apply by construction).
         emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
         if !lit.zero_init {
-            if _, has_init := g.checked.functions[st.name]; has_init {
+            if init_fn, has_init := g.checked.functions[st.name]; has_init && !(init_fn.type_ != nil && init_fn.type_.is_constraint) {
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
             }
         }

@@ -14,6 +14,16 @@ GB :: 1 << 30
 //
 // Each mark writes 8 bytes (prev_mark offset). No debug headers.
 
+oom_string :: "
+=== Arena out of memory ===
+
+Arena capacity: % bytes
+Bytes used:     % bytes
+Bytes free:     % bytes
+
+Failed allocation: %, % bytes in %
+"
+
 Arena_Basic :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
 	capacity: i64 = cap
@@ -109,7 +119,7 @@ Arena_Debug :: class(cap: i64) {
 
 		if end > cap {
 			dump(a, size, name, span)
-			crash()
+			crash("Arena OOM")
 		}
 
 		h : AllocHeader = {
@@ -154,25 +164,5 @@ Arena_Debug :: class(cap: i64) {
 			print("  %, % bytes in %", h.name, h.size, h.span)
 			pos = h.prev
 		}
-	}
-}
-
-oom_string :: "
-=== Arena out of memory ===
-
-Arena capacity: % bytes
-Bytes used:     % bytes
-Bytes free:     % bytes
-
-Failed allocation: %, % bytes in %
-"
-
-print_size :: fun(size: i64) {
-	if size >= MB {
-		print_float(f64(size) / f64(MB))
-		print_cstr(" MB")
-	else
-		print_float(f64(size) / f64(KB))
-		print_cstr(" KB")
 	}
 }

@@ -37,6 +37,9 @@ Type_Expr :: union {
 Type_Name :: struct {
     name: string,
     span: Span,
+    tilde: bool,  // `~T` at type-expr position — T must be a constraint type
+                  // (`~struct/~class`). Stylistic marker that makes the
+                  // interface-shaped slot visible at the use site.
 }
 
 // `fn game_run` — extracts the nominal function type from a named function
@@ -127,9 +130,6 @@ Generic_Param :: struct {
     const_type:    string,  // "uint", "int", etc. — only when is_const
     default_value: int,     // default value for const params (only valid when has_default)
     has_default:   bool,    // whether default_value is set
-    shape_match:   string,  // when set: ~T param, name of the type whose shape constrains this slot.
-                            // Each ~T occurrence introduces a fresh anonymous generic param
-                            // (named __shape_<n>) so two ~T params bind independently.
 }
 
 Union_Variant_Def :: struct {
@@ -503,6 +503,9 @@ Stmt_Scope :: struct {
     is_intrinsic:   bool,      // body was `{ @llvm.<name> }` — compiler generates body at call sites
     intrinsic_name: string,    // LLVM intrinsic mnemonic (e.g. "llvm.sqrt.f32"); set when is_intrinsic is true
     is_exposed:    bool,      // `#expose fun ...` — DLL entry point: dllexport linkage, unmangled symbol name
+    is_constraint: bool,      // `Name :: ~struct/~class { ... }` — interface-like shape. Cannot be constructed;
+                              //   field declarations of this type accept any concrete type that has the same
+                              //   methods (API) and fits in sizeof(this).
     span:           Span,
 }
 
@@ -642,8 +645,6 @@ Parser :: struct {
     // When true, a `{` following an expression is NOT parsed as a struct literal —
     // the `{` belongs to the enclosing loop/if body. Set during condition parsing.
     no_struct_lit: bool,
-    // Counter for anonymous shape-match generic params (~T introduces a fresh name per occurrence)
-    shape_counter: int,
 }
 
 // Get a Span from a Token
@@ -1388,7 +1389,7 @@ collect_body_type_refs :: proc(body: [dynamic]Stmt, params: []Scope_Binding, ref
     }
 }
 
-parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind) -> Stmt {
+parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind, is_constraint: bool = false) -> Stmt {
     advance(p) // consume 'fun' / 'struct' / 'class'
 
     // Case 1: fun { ... } — data-type fun, no params
@@ -1400,6 +1401,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         stmt.body = body
         stmt.is_intrinsic = is_intrinsic
         stmt.intrinsic_name = intrinsic_name
+        stmt.is_constraint = is_constraint
         stmt.span = start
         return stmt
     }
@@ -1469,6 +1471,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
             stmt.body = body
             stmt.is_intrinsic = is_intrinsic
             stmt.intrinsic_name = intrinsic_name
+            stmt.is_constraint = is_constraint
             stmt.has_parens = true
             stmt.span = start
             return stmt
@@ -1485,6 +1488,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
             stmt.body = body
             stmt.is_intrinsic = is_intrinsic
             stmt.intrinsic_name = intrinsic_name
+            stmt.is_constraint = is_constraint
             stmt.has_parens = true
             stmt.span = start
             return stmt
@@ -1503,6 +1507,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         stmt.body = body
         stmt.is_intrinsic = is_intrinsic
         stmt.intrinsic_name = intrinsic_name
+        stmt.is_constraint = is_constraint
         stmt.has_parens = true
         stmt.span = start
         return stmt
@@ -1597,6 +1602,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
     stmt.body = body
     stmt.is_intrinsic = is_intrinsic
     stmt.intrinsic_name = intrinsic_name
+    stmt.is_constraint = is_constraint
     stmt.has_parens = true
     stmt.span = start
     return stmt
@@ -2487,6 +2493,20 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             return parse_scope_def(p, name_tok.text, start, .Fun), true
         case .Struct:
             return parse_scope_def(p, name_tok.text, start, .Struct), true
+        case .Tilde:
+            // `Name :: ~struct { ... }` / `Name :: ~class { ... }` — constraint
+            // (interface-like) shape. Cannot be constructed; declares a slot
+            // shape that other concrete types satisfy by having the same
+            // methods and fitting in this type's storage size.
+            advance(p) // consume '~'
+            if current_kind(p) != .Struct {
+                tok := current(p)
+                fmt.printf("[%s] Parse error: expected `struct` or `class` after `~`, got %v \"%s\"\n",
+                    error_prefix(tok), tok.kind, tok.text)
+                p.errors += 1
+                return nil, false
+            }
+            return parse_scope_def(p, name_tok.text, start, .Struct, is_constraint = true), true
         case .Union:    return parse_union_def_with_name(p, name_tok.text, start), true
         case .Dispatch: return parse_dispatch_def_with_name(p, name_tok.text, start), true
         case .Distinct:
@@ -2793,23 +2813,17 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         return Type_Name{name = name_tok.text, span = start}
     }
 
-    // Shape-match type: ~T means "any type structurally compatible with T's API."
-    // Each occurrence introduces a fresh anonymous generic param so two ~T params
-    // bind independently. The constraint name (T) is recorded for diagnostics and
-    // for an eventual structural check; for now the body re-checking after
-    // monomorphization enforces compatibility implicitly.
+    // Constraint reference: `~T` at type-expression position. T must resolve
+    // to a constraint type (`Name :: ~struct/~class { ... }`) at type-check
+    // time; the tilde is a visible marker that this slot holds an interface,
+    // not a concrete type. The checker enforces the constraint requirement;
+    // the parser just stamps the flag onto the Type_Name so the resolver can
+    // tell `~T` apart from plain `T` for diagnostics and rule enforcement.
     if current_kind(p) == .Tilde {
         start := token_span(current(p))
         advance(p) // consume '~'
         name_tok := expect(p, .Identifier)
-        p.shape_counter += 1
-        anon_name := fmt.aprintf("__shape_%d", p.shape_counter)
-        append(&p.dollar_params, Generic_Param{
-            name        = anon_name,
-            span        = start,
-            shape_match = name_tok.text,
-        })
-        return Type_Name{name = anon_name, span = start}
+        return Type_Name{name = name_tok.text, span = start, tilde = true}
     }
 
     // Tuple type: (int, string) or named multi-return: (fwd, up, right: Vec3)

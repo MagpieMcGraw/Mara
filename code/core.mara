@@ -1,0 +1,21 @@
+module mara.core
+
+Arena :: class {
+	size: [64]byte
+
+	mark :: fun(a: ^Self) {
+	}
+	alloc :: fun(a: ^Self, size: i64) -> []byte	{
+	}
+	reset :: fun(a: ^Self) {
+	}
+	dump :: fun(a: ^Self, size: i64, name, span: ^byte)	{
+	}
+}
+
+// this gets special cased in the compiler to let the user type
+// program.scope_allocator = Some_Arena(some_size)
+Program :: struct (ar_shape: ~Arena) {
+	scope_allocator: ar_shape
+	args: [..64][, 0]utf8
+}

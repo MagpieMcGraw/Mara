@@ -160,6 +160,10 @@ Type_Scope :: struct {
     using sd: Scope_Body,
     kind:           Scope_Kind, // .Struct = data layout, .Fun = callable body
     has_parens:     bool,       // true if declared with parens — affects callable detection
+    is_constraint:  bool,       // `Name :: ~struct/~class { ... }` — interface-like shape.
+                                // Cannot be constructed; a field declared with this type
+                                // accepts any concrete type that exposes the same methods
+                                // and fits in this type's storage size.
 
     // Callable params (function parameters / constructor params)
     params:         [dynamic]Struct_Type_Field,
@@ -1377,6 +1381,24 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
 // ---------------------------------------------------------------------------
 
 resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Env = nil) -> Type {
+    // `~T` at type-expression position: T must be a constraint type
+    // (`~struct/~class`). The tilde is a visual marker that this slot holds
+    // an interface; the constraint requirement is enforced here. Strip the
+    // tilde for the recursive resolve so existing lookup paths handle it
+    // unchanged, then validate the result is a constraint type.
+    if tn, is_tn := te.(Type_Name); is_tn && tn.tilde {
+        plain := tn
+        plain.tilde = false
+        result := resolve_type_expr(plain, c, span, const_values, env)
+        if ts, ok := result.(^Type_Scope); ok && ts.is_constraint { return ts }
+        if c != nil {
+            check_error(c, span,
+                "`~%s` requires '%s' to be a constraint type (declared with `~struct/~class`)",
+                tn.name, tn.name)
+        }
+        return Type_Error{}
+    }
+
     switch t in te {
     case Type_Name:
         switch t.name {
@@ -1863,6 +1885,22 @@ sanitize_for_identifier :: proc(s: string) -> string {
 // Resolve a type expression with generic type parameter substitutions.
 // Used during monomorphization to replace T with the concrete type.
 resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, subst: ^map[string]Type) -> Type {
+    // `~T` validation: must resolve to a constraint type (same rule as the
+    // non-subst path). Substitutions can't reintroduce tilde, so a single
+    // strip-and-recheck handles it.
+    if tn, is_tn := te.(Type_Name); is_tn && tn.tilde {
+        plain := tn
+        plain.tilde = false
+        result := resolve_type_expr_with_subst(plain, c, span, subst)
+        if ts, ok := result.(^Type_Scope); ok && ts.is_constraint { return ts }
+        if c != nil {
+            check_error(c, span,
+                "`~%s` requires '%s' to be a constraint type (declared with `~struct/~class`)",
+                tn.name, tn.name)
+        }
+        return Type_Error{}
+    }
+
     switch t in te {
     case Type_Name:
         // Check substitution map first (for generic type params like T, K, V)
@@ -3161,6 +3199,58 @@ types_incompatible :: proc(a: Type, b: Type) -> bool {
     return !types_equal(a, b)
 }
 
+// Check whether a `~struct/~class` constraint type accepts a concrete RHS.
+// A constraint type acts as an interface-shaped slot: the RHS must be a
+// concrete struct/class that declares every method named in the constraint
+// (signature match is *not yet* enforced — name match only for now) and must
+// fit within the constraint's own byte budget (declared via real fields,
+// most commonly a `size: [N]byte` filler).
+//
+// Reports a per-shortcoming error and returns true iff every requirement
+// holds.
+constraint_accepts :: proc(c: ^Checker, ct: ^Type_Scope, rhs: Type, span: Span) -> bool {
+    rhs_scope, rhs_ok := distinct_base(rhs).(^Type_Scope)
+    if !rhs_ok || rhs_scope.kind != .Struct {
+        check_error(c, span,
+            "cannot assign %s to constraint '%s' — RHS must be a concrete struct/class",
+            type_name(rhs), ct.name)
+        return false
+    }
+    if rhs_scope.is_constraint {
+        check_error(c, span,
+            "cannot assign constraint '%s' to constraint '%s' — RHS must be a concrete struct/class",
+            rhs_scope.name, ct.name)
+        return false
+    }
+    ok := true
+    for fn_name in ct.functions {
+        if fn_name not_in rhs_scope.functions {
+            check_error(c, span,
+                "type '%s' does not satisfy constraint '%s': missing method '%s'",
+                rhs_scope.name, ct.name, fn_name)
+            ok = false
+        }
+    }
+    ct_size  := checker_struct_byte_size(ct)
+    rhs_size := checker_struct_byte_size(rhs_scope)
+    if rhs_size > ct_size {
+        check_error(c, span,
+            "type '%s' does not fit constraint '%s' budget: needs %d bytes, slot is %d bytes",
+            rhs_scope.name, ct.name, rhs_size, ct_size)
+        ok = false
+    }
+    return ok
+}
+
+// True when `t` is a `~struct/~class` constraint type. Distinct-wrapped
+// constraints (`type X :: distinct Constraint`) are not unwrapped — that
+// path isn't in use yet, and the explicit `^Type_Scope` lets call sites
+// avoid an extra unwrap when they already have the scope.
+is_constraint_type :: proc(t: Type) -> bool {
+    if ts, ok := t.(^Type_Scope); ok { return ts.is_constraint }
+    return false
+}
+
 // Byte size of a checker type (for big-array threshold checks).
 checker_type_byte_size :: proc(t: Type) -> int {
     switch v in t {
@@ -4112,17 +4202,28 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 check_error(c, s.span, "struct/class '%s' cannot declare a return type", bare_name)
                 s.return_type = nil  // suppress cascading return-path errors
             }
+            // Methods and nested types of a constraint class are themselves
+            // constraint scaffolding — their bodies are stubs that codegen
+            // skips. Propagate the flag down so the codegen filter at
+            // gen_scope_def catches them by inspecting cf.type_.is_constraint
+            // alone (no parent walk).
+            parent_is_constraint := false
+            if parent_ts, ok := self_type.(^Type_Scope); ok && parent_ts.is_constraint {
+                parent_is_constraint = true
+            }
             if def_is_struct && len(s.typed_params) == 0 {
                 // Pure data struct — create Type_Scope with kind=.Struct, no params
                 // Phase 2 (check_bodies) resolves fields; we only register the name here.
                 def_st := new(Type_Scope)
                 def_st.name = mangled
                 def_st.kind = .Struct
+                def_st.is_constraint = s.is_constraint || parent_is_constraint
                 c.table.structs[mangled] = def_st
                 if st.types == nil { st.types = make(map[string]Type) }
                 st.types[bare_name] = def_st
-                append(&st.fields, Struct_Type_Field{name = bare_name, type_ = def_st})
-                st.field_map[bare_name] = len(st.fields) - 1
+                // Nested `::` defs are compile-time names, not runtime data.
+                // resolve_struct_field falls through to st.types for field-style
+                // lookup, so `Parent.Inner` still works without an entry here.
                 if len(s.body) > 0 {
                     register_scope_defs(c, def_st, &def_st.sd, s.body, &scope_env)
                 }
@@ -4135,14 +4236,14 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_ft := new(Type_Scope)
                 def_ft.name = mangled
                 def_ft.has_parens = s.has_parens
+                def_ft.is_constraint = s.is_constraint || parent_is_constraint
                 if def_is_struct {
                     def_ft.kind = .Struct
                     // Phase 2 (check_bodies) resolves fields; we only register the name here.
                     c.table.funs[mangled] = def_ft
                     if st.types == nil { st.types = make(map[string]Type) }
                     st.types[bare_name] = def_ft
-                    append(&st.fields, Struct_Type_Field{name = bare_name, type_ = def_ft})
-                    st.field_map[bare_name] = len(st.fields) - 1
+                    // Nested `::` defs don't claim runtime storage in the parent.
                     if len(s.body) > 0 {
                         register_scope_defs(c, def_ft, &def_ft.sd, s.body, &scope_env)
                     }
@@ -4457,6 +4558,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 struct_type := new(Type_Scope)
                 struct_type.name = flat
                 struct_type.kind = .Struct
+                struct_type.is_constraint = s.is_constraint
                 c.table.structs[flat] = struct_type
                 // Body fields deferred to Pass 1b (register_scope_defs).
                 type_env_set(pub, s.name, struct_type)
@@ -4485,6 +4587,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 }
                 fun_type := new(Type_Scope)
                 fun_type.has_parens = s.has_parens
+                fun_type.is_constraint = s.is_constraint
                 fun_type.name = flat_name
                 if is_struct_type {
                     fun_type.kind = .Struct
@@ -4776,6 +4879,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 struct_type := new(Type_Scope)
                 struct_type.name = make_flat_name(c.current_package, s.name)
                 struct_type.kind = .Struct
+                struct_type.is_constraint = s.is_constraint
                 if struct_type.name in c.table.structs || struct_type.name in c.table.funs {
                     check_error(c, s.span, "type '%s' already defined", s.name)
                     continue
@@ -4804,6 +4908,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
                 fun_type := new(Type_Scope)
                 fun_type.has_parens = s.has_parens
+                fun_type.is_constraint = s.is_constraint
                 // Name is set for both struct and fun kinds so types_equal
                 // compares them nominally (two funs with same shape but different
                 // names are distinct — honors `fn name` identity). Only struct
@@ -5436,6 +5541,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 } else if is_byte_buffer_index_read(s.value) {
                     // Byte buffer reinterpret read via index: x : int = mem[0]
                     // Size comes from the annotation type; bounds checked at runtime
+                } else if ct, ct_ok := ann_type.(^Type_Scope); ct_ok && ct.is_constraint {
+                    // Constraint-typed local: any concrete struct/class with the
+                    // matching method names and a small-enough byte footprint.
+                    constraint_accepts(c, ct, val_type, s.span)
                 } else if types_incompatible(ann_type, val_type) {
                     check_error(c, s.span, "cannot assign %s to variable '%s' of type %s",
                         type_name(val_type), s.name, type_name(ann_type))
@@ -5490,7 +5599,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // Also clear any field-level uninit entries (whole struct reassignment)
                     clear_struct_uninit_fields(env, s.name)
                     // Reassignment: check value type matches existing variable type
-                    if types_incompatible(existing_type, val_type) {
+                    if ct, ct_ok := existing_type.(^Type_Scope); ct_ok && ct.is_constraint {
+                        constraint_accepts(c, ct, val_type, s.span)
+                    } else if types_incompatible(existing_type, val_type) {
                         check_error(c, s.span, "cannot assign %s to variable '%s' of type %s",
                             type_name(val_type), s.name, type_name(existing_type))
                     }
@@ -6619,6 +6730,13 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             } else if is_byte_buffer_index_read(s.value) {
                 // Byte buffer reinterpret read via index: obj.field = mem[off]
                 // Size comes from field type; bounds checked at runtime
+            } else if ct, ct_ok := ft.(^Type_Scope); ct_ok && ct.is_constraint {
+                // Constraint-typed field: accept any concrete struct/class that
+                // (1) provides every method the constraint declares and (2) fits
+                // in the constraint's declared size budget. The concrete type's
+                // bytes get assigned into the slot directly; codegen handles
+                // the bitcast.
+                constraint_accepts(c, ct, val_type, s.span)
             } else if types_incompatible(ft, val_type) {
                 check_error(c, s.span, "cannot assign %s to field '%s' of type %s",
                     type_name(val_type), fa_expr.field, type_name(ft))
@@ -8378,10 +8496,22 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         if e.name != "" {
             flat := resolve_type_name(c, e.name, "", env)
             if st, ok := c.table.structs[flat]; ok {
+                if st.is_constraint {
+                    check_error(c, e.span,
+                        "cannot construct constraint type '%s' — it's an interface-like shape, assign a concrete type instead",
+                        e.name)
+                    return Type_Error{}
+                }
                 check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return st
             }
             if st, ok := c.table.funs[flat]; ok {
+                if st.is_constraint {
+                    check_error(c, e.span,
+                        "cannot construct constraint type '%s' — it's an interface-like shape, assign a concrete type instead",
+                        e.name)
+                    return Type_Error{}
+                }
                 check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return st
             }
@@ -9773,6 +9903,12 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     // fields directly to memory. Covers old Type_Struct usages plus classes
     // declared with empty parens `class Foo() { x: int }`.
     if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.fields) > 0 && fun_type.return_type == nil {
+        if fun_type.is_constraint {
+            check_error(c, e.span,
+                "cannot construct constraint type '%s' — it's an interface-like shape, assign a concrete type instead",
+                fun_type.name)
+            return Type_Error{}
+        }
         e.type_ = fun_type
         // Annotate with mangled name for codegen — old Type_Struct branch did this.
         if e.resolved_func == nil && fun_type.name != "" {
@@ -9837,6 +9973,12 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 
     // Constructor with params: returns the struct type itself
     if fun_type.return_type == nil && fun_type.kind == .Struct && len(fun_type.params) > 0 {
+        if fun_type.is_constraint {
+            check_error(c, e.span,
+                "cannot construct constraint type '%s' — it's an interface-like shape, assign a concrete type instead",
+                fun_type.name)
+            return Type_Error{}
+        }
         e.type_ = fun_type
         if e.overrides != nil {
             check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env)
@@ -9856,6 +9998,13 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 // With params: Arena(4096) — args mapped to constructor params, fields initialized by body.
 check_constructor_call :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, args: []Expr, env: ^Type_Env) -> Type {
     e.type_ = st
+
+    if st.is_constraint {
+        check_error(c, e.span,
+            "cannot construct constraint type '%s' — it's an interface-like shape, assign a concrete type instead",
+            st.name)
+        return Type_Error{}
+    }
 
     // Constructor with params: args map to params, not fields
     if len(st.params) > 0 {
