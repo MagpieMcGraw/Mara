@@ -309,6 +309,16 @@ emit_dep_file :: proc(cfg: ^Config, name: string, deps: []File_Info, _all_files:
         append(&structs, gen_struct_def(&b))
     }
 
+    // Operator overloads driven by -opover: that percentage of structs
+    // get a +/-/* overload set (declaration + dispatch + 2 variant fns).
+    // Doesn't go into Fn_Spec (overloads aren't user-callable from main
+    // by name), but stresses the type checker's dispatch resolution.
+    for sd in structs {
+        if rand.int_max(100) < cfg.opover_pct {
+            gen_overload_set(&b, sd)
+        }
+    }
+
     specs: [dynamic]Fn_Spec
     line_count := count_lines(strings.to_string(b))
     for line_count < cfg.lines {

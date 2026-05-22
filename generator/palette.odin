@@ -289,6 +289,60 @@ gen_struct_def :: proc(b: ^strings.Builder) -> Struct_Spec {
     return spec
 }
 
+// Generated name counter for overload-dispatch helpers so they don't
+// collide across files.
+g_overload_counter: int = 0
+
+// Emit an operator-overload set for a struct: `overload OP name`, a
+// dispatch table with 2 variants, and the two field-wise variant fns.
+// Returns nothing — the overload affects type checking, not call-site
+// codegen we need to track. Stresses the overload resolution path.
+gen_overload_set :: proc(b: ^strings.Builder, sd: Struct_Spec) {
+    op_pool := []string{"+", "-", "*"}
+    op := op_pool[rand.int_max(len(op_pool))]
+    base_name := fmt.aprintf("op%d", g_overload_counter)
+    g_overload_counter += 1
+    v1 := strings.concatenate({base_name, "_a"})
+    v2 := strings.concatenate({base_name, "_b"})
+
+    w(b, "overload ", op, " ", base_name, "\n")
+    w(b, base_name, " :: dispatch {\n")
+    w(b, "\t", v1, "\n")
+    w(b, "\t", v2, "\n")
+    w(b, "}\n\n")
+
+    // Variant 1: (T, T) -> T — field-wise op.
+    w(b, v1, " :: fun(a: ", sd.name, ", b: ", sd.name, ") -> ", sd.name, " {\n")
+    w(b, "\tresult : ", sd.name, "\n")
+    for f in sd.fields {
+        // Unsigned `-` is unsafe (underflow), so for `-` only emit on signed
+        // fields; others use additive form to keep the body well-typed
+        // without runtime traps.
+        eff_op := op
+        if op == "-" && !is_signed_kind(f.kind) { eff_op = "+" }
+        w(b, "\tresult.", f.name, " = a.", f.name, " ", eff_op, " b.", f.name, "\n")
+    }
+    w(b, "\treturn result\n")
+    w(b, "}\n\n")
+
+    // Variant 2: (T, scalar) -> T — broadcast the scalar across fields.
+    scalar_kind := pick_numeric_kind()
+    w(b, v2, " :: fun(a: ", sd.name, ", s: ", type_str(scalar_kind), ") -> ", sd.name, " {\n")
+    w(b, "\tresult : ", sd.name, "\n")
+    for f in sd.fields {
+        eff_op := op
+        if op == "-" && !is_signed_kind(f.kind) { eff_op = "+" }
+        // Cast the scalar to the field's kind so the arithmetic is well-typed.
+        if f.kind == scalar_kind {
+            w(b, "\tresult.", f.name, " = a.", f.name, " ", eff_op, " s\n")
+        } else {
+            w(b, "\tresult.", f.name, " = a.", f.name, " ", eff_op, " ", type_str(f.kind), "(s)\n")
+        }
+    }
+    w(b, "\treturn result\n")
+    w(b, "}\n\n")
+}
+
 // A function that takes a struct param, reads/writes its fields, returns
 // a numeric value. Mixes in 0-2 numeric scalar params.
 gen_struct_consumer_fn :: proc(b: ^strings.Builder, name: string, structs: []Struct_Spec) -> Fn_Spec {
