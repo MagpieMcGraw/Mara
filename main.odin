@@ -115,56 +115,88 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
 }
 
 // ---------------------------------------------------------------------------
-// Stage 2: lex — tokenize every discovered file
+// Stage 2 + 3: lex + parse, driven by the target's use-closure
 // ---------------------------------------------------------------------------
 
-// One token list per file, grouped by the module that owns the file. Same key
-// set as the input `files` map.
-lex_all_files :: proc(files: map[string][dynamic]string) -> map[string][dynamic]^[dynamic]Token {
-    result: map[string][dynamic]^[dynamic]Token
-    for module, paths in files {
-        for path in paths {
+// Collect every `use`/`include` path referenced at the top of a parsed stmt.
+// Mirrors the shape the type checker uses in its use-graph walk: bare
+// `use path` lowers to Stmt_Decl with an Expr_Include init; aliased
+// `name :: use path` lowers to Stmt_Define; the older `name := use path`
+// spelling lands as Stmt_Assign. Stmt_Multi_Assign rolls up multiple at once.
+collect_include_paths :: proc(stmt: Stmt, out: ^[dynamic]string) {
+    #partial switch s in stmt {
+    case ^Stmt_Decl:
+        for v in s.init_values {
+            if inc, ok := v.(^Expr_Include); ok { append(out, inc.path) }
+        }
+    case ^Stmt_Assign:
+        if inc, ok := s.value.(^Expr_Include); ok { append(out, inc.path) }
+    case ^Stmt_Define:
+        if inc, ok := s.value.(^Expr_Include); ok { append(out, inc.path) }
+    case ^Stmt_Multi_Assign:
+        for a in s.assigns {
+            if inc, ok := a.value.(^Expr_Include); ok { append(out, inc.path) }
+        }
+    }
+}
+
+// Lex + parse only the modules reachable from `target`. Seeds a worklist with
+// `target`, parses each module's files in sorted path order, walks the
+// resulting AST for `use`/`include`, and enqueues every discovered module
+// matching that path (exact match plus dotted submodules — same prefix rule
+// the type checker's find_matching_modules uses). Modules outside this
+// closure are left untouched: their parse errors never run, their tokens
+// never get allocated. Without this, an unrelated `.mara` file in the search
+// directory would dump its parse errors into the user's terminal even though
+// it has no bearing on the build.
+parse_target_closure :: proc(files: map[string][dynamic]string, target: string) -> (programs: map[string]^Program, errors: map[string]int) {
+    visited: map[string]bool
+    worklist: [dynamic]string
+    append(&worklist, target)
+
+    for len(worklist) > 0 {
+        module := pop(&worklist)
+        if visited[module] { continue }
+        visited[module] = true
+
+        paths, has := files[module]
+        if !has { continue }  // missing module — the type checker will diagnose if it matters
+
+        ordered := slice.clone(paths[:])
+        slice.sort(ordered)
+
+        merged := new(Program)
+        module_errors := 0
+        for path in ordered {
             data, rerr := os.read_entire_file_from_path(path, context.allocator)
             if rerr != nil {
                 fmt.printf("Error: could not read '%s'\n", path)
                 os.exit(1)
             }
             tokens := lex_all(string(data), path)
-            if module not_in result { result[module] = {} }
-            append(&result[module], tokens)
-        }
-    }
-    return result
-}
-
-// ---------------------------------------------------------------------------
-// Stage 3: parse — parse all token streams, merge per-module
-// ---------------------------------------------------------------------------
-
-// One merged Program per module, plus per-module parse-error counts. Caller
-// decides what to do with errors — typically: abort if the main package
-// errored, ignore non-main errors (their modules will simply fail to type-
-// check if anyone imports them).
-//
-// Files within a module are visited in sorted path order so the merged AST
-// (and the IR Mara eventually emits) is deterministic across runs.
-parse_all_files :: proc(tokens: map[string][dynamic]^[dynamic]Token) -> (programs: map[string]^Program, errors: map[string]int) {
-    for module, file_tokens in tokens {
-        ordered := slice.clone(file_tokens[:])
-        slice.sort_by(ordered, proc(a, b: ^[dynamic]Token) -> bool {
-            return a[0].file < b[0].file
-        })
-
-        merged := new(Program)
-        module_errors := 0
-        for tok_list in ordered {
-            p := parser_init(tok_list)
+            p := parser_init(tokens)
             parsed := parse_program(p)
             for stmt in parsed^ { append(merged, stmt) }
             module_errors += p.errors
         }
         programs[module] = merged
         if module_errors > 0 { errors[module] = module_errors }
+
+        // Walk the merged AST for use/include paths, enqueue every matching
+        // discovered module (exact + dotted submodules).
+        deps: [dynamic]string
+        defer delete(deps)
+        for stmt in merged^ {
+            collect_include_paths(stmt, &deps)
+        }
+        for path in deps {
+            prefix_dot := strings.concatenate({path, "."})
+            for fmod in files {
+                if fmod == path || strings.has_prefix(fmod, prefix_dot) {
+                    if !visited[fmod] { append(&worklist, fmod) }
+                }
+            }
+        }
     }
     return programs, errors
 }
@@ -699,14 +731,12 @@ main :: proc() {
         return
     }
 
-    perf_timer_mark(&perf, "lex")
-    tokens := lex_all_files(files)
-
     perf_timer_mark(&perf, "parse")
-    programs, parse_errors := parse_all_files(tokens)
-    // Non-main parse errors are deferred — the offending modules will fail
-    // type-checking if they're actually imported, with a clearer message
-    // than a cryptic parse-error dump at the top of the build.
+    programs, parse_errors := parse_target_closure(files, args.pkg_name)
+    // Non-target parse errors are still surfaced (inline by the parser) for
+    // modules the target actually imports; modules outside the use-closure
+    // never get parsed, so unrelated `.mara` files in the search directory
+    // can't dump diagnostics into the build.
 
     target_os: Target_OS = .Windows
     when ODIN_OS == .Linux  { target_os = .Linux  }
