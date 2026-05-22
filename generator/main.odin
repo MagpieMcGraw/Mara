@@ -167,13 +167,46 @@ main :: proc() {
 }
 
 // ---------------------------------------------------------------------------
-// MVP generate: one isolated file + main. Replaced by real palette + topology
-// in subsequent tasks.
+// Generation orchestration. Phase A: emit isolated files of arithmetic +
+// fixed-array functions only. Topology + cross-file calls come in later
+// phases.
 // ---------------------------------------------------------------------------
 
+// Global function-name counter so every generated function has a unique
+// suffix across all files in this generation run.
+g_fn_counter: int = 0
+
+VERBS  := []string{
+    "emit", "compute", "calculate", "process", "transform", "apply", "merge",
+    "blend", "damp", "clamp", "rotate", "scale", "shift", "lerp", "hash",
+    "iterate", "accumulate", "normalize", "validate", "resolve", "gather",
+    "dispatch", "inject", "render", "load", "build", "sort", "check",
+}
+NOUNS  := []string{
+    "vertex", "color", "velocity", "normal", "weight", "torque", "field",
+    "block", "frame", "tile", "voxel", "node", "edge", "anchor", "layer",
+    "range", "pixel", "axis", "joint", "buffer", "cache", "slot", "index",
+    "depth", "stride", "offset", "mass", "wave", "orbit",
+}
+
+pick_fn_name :: proc() -> string {
+    v := VERBS[rand.int_max(len(VERBS))]
+    n := NOUNS[rand.int_max(len(NOUNS))]
+    id := g_fn_counter
+    g_fn_counter += 1
+    return fmt.aprintf("%s_%s_%04d", v, n, id)
+}
+
 generate :: proc(cfg: ^Config) {
-    emit_isolated_smoke(cfg, 0)
-    emit_main_smoke(cfg)
+    // Phase A: emit only isolated files (ignores -short / -long for now).
+    specs: [dynamic]Fn_Spec
+    defer delete(specs)
+    for i in 0..<cfg.isolated {
+        per_file := emit_isolated_file(cfg, i)
+        append(&specs, ..per_file[:])
+    }
+    emit_main(cfg, specs[:])
+    fmt.printfln("Emitted %d isolated files, %d total fns", cfg.isolated, len(specs))
 }
 
 // fmt.tprintf/sbprintfln treat `{` and `}` as format directives, so any line
@@ -187,25 +220,50 @@ w :: proc(b: ^strings.Builder, parts: ..string) {
     }
 }
 
-emit_isolated_smoke :: proc(cfg: ^Config, idx: int) {
+emit_isolated_file :: proc(cfg: ^Config, idx: int) -> [dynamic]Fn_Spec {
     idx_str := fmt.tprintf("%03d", idx)
     name := strings.concatenate({"iso_", idx_str})
     path := strings.concatenate({cfg.out_dir, "/", name, ".mara"})
+
     b := strings.builder_make()
     w(&b, "module ", name, "\n\n")
-    w(&b, "hello_", idx_str, " :: fun() {\n")
-    w(&b, "\tprint(\"hello from iso_", idx_str, "\")\n")
-    w(&b, "}\n")
+
+    specs: [dynamic]Fn_Spec
+    line_count := 2
+    for line_count < cfg.lines {
+        fn := pick_fn_name()
+        before := strings.builder_len(b)
+        spec := gen_arith_fn(&b, fn)
+        append(&specs, spec)
+        added := strings.builder_len(b) - before
+        s := strings.to_string(b)
+        for i := strings.builder_len(b) - added; i < strings.builder_len(b); i += 1 {
+            if s[i] == '\n' { line_count += 1 }
+        }
+    }
     write_file(path, strings.to_string(b))
+    return specs
 }
 
-emit_main_smoke :: proc(cfg: ^Config) {
+emit_main :: proc(cfg: ^Config, all_specs: []Fn_Spec) {
     path := strings.concatenate({cfg.out_dir, "/main.mara"})
     b := strings.builder_make()
     w(&b, "module ", cfg.out_dir, "\n\n")
-    w(&b, "use iso_000\n\n")
-    w(&b, "main :: fun() -> i64 {\n")
-    w(&b, "\thello_000()\n")
+    for i in 0..<cfg.isolated {
+        idx_str := fmt.tprintf("%03d", i)
+        w(&b, "use iso_", idx_str, "\n")
+    }
+    w(&b, "\nmain :: fun() -> i64 {\n")
+    sample_count := min(len(all_specs), 1000)
+    for i in 0..<sample_count {
+        spec := all_specs[rand.int_max(len(all_specs))]
+        w(&b, "\t", spec.name, "(")
+        for k, j in spec.param_kinds {
+            if j > 0 { w(&b, ", ") }
+            w(&b, literal_for(k))
+        }
+        w(&b, ")\n")
+    }
     w(&b, "\treturn 0\n")
     w(&b, "}\n")
     write_file(path, strings.to_string(b))
