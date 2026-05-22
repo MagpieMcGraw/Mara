@@ -2542,7 +2542,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
             }
         }
 
-        return check_constructor_call(c, e, st, {}, env)
+        return check_pure_struct_construction(c, e, st, env)
     }
 
     // Also try to infer from the return type context if needed (future enhancement)
@@ -2604,7 +2604,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     }
     // Generic constructor call: e.g. Pair(int)(1, 2)
     if len(fun_type.fields) > 0 && len(fun_type.params) == 0 {
-        return check_constructor_call(c, e, fun_type, args, env)
+        return check_pure_struct_construction(c, e, fun_type, env)
     }
 
     // Step 7: Rewrite the call to target the mangled name
@@ -10200,47 +10200,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     // fields directly to memory. Covers old Type_Struct usages plus classes
     // declared with empty parens `class Foo() { x: int }`.
     if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.fields) > 0 && fun_type.return_type == nil {
-        e.type_ = fun_type
-        // Annotate with mangled name for codegen — old Type_Struct branch did this.
-        if e.resolved_func == nil && fun_type.name != "" {
-            e.resolved_func = Resolved_Func{name = fun_type.name}
-        }
-
-        // `Foo()` (no args) is always valid — equivalent to bare declaration `x : Foo`.
-        // Init function applies defaults and zero-inits fields without defaults.
-        if len(check_args) == 0 {
-            if e.overrides != nil {
-                check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env)
-            }
-            return fun_type
-        }
-
-        num_required := 0
-        for f in fun_type.fields {
-            if f.default_value == nil { num_required += 1 }
-        }
-        if len(check_args) > len(fun_type.fields) {
-            check_error(c, e.span, "'%s' has %d field(s), got %d argument(s)", fun_type.name, len(fun_type.fields), len(check_args))
-        } else if len(check_args) < num_required {
-            check_error(c, e.span, "'%s' requires at least %d argument(s), got %d", fun_type.name, num_required, len(check_args))
-        }
-        for arg, i in check_args {
-            if i < len(fun_type.fields) {
-                c.expected_hint = fun_type.fields[i].type_
-            }
-            arg_type := check_expr(c, arg, env)
-            if i < len(fun_type.fields) {
-                field := fun_type.fields[i]
-                if types_incompatible(field.type_, arg_type) && !is_any(arg_type) {
-                    check_error(c, e.span, "field '%s': expected %s, got %s",
-                        field.name, type_name(field.type_), type_name(arg_type))
-                }
-            }
-        }
-        if e.overrides != nil {
-            check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env)
-        }
-        return fun_type
+        return check_pure_struct_construction(c, e, fun_type, env)
     }
 
     // `_` at any positional arg means "use the parameter's default value here."
@@ -10277,45 +10237,60 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     return fun_type.return_type
 }
 
-// Constructor call: data fun called with positional args.
-// Parameterless: Point(1, 2) — args mapped to fields.
-// Array class: Vec3(0, 1, 0) — args mapped to array elements.
-// With params: Arena(4096) — args mapped to constructor params, fields initialized by body.
-check_constructor_call :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, args: []Expr, env: ^Type_Env) -> Type {
+// Pure-struct positional construction: parameterless struct called with positional
+// args mapped to fields. Single entry point used by check_call's pure-struct
+// branch and check_generic_call's post-instantiation calls (Array(Player, 64),
+// Pair(int)(1, 2)).
+//
+// Supports `_` substitution against field defaults — same surface as the
+// regular function call path applies to parameter defaults.
+check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Env) -> Type {
     e.type_ = st
+    if e.resolved_func == nil && st.name != "" {
+        e.resolved_func = Resolved_Func{name = st.name}
+    }
 
-    // Constructor with params: args map to params, not fields
-    if len(st.params) > 0 {
-        check_call_args(c, args, st, st.name, e.span, env)
+    // `Foo()` (no args) is always valid — equivalent to bare declaration `x : Foo`.
+    // Init function applies defaults and zero-inits fields without defaults.
+    if len(e.args) == 0 {
         if e.overrides != nil {
             check_struct_literal_fields(c, e.overrides, &st.sd, e.span, env)
         }
         return st
     }
 
-    // Parameterless constructor: args map to fields positionally.
-    // `Foo()` (no args) is always valid — equivalent to bare declaration `x : Foo`.
-    // The init function handles defaults and zero-inits fields without defaults.
-    if len(args) == 0 {
-        if e.overrides != nil {
-            check_struct_literal_fields(c, e.overrides, &st.sd, e.span, env)
+    // `_` at any positional arg means "use the field's default value here."
+    // Mirrors substitute_underscore_args for parameters.
+    for i in 0..<len(e.args) {
+        if i >= len(st.fields) { break }
+        ident, id_ok := e.args[i].(^Expr_Ident)
+        if !id_ok || ident.name != "_" { continue }
+        def := st.fields[i].default_value
+        if def == nil {
+            check_error(c, e.span, "argument %d of '%s': '_' requires a default value, but field '%s' has none",
+                i + 1, st.name, st.fields[i].name)
+            continue
         }
-        return st
+        if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
+            e.args[i] = new_clone(Expr_Compiler_Intrinsic{
+                kind = intr.kind,
+                span = ident.span,
+            })
+        } else {
+            e.args[i] = def
+        }
     }
 
     num_required := 0
     for f in st.fields {
         if f.default_value == nil { num_required += 1 }
     }
-
-    if len(args) > len(st.fields) {
-        check_error(c, e.span, "'%s' has %d field(s), got %d argument(s)", st.name, len(st.fields), len(args))
-    } else if len(args) < num_required {
-        check_error(c, e.span, "'%s' requires at least %d argument(s), got %d", st.name, num_required, len(args))
+    if len(e.args) > len(st.fields) {
+        check_error(c, e.span, "'%s' has %d field(s), got %d argument(s)", st.name, len(st.fields), len(e.args))
+    } else if len(e.args) < num_required {
+        check_error(c, e.span, "'%s' requires at least %d argument(s), got %d", st.name, num_required, len(e.args))
     }
-
-    // Type-check each positional arg against the corresponding field
-    for arg, i in args {
+    for arg, i in e.args {
         if i < len(st.fields) {
             c.expected_hint = st.fields[i].type_
         }
@@ -10328,9 +10303,8 @@ check_constructor_call :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, args
             }
         }
     }
-
     if e.overrides != nil {
-        check_struct_literal_fields(c, e.overrides, st, e.span, env)
+        check_struct_literal_fields(c, e.overrides, &st.sd, e.span, env)
     }
     return st
 }
