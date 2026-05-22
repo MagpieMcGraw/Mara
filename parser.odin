@@ -168,6 +168,7 @@ Expr :: union {
     ^Expr_Compiler_Intrinsic,
     ^Expr_Include,
     ^Expr_Type_Name,
+    ^Expr_Tuple_Default,
 }
 
 Expr_Number :: struct {
@@ -375,6 +376,21 @@ Expr_Include :: struct {
     is_reexport: bool,     // true for `include` (re-export); false for `use` (private). Re-export adds names to the module's public surface.
     span:        Span,
     type_:       Type,
+}
+
+// Synthetic default for one binding in a tuple-destructure param group.
+// `source` is a call returning a tuple; `index` is this binding's slot.
+// All N bindings in a destructure group share the SAME `source` pointer
+// (not clones), which the codegen uses to dedup: first occurrence at a
+// call site evaluates the source once into a temp, subsequent ones reuse
+// it. Created by stmt_decl_to_bindings when a param/return group has
+// init_n=1 and n_names>1 — the statement-level path uses Stmt_Multi_Return_Assign
+// for the same shape and doesn't need this node.
+Expr_Tuple_Default :: struct {
+    source: Expr,   // shared by identity across the group
+    index:  int,    // 0..N-1
+    span:   Span,
+    type_:  Type,   // filled by type checker — the i-th tuple slot
 }
 
 // Statements
@@ -1353,15 +1369,31 @@ validate_init_count :: proc(p: ^Parser, init_n: int, n_names: int) {
 // Distribute a parsed multi-name decl into the param/return-context
 // Scope_Binding shape. Each name gets its own binding with type and
 // is_var copied from the decl, and a default_value taken from
-// init_values per the standard distribution rule (1 → broadcast with
-// clone past the first; N → parallel; 0 → no default). out_types is
-// optional — non-nil for named-return parsing, which keeps a parallel
-// type list alongside p.return_bindings.
+// init_values per the distribution rule:
+//
+//   N names, init_n=0 → no defaults.
+//   N names, init_n=N → parallel (each name takes its own value).
+//   N names, init_n=1, N=1 → single value to single name.
+//   N names, init_n=1, N>1 → tuple-destructure: emit Expr_Tuple_Default
+//                            per binding, all referencing the SAME source
+//                            (identity-shared, not cloned) so codegen
+//                            evaluates the source once at each call site
+//                            and routes its tuple slots to the bindings.
+//
+// out_types is optional — non-nil for named-return parsing, which keeps
+// a parallel type list alongside p.return_bindings.
 stmt_decl_to_bindings :: proc(decl: ^Stmt_Decl, out_bindings: ^[dynamic]Scope_Binding, out_types: ^[dynamic]Type_Expr) {
     init_n := len(decl.init_values)
+    is_tuple_destructure := init_n == 1 && len(decl.names) > 1
     for name, i in decl.names {
         dv: Expr
-        if init_n == 1 {
+        if is_tuple_destructure {
+            dv = new_clone(Expr_Tuple_Default{
+                source = decl.init_values[0],
+                index  = i,
+                span   = decl.span,
+            })
+        } else if init_n == 1 {
             dv = i == 0 ? decl.init_values[0] : clone_expr(decl.init_values[0])
         } else if init_n == len(decl.names) {
             dv = decl.init_values[i]
@@ -4145,6 +4177,13 @@ clone_expr :: proc(e: Expr) -> Expr {
         c.type_ = nil
         return c
     case ^Expr_Type_Name:
+        c := new_clone(v^)
+        c.type_ = nil
+        return c
+    case ^Expr_Tuple_Default:
+        // Preserve `source` by reference — the whole point of this node is
+        // that multiple bindings in a group share the SAME source so codegen
+        // can dedup. Cloning the source here would defeat that.
         c := new_clone(v^)
         c.type_ = nil
         return c

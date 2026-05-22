@@ -27,6 +27,7 @@ use test_submod_check
 use test_in_range
 use test_partial_array
 use test_param_parallel_defaults
+use test_param_tuple_destructure
 use test_named_returns
 use test_abi
 use test_defer
@@ -65,6 +66,7 @@ main :: fun() -> i64 {
 	test_in_range()
 	test_partial_array()
 	test_param_parallel_defaults()
+	test_param_tuple_destructure()
 	test_named_returns()
 	test_abi()
 	test_defer()

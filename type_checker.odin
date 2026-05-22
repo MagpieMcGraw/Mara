@@ -4314,6 +4314,17 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
     if un, ok := value.(^Expr_Unary); ok {
         return infer_field_type_from_default(c, un.operand, env)
     }
+    // Tuple-destructure default: source must resolve to a Type_Scope of
+    // kind .Fun returning a Type_Tuple; this binding's type is the i-th
+    // slot. Mirrors the Expr_Call branch above, then unwraps the tuple.
+    if td, ok := value.(^Expr_Tuple_Default); ok {
+        src_type := infer_field_type_from_default(c, td.source, env)
+        if tup, is_tup := src_type.(^Type_Tuple); is_tup {
+            if td.index >= 0 && td.index < len(tup.elems) {
+                return tup.elems[td.index]
+            }
+        }
+    }
     return Type_Any{}
 }
 
@@ -8475,6 +8486,7 @@ expr_type_ptr :: proc(e: Expr) -> ^Type {
     case ^Expr_Compiler_Intrinsic: return &v.type_
     case ^Expr_Include:            return &v.type_
     case ^Expr_Type_Name:          return &v.type_
+    case ^Expr_Tuple_Default:      return &v.type_
     case nil:                      return nil
     }
     return nil
@@ -8933,6 +8945,25 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             return Type_Error{}
         }
         return Type_Error{}
+    case ^Expr_Tuple_Default:
+        // Type-check the source once (idempotent — the same source pointer is
+        // shared by every binding in the destructure group). If the source is
+        // a tuple, this binding's type is the i-th slot. Otherwise the user
+        // wrote a single non-tuple value with N names — that's the broadcast
+        // case (`a, b: i64 = 7`), so each binding takes the source's type
+        // directly and codegen just re-evaluates the source per binding.
+        src_type := check_expr(c, e.source, env)
+        if _, is_err := src_type.(Type_Error); is_err { return Type_Error{} }
+        if tup, is_tup := src_type.(^Type_Tuple); is_tup {
+            if e.index < 0 || e.index >= len(tup.elems) {
+                check_error(c, e.span,
+                    "tuple-destructure index %d out of range for %d-tuple",
+                    e.index, len(tup.elems))
+                return Type_Error{}
+            }
+            return tup.elems[e.index]
+        }
+        return src_type
     }
     return Type_Error{}
 }

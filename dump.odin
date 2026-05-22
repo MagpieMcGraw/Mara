@@ -591,6 +591,11 @@ dump_expr :: proc(b: ^strings.Builder, expr: Expr) {
     case ^Expr_Type_Name:
         fmt.sbprintf(b, "type:%s", type_name(e.type_))
 
+    case ^Expr_Tuple_Default:
+        fmt.sbprintf(b, "tuple_default[%d](", e.index)
+        dump_expr(b, e.source)
+        fmt.sbprintf(b, ")")
+
     case nil:
         fmt.sbprintf(b, "<nil>")
     }
@@ -1175,6 +1180,11 @@ dump_parse_expr :: proc(b: ^strings.Builder, expr: Expr) {
 
     case ^Expr_Type_Name:
         fmt.sbprintf(b, "type:%s", type_name(e.type_))
+
+    case ^Expr_Tuple_Default:
+        fmt.sbprintf(b, "tuple_default[%d](", e.index)
+        dump_expr(b, e.source)
+        fmt.sbprintf(b, ")")
 
     case nil:
         fmt.sbprintf(b, "<nil>")

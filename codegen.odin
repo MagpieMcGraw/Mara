@@ -270,6 +270,13 @@ Loop_Labels :: struct {
     continue_label: string,
 }
 
+// One entry in the tuple-default cache: the slot pointers and types from
+// a tuple-returning source call evaluated at the current call site.
+Tuple_Default_Entry :: struct {
+    ptrs:  [dynamic]string,
+    types: [dynamic]string,
+}
+
 Codegen :: struct {
     out:         strings.Builder,  // the IR text
     alloca_buf:  strings.Builder,  // hoisted allocas (entry block)
@@ -317,6 +324,12 @@ Codegen :: struct {
     // Tuple call result: temp alloca pointers from the most recent tuple-returning call
     tuple_result_ptrs:  [dynamic]string,  // alloca names for each tuple element
     tuple_result_types: [dynamic]string,  // LLVM types for each tuple element
+    // Per-call cache for Expr_Tuple_Default dedup: when multiple bindings in
+    // a param group share one tuple source, the source is evaluated once at
+    // each call site and the slot ptrs cached here keyed by source pointer.
+    // Saved/restored around nested gen_call invocations so each call site
+    // gets a fresh cache.
+    tuple_default_cache: map[rawptr]Tuple_Default_Entry,
     // Fun_Info cache: avoids re-deriving from Checked_Scope on every call
     fun_info_cache:   map[string]Fun_Info,
     // Temp results: typed fields replacing magic __call_result / __field_result / __swizzle_result

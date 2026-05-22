@@ -305,8 +305,58 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         // codegen it's a misuse (e.g. assigning a type-name to a variable);
         // emit a placeholder so the generated IR still parses.
         return "0"
+    case ^Expr_Tuple_Default:
+        return gen_tuple_default(g, e)
     }
     return "0"
+}
+
+// Evaluate one binding's slot of a default that was parsed as `a, b := X`.
+// When X is a tuple-returning call this is true destructure: evaluate the
+// source once at this call site (cached per-source-ptr) and load slot i.
+// When X is anything else (literal, scalar call, etc.) the binding-group
+// is effectively broadcast — just re-evaluate the source per binding, same
+// as if the parser had cloned X into each binding's default_value.
+gen_tuple_default :: proc(g: ^Codegen, e: ^Expr_Tuple_Default) -> string {
+    call, is_call := e.source.(^Expr_Call)
+    is_tuple := false
+    if is_call {
+        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok {
+            is_tuple = info.ret_tuple != nil
+        }
+    }
+    if !is_tuple {
+        // Broadcast fallback: evaluate the source for this binding. The
+        // same source Expr is shared by all bindings in the group but
+        // gen_expr emits fresh IR each time, matching the historical
+        // clone-per-name behaviour.
+        return gen_expr(g, e.source)
+    }
+
+    // Destructure path: dedup by source ptr within this call site.
+    src_key := rawptr(call)
+    if g.tuple_default_cache == nil {
+        g.tuple_default_cache = make(map[rawptr]Tuple_Default_Entry)
+    }
+    entry, hit := g.tuple_default_cache[src_key]
+    if !hit {
+        gen_call(g, call)
+        // gen_call clears+repopulates g.tuple_result_ptrs/types per call;
+        // snapshot them now so subsequent gen_call invocations in this
+        // arg list don't overwrite our entry.
+        ptrs:  [dynamic]string
+        types: [dynamic]string
+        for p in g.tuple_result_ptrs  { append(&ptrs, p) }
+        for t in g.tuple_result_types { append(&types, t) }
+        entry = Tuple_Default_Entry{ptrs = ptrs, types = types}
+        g.tuple_default_cache[src_key] = entry
+    }
+    if e.index < 0 || e.index >= len(entry.ptrs) {
+        codegen_fatal(g, e.span, "tuple-default index %d out of range", e.index)
+    }
+    val := fresh_tmp(g)
+    emit(g, "  %s = load %s, ptr %s", val, entry.types[e.index], entry.ptrs[e.index])
+    return val
 }
 
 // ---------------------------------------------------------------------------
@@ -801,6 +851,27 @@ emit_intrinsic_call :: proc(g: ^Codegen, lookup_name: string, e: ^Expr_Call) -> 
 }
 
 gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
+    // Each call site evaluates its tuple-default sources fresh. Save the
+    // outer cache, install an empty one, run, then restore — so nested
+    // gen_call invocations (e.g. when evaluating the source itself) get a
+    // clean cache and our cache doesn't survive past this call. Done as a
+    // wrapper because gen_call_inner ends in a `noreturn` codegen_fatal,
+    // which Odin's defer analysis rejects.
+    saved_cache := g.tuple_default_cache
+    g.tuple_default_cache = nil
+    result := gen_call_inner(g, e)
+    if g.tuple_default_cache != nil {
+        for _, entry in g.tuple_default_cache {
+            delete(entry.ptrs)
+            delete(entry.types)
+        }
+        delete(g.tuple_default_cache)
+    }
+    g.tuple_default_cache = saved_cache
+    return result
+}
+
+gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     // Desugared builtin: type checker rewrote this call to a simpler expression
     if e.desugared != nil {
         return gen_expr(g, e.desugared)
