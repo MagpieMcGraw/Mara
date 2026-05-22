@@ -93,6 +93,66 @@ find_nrvo_candidates :: proc(body: []Stmt, n_positions: int) -> [dynamic]string 
     return candidates
 }
 
+// Register `name` in g.all_vars as the right Var_Entry shape for a field of
+// type `ft` whose storage lives at LLVM pointer `addr`. Used to pre-bind a
+// struct constructor's fields to GEPs into %sret so the body's references
+// route through the caller's slot directly.
+prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
+    t := distinct_base(ft)
+    #partial switch v in t {
+    case ^Type_Fixed_Array:
+        elem_t := llvm_type_from_checker(v.elem)
+        utf8 := false
+        if _, u_ok := v.elem.(Type_Utf8); u_ok { utf8 = true }
+        g.all_vars[name] = Array_Var{
+            alloca       = addr,
+            capacity     = v.size,
+            elem_type    = elem_t,
+            is_utf8      = utf8,
+            has_sentinel = v.has_sentinel,
+            sentinel     = v.sentinel,
+        }
+        return
+    case ^Type_Slice:
+        elem_t := llvm_type_from_checker(v.elem)
+        utf8 := false
+        if _, u_ok := v.elem.(Type_Utf8); u_ok { utf8 = true }
+        g.all_vars[name] = Slice_Var{
+            alloca       = addr,
+            elem_type    = elem_t,
+            is_utf8      = utf8,
+            has_sentinel = v.has_sentinel,
+        }
+        return
+    case ^Type_Partial_Array:
+        elem_t := llvm_type_from_checker(v.elem)
+        utf8 := false
+        if _, u_ok := v.elem.(Type_Utf8); u_ok { utf8 = true }
+        g.all_vars[name] = Slice_Var{
+            alloca       = addr,
+            elem_type    = elem_t,
+            is_utf8      = utf8,
+            has_sentinel = v.has_sentinel,
+        }
+        return
+    case ^Type_Union:
+        g.all_vars[name] = Union_Var{
+            alloca     = addr,
+            union_name = union_key(v),
+        }
+        return
+    case ^Type_Scope:
+        if v.kind == .Struct {
+            g.all_vars[name] = Struct_Var{
+                alloca      = addr,
+                struct_name = v.name,
+            }
+            return
+        }
+    }
+    g.all_vars[name] = Scalar_Var{alloca = addr}
+}
+
 gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // Foreigns and intrinsics have no body to emit — foreign calls dispatch
     // through their `declare` and link_name; intrinsic calls expand inline at
@@ -246,6 +306,22 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                     is_utf8      = el.is_utf8,
                     has_sentinel = el.has_sentinel,
                     sentinel     = el.sentinel,
+                }
+            }
+        }
+        // Struct constructor: pre-bind each field to a GEP into %sret. The body's
+        // field-decl statements (e.g. `vao : u32`) detect the pre-bound name and
+        // skip their own alloca; subsequent reads and writes of bare field names
+        // route through the caller's slot directly. Replaces the prior
+        // copy-locals-to-sret epilogue.
+        if cf.type_ != nil && cf.type_.kind == .Struct {
+            if ret_st, rs_ok := lookup_struct(g, ret_struct_name); rs_ok {
+                sret_llvm := struct_llvm_name(ret_struct_name)
+                for &f, i in ret_st.fields {
+                    if _, already := g.all_vars[f.name]; already { continue }
+                    addr := fresh_tmp(g)
+                    emit(g, "  %s = getelementptr %s, ptr %%sret, i32 0, i32 %d", addr, sret_llvm, i)
+                    prebind_field_var(g, f.name, addr, f.type_)
                 }
             }
         }
@@ -443,14 +519,10 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // After body gen, we flush alloca_buf then body_buf into g.out.
     begin_alloca_hoist(g)
 
-    // Unified struct construction: every struct's init function executes its
-    // body as a normal function body, then a tail phase copies locals named
-    // like the struct's fields into %sret. This collapses paramized and
-    // non-paramized classes into one codegen path — imperative statements
-    // run in source order alongside field initializations, in both cases.
-    //
-    // Cost: an extra alloca + copy per field for plain POD structs. LLVM's
-    // mem2reg + SROA + DCE fold these away in release builds.
+    // Struct constructors pre-bind each field to a GEP into %sret (see the
+    // prebind_field_var block above), so the body's field-decl statements
+    // skip their own alloca and write straight into the caller's slot. No
+    // tail-phase copy is needed.
 
     push_scope(g, .Function, cf.body[:])
     has_ret := false
@@ -464,43 +536,6 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // Default return if no explicit return
     if !has_ret {
         pop_scope(g)  // normal exit: emit reset before default return
-
-        // Constructor: copy field values from locals to %sret before returning.
-        // Fires for every struct constructor — paramized or not. The body has
-        // run as a normal function body, allocating locals named like the
-        // struct's fields; this pass moves those locals into the return slot.
-        // Fields whose body never bound a value stay zero in %sret.
-        if ret_struct_name != "" && cf.type_ != nil && cf.type_.kind == .Struct {
-            if ret_st, rs_ok := lookup_struct(g, ret_struct_name); rs_ok {
-                sret_type := struct_llvm_name(ret_struct_name)
-                for &f, i in ret_st.fields {
-                    gep := fresh_tmp(g)
-                    emit_raw(g, strings.concatenate({"  ", gep, " = getelementptr ", sret_type, ", ptr %sret, i32 0, i32 ", fmt.tprintf("%d", i)}))
-                    // Copy field from local to sret
-                    if sv, sv_ok := get_struct(g, f.name); sv_ok {
-                        inner_st_name := struct_llvm_name(sv.struct_name)
-                        inner_st, _ := lookup_struct(g, sv.struct_name)
-                        sz := struct_byte_size(inner_st, g.checked)
-                        emit_raw(g, strings.concatenate({"  call void @llvm.memcpy.p0.p0.i64(ptr ", gep, ", ptr ", sv.alloca, ", i64 ", fmt.tprintf("%d", sz), ", i1 false)"}))
-                    } else if av, av_ok := get_array(g, f.name); av_ok {
-                        total_bytes := av.capacity * elem_byte_size(av.elem_type, g.checked)
-                        if av.has_sentinel {
-                            total_bytes += elem_byte_size(av.elem_type, g.checked)
-                        }
-                        emit_raw(g, strings.concatenate({"  call void @llvm.memcpy.p0.p0.i64(ptr ", gep, ", ptr ", av.alloca, ", i64 ", fmt.tprintf("%d", total_bytes), ", i1 false)"}))
-                    } else if slv, slv_ok := get_slice(g, f.name); slv_ok {
-                        tmp := fresh_tmp(g)
-                        emit_raw(g, strings.concatenate({"  ", tmp, " = load ", SLICE_IR_TYPE, ", ptr ", slv.alloca}))
-                        emit_raw(g, strings.concatenate({"  store ", SLICE_IR_TYPE, " ", tmp, ", ptr ", gep}))
-                    } else if sc_alloca, sc_ok := get_scalar(g, f.name); sc_ok {
-                        fir := field_ir_type(&f)
-                        tmp := fresh_tmp(g)
-                        emit_raw(g, strings.concatenate({"  ", tmp, " = load ", fir, ", ptr ", sc_alloca}))
-                        emit_raw(g, strings.concatenate({"  store ", fir, " ", tmp, ", ptr ", gep}))
-                    }
-                }
-            }
-        }
 
         if ret_struct_name != "" || ret_array_cap > 0 || ret_tuple != nil || ret_type == "void" {
             emit(g, "  ret void")
