@@ -15,14 +15,14 @@ GB :: 1 << 30
 // Each mark writes 8 bytes (prev_mark offset). No debug headers.
 
 oom_string :: "
-=== Arena out of memory ===
+	=== Arena out of memory ===
 
-Arena capacity: % bytes
-Bytes used:     % bytes
-Bytes free:     % bytes
+	Arena capacity: % bytes
+	Bytes used:     % bytes
+	Bytes free:     % bytes
 
-Failed allocation: %, % bytes in %
-"
+	Failed allocation: %, % bytes in %
+	"
 
 Arena_Basic :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
@@ -119,7 +119,7 @@ Arena_Debug :: class(cap: i64) {
 
 		if end > cap {
 			dump(a, size, name, span)
-			crash("Arena OOM")
+			crash()
 		}
 
 		h : AllocHeader = {

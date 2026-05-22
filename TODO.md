@@ -21,3 +21,9 @@ Steal string formatting from python.
 Write build script for .c code in mara to test capabilities
 
 Should generic constructors take values? Should type only arguments even be allowed in generic struct constructors? A constructor is supposed to construct a ready to use struct, which implies that all values are intiialized.
+
+DLLs need an init function where the arena layout is defined.
+
+How do you use Mara code as a static lib? Dll should work, but how would a static lib manage it's memory? Analyze the lib and rewrite it to use explicit allocation?
+
+Verify partial arrays can be copies. Are their pointers relative?
