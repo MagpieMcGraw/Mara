@@ -17,15 +17,25 @@ Point3 :: struct {
 	z: i64 = 300
 }
 
-// Two dispatch candidates that differ only in the second param's type — `_` on
-// the first slot is fine for both (both have a default at position 0), so the
-// second-slot arg disambiguates which overload runs.
-disp_helper_int    :: fun(a: i64 = 1, b: i64) -> i64    { return a * 1000 + b }
-disp_helper_float  :: fun(a: i64 = 2, b: f64) -> i64    { return a * 2000 + i64(b) }
+// Two dispatch candidates that differ on the second param's type. Bool
+// avoids the Type_Infer_Int-matches-any-numeric ambiguity that would fire
+// for two numeric overloads. `_` on slot 0 is fine for both (both have a
+// default at position 0); the second-slot arg disambiguates which overload runs.
+disp_helper_int  :: fun(a: i64 = 1, b: i64) -> i64  { return a * 1000 + b }
+disp_helper_bool :: fun(a: i64 = 2, b: bool) -> i64 { return a * 2000 }
 
 disp :: dispatch {
 	disp_helper_int
-	disp_helper_float
+	disp_helper_bool
+}
+
+// Two candidates with trailing defaults. Leading-arg type disambiguates.
+disp_trail_int  :: fun(a: i64,  b: i64 = 10) -> i64 { return a * 100 + b }
+disp_trail_bool :: fun(a: bool, b: i64 = 20) -> i64 { return b }
+
+disp_trail :: dispatch {
+	disp_trail_int
+	disp_trail_bool
 }
 
 test_underscore_default :: fun() {
@@ -61,6 +71,13 @@ test_underscore_default :: fun() {
 
 	// Dispatch + `_`: each candidate's default fills its own `_` slot. Second
 	// arg's type picks the overload, then position 0 takes that overload's default.
-	print(disp(_, 5))     // disp_helper_int → 1*1000 + 5 = 1005
-	print(disp(_, 3.5))   // disp_helper_float → 2*2000 + 3 = 4003
+	print(disp(_, 5))      // disp_helper_int  → 1*1000 + 5 = 1005
+	print(disp(_, true))   // disp_helper_bool → 2*2000      = 4000
+
+	// Trailing default fill in dispatch: one supplied arg picks the overload
+	// by type, the trailing default fills.
+	print(disp_trail(5))      // disp_trail_int  → 5*100 + 10 = 510
+	print(disp_trail(true))   // disp_trail_bool → 20
+	// Explicit arg overrides the default.
+	print(disp_trail(5, 7))   // disp_trail_int  → 5*100 + 7 = 507
 }

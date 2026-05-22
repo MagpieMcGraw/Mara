@@ -10034,10 +10034,10 @@ resolve_qualified_call :: proc(
 // Rewrites `e.name` and `e.resolved_func` to the matched overload.
 //
 // `_` placeholders are resolved per-candidate: each `_` arg matches any
-// candidate that has a default for that param position, and the picked
-// candidate's defaults are substituted into e.args before returning. The
-// non-underscore args type-check once up front and feed the per-candidate
-// type compatibility test.
+// candidate that has a default for that param position. Trailing args may
+// also be omitted as long as the missing positions have defaults — those
+// fill in after the candidate is picked. All matching candidates are
+// collected; if more than one matches, the call is rejected as ambiguous.
 check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]string, check_args: []Expr, env: ^Type_Env) -> Type {
     // Mark underscore positions — they can't be typed without knowing which
     // overload (and therefore which default) they'll take. Non-underscore
@@ -10061,15 +10061,33 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             append(&arg_types, check_expr(c, arg, env))
         }
     }
+
+    matched_fns: [dynamic]string
+    defer delete(matched_fns)
+    matched_fts: [dynamic]^Type_Scope
+    defer delete(matched_fts)
+
     for fn_name in fn_names {
         ft_raw, ft_found := type_env_get(env, fn_name)
         if !ft_found { continue }
         ft, ft_ok := ft_raw.(^Type_Scope)
         if !ft_ok { continue }
-        if len(ft.params) != len(arg_types) { continue }
+        // Too many args = candidate's param count must be >= supplied args.
+        if len(ft.params) < len(arg_types) { continue }
+        // Trailing-default check: every position beyond the supplied args must
+        // have a default. Otherwise the candidate can't be called with this
+        // few args.
+        trailing_ok := true
+        for i := len(arg_types); i < len(ft.params); i += 1 {
+            if ft.params[i].default_value == nil {
+                trailing_ok = false
+                break
+            }
+        }
+        if !trailing_ok { continue }
 
         all_match := true
-        for i := 0; i < len(ft.params); i += 1 {
+        for i := 0; i < len(arg_types); i += 1 {
             if is_underscore[i] {
                 // `_` requires a default at this position on this candidate.
                 if ft.params[i].default_value == nil {
@@ -10084,49 +10102,86 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             }
         }
         if all_match {
-            // Substitute `_` against the chosen candidate's defaults. Mirrors
-            // substitute_underscore_args + fill_default_args' span/intrinsic
-            // handling. Re-runs check_expr on the substituted node so codegen
-            // sees the resolved type metadata, same as fill_default_args does.
-            if has_underscore {
-                for i in 0..<len(e.args) {
-                    if !is_underscore[i] { continue }
-                    def := ft.params[i].default_value
-                    new_arg: Expr
-                    if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
-                        span := e.span
-                        if ident, id_ok := e.args[i].(^Expr_Ident); id_ok {
-                            span = ident.span
-                        }
-                        new_arg = new_clone(Expr_Compiler_Intrinsic{
-                            kind = intr.kind,
-                            span = span,
-                        })
-                    } else {
-                        new_arg = def
-                    }
-                    check_expr(c, new_arg, env)
-                    e.args[i] = new_arg
-                }
+            append(&matched_fns, fn_name)
+            append(&matched_fts, ft)
+        }
+    }
+
+    if len(matched_fns) == 0 {
+        type_strs: [dynamic]string
+        defer delete(type_strs)
+        for at, i in arg_types {
+            if is_underscore[i] {
+                append(&type_strs, "_")
+            } else {
+                append(&type_strs, type_name(at))
             }
-            disp_flat := make_flat_name(resolve_fn_home(c, env,fn_name), fn_name)
-            e.name = fn_name  // rewrite call target for codegen
-            e.resolved_func = Resolved_Func{name = disp_flat}
-            return ft.return_type
+        }
+        check_error(c, e.span, "no matching function in dispatch group '%s' for argument types (%s)",
+            e.name, strings.join(type_strs[:], ", "))
+        return Type_Error{}
+    }
+
+    if len(matched_fns) > 1 {
+        // Two or more candidates can serve this call shape — usually because a
+        // trailing-default overload overlaps an exact-arity overload. Mara
+        // doesn't pick a winner; the user disambiguates by supplying the
+        // distinguishing arg explicitly or removing the default.
+        check_error(c, e.span, "ambiguous dispatch '%s' — matches multiple overloads: %s",
+            e.name, strings.join(matched_fns[:], ", "))
+        return Type_Error{}
+    }
+
+    fn_name := matched_fns[0]
+    ft := matched_fts[0]
+
+    // Substitute `_` against the chosen candidate's defaults. Mirrors
+    // substitute_underscore_args + fill_default_args' span/intrinsic handling.
+    // Re-runs check_expr on the substituted node so codegen sees the resolved
+    // type metadata, same as fill_default_args does.
+    if has_underscore {
+        for i in 0..<len(e.args) {
+            if !is_underscore[i] { continue }
+            def := ft.params[i].default_value
+            new_arg: Expr
+            if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
+                span := e.span
+                if ident, id_ok := e.args[i].(^Expr_Ident); id_ok {
+                    span = ident.span
+                }
+                new_arg = new_clone(Expr_Compiler_Intrinsic{
+                    kind = intr.kind,
+                    span = span,
+                })
+            } else {
+                new_arg = def
+            }
+            check_expr(c, new_arg, env)
+            e.args[i] = new_arg
         }
     }
-    type_strs: [dynamic]string
-    defer delete(type_strs)
-    for at, i in arg_types {
-        if is_underscore[i] {
-            append(&type_strs, "_")
+
+    // Trailing default fill: append each missing slot's default expression so
+    // codegen sees a fully-saturated arg list. Mirrors fill_default_args.
+    for i := len(e.args); i < len(ft.params); i += 1 {
+        def := ft.params[i].default_value
+        new_arg: Expr
+        if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
+            new_arg = new_clone(Expr_Compiler_Intrinsic{
+                kind = intr.kind,
+                span = e.span,
+            })
         } else {
-            append(&type_strs, type_name(at))
+            new_arg = def
         }
+        check_expr(c, new_arg, env)
+        append(&e.args, new_arg)
     }
-    check_error(c, e.span, "no matching function in dispatch group '%s' for argument types (%s)",
-        e.name, strings.join(type_strs[:], ", "))
-    return Type_Error{}
+
+    disp_flat := make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
+    e.name = fn_name  // rewrite call target for codegen
+    e.resolved_func = Resolved_Func{name = disp_flat}
+    return ft.return_type
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {

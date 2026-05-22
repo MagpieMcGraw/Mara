@@ -1,0 +1,17 @@
+module test_dispatch_ambiguous_fail
+
+// Two overloads both match a one-arg call: amb_exact via exact arity, amb_trail
+// via trailing default. Dispatch rejects ambiguity rather than picking by
+// declaration order, so the call below must produce a type error.
+
+amb_exact :: fun(x: i64) -> i64           { return x }
+amb_trail :: fun(x: i64, y: i64 = 5) -> i64 { return x + y }
+
+amb :: dispatch {
+	amb_exact
+	amb_trail
+}
+
+main :: fun() -> i64 {
+	return amb(1)
+}
