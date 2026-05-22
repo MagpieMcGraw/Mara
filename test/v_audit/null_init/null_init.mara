@@ -1,0 +1,11 @@
+module null_init
+
+// V audit: creating a null pointer via uninit struct field (no error).
+// Mara analog: declare a pointer and initialize to null literal `void`.
+// Expected behaviour: Mara accepts the initialization but tracks the
+// resulting pointer as null; a later deref triggers emit_null_check.
+
+main :: fun() -> i64 {
+    p : ^i64 = void
+    return 0
+}

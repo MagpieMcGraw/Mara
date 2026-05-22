@@ -1,0 +1,13 @@
+module overflow
+
+// V audit: integer overflow is undefined behaviour (no trap).
+// Mara analog: force an i8 + i8 overflow.
+// Expected behaviour: emit_checked_arith traps at runtime with
+// "integer overflow" and exits.
+
+main :: fun() -> i64 {
+    a : i8 = 100
+    b : i8 = 50
+    c : i8 = a + b
+    return i64(c)
+}

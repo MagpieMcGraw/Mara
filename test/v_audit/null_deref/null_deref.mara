@@ -1,0 +1,11 @@
+module null_deref
+
+// V audit: dereferencing a null pointer segfaults silently.
+// Mara analog: deref a null-initialized pointer.
+// Expected behaviour: emit_null_check fires at runtime and exits cleanly
+// with a "null pointer dereference" message.
+
+main :: fun() -> i64 {
+    p : ^i64 = void
+    return p^
+}

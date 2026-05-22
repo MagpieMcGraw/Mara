@@ -1,0 +1,13 @@
+module divzero
+
+// V audit: division by zero is a runtime error (no clean exit).
+// Mara analog: divide by a zero-valued local (literal-zero is elided
+// at compile time, so use a variable).
+// Expected behaviour: emit_div_zero_check traps at runtime with
+// "division by zero" and exits.
+
+main :: fun() -> i64 {
+    a : i64 = 10
+    b : i64 = 0
+    return a / b
+}

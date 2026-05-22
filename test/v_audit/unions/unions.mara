@@ -1,0 +1,22 @@
+module unions
+
+// V audit: sum types crash on cast operations and accept invalid
+// reference-type variants through aliases.
+// Mara analog: declare a tagged union with two variants, construct one,
+// try to access the wrong variant's fields without a match.
+// Expected behaviour: either compile error (wrong-variant access without
+// match) or runtime tag check that traps.
+
+Shape :: union(tag i32) {
+    Circle = 1 {
+        radius: i32
+    }
+    Square = 2 {
+        side: i32
+    }
+}
+
+main :: fun() -> i64 {
+    s : Shape = Square{side = 5}
+    return i64(s.Circle.radius)
+}

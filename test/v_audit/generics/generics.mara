@@ -1,0 +1,16 @@
+module generics
+
+// V audit: generic bodies aren't type-checked at declaration time —
+// V silently accepts `fn foo<T>(x T) { this_func_does_not_exist(x) }`.
+// Mara analog: generic function over $T whose body calls an undefined
+// identifier.
+// Expected behaviour: type checker rejects at declaration (or at
+// instantiation at the latest), not silently like V.
+
+foo :: fun(x: $T) -> $T {
+    return nonexistent_helper_fn(x)
+}
+
+main :: fun() -> i64 {
+    return foo(5)
+}
