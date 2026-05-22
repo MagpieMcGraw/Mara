@@ -411,6 +411,12 @@ Type_Env :: struct {
     local_slice_backed: map[string]bool,
     uninit_refs: map[string]bool, // ptr/slice vars declared without initializer (read = error)
     newly_inited: map[string]bool, // ancestor uninit vars initialized in THIS scope (for definite assignment)
+    null_refs:   map[string]bool, // ptr vars known to hold `void` (null literal) in this scope.
+                                  // Deref of a name in null_refs is a compile error. Cleared
+                                  // by mark_non_null when a non-void value is assigned.
+                                  // Mara is gradually steering toward Maybe(^T) for opt-in null
+                                  // safety; this tracker catches the easy intra-scope bugs
+                                  // without forcing the type-level distinction yet.
     fn_name: string,             // enclosing function name (for #caller_name)
     class_scope: ^Type_Scope,    // when non-nil, this env is the body of that class/struct — field names
                                  // in this env should not leak to nested method bodies as bare identifiers.
@@ -588,6 +594,55 @@ is_uninit_ref :: proc(env: ^Type_Env, name: string) -> bool {
         cur = cur.parent
     }
     return false
+}
+
+// True if the expression is exactly the `void` literal — Mara's null
+// pointer constant. Used by the null-ref tracker to decide whether a
+// just-assigned pointer is statically known to be null.
+is_void_literal :: proc(e: Expr) -> bool {
+    if id, ok := e.(^Expr_Ident); ok && id.name == "void" { return true }
+    return false
+}
+
+// Walk the env chain for "is `name` known to hold the null literal here?".
+// Mirrors is_uninit_ref's shape — locals shadow ancestors via mark_non_null
+// stashing entries in the local null_refs as `false` (signal "cleared here").
+// Plain absence means "unknown" (e.g. a function param or a value from a
+// call), which is permissive: deref allowed, runtime null-check catches it.
+is_null_ref :: proc(env: ^Type_Env, name: string) -> bool {
+    cur := env
+    for cur != nil {
+        if v, found := cur.null_refs[name]; found {
+            return v  // false here means "cleared in this scope"
+        }
+        cur = cur.parent
+    }
+    return false
+}
+
+// Mark a variable as null in the current scope (just assigned `void`).
+mark_null :: proc(env: ^Type_Env, name: string) {
+    env.null_refs[name] = true
+}
+
+// Mark a variable as no-longer-null in the current scope. If declared in
+// THIS scope's null_refs as true, remove the entry. If declared in an
+// ancestor's null_refs as true, record a `false` in this scope so lookups
+// from here onward correctly see it as cleared without mutating the parent
+// (matches mark_initialized's shadowing pattern).
+mark_non_null :: proc(env: ^Type_Env, name: string) {
+    if v, found := env.null_refs[name]; found {
+        if v { delete_key(&env.null_refs, name) }
+        return
+    }
+    cur := env.parent
+    for cur != nil {
+        if v, found := cur.null_refs[name]; found && v {
+            env.null_refs[name] = false
+            return
+        }
+        cur = cur.parent
+    }
 }
 
 // Mark a variable as initialized. If declared in this scope, removes directly.
@@ -5765,6 +5820,15 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 type_env_set(env, s.name, ann_type)
                 set_provenance(env, s.name, expr_provenance(c, s.value, env))
                 mark_local_slice_backed_if_needed(c, env, s.name, s.value)
+                // Null tracking for pointer types: `p : ^T = void` marks p
+                // null; `p : ^T = &x` (or any other ptr value) clears it.
+                if _, is_ptr := distinct_base(ann_type).(^Type_Ptr); is_ptr {
+                    if is_void_literal(s.value) {
+                        mark_null(env, s.name)
+                    } else {
+                        mark_non_null(env, s.name)
+                    }
+                }
             } else {
                 // No type annotation: variables solidify.
                 // But DON'T overwrite if the variable already has a declared type
@@ -5797,11 +5861,27 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     type_env_set(env, s.name, solid)
                     set_provenance(env, s.name, expr_provenance(c, s.value, env))
                     mark_local_slice_backed_if_needed(c, env, s.name, s.value)
+                    if _, is_ptr := distinct_base(solid).(^Type_Ptr); is_ptr {
+                        if is_void_literal(s.value) {
+                            mark_null(env, s.name)
+                        } else {
+                            mark_non_null(env, s.name)
+                        }
+                    }
                 } else {
                     // Reassignment: mark as initialized (clears uninit_refs for ptr/slice)
                     mark_initialized(env, s.name)
                     // Also clear any field-level uninit entries (whole struct reassignment)
                     clear_struct_uninit_fields(env, s.name)
+                    // Same null-tracking update as the typed decl path: reassign to
+                    // void → known null, reassign to anything else → cleared.
+                    if _, is_ptr := distinct_base(existing_type).(^Type_Ptr); is_ptr {
+                        if is_void_literal(s.value) {
+                            mark_null(env, s.name)
+                        } else {
+                            mark_non_null(env, s.name)
+                        }
+                    }
                     // Reassignment: check value type matches existing variable type
                     if types_incompatible(existing_type, val_type) {
                         check_error(c, s.span, "cannot assign %s to variable '%s' of type %s",
@@ -8691,6 +8771,15 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             return pt
         case .Caret:
             // Dereference: p^ — operand must be a pointer
+            // First: if the operand is a name known to hold `void` in this
+            // scope (intraprocedural null-ref tracker), reject at compile
+            // time rather than letting the runtime null-check fire.
+            if id, id_ok := e.operand.(^Expr_Ident); id_ok && is_null_ref(env, id.name) {
+                check_error(c, e.span,
+                    "dereference of '%s', which holds the null literal `void` at this point",
+                    id.name)
+                return Type_Error{}
+            }
             if p, ok := operand_type.(^Type_Ptr); ok {
                 return p.elem
             }

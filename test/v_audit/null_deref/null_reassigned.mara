@@ -1,0 +1,12 @@
+module null_reassigned
+
+// Companion to null_deref: verify that reassigning a known-null pointer
+// to a non-void value clears the tracker, so the subsequent deref is
+// allowed (and works correctly at runtime).
+
+main :: fun() -> i64 {
+    x : i64 = 42
+    p : ^i64 = void
+    p = &x
+    return p^   // should compile (p is no longer known-null) and return 42
+}
