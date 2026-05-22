@@ -10,7 +10,7 @@ this directory.
 | # | Test | V outcome | Mara outcome | Verdict |
 |---|------|-----------|--------------|---------|
 | 1 | `null_init` (declare ptr = null) | compiles silently | compiles silently | tied |
-| 2 | `null_deref` (deref null) | **segfault** | **compile error** (same-scope null-ref tracker) | **Mara wins** (upgraded to compile-time post-audit) |
+| 2 | `null_deref` (deref null) | **segfault** | **compile error** ("used before being assigned a value" — `void` is treated as semantically unassigned) | **Mara wins** (upgraded to compile-time post-audit) |
 | 3 | `uninit_read` (read uninit ptr) | **segfault** | **compile error** ("used before assigned") | **Mara wins** |
 | 4 | `overflow` (i8 100 + 50) | **undefined behavior** | runtime trap "integer overflow" + exit(1) | **Mara wins** |
 | 5 | `divzero` (x / 0) | runtime error | clean runtime trap + exit(1) | tied (both trap) |
@@ -30,12 +30,14 @@ this directory.
 ### Where Mara is materially better than V
 
 - **Null deref** is now a compile error in the same scope as a `void`
-  assignment — the type checker tracks pointers known to hold the null
-  literal and rejects the deref before codegen. The runtime null-check
-  (`emit_null_check`) is still the safety net for unknown-shape cases
-  (function params, returned pointers, cleared-then-might-still-be-null
-  branches) where the intra-scope tracker can't prove anything. V
-  segfaults here; Mara catches at TC.
+  assignment. `void` is unified with the existing "uninitialized
+  pointer" tracker — semantically, a pointer holding `void` has no
+  usable value, so the error is the same one you'd get from
+  `p : ^T` with no initializer: "used before being assigned a value".
+  Reassigning to a real address (`p = &x`) clears it. The runtime
+  null-check (`emit_null_check`) is still the safety net for things the
+  tracker can't see — function params, returned pointers, cross-branch
+  state. V segfaults here; Mara catches at TC.
 - **Uninit read, overflow, div-zero** all fail cleanly with named errors
   and `exit(1)`. V silently UBs or segfaults. This is the payoff for the
   per-site safety-check machinery (`emit_checked_arith`, `emit_div_zero_check`,
