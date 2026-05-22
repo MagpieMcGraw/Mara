@@ -1158,12 +1158,12 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
 parse_typed_param_loop :: proc(p: ^Parser, typed_params: ^[dynamic]Scope_Binding, allow_defaults: bool) {
     skip_newlines(p)
     if current_kind(p) == .Right_Paren { return }
-    parse_typed_param_group(p, typed_params, allow_defaults)
+    parse_typed_decl_group(p, typed_params, nil, allow_defaults, true)
     for current_kind(p) == .Comma || current_kind(p) == .Newline {
         if current_kind(p) == .Comma { advance(p) }
         skip_newlines(p)
         if current_kind(p) == .Right_Paren { break }
-        parse_typed_param_group(p, typed_params, allow_defaults)
+        parse_typed_decl_group(p, typed_params, nil, allow_defaults, true)
     }
     skip_newlines(p)
 }
@@ -1214,11 +1214,11 @@ parse_return_type_clause :: proc(p: ^Parser) -> Type_Expr {
     if is_named {
         clear(&p.return_bindings)
         elems: [dynamic]Type_Expr
-        parse_named_return_group(p, &elems)
+        parse_typed_decl_group(p, &p.return_bindings, &elems, false, false)
         for current_kind(p) == .Comma {
             advance(p)
             skip_newlines(p)
-            parse_named_return_group(p, &elems)
+            parse_typed_decl_group(p, &p.return_bindings, &elems, false, false)
         }
         tt := new(Type_Tuple_Expr)
         tt.elems = elems
@@ -1244,28 +1244,37 @@ parse_return_type_clause :: proc(p: ^Parser) -> Type_Expr {
     return tt
 }
 
-parse_named_return_group :: proc(p: ^Parser, elems: ^[dynamic]Type_Expr) {
-    names: [dynamic]string
-    defer delete(names)
-    append(&names, expect(p, .Identifier).text)
-    for current_kind(p) == .Comma {
-        if peek_kind(p, 1) == .Identifier && (peek_kind(p, 2) == .Comma || peek_kind(p, 2) == .Colon) {
-            advance(p)
-            skip_newlines(p)
-            append(&names, expect(p, .Identifier).text)
-        } else {
-            break
-        }
-    }
-    expect(p, .Colon)
-    type_expr := parse_type_expr(p)
-    for pname in names {
-        append(elems, type_expr)
-        append(&p.return_bindings, Scope_Binding{name = pname, type_expr = type_expr})
-    }
-}
-
-parse_typed_param_group :: proc(p: ^Parser, typed_params: ^[dynamic]Scope_Binding, allow_defaults: bool) {
+// Parse one group of typed declarations: `name [, name ...] : [var]? T [= default]?`
+// (or the `name(s) := default` short form when allow_defaults). Each name
+// in the group produces a Scope_Binding appended to `out_bindings`.
+//
+// This is the single shared parser for param lists AND named-return lists.
+// Both shapes are `name : Type` groups with the same name-loop, the same
+// optional `var` modifier, and (for params) the same default-value tail.
+// The two contexts differ only in which features they whitelist:
+//
+//   out_types     : non-nil for named-return parsing — the resolved type
+//                   is also pushed once per name so the caller's positional
+//                   type-list stays aligned with `p.return_bindings`. nil
+//                   for params (which don't need a parallel type array).
+//   allow_defaults: true for params (=default tail, := short form);
+//                   false for returns (no defaults today).
+//   allow_var     : true for params (var Type opts into runtime-sized
+//                   aggregate instantiations); false for returns.
+//
+// `var` between the colon and the type opts the group into accepting
+// VLA-shaped instantiations (`dst: var ^String` accepts a String
+// parameterized by a runtime size). Without it, the binding refuses
+// runtime-sized aggregate instantiations — runtime-length attack surface
+// stays explicitly opt-in. Position mirrors local declarations
+// (`x : var Array(byte, n)`).
+//
+// Open follow-up (TODO line "Unify declaration parsing..."): the statement-
+// level decl path (try_parse_assign) still uses its own machinery because
+// its multi-LHS shape is tuple-destructure (`x, y := call()`), not multi-
+// name-shared-type. A deeper unification would need to reconcile those two
+// "multi" forms or change one's surface.
+parse_typed_decl_group :: proc(p: ^Parser, out_bindings: ^[dynamic]Scope_Binding, out_types: ^[dynamic]Type_Expr, allow_defaults: bool, allow_var: bool) {
     names: [dynamic]string
     defer delete(names)
     append(&names, expect(p, .Identifier).text)
@@ -1285,24 +1294,17 @@ parse_typed_param_group :: proc(p: ^Parser, typed_params: ^[dynamic]Scope_Bindin
     is_var := false
 
     // `name(s) := default` — type inferred from the default expression.
-    // Otherwise `name(s) : [var] Type [= default]` — explicit type, optional default.
+    // Otherwise `name(s) : [var]? Type [= default]?` — explicit type, optional default.
     if allow_defaults && current_kind(p) == .Equals {
         advance(p) // consume '='
         default_val = parse_expr(p)
         // type_expr stays nil; checker infers from default
     } else {
-        // `var` between the colon and the type opts the group into accepting
-        // VLA-shaped instantiations (`dst: var ^String` accepts a String
-        // parameterized by a runtime size). Without it, the binding refuses
-        // runtime-sized aggregate instantiations — runtime-length attack surface
-        // stays explicitly opt-in. Position mirrors local declarations
-        // (`x : var Array(byte, n)`).
-        if current_kind(p) == .Var {
+        if allow_var && current_kind(p) == .Var {
             advance(p)
             is_var = true
         }
         type_expr = parse_type_expr(p)
-        // Optional shared default, applied to every name in the group.
         if allow_defaults && current_kind(p) == .Equals {
             advance(p) // consume '='
             default_val = parse_expr(p)
@@ -1317,7 +1319,10 @@ parse_typed_param_group :: proc(p: ^Parser, typed_params: ^[dynamic]Scope_Bindin
         if i > 0 && dv != nil {
             dv = clone_expr(default_val)
         }
-        append(typed_params, Scope_Binding{name = pname, type_expr = type_expr, default_value = dv, is_var = is_var})
+        append(out_bindings, Scope_Binding{name = pname, type_expr = type_expr, default_value = dv, is_var = is_var})
+        if out_types != nil {
+            append(out_types, type_expr)
+        }
     }
 }
 
