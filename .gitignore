@@ -35,3 +35,6 @@ Pounce/Warlock.odin
 # Backup of the pre-publish history. Kept on disk locally for reference;
 # never goes upstream.
 .git.backup-history/
+
+# Generated stress-test projects (regenerated from generator/, never committed)
+test_*/

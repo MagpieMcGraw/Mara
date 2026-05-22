@@ -26,4 +26,4 @@ DLLs need an init function where the arena layout is defined.
 
 How do you use Mara code as a static lib? Dll should work, but how would a static lib manage it's memory? Analyze the lib and rewrite it to use explicit allocation?
 
-Verify partial arrays can be copies. Are their pointers relative?
+Trait system where each type describes how it achieves a certain operation. Array would define elem access as an offset, a slice as a ptr deref. Traits might have to be very small, for example, "I have a len" "I have a cap" "I have elements". Fixed arrays and slices composed from these.
