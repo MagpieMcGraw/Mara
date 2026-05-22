@@ -1508,6 +1508,17 @@ collect_body_type_refs :: proc(body: [dynamic]Stmt, params: []Scope_Binding, ref
 parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind) -> Stmt {
     advance(p) // consume 'fun' / 'struct' / 'class'
 
+    // p.dollar_params is the parser-wide buffer collecting `$T` introductions
+    // during parse_type_expr. It belongs to *this* scope_def — save and
+    // reset on entry, restore on exit so a previous sibling's leftovers
+    // don't bleed into us (the bug: an empty-param-list scope after a
+    // generic sibling would inherit the sibling's $T's into its own
+    // generic_params merge below) and a nested scope_def can't trample
+    // its parent's accumulating set during body parsing.
+    saved_dollar := p.dollar_params
+    p.dollar_params = {}
+    defer p.dollar_params = saved_dollar
+
     // Case 1: fun { ... } — data-type fun, no params
     if current_kind(p) == .Left_Brace {
         body, is_intrinsic, intrinsic_name := parse_scope_body(p)
