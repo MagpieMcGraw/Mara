@@ -46,10 +46,8 @@ main :: fun() -> i64 {
 
     // Game state lives here, owned by the host across DLL reloads.
     memory_block  : [..50 * MB]byte
-    memory_block2 : [..50 * MB]byte
-    memory_block3 : [..50 * MB]byte
 
-    big_boy : [200 * MB]byte
+    a, b, c: i64
 
     win, ctx = create_window()
     memory_block[0] = win
