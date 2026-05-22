@@ -17,6 +17,17 @@ Point3 :: struct {
 	z: i64 = 300
 }
 
+// Two dispatch candidates that differ only in the second param's type — `_` on
+// the first slot is fine for both (both have a default at position 0), so the
+// second-slot arg disambiguates which overload runs.
+disp_helper_int    :: fun(a: i64 = 1, b: i64) -> i64    { return a * 1000 + b }
+disp_helper_float  :: fun(a: i64 = 2, b: f64) -> i64    { return a * 2000 + i64(b) }
+
+disp :: dispatch {
+	disp_helper_int
+	disp_helper_float
+}
+
 test_underscore_default :: fun() {
 	// All explicit
 	print(with_two(1, 2))     // 3
@@ -47,4 +58,9 @@ test_underscore_default :: fun() {
 	print(b.x)   // 100 (from field default)
 	print(b.y)   // 7
 	print(b.z)   // 300 (from field default)
+
+	// Dispatch + `_`: each candidate's default fills its own `_` slot. Second
+	// arg's type picks the overload, then position 0 takes that overload's default.
+	print(disp(_, 5))     // disp_helper_int → 1*1000 + 5 = 1005
+	print(disp(_, 3.5))   // disp_helper_float → 2*2000 + 3 = 4003
 }
