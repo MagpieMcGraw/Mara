@@ -36,5 +36,16 @@ test_partial_array :: fun() {
 	print(greet.cap)
 	print(greet.len)
 
+	// Partial-to-partial copy: the copy must have its `ptr` re-anchored to
+	// its own elements. A subsequent write to the source must NOT bleed into
+	// the copy. Without the ptr fixup, both reads below would return 999.
+	src : [..4]i64
+	src[0] = 111
+	src[1] = 222
+	dst : [..4]i64 = src
+	src[0] = 999       // mutate source AFTER the copy
+	print(dst[0])      // expect 111 — copy unaffected
+	print(dst[1])      // expect 222
+
 	print("=== test_partial_array passed ===")
 }

@@ -1,0 +1,15 @@
+module test_pa_struct_copy
+
+// Expected to FAIL type-check: copying a struct that transitively contains a
+// partial-array field would silently leave the inner partial array's `ptr`
+// aliasing the source's elements.
+
+Holder :: struct {
+    text: [..32]i64
+}
+
+main :: fun() -> i64 {
+    a : Holder
+    b : Holder = a   // should error: Holder contains a partial-array field
+    return 0
+}

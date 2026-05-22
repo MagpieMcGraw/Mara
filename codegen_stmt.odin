@@ -291,7 +291,8 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 has_sentinel = pa.has_sentinel,
             }
             // Optional initial value: string literal into a byte/utf8 partial
-            // array. Mirrors the sized-slice path.
+            // array, or another partial array of the same shape. Mirrors the
+            // sized-slice path.
             if s.value != nil {
                 if str_lit, str_ok := s.value.(^Expr_String); str_ok && elem_bytes == 1 {
                     str_bytes := str_lit.value
@@ -307,6 +308,15 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", term_ptr, elements_ptr, len(str_bytes))
                         emit(g, "  store i8 0, ptr %s", term_ptr)
                     }
+                } else if _, src_pa_ok := distinct_base(expr_type(s.value)).(^Type_Partial_Array); src_pa_ok {
+                    // Partial-to-partial copy: memcpy the header + inline elements,
+                    // then re-anchor dst.ptr (which still aliases src.elements).
+                    src_ptr := gen_expr(g, s.value)
+                    partial_array_copy(g, alloca_name, src_ptr, elem_t, alloc_cap)
+                } else {
+                    codegen_fatal(g, s.span,
+                        "partial array '%s' initializer must be a string literal or another partial array, got %s",
+                        s.name, type_name(expr_type(s.value)))
                 }
             }
             return

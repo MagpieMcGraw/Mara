@@ -89,6 +89,24 @@ slice_arg_str :: proc(val: string) -> string {
     return strings.concatenate({"ptr ", val})
 }
 
+// Copy a `[..N]T` partial array from src into dst (both are pointers to a
+// `{len, cap, ptr, [N x T]}` header). The trailing elements live inline, so
+// the byte-for-byte memcpy lands the destination's `ptr` field still aliased
+// to the source's elements — re-anchor it to `&dst.elements` so reads through
+// the copy hit its own storage. Without that re-store, dst silently observes
+// and clobbers src.
+partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_ir: string, alloc_cap: int) {
+    elem_bytes := elem_byte_size(elem_ir, g.checked)
+    total_bytes := slice_header_bytes + alloc_cap * elem_bytes
+    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, total_bytes)
+    ir_type := partial_array_ir_type(elem_ir, alloc_cap)
+    elements_ptr := fresh_tmp(g)
+    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", dst_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+    ptr_gep := fresh_tmp(g)
+    emit_slice_gep(g, ptr_gep, dst_ptr, SLICE.ptr)
+    emit(g, "  store ptr %s, ptr %s", elements_ptr, ptr_gep)
+}
+
 // Alloca a { ptr, i64, i64 } and store data_ptr / len / cap into its fields.
 // Returns the alloca ptr. Callers load from it to get the slice value.
 emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, cap_val: string) -> string {

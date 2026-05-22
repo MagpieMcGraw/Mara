@@ -1,0 +1,19 @@
+module test_pa_field_copy
+
+// Expected to FAIL type-check: writing a struct value containing a partial
+// array into a field is the same memcpy hazard as a top-level struct copy.
+
+Holder :: struct {
+    text: [..32]i64
+}
+
+Outer :: struct {
+    h: Holder
+}
+
+main :: fun() -> i64 {
+    src : Holder
+    obj : Outer
+    obj.h = src   // field-write copy of a partial-array-containing struct
+    return 0
+}
