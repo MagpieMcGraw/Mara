@@ -1134,6 +1134,12 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
 
 // Assign a slice expression to an inferred-type variable: x := arr[1:3]
 gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
+    // Pre-bound slice with no body initializer (e.g. `name: String` as a struct
+    // field where prebind_field_var already wired the header) — there's
+    // nothing to do here. Falling through would `gen_expr(nil) = "0"` and
+    // memcpy from `ptr 0`, which clang rejects as an integer constant in a
+    // pointer slot.
+    if value == nil { return }
     // NRVO: if value is a slice-returning Mara call, route its sret
     // straight to our dest's alloca. Same trick as gen_slice_from_expr.
     if call, call_ok := value.(^Expr_Call); call_ok {

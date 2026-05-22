@@ -134,6 +134,23 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
             is_utf8      = utf8,
             has_sentinel = v.has_sentinel,
         }
+        // Partial-array header lives at the start of the field's slot, followed
+        // by the inline [N x T] elements. The caller's memset zeroed both, but
+        // a valid partial array needs header.ptr → &elements and header.cap = N.
+        // Mirrors the local-decl init at codegen_stmt.odin's Type_Partial_Array
+        // branch — same shape, the storage base is the sret GEP rather than a
+        // fresh alloca.
+        alloc_cap := v.size
+        if v.has_sentinel { alloc_cap += 1 }
+        ir_type := partial_array_ir_type(elem_t, alloc_cap)
+        elements_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+        ptr_gep := fresh_tmp(g)
+        emit_slice_gep(g, ptr_gep, addr, SLICE.ptr)
+        emit(g, "  store ptr %s, ptr %s", elements_ptr, ptr_gep)
+        cap_gep := fresh_tmp(g)
+        emit_slice_gep(g, cap_gep, addr, SLICE.cap)
+        emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
         return
     case ^Type_Union:
         g.all_vars[name] = Union_Var{
