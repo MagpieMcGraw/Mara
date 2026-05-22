@@ -1296,9 +1296,96 @@ parse_return_type_clause :: proc(p: ^Parser) -> Type_Expr {
 // its multi-LHS shape is tuple-destructure (`x, y := call()`), not multi-
 // name-shared-type. A deeper unification would need to reconcile those two
 // "multi" forms or change one's surface.
+// Parse the post-`:` tail of a multi-name declaration. Caller has already
+// consumed the names and the colon. Returns the parsed shape as a neutral
+// ^Stmt_Decl carrier — statement contexts use it directly, param/return
+// contexts convert via stmt_decl_to_bindings.
+//
+// Shape parsed: [= RHS] | [var]? Type [= RHS]?
+//
+// `allow_defaults` allows the `= RHS` tail (and the bare `:=` short form,
+// which is detected here by seeing `=` immediately after the colon).
+// `allow_var` allows `var` before the type. `stop_at_group_break` is forwarded
+// to parse_multi_rhs so param/return RHS parsing knows when to bail and let
+// the caller resume group iteration.
+//
+// Init count is validated here once instead of at every caller: a group of
+// N names accepts 0, 1, or N RHS values. Anything else is a parse error
+// with an explicit message — surfaces earlier than the type checker would.
+parse_decl_tail :: proc(p: ^Parser, names: [dynamic]string, start: Span, allow_var: bool, allow_defaults: bool, stop_at_group_break: bool) -> ^Stmt_Decl {
+    decl := new(Stmt_Decl)
+    decl.names = names
+    decl.span = start
+
+    if allow_defaults && current_kind(p) == .Equals {
+        // `name(s) := RHS` short form — type inferred from RHS
+        advance(p)
+        decl.init_values = parse_multi_rhs(p, len(names), stop_at_group_break)
+        validate_init_count(p, len(decl.init_values), len(names))
+        return decl
+    }
+
+    if allow_var && current_kind(p) == .Var {
+        advance(p)
+        decl.is_var = true
+    }
+
+    decl.type_expr = parse_type_expr(p)
+
+    if allow_defaults && current_kind(p) == .Equals {
+        advance(p)
+        decl.init_values = parse_multi_rhs(p, len(names), stop_at_group_break)
+        validate_init_count(p, len(decl.init_values), len(names))
+    }
+
+    return decl
+}
+
+validate_init_count :: proc(p: ^Parser, init_n: int, n_names: int) {
+    if init_n != 0 && init_n != 1 && init_n != n_names {
+        tok := current(p)
+        fmt.printf("[%s] Parse error: %d default values for %d names (expected 0, 1, or %d)\n",
+            error_prefix(tok), init_n, n_names, n_names)
+        p.errors += 1
+    }
+}
+
+// Distribute a parsed multi-name decl into the param/return-context
+// Scope_Binding shape. Each name gets its own binding with type and
+// is_var copied from the decl, and a default_value taken from
+// init_values per the standard distribution rule (1 → broadcast with
+// clone past the first; N → parallel; 0 → no default). out_types is
+// optional — non-nil for named-return parsing, which keeps a parallel
+// type list alongside p.return_bindings.
+stmt_decl_to_bindings :: proc(decl: ^Stmt_Decl, out_bindings: ^[dynamic]Scope_Binding, out_types: ^[dynamic]Type_Expr) {
+    init_n := len(decl.init_values)
+    for name, i in decl.names {
+        dv: Expr
+        if init_n == 1 {
+            dv = i == 0 ? decl.init_values[0] : clone_expr(decl.init_values[0])
+        } else if init_n == len(decl.names) {
+            dv = decl.init_values[i]
+        }
+        append(out_bindings, Scope_Binding{
+            name          = name,
+            type_expr     = decl.type_expr,
+            default_value = dv,
+            is_var        = decl.is_var,
+        })
+        if out_types != nil {
+            append(out_types, decl.type_expr)
+        }
+    }
+}
+
+// Param/return entry point for the unified declaration parser. Parses the
+// name list (with the param-specific lookahead — only consume `, name`
+// when the next token is `,` or `:`), consumes the colon, delegates the
+// tail to parse_decl_tail, and converts the result into the Scope_Binding
+// shape that param/return contexts expect.
 parse_typed_decl_group :: proc(p: ^Parser, out_bindings: ^[dynamic]Scope_Binding, out_types: ^[dynamic]Type_Expr, allow_defaults: bool, allow_var: bool) {
+    start := token_span(current(p))
     names: [dynamic]string
-    defer delete(names)
     append(&names, expect(p, .Identifier).text)
     for current_kind(p) == .Comma {
         if peek_kind(p, 1) == .Identifier && (peek_kind(p, 2) == .Comma || peek_kind(p, 2) == .Colon) {
@@ -1311,63 +1398,8 @@ parse_typed_decl_group :: proc(p: ^Parser, out_bindings: ^[dynamic]Scope_Binding
     }
     expect(p, .Colon)
 
-    type_expr: Type_Expr
-    init_vals: [dynamic]Expr
-    defer delete(init_vals)
-    is_var := false
-
-    // `name(s) := default` — type inferred from the default expression(s).
-    // Otherwise `name(s) : [var]? Type [= default(s)]?` — explicit type,
-    // optional default. RHS goes through parse_multi_rhs with the param/
-    // return stop-at-group-break heuristic, so each of these all parse:
-    //   a, b : i64                   (no default)
-    //   a, b : i64 = 5               (broadcast — clone to both)
-    //   a, b : i64 = 5, 10           (parallel — each gets its own)
-    //   a, b : i64 = all expr        (explicit broadcast)
-    //   x, y := get_pair()           (single tuple-source — broadcast today;
-    //                                 checker work for true tuple-destruct
-    //                                 in param defaults is a separate piece)
-    if allow_defaults && current_kind(p) == .Equals {
-        advance(p) // consume '='
-        init_vals = parse_multi_rhs(p, len(names), true)
-        // type_expr stays nil; checker infers from default
-    } else {
-        if allow_var && current_kind(p) == .Var {
-            advance(p)
-            is_var = true
-        }
-        type_expr = parse_type_expr(p)
-        if allow_defaults && current_kind(p) == .Equals {
-            advance(p) // consume '='
-            init_vals = parse_multi_rhs(p, len(names), true)
-        }
-    }
-
-    // Distribute init_vals across names:
-    //   len 0 → no defaults
-    //   len 1 → broadcast (clone for names past the first; matches today's
-    //           Scope_Binding semantics — each binding holds its own copy)
-    //   len N → parallel (each name takes its matching value)
-    //   other → count mismatch; surfaces as a parse error
-    init_n := len(init_vals)
-    if init_n != 0 && init_n != 1 && init_n != len(names) {
-        tok := current(p)
-        fmt.printf("[%s] Parse error: %d default values for %d names (expected 0, 1, or %d)\n",
-            error_prefix(tok), init_n, len(names), len(names))
-        p.errors += 1
-    }
-    for pname, i in names {
-        dv: Expr
-        if init_n == 1 {
-            dv = i == 0 ? init_vals[0] : clone_expr(init_vals[0])
-        } else if init_n == len(names) {
-            dv = init_vals[i]
-        }
-        append(out_bindings, Scope_Binding{name = pname, type_expr = type_expr, default_value = dv, is_var = is_var})
-        if out_types != nil {
-            append(out_types, type_expr)
-        }
-    }
+    decl := parse_decl_tail(p, names, start, allow_var, allow_defaults, true)
+    stmt_decl_to_bindings(decl, out_bindings, out_types)
 }
 
 // Returns true if `te` (or any nested type expression inside it) references
@@ -2478,41 +2510,11 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         }
         if is_multi && current_kind(p) == .Colon {
             advance(p) // consume ':'
-            if current_kind(p) == .Equals {
-                // x, y := expr  or  x, y := a, b  or  x, y := all expr
-                advance(p) // consume '='
-                init_values := parse_multi_rhs(p, len(names))
-                return new_clone(Stmt_Decl{
-                    names       = names,
-                    init_values = init_values,
-                    span        = start,
-                }), true
-            }
-            // x, y : type = a, b  or  x, y : type = call()  or  a, b : type
-            is_var := false
-            if current_kind(p) == .Var {
-                is_var = true
-                advance(p) // consume 'var'
-            }
-            type_expr := parse_type_expr(p)
-            if current_kind(p) == .Equals {
-                advance(p) // consume '='
-                init_values := parse_multi_rhs(p, len(names))
-                return new_clone(Stmt_Decl{
-                    names       = names,
-                    type_expr   = type_expr,
-                    init_values = init_values,
-                    is_var      = is_var,
-                    span        = start,
-                }), true
-            }
-            // a, b, c : type (no initializer)
-            return new_clone(Stmt_Decl{
-                names     = names,
-                type_expr = type_expr,
-                is_var    = is_var,
-                span      = start,
-            }), true
+            // Statement-context decl tail. Same shared parser as param/return
+            // contexts; the only difference is stop_at_group_break=false here
+            // (statements don't have a "next param group" — commas in RHS
+            // belong to this decl).
+            return parse_decl_tail(p, names, start, true, true, false), true
         }
         if is_multi && current_kind(p) == .Equals {
             // x, y = expr  or  x, y = a, b  or  x, y = all expr  (reassignment)

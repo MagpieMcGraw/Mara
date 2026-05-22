@@ -10,7 +10,7 @@ Dynamic arena: if we allocate past the cap, commit more virtual memory. If we fr
 
 Modules are not structs. See register_and_check_declarations vs register scope defs for examples.
 
-Unify declaration parsing across params/returns and statement-level decls. PARTIAL: `parse_typed_param_group` and `parse_named_return_group` are now both `parse_typed_decl_group` with whitelist flags (allow_defaults, allow_var, plus an out_types parallel array for returns). STILL OPEN: the statement-level path (`try_parse_assign`) hasn't been merged because its multi-LHS shape is tuple-destructure (`x, y := call()`), not multi-name-shared-type (`a, b, c: int`). Reconciling those two "multi" forms would either need a unified grammar that admits both — every shape becoming a `[]Scope_Binding` with a per-binding init source — or a syntax change to one side. Struct field parsing already shares the statement path (via `Stmt_Decl`) so no separate work there.
+Unify declaration parsing across params/returns and statement-level decls. DONE at the parser level: `parse_decl_tail` is the single shared core. Param/return contexts call it from `parse_typed_decl_group` (which adds the param-specific name lookahead + converts to Scope_Binding[] via `stmt_decl_to_bindings`). Statement context calls it from `try_parse_assign`'s multi-name decl branch. Struct fields ride the statement path via Stmt_Decl. All five sites share one decl-tail parser. STILL OPEN at the checker level: tuple-destructure-as-default in param/return position (`fun(x, y := get_pair())`) parses fine but the checker broadcasts the call to each name instead of destructuring its tuple result — see test/failures/test_param_call_default.mara. Fix is checker-side: when a Scope_Binding's default_value is a single call that returns an N-tuple matching N adjacent bindings in the same group, plumb tuple-positional defaults through param-default handling (similar to Stmt_Multi_Return_Assign at statement level).
 
 When lexing, save file sizes, pass them on to the parser, to know roughly how much memory to allocate.
 
@@ -27,3 +27,5 @@ DLLs need an init function where the arena layout is defined.
 How do you use Mara code as a static lib? Dll should work, but how would a static lib manage it's memory? Analyze the lib and rewrite it to use explicit allocation?
 
 Trait system where each type describes how it achieves a certain operation. Array would define elem access as an offset, a slice as a ptr deref. Traits might have to be very small, for example, "I have a len" "I have a cap" "I have elements". Fixed arrays and slices composed from these.
+
+Since everything is a scope... can we do metaprogramming by injecting a scope in place of another scope? A scope as value?
