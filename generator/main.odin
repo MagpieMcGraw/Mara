@@ -197,16 +197,77 @@ pick_fn_name :: proc() -> string {
     return fmt.aprintf("%s_%s_%04d", v, n, id)
 }
 
+// Tracks what one generated file emits — so later dep files can `use` it
+// and call into its functions.
+File_Info :: struct {
+    module_name: string,
+    specs:       [dynamic]Fn_Spec,
+}
+
 generate :: proc(cfg: ^Config) {
-    // Phase A: emit only isolated files (ignores -short / -long for now).
-    specs: [dynamic]Fn_Spec
-    defer delete(specs)
-    for i in 0..<cfg.isolated {
-        per_file := emit_isolated_file(cfg, i)
-        append(&specs, ..per_file[:])
+    files: [dynamic]File_Info
+    defer {
+        for &f in files { delete(f.specs) }
+        delete(files)
     }
-    emit_main(cfg, specs[:])
-    fmt.printfln("Emitted %d isolated files, %d total fns", cfg.isolated, len(specs))
+
+    // 1. Isolated files: no `use`, no externs.
+    for i in 0..<cfg.isolated {
+        idx_str := fmt.tprintf("%03d", i)
+        name := strings.concatenate({"iso_", idx_str})
+        per_file := emit_dep_file(cfg, name, nil, nil)
+        append(&files, File_Info{module_name = name, specs = per_file})
+    }
+
+    // 2. Short-chain files: each `use`s 2-3 already-generated files.
+    for i in 0..<cfg.short {
+        idx_str := fmt.tprintf("%03d", i)
+        name := strings.concatenate({"sht_", idx_str})
+        n_deps := 2 + rand.int_max(2)  // 2..3
+        deps := pick_dep_files(files[:], n_deps)
+        defer delete(deps)
+        per_file := emit_dep_file(cfg, name, deps[:], files[:])
+        append(&files, File_Info{module_name = name, specs = per_file})
+    }
+
+    // 3. Long-chain files: each `use`s 5-7.
+    for i in 0..<cfg.long {
+        idx_str := fmt.tprintf("%03d", i)
+        name := strings.concatenate({"lng_", idx_str})
+        n_deps := 5 + rand.int_max(3)  // 5..7
+        deps := pick_dep_files(files[:], n_deps)
+        defer delete(deps)
+        per_file := emit_dep_file(cfg, name, deps[:], files[:])
+        append(&files, File_Info{module_name = name, specs = per_file})
+    }
+
+    // Main pulls every file in.
+    all_specs: [dynamic]Fn_Spec
+    defer delete(all_specs)
+    for &f in files {
+        append(&all_specs, ..f.specs[:])
+    }
+    emit_main(cfg, files[:], all_specs[:])
+
+    fmt.printfln("Emitted %d files (%d iso + %d short + %d long), %d total fns",
+        len(files), cfg.isolated, cfg.short, cfg.long, len(all_specs))
+}
+
+// Pick `n` distinct files from the pool for use as deps. If the pool is
+// smaller than n, returns whatever's available.
+pick_dep_files :: proc(pool: []File_Info, n: int) -> [dynamic]File_Info {
+    out: [dynamic]File_Info
+    if len(pool) == 0 { return out }
+    actual := min(n, len(pool))
+    used: map[int]bool
+    defer delete(used)
+    for len(out) < actual {
+        i := rand.int_max(len(pool))
+        if used[i] { continue }
+        used[i] = true
+        append(&out, pool[i])
+    }
+    return out
 }
 
 // fmt.tprintf/sbprintfln treat `{` and `}` as format directives, so any line
@@ -220,17 +281,27 @@ w :: proc(b: ^strings.Builder, parts: ..string) {
     }
 }
 
-emit_isolated_file :: proc(cfg: ^Config, idx: int) -> [dynamic]Fn_Spec {
-    idx_str := fmt.tprintf("%03d", idx)
-    name := strings.concatenate({"iso_", idx_str})
+// Emit one file, optionally `use`ing earlier files. `deps` lists the
+// modules this file imports; their specs are the externs visible inside
+// this file's function bodies (so they get called).
+emit_dep_file :: proc(cfg: ^Config, name: string, deps: []File_Info, _all_files: []File_Info) -> [dynamic]Fn_Spec {
     path := strings.concatenate({cfg.out_dir, "/", name, ".mara"})
 
     b := strings.builder_make()
     w(&b, "module ", name, "\n\n")
+    for d in deps {
+        w(&b, "use ", d.module_name, "\n")
+    }
+    if len(deps) > 0 { w(&b, "\n") }
 
-    // Up-front: emit a handful of struct definitions so consumer functions
-    // generated below have things to take as parameters. Roughly one struct
-    // per ~500 target lines, capped at 20.
+    // Build the extern pool from all deps' specs.
+    externs: [dynamic]Fn_Spec
+    defer delete(externs)
+    for d in deps {
+        append(&externs, ..d.specs[:])
+    }
+
+    // Struct defs: roughly one per ~500 target lines, capped at 20.
     n_structs := min(20, max(3, cfg.lines / 500))
     structs: [dynamic]Struct_Spec
     defer delete(structs)
@@ -243,12 +314,11 @@ emit_isolated_file :: proc(cfg: ^Config, idx: int) -> [dynamic]Fn_Spec {
     for line_count < cfg.lines {
         fn := pick_fn_name()
         before := strings.builder_len(b)
-        // 70% arith, 30% struct consumer (if any structs available).
         spec: Fn_Spec
         if rand.int_max(100) < 30 && len(structs) > 0 {
             spec = gen_struct_consumer_fn(&b, fn, structs[:])
         } else {
-            spec = gen_arith_fn(&b, fn)
+            spec = gen_arith_fn(&b, fn, externs[:])
         }
         append(&specs, spec)
         added := strings.builder_len(b) - before
@@ -269,13 +339,12 @@ count_lines :: proc(s: string) -> int {
     return n
 }
 
-emit_main :: proc(cfg: ^Config, all_specs: []Fn_Spec) {
+emit_main :: proc(cfg: ^Config, files: []File_Info, all_specs: []Fn_Spec) {
     path := strings.concatenate({cfg.out_dir, "/main.mara"})
     b := strings.builder_make()
     w(&b, "module ", cfg.out_dir, "\n\n")
-    for i in 0..<cfg.isolated {
-        idx_str := fmt.tprintf("%03d", i)
-        w(&b, "use iso_", idx_str, "\n")
+    for f in files {
+        w(&b, "use ", f.module_name, "\n")
     }
     w(&b, "\nmain :: fun() -> i64 {\n")
     sample_count := min(len(all_specs), 1000)

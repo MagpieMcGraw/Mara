@@ -86,6 +86,7 @@ Fn_State :: struct {
     locals:  [dynamic]Local,
     next_id: int,
     lines:   int,  // emitted body lines so far
+    externs: []Fn_Spec, // cross-file fns visible from this body (via `use`)
 }
 
 fresh_local :: proc(s: ^Fn_State) -> string {
@@ -355,9 +356,10 @@ gen_struct_consumer_fn :: proc(b: ^strings.Builder, name: string, structs: []Str
 
 // Emit a full numeric-arithmetic function with the given name. Body size
 // is ~20-30 statements, mixing arithmetic, an array, and a conditional.
-// Returns the call-site spec.
-gen_arith_fn :: proc(b: ^strings.Builder, name: string) -> Fn_Spec {
-    s := Fn_State{b = b}
+// When `externs` is non-empty, ~15% of statements become cross-file calls
+// into those specs. Returns the call-site spec.
+gen_arith_fn :: proc(b: ^strings.Builder, name: string, externs: []Fn_Spec = nil) -> Fn_Spec {
+    s := Fn_State{b = b, externs = externs}
     defer delete(s.locals)
 
     ret_kind := pick_numeric_kind()
@@ -377,9 +379,16 @@ gen_arith_fn :: proc(b: ^strings.Builder, name: string) -> Fn_Spec {
     w(b, ") -> ", type_str(ret_kind), " {\n")
 
     target_stmts := 18 + rand.int_max(10)
+    have_externs := len(externs) > 0
     for stmt_i := 0; stmt_i < target_stmts; stmt_i += 1 {
         roll := rand.int_max(100)
         switch {
+        case have_externs && roll < 15:
+            // Cross-file call. Falls through to arith if no numeric-only
+            // extern is reachable on this try.
+            if !emit_call_stmt(&s) {
+                emit_arith_stmt(&s, pick_numeric_kind())
+            }
         case roll < 70:
             emit_arith_stmt(&s, pick_numeric_kind())
         case roll < 85:
@@ -404,4 +413,35 @@ pick_numeric_kind :: proc() -> Type_Kind {
 
 pick_numeric_kind_int :: proc() -> Type_Kind {
     return Type_Kind(rand.int_max(int(Type_Kind.U64) + 1))
+}
+
+// Emit a call to an extern (cross-file) function and bind the return value
+// to a fresh local so subsequent statements can use it. Skips externs that
+// take struct params — constructing the right struct in an arbitrary body
+// would need the extern's own struct specs in scope, which we don't track
+// yet. Numeric-param externs cover plenty of cross-file stress on their own.
+emit_call_stmt :: proc(s: ^Fn_State) -> bool {
+    if len(s.externs) == 0 { return false }
+    // Try a few times to find a numeric-only extern.
+    for try := 0; try < 4; try += 1 {
+        spec := s.externs[rand.int_max(len(s.externs))]
+        numeric_only := true
+        for p in spec.params {
+            if p.struct_name != "" { numeric_only = false; break }
+        }
+        if !numeric_only { continue }
+        // Build args.
+        args := strings.builder_make()
+        defer strings.builder_destroy(&args)
+        for p, j in spec.params {
+            if j > 0 { strings.write_string(&args, ", ") }
+            strings.write_string(&args, literal_for(p.kind))
+        }
+        local := fresh_local(s)
+        w(s.b, "\t", local, " : ", type_str(spec.ret), " = ", spec.name, "(", strings.to_string(args), ")\n")
+        add_local(s, local, spec.ret)
+        s.lines += 1
+        return true
+    }
+    return false
 }
