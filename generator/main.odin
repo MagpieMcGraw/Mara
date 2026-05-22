@@ -228,12 +228,28 @@ emit_isolated_file :: proc(cfg: ^Config, idx: int) -> [dynamic]Fn_Spec {
     b := strings.builder_make()
     w(&b, "module ", name, "\n\n")
 
+    // Up-front: emit a handful of struct definitions so consumer functions
+    // generated below have things to take as parameters. Roughly one struct
+    // per ~500 target lines, capped at 20.
+    n_structs := min(20, max(3, cfg.lines / 500))
+    structs: [dynamic]Struct_Spec
+    defer delete(structs)
+    for i in 0..<n_structs {
+        append(&structs, gen_struct_def(&b))
+    }
+
     specs: [dynamic]Fn_Spec
-    line_count := 2
+    line_count := count_lines(strings.to_string(b))
     for line_count < cfg.lines {
         fn := pick_fn_name()
         before := strings.builder_len(b)
-        spec := gen_arith_fn(&b, fn)
+        // 70% arith, 30% struct consumer (if any structs available).
+        spec: Fn_Spec
+        if rand.int_max(100) < 30 && len(structs) > 0 {
+            spec = gen_struct_consumer_fn(&b, fn, structs[:])
+        } else {
+            spec = gen_arith_fn(&b, fn)
+        }
         append(&specs, spec)
         added := strings.builder_len(b) - before
         s := strings.to_string(b)
@@ -243,6 +259,14 @@ emit_isolated_file :: proc(cfg: ^Config, idx: int) -> [dynamic]Fn_Spec {
     }
     write_file(path, strings.to_string(b))
     return specs
+}
+
+count_lines :: proc(s: string) -> int {
+    n := 0
+    for i in 0..<len(s) {
+        if s[i] == '\n' { n += 1 }
+    }
+    return n
 }
 
 emit_main :: proc(cfg: ^Config, all_specs: []Fn_Spec) {
@@ -255,12 +279,39 @@ emit_main :: proc(cfg: ^Config, all_specs: []Fn_Spec) {
     }
     w(&b, "\nmain :: fun() -> i64 {\n")
     sample_count := min(len(all_specs), 1000)
+
+    // Pre-sample so we know which structs we need locals for. Mara's codegen
+    // currently rejects `StructName{}` as a call-arg literal (lowers to
+    // `ptr 0` in IR), so we declare a zero-init local for each unique
+    // struct type and pass it by name from the call sites below.
+    sampled: [dynamic]Fn_Spec
+    defer delete(sampled)
+    struct_locals: map[string]string
+    defer delete(struct_locals)
     for i in 0..<sample_count {
         spec := all_specs[rand.int_max(len(all_specs))]
+        append(&sampled, spec)
+        for p in spec.params {
+            if p.struct_name != "" {
+                if _, exists := struct_locals[p.struct_name]; !exists {
+                    local := fmt.aprintf("__sarg_%d", len(struct_locals))
+                    struct_locals[p.struct_name] = local
+                }
+            }
+        }
+    }
+    for sname, local in struct_locals {
+        w(&b, "\t", local, " : ", sname, "\n")
+    }
+    for spec in sampled {
         w(&b, "\t", spec.name, "(")
-        for k, j in spec.param_kinds {
+        for p, j in spec.params {
             if j > 0 { w(&b, ", ") }
-            w(&b, literal_for(k))
+            if p.struct_name != "" {
+                w(&b, struct_locals[p.struct_name])
+            } else {
+                w(&b, literal_for(p.kind))
+            }
         }
         w(&b, ")\n")
     }
