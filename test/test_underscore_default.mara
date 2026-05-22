@@ -11,6 +11,12 @@ with_three :: fun(a: i64, b: i64 = 5, c: i64 = 7) -> i64 {
 	return a * 100 + b * 10 + c
 }
 
+Point3 :: struct {
+	x: i64 = 100
+	y: i64 = 200
+	z: i64 = 300
+}
+
 test_underscore_default :: fun() {
 	// All explicit
 	print(with_two(1, 2))     // 3
@@ -29,4 +35,16 @@ test_underscore_default :: fun() {
 
 	// Required first, `_` for both trailing
 	print(with_three(2, _, _))   // 257 (2*100 + 5*10 + 7)
+
+	// Positional parameterless-struct ctor — args map to fields.
+	a : Point3 = Point3(10, 20, 30)
+	print(a.x)   // 10
+	print(a.y)   // 20
+	print(a.z)   // 30
+
+	// `_` substitutes the field's default in the same shape.
+	b : Point3 = Point3(_, 7, _)
+	print(b.x)   // 100 (from field default)
+	print(b.y)   // 7
+	print(b.z)   // 300 (from field default)
 }

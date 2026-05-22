@@ -1183,23 +1183,31 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             }
         }
 
-        // Check the NRVO path FIRST: if this resolves to a function that
-        // returns a struct, write into dst_ptr directly. This must come
-        // before the constructor checks because every struct's auto-generated
-        // init function looks like a "zero-arg constructor with init"
-        // pattern; without this ordering, calls like `o.inner = make_inner()`
-        // would be misclassified as `Inner()` constructor calls.
-        if info, info_ok := lookup_fun_info(g, resolved_name); info_ok && info.ret_struct != "" {
-            gen_call_into_struct(g, call, dst_ptr, &info)
-            if call.overrides != nil {
-                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
-            }
-            return
-        }
-
         _, is_pure_struct := g.checked.table.structs[st.name]
-        _, is_function_call := g.checked.functions[resolved_name]
         _, has_init := g.checked.functions[st.name]
+        // Pure-self-ctor: the call target is the struct's own auto-init function,
+        // and the struct has no callable params (pure data layout with field
+        // defaults). For these, positional args map to fields — NRVO would
+        // pass them as function args, which the zero-arg init can't accept.
+        // For paramized structs (Arena_Basic in funs, not structs) is_pure_struct
+        // is false, so NRVO still fires correctly and forwards ctor args as
+        // function args (which the init does take).
+        is_pure_self_ctor := is_pure_struct && resolved_name == st.name
+
+        // NRVO: if this resolves to a function that returns a struct, write
+        // into dst_ptr directly. Skipped for pure-self-ctor calls — the
+        // positional/zero-arg branches below handle those. Distinct from
+        // calls like `o.inner = make_inner()` where the function name differs
+        // from the destination struct's name: NRVO still applies there.
+        if !is_pure_self_ctor {
+            if info, info_ok := lookup_fun_info(g, resolved_name); info_ok && info.ret_struct != "" {
+                gen_call_into_struct(g, call, dst_ptr, &info)
+                if call.overrides != nil {
+                    apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
+                }
+                return
+            }
+        }
 
         // Pure-struct zero-arg constructor `Foo()`: route through init function.
         if is_pure_struct && len(call.args) == 0 && has_init {
@@ -1212,7 +1220,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
 
         // Pure-struct positional constructor `Foo(a, b, c)`: inline field stores
         // by position + defaults for unprovided trailing fields.
-        if is_pure_struct && !is_function_call {
+        if is_pure_self_ctor && len(call.args) > 0 {
             emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
             for arg, i in call.args {
                 if i >= len(st.fields) { break }
