@@ -4327,9 +4327,12 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
     if un, ok := value.(^Expr_Unary); ok {
         return infer_field_type_from_default(c, un.operand, env)
     }
-    // Tuple-destructure default: source must resolve to a Type_Scope of
-    // kind .Fun returning a Type_Tuple; this binding's type is the i-th
-    // slot. Mirrors the Expr_Call branch above, then unwraps the tuple.
+    // Tuple-destructure default: when source resolves to a Type_Tuple this
+    // binding's type is the i-th slot. Mirrors the Expr_Call branch above,
+    // then unwraps the tuple. Non-tuple source is the broadcast case
+    // (`a, b := 1 << 16` — three names sharing one scalar default), so each
+    // binding takes the source's type directly — matches check_expr's
+    // Expr_Tuple_Default fallback at the body-check pass.
     if td, ok := value.(^Expr_Tuple_Default); ok {
         src_type := infer_field_type_from_default(c, td.source, env)
         if tup, is_tup := src_type.(^Type_Tuple); is_tup {
@@ -4337,6 +4340,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
                 return tup.elems[td.index]
             }
         }
+        return src_type
     }
     return Type_Any{}
 }
