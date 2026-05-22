@@ -971,7 +971,13 @@ try_parse_slice_cap_suffix :: proc(p: ^Parser, type_expr: Type_Expr) -> Expr {
 //   a, b, c         — parallel: n RHS values (caller checks n == n_names)
 //   call()          — single call producing a tuple (multi-return destructure)
 // Returns len == n_names for broadcast/parallel, len == 1 for multi-return.
-parse_multi_rhs :: proc(p: ^Parser, n_names: int) -> [dynamic]Expr {
+//
+// When `stop_at_group_break` is true (param/return context), the comma-loop
+// stops if it sees `<ident> <colon-or-comma>` after a comma — that pattern
+// marks the start of the next param/return group, not another RHS value.
+// At statement context the flag stays false: commas eat everything to end-
+// of-statement, and count mismatches surface as type errors.
+parse_multi_rhs :: proc(p: ^Parser, n_names: int, stop_at_group_break: bool = false) -> [dynamic]Expr {
     vals: [dynamic]Expr
     if current_kind(p) == .Identifier && current(p).text == "all" {
         advance(p) // consume 'all'
@@ -984,6 +990,22 @@ parse_multi_rhs :: proc(p: ^Parser, n_names: int) -> [dynamic]Expr {
     }
     append(&vals, parse_expr(p))
     for current_kind(p) == .Comma {
+        if stop_at_group_break {
+            // Look past the comma, skipping any newlines (multi-line param
+            // lists wrap one group per line). If the next non-newline tokens
+            // are `<ident> <:|,>`, that's the start of the next group, not
+            // another RHS value — bail and let the caller resume group parsing.
+            ofs := 1
+            for peek_kind(p, ofs) == .Newline { ofs += 1 }
+            if peek_kind(p, ofs) == .Identifier {
+                next_ofs := ofs + 1
+                for peek_kind(p, next_ofs) == .Newline { next_ofs += 1 }
+                k := peek_kind(p, next_ofs)
+                if k == .Colon || k == .Comma {
+                    break
+                }
+            }
+        }
         advance(p) // consume ','
         append(&vals, parse_expr(p))
     }
@@ -1290,14 +1312,24 @@ parse_typed_decl_group :: proc(p: ^Parser, out_bindings: ^[dynamic]Scope_Binding
     expect(p, .Colon)
 
     type_expr: Type_Expr
-    default_val: Expr
+    init_vals: [dynamic]Expr
+    defer delete(init_vals)
     is_var := false
 
-    // `name(s) := default` — type inferred from the default expression.
-    // Otherwise `name(s) : [var]? Type [= default]?` — explicit type, optional default.
+    // `name(s) := default` — type inferred from the default expression(s).
+    // Otherwise `name(s) : [var]? Type [= default(s)]?` — explicit type,
+    // optional default. RHS goes through parse_multi_rhs with the param/
+    // return stop-at-group-break heuristic, so each of these all parse:
+    //   a, b : i64                   (no default)
+    //   a, b : i64 = 5               (broadcast — clone to both)
+    //   a, b : i64 = 5, 10           (parallel — each gets its own)
+    //   a, b : i64 = all expr        (explicit broadcast)
+    //   x, y := get_pair()           (single tuple-source — broadcast today;
+    //                                 checker work for true tuple-destruct
+    //                                 in param defaults is a separate piece)
     if allow_defaults && current_kind(p) == .Equals {
         advance(p) // consume '='
-        default_val = parse_expr(p)
+        init_vals = parse_multi_rhs(p, len(names), true)
         // type_expr stays nil; checker infers from default
     } else {
         if allow_var && current_kind(p) == .Var {
@@ -1307,17 +1339,29 @@ parse_typed_decl_group :: proc(p: ^Parser, out_bindings: ^[dynamic]Scope_Binding
         type_expr = parse_type_expr(p)
         if allow_defaults && current_kind(p) == .Equals {
             advance(p) // consume '='
-            default_val = parse_expr(p)
+            init_vals = parse_multi_rhs(p, len(names), true)
         }
     }
 
-    // Broadcast the default to every name in the group. Clone for names
-    // after the first so each binding owns its own AST subtree (matches
-    // parse_multi_rhs behavior for `:= all expr`).
+    // Distribute init_vals across names:
+    //   len 0 → no defaults
+    //   len 1 → broadcast (clone for names past the first; matches today's
+    //           Scope_Binding semantics — each binding holds its own copy)
+    //   len N → parallel (each name takes its matching value)
+    //   other → count mismatch; surfaces as a parse error
+    init_n := len(init_vals)
+    if init_n != 0 && init_n != 1 && init_n != len(names) {
+        tok := current(p)
+        fmt.printf("[%s] Parse error: %d default values for %d names (expected 0, 1, or %d)\n",
+            error_prefix(tok), init_n, len(names), len(names))
+        p.errors += 1
+    }
     for pname, i in names {
-        dv := default_val
-        if i > 0 && dv != nil {
-            dv = clone_expr(default_val)
+        dv: Expr
+        if init_n == 1 {
+            dv = i == 0 ? init_vals[0] : clone_expr(init_vals[0])
+        } else if init_n == len(names) {
+            dv = init_vals[i]
         }
         append(out_bindings, Scope_Binding{name = pname, type_expr = type_expr, default_value = dv, is_var = is_var})
         if out_types != nil {

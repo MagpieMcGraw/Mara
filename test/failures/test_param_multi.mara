@@ -1,0 +1,26 @@
+module test_param_multi
+
+// Probe: does the param parser accept multi-name + multi-form RHS today?
+
+get_pair :: fun() -> (i64, i64) {
+    return 1, 2
+}
+
+// Multi-name shared type, no default — should already work today.
+take_pair :: fun(a, b: i64) -> i64 {
+    return a + b
+}
+
+// Multi-name with parallel defaults — does this parse?
+take_pair_defaults :: fun(a, b: i64 = 5, 10) -> i64 {
+    return a + b
+}
+
+// Multi-name with tuple-destructure default — user's example.
+take_pair_call :: fun(x, y := get_pair()) -> i64 {
+    return x + y
+}
+
+main :: fun() -> i64 {
+    return take_pair(1, 2) + take_pair_defaults() + take_pair_call()
+}

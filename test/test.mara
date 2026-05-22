@@ -26,6 +26,7 @@ use test_arena_alignment
 use test_submod_check
 use test_in_range
 use test_partial_array
+use test_param_parallel_defaults
 use test_named_returns
 use test_abi
 use test_defer
@@ -63,6 +64,7 @@ main :: fun() -> i64 {
 	test_submod()
 	test_in_range()
 	test_partial_array()
+	test_param_parallel_defaults()
 	test_named_returns()
 	test_abi()
 	test_defer()
