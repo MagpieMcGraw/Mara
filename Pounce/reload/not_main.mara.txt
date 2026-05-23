@@ -1,0 +1,78 @@
+module not_main
+
+use mara.core
+
+use mara.memory
+use mara.os
+
+use mara.sdl
+use mara.open_gl
+
+// Hot-reload host. Loads `Pounce.dll` via an under-the-hood copy so the
+// build can keep overwriting the source. Polls the source file's mtime
+// each frame; on change, frees the current handle, makes a fresh copy,
+// re-loads, and re-resolves `game_run`.
+DLL_SRC  :: "Pounce.dll"
+DLL_COPY :: "Pounce_loaded.dll"
+
+create_window :: fun() -> (Window, GLContext) {
+	init_err := sdl.Init(Video)
+
+	sdl.GL_SetAttribute(ContextProfileMask, .Core)
+	sdl.GL_SetAttribute(ContextMajorVersion, 4)
+	sdl.GL_SetAttribute(ContextMinorVersion, 5)
+
+	window = sdl.CreateWindow("Not main...", 960, 540,
+		OpenGL | Resizable)
+
+	gl_context = sdl.GL_CreateContext(window)
+	sdl.GL_MakeCurrent(window, gl_context)
+	gl_load(GL_GetProcAddress)
+	return window, gl_context
+}
+
+main :: fun() -> i64 {
+    program = Program(Arena_Debug(192 * MB))
+
+    // Initial load: copy source out from under the build, load the copy.
+    if not os.copy_file(DLL_SRC, DLL_COPY) {
+        print("startup: failed to copy ", DLL_SRC, " -> ", DLL_COPY)
+        return 1
+    }
+    handle := os.load_library(DLL_COPY)
+    game_run_ptr := os.find_symbol(handle, "game_run")
+    game_run : fn(^Program, ^[]byte, bool -> bool) = game_run_ptr
+    last_mtime := os.file_mtime(DLL_SRC)
+
+    // Game state lives here, owned by the host across DLL reloads.
+    memory_block  : [..50 * MB]byte
+
+    a, b, c: i64
+
+    win, ctx = create_window()
+    memory_block[0] = win
+    memory_block[8] = ctx
+    reload := false
+
+    running := true
+    for running {
+        // Hot-reload poll: if the source DLL's mtime changed, the build
+        // overwrote it. Unload the current copy, refresh, reload.
+        cur_mtime := os.file_mtime(DLL_SRC)
+        if cur_mtime != last_mtime {
+            os.free_library(handle)
+            if not os.copy_file(DLL_SRC, DLL_COPY) {
+                print("reload: copy failed; staying on old code")
+            else
+                handle = os.load_library(DLL_COPY)
+                game_run_ptr = os.find_symbol(handle, "game_run")
+                game_run = game_run_ptr
+                last_mtime = cur_mtime
+                print("reloaded ", DLL_SRC)
+                reload = true
+            }
+        }
+        running = game_run(&program, &memory_block, reload)
+    }
+    return 0
+}
