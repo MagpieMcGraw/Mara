@@ -1140,6 +1140,11 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
     // memcpy from `ptr 0`, which clang rejects as an integer constant in a
     // pointer slot.
     if value == nil { return }
+    // Explicit `---`: the user opts out of construction. The pre-bound header
+    // (ptr → inline elements, cap = N) is already valid; overwriting from
+    // gen_expr's "zeroinitializer" placeholder would clobber it with garbage.
+    // The opt-out covers per-element construction only; structural setup stays.
+    if _, is_uninit := value.(^Expr_Uninit); is_uninit { return }
     // NRVO: if value is a slice-returning Mara call, route its sret
     // straight to our dest's alloca. Same trick as gen_slice_from_expr.
     if call, call_ok := value.(^Expr_Call); call_ok {

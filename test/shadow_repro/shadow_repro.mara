@@ -1,24 +1,22 @@
 module shadow_repro
 
-// Regression for three issues this session:
-//   1. Struct field name shadowing imported module name (e.g. `camera`).
+// Regression for several fixes from this session:
+//   1. Struct field name shadowing imported module name (`use camera; field: camera`).
 //   2. `field := ClassName(args)` mis-typing the field as the module.
-//   3. `field : [N]Class` rejection when Class has required ctor params
-//      (declaration only valid with explicit `= ---` opt-out).
+//   3. `field : [N]Class` / `[..N]Class` rejection when Class has required ctor
+//      params (declaration only valid with explicit `= ---` opt-out).
+//   4. `[..N]T = ---` (partial-array uninit) — the slice header must stay
+//      initialized so the partial array can function; only per-element
+//      construction is skipped. Previously a spurious memcpy from
+//      `ptr zeroinitializer` clobbered the header and segfaulted at runtime.
 
 use camera
 
 Game :: struct {
-    // Field name == module name; verbose form works.
     camera : Camera = Camera(640, 480, 90)
-
-    // `:=` form also works (separately fixed: type-env-locate walk-up
-    // suppressed for struct bodies).
     cam_b := Camera(800, 600, 75)
-
-    // Array of class with required params: must opt into uninit memory
-    // explicitly via `= ---`.
-    cameras: [6]Camera = ---
+    cameras: [6]Camera = ---       // fixed array, uninit
+    camera_pool: [..6]Camera = ---  // partial array, uninit — header still valid
 }
 
 main :: fun() -> i64 {
@@ -26,5 +24,7 @@ main :: fun() -> i64 {
     if g.camera.window_w != 640 { return 1 }
     if g.camera.window_h != 480 { return 2 }
     if g.cam_b.window_w != 800 { return 3 }
+    // Just declaring g (which constructs Game) must not segfault — the
+    // partial-array header init for camera_pool still runs even with `= ---`.
     return 0
 }
