@@ -12,12 +12,9 @@ GRADIENT_LEN :: 13
 main :: fun() {
 	// 13 glyphs + null terminator; index 0..GRADIENT_LEN, never reach the null.
 	gradient := " .,-~:;=!*#$@"
-	for char, i in gradient {print(i)}
-	print(gradient[13])
-
 
 	for py in 0..HEIGHT {
-		row : [WIDTH]utf8
+		row : [WIDTH, 0]utf8
 		for px in 0..WIDTH {
 			// Pixel -> complex plane. Real spans [-2.5, 1.0], imaginary
 			// spans [-1.0, 1.0]. Terminal rows are roughly 2x taller
