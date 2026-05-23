@@ -1246,14 +1246,24 @@ parse_optional_return_type :: proc(p: ^Parser) -> Type_Expr {
 parse_return_type_clause :: proc(p: ^Parser) -> Type_Expr {
     start := token_span(current(p))
 
-    // Named multi-return detection: `name:` or `name, name (:|,)`
+    // Named multi-return detection: `name:` or `name, name, ... : T`
+    // Walk identifier-comma pairs until we see a colon (named) or anything
+    // else (positional). Necessary because `Mat4, Mat4, Mat4` and
+    // `a, b, c : T` share the leading `Ident, Ident, Ident, ...` shape — a
+    // fixed-depth peek can't tell them apart once you go past two names.
     is_named := false
     if current_kind(p) == .Identifier {
         if peek_kind(p, 1) == .Colon {
             is_named = true
-        } else if peek_kind(p, 1) == .Comma && peek_kind(p, 2) == .Identifier &&
-                  (peek_kind(p, 3) == .Colon || peek_kind(p, 3) == .Comma) {
-            is_named = true
+        } else if peek_kind(p, 1) == .Comma {
+            i := 2
+            for {
+                if peek_kind(p, i) != .Identifier { break }      // positional
+                i += 1
+                if peek_kind(p, i) == .Colon { is_named = true; break }
+                if peek_kind(p, i) != .Comma { break }           // positional
+                i += 1
+            }
         }
     }
 
