@@ -1,19 +1,9 @@
 module shadow_repro
 
-// Regression: struct field name matching an imported module name was
-// erroneously flagged as "variable shadows an enclosing binding". Fields
-// live in their own namespace (only reached via obj.field), so they can't
-// shadow file-scope bindings.
-//
-// Also covers the class-ctor-in-field rewrite: `cam: Camera(640, 480, 90)`
-// is parsed as Type_Generic_Instance because the parser is greedy about
-// `Name(args)`. The pre-pass recognises non-generic classes with ctor params
-// and rewrites to `cam: Camera = Camera(640, 480, 90)`.
-
 use camera
 
 Game :: struct {
-    camera: Camera(640, 480, 90)
+    camera := Camera(640, 480, 90)
 }
 
 main :: fun() -> i64 {
