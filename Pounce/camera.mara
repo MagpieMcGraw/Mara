@@ -5,11 +5,28 @@ use mara.math
 
 use object
 
-Camera :: class(w, h, fovy : f32) {
-	using obj: Object
-	proj_mx, ortho_mx, view_mx : Mat4 = all mat4_identity()
-	window_w, window_h := w, h
-	fov_x, fov_y, near_plane, far_plane : f32
+Camera :: struct(w, h, fovy : f32) {
+	obj := Object {
+		speed = 50
+		turn_speed = 0.2
+		pos = Vec3{0, 0, 512}
+	}
+	proj_mx ortho_mx, view_mx := view_and_projections()
+	w_width, w_height := w, h
+	fov_y := to_radians(fovy)
+	fov_x := fov_y * w_width / w_height
+	near_plane := 0.1
+	far_plane := 50000
+
+	view_and_projections :: fun(cam: ^Self) {
+		proj := mat4_perspective(fovy, (w/h), near_plane, far_plane)
+		half_w := cam.w_width / 2
+		half_h := cam.w_height / 2
+		ortho := mat4_ortho3d(-half_w, half_w, -half_h, half_h, -1, 1)
+	}
+	
+
+
 }
 
 // Camera :: struct {
@@ -213,22 +230,22 @@ Camera :: class(w, h, fovy : f32) {
 // 	return x, y, true
 // }
 
-// mouse_ray :: proc(mouse_x, mouse_y: i32, camera: ^Camera) -> linalg.Vector3f32 {
-// 	// mouse x and y needs to be in the range of 1 to -1
-// 	x := (2 * f32(mouse_x)) / f32(camera.w_width) - 1
-// 	y := 1 - (2 * f32(mouse_y)) / f32(camera.w_height)
+mouse_ray :: fun(mouse_x, mouse_y: i32, camera: ^Camera) -> Vec3 {
+	// mouse x and y needs to be in the range of 1 to -1
+	x := (2 * f32(mouse_x)) / f32(camera.w_width) - 1
+	y := 1 - (2 * f32(mouse_y)) / f32(camera.w_height)
 
-// 	// create mouse ray, apply inverse projection
-// 	mouse := linalg.Vector4f32{x, y, 0, 0}
-// 	inv_projection := linalg.matrix4_inverse(camera.proj_mx)
-// 	unprojected := linalg.mul(inv_projection, mouse)
+	// create mouse ray, apply inverse projection
+	mouse := Vec4{x, y, 0, 0}
+	inv_projection := mat4_inverse(camera.proj_mx)
+	unprojected := inv_projection * mouse
 
-// 	// we have to write 1, 0 into the mouse ray
-// 	adjusted := linalg.Vector4f32{unprojected.x, unprojected.y, 1, 0}
+	// we have to write 1, 0 into the mouse ray
+	adjusted := Vec4{unprojected.x, unprojected.y, 1, 0}
 
-// 	// apply inverted view matrix to mouse ray
-// 	inv_view := linalg.matrix4_inverse(camera.view_mx)
-// 	ray := linalg.normalize(linalg.mul(inv_view, adjusted))
+	// apply inverted view matrix to mouse ray
+	inv_view := mat4_inverse(camera.view_mx)
+	ray := normalize(inv_view * adjusted)
 
-// 	return linalg.Vector3f32{ray.x, ray.y, ray.z}
-// }
+	return Vec3{ray.x, ray.y, ray.z}
+}
