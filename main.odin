@@ -31,8 +31,20 @@ CLANG_BIN :: "clang.exe" when ODIN_OS == .Windows else "clang"
 STATIC_LIB_EXT :: ".lib" when ODIN_OS == .Windows else ".a"
 
 // ---------------------------------------------------------------------------
-// Stage 1: discovery — find every .mara file the compiler can see
+// Stage 1: discovery — find every .mara file the compiler can see, then walk
+// the use-closure starting from the target to filter down to the files we
+// actually need to lex + parse.
 // ---------------------------------------------------------------------------
+
+// Per-file state that survives the discover phase. Source bytes are read
+// once and reused by the lex phase so we don't hit the disk twice.
+Source_File :: struct {
+    path:    string,           // for diagnostics + lexer span info
+    module:  string,           // declared module name
+    source:  string,           // file bytes (kept alive through lex)
+    imports: [dynamic]string,  // paths from `use`/`include`/`sealed use`
+    tokens:  ^[dynamic]Token,  // filled by lex_target_files
+}
 
 // Read just enough of `source` to know which `module <name>` (or `package
 // <name>`) it declares. Returns "" when the source doesn't start with a
@@ -64,17 +76,99 @@ extract_package_name :: proc(source: string) -> string {
     return rest[name_start:j]
 }
 
-// Walk every .mara source dir the compiler knows about and index files by
-// their declared module name. User-package files shadow stdlib files of the
-// same name. Order of scans:
+// Scan the top of `source` for `use` / `include` / `sealed use` statements
+// and pull out the imported paths. Mara's convention puts imports in the
+// preamble (after `module X`, before any top-level declarations); the
+// scanner stops at the first non-import top-level line. Lines we recognize:
 //
+//   use foo.bar              include foo.bar
+//   sealed use foo.bar       name :: use foo.bar
+//   name :: include foo.bar  name := use foo.bar      (legacy)
+//
+// Anything beyond the preamble is invisible here — the closure won't follow
+// a `use` that appears after the first non-import line. The type checker
+// still parses imports anywhere at top level; this is a discovery shortcut,
+// not a grammar restriction.
+extract_imports :: proc(source: string) -> [dynamic]string {
+    paths: [dynamic]string
+    i := 0
+    for i < len(source) {
+        // Skip leading whitespace on this line
+        for i < len(source) && (source[i] == ' ' || source[i] == '\t') { i += 1 }
+        if i >= len(source) { break }
+        // Blank line
+        if source[i] == '\n' || source[i] == '\r' {
+            i += 1
+            continue
+        }
+        // Line comment — skip rest of line
+        if i + 1 < len(source) && source[i] == '/' && source[i+1] == '/' {
+            for i < len(source) && source[i] != '\n' { i += 1 }
+            continue
+        }
+        // Capture the full trimmed line (without newline)
+        line_start := i
+        for i < len(source) && source[i] != '\n' { i += 1 }
+        line := strings.trim_space(source[line_start:i])
+
+        // Module declaration — skip
+        if strings.has_prefix(line, "module ") || strings.has_prefix(line, "package ") {
+            continue
+        }
+
+        // Direct forms first
+        path := ""
+        if strings.has_prefix(line, "use ") {
+            path = path_word_at(line[len("use "):])
+        } else if strings.has_prefix(line, "include ") {
+            path = path_word_at(line[len("include "):])
+        } else if strings.has_prefix(line, "sealed use ") {
+            path = path_word_at(line[len("sealed use "):])
+        } else {
+            // Aliased forms: `<name> :: use <path>` / `:: include` / `:= use` / `:= include`.
+            for marker in ([]string{" :: use ", " :: include ", " := use ", " := include "}) {
+                if idx := strings.index(line, marker); idx >= 0 {
+                    path = path_word_at(line[idx + len(marker):])
+                    break
+                }
+            }
+        }
+        if path != "" {
+            append(&paths, path)
+            continue
+        }
+        // First non-import top-level line — stop scanning. Imports later in
+        // the file (rare, by convention) will be missed; if they're needed,
+        // the type checker will flag the missing module at the use site.
+        break
+    }
+    return paths
+}
+
+// Read a dotted identifier (`mara.sdl3`, `foo_bar`) from the start of `s`.
+// Returns "" if the prefix isn't a valid identifier start.
+path_word_at :: proc(s: string) -> string {
+    i := 0
+    for i < len(s) && (is_alpha(s[i]) || is_digit(s[i]) || s[i] == '.' || s[i] == '_') {
+        i += 1
+    }
+    return s[:i]
+}
+
+// Walk every .mara source dir the compiler knows about and index files by
+// their declared module name. For each file we also extract the use/include
+// preamble so the next step can prune to just the modules the target needs.
+// Source bytes are kept on the returned Source_File so the lex phase doesn't
+// re-read from disk.
+//
+// Order of scans (later entries shadow earlier ones for module-name conflicts):
 //   1. <compiler_dir>/code/           — stdlib loose .mara files
 //   2. <compiler_dir>/code/*/         — binding subfolders (SDL/, Open_GL/, ...)
 //   3. <search_dir>                   — user project (overrides on conflict)
-discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[string][dynamic]string {
-    result: map[string][dynamic]string
+discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[string][dynamic]^Source_File {
+    result: map[string][dynamic]^Source_File
 
-    scan_dir :: proc(dir: string, out: ^map[string][dynamic]string) {
+    scan_dir :: proc(dir: string, out: ^map[string][dynamic]^Source_File) {
         dh, err := os.open(dir)
         if err != nil { return }
         defer os.close(dh)
@@ -85,10 +179,16 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
             path, _ := filepath.join({dir, entry.name})
             data, rerr := os.read_entire_file_from_path(path, context.allocator)
             if rerr != nil { continue }
-            pkg := extract_package_name(string(data))
+            source := string(data)
+            pkg := extract_package_name(source)
             if pkg == "" { continue }
+            f := new(Source_File)
+            f.path    = path
+            f.module  = pkg
+            f.source  = source
+            f.imports = extract_imports(source)
             if pkg not_in out^ { out^[pkg] = {} }
-            append(&out^[pkg], path)
+            append(&out^[pkg], f)
         }
     }
 
@@ -107,96 +207,76 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
     }
 
     // User project files shadow stdlib bare names on conflict.
-    user: map[string][dynamic]string
+    user: map[string][dynamic]^Source_File
     scan_dir(search_dir, &user)
     for name, files in user { result[name] = files }
 
     return result
 }
 
-// ---------------------------------------------------------------------------
-// Stage 2 + 3: lex + parse, driven by the target's use-closure
-// ---------------------------------------------------------------------------
-
-// Collect every `use`/`include` path referenced at the top of a parsed stmt.
-// Mirrors the shape the type checker uses in its use-graph walk: bare
-// `use path` lowers to Stmt_Decl with an Expr_Include init; aliased
-// `name :: use path` lowers to Stmt_Define; the older `name := use path`
-// spelling lands as Stmt_Assign. Stmt_Multi_Assign rolls up multiple at once.
-collect_include_paths :: proc(stmt: Stmt, out: ^[dynamic]string) {
-    #partial switch s in stmt {
-    case ^Stmt_Decl:
-        for v in s.init_values {
-            if inc, ok := v.(^Expr_Include); ok { append(out, inc.path) }
-        }
-    case ^Stmt_Assign:
-        if inc, ok := s.value.(^Expr_Include); ok { append(out, inc.path) }
-    case ^Stmt_Define:
-        if inc, ok := s.value.(^Expr_Include); ok { append(out, inc.path) }
-    case ^Stmt_Multi_Assign:
-        for a in s.assigns {
-            if inc, ok := a.value.(^Expr_Include); ok { append(out, inc.path) }
-        }
-    }
-}
-
-// Lex + parse only the modules reachable from `target`. Seeds a worklist with
-// `target`, parses each module's files in sorted path order, walks the
-// resulting AST for `use`/`include`, and enqueues every discovered module
-// matching that path (exact match plus dotted submodules — same prefix rule
-// the type checker's find_matching_modules uses). Modules outside this
-// closure are left untouched: their parse errors never run, their tokens
-// never get allocated. Without this, an unrelated `.mara` file in the search
-// directory would dump its parse errors into the user's terminal even though
-// it has no bearing on the build.
-parse_target_closure :: proc(files: map[string][dynamic]string, target: string) -> (programs: map[string]^Program, errors: map[string]int) {
+// Walk the use graph from `target` and return the subset of `all_files` we
+// need to lex + parse. Same prefix-match rule the type checker uses:
+// a `use foo` enqueues `foo` plus any `foo.*` dotted submodule.
+compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target: string) -> map[string][dynamic]^Source_File {
+    result: map[string][dynamic]^Source_File
     visited: map[string]bool
     worklist: [dynamic]string
+    defer delete(worklist)
     append(&worklist, target)
-
     for len(worklist) > 0 {
         module := pop(&worklist)
         if visited[module] { continue }
         visited[module] = true
+        files, has := all_files[module]
+        if !has { continue }
+        result[module] = files
+        for f in files {
+            for path in f.imports {
+                prefix_dot := strings.concatenate({path, "."})
+                for fmod in all_files {
+                    if fmod == path || strings.has_prefix(fmod, prefix_dot) {
+                        if !visited[fmod] { append(&worklist, fmod) }
+                    }
+                }
+            }
+        }
+    }
+    return result
+}
 
-        paths, has := files[module]
-        if !has { continue }  // missing module — the type checker will diagnose if it matters
+// ---------------------------------------------------------------------------
+// Stage 2: lex every file in the closed set, using the cached source bytes.
+// ---------------------------------------------------------------------------
 
-        ordered := slice.clone(paths[:])
-        slice.sort(ordered)
+lex_target_files :: proc(files: map[string][dynamic]^Source_File) {
+    for _, module_files in files {
+        for f in module_files {
+            f.tokens = lex_all(f.source, f.path)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3: parse the cached token streams into per-module merged Programs.
+// ---------------------------------------------------------------------------
+
+parse_target_files :: proc(files: map[string][dynamic]^Source_File) -> (programs: map[string]^Program, errors: map[string]int) {
+    for module, module_files in files {
+        // Sort per-module files by path so the merged program has stable
+        // statement ordering across builds.
+        ordered := slice.clone(module_files[:])
+        slice.sort_by(ordered, proc(a, b: ^Source_File) -> bool { return a.path < b.path })
 
         merged := new(Program)
         module_errors := 0
-        for path in ordered {
-            data, rerr := os.read_entire_file_from_path(path, context.allocator)
-            if rerr != nil {
-                fmt.printf("Error: could not read '%s'\n", path)
-                os.exit(1)
-            }
-            tokens := lex_all(string(data), path)
-            p := parser_init(tokens)
+        for f in ordered {
+            p := parser_init(f.tokens)
             parsed := parse_program(p)
             for stmt in parsed^ { append(merged, stmt) }
             module_errors += p.errors
         }
         programs[module] = merged
         if module_errors > 0 { errors[module] = module_errors }
-
-        // Walk the merged AST for use/include paths, enqueue every matching
-        // discovered module (exact + dotted submodules).
-        deps: [dynamic]string
-        defer delete(deps)
-        for stmt in merged^ {
-            collect_include_paths(stmt, &deps)
-        }
-        for path in deps {
-            prefix_dot := strings.concatenate({path, "."})
-            for fmod in files {
-                if fmod == path || strings.has_prefix(fmod, prefix_dot) {
-                    if !visited[fmod] { append(&worklist, fmod) }
-                }
-            }
-        }
     }
     return programs, errors
 }
@@ -715,28 +795,28 @@ main :: proc() {
     perf: Performance_Timer
     perf_timer_begin(&perf, "discover")
 
-    files := discover_all_files(args.compiler_dir, args.search_dir)
+    all_files := discover_all_files(args.compiler_dir, args.search_dir)
 
     // Validate up front that the requested package was discovered so the user
     // gets one clean error block rather than partial-build noise.
-    missing := false
-    if args.pkg_name not_in files {
+    if args.pkg_name not_in all_files {
         fmt.println("Error: no files found for the following modules:")
         fmt.printf("  %s\n", args.pkg_name)
-        missing = true
-    }
-    if missing {
         fmt.println("Available modules:")
-        for name in files { fmt.printf("  %s\n", name) }
+        for name in all_files { fmt.printf("  %s\n", name) }
         return
     }
 
+    // Prune to the use-closure starting from the target. Modules outside
+    // the closure aren't lexed/parsed, so unrelated `.mara` files in the
+    // search dir can't dump diagnostics into the build.
+    files := compute_use_closure(all_files, args.pkg_name)
+
+    perf_timer_mark(&perf, "lex")
+    lex_target_files(files)
+
     perf_timer_mark(&perf, "parse")
-    programs, parse_errors := parse_target_closure(files, args.pkg_name)
-    // Non-target parse errors are still surfaced (inline by the parser) for
-    // modules the target actually imports; modules outside the use-closure
-    // never get parsed, so unrelated `.mara` files in the search directory
-    // can't dump diagnostics into the build.
+    programs, parse_errors := parse_target_files(files)
 
     target_os: Target_OS = .Windows
     when ODIN_OS == .Linux  { target_os = .Linux  }
