@@ -1,0 +1,13 @@
+module overflow_unsigned
+
+// 200 + 100 = 300 wraps past u8 max (255).
+// As signed i8 the operation doesn't overflow (200 reads as -56, -56+100=44),
+// so the signed intrinsic would miss it. emit_checked_arith must route to
+// llvm.uadd.with.overflow.i8 and trap.
+
+main :: fun() -> i64 {
+    a : u8 = 200
+    b : u8 = 100
+    c : u8 = a + b
+    return i64(c)
+}

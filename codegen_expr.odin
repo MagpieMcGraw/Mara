@@ -487,31 +487,43 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
             emit(g, "  %s = fadd %s %s, %s", tmp, ir_type, left, right)
         }
     } else {
+        // Signedness flows from the resolved type. For arithmetic, e.type_ is
+        // the operand type (catches the literal-on-literal case where both
+        // operands are infer-typed). For comparisons, e.type_ is bool, so we
+        // fall back to operand types.
+        is_unsigned := false
+        if n, ok := distinct_base(e.type_).(Type_Numeric); ok && n.kind == .Unsigned {
+            is_unsigned = true
+        } else if n, ok := distinct_base(expr_type(e.left)).(Type_Numeric); ok && n.kind == .Unsigned {
+            is_unsigned = true
+        } else if n, ok := distinct_base(expr_type(e.right)).(Type_Numeric); ok && n.kind == .Unsigned {
+            is_unsigned = true
+        }
         #partial switch e.op {
         case .Plus:
-            tmp = emit_checked_arith(g, "sadd", ir_type, left, right)
+            tmp = emit_checked_arith(g, is_unsigned ? "uadd" : "sadd", ir_type, left, right)
         case .Minus:
-            tmp = emit_checked_arith(g, "ssub", ir_type, left, right)
+            tmp = emit_checked_arith(g, is_unsigned ? "usub" : "ssub", ir_type, left, right)
         case .Star:
-            tmp = emit_checked_arith(g, "smul", ir_type, left, right)
+            tmp = emit_checked_arith(g, is_unsigned ? "umul" : "smul", ir_type, left, right)
         case .Slash:
             emit_div_zero_check(g, right, ir_type)
-            emit(g, "  %s = sdiv %s %s, %s", tmp, ir_type, left, right)
+            emit(g, "  %s = %s %s %s, %s", tmp, is_unsigned ? "udiv" : "sdiv", ir_type, left, right)
         case .Modulo:
             emit_div_zero_check(g, right, ir_type)
-            emit(g, "  %s = srem %s %s, %s", tmp, ir_type, left, right)
+            emit(g, "  %s = %s %s %s, %s", tmp, is_unsigned ? "urem" : "srem", ir_type, left, right)
         case .Equal_Equal:
             emit(g, "  %s = icmp eq %s %s, %s", tmp, ir_type, left, right)
         case .Not_Equal:
             emit(g, "  %s = icmp ne %s %s, %s", tmp, ir_type, left, right)
         case .Less:
-            emit(g, "  %s = icmp slt %s %s, %s", tmp, ir_type, left, right)
+            emit(g, "  %s = icmp %s %s %s, %s", tmp, is_unsigned ? "ult" : "slt", ir_type, left, right)
         case .Less_Equal:
-            emit(g, "  %s = icmp sle %s %s, %s", tmp, ir_type, left, right)
+            emit(g, "  %s = icmp %s %s %s, %s", tmp, is_unsigned ? "ule" : "sle", ir_type, left, right)
         case .Greater:
-            emit(g, "  %s = icmp sgt %s %s, %s", tmp, ir_type, left, right)
+            emit(g, "  %s = icmp %s %s %s, %s", tmp, is_unsigned ? "ugt" : "sgt", ir_type, left, right)
         case .Greater_Equal:
-            emit(g, "  %s = icmp sge %s %s, %s", tmp, ir_type, left, right)
+            emit(g, "  %s = icmp %s %s %s, %s", tmp, is_unsigned ? "uge" : "sge", ir_type, left, right)
         case .Ampersand:
             emit(g, "  %s = and %s %s, %s", tmp, ir_type, left, right)
         case .Pipe:
@@ -521,7 +533,7 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
         case .Shift_Left:
             emit(g, "  %s = shl %s %s, %s", tmp, ir_type, left, right)
         case .Shift_Right:
-            emit(g, "  %s = ashr %s %s, %s", tmp, ir_type, left, right)
+            emit(g, "  %s = %s %s %s, %s", tmp, is_unsigned ? "lshr" : "ashr", ir_type, left, right)
         case:
             emit(g, "  %s = add %s %s, %s", tmp, ir_type, left, right)
         }

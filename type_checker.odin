@@ -9665,7 +9665,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                 type_name(left_type), type_name(right_type))
             return Type_Error{}
         }
-        return promote_numeric(c, left_type, right_type, e.span)
+        return coerce_infer_to_hint(promote_numeric(c, left_type, right_type, e.span), hint)
 
     case .Minus, .Star, .Slash, .Modulo:
         if !is_numeric(left_type) || !is_numeric(right_type) {
@@ -9674,7 +9674,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                 op_sym, type_name(left_type), type_name(right_type))
             return Type_Error{}
         }
-        return promote_numeric(c, left_type, right_type, e.span)
+        return coerce_infer_to_hint(promote_numeric(c, left_type, right_type, e.span), hint)
 
     case .Ampersand, .Pipe, .Tilde, .Shift_Left, .Shift_Right:
         if !is_integer(left_type) && !is_any(left_type) {
@@ -9685,9 +9685,28 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
             check_error(c, e.span, "bitwise operators require integer operands, got %s", type_name(right_type))
             return Type_Error{}
         }
-        return promote_numeric(c, left_type, right_type, e.span)
+        return coerce_infer_to_hint(promote_numeric(c, left_type, right_type, e.span), hint)
     }
     return Type_Error{}
+}
+
+// When promote_numeric leaves the result as an infer type (both operands were
+// untyped literals), adopt the surrounding expected hint so e.type_ carries
+// concrete signedness/width to codegen. Without this, `c : u8 = 200 + 100`
+// would type-check as Type_Infer_Int and codegen would default to signed
+// arithmetic — silently giving the wrong overflow semantics.
+coerce_infer_to_hint :: proc(t, hint: Type) -> Type {
+    if _, ok := t.(Type_Infer_Int); ok {
+        if n, n_ok := distinct_base(hint).(Type_Numeric); n_ok && n.kind != .Float {
+            return hint
+        }
+    }
+    if _, ok := t.(Type_Infer_Float); ok {
+        if n, n_ok := distinct_base(hint).(Type_Numeric); n_ok && n.kind == .Float {
+            return hint
+        }
+    }
+    return t
 }
 
 // Promote numeric types for binary operations.

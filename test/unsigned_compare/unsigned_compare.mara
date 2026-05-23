@@ -1,0 +1,13 @@
+module unsigned_compare
+
+// `200 as i8` sign-extends to -56, so a signed comparison says (-56) < 100.
+// We want the unsigned answer (200 > 100, branch not taken).
+// Returns 0 on correct unsigned behavior, 1 on wrong signed behavior.
+
+main :: fun() -> i64 {
+    a : u8 = 200
+    if a < 100 {
+        return 1
+    }
+    return 0
+}

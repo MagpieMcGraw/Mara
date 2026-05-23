@@ -1,0 +1,12 @@
+module overflow_literal
+
+// Literal-on-literal overflow: 200 + 100 in a u8 context. Before the elision
+// fix, `can_elide_overflow` accepted any pair of literal operands and emitted
+// a plain `add i8 200, 100` that silently wrapped to 44. Now the elision is
+// refused (result doesn't fit), the runtime intrinsic is emitted, and LLVM
+// folds it to an unconditional trap.
+
+main :: fun() -> i64 {
+    c : u8 = 200 + 100
+    return i64(c)
+}

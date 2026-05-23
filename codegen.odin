@@ -1893,18 +1893,17 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
 }
 
 // Emit an overflow-checked integer arithmetic operation using LLVM intrinsics.
-// `op` is "sadd", "ssub", or "smul". Returns the result temporary.
-// On overflow: dispatches to the hoisted helper.
+// `op` is one of "sadd"/"ssub"/"smul"/"uadd"/"usub"/"umul". Returns the result
+// temporary. On overflow: dispatches to the hoisted helper.
 //
-// Compile-time elision: both operands as integer literals → const-fold the op
-// at the IR level (LLVM will then fold to the literal value during opt) and
-// skip the intrinsic. The fold's safety is delegated to LLVM constant
-// arithmetic — `add nsw` on out-of-range literals would surface as undef,
-// but our literal range is always inside the type, so this is safe.
+// Compile-time elision: when both operands are integer literals AND the result
+// provably fits in the target type, skip the intrinsic and emit a plain
+// add/sub/mul. If the result would overflow, fall through to the runtime check
+// (LLVM will then const-fold it to an unconditional trap).
 emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: string, right: string, span: Span = {}) -> string {
-    if can_elide_overflow(left, right, ir_type) {
+    if can_elide_overflow(op, ir_type, left, right) {
         result := fresh_tmp(g)
-        op_short := op[1:]  // "sadd" → "add", "ssub" → "sub", "smul" → "mul"
+        op_short := op[1:]  // "sadd"/"uadd" → "add", etc.
         emit(g, "  %s = %s %s %s, %s", result, op_short, ir_type, left, right)
         return result
     }
@@ -1936,14 +1935,39 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: strin
     return result
 }
 
-// True if both operands are integer literals (so LLVM can const-fold the op).
-// We pre-confirm both parse as i64; the type's exact width handling is left
-// to LLVM (which folds in the type domain).
-can_elide_overflow :: proc(left, right, ir_type: string) -> bool {
-    _, lok := strconv.parse_i64(left)
+// True if both operands are integer literals AND the computed result provably
+// fits in `ir_type`. For i64 (or unknown widths) we conservatively decline so
+// we never need to detect i64 arithmetic overflow at codegen time; the runtime
+// intrinsic handles those cases (LLVM folds it in optimized builds).
+can_elide_overflow :: proc(op, ir_type, left, right: string) -> bool {
+    l_val, lok := strconv.parse_i64(left)
     if !lok { return false }
-    _, rok := strconv.parse_i64(right)
-    return rok
+    r_val, rok := strconv.parse_i64(right)
+    if !rok { return false }
+
+    bits: uint
+    switch ir_type {
+    case "i8":  bits = 8
+    case "i16": bits = 16
+    case "i32": bits = 32
+    case:       return false   // i64 or unknown — defer to runtime check
+    }
+
+    // i32-or-narrower inputs in i64 arithmetic can't overflow i64.
+    result: i64
+    switch op[1:] {
+    case "add": result = l_val + r_val
+    case "sub": result = l_val - r_val
+    case "mul": result = l_val * r_val
+    case:       return false
+    }
+
+    if op[0] == 'u' {
+        max_excl := i64(1) << bits
+        return result >= 0 && result < max_excl
+    }
+    max_excl := i64(1) << (bits - 1)
+    return result >= -max_excl && result < max_excl
 }
 
 
