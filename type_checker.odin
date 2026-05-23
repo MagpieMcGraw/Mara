@@ -1472,9 +1472,9 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
             strings.write_string(&sig, ")")
 
             if is_array {
-                check_error(c, span,
-                    "'%s' is an array of '%s' (self-constructing, no defaults for required args). The array can't be bulk-default-initialized. Definition: %s. Provide a full initializer, or opt out of the check with '%s = #skip_constructor' (the constructor body is skipped; the array's storage isn't constructed — initialize each element before reading).",
-                    name, class_ft.name, strings.to_string(sig), name)
+                check_warning(c, span,
+                    "'%s' won't get auto-constructed when declared inside of an array. Promise me that you will write valid data to '%s' before you try to read from it.",
+                    class_ft.name, name)
             } else {
                 check_error(c, span,
                     "'%s' of type '%s' is self-constructing — call it like a function with the required arguments. Definition: %s. Try: '%s : %s = %s(...)'",
