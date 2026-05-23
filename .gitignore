@@ -8,8 +8,6 @@
 *.a
 *.dll
 *.so
-# Compiler dump output (`mara -dump` writes checked_dump.txt next to the project)
-checked_dump.txt
 # Bundled toolchain — vendored, not build output
 !tools/*.exe
 # Vendored runtime deps — shipped with the apps, not produced by the build

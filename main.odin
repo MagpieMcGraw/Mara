@@ -743,7 +743,6 @@ CLI_Args :: struct {
     compiler_dir: string,
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
-    dump:         bool,
     ok:           bool,
 }
 
@@ -753,7 +752,7 @@ parse_args :: proc() -> CLI_Args {
     args.search_dir   = "."
 
     if len(os.args) < 2 {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-dump]")
+        fmt.println("Usage: mara build [package-name] [-web] [-shared]")
         return args
     }
 
@@ -761,13 +760,12 @@ parse_args :: proc() -> CLI_Args {
     for arg in os.args {
         if arg == "-web"    { args.web    = true; continue }
         if arg == "-shared" { args.shared = true; continue }
-        if arg == "-dump"   { args.dump   = true; continue }
         append(&positional, arg)
     }
 
     // positional[0] is the exe name itself. positional[1] should be "build".
     if len(positional) < 2 || positional[1] != "build" {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-dump]")
+        fmt.println("Usage: mara build [package-name] [-web] [-shared]")
         return args
     }
 
@@ -879,13 +877,6 @@ main :: proc() {
         perf_timer_end(&perf)
         flush_diagnostics()
         fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
-        return
-    }
-
-    if args.dump {
-        dump_checked_program("checked_dump.txt", checked)
-        perf_timer_end(&perf)
-        flush_diagnostics()
         return
     }
 
