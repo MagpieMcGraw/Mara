@@ -903,5 +903,5 @@ main :: proc() {
     }
 
     perf_timer_end(&perf)
-    fmt.printf("Compiled package '%s' -> %s\n", args.pkg_name, out_name)
+    fmt.printf("Compiled module '%s' -> %s\n", args.pkg_name, out_name)
 }
