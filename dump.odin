@@ -464,7 +464,7 @@ dump_expr :: proc(b: ^strings.Builder, expr: Expr) {
     case ^Expr_Bool:
         fmt.sbprintf(b, "%v:%s", e.value, type_name(e.type_))
 
-    case ^Expr_Uninit:
+    case ^Expr_Skip_Constructor:
         fmt.sbprintf(b, "---:%s", type_name(e.type_))
 
     case ^Expr_Ident:
@@ -1080,7 +1080,7 @@ dump_parse_expr :: proc(b: ^strings.Builder, expr: Expr) {
     case ^Expr_Bool:
         fmt.sbprintf(b, "%v", e.value)
 
-    case ^Expr_Uninit:
+    case ^Expr_Skip_Constructor:
         fmt.sbprintf(b, "---")
 
     case ^Expr_Ident:

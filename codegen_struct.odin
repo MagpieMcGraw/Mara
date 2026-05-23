@@ -86,8 +86,8 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
                 struct_name = skey,
             }
         }
-        // Explicit `---`: alloca only, skip everything else.
-        if _, is_uninit := value.(^Expr_Uninit); is_uninit {
+        // Explicit `#skip_constructor`: alloca only, skip everything else.
+        if _, is_uninit := value.(^Expr_Skip_Constructor); is_uninit {
             return
         }
         // Generic value: route through the unified struct-store primitive.
@@ -201,7 +201,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     // Explicit `---` initializer: alloca only, no constructor / defaults.
     // The user opts out of automatic construction and takes responsibility
     // for initializing the value before reading it.
-    if _, is_uninit := value.(^Expr_Uninit); is_uninit {
+    if _, is_uninit := value.(^Expr_Skip_Constructor); is_uninit {
         return
     }
 

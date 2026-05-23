@@ -153,7 +153,7 @@ Expr :: union {
     ^Expr_Char,
     ^Expr_Ident,
     ^Expr_Bool,
-    ^Expr_Uninit,
+    ^Expr_Skip_Constructor,
     ^Expr_Unary,
     ^Expr_Binary,
     ^Expr_Call,
@@ -223,11 +223,12 @@ Expr_Bool :: struct {
     type_: Type,
 }
 
-// `---` — explicit "leave this slot uninitialized." Used as a default
-// or initializer to suppress automatic construction (constructor calls,
-// field defaults). At codegen the field/local stays whatever zero pattern
-// the alloca produces — no constructor runs, no defaults applied.
-Expr_Uninit :: struct {
+// `#skip_constructor` — explicit "skip the constructor body for this slot."
+// Used as a default or initializer to suppress automatic construction
+// (constructor calls, field defaults). Structural setup (slice/partial-array
+// header init) still runs; only the per-field construction logic is skipped.
+// The user takes responsibility for assigning before reading.
+Expr_Skip_Constructor :: struct {
     span:  Span,
     type_: Type,
 }
@@ -3801,10 +3802,6 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         tok := advance(p)
         result = new_clone(Expr_Bool{value = false, span = token_span(tok)})
 
-    case .Uninit:
-        tok := advance(p)
-        result = new_clone(Expr_Uninit{span = token_span(tok)})
-
     case .String:
         tok := advance(p)
         result = new_clone(Expr_String{value = tok.text, span = token_span(tok)})
@@ -3980,34 +3977,42 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             result = new_clone(Expr_Number{value = 0, span = token_span(hash_tok)})
         } else {
             name_tok := advance(p)
-            intrinsic_kind: Intrinsic_Kind
-            intrinsic_ok := true
-            switch name_tok.text {
-            case "caller_name":
-                intrinsic_kind = .Caller_Name
-            case "caller_span":
-                intrinsic_kind = .Caller_Span
-            case "web":
-                intrinsic_kind = .Web
-            case "native":
-                intrinsic_kind = .Native
-            case "windows":
-                intrinsic_kind = .Windows
-            case "linux":
-                intrinsic_kind = .Linux
-            case "mac":
-                intrinsic_kind = .Mac
-            case:
-                fmt.printf("[%s] Parse error: unknown compiler intrinsic '#%s'\n", error_prefix(hash_tok), name_tok.text)
-                p.errors += 1
-                result = new_clone(Expr_Number{value = 0, span = token_span(hash_tok)})
-                intrinsic_ok = false
-            }
-            if intrinsic_ok {
-                result = new_clone(Expr_Compiler_Intrinsic{
-                    kind = intrinsic_kind,
-                    span = token_span(hash_tok),
-                })
+            // #skip_constructor is value-position only: marks a field as
+            // "don't run the constructor body" (the field still gets header
+            // setup for slices/partial arrays). Parsed as Expr_Skip_Constructor,
+            // which the rest of the pipeline already understands.
+            if name_tok.text == "skip_constructor" {
+                result = new_clone(Expr_Skip_Constructor{span = token_span(hash_tok)})
+            } else {
+                intrinsic_kind: Intrinsic_Kind
+                intrinsic_ok := true
+                switch name_tok.text {
+                case "caller_name":
+                    intrinsic_kind = .Caller_Name
+                case "caller_span":
+                    intrinsic_kind = .Caller_Span
+                case "web":
+                    intrinsic_kind = .Web
+                case "native":
+                    intrinsic_kind = .Native
+                case "windows":
+                    intrinsic_kind = .Windows
+                case "linux":
+                    intrinsic_kind = .Linux
+                case "mac":
+                    intrinsic_kind = .Mac
+                case:
+                    fmt.printf("[%s] Parse error: unknown compiler intrinsic '#%s'\n", error_prefix(hash_tok), name_tok.text)
+                    p.errors += 1
+                    result = new_clone(Expr_Number{value = 0, span = token_span(hash_tok)})
+                    intrinsic_ok = false
+                }
+                if intrinsic_ok {
+                    result = new_clone(Expr_Compiler_Intrinsic{
+                        kind = intrinsic_kind,
+                        span = token_span(hash_tok),
+                    })
+                }
             }
         }
 
@@ -4099,7 +4104,7 @@ clone_expr :: proc(e: Expr) -> Expr {
         c := new_clone(v^)
         c.type_ = nil
         return c
-    case ^Expr_Uninit:
+    case ^Expr_Skip_Constructor:
         c := new_clone(v^)
         c.type_ = nil
         return c

@@ -57,7 +57,6 @@ Token_Kind :: enum {
     // Operators
     Plus,
     Minus,
-    Uninit,         // `---` — explicit "leave this slot uninitialized"
     Star,
     Slash,
     Modulo,
@@ -419,15 +418,6 @@ next_token :: proc(l: ^Lexer) -> Token {
         switch three {
         case "<<=": lexer_advance(l, 3); return make_token(l, .Shift_Left_Equal,  three, tok_line, tok_col)
         case ">>=": lexer_advance(l, 3); return make_token(l, .Shift_Right_Equal, three, tok_line, tok_col)
-        }
-    }
-
-    // Three-character tokens (check before two-character)
-    if l.pos + 2 < len(l.source) {
-        three := l.source[start:start+3]
-        if three == "---" {
-            lexer_advance(l, 3)
-            return make_token(l, .Uninit, three, tok_line, tok_col)
         }
     }
 

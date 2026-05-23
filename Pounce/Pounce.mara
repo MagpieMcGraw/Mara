@@ -17,8 +17,6 @@ use perf
 use asset
 use test_draw
 
-use not_main
-
 COLOR_RED 		:: Vec3{0.9, 0.2, 0.2}
 COLOR_ORANGE  	:: Vec3{0.95, 0.5, 0.1}
 COLOR_YELLOW  	:: Vec3{0.95, 0.85, 0.1}
@@ -57,22 +55,40 @@ Megastruct :: struct {
 	// Input
 	using events: Event_State,
 
-	//camera: Camera,
-	mouse_look: bool,
+	// Asset system
+	//assets: Assets
+
+	// Not initialized because of array? Sketchy!
+	cameras: [..6]Camera
+
+	camera := Camera(1280, 720, 90)
+	mouse_look: bool
+
+	// Draw states
+	vao: VAO_State = #skip_constructor
+	draw_state_object: DrawState
+	draw_state_highlight: DrawState
+	draw_state_text: DrawState
 
 	// Rendering
 	quad:   Quad_Renderer
 	player: Player
-	
-	VAO: VAO_State = ---
 }
 
 game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game^ = Megastruct{}
-	game.window = memory[0]
-	game.gl_context = memory[8]
 
-	// dll needs to gl load its own functions
+	init_err := sdl.Init(Video)
+
+	sdl.GL_SetAttribute(ContextProfileMask, .Core)
+	sdl.GL_SetAttribute(ContextMajorVersion, 4)
+	sdl.GL_SetAttribute(ContextMinorVersion, 5)
+
+	game.window = sdl.CreateWindow("Not main...", 960, 540,
+		OpenGL | Resizable)
+
+	game.gl_context = sdl.GL_CreateContext(game.window)
+	sdl.GL_MakeCurrent(game.window, game.gl_context)
 	gl_load(GL_GetProcAddress)
 
 	quad_init(&game.quad)
@@ -80,47 +96,14 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game.player.y = 270
 
 	// testing the gfx
-	game.VAO = VAO_State()
-	gfx.primitives_init(&game.VAO)
+	game.vao = VAO_State()
+	gfx.primitives_init(&game.vao)
 
 	game.running = true
 	game.initialized = true
 }
 
-game_reload :: fun(game: ^Megastruct) {
-	gl_load(GL_GetProcAddress)
-}
-
-game_events :: fun() {
-	// so far we do nothing
-}
-
-game_update :: fun(dt: f64) {
-	// so far we do nothing
-}
-
-game_draw :: fun(game: ^Megastruct) {
-	ClearColor(0.85, 0.80, 0.70, 1.0)
-	Clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
-	p := &game.player
-	draw_quad(&game.quad, 960.0, 540.0,
-		f32(p.x), f32(p.y), f32(p.size), f32(p.size), p.color)
-	GL_SwapWindow(game.window)
-}
-
-#expose
-game_run :: fun(ctx: ^Program, memory: ^[]byte, reload: bool) -> bool {
-	program = Program(Arena_Debug(192 * MB))
-
-	game := take(Megastruct, &memory[16])
-	if not game.initialized do game_init(&game, memory)
-	if reload do game_reload(&game)
-
-	timer := &game.timers
-	timer.work.counter = time_now()
-
-	big_array : [50 * MB]byte
-
+game_events :: fun(game: ^Megastruct) {
 	quit_msg : String
 	&quit_msg + "Escaping..."
 
@@ -139,6 +122,29 @@ game_run :: fun(ctx: ^Program, memory: ^[]byte, reload: bool) -> bool {
 			print(quit_msg)
 			game.running = false
 	}
+}
+
+game_update :: fun(dt: f64) {
+	// so far we do nothing
+}
+
+game_draw :: fun(game: ^Megastruct) {
+	ClearColor(0.85, 0.80, 0.70, 1.0)
+	Clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
+	p := &game.player
+	draw_quad(&game.quad, 960.0, 540.0,
+		f32(p.x), f32(p.y), f32(p.size), f32(p.size), p.color)
+	GL_SwapWindow(game.window)
+}
+
+game_run :: fun(memory: ^[]byte) -> bool {
+	game := take(Megastruct, &memory[0])
+	if not game.initialized do game_init(&game, memory)
+
+	timer := &game.timers
+	timer.work.counter = time_now()
+
+	game_events(&game)
 
 	tally_up(&timer.frame, &timer.fixed)
 	for one_step(&timer.fixed) do game_update(timer.fixed.step)

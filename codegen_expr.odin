@@ -37,7 +37,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
             return fmt.tprintf("%d", e.int_value)
         }
 
-    case ^Expr_Uninit:
+    case ^Expr_Skip_Constructor:
         // `---` should never reach gen_expr as a value-producing expression.
         // Callers (gen_struct_assign, apply_struct_defaults, etc.) recognize
         // it as an opt-out marker before falling through to gen_expr. If we

@@ -409,12 +409,12 @@ Type_Env :: struct {
     // sibling/pool buffers (set when bound from a call with escape locals).
     // Returning such a local would dangle once the frame pops.
     local_slice_backed: map[string]bool,
-    uninit_refs: map[string]bool, // ptr/slice vars without a usable value at this point
+    invalid_refs: map[string]bool, // ptr/slice vars without a usable value at this point
                                   // (declared without initializer, OR pointer-typed and
                                   // currently assigned the `void` null literal — both
                                   // are "not safe to read" by the same definition).
                                   // Read = error. Deref counts as read via the Expr_Ident
-                                  // path that fires is_uninit_ref.
+                                  // path that fires is_invalid_ref.
     newly_inited: map[string]bool, // ancestor uninit vars initialized in THIS scope (for definite assignment)
     aliases:      map[string]string, // simple intra-procedural points-to: `it = &root` records
                                      // aliases[it] = "root". Empty-string value means the alias
@@ -589,11 +589,11 @@ type_env_set :: proc(env: ^Type_Env, name: string, t: Type) {
 
 // Check if a variable is an uninitialized pointer/slice (walks scope chain).
 // Respects newly_inited: if a child scope initialized it, it's not uninit in that scope.
-is_uninit_ref :: proc(env: ^Type_Env, name: string) -> bool {
+is_invalid_ref :: proc(env: ^Type_Env, name: string) -> bool {
     cur := env
     for cur != nil {
         if name in cur.newly_inited { return false } // shadowed by init in this scope
-        if name in cur.uninit_refs { return true }
+        if name in cur.invalid_refs { return true }
         cur = cur.parent
     }
     return false
@@ -611,14 +611,14 @@ is_void_literal :: proc(e: Expr) -> bool {
 // If declared in an ancestor scope, records in newly_inited (doesn't mutate parent).
 mark_initialized :: proc(env: ^Type_Env, name: string) {
     // Local scope: delete directly
-    if name in env.uninit_refs {
-        delete_key(&env.uninit_refs, name)
+    if name in env.invalid_refs {
+        delete_key(&env.invalid_refs, name)
         return
     }
     // Ancestor scope: record locally, don't mutate parent
     cur := env.parent
     for cur != nil {
-        if name in cur.uninit_refs {
+        if name in cur.invalid_refs {
             env.newly_inited[name] = true
             return
         }
@@ -633,7 +633,7 @@ mark_initialized :: proc(env: ^Type_Env, name: string) {
 
 // Track uninitialized pointer/slice fields inside a struct variable.
 // `provided` is the set of field names explicitly initialized (from a struct literal).
-add_struct_uninit_fields :: proc(env: ^Type_Env, var_name: string, st: ^Scope_Body, provided: map[string]bool = nil) {
+add_struct_invalid_fields :: proc(env: ^Type_Env, var_name: string, st: ^Scope_Body, provided: map[string]bool = nil) {
     for &f in st.fields {
         if provided != nil && f.name in provided { continue }
         if f.default_value != nil { continue }
@@ -651,29 +651,29 @@ add_struct_uninit_fields :: proc(env: ^Type_Env, var_name: string, st: ^Scope_Bo
         if _, is_slice := base.(^Type_Slice); is_slice { is_ref = true }
         if is_ref {
             key := strings.concatenate({var_name, ".", f.name})
-            env.uninit_refs[key] = true
+            env.invalid_refs[key] = true
         }
     }
 }
 
 // Clear all field-level uninit entries for a variable (e.g. when the whole struct is reassigned).
 // Local entries are deleted directly; ancestor entries are recorded in newly_inited.
-clear_struct_uninit_fields :: proc(env: ^Type_Env, var_name: string) {
+clear_struct_invalid_fields :: proc(env: ^Type_Env, var_name: string) {
     prefix := strings.concatenate({var_name, "."})
     // Clear from current scope directly
     keys_to_delete: [dynamic]string
-    for key in env.uninit_refs {
+    for key in env.invalid_refs {
         if strings.has_prefix(key, prefix) {
             append(&keys_to_delete, key)
         }
     }
     for key in keys_to_delete {
-        delete_key(&env.uninit_refs, key)
+        delete_key(&env.invalid_refs, key)
     }
     // For ancestor scopes, record in newly_inited
     cur := env.parent
     for cur != nil {
-        for key in cur.uninit_refs {
+        for key in cur.invalid_refs {
             if strings.has_prefix(key, prefix) {
                 env.newly_inited[key] = true
             }
@@ -733,7 +733,7 @@ update_alias_from_value :: proc(env: ^Type_Env, name: string, value: Expr) {
 
 // Check if a variable has any uninitialized pointer/slice fields.
 // Returns the first uninit field name, or nil. Respects newly_inited shadowing.
-first_uninit_field :: proc(env: ^Type_Env, var_name: string) -> Maybe(string) {
+first_invalid_field :: proc(env: ^Type_Env, var_name: string) -> Maybe(string) {
     prefix := strings.concatenate({var_name, "."})
     // Collect all newly_inited keys from this scope up
     inited: map[string]bool
@@ -747,7 +747,7 @@ first_uninit_field :: proc(env: ^Type_Env, var_name: string) -> Maybe(string) {
     // Find first uninit that isn't shadowed
     cur = env
     for cur != nil {
-        for key in cur.uninit_refs {
+        for key in cur.invalid_refs {
             if strings.has_prefix(key, prefix) && key not_in inited {
                 return key[len(prefix):]
             }
@@ -1473,7 +1473,7 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
 
             if is_array {
                 check_error(c, span,
-                    "'%s' is an array of '%s' (self-constructing, no defaults for required args). The array can't be bulk-default-initialized. Definition: %s. Provide a full initializer, or opt out of the check with '%s = ---' (uninitialized memory — initialize each element before reading).",
+                    "'%s' is an array of '%s' (self-constructing, no defaults for required args). The array can't be bulk-default-initialized. Definition: %s. Provide a full initializer, or opt out of the check with '%s = #skip_constructor' (the constructor body is skipped; the array's storage isn't constructed — initialize each element before reading).",
                     name, class_ft.name, strings.to_string(sig), name)
             } else {
                 check_error(c, span,
@@ -5146,8 +5146,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 if tp.type_expr != nil {
                                     pt = resolve_type_expr(tp.type_expr, c, s.span, env = env)
                                 } else if tp.default_value != nil {
-                                    if _, is_uninit := tp.default_value.(^Expr_Uninit); is_uninit {
-                                        check_error(c, s.span, "param '%s' has no type — `---` requires an explicit type annotation (e.g. `%s : T = ---`)", tp.name, tp.name)
+                                    if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
+                                        check_error(c, s.span, "param '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)", tp.name, tp.name)
                                         pt = Type_Error{}
                                     } else {
                                         pt = infer_field_type_from_default(c, tp.default_value, env)
@@ -5264,8 +5264,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         if tp.type_expr != nil {
                             pt = resolve_type_expr(tp.type_expr, c, s.span, env = env)
                         } else if tp.default_value != nil {
-                            if _, is_uninit := tp.default_value.(^Expr_Uninit); is_uninit {
-                                check_error(c, s.span, "param '%s' has no type — `---` requires an explicit type annotation (e.g. `%s : T = ---`)", tp.name, tp.name)
+                            if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
+                                check_error(c, s.span, "param '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)", tp.name, tp.name)
                                 pt = Type_Error{}
                             } else {
                                 // `name(s) := default` — infer the param's type from the default expression.
@@ -5778,16 +5778,16 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Track uninitialized pointers/slices — reading before assignment is an error
                 base := distinct_base(ann_type)
                 if _, is_ptr := base.(^Type_Ptr); is_ptr {
-                    env.uninit_refs[s.name] = true
+                    env.invalid_refs[s.name] = true
                 } else if _, is_slice := base.(^Type_Slice); is_slice {
                     // Sized slices `name : []T(N)` allocate storage at decl time,
                     // so they're not uninitialized.
                     if s.slice_cap_expr == nil {
-                        env.uninit_refs[s.name] = true
+                        env.invalid_refs[s.name] = true
                     }
                 } else if sd := as_scope_body(base); sd != nil && len(sd.fields) > 0 {
                     // Track uninit ptr/slice fields inside a struct declared without initializer
-                    add_struct_uninit_fields(env, s.name, sd)
+                    add_struct_invalid_fields(env, s.name, sd)
                 }
                 continue
             }
@@ -5860,7 +5860,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     if lit, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok {
                         provided: map[string]bool
                         for field in lit.fields { provided[field.name] = true }
-                        add_struct_uninit_fields(env, s.name, sd, provided)
+                        add_struct_invalid_fields(env, s.name, sd, provided)
                     }
                     continue
                 }
@@ -5920,11 +5920,11 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Pointer-typed and assigned `void` (the null literal) is
                 // semantically "no usable value yet" — same definition as
                 // declared-without-initializer. Route through the existing
-                // uninit_refs path so the deref check at the Expr_Ident site
+                // invalid_refs path so the deref check at the Expr_Ident site
                 // catches it with the same error.
                 if _, is_ptr := distinct_base(ann_type).(^Type_Ptr); is_ptr {
                     if is_void_literal(s.value) {
-                        env.uninit_refs[s.name] = true
+                        env.invalid_refs[s.name] = true
                     }
                 }
             } else {
@@ -5960,10 +5960,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                 }
                 if !already_declared {
-                    // `x := ---` has no type to infer from. Require an
-                    // explicit annotation: `x : T = ---`.
-                    if _, is_uninit := s.value.(^Expr_Uninit); is_uninit {
-                        check_error(c, s.span, "'%s' has no type — `---` requires an explicit type annotation (e.g. `%s : T = ---`)", s.name, s.name)
+                    // `x := #skip_constructor` has no type to infer from. Require
+                    // an explicit annotation: `x : T = #skip_constructor`.
+                    if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip {
+                        check_error(c, s.span, "'%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)", s.name, s.name)
                         type_env_set(env, s.name, Type_Error{})
                         continue
                     }
@@ -5979,7 +5979,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     update_alias_from_value(env, s.name, s.value)
                     if _, is_ptr := distinct_base(solid).(^Type_Ptr); is_ptr {
                         if is_void_literal(s.value) {
-                            env.uninit_refs[s.name] = true
+                            env.invalid_refs[s.name] = true
                         }
                     }
                 } else {
@@ -5988,14 +5988,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     is_ptr := false
                     if _, ok := distinct_base(existing_type).(^Type_Ptr); ok { is_ptr = true }
                     if is_ptr && is_void_literal(s.value) {
-                        env.uninit_refs[s.name] = true
+                        env.invalid_refs[s.name] = true
                         // Don't clear field-uninit either — but this branch
                         // only applies to scalar ptrs anyway.
                     } else {
-                        // Reassignment: mark as initialized (clears uninit_refs for ptr/slice)
+                        // Reassignment: mark as initialized (clears invalid_refs for ptr/slice)
                         mark_initialized(env, s.name)
                         // Also clear any field-level uninit entries (whole struct reassignment)
-                        clear_struct_uninit_fields(env, s.name)
+                        clear_struct_invalid_fields(env, s.name)
                     }
                     // Reassignment: check value type matches existing variable type
                     if types_incompatible(existing_type, val_type) {
@@ -6250,8 +6250,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
                 check_uninitialized_class_decl(c, s.span, field.name, field_type)
             }
         } else if field.default_value != nil {
-            if _, is_uninit := field.default_value.(^Expr_Uninit); is_uninit {
-                check_error(c, s.span, "field '%s' has no type — `---` requires an explicit type annotation (e.g. `%s : T = ---`)", field.name, field.name)
+            if _, is_uninit := field.default_value.(^Expr_Skip_Constructor); is_uninit {
+                check_error(c, s.span, "field '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)", field.name, field.name)
                 field_type = Type_Error{}
             } else {
                 field_type = infer_field_type_from_default(c, field.default_value, &child)
@@ -7128,7 +7128,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                     "cannot write to field '%s' of immutable parameter '%s' (declare it with ^ to allow mutation)",
                     fa_expr.field, pname)
             }
-            // Mark field as initialized (clears uninit_refs for ptr/slice struct fields)
+            // Mark field as initialized (clears invalid_refs for ptr/slice struct fields)
             if ident, ident_ok := fa_expr.expr.(^Expr_Ident); ident_ok {
                 field_key := strings.concatenate({ident.name, ".", fa_expr.field})
                 mark_initialized(env, field_key)
@@ -8667,7 +8667,7 @@ expr_type_ptr :: proc(e: Expr) -> ^Type {
     case ^Expr_Char:               return &v.type_
     case ^Expr_Ident:              return &v.type_
     case ^Expr_Bool:               return &v.type_
-    case ^Expr_Uninit:             return &v.type_
+    case ^Expr_Skip_Constructor:             return &v.type_
     case ^Expr_Unary:              return &v.type_
     case ^Expr_Binary:             return &v.type_
     case ^Expr_Call:               return &v.type_
@@ -8723,7 +8723,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         return Type_C8{}
     case ^Expr_Bool:
         return Type_Bool{}
-    case ^Expr_Uninit:
+    case ^Expr_Skip_Constructor:
         // `---` carries no intrinsic type — the type comes from the LHS
         // (a field's declared type or a local's type annotation). The
         // checker treats it as Type_Any so any LHS accepts it; codegen
@@ -8784,7 +8784,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
 
         // Check for reading an uninitialized pointer/slice
-        if is_uninit_ref(env, e.name) {
+        if is_invalid_ref(env, e.name) {
             check_error(c, e.span, "variable '%s' is used before being assigned a value", e.name)
         }
         // Check env (common case: local vars, params, functions)
@@ -8887,9 +8887,9 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             return pt
         case .Caret:
             // Dereference: p^ — operand must be a pointer. The Expr_Ident
-            // check at the operand site already fires is_uninit_ref, which
+            // check at the operand site already fires is_invalid_ref, which
             // covers both no-initializer pointers and pointers currently
-            // holding `void` (see uninit_refs comment on Type_Env).
+            // holding `void` (see invalid_refs comment on Type_Env).
             if p, ok := operand_type.(^Type_Ptr); ok {
                 return p.elem
             }
@@ -9175,11 +9175,11 @@ check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope
     // alias too — `it.next` should fire the same error as `root.next`.
     if ident, ident_ok := e.expr.(^Expr_Ident); ident_ok {
         field_key := strings.concatenate({ident.name, ".", e.field})
-        if is_uninit_ref(env, field_key) {
+        if is_invalid_ref(env, field_key) {
             check_error(c, e.span, "field '%s' of '%s' is used before being assigned a value", e.field, ident.name)
         } else if target, has_alias := lookup_alias(env, ident.name); has_alias {
             aliased_key := strings.concatenate({target, ".", e.field})
-            if is_uninit_ref(env, aliased_key) {
+            if is_invalid_ref(env, aliased_key) {
                 check_error(c, e.span,
                     "field '%s' of '%s' (aliased via '%s') is used before being assigned a value",
                     e.field, target, ident.name)

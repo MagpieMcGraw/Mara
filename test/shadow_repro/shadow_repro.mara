@@ -4,8 +4,8 @@ module shadow_repro
 //   1. Struct field name shadowing imported module name (`use camera; field: camera`).
 //   2. `field := ClassName(args)` mis-typing the field as the module.
 //   3. `field : [N]Class` / `[..N]Class` rejection when Class has required ctor
-//      params (declaration only valid with explicit `= ---` opt-out).
-//   4. `[..N]T = ---` (partial-array uninit) — the slice header must stay
+//      params (declaration only valid with explicit `= #skip_constructor` opt-out).
+//   4. `[..N]T = #skip_constructor` (partial-array uninit) — the slice header must stay
 //      initialized so the partial array can function; only per-element
 //      construction is skipped. Previously a spurious memcpy from
 //      `ptr zeroinitializer` clobbered the header and segfaulted at runtime.
@@ -15,8 +15,8 @@ use camera
 Game :: struct {
     camera : Camera = Camera(640, 480, 90)
     cam_b := Camera(800, 600, 75)
-    cameras: [6]Camera = ---       // fixed array, uninit
-    camera_pool: [..6]Camera = ---  // partial array, uninit — header still valid
+    cameras: [6]Camera = #skip_constructor       // fixed array, uninit
+    camera_pool: [..6]Camera = #skip_constructor  // partial array, uninit — header still valid
 }
 
 main :: fun() -> i64 {
@@ -25,6 +25,6 @@ main :: fun() -> i64 {
     if g.camera.window_h != 480 { return 2 }
     if g.cam_b.window_w != 800 { return 3 }
     // Just declaring g (which constructs Game) must not segfault — the
-    // partial-array header init for camera_pool still runs even with `= ---`.
+    // partial-array header init for camera_pool still runs even with `= #skip_constructor`.
     return 0
 }

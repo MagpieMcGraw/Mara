@@ -24,7 +24,7 @@ main :: fun() -> i64 {
 	buf[16:24] = i64(123)
 	buf[24:32] = i64(456)
 
-	h : Holder = ---
+	h : Holder = #skip_constructor
 	h.count = buf[0]
 	h.flag  = buf[8:16]
 	h.pair  = buf[16:32]
