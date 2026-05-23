@@ -7194,6 +7194,16 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 
 check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     ix := s.target.(^Expr_Index)
+    // `::` constants can be read by index — the codegen routes that through
+    // the literal's .rodata global. But writing through one would attempt
+    // to mutate read-only memory at runtime, so reject at the type-check
+    // stage with a hint about how to fix.
+    if ident, ok := ix.expr.(^Expr_Ident); ok {
+        if _, is_const := c.table.constants[ident.name]; is_const {
+            check_error(c, s.span, TYPE_CANNOT_WRITE_INDEXED_CONSTANT, ident.name, ident.name)
+            return
+        }
+    }
     target_type := distinct_base(check_expr(c, ix.expr, env))
     s.target_type = target_type
     if fa, ok := target_type.(^Type_Fixed_Array); ok && fa.index_type != nil {

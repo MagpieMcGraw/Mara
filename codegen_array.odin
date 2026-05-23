@@ -695,6 +695,25 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
 
     av, av_ok := get_array(g, ident.name)
     if !av_ok {
+        // Indexing a `::` string constant. The literal lives in a
+        // module-level [N x i8] global, so we GEP+load the byte the
+        // same way any other byte buffer would. Writes are already
+        // blocked at type-check (TYPE_CANNOT_ASSIGN_CONSTANT_TYPE),
+        // so this path only fires for reads.
+        if const_expr, found := g.checked.table.constants[ident.name]; found {
+            if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
+                global_name, byte_len := get_string_literal(g, lit.value)
+                idx_raw := gen_expr(g, e.index)
+                idx := ensure_i64(g, idx_raw, e.index)
+                emit_bounds_check(g, idx, fmt.tprintf("%d", byte_len), ident.name, e.span)
+                gep := fresh_tmp(g)
+                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 %s",
+                    gep, byte_len, global_name, idx)
+                val := fresh_tmp(g)
+                emit(g, "  %s = load i8, ptr %s", val, gep)
+                return val
+            }
+        }
         codegen_fatal(g, e.span, CODE_ARRAY_SLICE, ident.name)
     }
 

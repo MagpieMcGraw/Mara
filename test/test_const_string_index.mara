@@ -1,0 +1,13 @@
+module test_const_string_index
+
+GLYPHS :: " .,-~:;=!*#$@"
+
+main :: fun() {
+	// Indexing a `::` string constant directly. Reads should work; the
+	// global lives in .rodata and we GEP+load the byte at runtime.
+	for i in 0..13 {
+		row : [1]utf8
+		row[0] = GLYPHS[i]
+		print(row)
+	}
+}
