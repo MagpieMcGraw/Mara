@@ -247,9 +247,22 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
             }
         case ^Stmt_Decl:
             // x : T, x := v, x, y : T, x, y := a, b → one field per name
+            // x, y, z := call() — single-init multi-name is tuple-destructure:
+            // each binding gets an Expr_Tuple_Default so infer_field_type_from_default
+            // unwraps the i-th slot of the call's tuple return type. Same wrapper
+            // shape that stmt_decl_to_bindings produces for params/named returns.
+            is_tuple_destructure := len(s.init_values) == 1 && len(s.names) > 1
             for name, i in s.names {
                 val: Expr = nil
-                if i < len(s.init_values) { val = s.init_values[i] }
+                if is_tuple_destructure {
+                    val = new_clone(Expr_Tuple_Default{
+                        source = s.init_values[0],
+                        index  = i,
+                        span   = s.span,
+                    })
+                } else if i < len(s.init_values) {
+                    val = s.init_values[i]
+                }
                 append(&fields, Scope_Binding{
                     name          = name,
                     type_expr     = s.type_expr,
