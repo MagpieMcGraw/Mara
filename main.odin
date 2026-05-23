@@ -358,7 +358,7 @@ compile_c_to_static_lib :: proc(c_path, lib_path, compiler_dir: string) -> bool 
         compile_cmd = strings.concatenate({CLANG_BIN, ` -c "`, c_path, `" -o "`, obj_path, `" -I "`, c_dir, `"`})
     }
     if libc.system(strings.clone_to_cstring(compile_cmd)) != 0 {
-        fmt.printf("Error: clang failed to compile '%s'\n", c_path)
+        fmt.printf(BUILD_CLANG_FAILED, c_path)
         return false
     }
 
@@ -372,7 +372,7 @@ compile_c_to_static_lib :: proc(c_path, lib_path, compiler_dir: string) -> bool 
         archive_cmd = strings.concatenate({`ar rcs "`, lib_path, `" "`, obj_path, `"`})
     }
     if libc.system(strings.clone_to_cstring(archive_cmd)) != 0 {
-        fmt.printf("Error: archive creation failed for '%s'\n", lib_path)
+        fmt.printf(BUILD_ARCHIVE_FAILED, lib_path)
         return false
     }
 
@@ -421,7 +421,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
                 if os.exists(sub_path) { return sub_path }
             }
         }
-        fmt.printf("Error: foreign file '%s' not found under %s\n", name, code_base)
+        fmt.printf(BUILD_FOREIGN_FILE_NOT_FOUND, name, code_base)
         os.exit(1)
     }
 
@@ -446,7 +446,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
             if !os.exists(c_path) { return "", false }
             lib_path, _ := filepath.join({dir, lib_name})
             if !compile_c_to_static_lib(c_path, lib_path, compiler_dir) {
-                fmt.printf("Error: forced recompile of '%s' failed\n", c_path)
+                fmt.printf(BUILD_FORCED_RECOMPILE_FAILED, c_path)
                 os.exit(1)
             }
             return lib_path, true
@@ -495,7 +495,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
                 }
                 // Compile failed — abort. Falling through to `-l<name>` would
                 // hide the real error behind a confusing linker complaint.
-                fmt.printf("Error: failed to build static lib from '%s'\n", c_path)
+                fmt.printf(BUILD_STATIC_LIB_FAILED, c_path)
                 os.exit(1)
             }
             return "", false
@@ -549,7 +549,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
             }
             flag, port_ok := emscripten_port_flag(lib)
             if !port_ok {
-                fmt.printf("Error: foreign library '%s' has no known emscripten equivalent.\n", lib)
+                fmt.printf(BUILD_NO_EMCC_EQUIVALENT, lib)
                 fmt.printf("  Known web ports: SDL2, SDL3, opengl32. Rename the foreign block\n")
                 fmt.printf("  to one of these, or compile the dependency from a .c source.\n")
                 ok = false
@@ -585,7 +585,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
                     strings.write_string(src_b, bundled)
                     continue
                 }
-                fmt.printf("Error: foreign source '%s' not found under code/\n", lib)
+                fmt.printf(BUILD_FOREIGN_SOURCE_NOT_FOUND, lib)
                 os.exit(1)
             }
             if is_foreign_file(lib) {
@@ -836,7 +836,7 @@ main :: proc() {
 
     // Abort early on parse errors in the requested package.
     if main_errs, has := parse_errors[args.pkg_name]; has {
-        fmt.printf("Found %d parse error(s) in '%s'. Aborting.\n", main_errs, args.pkg_name)
+        fmt.printf(BUILD_PARSE_ERRORS_ABORT, main_errs, args.pkg_name)
         return
     }
 
@@ -853,7 +853,7 @@ main :: proc() {
     }
     if !args.shared {
         if !pkg_has_main(programs[args.pkg_name]) && !pkg_has_expose(programs[args.pkg_name]) {
-            fmt.printf("Error: package '%s' has no `main` and no `#expose` function. Add an entry point, or pass `-shared` to build an empty DLL.\n", args.pkg_name)
+            fmt.printf(BUILD_NO_ENTRY_POINT, args.pkg_name)
             return
         }
     }
@@ -869,7 +869,7 @@ main :: proc() {
                              shared       = pkg_shared,
                              target_os    = target_os)
     if checked.errors > 0 {
-        fmt.printf("Found %d type error(s). Aborting.\n", checked.errors)
+        fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
         return
     }
 

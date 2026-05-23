@@ -96,7 +96,7 @@ dump_checked_program :: proc(path: string, checked: ^Checked_Program) -> bool {
 
     werr := os.write_entire_file(path, transmute([]u8)strings.to_string(b))
     if werr != nil {
-        fmt.printf("Error: could not write dump file '%s'\n", path)
+        fmt.printf(BUILD_DUMP_WRITE_FAILED, path)
         return false
     }
     fmt.printf("Dumped checked program to '%s'\n", path)
@@ -734,7 +734,7 @@ dump_parse_tree :: proc(program: Program, path: string) -> bool {
 
     werr := os.write_entire_file(path, transmute([]u8)output)
     if werr != nil {
-        fmt.printf("Error: could not write parse dump to '%s'\n", path)
+        fmt.printf(BUILD_PARSE_DUMP_WRITE_FAILED, path)
         return false
     }
     fmt.printf("\nWrote parse dump to '%s'\n", path)

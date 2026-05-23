@@ -345,3 +345,27 @@ CODE_MULTI_COMPONENT_SWIZZLE_WRITE_REQUIRES :: "multi-component swizzle write re
 CODE_UNION_ASSIGNMENT_REQUIRES_NAMED_STRUCT :: "union assignment requires named struct literal"
 CODE_VARIANT_UNION :: "'%s' is not a variant of union '%s'"
 
+
+// ============================================================
+// Build / orchestration messages (main.odin, dump.odin)
+//
+// Different shape from the rest — no Span, no error counter. Each
+// constant is the FULL string passed to fmt.printf at the call site
+// (prefix, format placeholders, trailing newline). The convention
+// is "Error: " for hard failures and "Found ... Aborting." for
+// summary counts; both styles are kept verbatim until the user
+// rewrites them.
+// ============================================================
+
+BUILD_CLANG_FAILED                :: "Error: clang failed to compile '%s'\n"
+BUILD_ARCHIVE_FAILED              :: "Error: archive creation failed for '%s'\n"
+BUILD_FOREIGN_FILE_NOT_FOUND      :: "Error: foreign file '%s' not found under %s\n"
+BUILD_FORCED_RECOMPILE_FAILED     :: "Error: forced recompile of '%s' failed\n"
+BUILD_STATIC_LIB_FAILED           :: "Error: failed to build static lib from '%s'\n"
+BUILD_NO_EMCC_EQUIVALENT          :: "Error: foreign library '%s' has no known emscripten equivalent.\n"
+BUILD_FOREIGN_SOURCE_NOT_FOUND    :: "Error: foreign source '%s' not found under code/\n"
+BUILD_PARSE_ERRORS_ABORT          :: "Found %d parse error(s) in '%s'. Aborting.\n"
+BUILD_NO_ENTRY_POINT              :: "Error: package '%s' has no `main` and no `#expose` function. Add an entry point, or pass `-shared` to build an empty DLL.\n"
+BUILD_TYPE_ERRORS_ABORT           :: "Found %d type error(s). Aborting.\n"
+BUILD_DUMP_WRITE_FAILED           :: "Error: could not write dump file '%s'\n"
+BUILD_PARSE_DUMP_WRITE_FAILED     :: "Error: could not write parse dump to '%s'\n"
