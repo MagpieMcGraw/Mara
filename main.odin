@@ -644,7 +644,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
 // -fuse-ld=lld points clang at lld-link.exe (bundled on Windows; lld via
 // PATH on Linux). -Wno-override-module silences the warning our IR
 // module's target triple triggers.
-link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false) -> bool {
+link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
@@ -664,6 +664,13 @@ link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compil
     // Linux/macOS expect `ld.lld` on PATH via the system `lld` package
     // (`dnf install lld` / `apt install lld`).
     strings.write_string(&b, " -Wno-override-module -fuse-ld=lld -mf16c")
+    // Optimization level. Default debug build skips -O entirely (clang's
+    // implicit -O0); `mara build … -release` flips on -O3 for benchmarking
+    // and shippable binaries. -O3 turns on the full LLVM pipeline including
+    // vectorisation and aggressive inlining.
+    if release {
+        strings.write_string(&b, " -O3")
+    }
     // Shared mode: build a DLL/SO instead of an executable. clang's `-shared`
     // works across platforms — lld produces a .dll on Windows and a .so on
     // Linux. No entry-point symbol required (DllMain stub is auto-generated).
@@ -743,6 +750,7 @@ CLI_Args :: struct {
     compiler_dir: string,
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
+    release:      bool,    // -release — pass -O3 to clang for an optimized build
     ok:           bool,
 }
 
@@ -752,20 +760,21 @@ parse_args :: proc() -> CLI_Args {
     args.search_dir   = "."
 
     if len(os.args) < 2 {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared]")
+        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-release]")
         return args
     }
 
     positional: [dynamic]string
     for arg in os.args {
-        if arg == "-web"    { args.web    = true; continue }
-        if arg == "-shared" { args.shared = true; continue }
+        if arg == "-web"     { args.web     = true; continue }
+        if arg == "-shared"  { args.shared  = true; continue }
+        if arg == "-release" { args.release = true; continue }
         append(&positional, arg)
     }
 
     // positional[0] is the exe name itself. positional[1] should be "build".
     if len(positional) < 2 || positional[1] != "build" {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared]")
+        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-release]")
         return args
     }
 
@@ -901,7 +910,7 @@ main :: proc() {
     if args.web {
         if !link_web(ll_path, out_name, checked) { return }
     } else {
-        if !link_native(ll_path, out_name, checked, args.compiler_dir, pkg_shared) { return }
+        if !link_native(ll_path, out_name, checked, args.compiler_dir, pkg_shared, args.release) { return }
     }
 
     perf_timer_end(&perf)
