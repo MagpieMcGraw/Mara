@@ -1185,7 +1185,16 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
 
     // Fall through: not a valid statement
     tok := current(p)
-    parse_error(p, tok, PARSE_UNEXPECTED_TOKEN_STMT, tok.kind, tok.text)
+    // Common shape mistake: `if cond { body } else { body }` (C-style).
+    // The closing `}` already terminated the if and consumed it, so `else`
+    // arrives here as a stand-alone token with no enclosing if to bind to.
+    // Catch it specifically — the generic "unexpected token" message
+    // doesn't hint at the actual fix.
+    if tok.kind == .Else {
+        parse_error(p, tok, PARSE_STRAY_ELSE)
+    } else {
+        parse_error(p, tok, PARSE_UNEXPECTED_TOKEN_STMT, tok.kind, tok.text)
+    }
     advance(p)
     return Stmt_Call{span = token_span(tok)}
 }

@@ -370,6 +370,7 @@ PARSE_EXPECTED_HASH_NAME          :: "expected intrinsic name after '#'"
 PARSE_UNKNOWN_INTRINSIC           :: "unknown compiler intrinsic '#%s'"
 PARSE_SEALED_NEEDS_USE_INCLUDE    :: "expected `use` or `include` after `sealed`, got `%s`"
 PARSE_UNEXPECTED_TOKEN            :: "unexpected token %v \"%s\""
+PARSE_STRAY_ELSE                  :: "stray `else` — braces go around the entire if/else block, with `else` inside. Try `if cond {{ body else body }}` instead of `if cond {{ body }} else {{ body }}`."
 
 // ============================================================
 // Type-checker errors and warnings — populated in next pass.
