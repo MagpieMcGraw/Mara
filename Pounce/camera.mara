@@ -11,14 +11,14 @@ Camera :: struct(w, h, fovy : f32) {
 		turn_speed = 0.2
 		pos = Vec3{0, 0, 512}
 	}
-	proj, ortho, view : Mat4
+	proj, ortho, view : Mat4 = view_and_projections(#self)
 	w_width, w_height := w, h
 	fov_y := to_radians(fovy)
 	fov_x := fov_y * w_width / w_height
 	near_plane : f32 = 0.1
 	far_plane  : f32 = 50000
 
-	proj, ortho, view = view_and_projections(#self)
+	//proj, ortho, view = view_and_projections(#self)
 
 	view_and_projections :: fun(cam: ^Self) -> Mat4, Mat4, Mat4 {
 		w, h := cam.w_width, cam.w_height
