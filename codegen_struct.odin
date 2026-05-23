@@ -269,11 +269,11 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
     if lit.is_spread {
         call, call_ok := lit.fields[0].value.(^Expr_Call)
         if !call_ok {
-            codegen_fatal(g, lit.span, "is_spread set but lit.fields[0] is not a call")
+            codegen_fatal(g, lit.span, CODE_SPREAD_SET_LIT_FIELDS_CALL)
         }
         info, info_ok := lookup_fun_info(g, call_resolved_name(call))
         if !info_ok || info.ret_tuple == nil {
-            codegen_fatal(g, lit.span, "spread call has no tuple return info")
+            codegen_fatal(g, lit.span, CODE_SPREAD_CALL_TUPLE_RETURN_INFO)
         }
         ret_tuple := info.ret_tuple
         gen_call(g, call)
@@ -574,11 +574,11 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             // share the first 24 bytes of layout, so a Slice_Var pointing at
             // the field's storage handles .len/.cap/.ptr reads for either.
             if len(chain.steps) == 0 {
-                codegen_fatal(g, e.span, "address chain ended at .Slice with no steps — cannot determine elem type")
+                codegen_fatal(g, e.span, CODE_ADDRESS_CHAIN_ENDED_SLICE_STEPS)
             }
             sf, sf_ok := chain.steps[len(chain.steps)-1].(Step_Field)
             if !sf_ok {
-                codegen_fatal(g, e.span, "address chain ended at .Slice but last step is not a field — cannot determine elem type")
+                codegen_fatal(g, e.span, CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST)
             }
             elem_t := ""
             sentinel := false
@@ -592,7 +592,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                 sentinel = pa.has_sentinel
                 _, utf8 = pa.elem.(Type_Utf8)
             } else {
-                codegen_fatal(g, e.span, "address chain ended at .Slice but last field is neither Type_Slice nor Type_Partial_Array")
+                codegen_fatal(g, e.span, CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST_2)
             }
             set_field_result(g, Slice_Var{alloca = addr, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
             return addr
@@ -728,7 +728,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     }
                 }
                 // Non-swizzle scalar field on indexed array element.
-                codegen_fatal(g, e.span, "field '.%s' on array element is not a valid swizzle and not a struct field", e.field)
+                codegen_fatal(g, e.span, CODE_FIELD_ARRAY_ELEMENT_VALID_SWIZZLE, e.field)
             }
             // Struct element of an array or slice — GEP into the field and
             // resolve to a scalar / sub-array / sub-struct / sub-slice result.
@@ -779,9 +779,9 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     return val
                 }
             }
-            codegen_fatal(g, e.span, "field access '.%s' on indexed element of unknown shape", e.field)
+            codegen_fatal(g, e.span, CODE_FIELD_ACCESS_INDEXED_ELEMENT_UNKNOWN, e.field)
         }
-        codegen_fatal(g, e.span, "field access target must be a variable")
+        codegen_fatal(g, e.span, CODE_FIELD_ACCESS_TARGET_VARIABLE)
     }
 
     // Check resolved annotation on the node (populated by type checker)
@@ -842,7 +842,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
 
     st, base_ptr, found := resolve_struct_for_field(g, ident.name, ident.type_, ident.span)
     if !found {
-        codegen_fatal(g, e.span, "'%s' is not a struct or pointer to struct", ident.name)
+        codegen_fatal(g, e.span, CODE_STRUCT_POINTER_STRUCT, ident.name)
     }
 
     st_llvm := struct_llvm_name(struct_key(st))
@@ -912,7 +912,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         return val
     }
 
-    codegen_fatal(g, e.span, "class '%s' has no field '%s'", struct_key(st), e.field)
+    codegen_fatal(g, e.span, CODE_CLASS_FIELD, struct_key(st), e.field)
 }
 
 // Resolve an expression to a struct type + pointer for chained field assignment.
@@ -1267,7 +1267,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
 gen_struct_store_at :: proc(g: ^Codegen, dst_ptr: string, struct_name: string, value: Expr) {
     st, st_ok := lookup_struct(g, struct_name)
     if !st_ok {
-        codegen_fatal(g, {}, "gen_struct_store_at: unknown struct '%s'", struct_name)
+        codegen_fatal(g, {}, CODE_GEN_STRUCT_STORE_UNKNOWN_STRUCT, struct_name)
     }
     if value == nil {
         // Bare "store nothing" — same effect as the old fallback: zero + cap init.
@@ -1401,7 +1401,7 @@ gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string,
     case "len": field_idx = SLICE.len
     case "cap": field_idx = SLICE.cap
     case:
-        codegen_fatal(g, span, "cannot assign to slice field '.%s' (only .len and .cap)", field)
+        codegen_fatal(g, span, CODE_CANNOT_ASSIGN_SLICE_FIELD_ONLY, field)
     }
     gep := fresh_tmp(g)
     emit_slice_gep(g, gep, slice_hdr_ptr, field_idx)
@@ -1447,9 +1447,9 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         st, base_ptr, found = resolve_struct_for_field(g, ident.name, ident.type_, ident.span)
         if !found {
             if is_array(g, ident.name) {
-                codegen_fatal(g, s.span, "'%s' is an array — '.%s' is not a valid swizzle (use xyzw/rgba, indices 0-3)", ident.name, fa_expr.field)
+                codegen_fatal(g, s.span, CODE_ARRAY_VALID_SWIZZLE_USE_XYZW, ident.name, fa_expr.field)
             } else {
-                codegen_fatal(g, s.span, "'%s' has no field '%s' (not a struct or array)", ident.name, fa_expr.field)
+                codegen_fatal(g, s.span, CODE_FIELD_STRUCT_ARRAY, ident.name, fa_expr.field)
             }
         }
     } else {
@@ -1493,7 +1493,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         // Chained field access: obj.inner.field = value
         st, base_ptr, found = resolve_lhs_struct(g, fa_expr.expr)
         if !found {
-            codegen_fatal(g, s.span, "field assignment target must be a struct or pointer to struct")
+            codegen_fatal(g, s.span, CODE_FIELD_ASSIGNMENT_TARGET_STRUCT_POINTER)
         }
     }
 
@@ -1566,7 +1566,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         return
     }
 
-    codegen_fatal(g, s.span, "class '%s' has no field '%s'", struct_key(st), fa_expr.field)
+    codegen_fatal(g, s.span, CODE_CLASS_FIELD, struct_key(st), fa_expr.field)
 }
 
 gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
@@ -1720,7 +1720,7 @@ gen_swizzle_write_multi :: proc(g: ^Codegen, av: ^Array_Var, field: string, valu
         return
     }
 
-    codegen_fatal(g, {}, "multi-component swizzle write requires array source")
+    codegen_fatal(g, {}, CODE_MULTI_COMPONENT_SWIZZLE_WRITE_REQUIRES)
 }
 
 // ---------------------------------------------------------------------------
@@ -1757,12 +1757,12 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
 
     lit, ok := value.(^Expr_Struct_Literal)
     if !ok || lit.name == "" {
-        codegen_fatal(g, {}, "union assignment requires named struct literal")
+        codegen_fatal(g, {}, CODE_UNION_ASSIGNMENT_REQUIRES_NAMED_STRUCT)
     }
 
     tag, tag_ok := ut.tag_map[lit.name]
     if !tag_ok {
-        codegen_fatal(g, lit.span, "'%s' is not a variant of union '%s'", lit.name, ukey)
+        codegen_fatal(g, lit.span, CODE_VARIANT_UNION, lit.name, ukey)
     }
 
     // Niche layout: union storage is just a pointer. Some{value = p} writes

@@ -128,7 +128,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             if s.slice_cap_expr != nil {
                 cap_val, cap_ok := codegen_const_eval_int(g, s.slice_cap_expr)
                 if !cap_ok {
-                    codegen_fatal(g, s.span, "slice capacity must be a compile-time constant")
+                    codegen_fatal(g, s.span, CODE_SLICE_CAPACITY_COMPILE_TIME_CONSTANT)
                 }
                 cap_n := int(cap_val)
                 alloc_cap := cap_n
@@ -315,7 +315,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     partial_array_copy(g, alloca_name, src_ptr, elem_t, alloc_cap)
                 } else {
                     codegen_fatal(g, s.span,
-                        "partial array '%s' initializer must be a string literal or another partial array, got %s",
+                        CODE_PARTIAL_ARRAY_INITIALIZER_STRING_LITERAL,
                         s.name, type_name(expr_type(s.value)))
                 }
             }
@@ -580,7 +580,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Branch to the innermost loop's end label, unwinding any intervening
         // if/match/etc. scopes' defers + arena marks first. Works at any depth.
         if len(g.loop_label_stack) == 0 {
-            codegen_fatal(g, s.span, "break outside of loop")
+            codegen_fatal(g, s.span, CODE_BREAK_OUTSIDE_LOOP)
         }
         labels := g.loop_label_stack[len(g.loop_label_stack) - 1]
         emit_loop_exit(g)
@@ -589,7 +589,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Branch to the innermost loop's continue target (post clause or
         // condition check), unwinding intervening scopes' cleanup first.
         if len(g.loop_label_stack) == 0 {
-            codegen_fatal(g, s.span, "continue outside of loop")
+            codegen_fatal(g, s.span, CODE_CONTINUE_OUTSIDE_LOOP)
         }
         labels := g.loop_label_stack[len(g.loop_label_stack) - 1]
         emit_loop_exit(g)
@@ -599,7 +599,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // (called from pop_scope / emit_return_resets / emit_loop_exit) emits
         // these in LIFO order on scope exit, before the arena reset.
         if len(g.scope_stack) == 0 {
-            codegen_fatal(g, s.span, "defer outside of any scope")
+            codegen_fatal(g, s.span, CODE_DEFER_OUTSIDE_ANY_SCOPE)
         }
         top := &g.scope_stack[len(g.scope_stack) - 1]
         block: [dynamic]Stmt
@@ -754,11 +754,11 @@ gen_take_decl :: proc(g: ^Codegen, name: string, e: ^Expr_Take) {
 gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
     // Multi-return function call: x, y := call()
     if len(s.values) == 0 {
-        codegen_fatal(g, s.span, "multi-assign has no RHS values")
+        codegen_fatal(g, s.span, CODE_MULTI_ASSIGN_RHS_VALUES)
     }
     call, call_ok := s.values[0].(^Expr_Call)
     if !call_ok {
-        codegen_fatal(g, s.span, "multi-assign RHS must be a function call")
+        codegen_fatal(g, s.span, CODE_MULTI_ASSIGN_RHS_FUNCTION_CALL)
     }
 
     // Look up the function's tuple return type BEFORE calling gen_call
@@ -770,7 +770,7 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
     gen_call(g, call)
 
     if len(g.tuple_result_ptrs) == 0 {
-        codegen_fatal(g, s.span, "multi-assign call did not produce tuple results")
+        codegen_fatal(g, s.span, CODE_MULTI_ASSIGN_CALL_DID_PRODUCE)
     }
 
     for name, i in s.names {
@@ -784,7 +784,7 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
         if tuple_type != nil && i < len(tuple_type.elems) {
             if sd := as_struct_body(distinct_base(tuple_type.elems[i])); sd != nil {
                 if name == "" {
-                    codegen_fatal(g, s.span, "struct in multi-return can't target an expression yet")
+                    codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
                 }
                 alloca_name: string
                 if existing, ok := get_struct(g, name); ok {
@@ -848,28 +848,28 @@ gen_multi_return_store_target :: proc(g: ^Codegen, target: Expr, elem_type: stri
     case ^Expr_Field_Access:
         st, base_ptr, found := resolve_lhs_struct(g, t.expr)
         if !found {
-            codegen_fatal(g, t.span, "multi-return target field access — cannot resolve struct")
+            codegen_fatal(g, t.span, CODE_MULTI_RETURN_TARGET_FIELD_ACCESS)
         }
         st_llvm := struct_llvm_name(struct_key(st))
         idx := struct_field_index(st, t.field)
         if idx < 0 {
-            codegen_fatal(g, t.span, "struct '%s' has no field '%s'", struct_key(st), t.field)
+            codegen_fatal(g, t.span, CODE_STRUCT_FIELD, struct_key(st), t.field)
         }
         gep := fresh_tmp(g)
         emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
         emit(g, "  store %s %s, ptr %s", elem_type, val, gep)
     case ^Expr_Index:
-        codegen_fatal(g, t.span, "index target in multi-return assign not yet supported")
+        codegen_fatal(g, t.span, CODE_INDEX_TARGET_MULTI_RETURN_ASSIGN)
     case ^Expr_Unary:
         if t.op == .Caret {
             // Deref target: store through pointer
             ptr_val := gen_expr(g, t.operand)
             emit(g, "  store %s %s, ptr %s", elem_type, val, ptr_val)
         } else {
-            codegen_fatal(g, t.span, "unary op '%v' is not a valid multi-return target", t.op)
+            codegen_fatal(g, t.span, CODE_UNARY_OP_VALID_MULTI_RETURN, t.op)
         }
     case:
-        codegen_fatal(g, {}, "unsupported multi-return target expression")
+        codegen_fatal(g, {}, CODE_UNSUPPORTED_MULTI_RETURN_TARGET_EXPRESSION)
     }
 }
 

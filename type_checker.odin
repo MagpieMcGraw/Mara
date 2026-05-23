@@ -1399,7 +1399,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
     }
     if len(visible_owners) > 1 {
         owners := strings.join(visible_owners[:], ", ")
-        check_error(c, e.span, "'.%s' is ambiguous (defined in: %s). Use qualified access, e.g. %s.%s",
+        check_error(c, e.span, TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS,
             e.name, owners, visible_owners[0], e.name)
         return Type_Error{}, true
     }
@@ -1550,14 +1550,14 @@ check_early_self_decls :: proc(c: ^Checker, body: [dynamic]Stmt) {
         for init in decl.init_values {
             if call_name, ok := find_self_call_name(init); ok {
                 check_warning(c, decl.span,
-                    "Move '%s' below all of the declarations in this class. Trust me.",
+                    TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS,
                     call_name)
                 break
             } else if contains_self_anywhere(init) {
                 names := strings.join(decl.names[:], ", ")
                 defer delete(names)
                 check_warning(c, decl.span,
-                    "Move '%s' below all of the declarations in this class. Trust me.",
+                    TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS,
                     names)
                 break
             }
@@ -1619,11 +1619,11 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
 
             if is_array {
                 check_warning(c, span,
-                    "'%s' won't get auto-constructed when declared inside of an array. Promise me that you will write valid data to '%s' before you try to read from it.",
+                    TYPE_WON_GET_AUTO_CONSTRUCTED_DECLARED,
                     class_ft.name, name)
             } else {
                 check_error(c, span,
-                    "'%s' of type '%s' is self-constructing — call it like a function with the required arguments. Definition: %s. Try: '%s : %s = %s(...)'",
+                    TYPE_TYPE_SELF_CONSTRUCTING_CALL_LIKE,
                     name, class_ft.name, strings.to_string(sig), name, class_ft.name, class_ft.name)
             }
             return
@@ -1645,7 +1645,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
     if tn, is_tn := te.(Type_Name); is_tn && tn.tilde {
         if c != nil {
             check_error(c, span,
-                "`~%s` only valid as the type of a generic parameter (e.g. `Foo :: struct (s: ~%s)`)",
+                TYPE_ONLY_VALID_TYPE_GENERIC_PARAMETER,
                 tn.name, tn.name)
         }
         return Type_Error{}
@@ -1658,7 +1658,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             // Reserved keyword; not a valid type today. Kept in the lexer
             // so the name is available if word-sized `int` returns later.
             if c != nil {
-                check_error(c, span, "type 'int' is reserved — use 'i64' (or 'isize' for word-sized)")
+                check_error(c, span, TYPE_TYPE_INT_RESERVED_USE_I64)
             }
             return Type_Error{}
         case "f64":    return Type_F64{}
@@ -1681,7 +1681,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         case "uint":
             // Reserved keyword; same retired status as `int`. Use 'u64' or 'usize'.
             if c != nil {
-                check_error(c, span, "type 'uint' is reserved — use 'u64' (or 'usize' for word-sized)")
+                check_error(c, span, TYPE_TYPE_UINT_RESERVED_USE_U64)
             }
             return Type_Error{}
         case "f16":    return Type_Numeric{kind = .Float,    bits = 16}
@@ -1761,7 +1761,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             if len(ambiguous_owners) > 1 {
                 if c != nil {
                     owner_list := strings.join(ambiguous_owners[:], ", ")
-                    check_error(c, span, "type name '%s' is ambiguous (defined in: %s). Use a qualified path or seal one of the includes (e.g. `name :: sealed include ...`).", t.name, owner_list)
+                    check_error(c, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, t.name, owner_list)
                 }
                 return Type_Error{}
             }
@@ -1814,7 +1814,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                 }
                 delete(type_args)
             }
-            check_error(c, span, "unknown type '%s'", t.name)
+            check_error(c, span, TYPE_UNKNOWN_TYPE, t.name)
         }
         return Type_Error{}
     case ^Type_Array:
@@ -1835,7 +1835,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     fa.elem = elem
                     return fa
                 }
-                check_error(c, span, "runtime-sized arrays are not supported. Use 'var' with Array instead:\n\n    import \"array\"\n    name : var [N]%s", type_name(elem))
+                check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
             }
             return Type_Error{}
         }
@@ -1848,11 +1848,11 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                         fa.size = int(i_val)
                         resolved = true
                     } else {
-                        check_error(c, span, "array size constant '%s' is not a compile-time integer", t.size_name)
+                        check_error(c, span, TYPE_ARRAY_SIZE_CONSTANT_COMPILE_TIME, t.size_name)
                     }
                 } else {
                     // Not a constant — runtime-sized arrays must use var Array
-                    check_error(c, span, "runtime-sized arrays are not supported. Use 'var' with Array instead:\n\n    import \"array\"\n    name : var [%s]%s", t.size_name, type_name(elem))
+                    check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, t.size_name, type_name(elem))
                     return Type_Error{}
                 }
             }
@@ -1904,7 +1904,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                         pa.size = int(i_val)
                         return pa
                     }
-                    check_error(c, span, "partial-array size constant '%s' is not a compile-time integer", t.size_name)
+                    check_error(c, span, TYPE_PARTIAL_ARRAY_SIZE_CONSTANT_COMPILE, t.size_name)
                     return Type_Error{}
                 }
                 pa.is_vla = true
@@ -1973,7 +1973,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                 }
             }
             if len(type_args) != len(tmpl.generic_params) {
-                check_error(c, span, "'%s' expects %d type argument(s), got %d",
+                check_error(c, span, TYPE_EXPECTS_TYPE_ARGUMENT,
                     t.name, len(tmpl.generic_params), len(type_args))
                 return Type_Error{}
             }
@@ -1984,7 +1984,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         // to a concrete Type_Union, cached in mono_union_cache.
         if utmpl_ptr, utmpl_ok := &c.table.generic_union_templates[t.name]; utmpl_ok {
             if len(type_args) != len(utmpl_ptr.generic_params) {
-                check_error(c, span, "'%s' expects %d type argument(s), got %d",
+                check_error(c, span, TYPE_EXPECTS_TYPE_ARGUMENT,
                     t.name, len(utmpl_ptr.generic_params), len(type_args))
                 return Type_Error{}
             }
@@ -2026,13 +2026,13 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             if t_val, t_ok := type_env_get(env, t.name); t_ok {
                 if ts, ts_ok := t_val.(^Type_Scope); ts_ok && ts.kind == .Struct && len(ts.params) > 0 {
                     check_error(c, span,
-                        "'%s' is a struct/class with constructor params, not a generic type — construct in expression position instead: `field : %s = %s(...)` or `field := %s(...)`",
+                        TYPE_STRUCT_CLASS_CONSTRUCTOR_PARAMS_GENERIC,
                         t.name, t.name, t.name, t.name)
                     return Type_Error{}
                 }
             }
         }
-        check_error(c, span, "unknown type '%s'", t.name)
+        check_error(c, span, TYPE_UNKNOWN_TYPE, t.name)
         return Type_Error{}
     case ^Type_Func_Expr:
         ft := new(Type_Scope)
@@ -2064,7 +2064,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     }
                     if c != nil && !silent {
                         check_error(c, span,
-                            "'fn %s' requires a function-valued name; '%s' has type %s",
+                            TYPE_FN_REQUIRES_FUNCTION_VALUED_NAME,
                             t.name, t.name, type_name(val_type))
                     }
                     return Type_Error{}
@@ -2076,7 +2076,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     return fn_type
                 }
                 if !silent {
-                    check_error(c, span, "unknown function '%s' in 'fn %s'", t.name, t.name)
+                    check_error(c, span, TYPE_UNKNOWN_FUNCTION_FN, t.name, t.name)
                 }
             }
             return Type_Error{}
@@ -2103,7 +2103,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                 }
             }
             if !silent {
-                check_error(c, span, "unknown function '%s' in 'fn %s'", t.name, t.name)
+                check_error(c, span, TYPE_UNKNOWN_FUNCTION_FN, t.name, t.name)
             }
         }
         return Type_Error{}
@@ -2164,7 +2164,7 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
     if tn, is_tn := te.(Type_Name); is_tn && tn.tilde {
         if c != nil {
             check_error(c, span,
-                "`~%s` only valid as the type of a generic parameter (e.g. `Foo :: struct (s: ~%s)`)",
+                TYPE_ONLY_VALID_TYPE_GENERIC_PARAMETER,
                 tn.name, tn.name)
         }
         return Type_Error{}
@@ -2281,7 +2281,7 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
             }
             return instantiate_generic_struct(c, tmpl, type_args[:], span)
         }
-        check_error(c, span, "unknown generic type '%s'", t.name)
+        check_error(c, span, TYPE_UNKNOWN_GENERIC_TYPE, t.name)
         return Type_Error{}
     case ^Type_Func_Expr:
         ft := new(Type_Scope)
@@ -2757,7 +2757,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
                     if v, ok := const_eval_int(args[i], c); ok {
                         append(&type_args, Type_Const_Int{value = v})
                     } else {
-                        check_error(c, e.span, "argument %d to '%s': const generic parameter '%s' requires a compile-time integer", i, tmpl.name, param.name)
+                        check_error(c, e.span, TYPE_ARGUMENT_CONST_GENERIC_PARAMETER_REQUIRES, i, tmpl.name, param.name)
                         return Type_Error{}
                     }
                 } else {
@@ -2766,7 +2766,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
             } else if param.is_const && param.has_default {
                 append(&type_args, Type_Const_Int{value = param.default_value})
             } else {
-                check_error(c, e.span, "'%s' requires generic parameter '%s' (no default)", tmpl.name, param.name)
+                check_error(c, e.span, TYPE_REQUIRES_GENERIC_PARAMETER_DEFAULT, tmpl.name, param.name)
                 return Type_Error{}
             }
         }
@@ -2809,7 +2809,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     // Step 3: Verify all type params were resolved
     for param in tmpl.generic_params {
         if subst[param.name] == nil {
-            check_error(c, e.span, "could not infer type parameter '$%s' in call to '%s'", param.name, e.name)
+            check_error(c, e.span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, param.name, e.name)
             return Type_Error{}
         }
     }
@@ -2853,12 +2853,12 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     // Step 6: Resolve the concrete function type
     fun_type_raw, ok := type_env_get(env, mangled)
     if !ok {
-        check_error(c, e.span, "failed to instantiate generic function '%s'", e.name)
+        check_error(c, e.span, TYPE_FAILED_INSTANTIATE_GENERIC_FUNCTION, e.name)
         return Type_Error{}
     }
     fun_type, fun_ok := fun_type_raw.(^Type_Scope)
     if !fun_ok {
-        check_error(c, e.span, "failed to instantiate generic function '%s'", e.name)
+        check_error(c, e.span, TYPE_FAILED_INSTANTIATE_GENERIC_FUNCTION, e.name)
         return Type_Error{}
     }
     // Generic constructor call: e.g. Pair(int)(1, 2)
@@ -2873,7 +2873,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
 
     // Step 8: Validate arg count matches concrete param count
     if len(args) != len(fun_type.params) {
-        check_error(c, e.span, "'%s' expects %d argument(s), got %d", tmpl.name, len(fun_type.params), len(args))
+        check_error(c, e.span, TYPE_EXPECTS_ARGUMENT, tmpl.name, len(fun_type.params), len(args))
     }
 
     return fun_type.return_type
@@ -3634,14 +3634,14 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
         // Couldn't find the constraint — the parser stashed a bare name, so
         // a typo or unimported module slips through to here. Bail loud.
         check_error(c, span,
-            "shape constraint '%s' on generic parameter '%s' could not be resolved",
+            TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD,
             constraint_name, param.name)
         return
     }
     arg_scope, arg_ok := distinct_base(arg).(^Type_Scope)
     if !arg_ok || arg_scope.kind != .Struct {
         check_error(c, span,
-            "generic argument for '%s: ~%s' must be a concrete struct/class, got %s",
+            TYPE_GENERIC_ARGUMENT_CONCRETE_STRUCT_CLASS,
             param.name, constraint_name, type_name(arg))
         return
     }
@@ -3649,7 +3649,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
         arg_fn, arg_has := arg_scope.functions[fn_name]
         if !arg_has || arg_fn == nil {
             check_error(c, span,
-                "type '%s' does not satisfy `~%s`: missing method '%s'",
+                TYPE_TYPE_SATISFY_MISSING_METHOD,
                 arg_scope.name, constraint_name, fn_name)
             continue
         }
@@ -3659,7 +3659,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
         // Fewer params, or extras without defaults, breaks the API.
         if len(arg_fn.params) < len(ct_fn.params) {
             check_error(c, span,
-                "type '%s' does not satisfy `~%s`: method '%s' expects at least %d param(s), got %d",
+                TYPE_TYPE_SATISFY_METHOD_EXPECTS_LEAST,
                 arg_scope.name, constraint_name, fn_name, len(ct_fn.params), len(arg_fn.params))
             continue
         }
@@ -3667,7 +3667,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
         for i in len(ct_fn.params)..<len(arg_fn.params) {
             if arg_fn.params[i].default_value == nil {
                 check_error(c, span,
-                    "type '%s' does not satisfy `~%s`: method '%s' has extra param '%s' without a default value",
+                    TYPE_TYPE_SATISFY_METHOD_EXTRA_PARAM,
                     arg_scope.name, constraint_name, fn_name, arg_fn.params[i].name)
                 extras_ok = false
             }
@@ -3678,7 +3678,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
             arg_p := arg_fn.params[i].type_
             if !self_equivalent(ct_p, arg_p, ct, arg_scope) {
                 check_error(c, span,
-                    "type '%s' does not satisfy `~%s`: method '%s' param '%s' expected %s, got %s",
+                    TYPE_TYPE_SATISFY_METHOD_PARAM_EXPECTED,
                     arg_scope.name, constraint_name, fn_name,
                     ct_fn.params[i].name, type_name(ct_p), type_name(arg_p))
             }
@@ -3692,7 +3692,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
         else if ct_ret == nil || arg_ret == nil ||
                 !self_equivalent(ct_ret, arg_ret, ct, arg_scope) {
             check_error(c, span,
-                "type '%s' does not satisfy `~%s`: method '%s' expected return %s, got %s",
+                TYPE_TYPE_SATISFY_METHOD_EXPECTED_RETURN,
                 arg_scope.name, constraint_name, fn_name, type_name(ct_ret), type_name(arg_ret))
         }
     }
@@ -3700,7 +3700,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
     arg_size := checker_struct_byte_size(arg_scope)
     if arg_size > ct_size {
         check_error(c, span,
-            "type '%s' does not fit `~%s` size budget: needs %d bytes, slot is %d bytes",
+            TYPE_TYPE_FIT_SIZE_BUDGET_NEEDS,
             arg_scope.name, constraint_name, arg_size, ct_size)
     }
 }
@@ -4277,14 +4277,14 @@ report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Env)
             if unsafe_count > 0 {
                 noun := "argument" if unsafe_count == 1 else "arguments"
                 check_error(c, span,
-                    "cannot return result of `%s(...)`: its return may reference local memory via %s — pass caller-rooted %s instead",
+                    TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
                     call.name, strings.to_string(sb), noun)
                 return
             }
         }
     }
     check_error(c, span,
-        "cannot return local reference (memory freed on function return)")
+        TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY)
 }
 
 // Walk a function's body looking for a `return Foo{a, b}` where Foo has slice
@@ -4492,30 +4492,30 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
             max_v := (i128(1) << uint(v.bits - 1)) - 1
             min_v := -(i128(1) << uint(v.bits - 1))
             if i_val < min_v || i_val > max_v {
-                check_error(c, span, "constant %d overflows %s (range %d..%d)", i_val, tn, min_v, max_v)
+                check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE, i_val, tn, min_v, max_v)
             }
         case .Unsigned:
             // For u128, the i128 storage caps at 2^127-1, so the parser's u64
             // ceiling is already much tighter. Just sanity-check non-negative.
             if v.bits == 128 {
                 if i_val < 0 {
-                    check_error(c, span, "constant %d overflows %s (range 0..2^128-1)", i_val, tn)
+                    check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE_128, i_val, tn)
                 }
                 return
             }
             max_v := (i128(1) << uint(v.bits)) - 1
             if i_val < 0 || i_val > max_v {
-                check_error(c, span, "constant %d overflows %s (range 0..%d)", i_val, tn, max_v)
+                check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE_2, i_val, tn, max_v)
             }
         case .Float:
             // f16: ~65504 max magnitude.
             if v.bits == 16 {
                 if val > 65504 || val < -65504 {
-                    check_error(c, span, "constant %v overflows f16", val)
+                    check_error(c, span, TYPE_CONSTANT_OVERFLOWS_F16, val)
                 }
             } else if v.bits == 32 {
                 if val > 3.4028235e+38 || val < -3.4028235e+38 {
-                    check_error(c, span, "constant %v overflows f32", val)
+                    check_error(c, span, TYPE_CONSTANT_OVERFLOWS_F32, val)
                 }
             }
         }
@@ -4701,7 +4701,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
             // tell a method's `:=` locals from a class body's init computation).
             def_is_struct := s.kind == .Struct
             if def_is_struct && s.return_type != nil {
-                check_error(c, s.span, "struct/class '%s' cannot declare a return type", bare_name)
+                check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, bare_name)
                 s.return_type = nil  // suppress cascading return-path errors
             }
             if def_is_struct && len(s.typed_params) == 0 {
@@ -4948,7 +4948,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             if !has_data {
                 flat := make_flat_name(c.current_package, s.name)
                 if flat in c.table.enums {
-                    check_error(c, s.span, "enum '%s' already defined", s.name)
+                    check_error(c, s.span, TYPE_ENUM_ALREADY_DEFINED, s.name)
                     continue
                 }
                 et := new(Type_Enum)
@@ -4968,7 +4968,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             } else {
                 flat := make_flat_name(c.current_package, s.name)
                 if flat in c.table.unions {
-                    check_error(c, s.span, "union '%s' already defined", s.name)
+                    check_error(c, s.span, TYPE_UNION_ALREADY_DEFINED, s.name)
                     continue
                 }
                 ut := new(Type_Union)
@@ -5010,7 +5010,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             flat := make_flat_name(c.current_package, s.name)
             if flat in c.table.distinct_types {
                 kind := "type" if s.is_alias else "distinct type"
-                check_error(c, s.span, "%s '%s' already defined", kind, s.name)
+                check_error(c, s.span, TYPE_ALREADY_DEFINED, kind, s.name)
                 continue
             }
             dt := new(Type_Distinct)
@@ -5043,7 +5043,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             if is_struct_type && len(s.typed_params) == 0 {
                 flat := make_flat_name(c.current_package, s.name)
                 if flat in c.table.structs || flat in c.table.funs {
-                    check_error(c, s.span, "type '%s' already defined", s.name)
+                    check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
                     continue
                 }
                 struct_type := new(Type_Scope)
@@ -5065,7 +5065,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 flat_name := make_flat_name(c.current_package, s.name)
                 if is_struct_type {
                     if flat_name in c.table.funs || flat_name in c.table.structs {
-                        check_error(c, s.span, "type '%s' already defined", s.name)
+                        check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
                         continue
                     }
                 } else {
@@ -5194,7 +5194,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 et.name = make_flat_name(c.current_package, s.name)
                 et.tag_type = s.tag_type
                 if et.name in c.table.enums {
-                    check_error(c, s.span, "enum '%s' already defined", s.name)
+                    check_error(c, s.span, TYPE_ENUM_ALREADY_DEFINED, s.name)
                 } else {
                     for vdef in s.variants {
                         et.variants[vdef.name] = vdef.tag
@@ -5213,7 +5213,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 ut := new(Type_Union)
                 ut.name = make_flat_name(c.current_package, s.name)
                 if ut.name in c.table.unions {
-                    check_error(c, s.span, "union '%s' already defined", s.name)
+                    check_error(c, s.span, TYPE_UNION_ALREADY_DEFINED, s.name)
                 } else {
                     // 1. Create tag enum (Name_Tag)
                     tag_enum_name := strings.concatenate({s.name, "_Tag"})
@@ -5278,7 +5278,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             dt.is_alias = s.is_alias
             if dt.name in c.table.distinct_types {
                 kind := "type" if s.is_alias else "distinct type"
-                check_error(c, s.span, "%s '%s' already defined", kind, s.name)
+                check_error(c, s.span, TYPE_ALREADY_DEFINED, kind, s.name)
             } else {
                 c.table.distinct_types[dt.name] = dt
                 type_env_set(pub, s.name, dt)
@@ -5309,7 +5309,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                     pt = resolve_type_expr(tp.type_expr, c, s.span, env = env)
                                 } else if tp.default_value != nil {
                                     if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
-                                        check_error(c, s.span, "param '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)", tp.name, tp.name)
+                                        check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
                                         pt = Type_Error{}
                                     } else {
                                         pt = infer_field_type_from_default(c, tp.default_value, env)
@@ -5325,7 +5325,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         if is_callable && s.return_type != nil {
                             fun_type.return_type = resolve_type_expr(s.return_type, c, s.span, env = env)
                             if fa, fa_ok := fun_type.return_type.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-                                check_error(c, s.span, "variable-length arrays cannot be returned from functions")
+                                check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
                             }
                         }
                     }
@@ -5351,7 +5351,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             existing_fn, existing_fn_found := type_env_get(env, s.name)
             if existing_fn_found {
                 if tf, is_fn := existing_fn.(^Type_Scope); is_fn && len(tf.params) > 0 && len(s.typed_params) > 0 {
-                    check_error(c, s.span, "function '%s' already defined", s.name)
+                    check_error(c, s.span, TYPE_FUNCTION_ALREADY_DEFINED, s.name)
                     continue
                 }
             }
@@ -5360,7 +5360,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // comment in register_scope_defs for details).
             is_struct_type := s.kind == .Struct
             if is_struct_type && s.return_type != nil {
-                check_error(c, s.span, "struct/class '%s' cannot declare a return type", s.name)
+                check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, s.name)
                 s.return_type = nil  // suppress cascading return-path errors
             }
             if is_struct_type && len(s.typed_params) == 0 {
@@ -5369,7 +5369,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 struct_type.name = make_flat_name(c.current_package, s.name)
                 struct_type.kind = .Struct
                 if struct_type.name in c.table.structs || struct_type.name in c.table.funs {
-                    check_error(c, s.span, "type '%s' already defined", s.name)
+                    check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
                     continue
                 }
                 c.table.structs[struct_type.name] = struct_type
@@ -5390,7 +5390,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_struct_type {
                     flat_name := make_flat_name(c.current_package, s.name)
                     if flat_name in c.table.funs || flat_name in c.table.structs {
-                        check_error(c, s.span, "type '%s' already defined", s.name)
+                        check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
                         continue
                     }
                 }
@@ -5427,7 +5427,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             pt = resolve_type_expr(tp.type_expr, c, s.span, env = env)
                         } else if tp.default_value != nil {
                             if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
-                                check_error(c, s.span, "param '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)", tp.name, tp.name)
+                                check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
                                 pt = Type_Error{}
                             } else {
                                 // `name(s) := default` — infer the param's type from the default expression.
@@ -5444,7 +5444,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_callable && s.return_type != nil {
                     fun_type.return_type = resolve_type_expr(s.return_type, c, s.span, env = env)
                     if fa, fa_ok := fun_type.return_type.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-                        check_error(c, s.span, "variable-length arrays cannot be returned from functions")
+                        check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
                     }
                 }
                 // Register name in scope
@@ -5521,7 +5521,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             if !s.is_comptime { continue }
             live, ok := evaluate_comptime_bool(c, s.condition)
             if !ok {
-                check_error(c, s.span, "#if condition must be a comptime-known boolean")
+                check_error(c, s.span, TYPE_CONDITION_COMPTIME_KNOWN_BOOLEAN)
                 continue
             }
             if live {
@@ -5543,7 +5543,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 matching := find_matching_modules(c, inc.path)
                 defer delete(matching)
                 if len(matching) == 0 {
-                    check_error(c, inc.span, "module '%s' not found", inc.path)
+                    check_error(c, inc.span, TYPE_MODULE_FOUND, inc.path)
                     continue
                 }
                 main_mod: Type
@@ -5721,7 +5721,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 matching := find_matching_modules(c, inc.path)
                 defer delete(matching)
                 if len(matching) == 0 {
-                    check_error(c, inc.span, "module '%s' not found", inc.path)
+                    check_error(c, inc.span, TYPE_MODULE_FOUND, inc.path)
                     continue
                 }
                 main_mod: Type
@@ -5764,7 +5764,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // `var` keyword: rewrite fixed arrays to Array class, force arena allocation
             if s.is_var {
                 if s.type_expr == nil {
-                    check_error(c, s.span, "'var' requires a type annotation")
+                    check_error(c, s.span, TYPE_VAR_REQUIRES_TYPE_ANNOTATION)
                 } else if ta, ta_ok := s.type_expr.(^Type_Array); ta_ok {
                     // var [N]T -> Array(T, N) — rewrite to generic Array class
                     gi := new(Type_Generic_Instance)
@@ -5776,7 +5776,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
                 if !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                     check_error(c, s.span,
-                        "'var' requires a scope allocator. Set up in main:\n\n    include mara.memory\n    program = Program(Arena_Basic)")
+                        TYPE_VAR_REQUIRES_SCOPE_ALLOCATOR_SET)
                 }
             }
 
@@ -5792,7 +5792,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         is_var_type = sd.generic_base == "Array" || sd.generic_base == "String"
                     }
                     if !is_var_type {
-                        check_error(c, s.span, "'var' can only be used with Array or String types, got %s", type_name(ann_type))
+                        check_error(c, s.span, TYPE_VAR_ONLY_USED_ARRAY_STRING, type_name(ann_type))
                     }
                 }
             }
@@ -5821,7 +5821,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // Reassignment with `=` is unaffected — those parse as Stmt_Assign with
             // is_decl=false and never reach this branch's Stmt_Decl-derived path.
             if s.is_decl && s.name in env.types {
-                check_error(c, s.span, "variable '%s' already declared in this scope", s.name)
+                check_error(c, s.span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, s.name)
                 continue
             }
             // Struct field declarations live in their own namespace (accessed
@@ -5834,7 +5834,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 for outer != nil {
                     if outer.is_module_scope { break }
                     if s.name in outer.types {
-                        check_error(c, s.span, "variable '%s' shadows an enclosing binding", s.name)
+                        check_error(c, s.span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, s.name)
                         break
                     }
                     outer = outer.parent
@@ -5843,7 +5843,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 
             // Nothing can shadow a constant from an outer scope
             if s.name in c.table.constants && s.name not_in env.types {
-                check_error(c, s.span, "variable '%s' shadows a constant from an outer scope", s.name)
+                check_error(c, s.span, TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE, s.name)
                 continue
             }
 
@@ -5856,7 +5856,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if !is_any(ann_type) {
                     if types_incompatible(ann_type, val_type) {
                         check_error(c, s.span,
-                            "cannot assign %s to variable '%s' of type %s",
+                            TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(ann_type))
                     }
                 }
@@ -5879,7 +5879,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     continue
                 }
                 if is_any(ann_type) {
-                    check_error(c, s.span, "declaration without initializer requires a type annotation")
+                    check_error(c, s.span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE)
                 }
                 // Big-array check for uninitialized arrays (unwrap distinct)
                 base_ann := distinct_base(ann_type)
@@ -5887,7 +5887,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     total_bytes := fa.size * checker_type_byte_size(fa.elem)
                     if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                         check_error(c, s.span,
-                            "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    program = Program(Arena_Basic)",
+                            TYPE_ARRAY_TOO_LARGE_STACK_BYTES,
                             s.name, total_bytes)
                     }
                 }
@@ -5897,13 +5897,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         // Use the generic base name for a cleaner error message
                         user_type := sd.generic_base != "" ? sd.generic_base : type_name(ann_type)
                         check_error(c, s.span,
-                            "runtime-sized types require the 'var' keyword:\n\n    %s : var %s",
+                            TYPE_RUNTIME_SIZED_TYPES_REQUIRE_VAR,
                             s.name, user_type)
                     }
                     if s.vla_size_expr != nil {
                         size_type := check_expr(c, s.vla_size_expr, env)
                         if !is_any(size_type) && !is_numeric(size_type) {
-                            check_error(c, s.span, "size expression must be an integer, got %s", type_name(size_type))
+                            check_error(c, s.span, TYPE_SIZE_EXPRESSION_INTEGER, type_name(size_type))
                         }
                     }
                 }
@@ -5930,7 +5930,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     cap_type := check_expr(c, s.slice_cap_expr, env)
                     if !is_any(cap_type) && !is_numeric(cap_type) {
                         check_error(c, s.span,
-                            "slice capacity must be an integer, got %s", type_name(cap_type))
+                            TYPE_SLICE_CAPACITY_INTEGER, type_name(cap_type))
                     }
                 }
                 s.var_type = distinct_base(ann_type)
@@ -5968,7 +5968,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             if _, ok := s.value.(^Expr_Field_Access); ok { is_copy_source = true }
             if is_copy_source && struct_contains_partial_array(val_type) {
                 check_error(c, s.span,
-                    "cannot copy '%s' by value — it contains a partial-array field whose `ptr` would still alias the source's elements after the copy; construct in place or assign individual fields",
+                    TYPE_CANNOT_COPY_VALUE_CONTAINS_PARTIAL,
                     type_name(val_type))
             }
             if !is_any(ann_type) {
@@ -5990,14 +5990,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                     ann_size := checker_type_byte_size(ann_type)
                                     if span_size != ann_size {
                                         check_error(c, s.span,
-                                            "byte buffer read: %s is %d bytes, but slice span is %d bytes",
+                                            TYPE_BYTE_BUFFER_READ_BYTES_SLICE,
                                             type_name(ann_type), ann_size, span_size)
                                     }
                                 }
                             }
                         }
                     } else if types_incompatible(ann_type, val_type) {
-                        check_error(c, s.span, "cannot assign %s to variable '%s' of type %s",
+                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(ann_type))
                     }
                     if is_infer(val_type) {
@@ -6040,7 +6040,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     total_bytes := fa.size * checker_type_byte_size(fa.elem)
                     if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
                         check_error(c, s.span,
-                            "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    program = Program(Arena_Basic)",
+                            TYPE_ARRAY_TOO_LARGE_STACK_BYTES,
                             s.name, total_bytes)
                     }
                 } else if is_byte_buffer(val_type) {
@@ -6053,7 +6053,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 span_size := high_num - low_num
                                 if span_size != ann_size {
                                     check_error(c, s.span,
-                                        "byte buffer read: %s is %d bytes, but slice span is %d bytes",
+                                        TYPE_BYTE_BUFFER_READ_BYTES_SLICE,
                                         type_name(check_ann), ann_size, span_size)
                                 }
                             }
@@ -6063,7 +6063,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // Byte buffer reinterpret read via index: x : int = mem[0]
                     // Size comes from the annotation type; bounds checked at runtime
                 } else if types_incompatible(ann_type, val_type) {
-                    check_error(c, s.span, "cannot assign %s to variable '%s' of type %s",
+                    check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                         type_name(val_type), s.name, type_name(ann_type))
                 }
                 // Tag `&buf[i]` widened from ^byte to a typed pointer so codegen
@@ -6116,7 +6116,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if already_declared && loc_env != env && loc_env.class_scope != nil {
                     if is_real_field(&loc_env.class_scope.sd, s.name) {
                         check_error(c, s.span,
-                            "'%s' is a field of '%s'; assign through the receiver (e.g. 'a.%s = ...')",
+                            TYPE_FIELD_ASSIGN_THROUGH_RECEIVER,
                             s.name, loc_env.class_scope.name, s.name)
                         continue
                     }
@@ -6125,13 +6125,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // `x := #skip_constructor` has no type to infer from. Require
                     // an explicit annotation: `x : T = #skip_constructor`.
                     if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip {
-                        check_error(c, s.span, "'%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)", s.name, s.name)
+                        check_error(c, s.span, TYPE_TYPE_SKIP_CONSTRUCTOR_REQUIRES_EXPLICIT, s.name, s.name)
                         type_env_set(env, s.name, Type_Error{})
                         continue
                     }
                     solid := solidify_type(val_type)
                     if is_untyped(solid) {
-                        check_warning(c, s.span, "variable '%s' has no concrete type (type checking bypassed)", s.name)
+                        check_warning(c, s.span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, s.name)
                     }
                     s.var_type = distinct_base(solid)
                     s.env_type = solid
@@ -6161,7 +6161,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                     // Reassignment: check value type matches existing variable type
                     if types_incompatible(existing_type, val_type) {
-                        check_error(c, s.span, "cannot assign %s to variable '%s' of type %s",
+                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(existing_type))
                     }
                     maybe_stamp_byte_view(c, existing_type, s.value)
@@ -6187,7 +6187,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 val_type := check_expr(c, s.values[0], env)
                 if tup, ok := val_type.(^Type_Tuple); ok {
                     if len(s.names) != len(tup.elems) {
-                        check_error(c, s.span, "multi-return assign: left side has %d names but right side returns %d values",
+                        check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE,
                             len(s.names), len(tup.elems))
                     } else {
                         for name, i in s.names {
@@ -6200,7 +6200,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 target_type := check_expr(c, s.targets[i], env)
                                 if !is_any(target_type) && !is_any(resolved_type) {
                                     if !types_equal(target_type, resolved_type) {
-                                        check_error(c, s.span, "cannot assign %s to %s in multi-return",
+                                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
                                             type_name(resolved_type), type_name(target_type))
                                     }
                                 }
@@ -6215,7 +6215,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         }
                     }
                 } else {
-                    check_error(c, s.span, "multi-return assign requires a function returning multiple values, got %s",
+                    check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_REQUIRES_FUNCTION,
                         type_name(val_type))
                 }
             }
@@ -6267,7 +6267,7 @@ check_struct_defaults :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env)
                 }
                 dt := check_expr(c, field.default_value, env)
                 if types_incompatible(field.type_, dt) && !is_any(dt) {
-                    check_error(c, s.span, "default value for field '%s': expected %s, got %s",
+                    check_error(c, s.span, TYPE_DEFAULT_VALUE_FIELD_EXPECTED,
                         field.name, type_name(field.type_), type_name(dt))
                 }
             }
@@ -6290,14 +6290,14 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
         elem_type = pa.elem
     } else {
         check_error(c, span,
-            "broadcast literal '{all ...}' for field '%s' requires an array type, got %s",
+            TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES,
             field_name, type_name(field_type))
         return
     }
     val_type := check_expr(c, lit.broadcast_value, env)
     if !is_any(val_type) && types_incompatible(elem_type, val_type) {
         check_error(c, span,
-            "broadcast value for field '%s' has type %s, expected %s (element of %s)",
+            TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED,
             field_name, type_name(val_type), type_name(elem_type), type_name(field_type))
         return
     }
@@ -6467,7 +6467,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             }
         } else if field.default_value != nil {
             if _, is_uninit := field.default_value.(^Expr_Skip_Constructor); is_uninit {
-                check_error(c, s.span, "field '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)", field.name, field.name)
+                check_error(c, s.span, TYPE_FIELD_TYPE_SKIP_CONSTRUCTOR_REQUIRES, field.name, field.name)
                 field_type = Type_Error{}
             } else {
                 field_type = infer_field_type_from_default(c, field.default_value, &child)
@@ -6479,7 +6479,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             if _, fa_ok := field_type.(^Type_Fixed_Array); fa_ok {
                 // array class — validated below
             } else if using_sd := as_scope_body(field_type); using_sd == nil || len(using_sd.fields) == 0 {
-                check_error(c, s.span, "using field '%s' must be a struct or fixed-array type", field.name)
+                check_error(c, s.span, TYPE_USING_FIELD_STRUCT_FIXED_ARRAY, field.name)
             }
         }
         append(&ft.fields, Struct_Type_Field{name = field.name, type_ = field_type, default_value = field.default_value, is_using = field.is_using})
@@ -6498,7 +6498,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.return_type == nil && s.return_type != nil {
         ft.return_type = resolve_type_expr(s.return_type, c, s.span, env=&child)
         if fa, fa_ok := ft.return_type.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-            check_error(c, s.span, "variable-length arrays cannot be returned from functions")
+            check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
         }
     }
 
@@ -6560,7 +6560,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
 
     // Return check — functions with nil return_type don't need return statements
     if ft.return_type != nil && !is_any(ft.return_type) && !always_returns(s.body) {
-        check_error(c, s.span, "function '%s' missing return on all code paths", s.name)
+        check_error(c, s.span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, s.name)
     }
 }
 
@@ -6579,14 +6579,14 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         case ^Type_Partial_Array:
             elem_type = ct.elem
         case ^Type_Scope:
-            check_error(c, s.span, "cannot iterate over struct type '%s'", ct.name)
+            check_error(c, s.span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, ct.name)
             elem_type = Type_Any{}
         case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
              Type_CString, Type_C8, Type_Utf8, Type_Byte, Type_Numeric,
              ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Tuple, ^Type_Distinct,
              Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Void, Type_Error,
              nil:
-            check_error(c, s.span, "cannot iterate over type '%s'", type_name(coll_type))
+            check_error(c, s.span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(coll_type))
             elem_type = Type_Any{}
         }
 
@@ -6623,10 +6623,10 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         }
 
         if !is_numeric(low_type) && !is_infer(low_type) && !is_any(low_type) {
-            check_error(c, s.span, "range lower bound must be numeric, got %s", type_name(low_type))
+            check_error(c, s.span, TYPE_RANGE_LOWER_BOUND_NUMERIC, type_name(low_type))
         }
         if !is_numeric(high_type) && !is_infer(high_type) && !is_any(high_type) {
-            check_error(c, s.span, "range upper bound must be numeric, got %s", type_name(high_type))
+            check_error(c, s.span, TYPE_RANGE_UPPER_BOUND_NUMERIC, type_name(high_type))
         }
 
         type_env_set(&child, s.loop_var, iter_type)
@@ -6645,7 +6645,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         }
         cond_type := check_expr(c, s.condition, &child)
         if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
-            check_error(c, s.span, "for condition must be bool, got %s", type_name(cond_type))
+            check_error(c, s.span, TYPE_CONDITION_BOOL, type_name(cond_type))
         }
         if s.post != nil {
             post_stmts: [dynamic]Stmt
@@ -6661,9 +6661,9 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
     if len(s.values) > 1 {
         tup, is_tup := env.return_type.(^Type_Tuple)
         if !is_tup && !is_any(env.return_type) {
-            check_error(c, s.span, "multi-value return in function that doesn't return a tuple")
+            check_error(c, s.span, TYPE_MULTI_VALUE_RETURN_FUNCTION_DOESN)
         } else if is_tup && len(s.values) != len(tup.elems) {
-            check_error(c, s.span, "return value count %d does not match expected %d",
+            check_error(c, s.span, TYPE_RETURN_VALUE_COUNT_MATCH_EXPECTED,
                 len(s.values), len(tup.elems))
         } else if is_tup {
             for val, i in s.values {
@@ -6671,7 +6671,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
                 vt := check_expr(c, val, env)
                 if !is_any(vt) && !is_any(tup.elems[i]) {
                     if !types_equal(tup.elems[i], vt) {
-                        check_error(c, s.span, "return value %d: type %s does not match expected %s",
+                        check_error(c, s.span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED,
                             i+1, type_name(vt), type_name(tup.elems[i]))
                     }
                 }
@@ -6690,7 +6690,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
         val_type := check_expr(c, s.values[0], env)
         if !is_any(env.return_type) && !is_any(val_type) {
             if !types_equal(env.return_type, val_type) {
-                check_error(c, s.span, "return type %s does not match expected %s",
+                check_error(c, s.span, TYPE_RETURN_TYPE_MATCH_EXPECTED,
                     type_name(val_type), type_name(env.return_type))
             }
         }
@@ -6714,7 +6714,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
             // the escape relocation.
             if returns_locally_backed_struct(c, val, env) {
                 check_error(c, s.span,
-                    "cannot return struct whose slice fields point at local memory; the escape mechanism only applies to direct `return Lit[local_arr, ...]` forms (memory freed on function return)")
+                    TYPE_CANNOT_RETURN_STRUCT_WHOSE_SLICE)
             }
         }
     }
@@ -6761,7 +6761,7 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
                 check_expr(c, s.condition, env)
                 live, ok := evaluate_comptime_bool(c, s.condition)
                 if !ok {
-                    check_error(c, s.span, "#if condition must be a comptime-known boolean")
+                    check_error(c, s.span, TYPE_CONDITION_COMPTIME_KNOWN_BOOLEAN)
                     break
                 }
                 // Pass 1 (register_and_check_declarations) already recursed
@@ -6780,7 +6780,7 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             }
             cond_type := check_expr(c, s.condition, env)
             if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
-                check_error(c, s.span, "if condition must be bool, got %s", type_name(cond_type))
+                check_error(c, s.span, TYPE_CONDITION_BOOL_2, type_name(cond_type))
             }
             child := type_env_child(env)
             check_scope(c, s.body, &child)
@@ -6836,10 +6836,10 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
                     if t.op == .Caret {
                         check_deref_assign(c, s, env)
                     } else {
-                        check_error(c, s.span, "invalid assignment target")
+                        check_error(c, s.span, TYPE_INVALID_ASSIGNMENT_TARGET)
                     }
                 case:
-                    check_error(c, s.span, "invalid assignment target")
+                    check_error(c, s.span, TYPE_INVALID_ASSIGNMENT_TARGET)
                 }
                 continue
             }
@@ -6868,15 +6868,15 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
                 ft_raw, found := type_env_get(env, fn_name)
                 if found {
                     if tf, ok := ft_raw.(^Type_Scope); !ok || len(tf.params) == 0 {
-                        check_error(c, s.span, "dispatch group '%s': '%s' is not a function", s.name, fn_name)
+                        check_error(c, s.span, TYPE_DISPATCH_GROUP_FUNCTION, s.name, fn_name)
                     }
                 } else if fn_name not_in c.table.generic_templates {
-                    check_error(c, s.span, "dispatch group '%s': function '%s' not defined", s.name, fn_name)
+                    check_error(c, s.span, TYPE_DISPATCH_GROUP_FUNCTION_DEFINED, s.name, fn_name)
                 }
             }
         case Stmt_Overload:
             if _, ok := find_dispatch(c, env, s.dispatch_name); !ok {
-                check_error(c, s.span, "overload: '%s' is not a dispatch group", s.dispatch_name)
+                check_error(c, s.span, TYPE_OVERLOAD_DISPATCH_GROUP, s.dispatch_name)
             }
         case Stmt_Module:
             // nothing to check
@@ -6913,7 +6913,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
 
         if ann_is_distinct && !val_is_array && !val_is_struct_lit {
             if types_incompatible(ann_type, val_type) {
-                check_error(c, s.span, "cannot assign %s to constant '%s' of type %s",
+                check_error(c, s.span, TYPE_CANNOT_ASSIGN_CONSTANT_TYPE,
                     type_name(val_type), s.name, type_name(ann_type))
             }
             if is_infer(val_type) {
@@ -6951,7 +6951,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
 
         // Fallback: simple structural compatibility
         if types_incompatible(ann_type, val_type) {
-            check_error(c, s.span, "cannot assign %s to constant '%s' of type %s",
+            check_error(c, s.span, TYPE_CANNOT_ASSIGN_CONSTANT_TYPE,
                 type_name(val_type), s.name, type_name(ann_type))
         }
         if is_infer(val_type) {
@@ -7001,7 +7001,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
             // useful error if the tuple shape doesn't match the struct.
         }
         if len(lit.fields) > len(st.fields) {
-            check_error(c, span, "class '%s' has %d fields, got %d positional values",
+            check_error(c, span, TYPE_CLASS_FIELDS_POSITIONAL_VALUES,
                 st.name, len(st.fields), len(lit.fields))
         }
         for field, i in lit.fields {
@@ -7009,7 +7009,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
             sf := st.fields[i]
             ft := check_expr(c, field.value, env)
             if types_incompatible(sf.type_, ft) {
-                check_error(c, span, "field '%s' (position %d): expected %s, got %s",
+                check_error(c, span, TYPE_FIELD_POSITION_EXPECTED,
                     sf.name, i, type_name(sf.type_), type_name(ft))
             }
             maybe_stamp_byte_view(c, sf.type_, field.value)
@@ -7028,7 +7028,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
             provided[field.name] = true
             ft := check_expr(c, field.value, env)
             if types_incompatible(sf.type_, ft) {
-                check_error(c, span, "field '%s': expected %s, got %s",
+                check_error(c, span, TYPE_FIELD_EXPECTED,
                     field.name, type_name(sf.type_), type_name(ft))
             }
             maybe_stamp_byte_view(c, sf.type_, field.value)
@@ -7036,7 +7036,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                 check_literal_overflow(c, field.value, sf.type_, span)
             }
         } else {
-            check_error(c, span, "class '%s' has no field '%s'", st.name, field.name)
+            check_error(c, span, TYPE_CLASS_FIELD, st.name, field.name)
         }
     }
     // No missing-field check: all struct literals are zero-initialized first,
@@ -7054,9 +7054,9 @@ check_union_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, ut: ^Ty
     if !lit_ok { return }
 
     if lit.name == "" {
-        check_error(c, span, "union '%s' requires a named variant, e.g. Variant { ... }", ut.name)
+        check_error(c, span, TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT, ut.name)
     } else if lit.name not_in ut.tag_map {
-        check_error(c, span, "'%s' is not a variant of union '%s'", lit.name, ut.name)
+        check_error(c, span, TYPE_VARIANT_UNION, lit.name, ut.name)
     } else {
         // Look up struct via variant_structs mapping
         struct_name := ut.variant_structs[lit.name]
@@ -7088,7 +7088,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
     if lit.is_broadcast {
         val_type := check_expr(c, lit.broadcast_value, env)
         if types_incompatible(fa.elem, val_type) {
-            check_error(c, lit.span, "'%s' broadcast value has type %s, expected %s",
+            check_error(c, lit.span, TYPE_BROADCAST_VALUE_TYPE_EXPECTED,
                 lit.name, type_name(val_type), type_name(fa.elem))
             return
         }
@@ -7106,14 +7106,14 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
 
     if lit.positional {
         if len(lit.fields) != fa.size {
-            check_error(c, lit.span, "'%s' expects %d positional values, got %d",
+            check_error(c, lit.span, TYPE_EXPECTS_POSITIONAL_VALUES,
                 lit.name, fa.size, len(lit.fields))
             return
         }
         for field, i in lit.fields {
             val_type := check_expr(c, field.value, env)
             if types_incompatible(fa.elem, val_type) {
-                check_error(c, lit.span, "'%s' element %d has type %s, expected %s",
+                check_error(c, lit.span, TYPE_ELEMENT_TYPE_EXPECTED,
                     lit.name, i, type_name(val_type), type_name(fa.elem))
             }
             if is_infer(val_type) {
@@ -7127,18 +7127,18 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
     // Named form: each name must be a single swizzle char
     for field in lit.fields {
         if len(field.name) != 1 || !is_swizzle_field(field.name, fa.size) {
-            check_error(c, lit.span, "'%s' has no field '%s' (use swizzle components x/y/z/w or r/g/b/a within [0..<%d])",
+            check_error(c, lit.span, TYPE_FIELD_USE_SWIZZLE_COMPONENTS_WITHIN,
                 lit.name, field.name, fa.size)
             continue
         }
         idx := swizzle_char_to_index(field.name[0])
         if lit.array_values[idx] != nil {
-            check_error(c, lit.span, "'%s' field '%s' set more than once", lit.name, field.name)
+            check_error(c, lit.span, TYPE_FIELD_SET_MORE_THAN_ONCE, lit.name, field.name)
             continue
         }
         val_type := check_expr(c, field.value, env)
         if types_incompatible(fa.elem, val_type) {
-            check_error(c, lit.span, "'%s' field '%s' has type %s, expected %s",
+            check_error(c, lit.span, TYPE_FIELD_TYPE_EXPECTED,
                 lit.name, field.name, type_name(val_type), type_name(fa.elem))
         }
         if is_infer(val_type) {
@@ -7151,15 +7151,15 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
 check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixed_Array, val_type: Type) {
     if fv, ok2 := val_type.(^Type_Fixed_Array); ok2 {
         if types_incompatible(fa.elem, fv.elem) {
-            check_error(c, span, "cannot assign %s to variable '%s' of type %s",
+            check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                 type_name(val_type), name, type_name(fa))
         } else if fv.size > 0 && fv.size > fa.size {
             // Literal must not have more elements than capacity
-            check_error(c, span, "array has %d elements but '%s' has capacity %d",
+            check_error(c, span, TYPE_ARRAY_ELEMENTS_CAPACITY,
                 fv.size, name, fa.size)
         }
     } else if !is_any(val_type) {
-        check_error(c, span, "cannot assign %s to variable '%s' of type %s",
+        check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
             type_name(val_type), name, type_name(fa))
     }
 }
@@ -7171,7 +7171,7 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     if p, ok := ptr_type.(^Type_Ptr); ok {
         s.target_type = p.elem
         if types_incompatible(p.elem, val_type) {
-            check_error(c, s.span, "cannot assign %s through pointer to %s",
+            check_error(c, s.span, TYPE_CANNOT_ASSIGN_THROUGH_POINTER,
                 type_name(val_type), type_name(p.elem))
         }
         // Check that infer literal fits in the pointed-to type
@@ -7179,7 +7179,7 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             check_literal_overflow(c, s.value, p.elem, s.span)
         }
     } else if !is_any(ptr_type) {
-        check_error(c, s.span, "cannot dereference-assign to non-pointer type %s", type_name(ptr_type))
+        check_error(c, s.span, TYPE_CANNOT_DEREFERENCE_ASSIGN_NON_POINTER, type_name(ptr_type))
     }
     // Escape analysis: prevent writing local references through param pointers.
     // e.g., param^ = &local_var would let a local reference escape.
@@ -7188,7 +7188,7 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             if ident, ok := un.operand.(^Expr_Ident); ok {
                 if is_param(env, ident.name) {
                     check_error(c, s.span,
-                        "cannot write local reference through parameter '%s' (would escape function scope)",
+                        TYPE_CANNOT_WRITE_LOCAL_REFERENCE_THROUGH,
                         ident.name)
                 }
             }
@@ -7210,12 +7210,12 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     val_type := check_expr(c, s.value, env)
 
     if !is_numeric(idx_type) && !is_any(idx_type) {
-        check_error(c, s.span, "array index must be a number, got %s", type_name(idx_type))
+        check_error(c, s.span, TYPE_ARRAY_INDEX_NUMBER, type_name(idx_type))
     }
 
     if pname, immut := write_root_immutable_param(s.target, env); immut {
         check_error(c, s.span,
-            "cannot write to element of immutable parameter '%s' (declare it with ^ to allow mutation)",
+            TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER,
             pname)
     }
 
@@ -7240,7 +7240,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             return
         }
         if types_incompatible(fa.elem, val_type) {
-            check_error(c, s.span, "cannot assign %s to element of [%d]%s",
+            check_error(c, s.span, TYPE_CANNOT_ASSIGN_ELEMENT,
                 type_name(val_type), fa.size, type_name(fa.elem))
         }
         // Check that infer literal fits in the array element type
@@ -7263,15 +7263,15 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     val_type    := check_expr(c, s.value, env)
 
     if !is_numeric(low_type) && !is_any(low_type) {
-        check_error(c, s.span, "slice lower bound must be a number, got %s", type_name(low_type))
+        check_error(c, s.span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(low_type))
     }
     if sl.high != nil && !is_numeric(high_type) && !is_any(high_type) {
-        check_error(c, s.span, "slice upper bound must be a number, got %s", type_name(high_type))
+        check_error(c, s.span, TYPE_SLICE_UPPER_BOUND_NUMBER, type_name(high_type))
     }
 
     if pname, immut := write_root_immutable_param(s.target, env); immut {
         check_error(c, s.span,
-            "cannot slice-assign into immutable parameter '%s' (declare it with ^ to allow mutation)",
+            TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE,
             pname)
     }
 
@@ -7286,7 +7286,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                 val_size := checker_type_byte_size(solid_val_type)
                 if span_size != val_size {
                     check_error(c, s.span,
-                        "byte slice write: %s is %d bytes, but slice span is %d bytes",
+                        TYPE_BYTE_SLICE_WRITE_BYTES_SLICE,
                         type_name(solid_val_type), val_size, span_size)
                 }
             }
@@ -7310,7 +7310,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                     val_size := checker_type_byte_size(solid_val_type)
                     if span_size != val_size {
                         check_error(c, s.span,
-                            "byte array write: %s is %d bytes, but slice span is %d bytes",
+                            TYPE_BYTE_ARRAY_WRITE_BYTES_SLICE,
                             type_name(solid_val_type), val_size, span_size)
                     }
                 }
@@ -7323,16 +7323,16 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
         // RHS must also be a fixed array with matching element type
         if rhs, rhs_ok := val_type.(^Type_Fixed_Array); rhs_ok {
             if types_incompatible(fa.elem, rhs.elem) {
-                check_error(c, s.span, "cannot slice-assign [%d]%s into [%d]%s",
+                check_error(c, s.span, TYPE_CANNOT_SLICE_ASSIGN_INTO,
                     rhs.size, type_name(rhs.elem), fa.size, type_name(fa.elem))
             }
         } else if rhs_sl, rhs_sl_ok := val_type.(^Type_Slice); rhs_sl_ok {
             if types_incompatible(fa.elem, rhs_sl.elem) {
-                check_error(c, s.span, "cannot slice-assign []%s into [%d]%s",
+                check_error(c, s.span, TYPE_CANNOT_SLICE_ASSIGN_INTO_2,
                     type_name(rhs_sl.elem), fa.size, type_name(fa.elem))
             }
         } else if !is_any(val_type) {
-            check_error(c, s.span, "slice assignment requires an array or slice on the right-hand side, got %s", type_name(val_type))
+            check_error(c, s.span, TYPE_SLICE_ASSIGNMENT_REQUIRES_ARRAY_SLICE, type_name(val_type))
         }
     }
 }
@@ -7350,7 +7350,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     if _, ok := s.value.(^Expr_Field_Access); ok { is_copy_source = true }
     if is_copy_source && struct_contains_partial_array(val_type) {
         check_error(c, s.span,
-            "cannot copy '%s' by value — it contains a partial-array field whose `ptr` would still alias the source's elements after the copy; construct in place or assign individual fields",
+            TYPE_CANNOT_COPY_VALUE_CONTAINS_PARTIAL,
             type_name(val_type))
     }
 
@@ -7370,7 +7370,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             s.target_type = ft
             if pname, immut := write_root_immutable_param(s.target, env); immut {
                 check_error(c, s.span,
-                    "cannot write to field '%s' of immutable parameter '%s' (declare it with ^ to allow mutation)",
+                    TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER,
                     fa_expr.field, pname)
             }
             // Mark field as initialized (clears invalid_refs for ptr/slice struct fields)
@@ -7387,7 +7387,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                             span_size := high_num - low_num
                             if span_size != field_size {
                                 check_error(c, s.span,
-                                    "byte buffer read: %s is %d bytes, but slice span is %d bytes",
+                                    TYPE_BYTE_BUFFER_READ_BYTES_SLICE,
                                     type_name(ft), field_size, span_size)
                             }
                         }
@@ -7397,7 +7397,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                 // Byte buffer reinterpret read via index: obj.field = mem[off]
                 // Size comes from field type; bounds checked at runtime
             } else if types_incompatible(ft, val_type) {
-                check_error(c, s.span, "cannot assign %s to field '%s' of type %s",
+                check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
                     type_name(val_type), fa_expr.field, type_name(ft))
             }
             // Check that infer literal fits in the field type
@@ -7416,14 +7416,14 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                     if ident, ok := fa_expr.expr.(^Expr_Ident); ok {
                         if is_param(env, ident.name) {
                             check_error(c, s.span,
-                                "cannot write local reference to field '%s' of parameter '%s' (would escape function scope)",
+                                TYPE_CANNOT_WRITE_LOCAL_REFERENCE_FIELD,
                                 fa_expr.field, ident.name)
                         }
                     }
                 }
             }
         } else {
-            check_error(c, s.span, "class '%s' has no field '%s'", st.name, fa_expr.field)
+            check_error(c, s.span, TYPE_CLASS_FIELD, st.name, fa_expr.field)
         }
         return
     }
@@ -7438,7 +7438,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             if len(fa_expr.field) == 1 {
                 // Single-component write: value must match element type
                 if types_incompatible(fa.elem, val_type) && !is_infer(val_type) {
-                    check_error(c, s.span, "cannot assign %s to swizzle '%s' of element type %s",
+                    check_error(c, s.span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPE,
                         type_name(val_type), fa_expr.field, type_name(fa.elem))
                 }
                 if is_infer(val_type) {
@@ -7448,18 +7448,18 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                 // Multi-component write: value must be an array with matching element type
                 if va, va_ok := val_type.(^Type_Fixed_Array); va_ok {
                     if types_incompatible(fa.elem, va.elem) {
-                        check_error(c, s.span, "cannot assign %s to swizzle '%s': element types differ",
+                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPES,
                             type_name(val_type), fa_expr.field)
                     }
                 } else if !is_any(val_type) && !is_infer(val_type) {
-                    check_error(c, s.span, "cannot assign %s to multi-component swizzle '%s': expected array",
+                    check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_COMPONENT_SWIZZLE,
                         type_name(val_type), fa_expr.field)
                 }
             }
             return
         }
         if is_all_swizzle_chars(fa_expr.field) {
-            check_error(c, s.span, "swizzle '%s' has component out of range for [%d] array", fa_expr.field, fa.size)
+            check_error(c, s.span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, fa_expr.field, fa.size)
             return
         }
     }
@@ -7485,7 +7485,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
     // Rust's `_ => {}`.
     for arm, i in s.arms {
         if arm.is_else && i != len(s.arms) - 1 {
-            check_error(c, s.span, "'else' must be the last arm in a match")
+            check_error(c, s.span, TYPE_LAST_ARM_MATCH)
         }
     }
 
@@ -7500,7 +7500,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                 if tag_val, v_ok := et.variants[arm.dot_shorthand]; v_ok {
                     arm.resolved_tag = tag_val
                 } else {
-                    check_error(c, s.span, "enum '%s' has no variant '%s'", et.name, arm.dot_shorthand)
+                    check_error(c, s.span, TYPE_ENUM_VARIANT, et.name, arm.dot_shorthand)
                 }
             } else if is_union_match {
                 if tag_val, v_ok := ut.tag_map[arm.dot_shorthand]; v_ok {
@@ -7512,10 +7512,10 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                         arm.resolved_struct = arm_st.name
                     }
                 } else {
-                    check_error(c, s.span, "union '%s' has no variant '%s'", ut.name, arm.dot_shorthand)
+                    check_error(c, s.span, TYPE_UNION_VARIANT, ut.name, arm.dot_shorthand)
                 }
             } else {
-                check_error(c, s.span, "dot shorthand '.%s' can only be used when matching on an enum or union", arm.dot_shorthand)
+                check_error(c, s.span, TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING, arm.dot_shorthand)
             }
             child := type_env_child(env)
             check_scope(c, arm.body, &child)
@@ -7527,7 +7527,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                 if tag_val, tv_ok := ut.tag_map[arm.variant_name]; tv_ok {
                     arm.resolved_tag = tag_val
                 } else {
-                    check_error(c, s.span, "'%s' is not a variant of union '%s'", arm.variant_name, ut.name)
+                    check_error(c, s.span, TYPE_VARIANT_UNION, arm.variant_name, ut.name)
                 }
             }
             // No-binding form: `KeyDown` (no binding name) on a bare-ident
@@ -7648,13 +7648,13 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
         if is_enum_match {
             for name in et.variants {
                 if name not_in covered {
-                    check_error(c, s.span, "match on '%s' is missing variant '%s' (add an arm, or `else` to opt out)", et.name, name)
+                    check_error(c, s.span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, et.name, name)
                 }
             }
         } else if is_union_match {
             for variant in ut.variants {
                 if variant not_in covered {
-                    check_error(c, s.span, "match on '%s' is missing variant '%s' (add an arm, or `else` to opt out)", ut.name, variant)
+                    check_error(c, s.span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, ut.name, variant)
                 }
             }
         }
@@ -7690,7 +7690,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
 check_namespace_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env, scope: ^Type_Scope) {
     for arm in s.arms {
         if arm.is_else {
-            check_error(c, s.span, "'else' is not allowed in match on a struct — arms fire independently, so there is no single 'no match' branch")
+            check_error(c, s.span, TYPE_ALLOWED_MATCH_STRUCT_ARMS_FIRE)
         }
     }
 
@@ -7726,13 +7726,13 @@ check_namespace_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env, scope
             predicate            = arm.value
             arm.is_predicate_arm = true
         } else {
-            check_error(c, s.span, "match on struct '%s' expects predicate arms (`field do …` or `expr do …`)", scope.name)
+            check_error(c, s.span, TYPE_MATCH_STRUCT_EXPECTS_PREDICATE_ARMS, scope.name)
             continue
         }
 
         pred_type := check_expr(c, predicate, env)
         if _, is_bool := pred_type.(Type_Bool); !is_bool {
-            check_error(c, s.span, "predicate arm must be bool, got %s — Mara doesn't auto-truthy non-bool values; write an explicit comparison", type_name(pred_type))
+            check_error(c, s.span, TYPE_PREDICATE_ARM_BOOL_MARA_DOESN, type_name(pred_type))
         }
 
         child := type_env_child(env)
@@ -7916,7 +7916,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
 
     // Circular dependency detection
     if module_name in c.modules_in_progress {
-        check_error(c, span, "circular include: module '%s' is already being checked", module_name)
+        check_error(c, span, TYPE_CIRCULAR_INCLUDE_MODULE_ALREADY_CHECKED, module_name)
         return nil
     }
 
@@ -7924,7 +7924,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // before check_program ran).
     mod_program_ptr, found := c.programs[module_name]
     if !found {
-        check_error(c, span, "module '%s' not found", module_name)
+        check_error(c, span, TYPE_MODULE_FOUND, module_name)
         return nil
     }
     mod_program := mod_program_ptr^
@@ -8115,7 +8115,7 @@ make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Sco
             if !is_foreign { continue }
             if fo.link_name != ln { continue }
             check_error(c, decl.span,
-                "foreign symbol '%s' is already declared in library '%s' (first declaration at %s); each external symbol may be bound by at most one foreign block",
+                TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY,
                 ln, fo.library, span_loc(existing.span))
             break
         }
@@ -8356,7 +8356,7 @@ validate_scope_allocator :: proc(c: ^Checker) {
     name := c.table.scope_allocator_name
     if name == "" {
         check_error(c, {},
-            "program global requires an allocator type (e.g. `program = Program(Arena_Basic(<args>))`)")
+            TYPE_PROGRAM_GLOBAL_REQUIRES_ALLOCATOR_TYPE)
         c.table.has_scope_allocator = false
         return
     }
@@ -8375,7 +8375,7 @@ validate_scope_allocator :: proc(c: ^Checker) {
     }
     if alloc_type == nil {
         check_error(c, {},
-            "program scope allocator: '%s' is not a known type", name)
+            TYPE_PROGRAM_SCOPE_ALLOCATOR_KNOWN_TYPE, name)
         c.table.has_scope_allocator = false
         return
     }
@@ -8389,7 +8389,7 @@ validate_scope_allocator :: proc(c: ^Checker) {
     for req in required_fns {
         if alloc_type.functions == nil || req not_in alloc_type.functions {
             check_error(c, {},
-                "program scope allocator: '%s' is missing required function '%s'", name, req)
+                TYPE_PROGRAM_SCOPE_ALLOCATOR_MISSING_REQUIRED, name, req)
             c.table.has_scope_allocator = false
             return
         }
@@ -8479,10 +8479,10 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                 // i64 is the same type as int — accept it spelled either way.
                 if vn, ok := ret.(Type_Numeric); ok && vn.kind == .Signed && vn.bits == 64 { is_int = true }
                 if !is_void && !is_int {
-                    check_error(c, s.span, "fun main() must return int or have no return type")
+                    check_error(c, s.span, TYPE_FUN_MAIN_RETURN_INT_RETURN)
                 }
                 if len(s.typed_params) != 0 {
-                    check_error(c, s.span, "fun main() must take no parameters")
+                    check_error(c, s.span, TYPE_FUN_MAIN_TAKE_PARAMETERS)
                 }
             }
             // `#expose fun foo(ctx: ^Context, ...)` — DLL entry points must
@@ -8503,12 +8503,12 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                     }
                 }
                 if !ok {
-                    check_error(c, s.span, "#expose function '%s' must take its first parameter as `^Program`", s.name)
+                    check_error(c, s.span, TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER, s.name)
                 }
             }
         case ^Stmt_If:
             if !s.is_comptime {
-                check_error(c, s.span, "executable statements must be inside fun main()")
+                check_error(c, s.span, TYPE_EXECUTABLE_STATEMENTS_INSIDE_FUN_MAIN)
                 continue
             }
             // Recurse into the live arm. Pass 1 already evaluated and the
@@ -8529,7 +8529,7 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
              Stmt_Module, ^Stmt_Dispatch_Def, Stmt_Overload, ^Stmt_Distinct_Def:
             // Allowed at top level.
         case:
-            check_error(c, stmt_span(stmt), "executable statements must be inside fun main()")
+            check_error(c, stmt_span(stmt), TYPE_EXECUTABLE_STATEMENTS_INSIDE_FUN_MAIN)
         }
     }
 }
@@ -8987,7 +8987,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             if t, ok := resolve_variant_ident(c, e, hint, env, dot = true); ok {
                 return t
             }
-            check_error(c, e.span, "no visible enum or union has variant '.%s'", e.name)
+            check_error(c, e.span, TYPE_VISIBLE_ENUM_UNION_VARIANT, e.name)
             return Type_Error{}
         }
 
@@ -9023,7 +9023,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             if len(owners) > 1 {
                 joined := strings.join(owners[:], ", ")
                 check_error(c, e.span,
-                    "constant '%s' is ambiguous (defined in: %s). Use qualified access, e.g. %s.%s",
+                    TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED,
                     e.name, joined, owners[0], e.name)
                 return Type_Error{}
             }
@@ -9031,7 +9031,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
 
         // Check for reading an uninitialized pointer/slice
         if is_invalid_ref(env, e.name) {
-            check_error(c, e.span, "variable '%s' is used before being assigned a value", e.name)
+            check_error(c, e.span, TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, e.name)
         }
         // Check env (common case: local vars, params, functions)
         t, loc_env, ok := type_env_locate(env, e.name)
@@ -9043,7 +9043,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             if loc_env != env && loc_env.class_scope != nil {
                 if is_real_field(&loc_env.class_scope.sd, e.name) {
                     check_error(c, e.span,
-                        "'%s' is a field of '%s'; access it through the receiver (e.g. 'a.%s')",
+                        TYPE_FIELD_ACCESS_THROUGH_RECEIVER,
                         e.name, loc_env.class_scope.name, e.name)
                     return Type_Error{}
                 }
@@ -9092,13 +9092,13 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // Not in env — check for better error messages
         ident_flat := resolve_type_name(c, e.name, "", env)
         if ident_flat in c.table.funs {
-            check_error(c, e.span, "'%s' is a type, not a value. Did you mean ': %s'?", e.name, e.name)
+            check_error(c, e.span, TYPE_TYPE_VALUE_DID_MEAN, e.name, e.name)
         } else if ident_flat in c.table.enums {
-            check_error(c, e.span, "'%s' is a type, not a value. Did you mean ': %s'?", e.name, e.name)
+            check_error(c, e.span, TYPE_TYPE_VALUE_DID_MEAN, e.name, e.name)
         } else if ident_flat in c.table.unions {
-            check_error(c, e.span, "'%s' is a type, not a value. Did you mean ': %s'?", e.name, e.name)
+            check_error(c, e.span, TYPE_TYPE_VALUE_DID_MEAN, e.name, e.name)
         } else {
-            check_error(c, e.span, "undefined identifier '%s'", e.name)
+            check_error(c, e.span, TYPE_UNDEFINED_IDENTIFIER, e.name)
         }
         return Type_Error{}
     case ^Expr_Unary:
@@ -9106,17 +9106,17 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         #partial switch e.op {
         case .Minus:
             if !is_numeric(operand_type) {
-                check_error(c, e.span, "cannot negate %s", type_name(operand_type))
+                check_error(c, e.span, TYPE_CANNOT_NEGATE, type_name(operand_type))
             }
             return operand_type
         case .Not:
             if _, ok := operand_type.(Type_Bool); !ok && !is_any(operand_type) {
-                check_error(c, e.span, "cannot apply 'not' to %s", type_name(operand_type))
+                check_error(c, e.span, TYPE_CANNOT_APPLY, type_name(operand_type))
             }
             return Type_Bool{}
         case .Tilde:
             if !is_integer(operand_type) && !is_any(operand_type) {
-                check_error(c, e.span, "cannot apply '~' to %s, requires integer type", type_name(operand_type))
+                check_error(c, e.span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(operand_type))
             }
             return operand_type
         case .Ampersand:
@@ -9125,7 +9125,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             // grant the mutation that declaring `t` without `^` denied.
             if pname, immut := write_root_immutable_param(e.operand, env); immut {
                 check_error(c, e.span,
-                    "cannot take address of immutable parameter '%s' (declare it with ^ to allow mutation)",
+                    TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER,
                     pname)
             }
             pt := new(Type_Ptr)
@@ -9143,7 +9143,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             if is_any(operand_type) {
                 return Type_Error{}
             }
-            check_error(c, e.span, "cannot dereference non-pointer type %s", type_name(operand_type))
+            check_error(c, e.span, TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE, type_name(operand_type))
             return Type_Error{}
         }
     case ^Expr_Binary:
@@ -9176,7 +9176,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 e.type_ = resolved
                 return resolved
             }
-            check_error(c, e.span, "typed array literal: type %s is not a fixed-size array", type_name(resolved))
+            check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
             return Type_Error{}
         }
         // Distinct-fixed-array literal: Quat{1,2,3,4} / Quat{w: 1} / Quat{}.
@@ -9218,7 +9218,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // size_of(Type) — compile-time constant, infers type from context (like Zig's @sizeOf)
         resolved := resolve_type_expr(e.type_expr, c, e.span, env=env)
         if _, is_err := resolved.(Type_Error); is_err {
-            check_error(c, e.span, "size_of: unknown type")
+            check_error(c, e.span, TYPE_SIZE_UNKNOWN_TYPE)
         }
         e.resolved_type = resolved
         return Type_Infer_Int{}
@@ -9267,18 +9267,18 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         resolved := resolve_type_expr(e.type_expr, c, e.span, env=env)
         if _, is_err := resolved.(Type_Error); is_err {
-            check_error(c, e.span, "take: unknown type")
+            check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
         }
         // Runtime-counted form: validate count is integer, resolved is a slice.
         if e.count_expr != nil {
             count_type := check_expr(c, e.count_expr, env)
             if !is_any(count_type) && !is_numeric(count_type) {
                 check_error(c, e.span,
-                    "take count must be an integer, got %s", type_name(count_type))
+                    TYPE_TAKE_COUNT_INTEGER, type_name(count_type))
             }
             if _, is_slice := distinct_base(resolved).(^Type_Slice); !is_slice {
                 check_error(c, e.span,
-                    "take with a count requires a slice type, got %s", type_name(resolved))
+                    TYPE_TAKE_COUNT_REQUIRES_SLICE_TYPE, type_name(resolved))
             }
         }
         e.resolved_type = resolved
@@ -9301,7 +9301,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         if !is_slice_ptr_arg && !is_byte_ptr_arg && !is_any(src_type) {
             check_error(c, e.span,
-                "take requires ^[]byte (cursor form, pass &slice_var) or ^byte (positional form), got %s",
+                TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM,
                 type_name(src_type))
         }
         // Lifetime: storage must not point into our own frame (or deeper) —
@@ -9309,7 +9309,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         src_prov := expr_provenance(c, e.storage, env)
         if src_prov.depth >= env.scope_depth {
             check_error(c, e.span,
-                "take storage points into local stack memory, which would not outlive a returning view")
+                TYPE_TAKE_STORAGE_POINTS_INTO_LOCAL)
         }
         e.type_ = resolved
         return resolved
@@ -9317,7 +9317,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         cond_type := check_expr(c, e.condition, env)
         if !is_any(cond_type) {
             if _, is_bool := cond_type.(Type_Bool); !is_bool {
-                check_error(c, e.span, "if-expression condition must be bool, got %s", type_name(cond_type))
+                check_error(c, e.span, TYPE_EXPRESSION_CONDITION_BOOL, type_name(cond_type))
             }
         }
         then_type := check_expr(c, e.then_expr, env)
@@ -9326,7 +9326,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         if is_untyped(then_type) || is_infer(then_type) { return else_type }
         if is_untyped(else_type) || is_infer(else_type) { return then_type }
         if types_incompatible(then_type, else_type) {
-            check_error(c, e.span, "if-expression branches have incompatible types: %s vs %s",
+            check_error(c, e.span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS,
                 type_name(then_type), type_name(else_type))
         }
         return then_type
@@ -9395,7 +9395,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         case .Utf8:      return Type_Utf8{}
         case .Byte:      return Type_Byte{}
         case .Int:
-            check_error(c, e.span, "type 'int' is reserved — use 'i64' (or 'isize' for word-sized)")
+            check_error(c, e.span, TYPE_TYPE_INT_RESERVED_USE_I64)
             return Type_Error{}
         }
         return Type_Error{}
@@ -9411,7 +9411,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         if tup, is_tup := src_type.(^Type_Tuple); is_tup {
             if e.index < 0 || e.index >= len(tup.elems) {
                 check_error(c, e.span,
-                    "tuple-destructure index %d out of range for %d-tuple",
+                    TYPE_TUPLE_DESTRUCTURE_INDEX_OUT_RANGE,
                     e.index, len(tup.elems))
                 return Type_Error{}
             }
@@ -9433,7 +9433,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             }
             cur = cur.parent
         }
-        check_error(c, e.span, "#self is only legal inside a struct/class body")
+        check_error(c, e.span, TYPE_SELF_ONLY_LEGAL_INSIDE_STRUCT)
         return Type_Error{}
     }
     return Type_Error{}
@@ -9448,12 +9448,12 @@ check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope
     if ident, ident_ok := e.expr.(^Expr_Ident); ident_ok {
         field_key := strings.concatenate({ident.name, ".", e.field})
         if is_invalid_ref(env, field_key) {
-            check_error(c, e.span, "field '%s' of '%s' is used before being assigned a value", e.field, ident.name)
+            check_error(c, e.span, TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, e.field, ident.name)
         } else if target, has_alias := lookup_alias(env, ident.name); has_alias {
             aliased_key := strings.concatenate({target, ".", e.field})
             if is_invalid_ref(env, aliased_key) {
                 check_error(c, e.span,
-                    "field '%s' of '%s' (aliased via '%s') is used before being assigned a value",
+                    TYPE_FIELD_ALIASED_VIA_USED_BEFORE,
                     e.field, target, ident.name)
             }
         }
@@ -9467,7 +9467,7 @@ check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope
             return fn
         }
     }
-    check_error(c, e.span, "class '%s' has no field '%s'", st.name, e.field)
+    check_error(c, e.span, TYPE_CLASS_FIELD, st.name, e.field)
     return Type_Error{}
 }
 
@@ -9507,7 +9507,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
             e.resolved = resolved
             return et
         }
-        check_error(c, e.span, "enum '%s' has no variant '%s'", et.name, e.field)
+        check_error(c, e.span, TYPE_ENUM_VARIANT, et.name, e.field)
         return Type_Error{}
     }
     // Qualified union variant access: UnionName.Variant
@@ -9522,12 +9522,12 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
                 e.resolved = Resolved_Union_Tag{union_name = ut.name}
                 return tag_et
             }
-            check_error(c, e.span, "union '%s' has no tag enum (internal error)", ut.name)
+            check_error(c, e.span, TYPE_UNION_TAG_ENUM_INTERNAL_ERROR, ut.name)
             return Type_Error{}
         }
         if e.field == "pad" {
             if ut.tag_pad == nil {
-                check_error(c, e.span, "union '%s' has no padding (declare with `union(... pad T ...)`)", ut.name)
+                check_error(c, e.span, TYPE_UNION_PADDING_DECLARE_UNION_PAD, ut.name)
                 return Type_Error{}
             }
             e.resolved = Resolved_Union_Pad{union_name = ut.name}
@@ -9544,7 +9544,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
             e.resolved = resolved
             return ut
         }
-        check_error(c, e.span, "union '%s' has no variant '%s'", ut.name, e.field)
+        check_error(c, e.span, TYPE_UNION_VARIANT, ut.name, e.field)
         return Type_Error{}
     }
     if sd := as_scope_body(obj_type); sd != nil && (len(sd.fields) > 0 || sd.scope != nil) {
@@ -9579,7 +9579,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
                         }
                     }
                 }
-                check_error(c, e.span, "module '%s' has no symbol '%s'", sd.name, e.field)
+                check_error(c, e.span, TYPE_MODULE_SYMBOL, sd.name, e.field)
                 return Type_Error{}
             }
             // Resolve enum types from this module
@@ -9647,10 +9647,10 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         }
         // Helpful error: all chars are swizzle chars but index out of range
         if is_all_swizzle_chars(e.field) {
-            check_error(c, e.span, "swizzle '%s' has component out of range for [%d] array", e.field, fa.size)
+            check_error(c, e.span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, e.field, fa.size)
             return Type_Error{}
         }
-        check_error(c, e.span, "cannot access field '%s' on array type %s", e.field, type_name(obj_type))
+        check_error(c, e.span, TYPE_CANNOT_ACCESS_FIELD_ARRAY_TYPE, e.field, type_name(obj_type))
         return Type_Error{}
     }
     // Slice field access: sl.ptr, sl.len, sl.cap
@@ -9663,7 +9663,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         if e.field == "len" || e.field == "cap" {
             return Type_Int{}
         }
-        check_error(c, e.span, "slice type %s has no field '%s'", type_name(obj_type), e.field)
+        check_error(c, e.span, TYPE_SLICE_TYPE_FIELD, type_name(obj_type), e.field)
         return Type_Error{}
     }
     // Partial array field access: pa.ptr, pa.len, pa.cap — shape matches slice.
@@ -9676,11 +9676,11 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         if e.field == "len" || e.field == "cap" {
             return Type_Int{}
         }
-        check_error(c, e.span, "partial array type %s has no field '%s'", type_name(obj_type), e.field)
+        check_error(c, e.span, TYPE_PARTIAL_ARRAY_TYPE_FIELD, type_name(obj_type), e.field)
         return Type_Error{}
     }
     if !is_any(obj_type) {
-        check_error(c, e.span, "cannot access field '%s' on type %s", e.field, type_name(obj_type))
+        check_error(c, e.span, TYPE_CANNOT_ACCESS_FIELD_TYPE, e.field, type_name(obj_type))
     }
     return Type_Error{}
 }
@@ -9690,7 +9690,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
 check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_Env) -> (Type, bool) {
     check_args_n :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_Env, n: int) {
         if len(args) != n {
-            check_error(c, e.span, "%s() expects %d argument%s, got %d",
+            check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_2,
                 e.name, n, n == 1 ? "" : "s", len(args))
         } else {
             for arg in args {
@@ -9708,21 +9708,21 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
     switch e.name {
     case "len":
         if len(args) != 1 {
-            check_error(c, e.span, "len() expects 1 argument, got %d", len(args))
+            check_error(c, e.span, TYPE_LEN_EXPECTS_ARGUMENT, len(args))
         } else {
             arg_type := check_expr(c, args[0], env)
             if !is_array_type(arg_type) && !is_any(arg_type) {
-                check_error(c, e.span, "len() requires array or slice, got %s", type_name(arg_type))
+                check_error(c, e.span, TYPE_LEN_REQUIRES_ARRAY_SLICE, type_name(arg_type))
             }
         }
         return Type_Int{}, true
     case "cap":
         if len(args) != 1 {
-            check_error(c, e.span, "cap() expects 1 argument, got %d", len(args))
+            check_error(c, e.span, TYPE_CAP_EXPECTS_ARGUMENT, len(args))
         } else {
             arg_type := check_expr(c, args[0], env)
             if !is_array_type(arg_type) && !is_any(arg_type) {
-                check_error(c, e.span, "cap() requires array or slice, got %s", type_name(arg_type))
+                check_error(c, e.span, TYPE_CAP_REQUIRES_ARRAY_SLICE, type_name(arg_type))
             }
         }
         return Type_Int{}, true
@@ -9780,7 +9780,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
                 }
                 if pct_count > 0 && pct_count != len(args) - 1 {
                     check_error(c, e.span,
-                        "print format string has %d `%%` placeholder(s) but %d value(s) were passed",
+                        TYPE_PRINT_FORMAT_STRING_PLACEHOLDER_VALUE,
                         pct_count, len(args) - 1)
                 }
             }
@@ -9788,28 +9788,28 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         return Type_Error{}, true
     case "crash":
         if len(args) > 1 {
-            check_error(c, e.span, "crash() expects 0 or 1 arguments, got %d", len(args))
+            check_error(c, e.span, TYPE_CRASH_EXPECTS_ARGUMENTS, len(args))
         } else if len(args) == 1 {
             check_expr(c, args[0], env)
         }
         return Type_Error{}, true
     case "print_cstr":
         if len(args) != 1 {
-            check_error(c, e.span, "print_cstr() expects 1 argument (^byte), got %d", len(args))
+            check_error(c, e.span, TYPE_PRINT_CSTR_EXPECTS_ARGUMENT_BYTE, len(args))
         } else {
             check_expr(c, args[0], env)
         }
         return Type_Error{}, true
     case "print_int":
         if len(args) != 1 {
-            check_error(c, e.span, "print_int() expects 1 argument (int), got %d", len(args))
+            check_error(c, e.span, TYPE_PRINT_INT_EXPECTS_ARGUMENT_INT, len(args))
         } else {
             check_expr(c, args[0], env)
         }
         return Type_Error{}, true
     case "print_float":
         if len(args) != 1 {
-            check_error(c, e.span, "print_float() expects 1 argument (float), got %d", len(args))
+            check_error(c, e.span, TYPE_PRINT_FLOAT_EXPECTS_ARGUMENT_FLOAT, len(args))
         } else {
             check_expr(c, args[0], env)
         }
@@ -9822,21 +9822,21 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         // untrusted input. Constraining to comptime constants closes the
         // entire size-control attack class outside one well-audited file.
         if len(args) != 2 {
-            check_error(c, e.span, "slice_from_ptr() expects 2 arguments (ptr, size), got %d", len(args))
+            check_error(c, e.span, TYPE_SLICE_PTR_EXPECTS_ARGUMENTS_PTR, len(args))
         } else {
             ptr_type := check_expr(c, args[0], env)
             _, ptr_ok := ptr_type.(^Type_Ptr)
             if !ptr_ok && !is_any(ptr_type) {
-                check_error(c, e.span, "slice_from_ptr() first argument must be a pointer, got %s", type_name(ptr_type))
+                check_error(c, e.span, TYPE_SLICE_PTR_FIRST_ARGUMENT_POINTER, type_name(ptr_type))
             }
             size_type := check_expr(c, args[1], env)
             if !is_numeric(size_type) && !is_any(size_type) {
-                check_error(c, e.span, "slice_from_ptr() second argument must be numeric, got %s", type_name(size_type))
+                check_error(c, e.span, TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC, type_name(size_type))
             }
             if !is_package(c, "os") {
                 if _, comptime_ok := evaluate_comptime_int(c, args[1]); !comptime_ok {
                     check_error(c, e.span,
-                        "slice_from_ptr() outside the os module requires a comptime-known size " +
+                        TYPE_SLICE_PTR_OUTSIDE_OS_MODULE +
                         "(literal, '::' constant, or comptime arithmetic). Runtime-derived lengths " +
                         "are restricted because they're the classic source of OOB-access bugs at C boundaries.")
                 }
@@ -9863,17 +9863,17 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
     }
     if is_type_cast(e.name) {
         if len(args) != 1 {
-            check_error(c, e.span, "%s() expects 1 argument, got %d", e.name, len(args))
+            check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, e.name, len(args))
             return Type_Error{}, true
         }
         check_expr(c, args[0], env)
         switch e.name {
         case "int":
-            check_error(c, e.span, "type 'int' is reserved — use 'i64' (or 'isize' for word-sized)")
+            check_error(c, e.span, TYPE_TYPE_INT_RESERVED_USE_I64)
             return Type_Error{}, true
         case "i64": return Type_Numeric{kind = .Signed, bits = 64}, true
         case "uint":
-            check_error(c, e.span, "type 'uint' is reserved — use 'u64' (or 'usize' for word-sized)")
+            check_error(c, e.span, TYPE_TYPE_UINT_RESERVED_USE_U64)
             return Type_Error{}, true
         case "i8":  return Type_Numeric{kind = .Signed, bits = 8}, true
         case "i16": return Type_Numeric{kind = .Signed, bits = 16}, true
@@ -10034,7 +10034,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
     case .And, .Or:
         op_word := "and" if e.op == .And else "or"
         if _, ok := left_type.(Type_Bool); !ok && !is_any(left_type) {
-            check_error(c, e.span, "left operand of '%s' must be bool, got %s",
+            check_error(c, e.span, TYPE_LEFT_OPERAND_BOOL,
                 op_word, type_name(left_type))
             // Educational hint for the classic novice trap:
             //   `if x and y == 0`  parses as  `x and (y == 0)`
@@ -10055,13 +10055,13 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                     fmt.sbprintf(&b, " %s ", op_str(right_bin.op))
                     dump_parse_expr(&b, right_bin.right)
                     check_warning(c, e.span,
-                        "did you mean `%s`? Each operand of `%s` needs its own comparison.",
+                        TYPE_DID_MEAN_EACH_OPERAND_NEEDS,
                         strings.to_string(b), op_word)
                 }
             }
         }
         if _, ok := right_type.(Type_Bool); !ok && !is_any(right_type) {
-            check_error(c, e.span, "right operand of '%s' must be bool, got %s",
+            check_error(c, e.span, TYPE_RIGHT_OPERAND_BOOL,
                 op_word, type_name(right_type))
         }
         return Type_Bool{}
@@ -10072,7 +10072,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
             left_composite := is_composite(left_type)
             right_composite := is_composite(right_type)
             if left_composite || right_composite {
-                check_error(c, e.span, "cannot compare %s with %s using '%s'",
+                check_error(c, e.span, TYPE_CANNOT_COMPARE_USING,
                     type_name(left_type), type_name(right_type),
                     e.op == .Equal_Equal ? "==" : "!=")
             }
@@ -10085,10 +10085,10 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
 
     case .Less, .Less_Equal, .Greater, .Greater_Equal:
         if !is_numeric(left_type) {
-            check_error(c, e.span, "left operand of comparison must be numeric, got %s", type_name(left_type))
+            check_error(c, e.span, TYPE_LEFT_OPERAND_COMPARISON_NUMERIC, type_name(left_type))
         }
         if !is_numeric(right_type) {
-            check_error(c, e.span, "right operand of comparison must be numeric, got %s", type_name(right_type))
+            check_error(c, e.span, TYPE_RIGHT_OPERAND_COMPARISON_NUMERIC, type_name(right_type))
         }
         // Require matching types (infer literals adopt the concrete side)
         if is_numeric(left_type) && is_numeric(right_type) {
@@ -10099,7 +10099,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
     case .Plus:
         // Numeric addition
         if !is_numeric(left_type) || !is_numeric(right_type) {
-            check_error(c, e.span, "mismatched types for '+': %s and %s - did you forget to import the package that defines the overload?",
+            check_error(c, e.span, TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT,
                 type_name(left_type), type_name(right_type))
             return Type_Error{}
         }
@@ -10108,7 +10108,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
     case .Minus, .Star, .Slash, .Modulo:
         if !is_numeric(left_type) || !is_numeric(right_type) {
             op_sym := e.op == .Minus ? "-" : e.op == .Star ? "*" : e.op == .Slash ? "/" : "%%"
-            check_error(c, e.span, "mismatched types for '%s': %s and %s - did you forget to import the package that defines the overload?",
+            check_error(c, e.span, TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT_2,
                 op_sym, type_name(left_type), type_name(right_type))
             return Type_Error{}
         }
@@ -10116,11 +10116,11 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
 
     case .Ampersand, .Pipe, .Tilde, .Shift_Left, .Shift_Right:
         if !is_integer(left_type) && !is_any(left_type) {
-            check_error(c, e.span, "bitwise operators require integer operands, got %s", type_name(left_type))
+            check_error(c, e.span, TYPE_BITWISE_OPERATORS_REQUIRE_INTEGER_OPERANDS, type_name(left_type))
             return Type_Error{}
         }
         if !is_integer(right_type) && !is_any(right_type) {
-            check_error(c, e.span, "bitwise operators require integer operands, got %s", type_name(right_type))
+            check_error(c, e.span, TYPE_BITWISE_OPERATORS_REQUIRE_INTEGER_OPERANDS, type_name(right_type))
             return Type_Error{}
         }
         return coerce_infer_to_hint(promote_numeric(c, left_type, right_type, e.span), hint)
@@ -10171,7 +10171,7 @@ promote_numeric :: proc(c: ^Checker, a: Type, b: Type, span: Span) -> Type {
     // Both concrete: require exact match
     if types_equal(a, b) { return a }
 
-    check_error(c, span, "mismatched types in arithmetic: %s and %s (use an explicit cast)",
+    check_error(c, span, TYPE_MISMATCHED_TYPES_ARITHMETIC_USE_EXPLICIT,
         type_name(a), type_name(b))
     return Type_Error{}
 }
@@ -10211,7 +10211,7 @@ substitute_underscore_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_S
         if !id_ok || ident.name != "_" { continue }
         def := fun_type.params[param_idx].default_value
         if def == nil {
-            check_error(c, e.span, "argument %d of '%s': '_' requires a default value, but parameter '%s' has none",
+            check_error(c, e.span, TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER,
                 i + 1, display_name, fun_type.params[param_idx].name)
             continue
         }
@@ -10271,7 +10271,7 @@ is_vla_shape :: proc(t: Type) -> bool {
 check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, display_name: string, span: Span, env: ^Type_Env) {
     required := count_required_params(fun_type)
     if len(args) < required || len(args) > len(fun_type.params) {
-        check_error(c, span, "'%s' expects %d args, got %d", display_name, len(fun_type.params), len(args))
+        check_error(c, span, TYPE_EXPECTS_ARGS, display_name, len(fun_type.params), len(args))
     } else {
         for arg, i in args {
             // Hand the parameter type down so bare variant idents like
@@ -10279,7 +10279,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             c.expected_hint = fun_type.params[i].type_
             arg_type := check_expr(c, arg, env)
             if types_incompatible(fun_type.params[i].type_, arg_type) {
-                check_error(c, span, "argument %d of '%s': expected %s, got %s",
+                check_error(c, span, TYPE_ARGUMENT_EXPECTED,
                     i + 1, display_name, type_name(fun_type.params[i].type_), type_name(arg_type))
             }
             maybe_stamp_byte_view(c, fun_type.params[i].type_, arg)
@@ -10294,7 +10294,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             // a runtime bug.
             if is_vla_shape(arg_type) && !fun_type.params[i].is_var {
                 check_error(c, span,
-                    "argument %d of '%s': value has VLA-shaped type %s; mark the parameter `var` to accept runtime-sized instantiations",
+                    TYPE_ARGUMENT_VALUE_VLA_SHAPED_TYPE,
                     i + 1, display_name, type_name(arg_type))
             }
         }
@@ -10361,7 +10361,7 @@ resolve_qualified_call :: proc(
                             _, qual_is_ptr := qual_type.(^Type_Ptr)
                             if first_param_wants_ptr && !qual_is_ptr {
                                 check_error(c, e.span,
-                                    "method '%s' requires a pointer receiver — take an address with `&` (or use a `^%s` local) before calling",
+                                    TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE,
                                     e.name, qual_sd.name)
                                 e.qualifier = nil
                                 return nil, nil, nil, true
@@ -10393,7 +10393,7 @@ resolve_qualified_call :: proc(
                     qual_dispatch_fns = fns
                     resolved_assoc = true
                 } else if qual_sd.scope != nil {
-                    check_error(c, e.span, "module '%s' has no function '%s'", qual_sd.name, e.name)
+                    check_error(c, e.span, TYPE_MODULE_FUNCTION, qual_sd.name, e.name)
                     return nil, nil, nil, true
                 }
             }
@@ -10453,7 +10453,7 @@ resolve_qualified_call :: proc(
                     _, qual_is_ptr := qual_type.(^Type_Ptr)
                     if first_param_wants_ptr && !qual_is_ptr {
                         check_error(c, e.span,
-                            "method '%s' requires a pointer receiver — take an address with `&` (or use a `^%s` local) before calling",
+                            TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE,
                             e.name, assoc_st.name)
                         e.qualifier = nil
                         return nil, nil, nil, true
@@ -10574,7 +10574,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
                 append(&type_strs, type_name(at))
             }
         }
-        check_error(c, e.span, "no matching function in dispatch group '%s' for argument types (%s)",
+        check_error(c, e.span, TYPE_MATCHING_FUNCTION_DISPATCH_GROUP_ARGUMENT,
             e.name, strings.join(type_strs[:], ", "))
         return Type_Error{}
     }
@@ -10584,7 +10584,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         // trailing-default overload overlaps an exact-arity overload. Mara
         // doesn't pick a winner; the user disambiguates by supplying the
         // distinguishing arg explicitly or removing the default.
-        check_error(c, e.span, "ambiguous dispatch '%s' — matches multiple overloads: %s",
+        check_error(c, e.span, TYPE_AMBIGUOUS_DISPATCH_MATCHES_MULTIPLE_OVERLOADS,
             e.name, strings.join(matched_fns[:], ", "))
         return Type_Error{}
     }
@@ -10698,7 +10698,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     } else {
         fun_type_raw, ok := type_env_get(env, e.name)
         if !ok {
-            check_error(c, e.span, "undefined function '%s'", e.name)
+            check_error(c, e.span, TYPE_UNDEFINED_FUNCTION, e.name)
             for arg in check_args {
                 check_expr(c, arg, env)
             }
@@ -10713,7 +10713,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
         // type) — the distinct-ness is purely a type-system identity.
         if dt, is_distinct := fun_type_raw.(^Type_Distinct); is_distinct {
             if len(check_args) != 1 {
-                check_error(c, e.span, "%s() expects 1 argument, got %d", e.name, len(check_args))
+                check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, e.name, len(check_args))
                 return Type_Error{}
             }
             saved_hint := c.expected_hint
@@ -10723,7 +10723,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
             if !is_any(arg_type) && !is_infer(arg_type) {
                 if types_incompatible(dt.base_type, arg_type) {
                     check_error(c, e.span,
-                        "cannot construct %s from %s; underlying type is %s",
+                        TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE,
                         e.name, type_name(arg_type), type_name(dt.base_type))
                 }
             }
@@ -10734,7 +10734,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 
         fun_type, fun_ok = fun_type_raw.(^Type_Scope)
         if !fun_ok {
-            check_error(c, e.span, "'%s' is not a function", e.name)
+            check_error(c, e.span, TYPE_FUNCTION, e.name)
             return Type_Error{}
         }
     }
@@ -10754,7 +10754,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
             home, home_ok, ambiguous_owners := resolve_fn_home_with_ambiguity(c, env, e.name)
             if !home_ok && len(ambiguous_owners) > 1 {
                 owner_list := strings.join(ambiguous_owners[:], ", ")
-                check_error(c, e.span, "function '%s' is ambiguous (defined in: %s). Use a qualified call (e.g. `%s.%s(...)`) or seal one of the includes.", e.name, owner_list, ambiguous_owners[0], e.name)
+                check_error(c, e.span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, e.name, owner_list, ambiguous_owners[0], e.name)
                 return Type_Error{}
             }
             flat := make_flat_name(home, e.name)
@@ -10808,7 +10808,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     }
 
     if e.overrides != nil {
-        check_error(c, e.span, "'%s' field-override block is only valid on struct construction", e.name)
+        check_error(c, e.span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, e.name)
     }
     return fun_type.return_type
 }
@@ -10843,7 +10843,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
         if !id_ok || ident.name != "_" { continue }
         def := st.fields[i].default_value
         if def == nil {
-            check_error(c, e.span, "argument %d of '%s': '_' requires a default value, but field '%s' has none",
+            check_error(c, e.span, TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_FIELD,
                 i + 1, st.name, st.fields[i].name)
             continue
         }
@@ -10862,9 +10862,9 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
         if f.default_value == nil { num_required += 1 }
     }
     if len(e.args) > len(st.fields) {
-        check_error(c, e.span, "'%s' has %d field(s), got %d argument(s)", st.name, len(st.fields), len(e.args))
+        check_error(c, e.span, TYPE_FIELD_ARGUMENT, st.name, len(st.fields), len(e.args))
     } else if len(e.args) < num_required {
-        check_error(c, e.span, "'%s' requires at least %d argument(s), got %d", st.name, num_required, len(e.args))
+        check_error(c, e.span, TYPE_REQUIRES_LEAST_ARGUMENT, st.name, num_required, len(e.args))
     }
     for arg, i in e.args {
         if i < len(st.fields) {
@@ -10874,7 +10874,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
         if i < len(st.fields) {
             field := st.fields[i]
             if types_incompatible(field.type_, arg_type) && !is_any(arg_type) {
-                check_error(c, e.span, "field '%s': expected %s, got %s",
+                check_error(c, e.span, TYPE_FIELD_EXPECTED,
                     field.name, type_name(field.type_), type_name(arg_type))
             }
         }
@@ -10898,7 +10898,7 @@ check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Env) -> Type
     for i := 1; i < len(e.elements); i += 1 {
         et := check_expr(c, e.elements[i], env)
         if types_incompatible(elem_type, et) {
-            check_error(c, e.span, "array element %d has type %s, expected %s",
+            check_error(c, e.span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED,
                 i, type_name(et), type_name(elem_type))
         }
     }
@@ -10928,7 +10928,7 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
     idx_type := check_expr(c, e.index, env)
 
     if !is_numeric(idx_type) {
-        check_error(c, e.span, "index must be a number, got %s", type_name(idx_type))
+        check_error(c, e.span, TYPE_INDEX_NUMBER, type_name(idx_type))
     }
 
     // Array indexing returns element type
@@ -10949,7 +10949,7 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
     }
 
     if !is_any(target_type) {
-        check_error(c, e.span, "cannot index into %s", type_name(target_type))
+        check_error(c, e.span, TYPE_CANNOT_INDEX_INTO, type_name(target_type))
     }
     return Type_Error{}
 }
@@ -10973,7 +10973,7 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Env) -> Type {
     } else if pa, ok := target_type.(^Type_Partial_Array); ok {
         elem_type = pa.elem
     } else if !is_any(target_type) {
-        check_error(c, e.span, "cannot slice %s", type_name(target_type))
+        check_error(c, e.span, TYPE_CANNOT_SLICE, type_name(target_type))
         return Type_Error{}
     }
 
@@ -10981,13 +10981,13 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Env) -> Type {
     if e.low != nil {
         lt := check_expr(c, e.low, env)
         if !is_numeric(lt) && !is_any(lt) {
-            check_error(c, e.span, "slice low bound must be numeric, got %s", type_name(lt))
+            check_error(c, e.span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
         }
     }
     if e.high != nil {
         ht := check_expr(c, e.high, env)
         if !is_numeric(ht) && !is_any(ht) {
-            check_error(c, e.span, "slice high bound must be numeric, got %s", type_name(ht))
+            check_error(c, e.span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
         }
     }
 

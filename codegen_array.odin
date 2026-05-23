@@ -239,7 +239,7 @@ gen_array_copy_expr :: proc(g: ^Codegen, name: string, value: Expr) {
         }
         src, src_ok := get_array(g, ident.name)
         if !src_ok {
-            codegen_fatal(g, ident.span, "'%s' is not an array", ident.name)
+            codegen_fatal(g, ident.span, CODE_ARRAY, ident.name)
         }
         dst, _ := get_array(g, name)
 
@@ -350,7 +350,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     // VLAs GEP by element type directly (no [N x T] wrapper).
     ident, ident_ok := ix.expr.(^Expr_Ident)
     if !ident_ok {
-        codegen_fatal(g, s.span, "index assignment target must be a variable")
+        codegen_fatal(g, s.span, CODE_INDEX_ASSIGNMENT_TARGET_VARIABLE)
     }
     // Slice element write: load the data ptr from the slice header, bounds
     // check against the len cursor, GEP, store. Lets `add_element` and other
@@ -385,7 +385,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     }
     av, av_ok := get_array(g, ident.name)
     if !av_ok {
-        codegen_fatal(g, s.span, "'%s' is not an array", ident.name)
+        codegen_fatal(g, s.span, CODE_ARRAY, ident.name)
     }
     idx_raw := gen_expr(g, ix.index)
     idx := ensure_i64(g, idx_raw, ix.index)
@@ -443,7 +443,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             }
         }
         if !dst_resolved {
-            codegen_fatal(g, s.span, "slice assignment target must be a variable")
+            codegen_fatal(g, s.span, CODE_SLICE_ASSIGNMENT_TARGET_VARIABLE)
         }
     }
 
@@ -475,7 +475,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if !dst_resolved && ident_ok {
         av, av_ok := get_array(g, ident.name)
         if !av_ok {
-            codegen_fatal(g, s.span, "'%s' is not an array, array class, or slice", ident.name)
+            codegen_fatal(g, s.span, CODE_ARRAY_ARRAY_CLASS_SLICE, ident.name)
         }
         dst_data_ptr    = av.alloca
         dst_capacity  = av.capacity
@@ -520,7 +520,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             emit_typed_load_len(g, rhs_slice_len, len_gep)
         }
         if !rhs_resolved {
-            codegen_fatal(g, s.span, "'%s' is not an array or slice", rv.name)
+            codegen_fatal(g, s.span, CODE_ARRAY_SLICE, rv.name)
         }
     case ^Expr_Array:
         // Give each literal a unique temp name so multiple slice assigns don't collide
@@ -532,7 +532,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         rhs_resolved = true
     }
     if !rhs_resolved {
-        codegen_fatal(g, s.span, "slice RHS must be a named array, slice, or array literal")
+        codegen_fatal(g, s.span, CODE_SLICE_RHS_NAMED_ARRAY_SLICE)
     }
 
     // Compute high — explicit or derived from RHS length for open-ended [low:]
@@ -685,7 +685,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
                 return val
             }
         }
-        codegen_fatal(g, e.span, "index target must be a variable")
+        codegen_fatal(g, e.span, CODE_INDEX_TARGET_VARIABLE)
     }
 
     // Check if it's a slice variable
@@ -695,7 +695,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
 
     av, av_ok := get_array(g, ident.name)
     if !av_ok {
-        codegen_fatal(g, e.span, "'%s' is not an array or slice", ident.name)
+        codegen_fatal(g, e.span, CODE_ARRAY_SLICE, ident.name)
     }
 
     idx_raw := gen_expr(g, e.index)
@@ -781,7 +781,7 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
         }
     }
 
-    codegen_fatal(g, e.span, "cannot take address of this index expression")
+    codegen_fatal(g, e.span, CODE_CANNOT_TAKE_ADDRESS_INDEX_EXPRESSION)
 }
 
 // ---------------------------------------------------------------------------
@@ -858,7 +858,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
                     }
                 }
             }
-            codegen_fatal(g, e.span, "positional take requires a &buf[i] source (byte slice or [N]byte) so the carve can be bounds-checked")
+            codegen_fatal(g, e.span, CODE_POSITIONAL_TAKE_REQUIRES_BUF_SOURCE)
         }
     }
 
@@ -880,11 +880,11 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
         name = id.name
     }
     if name == "" {
-        codegen_fatal(g, e.span, "take's storage must be &slice_var or a slice-pointer parameter")
+        codegen_fatal(g, e.span, CODE_TAKE_STORAGE_SLICE_VAR_SLICE)
     }
     sv, sv_ok := get_slice(g, name)
     if !sv_ok {
-        codegen_fatal(g, e.span, "take: '%s' is not a slice variable", name)
+        codegen_fatal(g, e.span, CODE_TAKE_SLICE_VARIABLE, name)
     }
 
     // Load storage's data pointer (field 0).
@@ -1068,7 +1068,7 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
             source = av
         }
     } else {
-        codegen_fatal(g, e.span, "slice target must be a variable")
+        codegen_fatal(g, e.span, CODE_SLICE_TARGET_VARIABLE)
     }
 
     // Resolve start index
@@ -1129,7 +1129,7 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         return emit_build_temp_slice(g, new_data, new_cap, new_cap)
     }
 
-    codegen_fatal(g, e.span, "slice target is not an array or slice")
+    codegen_fatal(g, e.span, CODE_SLICE_TARGET_ARRAY_SLICE)
 }
 
 // Assign a slice expression to an inferred-type variable: x := arr[1:3]
@@ -1428,7 +1428,7 @@ emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, siz
 gen_byte_view_address :: proc(g: ^Codegen, idx: ^Expr_Index, target_size: int) -> string {
     elem_ptr, ok := emit_byte_offset_ptr(g, idx.expr, idx.index, target_size, "view", idx.span)
     if !ok {
-        codegen_fatal(g, idx.span, "byte view source must be a byte slice or [N]byte")
+        codegen_fatal(g, idx.span, CODE_BYTE_VIEW_SOURCE_BYTE_SLICE)
     }
     return elem_ptr
 }
@@ -1473,7 +1473,7 @@ gen_byte_target_write :: proc(g: ^Codegen, s: ^Stmt_Assign, buf_expr: Expr, offs
 
     elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, val_size, "write", s.span)
     if !ok {
-        codegen_fatal(g, s.span, "byte buffer write target must be a byte slice or [N]byte")
+        codegen_fatal(g, s.span, CODE_BYTE_BUFFER_WRITE_TARGET_BYTE)
     }
 
     if sd := as_struct_body(val_type); sd != nil {
@@ -1498,7 +1498,7 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
 
     elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, target_size, "read", span)
     if !ok {
-        codegen_fatal(g, span, "byte buffer read source must be a byte slice or [N]byte")
+        codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
 
     alloca_name := fmt.tprintf("%%%s", name)
@@ -1525,7 +1525,7 @@ gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: strin
     field_size := checker_type_byte_size(f.type_)
     elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, field_size, "read", span)
     if !ok {
-        codegen_fatal(g, span, "byte buffer read source must be a byte slice or [N]byte")
+        codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
     gep := fresh_tmp(g)
     emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)

@@ -111,7 +111,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 }
                 return ir_name
             }
-            codegen_fatal(g, e.span, "undefined variable '%s'", e.name)
+            codegen_fatal(g, e.span, CODE_UNDEFINED_VARIABLE, e.name)
         }
         tmp := fresh_tmp(g)
         ir_type := "i64"
@@ -160,7 +160,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 }
                 return gen_index_address(g, idx)
             }
-            codegen_fatal(g, e.span, "cannot take address of this expression")
+            codegen_fatal(g, e.span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
         case .Caret:
             // Dereference: load through pointer
             ptr_val := gen_expr(g, e.operand)
@@ -361,7 +361,7 @@ gen_tuple_default :: proc(g: ^Codegen, e: ^Expr_Tuple_Default) -> string {
         g.tuple_default_cache[src_key] = entry
     }
     if e.index < 0 || e.index >= len(entry.ptrs) {
-        codegen_fatal(g, e.span, "tuple-default index %d out of range", e.index)
+        codegen_fatal(g, e.span, CODE_TUPLE_DEFAULT_INDEX_OUT_RANGE, e.index)
     }
     val := fresh_tmp(g)
     emit(g, "  %s = load %s, ptr %s", val, entry.types[e.index], entry.ptrs[e.index])
@@ -1193,7 +1193,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         return tmp
     }
 
-    codegen_fatal(g, e.span, "call to unknown function '%s' — no fun_info and no function-pointer variable", lookup_name)
+    codegen_fatal(g, e.span, CODE_CALL_UNKNOWN_FUNCTION_FUN_INFO, lookup_name)
 }
 
 // Emit a foreign (.C convention) function call. Applies platform ABI lowering
@@ -1613,7 +1613,7 @@ gen_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Expr, call_span: 
             }
             flush(g, &seg_buf)
             if arg_idx >= len(args) {
-                codegen_fatal(g, call_span, "format string has more `%%` placeholders than args")
+                codegen_fatal(g, call_span, CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN)
             }
             emit_print_arg(g, args[arg_idx])
             arg_idx += 1
@@ -1960,7 +1960,7 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
         gen_expr(g, expr)
         cf, cf_ok := claim_field_array(g)
         if !cf_ok {
-            codegen_fatal(g, {}, "print: array expression did not resolve to an Array_Var")
+            codegen_fatal(g, {}, CODE_PRINT_ARRAY_EXPRESSION_DID_RESOLVE)
         }
         av = cf
     }

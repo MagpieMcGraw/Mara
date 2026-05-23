@@ -1688,7 +1688,7 @@ ensure_i64 :: proc(g: ^Codegen, val: string, expr: Expr) -> string {
         emit(g, "  %s = sext %s %s to i64", ext, ir, val)
         return ext
     }
-    codegen_fatal(g, {}, "ensure_i64: unexpected IR type '%s'", ir)
+    codegen_fatal(g, {}, CODE_ENSURE_I64_UNEXPECTED_IR_TYPE, ir)
 }
 
 // Emit an LLVM type conversion between scalar types.
@@ -1731,7 +1731,7 @@ emit_type_convert :: proc(g: ^Codegen, val: string, from: string, to: string) ->
     } else if is_int(from) && is_float(to) {
         emit(g, "  %s = sitofp %s %s to %s", conv, from, val, to)
     } else {
-        codegen_fatal(g, {}, "emit_type_convert: unsupported scalar conversion '%s' -> '%s'", from, to)
+        codegen_fatal(g, {}, CODE_EMIT_TYPE_CONVERT_UNSUPPORTED_SCALAR, from, to)
     }
     return conv
 }
@@ -2180,9 +2180,9 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     if g.arena_alloc_name == "" {
         if g.shared {
             codegen_fatal(g, {},
-                "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `program = Program(ArenaType(<args>))` somewhere in this module to specify the Context layout (must match the host's allocator type)")
+                CODE_DLL_EXPOSE_FN_USES_ARENA)
         }
-        codegen_fatal(g, {}, "arena allocation requested but no scope_allocator declared")
+        codegen_fatal(g, {}, CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR)
     }
     arena_ptr := get_context_arena_ptr(g)
     // Alloca for the sret slice result { ptr, i64 }

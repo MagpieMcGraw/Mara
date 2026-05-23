@@ -248,7 +248,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         coll_fa = fa
     }
     if coll_name == "" && coll_fa == nil {
-        codegen_fatal(g, s.span, "collection-for requires an identifier or field access")
+        codegen_fatal(g, s.span, CODE_COLLECTION_REQUIRES_IDENTIFIER_FIELD_ACCESS)
     }
 
     // Resolve data pointer, length, and element IR type from the collection variable
@@ -312,7 +312,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         length_val = len_val
         elem_ir = sv.elem_type
     } else {
-        codegen_fatal(g, s.span, "unknown collection variable '%s'", coll_name)
+        codegen_fatal(g, s.span, CODE_UNKNOWN_COLLECTION_VARIABLE, coll_name)
     }
 
     // Alloca index variable, init to 0

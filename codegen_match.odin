@@ -16,7 +16,7 @@ gen_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
             gen_union_match(g, s, ut, union_ptr)
             return
         }
-        codegen_fatal(g, s.span, "cannot match on this kind of union expression")
+        codegen_fatal(g, s.span, CODE_CANNOT_MATCH_KIND_UNION_EXPRESSION)
     }
     // Namespace-form match: subject is a struct. Arms are bool predicates
     // already type-checked; lower as a chain of independent test+branches.
