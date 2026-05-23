@@ -467,6 +467,7 @@ TYPE_DISPATCH_GROUP_FUNCTION_DEFINED :: "dispatch group '%s': function '%s' not 
 TYPE_OVERLOAD_DISPATCH_GROUP :: "overload: '%s' is not a dispatch group"
 TYPE_CANNOT_ASSIGN_CONSTANT_TYPE :: "cannot assign %s to constant '%s' of type %s"
 TYPE_CANNOT_WRITE_INDEXED_CONSTANT :: "cannot write through `::` constant '%s' — the value lives in read-only memory. Declare it as a variable (`%s := ...`) if you need to mutate it"
+TYPE_INDEX_OUT_OF_BOUNDS_CONST :: "index %d out of bounds — array has %d elements (valid indices 0..%d)"
 TYPE_CLASS_FIELDS_POSITIONAL_VALUES :: "class '%s' has %d fields, got %d positional values"
 TYPE_FIELD_POSITION_EXPECTED :: "field '%s' (position %d): expected %s, got %s"
 TYPE_FIELD_EXPECTED :: "field '%s': expected %s, got %s"

@@ -10948,6 +10948,19 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
 
     // Array indexing returns element type
     if fa, ok := target_type.(^Type_Fixed_Array); ok {
+        // Compile-time bounds check when we have both pieces — the
+        // array's visible size is fa.size (sentinel slot, if any, is
+        // not addressable), and a literal/const index folds via
+        // evaluate_comptime_int. Lets `s := "hello"; s[5]` be a
+        // compile error instead of a runtime trap.
+        if !fa.is_vla {
+            if idx_val, idx_ok := evaluate_comptime_int(c, e.index); idx_ok {
+                if idx_val < 0 || idx_val >= i64(fa.size) {
+                    check_error(c, e.span, TYPE_INDEX_OUT_OF_BOUNDS_CONST,
+                        idx_val, fa.size, fa.size - 1)
+                }
+            }
+        }
         return fa.elem
     }
 
