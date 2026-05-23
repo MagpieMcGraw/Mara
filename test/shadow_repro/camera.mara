@@ -1,5 +1,6 @@
 module camera
 
-Camera :: struct {
-    fov: f32
+Camera :: class(w, h, fovy : f32) {
+    window_w, window_h := w, h
+    fov_y := fovy
 }

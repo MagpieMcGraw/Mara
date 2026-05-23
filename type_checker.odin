@@ -3350,6 +3350,56 @@ types_incompatible :: proc(a: Type, b: Type) -> bool {
 // Idempotent — after the first run the args are Type_Name, so re-running
 // is a no-op. Multiple shape-constrained slots stack their bindings into
 // one literal.
+// `field: ClassName(args)` where ClassName is a non-generic class (Type_Scope
+// with kind=.Struct and constructor params) is parsed as Type_Generic_Instance
+// because the parser is greedy about `Name(args)`. Rewrite to
+// `field: ClassName = ClassName(args)` so the args become the constructor call
+// at initialization. Idempotent: subsequent invocations see Type_Name and bail.
+desugar_class_ctor_in_decl :: proc(c: ^Checker, s: ^Stmt_Decl, env: ^Type_Env) {
+    if c == nil || env == nil { return }
+    if len(s.init_values) != 0 { return }
+    gi, gi_ok := s.type_expr.(^Type_Generic_Instance)
+    if !gi_ok { return }
+    // Skip when the name is actually a generic template.
+    if _, is_generic := c.table.generic_templates[gi.name]; is_generic { return }
+    // Resolve the bare name through env (includes / aliases / nested types).
+    t, found := type_env_get(env, gi.name)
+    if !found { return }
+    class_ft, ok := t.(^Type_Scope)
+    if !ok || class_ft.kind != .Struct || len(class_ft.params) == 0 { return }
+
+    // Build the constructor-call expression from the type-args, which the
+    // parser stores as Type_Const_Value / Type_Const_Expr / Type_Name.
+    call := new(Expr_Call)
+    call.name = gi.name
+    call.span = gi.span
+    for arg in gi.type_args {
+        if cv, cv_ok := arg.(Type_Const_Value); cv_ok {
+            num := new(Expr_Number)
+            num.int_value = i128(cv.value)
+            num.value = f64(cv.value)
+            num.span = cv.span
+            append(&call.args, Expr(num))
+        } else if ce, ce_ok := arg.(Type_Const_Expr); ce_ok {
+            append(&call.args, ce.expr)
+        } else if tn, tn_ok := arg.(Type_Name); tn_ok {
+            ident := new(Expr_Ident)
+            ident.name = tn.name
+            ident.span = tn.span
+            append(&call.args, Expr(ident))
+        } else {
+            // Unhandled arg shape — leave the decl alone, let the normal
+            // resolver emit its own diagnostic.
+            return
+        }
+    }
+
+    s.type_expr = Type_Name{name = gi.name, span = gi.span}
+    for _ in s.names {
+        append(&s.init_values, Expr(call))
+    }
+}
+
 desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
     if c == nil { return }
     if len(s.init_values) != 0 { return }
@@ -6168,9 +6218,15 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // field-resolution loop below — that loop resolves each Stmt_Decl's
     // type_expr and would otherwise hit the un-desugared Type_Const_Expr
     // and fail the shape-constraint check with a "got vla" diagnostic.
+    //
+    // Class-ctor-in-field pre-pass: rewrite `field: ClassName(args)` to
+    // `field: ClassName = ClassName(args)` when ClassName is a non-generic
+    // class. Same reason — runs before resolve_type_expr emits an "unknown
+    // generic type" error for what the user meant as a constructor call.
     for stmt in s.body {
         if d, ok := stmt.(^Stmt_Decl); ok {
             desugar_shape_shortcut(c, d)
+            desugar_class_ctor_in_decl(c, d, &child)
         }
     }
 
