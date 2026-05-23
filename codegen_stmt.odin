@@ -1073,6 +1073,21 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         } else {
             gen_call(g, call)
         }
+    } else if sl, sl_ok := arr_ret_val.(^Expr_Struct_Literal); sl_ok {
+        // Case D: returning a distinct-fixed-array literal like
+        // `F64x8{a, b, c, ...}` or `Vec3{x, y, z}`. The type checker has
+        // already filled in `array_values` (resolving swizzle-name forms
+        // like `Quat{w = 1}` into positional slots), so each element is
+        // just a GEP+store into sret. Without this case the return was
+        // silently emitting `ret void` with no writes — every distinct-
+        // array literal return produced uninitialized output.
+        for elem, i in sl.array_values {
+            if elem == nil { continue }   // nil slot — leave as zero
+            val := gen_expr(g, elem, sret_av.elem_type)
+            gep := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, sret_type, sret_av.alloca, i)
+            emit(g, "  store %s %s, ptr %s", sret_av.elem_type, val, gep)
+        }
     }
     emit_ret_void(g)
 }

@@ -31,31 +31,28 @@ add :: dispatch { f64x8_add }
 sub :: dispatch { f64x8_sub }
 
 f64x8_mul :: fun(a: F64x8, b: F64x8) -> F64x8 {
-	r : F64x8
-	r[0] = a[0]*b[0]; r[1] = a[1]*b[1]; r[2] = a[2]*b[2]; r[3] = a[3]*b[3]
-	r[4] = a[4]*b[4]; r[5] = a[5]*b[5]; r[6] = a[6]*b[6]; r[7] = a[7]*b[7]
-	return r
+	return F64x8{
+		a[0]*b[0], a[1]*b[1], a[2]*b[2], a[3]*b[3],
+		a[4]*b[4], a[5]*b[5], a[6]*b[6], a[7]*b[7],
+	}
 }
 
 f64x8_add :: fun(a: F64x8, b: F64x8) -> F64x8 {
-	r : F64x8
-	r[0] = a[0]+b[0]; r[1] = a[1]+b[1]; r[2] = a[2]+b[2]; r[3] = a[3]+b[3]
-	r[4] = a[4]+b[4]; r[5] = a[5]+b[5]; r[6] = a[6]+b[6]; r[7] = a[7]+b[7]
-	return r
+	return F64x8{
+		a[0]+b[0], a[1]+b[1], a[2]+b[2], a[3]+b[3],
+		a[4]+b[4], a[5]+b[5], a[6]+b[6], a[7]+b[7],
+	}
 }
 
 f64x8_sub :: fun(a: F64x8, b: F64x8) -> F64x8 {
-	r : F64x8
-	r[0] = a[0]-b[0]; r[1] = a[1]-b[1]; r[2] = a[2]-b[2]; r[3] = a[3]-b[3]
-	r[4] = a[4]-b[4]; r[5] = a[5]-b[5]; r[6] = a[6]-b[6]; r[7] = a[7]-b[7]
-	return r
+	return F64x8{
+		a[0]-b[0], a[1]-b[1], a[2]-b[2], a[3]-b[3],
+		a[4]-b[4], a[5]-b[5], a[6]-b[6], a[7]-b[7],
+	}
 }
 
 f64x8_splat :: fun(v: f64) -> F64x8 {
-	r : F64x8
-	r[0] = v; r[1] = v; r[2] = v; r[3] = v
-	r[4] = v; r[5] = v; r[6] = v; r[7] = v
-	return r
+	return F64x8{v, v, v, v, v, v, v, v}
 }
 
 all_diverged :: fun(z: F64x8) -> bool {
