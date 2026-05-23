@@ -11,7 +11,11 @@ GRADIENT_LEN :: 13
 
 main :: fun() {
 	// 13 glyphs + null terminator; index 0..GRADIENT_LEN, never reach the null.
-	gradient : [14]utf8 = " .,-~:;=!*#$@"
+	gradient := " .,-~:;=!*#$@"
+	for char, i in gradient {print(i)}
+	print(gradient[13])
+
+
 	for py in 0..HEIGHT {
 		row : [WIDTH]utf8
 		for px in 0..WIDTH {
