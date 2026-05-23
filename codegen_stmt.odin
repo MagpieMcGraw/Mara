@@ -812,9 +812,24 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
             continue
         }
 
-        // Bare identifier target
-        if existing, ok := get_scalar(g, name); ok {
-            emit(g, "  store %s %s, ptr %s", elem_type, val, existing)
+        // Bare identifier target. Honor any pre-bound entry — struct
+        // constructors bind every field to its %sret GEP at function entry,
+        // and named return bindings bind their alloca too. Without this,
+        // an existing Array_Var (Mat4 field, etc.) or Slice_Var falls
+        // through to a fresh local alloca and the store-back never reaches
+        // the caller's slot. Mirrors the Struct_Var handling above.
+        target_ptr := ""
+        if existing, ok := g.all_vars[name]; ok {
+            switch v in existing {
+            case Scalar_Var: target_ptr = v.alloca
+            case Array_Var:  target_ptr = v.alloca
+            case Slice_Var:  target_ptr = v.alloca
+            case Struct_Var: target_ptr = v.alloca
+            case Union_Var:  target_ptr = v.alloca
+            }
+        }
+        if target_ptr != "" {
+            emit(g, "  store %s %s, ptr %s", elem_type, val, target_ptr)
         } else {
             alloca_name := fmt.tprintf("%%%s", name)
             emit(g, "  %s = alloca %s", alloca_name, elem_type)
