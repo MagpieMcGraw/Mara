@@ -1431,7 +1431,26 @@ check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
 // Only applies to Type_Scope with kind=.Struct and params (i.e. classes with ctor args).
 // Pure data structs (kind=.Struct, no params) and callable funs aren't affected.
 check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, field_type: Type) {
-    class_ft, ok := field_type.(^Type_Scope)
+    // Walk through fixed-array and partial-array layers: `[6]Camera` and
+    // `[..6]Camera` need the same check as bare `Camera` — every element
+    // requires construction, and the array can't bulk-default-construct.
+    elem_type := field_type
+    is_array := false
+    for {
+        base := distinct_base(elem_type)
+        if fa, ok := base.(^Type_Fixed_Array); ok {
+            elem_type = fa.elem
+            is_array = true
+            continue
+        }
+        if pa, ok := base.(^Type_Partial_Array); ok {
+            elem_type = pa.elem
+            is_array = true
+            continue
+        }
+        break
+    }
+    class_ft, ok := elem_type.(^Type_Scope)
     if !ok || class_ft.kind != .Struct { return }
     if len(class_ft.params) == 0 { return }
     for p in class_ft.params {
@@ -1452,9 +1471,15 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
             }
             strings.write_string(&sig, ")")
 
-            check_error(c, span,
-                "'%s' of type '%s' is self-constructing — call it like a function with the required arguments. Definition: %s. Try: '%s : %s = %s(...)'",
-                name, class_ft.name, strings.to_string(sig), name, class_ft.name, class_ft.name)
+            if is_array {
+                check_error(c, span,
+                    "'%s' is an array of '%s' (self-constructing, no defaults for required args). The array can't be bulk-default-initialized. Definition: %s. Provide a full initializer, or opt out of the check with '%s = ---' (uninitialized memory — initialize each element before reading).",
+                    name, class_ft.name, strings.to_string(sig), name)
+            } else {
+                check_error(c, span,
+                    "'%s' of type '%s' is self-constructing — call it like a function with the required arguments. Definition: %s. Try: '%s : %s = %s(...)'",
+                    name, class_ft.name, strings.to_string(sig), name, class_ft.name, class_ft.name)
+            }
             return
         }
     }

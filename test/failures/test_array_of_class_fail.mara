@@ -1,0 +1,18 @@
+module test_array_of_class_fail
+
+// A struct field that's an array of a class with required ctor params has
+// no way to bulk-default-initialize. Reject the bare form; the user must
+// opt out explicitly with `= ---` (or initialize the whole array).
+
+Camera :: class(w, h, fovy : f32) {
+    fov_x : f32
+}
+
+Game :: struct {
+    cameras : [6]Camera
+}
+
+main :: fun() -> i64 {
+    g : Game
+    return i64(g.cameras[0].fov_x)
+}

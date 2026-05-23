@@ -1,14 +1,30 @@
 module shadow_repro
 
+// Regression for three issues this session:
+//   1. Struct field name shadowing imported module name (e.g. `camera`).
+//   2. `field := ClassName(args)` mis-typing the field as the module.
+//   3. `field : [N]Class` rejection when Class has required ctor params
+//      (declaration only valid with explicit `= ---` opt-out).
+
 use camera
 
 Game :: struct {
-    camera := Camera(640, 480, 90)
+    // Field name == module name; verbose form works.
+    camera : Camera = Camera(640, 480, 90)
+
+    // `:=` form also works (separately fixed: type-env-locate walk-up
+    // suppressed for struct bodies).
+    cam_b := Camera(800, 600, 75)
+
+    // Array of class with required params: must opt into uninit memory
+    // explicitly via `= ---`.
+    cameras: [6]Camera = ---
 }
 
 main :: fun() -> i64 {
     g : Game
     if g.camera.window_w != 640 { return 1 }
     if g.camera.window_h != 480 { return 2 }
+    if g.cam_b.window_w != 800 { return 3 }
     return 0
 }
