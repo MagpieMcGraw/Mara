@@ -283,7 +283,7 @@ mat4_scale :: fun(s: Vec3) -> Mat4 {
 	return m
 }
 
-// Perspective projection (right-handed, clip space z: 0 to 1)
+// Perspective projection (right-handed, clip space z: -1 to 1)
 mat4_perspective :: fun(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
 	m : Mat4
 	t := tan(fov_y * 0.5)
@@ -293,6 +293,23 @@ mat4_perspective :: fun(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
 	m.z.z = -(far + near) / (far - near)
 	m.z.w = -1.0
 	m.w.z = -(2.0 * far * near) / (far - near)
+	return m
+}
+
+// Orthographic projection (right-handed, clip space z: -1 to 1)
+mat4_ortho :: fun(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> Mat4 {
+	m : Mat4
+	width  := right - left
+	height := top - bottom
+	depth  := far - near
+	if abs(width) < 0.000001 or abs(height) < 0.000001 or abs(depth) < 0.000001 { return m }
+	m.x.x = 2.0 / width
+	m.y.y = 2.0 / height
+	m.z.z = -2.0 / depth
+	m.w.x = -(right + left) / width
+	m.w.y = -(top + bottom) / height
+	m.w.z = -(far + near) / depth
+	m.w.w = 1.0
 	return m
 }
 
