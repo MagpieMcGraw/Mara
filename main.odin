@@ -834,8 +834,13 @@ main :: proc() {
         return false
     }
 
-    // Abort early on parse errors in the requested package.
+    // Abort early on parse errors in the requested package. Print the
+    // perf-so-far, then the parse-error details (buffered), then the
+    // summary — so a failed build reads top-to-bottom like a successful
+    // one with the errors interleaved at the right phase.
     if main_errs, has := parse_errors[args.pkg_name]; has {
+        perf_timer_end(&perf)
+        flush_diagnostics()
         fmt.printf(BUILD_PARSE_ERRORS_ABORT, main_errs, args.pkg_name)
         return
     }
@@ -853,6 +858,8 @@ main :: proc() {
     }
     if !args.shared {
         if !pkg_has_main(programs[args.pkg_name]) && !pkg_has_expose(programs[args.pkg_name]) {
+            perf_timer_end(&perf)
+            flush_diagnostics()
             fmt.printf(BUILD_NO_ENTRY_POINT, args.pkg_name)
             return
         }
@@ -869,12 +876,16 @@ main :: proc() {
                              shared       = pkg_shared,
                              target_os    = target_os)
     if checked.errors > 0 {
+        perf_timer_end(&perf)
+        flush_diagnostics()
         fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
         return
     }
 
     if args.dump {
         dump_checked_program("checked_dump.txt", checked)
+        perf_timer_end(&perf)
+        flush_diagnostics()
         return
     }
 
@@ -903,5 +914,6 @@ main :: proc() {
     }
 
     perf_timer_end(&perf)
+    flush_diagnostics()
     fmt.printf("Compiled module '%s' -> %s\n", args.pkg_name, out_name)
 }

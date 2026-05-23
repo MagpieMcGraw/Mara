@@ -382,13 +382,12 @@ fresh_label :: proc(g: ^Codegen, prefix: string) -> string {
 // broken IR and letting clang fail with a cryptic message hides the real
 // cause. Pass `{}` as span when no source location is available.
 codegen_fatal :: proc(g: ^Codegen, span: Span, format: string, args: ..any) -> ! {
+    loc := ""
     if span.file != "" {
-        fmt.printf("%s Codegen error: ", span_loc(span))
-    } else {
-        fmt.print("Codegen error: ")
+        loc = format_location(span.file, span.line, span.col)
     }
-    fmt.printf(format, ..args)
-    fmt.println()
+    emit_diagnostic(.Codegen_Error, loc, format, ..args)
+    flush_diagnostics()
     os.exit(1)
 }
 

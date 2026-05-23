@@ -1,5 +1,63 @@
 package mara
 
+import "core:fmt"
+
+// ============================================================
+// Diagnostic queue — buffered emission with explicit flush
+// ============================================================
+//
+// Every error and warning the compiler emits goes through emit_diagnostic
+// here. The message is formatted (printf-style) at the call site and
+// stashed on g_diagnostics; nothing prints until flush_diagnostics() is
+// called. This keeps inline error/warning text from interleaving with
+// the streaming perf-timer phase prints — main.odin flushes at well-
+// defined points (after perf_timer_end on success, before each abort
+// summary on failure). codegen_fatal flushes itself before os.exit.
+
+Diagnostic_Kind :: enum {
+    Parse_Error,
+    Type_Error,
+    Warning,
+    Codegen_Error,
+}
+
+Diagnostic :: struct {
+    kind:     Diagnostic_Kind,
+    location: string, // "file:line:col", or "" for codegen with no source span
+    message:  string, // already-formatted message body (printf applied)
+}
+
+@(private="file")
+g_diagnostics: [dynamic]Diagnostic
+
+// Queue one diagnostic. msg + args are formatted now (so the args
+// don't have to outlive the call); the resulting string lives until
+// flush. Order at flush time is the order emitted.
+emit_diagnostic :: proc(kind: Diagnostic_Kind, location: string, msg: string, args: ..any) {
+    body := fmt.aprintf(msg, ..args)
+    append(&g_diagnostics, Diagnostic{kind = kind, location = location, message = body})
+}
+
+// Print every queued diagnostic and clear the queue. Safe to call
+// multiple times — second call has nothing to print.
+flush_diagnostics :: proc() {
+    for d in g_diagnostics {
+        label: string
+        switch d.kind {
+        case .Parse_Error:   label = "Parse error"
+        case .Type_Error:    label = "Type error"
+        case .Warning:       label = "Warning"
+        case .Codegen_Error: label = "Codegen error"
+        }
+        if d.location != "" {
+            fmt.printf("[%s] %s: %s\n", d.location, label, d.message)
+        } else {
+            fmt.printf("%s: %s\n", label, d.message)
+        }
+    }
+    clear(&g_diagnostics)
+}
+
 // All compiler diagnostics — errors and warnings — live in this file.
 // Call sites reference these constants; edits to wording happen here only.
 //

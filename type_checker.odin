@@ -1420,16 +1420,12 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
 }
 
 check_error :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
-    fmt.printf("[%s] Type error: ", format_location(span.file, span.line, span.col))
-    fmt.printf(msg, ..args)
-    fmt.println()
+    emit_diagnostic(.Type_Error, format_location(span.file, span.line, span.col), msg, ..args)
     c.errors += 1
 }
 
 check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
-    fmt.printf("[%s] Warning: ", format_location(span.file, span.line, span.col))
-    fmt.printf(msg, ..args)
-    fmt.println()
+    emit_diagnostic(.Warning, format_location(span.file, span.line, span.col), msg, ..args)
 }
 
 // Walk an expression looking for `Expr_Call` whose direct args include

@@ -787,9 +787,7 @@ error_prefix :: proc(tok: Token) -> string {
 // at the dozens of parser error sites — wording changes happen in
 // diagnostics.odin, not here.
 parse_error :: proc(p: ^Parser, tok: Token, msg: string, args: ..any) {
-    fmt.printf("[%s] Parse error: ", error_prefix(tok))
-    fmt.printf(msg, ..args)
-    fmt.println()
+    emit_diagnostic(.Parse_Error, error_prefix(tok), msg, ..args)
     p.errors += 1
 }
 
