@@ -288,6 +288,12 @@ Expr_Struct_Literal :: struct {
     // one-to-one. Set by the type checker; codegen materializes temps for the
     // call's sret slots and fills each struct field from the corresponding temp.
     is_spread:  bool,
+    // Broadcast literal: `{all <expr>}`. The single value fills every slot
+    // (every element of an array, or — future — every field of a same-typed
+    // struct). The checker expands `broadcast_value` into `array_values`
+    // once the target's element count is known.
+    is_broadcast:    bool,
+    broadcast_value: Expr,
     // Inline type expression for typed array literals like `[3]f32{0.9, 0.2, 0.6}`.
     // When set, name is "" and the checker resolves type_expr to determine the
     // literal's type rather than looking up name.
@@ -3392,11 +3398,21 @@ parse_struct_literal :: proc(p: ^Parser) -> Expr {
     fields: [dynamic]Struct_Field
     is_zero_init := false
     is_positional := false
+    is_broadcast := false
+    broadcast_value: Expr
     if current_kind(p) != .Right_Brace {
         // Check for {0} — explicit zero-init syntax
         if current_kind(p) == .Number && current(p).text == "0" && peek_kind(p) == .Right_Brace {
             advance(p) // consume '0'
             is_zero_init = true
+        } else if current_kind(p) == .Identifier && current(p).text == "all" && peek_kind(p) != .Equals {
+            // `{all <expr>}` — broadcast one value to every slot. Element
+            // count comes from the target type; the checker expands into
+            // array_values once it knows.
+            advance(p) // consume 'all'
+            broadcast_value = parse_expr(p)
+            is_broadcast = true
+            skip_newlines(p)
         } else {
             // Peek first element to decide named vs positional. Named fields look
             // like `ident =` (but not `==`); anything else parses as a value.
@@ -3443,6 +3459,8 @@ parse_struct_literal :: proc(p: ^Parser) -> Expr {
     s.fields = fields
     s.zero_init = is_zero_init
     s.positional = is_positional
+    s.is_broadcast = is_broadcast
+    s.broadcast_value = broadcast_value
     s.span = token_span(tok)
     return s
 }

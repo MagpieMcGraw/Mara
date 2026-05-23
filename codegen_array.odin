@@ -1146,6 +1146,38 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
     // garbage. The opt-out covers per-element construction only; structural
     // setup stays.
     if _, is_skip := value.(^Expr_Skip_Constructor); is_skip { return }
+    // `{all <expr>}` broadcast literal: the type checker expanded into
+    // array_values (one per element). The pre-bound partial-array header is
+    // already valid; emit element-by-element stores into the inline storage.
+    if lit, lit_ok := value.(^Expr_Struct_Literal); lit_ok && lit.is_broadcast && len(lit.array_values) > 0 {
+        if pa, pa_ok := distinct_base(lit.type_).(^Type_Partial_Array); pa_ok {
+            sv, sv_ok := get_slice(g, name)
+            if !sv_ok { return }
+            elem_t := llvm_type_from_checker(pa.elem)
+            alloc_cap := pa.size
+            if pa.has_sentinel { alloc_cap += 1 }
+            ir_type := partial_array_ir_type(elem_t, alloc_cap)
+            for elem_expr, i in lit.array_values {
+                if elem_expr == nil { continue }
+                slot := fresh_tmp(g)
+                emit(g, "  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d, i32 %d",
+                    slot, ir_type, sv.alloca, PARTIAL_ELEMENTS_FIELD, i)
+                if sd := as_struct_body(pa.elem); sd != nil {
+                    // Struct/class element — write through the unified store.
+                    gen_store_struct_into(g, slot, sd, elem_expr)
+                } else {
+                    val := gen_expr(g, elem_expr, elem_t)
+                    emit(g, "  store %s %s, ptr %s", elem_t, val, slot)
+                }
+            }
+            // Update the slice's len to match the broadcast count (the user
+            // initialized all N elements, so len = N).
+            len_gep := fresh_tmp(g)
+            emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
+            emit_typed_store_len(g, fmt.tprintf("%d", pa.size), len_gep)
+            return
+        }
+    }
     // NRVO: if value is a slice-returning Mara call, route its sret
     // straight to our dest's alloca. Same trick as gen_slice_from_expr.
     if call, call_ok := value.(^Expr_Call); call_ok {

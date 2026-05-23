@@ -1,0 +1,21 @@
+module broadcast_probe
+
+// {all <expr>} broadcast literal — fills every element of an array field
+// with the same constructed value. Works for partial arrays even when the
+// element class has required ctor params (the bare declaration would warn).
+
+Camera :: class(w, h, fovy : f32) {
+    width  := w
+    height := h
+}
+
+Game :: struct {
+    cameras: [..6]Camera = {all Camera(640, 480, 90)}
+}
+
+main :: fun() -> i64 {
+    g : Game
+    if g.cameras[0].width  != 640 { return 1 }
+    if g.cameras[5].height != 480 { return 2 }
+    return 0
+}

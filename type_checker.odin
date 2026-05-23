@@ -6095,6 +6095,14 @@ check_struct_defaults :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env)
             if sd == nil { continue }
             for &field in sd.fields {
                 if field.default_value == nil { continue }
+                // Broadcast literal targeting a fixed- or partial-array field:
+                // expand `{all <expr>}` into per-slot entries on the literal so
+                // codegen can emit element-by-element stores. Handles the case
+                // `cameras: [..6]Camera = {all Camera(1280, 720, 90)}`.
+                if lit, lit_ok := field.default_value.(^Expr_Struct_Literal); lit_ok && lit.is_broadcast {
+                    expand_broadcast_array_literal(c, lit, field.type_, field.name, s.span, env)
+                    continue
+                }
                 dt := check_expr(c, field.default_value, env)
                 if types_incompatible(field.type_, dt) && !is_any(dt) {
                     check_error(c, s.span, "default value for field '%s': expected %s, got %s",
@@ -6103,6 +6111,52 @@ check_struct_defaults :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env)
             }
         }
     }
+}
+
+// Expand `{all <expr>}` into per-element entries on `lit.array_values`. The
+// expression is type-checked once against the array's element type; codegen
+// emits N independent stores (clones share the same checked AST node).
+expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, field_type: Type, field_name: string, span: Span, env: ^Type_Env) {
+    size := 0
+    elem_type: Type
+    base := distinct_base(field_type)
+    if fa, ok := base.(^Type_Fixed_Array); ok {
+        size = fa.size
+        elem_type = fa.elem
+    } else if pa, ok := base.(^Type_Partial_Array); ok {
+        size = pa.size
+        elem_type = pa.elem
+    } else {
+        check_error(c, span,
+            "broadcast literal '{all ...}' for field '%s' requires an array type, got %s",
+            field_name, type_name(field_type))
+        return
+    }
+    val_type := check_expr(c, lit.broadcast_value, env)
+    if !is_any(val_type) && types_incompatible(elem_type, val_type) {
+        check_error(c, span,
+            "broadcast value for field '%s' has type %s, expected %s (element of %s)",
+            field_name, type_name(val_type), type_name(elem_type), type_name(field_type))
+        return
+    }
+    if is_infer(val_type) {
+        check_literal_overflow(c, lit.broadcast_value, elem_type, span)
+    }
+    clear(&lit.array_values)
+    resize(&lit.array_values, size)
+    for i in 0..<size {
+        if i == 0 {
+            lit.array_values[0] = lit.broadcast_value
+        } else {
+            // clone_expr clears `resolved_func` and `type_` on each Expr_Call
+            // it copies — re-run check_expr so each clone has its own
+            // resolution before codegen sees it.
+            cloned := clone_expr(lit.broadcast_value)
+            check_expr(c, cloned, env)
+            lit.array_values[i] = cloned
+        }
+    }
+    lit.type_ = field_type
 }
 
 // Phase-2 checker for a single function/method/struct/module body.
@@ -6855,6 +6909,25 @@ check_union_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, ut: ^Ty
 check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^Type_Fixed_Array, env: ^Type_Env) {
     clear(&lit.array_values)
     resize(&lit.array_values, fa.size)
+
+    // Broadcast: `{all <expr>}` — check the expression once against the
+    // element type, then fill every slot with a clone so codegen emits
+    // independent stores per element.
+    if lit.is_broadcast {
+        val_type := check_expr(c, lit.broadcast_value, env)
+        if types_incompatible(fa.elem, val_type) {
+            check_error(c, lit.span, "'%s' broadcast value has type %s, expected %s",
+                lit.name, type_name(val_type), type_name(fa.elem))
+            return
+        }
+        if is_infer(val_type) {
+            check_literal_overflow(c, lit.broadcast_value, fa.elem, lit.span)
+        }
+        for i in 0..<fa.size {
+            lit.array_values[i] = i == 0 ? lit.broadcast_value : clone_expr(lit.broadcast_value)
+        }
+        return
+    }
 
     // Zero-init or empty — all slots stay nil
     if lit.zero_init || len(lit.fields) == 0 { return }
@@ -8911,6 +8984,15 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
     case ^Expr_Slice:
         return check_slice(c, e, env)
     case ^Expr_Struct_Literal:
+        // Broadcast literal `{all <expr>}`: expand_broadcast_array_literal
+        // has already validated and populated array_values, and set e.type_
+        // to the surrounding field/decl type. Don't re-check (which would
+        // return Type_Error for the anonymous shape) and overwrite the type.
+        if e.is_broadcast && e.type_ != nil {
+            if _, is_err := e.type_.(Type_Error); !is_err {
+                return e.type_
+            }
+        }
         // Inline typed-array literal: `[3]f32{0.9, 0.2, 0.6}`. The parser
         // attaches the inline type expression; resolve it and reuse the
         // array-literal validation path used by named distinct array types.
