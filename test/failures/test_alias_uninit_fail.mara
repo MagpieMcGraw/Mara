@@ -1,0 +1,21 @@
+module test_alias_uninit_fail
+
+// `it = &root` aliases root, so `it.next` should fire the same uninit-field
+// check as a direct `root.next` would. Expected error:
+//   "field 'next' of 'root' (aliased via 'it') is used before being assigned"
+
+Config :: struct {
+    name: ^u8
+    next: ^Config
+}
+
+main :: fun() -> i64 {
+    root : Config
+
+    it : ^Config = &root
+    for it != void {
+        it = it.next
+    }
+
+    return 0
+}
