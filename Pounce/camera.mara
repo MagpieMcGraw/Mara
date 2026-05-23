@@ -34,51 +34,6 @@ Camera :: struct(w, h, fovy : f32) {
 	}
 }
 
-// Camera :: struct {
-// 	using obj: Object,
-// 	proj_mx,
-// 	ortho_mx,
-// 	view_mx: linalg.Matrix4f32,
-// 	w_width,
-// 	w_height: i32,
-// 	fov_y,
-// 	fov_x,
-// 	near_plane,
-// 	far_plane: f32,
-// }
-
-// camera_create :: proc(w_width, w_height, fovy: i32) -> Camera
-// {
-// 	camera: Camera
-
-// 	camera.speed = 50  // Slower speed for space flight
-// 	camera.turn_speed = 0.2  // Slower rotation
-// 	camera.pos = linalg.Vector3f32{0, 0, 512}
-// 	camera.dir = linalg.QUATERNIONF32_IDENTITY
-
-// 	camera.w_width = w_width
-// 	camera.w_height = w_height
-// 	camera.near_plane = 0.1
-// 	camera.far_plane = 50000
-
-// 	aspect_ratio := cast(f32)w_width / cast(f32)w_height
-// 	camera.fov_y = math.to_radians(f32(fovy))
-// 	camera.fov_x = camera.fov_y * aspect_ratio
-
-// 	camera.proj_mx = linalg.matrix4_perspective(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane, false)
-
-// 	// Orthographic projection for 2D rendering (origin at center, Y up)
-// 	half_w := f32(w_width) / 2
-// 	half_h := f32(w_height) / 2
-// 	camera.ortho_mx = linalg.matrix_ortho3d_f32(-half_w, half_w, -half_h, half_h, -1, 1)
-
-// 	translation_mx := linalg.matrix4_translate(camera.pos)
-// 	rotation_mx := linalg.matrix4_from_quaternion(camera.dir)
-// 	camera.view_mx = linalg.matrix_mul(rotation_mx, translation_mx)
-
-// 	return camera
-// }
-
 // camera_look_down :: proc(camera: ^Camera) {
 // 	camera.dir *= linalg.quaternion_angle_axis(
 // 	math.to_radians(f32(180)), linalg.Vector3f32{0, 1, 0})
