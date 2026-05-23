@@ -1,0 +1,138 @@
+module mandelbrot_bench_simd
+
+// Vectorised Mandelbrot. 8 pixels per iteration, lockstep on a custom
+// F64x8 type. LLVM's auto-vectoriser recognises the 8-line per-element
+// expansion in the operators below and emits AVX (or whatever is
+// available) on the inner loop — no intrinsics required.
+//
+// Structure mirrors the Rust benchmarksgame mandelbrot-4 entry:
+//   - 8 pixels iterated in lockstep with no per-pixel break.
+//   - Group-level divergence check every 4 iterations.
+//   - 12 * 4 + 1 = 49 iterations total (effectively MAX_ITER=49).
+//
+// The trade-off vs the scalar version: we lose the early-out for
+// individual pixels that escape quickly, but we gain SIMD on the
+// arithmetic. Net win because the SIMD is wide and most pixels
+// in the rendered window need many iterations anyway.
+
+use mara.time
+
+N    :: 1000
+VLEN :: 8
+
+F64x8 :: distinct [8]f64
+
+overload * mul
+overload + add
+overload - sub
+
+mul :: dispatch { f64x8_mul }
+add :: dispatch { f64x8_add }
+sub :: dispatch { f64x8_sub }
+
+f64x8_mul :: fun(a: F64x8, b: F64x8) -> F64x8 {
+	r : F64x8
+	r[0] = a[0]*b[0]; r[1] = a[1]*b[1]; r[2] = a[2]*b[2]; r[3] = a[3]*b[3]
+	r[4] = a[4]*b[4]; r[5] = a[5]*b[5]; r[6] = a[6]*b[6]; r[7] = a[7]*b[7]
+	return r
+}
+
+f64x8_add :: fun(a: F64x8, b: F64x8) -> F64x8 {
+	r : F64x8
+	r[0] = a[0]+b[0]; r[1] = a[1]+b[1]; r[2] = a[2]+b[2]; r[3] = a[3]+b[3]
+	r[4] = a[4]+b[4]; r[5] = a[5]+b[5]; r[6] = a[6]+b[6]; r[7] = a[7]+b[7]
+	return r
+}
+
+f64x8_sub :: fun(a: F64x8, b: F64x8) -> F64x8 {
+	r : F64x8
+	r[0] = a[0]-b[0]; r[1] = a[1]-b[1]; r[2] = a[2]-b[2]; r[3] = a[3]-b[3]
+	r[4] = a[4]-b[4]; r[5] = a[5]-b[5]; r[6] = a[6]-b[6]; r[7] = a[7]-b[7]
+	return r
+}
+
+f64x8_splat :: fun(v: f64) -> F64x8 {
+	r : F64x8
+	r[0] = v; r[1] = v; r[2] = v; r[3] = v
+	r[4] = v; r[5] = v; r[6] = v; r[7] = v
+	return r
+}
+
+all_diverged :: fun(z: F64x8) -> bool {
+	return z[0] > 4.0 and z[1] > 4.0 and z[2] > 4.0 and z[3] > 4.0 and z[4] > 4.0 and z[5] > 4.0 and z[6] > 4.0 and z[7] > 4.0
+}
+
+count_in_set :: fun(z: F64x8) -> i64 {
+	n : i64 = 0
+	if z[0] <= 4.0 { n += 1 }
+	if z[1] <= 4.0 { n += 1 }
+	if z[2] <= 4.0 { n += 1 }
+	if z[3] <= 4.0 { n += 1 }
+	if z[4] <= 4.0 { n += 1 }
+	if z[5] <= 4.0 { n += 1 }
+	if z[6] <= 4.0 { n += 1 }
+	if z[7] <= 4.0 { n += 1 }
+	return n
+}
+
+// Iterate z = z^2 + c for 49 steps on 8 pixels in lockstep. Bail
+// after every group of 4 if ALL 8 pixels have diverged. Returns
+// the count of pixels still in the set.
+mand8 :: fun(cr: F64x8, ci_scalar: f64) -> i64 {
+	ci := f64x8_splat(ci_scalar)
+	zr := cr
+	zi := ci
+	tr := zr * zr
+	ti := zi * zi
+
+	for round in 0..12 {
+		for inner in 0..4 {
+			zi = (zr + zr) * zi + ci
+			zr = tr - ti + cr
+			tr = zr * zr
+			ti = zi * zi
+		}
+		absz := tr + ti
+		if all_diverged(absz) {
+			return 0
+		}
+	}
+	// Tail iteration to reach 49 steps total.
+	zi = (zr + zr) * zi + ci
+	zr = tr - ti + cr
+	tr = zr * zr
+	ti = zi * zi
+
+	final_absz := tr + ti
+	return count_in_set(final_absz)
+}
+
+main :: fun() {
+	inv := 2.0 / f64(N)
+	in_set_count : i64 = 0
+
+	_, start := time_since(0)
+
+	for y in 0..N {
+		ci := f64(y) * inv - 1.0
+		for x in 0..N/VLEN {
+			x_base := f64(x * VLEN)
+			cr := F64x8{
+				(x_base + 0.0) * inv - 1.5,
+				(x_base + 1.0) * inv - 1.5,
+				(x_base + 2.0) * inv - 1.5,
+				(x_base + 3.0) * inv - 1.5,
+				(x_base + 4.0) * inv - 1.5,
+				(x_base + 5.0) * inv - 1.5,
+				(x_base + 6.0) * inv - 1.5,
+				(x_base + 7.0) * inv - 1.5,
+			}
+			in_set_count += mand8(cr, ci)
+		}
+	}
+
+	elapsed, _ := time_since(start)
+	print("N=%d (8-wide f64 SIMD, 49 iters)", N)
+	print("in-set: %d / %d pixels", in_set_count, N*N)
+	print("elapsed: %g sec", elapsed)
+}
