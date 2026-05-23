@@ -4454,6 +4454,22 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
             }
         }
     }
+    // Struct literals: `obj := Object { ... }` — look up the named struct
+    // type. Without this, the field's type falls through to Type_Any and
+    // lowers to i64 in IR, which silently corrupts later nested-field
+    // accesses (e.g. `cam.obj.pos` loads 8 bytes from Camera[0] instead
+    // of GEPing into the Object slot). Mirrors the Expr_Call branch.
+    if sl, ok := value.(^Expr_Struct_Literal); ok && sl.name != "" {
+        if t, t_ok := type_env_get(env, sl.name); t_ok {
+            return t
+        }
+        if c.current_package != "" {
+            flat := make_flat_name(c.current_package, sl.name)
+            if t, t_ok := type_env_get(env, flat); t_ok {
+                return t
+            }
+        }
+    }
     // Binary ops: arithmetic / bitwise / shift preserve the operand type.
     // Comparison ops produce bool. Recurse on the left operand so e.g.
     // `1 << 16` (Number << Number) → Type_Int.
