@@ -780,12 +780,24 @@ error_prefix :: proc(tok: Token) -> string {
     return format_location(tok.file, tok.line, tok.col)
 }
 
+// Emit a parser error: `[file:line:col] Parse error: <msg>` + newline,
+// and increment p.errors. `msg` is the message body (see diagnostics.odin
+// for the PARSE_* constants used at call sites); positional args fill its
+// format placeholders. Replaces the inline fmt.printf + counter idiom
+// at the dozens of parser error sites — wording changes happen in
+// diagnostics.odin, not here.
+parse_error :: proc(p: ^Parser, tok: Token, msg: string, args: ..any) {
+    fmt.printf("[%s] Parse error: ", error_prefix(tok))
+    fmt.printf(msg, ..args)
+    fmt.println()
+    p.errors += 1
+}
+
 // Expect the current token to be of a certain kind, consume it, or report an error
 expect :: proc(p: ^Parser, kind: Token_Kind) -> Token {
     tok := current(p)
     if tok.kind != kind {
-        fmt.printf("[%s] Parse error: expected %v, got %v \"%s\"\n", error_prefix(tok), kind, tok.kind, tok.text)
-        p.errors += 1
+        parse_error(p, tok, PARSE_EXPECTED_TOKEN, kind, tok.kind, tok.text)
     }
     advance(p)
     return tok
@@ -895,8 +907,7 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
             sb: strings.Builder
             if !is_intrinsic_part_kind(current_kind(p)) {
                 tok := current(p)
-                fmt.printf("[%s] Parse error: expected intrinsic name part after `@`, got `%s`\n", error_prefix(at_tok), tok.text)
-                p.errors += 1
+                parse_error(p, at_tok, PARSE_EXPECTED_INTRINSIC_AFTER_AT, tok.text)
                 skip_newlines(p)
                 expect(p, .Right_Brace)
                 return nil, true, ""
@@ -907,8 +918,7 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
                 advance(p) // consume '.'
                 if !is_intrinsic_part_kind(current_kind(p)) {
                     tok := current(p)
-                    fmt.printf("[%s] Parse error: expected intrinsic name part after `.`, got `%s`\n", error_prefix(tok), tok.text)
-                    p.errors += 1
+                    parse_error(p, tok, PARSE_EXPECTED_INTRINSIC_AFTER_DOT, tok.text)
                     skip_newlines(p)
                     expect(p, .Right_Brace)
                     return nil, true, ""
@@ -923,8 +933,7 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
         }
         if current_kind(p) == .Intrinsic {
             tok := current(p)
-            fmt.printf("[%s] Parse error: bare `intrinsic` body is no longer supported — use `{{ @llvm.<name> }}` instead\n", error_prefix(tok))
-            p.errors += 1
+            parse_error(p, tok, PARSE_BARE_INTRINSIC_REMOVED)
             advance(p) // consume 'intrinsic' to attempt recovery
             skip_newlines(p)
             expect(p, .Right_Brace)
@@ -1069,8 +1078,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
             // reaching here means a parse error earlier in the path. Report
             // so the user sees a real diagnostic instead of a downstream type
             // error from a malformed Stmt_Decl.
-            fmt.printf("[%s] Parse error: malformed use/include statement\n", error_prefix(current(p)))
-            p.errors += 1
+            parse_error(p, current(p), PARSE_MALFORMED_USE_INCLUDE)
             return Stmt_Call{expr = inc_expr, span = start}
         }
         // Infer name from last segment: "mara.time" → "time", "math" → "math"
@@ -1105,8 +1113,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
             inner := parse_stmt(p)
             scope, ok := inner.(^Stmt_Scope)
             if !ok || scope.kind != .Fun {
-                fmt.printf("[%s] Parse error: `#expose` must precede a `name :: fun(...)` declaration\n", error_prefix(hash_tok))
-                p.errors += 1
+                parse_error(p, hash_tok, PARSE_EXPOSE_NEEDS_FUN_DECL)
                 return inner
             }
             scope.is_exposed = true
@@ -1140,8 +1147,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
                 }
                 if _, is_inc := value.(^Expr_Include); is_inc {
                     tok := current(p)
-                    fmt.printf("[%s] Parse error: `using` is not allowed before `use`/`include` — use bare `use %s` (private) or `include %s` (re-export), or `name :: use path` for qualified access\n", error_prefix(tok), "...", "...")
-                    p.errors += 1
+                    parse_error(p, tok, PARSE_USING_NOT_ALLOWED_ON_INCLUDE, "...", "...")
                 }
                 return result
             }
@@ -1162,8 +1168,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
                 for v in decl.init_values {
                     if _, is_inc := v.(^Expr_Include); is_inc {
                         tok := current(p)
-                        fmt.printf("[%s] Parse error: `:=` is not allowed for `use`/`include` — modules are comptime, use `name :: use path` (private) or `name :: include path` (re-export)\n", error_prefix(tok))
-                        p.errors += 1
+                        parse_error(p, tok, PARSE_INCLUDE_NEEDS_COLON_COLON)
                         break
                     }
                 }
@@ -1182,8 +1187,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
 
     // Fall through: not a valid statement
     tok := current(p)
-    fmt.printf("[%s] Parse error: unexpected token %v \"%s\" (expected statement)\n", error_prefix(tok), tok.kind, tok.text)
-    p.errors += 1
+    parse_error(p, tok, PARSE_UNEXPECTED_TOKEN_STMT, tok.kind, tok.text)
     advance(p)
     return Stmt_Call{span = token_span(tok)}
 }
@@ -1391,9 +1395,7 @@ parse_decl_tail :: proc(p: ^Parser, names: [dynamic]string, start: Span, allow_v
 validate_init_count :: proc(p: ^Parser, init_n: int, n_names: int) {
     if init_n != 0 && init_n != 1 && init_n != n_names {
         tok := current(p)
-        fmt.printf("[%s] Parse error: %d default values for %d names (expected 0, 1, or %d)\n",
-            error_prefix(tok), init_n, n_names, n_names)
-        p.errors += 1
+        parse_error(p, tok, PARSE_DEFAULT_VALUE_COUNT_MISMATCH, init_n, n_names, n_names)
     }
 }
 
@@ -1836,8 +1838,7 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
                     tag_type = current(p).text
                     advance(p)
                 } else {
-                    fmt.printf("[%s] Parse error: expected type after `tag` in union header, got `%s`\n",
-                        error_prefix(current(p)), current(p).text)
+                    parse_error(p, current(p), PARSE_UNION_TAG_NEEDS_TYPE, current(p).text)
                 }
             } else if tok.kind == .Identifier && tok.text == "pad" {
                 advance(p)
@@ -1848,12 +1849,10 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
                     min_size = parse_int_token(current(p).text)
                     advance(p)
                 } else {
-                    fmt.printf("[%s] Parse error: expected number after `size` in union header, got `%s`\n",
-                        error_prefix(current(p)), current(p).text)
+                    parse_error(p, current(p), PARSE_UNION_SIZE_NEEDS_NUM, current(p).text)
                 }
             } else {
-                fmt.printf("[%s] Parse error: union header takes `$T: type`, `tag <type>`, `pad <type>`, `size <N>`; got `%s`\n",
-                    error_prefix(tok), tok.text)
+                parse_error(p, tok, PARSE_UNION_HEADER_UNKNOWN, tok.text)
                 advance(p) // skip unrecognized token to avoid infinite loop
             }
             if current_kind(p) == .Comma { advance(p) }
@@ -1965,9 +1964,7 @@ parse_overload :: proc(p: ^Parser) -> Stmt {
     case .Slash:  op = .Slash
     case .Modulo: op = .Modulo
     case:
-        fmt.printf("[%s] Parse error: expected operator after 'overload', got '%s'\n",
-            error_prefix(op_tok), op_tok.text)
-        p.errors += 1
+        parse_error(p, op_tok, PARSE_OVERLOAD_EXPECTED_OP, op_tok.text)
     }
 
     dispatch_name := expect(p, .Identifier).text
@@ -1989,8 +1986,7 @@ parse_foreign :: proc(p: ^Parser) -> Stmt {
     if kind_tok.kind == .Identifier && kind_tok.text == "static_lib" {
         advance(p)
     } else {
-        fmt.printf("[%s] Parse error: foreign block needs `static_lib`, got `%s`\n", error_prefix(kind_tok), kind_tok.text)
-        p.errors += 1
+        parse_error(p, kind_tok, PARSE_FOREIGN_NEEDS_STATIC_LIB, kind_tok.text)
     }
 
     // Library name as string literal
@@ -2132,14 +2128,12 @@ parse_if_expr :: proc(p: ^Parser) -> Expr {
     expect(p, .Do)
     then_expr := parse_expr(p)
     if _, is_if := then_expr.(^Expr_If); is_if {
-        fmt.printf("[%s] Parse error: nested if-expressions are not allowed\n", error_prefix(tok))
-        p.errors += 1
+        parse_error(p, tok, PARSE_NESTED_IF_EXPR)
     }
     expect(p, .Else)
     else_expr := parse_expr(p)
     if _, is_if := else_expr.(^Expr_If); is_if {
-        fmt.printf("[%s] Parse error: nested if-expressions are not allowed\n", error_prefix(tok))
-        p.errors += 1
+        parse_error(p, tok, PARSE_NESTED_IF_EXPR)
     }
     e := new(Expr_If)
     e.condition = condition
@@ -2449,8 +2443,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
             if current_kind(p) == .Dot_Dot {
                 if has_second {
                     tok := current(p)
-                    fmt.printf("[%s] Parse error: range-for loop takes one variable, not two\n", error_prefix(tok))
-                    p.errors += 1
+                    parse_error(p, tok, PARSE_RANGE_FOR_ONE_VAR)
                 }
                 advance(p)
 
@@ -2701,8 +2694,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             // x : type : expr — typed comptime constant
             if is_var {
                 tok := current(p)
-                fmt.printf("[%s] Parse error: 'var' cannot be combined with '::' (comptime constant)\n", error_prefix(tok))
-                p.errors += 1
+                parse_error(p, tok, PARSE_VAR_WITH_CONSTANT)
             }
             advance(p) // consume ':'
             value := parse_expr(p)
@@ -3268,8 +3260,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
     }
 
     tok := current(p)
-    fmt.printf("[%s] Parse error: expected type, got %v \"%s\"\n", error_prefix(tok), tok.kind, tok.text)
-    p.errors += 1
+    parse_error(p, tok, PARSE_EXPECTED_TYPE, tok.kind, tok.text)
     advance(p)
     return Type_Name{name = "int", span = token_span(tok)}
 }
@@ -3310,9 +3301,7 @@ parse_expr :: proc(p: ^Parser, min_prec: int = 0) -> Expr {
             if is_not_in { advance(p) /* consume `in` */ }
             lo := parse_expr(p, 4) // anything tighter than comparison, but `..` isn't a Pratt op
             if current_kind(p) != .Dot_Dot {
-                fmt.printf("[%s] Parse error: expected '..' after `%sin` in range-membership check\n",
-                    error_prefix(current(p)), "not " if is_not_in else "")
-                p.errors += 1
+                parse_error(p, current(p), PARSE_RANGE_NEEDS_DOTS, "not " if is_not_in else "")
                 left = lo
                 continue
             }
@@ -3488,8 +3477,7 @@ parse_struct_literal :: proc(p: ^Parser) -> Expr {
                 }
                 if this_is_named == is_positional {
                     tok := current(p)
-                    fmt.printf("[%s] Parse error: struct literal cannot mix positional and named fields\n", error_prefix(tok))
-                    p.errors += 1
+                    parse_error(p, tok, PARSE_STRUCT_LIT_MIXED_FIELDS)
                 }
                 append(&fields, parse_field(p, is_positional))
             }
@@ -3737,11 +3725,9 @@ report_number_parse_error :: proc(p: ^Parser, tok: Token, err: Number_Parse_Erro
     case .None:
         // nothing to report
     case .Hex_Overflow:
-        fmt.printf("[%s] Parse error: hex literal '%s' overflows u64 (max 0xFFFFFFFFFFFFFFFF) — Mara's integer-literal precision tops out at 64 bits\n", error_prefix(tok), tok.text)
-        p.errors += 1
+        parse_error(p, tok, PARSE_HEX_OVERFLOWS_U64, tok.text)
     case .Invalid:
-        fmt.printf("[%s] Parse error: invalid number '%s'\n", error_prefix(tok), tok.text)
-        p.errors += 1
+        parse_error(p, tok, PARSE_INVALID_NUMBER, tok.text)
     }
 }
 
@@ -3855,8 +3841,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         // variant_to_enum search across visible unions/enums.
         dot_tok := advance(p) // consume '.'
         if current_kind(p) != .Identifier {
-            fmt.printf("[%s] Parse error: expected variant name after '.'\n", error_prefix(current(p)))
-            p.errors += 1
+            parse_error(p, current(p), PARSE_EXPECTED_VARIANT_NAME)
             result = new_clone(Expr_Number{value = 0, span = token_span(dot_tok)})
         } else {
             name_tok := advance(p)
@@ -3936,8 +3921,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             result = parse_struct_literal(p)
         } else {
             tok := current(p)
-            fmt.printf("[%s] Parse error: unexpected '{' in expression\n", error_prefix(tok))
-            p.errors += 1
+            parse_error(p, tok, PARSE_UNEXPECTED_LBRACE_IN_EXPR)
             advance(p)
             result = new_clone(Expr_Number{value = 0, span = start})
         }
@@ -4041,8 +4025,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
     case .Hash:
         hash_tok := advance(p) // consume '#'
         if current_kind(p) != .Identifier {
-            fmt.printf("[%s] Parse error: expected intrinsic name after '#'\n", error_prefix(hash_tok))
-            p.errors += 1
+            parse_error(p, hash_tok, PARSE_EXPECTED_HASH_NAME)
             result = new_clone(Expr_Number{value = 0, span = token_span(hash_tok)})
         } else {
             name_tok := advance(p)
@@ -4073,8 +4056,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
                 case "mac":
                     intrinsic_kind = .Mac
                 case:
-                    fmt.printf("[%s] Parse error: unknown compiler intrinsic '#%s'\n", error_prefix(hash_tok), name_tok.text)
-                    p.errors += 1
+                    parse_error(p, hash_tok, PARSE_UNKNOWN_INTRINSIC, name_tok.text)
                     result = new_clone(Expr_Number{value = 0, span = token_span(hash_tok)})
                     intrinsic_ok = false
                 }
@@ -4101,8 +4083,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         kw_kind := current_kind(p)
         if kw_kind != .Use && kw_kind != .Include {
             tok := current(p)
-            fmt.printf("[%s] Parse error: expected `use` or `include` after `sealed`, got `%s`\n", error_prefix(tok), tok.text)
-            p.errors += 1
+            parse_error(p, tok, PARSE_SEALED_NEEDS_USE_INCLUDE, tok.text)
             advance(p)
             result = new_clone(Expr_Number{value = 0, span = start})
             return result
@@ -4123,8 +4104,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
 
     case:
         tok := current(p)
-        fmt.printf("[%s] Parse error: unexpected token %v \"%s\"\n", error_prefix(tok), tok.kind, tok.text)
-        p.errors += 1
+        parse_error(p, tok, PARSE_UNEXPECTED_TOKEN, tok.kind, tok.text)
         advance(p)
         result = new_clone(Expr_Number{value = 0, span = start})
     }
