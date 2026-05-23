@@ -1,8 +1,7 @@
 module broadcast_probe
 
-// {all <expr>} broadcast literal — fills every element of an array field
-// with the same constructed value. Works for partial arrays even when the
-// element class has required ctor params (the bare declaration would warn).
+// `all <expr>` (without braces) desugars to `{all <expr>}` — a broadcast
+// struct literal that fills every element of an array field.
 
 Camera :: class(w, h, fovy : f32) {
     width  := w
@@ -10,7 +9,7 @@ Camera :: class(w, h, fovy : f32) {
 }
 
 Game :: struct {
-    cameras: [..6]Camera = {all Camera(640, 480, 90)}
+    cameras: [..6]Camera = all Camera(640, 480, 90)
 }
 
 main :: fun() -> i64 {

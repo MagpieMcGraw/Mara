@@ -3392,6 +3392,24 @@ is_struct_literal :: proc(p: ^Parser) -> bool {
     return false
 }
 
+// What tokens can begin the broadcast value in `all <expr>` (parser-level
+// disambiguation against bare `all` as an identifier or `all(x)` as a call).
+// Conservative: identifiers, literals, unary/grouping/composite starters,
+// and the type keywords that can sit at the head of a value expression.
+is_broadcast_value_start :: proc(k: Token_Kind) -> bool {
+    #partial switch k {
+    case .Identifier, .Number, .String, .Char,
+         .True, .False,
+         .Minus, .Caret, .Ampersand,
+         .Left_Bracket, .Left_Brace,
+         .Fun, .Match, .If, .Hash,
+         .Bool_Type, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64,
+         .F32, .F64, .C8, .Utf8, .Byte:
+        return true
+    }
+    return false
+}
+
 parse_struct_literal :: proc(p: ^Parser) -> Expr {
     tok := advance(p) // consume '{'
     skip_newlines(p)
@@ -3756,6 +3774,16 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             tk.count_expr = count_arg
             tk.span = token_span(tok)
             result = tk
+        } else if tok.text == "all" && is_broadcast_value_start(current_kind(p)) {
+            // Bare `all <expr>` desugars to the `{all <expr>}` broadcast struct
+            // literal. Only triggered when the following token plausibly starts
+            // an expression — `all(x)` stays a function call.
+            val := parse_expr(p)
+            lit := new(Expr_Struct_Literal)
+            lit.is_broadcast = true
+            lit.broadcast_value = val
+            lit.span = token_span(tok)
+            result = lit
         } else if current_kind(p) == .Left_Paren {
         // Check if this is a function call: name(args)
             advance(p) // consume '('
