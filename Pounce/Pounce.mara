@@ -58,8 +58,7 @@ Megastruct :: struct {
 	// Asset system
 	//assets: Assets
 
-	// Not initialized because of array? Sketchy!
-	cameras: [..6]Camera
+	cameras: [..6]Camera = all Camera(1280, 720, 90)
 
 	camera := Camera(1280, 720, 90)
 	mouse_look: bool
