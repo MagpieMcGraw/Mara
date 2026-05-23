@@ -1322,6 +1322,11 @@ Checker :: struct {
     // in this pass return Type_Error{} silently; the body-check pass re-runs
     // resolution with all locals in scope and emits real errors then.
     in_register_pass: bool,
+    // Type-expr AST nodes we've already emitted a "utf8 must be sentinel-
+    // terminated" error for. resolve_type_expr runs in two passes for the
+    // same nodes (register + body), so without dedup the user sees every
+    // offending decl twice.
+    errored_utf8_nodes: map[rawptr]bool,
     // Namespace-form match arm context: when set, identifier resolution falls
     // back to looking up the name as a field of namespace_subject's struct
     // type (after env/local lookup misses). Lets arm bodies/predicates write
@@ -1815,6 +1820,19 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         return Type_Error{}
     case ^Type_Array:
         elem := resolve_type_expr(t.elem, c, span, const_values = const_values, env = env)
+        // utf8 arrays must be sentinel-terminated. print() and any other
+        // null-terminated-string consumer relies on the trailing 0; a
+        // plain [N]utf8 buffer fed to printf("%s", ...) walks past the
+        // buffer until it finds an unrelated zero somewhere on the
+        // stack (or rings the BEL byte). Force the sentinel form at
+        // type-check time so the storage promise lines up with the use.
+        // Dedup against the multi-pass resolver by AST pointer.
+        if _, is_utf8 := elem.(Type_Utf8); is_utf8 && !t.has_sentinel && c != nil {
+            if !c.errored_utf8_nodes[rawptr(t)] {
+                check_error(c, t.span, TYPE_UTF8_NEEDS_SENTINEL)
+                c.errored_utf8_nodes[rawptr(t)] = true
+            }
+        }
         fa := new(Type_Fixed_Array)
         fa.has_sentinel = t.has_sentinel
         fa.sentinel = t.sentinel
@@ -1870,6 +1888,12 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         return pt
     case ^Type_Slice_Expr:
         elem := resolve_type_expr(t.elem, c, span, env = env)
+        if _, is_utf8 := elem.(Type_Utf8); is_utf8 && !t.has_sentinel && c != nil {
+            if !c.errored_utf8_nodes[rawptr(t)] {
+                check_error(c, t.span, TYPE_UTF8_NEEDS_SENTINEL)
+                c.errored_utf8_nodes[rawptr(t)] = true
+            }
+        }
         sl := new(Type_Slice)
         sl.elem = elem
         sl.has_sentinel = t.has_sentinel
@@ -1877,6 +1901,12 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         return sl
     case ^Type_Partial_Array_Expr:
         elem := resolve_type_expr(t.elem, c, span, env = env)
+        if _, is_utf8 := elem.(Type_Utf8); is_utf8 && !t.has_sentinel && c != nil {
+            if !c.errored_utf8_nodes[rawptr(t)] {
+                check_error(c, t.span, TYPE_UTF8_NEEDS_SENTINEL)
+                c.errored_utf8_nodes[rawptr(t)] = true
+            }
+        }
         pa := new(Type_Partial_Array)
         pa.elem = elem
         pa.has_sentinel = t.has_sentinel
