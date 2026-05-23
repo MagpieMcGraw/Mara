@@ -19,11 +19,15 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         // and loses precision above 2^53. e.value is authoritative for
         // float targets.
         switch tt {
+        case "half":
+            // LLVM half literals use the `0xH<4 hex>` form. Cast through f16
+            // first to round to half precision.
+            return fmt.tprintf("0xH%04X", transmute(u16)f16(e.value))
         case "float":
             return fmt.tprintf("0x%016X", transmute(u64)f64(f32(e.value)))
         case "double":
             return fmt.tprintf("%f", e.value)
-        case "i8", "i16", "i32", "i64":
+        case "i8", "i16", "i32", "i64", "i128":
             return fmt.tprintf("%d", e.int_value)
         case:
             // Unknown target, fall back to literal kind
@@ -457,7 +461,7 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
     right := gen_expr(g, e.right, ir_type)
     tmp := fresh_tmp(g)
 
-    is_float := ir_type == "double" || ir_type == "float"
+    is_float := ir_type == "double" || ir_type == "float" || ir_type == "half"
 
     if is_float {
         #partial switch e.op {
@@ -598,6 +602,8 @@ cast_target_ir_type :: proc(name: string) -> (ir_type: string, is_float: bool, i
     switch name {
     case "int", "i64":  return "i64", false, false, true
     case "uint", "u64": return "i64", false, false, true
+    case "i128":        return "i128", false, false, true
+    case "u128":        return "i128", false, false, true
     case "i32":         return "i32", false, false, true
     case "i16":         return "i16", false, false, true
     case "i8", "c8", "utf8": return "i8", false, false, true
@@ -609,6 +615,7 @@ cast_target_ir_type :: proc(name: string) -> (ir_type: string, is_float: bool, i
         return "i32" if word_size_is_32 else "i64", false, false, true
     case "f64":         return "double", true, false, true
     case "f32":         return "float", true, false, true
+    case "f16":         return "half", true, false, true
     case "bool":        return "i1", false, false, true
     }
     return "", false, false, false
@@ -621,6 +628,8 @@ ir_type_bits :: proc(t: string) -> int {
     case "i16":    return 16
     case "i32":    return 32
     case "i64":    return 64
+    case "i128":   return 128
+    case "half":   return 16
     case "float":  return 32
     case "double": return 64
     }
@@ -628,12 +637,12 @@ ir_type_bits :: proc(t: string) -> int {
 }
 
 is_ir_float :: proc(t: string) -> bool {
-    return t == "float" || t == "double"
+    return t == "half" || t == "float" || t == "double"
 }
 
 is_unsigned_cast :: proc(name: string) -> bool {
     switch name {
-    case "u8", "u16", "u32", "u64", "uint", "usize", "bool":
+    case "u8", "u16", "u32", "u64", "u128", "uint", "usize", "bool":
         return true
     }
     return false

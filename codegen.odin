@@ -1570,6 +1570,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
             if v.bits == 0 { return "i32" if word_size_is_32 else "i64" }
             return fmt.tprintf("i%d", v.bits)
         case .Float:
+            if v.bits == 16 { return "half" }
             if v.bits == 32 { return "float" }
             return "double"
         }
@@ -1979,12 +1980,14 @@ can_elide_overflow :: proc(op, ir_type, left, right: string) -> bool {
 elem_byte_size :: proc(elem_type: string, checked: ^Checked_Program = nil) -> int {
     ptr_size := 4 if word_size_is_32 else 8
     switch elem_type {
+    case "i128":        return 16
     case "i64":         return 8
     case "double":      return 8
     case "ptr":         return ptr_size
     case "i32":         return 4
     case "float":       return 4
     case "i16":         return 2
+    case "half":        return 2
     case "i8":          return 1
     case "i1":          return 1
     case SLICE_IR_TYPE: return slice_header_bytes

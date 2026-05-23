@@ -49,8 +49,10 @@ find_llvm_intrinsic_spec :: proc(op: string) -> (LLVM_Intrinsic_Spec, bool) {
 // Returns ok=false if the suffix is malformed.
 type_from_llvm_suffix :: proc(suffix: string) -> (Type, bool) {
     switch suffix {
+    case "f16": return Type_Numeric{kind = .Float, bits = 16}, true
     case "f32": return Type_Numeric{kind = .Float, bits = 32}, true
     case "f64": return Type_F64{}, true
+    case "i128": return Type_Numeric{kind = .Signed, bits = 128}, true
     case "i64": return Type_Int{}, true
     case "i32": return Type_Numeric{kind = .Signed, bits = 32}, true
     case "i16": return Type_Numeric{kind = .Signed, bits = 16}, true
@@ -77,7 +79,7 @@ suffix_is_signed_int :: proc(suffix: string) -> bool {
     if len(suffix) < 2 || suffix[0] != 'i' { return false }
     n, ok := strconv.parse_int(suffix[1:])
     if !ok { return false }
-    return n == 8 || n == 16 || n == 32 || n == 64
+    return n == 8 || n == 16 || n == 32 || n == 64 || n == 128
 }
 
 suffix_is_float :: proc(suffix: string) -> bool {

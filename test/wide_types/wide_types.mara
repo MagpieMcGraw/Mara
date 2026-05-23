@@ -1,0 +1,53 @@
+module wide_types
+
+// Smoke test for i128, u128, and f16 — arithmetic, comparisons, storage,
+// function ABI, division.
+
+add_i128 :: fun(a: i128, b: i128) -> i128 {
+    return a + b
+}
+
+scale_half :: fun(x: f16, k: f16) -> f16 {
+    return x * k
+}
+
+main :: fun() -> i64 {
+    // i128: store, add, compare.
+    a : i128 = 100
+    b : i128 = 200
+    c : i128 = a + b
+    if c != 300 { return 1 }
+
+    // i128 cross function-boundary.
+    fn_sum : i128 = add_i128(a, b)
+    if fn_sum != 300 { return 2 }
+
+    // u128 with u64-range literal.
+    u : u128 = 0xFFFFFFFFFFFFFFFF
+    if u == 0 { return 3 }
+
+    // i128 multiplication beyond i64 range.
+    big_a : i128 = i128(1) * 1099511627776
+    big_b : i128 = big_a * 1099511627776
+    if big_b == 0 { return 4 }
+
+    // Negative i128 literal.
+    n : i128 = -1
+    if n >= 0 { return 5 }
+
+    // Note: i128 division (`/`) and modulo (`%`) currently fail to link
+    // because clang lowers them to compiler-rt builtins (`__divti3`,
+    // `__umodti3`, etc.) that we don't bundle. Add/sub/mul work because
+    // those map to native instructions or LLVM intrinsics.
+
+    // f16: store, arithmetic, compare.
+    h : f16 = 1.5
+    g : f16 = 2.5
+    sum : f16 = h + g
+    if sum != 4.0 { return 6 }
+
+    scaled : f16 = scale_half(h, 4.0)
+    if scaled != 6.0 { return 7 }
+
+    return 0
+}

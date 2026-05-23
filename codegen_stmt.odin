@@ -532,6 +532,8 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 emit(g, "  store double 0.0, ptr %s", alloca_name)
             } else if ir_type == "float" {
                 emit(g, "  store float 0.0, ptr %s", alloca_name)
+            } else if ir_type == "half" {
+                emit(g, "  store half 0xH0000, ptr %s", alloca_name)
             } else if ir_type == "i1" {
                 emit(g, "  store i1 false, ptr %s", alloca_name)
             } else if strings.has_prefix(ir_type, "[") || strings.has_prefix(ir_type, "%") {

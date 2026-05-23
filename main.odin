@@ -583,7 +583,7 @@ link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compil
     // tools/lld-link.exe next to tools/clang.exe (bundled in this repo);
     // Linux/macOS expect `ld.lld` on PATH via the system `lld` package
     // (`dnf install lld` / `apt install lld`).
-    strings.write_string(&b, " -Wno-override-module -fuse-ld=lld")
+    strings.write_string(&b, " -Wno-override-module -fuse-ld=lld -mf16c")
     // Shared mode: build a DLL/SO instead of an executable. clang's `-shared`
     // works across platforms — lld produces a .dll on Windows and a .so on
     // Linux. No entry-point symbol required (DllMain stub is auto-generated).

@@ -1483,16 +1483,19 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         case "i16":    return Type_Numeric{kind = .Signed,   bits = 16}
         case "i32":    return Type_Numeric{kind = .Signed,   bits = 32}
         case "i64":    return Type_Numeric{kind = .Signed,   bits = 64}
+        case "i128":   return Type_Numeric{kind = .Signed,   bits = 128}
         case "u8":     return Type_Numeric{kind = .Unsigned, bits = 8}
         case "u16":    return Type_Numeric{kind = .Unsigned, bits = 16}
         case "u32":    return Type_Numeric{kind = .Unsigned, bits = 32}
         case "u64":    return Type_Numeric{kind = .Unsigned, bits = 64}
+        case "u128":   return Type_Numeric{kind = .Unsigned, bits = 128}
         case "uint":
             // Reserved keyword; same retired status as `int`. Use 'u64' or 'usize'.
             if c != nil {
                 check_error(c, span, "type 'uint' is reserved — use 'u64' (or 'usize' for word-sized)")
             }
             return Type_Error{}
+        case "f16":    return Type_Numeric{kind = .Float,    bits = 16}
         case "f32":    return Type_Numeric{kind = .Float,    bits = 32}
         // Word-sized (target-dependent: i64 on x86-64, i32 on wasm32). bits=0
         // is the marker; codegen picks the actual width per build.
@@ -3213,6 +3216,7 @@ checker_type_alignment :: proc(t: Type) -> int {
         return 1
     case Type_Numeric:
         switch v.bits {
+        case 128: return 16
         case 64: return 8
         case 32: return 4
         case 16: return 2
@@ -4278,19 +4282,35 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
         if v.bits == 0 { return }
         switch v.kind {
         case .Signed:
+            // i128 covers the storage range exactly — anything that reached us
+            // already fits. Width=128 also skips the formula below where
+            // `1 << 127` would wrap.
+            if v.bits == 128 { return }
             max_v := (i128(1) << uint(v.bits - 1)) - 1
             min_v := -(i128(1) << uint(v.bits - 1))
             if i_val < min_v || i_val > max_v {
                 check_error(c, span, "constant %d overflows %s (range %d..%d)", i_val, tn, min_v, max_v)
             }
         case .Unsigned:
+            // For u128, the i128 storage caps at 2^127-1, so the parser's u64
+            // ceiling is already much tighter. Just sanity-check non-negative.
+            if v.bits == 128 {
+                if i_val < 0 {
+                    check_error(c, span, "constant %d overflows %s (range 0..2^128-1)", i_val, tn)
+                }
+                return
+            }
             max_v := (i128(1) << uint(v.bits)) - 1
             if i_val < 0 || i_val > max_v {
                 check_error(c, span, "constant %d overflows %s (range 0..%d)", i_val, tn, max_v)
             }
         case .Float:
-            // f32 range check
-            if v.bits == 32 {
+            // f16: ~65504 max magnitude.
+            if v.bits == 16 {
+                if val > 65504 || val < -65504 {
+                    check_error(c, span, "constant %v overflows f16", val)
+                }
+            } else if v.bits == 32 {
                 if val > 3.4028235e+38 || val < -3.4028235e+38 {
                     check_error(c, span, "constant %v overflows f32", val)
                 }
@@ -9480,10 +9500,10 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
     is_type_cast :: proc(name: string) -> bool {
         switch name {
         case "int", "uint",
-             "i8", "i16", "i32", "i64",
-             "u8", "u16", "u32", "u64",
+             "i8", "i16", "i32", "i64", "i128",
+             "u8", "u16", "u32", "u64", "u128",
              "usize", "isize",
-             "f32", "f64", "c8", "utf8", "bool":
+             "f16", "f32", "f64", "c8", "utf8", "bool":
             return true   // int / uint kept here so the cast site emits the
                           // same "reserved" error as a type position would,
                           // instead of a generic "unknown function".
@@ -9507,12 +9527,15 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         case "i8":  return Type_Numeric{kind = .Signed, bits = 8}, true
         case "i16": return Type_Numeric{kind = .Signed, bits = 16}, true
         case "i32": return Type_Numeric{kind = .Signed, bits = 32}, true
+        case "i128": return Type_Numeric{kind = .Signed, bits = 128}, true
         case "u8":  return Type_Numeric{kind = .Unsigned, bits = 8}, true
         case "u16": return Type_Numeric{kind = .Unsigned, bits = 16}, true
         case "u32": return Type_Numeric{kind = .Unsigned, bits = 32}, true
         case "u64": return Type_Numeric{kind = .Unsigned, bits = 64}, true
+        case "u128": return Type_Numeric{kind = .Unsigned, bits = 128}, true
         case "usize": return Type_Numeric{kind = .Unsigned, bits = 0}, true
         case "isize": return Type_Numeric{kind = .Signed,   bits = 0}, true
+        case "f16": return Type_Numeric{kind = .Float, bits = 16}, true
         case "f32": return Type_Numeric{kind = .Float, bits = 32}, true
         case "f64": return Type_F64{}, true
         case "c8":  return Type_C8{}, true
