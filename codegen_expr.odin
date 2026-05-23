@@ -1653,10 +1653,18 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             printed := false
             if ident, id_ok := arg_expr.(^Expr_Ident); id_ok {
                 if av, av_ok := get_array(g, ident.name); av_ok {
-                    fmt_name, fmt_len := get_string_literal(g, "%s")
+                    // Use %.*s (length-bounded) instead of %s. A plain
+                    // [N]utf8 buffer might not be null-terminated, in
+                    // which case printf("%s", ...) walks past the buffer
+                    // into adjacent memory until it finds a 0 — leaking
+                    // garbage to the user's terminal at best, ringing
+                    // the BEL byte at worst. %.*s reads exactly cap
+                    // bytes (stops early on a null), so sentinel and
+                    // non-sentinel utf8 arrays both print cleanly.
+                    fmt_name, fmt_len := get_string_literal(g, "%.*s")
                     fmt_ptr := fresh_tmp(g)
                     emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, av.alloca)
+                    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %d, ptr %s)", fmt_ptr, av.capacity, av.alloca)
                     printed = true
                 } else if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.is_utf8 {
                     // utf8 slice — load data ptr, print with %s
