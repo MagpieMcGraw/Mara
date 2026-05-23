@@ -1,0 +1,50 @@
+module mandelbrot_bench
+
+// Benchmarksgame Mandelbrot, compute-only variant.
+//
+// Iterates the standard z = z^2 + c, |z|^2 < 4 escape test over an
+// SIZExSIZE grid at MAX_ITER iterations. SIZEo file output — that's noise
+// when measuring the compute floor. The in_set counter sinks the
+// inner loop's result so the compiler can't dead-code the iteration.
+//
+// Canonical size from the Computer Language Benchmarks Game is 16000;
+// 1000 is more reasonable for development.
+
+use mara.time
+
+SIZE        :: 1000
+MAX_ITER :: 50
+
+main :: fun() {
+	// Sink — every in-set pixel bumps this. Printed at the end so the
+	// compiler can't elide the iter loop.
+	in_set_count := 0
+
+	_, start := time_since(0)
+
+	for y in 0..SIZE {
+		cy := 2.0 * f32(y) / f32(SIZE) - 1.0
+		for x in 0..SIZE {
+			cx := 2.0 * f32(x) / f32(SIZE) - 1.5
+			zx : f32 = 0
+			zy : f32 = 0
+			iter := 0
+			for iter < MAX_ITER {
+				zx2 := zx * zx
+				zy2 := zy * zy
+				if zx2 + zy2 > 4.0 do break
+				zy = 2.0 * zx * zy + cy
+				zx = zx2 - zy2 + cx
+				iter += 1
+			}
+			if iter == MAX_ITER {
+				in_set_count += 1
+			}
+		}
+	}
+
+	elapsed, _ := time_since(start)
+	print("SIZE=%d MAX_ITER=%d", SIZE, MAX_ITER)
+	print("in-set: %d / %d pixels", in_set_count, SIZE*SIZE)
+	print("elapsed: %g sec", elapsed)
+}
