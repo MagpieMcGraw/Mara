@@ -2093,11 +2093,18 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
 // Type query helpers
 // ---------------------------------------------------------------------------
 
-// Check if this expression is a c8 character (char literal or c8 variable)
+// Check if this expression is a single character byte — c8 literal,
+// c8 variable, or a Type_Utf8 byte (e.g. one element loaded out of a
+// utf8 string array). Both print the same way (%c via printf): they're
+// 8-bit values whose only meaningful rendering is as a glyph. Calling
+// the helper is_c8_expr is a slight name lie now that utf8 is included,
+// but every caller uses it for "should this print as a character?"
+// which is exactly the right semantic for both kinds.
 is_c8_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if _, ok := expr.(^Expr_Char); ok { return true }
     t := expr_type(expr)
     if _, is_c8 := t.(Type_C8); is_c8 { return true }
+    if _, is_utf8 := t.(Type_Utf8); is_utf8 { return true }
     return false
 }
 

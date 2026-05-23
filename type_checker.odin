@@ -8965,11 +8965,20 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         return Type_Infer_Int{}
     case ^Expr_String:
-        // String literals are full arrays of utf8 bytes (including null terminator)
+        // String literals are sentinel-terminated arrays of utf8 bytes:
+        // the visible content is `byte_len` glyphs and the trailing null
+        // is the sentinel. `size` is the visible byte count (matches
+        // cap()/len() reported to the user); has_sentinel = true tells
+        // codegen to reserve one extra storage slot for the null. Without
+        // the sentinel flag, `name : [N]utf8 = "..."` was incorrectly
+        // accepted — the type system couldn't tell a string literal apart
+        // from a plain `[N]utf8` of the same total size.
         byte_len := len(e.value)  // UTF-8 byte count (already decoded by lexer)
         fa := new(Type_Fixed_Array)
-        fa.size = byte_len + 1    // +1 for null terminator
+        fa.size = byte_len
         fa.elem = Type_Utf8{}
+        fa.has_sentinel = true
+        fa.sentinel = 0
         return fa
     case ^Expr_Char:
         return Type_C8{}
