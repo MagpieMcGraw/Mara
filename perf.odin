@@ -13,22 +13,26 @@ Performance_Timer :: struct {
     total_start: time.Time,                  // Start of entire timing session
 }
 
-// Begin timing session - call once at the start
+// Begin timing session - call once at the start. Prints the header so
+// per-phase lines from subsequent marks stream under it.
 perf_timer_begin :: proc(timer: ^Performance_Timer, first_phase: string) {
     timer.count = 0
     timer.total_start = time.now()
     timer.phase_start = timer.total_start
     timer.names[0] = first_phase
+    fmt.println("=== Performance ===")
 }
 
-// End current phase and start a new one - single call per phase transition
-// Records the time for the previous phase and starts timing the new phase
+// End current phase and start a new one - single call per phase transition.
+// Records the time for the previous phase, prints it, then starts the next.
 perf_timer_mark :: proc(timer: ^Performance_Timer, next_phase: string) {
     now := time.now()
 
     // Record time for the phase that just ended
     if timer.count < MAX_PERF_PHASES {
-        timer.times[timer.count] = time.duration_seconds(time.diff(timer.phase_start, now))
+        elapsed := time.duration_seconds(time.diff(timer.phase_start, now))
+        timer.times[timer.count] = elapsed
+        fmt.printf("  %s: %.1fms\n", timer.names[timer.count], elapsed * 1000)
         timer.count += 1
     }
 
@@ -39,24 +43,20 @@ perf_timer_mark :: proc(timer: ^Performance_Timer, next_phase: string) {
     timer.phase_start = now
 }
 
-// End the final phase and print results
+// End the final phase and print the total. The final phase's own line
+// streams from here too, then the cumulative total.
 perf_timer_end :: proc(timer: ^Performance_Timer) {
     now := time.now()
 
-    // Record time for the final phase
+    // Record + print the final phase
     if timer.count < MAX_PERF_PHASES {
-        timer.times[timer.count] = time.duration_seconds(time.diff(timer.phase_start, now))
+        elapsed := time.duration_seconds(time.diff(timer.phase_start, now))
+        timer.times[timer.count] = elapsed
+        fmt.printf("  %s: %.1fms\n", timer.names[timer.count], elapsed * 1000)
         timer.count += 1
     }
 
-    // Calculate total
     total := time.duration_seconds(time.diff(timer.total_start, now))
-
-    // Print results
-    fmt.println("=== Performance ===")
-    for i in 0..<timer.count {
-        fmt.printf("  %s: %.1fms\n", timer.names[i], timer.times[i] * 1000)
-    }
     fmt.printf("  Total: %.1fms\n", total * 1000)
 }
 

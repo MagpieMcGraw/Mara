@@ -902,7 +902,6 @@ main :: proc() {
         if !link_native(ll_path, out_name, checked, args.compiler_dir, pkg_shared) { return }
     }
 
-    fmt.printf("Compiled package '%s' -> %s\n", args.pkg_name, out_name)
-
     perf_timer_end(&perf)
+    fmt.printf("Compiled package '%s' -> %s\n", args.pkg_name, out_name)
 }
