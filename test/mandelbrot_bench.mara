@@ -3,7 +3,7 @@ module mandelbrot_bench
 // Benchmarksgame Mandelbrot, compute-only variant.
 //
 // Iterates the standard z = z^2 + c, |z|^2 < 4 escape test over an
-// SIZExSIZE grid at MAX_ITER iterations. SIZEo file output — that's noise
+// NxN grid at MAX_ITER iterations. No file output — that's noise
 // when measuring the compute floor. The in_set counter sinks the
 // inner loop's result so the compiler can't dead-code the iteration.
 //
@@ -12,7 +12,7 @@ module mandelbrot_bench
 
 use mara.time
 
-SIZE        :: 1000
+N        :: 1000
 MAX_ITER :: 50
 
 main :: fun() {
@@ -22,10 +22,10 @@ main :: fun() {
 
 	_, start := time_since(0)
 
-	for y in 0..SIZE {
-		cy := 2.0 * f32(y) / f32(SIZE) - 1.0
-		for x in 0..SIZE {
-			cx := 2.0 * f32(x) / f32(SIZE) - 1.5
+	for y in 0..N {
+		cy := 2.0 * f32(y) / f32(N) - 1.0
+		for x in 0..N {
+			cx := 2.0 * f32(x) / f32(N) - 1.5
 			zx : f32 = 0
 			zy : f32 = 0
 			iter := 0
@@ -44,7 +44,7 @@ main :: fun() {
 	}
 
 	elapsed, _ := time_since(start)
-	print("SIZE=%d MAX_ITER=%d", SIZE, MAX_ITER)
-	print("in-set: %d / %d pixels", in_set_count, SIZE*SIZE)
+	print("N=%d MAX_ITER=%d", N, MAX_ITER)
+	print("in-set: %d / %d pixels", in_set_count, N*N)
 	print("elapsed: %g sec", elapsed)
 }

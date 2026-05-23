@@ -9093,9 +9093,14 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                     return Type_Error{}
                 }
             }
-            // Set variant resolution metadata if this is an enum variant
+            // Set variant resolution metadata if this is an enum variant.
+            // Only attach when the env binding actually IS the enum — without
+            // this guard, any local `N :: 1000` would silently get overridden
+            // by an imported `Scancode.N` variant of the same name. The
+            // variant_to_enum table is meant for the `.N` dot-shorthand
+            // fallback, not bare names that already resolved to something else.
             if owner_enum, mapped := c.table.variant_to_enum[e.name]; mapped {
-                if et, et_ok := c.table.enums[owner_enum]; et_ok {
+                if et, t_ok := t.(^Type_Enum); t_ok && et.name == owner_enum {
                     if val, v_ok := et.variants[e.name]; v_ok {
                         e.resolved = Resolved_Enum_Variant{
                             enum_name = owner_enum,

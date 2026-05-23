@@ -1617,7 +1617,12 @@ gen_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Expr, call_span: 
             }
             emit_print_arg(g, args[arg_idx])
             arg_idx += 1
-            i += 1
+            // Skip both the `%` and the marker character (d, g, s, v, etc.).
+            // The marker is human-readable shorthand only — Mara picks the
+            // actual printf spec from the arg's type. Used to advance by 1,
+            // which left the marker char to be appended as a literal in the
+            // next iteration (`%d` printed as `<value>d`).
+            i += i+1 < len(fmt_str) ? 2 : 1
             continue
         }
         append(&seg_buf, ch)
