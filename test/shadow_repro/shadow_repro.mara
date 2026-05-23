@@ -1,0 +1,18 @@
+module shadow_repro
+
+// Regression: struct field name matching an imported module name was
+// erroneously flagged as "variable shadows an enclosing binding". Fields
+// live in their own namespace (only reached via obj.field), so they can't
+// shadow file-scope bindings.
+
+use camera
+
+Game :: struct {
+    camera: Camera
+}
+
+main :: fun() -> i64 {
+    g : Game
+    g.camera.fov = 90.0
+    return 0
+}

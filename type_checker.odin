@@ -1436,7 +1436,25 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
     if len(class_ft.params) == 0 { return }
     for p in class_ft.params {
         if p.default_value == nil {
-            check_error(c, span, "'%s' of type '%s' has no initializer, but constructor requires argument '%s' (no default) — supply constructor arguments", name, class_ft.name, p.name)
+            // Build a signature like `Camera(w: f32, h: f32, fovy: f32)` so the
+            // user can see exactly what to pass.
+            sig: strings.Builder
+            strings.builder_init(&sig)
+            strings.write_string(&sig, class_ft.name)
+            strings.write_string(&sig, "(")
+            for pp, i in class_ft.params {
+                if i > 0 { strings.write_string(&sig, ", ") }
+                strings.write_string(&sig, pp.name)
+                if pp.type_ != nil {
+                    strings.write_string(&sig, ": ")
+                    strings.write_string(&sig, type_name(pp.type_))
+                }
+            }
+            strings.write_string(&sig, ")")
+
+            check_error(c, span,
+                "'%s' of type '%s' is self-constructing — call it like a function with the required arguments. Definition: %s. Try: '%s : %s = %s(...)'",
+                name, class_ft.name, strings.to_string(sig), name, class_ft.name, class_ft.name)
             return
         }
     }
@@ -5605,7 +5623,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 check_error(c, s.span, "variable '%s' already declared in this scope", s.name)
                 continue
             }
-            if s.is_decl && !env.is_module_scope {
+            // Struct field declarations live in their own namespace (accessed
+            // via `obj.field`, never as a bare identifier), so they can't
+            // shadow file-scope or module-scope bindings. Skip the walk when
+            // the immediate parent is a class/struct scope.
+            in_struct_body := env.parent != nil && env.parent.class_scope != nil
+            if s.is_decl && !env.is_module_scope && !in_struct_body {
                 outer := env.parent
                 for outer != nil {
                     if outer.is_module_scope { break }

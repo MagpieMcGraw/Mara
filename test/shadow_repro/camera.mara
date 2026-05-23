@@ -1,0 +1,5 @@
+module camera
+
+Camera :: struct {
+    fov: f32
+}
