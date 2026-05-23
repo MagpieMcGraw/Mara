@@ -914,6 +914,7 @@ main :: proc() {
     }
 
     perf_timer_end(&perf)
+    fmt.println()
     flush_diagnostics()
     fmt.printf("Compiled module '%s' -> %s\n", args.pkg_name, out_name)
 }

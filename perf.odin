@@ -58,6 +58,10 @@ perf_timer_end :: proc(timer: ^Performance_Timer) {
 
     total := time.duration_seconds(time.diff(timer.total_start, now))
     fmt.printf("  Total: %.1fms\n", total * 1000)
+    // Closing divider — same width as "=== Performance ===" (19 chars).
+    // Visually wraps the timer block so diagnostic flushes and the
+    // success message that follow read as separate.
+    fmt.println("===================")
 }
 
 // Get time for a specific phase by index
