@@ -34,7 +34,7 @@ Player :: struct {
 
 Timers :: struct {
 	work  : time.Timer
-	frame : time.Timer
+	frame : Timer
 	fixed : time.Fixed_Timer
 }
 

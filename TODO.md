@@ -24,4 +24,6 @@ Should a param list be parsed as a scope? And then have it's fields extracted? H
 
 Scope literals.
 
+Can we drop fn from function pointers?
+
 Storage buffers as a type? Can that help out the depth analysis?

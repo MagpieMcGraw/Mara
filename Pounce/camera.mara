@@ -11,22 +11,27 @@ Camera :: struct(w, h, fovy : f32) {
 		turn_speed = 0.2
 		pos = Vec3{0, 0, 512}
 	}
-	proj_mx ortho_mx, view_mx := view_and_projections()
+	proj, ortho, view : Mat4
 	w_width, w_height := w, h
 	fov_y := to_radians(fovy)
 	fov_x := fov_y * w_width / w_height
-	near_plane := 0.1
-	far_plane := 50000
+	near_plane : f32 = 0.1
+	far_plane  : f32 = 50000
 
-	view_and_projections :: fun(cam: ^Self) {
-		proj := mat4_perspective(fovy, (w/h), near_plane, far_plane)
-		half_w := cam.w_width / 2
-		half_h := cam.w_height / 2
-		ortho := mat4_ortho3d(-half_w, half_w, -half_h, half_h, -1, 1)
+	proj, ortho, view = view_and_projections(#self)
+
+	view_and_projections :: fun(cam: ^Self) -> Mat4, Mat4, Mat4 {
+		w, h := cam.w_width, cam.w_height
+		proj := mat4_perspective(cam.fov_y, w/h, cam.near_plane, cam.far_plane)
+		half_w := w / 2
+		half_h := h / 2
+		ortho := mat4_ortho(-half_w, half_w, -half_h, half_h, -1, 1)
+		t := mat4_translate(cam.obj.pos)
+		r := mat4_from_quaternion(cam.obj.dir)
+		view := r * t
+
+		return proj, ortho, view
 	}
-	
-
-
 }
 
 // Camera :: struct {
@@ -237,14 +242,14 @@ mouse_ray :: fun(mouse_x, mouse_y: i32, camera: ^Camera) -> Vec3 {
 
 	// create mouse ray, apply inverse projection
 	mouse := Vec4{x, y, 0, 0}
-	inv_projection := mat4_inverse(camera.proj_mx)
+	inv_projection := mat4_inverse(camera.proj)
 	unprojected := inv_projection * mouse
 
 	// we have to write 1, 0 into the mouse ray
 	adjusted := Vec4{unprojected.x, unprojected.y, 1, 0}
 
 	// apply inverted view matrix to mouse ray
-	inv_view := mat4_inverse(camera.view_mx)
+	inv_view := mat4_inverse(camera.view)
 	ray := normalize(inv_view * adjusted)
 
 	return Vec3{ray.x, ray.y, ray.z}

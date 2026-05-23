@@ -121,7 +121,7 @@ draw_state_append :: fun(
 			obj.pos,
 			obj.dir,
 			obj.scale,
-			camera.view_mx, camera.proj_mx,
+			camera.view, camera.proj,
 		)
 		instance := Instance{
 			mvp_matrix = mvp,
@@ -139,7 +139,7 @@ draw_state_append :: fun(
 				obj.pos,
 				obj.dir,
 				highlight_scale,
-				camera.view_mx, camera.proj_mx
+				camera.view, camera.proj
 			)
 			highlight_batch.instances[i] = Instance{
 				mvp_matrix = highlight_mvp,
