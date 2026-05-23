@@ -1,0 +1,44 @@
+module mandelbrot
+
+// ASCII Mandelbrot. Each cell is one iteration of the escape-time loop;
+// glyphs are picked from a shade gradient based on how fast the point
+// escaped. Points that never escape inside MAX_ITER stay blank.
+
+WIDTH        :: 80
+HEIGHT       :: 30
+MAX_ITER     :: 60
+GRADIENT_LEN :: 13
+
+main :: fun() {
+	// 13 glyphs + null terminator; index 0..GRADIENT_LEN, never reach the null.
+	gradient : [14]utf8 = " .,-~:;=!*#$@"
+	for py in 0..HEIGHT {
+		row : [WIDTH]utf8
+		for px in 0..WIDTH {
+			// Pixel -> complex plane. Real spans [-2.5, 1.0], imaginary
+			// spans [-1.0, 1.0]. Terminal rows are roughly 2x taller
+			// than columns, so the 3.5:2.0 ratio comes out about square.
+			cx := f32(px) / f32(WIDTH)  * 3.5 - 2.5
+			cy := f32(py) / f32(HEIGHT) * 2.0 - 1.0
+
+			// Standard escape-time iteration: z_{n+1} = z_n^2 + c, stop
+			// when |z|^2 >= 4 (point has escaped) or we hit MAX_ITER.
+			zx : f32 = 0
+			zy : f32 = 0
+			iter := 0
+			for iter < MAX_ITER and zx*zx + zy*zy < 4.0 {
+				xt := zx*zx - zy*zy + cx
+				zy = 2.0 * zx * zy + cy
+				zx = xt
+				iter += 1
+			}
+
+			shade := 0
+			if iter < MAX_ITER {
+				shade = iter * GRADIENT_LEN / MAX_ITER
+			}
+			row[px] = gradient[shade]
+		}
+		print(row)
+	}
+}
