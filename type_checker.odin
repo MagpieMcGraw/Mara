@@ -416,6 +416,10 @@ Type_Env :: struct {
                                   // Read = error. Deref counts as read via the Expr_Ident
                                   // path that fires is_uninit_ref.
     newly_inited: map[string]bool, // ancestor uninit vars initialized in THIS scope (for definite assignment)
+    aliases:      map[string]string, // simple intra-procedural points-to: `it = &root` records
+                                     // aliases[it] = "root". Empty-string value means the alias
+                                     // was explicitly cleared in this scope (shadows parent).
+                                     // Lets field-access uninit checks see through pointer aliases.
     fn_name: string,             // enclosing function name (for #caller_name)
     class_scope: ^Type_Scope,    // when non-nil, this env is the body of that class/struct — field names
                                  // in this env should not leak to nested method bodies as bare identifiers.
@@ -675,6 +679,55 @@ clear_struct_uninit_fields :: proc(env: ^Type_Env, var_name: string) {
             }
         }
         cur = cur.parent
+    }
+}
+
+// Look up the target a local variable currently aliases via `&ident` assignment.
+// Walks the scope chain; an empty-string entry means the alias was explicitly
+// cleared in that scope (the variable was reassigned to something else).
+lookup_alias :: proc(env: ^Type_Env, name: string) -> (target: string, ok: bool) {
+    cur := env
+    for cur != nil {
+        if t, found := cur.aliases[name]; found {
+            if t == "" { return "", false }
+            return t, true
+        }
+        cur = cur.parent
+    }
+    return "", false
+}
+
+// Record `name` as aliasing `target` (from `name = &target`). Writes to current
+// scope's map; lookups walk up and find this entry before any parent.
+record_alias :: proc(env: ^Type_Env, name, target: string) {
+    env.aliases[name] = target
+}
+
+// Mark `name`'s alias as cleared in the current scope. Lookups stop at this
+// shadow entry instead of reaching an outer-scope alias.
+clear_alias :: proc(env: ^Type_Env, name: string) {
+    env.aliases[name] = ""
+}
+
+// If `e` is `&<ident>` for a plain identifier, return that name. Used to detect
+// simple pointer aliasing for the uninit-field check.
+address_of_ident :: proc(e: Expr) -> (name: string, ok: bool) {
+    if u, u_ok := e.(^Expr_Unary); u_ok && u.op == .Ampersand {
+        if id, id_ok := u.operand.(^Expr_Ident); id_ok {
+            return id.name, true
+        }
+    }
+    return "", false
+}
+
+// Refresh the alias entry for `name` after an assignment. If the RHS is `&ident`,
+// record the alias; otherwise clear any prior alias (the variable now points
+// somewhere the analysis can't follow).
+update_alias_from_value :: proc(env: ^Type_Env, name: string, value: Expr) {
+    if target, ok := address_of_ident(value); ok {
+        record_alias(env, name, target)
+    } else {
+        clear_alias(env, name)
     }
 }
 
@@ -5782,6 +5835,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 type_env_set(env, s.name, ann_type)
                 set_provenance(env, s.name, expr_provenance(c, s.value, env))
                 mark_local_slice_backed_if_needed(c, env, s.name, s.value)
+                update_alias_from_value(env, s.name, s.value)
                 // Pointer-typed and assigned `void` (the null literal) is
                 // semantically "no usable value yet" — same definition as
                 // declared-without-initializer. Route through the existing
@@ -5824,6 +5878,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     type_env_set(env, s.name, solid)
                     set_provenance(env, s.name, expr_provenance(c, s.value, env))
                     mark_local_slice_backed_if_needed(c, env, s.name, s.value)
+                    update_alias_from_value(env, s.name, s.value)
                     if _, is_ptr := distinct_base(solid).(^Type_Ptr); is_ptr {
                         if is_void_literal(s.value) {
                             env.uninit_refs[s.name] = true
@@ -5856,6 +5911,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.var_type = distinct_base(existing_type)
                     s.env_type = existing_type
                     set_provenance(env, s.name, expr_provenance(c, s.value, env))
+                    update_alias_from_value(env, s.name, s.value)
                 }
             }
         case ^Stmt_Multi_Assign:
@@ -9016,11 +9072,20 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
 // Shared struct field access logic — used for both direct and auto-deref (^Struct) paths.
 // Handles uninit checks, field resolution, and associated function lookup.
 check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope_Body, env: ^Type_Env) -> Type {
-    // Check for reading an uninitialized pointer/slice field
+    // Check for reading an uninitialized pointer/slice field.
+    // If the receiver is a pointer alias (e.g. `it = &root`), look through the
+    // alias too — `it.next` should fire the same error as `root.next`.
     if ident, ident_ok := e.expr.(^Expr_Ident); ident_ok {
         field_key := strings.concatenate({ident.name, ".", e.field})
         if is_uninit_ref(env, field_key) {
             check_error(c, e.span, "field '%s' of '%s' is used before being assigned a value", e.field, ident.name)
+        } else if target, has_alias := lookup_alias(env, ident.name); has_alias {
+            aliased_key := strings.concatenate({target, ".", e.field})
+            if is_uninit_ref(env, aliased_key) {
+                check_error(c, e.span,
+                    "field '%s' of '%s' (aliased via '%s') is used before being assigned a value",
+                    e.field, target, ident.name)
+            }
         }
     }
     ft := resolve_struct_field(st, e.field, c.table)

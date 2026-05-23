@@ -1,0 +1,17 @@
+module zig_audit_mara
+
+Config :: struct {
+    name: ^u8
+    next: ^Config
+}
+
+main :: fun() -> i64 {
+    root : Config
+
+    it : ^Config = &root
+    for it != void {
+        it = it.next
+    }
+
+    return 0
+}
