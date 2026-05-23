@@ -1,0 +1,9 @@
+module test_literal_overflow_u64_fail
+
+// 64-bit overflow checks are now exact (previously skipped due to f64
+// imprecision). A negative literal assigned to u64 must error.
+
+main :: fun() -> i64 {
+    x : u64 = -1
+    return i64(x)
+}

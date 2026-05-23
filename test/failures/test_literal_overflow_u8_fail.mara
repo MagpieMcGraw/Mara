@@ -1,0 +1,9 @@
+module test_literal_overflow_u8_fail
+
+// Literal range check on smaller integer types — must still error after the
+// i128-precision rewrite of check_literal_overflow.
+
+main :: fun() -> i64 {
+    x : u8 = 0x1FF   // 511, doesn't fit in u8 (0..255)
+    return i64(x)
+}

@@ -173,8 +173,9 @@ Expr :: union {
 
 Expr_Number :: struct {
     value:     f64,    // f64 form (authoritative when is_float = true)
-    int_value: i64,    // i64 form (authoritative when is_float = false) — exact for hex/decimal
-                       // integer literals up to i64 max; f64 alone loses precision above 2^53
+    int_value: i128,   // exact integer form (authoritative when is_float = false).
+                       // Wide enough for u64 hex literals (`0xFFFFFFFFFFFFFFFF`) and
+                       // their negations, with headroom for future widening if needed.
     is_float:  bool,
     span:      Span,
     type_:     Type,   // filled by type checker
@@ -1710,7 +1711,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
                         const_type = tn.name,
                     }
                     if num, num_ok := tp.default_value.(^Expr_Number); num_ok {
-                        gp.default_value = int(num.int_value)
+                        gp.default_value = int(i64(num.int_value))
                         gp.has_default = true
                     }
                     append(&generic_params, gp)
@@ -3618,22 +3619,20 @@ is_type_token :: proc(k: Token_Kind) -> bool {
     return false
 }
 
-// Outcome of parsing a Number token's text. `Hex_Overflow` is split out from
-// `Invalid` so the parser can give the user a precise diagnostic when their
-// literal is well-formed hex but exceeds i64.
+// Outcome of parsing a Number token's text.
 Number_Parse_Error :: enum {
     None,
     Invalid,        // malformed text (empty hex digits, garbage)
-    Hex_Overflow,   // well-formed hex but > i64 max — needs u64 / bigint literals later
+    Hex_Overflow,   // well-formed hex but > u64 max — beyond the simple wide-literal tier
 }
 
-// Parse a Number token's text into both an f64 and an i64 form. Hex literals
-// (`0x...`) and decimal-without-dot integers fill the i64 form exactly;
-// floats fill only the f64 form (i64 is set to the truncating cast for
+// Parse a Number token's text into both an f64 and an i128 form. Hex literals
+// (`0x...`) and decimal-without-dot integers fill the i128 form exactly;
+// floats fill only the f64 form (i128 is set to the truncating cast for
 // fallback but should never be read when is_float is true). Hex values up
-// to i64 max (0x7FFFFFFFFFFFFFFF) round-trip exactly in i64; larger hex
-// values are flagged as Hex_Overflow.
-parse_number_text :: proc(text: string) -> (f_val: f64, i_val: i64, err: Number_Parse_Error) {
+// to u64 max (`0xFFFFFFFFFFFFFFFF`, 16 hex digits) round-trip exactly;
+// anything wider is flagged as Hex_Overflow.
+parse_number_text :: proc(text: string) -> (f_val: f64, i_val: i128, err: Number_Parse_Error) {
     if len(text) > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') {
         // Strip prefix and any `_` separators before base-16 parse.
         b: strings.Builder
@@ -3642,36 +3641,32 @@ parse_number_text :: proc(text: string) -> (f_val: f64, i_val: i64, err: Number_
         }
         digits := strings.to_string(b)
 
-        // Overflow detection has to happen BEFORE parse_int — Odin's
-        // parse_int(s, 16) silently wraps top-bit-set values to negative
-        // i64 (treating the bit pattern as two's-complement) rather than
-        // failing. Strip leading zeros first so `0x000…7FFF...F` isn't
-        // false-flagged. After that: more than 16 significant hex digits,
-        // or 16 with the leading digit > '7' (top bit set), exceeds i64.
+        // More than 16 significant hex digits doesn't fit in u64. Strip leading
+        // zeros first so `0x000…FFFF...F` isn't false-flagged.
         clean := digits
         for len(clean) > 0 && clean[0] == '0' { clean = clean[1:] }
-        if len(clean) > 16 || (len(clean) == 16 && clean[0] > '7') {
+        if len(clean) > 16 {
             return 0, 0, .Hex_Overflow
         }
 
-        n, parse_ok := strconv.parse_int(digits, 16)
+        n, parse_ok := strconv.parse_u64_of_base(digits, 16)
         if !parse_ok {
             return 0, 0, .Invalid
         }
-        return f64(n), i64(n), .None
+        return f64(n), i128(n), .None
     }
     // Decimal: try int parsing first. If it succeeds, the integer form is
     // exact and we derive the f64 from it. Otherwise (has `.`, exponent,
     // etc.) fall back to parse_f64 — int_value gets a truncating cast that
     // shouldn't be read for is_float = true literals anyway.
     if n, int_ok := strconv.parse_int(text, 10); int_ok {
-        return f64(n), i64(n), .None
+        return f64(n), i128(n), .None
     }
     f, f_ok := strconv.parse_f64(text)
     if !f_ok {
         return 0, 0, .Invalid
     }
-    return f, i64(f), .None
+    return f, i128(f), .None
 }
 
 // Emit the appropriate parse-time diagnostic for a Number token whose text
@@ -3682,7 +3677,7 @@ report_number_parse_error :: proc(p: ^Parser, tok: Token, err: Number_Parse_Erro
     case .None:
         // nothing to report
     case .Hex_Overflow:
-        fmt.printf("[%s] Parse error: hex literal '%s' overflows i64 (max 0x7FFFFFFFFFFFFFFF) — Mara doesn't yet have u64 or arbitrary-precision integer literals\n", error_prefix(tok), tok.text)
+        fmt.printf("[%s] Parse error: hex literal '%s' overflows u64 (max 0xFFFFFFFFFFFFFFFF) — Mara's integer-literal precision tops out at 64 bits\n", error_prefix(tok), tok.text)
         p.errors += 1
     case .Invalid:
         fmt.printf("[%s] Parse error: invalid number '%s'\n", error_prefix(tok), tok.text)

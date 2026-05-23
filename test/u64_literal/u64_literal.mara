@@ -1,0 +1,16 @@
+module u64_literal
+
+// Probe: u64 hex literals beyond i64 max.
+// 0xFFFFFFFFFFFFFFFF (u64::MAX) should now parse and store as u64.
+
+main :: fun() -> i64 {
+    a : u64 = 0xFFFFFFFFFFFFFFFF
+    b : u64 = 0x8000000000000000   // 2^63 — top bit set, exceeds i64 max
+    if a == 0xFFFFFFFFFFFFFFFF {
+        if b == 0x8000000000000000 {
+            return 0
+        }
+        return 2
+    }
+    return 1
+}

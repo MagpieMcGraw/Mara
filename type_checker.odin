@@ -2154,7 +2154,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
             if sub, sub_ok := subst[ident.name]; sub_ok {
                 if ci, ci_ok := sub.(Type_Const_Int); ci_ok {
                     new_num := new(Expr_Number)
-                    new_num.int_value = i64(ci.value)
+                    new_num.int_value = i128(ci.value)
                     new_num.value = f64(ci.value)
                     new_num.span = ident.span
                     dv = new_num
@@ -4236,9 +4236,10 @@ solidify_type :: proc(t: Type) -> Type {
 
 // Try to extract a compile-time constant numeric value from an expression.
 // Returns both forms — f64 (for fractional/range-vs-float comparisons) and
-// i64 (exact for integer literals). Callers use whichever matches the type
-// they're checking. f64 is lossy above 2^53 but i64 stays exact.
-extract_constant_value :: proc(expr: Expr) -> (f_val: f64, i_val: i64, ok: bool) {
+// i128 (exact for integer literals up to u64 width). Callers use whichever
+// matches the type they're checking. f64 is lossy above 2^53 but i128 stays
+// exact for the full u64-width literal range and its negation.
+extract_constant_value :: proc(expr: Expr) -> (f_val: f64, i_val: i128, ok: bool) {
     if num, n_ok := expr.(^Expr_Number); n_ok {
         return num.value, num.int_value, true
     }
@@ -4256,7 +4257,7 @@ extract_constant_value :: proc(expr: Expr) -> (f_val: f64, i_val: i64, ok: bool)
 // Only checks when the value expression is a compile-time constant (literal)
 // and the target is a concrete sized type.
 check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span) {
-    val, _, is_const := extract_constant_value(expr)
+    val, i_val, is_const := extract_constant_value(expr)
     // If not a direct literal, check if it's a reference to an infer constant
     if !is_const {
         if ident, ok := expr.(^Expr_Ident); ok {
@@ -4271,23 +4272,21 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
 
     #partial switch v in target {
     case Type_Numeric:
-        // 64-bit types: skip overflow check (f64 can't precisely represent the boundary)
-        if v.bits >= 64 { return }
-        // Word-sized (bits=0): skip too. Width is decided at codegen, and the
-        // 32-bit case is conservative — anything that would overflow there
-        // already overflows on the 64-bit case worth catching.
+        // Word-sized (bits=0): skip — width is decided at codegen, and the 32-bit
+        // case is conservative (anything that would overflow there already
+        // overflows on the 64-bit case worth catching).
         if v.bits == 0 { return }
         switch v.kind {
         case .Signed:
-            max := f64(int(1) << uint(v.bits - 1) - 1)
-            min := -max - 1
-            if val < min || val > max {
-                check_error(c, span, "constant %v overflows %s (range %v..%v)", int(val), tn, int(min), int(max))
+            max_v := (i128(1) << uint(v.bits - 1)) - 1
+            min_v := -(i128(1) << uint(v.bits - 1))
+            if i_val < min_v || i_val > max_v {
+                check_error(c, span, "constant %d overflows %s (range %d..%d)", i_val, tn, min_v, max_v)
             }
         case .Unsigned:
-            max := f64(int(1) << uint(v.bits) - 1)
-            if val < 0 || val > max {
-                check_error(c, span, "constant %v overflows %s (range 0..%v)", int(val), tn, int(max))
+            max_v := (i128(1) << uint(v.bits)) - 1
+            if i_val < 0 || i_val > max_v {
+                check_error(c, span, "constant %d overflows %s (range 0..%d)", i_val, tn, max_v)
             }
         case .Float:
             // f32 range check
@@ -4298,7 +4297,7 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
             }
         }
     case Type_Int:
-        // i64 — f64 can't precisely represent the boundary, skip
+        // Type_Int is reserved (rejected by name lookup) — nothing to check here.
     case Type_F64:
         // f64 — no meaningful overflow from a literal
     case:
@@ -5364,7 +5363,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             cap_expr: Expr
                             if cv, cv_ok := gi.type_args[0].(Type_Const_Value); cv_ok {
                                 num := new(Expr_Number)
-                                num.int_value = i64(cv.value)
+                                num.int_value = i128(cv.value)
                                 num.value = f64(cv.value)
                                 num.span = cv.span
                                 cap_expr = num
@@ -5401,7 +5400,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         cap_expr: Expr
                         if cv, cv_ok := gi.type_args[0].(Type_Const_Value); cv_ok {
                             num := new(Expr_Number)
-                            num.int_value = i64(cv.value)
+                            num.int_value = i128(cv.value)
                             num.value = f64(cv.value)
                             num.span = cv.span
                             cap_expr = num
@@ -8896,7 +8895,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                         //   Type_Const_Expr   — anything else:    take([]T(n*2), ...), take([]T(f(x)), ...)
                         if cv, cv_ok := gi.type_args[0].(Type_Const_Value); cv_ok {
                             num := new(Expr_Number)
-                            num.int_value = i64(cv.value)
+                            num.int_value = i128(cv.value)
                             num.value = f64(cv.value)
                             num.span = cv.span
                             e.count_expr = num
