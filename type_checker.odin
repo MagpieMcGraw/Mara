@@ -8769,6 +8769,7 @@ expr_type_ptr :: proc(e: Expr) -> ^Type {
     case ^Expr_Include:            return &v.type_
     case ^Expr_Type_Name:          return &v.type_
     case ^Expr_Tuple_Default:      return &v.type_
+    case ^Expr_Self:               return &v.type_
     case nil:                      return nil
     }
     return nil
@@ -9258,6 +9259,23 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             return tup.elems[e.index]
         }
         return src_type
+    case ^Expr_Self:
+        // `#self` — pointer the constructor is writing into. Walk the env
+        // chain for the nearest class_scope (set on a struct/class body's
+        // ns_env). Nested funs are reparented past the class ns_env at
+        // check_scope_body, so the lookup fails inside them — explicit
+        // ^Self params are still required for helpers.
+        cur := env
+        for cur != nil {
+            if cur.class_scope != nil {
+                t := new_clone(Type_Ptr{elem = cur.class_scope})
+                e.type_ = t
+                return t
+            }
+            cur = cur.parent
+        }
+        check_error(c, e.span, "#self is only legal inside a struct/class body")
+        return Type_Error{}
     }
     return Type_Error{}
 }

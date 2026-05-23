@@ -169,6 +169,7 @@ Expr :: union {
     ^Expr_Include,
     ^Expr_Type_Name,
     ^Expr_Tuple_Default,
+    ^Expr_Self,
 }
 
 Expr_Number :: struct {
@@ -399,6 +400,18 @@ Expr_Tuple_Default :: struct {
     index:  int,    // 0..N-1
     span:   Span,
     type_:  Type,   // filled by type checker — the i-th tuple slot
+}
+
+// `#self` — compiler-injected pointer to the under-construction instance,
+// valid only inside a struct/class body. Resolves to type ^Self (the
+// enclosing struct's Type_Scope wrapped in Type_Ptr). Codegen emits %sret,
+// the destination pointer the constructor is writing into. Nested funs
+// inside the struct body are reparented past the class_scope env at check
+// time, so #self in a nested fun fails the lookup — explicit ^Self params
+// are still the way to thread the instance through helpers.
+Expr_Self :: struct {
+    span:  Span,
+    type_: Type,    // filled by type checker — ^Type_Scope of enclosing struct
 }
 
 // Statements
@@ -4039,6 +4052,8 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             // which the rest of the pipeline already understands.
             if name_tok.text == "skip_constructor" {
                 result = new_clone(Expr_Skip_Constructor{span = token_span(hash_tok)})
+            } else if name_tok.text == "self" {
+                result = new_clone(Expr_Self{span = token_span(hash_tok)})
             } else {
                 intrinsic_kind: Intrinsic_Kind
                 intrinsic_ok := true
@@ -4251,6 +4266,10 @@ clone_expr :: proc(e: Expr) -> Expr {
         // Preserve `source` by reference — the whole point of this node is
         // that multiple bindings in a group share the SAME source so codegen
         // can dedup. Cloning the source here would defeat that.
+        c := new_clone(v^)
+        c.type_ = nil
+        return c
+    case ^Expr_Self:
         c := new_clone(v^)
         c.type_ = nil
         return c

@@ -311,6 +311,11 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         return "0"
     case ^Expr_Tuple_Default:
         return gen_tuple_default(g, e)
+    case ^Expr_Self:
+        // The constructor's destination pointer — pre-bind_field_var at
+        // codegen_fn.odin GEPs every field off %sret, so %sret IS the
+        // under-construction instance pointer.
+        return "%sret"
     }
     return "0"
 }
