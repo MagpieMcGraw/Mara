@@ -1432,6 +1432,139 @@ check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
     fmt.println()
 }
 
+// Walk an expression looking for `Expr_Call` whose direct args include
+// `Expr_Self`. Returns the call's name on first hit. DFS order means
+// nested-most hits first — `wrap(view_and_projections(#self))` reports
+// "view_and_projections" (the actual #self consumer), not the wrapper.
+find_self_call_name :: proc(e: Expr) -> (name: string, found: bool) {
+    if e == nil { return "", false }
+    #partial switch v in e {
+    case ^Expr_Call:
+        for arg in v.args {
+            if n, ok := find_self_call_name(arg); ok { return n, true }
+        }
+        for arg in v.args {
+            if _, is_self := arg.(^Expr_Self); is_self {
+                return v.name, true
+            }
+        }
+    case ^Expr_Binary:
+        if n, ok := find_self_call_name(v.left); ok { return n, true }
+        return find_self_call_name(v.right)
+    case ^Expr_Unary:
+        return find_self_call_name(v.operand)
+    case ^Expr_Field_Access:
+        return find_self_call_name(v.expr)
+    case ^Expr_Index:
+        if n, ok := find_self_call_name(v.expr); ok { return n, true }
+        return find_self_call_name(v.index)
+    case ^Expr_Slice:
+        if n, ok := find_self_call_name(v.expr); ok { return n, true }
+        if n, ok := find_self_call_name(v.low); ok { return n, true }
+        return find_self_call_name(v.high)
+    case ^Expr_Struct_Literal:
+        for f in v.fields {
+            if n, ok := find_self_call_name(f.value); ok { return n, true }
+        }
+        if v.is_broadcast {
+            return find_self_call_name(v.broadcast_value)
+        }
+    case ^Expr_Array:
+        for elem in v.elements {
+            if n, ok := find_self_call_name(elem); ok { return n, true }
+        }
+    case ^Expr_If:
+        if n, ok := find_self_call_name(v.then_expr); ok { return n, true }
+        return find_self_call_name(v.else_expr)
+    case ^Expr_Take:
+        return find_self_call_name(v.storage)
+    case ^Expr_Tuple_Default:
+        return find_self_call_name(v.source)
+    }
+    return "", false
+}
+
+// True if `#self` appears anywhere in `e`. Used to catch the inline form
+// (`x := #self.fov_y * 2`) that doesn't go through a function call.
+contains_self_anywhere :: proc(e: Expr) -> bool {
+    if e == nil { return false }
+    #partial switch v in e {
+    case ^Expr_Self:
+        return true
+    case ^Expr_Call:
+        for arg in v.args { if contains_self_anywhere(arg) { return true } }
+    case ^Expr_Binary:
+        return contains_self_anywhere(v.left) || contains_self_anywhere(v.right)
+    case ^Expr_Unary:
+        return contains_self_anywhere(v.operand)
+    case ^Expr_Field_Access:
+        return contains_self_anywhere(v.expr)
+    case ^Expr_Index:
+        return contains_self_anywhere(v.expr) || contains_self_anywhere(v.index)
+    case ^Expr_Slice:
+        return contains_self_anywhere(v.expr) || contains_self_anywhere(v.low) || contains_self_anywhere(v.high)
+    case ^Expr_Struct_Literal:
+        for f in v.fields { if contains_self_anywhere(f.value) { return true } }
+        if v.is_broadcast { return contains_self_anywhere(v.broadcast_value) }
+    case ^Expr_Array:
+        for elem in v.elements { if contains_self_anywhere(elem) { return true } }
+    case ^Expr_If:
+        return contains_self_anywhere(v.condition) ||
+               contains_self_anywhere(v.then_expr) ||
+               contains_self_anywhere(v.else_expr)
+    case ^Expr_Take:
+        return contains_self_anywhere(v.storage)
+    case ^Expr_Tuple_Default:
+        return contains_self_anywhere(v.source)
+    }
+    return false
+}
+
+// Warn when a struct field initializer hands `#self` to anything that
+// could read partially-constructed state, while other field decls
+// still follow. The function-call form (`x := helper(#self)`) is the
+// silent-zero case from the Camera porting session — helper reads
+// `cam.fov_y` etc. and gets zeros because later decls haven't written
+// yet. The inline shape (`x := #self.fov_y * 2`) is caught by the
+// same check via `contains_self_anywhere` as a fallback.
+check_early_self_decls :: proc(c: ^Checker, body: [dynamic]Stmt) {
+    n := len(body)
+    if n == 0 { return }
+    // Single backward scan so each later "does any Stmt_Decl follow?"
+    // probe is O(1). Without this, the check is O(n^2) over the body.
+    has_decl_after: [dynamic]bool
+    defer delete(has_decl_after)
+    resize(&has_decl_after, n)
+    seen := false
+    for i := n - 1; i >= 0; i -= 1 {
+        has_decl_after[i] = seen
+        if _, is_decl := body[i].(^Stmt_Decl); is_decl {
+            seen = true
+        }
+    }
+    for stmt, i in body {
+        decl, is_decl := stmt.(^Stmt_Decl)
+        if !is_decl { continue }
+        if len(decl.init_values) == 0 { continue }
+        if !has_decl_after[i] { continue }
+        for init in decl.init_values {
+            if call_name, ok := find_self_call_name(init); ok {
+                check_warning(c, decl.span,
+                    "Move '%s' below all of the declarations in this class. Trust me.",
+                    call_name)
+                break
+            } else if contains_self_anywhere(init) {
+                names := strings.join(decl.names[:], ", ")
+                defer delete(names)
+                check_warning(c, decl.span,
+                    "Move '%s' below all of the declarations in this class. Trust me.",
+                    names)
+                break
+            }
+        }
+    }
+}
+
 // Reject an uninitialized declaration whose type is a class that requires
 // ctor arguments without defaults.
 //
@@ -6373,6 +6506,16 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if signature_only { return }
 
     if len(s.body) == 0 { return }
+
+    // Footgun check (struct only): warn when a field initializer hands
+    // #self to anything that could read partially-constructed state
+    // while later field decls still come below it. Lives after the
+    // signature_only bail so it fires once per struct (the pre-pass and
+    // full pass both reach this function — only the full pass continues
+    // past the bail).
+    if ft.kind == .Struct {
+        check_early_self_decls(c, s.body)
+    }
 
     // Register params in scope
     child.return_type = ft.return_type
