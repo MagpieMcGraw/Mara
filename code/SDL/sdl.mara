@@ -61,6 +61,14 @@ Scancode :: union(tag u32) {
     Left     = 80
     Down     = 81
     Up       = 82
+    LCTRL    = 224
+    LSHIFT   = 225
+    LALT     = 226
+    LGUI     = 227
+    RCTRL    = 228
+    RSHIFT   = 229
+    RALT     = 230
+    RGUI     = 231
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +85,75 @@ Event :: union(tag u32, pad u32, size 128) {
     }
     Terminating = 257 {
         timestamp: u64
+    }
+    LowMemory = 258 {
+        timestamp: u64
+    }
+    WillEnterBackground = 259 {
+        timestamp: u64
+    }
+    DidEnterBackground = 260 {
+        timestamp: u64
+    }
+    WillEnterForeground = 261 {
+        timestamp: u64
+    }
+    DidEnterForeground = 262 {
+        timestamp: u64
+    }
+    LocaleChanged = 263 {
+        timestamp: u64
+    }
+    SystemThemeChanged = 264 {
+        timestamp: u64
+    }
+    DisplayOrientation = 337 {
+        timestamp: u64
+        displayID: u32
+        data1: i32
+        data2: i32
+    }
+    DisplayAdded = 338 {
+        timestamp: u64
+        displayID: u32
+        data1: i32
+        data2: i32
+    }
+    DisplayRemoved = 339 {
+        timestamp: u64
+        displayID: u32
+        data1: i32
+        data2: i32
+    }
+    DisplayMoved = 340 {
+        timestamp: u64
+        displayID: u32
+        data1: i32
+        data2: i32
+    }
+    DisplayDesktopModeChanged = 341 {
+        timestamp: u64
+        displayID: u32
+        data1: i32
+        data2: i32
+    }
+    DisplayCurrentModeChanged = 342 {
+        timestamp: u64
+        displayID: u32
+        data1: i32
+        data2: i32
+    }
+    DisplayContentScaleChanged = 343 {
+        timestamp: u64
+        displayID: u32
+        data1: i32
+        data2: i32
+    }
+    DisplayUsableBoundsChanged = 344 {
+        timestamp: u64
+        displayID: u32
+        data1: i32
+        data2: i32
     }
     WindowShown = 514 {
         timestamp: u64
@@ -103,6 +180,18 @@ Event :: union(tag u32, pad u32, size 128) {
         data2: i32
     }
     WindowResized = 518 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowPixelSizeChanged = 519 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowMetalViewResized = 520 {
         timestamp: u64
         windowID: u32
         data1: i32
@@ -156,6 +245,66 @@ Event :: union(tag u32, pad u32, size 128) {
         data1: i32
         data2: i32
     }
+    WindowHitTest = 529 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowIccprofChanged = 530 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowDisplayChanged = 531 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowDisplayScaleChanged = 532 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowSafeAreaChanged = 533 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowOccluded = 534 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowEnterFullscreen = 535 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowLeaveFullscreen = 536 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowDestroyed = 537 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
+    WindowHdrStateChanged = 538 {
+        timestamp: u64
+        windowID: u32
+        data1: i32
+        data2: i32
+    }
     KeyDown = 768 {
         timestamp: u64
         windowID: u32
@@ -177,6 +326,48 @@ Event :: union(tag u32, pad u32, size 128) {
         raw: u16
         down: u8
         repeat: u8
+    }
+    TextEditing = 770 {
+        timestamp: u64
+        windowID: u32
+        text: ^byte
+        start: i32
+        length: i32
+    }
+    TextInput = 771 {
+        timestamp: u64
+        windowID: u32
+        text: ^byte
+    }
+    KeymapChanged = 772 {
+        timestamp: u64
+    }
+    KeyboardAdded = 773 {
+        timestamp: u64
+        which: u32
+    }
+    KeyboardRemoved = 774 {
+        timestamp: u64
+        which: u32
+    }
+    TextEditingCandidates = 775 {
+        timestamp: u64
+        windowID: u32
+        candidates: ^byte
+        num_candidates: i32
+        selected_candidate: i32
+        horizontal: u8
+        padding1: u8
+        padding2: u8
+        padding3: u8
+    }
+    ScreenKeyboardShown = 776 {
+        timestamp: u64
+        windowID: u32
+    }
+    ScreenKeyboardHidden = 777 {
+        timestamp: u64
+        windowID: u32
     }
     MouseMotion = 1024 {
         timestamp: u64
@@ -222,6 +413,221 @@ Event :: union(tag u32, pad u32, size 128) {
         integer_x: i32
         integer_y: i32
     }
+    MouseAdded = 1028 {
+        timestamp: u64
+        which: u32
+    }
+    MouseRemoved = 1029 {
+        timestamp: u64
+        which: u32
+    }
+    JoystickAxisMotion = 1536 {
+        timestamp: u64
+        which: u32
+        axis: u8
+        padding1: u8
+        padding2: u8
+        padding3: u8
+        value: i16
+        padding4: u16
+    }
+    JoystickBallMotion = 1537 {
+        timestamp: u64
+        which: u32
+        ball: u8
+        padding1: u8
+        padding2: u8
+        padding3: u8
+        xrel: i16
+        yrel: i16
+    }
+    JoystickHatMotion = 1538 {
+        timestamp: u64
+        which: u32
+        hat: u8
+        value: u8
+        padding1: u8
+        padding2: u8
+    }
+    JoystickButtonDown = 1539 {
+        timestamp: u64
+        which: u32
+        button: u8
+        down: u8
+        padding1: u8
+        padding2: u8
+    }
+    JoystickButtonUp = 1540 {
+        timestamp: u64
+        which: u32
+        button: u8
+        down: u8
+        padding1: u8
+        padding2: u8
+    }
+    JoystickAdded = 1541 {
+        timestamp: u64
+        which: u32
+    }
+    JoystickRemoved = 1542 {
+        timestamp: u64
+        which: u32
+    }
+    JoystickBatteryUpdated = 1543 {
+        timestamp: u64
+        which: u32
+        state: i32
+        percent: i32
+    }
+    JoystickUpdateComplete = 1544 {
+        timestamp: u64
+        which: u32
+    }
+    GamepadAxisMotion = 1616 {
+        timestamp: u64
+        which: u32
+        axis: u8
+        padding1: u8
+        padding2: u8
+        padding3: u8
+        value: i16
+        padding4: u16
+    }
+    GamepadButtonDown = 1617 {
+        timestamp: u64
+        which: u32
+        button: u8
+        down: u8
+        padding1: u8
+        padding2: u8
+    }
+    GamepadButtonUp = 1618 {
+        timestamp: u64
+        which: u32
+        button: u8
+        down: u8
+        padding1: u8
+        padding2: u8
+    }
+    GamepadAdded = 1619 {
+        timestamp: u64
+        which: u32
+    }
+    GamepadRemoved = 1620 {
+        timestamp: u64
+        which: u32
+    }
+    GamepadRemapped = 1621 {
+        timestamp: u64
+        which: u32
+    }
+    GamepadTouchpadDown = 1622 {
+        timestamp: u64
+        which: u32
+        touchpad: i32
+        finger: i32
+        x: f32
+        y: f32
+        pressure: f32
+    }
+    GamepadTouchpadMotion = 1623 {
+        timestamp: u64
+        which: u32
+        touchpad: i32
+        finger: i32
+        x: f32
+        y: f32
+        pressure: f32
+    }
+    GamepadTouchpadUp = 1624 {
+        timestamp: u64
+        which: u32
+        touchpad: i32
+        finger: i32
+        x: f32
+        y: f32
+        pressure: f32
+    }
+    GamepadSensorUpdate = 1625 {
+        timestamp: u64
+        which: u32
+        sensor: i32
+        data: [3]f32
+        sensor_timestamp: u64
+    }
+    GamepadUpdateComplete = 1626 {
+        timestamp: u64
+        which: u32
+    }
+    GamepadSteamHandleUpdated = 1627 {
+        timestamp: u64
+        which: u32
+    }
+    FingerDown = 1792 {
+        timestamp: u64
+        touchID: u64
+        fingerID: u64
+        x: f32
+        y: f32
+        dx: f32
+        dy: f32
+        pressure: f32
+        windowID: u32
+    }
+    FingerUp = 1793 {
+        timestamp: u64
+        touchID: u64
+        fingerID: u64
+        x: f32
+        y: f32
+        dx: f32
+        dy: f32
+        pressure: f32
+        windowID: u32
+    }
+    FingerMotion = 1794 {
+        timestamp: u64
+        touchID: u64
+        fingerID: u64
+        x: f32
+        y: f32
+        dx: f32
+        dy: f32
+        pressure: f32
+        windowID: u32
+    }
+    FingerCanceled = 1795 {
+        timestamp: u64
+        touchID: u64
+        fingerID: u64
+        x: f32
+        y: f32
+        dx: f32
+        dy: f32
+        pressure: f32
+        windowID: u32
+    }
+    PinchBegin = 1808 {
+        timestamp: u64
+        scale: f32
+        windowID: u32
+    }
+    PinchUpdate = 1809 {
+        timestamp: u64
+        scale: f32
+        windowID: u32
+    }
+    PinchEnd = 1810 {
+        timestamp: u64
+        scale: f32
+        windowID: u32
+    }
+    ClipboardUpdate = 2304 {
+        timestamp: u64
+        owner: u8
+        num_mime_types: i32
+        mime_types: ^byte
+    }
     DropFile = 4096 {
         timestamp: u64
         windowID: u32
@@ -261,6 +667,132 @@ Event :: union(tag u32, pad u32, size 128) {
         y: f32
         source: ^byte
         data: ^byte
+    }
+    AudioDeviceAdded = 4352 {
+        timestamp: u64
+        which: u32
+        recording: u8
+        padding1: u8
+        padding2: u8
+        padding3: u8
+    }
+    AudioDeviceRemoved = 4353 {
+        timestamp: u64
+        which: u32
+        recording: u8
+        padding1: u8
+        padding2: u8
+        padding3: u8
+    }
+    AudioDeviceFormatChanged = 4354 {
+        timestamp: u64
+        which: u32
+        recording: u8
+        padding1: u8
+        padding2: u8
+        padding3: u8
+    }
+    SensorUpdate = 4608 {
+        timestamp: u64
+        which: u32
+        data: [6]f32
+        sensor_timestamp: u64
+    }
+    PenProximityIn = 4864 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+    }
+    PenProximityOut = 4865 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+    }
+    PenDown = 4866 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        pen_state: u32
+        x: f32
+        y: f32
+        eraser: u8
+        down: u8
+    }
+    PenUp = 4867 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        pen_state: u32
+        x: f32
+        y: f32
+        eraser: u8
+        down: u8
+    }
+    PenButtonDown = 4868 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        pen_state: u32
+        x: f32
+        y: f32
+        button: u8
+        down: u8
+    }
+    PenButtonUp = 4869 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        pen_state: u32
+        x: f32
+        y: f32
+        button: u8
+        down: u8
+    }
+    PenMotion = 4870 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        pen_state: u32
+        x: f32
+        y: f32
+    }
+    PenAxis = 4871 {
+        timestamp: u64
+        windowID: u32
+        which: u32
+        pen_state: u32
+        x: f32
+        y: f32
+        axis: i32
+        value: f32
+    }
+    CameraDeviceAdded = 5120 {
+        timestamp: u64
+        which: u32
+    }
+    CameraDeviceRemoved = 5121 {
+        timestamp: u64
+        which: u32
+    }
+    CameraDeviceApproved = 5122 {
+        timestamp: u64
+        which: u32
+    }
+    CameraDeviceDenied = 5123 {
+        timestamp: u64
+        which: u32
+    }
+    RenderTargetsReset = 8192 {
+        timestamp: u64
+        windowID: u32
+    }
+    RenderDeviceReset = 8193 {
+        timestamp: u64
+        windowID: u32
+    }
+    RenderDeviceLost = 8194 {
+        timestamp: u64
+        windowID: u32
     }
 }
 
