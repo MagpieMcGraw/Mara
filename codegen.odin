@@ -289,9 +289,22 @@ Tuple_Default_Entry :: struct {
 }
 
 Codegen :: struct {
-    out:         strings.Builder,  // the IR text
+    out:         strings.Builder,  // current per-module IR buffer (swapped in from module_outs)
     alloca_buf:  strings.Builder,  // hoisted allocas (entry block)
     body_buf:    strings.Builder,  // temporary buffer for function body during alloca hoisting
+
+    // Per-module IR buffers. Each function's IR lands in the buffer keyed by
+    // its home_package; g.out is swapped to the right buffer before
+    // gen_scope_def runs and copied back after. module_order tracks first-
+    // seen order for deterministic final concatenation.
+    //
+    // Today the final-assembly step concats every buffer in order into a
+    // single .ll file (preserving current downstream behaviour). The split
+    // exists so a future phase can write each buffer to its own .ll and
+    // run clang on them in parallel.
+    module_outs:         map[string]strings.Builder,
+    module_order:        [dynamic]string,
+    current_module_home: string,  // the package whose buffer g.out currently holds (empty = not in a module section)
     hoist_allocas: bool,           // true during function body codegen
     emitted_allocas: map[string]string, // track alloca names emitted in current function (name -> IR type for dedup)
     tmp_counter: int,              // %0, %1, %2 ...
@@ -1508,6 +1521,40 @@ emit_printf_double :: proc(g: ^Codegen, fmt_ptr, val: string) {
     strings.write_string(b, ", double ")
     strings.write_string(b, val)
     strings.write_string(b, ")\n")
+}
+
+// Switch g.out to the IR buffer owned by `home_package`. Creates the buffer
+// (with the same 4 MB pre-size used for single-file builds) on first use
+// and records the package in module_order so the final assembly step gets a
+// deterministic emission order.
+//
+// Pattern at every call site: capture the *previous* buffer state back into
+// the map before switching, since [dynamic]u8 growth produces a new backing
+// pointer that lives only on the current copy.
+switch_to_module :: proc(g: ^Codegen, home_package: string) {
+    // Capture growth from the buffer we're leaving. The previously-active
+    // module records its state via g.current_module_home (set just below).
+    if g.current_module_home != "" {
+        g.module_outs[g.current_module_home] = g.out
+    }
+    if _, exists := g.module_outs[home_package]; !exists {
+        b: strings.Builder
+        strings.builder_init_len_cap(&b, 0, 4 * 1024 * 1024)
+        g.module_outs[home_package] = b
+        append(&g.module_order, home_package)
+    }
+    g.out = g.module_outs[home_package]
+    g.current_module_home = home_package
+}
+
+// Capture g.out's current state back to its module slot. Call once after the
+// last gen_scope_def in a phase so the final assembly step sees the latest
+// buffer state.
+flush_current_module :: proc(g: ^Codegen) {
+    if g.current_module_home != "" {
+        g.module_outs[g.current_module_home] = g.out
+        g.current_module_home = ""
+    }
 }
 
 // Begin alloca hoisting: emit() will redirect allocas to alloca_buf, body code to body_buf.
@@ -2727,13 +2774,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     word_size_is_32 = web
     init_slice_layout()
 
-    // Pre-size the IR output buffer. `[dynamic]byte` grows by doubling, so
-    // building up ~50MB of IR from a 0-byte start costs ~22 reallocations
-    // and arena waste from every dead old buffer (free is a no-op against
-    // an arena). 4MB skips the first ~17 growths for medium modules and
-    // limits the leak for small ones — 64MB tested basically the same as
-    // 4MB so the late doublings aren't where the time goes.
-    strings.builder_init_len_cap(&g.out, 0, 4 * 1024 * 1024)
+    // g.out is now a swap target driven by switch_to_module; each per-module
+    // buffer is pre-sized to 4MB on first creation. No global pre-size here.
 
     // Context system: scope allocator setup. Enabled when either:
     //   - the user declared `context.scope_allocator = X` (has_scope_allocator), OR
@@ -2810,10 +2852,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         }
     }
 
-    // We use two builders: one for functions, one for main
-    fn_builder: strings.Builder
-    strings.builder_init(&fn_builder)
-
+    // @main lives in its own builder so the final-assembly step can place it
+    // after all per-module function definitions. Non-main user functions now
+    // route into per-module buffers in g.module_outs (set up lazily by
+    // switch_to_module on first reference).
     main_builder: strings.Builder
     strings.builder_init(&main_builder)
 
@@ -2859,10 +2901,15 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     // Phase 1: Emit non-main function definitions (preserving AST order).
-    g.out = fn_builder
+    // Each function's IR is routed to its home_package's per-module buffer.
+    // Functions without a home_package (compiler-synthesized, generic
+    // templates not yet associated with a module) fall back to the main
+    // package so the linker sees them in exactly one TU.
     for fn_name in checked.function_order {
         if fn_name == "main" { continue }
         if cf, cf_ok := checked.functions[fn_name]; cf_ok {
+            home := cf.home_package if cf.home_package != "" else checked.main_package
+            switch_to_module(&g, home)
             gen_scope_def(&g, &cf)
         }
     }
@@ -2881,10 +2928,12 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     slice.sort(mono_names[:])
     for fn_name in mono_names {
         cf := checked.functions[fn_name]
+        home := cf.home_package if cf.home_package != "" else checked.main_package
+        switch_to_module(&g, home)
         gen_scope_def(&g, &cf)
     }
 
-    fn_builder = g.out
+    flush_current_module(&g)
 
     // Phase 2: Emit @main from user's fn main(). Skipped in shared (DLL) mode —
     // the binary has no entry point; each #expose function does its own ctx
@@ -3171,9 +3220,19 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     strings.write_string(&final, fail_helpers_ir)
     strings.write_byte(&final, '\n')
 
-    // Function definitions
-    strings.write_string(&final, strings.to_string(fn_builder))
-    strings.write_byte(&final, '\n')
+    // Function definitions — one section per module, in first-seen order
+    // (matches the original AST order for non-main packages, then mono'd
+    // generics sorted by name within their owning packages). Eventually
+    // each module's bytes will go to its own .ll file for parallel clang;
+    // for now they're concatenated to preserve single-file output.
+    for module_name in g.module_order {
+        buf := g.module_outs[module_name]
+        strings.write_string(&final, "; ---- module ")
+        strings.write_string(&final, module_name)
+        strings.write_string(&final, " ----\n")
+        strings.write_string(&final, strings.to_string(buf))
+        strings.write_byte(&final, '\n')
+    }
 
     // Main
     strings.write_string(&final, strings.to_string(main_builder))

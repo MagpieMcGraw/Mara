@@ -1245,6 +1245,12 @@ Checked_Program :: struct {
     // Target platform — drives ABI lowering for .C-convention functions.
     // Inherited from the checker; stamped at check completion.
     target_os:      Target_OS,
+
+    // The main package name (e.g. "Pounce" or "test_1M"). Used by codegen as
+    // the default home for symbols not attributable to any specific module
+    // — compiler-synthesized helpers, @main, etc. — so per-module emission
+    // has a single canonical "main TU" to drop them into.
+    main_package:   string,
 }
 
 // ---------------------------------------------------------------------------
@@ -8648,6 +8654,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     checked := new(Checked_Program)
     checked.table = table
     checked.target_os = target_os
+    checked.main_package = main_package
     c.checked = checked
     c.programs = programs
     c.compiler_dir = compiler_dir
