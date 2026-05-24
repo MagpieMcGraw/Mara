@@ -4597,7 +4597,7 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
 // (which would fail because the enclosing fun's params/locals aren't in scope yet).
 // Handles: identifiers (constants/variables in env), number/string/bool literals,
 // and calls to known struct constructors / functions with a return type.
-infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) -> Type {
+infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, ft: ^Type_Scope = nil) -> Type {
     if ident, id_ok := value.(^Expr_Ident); id_ok {
         if t, t_ok := type_env_get(env, ident.name); t_ok {
             return t
@@ -4607,6 +4607,20 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
             flat := make_flat_name(c.current_package, ident.name)
             if t, t_ok := type_env_get(env, flat); t_ok {
                 return t
+            }
+        }
+        // Fall back to the in-progress struct's already-typed fields. Lets
+        // `fov_x := fov_y * w_width / w_height` see the earlier `fov_y` field
+        // — without this it would resolve to Type_Any → IR `i64` and the
+        // float multiplication would lower to `smul.with.overflow.i64`.
+        if ft != nil {
+            if idx, fm_ok := ft.field_map[ident.name]; fm_ok && idx < len(ft.fields) {
+                return ft.fields[idx].type_
+            }
+            for &f in ft.fields {
+                if f.name == ident.name {
+                    return f.type_
+                }
             }
         }
     }
@@ -4661,12 +4675,12 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
         case .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .And, .Or:
             return Type_Bool{}
         case:
-            return infer_field_type_from_default(c, bin.left, env)
+            return infer_field_type_from_default(c, bin.left, env, ft)
         }
     }
     // Unary ops: same idea — type follows the operand.
     if un, ok := value.(^Expr_Unary); ok {
-        return infer_field_type_from_default(c, un.operand, env)
+        return infer_field_type_from_default(c, un.operand, env, ft)
     }
     // Tuple-destructure default: when source resolves to a Type_Tuple this
     // binding's type is the i-th slot. Mirrors the Expr_Call branch above,
@@ -4675,7 +4689,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
     // binding takes the source's type directly — matches check_expr's
     // Expr_Tuple_Default fallback at the body-check pass.
     if td, ok := value.(^Expr_Tuple_Default); ok {
-        src_type := infer_field_type_from_default(c, td.source, env)
+        src_type := infer_field_type_from_default(c, td.source, env, ft)
         if tup, is_tup := src_type.(^Type_Tuple); is_tup {
             if td.index >= 0 && td.index < len(tup.elems) {
                 return tup.elems[td.index]
@@ -6544,7 +6558,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
                 check_error(c, s.span, TYPE_FIELD_TYPE_SKIP_CONSTRUCTOR_REQUIRES, field.name, field.name)
                 field_type = Type_Error{}
             } else {
-                field_type = infer_field_type_from_default(c, field.default_value, &child)
+                field_type = infer_field_type_from_default(c, field.default_value, &child, ft)
             }
         } else {
             field_type = Type_Any{}
