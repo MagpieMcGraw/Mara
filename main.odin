@@ -644,7 +644,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
 // -fuse-ld=lld points clang at lld-link.exe (bundled on Windows; lld via
 // PATH on Linux). -Wno-override-module silences the warning our IR
 // module's target triple triggers.
-link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false) -> bool {
+link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
@@ -655,8 +655,12 @@ link_native :: proc(ll_path, exe_name: string, checked: ^Checked_Program, compil
     } else {
         strings.write_string(&b, CLANG_BIN)  // bare `clang`; resolved via PATH
     }
-    strings.write_string(&b, " ")
-    strings.write_string(&b, ll_path)
+    // Pass every per-module .ll as a separate translation unit. clang
+    // compiles each independently, then the linker pulls them together.
+    for ll_path in ll_paths {
+        strings.write_byte(&b, ' ')
+        strings.write_byte(&b, '"'); strings.write_string(&b, ll_path); strings.write_byte(&b, '"')
+    }
     strings.write_string(&b, lf.extra_inputs)
     strings.write_string(&b, ` -o "`); strings.write_string(&b, exe_name); strings.write_byte(&b, '"')
     // Always use lld for consistency across platforms. Windows finds
@@ -891,7 +895,8 @@ main :: proc() {
 
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
-    if !generate_program(ll_path, checked, web = args.web, shared = pkg_shared) {
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared)
+    if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         return
     }
@@ -908,9 +913,13 @@ main :: proc() {
 
     perf_timer_mark(&perf, "clang")
     if args.web {
-        if !link_web(ll_path, out_name, checked) { return }
+        // emcc currently invoked with the first .ll only; per-module web
+        // builds aren't supported yet. Falls back to single-file behavior
+        // if there's just one module, which is the common case for the
+        // wasm32 targets we test.
+        if !link_web(ll_paths[0], out_name, checked) { return }
     } else {
-        if !link_native(ll_path, out_name, checked, args.compiler_dir, pkg_shared, args.release) { return }
+        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release) { return }
     }
 
     perf_timer_end(&perf)

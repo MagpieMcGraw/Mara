@@ -313,6 +313,10 @@ Codegen :: struct {
     // libc names (always declared per TU regardless) are excluded from this
     // set.
     module_imports:      map[string]map[string]bool,
+
+    // Filesystem paths produced by generate_program — one .ll per module.
+    // Populated at write time; read by main.odin to feed clang.
+    module_ll_paths:     [dynamic]string,
     hoist_allocas: bool,           // true during function body codegen
     emitted_allocas: map[string]string, // track alloca names emitted in current function (name -> IR type for dedup)
     tmp_counter: int,              // %0, %1, %2 ...
@@ -1630,17 +1634,14 @@ dump_module_imports :: proc(g: ^Codegen) {
 // Build module_imports by walking each module's buffer for `@<name>`
 // references and subtracting the locally-defined names. Skips well-known
 // categories every TU declares anyway (libc, LLVM intrinsics, the per-TU
-// `@.str.N` globals).
-compute_module_imports :: proc(g: ^Codegen) {
+// `@.str.N` globals). Pass `main_extras_ir` to fold extra IR text
+// (typically the @main entry-point block) into the main TU's import set.
+compute_module_imports :: proc(g: ^Codegen, main_package, main_extras_ir: string) {
     g.module_imports = make(map[string]map[string]bool)
     skip_libc :: proc(name: string) -> bool {
         return name == "printf" || name == "exit" || name == "strlen"
     }
-    for module_name in g.module_order {
-        defined: map[string]bool
-        referenced: map[string]bool
-        buf := g.module_outs[module_name]
-        ir := strings.to_string(buf)
+    scan :: proc(ir: string, defined, referenced: ^map[string]bool) {
         i := 0
         for i < len(ir) {
             if ir[i] != '@' { i += 1; continue }
@@ -1655,6 +1656,18 @@ compute_module_imports :: proc(g: ^Codegen) {
                 referenced[name] = true
             }
             i = end
+        }
+    }
+    for module_name in g.module_order {
+        defined: map[string]bool
+        referenced: map[string]bool
+        buf := g.module_outs[module_name]
+        scan(strings.to_string(buf), &defined, &referenced)
+        // The main TU also gets @main's references — those calls
+        // (Arena init, args setup, dispatch into user `main`) are emitted
+        // into main_builder, not into the module's own buffer.
+        if module_name == main_package && main_extras_ir != "" {
+            scan(main_extras_ir, &defined, &referenced)
         }
         imports: map[string]bool
         for name in referenced {
@@ -2232,7 +2245,11 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, "; Runtime fail-block helpers (hoisted)\n")
 
     // bounds: (loc, idx, len, name)
-    strings.write_string(&b, "define internal void ")
+    //
+    // Default (external) linkage so per-module .ll files can reference these
+    // via `declare` lines instead of duplicating the definition. Main TU
+    // owns the definition; every other TU gets just the declare.
+    strings.write_string(&b, "define void ")
     strings.write_string(&b, __MARA_BOUNDS_FAIL)
     strings.write_string(&b, "(ptr %loc, i64 %idx, i64 %len, ptr %name) {\n")
     strings.write_string(&b, strings.concatenate({
@@ -2242,7 +2259,7 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
     // overflow: (loc)
-    strings.write_string(&b, "define internal void ")
+    strings.write_string(&b, "define void ")
     strings.write_string(&b, __MARA_OVERFLOW_FAIL)
     strings.write_string(&b, "(ptr %loc) {\n")
     strings.write_string(&b, strings.concatenate({
@@ -2251,7 +2268,7 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
     // null: (loc, name)
-    strings.write_string(&b, "define internal void ")
+    strings.write_string(&b, "define void ")
     strings.write_string(&b, __MARA_NULL_FAIL)
     strings.write_string(&b, "(ptr %loc, ptr %name) {\n")
     strings.write_string(&b, strings.concatenate({
@@ -2260,7 +2277,7 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
     // divz: (loc)
-    strings.write_string(&b, "define internal void ")
+    strings.write_string(&b, "define void ")
     strings.write_string(&b, __MARA_DIVZ_FAIL)
     strings.write_string(&b, "(ptr %loc) {\n")
     strings.write_string(&b, strings.concatenate({
@@ -2876,8 +2893,10 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 @(private) word_size_is_32: bool
 
 // Emit LLVM IR for the checked program. Every visible function gets
-// emitted; the linker drops unreachable code.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> bool {
+// emitted; the linker drops unreachable code. Returns the list of per-
+// module .ll files produced (one per home_package in g.module_order),
+// plus a success flag.
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
@@ -3046,14 +3065,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     flush_current_module(&g)
 
-    // Phase 1.6: Compute per-module imports. Walks each module's buffer for
-    // referenced-but-not-defined `@<name>` symbols. Used by the eventual
-    // per-`.ll` writer; for now the data sits unused except for the debug
-    // summary below.
-    compute_module_imports(&g)
-    when ODIN_DEBUG {
-        dump_module_imports(&g)
-    }
+    // (Phase 1.6 — compute imports — runs after Phase 2 below so the @main
+    // body in main_builder is scanned too.)
 
     // Phase 2: Emit @main from user's fn main(). Skipped in shared (DLL) mode —
     // the binary has no entry point; each #expose function does its own ctx
@@ -3240,81 +3253,260 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // string section below writes it out. The returned text is appended
     // after the external declarations.
     fail_helpers_ir := runtime_fail_helpers_ir(&g)
+    main_builder_str := strings.to_string(main_builder)
 
-    // Assemble final module
-    final: strings.Builder
-    strings.builder_init(&final)
+    // Ensure the main package has an entry in module_outs (and therefore
+    // module_order) before computing imports — it might have no user
+    // functions of its own (just `use` directives + `fun main`), in which
+    // case the function-emission loops never created a buffer for it.
+    if checked.main_package not_in g.module_outs {
+        switch_to_module(&g, checked.main_package)
+        flush_current_module(&g)
+    }
+
+    // Phase 1.6: Compute per-module imports now that both function bodies
+    // and @main are emitted. The main TU's import set folds in @main's
+    // references (arena init, args setup, dispatch into user `main`).
+    compute_module_imports(&g, checked.main_package, main_builder_str)
+    when ODIN_DEBUG {
+        dump_module_imports(&g)
+    }
+
+    // Pre-build the intrinsic + foreign declare blocks once; they're
+    // identical across every per-module .ll file.
+    intrinsic_declares := build_intrinsic_declares(&g)
+    foreign_declares := build_foreign_declares(&g, checked)
+
+    // Walk every module's emitted IR for `define ... @name(args) {` lines
+    // and convert each to its corresponding `declare ... @name(args)` form.
+    // The per-module `.ll` files use this table to emit extern declares for
+    // any cross-module call (the module's import set).
+    fn_declares := build_cross_module_declares(&g)
+    defer delete(fn_declares)
+
+    // Per-module output: each home_package gets its own .ll file. Main TU
+    // owns the runtime helper definitions, @__mara_program globals, and
+    // @main; every other TU just declares those externally.
+
+    // Resolve output directory: <output_path stem>_build/ next to the
+    // existing output path. Created if missing.
+    build_dir := derive_build_dir(output_path)
+    if !ensure_dir(build_dir) {
+        fmt.printf("Error: could not create build dir '%s'\n", build_dir)
+        return nil, false
+    }
+
+    g.module_ll_paths = make([dynamic]string)
+    for module_name in g.module_order {
+        is_main_tu := module_name == checked.main_package
+        content := build_module_ll(&g, checked, module_name, is_main_tu, web,
+                                    fail_helpers_ir, main_builder_str,
+                                    intrinsic_declares, foreign_declares,
+                                    fn_declares)
+        path := module_ll_path(build_dir, module_name)
+        werr := os.write_entire_file(path, transmute([]u8)content)
+        if werr != nil {
+            fmt.printf("Error: could not write '%s'\n", path)
+            return nil, false
+        }
+        append(&g.module_ll_paths, path)
+    }
+
+    return g.module_ll_paths[:], true
+}
+
+// Build the LLVM IR contents for a single module's .ll file. The shared
+// prelude (target triple, struct decls, string globals, foreign + libc +
+// intrinsic declares) appears in every TU. The runtime helper definitions
+// + @__mara_program globals live in the main TU only; other TUs see them
+// as extern declares. @main lives only in the main TU.
+@(private="file")
+build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
+                        module_name: string, is_main_tu: bool, web: bool,
+                        fail_helpers_ir, main_builder_str,
+                        intrinsic_declares, foreign_declares: string,
+                        fn_declares: map[string]string) -> string {
+    b: strings.Builder
+    strings.builder_init_len_cap(&b, 0, 1024 * 1024)
 
     // Module header
-    strings.write_string(&final, "; Mara LLVM IR output\n")
+    strings.write_string(&b, "; Mara LLVM IR output — module ")
+    strings.write_string(&b, module_name)
+    strings.write_byte(&b, '\n')
     if web {
-        strings.write_string(&final, "target triple = \"wasm32-unknown-emscripten\"\n\n")
+        strings.write_string(&b, "target triple = \"wasm32-unknown-emscripten\"\n\n")
     } else {
-        // Native triple matches the host OS. Cross-compilation would override.
         native_triple :: "x86_64-pc-windows-msvc" when ODIN_OS == .Windows else
                          "x86_64-pc-linux-gnu"   when ODIN_OS == .Linux   else
                          "x86_64-apple-darwin"
-        strings.write_string(&final, "target triple = \"")
-        strings.write_string(&final, native_triple)
-        strings.write_string(&final, "\"\n\n")
+        strings.write_string(&b, "target triple = \"")
+        strings.write_string(&b, native_triple)
+        strings.write_string(&b, "\"\n\n")
     }
 
-    // Struct type definitions
+    // Struct/union type definitions — TU-local in LLVM IR (the LLVM type
+    // name namespace is per-TU at the IR level, not at the linker level),
+    // so every TU emits the full set. clang dedups intra-TU.
     for decl in g.struct_decls {
-        strings.write_string(&final, decl)
-        strings.write_byte(&final, '\n')
+        strings.write_string(&b, decl)
+        strings.write_byte(&b, '\n')
     }
-    if len(g.struct_decls) > 0 {
-        strings.write_byte(&final, '\n')
-    }
+    if len(g.struct_decls) > 0 { strings.write_byte(&b, '\n') }
 
-    // String literal globals
+    // String literal globals — private linkage means no link collision
+    // between TUs that both define `@.str.0`; each owns its own.
     for decl in g.string_decls {
-        strings.write_string(&final, decl)
-        strings.write_byte(&final, '\n')
+        strings.write_string(&b, decl)
+        strings.write_byte(&b, '\n')
     }
-    if len(g.string_decls) > 0 {
-        strings.write_byte(&final, '\n')
-    }
+    if len(g.string_decls) > 0 { strings.write_byte(&b, '\n') }
 
-    // Context global (always present — holds args, and arena when scope allocator is active)
-    strings.write_string(&final, "; Context system\n")
-    strings.write_string(&final, "@__mara_program = internal global ptr null\n")
-    strings.write_string(&final, "@__mara_program_storage = internal global %class.Program zeroinitializer\n\n")
-
-    // External declarations
-    strings.write_string(&final, "; External declarations\n")
-    strings.write_string(&final, "declare i32 @printf(ptr, ...)\n")
-    strings.write_string(&final, "declare void @exit(i32)\n")
-    // size_t is i64 on x86_64 but i32 on wasm32. The call site sexts to i64
-    // so the rest of the IR doesn't need to know which target it's on.
-    if g.web {
-        strings.write_string(&final, "declare i32 @strlen(ptr)\n")
+    // Context globals: main TU defines, others declare external.
+    strings.write_string(&b, "; Context system\n")
+    if is_main_tu {
+        strings.write_string(&b, "@__mara_program = global ptr null\n")
+        strings.write_string(&b, "@__mara_program_storage = global %class.Program zeroinitializer\n\n")
     } else {
-        strings.write_string(&final, "declare i64 @strlen(ptr)\n")
+        strings.write_string(&b, "@__mara_program = external global ptr\n")
+        strings.write_string(&b, "@__mara_program_storage = external global %class.Program\n\n")
     }
-    // Overflow-checking intrinsics — sort for reproducible IR.
+
+    // libc + intrinsic + foreign declares — every TU declares regardless.
+    strings.write_string(&b, "; External declarations\n")
+    strings.write_string(&b, "declare i32 @printf(ptr, ...)\n")
+    strings.write_string(&b, "declare void @exit(i32)\n")
+    if g.web {
+        strings.write_string(&b, "declare i32 @strlen(ptr)\n")
+    } else {
+        strings.write_string(&b, "declare i64 @strlen(ptr)\n")
+    }
+    strings.write_string(&b, intrinsic_declares)
+    strings.write_string(&b, foreign_declares)
+    strings.write_byte(&b, '\n')
+
+    // Runtime helpers: main TU defines, others extern-declare.
+    if is_main_tu {
+        strings.write_string(&b, fail_helpers_ir)
+    } else {
+        strings.write_string(&b, "; Runtime fail-block helpers (extern)\n")
+        strings.write_string(&b, "declare void @__mara_bounds_fail(ptr, i64, i64, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_overflow_fail(ptr)\n")
+        strings.write_string(&b, "declare void @__mara_null_fail(ptr, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")
+    }
+    strings.write_byte(&b, '\n')
+
+    // Cross-module extern declares: every symbol this module imports from
+    // another TU needs a matching `declare` here. The fn_declares table
+    // is the global function-name → declare-line index, built from every
+    // module's emitted `define ...` lines. Skip well-known categories
+    // already declared above (runtime helpers + the libc trio).
+    if imports, has_imports := g.module_imports[module_name]; has_imports && len(imports) > 0 {
+        sorted: [dynamic]string
+        defer delete(sorted)
+        for name in imports { append(&sorted, name) }
+        slice.sort(sorted[:])
+        wrote_header := false
+        for name in sorted {
+            // Runtime helpers handled above; libc declared unconditionally.
+            if strings.has_prefix(name, "__mara_") { continue }
+            if name == "printf" || name == "exit" || name == "strlen" { continue }
+            decl, ok := fn_declares[name]
+            if !ok { continue }
+            if !wrote_header {
+                strings.write_string(&b, "; Cross-module imports\n")
+                wrote_header = true
+            }
+            strings.write_string(&b, decl)
+            strings.write_byte(&b, '\n')
+        }
+        if wrote_header { strings.write_byte(&b, '\n') }
+    }
+
+    // This module's own function definitions.
+    if buf, ok := g.module_outs[module_name]; ok {
+        strings.write_string(&b, strings.to_string(buf))
+    }
+
+    // @main: only the main TU includes it.
+    if is_main_tu {
+        strings.write_byte(&b, '\n')
+        strings.write_string(&b, main_builder_str)
+        strings.write_byte(&b, '\n')
+    }
+
+    return strings.to_string(b)
+}
+
+// Scan every module's emitted IR for `define ... @name(...) {` headers and
+// produce a flat-name → `declare ... @name(...)` map. Each per-module .ll
+// uses this to emit extern declares for the cross-module functions it
+// imports.
+//
+// Why text-based: the alternative is rebuilding the declare from the
+// Type_Scope + signature info via the same code that builds the define
+// header (codegen_fn.odin's `gen_scope_def`). That path is involved
+// enough — sret routing, NRVO, escape args, calling-conv lowering — that
+// reusing it for declares means refactoring it to take a write-target arg.
+// Reading the already-emitted text is simpler and the dependency is just
+// "the define line is on the line right after a label-less open." If the
+// emission format changes, this breaks loudly at the next clang invocation.
+@(private="file")
+build_cross_module_declares :: proc(g: ^Codegen) -> map[string]string {
+    declares := make(map[string]string)
+    for module_name in g.module_order {
+        buf := g.module_outs[module_name]
+        ir := strings.to_string(buf)
+        i := 0
+        for i < len(ir) {
+            line_end := strings.index_byte(ir[i:], '\n')
+            line: string
+            if line_end < 0 { line = ir[i:]; i = len(ir) } else { line = ir[i:i+line_end]; i += line_end + 1 }
+            if !strings.has_prefix(line, "define ") { continue }
+            // Parse "define <linkage>? <retty> @<name>(<params>) {"
+            at := strings.index_byte(line, '@')
+            if at < 0 { continue }
+            // The signature ends just before the trailing " {".
+            sig_end := strings.last_index(line, "{")
+            if sig_end < 0 { continue }
+            sig := strings.trim_right(line[at:sig_end], " ")
+            // Extract just the bare name for the map key.
+            paren := strings.index_byte(sig, '(')
+            if paren < 0 { continue }
+            name := sig[1:paren]  // skip the leading '@'
+            // Reconstruct the declare with the same return type prefix.
+            ret_prefix := strings.trim(line[len("define "):at], " ")
+            declares[name] = strings.concatenate({"declare ", ret_prefix, " ", sig})
+        }
+    }
+    return declares
+}
+
+// Pre-build the LLVM intrinsic `declare` block: one declare per intrinsic
+// used anywhere in the program, sorted for reproducible IR.
+@(private="file")
+build_intrinsic_declares :: proc(g: ^Codegen) -> string {
+    b: strings.Builder
     intr_names: [dynamic]string
     defer delete(intr_names)
     for name in g.overflow_intrinsics { append(&intr_names, name) }
     slice.sort(intr_names[:])
     for name in intr_names {
-        // name is e.g. "llvm.sadd.with.overflow.i64"
-        // Extract the type suffix (last dot-separated component)
         dot_idx := 0
         for i := len(name) - 1; i >= 0; i -= 1 {
             if name[i] == '.' { dot_idx = i; break }
         }
-        it := name[dot_idx+1:]  // e.g. "i64"
-        // Use concatenate to avoid fmt.tprintf interpreting braces
-        strings.write_string(&final, strings.concatenate({"declare { ", it, ", i1 } @", name, "(", it, ", ", it, ")\n"}))
+        it := name[dot_idx+1:]
+        strings.write_string(&b, strings.concatenate({"declare { ", it, ", i1 } @", name, "(", it, ", ", it, ")\n"}))
     }
-    // Each foreign symbol has a globally unique link_name (enforced at
-    // registration time, see make_foreign_checked_scope), so no dedup pass
-    // is needed here — one declare per foreign entry. Dynamic foreigns on
-    // native skip; their resolution goes through the loader's fn-pointer
-    // globals instead of the linker's import table. Sort by name so the
-    // declare order is reproducible across builds.
+    return strings.to_string(b)
+}
+
+// Pre-build the foreign `declare` block: one declare per foreign symbol,
+// sorted by name. Same content in every TU.
+@(private="file")
+build_foreign_declares :: proc(g: ^Codegen, checked: ^Checked_Program) -> string {
+    b: strings.Builder
     foreign_keys: [dynamic]string
     defer delete(foreign_keys)
     for k in checked.functions { append(&foreign_keys, k) }
@@ -3323,50 +3515,36 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         cs := checked.functions[k]
         fo, is_foreign := cs.origin.(Origin_Foreign)
         if !is_foreign { continue }
-        decl_str := build_c_declare(&cs, fo.link_name, checked.target_os)
-        strings.write_string(&final, decl_str)
-        strings.write_byte(&final, '\n')
+        strings.write_string(&b, build_c_declare(&cs, fo.link_name, checked.target_os))
+        strings.write_byte(&b, '\n')
     }
-    strings.write_byte(&final, '\n')
+    return strings.to_string(b)
+}
 
-    // Runtime fail-block helpers. Hoisting the per-site `printf + exit +
-    // unreachable` tail saves ~30% of total IR at 1M scale — each check
-    // site shrinks from a 4-line fail block to a single `call + unreachable`.
-    // Message format is one template per failure kind; per-site location +
-    // variable name are passed as ptr args referencing get_string_literal
-    // globals (already deduped via the literals map, so identical names /
-    // locations across sites share storage). Built into `fail_helpers_ir`
-    // above before the string-decls section was emitted.
-    strings.write_string(&final, fail_helpers_ir)
-    strings.write_byte(&final, '\n')
+// `<output_path>` typically ends in `.ll`; strip that and append `_build`
+// to produce the per-module-output directory next to where the caller
+// originally wanted the single .ll.
+@(private="file")
+derive_build_dir :: proc(output_path: string) -> string {
+    base := output_path
+    if strings.has_suffix(base, ".ll") { base = base[:len(base)-3] }
+    return strings.concatenate({base, "_build"})
+}
 
-    // Function definitions — one section per module, in first-seen order
-    // (matches the original AST order for non-main packages, then mono'd
-    // generics sorted by name within their owning packages). Eventually
-    // each module's bytes will go to its own .ll file for parallel clang;
-    // for now they're concatenated to preserve single-file output.
-    for module_name in g.module_order {
-        buf := g.module_outs[module_name]
-        strings.write_string(&final, "; ---- module ")
-        strings.write_string(&final, module_name)
-        strings.write_string(&final, " ----\n")
-        strings.write_string(&final, strings.to_string(buf))
-        strings.write_byte(&final, '\n')
-    }
+// Produce the on-disk path for a single module's .ll file inside `build_dir`.
+// Module names may contain dots (e.g. "mara.core"); replace with `_` so the
+// filename is portable across filesystems.
+@(private="file")
+module_ll_path :: proc(build_dir, module_name: string) -> string {
+    safe, _ := strings.replace_all(module_name, ".", "_")
+    return strings.concatenate({build_dir, "/", safe, ".ll"})
+}
 
-    // Main
-    strings.write_string(&final, strings.to_string(main_builder))
-    strings.write_byte(&final, '\n')
-
-    // Write to file
-    result := strings.to_string(final)
-    werr := os.write_entire_file(output_path, transmute([]u8)result)
-    if werr != nil {
-        fmt.printf("Error: could not write '%s'\n", output_path)
-        return false
-    }
-
-    return true
+@(private="file")
+ensure_dir :: proc(path: string) -> bool {
+    if os.exists(path) { return true }
+    err := os.make_directory(path)
+    return err == os.ERROR_NONE
 }
 
 // NOTE: The following procs have been moved to separate files:
