@@ -196,6 +196,17 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
             emit_load_into(g, tmp, deref_type, ptr_val)
             return tmp
         case .Minus:
+            // Overloaded unary `-` (e.g. `-vec3`): synthesize a 1-arg call to
+            // the resolved function. Same shape as gen_binary's overload path.
+            if rf, rf_ok := e.overload_fn.?; rf_ok {
+                call := new(Expr_Call)
+                call.name = rf.name
+                append(&call.args, e.operand)
+                call.span = e.span
+                call.type_ = e.type_
+                call.resolved_func = rf
+                return gen_call(g, call)
+            }
             operand := gen_expr(g, e.operand, target_type)
             tmp := fresh_tmp(g)
             op_type := target_type != "" ? target_type : expr_ir_type(g, e.operand)
@@ -842,6 +853,13 @@ gen_array_param_arg :: proc(g: ^Codegen, arg: Expr, pt: string, val: string) -> 
         // ptr-to-array gets loaded into the array value the param expects.
         // Without this, `a * (b * c)` for a Mat4-returning `*` passes the
         // inner sret pointer where an `[N x T]` value is expected.
+        if _, has_overload := a.overload_fn.?; has_overload {
+            _, needs_load = claim_call_result(g)
+        }
+    case ^Expr_Unary:
+        // Same situation for unary `-`: `-v3` resolved to vec3_negate gets
+        // wrapped into a 1-arg Expr_Call. The ptr-to-array result needs the
+        // same load so it can flow into a `[N x T]` param.
         if _, has_overload := a.overload_fn.?; has_overload {
             _, needs_load = claim_call_result(g)
         }

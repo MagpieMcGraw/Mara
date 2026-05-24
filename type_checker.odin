@@ -9305,6 +9305,37 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         #partial switch e.op {
         case .Minus:
             if !is_numeric(operand_type) {
+                // Try `overload -` dispatch with a single-arg function (e.g.
+                // mara.math's `vec3_negate`). Falls through to the standard
+                // not-numeric error if no overload matches.
+                if dispatch_names, has_overload := find_operator_overload(c, env, e.op); has_overload {
+                    best_flat := ""
+                    best_ret: Type = nil
+                    best_score := 0  // 0=none, 2=concrete structural, 3=concrete exact
+                    for dispatch_name in dispatch_names {
+                        if fn_names, is_dispatch := find_dispatch(c, env, dispatch_name); is_dispatch {
+                            for fn_name in fn_names {
+                                ft_raw, ft_found := type_env_get(env, fn_name)
+                                if !ft_found { continue }
+                                ft, ft_ok := ft_raw.(^Type_Scope)
+                                if !ft_ok { continue }
+                                if len(ft.params) != 1 { continue }
+                                if types_incompatible(ft.params[0].type_, operand_type) { continue }
+                                score := 2
+                                if types_name_equal(ft.params[0].type_, operand_type) { score = 3 }
+                                if score > best_score {
+                                    best_flat = make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
+                                    best_ret = ft.return_type
+                                    best_score = score
+                                }
+                            }
+                        }
+                    }
+                    if best_score > 0 {
+                        e.overload_fn = Resolved_Func{name = best_flat}
+                        return best_ret
+                    }
+                }
                 check_error(c, e.span, TYPE_CANNOT_NEGATE, type_name(operand_type))
             }
             return operand_type

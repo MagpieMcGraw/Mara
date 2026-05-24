@@ -28,6 +28,7 @@ overload - sub
 sub :: dispatch {
 	vec3_sub
 	vec3_sub_scalar
+	vec3_negate
 }
 
 // ============================================================================
@@ -353,7 +354,7 @@ mat4_inverse :: fun(m: Mat4) -> Mat4 {
 }
 
 // Build rotation matrix from quaternion (column-major, same layout as Odin linalg)
-mat4_from_quaternion :: fun(q: Quat) -> Mat4 {
+mat4_from_quat :: fun(q: Quat) -> Mat4 {
 	xx := q.x * q.x
 	yy := q.y * q.y
 	zz := q.z * q.z

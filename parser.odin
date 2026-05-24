@@ -216,6 +216,10 @@ Expr_Unary :: struct {
     // reads this to emit a runtime byte-buffer bounds check before producing
     // the pointer. Zero means no widening — use the regular &-of-index path.
     byte_view_size: int,
+    // Set by the type checker when unary `-` resolves through an `overload -`
+    // dispatch (e.g. `-v3` → `vec3_negate(v3)`). Codegen reads this to emit a
+    // call instead of fneg / `sub 0, x`.
+    overload_fn: Maybe(Resolved_Func),
 }
 
 Expr_Bool :: struct {
