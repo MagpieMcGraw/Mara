@@ -686,23 +686,18 @@ compile_task_proc :: proc(t: thread.Task) {
     data.exit_code = libc.system(cmd_cstr)
 }
 
-link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, multithread: bool = false) -> bool {
+link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
     clang_path := clang_resolve_path(compiler_dir)
 
-    // ---- Stage 1 (only in -m mode): parallel `clang -c <ll> -o <o>` ----
+    // ---- Stage 1: parallel `clang -c <ll> -o <o>` per module ----
     //
-    // Multithread mode fans every per-module .ll out to its own clang
-    // process running in a worker thread; the resulting .o files are
-    // linked together in Stage 2. Worth it when the per-module compile
-    // work outweighs the per-process spawn overhead — i.e. on a large
-    // module count (think test_1M with 100+ modules).
-    //
-    // The default path skips Stage 1 entirely and hands every .ll
-    // directly to a single clang invocation in Stage 2. One process =
-    // no spawn-overhead tax for small projects.
+    // Each per-module .ll is an independent translation unit and the
+    // resulting .o files are linked together at the end. With N worker
+    // threads (defaulting to the host's core count), the slowest .ll
+    // pace-sets compile time rather than the sum.
     tasks: [dynamic]^Compile_Task
     defer {
         for t in tasks {
@@ -712,69 +707,63 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         }
         delete(tasks)
     }
-    if multithread {
-        for ll_path in ll_paths {
-            t := new(Compile_Task)
-            t.ll_path = ll_path
-            t.o_path = ll_to_o_path(ll_path)
-            cb: strings.Builder
-            strings.write_byte(&cb, '"'); strings.write_string(&cb, clang_path); strings.write_byte(&cb, '"')
-            strings.write_string(&cb, " -c ")
-            strings.write_byte(&cb, '"'); strings.write_string(&cb, t.ll_path); strings.write_byte(&cb, '"')
-            strings.write_string(&cb, " -o ")
-            strings.write_byte(&cb, '"'); strings.write_string(&cb, t.o_path); strings.write_byte(&cb, '"')
-            strings.write_string(&cb, " -Wno-override-module -mf16c")
-            if release { strings.write_string(&cb, " -O3") }
-            when ODIN_OS == .Windows {
-                t.clang_cmd = strings.concatenate({`"`, strings.to_string(cb), `"`})
-            } else {
-                t.clang_cmd = strings.to_string(cb)
-            }
-            append(&tasks, t)
+    for ll_path in ll_paths {
+        t := new(Compile_Task)
+        t.ll_path = ll_path
+        t.o_path = ll_to_o_path(ll_path)
+        // Per-TU compile command. -Wno-override-module silences the
+        // "overriding the module target triple" warning that emcc/clang
+        // raises when our IR's target triple differs from the host's
+        // default (we set it explicitly per file, so it's expected).
+        cb: strings.Builder
+        strings.write_byte(&cb, '"'); strings.write_string(&cb, clang_path); strings.write_byte(&cb, '"')
+        strings.write_string(&cb, " -c ")
+        strings.write_byte(&cb, '"'); strings.write_string(&cb, t.ll_path); strings.write_byte(&cb, '"')
+        strings.write_string(&cb, " -o ")
+        strings.write_byte(&cb, '"'); strings.write_string(&cb, t.o_path); strings.write_byte(&cb, '"')
+        strings.write_string(&cb, " -Wno-override-module -mf16c")
+        if release { strings.write_string(&cb, " -O3") }
+        // Pull -I and -D flags from lf.extra_inputs only if they're
+        // compile-level options (we exclude .obj/.lib paths which only
+        // matter at link). For now: skip extra_inputs entirely on the
+        // -c step; they're added only to the link command below.
+        when ODIN_OS == .Windows {
+            t.clang_cmd = strings.concatenate({`"`, strings.to_string(cb), `"`})
+        } else {
+            t.clang_cmd = strings.to_string(cb)
         }
+        append(&tasks, t)
+    }
 
-        pool: thread.Pool
-        num_workers := os_old.processor_core_count()
-        if num_workers < 1 { num_workers = 1 }
-        if num_workers > len(tasks) { num_workers = len(tasks) }
-        thread.pool_init(&pool, context.allocator, num_workers)
-        defer thread.pool_destroy(&pool)
-        thread.pool_start(&pool)
-        for t in tasks {
-            thread.pool_add_task(&pool, context.allocator, compile_task_proc, rawptr(t))
-        }
-        thread.pool_finish(&pool)
+    pool: thread.Pool
+    num_workers := os_old.processor_core_count()
+    if num_workers < 1 { num_workers = 1 }
+    if num_workers > len(tasks) { num_workers = len(tasks) }
+    thread.pool_init(&pool, context.allocator, num_workers)
+    defer thread.pool_destroy(&pool)
+    thread.pool_start(&pool)
+    for t in tasks {
+        thread.pool_add_task(&pool, context.allocator, compile_task_proc, rawptr(t))
+    }
+    thread.pool_finish(&pool)
 
-        for t in tasks {
-            if t.exit_code != 0 {
-                fmt.printf("clang -c failed for '%s' (exit %d)\n", t.ll_path, t.exit_code)
-                return false
-            }
+    for t in tasks {
+        if t.exit_code != 0 {
+            fmt.printf("clang -c failed for '%s' (exit %d)\n", t.ll_path, t.exit_code)
+            return false
         }
     }
 
-    // ---- Stage 2: one clang invocation to produce the final binary ----
-    //
-    // Inputs depend on Stage 1:
-    //   -m mode:  link the .o files Stage 1 produced
-    //   default:  hand every .ll directly to clang (compile + link in
-    //             one process)
+    // ---- Stage 2: link all .o files ----
     b: strings.Builder
     when ODIN_OS == .Windows {
         strings.write_byte(&b, '"'); strings.write_string(&b, clang_path); strings.write_byte(&b, '"')
     } else {
         strings.write_string(&b, CLANG_BIN)
     }
-    if multithread {
-        for t in tasks {
-            strings.write_byte(&b, ' ')
-            strings.write_byte(&b, '"'); strings.write_string(&b, t.o_path); strings.write_byte(&b, '"')
-        }
-    } else {
-        for ll_path in ll_paths {
-            strings.write_byte(&b, ' ')
-            strings.write_byte(&b, '"'); strings.write_string(&b, ll_path); strings.write_byte(&b, '"')
-        }
+    for t in tasks {
+        strings.write_byte(&b, ' ')
+        strings.write_byte(&b, '"'); strings.write_string(&b, t.o_path); strings.write_byte(&b, '"')
     }
     strings.write_string(&b, lf.extra_inputs)
     strings.write_string(&b, ` -o "`); strings.write_string(&b, exe_name); strings.write_byte(&b, '"')
@@ -870,7 +859,6 @@ CLI_Args :: struct {
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
     release:      bool,    // -release — pass -O3 to clang for an optimized build
-    multithread:  bool,    // -m — fan out clang -c per module across CPU cores; default is one clang invocation for everything
     ok:           bool,
 }
 
@@ -880,22 +868,21 @@ parse_args :: proc() -> CLI_Args {
     args.search_dir   = "."
 
     if len(os.args) < 2 {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-release] [-m]")
+        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-release]")
         return args
     }
 
     positional: [dynamic]string
     for arg in os.args {
-        if arg == "-web"     { args.web         = true; continue }
-        if arg == "-shared"  { args.shared      = true; continue }
-        if arg == "-release" { args.release     = true; continue }
-        if arg == "-m"       { args.multithread = true; continue }
+        if arg == "-web"     { args.web     = true; continue }
+        if arg == "-shared"  { args.shared  = true; continue }
+        if arg == "-release" { args.release = true; continue }
         append(&positional, arg)
     }
 
     // positional[0] is the exe name itself. positional[1] should be "build".
     if len(positional) < 2 || positional[1] != "build" {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-release] [-m]")
+        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-release]")
         return args
     }
 
@@ -1012,7 +999,7 @@ main :: proc() {
 
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
-    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, multithread = args.multithread)
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         return
@@ -1036,7 +1023,7 @@ main :: proc() {
         // wasm32 targets we test.
         if !link_web(ll_paths[0], out_name, checked) { return }
     } else {
-        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.multithread) { return }
+        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release) { return }
     }
 
     perf_timer_end(&perf)

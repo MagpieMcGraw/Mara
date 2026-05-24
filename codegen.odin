@@ -3031,12 +3031,7 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-//
-// `multithread` opts into parallel per-module codegen via the thread
-// pool. The default runs each module's codegen sequentially in the
-// main thread — smaller projects get the simpler path with no spawn
-// overhead.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, multithread: bool = false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
@@ -3219,12 +3214,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         append(&tasks, task)
     }
 
-    // Run the per-module tasks. In `-m` (multithread) mode they go
-    // through a worker pool sized to the host's cores; the slowest
-    // single module then pace-sets total codegen time. Without -m,
-    // each task runs inline on the main thread — no spawn overhead,
-    // no inter-thread bookkeeping.
-    if multithread && len(tasks) > 1 {
+    // Spawn worker pool sized to the host's cores. Each worker pops one
+    // module task at a time from the queue; tasks are independent so the
+    // slowest single module pace-sets total codegen time.
+    if len(tasks) > 0 {
         pool: thread.Pool
         num_workers := os_old.processor_core_count()
         if num_workers < 1 { num_workers = 1 }
@@ -3236,13 +3229,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
             thread.pool_add_task(&pool, context.allocator, module_codegen_worker, rawptr(t))
         }
         thread.pool_finish(&pool)
-    } else {
-        for t in tasks {
-            // module_codegen_worker takes a thread.Task; we synthesize a
-            // minimal one so the same code path runs whether or not the
-            // worker is dispatched via the pool.
-            module_codegen_worker(thread.Task{data = rawptr(t)})
-        }
     }
 
     // Collect each worker's output into main_g. module_outs[name] gets the
