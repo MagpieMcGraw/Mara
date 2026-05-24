@@ -116,6 +116,13 @@ Struct_Type_Field :: struct {
 Scope_Body :: struct {
     name:           string,  // C-ified flat name (e.g. "game_Point", "sdl_Init"), "" for anonymous
 
+    // Owning module's flat package name (e.g. "iso_000", "mara_math"). Empty
+    // for anonymous scopes that don't belong to a single module. Set at every
+    // construction site that has access to the surrounding package context;
+    // downstream phases (codegen module split, incremental rebuild) use this
+    // to partition symbols by their compilation unit.
+    home_package:   string,
+
     // Data fields — the members of a struct/class, or extracted locals on a fun scope
     fields:         [dynamic]Struct_Type_Field,
     field_map:      map[string]int,  // field name -> index into fields (for O(1) lookup)
@@ -278,12 +285,14 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
 
 Type_Enum :: struct {
     name:         string,  // C-ified flat name
+    home_package: string,  // owning module flat name (see Scope_Body.home_package)
     tag_type:     string,                    // "" = default (i64), or "i32", "i16", etc.
     variants:     map[string]int,
 }
 
 Type_Union :: struct {
     name:            string,             // C-ified flat name
+    home_package:    string,             // owning module flat name (see Scope_Body.home_package)
     tag_type:        string,             // "" = default (i64), or "i32", "i16", etc.
     min_size:        int,                // 0 = no minimum, otherwise minimum total size in bytes (from union(128))
     tag_pad:         Type,               // type of padding between tag and payload (nil = none); reachable as `value.pad`
@@ -300,6 +309,7 @@ union_tag_pad_bytes :: proc(ut: ^Type_Union) -> int {
 
 Type_Distinct :: struct {
     name:             string,  // C-ified flat name
+    home_package:     string,  // owning module flat name (see Scope_Body.home_package)
     base_type:        Type,    // the underlying type (transparent at codegen level)
     default_cap_expr: Expr,    // for sized-slice aliases: default cap when decl omits `(N)`
     is_alias:         bool,    // true for `Name :: type(T)` — transparent in types_equal; false for `distinct T` — nominal
@@ -1198,14 +1208,15 @@ Origin_Foreign :: struct {
 // origin classification that drives codegen behaviour. Foreigns and
 // intrinsics have empty bodies; their work is dictated by the origin tag.
 Checked_Scope :: struct {
-    name:        string,
-    type_:       ^Type_Scope,            // resolved param + return types
-    params:      [dynamic]Checked_Param,
-    return_type: Type,
-    body:        [dynamic]Stmt,        // original AST body
-    ast:         ^Stmt_Scope,            // original AST node (for auto-monomorphization)
-    origin:      Function_Origin,      // Source / Intrinsic / Foreign — codegen dispatch
-    span:        Span,
+    name:         string,
+    home_package: string,                // owning module flat name; mirrored from the Type_Scope at registration so post-check phases can partition by module without env lookups
+    type_:        ^Type_Scope,           // resolved param + return types
+    params:       [dynamic]Checked_Param,
+    return_type:  Type,
+    body:         [dynamic]Stmt,         // original AST body
+    ast:          ^Stmt_Scope,           // original AST node (for auto-monomorphization)
+    origin:       Function_Origin,       // Source / Intrinsic / Foreign — codegen dispatch
+    span:         Span,
 }
 
 // Checked info for an aliased import package.
@@ -2364,6 +2375,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
     // Create concrete Type_Scope with C-ified name
     st := new(Type_Scope)
     st.name = make_flat_name(tmpl.home_package, mangled)
+    st.home_package = tmpl.home_package
     st.kind = .Struct
     st.generic_base = tmpl.name
     for arg in type_args {
@@ -2434,6 +2446,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
 
     ut := new(Type_Union)
     ut.name = make_flat_name(tmpl.home_package, mangled)
+    ut.home_package = tmpl.home_package
     ut.tag_type = s.tag_type
     ut.min_size = s.min_size
     if s.tag_pad != nil {
@@ -2445,6 +2458,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
     tag_enum_name := strings.concatenate({mangled, "_Tag"})
     tag_et := new(Type_Enum)
     tag_et.name = make_flat_name(tmpl.home_package, tag_enum_name)
+    tag_et.home_package = tmpl.home_package
     tag_et.tag_type = s.tag_type
     for vdef in s.variants {
         tag_et.variants[vdef.name] = vdef.tag
@@ -2456,6 +2470,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
         struct_name := strings.concatenate({mangled, "_", vdef.name})
         vst := new(Type_Scope)
         vst.name = make_flat_name(tmpl.home_package, struct_name)
+        vst.home_package = tmpl.home_package
         vst.kind = .Struct
         for field in vdef.fields {
             ft := resolve_type_expr_with_subst(field.type_expr, c, span, &subst)
@@ -2579,6 +2594,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     // Build concrete function type
     fun_type := new(Type_Scope)
     fun_type.kind = .Fun
+    fun_type.home_package = tmpl.home_package
     for tp in ast.typed_params {
         pt := resolve_type_expr_with_subst(tp.type_expr, c, ast.span, subst)
         append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
@@ -2697,6 +2713,7 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     // Build concrete function type with actual param types
     mono_ft := new(Type_Scope)
     mono_ft.kind = .Fun
+    mono_ft.home_package = home
     for tp, i in ast.typed_params {
         if i < len(actual_types) {
             // Use actual type for params that need specialization
@@ -2814,13 +2831,14 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         if c.checked != nil {
             if _, exists := c.checked.functions[st.name]; !exists {
                 cs := Checked_Scope{
-                    name        = st.name,
-                    type_       = st,
-                    return_type = st,
-                    body        = tmpl.ast.body,
-                    ast         = tmpl.ast,
-                    origin      = Origin_Source{},
-                    span        = e.span,
+                    name         = st.name,
+                    home_package = tmpl.home_package,
+                    type_        = st,
+                    return_type  = st,
+                    body         = tmpl.ast.body,
+                    ast          = tmpl.ast,
+                    origin       = Origin_Source{},
+                    span         = e.span,
                 }
                 c.checked.functions[st.name] = cs
                 append(&c.checked.function_order, st.name)
@@ -4735,6 +4753,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // Phase 2 (check_bodies) resolves fields; we only register the name here.
                 def_st := new(Type_Scope)
                 def_st.name = mangled
+                def_st.home_package = c.current_package
                 def_st.kind = .Struct
                 c.table.structs[mangled] = def_st
                 if st.types == nil { st.types = make(map[string]Type) }
@@ -4753,6 +4772,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // Function or struct constructor (has params) — create Type_Scope
                 def_ft := new(Type_Scope)
                 def_ft.name = mangled
+                def_ft.home_package = c.current_package
                 def_ft.has_parens = s.has_parens
                 if def_is_struct {
                     def_ft.kind = .Struct
@@ -4813,6 +4833,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 fun_type := new(Type_Scope)
                 fun_type.kind = .Fun
                 fun_type.calling_conv = .C
+                fun_type.home_package = c.current_package
                 bare_name := decl.name
                 mangled := fmt.aprintf("%s_%s", st.name, bare_name)
                 fun_type.name = mangled
@@ -4979,6 +5000,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 }
                 et := new(Type_Enum)
                 et.name = flat
+                et.home_package = c.current_package
                 et.tag_type = s.tag_type
                 for vdef in s.variants {
                     et.variants[vdef.name] = vdef.tag
@@ -4999,6 +5021,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 }
                 ut := new(Type_Union)
                 ut.name = flat
+                ut.home_package = c.current_package
                 ut.tag_type = s.tag_type
                 ut.min_size = s.min_size
                 // tag_pad: deferred to Pass 1b (type expr)
@@ -5006,6 +5029,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 tag_enum_name := strings.concatenate({s.name, "_Tag"})
                 tag_et := new(Type_Enum)
                 tag_et.name = make_flat_name(c.current_package, tag_enum_name)
+                tag_et.home_package = c.current_package
                 tag_et.tag_type = s.tag_type
                 for vdef in s.variants {
                     tag_et.variants[vdef.name] = vdef.tag
@@ -5018,6 +5042,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                     struct_name := strings.concatenate({s.name, "_", vdef.name})
                     vst := new(Type_Scope)
                     vst.name = make_flat_name(c.current_package, struct_name)
+                    vst.home_package = c.current_package
                     vst.kind = .Struct
                     c.table.structs[vst.name] = vst
                     append(&ut.variants, vdef.name)
@@ -5041,6 +5066,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             }
             dt := new(Type_Distinct)
             dt.name = flat
+            dt.home_package = c.current_package
             dt.default_cap_expr = s.default_cap_expr
             dt.is_alias = s.is_alias
             // base_type: deferred to Pass 1b
@@ -5074,6 +5100,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 }
                 struct_type := new(Type_Scope)
                 struct_type.name = flat
+                struct_type.home_package = c.current_package
                 struct_type.kind = .Struct
                 c.table.structs[flat] = struct_type
                 // Body fields deferred to Pass 1b (register_scope_defs).
@@ -5104,6 +5131,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 fun_type := new(Type_Scope)
                 fun_type.has_parens = s.has_parens
                 fun_type.name = flat_name
+                fun_type.home_package = c.current_package
                 if is_struct_type {
                     fun_type.kind = .Struct
                 } else {
@@ -5218,6 +5246,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Pure-enum union: register as a Type_Enum with the union's name
                 et := new(Type_Enum)
                 et.name = make_flat_name(c.current_package, s.name)
+                et.home_package = c.current_package
                 et.tag_type = s.tag_type
                 if et.name in c.table.enums {
                     check_error(c, s.span, TYPE_ENUM_ALREADY_DEFINED, s.name)
@@ -5238,6 +5267,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Data union: create tag enum, variant structs, and union type
                 ut := new(Type_Union)
                 ut.name = make_flat_name(c.current_package, s.name)
+                ut.home_package = c.current_package
                 if ut.name in c.table.unions {
                     check_error(c, s.span, TYPE_UNION_ALREADY_DEFINED, s.name)
                 } else {
@@ -5245,6 +5275,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     tag_enum_name := strings.concatenate({s.name, "_Tag"})
                     tag_et := new(Type_Enum)
                     tag_et.name = make_flat_name(c.current_package, tag_enum_name)
+                    tag_et.home_package = c.current_package
                     tag_et.tag_type = s.tag_type
                     for vdef in s.variants {
                         tag_et.variants[vdef.name] = vdef.tag
@@ -5262,6 +5293,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         struct_name := strings.concatenate({s.name, "_", vdef.name})
                         vst := new(Type_Scope)
                         vst.name = make_flat_name(c.current_package, struct_name)
+                        vst.home_package = c.current_package
                         vst.kind = .Struct
                         for field in vdef.fields {
                             ft := resolve_type_expr(field.type_expr, c, s.span)
@@ -5299,6 +5331,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             base := resolve_type_expr(s.base_type, c, s.span)
             dt := new(Type_Distinct)
             dt.name = make_flat_name(c.current_package, s.name)
+            dt.home_package = c.current_package
             dt.base_type = base
             dt.default_cap_expr = s.default_cap_expr
             dt.is_alias = s.is_alias
@@ -5393,6 +5426,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Pure data struct — create Type_Scope with kind=.Struct, no params
                 struct_type := new(Type_Scope)
                 struct_type.name = make_flat_name(c.current_package, s.name)
+                struct_type.home_package = c.current_package
                 struct_type.kind = .Struct
                 if struct_type.name in c.table.structs || struct_type.name in c.table.funs {
                     check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
@@ -5428,6 +5462,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // kinds are added to c.table.funs (the map is used by codegen
                 // to emit LLVM struct types; funs are emitted separately).
                 fun_type.name = make_flat_name(c.current_package, s.name)
+                fun_type.home_package = c.current_package
                 if is_struct_type {
                     fun_type.kind = .Struct
                     c.table.funs[fun_type.name] = fun_type
@@ -5518,6 +5553,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 fun_type := new(Type_Scope)
                 fun_type.kind = .Fun
                 fun_type.calling_conv = .C
+                fun_type.home_package = c.current_package
                 fun_type.name = make_flat_name(c.current_package, decl.name)
                 for tp in decl.typed_params {
                     pt := resolve_type_expr(tp.type_expr, c, decl.span, env = env)
@@ -7877,13 +7913,14 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
         origin = Origin_Intrinsic{llvm_name = s.intrinsic_name}
     }
     cf := Checked_Scope{
-        name        = s.name,
-        type_       = ft,
-        return_type = distinct_base(ret_type),
-        body        = s.body,
-        ast         = s,
-        origin      = origin,
-        span        = s.span,
+        name         = s.name,
+        home_package = ft.home_package,
+        type_        = ft,
+        return_type  = distinct_base(ret_type),
+        body         = s.body,
+        ast          = s,
+        origin       = origin,
+        span         = s.span,
     }
 
     for p in ft.params {
@@ -7925,6 +7962,7 @@ get_or_synth_module_scope :: proc(c: ^Checker, name: string) -> ^Type_Scope {
     if existing, ok := c.checked_modules[name]; ok { return existing }
     synth := new(Type_Scope)
     synth.name = name
+    synth.home_package = name  // module is its own home
     synth.kind = .Struct
     // Empty body — no fields, no top-level decls. Submodules will be
     // registered as members by register_in_parent_scopes.
@@ -8022,6 +8060,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // check_scope completes.
     mod_struct := new(Type_Scope)
     mod_struct.name = module_name
+    mod_struct.home_package = module_name  // module is its own home
     mod_struct.kind = .Struct
     mod_struct.scope = mod_env
     mod_env.owner_module = mod_struct
@@ -8180,11 +8219,12 @@ make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Sco
         }
     }
     cs := Checked_Scope{
-        name        = decl.name,
-        type_       = ft,
-        return_type = distinct_base(ft.return_type),
-        ast         = nil,
-        origin      = Origin_Foreign{
+        name         = decl.name,
+        home_package = ft.home_package,
+        type_        = ft,
+        return_type  = distinct_base(ft.return_type),
+        ast          = nil,
+        origin       = Origin_Foreign{
             library    = library,
             link_name  = ln,
             prefix     = prefix,
@@ -8631,6 +8671,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     c.mara_env = env  // for now, reuse root env as mara scope
     std_fun := new(Type_Scope)
     std_fun.name = "std"
+    std_fun.home_package = "std"
     std_fun.kind = .Struct
     std_fun.scope = new(Type_Env)
     std_fun.scope.parent = env
@@ -8762,6 +8803,12 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         // generic_templates under the bare name "Program" — separate path.
         prog_type := new(Type_Scope)
         prog_type.name = "Program"
+        // Synthetic Program belongs to the main package — that's the only TU
+        // that will emit its init body, so cross-module references resolve
+        // there. Without a real home_package, the per-module IR split has
+        // nowhere to put its definition and downstream modules can't extern
+        // it.
+        prog_type.home_package = main_package
         prog_type.kind = .Struct
         field_idx := 0
         if c.table.has_scope_allocator {
@@ -8853,6 +8900,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         if _, already := c.checked_modules[main_package]; !already {
             mod_struct := new(Type_Scope)
             mod_struct.name = main_package
+            mod_struct.home_package = main_package
             mod_struct.kind = .Struct
             mod_struct.scope = new(Type_Env)
             mod_struct.scope.is_module_scope = true
@@ -8906,11 +8954,12 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         // Use cloned body if available (each monomorphization has independent type annotations)
         body := c.table.mono_fun_bodies[mangled_name] if mangled_name in c.table.mono_fun_bodies else tmpl_ast.body
         cf := Checked_Scope{
-            name        = flat_key,
-            type_       = ft,
-            return_type = distinct_base(ft.return_type),
-            body        = body,
-            span        = tmpl_ast.span,
+            name         = flat_key,
+            home_package = tmpl_home,
+            type_        = ft,
+            return_type  = distinct_base(ft.return_type),
+            body         = body,
+            span         = tmpl_ast.span,
         }
         for p in ft.params {
             append(&cf.params, Checked_Param{name = p.name, type_ = distinct_base(p.type_)})
@@ -8927,8 +8976,72 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         check_error(&c, {}, "package '%s' must define fun main()", main_package)
     }
 
+    // Sanity check (debug builds only): every named entity should have a
+    // home_package set. Empty home_package on a registered named entity
+    // indicates a missed population site. Built-in primitives ("Program",
+    // anonymous fn-pointer types from Type_Func_Expr) are expected to be
+    // empty and skipped here.
+    when ODIN_DEBUG {
+        audit_home_package(checked)
+    }
+
     checked.errors = c.errors
     return checked
+}
+
+@(private="file")
+audit_home_package :: proc(checked: ^Checked_Program) {
+    skip :: proc(name: string) -> bool {
+        // Compiler-synthesized + structural-anonymous types that legitimately
+        // have no home module.
+        return name == "" || name == "Program" || name == "std"
+    }
+    missing := 0
+    for k, st in checked.table.structs {
+        if skip(k) { continue }
+        if st.home_package == "" {
+            fmt.printf("audit: struct '%s' has no home_package\n", k)
+            missing += 1
+        }
+    }
+    for k, ft in checked.table.funs {
+        if skip(k) { continue }
+        if ft.home_package == "" {
+            fmt.printf("audit: fun '%s' has no home_package\n", k)
+            missing += 1
+        }
+    }
+    for k, et in checked.table.enums {
+        if skip(k) { continue }
+        if et.home_package == "" {
+            fmt.printf("audit: enum '%s' has no home_package\n", k)
+            missing += 1
+        }
+    }
+    for k, ut in checked.table.unions {
+        if skip(k) { continue }
+        if ut.home_package == "" {
+            fmt.printf("audit: union '%s' has no home_package\n", k)
+            missing += 1
+        }
+    }
+    for k, dt in checked.table.distinct_types {
+        if skip(k) { continue }
+        if dt.home_package == "" {
+            fmt.printf("audit: distinct '%s' has no home_package\n", k)
+            missing += 1
+        }
+    }
+    for k, cf in checked.functions {
+        if skip(k) { continue }
+        if cf.home_package == "" {
+            fmt.printf("audit: checked fn '%s' has no home_package\n", k)
+            missing += 1
+        }
+    }
+    if missing > 0 {
+        fmt.printf("audit: %d named entities missing home_package\n", missing)
+    }
 }
 
 
