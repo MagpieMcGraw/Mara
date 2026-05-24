@@ -2,7 +2,9 @@ module camera
 
 use mara.memory
 use mara.math
+use mara.sdl
 
+use event
 use object
 
 Camera :: struct(w, h, fovy : f32) {
@@ -43,42 +45,42 @@ camera_align_with_gravity :: fun(camera: ^Camera) {
 	camera.obj.dir = quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})
 }
 
-// camera_move :: fun(events: ^Event_State, loop_time: f32, camera: ^Camera) {
-// 	direction: linalg.Vector3f32
-// 	speed: f32 = 500
+camera_move :: fun(events: ^Event_State, loop_time: f32, camera: ^Camera) {
+	direction: Vec3
+	speed: f32 = 500
 
-// 	fwd, up, right := obj_get_directions(camera.dir)
+	fwd, up, right := obj_get_directions(camera.obj.dir)
 
-// 	if events.keyboard.held[sdl.Scancode.W] {
-// 		direction += fwd
-// 	}
-// 	if events.keyboard.held[sdl.Scancode.S] {
-// 		direction -= fwd
-// 	}
-// 	if events.keyboard.held[sdl.Scancode.A] {
-// 		direction -= right
-// 	}
-// 	if events.keyboard.held[sdl.Scancode.D] {
-// 		direction += right
-// 	}
-// 	if events.keyboard.held[sdl.Scancode.Q] {
-// 		direction += up
-// 	}
-// 	if events.keyboard.held[sdl.Scancode.Z] {
-// 		direction -= up
-// 	}
+	if events.keyboard.held[sdl.Scancode.W] {
+		direction += fwd
+	}
+	if events.keyboard.held[sdl.Scancode.S] {
+		direction -= fwd
+	}
+	if events.keyboard.held[sdl.Scancode.A] {
+		direction -= right
+	}
+	if events.keyboard.held[sdl.Scancode.D] {
+		direction += right
+	}
+	if events.keyboard.held[sdl.Scancode.Q] {
+		direction += up
+	}
+	if events.keyboard.held[sdl.Scancode.Z] {
+		direction -= up
+	}
 
-// 	if events.keyboard.held[sdl.Scancode.LSHIFT] {
-// 		speed *= 0.2
-// 	}
+	if events.keyboard.held[sdl.Scancode.LShift] {
+		speed *= 0.2
+	}
 
-// 	if events.keyboard.held[sdl.Scancode.LCTRL] {
-// 		speed *= 5.0
-// 	}
+	if events.keyboard.held[sdl.Scancode.LCtrl] {
+		speed *= 5.0
+	}
 
-// 	move_this_frame := speed * loop_time * direction
-// 	camera.accel += move_this_frame
-// }
+	move_this_frame := direction * speed * loop_time
+	camera.obj.accel += move_this_frame
+}
 
 // camera_turn_flying :: fun(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
 // 	sensitivity: f32 = 0.005

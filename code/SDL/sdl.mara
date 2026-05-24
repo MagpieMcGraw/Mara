@@ -14,6 +14,9 @@ Init_Flags :: union(tag u32) {
 }
 
 // NEEDS DISTINCT!
+// Variant names follow Mara's PascalCase convention even though SDL3's
+// C constants are ALL_CAPS. Bare digits aren't valid identifiers, so the
+// numeric row uses Num<n> / Kp<n>.
 Scancode :: union(tag u32) {
     Unknown            = 0
     A                  = 4
@@ -220,14 +223,14 @@ Scancode :: union(tag u32) {
     KpOctal            = 219
     KpDecimal          = 220
     KpHexadecimal      = 221
-    LCTRL              = 224
-    LSHIFT             = 225
-    LALT               = 226
-    LGUI               = 227
-    RCTRL              = 228
-    RSHIFT             = 229
-    RALT               = 230
-    RGUI               = 231
+    LCtrl              = 224
+    LShift             = 225
+    LAlt               = 226
+    LGui               = 227
+    RCtrl              = 228
+    RShift             = 229
+    RAlt               = 230
+    RGui               = 231
     Mode               = 257
     Sleep              = 258
     Wake               = 259
