@@ -3443,13 +3443,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // and @main are emitted. The main TU's import set folds in @main's
     // references (arena init, args setup, dispatch into user `main`).
     compute_module_imports(&g, checked.main_package, main_builder_str)
-    when ODIN_DEBUG {
-        // Spot-check aid for small builds — past ~10 modules the dump is
-        // pure noise (100-line wall on the 1M stress test).
-        if len(g.module_order) <= 10 {
-            dump_module_imports(&g)
-        }
-    }
 
     // Pre-build the foreign declare block once; the same set is included
     // in every per-module .ll. Intrinsic declares are computed per-module
