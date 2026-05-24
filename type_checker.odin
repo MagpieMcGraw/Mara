@@ -6042,10 +6042,16 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             if !is_any(ann_type) {
                 // If ann_type is distinct and val_type is NOT a literal (array/struct),
                 // skip structural checks — use nominal comparison directly.
+                // Also take the nominal path when the literal already produced a
+                // matching distinct type (e.g. `bar : Vec3 = Vec3{1,2,3}`): the
+                // RHS constructor's check_array_struct_literal validated element
+                // shape and returned ^Type_Distinct, so the unwrap-to-base path
+                // would wrongly reject the tagged value against the bare array.
                 _, ann_is_distinct := ann_type.(^Type_Distinct)
                 _, val_is_array := s.value.(^Expr_Array)
                 _, val_is_struct_lit := s.value.(^Expr_Struct_Literal)
-                if ann_is_distinct && !val_is_array && !val_is_struct_lit {
+                val_carries_matching_distinct := ann_is_distinct && types_equal(ann_type, val_type)
+                if ann_is_distinct && (!val_is_array && !val_is_struct_lit || val_carries_matching_distinct) {
                     // Byte-buffer reinterpret read overrides the nominal type
                     // match — `win : sdl.Window = mem[0]` reads sizeof(Window)
                     // bytes regardless of the distinct wrapper.
