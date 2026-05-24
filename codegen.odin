@@ -1999,13 +1999,21 @@ ensure_i64 :: proc(g: ^Codegen, val: string, expr: Expr) -> string {
 // Returns the (possibly converted) value register.
 emit_type_convert :: proc(g: ^Codegen, val: string, from: string, to: string) -> string {
     if from == to { return val }
-    conv := fresh_tmp(g)
     is_int :: proc(t: string) -> bool {
         return t == "i64" || t == "i32" || t == "i16" || t == "i8" || t == "i1"
     }
     is_float :: proc(t: string) -> bool {
         return t == "double" || t == "float"
     }
+    // Constant short-circuits: type-converting a literal zero produces the
+    // zero of the destination type, with no IR. Saves a few thousand
+    // sext/zext/trunc/sitofp instructions on struct-init-heavy modules
+    // (every defaulted-to-0 numeric field hit this).
+    if val == "0" {
+        if is_int(to) { return "0" }
+        if is_float(to) { return "0.0" }
+    }
+    conv := fresh_tmp(g)
     int_bits :: proc(t: string) -> int {
         switch t {
         case "i64": return 64
