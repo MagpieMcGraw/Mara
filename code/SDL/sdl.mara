@@ -1098,6 +1098,8 @@ foreign static_lib "SDL3" prefix SDL_ {
     fun SetHint(name: cstring, value: cstring) -> bool
     fun CreateWindow(title: cstring, w: i32, h: i32, flags: WindowFlags) -> Window
     fun DestroyWindow(window: Window)
+    fun GetWindowSize(window: Window, w: ^i32, h: ^i32) -> bool
+    fun GetWindowSizeInPixels(window: Window, w: ^i32, h: ^i32) -> bool
     fun PollEvent(event: ^Event) -> bool
     fun Delay(ms: u32)
     fun Quit()
