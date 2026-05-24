@@ -7,6 +7,8 @@ import "core:slice"
 import "core:strings"
 import "core:c/libc"
 import "core:path/filepath"
+import "core:thread"
+import os_old "core:os/old"
 
 // get_compiler_dir lives in platform-suffixed files (compiler_dir_windows.odin,
 // compiler_dir_linux.odin) — each uses its native API to find the exe path.
@@ -644,22 +646,124 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
 // -fuse-ld=lld points clang at lld-link.exe (bundled on Windows; lld via
 // PATH on Linux). -Wno-override-module silences the warning our IR
 // module's target triple triggers.
+// Per-compile task data: spawned thread reads ll/o paths + clang flags and
+// fills exit_code on completion. Stored as ^Compile_Task so the thread pool
+// can pass it around via `rawptr` without copies.
+Compile_Task :: struct {
+    ll_path:   string,
+    o_path:    string,
+    clang_cmd: string,  // full quoted command for libc.system
+    exit_code: i32,
+}
+
+@(private="file")
+clang_resolve_path :: proc(compiler_dir: string) -> string {
+    when ODIN_OS == .Windows {
+        p, _ := filepath.join({compiler_dir, "tools", CLANG_BIN})
+        return p
+    } else {
+        return CLANG_BIN
+    }
+}
+
+@(private="file")
+ll_to_o_path :: proc(ll_path: string) -> string {
+    if strings.has_suffix(ll_path, ".ll") {
+        base := ll_path[:len(ll_path)-3]
+        return strings.concatenate({base, ".o"})
+    }
+    return strings.concatenate({ll_path, ".o"})
+}
+
+// Compile one .ll to its corresponding .o. Invoked from the thread pool;
+// each worker thread runs one of these via libc.system (which blocks the
+// worker but the other workers run in parallel).
+@(private="file")
+compile_task_proc :: proc(t: thread.Task) {
+    data := cast(^Compile_Task)t.data
+    cmd_cstr := strings.clone_to_cstring(data.clang_cmd)
+    defer delete(cmd_cstr)
+    data.exit_code = libc.system(cmd_cstr)
+}
+
 link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
+    clang_path := clang_resolve_path(compiler_dir)
+
+    // ---- Stage 1: parallel `clang -c <ll> -o <o>` per module ----
+    //
+    // Each per-module .ll is an independent translation unit and the
+    // resulting .o files are linked together at the end. With N worker
+    // threads (defaulting to the host's core count), the slowest .ll
+    // pace-sets compile time rather than the sum.
+    tasks: [dynamic]^Compile_Task
+    defer {
+        for t in tasks {
+            delete(t.clang_cmd)
+            delete(t.o_path)
+            free(t)
+        }
+        delete(tasks)
+    }
+    for ll_path in ll_paths {
+        t := new(Compile_Task)
+        t.ll_path = ll_path
+        t.o_path = ll_to_o_path(ll_path)
+        // Per-TU compile command. -Wno-override-module silences the
+        // "overriding the module target triple" warning that emcc/clang
+        // raises when our IR's target triple differs from the host's
+        // default (we set it explicitly per file, so it's expected).
+        cb: strings.Builder
+        strings.write_byte(&cb, '"'); strings.write_string(&cb, clang_path); strings.write_byte(&cb, '"')
+        strings.write_string(&cb, " -c ")
+        strings.write_byte(&cb, '"'); strings.write_string(&cb, t.ll_path); strings.write_byte(&cb, '"')
+        strings.write_string(&cb, " -o ")
+        strings.write_byte(&cb, '"'); strings.write_string(&cb, t.o_path); strings.write_byte(&cb, '"')
+        strings.write_string(&cb, " -Wno-override-module -mf16c")
+        if release { strings.write_string(&cb, " -O3") }
+        // Pull -I and -D flags from lf.extra_inputs only if they're
+        // compile-level options (we exclude .obj/.lib paths which only
+        // matter at link). For now: skip extra_inputs entirely on the
+        // -c step; they're added only to the link command below.
+        when ODIN_OS == .Windows {
+            t.clang_cmd = strings.concatenate({`"`, strings.to_string(cb), `"`})
+        } else {
+            t.clang_cmd = strings.to_string(cb)
+        }
+        append(&tasks, t)
+    }
+
+    pool: thread.Pool
+    num_workers := os_old.processor_core_count()
+    if num_workers < 1 { num_workers = 1 }
+    if num_workers > len(tasks) { num_workers = len(tasks) }
+    thread.pool_init(&pool, context.allocator, num_workers)
+    defer thread.pool_destroy(&pool)
+    thread.pool_start(&pool)
+    for t in tasks {
+        thread.pool_add_task(&pool, context.allocator, compile_task_proc, rawptr(t))
+    }
+    thread.pool_finish(&pool)
+
+    for t in tasks {
+        if t.exit_code != 0 {
+            fmt.printf("clang -c failed for '%s' (exit %d)\n", t.ll_path, t.exit_code)
+            return false
+        }
+    }
+
+    // ---- Stage 2: link all .o files ----
     b: strings.Builder
     when ODIN_OS == .Windows {
-        clang_path, _ := filepath.join({compiler_dir, "tools", CLANG_BIN})
         strings.write_byte(&b, '"'); strings.write_string(&b, clang_path); strings.write_byte(&b, '"')
     } else {
-        strings.write_string(&b, CLANG_BIN)  // bare `clang`; resolved via PATH
+        strings.write_string(&b, CLANG_BIN)
     }
-    // Pass every per-module .ll as a separate translation unit. clang
-    // compiles each independently, then the linker pulls them together.
-    for ll_path in ll_paths {
+    for t in tasks {
         strings.write_byte(&b, ' ')
-        strings.write_byte(&b, '"'); strings.write_string(&b, ll_path); strings.write_byte(&b, '"')
+        strings.write_byte(&b, '"'); strings.write_string(&b, t.o_path); strings.write_byte(&b, '"')
     }
     strings.write_string(&b, lf.extra_inputs)
     strings.write_string(&b, ` -o "`); strings.write_string(&b, exe_name); strings.write_byte(&b, '"')
