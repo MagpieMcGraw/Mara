@@ -305,6 +305,14 @@ Codegen :: struct {
     module_outs:         map[string]strings.Builder,
     module_order:        [dynamic]string,
     current_module_home: string,  // the package whose buffer g.out currently holds (empty = not in a module section)
+
+    // Imports per module: each module's set of `@<symbol>` references that
+    // aren't defined locally. Populated by a post-emission walk of each
+    // module's buffer. Used by the eventual per-`.ll` writer to emit
+    // `declare` lines at the top of each module's file. LLVM intrinsics and
+    // libc names (always declared per TU regardless) are excluded from this
+    // set.
+    module_imports:      map[string]map[string]bool,
     hoist_allocas: bool,           // true during function body codegen
     emitted_allocas: map[string]string, // track alloca names emitted in current function (name -> IR type for dedup)
     tmp_counter: int,              // %0, %1, %2 ...
@@ -1554,6 +1562,109 @@ flush_current_module :: proc(g: ^Codegen) {
     if g.current_module_home != "" {
         g.module_outs[g.current_module_home] = g.out
         g.current_module_home = ""
+    }
+}
+
+// True if `c` is a legal continuation byte in an LLVM identifier. LLVM
+// allows letters, digits, '_', '.', and '$' inside identifiers (and dollars
+// don't actually appear in Mara-emitted IR but we keep them for safety).
+@(private="file")
+is_ir_ident_byte :: proc(c: byte) -> bool {
+    return (c >= 'a' && c <= 'z') ||
+           (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') ||
+           c == '_' || c == '.' || c == '$'
+}
+
+// True if the `@<name>` token at `at` in `ir` is a definition (the start of
+// a `define ...` line or a global-variable assignment `@name = ...`). The
+// heuristic: check what's at the start of the current line — `define ` /
+// `declare ` mean a function definition/declaration; otherwise look for a
+// ` = ` right after the identifier (global initializer). Anything else is a
+// reference.
+@(private="file")
+is_ir_definition :: proc(ir: string, at_token, end_of_token: int) -> bool {
+    // Walk back to the start of this line.
+    line_start := at_token
+    for line_start > 0 && ir[line_start-1] != '\n' { line_start -= 1 }
+    line_prefix := ir[line_start:at_token]
+    if strings.has_prefix(strings.trim_left(line_prefix, " \t"), "define ") { return true }
+    if strings.has_prefix(strings.trim_left(line_prefix, " \t"), "declare ") { return true }
+    // Global initializer: `@name = ...`
+    j := end_of_token
+    for j < len(ir) && (ir[j] == ' ' || ir[j] == '\t') { j += 1 }
+    if j < len(ir) && ir[j] == '=' { return true }
+    return false
+}
+
+// Debug-build summary of per-module imports. Reads cleanly enough to spot-
+// check whether a module's imports match what its source code calls.
+@(private="file")
+dump_module_imports :: proc(g: ^Codegen) {
+    fmt.printf("\n=== Per-module imports ===\n")
+    for module_name in g.module_order {
+        imports := g.module_imports[module_name]
+        fmt.printf("[%s] %d imports", module_name, len(imports))
+        if len(imports) == 0 {
+            fmt.printf("\n")
+            continue
+        }
+        names: [dynamic]string
+        defer delete(names)
+        for n in imports { append(&names, n) }
+        slice.sort(names[:])
+        fmt.printf(": ")
+        for n, i in names {
+            if i > 0 { fmt.printf(", ") }
+            fmt.printf("@%s", n)
+            if i == 4 && len(names) > 6 {
+                fmt.printf(", ... (%d more)", len(names) - 5)
+                break
+            }
+        }
+        fmt.printf("\n")
+    }
+    fmt.printf("===========================\n\n")
+}
+
+// Build module_imports by walking each module's buffer for `@<name>`
+// references and subtracting the locally-defined names. Skips well-known
+// categories every TU declares anyway (libc, LLVM intrinsics, the per-TU
+// `@.str.N` globals).
+compute_module_imports :: proc(g: ^Codegen) {
+    g.module_imports = make(map[string]map[string]bool)
+    skip_libc :: proc(name: string) -> bool {
+        return name == "printf" || name == "exit" || name == "strlen"
+    }
+    for module_name in g.module_order {
+        defined: map[string]bool
+        referenced: map[string]bool
+        buf := g.module_outs[module_name]
+        ir := strings.to_string(buf)
+        i := 0
+        for i < len(ir) {
+            if ir[i] != '@' { i += 1; continue }
+            start := i + 1
+            end := start
+            for end < len(ir) && is_ir_ident_byte(ir[end]) { end += 1 }
+            if end == start { i += 1; continue }
+            name := ir[start:end]
+            if is_ir_definition(ir, i, end) {
+                defined[name] = true
+            } else {
+                referenced[name] = true
+            }
+            i = end
+        }
+        imports: map[string]bool
+        for name in referenced {
+            if name in defined { continue }
+            if strings.has_prefix(name, "llvm.") { continue }
+            if strings.has_prefix(name, ".str.") { continue }
+            if skip_libc(name) { continue }
+            imports[name] = true
+        }
+        g.module_imports[module_name] = imports
     }
 }
 
@@ -2934,6 +3045,15 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
 
     flush_current_module(&g)
+
+    // Phase 1.6: Compute per-module imports. Walks each module's buffer for
+    // referenced-but-not-defined `@<name>` symbols. Used by the eventual
+    // per-`.ll` writer; for now the data sits unused except for the debug
+    // summary below.
+    compute_module_imports(&g)
+    when ODIN_DEBUG {
+        dump_module_imports(&g)
+    }
 
     // Phase 2: Emit @main from user's fn main(). Skipped in shared (DLL) mode —
     // the binary has no entry point; each #expose function does its own ctx
