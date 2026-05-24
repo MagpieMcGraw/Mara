@@ -399,7 +399,10 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 ir_t := llvm_type_from_checker(rb_type)
                 alloca_name := fmt.tprintf("%%%s", rb.name)
                 emit_alloca(g, alloca_name, ir_t)
-                emit_store(g, ir_t, "0", alloca_name)
+                // LLVM rejects `store float 0` — float and double slots need
+                // a float literal, not the integer 0.
+                zero_lit := ir_t == "float" || ir_t == "double" ? "0.0" : "0"
+                emit_store(g, ir_t, zero_lit, alloca_name)
                 g.all_vars[rb.name] = Scalar_Var{alloca = alloca_name}
             }
         }
