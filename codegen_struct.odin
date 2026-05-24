@@ -80,7 +80,7 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
         if data_ptr == "" {
             total := struct_byte_size(st, g.checked)
             data_ptr = emit_arena_bump(g, total, name, loc)
-            emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", data_ptr, total)
+            emit_memset_zero(g, data_ptr, total)
             g.all_vars[name] = Struct_Var{
                 alloca      = data_ptr,
                 struct_name = skey,
@@ -181,14 +181,14 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
             // Re-declaration with different struct type — use a fresh name for the alloca
             alloca_name = fresh_tmp(g)
         }
-        emit(g, "  %s = alloca %s", alloca_name, llvm_name)
+        emit_alloca(g, alloca_name, llvm_name)
         g.all_vars[name] = Struct_Var{
             alloca = alloca_name,
             struct_name = skey,
         }
         // Always zero-init struct allocas (ensures null ptrs, zero ints, etc.)
         total := struct_byte_size(st, g.checked)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", alloca_name, total)
+        emit_memset_zero(g, alloca_name, total)
 
         // Sized-slice fields are NOT init'd here — the struct's auto-init
         // function (called below for bare decls) and gen_store_struct_into
@@ -282,7 +282,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             src_ptr := g.tuple_result_ptrs[i]
             src_sem := distinct_base(ret_tuple.elems[i])
             dst_field_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", dst_field_gep, llvm_name, base_ptr, i)
+            emit_field_gep_into(g, dst_field_gep, llvm_name, base_ptr, i)
             // Slice field + array tuple element: build slice header at the field
             // pointing at the temp's storage. Array's compile-time size is the
             // slice's len/cap (the function fully filled it).
@@ -290,7 +290,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
                 if fa, fa_ok := src_sem.(^Type_Fixed_Array); fa_ok {
                     ptr_gep := fresh_tmp(g)
                     emit_slice_gep(g, ptr_gep, dst_field_gep, SLICE.ptr)
-                    emit(g, "  store ptr %s, ptr %s", src_ptr, ptr_gep)
+                    emit_store(g, "ptr", src_ptr, ptr_gep)
                     len_gep := fresh_tmp(g)
                     emit_slice_gep(g, len_gep, dst_field_gep, SLICE.len)
                     emit_typed_store_len(g, fmt.tprintf("%d", fa.size), len_gep)
@@ -302,7 +302,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             }
             // Direct copy: same shape on both sides.
             size := checker_type_byte_size(sf.type_)
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_field_gep, src_ptr, size)
+            emit_memcpy(g, dst_field_gep, src_ptr, size)
         }
         clear(&g.tuple_result_ptrs)
         clear(&g.tuple_result_types)
@@ -327,7 +327,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             inner_st, inner_ok := lookup_struct(g, inner_name)
             if inner_ok {
                 embed_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", embed_gep, llvm_name, base_ptr, idx)
+                emit_field_gep_into(g, embed_gep, llvm_name, base_ptr, idx)
                 inner_llvm := struct_llvm_name(inner_name)
                 if inner_lit, il_ok := field.value.(^Expr_Struct_Literal); il_ok {
                     for inner_field in inner_lit.fields {
@@ -336,20 +336,20 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
                         inner_ft := field_ir_type(&inner_st.fields[inner_idx])
                         inner_val := gen_expr(g, inner_field.value, inner_ft)
                         inner_gep := fresh_tmp(g)
-                        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", inner_gep, inner_llvm, embed_gep, inner_idx)
-                        emit(g, "  store %s %s, ptr %s", inner_ft, inner_val, inner_gep)
+                        emit_field_gep_into(g, inner_gep, inner_llvm, embed_gep, inner_idx)
+                        emit_store(g, inner_ft, inner_val, inner_gep)
                     }
                 } else if ident2, id2_ok := field.value.(^Expr_Ident); id2_ok {
                     if src_sv, src_ok := get_struct(g, ident2.name); src_ok {
                         for &inner_f, inner_i in inner_st.fields {
                             inner_ft := field_ir_type(&inner_f)
                             src_gep := fresh_tmp(g)
-                            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", src_gep, inner_llvm, src_sv.alloca, inner_i)
+                            emit_field_gep_into(g, src_gep, inner_llvm, src_sv.alloca, inner_i)
                             tmp_val := fresh_tmp(g)
-                            emit(g, "  %s = load %s, ptr %s", tmp_val, inner_ft, src_gep)
+                            emit_load_into(g, tmp_val, inner_ft, src_gep)
                             dst_gep := fresh_tmp(g)
-                            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", dst_gep, inner_llvm, embed_gep, inner_i)
-                            emit(g, "  store %s %s, ptr %s", inner_ft, tmp_val, dst_gep)
+                            emit_field_gep_into(g, dst_gep, inner_llvm, embed_gep, inner_i)
+                            emit_store(g, inner_ft, tmp_val, dst_gep)
                         }
                     }
                 }
@@ -360,7 +360,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         acap := field_array_cap(f)
         if acap > 0 {
             data_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", data_gep, llvm_name, base_ptr, idx)
+            emit_field_gep_into(g, data_gep, llvm_name, base_ptr, idx)
             gen_array_field_store(g, data_gep, acap, field_array_elem(f), field.value)
             continue
         }
@@ -377,9 +377,9 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
                 src_ptr = gen_expr(g, field.value, ft)
             }
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, base_ptr, idx)
+            emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
             size := checker_type_byte_size(f.type_)
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", gep, src_ptr, size)
+            emit_memcpy(g, gep, src_ptr, size)
             continue
         }
         // Named-struct field (`%class.X`): the RHS is either a constructor
@@ -391,16 +391,16 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         if strings.has_prefix(ft, "%class.") {
             src_ptr := gen_expr(g, field.value, ft)
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, base_ptr, idx)
+            emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
             size := checker_type_byte_size(f.type_)
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", gep, src_ptr, size)
+            emit_memcpy(g, gep, src_ptr, size)
             continue
         }
         // Scalar field.
         val := gen_expr(g, field.value, ft)
         gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, base_ptr, idx)
-        emit(g, "  store %s %s, ptr %s", ft, val, gep)
+        emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
+        emit_store(g, ft, val, gep)
     }
 }
 
@@ -416,16 +416,16 @@ gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         idx := struct_field_index(st, field)
         if idx >= 0 {
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_n, base_ptr, idx)
+            emit_field_gep_into(g, gep, llvm_n, base_ptr, idx)
             return gep
         }
         // Try using-promoted field (two-level GEP)
         up, up_ok := resolve_using_field(g, st, field)
         if up_ok {
             gep1 := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep1, llvm_n, base_ptr, up.outer_index)
+            emit_field_gep_into(g, gep1, llvm_n, base_ptr, up.outer_index)
             gep2 := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
+            emit_field_gep_into(g, gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
             return gep2
         }
         return "null"
@@ -488,7 +488,7 @@ resolve_struct_for_field :: proc(g: ^Codegen, ident_name: string, ident_type: Ty
         if st, st_ok := lookup_struct(g, ptr_struct_name); st_ok {
             alloca_name, _ := get_scalar(g, ident_name)
             loaded_ptr := fresh_tmp(g)
-            emit(g, "  %s = load ptr, ptr %s", loaded_ptr, alloca_name)
+            emit_load_into(g, loaded_ptr, "ptr", alloca_name)
             // Null pointer check before auto-deref field access
             emit_null_check(g, loaded_ptr, ident_name, span)
             return st, loaded_ptr, true
@@ -531,7 +531,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         tag_ptr := fresh_tmp(g)
         emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, llvm_name, union_ptr)
         tag_val := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", tag_val, tag_ir, tag_ptr)
+        emit_load_into(g, tag_val, tag_ir, tag_ptr)
         return tag_val
     }
     // .pad accessor: read the typed padding between tag and payload. The pad
@@ -548,7 +548,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         pad_ptr := fresh_tmp(g)
         emit(g, "  %s = getelementptr i8, ptr %s, i32 %d", pad_ptr, union_ptr, tag_bytes)
         pad_val := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", pad_val, pad_ir, pad_ptr)
+        emit_load_into(g, pad_val, pad_ir, pad_ptr)
         return pad_val
     }
     // Try unified address chain first — handles chained access efficiently
@@ -617,7 +617,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                             idx := swizzle_char_to_index(e.field[0])
                             arr_type := array_var_type(&ar)
                             gep := fresh_tmp(g)
-                            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, ar.alloca, idx)
+                            emit_array_gep_const(g, gep, arr_type, ar.alloca, idx)
                             set_field_result(g, Array_Var{
                                 alloca    = gep,
                                 capacity  = inner_cap,
@@ -637,7 +637,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     ptr_gep := fresh_tmp(g)
                     emit_slice_gep(g, ptr_gep, sv.alloca, SLICE.ptr)
                     ptr_val := fresh_tmp(g)
-                    emit(g, "  %s = load ptr, ptr %s", ptr_val, ptr_gep)
+                    emit_load_into(g, ptr_val, "ptr", ptr_gep)
                     return ptr_val
                 }
                 if e.field == "len" {
@@ -664,7 +664,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                         f := &inner_st.fields[idx]
                         ft := field_ir_type(f)
                         gep := fresh_tmp(g)
-                        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, inner_llvm, fr.alloca, idx)
+                        emit_field_gep_into(g, gep, inner_llvm, fr.alloca, idx)
                         // Array field in chained access
                         acap := field_array_cap(f)
                         aelem := field_array_elem(f)
@@ -697,7 +697,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                             return gep
                         }
                         val := fresh_tmp(g)
-                        emit(g, "  %s = load %s, ptr %s", val, ft, gep)
+                        emit_load_into(g, val, ft, gep)
                         return val
                     }
                 }
@@ -741,7 +741,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     f := &sd.fields[fidx]
                     ft := field_ir_type(f)
                     gep := fresh_tmp(g)
-                    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, inner_llvm, ptr, fidx)
+                    emit_field_gep_into(g, gep, inner_llvm, ptr, fidx)
                     // Fixed-array field
                     acap := field_array_cap(f)
                     aelem := field_array_elem(f)
@@ -775,7 +775,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     }
                     // Scalar field — load and return
                     val := fresh_tmp(g)
-                    emit(g, "  %s = load %s, ptr %s", val, ft, gep)
+                    emit_load_into(g, val, ft, gep)
                     return val
                 }
             }
@@ -805,7 +805,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     idx := swizzle_char_to_index(e.field[0])
                     arr_type := array_var_type(&av)
                     gep := fresh_tmp(g)
-                    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, av.alloca, idx)
+                    emit_array_gep_const(g, gep, arr_type, av.alloca, idx)
                     set_field_result(g, Array_Var{
                         alloca    = gep,
                         capacity  = inner_cap,
@@ -851,7 +851,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         f := &st.fields[idx]
         ft := field_ir_type(f)
         gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+        emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
         // If the field is an embedded struct (using), return its pointer (it's already a value in memory)
         if f.is_using && strings.has_prefix(ft, "%class.") {
             inner_name := ft[len("%class."):]
@@ -896,7 +896,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             return gep
         }
         val := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", val, ft, gep)
+        emit_load_into(g, val, ft, gep)
         return val
     }
 
@@ -904,11 +904,11 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
     up, up_ok := resolve_using_field(g, st, e.field)
     if up_ok {
         gep1 := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep1, st_llvm, base_ptr, up.outer_index)
+        emit_field_gep_into(g, gep1, st_llvm, base_ptr, up.outer_index)
         gep2 := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
+        emit_field_gep_into(g, gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
         val := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", val, up.inner_ir_type, gep2)
+        emit_load_into(g, val, up.inner_ir_type, gep2)
         return val
     }
 
@@ -979,13 +979,13 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
     total_bytes := alloc_cap * ebs
 
     if value == nil {
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        emit_memset_zero(g, dst_ptr, total_bytes)
         return
     }
 
     // Empty struct literal `{}` — zero the array.
     if sl, ok := value.(^Expr_Struct_Literal); ok && len(sl.fields) == 0 && sl.array_values == nil {
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        emit_memset_zero(g, dst_ptr, total_bytes)
         return
     }
 
@@ -993,9 +993,9 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
     if str_lit, ok := value.(^Expr_String); ok {
         global_name, byte_len := get_string_literal(g, str_lit.value)
         src_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, byte_len, global_name)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, byte_len)
+        emit_string_gep(g, src_ptr, byte_len, global_name)
+        emit_memset_zero(g, dst_ptr, total_bytes)
+        emit_memcpy(g, dst_ptr, src_ptr, byte_len)
         return
     }
 
@@ -1003,22 +1003,22 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
     if intrinsic, ok := value.(^Expr_Compiler_Intrinsic); ok {
         global_name, byte_len := get_string_literal(g, intrinsic.resolved_value)
         src_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, byte_len, global_name)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, byte_len)
+        emit_string_gep(g, src_ptr, byte_len, global_name)
+        emit_memset_zero(g, dst_ptr, total_bytes)
+        emit_memcpy(g, dst_ptr, src_ptr, byte_len)
         return
     }
 
     // Bare array literal [a, b, c].
     if arr_lit, ok := value.(^Expr_Array); ok {
         if len(arr_lit.elements) < alloc_cap {
-            emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+            emit_memset_zero(g, dst_ptr, total_bytes)
         }
         for elem, i in arr_lit.elements {
             val := gen_expr(g, elem, elem_type)
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, dst_ptr, i)
-            emit(g, "  store %s %s, ptr %s", elem_type, val, gep)
+            emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
+            emit_store(g, elem_type, val, gep)
         }
         return
     }
@@ -1026,13 +1026,13 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
     // Distinct-fixed-array struct literal (Quat{...} etc.) — array_values has
     // per-slot exprs, nil meaning zero-fill.
     if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+        emit_memset_zero(g, dst_ptr, total_bytes)
         for elem, i in sl.array_values {
             if elem == nil { continue }
             val := gen_expr(g, elem, elem_type)
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, dst_ptr, i)
-            emit(g, "  store %s %s, ptr %s", elem_type, val, gep)
+            emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
+            emit_store(g, elem_type, val, gep)
         }
         return
     }
@@ -1045,30 +1045,30 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
             body_label := fresh_label(g, "copy.body")
             end_label  := fresh_label(g, "copy.end")
             idx_ptr := fresh_tmp(g)
-            emit(g, "  %s = alloca i64", idx_ptr)
-            emit(g, "  store i64 0, ptr %s", idx_ptr)
-            emit(g, "  br label %%%s", cond_label)
-            emit(g, "%s:", cond_label)
+            emit_alloca(g, idx_ptr, "i64")
+            emit_store(g, "i64", "0", idx_ptr)
+            emit_br(g, cond_label)
+            emit_label(g, cond_label)
             idx := fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", idx, idx_ptr)
+            emit_load_into(g, idx, "i64", idx_ptr)
             cmp := fresh_tmp(g)
             emit(g, "  %s = icmp slt i64 %s, %d", cmp, idx, src.capacity)
-            emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, body_label, end_label)
-            emit(g, "%s:", body_label)
+            emit_cond_br(g, cmp, body_label, end_label)
+            emit_label(g, body_label)
             idx2 := fresh_tmp(g)
-            emit(g, "  %s = load i64, ptr %s", idx2, idx_ptr)
+            emit_load_into(g, idx2, "i64", idx_ptr)
             src_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", src_gep, src_type, src.alloca, idx2)
+            emit_array_gep_var(g, src_gep, src_type, src.alloca, idx2)
             val := fresh_tmp(g)
-            emit(g, "  %s = load %s, ptr %s", val, elem_type, src_gep)
+            emit_load_into(g, val, elem_type, src_gep)
             dst_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", dst_gep, arr_type, dst_ptr, idx2)
-            emit(g, "  store %s %s, ptr %s", elem_type, val, dst_gep)
+            emit_array_gep_var(g, dst_gep, arr_type, dst_ptr, idx2)
+            emit_store(g, elem_type, val, dst_gep)
             next := fresh_tmp(g)
             emit(g, "  %s = add i64 %s, 1", next, idx2)
-            emit(g, "  store i64 %s, ptr %s", next, idx_ptr)
-            emit(g, "  br label %%%s", cond_label)
-            emit(g, "%s:", end_label)
+            emit_store(g, "i64", next, idx_ptr)
+            emit_br(g, cond_label)
+            emit_label(g, end_label)
             return
         }
     }
@@ -1084,12 +1084,12 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
             count := sr.capacity
             for i := 0; i < count; i += 1 {
                 src_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, sr.alloca, i)
+                emit_array_gep_const(g, src_gep, src_arr_type, sr.alloca, i)
                 val := fresh_tmp(g)
-                emit(g, "  %s = load %s, ptr %s", val, elem_type, src_gep)
+                emit_load_into(g, val, elem_type, src_gep)
                 dst_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, arr_type, dst_ptr, i)
-                emit(g, "  store %s %s, ptr %s", elem_type, val, dst_gep)
+                emit_array_gep_const(g, dst_gep, arr_type, dst_ptr, i)
+                emit_store(g, elem_type, val, dst_gep)
             }
             return
         }
@@ -1097,7 +1097,7 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
             // Source and destination are both flat [N x T] of matching shape
             // (the type checker has verified this). Bulk memcpy is the
             // simplest correct lowering.
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, av.alloca, total_bytes)
+            emit_memcpy(g, dst_ptr, av.alloca, total_bytes)
             return
         }
     }
@@ -1173,7 +1173,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         // assignments on top. `{0}` (lit.zero_init) skips the constructor —
         // the zero memset stands alone. Structs without an init function
         // stay zero (no defaults to apply by construction).
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
+        emit_memset_zero(g, dst_ptr, total)
         if !lit.zero_init {
             if _, has_init := g.checked.functions[st.name]; has_init {
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
@@ -1185,7 +1185,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
 
     if ident, ok := value.(^Expr_Ident); ok {
         if src_sv, sv_ok := get_struct(g, ident.name); sv_ok {
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_sv.alloca, total)
+            emit_memcpy(g, dst_ptr, src_sv.alloca, total)
             return
         }
     }
@@ -1193,7 +1193,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
     if fa, ok := value.(^Expr_Field_Access); ok {
         src_ptr := gen_field_address(g, fa)
         if src_ptr != "null" {
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, total)
+            emit_memcpy(g, dst_ptr, src_ptr, total)
             return
         }
     }
@@ -1210,7 +1210,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
                 result_ptr := gen_call(g, call)
                 if result_ptr != "0" {
-                    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, result_ptr, total)
+                    emit_memcpy(g, dst_ptr, result_ptr, total)
                 }
                 return
             }
@@ -1254,15 +1254,15 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         // Pure-struct positional constructor `Foo(a, b, c)`: inline field stores
         // by position + defaults for unprovided trailing fields.
         if is_pure_self_ctor && len(call.args) > 0 {
-            emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
+            emit_memset_zero(g, dst_ptr, total)
             for arg, i in call.args {
                 if i >= len(st.fields) { break }
                 field := &st.fields[i]
                 ft := field_ir_type(field)
                 val := gen_expr(g, arg, ft)
                 gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, dst_ptr, i)
-                emit(g, "  store %s %s, ptr %s", ft, val, gep)
+                emit_field_gep_into(g, gep, llvm_name, dst_ptr, i)
+                emit_store(g, ft, val, gep)
             }
             for fi := len(call.args); fi < len(st.fields); fi += 1 {
                 field := &st.fields[fi]
@@ -1270,8 +1270,8 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
                     ft := field_ir_type(field)
                     val := gen_expr(g, field.default_value, ft)
                     gep := fresh_tmp(g)
-                    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, llvm_name, dst_ptr, fi)
-                    emit(g, "  store %s %s, ptr %s", ft, val, gep)
+                    emit_field_gep_into(g, gep, llvm_name, dst_ptr, fi)
+                    emit_store(g, ft, val, gep)
                 }
             }
             if call.overrides != nil {
@@ -1284,14 +1284,14 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
     if bin, ok := value.(^Expr_Binary); ok {
         if _, rf_ok := bin.overload_fn.?; rf_ok {
             result_ptr := gen_binary(g, bin)
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, result_ptr, total)
+            emit_memcpy(g, dst_ptr, result_ptr, total)
             return
         }
     }
 
     // Fallback: evaluate the expression and expect a pointer back, then memcpy.
     src_ptr := gen_expr(g, value, llvm_name)
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, total)
+    emit_memcpy(g, dst_ptr, src_ptr, total)
 }
 
 // Thin wrapper over gen_store_struct_into for callers that have a struct name
@@ -1305,7 +1305,7 @@ gen_struct_store_at :: proc(g: ^Codegen, dst_ptr: string, struct_name: string, v
     if value == nil {
         // Bare "store nothing" — same effect as the old fallback: zero + cap init.
         total := struct_byte_size(st, g.checked)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total)
+        emit_memset_zero(g, dst_ptr, total)
         return
     }
     gen_store_struct_into(g, dst_ptr, st, value)
@@ -1341,11 +1341,11 @@ value_is_nrvo_call :: proc(g: ^Codegen, value: Expr) -> bool {
 // as a slice's data field.
 emit_struct_backing_gep :: proc(g: ^Codegen, st_llvm: string, base_ptr: string, backing_field_idx: int, backing_size: int, offset: int) -> string {
     backing_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", backing_ptr, st_llvm, base_ptr, backing_field_idx)
+    emit_field_gep_into(g, backing_ptr, st_llvm, base_ptr, backing_field_idx)
     if offset == 0 { return backing_ptr }
     offset_ptr := fresh_tmp(g)
     backing_arr_type := fmt.tprintf("[%d x i8]", backing_size)
-    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", offset_ptr, backing_arr_type, backing_ptr, offset)
+    emit_array_gep_const(g, offset_ptr, backing_arr_type, backing_ptr, offset)
     return offset_ptr
 }
 
@@ -1373,11 +1373,11 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
             field_size := alloc_cap * elem_bytes
 
             hdr_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", hdr_ptr, st_llvm, base_ptr, fi)
+            emit_field_gep_into(g, hdr_ptr, st_llvm, base_ptr, fi)
             data_ptr := emit_struct_backing_gep(g, st_llvm, base_ptr, backing_field_idx, st.backing_bytes, backing_offset)
             ptr_gep := fresh_tmp(g)
             emit_slice_gep(g, ptr_gep, hdr_ptr, SLICE.ptr)
-            emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
+            emit_store(g, "ptr", data_ptr, ptr_gep)
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, hdr_ptr, SLICE.cap)
             emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
@@ -1393,7 +1393,7 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
                 slot_bytes := alloc_cap * elem_bytes
 
                 arr_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", arr_ptr, st_llvm, base_ptr, fi)
+                emit_field_gep_into(g, arr_ptr, st_llvm, base_ptr, fi)
                 arr_type := strings.concatenate({"[", fmt.tprintf("%d", fa.size), " x ", SLICE_IR_TYPE, "]"})
 
                 for i in 0..<fa.size {
@@ -1404,7 +1404,7 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
                     data_ptr := emit_struct_backing_gep(g, st_llvm, base_ptr, backing_field_idx, st.backing_bytes, slot_offset)
                     ptr_gep := fresh_tmp(g)
                     emit_slice_gep(g, ptr_gep, slot_hdr, SLICE.ptr)
-                    emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
+                    emit_store(g, "ptr", data_ptr, ptr_gep)
                     cap_gep := fresh_tmp(g)
                     emit_slice_gep(g, cap_gep, slot_hdr, SLICE.cap)
                     emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
@@ -1418,7 +1418,7 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
             inner_checked, ic_ok := lookup_struct(g, inner_sd.name)
             if !ic_ok { continue }
             field_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", field_gep, st_llvm, base_ptr, fi)
+            emit_field_gep_into(g, field_gep, st_llvm, base_ptr, fi)
             emit_nested_sized_slice_init(g, field_gep, inner_checked)
         }
     }
@@ -1559,7 +1559,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         acap := field_array_cap(f)
         if acap > 0 {
             data_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", data_gep, st_llvm, base_ptr, idx)
+            emit_field_gep_into(g, data_gep, st_llvm, base_ptr, idx)
             apply_compound_load_substitute(g, s, data_gep, ft)
             gen_array_field_store(g, data_gep, acap, field_array_elem(f), s.value)
             return
@@ -1567,7 +1567,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         // Union field — emit tag + payload stores directly into the field GEP
         if ut, ut_ok := f.type_.(^Type_Union); ut_ok {
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+            emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
             emit_union_literal_store(g, ut, s.value, gep)
             return
         }
@@ -1577,7 +1577,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         if field_sd := as_struct_body(f.type_); field_sd != nil {
             if checked_field_st, cs_ok := lookup_struct(g, field_sd.name); cs_ok {
                 gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+                emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
                 apply_compound_load_substitute(g, s, gep, struct_llvm_name(field_sd.name))
                 gen_store_struct_into(g, gep, checked_field_st, s.value)
                 return
@@ -1588,17 +1588,17 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         // struct bug). Route through gen_store_slice_into.
         if _, sl_ok := f.type_.(^Type_Slice); sl_ok {
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+            emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
             gen_store_slice_into(g, gep, s.value)
             return
         }
         // Scalar field — compute the GEP first so the compound-load substitute
         // can pre-load the current value through it before gen_expr runs.
         gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+        emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
         apply_compound_load_substitute(g, s, gep, ft)
         val := gen_expr(g, s.value, ft)
-        emit(g, "  store %s %s, ptr %s", ft, val, gep)
+        emit_store(g, ft, val, gep)
         return
     }
 
@@ -1607,10 +1607,10 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if up_ok {
         val := gen_expr(g, s.value, up.inner_ir_type)
         gep1 := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep1, st_llvm, base_ptr, up.outer_index)
+        emit_field_gep_into(g, gep1, st_llvm, base_ptr, up.outer_index)
         gep2 := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
-        emit(g, "  store %s %s, ptr %s", up.inner_ir_type, val, gep2)
+        emit_field_gep_into(g, gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
+        emit_store(g, up.inner_ir_type, val, gep2)
         return
     }
 
@@ -1655,7 +1655,7 @@ gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         val = emit_type_convert(g, val, val_type, store_type)
     }
 
-    emit(g, "  store %s %s, ptr %s", store_type, val, ptr_val)
+    emit_store(g, store_type, val, ptr_val)
 }
 
 // ---------------------------------------------------------------------------
@@ -1667,9 +1667,9 @@ gen_swizzle_read_single :: proc(g: ^Codegen, av: ^Array_Var, field: string) -> s
     idx := swizzle_char_to_index(field[0])
     arr_type := array_var_type(av)
     gep := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, av.alloca, idx)
+    emit_array_gep_const(g, gep, arr_type, av.alloca, idx)
     val := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", val, av.elem_type, gep)
+    emit_load_into(g, val, av.elem_type, gep)
     return val
 }
 
@@ -1682,19 +1682,19 @@ gen_swizzle_read_multi :: proc(g: ^Codegen, av: ^Array_Var, field: string) -> st
     // Allocate temp array
     data_name := fmt.tprintf("%%__swizzle_%d.data", g.tmp_counter)
     g.tmp_counter += 1
-    emit(g, "  %s = alloca %s", data_name, tmp_arr_type)
+    emit_alloca(g, data_name, tmp_arr_type)
 
     // Copy each swizzled element from source
     src_arr_type := array_var_type(av)
     for i := 0; i < count; i += 1 {
         idx := swizzle_char_to_index(field[i])
         src_gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, av.alloca, idx)
+        emit_array_gep_const(g, src_gep, src_arr_type, av.alloca, idx)
         val := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", val, elem_type, src_gep)
+        emit_load_into(g, val, elem_type, src_gep)
         dst_gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, tmp_arr_type, data_name, i)
-        emit(g, "  store %s %s, ptr %s", elem_type, val, dst_gep)
+        emit_array_gep_const(g, dst_gep, tmp_arr_type, data_name, i)
+        emit_store(g, elem_type, val, dst_gep)
     }
 
     // Register as temp swizzle result so assignment codegen can adopt it
@@ -1713,8 +1713,8 @@ gen_swizzle_write_single :: proc(g: ^Codegen, av: ^Array_Var, field: string, val
     val := gen_expr(g, value, av.elem_type)
     arr_type := array_var_type(av)
     gep := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, av.alloca, idx)
-    emit(g, "  store %s %s, ptr %s", av.elem_type, val, gep)
+    emit_array_gep_const(g, gep, arr_type, av.alloca, idx)
+    emit_store(g, av.elem_type, val, gep)
 }
 
 // Multi-component swizzle write: arr.xy = [a, b] or arr.xy = other
@@ -1728,8 +1728,8 @@ gen_swizzle_write_multi :: proc(g: ^Codegen, av: ^Array_Var, field: string, valu
             if i < len(arr_lit.elements) {
                 elem_val := gen_expr(g, arr_lit.elements[i], av.elem_type)
                 gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, dst_arr_type, av.alloca, dst_idx)
-                emit(g, "  store %s %s, ptr %s", av.elem_type, elem_val, gep)
+                emit_array_gep_const(g, gep, dst_arr_type, av.alloca, dst_idx)
+                emit_store(g, av.elem_type, elem_val, gep)
             }
         }
         return
@@ -1742,12 +1742,12 @@ gen_swizzle_write_multi :: proc(g: ^Codegen, av: ^Array_Var, field: string, valu
             for i := 0; i < len(field); i += 1 {
                 dst_idx := swizzle_char_to_index(field[i])
                 src_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, src_av.alloca, i)
+                emit_array_gep_const(g, src_gep, src_arr_type, src_av.alloca, i)
                 elem := fresh_tmp(g)
-                emit(g, "  %s = load %s, ptr %s", elem, av.elem_type, src_gep)
+                emit_load_into(g, elem, av.elem_type, src_gep)
                 dst_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, dst_arr_type, av.alloca, dst_idx)
-                emit(g, "  store %s %s, ptr %s", av.elem_type, elem, dst_gep)
+                emit_array_gep_const(g, dst_gep, dst_arr_type, av.alloca, dst_idx)
+                emit_store(g, av.elem_type, elem, dst_gep)
             }
             return
         }
@@ -1760,12 +1760,12 @@ gen_swizzle_write_multi :: proc(g: ^Codegen, av: ^Array_Var, field: string, valu
         for i := 0; i < len(field); i += 1 {
             dst_idx := swizzle_char_to_index(field[i])
             src_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, sr.alloca, i)
+            emit_array_gep_const(g, src_gep, src_arr_type, sr.alloca, i)
             elem := fresh_tmp(g)
-            emit(g, "  %s = load %s, ptr %s", elem, av.elem_type, src_gep)
+            emit_load_into(g, elem, av.elem_type, src_gep)
             dst_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, dst_arr_type, av.alloca, dst_idx)
-            emit(g, "  store %s %s, ptr %s", av.elem_type, elem, dst_gep)
+            emit_array_gep_const(g, dst_gep, dst_arr_type, av.alloca, dst_idx)
+            emit_store(g, av.elem_type, elem, dst_gep)
         }
         return
     }
@@ -1784,7 +1784,7 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
     // Alloca if variable doesn't exist yet
     if _, already_exists := get_union(g, name); !already_exists {
         alloca_name := fmt.tprintf("%%%s", name)
-        emit(g, "  %s = alloca %s", alloca_name, llvm_name)
+        emit_alloca(g, alloca_name, llvm_name)
         g.all_vars[name] = Union_Var{
             alloca = alloca_name,
             union_name  = ukey,
@@ -1823,14 +1823,14 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
             // Find the single pointer field and store its value at offset 0.
             if len(lit.fields) > 0 {
                 val := gen_expr(g, lit.fields[0].value, "ptr")
-                emit(g, "  store ptr %s, ptr %s", val, union_ptr)
+                emit_store(g, "ptr", val, union_ptr)
             } else {
                 // Some{} with no fields — caller meant Some(zero); store null.
-                emit(g, "  store ptr null, ptr %s", union_ptr)
+                emit_store(g, "ptr", "null", union_ptr)
             }
         } else {
             // None{} — store null sentinel.
-            emit(g, "  store ptr null, ptr %s", union_ptr)
+            emit_store(g, "ptr", "null", union_ptr)
         }
         return
     }
@@ -1856,8 +1856,8 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
         ft := field_ir_type(&vst.fields[idx])
         val := gen_expr(g, field.value, ft)
         gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, vst_llvm, payload_ptr, idx)
-        emit(g, "  store %s %s, ptr %s", ft, val, gep)
+        emit_field_gep_into(g, gep, vst_llvm, payload_ptr, idx)
+        emit_store(g, ft, val, gep)
     }
     // Fill in defaults for variant fields (skip for {0} zero-init)
     if !lit.zero_init {
@@ -1871,8 +1871,8 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
                 sdf_ft := field_ir_type(&sdf)
                 val := gen_expr(g, sdf.default_value, sdf_ft)
                 gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, vst_llvm, payload_ptr, sdf_i)
-                emit(g, "  store %s %s, ptr %s", sdf_ft, val, gep)
+                emit_field_gep_into(g, gep, vst_llvm, payload_ptr, sdf_i)
+                emit_store(g, sdf_ft, val, gep)
             }
         }
     }

@@ -41,22 +41,22 @@ emit_slice_store :: proc(g: ^Codegen, val: string, dst: string) {
 // this lets sites that reuse the gep continue to do so.
 emit_typed_store_len :: proc(g: ^Codegen, val_i64: string, field_gep: string) {
     if slice_layout.len_ir == "i64" {
-        emit(g, "  store i64 %s, ptr %s", val_i64, field_gep)
+        emit_store(g, "i64", val_i64, field_gep)
         return
     }
     t := fresh_tmp(g)
     emit(g, "  %s = trunc i64 %s to %s", t, val_i64, slice_layout.len_ir)
-    emit(g, "  store %s %s, ptr %s", slice_layout.len_ir, t, field_gep)
+    emit_store(g, slice_layout.len_ir, t, field_gep)
 }
 
 emit_typed_store_cap :: proc(g: ^Codegen, val_i64: string, field_gep: string) {
     if slice_layout.cap_ir == "i64" {
-        emit(g, "  store i64 %s, ptr %s", val_i64, field_gep)
+        emit_store(g, "i64", val_i64, field_gep)
         return
     }
     t := fresh_tmp(g)
     emit(g, "  %s = trunc i64 %s to %s", t, val_i64, slice_layout.cap_ir)
-    emit(g, "  store %s %s, ptr %s", slice_layout.cap_ir, t, field_gep)
+    emit_store(g, slice_layout.cap_ir, t, field_gep)
 }
 
 // Load len/cap from `field_gep` into a fresh SSA name. The returned name
@@ -64,21 +64,21 @@ emit_typed_store_cap :: proc(g: ^Codegen, val_i64: string, field_gep: string) {
 // so downstream arithmetic doesn't need to know the underlying width.
 emit_typed_load_len :: proc(g: ^Codegen, result_i64: string, field_gep: string) {
     if slice_layout.len_ir == "i64" {
-        emit(g, "  %s = load i64, ptr %s", result_i64, field_gep)
+        emit_load_into(g, result_i64, "i64", field_gep)
         return
     }
     raw := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", raw, slice_layout.len_ir, field_gep)
+    emit_load_into(g, raw, slice_layout.len_ir, field_gep)
     emit(g, "  %s = zext %s %s to i64", result_i64, slice_layout.len_ir, raw)
 }
 
 emit_typed_load_cap :: proc(g: ^Codegen, result_i64: string, field_gep: string) {
     if slice_layout.cap_ir == "i64" {
-        emit(g, "  %s = load i64, ptr %s", result_i64, field_gep)
+        emit_load_into(g, result_i64, "i64", field_gep)
         return
     }
     raw := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", raw, slice_layout.cap_ir, field_gep)
+    emit_load_into(g, raw, slice_layout.cap_ir, field_gep)
     emit(g, "  %s = zext %s %s to i64", result_i64, slice_layout.cap_ir, raw)
 }
 
@@ -98,13 +98,13 @@ slice_arg_str :: proc(val: string) -> string {
 partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_ir: string, alloc_cap: int) {
     elem_bytes := elem_byte_size(elem_ir, g.checked)
     total_bytes := slice_header_bytes + alloc_cap * elem_bytes
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src_ptr, total_bytes)
+    emit_memcpy(g, dst_ptr, src_ptr, total_bytes)
     ir_type := partial_array_ir_type(elem_ir, alloc_cap)
     elements_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", dst_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
     ptr_gep := fresh_tmp(g)
     emit_slice_gep(g, ptr_gep, dst_ptr, SLICE.ptr)
-    emit(g, "  store ptr %s, ptr %s", elements_ptr, ptr_gep)
+    emit_store(g, "ptr", elements_ptr, ptr_gep)
 }
 
 // Alloca a { ptr, i64, i64 } and store data_ptr / len / cap into its fields.
@@ -114,7 +114,7 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, ca
     emit_slice_alloca(g, slice_alloca)
     ptr_gep := fresh_tmp(g)
     emit_slice_gep(g, ptr_gep, slice_alloca, SLICE.ptr)
-    emit(g, "  store ptr %s, ptr %s", data_ptr, ptr_gep)
+    emit_store(g, "ptr", data_ptr, ptr_gep)
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, slice_alloca, SLICE.len)
     emit_typed_store_len(g, len_val, len_gep)
@@ -144,7 +144,7 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
         } else {
             // Small array: stack alloca as usual
             data_name = fmt.tprintf("%%%s.data", name)
-            emit(g, "  %s = alloca %s", data_name, arr_type)
+            emit_alloca(g, data_name, arr_type)
         }
 
         g.all_vars[name] = Array_Var{
@@ -162,7 +162,7 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
     // No initializer — just zero the array
     if value == nil {
         total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", av.alloca, total_bytes)
+        emit_memset_zero(g, av.alloca, total_bytes)
         return
     }
 
@@ -170,11 +170,11 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
     if str_lit, ok := value.(^Expr_String); ok {
         global_name, byte_len := get_string_literal(g, str_lit.value)
         src_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, byte_len, global_name)
+        emit_string_gep(g, src_ptr, byte_len, global_name)
         // Zero-initialize first, then copy string bytes over
         total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", av.alloca, total_bytes)
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", av.alloca, src_ptr, byte_len)
+        emit_memset_zero(g, av.alloca, total_bytes)
+        emit_memcpy(g, av.alloca, src_ptr, byte_len)
         return
     }
 
@@ -182,10 +182,10 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
     if intrinsic, ok := value.(^Expr_Compiler_Intrinsic); ok {
         global_name, byte_len := get_string_literal(g, intrinsic.resolved_value)
         src_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, byte_len, global_name)
+        emit_string_gep(g, src_ptr, byte_len, global_name)
         total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", av.alloca, total_bytes)
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", av.alloca, src_ptr, byte_len)
+        emit_memset_zero(g, av.alloca, total_bytes)
+        emit_memcpy(g, av.alloca, src_ptr, byte_len)
         return
     }
 
@@ -194,26 +194,26 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
         // Zero-init first (handles undersized literals + sentinel), then store each element
         if len(arr_lit.elements) < alloc_cap {
             total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-            emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", av.alloca, total_bytes)
+            emit_memset_zero(g, av.alloca, total_bytes)
         }
         for elem, i in arr_lit.elements {
             val := gen_expr(g, elem, elem_type)
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, av.alloca, i)
-            emit(g, "  store %s %s, ptr %s", elem_type, val, gep)
+            emit_array_gep_const(g, gep, arr_type, av.alloca, i)
+            emit_store(g, elem_type, val, gep)
         }
     } else if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         // Distinct-fixed-array struct literal (Quat{...}). Zero-init the slab
         // then store each non-nil slot; nil entries were checker-marked as
         // zero-fill.
         total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", av.alloca, total_bytes)
+        emit_memset_zero(g, av.alloca, total_bytes)
         for elem, i in sl.array_values {
             if elem == nil { continue }
             val := gen_expr(g, elem, elem_type)
             gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, av.alloca, i)
-            emit(g, "  store %s %s, ptr %s", elem_type, val, gep)
+            emit_array_gep_const(g, gep, arr_type, av.alloca, i)
+            emit_store(g, elem_type, val, gep)
         }
     } else {
         // Value is an expression — copy from another array
@@ -253,33 +253,33 @@ gen_array_copy_expr :: proc(g: ^Codegen, name: string, value: Expr) {
         end_label  := fresh_label(g, "copy.end")
 
         idx_ptr := fresh_tmp(g)
-        emit(g, "  %s = alloca i64", idx_ptr)
-        emit(g, "  store i64 0, ptr %s", idx_ptr)
-        emit(g, "  br label %%%s", cond_label)
+        emit_alloca(g, idx_ptr, "i64")
+        emit_store(g, "i64", "0", idx_ptr)
+        emit_br(g, cond_label)
 
-        emit(g, "%s:", cond_label)
+        emit_label(g, cond_label)
         idx := fresh_tmp(g)
-        emit(g, "  %s = load i64, ptr %s", idx, idx_ptr)
+        emit_load_into(g, idx, "i64", idx_ptr)
         cmp := fresh_tmp(g)
         emit(g, "  %s = icmp slt i64 %s, %s", cmp, idx, loop_bound)
-        emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, body_label, end_label)
+        emit_cond_br(g, cmp, body_label, end_label)
 
-        emit(g, "%s:", body_label)
+        emit_label(g, body_label)
         idx2 := fresh_tmp(g)
-        emit(g, "  %s = load i64, ptr %s", idx2, idx_ptr)
+        emit_load_into(g, idx2, "i64", idx_ptr)
         src_gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", src_gep, src_type, src.alloca, idx2)
+        emit_array_gep_var(g, src_gep, src_type, src.alloca, idx2)
         val := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", val, dst.elem_type, src_gep)
+        emit_load_into(g, val, dst.elem_type, src_gep)
         dst_gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", dst_gep, dst_type, dst.alloca, idx2)
-        emit(g, "  store %s %s, ptr %s", dst.elem_type, val, dst_gep)
+        emit_array_gep_var(g, dst_gep, dst_type, dst.alloca, idx2)
+        emit_store(g, dst.elem_type, val, dst_gep)
         next := fresh_tmp(g)
         emit(g, "  %s = add i64 %s, 1", next, idx2)
-        emit(g, "  store i64 %s, ptr %s", next, idx_ptr)
-        emit(g, "  br label %%%s", cond_label)
+        emit_store(g, "i64", next, idx_ptr)
+        emit_br(g, cond_label)
 
-        emit(g, "%s:", end_label)
+        emit_label(g, end_label)
         return
     }
 
@@ -293,12 +293,12 @@ gen_array_copy_expr :: proc(g: ^Codegen, name: string, value: Expr) {
             count := sr.capacity
             for i := 0; i < count; i += 1 {
                 src_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", src_gep, src_arr_type, sr.alloca, i)
+                emit_array_gep_const(g, src_gep, src_arr_type, sr.alloca, i)
                 val := fresh_tmp(g)
-                emit(g, "  %s = load %s, ptr %s", val, dst.elem_type, src_gep)
+                emit_load_into(g, val, dst.elem_type, src_gep)
                 dst_gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", dst_gep, dst_arr_type, dst.alloca, i)
-                emit(g, "  store %s %s, ptr %s", dst.elem_type, val, dst_gep)
+                emit_array_gep_const(g, dst_gep, dst_arr_type, dst.alloca, i)
+                emit_store(g, dst.elem_type, val, dst_gep)
             }
             return
         }
@@ -341,7 +341,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value)
         } else {
             val := gen_expr(g, s.value, chain.final_type)
-            emit(g, "  store %s %s, ptr %s", chain.final_type, val, elem_ptr)
+            emit_store(g, chain.final_type, val, elem_ptr)
         }
         return
     }
@@ -372,15 +372,15 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         data_gep := fresh_tmp(g)
         emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
         data_ptr := fresh_tmp(g)
-        emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+        emit_load_into(g, data_ptr, "ptr", data_gep)
         elem_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", elem_ptr, sv.elem_type, data_ptr, idx)
+        emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx)
         if strings.has_prefix(sv.elem_type, "%class.") {
             elem_struct := sv.elem_type[len("%class."):]
             gen_struct_store_at(g, elem_ptr, elem_struct, s.value)
         } else {
             val := gen_expr(g, s.value, sv.elem_type)
-            emit(g, "  store %s %s, ptr %s", sv.elem_type, val, elem_ptr)
+            emit_store(g, sv.elem_type, val, elem_ptr)
         }
         return
     }
@@ -399,17 +399,17 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     emit_bounds_check(g, idx, arr_cap, ident.name, s.span)
     gep := fresh_tmp(g)
     if av.capacity_val != "" {
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", gep, av.elem_type, av.alloca, idx)
+        emit_elem_gep(g, gep, av.elem_type, av.alloca, idx)
     } else {
         arr_type := array_var_type(&av)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", gep, arr_type, av.alloca, idx)
+        emit_array_gep_var(g, gep, arr_type, av.alloca, idx)
     }
     if strings.has_prefix(av.elem_type, "%class.") {
         elem_struct := av.elem_type[len("%class."):]
         gen_struct_store_at(g, gep, elem_struct, s.value)
     } else {
         val := gen_expr(g, s.value, av.elem_type)
-        emit(g, "  store %s %s, ptr %s", av.elem_type, val, gep)
+        emit_store(g, av.elem_type, val, gep)
     }
 }
 
@@ -455,7 +455,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
             data_ptr := fresh_tmp(g)
-            emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+            emit_load_into(g, data_ptr, "ptr", data_gep)
 
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
@@ -506,7 +506,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, slv.alloca, SLICE.ptr)
             data_ptr := fresh_tmp(g)
-            emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+            emit_load_into(g, data_ptr, "ptr", data_gep)
             rhs_av = Array_Var{
                 alloca    = data_ptr,
                 capacity  = 0,
@@ -562,16 +562,16 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     high_err_lbl := fresh_label(g, "slice.high.err")
     high_cmp := fresh_tmp(g)
     emit(g, "  %s = icmp sgt i64 %s, %s", high_cmp, high, dst_len)
-    emit(g, "  br i1 %s, label %%%s, label %%%s", high_cmp, high_err_lbl, high_ok_lbl)
-    emit(g, "%s:", high_err_lbl)
+    emit_cond_br(g, high_cmp, high_err_lbl, high_ok_lbl)
+    emit_label(g, high_err_lbl)
     err_msg := fmt.tprintf("runtime error: slice assignment out of bounds: high %%lld > capacity %%lld for '%s'\n", dst_name)
     err_name, err_len := get_string_literal(g, err_msg)
     err_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", err_ptr, err_len, err_name)
+    emit_string_gep(g, err_ptr, err_len, err_name)
     emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s, i64 %s)", err_ptr, high, dst_len)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
-    emit(g, "%s:", high_ok_lbl)
+    emit_label(g, high_ok_lbl)
 
     // Emit loop: for i = 0; i < (high - low); i++
     //   dst[low + i] = src[i]
@@ -580,48 +580,48 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     end_lbl   := fresh_label(g, "slice.end")
 
     i_ptr := fresh_tmp(g)
-    emit(g, "  %s = alloca i64", i_ptr)
-    emit(g, "  store i64 0, ptr %s", i_ptr)
+    emit_alloca(g, i_ptr, "i64")
+    emit_store(g, "i64", "0", i_ptr)
 
     count := fresh_tmp(g)
     emit(g, "  %s = sub i64 %s, %s", count, high, low)
 
-    emit(g, "  br label %%%s", loop_lbl)
-    emit(g, "%s:", loop_lbl)
+    emit_br(g, loop_lbl)
+    emit_label(g, loop_lbl)
     i_cur := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", i_cur, i_ptr)
+    emit_load_into(g, i_cur, "i64", i_ptr)
     cmp := fresh_tmp(g)
     emit(g, "  %s = icmp slt i64 %s, %s", cmp, i_cur, count)
-    emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, body_lbl, end_lbl)
+    emit_cond_br(g, cmp, body_lbl, end_lbl)
 
-    emit(g, "%s:", body_lbl)
+    emit_label(g, body_lbl)
 
     // Load src[i] — use flat GEP for slices, array GEP for fixed arrays
     src_gep := fresh_tmp(g)
     if rhs_is_slice {
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", src_gep, rhs_av.elem_type, rhs_av.alloca, i_cur)
+        emit_elem_gep(g, src_gep, rhs_av.elem_type, rhs_av.alloca, i_cur)
     } else {
         rhs_arr_type := array_var_type(&rhs_av)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", src_gep, rhs_arr_type, rhs_av.alloca, i_cur)
+        emit_array_gep_var(g, src_gep, rhs_arr_type, rhs_av.alloca, i_cur)
     }
     src_val := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", src_val, dst_elem_type, src_gep)
+    emit_load_into(g, src_val, dst_elem_type, src_gep)
 
     // Store into dst[low + i]
     dst_idx := fresh_tmp(g)
     emit(g, "  %s = add i64 %s, %s", dst_idx, low, i_cur)
     dst_arr_type := fmt.tprintf("[%d x %s]", dst_capacity, dst_elem_type)
     dst_gep := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", dst_gep, dst_arr_type, dst_data_ptr, dst_idx)
-    emit(g, "  store %s %s, ptr %s", dst_elem_type, src_val, dst_gep)
+    emit_array_gep_var(g, dst_gep, dst_arr_type, dst_data_ptr, dst_idx)
+    emit_store(g, dst_elem_type, src_val, dst_gep)
 
     // i++
     i_next := fresh_tmp(g)
     emit(g, "  %s = add i64 %s, 1", i_next, i_cur)
-    emit(g, "  store i64 %s, ptr %s", i_next, i_ptr)
-    emit(g, "  br label %%%s", loop_lbl)
+    emit_store(g, "i64", i_next, i_ptr)
+    emit_br(g, loop_lbl)
 
-    emit(g, "%s:", end_lbl)
+    emit_label(g, end_lbl)
 }
 
 // Handle: arr[idx] — read element from array or slice
@@ -656,9 +656,9 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
                 emit_bounds_check(g, idx, arr_len, fa.field, e.span)
                 arr_type := array_var_type(&av)
                 gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", gep, arr_type, av.alloca, idx)
+                emit_array_gep_var(g, gep, arr_type, av.alloca, idx)
                 val := fresh_tmp(g)
-                emit(g, "  %s = load %s, ptr %s", val, av.elem_type, gep)
+                emit_load_into(g, val, av.elem_type, gep)
                 return val
             }
             // Slice field: `s.field[i]` where `field` is a `[]T`. Route the
@@ -680,9 +680,9 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
                 arr_len := fmt.tprintf("%d", inner_fa.size)
                 emit_bounds_check(g, idx, arr_len, "array", e.span)
                 gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", gep, inner_arr_type, inner_ptr, idx)
+                emit_array_gep_var(g, gep, inner_arr_type, inner_ptr, idx)
                 val := fresh_tmp(g)
-                emit(g, "  %s = load %s, ptr %s", val, inner_elem, gep)
+                emit_load_into(g, val, inner_elem, gep)
                 return val
             }
         }
@@ -733,13 +733,13 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
     // VLA: GEP by element type directly (no [N x T] wrapper)
     gep := fresh_tmp(g)
     if av.capacity_val != "" {
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", gep, av.elem_type, av.alloca, idx)
+        emit_elem_gep(g, gep, av.elem_type, av.alloca, idx)
     } else {
         arr_type := array_var_type(&av)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", gep, arr_type, av.alloca, idx)
+        emit_array_gep_var(g, gep, arr_type, av.alloca, idx)
     }
     val := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", val, av.elem_type, gep)
+    emit_load_into(g, val, av.elem_type, gep)
     return val
 }
 
@@ -768,10 +768,10 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
             data_ptr := fresh_tmp(g)
-            emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+            emit_load_into(g, data_ptr, "ptr", data_gep)
 
             elem_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", elem_ptr, sv.elem_type, data_ptr, idx)
+            emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx)
             return elem_ptr
         }
     }
@@ -793,10 +793,10 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
             data_ptr := fresh_tmp(g)
-            emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+            emit_load_into(g, data_ptr, "ptr", data_gep)
 
             elem_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", elem_ptr, sv.elem_type, data_ptr, idx)
+            emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx)
             return elem_ptr
         }
     }
@@ -814,7 +814,7 @@ gen_slice_data_ptr :: proc(g: ^Codegen, name: string) -> string {
     data_gep := fresh_tmp(g)
     emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
     data_ptr := fresh_tmp(g)
-    emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+    emit_load_into(g, data_ptr, "ptr", data_gep)
     return data_ptr
 }
 
@@ -824,7 +824,7 @@ gen_slice_ptr :: proc(g: ^Codegen, name: string) -> string {
     ptr_gep := fresh_tmp(g)
     emit_slice_gep(g, ptr_gep, sv.alloca, SLICE.ptr)
     ptr_val := fresh_tmp(g)
-    emit(g, "  %s = load ptr, ptr %s", ptr_val, ptr_gep)
+    emit_load_into(g, ptr_val, "ptr", ptr_gep)
     return ptr_val
 }
 
@@ -911,7 +911,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     data_gep := fresh_tmp(g)
     emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
     data_ptr := fresh_tmp(g)
-    emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+    emit_load_into(g, data_ptr, "ptr", data_gep)
 
     // Load storage's current cursor (field 1 = len).
     len_gep := fresh_tmp(g)
@@ -973,18 +973,18 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     emit(g, "  %s = icmp sgt i64 %s, %s", overflow, new_len, cap_val)
     fail_label := fresh_label(g, "take.fail")
     ok_label := fresh_label(g, "take.ok")
-    emit(g, "  br i1 %s, label %%%s, label %%%s", overflow, fail_label, ok_label)
-    emit(g, "%s:", fail_label)
+    emit_cond_br(g, overflow, fail_label, ok_label)
+    emit_label(g, fail_label)
     loc := format_location(e.span.file, e.span.line, e.span.col)
     msg := fmt.tprintf("%s runtime error: take overflows storage: advance to %%lld exceeds cap %%lld for '%s'\n",
         loc, name)
     msg_global, msg_byte_len := get_string_literal(g, msg)
     msg_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", msg_ptr, msg_byte_len, msg_global)
+    emit_string_gep(g, msg_ptr, msg_byte_len, msg_global)
     emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s, i64 %s)", msg_ptr, new_len, cap_val)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
-    emit(g, "%s:", ok_label)
+    emit_label(g, ok_label)
 
     emit_typed_store_len(g, new_len, len_gep)
 
@@ -1003,7 +1003,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
         }
         h_ptr_gep := fresh_tmp(g)
         emit_slice_gep(g, h_ptr_gep, hdr, SLICE.ptr)
-        emit(g, "  store ptr %s, ptr %s", typed_ptr, h_ptr_gep)
+        emit_store(g, "ptr", typed_ptr, h_ptr_gep)
         h_len_gep := fresh_tmp(g)
         emit_slice_gep(g, h_len_gep, hdr, SLICE.len)
         emit_typed_store_len(g, count_runtime, h_len_gep)
@@ -1048,11 +1048,11 @@ gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {
     data_gep := fresh_tmp(g)
     emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
     data_ptr := fresh_tmp(g)
-    emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+    emit_load_into(g, data_ptr, "ptr", data_gep)
 
     // GEP to element
     elem_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", elem_ptr, sv.elem_type, data_ptr, idx)
+    emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx)
     // Struct element: don't load. Hand back the address and tag it as a
     // struct-result so the caller (memcpy on assign, field-access, etc.)
     // works against the slot in place — same idiom as the field-access
@@ -1064,7 +1064,7 @@ gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {
         return elem_ptr
     }
     val := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", val, sv.elem_type, elem_ptr)
+    emit_load_into(g, val, sv.elem_type, elem_ptr)
     return val
 }
 
@@ -1118,7 +1118,7 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         av := src
         arr_type := array_var_type(&av)
         data_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", data_ptr, arr_type, src.alloca, start)
+        emit_array_gep_var(g, data_ptr, arr_type, src.alloca, start)
         // Sub-slice gives len=cap=(end-start): no preserved growth room beyond the carved range.
         return emit_build_temp_slice(g, data_ptr, slice_cap, slice_cap)
 
@@ -1127,7 +1127,7 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         data_gep := fresh_tmp(g)
         emit_slice_gep(g, data_gep, src.alloca, SLICE.ptr)
         orig_data := fresh_tmp(g)
-        emit(g, "  %s = load ptr, ptr %s", orig_data, data_gep)
+        emit_load_into(g, orig_data, "ptr", data_gep)
 
         end: string
         if e.high != nil {
@@ -1144,7 +1144,7 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         emit(g, "  %s = sub i64 %s, %s", new_cap, end, start)
 
         new_data := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", new_data, src.elem_type, orig_data, start)
+        emit_elem_gep(g, new_data, src.elem_type, orig_data, start)
         // Sub-slice gives len=cap=(end-start).
         return emit_build_temp_slice(g, new_data, new_cap, new_cap)
     }
@@ -1187,7 +1187,7 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
                     gen_store_struct_into(g, slot, sd, elem_expr)
                 } else {
                     val := gen_expr(g, elem_expr, elem_t)
-                    emit(g, "  store %s %s, ptr %s", elem_t, val, slot)
+                    emit_store(g, elem_t, val, slot)
                 }
             }
             // Update the slice's len to match the broadcast count (the user
@@ -1262,7 +1262,7 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
     sv, _ := get_slice(g, name)
 
     // Copy whole slice header { len, cap, ptr } from source into destination.
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", sv.alloca, src, slice_header_bytes)
+    emit_memcpy(g, sv.alloca, src, slice_header_bytes)
 }
 
 // Single point of truth for "store a slice value into a destination pointer".
@@ -1274,7 +1274,7 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
     if value == nil {
         ptr_gep := fresh_tmp(g)
         emit_slice_gep(g, ptr_gep, dst_ptr, SLICE.ptr)
-        emit(g, "  store ptr null, ptr %s", ptr_gep)
+        emit_store(g, "ptr", "null", ptr_gep)
         len_gep := fresh_tmp(g)
         emit_slice_gep(g, len_gep, dst_ptr, SLICE.len)
         emit_typed_store_len(g, "0", len_gep)
@@ -1284,7 +1284,7 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
         return
     }
     src := gen_expr(g, value)
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, src, slice_header_bytes)
+    emit_memcpy(g, dst_ptr, src, slice_header_bytes)
 }
 
 // Assign a slice-typed expression (e.g. alloc()) to a named variable.
@@ -1330,7 +1330,7 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
     sv, _ := get_slice(g, name)
 
     // Copy whole slice header { len, cap, ptr } from source into destination.
-    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", sv.alloca, src, slice_header_bytes)
+    emit_memcpy(g, sv.alloca, src, slice_header_bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -1377,7 +1377,7 @@ resolve_byte_target :: proc(g: ^Codegen, expr: Expr, span: Span) -> (data_ptr: s
         data_gep := fresh_tmp(g)
         emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
         data_ptr := fresh_tmp(g)
-        emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+        emit_load_into(g, data_ptr, "ptr", data_gep)
         // Byte-view / let-binding addresses raw storage — bound by cap, not len.
         cap_gep := fresh_tmp(g)
         emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
@@ -1460,16 +1460,16 @@ emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, s
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := fresh_tmp(g)
     emit(g, "  %s = icmp ugt i64 %s, %s", cmp, end_offset, cap_val)
-    emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, err_lbl, ok_lbl)
-    emit(g, "%s:", err_lbl)
+    emit_cond_br(g, cmp, err_lbl, ok_lbl)
+    emit_label(g, err_lbl)
     err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", label, size)
     err_name, err_len := get_string_literal(g, err_msg)
     err_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", err_ptr, err_len, err_name)
+    emit_string_gep(g, err_ptr, err_len, err_name)
     emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s, i64 %s)", err_ptr, low, cap_val)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
-    emit(g, "%s:", ok_lbl)
+    emit_label(g, ok_lbl)
 }
 
 // Get the data pointer from a Slice_Var. Used by non-byte-buffer code
@@ -1478,7 +1478,7 @@ slice_var_data_ptr :: proc(g: ^Codegen, sv: ^Slice_Var) -> string {
     data_gep := fresh_tmp(g)
     emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
     data_ptr := fresh_tmp(g)
-    emit(g, "  %s = load ptr, ptr %s", data_ptr, data_gep)
+    emit_load_into(g, data_ptr, "ptr", data_gep)
     return data_ptr
 }
 
@@ -1498,7 +1498,7 @@ gen_byte_target_write :: proc(g: ^Codegen, s: ^Stmt_Assign, buf_expr: Expr, offs
 
     if sd := as_struct_body(val_type); sd != nil {
         val := gen_expr(g, s.value)
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", elem_ptr, val, val_size)
+        emit_memcpy(g, elem_ptr, val, val_size)
     } else {
         val := gen_expr(g, s.value)
         // `align 1` — the offset is user-chosen so the address could be anything.
@@ -1523,16 +1523,16 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
 
     alloca_name := fmt.tprintf("%%%s", name)
     if sd := as_struct_body(target_type); sd != nil {
-        emit(g, "  %s = alloca %s", alloca_name, target_ir_type)
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", alloca_name, elem_ptr, target_size)
+        emit_alloca(g, alloca_name, target_ir_type)
+        emit_memcpy(g, alloca_name, elem_ptr, target_size)
         g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
     } else {
         val := fresh_tmp(g)
         // `align 1` on the byte-buffer load (offset user-chosen); the store
         // into the local alloca stays natural since the alloca is aligned.
         emit(g, "  %s = load %s, ptr %s, align 1", val, target_ir_type, elem_ptr)
-        emit(g, "  %s = alloca %s", alloca_name, target_ir_type)
-        emit(g, "  store %s %s, ptr %s", target_ir_type, val, alloca_name)
+        emit_alloca(g, alloca_name, target_ir_type)
+        emit_store(g, target_ir_type, val, alloca_name)
         g.all_vars[name] = Scalar_Var{alloca_name}
     }
 }
@@ -1548,12 +1548,12 @@ gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: strin
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
     gep := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+    emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
     if as_struct_body(f.type_) != nil {
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", gep, elem_ptr, field_size)
+        emit_memcpy(g, gep, elem_ptr, field_size)
     } else {
         val := fresh_tmp(g)
         emit(g, "  %s = load %s, ptr %s, align 1", val, ft, elem_ptr)
-        emit(g, "  store %s %s, ptr %s", ft, val, gep)
+        emit_store(g, ft, val, gep)
     }
 }

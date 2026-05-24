@@ -40,8 +40,8 @@ gen_namespace_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
     }
 
     if len(real_arms) == 0 {
-        emit(g, "  br label %%%s", end_label)
-        emit(g, "%s:", end_label)
+        emit_br(g, end_label)
+        emit_label(g, end_label)
         return
     }
 
@@ -52,19 +52,19 @@ gen_namespace_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
 
         body_label := fresh_label(g, fmt.tprintf("match.body.%d", i))
         next_label := i < len(real_arms) - 1 ? fresh_label(g, fmt.tprintf("match.next.%d", i)) : end_label
-        emit(g, "  br i1 %s, label %%%s, label %%%s", bool_val, body_label, next_label)
+        emit_cond_br(g, bool_val, body_label, next_label)
 
-        emit(g, "%s:", body_label)
+        emit_label(g, body_label)
         gen_body_block(g, arm.body[:], .Match_Arm, next_label)
 
         restore_var_scope(g, &snap)
 
         if i < len(real_arms) - 1 {
-            emit(g, "%s:", next_label)
+            emit_label(g, next_label)
         }
     }
 
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 }
 
 // Resolve the subject of a match-on-union to a pointer at the union's
@@ -87,10 +87,10 @@ union_subject_ptr :: proc(g: ^Codegen, expr: Expr, ut: ^Type_Union) -> (string, 
     // Rvalue fallback: spill to a stack alloca.
     llvm_name := union_llvm_name(ut.name)
     tmp := fresh_tmp(g)
-    emit(g, "  %s = alloca %s", tmp, llvm_name)
+    emit_alloca(g, tmp, llvm_name)
     val := gen_expr(g, expr)
     if val != "" && val != "0" {
-        emit(g, "  store %s %s, ptr %s", llvm_name, val, tmp)
+        emit_store(g, llvm_name, val, tmp)
         return tmp, true
     }
     return "", false
@@ -106,14 +106,14 @@ gen_niche_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, unio
 
     // Load the pointer value
     ptr_val := fresh_tmp(g)
-    emit(g, "  %s = load ptr, ptr %s", ptr_val, union_ptr)
+    emit_load_into(g, ptr_val, "ptr", union_ptr)
     is_null := fresh_tmp(g)
     emit(g, "  %s = icmp eq ptr %s, null", is_null, ptr_val)
 
     end_label  := fresh_label(g, "match.end")
     none_label := fresh_label(g, "match.none")
     some_label := fresh_label(g, "match.some")
-    emit(g, "  br i1 %s, label %%%s, label %%%s", is_null, none_label, some_label)
+    emit_cond_br(g, is_null, none_label, some_label)
 
     match_snap := save_var_scope(g)
 
@@ -134,17 +134,17 @@ gen_niche_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, unio
     if none_arm == nil { none_arm = else_arm }
 
     // None arm — just the body, no payload binding.
-    emit(g, "%s:", none_label)
+    emit_label(g, none_label)
     if none_arm != nil {
         gen_body_block(g, none_arm.body[:], .Match_Arm, end_label)
     } else {
-        emit(g, "  br label %%%s", end_label)
+        emit_br(g, end_label)
     }
     restore_var_scope(g, &match_snap)
 
     // Some arm — bind the payload to the union storage (Some struct's single
     // pointer field is at offset 0, same as the niche slot).
-    emit(g, "%s:", some_label)
+    emit_label(g, some_label)
     if some_arm != nil {
         if some_arm.binding_name != "" {
             struct_name := some_arm.resolved_struct
@@ -158,11 +158,11 @@ gen_niche_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, unio
         }
         gen_body_block(g, some_arm.body[:], .Match_Arm, end_label)
     } else {
-        emit(g, "  br label %%%s", end_label)
+        emit_br(g, end_label)
     }
     restore_var_scope(g, &match_snap)
 
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 }
 
 gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr: string) {
@@ -178,7 +178,7 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
     tag_ptr := fresh_tmp(g)
     emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, llvm_name, union_ptr)
     tag_val := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", tag_val, tag_type, tag_ptr)
+    emit_load_into(g, tag_val, tag_type, tag_ptr)
     switch_type := tag_type
 
     // Get payload pointer (field 1)
@@ -220,7 +220,7 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
 
     // Emit each arm block
     for arm, i in s.arms {
-        emit(g, "%s:", arm_labels[i])
+        emit_label(g, arm_labels[i])
 
         if arm.is_union_arm || arm.dot_shorthand != "" {
             // Register the binding variable as a struct var pointing at the payload
@@ -249,7 +249,7 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
     }
 
     // End block
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ gen_value_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
     // Edge case: else as only arm — unconditional branch
     if real_arm_count == 0 && has_else {
         else_label = fresh_label(g, "match.else")
-        emit(g, "  br label %%%s", else_label)
+        emit_br(g, else_label)
     }
 
     // Emit comparison chain for real arms
@@ -305,10 +305,10 @@ gen_value_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
         arm_val := arm.dot_shorthand != "" ? fmt.tprintf("%d", arm.resolved_tag) : gen_expr(g, arm.value)
         cmp := fresh_tmp(g)
         emit(g, "  %s = icmp eq %s %s, %s", cmp, subj_type, subj_val, arm_val)
-        emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, arm_body_labels[i], arm_next_labels[i])
+        emit_cond_br(g, cmp, arm_body_labels[i], arm_next_labels[i])
 
         // Emit arm body block
-        emit(g, "%s:", arm_body_labels[i])
+        emit_label(g, arm_body_labels[i])
         gen_body_block(g, arm.body[:], .Match_Arm, end_label)
 
         // Restore variable state after each arm
@@ -316,19 +316,19 @@ gen_value_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
 
         // Start next comparison block (unless this was the last real arm)
         if i < real_arm_count - 1 {
-            emit(g, "%s:", arm_next_labels[i])
+            emit_label(g, arm_next_labels[i])
         }
     }
 
     // Emit else arm body if present
     if has_else {
         else_arm := s.arms[len(s.arms) - 1]
-        emit(g, "%s:", else_label)
+        emit_label(g, else_label)
         gen_body_block(g, else_arm.body[:], .Match_Arm, end_label)
         // Restore after else arm
         restore_var_scope(g, &vm_snap)
     }
 
     // End block
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 }

@@ -147,7 +147,7 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
         emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
         ptr_gep := fresh_tmp(g)
         emit_slice_gep(g, ptr_gep, addr, SLICE.ptr)
-        emit(g, "  store ptr %s, ptr %s", elements_ptr, ptr_gep)
+        emit_store(g, "ptr", elements_ptr, ptr_gep)
         cap_gep := fresh_tmp(g)
         emit_slice_gep(g, cap_gep, addr, SLICE.cap)
         emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
@@ -398,8 +398,8 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             } else {
                 ir_t := llvm_type_from_checker(rb_type)
                 alloca_name := fmt.tprintf("%%%s", rb.name)
-                emit(g, "  %s = alloca %s", alloca_name, ir_t)
-                emit(g, "  store %s 0, ptr %s", ir_t, alloca_name)
+                emit_alloca(g, alloca_name, ir_t)
+                emit_store(g, ir_t, "0", alloca_name)
                 g.all_vars[rb.name] = Scalar_Var{alloca = alloca_name}
             }
         }
@@ -497,13 +497,13 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             if as_struct_body(pt.elem) != nil {
                 // Pointer-to-struct param: alloca a ptr slot, store the arg
                 alloca_name := fmt.tprintf("%%%s", p.name)
-                emit(g, "  %s = alloca ptr", alloca_name)
+                emit_alloca(g, alloca_name, "ptr")
                 emit(g, "  store ptr %%%s.arg, ptr %s", p.name, alloca_name)
                 g.all_vars[p.name] = Scalar_Var{alloca = alloca_name}
             } else {
                 ir_t := llvm_type_from_checker(p.type_)
                 alloca_name := fmt.tprintf("%%%s", p.name)
-                emit(g, "  %s = alloca %s", alloca_name, ir_t)
+                emit_alloca(g, alloca_name, ir_t)
                 emit(g, "  store %s %%%s.arg, ptr %s", ir_t, p.name, alloca_name)
                 g.all_vars[p.name] = Scalar_Var{alloca = alloca_name}
             }
@@ -512,7 +512,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             elem_t := llvm_type_from_checker(fa.elem)
             arr_type := fmt.tprintf("[%d x %s]", fa.size, elem_t)
             data_name := fmt.tprintf("%%%s.data", p.name)
-            emit(g, "  %s = alloca %s", data_name, arr_type)
+            emit_alloca(g, data_name, arr_type)
             emit(g, "  store %s %%%s.arg, ptr %s", arr_type, p.name, data_name)
             utf8 := false
             if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
@@ -525,7 +525,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         } else {
             ir_t := llvm_type_from_checker(p.type_)
             alloca_name := fmt.tprintf("%%%s", p.name)
-            emit(g, "  %s = alloca %s", alloca_name, ir_t)
+            emit_alloca(g, alloca_name, ir_t)
             emit(g, "  store %s %%%s.arg, ptr %s", ir_t, p.name, alloca_name)
             g.all_vars[p.name] = Scalar_Var{alloca = alloca_name}
         }

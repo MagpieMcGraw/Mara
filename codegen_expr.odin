@@ -55,7 +55,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
     case ^Expr_String:
         global_name, byte_len := get_string_literal(g, e.value)
         tmp := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", tmp, byte_len, global_name)
+        emit_string_gep(g, tmp, byte_len, global_name)
         return tmp
 
     case ^Expr_Char:
@@ -125,7 +125,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if e.type_ != nil && !is_untyped(e.type_) {
             ir_type = llvm_type_from_checker(e.type_)
         }
-        emit(g, "  %s = load %s, ptr %s", tmp, ir_type, alloca_name)
+        emit_load_into(g, tmp, ir_type, alloca_name)
         return tmp
 
     case ^Expr_Unary:
@@ -193,7 +193,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 }
             }
             tmp := fresh_tmp(g)
-            emit(g, "  %s = load %s, ptr %s", tmp, deref_type, ptr_val)
+            emit_load_into(g, tmp, deref_type, ptr_val)
             return tmp
         case .Minus:
             operand := gen_expr(g, e.operand, target_type)
@@ -305,7 +305,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         }
         global_name, byte_len := get_string_literal(g, e.resolved_value)
         tmp := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", tmp, byte_len, global_name)
+        emit_string_gep(g, tmp, byte_len, global_name)
         return tmp
     case ^Expr_Include:
         // Include expressions are desugared before codegen — should never reach here
@@ -371,7 +371,7 @@ gen_tuple_default :: proc(g: ^Codegen, e: ^Expr_Tuple_Default) -> string {
         codegen_fatal(g, e.span, CODE_TUPLE_DEFAULT_INDEX_OUT_RANGE, e.index)
     }
     val := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", val, entry.types[e.index], entry.ptrs[e.index])
+    emit_load_into(g, val, entry.types[e.index], entry.ptrs[e.index])
     return val
 }
 
@@ -385,15 +385,15 @@ gen_if_expr :: proc(g: ^Codegen, e: ^Expr_If, target_type: string = "") -> strin
     else_label := fresh_label(g, "ifx.else")
     end_label  := fresh_label(g, "ifx.end")
 
-    emit(g, "  br i1 %s, label %%%s, label %%%s", cond_val, then_label, else_label)
+    emit_cond_br(g, cond_val, then_label, else_label)
 
     emit_raw(g, fmt.tprintf("%s:", then_label))
     then_val := gen_expr(g, e.then_expr, target_type)
-    emit(g, "  br label %%%s", end_label)
+    emit_br(g, end_label)
 
     emit_raw(g, fmt.tprintf("%s:", else_label))
     else_val := gen_expr(g, e.else_expr, target_type)
-    emit(g, "  br label %%%s", end_label)
+    emit_br(g, end_label)
 
     emit_raw(g, fmt.tprintf("%s:", end_label))
     result := fresh_tmp(g)
@@ -561,7 +561,7 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
 gen_short_circuit_and :: proc(g: ^Codegen, e: ^Expr_Binary) -> string {
     // Use alloca+store pattern to avoid PHI predecessor tracking issues
     result_ptr := fresh_tmp(g)
-    emit(g, "  %s = alloca i1", result_ptr)
+    emit_alloca(g, result_ptr, "i1")
     emit(g, "  store i1 false, ptr %s", result_ptr)
 
     left := gen_expr(g, e.left)
@@ -569,23 +569,23 @@ gen_short_circuit_and :: proc(g: ^Codegen, e: ^Expr_Binary) -> string {
     rhs_label := fresh_label(g, "and.rhs")
     end_label := fresh_label(g, "and.end")
 
-    emit(g, "  br i1 %s, label %%%s, label %%%s", left, rhs_label, end_label)
+    emit_cond_br(g, left, rhs_label, end_label)
 
-    emit(g, "%s:", rhs_label)
+    emit_label(g, rhs_label)
     right := gen_expr(g, e.right)
-    emit(g, "  store i1 %s, ptr %s", right, result_ptr)
-    emit(g, "  br label %%%s", end_label)
+    emit_store(g, "i1", right, result_ptr)
+    emit_br(g, end_label)
 
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
     result := fresh_tmp(g)
-    emit(g, "  %s = load i1, ptr %s", result, result_ptr)
+    emit_load_into(g, result, "i1", result_ptr)
     return result
 }
 
 gen_short_circuit_or :: proc(g: ^Codegen, e: ^Expr_Binary) -> string {
     // Use alloca+store pattern to avoid PHI predecessor tracking issues
     result_ptr := fresh_tmp(g)
-    emit(g, "  %s = alloca i1", result_ptr)
+    emit_alloca(g, result_ptr, "i1")
     emit(g, "  store i1 true, ptr %s", result_ptr)
 
     left := gen_expr(g, e.left)
@@ -593,16 +593,16 @@ gen_short_circuit_or :: proc(g: ^Codegen, e: ^Expr_Binary) -> string {
     rhs_label := fresh_label(g, "or.rhs")
     end_label := fresh_label(g, "or.end")
 
-    emit(g, "  br i1 %s, label %%%s, label %%%s", left, end_label, rhs_label)
+    emit_cond_br(g, left, end_label, rhs_label)
 
-    emit(g, "%s:", rhs_label)
+    emit_label(g, rhs_label)
     right := gen_expr(g, e.right)
-    emit(g, "  store i1 %s, ptr %s", right, result_ptr)
-    emit(g, "  br label %%%s", end_label)
+    emit_store(g, "i1", right, result_ptr)
+    emit_br(g, end_label)
 
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
     result := fresh_tmp(g)
-    emit(g, "  %s = load i1, ptr %s", result, result_ptr)
+    emit_load_into(g, result, "i1", result_ptr)
     return result
 }
 
@@ -752,14 +752,14 @@ gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
             elem_ir := llvm_type_from_checker(fa.elem)
             arr_type := fmt.tprintf("[%d x %s]", fa.size, elem_ir)
             arr_alloca := fresh_tmp(g)
-            emit(g, "  %s = alloca %s", arr_alloca, arr_type)
+            emit_alloca(g, arr_alloca, arr_type)
             total_bytes := fa.size * elem_byte_size(elem_ir, g.checked)
-            emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", arr_alloca, total_bytes)
+            emit_memset_zero(g, arr_alloca, total_bytes)
             for elem, ei in al.elements {
                 val := gen_expr(g, elem, elem_ir)
                 gep := fresh_tmp(g)
-                emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, arr_alloca, ei)
-                emit(g, "  store %s %s, ptr %s", elem_ir, val, gep)
+                emit_array_gep_const(g, gep, arr_type, arr_alloca, ei)
+                emit_store(g, elem_ir, val, gep)
             }
             size_str := fmt.tprintf("%d", fa.size)
             return emit_build_temp_slice(g, arr_alloca, size_str, size_str)
@@ -815,15 +815,15 @@ gen_array_param_arg :: proc(g: ^Codegen, arg: Expr, pt: string, val: string) -> 
     if string_like_src != "" {
         global_name, byte_len := get_string_literal(g, string_like_src)
         src_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", src_ptr, byte_len, global_name)
+        emit_string_gep(g, src_ptr, byte_len, global_name)
         arr_alloca := fresh_tmp(g)
-        emit(g, "  %s = alloca %s", arr_alloca, pt)
+        emit_alloca(g, arr_alloca, pt)
         arr_cap, arr_elem, _ := parse_array_ir_type(pt)
         param_bytes := arr_cap * elem_byte_size(arr_elem, g.checked)
-        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", arr_alloca, param_bytes)
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", arr_alloca, src_ptr, byte_len)
+        emit_memset_zero(g, arr_alloca, param_bytes)
+        emit_memcpy(g, arr_alloca, src_ptr, byte_len)
         loaded := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", loaded, pt, arr_alloca)
+        emit_load_into(g, loaded, pt, arr_alloca)
         return loaded
     }
     // Ident / field access / call returning an array: `val` is a ptr to the data; load it.
@@ -848,7 +848,7 @@ gen_array_param_arg :: proc(g: ^Codegen, arg: Expr, pt: string, val: string) -> 
     }
     if needs_load {
         loaded := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", loaded, pt, val)
+        emit_load_into(g, loaded, pt, val)
         return loaded
     }
     return val
@@ -927,8 +927,8 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         val := gen_expr(g, e.args[0])
         fmt_name, fmt_len := get_string_literal(g, "%s")
         fmt_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, val)
+        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+        emit_printf_ptr(g, fmt_ptr, val)
         return "0"
     }
 
@@ -937,8 +937,8 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         val := gen_expr(g, e.args[0])
         fmt_name, fmt_len := get_string_literal(g, "%lld")
         fmt_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s)", fmt_ptr, val)
+        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+        emit_printf_i64(g, fmt_ptr, val)
         return "0"
     }
 
@@ -947,8 +947,8 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         val := gen_expr(g, e.args[0])
         fmt_name, fmt_len := get_string_literal(g, "%g")
         fmt_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, val)
+        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+        emit_printf_double(g, fmt_ptr, val)
         return "0"
     }
 
@@ -1096,7 +1096,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             // Struct return: alloca a temp, pass as sret, call void.
             // Sibling storage args (if any) follow sret.
             tmp_struct := fresh_tmp(g)
-            emit(g, "  %s = alloca %s", tmp_struct, struct_llvm_name(info.ret_struct))
+            emit_alloca(g, tmp_struct, struct_llvm_name(info.ret_struct))
             append(&arg_strs, fmt.tprintf("ptr %s", tmp_struct))
             emit_escape_storage_args(g, &arg_strs, &info, lookup_name, e.span)
             args_joined := strings.join(arg_strs[:], ", ")
@@ -1113,7 +1113,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             } else {
                 arr_type := fmt.tprintf("[%d x %s]", info.ret_array_cap, info.ret_array_elem)
                 tmp_data = fresh_tmp(g)
-                emit(g, "  %s = alloca %s", tmp_data, arr_type)
+                emit_alloca(g, tmp_data, arr_type)
             }
             append(&arg_strs, fmt.tprintf("ptr %s", tmp_data))
 
@@ -1142,7 +1142,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             for elem, i in info.ret_tuple.elems {
                 et := llvm_type_from_checker(elem)
                 tmp_ptr := fresh_tmp(g)
-                emit(g, "  %s = alloca %s", tmp_ptr, et)
+                emit_alloca(g, tmp_ptr, et)
                 append(&arg_strs, fmt.tprintf("ptr %s", tmp_ptr))
                 append(&g.tuple_result_ptrs, tmp_ptr)
                 append(&g.tuple_result_types, et)
@@ -1174,7 +1174,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     // Indirect call: callee is a function pointer variable
     if alloca, alloca_ok := get_scalar(g, lookup_name); alloca_ok {
         fn_ptr := fresh_tmp(g)
-        emit(g, "  %s = load ptr, ptr %s", fn_ptr, alloca)
+        emit_load_into(g, fn_ptr, "ptr", alloca)
         // Build typed arg list from each arg's checker type
         arg_strs: [dynamic]string
         for arg in e.args {
@@ -1232,7 +1232,7 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
         case Lowering_Indirect:
             ret_struct_ir := llvm_type_from_checker(cs.return_type)
             sret_slot = fresh_tmp(g)
-            emit(g, "  %s = alloca %s", sret_slot, ret_struct_ir)
+            emit_alloca(g, sret_slot, ret_struct_ir)
             append(&arg_strs, fmt.tprintf("ptr sret(%s) %s", ret_struct_ir, sret_slot))
         }
     }
@@ -1284,20 +1284,20 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
         if is_aggregate(cs.return_type) {
             ret_struct_ir := llvm_type_from_checker(cs.return_type)
             slot := fresh_tmp(g)
-            emit(g, "  %s = alloca %s", slot, ret_struct_ir)
+            emit_alloca(g, slot, ret_struct_ir)
             if len(direct.parts) == 1 {
-                emit(g, "  store %s %s, ptr %s", direct.parts[0], tmp, slot)
+                emit_store(g, direct.parts[0], tmp, slot)
             } else {
                 for part, pi in direct.parts {
                     offset := pi * 8
                     ev := fresh_tmp(g)
                     emit(g, "  %s = extractvalue %s %s, %d", ev, ret_ir, tmp, pi)
                     if offset == 0 {
-                        emit(g, "  store %s %s, ptr %s", part, ev, slot)
+                        emit_store(g, part, ev, slot)
                     } else {
                         gep := fresh_tmp(g)
                         emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", gep, slot, offset)
-                        emit(g, "  store %s %s, ptr %s", part, ev, gep)
+                        emit_store(g, part, ev, gep)
                     }
                 }
             }
@@ -1345,7 +1345,7 @@ emit_c_aggregate_direct_arg :: proc(g: ^Codegen, arg_expr: Expr, parts: []string
             emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", gep, addr, offset)
         }
         loaded := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", loaded, part, gep)
+        emit_load_into(g, loaded, part, gep)
         append(arg_strs, fmt.tprintf("%s %s", part, loaded))
     }
 }
@@ -1374,7 +1374,7 @@ emit_escape_storage_args :: proc(g: ^Codegen, arg_strs: ^[dynamic]string, info: 
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, pool, SLICE.ptr)
             base := fresh_tmp(g)
-            emit(g, "  %s = load ptr, ptr %s", base, data_gep)
+            emit_load_into(g, base, "ptr", data_gep)
             len_gep := fresh_tmp(g)
             emit_slice_gep(g, len_gep, pool, SLICE.len)
             cur := fresh_tmp(g)
@@ -1494,22 +1494,22 @@ gen_crash :: proc(g: ^Codegen, e: ^Expr_Call) {
             if _, is_utf8 := fa.elem.(Type_Utf8); is_utf8 {
                 fmt_name, fmt_len := get_string_literal(g, "%s")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, val)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_ptr(g, fmt_ptr, val)
             }
         } else {
             // Assume string-like (ptr)
             fmt_name, fmt_len := get_string_literal(g, "%s")
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, val)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+            emit_printf_ptr(g, fmt_ptr, val)
         }
 
         // Print newline
         nl_name, nl_len := get_string_literal(g, "\n")
         nl_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", nl_ptr, nl_len, nl_name)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", nl_ptr)
+        emit_string_gep(g, nl_ptr, nl_len, nl_name)
+        emit_printf_void(g, nl_ptr)
     }
 
     emit(g, "  call void @exit(i32 1)")
@@ -1518,7 +1518,7 @@ gen_crash :: proc(g: ^Codegen, e: ^Expr_Call) {
     // Start a dead block so any code after crash() in the same scope
     // doesn't produce IR after unreachable (which is invalid LLVM IR).
     dead_label := fresh_label(g, "crash.dead")
-    emit(g, "%s:", dead_label)
+    emit_label(g, dead_label)
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,18 +1642,18 @@ gen_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Expr, call_span: 
 emit_print_literal :: proc(g: ^Codegen, s: string) {
     str_name, str_len := get_string_literal(g, s)
     str_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", str_ptr, str_len, str_name)
+    emit_string_gep(g, str_ptr, str_len, str_name)
     fmt_name, fmt_len := get_string_literal(g, "%s")
     fmt_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, str_ptr)
+    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+    emit_printf_ptr(g, fmt_ptr, str_ptr)
 }
 
 emit_print_newline :: proc(g: ^Codegen) {
     nl_name, nl_len := get_string_literal(g, "\n")
     nl_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", nl_ptr, nl_len, nl_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", nl_ptr)
+    emit_string_gep(g, nl_ptr, nl_len, nl_name)
+    emit_printf_void(g, nl_ptr)
 }
 
 // Emit a single arg as printf output, dispatched on the arg's checker type.
@@ -1675,7 +1675,7 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                     // non-sentinel utf8 arrays both print cleanly.
                     fmt_name, fmt_len := get_string_literal(g, "%.*s")
                     fmt_ptr := fresh_tmp(g)
-                    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
+                    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
                     emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %d, ptr %s)", fmt_ptr, av.capacity, av.alloca)
                     printed = true
                 } else if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.is_utf8 {
@@ -1683,8 +1683,8 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                     data_ptr := slice_var_data_ptr(g, &sv)
                     fmt_name, fmt_len := get_string_literal(g, "%s")
                     fmt_ptr := fresh_tmp(g)
-                    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, data_ptr)
+                    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                    emit_printf_ptr(g, fmt_ptr, data_ptr)
                     printed = true
                 }
             } else if _, str_ok := arg_expr.(^Expr_String); str_ok {
@@ -1692,8 +1692,8 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                 val := gen_expr(g, arg_expr)
                 fmt_name, fmt_len := get_string_literal(g, "%s")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, val)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_ptr(g, fmt_ptr, val)
                 printed = true
             }
             _ = printed
@@ -1716,20 +1716,20 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             emit(g, "  %s = zext i8 %s to i32", ext, val)
             fmt_name, fmt_len := get_string_literal(g, "%c")
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
             emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
         } else if is_string_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
             fmt_name, fmt_len := get_string_literal(g, "%s")
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, val)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+            emit_printf_ptr(g, fmt_ptr, val)
         } else if is_float_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
             fmt_name, fmt_len := get_string_literal(g, "%g")
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, val)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+            emit_printf_double(g, fmt_ptr, val)
         } else if is_ptr_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
             // ^byte by convention carries null-terminated cstrings (e.g.
@@ -1742,8 +1742,8 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             if _, is_cs := t.(Type_CString); is_cs { spec = "%s" }
             fmt_name, fmt_len := get_string_literal(g, spec)
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, val)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+            emit_printf_ptr(g, fmt_ptr, val)
         } else if is_numeric_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
             nt := get_numeric_type(g, arg_expr)
@@ -1753,14 +1753,14 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                 emit(g, "  %s = fpext float %s to double", ext, val)
                 fmt_name, fmt_len := get_string_literal(g, "%g")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, ext)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_double(g, fmt_ptr, ext)
             } else if nt == "i64" {
                 // Already i64 — pass directly to printf
                 fmt_name, fmt_len := get_string_literal(g, "%lld")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s)", fmt_ptr, val)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_i64(g, fmt_ptr, val)
             } else {
                 // Small integer: extend to i64 for printf
                 ext := fresh_tmp(g)
@@ -1776,15 +1776,15 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                 }
                 fmt_name, fmt_len := get_string_literal(g, "%lld")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s)", fmt_ptr, ext)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_i64(g, fmt_ptr, ext)
             }
         } else {
             val := gen_expr(g, arg_expr)
             fmt_name, fmt_len := get_string_literal(g, "%lld")
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s)", fmt_ptr, val)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+            emit_printf_i64(g, fmt_ptr, val)
         }
 }
 
@@ -1819,25 +1819,25 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
     // Print "StructName { "
     header_name, header_len := get_string_literal(g, fmt.tprintf("%s {{ ", struct_key(st)))
     header_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", header_ptr, header_len, header_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", header_ptr)
+    emit_string_gep(g, header_ptr, header_len, header_name)
+    emit_printf_void(g, header_ptr)
 
     for &f, fi in st.fields {
         if fi > 0 {
             sep_name, sep_len := get_string_literal(g, ", ")
             sep_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", sep_ptr, sep_len, sep_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", sep_ptr)
+            emit_string_gep(g, sep_ptr, sep_len, sep_name)
+            emit_printf_void(g, sep_ptr)
         }
         // Print "fieldname: "
         label_name, label_len := get_string_literal(g, fmt.tprintf("%s: ", f.name))
         label_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", label_ptr, label_len, label_name)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", label_ptr)
+        emit_string_gep(g, label_ptr, label_len, label_name)
+        emit_printf_void(g, label_ptr)
 
         ft := field_ir_type(&f)
         gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, stv.alloca, fi)
+        emit_field_gep_into(g, gep, st_llvm, stv.alloca, fi)
 
         acap := field_array_cap(&f)
         aelem := field_array_elem(&f)
@@ -1854,24 +1854,24 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
         } else {
             // Scalar field — load and print
             val := fresh_tmp(g)
-            emit(g, "  %s = load %s, ptr %s", val, ft, gep)
+            emit_load_into(g, val, ft, gep)
             switch {
             case ft == "double":
                 fmt_name, fmt_len := get_string_literal(g, "%g")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, val)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_double(g, fmt_ptr, val)
             case ft == "float":
                 ext := fresh_tmp(g)
                 emit(g, "  %s = fpext float %s to double", ext, val)
                 fmt_name, fmt_len := get_string_literal(g, "%g")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, ext)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_double(g, fmt_ptr, ext)
             case ft == "i1":
                 fmt_name, fmt_len := get_string_literal(g, "%d")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
                 ext := fresh_tmp(g)
                 emit(g, "  %s = zext i1 %s to i32", ext, val)
                 emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
@@ -1880,8 +1880,8 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
                 emit(g, "  %s = sext %s %s to i64", ext, ft, val)
                 fmt_name, fmt_len := get_string_literal(g, "%lld")
                 fmt_ptr := fresh_tmp(g)
-                emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s)", fmt_ptr, ext)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_i64(g, fmt_ptr, ext)
             }
         }
     }
@@ -1889,56 +1889,56 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
     // Print " }"
     close_name, close_len := get_string_literal(g, " }")
     close_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", close_ptr, close_len, close_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", close_ptr)
+    emit_string_gep(g, close_ptr, close_len, close_name)
+    emit_printf_void(g, close_ptr)
 }
 
 // Print a flat array inline: [v1, v2, v3]
 gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_type: string) {
     open_name, open_len := get_string_literal(g, "[")
     open_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", open_ptr, open_len, open_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", open_ptr)
+    emit_string_gep(g, open_ptr, open_len, open_name)
+    emit_printf_void(g, open_ptr)
 
     arr_type := fmt.tprintf("[%d x %s]", cap, elem_type)
     for i := 0; i < cap; i += 1 {
         if i > 0 {
             sep_name, sep_len := get_string_literal(g, ", ")
             sep_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", sep_ptr, sep_len, sep_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", sep_ptr)
+            emit_string_gep(g, sep_ptr, sep_len, sep_name)
+            emit_printf_void(g, sep_ptr)
         }
         gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", gep, arr_type, data_ptr, i)
+        emit_array_gep_const(g, gep, arr_type, data_ptr, i)
         val := fresh_tmp(g)
-        emit(g, "  %s = load %s, ptr %s", val, elem_type, gep)
+        emit_load_into(g, val, elem_type, gep)
         switch {
         case elem_type == "double":
             fmt_name, fmt_len := get_string_literal(g, "%g")
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, val)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+            emit_printf_double(g, fmt_ptr, val)
         case elem_type == "float":
             ext := fresh_tmp(g)
             emit(g, "  %s = fpext float %s to double", ext, val)
             fmt_name, fmt_len := get_string_literal(g, "%g")
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, ext)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+            emit_printf_double(g, fmt_ptr, ext)
         case:
             ext := fresh_tmp(g)
             emit(g, "  %s = sext %s %s to i64", ext, elem_type, val)
             fmt_name, fmt_len := get_string_literal(g, "%lld")
             fmt_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s)", fmt_ptr, ext)
+            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+            emit_printf_i64(g, fmt_ptr, ext)
         }
     }
 
     close_name, close_len := get_string_literal(g, "]")
     close_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", close_ptr, close_len, close_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", close_ptr)
+    emit_string_gep(g, close_ptr, close_len, close_name)
+    emit_printf_void(g, close_ptr)
 }
 
 // Print a nested array like [4][4]f32 as: [[v, v, v, v], [v, v, v, v], ...]
@@ -1948,25 +1948,25 @@ gen_print_nested_array :: proc(g: ^Codegen, data_ptr: string, outer_cap: int, in
 
     open_name, open_len := get_string_literal(g, "[")
     open_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", open_ptr, open_len, open_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", open_ptr)
+    emit_string_gep(g, open_ptr, open_len, open_name)
+    emit_printf_void(g, open_ptr)
 
     for i := 0; i < outer_cap; i += 1 {
         if i > 0 {
             sep_name, sep_len := get_string_literal(g, ", ")
             sep_ptr := fresh_tmp(g)
-            emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", sep_ptr, sep_len, sep_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", sep_ptr)
+            emit_string_gep(g, sep_ptr, sep_len, sep_name)
+            emit_printf_void(g, sep_ptr)
         }
         row_gep := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %d", row_gep, outer_arr_type, data_ptr, i)
+        emit_array_gep_const(g, row_gep, outer_arr_type, data_ptr, i)
         gen_print_array_inline(g, row_gep, inner_cap, inner_elem)
     }
 
     close_name, close_len := get_string_literal(g, "]")
     close_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", close_ptr, close_len, close_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", close_ptr)
+    emit_string_gep(g, close_ptr, close_len, close_name)
+    emit_printf_void(g, close_ptr)
 }
 
 // Print an array as: [1, 2, 3]
@@ -2019,8 +2019,8 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     // Print opening bracket
     open_name, open_len := get_string_literal(g, "[")
     open_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", open_ptr, open_len, open_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", open_ptr)
+    emit_string_gep(g, open_ptr, open_len, open_name)
+    emit_printf_void(g, open_ptr)
 
     // Element count is always capacity (full arrays)
     arr_len := fmt.tprintf("%d", av.capacity)
@@ -2031,20 +2031,20 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     end_label  := fresh_label(g, "print.end")
 
     idx_ptr := fresh_tmp(g)
-    emit(g, "  %s = alloca i64", idx_ptr)
-    emit(g, "  store i64 0, ptr %s", idx_ptr)
-    emit(g, "  br label %%%s", cond_label)
+    emit_alloca(g, idx_ptr, "i64")
+    emit_store(g, "i64", "0", idx_ptr)
+    emit_br(g, cond_label)
 
-    emit(g, "%s:", cond_label)
+    emit_label(g, cond_label)
     idx := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", idx, idx_ptr)
+    emit_load_into(g, idx, "i64", idx_ptr)
     cmp := fresh_tmp(g)
     emit(g, "  %s = icmp slt i64 %s, %s", cmp, idx, arr_len)
-    emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, body_label, end_label)
+    emit_cond_br(g, cmp, body_label, end_label)
 
-    emit(g, "%s:", body_label)
+    emit_label(g, body_label)
     idx2 := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", idx2, idx_ptr)
+    emit_load_into(g, idx2, "i64", idx_ptr)
 
     // Print comma+space if not first element
     comma_label := fresh_label(g, "print.comma")
@@ -2052,61 +2052,61 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     after_comma_label := fresh_label(g, "print.aftercomma")
     is_first := fresh_tmp(g)
     emit(g, "  %s = icmp eq i64 %s, 0", is_first, idx2)
-    emit(g, "  br i1 %s, label %%%s, label %%%s", is_first, no_comma_label, comma_label)
+    emit_cond_br(g, is_first, no_comma_label, comma_label)
 
-    emit(g, "%s:", comma_label)
+    emit_label(g, comma_label)
     comma_name, comma_len := get_string_literal(g, ", ")
     comma_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", comma_ptr, comma_len, comma_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", comma_ptr)
-    emit(g, "  br label %%%s", after_comma_label)
+    emit_string_gep(g, comma_ptr, comma_len, comma_name)
+    emit_printf_void(g, comma_ptr)
+    emit_br(g, after_comma_label)
 
-    emit(g, "%s:", no_comma_label)
-    emit(g, "  br label %%%s", after_comma_label)
+    emit_label(g, no_comma_label)
+    emit_br(g, after_comma_label)
 
-    emit(g, "%s:", after_comma_label)
+    emit_label(g, after_comma_label)
     // Load and print the element
     idx3 := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", idx3, idx_ptr)
+    emit_load_into(g, idx3, "i64", idx_ptr)
     gep := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", gep, arr_type, av.alloca, idx3)
+    emit_array_gep_var(g, gep, arr_type, av.alloca, idx3)
     val := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", val, av.elem_type, gep)
+    emit_load_into(g, val, av.elem_type, gep)
 
     // For i1 (bool), zero-extend to i64 for printf; for double, use as-is
     fmt_name, fmt_len := get_string_literal(g, print_fmt)
     fmt_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", fmt_ptr, fmt_len, fmt_name)
+    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
     if print_llvm_type == "double" {
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, val)
+        emit_printf_double(g, fmt_ptr, val)
     } else if print_llvm_type == "float" {
         // Promote f32 → double for variadic call
         promoted := fresh_tmp(g)
         emit(g, "  %s = fpext float %s to double", promoted, val)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, double %s)", fmt_ptr, promoted)
+        emit_printf_double(g, fmt_ptr, promoted)
     } else if print_llvm_type == "i1" {
         ext := fresh_tmp(g)
         emit(g, "  %s = zext i1 %s to i64", ext, val)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s)", fmt_ptr, ext)
+        emit_printf_i64(g, fmt_ptr, ext)
     } else if print_llvm_type == "ptr" {
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, ptr %s)", fmt_ptr, val)
+        emit_printf_ptr(g, fmt_ptr, val)
     } else {
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s)", fmt_ptr, val)
+        emit_printf_i64(g, fmt_ptr, val)
     }
 
     // Increment index
     next := fresh_tmp(g)
     emit(g, "  %s = add i64 %s, 1", next, idx3)
-    emit(g, "  store i64 %s, ptr %s", next, idx_ptr)
-    emit(g, "  br label %%%s", cond_label)
+    emit_store(g, "i64", next, idx_ptr)
+    emit_br(g, cond_label)
 
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 
     // Print closing bracket
     close_name, close_len := get_string_literal(g, "]")
     close_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 0", close_ptr, close_len, close_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", close_ptr)
+    emit_string_gep(g, close_ptr, close_len, close_name)
+    emit_printf_void(g, close_ptr)
 }
 
 // ---------------------------------------------------------------------------

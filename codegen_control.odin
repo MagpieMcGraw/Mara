@@ -32,7 +32,7 @@ gen_body_block :: proc(g: ^Codegen, stmts: []Stmt, scope_kind: Control_Scope_Kin
     }
     if !terminated {
         pop_scope(g)
-        emit(g, "  br label %%%s", fallthrough_label)
+        emit_br(g, fallthrough_label)
     } else {
         // Terminator already emitted scope cleanup; just drop the stack entry
         if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
@@ -95,16 +95,16 @@ gen_if :: proc(g: ^Codegen, s: ^Stmt_If) {
     end_label  := fresh_label(g, "if.end")
 
     if len(s.else_body) > 0 {
-        emit(g, "  br i1 %s, label %%%s, label %%%s", cond, then_label, else_label)
+        emit_cond_br(g, cond, then_label, else_label)
     } else {
-        emit(g, "  br i1 %s, label %%%s, label %%%s", cond, then_label, end_label)
+        emit_cond_br(g, cond, then_label, end_label)
     }
 
     // Save variable state — variables declared in branches must not leak
     snap := save_var_scope(g)
 
     // Then block
-    emit(g, "%s:", then_label)
+    emit_label(g, then_label)
     gen_body_block(g, s.body[:], .If_Then, end_label)
 
     // Restore before else — then-block variables must not be visible in else
@@ -112,7 +112,7 @@ gen_if :: proc(g: ^Codegen, s: ^Stmt_If) {
 
     // Else block
     if len(s.else_body) > 0 {
-        emit(g, "%s:", else_label)
+        emit_label(g, else_label)
         gen_body_block(g, s.else_body[:], .If_Else, end_label)
     }
 
@@ -120,7 +120,7 @@ gen_if :: proc(g: ^Codegen, s: ^Stmt_If) {
     restore_var_scope(g, &snap)
 
     // End block
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 }
 
 // ---------------------------------------------------------------------------
@@ -151,26 +151,26 @@ gen_for :: proc(g: ^Codegen, s: ^Stmt_For) {
         gen_stmt(g, s.init)
     }
 
-    emit(g, "  br label %%%s", cond_label)
+    emit_br(g, cond_label)
 
     // Condition
-    emit(g, "%s:", cond_label)
+    emit_label(g, cond_label)
     cond := gen_expr(g, s.condition)
-    emit(g, "  br i1 %s, label %%%s, label %%%s", cond, body_label, end_label)
+    emit_cond_br(g, cond, body_label, end_label)
 
     // Body
-    emit(g, "%s:", body_label)
+    emit_label(g, body_label)
     gen_loop_body(g, s.body[:], end_label, continue_target)
 
     // Post clause
     if has_post {
-        emit(g, "%s:", post_label)
+        emit_label(g, post_label)
         gen_stmt(g, s.post)
-        emit(g, "  br label %%%s", cond_label)
+        emit_br(g, cond_label)
     }
 
     // End
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,9 +187,9 @@ gen_for_range :: proc(g: ^Codegen, s: ^Stmt_For) {
 
     // Alloca + init loop variable
     alloca_name := fmt.tprintf("%%%s", s.loop_var)
-    emit(g, "  %s = alloca %s", alloca_name, ir_type)
-    emit(g, "  store %s 0, ptr %s", ir_type, alloca_name)
-    emit(g, "  store %s %s, ptr %s", ir_type, low_val, alloca_name)
+    emit_alloca(g, alloca_name, ir_type)
+    emit_store(g, ir_type, "0", alloca_name)
+    emit_store(g, ir_type, low_val, alloca_name)
     g.all_vars[s.loop_var] = Scalar_Var{alloca_name}
 
     // Labels
@@ -199,12 +199,12 @@ gen_for_range :: proc(g: ^Codegen, s: ^Stmt_For) {
     end_label  := fresh_label(g, "for.end")
     continue_target := post_label
 
-    emit(g, "  br label %%%s", cond_label)
+    emit_br(g, cond_label)
 
     // Condition: i < high (half-open). Range-for is always exclusive.
-    emit(g, "%s:", cond_label)
+    emit_label(g, cond_label)
     cur := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", cur, ir_type, alloca_name)
+    emit_load_into(g, cur, ir_type, alloca_name)
     cmp := fresh_tmp(g)
     cmp_op := "slt"
     if s.var_type != nil {
@@ -215,23 +215,23 @@ gen_for_range :: proc(g: ^Codegen, s: ^Stmt_For) {
         }
     }
     emit(g, "  %s = icmp %s %s %s, %s", cmp, cmp_op, ir_type, cur, high_val)
-    emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, body_label, end_label)
+    emit_cond_br(g, cmp, body_label, end_label)
 
     // Body
-    emit(g, "%s:", body_label)
+    emit_label(g, body_label)
     gen_loop_body(g, s.body[:], end_label, continue_target)
 
     // Post: i += 1
-    emit(g, "%s:", post_label)
+    emit_label(g, post_label)
     inc_load := fresh_tmp(g)
-    emit(g, "  %s = load %s, ptr %s", inc_load, ir_type, alloca_name)
+    emit_load_into(g, inc_load, ir_type, alloca_name)
     inc_val := fresh_tmp(g)
     emit(g, "  %s = add %s %s, 1", inc_val, ir_type, inc_load)
-    emit(g, "  store %s %s, ptr %s", ir_type, inc_val, alloca_name)
-    emit(g, "  br label %%%s", cond_label)
+    emit_store(g, ir_type, inc_val, alloca_name)
+    emit_br(g, cond_label)
 
     // End
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 }
 
 // ---------------------------------------------------------------------------
@@ -267,14 +267,14 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             pa_ptr := gen_field_address(g, coll_fa)
             pa_ir := llvm_type_from_checker(pa)
             len_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", len_gep, pa_ir, pa_ptr, SLICE.len)
+            emit_field_gep_into(g, len_gep, pa_ir, pa_ptr, SLICE.len)
             len_val := fresh_tmp(g)
             emit_typed_load_len(g, len_val, len_gep)
             length_val = len_val
             ptr_gep := fresh_tmp(g)
-            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", ptr_gep, pa_ir, pa_ptr, SLICE.ptr)
+            emit_field_gep_into(g, ptr_gep, pa_ir, pa_ptr, SLICE.ptr)
             data_val := fresh_tmp(g)
-            emit(g, "  %s = load ptr, ptr %s", data_val, ptr_gep)
+            emit_load_into(g, data_val, "ptr", ptr_gep)
             data_ptr = data_val
             elem_ir = llvm_type_from_checker(pa.elem)
             resolved = true
@@ -317,8 +317,8 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
 
     // Alloca index variable, init to 0
     idx_alloca := fresh_tmp(g)
-    emit(g, "  %s = alloca i64", idx_alloca)
-    emit(g, "  store i64 0, ptr %s", idx_alloca)
+    emit_alloca(g, idx_alloca, "i64")
+    emit_store(g, "i64", "0", idx_alloca)
     if s.index_var != "" {
         g.all_vars[s.index_var] = Scalar_Var{idx_alloca}
     }
@@ -330,31 +330,31 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     end_label  := fresh_label(g, "for.end")
     continue_target := post_label
 
-    emit(g, "  br label %%%s", cond_label)
+    emit_br(g, cond_label)
 
     // Condition: idx < length
-    emit(g, "%s:", cond_label)
+    emit_label(g, cond_label)
     cur_idx := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", cur_idx, idx_alloca)
+    emit_load_into(g, cur_idx, "i64", idx_alloca)
     cmp := fresh_tmp(g)
     emit(g, "  %s = icmp slt i64 %s, %s", cmp, cur_idx, length_val)
-    emit(g, "  br i1 %s, label %%%s, label %%%s", cmp, body_label, end_label)
+    emit_cond_br(g, cmp, body_label, end_label)
 
     // Body
-    emit(g, "%s:", body_label)
+    emit_label(g, body_label)
 
     // Load element if elem_var is provided
     if s.elem_var != "" {
         // Reload index for element access
         body_idx := fresh_tmp(g)
-        emit(g, "  %s = load i64, ptr %s", body_idx, idx_alloca)
+        emit_load_into(g, body_idx, "i64", idx_alloca)
 
         // GEP to element
         elem_ptr := fresh_tmp(g)
         if use_array_gep {
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 0, i64 %s", elem_ptr, arr_type_str, data_ptr, body_idx)
+            emit_array_gep_var(g, elem_ptr, arr_type_str, data_ptr, body_idx)
         } else {
-            emit(g, "  %s = getelementptr %s, ptr %s, i64 %s", elem_ptr, elem_ir, data_ptr, body_idx)
+            emit_elem_gep(g, elem_ptr, elem_ir, data_ptr, body_idx)
         }
 
         // Check element kind: struct, slice, or scalar
@@ -377,25 +377,25 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             // Struct element: alloca + memcpy
             elem_alloca := fmt.tprintf("%%%s", s.elem_var)
             st_llvm_name := struct_llvm_name(struct_name)
-            emit(g, "  %s = alloca %s", elem_alloca, st_llvm_name)
+            emit_alloca(g, elem_alloca, st_llvm_name)
             if st_def, st_ok := lookup_struct(g, struct_name); st_ok {
                 sz := struct_byte_size(st_def, g.checked)
-                emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", elem_alloca, elem_ptr, sz)
+                emit_memcpy(g, elem_alloca, elem_ptr, sz)
             }
             g.all_vars[s.elem_var] = Struct_Var{elem_alloca, struct_name, ""}
         } else if is_slice_elem {
             // Slice element: alloca slice header + memcpy
             elem_alloca := fmt.tprintf("%%%s", s.elem_var)
             emit_slice_alloca(g, elem_alloca)
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", elem_alloca, elem_ptr, slice_header_bytes)
+            emit_memcpy(g, elem_alloca, elem_ptr, slice_header_bytes)
             g.all_vars[s.elem_var] = Slice_Var{alloca = elem_alloca, elem_type = "i8", is_utf8 = is_utf8_slice}
         } else {
             // Scalar element: alloca + load + store
             elem_alloca := fmt.tprintf("%%%s", s.elem_var)
-            emit(g, "  %s = alloca %s", elem_alloca, elem_ir)
+            emit_alloca(g, elem_alloca, elem_ir)
             elem_val := fresh_tmp(g)
-            emit(g, "  %s = load %s, ptr %s", elem_val, elem_ir, elem_ptr)
-            emit(g, "  store %s %s, ptr %s", elem_ir, elem_val, elem_alloca)
+            emit_load_into(g, elem_val, elem_ir, elem_ptr)
+            emit_store(g, elem_ir, elem_val, elem_alloca)
             g.all_vars[s.elem_var] = Scalar_Var{elem_alloca}
         }
     }
@@ -403,14 +403,14 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     gen_loop_body(g, s.body[:], end_label, continue_target)
 
     // Post: idx += 1
-    emit(g, "%s:", post_label)
+    emit_label(g, post_label)
     inc_load := fresh_tmp(g)
-    emit(g, "  %s = load i64, ptr %s", inc_load, idx_alloca)
+    emit_load_into(g, inc_load, "i64", idx_alloca)
     inc_val := fresh_tmp(g)
     emit(g, "  %s = add i64 %s, 1", inc_val, inc_load)
-    emit(g, "  store i64 %s, ptr %s", inc_val, idx_alloca)
-    emit(g, "  br label %%%s", cond_label)
+    emit_store(g, "i64", inc_val, idx_alloca)
+    emit_br(g, cond_label)
 
     // End
-    emit(g, "%s:", end_label)
+    emit_label(g, end_label)
 }
