@@ -1,23 +1,27 @@
 module mandelbrot_bench_simd
 
-// Vectorised Mandelbrot. 8 pixels per iteration, lockstep on a custom
-// F64x8 type. LLVM's auto-vectoriser recognises the 8-line per-element
-// expansion in the operators below and emits AVX (or whatever is
-// available) on the inner loop — no intrinsics required.
+// Vectorised Mandelbrot with PBM output. Mirrors the Rust benchmarksgame
+// mandelbrot-4 entry: 8 pixels iterated in lockstep on a custom F64x8
+// type, group-level divergence check every 4 iterations, 12 * 4 + 1 = 49
+// iterations total, bit-packed P4 PBM written to disk.
 //
-// Structure mirrors the Rust benchmarksgame mandelbrot-4 entry:
-//   - 8 pixels iterated in lockstep with no per-pixel break.
-//   - Group-level divergence check every 4 iterations.
-//   - 12 * 4 + 1 = 49 iterations total (effectively MAX_ITER=49).
+// LLVM's auto-vectoriser recognises the 8-line per-element expansion in
+// the operators below and emits AVX (or whatever is available) on the
+// inner loop — no intrinsics required.
 //
 // The trade-off vs the scalar version: we lose the early-out for
 // individual pixels that escape quickly, but we gain SIMD on the
 // arithmetic. Net win because the SIMD is wide and most pixels
 // in the rendered window need many iterations anyway.
+//
+// N must be a multiple of 8 — each F64x8 column writes exactly one
+// PBM byte (MSB-first per byte, matching the benchmarksgame convention).
 
 use mara.time
+use mara.os
+use mara.memory
 
-N    :: 1000
+N    :: 16000
 VLEN :: 8
 
 F64x8 :: distinct [8]f64
@@ -59,23 +63,60 @@ all_diverged :: fun(z: F64x8) -> bool {
 	return z[0] > 4.0 and z[1] > 4.0 and z[2] > 4.0 and z[3] > 4.0 and z[4] > 4.0 and z[5] > 4.0 and z[6] > 4.0 and z[7] > 4.0
 }
 
-count_in_set :: fun(z: F64x8) -> i64 {
-	n : i64 = 0
-	if z[0] <= 4.0 { n += 1 }
-	if z[1] <= 4.0 { n += 1 }
-	if z[2] <= 4.0 { n += 1 }
-	if z[3] <= 4.0 { n += 1 }
-	if z[4] <= 4.0 { n += 1 }
-	if z[5] <= 4.0 { n += 1 }
-	if z[6] <= 4.0 { n += 1 }
-	if z[7] <= 4.0 { n += 1 }
+// Bit-pack the 8 "still in set" flags into one PBM byte. MSB carries the
+// leftmost pixel, matching the benchmarksgame mandelbrot-4 layout — the
+// resulting byte stream is byte-identical to the reference output.
+pack_bits :: fun(z: F64x8) -> u8 {
+	n : u8 = 0
+	if z[0] <= 4.0 { n |= 0x80 }
+	if z[1] <= 4.0 { n |= 0x40 }
+	if z[2] <= 4.0 { n |= 0x20 }
+	if z[3] <= 4.0 { n |= 0x10 }
+	if z[4] <= 4.0 { n |= 0x08 }
+	if z[5] <= 4.0 { n |= 0x04 }
+	if z[6] <= 4.0 { n |= 0x02 }
+	if z[7] <= 4.0 { n |= 0x01 }
 	return n
+}
+
+popcount8 :: fun(b: u8) -> i64 {
+	n : i64 = 0
+	if (b & 0x80) != 0 { n += 1 }
+	if (b & 0x40) != 0 { n += 1 }
+	if (b & 0x20) != 0 { n += 1 }
+	if (b & 0x10) != 0 { n += 1 }
+	if (b & 0x08) != 0 { n += 1 }
+	if (b & 0x04) != 0 { n += 1 }
+	if (b & 0x02) != 0 { n += 1 }
+	if (b & 0x01) != 0 { n += 1 }
+	return n
+}
+
+// Write the decimal representation of val into buf at byte offset off and
+// return the next free offset. Only used for the PBM header — i64 is plenty.
+write_dec :: fun(buf: ^[]byte, off: i64, val: i64) -> i64 {
+	if val == 0 {
+		buf[off] = u8('0')
+		return off + 1
+	}
+	digits : [20]u8
+	count : i64 = 0
+	n := val
+	for n > 0 {
+		digits[count] = u8('0') + u8(n % 10)
+		n /= 10
+		count += 1
+	}
+	for i in 0..count {
+		buf[off + i] = digits[count - 1 - i]
+	}
+	return off + count
 }
 
 // Iterate z = z^2 + c for 49 steps on 8 pixels in lockstep. Bail
 // after every group of 4 if ALL 8 pixels have diverged. Returns
-// the count of pixels still in the set.
-mand8 :: fun(cr: F64x8, ci_scalar: f64) -> i64 {
+// the bit-packed in-set mask for the 8 pixels (0 means all escaped).
+mand8 :: fun(cr: F64x8, ci_scalar: f64) -> u8 {
 	ci := f64x8_splat(ci_scalar)
 	zr := cr
 	zi := ci
@@ -101,14 +142,44 @@ mand8 :: fun(cr: F64x8, ci_scalar: f64) -> i64 {
 	ti = zi * zi
 
 	final_absz := tr + ti
-	return count_in_set(final_absz)
+	return pack_bits(final_absz)
 }
 
 main :: fun() {
+	program = Program(Arena_Basic(16 * MB))
+
 	inv := 2.0 / f64(N)
 	in_set_count : i64 = 0
 
+	fd, ok := file_open_write("mandelbrot.pbm")
+	if not ok {
+		print("failed to open output file")
+		return
+	}
+
+	// One row's worth of bit-packed pixels. Filled per scanline, then
+	// flushed to disk. Holding the whole image would balloon to 32 MB at
+	// N=16000; a per-row write keeps the stack footprint flat.
+	row_arr : [N/VLEN]byte
+	row_slice : []byte = row_arr[:]
+
 	_, start := time_since(0)
+
+	// PBM header: "P4\n<N> <N>\n". Build into a stack buffer, then slice
+	// down to the written length for file_write.
+	hdr_arr : [64]byte
+	hdr_slice : []byte = hdr_arr[:]
+	off : i64 = 0
+	hdr_slice[off] = u8('P'); off += 1
+	hdr_slice[off] = u8('4'); off += 1
+	hdr_slice[off] = u8('\n'); off += 1
+	off = write_dec(&hdr_slice, off, N)
+	hdr_slice[off] = u8(' '); off += 1
+	off = write_dec(&hdr_slice, off, N)
+	hdr_slice[off] = u8('\n'); off += 1
+
+	hdr_out : []byte = hdr_slice[0:off]
+	_, _ = file_write(fd, &hdr_out)
 
 	for y in 0..N {
 		ci := f64(y) * inv - 1.0
@@ -124,10 +195,14 @@ main :: fun() {
 				(x_base + 6.0) * inv - 1.5,
 				(x_base + 7.0) * inv - 1.5,
 			}
-			in_set_count += mand8(cr, ci)
+			bits := mand8(cr, ci)
+			row_arr[x] = bits
+			in_set_count += popcount8(bits)
 		}
+		_, _ = file_write(fd, &row_slice)
 	}
 
+	file_close(fd)
 	elapsed, _ := time_since(start)
 	print("N=%d (8-wide f64 SIMD, 49 iters)", N)
 	print("in-set: %d / %d pixels", in_set_count, N*N)

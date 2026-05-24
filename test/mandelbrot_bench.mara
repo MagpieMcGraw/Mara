@@ -12,7 +12,7 @@ module mandelbrot_bench
 
 use mara.time
 
-N        :: 1000
+N        :: 16000
 MAX_ITER :: 50
 
 main :: fun() {

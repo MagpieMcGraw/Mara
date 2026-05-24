@@ -13,6 +13,7 @@ Init_Flags :: union(tag u32) {
     Camera   = 65536
 }
 
+// NEEDS DISTINCT!
 Scancode :: union(tag u32) {
     Unknown  = 0
     A        = 4

@@ -7033,6 +7033,13 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         for field, i in lit.fields {
             if i >= len(st.fields) { break }
             sf := st.fields[i]
+            // Only set the hint for anonymous nested literals — these need
+            // the field type to determine their shape. Other expression
+            // shapes (idents, calls, field-accesses, arithmetic) self-type
+            // and a stray hint can mistype intermediate sub-expressions.
+            if needs_field_type_hint(field.value) {
+                c.expected_hint = sf.type_
+            }
             ft := check_expr(c, field.value, env)
             if types_incompatible(sf.type_, ft) {
                 check_error(c, span, TYPE_FIELD_POSITION_EXPECTED,
@@ -7052,6 +7059,9 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         if idx, ok := st.field_map[field.name]; ok {
             sf := st.fields[idx]
             provided[field.name] = true
+            if needs_field_type_hint(field.value) {
+                c.expected_hint = sf.type_
+            }
             ft := check_expr(c, field.value, env)
             if types_incompatible(sf.type_, ft) {
                 check_error(c, span, TYPE_FIELD_EXPECTED,
@@ -7092,6 +7102,19 @@ check_union_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, ut: ^Ty
             check_struct_literal_fields(c, lit, &st.sd, span, env)
         }
     }
+}
+
+// True when an expression needs a type hint from its surrounding context to
+// be type-checked correctly. Today this is only anonymous struct/array
+// literals (`{a, b, c}` with no leading name and no inline `[N]T`) — the
+// type checker uses the hint at check_expr's Expr_Struct_Literal branch to
+// dispatch to check_array_struct_literal. Idents, field accesses, calls,
+// arithmetic, etc. all self-type without a hint, so we don't propagate one
+// to them (a stray hint can mistype intermediate sub-expressions).
+needs_field_type_hint :: proc(e: Expr) -> bool {
+    lit, ok := e.(^Expr_Struct_Literal)
+    if !ok { return false }
+    return lit.name == "" && lit.type_expr == nil && !lit.is_broadcast
 }
 
 // Validate a `Quat{...}` / `Vec3{...}` style literal that constructs a value of
@@ -9255,6 +9278,18 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             if st, ok := c.table.funs[flat]; ok {
                 check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return st
+            }
+        }
+        // Anonymous literal with a context-supplied type. Used for things like
+        // `quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})` where the parameter type
+        // (Vec3 :: distinct [3]f32) is the only source of shape information.
+        // Without this, array_values would never be populated and codegen
+        // would emit a bare `0` for the aggregate.
+        if hint := c.expected_hint; hint != nil {
+            if fa, fa_ok := distinct_base(hint).(^Type_Fixed_Array); fa_ok {
+                check_array_struct_literal(c, e, fa, env)
+                e.type_ = hint
+                return hint
             }
         }
         // Anonymous struct literal: just check each field value.

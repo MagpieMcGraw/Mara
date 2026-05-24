@@ -140,6 +140,16 @@ Union_Var :: struct {
     union_name: string,
 }
 
+// Synthetic binding to a precomputed SSA value (no alloca). Used by compound
+// assignment to hold the pre-loaded LHS value without paying for an
+// alloca/store/load triple — gen_expr on an Expr_Ident bound to one of these
+// returns the SSA directly. The synthetic name lives only as long as its
+// surrounding statement; nothing else should produce these.
+SSA_Var :: struct {
+    ssa:     string, // SSA name, e.g. "%t42"
+    ir_type: string, // LLVM type of the value, e.g. "i64" or "[4 x float]"
+}
+
 // Unified variable entry — each codegen variable is exactly one of these kinds.
 Var_Entry :: union {
     Scalar_Var,
@@ -147,6 +157,7 @@ Var_Entry :: union {
     Struct_Var,
     Union_Var,
     Slice_Var,
+    SSA_Var,
 }
 
 // ---------------------------------------------------------------------------
@@ -2705,8 +2716,13 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // Enable alloca hoisting for main body
     begin_alloca_hoist(&g)
 
-    // Emit the user's main body.
+    // Emit the user's main body. main lowers to `i64 @main` (C entry-point
+    // convention), so a bare `return` inside main must terminate with
+    // `ret i64 0`. Setting current_ret_type wires this into the bare-return
+    // codepath in gen_return.
     if main_cf, main_ok := checked.functions["main"]; main_ok {
+        prev_ret_type := g.current_ret_type
+        g.current_ret_type = "i64"
         has_ret := false
         for s in main_cf.body {
             gen_stmt(&g, s)
@@ -2717,6 +2733,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         if !has_ret {
             emit(&g, "  ret i64 0")
         }
+        g.current_ret_type = prev_ret_type
     }
 
     // Flush: hoisted allocas first, then body code

@@ -336,6 +336,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     // chain emits its own bounds checks per index step.
     if chain, chain_ok := build_address_chain(g, ix); chain_ok {
         elem_ptr := emit_address_chain(g, &chain)
+        apply_compound_load_substitute(g, s, elem_ptr, chain.final_type)
         if chain.final_kind == .Struct {
             gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value)
         } else {

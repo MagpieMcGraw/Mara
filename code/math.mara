@@ -416,7 +416,7 @@ quat_normalize :: fun(q: Quat) -> Quat {
 }
 
 // Build quaternion from forward and up vectors
-quat_from_forward_and_up :: fun(fwd: Vec3, up: Vec3) -> Quat {
+quat_from_fwd_and_up :: fun(fwd: Vec3, up: Vec3) -> Quat {
 	f := vec3_normalize(fwd)
 	r := vec3_normalize(cross(up, f))
 	u := cross(f, r)

@@ -10,6 +10,16 @@ import "core:strings"
 gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
     switch s in stmt {
     case ^Stmt_Assign:
+        // Compound assign (`lhs op= rhs`) was desugared by the parser into
+        // `lhs = lhs op rhs`, with the LHS AST node shared between `s.target`
+        // and the binary's `left`. To evaluate the LHS once — matching the
+        // semantics of every other language with compound assignment — pre-
+        // evaluate any side-effectful sub-expressions inside the LHS into
+        // temps. The in-place mutation propagates to the binary's left
+        // operand since both refer to the same node.
+        if s.is_compound && s.target != nil {
+            hoist_compound_lhs(g, s.target)
+        }
         // Complex LHS: dispatch by target kind.
         if s.target != nil {
             #partial switch t in s.target {
@@ -820,12 +830,13 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
         // the caller's slot. Mirrors the Struct_Var handling above.
         target_ptr := ""
         if existing, ok := g.all_vars[name]; ok {
-            switch v in existing {
+            #partial switch v in existing {
             case Scalar_Var: target_ptr = v.alloca
             case Array_Var:  target_ptr = v.alloca
             case Slice_Var:  target_ptr = v.alloca
             case Struct_Var: target_ptr = v.alloca
             case Union_Var:  target_ptr = v.alloca
+            // SSA_Var: synthetic compound-assign binding, can't be a target.
             }
         }
         if target_ptr != "" {
@@ -1172,8 +1183,89 @@ gen_return :: proc(g: ^Codegen, s: Stmt_Return) {
         gen_return_scalar(g, s)
         return
     }
-    // Bare `return` in a void function — emit the terminator so the basic
-    // block is well-formed. Without this, LLVM rejects the IR with
-    // "expected instruction opcode" at whichever label follows.
-    emit(g, "  ret void")
+    // Bare `return` — emit a terminator that matches the enclosing function's
+    // IR return type. Mara's `main` lowers to `i64 @main` (C entry-point
+    // convention), so an unadorned `return` inside main must emit `ret i64 0`
+    // rather than `ret void`. For ordinary void-returning Mara fns the type
+    // string is empty and we fall back to `ret void`.
+    switch g.current_ret_type {
+    case "":
+        emit(g, "  ret void")
+    case "void":
+        emit(g, "  ret void")
+    case "ptr":
+        emit(g, "  ret ptr null")
+    case:
+        emit(g, "  ret %s 0", g.current_ret_type)
+    }
+}
+
+// Walk a compound-assignment LHS and hoist every index sub-expression into a
+// precomputed temp. The LHS is shared with the binary RHS's `left` operand,
+// so in-place mutation here means the binary reads from the same hoisted
+// temp during its own codegen — preserving single-evaluation semantics for
+// the LHS as a whole.
+//
+// Only Expr_Index gets rewritten because field accesses and pointer derefs
+// are pure address computations; the only sub-expression a user can drop a
+// call (or any other effectful expression) into is an index slot. We hoist
+// unconditionally rather than gating on a purity check — mem2reg folds the
+// alloca+store+load triple to nothing at -O3, and a "is this expression
+// pure?" predicate would grow stale as the language adds new effect-bearing
+// kinds, with silent double-evaluation as the failure mode.
+hoist_compound_lhs :: proc(g: ^Codegen, lhs: Expr) {
+    #partial switch n in lhs {
+    case ^Expr_Field_Access:
+        hoist_compound_lhs(g, n.expr)
+    case ^Expr_Index:
+        hoist_compound_lhs(g, n.expr)
+        n.index = hoist_lhs_subexpr(g, n.index)
+    case ^Expr_Unary:
+        if n.op == .Caret {
+            hoist_compound_lhs(g, n.operand)
+        }
+    }
+}
+
+// Evaluate `e` once, register the SSA result under a synthetic name, and
+// return an Expr_Ident that resolves back to that SSA at codegen time
+// (without re-emitting the expression or allocating a stack slot). The
+// synthetic name uses a `$` prefix the lexer can't produce so it can't
+// collide with anything in scope.
+hoist_lhs_subexpr :: proc(g: ^Codegen, e: Expr) -> Expr {
+    ir_type := "i64"
+    if t := expr_type(e); t != nil && !is_untyped(t) {
+        ir_type = llvm_type_from_checker(t)
+    }
+    val := gen_expr(g, e, ir_type)
+    g.tmp_counter += 1
+    name := fmt.tprintf("$compound.%d", g.tmp_counter)
+    g.all_vars[name] = SSA_Var{ssa = val, ir_type = ir_type}
+    id := new(Expr_Ident)
+    id.name = name
+    id.type_ = expr_type(e)
+    return id
+}
+
+// For compound assigns (`lhs op= rhs`), the LHS appears on both sides of the
+// desugared `lhs = lhs op rhs` and would normally be re-emitted by gen_expr
+// on the binary's `left`. The patched gen_*_assign procs already compute the
+// LHS address once for the store; calling this helper at that point pre-
+// loads through the same address, registers the loaded SSA under a synthetic
+// name, and substitutes that name for `bin.left`. The binary's right operand
+// and final store then run normally — but the value-side address chain
+// (including any null/bounds checks it carried) is gone.
+apply_compound_load_substitute :: proc(g: ^Codegen, s: ^Stmt_Assign, addr: string, ir_type: string) {
+    if !s.is_compound { return }
+    bin, ok := s.value.(^Expr_Binary)
+    if !ok { return }
+    cur := fresh_tmp(g)
+    emit(g, "  %s = load %s, ptr %s", cur, ir_type, addr)
+    g.tmp_counter += 1
+    name := fmt.tprintf("$compound_val.%d", g.tmp_counter)
+    g.all_vars[name] = SSA_Var{ssa = cur, ir_type = ir_type}
+    id := new(Expr_Ident)
+    id.name = name
+    id.type_ = expr_type(bin.left)
+    bin.left = id
 }

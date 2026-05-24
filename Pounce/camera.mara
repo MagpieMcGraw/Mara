@@ -34,16 +34,16 @@ Camera :: struct(w, h, fovy : f32) {
 	}
 }
 
-// camera_look_down :: proc(camera: ^Camera) {
-// 	camera.dir *= linalg.quaternion_angle_axis(
-// 	math.to_radians(f32(180)), linalg.Vector3f32{0, 1, 0})
-// }
+camera_look_down :: fun(camera: ^Camera) {
+	camera.obj.dir *= quat_angle_axis(
+	to_radians(180), Vec3{0, 1, 0})
+}
 
-// camera_align_with_gravity :: proc(camera: ^Camera) {
-// 	camera.dir = linalg.quaternion_from_forward_and_up_f32({0, 1, 0}, {0, 0, 1})
-// }
+camera_align_with_gravity :: fun(camera: ^Camera) {
+	camera.obj.dir = quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})
+}
 
-// camera_move :: proc(events: ^Event_State, loop_time: f32, camera: ^Camera) {
+// camera_move :: fun(events: ^Event_State, loop_time: f32, camera: ^Camera) {
 // 	direction: linalg.Vector3f32
 // 	speed: f32 = 500
 
@@ -80,7 +80,7 @@ Camera :: struct(w, h, fovy : f32) {
 // 	camera.accel += move_this_frame
 // }
 
-// camera_turn_flying :: proc(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
+// camera_turn_flying :: fun(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
 // 	sensitivity: f32 = 0.005
 // 	turn_speed: f32 = 0.5  // Faster turn speed for direct mode
 // 	x_rot := turn_speed * f32(xrel) * sensitivity
@@ -110,7 +110,7 @@ Camera :: struct(w, h, fovy : f32) {
 
 // // Walking camera - constrained to ground-based movement
 // // Yaw always around world up, no roll, maintains upright orientation
-// camera_turn_walking :: proc(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
+// camera_turn_walking :: fun(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
 // 	if xrel == 0 && yrel == 0 do return
 
 // 	sensitivity: f32 = 0.01
@@ -134,7 +134,7 @@ Camera :: struct(w, h, fovy : f32) {
 // 	}
 // }
 
-// camera_update :: proc(camera: ^Camera, loop_time: f32) {
+// camera_update :: fun(camera: ^Camera, loop_time: f32) {
 // 	physics_resolution: f32 = 0.001
 // 	physics_this_frame := loop_time / physics_resolution
 
@@ -147,7 +147,7 @@ Camera :: struct(w, h, fovy : f32) {
 // 	camera.view_mx = linalg.matrix_mul(rotation_mx, translation_mx)
 // }
 
-// camera_update_size :: proc(camera: ^Camera, w_width, w_height: i32) {
+// camera_update_size :: fun(camera: ^Camera, w_width, w_height: i32) {
 // 	if w_width == camera.w_width && w_height == camera.w_height {
 // 		return
 // 	}
@@ -168,7 +168,7 @@ Camera :: struct(w, h, fovy : f32) {
 
 // // Project world position to screen pixels (origin at center, +x right, +y up)
 // // Returns screen x, y in pixels from center, and ok=false if behind camera
-// world_to_screen :: proc(world_pos: linalg.Vector3f32, camera: ^Camera) -> (x, y: f32, ok: bool) {
+// world_to_screen :: fun(world_pos: linalg.Vector3f32, camera: ^Camera) -> (x, y: f32, ok: bool) {
 // 	// Transform to clip space
 // 	pos4 := linalg.Vector4f32{world_pos.x, world_pos.y, world_pos.z, 1}
 // 	view_pos := linalg.mul(camera.view_mx, pos4)

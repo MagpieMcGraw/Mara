@@ -1073,7 +1073,10 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
         }
     }
 
-    // Multi-component swizzle field access (a.xy → temp array).
+    // Field access yielding an array — either a multi-component swizzle
+    // (a.xy → synthesized temp) or a plain array-typed field (obj.uv).
+    // gen_field_access stashes the source Array_Var; the right claim
+    // helper distinguishes the two shapes.
     if fa, ok := value.(^Expr_Field_Access); ok {
         gen_field_access(g, fa)
         if sr, sr_ok := claim_swizzle_result(g); sr_ok {
@@ -1090,6 +1093,13 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
             }
             return
         }
+        if av, av_ok := claim_field_array(g); av_ok {
+            // Source and destination are both flat [N x T] of matching shape
+            // (the type checker has verified this). Bulk memcpy is the
+            // simplest correct lowering.
+            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)", dst_ptr, av.alloca, total_bytes)
+            return
+        }
     }
 
     // Array-returning function call: NRVO directly into dst_ptr.
@@ -1103,12 +1113,35 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
         }
     }
 
-    // Fallback for unrecognised RHS shapes: zero the destination. Matches
-    // the legacy gen_array_field_store behavior so callers higher up the
-    // call chain still see their own call_result for parameter passing.
-    // (Expressions like `obj.pos = other.pos + a + b` flow through here as
-    // an Expr_Binary; gen_binary will handle the chain elsewhere.)
-    emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %d, i1 false)", dst_ptr, total_bytes)
+    // Operator overload returning a fixed-array (e.g. `Quat * Quat → Quat`):
+    // synthesize the resolved overload's call (same shape gen_binary builds)
+    // and route through gen_call_into_array so the call writes directly into
+    // dst_ptr as sret. The straight `gen_binary` path would also leave a
+    // dangling temp_call_result set by gen_call's array-NRVO branch, which
+    // the next scalar decl would mis-claim.
+    if bin, ok := value.(^Expr_Binary); ok {
+        if rf, rf_ok := bin.overload_fn.?; rf_ok {
+            if info, info_ok := lookup_fun_info(g, rf.name); info_ok && info.ret_array_cap > 0 {
+                call := new(Expr_Call)
+                call.name = rf.name
+                append(&call.args, bin.left)
+                append(&call.args, bin.right)
+                call.span = bin.span
+                call.type_ = bin.type_
+                call.resolved_func = rf
+                dst := Array_Var{alloca = dst_ptr, capacity = info.ret_array_cap, elem_type = info.ret_array_elem}
+                gen_call_into_array(g, call, &dst, &info)
+                return
+            }
+        }
+    }
+
+    // Every supported RHS shape was checked above. Falling through here means
+    // a new expression kind is reaching the array-store path without a
+    // handler; emit a hard error rather than silently zeroing the destination
+    // (which is exactly the kind of dropped-computation bug that motivated
+    // CLAUDE.md's "errors over fallbacks" rule).
+    codegen_fatal(g, {}, CODE_GEN_STORE_ARRAY_UNHANDLED_RHS)
 }
 
 
@@ -1455,21 +1488,31 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     } else {
         // Try chained field access that ends at an array (for swizzle writes like mvp.data.x.xyz = ...)
         if inner_fa, inner_ok := fa_expr.expr.(^Expr_Field_Access); inner_ok {
-            gen_field_access(g, inner_fa)
-            if ar, ar_ok := claim_field_array(g); ar_ok {
-                if is_swizzle_field(fa_expr.field, ar.capacity) {
-                    if len(fa_expr.field) == 1 {
-                        gen_swizzle_write_single(g, &ar, fa_expr.field, s.value)
-                    } else {
-                        gen_swizzle_write_multi(g, &ar, fa_expr.field, s.value)
+            // Only emit gen_field_access (which walks the chain and emits IR)
+            // when the inner FA could actually be claimed below as an array or
+            // slice. For ordinary struct-typed inner FAs, the address chain
+            // would just be re-computed by resolve_lhs_struct further down,
+            // and the IR emitted here would be dead code.
+            inner_type := distinct_base(expr_type(inner_fa))
+            _, inner_is_array := inner_type.(^Type_Fixed_Array)
+            _, inner_is_slice := inner_type.(^Type_Slice)
+            if inner_is_array || inner_is_slice {
+                gen_field_access(g, inner_fa)
+                if ar, ar_ok := claim_field_array(g); ar_ok {
+                    if is_swizzle_field(fa_expr.field, ar.capacity) {
+                        if len(fa_expr.field) == 1 {
+                            gen_swizzle_write_single(g, &ar, fa_expr.field, s.value)
+                        } else {
+                            gen_swizzle_write_multi(g, &ar, fa_expr.field, s.value)
+                        }
+                        return
                     }
+                }
+                // Slice field write via chained access: obj.slice_field.len = N
+                if slv, slv_ok := claim_field_slice(g); slv_ok {
+                    gen_slice_field_store(g, slv.alloca, fa_expr.field, s.value, s.span)
                     return
                 }
-            }
-            // Slice field write via chained access: obj.slice_field.len = N
-            if slv, slv_ok := claim_field_slice(g); slv_ok {
-                gen_slice_field_store(g, slv.alloca, fa_expr.field, s.value, s.span)
-                return
             }
         }
         // Slice field write via index: arr[i].len = N where arr[i] is a slice.
@@ -1517,6 +1560,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         if acap > 0 {
             data_gep := fresh_tmp(g)
             emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", data_gep, st_llvm, base_ptr, idx)
+            apply_compound_load_substitute(g, s, data_gep, ft)
             gen_array_field_store(g, data_gep, acap, field_array_elem(f), s.value)
             return
         }
@@ -1534,6 +1578,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             if checked_field_st, cs_ok := lookup_struct(g, field_sd.name); cs_ok {
                 gep := fresh_tmp(g)
                 emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+                apply_compound_load_substitute(g, s, gep, struct_llvm_name(field_sd.name))
                 gen_store_struct_into(g, gep, checked_field_st, s.value)
                 return
             }
@@ -1547,9 +1592,12 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             gen_store_slice_into(g, gep, s.value)
             return
         }
-        val := gen_expr(g, s.value, ft)
+        // Scalar field — compute the GEP first so the compound-load substitute
+        // can pre-load the current value through it before gen_expr runs.
         gep := fresh_tmp(g)
         emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", gep, st_llvm, base_ptr, idx)
+        apply_compound_load_substitute(g, s, gep, ft)
+        val := gen_expr(g, s.value, ft)
         emit(g, "  store %s %s, ptr %s", ft, val, gep)
         return
     }
@@ -1580,24 +1628,26 @@ gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     }
     emit_null_check(g, ptr_val, deref_name, s.span)
 
+    // Determine the store type from the typed AST annotation
+    store_type := "i64"
+    if s.target_type != nil && !is_untyped(s.target_type) {
+        store_type = llvm_type_from_checker(s.target_type)
+    }
+
     // Struct deref-assign: aggregates aren't a single LLVM scalar, so a
     // `store %class.X X, ptr P` form is invalid. Delegate to the unified
     // struct store primitive, which handles every RHS shape (including
     // struct-returning function calls — see test_deref_from_call).
     if sd := as_struct_body(s.target_type); sd != nil {
         if checked_st, cs_ok := lookup_struct(g, sd.name); cs_ok {
+            apply_compound_load_substitute(g, s, ptr_val, store_type)
             gen_store_struct_into(g, ptr_val, checked_st, s.value)
             return
         }
     }
 
+    apply_compound_load_substitute(g, s, ptr_val, store_type)
     val := gen_expr(g, s.value)
-
-    // Determine the store type from the typed AST annotation
-    store_type := "i64"
-    if s.target_type != nil && !is_untyped(s.target_type) {
-        store_type = llvm_type_from_checker(s.target_type)
-    }
 
     // Convert value to target type if needed
     val_type := expr_ir_type(g, s.value)

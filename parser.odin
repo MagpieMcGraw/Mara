@@ -457,6 +457,12 @@ Stmt_Assign :: struct {
     target:        Expr,
     target_type:   Type,       // resolved type of the target (field/container/pointee), filled by type checker
     assign_value_type:  Type,  // solid RHS type for byte-slice reinterpret writes, filled by type checker
+    // True when the parser desugared `lhs op= rhs` into `lhs = lhs op rhs`.
+    // `value` is always an Expr_Binary whose `left` is the same AST node as
+    // `target` (or, for the simple-name path, a fresh Expr_Ident referring to
+    // the same variable). Codegen uses this flag to hoist side-effectful
+    // sub-expressions of the LHS into temps so the LHS is evaluated once.
+    is_compound:   bool,
     checked:       [dynamic]Stmt,
 }
 
@@ -2545,15 +2551,15 @@ parse_for :: proc(p: ^Parser) -> Stmt {
 // declarations (::, :, :=), assignments (=, +=, etc.),
 // Dispatch an assignment to the right Stmt type based on the LHS expression.
 // Returns the statement and true if the LHS is a field access, index, or deref.
-make_lhs_assign :: proc(lhs: Expr, value: Expr, start: Span) -> (Stmt, bool) {
+make_lhs_assign :: proc(lhs: Expr, value: Expr, start: Span, is_compound: bool = false) -> (Stmt, bool) {
     #partial switch t in lhs {
     case ^Expr_Field_Access:
-        return new_clone(Stmt_Assign{target = lhs, value = value, span = start}), true
+        return new_clone(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
     case ^Expr_Index:
-        return new_clone(Stmt_Assign{target = lhs, value = value, span = start}), true
+        return new_clone(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
     case ^Expr_Unary:
         if t.op == .Caret {
-            return new_clone(Stmt_Assign{target = lhs, value = value, span = start}), true
+            return new_clone(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
         }
     }
     return {}, false
@@ -2727,7 +2733,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         bin.op = compound_op
         bin.right = rhs
         bin.span = token_span(op_tok)
-        return new_clone(Stmt_Assign{name = name_tok.text, value = bin, span = start}), true
+        return new_clone(Stmt_Assign{name = name_tok.text, value = bin, span = start, is_compound = true}), true
 
     // name[...] or name.field or name^ — could be index/field/deref assignment
     case .Left_Bracket, .Dot, .Caret:
@@ -2843,7 +2849,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             bin.op = compound_op
             bin.right = rhs
             bin.span = token_span(op_tok)
-            if stmt, ok := make_lhs_assign(lhs, bin, start); ok {
+            if stmt, ok := make_lhs_assign(lhs, bin, start, is_compound = true); ok {
                 return stmt, true
             }
         }

@@ -80,6 +80,13 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if const_expr, ok := g.checked.table.constants[e.name]; ok {
             return gen_expr(g, const_expr, target_type)
         }
+        // SSA-bound synthetic binding (compound assignment's pre-loaded LHS):
+        // the value already lives in a named SSA reg, no load needed.
+        if entry, ok := g.all_vars[e.name]; ok {
+            if sv, sv_ok := entry.(SSA_Var); sv_ok {
+                return sv.ssa
+            }
+        }
         // Struct variable: return the pointer directly (no load — structs are always ptrs)
         if sv, sv_ok := get_struct(g, e.name); sv_ok {
             return sv.alloca
