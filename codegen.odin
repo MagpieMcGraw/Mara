@@ -5,6 +5,9 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:os"
+import "core:thread"
+import "core:mem/virtual"
+import os_old "core:os/old"
 
 // ---------------------------------------------------------------------------
 // LLVM IR Code Generator
@@ -317,6 +320,11 @@ Codegen :: struct {
     // Filesystem paths produced by generate_program — one .ll per module.
     // Populated at write time; read by main.odin to feed clang.
     module_ll_paths:     [dynamic]string,
+
+    // Parallel-codegen task records. Each task carries per-module outputs
+    // produced by the worker pool: the IR buffer, string_decls,
+    // overflow_intrinsics used. Read at .ll-write time.
+    module_tasks:        []^Module_Task,
     hoist_allocas: bool,           // true during function body codegen
     emitted_allocas: map[string]string, // track alloca names emitted in current function (name -> IR type for dedup)
     tmp_counter: int,              // %0, %1, %2 ...
@@ -337,6 +345,11 @@ Codegen :: struct {
     // String literal table: value -> global name
     string_literals: map[string]string,
     string_counter:  int,
+    // Per-Codegen prefix for `@.str.N` names. Empty for the main thread
+    // (preserves existing IR layout); set to a module-specific tag by
+    // parallel codegen workers so each TU's strings live in its own
+    // namespace.
+    string_name_prefix: string,
     // Track all string globals to emit at top of module
     string_decls: [dynamic]string,
     // Struct support (no shadow map — reads directly from checked.table.funs)
@@ -1559,6 +1572,115 @@ switch_to_module :: proc(g: ^Codegen, home_package: string) {
     g.current_module_home = home_package
 }
 
+// ---------------------------------------------------------------------------
+// Parallel per-module codegen
+// ---------------------------------------------------------------------------
+//
+// Each module's functions can be codegen'd independently of every other
+// module's. Module_Task carries one module's worth of work + outputs; the
+// thread pool dispatches tasks to N worker threads, each running on its
+// own virtual.Arena allocator so per-codegen allocations don't contend.
+//
+// Workers run a stripped-down Codegen with the same read-only state as the
+// main thread (checked, target settings, registered struct types) but
+// private mutable state (tmp_pool, all_vars, string_decls, etc.). After
+// pool_finish, the main thread copies each task's outputs into main_g and
+// continues with the sequential @main + .ll write phases.
+
+Module_Task :: struct {
+    // Inputs — set by the main thread before spawn
+    main_g:      ^Codegen,
+    checked:     ^Checked_Program,
+    module_name: string,
+    fn_names:    []string,
+    web:         bool,
+    shared_mode: bool,
+
+    // Per-worker arena. Outlives the worker proc so the main thread can
+    // read task.out / string_decls / overflow_intrinsics in arena memory.
+    // Destroyed when generate_program is fully done (or just left to be
+    // reclaimed at process exit — Mara's overall arena does the same).
+    arena:       virtual.Arena,
+
+    // Outputs — populated by the worker proc
+    out:                 strings.Builder,
+    string_literals:     map[string]string,
+    string_decls:        [dynamic]string,
+    string_counter:      int,
+    overflow_intrinsics: map[string]bool,
+    imports:             map[string]bool,
+}
+
+// Worker entry point. Sets up an isolated arena allocator, builds a local
+// Codegen with the right read-only state copied from main_g, and emits
+// every function assigned to this task.
+@(private="file")
+module_codegen_worker :: proc(t: thread.Task) {
+    task := cast(^Module_Task)t.data
+
+    // Each worker gets its own arena. Allocations (string interning,
+    // tmp-pool buffers, all_vars maps, AST clone bookkeeping, etc.) all
+    // land here. Outputs we want to survive into the main thread are
+    // built directly in this arena; they remain valid as long as the
+    // arena does, which is the lifetime of generate_program.
+    _ = virtual.arena_init_growing(&task.arena)
+    arena_alloc := virtual.arena_allocator(&task.arena)
+    context.allocator = arena_alloc
+    context.temp_allocator = arena_alloc
+
+    local: Codegen
+    init_worker_codegen(&local, task)
+
+    // Emit this module's functions. switch_to_module + flush handle the
+    // g.out buffer swap so emit_target routes correctly.
+    switch_to_module(&local, task.module_name)
+    for fn_name in task.fn_names {
+        cf, cf_ok := task.checked.functions[fn_name]
+        if !cf_ok { continue }
+        gen_scope_def(&local, &cf)
+    }
+    flush_current_module(&local)
+
+    // Surface the per-module state into the task struct so the main
+    // thread can pick it up after pool_finish.
+    if buf, ok := local.module_outs[task.module_name]; ok {
+        task.out = buf
+    }
+    task.string_literals     = local.string_literals
+    task.string_decls        = local.string_decls
+    task.string_counter      = local.string_counter
+    task.overflow_intrinsics = local.overflow_intrinsics
+}
+
+// Build a Codegen suitable for one worker. Read-only fields (checked,
+// target flags, arena_*_name, registered struct decls) come straight from
+// main_g. Mutable per-function state (tmp_pool, all_vars, …) starts empty
+// and lives in the worker's arena.
+@(private="file")
+init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
+    g.checked            = task.checked
+    g.web                = task.web
+    g.shared             = task.shared_mode
+    g.context_enabled    = task.main_g.context_enabled
+    g.arena_alloc_name   = task.main_g.arena_alloc_name
+    g.arena_mark_name    = task.main_g.arena_mark_name
+    g.arena_reset_name   = task.main_g.arena_reset_name
+    g.arena_new_name     = task.main_g.arena_new_name
+    g.arena_alloc_has_debug = task.main_g.arena_alloc_has_debug
+
+    // Per-worker string-name prefix so this task's `@.str.N` references
+    // can never collide with the main thread's (used by @main emission)
+    // or with any other worker's. Sanitize the module name so it's a
+    // legal LLVM identifier component.
+    safe, _ := strings.replace_all(task.module_name, ".", "_")
+    g.string_name_prefix = strings.concatenate({safe, "_"})
+
+    // Struct decls live on main_g; workers reach into g.checked.* for
+    // type metadata they need. We deliberately do NOT copy struct_decls
+    // here — the .ll-write phase uses main_g.struct_decls as the shared
+    // type-definition block in every TU's prelude.
+}
+
 // Capture g.out's current state back to its module slot. Call once after the
 // last gen_scope_def in a phase so the final assembly step sees the latest
 // buffer state.
@@ -1673,7 +1795,11 @@ compute_module_imports :: proc(g: ^Codegen, main_package, main_extras_ir: string
         for name in referenced {
             if name in defined { continue }
             if strings.has_prefix(name, "llvm.") { continue }
-            if strings.has_prefix(name, ".str.") { continue }
+            // String globals: `.str.N` (main-thread namespace) or
+            // `.<module>_str.N` (per-worker namespace). All start with '.'
+            // and live in the local TU's `private` linkage block; never
+            // imports.
+            if len(name) > 0 && name[0] == '.' { continue }
             if skip_libc(name) { continue }
             imports[name] = true
         }
@@ -2104,7 +2230,16 @@ get_string_literal :: proc(g: ^Codegen, s: string) -> (global_name: string, byte
         return name, len(s) + 1 // +1 for null terminator
     }
     g.string_counter += 1
-    name := fmt.tprintf("@.str.%d", g.string_counter)
+    // Per-worker string-name prefix lets each parallel codegen invent its
+    // own @.str.<N> namespace without coordinating with the others. The
+    // main thread uses an empty prefix so existing behaviour and tests
+    // see `@.str.N` unchanged.
+    name: string
+    if g.string_name_prefix == "" {
+        name = fmt.tprintf("@.str.%d", g.string_counter)
+    } else {
+        name = fmt.tprintf("@.%sstr.%d", g.string_name_prefix, g.string_counter)
+    }
     g.string_literals[s] = name
 
     // Escape the string for LLVM IR
@@ -3030,24 +3165,17 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         declared_fns[fn_name] = true
     }
 
-    // Phase 1: Emit non-main function definitions (preserving AST order).
-    // Each function's IR is routed to its home_package's per-module buffer.
-    // Functions without a home_package (compiler-synthesized, generic
-    // templates not yet associated with a module) fall back to the main
-    // package so the linker sees them in exactly one TU.
+    // Phase 1: Partition every non-main function (including monomorphized
+    // generics) by home_package. Each partition becomes one parallel task.
+    fns_by_module: map[string][dynamic]string
     for fn_name in checked.function_order {
         if fn_name == "main" { continue }
-        if cf, cf_ok := checked.functions[fn_name]; cf_ok {
-            home := cf.home_package if cf.home_package != "" else checked.main_package
-            switch_to_module(&g, home)
-            gen_scope_def(&g, &cf)
-        }
+        cf, cf_ok := checked.functions[fn_name]
+        if !cf_ok { continue }
+        home := cf.home_package if cf.home_package != "" else checked.main_package
+        if home not_in fns_by_module { fns_by_module[home] = make([dynamic]string) }
+        append(&fns_by_module[home], fn_name)
     }
-
-    // Phase 1.5: Emit monomorphized generic function definitions.
-    // These have mangled names like "swap__int" and are stored in checked.functions
-    // but don't have AST nodes in the program. Sort by name so the emission
-    // order is reproducible (map iteration is hash-seeded otherwise).
     mono_names: [dynamic]string
     defer delete(mono_names)
     for fn_name in checked.functions {
@@ -3059,11 +3187,58 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     for fn_name in mono_names {
         cf := checked.functions[fn_name]
         home := cf.home_package if cf.home_package != "" else checked.main_package
-        switch_to_module(&g, home)
-        gen_scope_def(&g, &cf)
+        if home not_in fns_by_module { fns_by_module[home] = make([dynamic]string) }
+        append(&fns_by_module[home], fn_name)
     }
 
-    flush_current_module(&g)
+    // Build tasks in a deterministic order so module_order ends up the
+    // same regardless of how the pool schedules workers. Sort by module
+    // name (matches the byte-level layout previous single-threaded runs
+    // produced, modulo AST-order vs alphabetical — close enough for
+    // reproducibility and clang-friendly).
+    module_names: [dynamic]string
+    defer delete(module_names)
+    for k in fns_by_module { append(&module_names, k) }
+    slice.sort(module_names[:])
+
+    tasks: [dynamic]^Module_Task
+    defer delete(tasks)
+    for module_name in module_names {
+        task := new(Module_Task)
+        task.main_g      = &g
+        task.checked     = checked
+        task.module_name = module_name
+        task.fn_names    = fns_by_module[module_name][:]
+        task.web         = web
+        task.shared_mode = shared
+        append(&tasks, task)
+    }
+
+    // Spawn worker pool sized to the host's cores. Each worker pops one
+    // module task at a time from the queue; tasks are independent so the
+    // slowest single module pace-sets total codegen time.
+    if len(tasks) > 0 {
+        pool: thread.Pool
+        num_workers := os_old.processor_core_count()
+        if num_workers < 1 { num_workers = 1 }
+        if num_workers > len(tasks) { num_workers = len(tasks) }
+        thread.pool_init(&pool, context.allocator, num_workers)
+        defer thread.pool_destroy(&pool)
+        thread.pool_start(&pool)
+        for t in tasks {
+            thread.pool_add_task(&pool, context.allocator, module_codegen_worker, rawptr(t))
+        }
+        thread.pool_finish(&pool)
+    }
+
+    // Collect each worker's output into main_g. module_outs[name] gets the
+    // worker's IR buffer; the per-task string_decls / intrinsics are kept
+    // on the task struct itself and read at .ll-write time.
+    for t in tasks {
+        g.module_outs[t.module_name] = t.out
+        append(&g.module_order, t.module_name)
+    }
+    g.module_tasks = tasks[:]
 
     // (Phase 1.6 — compute imports — runs after Phase 2 below so the @main
     // body in main_builder is scanned too.)
@@ -3272,9 +3447,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         dump_module_imports(&g)
     }
 
-    // Pre-build the intrinsic + foreign declare blocks once; they're
-    // identical across every per-module .ll file.
-    intrinsic_declares := build_intrinsic_declares(&g)
+    // Pre-build the foreign declare block once; the same set is included
+    // in every per-module .ll. Intrinsic declares are computed per-module
+    // inside build_module_ll, since each TU only needs the intrinsics it
+    // actually references.
     foreign_declares := build_foreign_declares(&g, checked)
 
     // Walk every module's emitted IR for `define ... @name(args) {` lines
@@ -3296,13 +3472,22 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         return nil, false
     }
 
+    // Build a quick name → task lookup so each per-module .ll write can
+    // find its own string_decls / overflow_intrinsics blob.
+    task_by_module: map[string]^Module_Task
+    defer delete(task_by_module)
+    for t in g.module_tasks {
+        task_by_module[t.module_name] = t
+    }
+
     g.module_ll_paths = make([dynamic]string)
     for module_name in g.module_order {
         is_main_tu := module_name == checked.main_package
         content := build_module_ll(&g, checked, module_name, is_main_tu, web,
                                     fail_helpers_ir, main_builder_str,
-                                    intrinsic_declares, foreign_declares,
-                                    fn_declares)
+                                    foreign_declares,
+                                    fn_declares,
+                                    task_by_module[module_name])
         path := module_ll_path(build_dir, module_name)
         werr := os.write_entire_file(path, transmute([]u8)content)
         if werr != nil {
@@ -3324,8 +3509,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
                         module_name: string, is_main_tu: bool, web: bool,
                         fail_helpers_ir, main_builder_str,
-                        intrinsic_declares, foreign_declares: string,
-                        fn_declares: map[string]string) -> string {
+                        foreign_declares: string,
+                        fn_declares: map[string]string,
+                        module_task: ^Module_Task) -> string {
     b: strings.Builder
     strings.builder_init_len_cap(&b, 0, 1024 * 1024)
 
@@ -3354,12 +3540,25 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     if len(g.struct_decls) > 0 { strings.write_byte(&b, '\n') }
 
     // String literal globals — private linkage means no link collision
-    // between TUs that both define `@.str.0`; each owns its own.
-    for decl in g.string_decls {
-        strings.write_string(&b, decl)
-        strings.write_byte(&b, '\n')
+    // between TUs. Per-module workers contribute their own @.<module>_str.N
+    // entries; the main TU also folds in main_g.string_decls (used by
+    // @main emission and the fail-helper format strings).
+    wrote_any_string := false
+    if module_task != nil {
+        for decl in module_task.string_decls {
+            strings.write_string(&b, decl)
+            strings.write_byte(&b, '\n')
+            wrote_any_string = true
+        }
     }
-    if len(g.string_decls) > 0 { strings.write_byte(&b, '\n') }
+    if is_main_tu {
+        for decl in g.string_decls {
+            strings.write_string(&b, decl)
+            strings.write_byte(&b, '\n')
+            wrote_any_string = true
+        }
+    }
+    if wrote_any_string { strings.write_byte(&b, '\n') }
 
     // Context globals: main TU defines, others declare external.
     strings.write_string(&b, "; Context system\n")
@@ -3372,6 +3571,9 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     }
 
     // libc + intrinsic + foreign declares — every TU declares regardless.
+    // Intrinsics are per-module (only what this TU actually uses);
+    // foreign symbols are program-wide so the same block is included
+    // in every TU.
     strings.write_string(&b, "; External declarations\n")
     strings.write_string(&b, "declare i32 @printf(ptr, ...)\n")
     strings.write_string(&b, "declare void @exit(i32)\n")
@@ -3380,7 +3582,29 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     } else {
         strings.write_string(&b, "declare i64 @strlen(ptr)\n")
     }
-    strings.write_string(&b, intrinsic_declares)
+    {
+        // Union of per-module intrinsics plus main_g's (used by @main and
+        // fail helpers in the main TU).
+        used: map[string]bool
+        if module_task != nil {
+            for k in module_task.overflow_intrinsics { used[k] = true }
+        }
+        if is_main_tu {
+            for k in g.overflow_intrinsics { used[k] = true }
+        }
+        intr_names: [dynamic]string
+        defer delete(intr_names)
+        for k in used { append(&intr_names, k) }
+        slice.sort(intr_names[:])
+        for name in intr_names {
+            dot_idx := 0
+            for i := len(name) - 1; i >= 0; i -= 1 {
+                if name[i] == '.' { dot_idx = i; break }
+            }
+            it := name[dot_idx+1:]
+            strings.write_string(&b, strings.concatenate({"declare { ", it, ", i1 } @", name, "(", it, ", ", it, ")\n"}))
+        }
+    }
     strings.write_string(&b, foreign_declares)
     strings.write_byte(&b, '\n')
 
