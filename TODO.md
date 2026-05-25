@@ -28,18 +28,4 @@ Can we drop fn from function pointers?
 
 Storage buffers as a type? Can that help out the depth analysis?
 
-Type checker changes to enable threaded codegen.
-
 Language features that enable less IR generation. Functional stuff?
-
-
-
-Ownership (easy): add a home_package: string to Checked_Scope (and the analogous spots for types, unions, etc.). The type checker already knows this during resolution — it's set when make_flat_name(prefix, name) runs. Just persist it instead of throwing it away. Same shape as the home_package already on Type_Scope for generic templates.
-
-Imports (slightly harder): for each module, the set of symbols it references that aren't in it. Cleanest to compute this from the codegen IR string itself rather than upfront — every time the codegen calls mara_fn_name(g, fn_name) to spell a function reference, you check home_package(fn_name) == current_module and route to either "owned by me" or "extern needed". Collect those into a per-module import set.
-
-Once both exist, the parallel build is basically:
-
-Loop over modules
-For each, emit: extern declares from imports + struct types referenced + my own function defs
-One .ll per module → spawn N clangs → link

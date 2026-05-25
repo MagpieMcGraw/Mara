@@ -116,7 +116,7 @@ game_events :: fun(game: ^Megastruct) {
 		keyboard.pressed[S]		do game.player.y += 50
 		keyboard.pressed[D] 	do game.player.x += 50
 		keyboard.pressed[P]		do print("Printing!")
-		keyboard.pressed[T]		do print("T T Testing!")
+		keyboard.pressed[T]		do print("Testing!")
 		keyboard.pressed[Escape]
 			print(quit_msg)
 			game.running = false
@@ -147,10 +147,11 @@ game_run :: fun(memory: ^[]byte) -> bool {
 
 	tally_up(&timer.frame, &timer.fixed)
 	for one_step(&timer.fixed) do game_update(timer.fixed.step)
-	use_fps := if game.events.window_in_focus do game.fps else 2.0
-	sleep(timer.work, use_fps)
 
 	game_draw(&game)
+
+	use_fps := if game.events.window_in_focus do game.fps else 2.0
+	sleep(timer.work, use_fps)
 
 	if not game.running do game_end(game)
 	return game.running

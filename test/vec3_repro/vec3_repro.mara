@@ -1,0 +1,9 @@
+module vec3_repro
+use mara.math
+Foo :: struct {
+    bar: Vec3 = Vec3{1.0, 2.0, 3.0}
+}
+main :: fun() -> i64 {
+    f : Foo
+    return 0
+}

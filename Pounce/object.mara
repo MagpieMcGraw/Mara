@@ -20,7 +20,7 @@ Object :: struct {
 }
 
 obj_get_directions :: fun(dir: Quat) -> (fwd, up, right : Vec3) {
-	rot_mx := mat4_from_quaternion(dir)
+	rot_mx := mat4_from_quat(dir)
 	fwd.xyz = rot_mx[2].xyz
 	up.xyz = rot_mx[1].xyz
 	right.xyz = rot_mx[0].xyz
