@@ -1397,19 +1397,24 @@ resolve_byte_target :: proc(g: ^Codegen, expr: Expr, span: Span) -> (data_ptr: s
 // time when both sides are known, runtime otherwise) and returns the GEP
 // result. All three byte-buffer entry points (view, read, write) funnel
 // through this helper. `offset_expr` may be nil (treated as 0).
+//
+// offset is normalised to slice_layout.len_ir so the bounds check and the
+// GEP both operate at the same width as cap_val (loaded at slice header
+// width post-migration). Conversion is explicit at the indexing primitive,
+// not a hidden widen elsewhere.
 emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, size: int, label: string, span: Span) -> (elem_ptr: string, ok: bool) {
     data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span)
     if !resolved { return "", false }
 
     offset := "0"
     if offset_expr != nil {
-        offset_raw := gen_expr(g, offset_expr)
-        offset = ensure_i64(g, offset_raw, offset_expr)
+        offset_raw := gen_expr(g, offset_expr, slice_layout.len_ir)
+        offset = ensure_index_width(g, offset_raw, offset_expr)
     }
     emit_byte_size_bounds_check(g, cap_val, offset, size, label)
 
     elem_ptr = fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", elem_ptr, data_ptr, offset)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", elem_ptr, data_ptr, slice_layout.len_ir, offset)
     return elem_ptr, true
 }
 
@@ -1424,20 +1429,24 @@ gen_byte_view_address :: proc(g: ^Codegen, idx: ^Expr_Index, target_size: int) -
     return elem_ptr
 }
 
+// Bounds check for byte-buffer access at offset [low, low+size). Operates
+// at slice_layout.len_ir — caller has already normalised low and cap_val
+// to that width via emit_byte_offset_ptr / resolve_byte_target.
 emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string) {
+    w := slice_layout.len_ir
     end_offset := fresh_tmp(g)
-    emit(g, "  %s = add i64 %s, %d", end_offset, low, size)
+    emit(g, "  %s = add %s %s, %d", end_offset, w, low, size)
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp ugt i64 %s, %s", cmp, end_offset, cap_val)
+    emit(g, "  %s = icmp ugt %s %s, %s", cmp, w, end_offset, cap_val)
     emit_cond_br(g, cmp, err_lbl, ok_lbl)
     emit_label(g, err_lbl)
-    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", label, size)
+    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%d + %d > capacity %%d\n", label, size)
     err_name, err_len := get_string_literal(g, err_msg)
     err_ptr := fresh_tmp(g)
     emit_string_gep(g, err_ptr, err_len, err_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s, i64 %s)", err_ptr, low, cap_val)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", err_ptr, w, low, w, cap_val)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, ok_lbl)
