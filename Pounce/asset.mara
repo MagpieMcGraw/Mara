@@ -3,19 +3,19 @@ module asset
 use mara.string
 
 Texture :: struct {
-    name:  String,
+    name:  str,
     uv:    [4]f32,  // scale_x, scale_y, offset_x, offset_y
     layer: u32,     // texture array layer
 }
 
 Mesh :: struct {
-    name:  String,
+    name:  str,
     index: i64,
 }
 
 Font :: struct {
     w, h : i32,
-    name: String,
+    name: str,
     layer: u32,
     offset_x, offset_y: i32,  // Position within atlas layer
 	//info: stbtt.fontinfo,

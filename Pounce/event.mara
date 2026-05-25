@@ -16,7 +16,7 @@ Mouse :: struct {
 
 Dropfile :: struct {
     was_dropped: bool
-    name: String
+    name: str
 }
 
 Event_State :: struct {
