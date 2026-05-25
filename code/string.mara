@@ -1,7 +1,5 @@
 module mara.string
 
-use mara.os
-
 str :: type [..128]utf8
 cstr :: type [..128, 0]utf8
 cstring :: distinct ^utf8 // converts from cstr
@@ -9,15 +7,10 @@ cstring :: distinct ^utf8 // converts from cstr
 overload + add
 add :: dispatch {
 	add_str
-	add_cstr
 }
 
 // Append all elements from a slice in place.
 add_str :: fun(dst: ^str, src: str) {
 	dst[dst.len:] = src
 	dst.len += src.len
-}
-
-add_cstr :: fun(dst: ^str, src: ^byte) {
-	dst + os.read_cstring(dst.cap, src)
 }

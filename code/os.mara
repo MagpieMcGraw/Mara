@@ -1,5 +1,7 @@
 module mara.os
 
+use mara.string
+
 // DANGER BELOW
 read_cstring :: fun(cap: i64, src: ^byte) -> [, 0]utf8 {
 	cstring : [, 0]utf8 = slice_from_ptr(src, cap)

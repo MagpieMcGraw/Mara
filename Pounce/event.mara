@@ -1,5 +1,6 @@
 module event
 
+use mara.os
 use mara.sdl
 use mara.string
 
@@ -70,7 +71,7 @@ process :: fun(events: ^Event_State) {
 
         DropFile
             events.dropfile.was_dropped = true
-            &events.dropfile.name + e.data
+            &events.dropfile.name + read_cstring(128, e.data)
         else
         	print(e.tag)
         }
