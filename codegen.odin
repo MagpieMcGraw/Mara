@@ -2633,7 +2633,30 @@ elem_byte_size :: proc(elem_type: string, checked: ^Checked_Program = nil) -> in
             return cap * elem_byte_size(elem, checked)
         }
     }
+    // Partial-array IR shape: `{ i32, i32, ptr, [N x T] }`. The first three
+    // slots are the slice header (size = slice_header_bytes); the trailing
+    // [N x T] is the inline storage. Without this branch, the type falls
+    // through to ptr_size and a struct holding such a field is sized as if
+    // the field were 8 bytes — undersized memsets clobber the storage and
+    // leave field headers (ptr/cap) zero. Bit me on String fields.
+    if strings.has_prefix(elem_type, PARTIAL_ARRAY_HEADER_PREFIX) {
+        cap, elem, ok := parse_partial_array_ir_type(elem_type)
+        if ok {
+            return slice_header_bytes + cap * elem_byte_size(elem, checked)
+        }
+    }
     return ptr_size // default for struct pointers, etc.
+}
+
+// Parse `{ i32, i32, ptr, [N x T] }` (a partial-array IR type) into N and T.
+// Returns ok=false for any other shape, including bare slice headers.
+parse_partial_array_ir_type :: proc(ir: string) -> (cap: int, elem: string, ok: bool) {
+    if !strings.has_prefix(ir, PARTIAL_ARRAY_HEADER_PREFIX) { return 0, "", false }
+    rest := strings.trim_space(ir[len(PARTIAL_ARRAY_HEADER_PREFIX):])
+    // rest now starts with `[N x T] }`; drop the trailing brace before parsing.
+    end := strings.last_index_byte(rest, '}')
+    if end < 0 { return 0, "", false }
+    return parse_array_ir_type(strings.trim_space(rest[:end]))
 }
 
 // Alignment of an LLVM type (matches LLVM's default data layout)
@@ -2675,6 +2698,16 @@ elem_alignment :: proc(elem_type: string, checked: ^Checked_Program = nil) -> in
         _, elem, arr_ok := parse_array_ir_type(elem_type)
         if arr_ok {
             return elem_alignment(elem, checked)
+        }
+    }
+    // Partial-array IR: alignment is max(slice header align, inner elem align).
+    if strings.has_prefix(elem_type, PARTIAL_ARRAY_HEADER_PREFIX) {
+        _, elem, ok := parse_partial_array_ir_type(elem_type)
+        if ok {
+            a := slice_header_align
+            ea := elem_alignment(elem, checked)
+            if ea > a { a = ea }
+            return a
         }
     }
     return ptr_align

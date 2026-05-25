@@ -1716,6 +1716,31 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                     emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, len_i32, data_ptr)
                     printed = true
                 }
+            } else if fa, fa_ok := arg_expr.(^Expr_Field_Access); fa_ok {
+                // Field access yielding a utf8 slice or partial array
+                // (e.g. `print(h.name)` where name: String). The address
+                // chain bottoms out at .Slice for both shapes, so the same
+                // header-relative %.*s load works. Without this branch the
+                // outer `if printed` falls through to nothing and the call
+                // emits just a newline.
+                gen_field_access(g, fa)
+                if sv, sv_ok := claim_field_slice(g); sv_ok && sv.is_utf8 {
+                    data_gep := fresh_tmp(g)
+                    emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
+                    data_ptr := fresh_tmp(g)
+                    emit_load_into(g, data_ptr, "ptr", data_gep)
+                    len_gep := fresh_tmp(g)
+                    emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
+                    len_i64 := fresh_tmp(g)
+                    emit_typed_load_len(g, len_i64, len_gep)
+                    len_i32 := fresh_tmp(g)
+                    emit(g, "  %s = trunc i64 %s to i32", len_i32, len_i64)
+                    fmt_name, fmt_len := get_string_literal(g, "%.*s")
+                    fmt_ptr := fresh_tmp(g)
+                    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, len_i32, data_ptr)
+                    printed = true
+                }
             } else if _, str_ok := arg_expr.(^Expr_String); str_ok {
                 // Bare string literal in print — use old ptr path
                 val := gen_expr(g, arg_expr)
