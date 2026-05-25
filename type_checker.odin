@@ -1676,7 +1676,6 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             return Type_Error{}
         case "f64":    return Type_F64{}
         case "bool":   return Type_Bool{}
-        case "cstring": return Type_CString{}
         case "c8":     return Type_C8{}
         case "utf8":   return Type_Utf8{}
         case "byte":   return Type_Byte{}
@@ -2903,6 +2902,25 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
 // Type comparison
 // ---------------------------------------------------------------------------
 
+// Recognize the cstring type — either the legacy built-in (Type_CString,
+// no longer produced from source after the keyword removal but retained
+// for transitional safety) or the stdlib definition
+// `cstring :: distinct ^utf8`. The latter is a nominal Type_Distinct
+// whose base unwraps to `^Type_Ptr{elem: Type_Utf8}`.
+//
+// Conversion rule lives in the matching `case` arms below — utf8 storage
+// with a sentinel coerces to a cstring receiver via data-pointer
+// extraction in codegen. Documented in mara.string's `cstring` decl.
+is_cstring :: proc(t: Type) -> bool {
+    if _, ok := t.(Type_CString); ok { return true }
+    if dt, ok := t.(^Type_Distinct); ok && !dt.is_alias {
+        if pt, pt_ok := dt.base_type.(^Type_Ptr); pt_ok {
+            if _, utf8_ok := pt.elem.(Type_Utf8); utf8_ok { return true }
+        }
+    }
+    return false
+}
+
 types_equal :: proc(a: Type, b: Type) -> bool {
     // nil return type (void) — only matches itself
     if a == nil && b == nil { return true }
@@ -2973,11 +2991,10 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         _, ok := b.(Type_Bool)
         return ok
     case Type_CString:
-        if _, ok := b.(Type_CString); ok { return true }
-        // cstring accepts any utf8 storage as long as the source has a
-        // trailing 0 (sentinel). Covers `c_func("literal")` after the
-        // literal-type change — literals are now `[..N, 0]utf8` (partial
-        // sentinel array) — as well as legacy fixed-array sentinel forms.
+        // Legacy built-in path (kept while Type_CString might still appear
+        // in some legacy site); the equivalent rule for the stdlib
+        // distinct `cstring` lives at the top of types_equal below.
+        if is_cstring(b) { return true }
         if fa, ok := b.(^Type_Fixed_Array); ok {
             if _, utf8_ok := fa.elem.(Type_Utf8); utf8_ok && fa.has_sentinel { return true }
         }
@@ -3134,6 +3151,22 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // types reach this case. Match strictly by name.
         if vb, ok := b.(^Type_Distinct); ok {
             return va.name == vb.name
+        }
+        // Stdlib `cstring :: distinct ^utf8` is the FFI boundary type; it
+        // accepts utf8 storage with a sentinel via data-pointer extraction
+        // in codegen. Same rule as the legacy Type_CString case above.
+        // Comment near the decl in code/string.mara points here.
+        if is_cstring(va) {
+            if _, ok := b.(Type_CString); ok { return true }
+            if fa, ok := b.(^Type_Fixed_Array); ok {
+                if _, utf8_ok := fa.elem.(Type_Utf8); utf8_ok && fa.has_sentinel { return true }
+            }
+            if pa, ok := b.(^Type_Partial_Array); ok {
+                if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok && pa.has_sentinel { return true }
+            }
+            if sl, ok := b.(^Type_Slice); ok {
+                if _, utf8_ok := sl.elem.(Type_Utf8); utf8_ok && sl.has_sentinel { return true }
+            }
         }
         return false
     case Type_Const_Int:

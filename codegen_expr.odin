@@ -1691,7 +1691,7 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             if pt, ok := t.(^Type_Ptr); ok {
                 if _, is_byte := pt.elem.(Type_Byte); is_byte { spec = "%s" }
             }
-            if _, is_cs := t.(Type_CString); is_cs { spec = "%s" }
+            if is_cstring(t) { spec = "%s" }
             fmt_name, fmt_len := get_string_literal(g, spec)
             fmt_ptr := fresh_tmp(g)
             emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
@@ -2082,9 +2082,7 @@ is_c8_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
 
 is_string_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if _, ok := expr.(^Expr_String); ok { return true }
-    t := expr_type(expr)
-    _, is_str := t.(Type_CString)
-    return is_str
+    return is_cstring(expr_type(expr))
 }
 
 // Check if an expression is a utf8 array variable (string stored as [N]utf8),
@@ -2148,7 +2146,7 @@ is_ptr_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
         if cs, cs_ok := g.checked.functions[call_resolved_name(call)]; cs_ok {
             if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
                 if _, is_ptr := cs.return_type.(^Type_Ptr); is_ptr { return true }
-                if _, is_cs := cs.return_type.(Type_CString); is_cs { return true }
+                if is_cstring(cs.return_type) { return true }
             }
         }
     }
