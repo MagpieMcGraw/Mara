@@ -436,6 +436,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     dst_elem_type  := h.elem_type
     dst_is_utf8    := h.is_utf8
     dst_has_sentinel := h.has_sentinel
+    dst_sentinel_val := h.sentinel_value
     // Pre-refactor bounds rule (preserved literally): fixed arrays bound
     // against user-visible capacity (excludes the sentinel slot), slices
     // and partial arrays bound against the raw header cap (which includes
@@ -621,10 +622,10 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         emit_label(g, room_ok_lbl)
         sent_gep := fresh_tmp(g)
         emit_elem_gep(g, sent_gep, dst_elem_type, dst_data_ptr, high)
-        // Sentinel value is 0 across all currently-supported sentinel types
-        // (utf8 cstrings). If non-zero sentinels enter the language, thread
-        // the value through Slice_Var / Array_Var.
-        emit_store(g, dst_elem_type, "0", sent_gep)
+        // GEP strides by elem type (so `[10, -1]i64` lands at the correct
+        // byte offset) and the store is element-typed too, with the
+        // declared sentinel value rather than a hardcoded 0.
+        emit_store(g, dst_elem_type, fmt.tprintf("%d", dst_sentinel_val), sent_gep)
         emit_br(g, room_skip_lbl)
         emit_label(g, room_skip_lbl)
     }
