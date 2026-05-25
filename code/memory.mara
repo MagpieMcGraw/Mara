@@ -23,85 +23,86 @@ oom_string :: "
 
 	Failed allocation: %, % bytes in %
 	"
+Block :: type [16]byte
 
-Arena_Basic :: class(cap: i64) {
-	base: []byte = sys_alloc(cap)
-	capacity: i64 = cap
-	offset: i64 = 0
-	current_mark: i64 = -1
+// Arena_Basic :: class(cap: i64) {
+// 	base: []Block = sys_alloc(cap)
+// 	capacity: i32 = i32(cap / 16)
+// 	offset: i32 = 0
+// 	current_mark: i32 = -1
 
-	mark :: fun(a: ^Self) {
-		prev := a.current_mark
-		// Align to 16 — the backlink store is an unaligned i64 write otherwise,
-		// and subsequent allocs need a 16-aligned base for typed views.
-		off := (a.offset + 15) & -16
+// 	mark :: fun(a: ^Self) {
+// 		prev := a.current_mark
+// 		// Align to 16 — the backlink store is an unaligned i64 write otherwise,
+// 		// and subsequent allocs need a 16-aligned base for typed views.
+// 		off := (a.offset + 15) & -16
 
-		a.base[off : off+8] = prev
-		a.current_mark = off
-		a.offset = off + 8
-	}
+// 		a.base[off] = prev
+// 		a.current_mark = off
+// 		a.offset = off
+// 	}
 
-	alloc :: fun(
-		a: ^Self,
-		size: i64,
-		name: ^byte = #caller_name,
-		span: ^byte = #caller_span) -> []byte
-	{
-		off := (a.offset + 15) & -16
-		end := off + size
+// 	alloc :: fun(
+// 		a: ^Self,
+// 		size: i32,
+// 		name: ^byte = #caller_name,
+// 		span: ^byte = #caller_span) -> []Block
+// 	{
+// 		off := (a.offset + 15) & -16
+// 		end := off + size
 
-		if end > a.capacity {
-			dump(a, size, name, span)
-			crash()
-		}
+// 		if end > a.capacity {
+// 			dump(a, size, name, span)
+// 			crash()
+// 		}
 
-		result := a.base[off : end]
-		a.offset = end
-		return result
-	}
+// 		result := a.base[off : end]
+// 		a.offset = end
+// 		return result
+// 	}
 
-	reset :: fun(a: ^Self) {
-		cm := a.current_mark
+// 	reset :: fun(a: ^Self) {
+// 		cm := a.current_mark
 
-		prev : i64 = a.base[cm : cm+8]
+// 		prev : i32 = a.base[cm][0]
 
-		a.offset = cm
-		a.current_mark = prev
-	}
+// 		a.offset = cm
+// 		a.current_mark = prev
+// 	}
 
-	dump :: fun(
-		a: ^Self,
-		failed_size: i64,
-		failed_name: ^byte,
-		failed_span: ^byte)
-	{
-		print(oom_string,
-			a.capacity, a.offset, a.capacity - a.offset,
-			failed_name, failed_size, failed_span)
-	}
-}
+// 	dump :: fun(
+// 		a: ^Self,
+// 		failed_size: i32,
+// 		failed_name: ^byte,
+// 		failed_span: ^byte)
+// 	{
+// 		print(oom_string,
+// 			a.capacity, a.offset, a.capacity - a.offset,
+// 			failed_name, failed_size, failed_span)
+// 	}
+// }
 
-Arena_Debug :: class(cap: i64) {
-	base: []byte = sys_alloc(cap)
-	capacity: i64 = cap
-	offset: i64 = 0
-	current_mark: i64 = -1
-	last_alloc: i64
+Arena_Debug :: class(cap: i32) {
+	base: []byte = sys_alloc(i64(cap))
+	capacity: i32 = cap
+	offset: i32 = 0
+	current_mark: i32 = -1
+	last_alloc: i32 = -1
 
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
 		off := (a.offset + 15) & -16
 
 		a.base[off] = prev
-		a.base[off+8] = a.last_alloc
+		a.base[off + size_of(prev)] = a.last_alloc
 
 		a.current_mark = off
 		a.offset = off + 16
 	}
 
 	AllocHeader :: class{
-		prev: i64
-		size: i64
+		prev: i32
+		size: i32
 		name: ^byte
 		span: ^byte
 	}
@@ -109,7 +110,7 @@ Arena_Debug :: class(cap: i64) {
 
 	alloc :: fun(
 		a: ^Self,
-		size: i64,
+		size: i32,
 		name: ^byte = #caller_name,
 		span: ^byte = #caller_span) -> []byte
 	{
@@ -139,8 +140,8 @@ Arena_Debug :: class(cap: i64) {
 	reset :: fun(a: ^Self) {
 		cm := a.current_mark
 
-		prev : i64 = a.base[cm]
-		saved_last : i64 = a.base[cm+8]
+		prev : i32 = a.base[cm]
+		saved_last : i32 = a.base[cm + size_of(prev)]
 
 		a.offset = cm
 		a.last_alloc = saved_last
@@ -149,7 +150,7 @@ Arena_Debug :: class(cap: i64) {
 
 	dump :: fun(
 		a: ^Self,
-		failed_size: i64,
+		failed_size: i32,
 		failed_name: ^byte,
 		failed_span: ^byte)
 	{
@@ -159,7 +160,11 @@ Arena_Debug :: class(cap: i64) {
 
 		print("--- All allocations (most recent first) ---")
 		pos := a.last_alloc
-		for pos > 0 {
+		// Walk while pos is a valid offset. -1 is the sentinel (matches
+		// last_alloc's init and current_mark's convention); 0 IS a real
+		// alloc offset for the first thing in the arena, so `> 0` would
+		// silently drop it.
+		for pos >= 0 {
 			h : AllocHeader = a.base[pos]
 			print("  %, % bytes in %", h.name, h.size, h.span)
 			pos = h.prev

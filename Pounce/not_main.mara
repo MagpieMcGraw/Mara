@@ -8,6 +8,11 @@ main :: fun() -> i64 {
     // Game state lives in this block; Megastruct gets carved out at game_init.
     memory_block : [..50 * MB]byte
 
+    m1 : [49 * MB]byte
+    m2 : [48 * MB]byte
+    m3 : [47 * MB]byte
+    m4 : [46 * MB]byte
+
     running := true
     for running {
         running = game_run(&memory_block)
