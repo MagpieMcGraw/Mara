@@ -175,10 +175,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	file_read :: fun(id: File_Id, data: ^[]byte) -> bool {
 		read: u32 = 0
 		res := bool(ReadFile(id, &data[0], u32(data.cap), &read, void))
-		// ReadFile's out param is u32 (Win32 DWORD); slice .len is int
-		// (i64) per the codegen convention. Explicit cast required by
-		// the type checker — no implicit widening.
-		data.len = i64(read)
+		// ReadFile's out param is u32 (Win32 DWORD); slice .len is i32
+		// (the header's natural width). Explicit cast required — no
+		// implicit conversion in the typed codegen.
+		data.len = i32(read)
 		return res
 	}
 

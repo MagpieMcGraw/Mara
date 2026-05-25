@@ -122,15 +122,16 @@ emit_array_len :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     return out
 }
 
-// Load (or compute) the *physical* (raw) capacity as an i64 SSA value.
-// For sentinel arrays this includes the reserved sentinel slot; use
-// emit_array_cap_user to hide it from the user-facing cap.
+// Load (or compute) the *physical* (raw) capacity at the slice header's
+// natural width (slice_layout.cap_ir, i32 today). For sentinel arrays
+// this includes the reserved sentinel slot; use emit_array_cap_user to
+// hide it.
 emit_array_raw_cap :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     if handle_is_fixed(h) {
         if h.static_cap_str != "" {
             if h.has_sentinel {
                 out := fresh_tmp(g)
-                emit(g, "  %s = add i64 %s, 1", out, h.static_cap_str)
+                emit(g, "  %s = add %s %s, 1", out, slice_layout.cap_ir, h.static_cap_str)
                 return out
             }
             return h.static_cap_str
@@ -146,14 +147,8 @@ emit_array_raw_cap :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     return out
 }
 
-// User-facing capacity: raw cap with the sentinel slot hidden whenever
-// the storage has one. Both shapes (fixed and dynamic) now key off
-// has_sentinel — the bit that actually says "one slot is reserved".
-//
-// One quirk still here: a runtime-sized fixed array (VLA) returns its
-// capacity_val verbatim. Today's VLAs aren't sentinel-bearing, so the
-// subtraction would be a no-op anyway; the path is left simple. Revisit
-// if sentinel VLAs ever become a thing.
+// User-facing capacity: raw cap with the sentinel slot hidden when
+// applicable. Returns at slice header's cap width.
 emit_array_cap_user :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     if handle_is_fixed(h) {
         if h.static_cap_str != "" { return h.static_cap_str }
@@ -164,7 +159,7 @@ emit_array_cap_user :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     raw := emit_array_raw_cap(g, h)
     if !h.has_sentinel { return raw }
     out := fresh_tmp(g)
-    emit(g, "  %s = sub i64 %s, 1", out, raw)
+    emit(g, "  %s = sub %s %s, 1", out, slice_layout.cap_ir, raw)
     return out
 }
 
@@ -188,8 +183,8 @@ emit_array_print :: proc(g: ^Codegen, h: ^Array_Handle) {
     fmt_ptr := fresh_tmp(g)
     emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
     data_ptr := emit_array_data(g, h)
-    len_i64 := emit_array_len(g, h)
-    len_i32 := fresh_tmp(g)
-    emit(g, "  %s = trunc i64 %s to i32", len_i32, len_i64)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, len_i32, data_ptr)
+    // emit_array_len returns the value at the slice header's natural
+    // width (i32 today) — exactly what %.*s wants for its precision arg.
+    len_val := emit_array_len(g, h)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, len_val, data_ptr)
 }

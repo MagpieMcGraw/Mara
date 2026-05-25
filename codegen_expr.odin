@@ -1000,11 +1000,16 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         }
     }
 
-    // Built-in: slice_from_ptr(ptr, cap) -> []byte — wraps a raw pointer + capacity into a byte slice
+    // Built-in: slice_from_ptr(ptr, cap) -> []byte — wraps a raw pointer + capacity into a byte slice.
+    // cap is normalised to the slice header's width via emit_type_convert.
+    // The conversion is from the user's expression width to the header
+    // width, an explicit narrowing at this primitive's boundary.
     if e.name == "slice_from_ptr" && len(e.args) == 2 {
         ptr_val := gen_expr(g, e.args[0])
         cap_val := gen_expr(g, e.args[1])
-        return emit_build_temp_slice(g, ptr_val, cap_val, cap_val)
+        cap_ir  := expr_ir_type(g, e.args[1])
+        cap_at_width := emit_type_convert(g, cap_val, cap_ir, slice_layout.cap_ir)
+        return emit_build_temp_slice(g, ptr_val, cap_at_width, cap_at_width)
     }
 
     // Type casts: i32(x), f64(x), etc.
@@ -1706,37 +1711,52 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
         } else if is_numeric_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
             nt := get_numeric_type(g, arg_expr)
-            if nt == "float" {
-                // f32 must be extended to double for printf varargs
+            // Format spec matches the value's natural IR width — no
+            // sext/zext to a "convention" width. Mimics C varargs:
+            // printf reads whichever width the spec says.
+            is_unsigned := false
+            ft := expr_type(arg_expr)
+            if n, n_ok := ft.(Type_Numeric); n_ok {
+                is_unsigned = n.kind == .Unsigned
+            }
+            switch nt {
+            case "float":
+                // f32 → double for printf varargs (C ABI requires default-
+                // promotion for variadic float args). Not an implicit type
+                // conversion in user code — a calling-convention adapter.
                 ext := fresh_tmp(g)
                 emit(g, "  %s = fpext float %s to double", ext, val)
                 fmt_name, fmt_len := get_string_literal(g, "%g")
                 fmt_ptr := fresh_tmp(g)
                 emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
                 emit_printf_double(g, fmt_ptr, ext)
-            } else if nt == "i64" {
-                // Already i64 — pass directly to printf
-                fmt_name, fmt_len := get_string_literal(g, "%lld")
+            case "i64":
+                spec := is_unsigned ? "%llu" : "%lld"
+                fmt_name, fmt_len := get_string_literal(g, spec)
                 fmt_ptr := fresh_tmp(g)
                 emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
                 emit_printf_i64(g, fmt_ptr, val)
-            } else {
-                // Small integer: extend to i64 for printf
-                ext := fresh_tmp(g)
-                is_unsigned := false
-                ft := expr_type(arg_expr)
-                if n, n_ok := ft.(Type_Numeric); n_ok {
-                    is_unsigned = n.kind == .Unsigned
-                }
-                if is_unsigned {
-                    emit(g, "  %s = zext %s %s to i64", ext, nt, val)
-                } else {
-                    emit(g, "  %s = sext %s %s to i64", ext, nt, val)
-                }
-                fmt_name, fmt_len := get_string_literal(g, "%lld")
+            case "i32":
+                spec := is_unsigned ? "%u" : "%d"
+                fmt_name, fmt_len := get_string_literal(g, spec)
                 fmt_ptr := fresh_tmp(g)
                 emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_i64(g, fmt_ptr, ext)
+                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, val)
+            case:
+                // i8 / i16: still extend to i32 for printf's default-int
+                // varargs promotion (C calling convention; not an implicit
+                // user-code conversion).
+                ext := fresh_tmp(g)
+                if is_unsigned {
+                    emit(g, "  %s = zext %s %s to i32", ext, nt, val)
+                } else {
+                    emit(g, "  %s = sext %s %s to i32", ext, nt, val)
+                }
+                spec := is_unsigned ? "%u" : "%d"
+                fmt_name, fmt_len := get_string_literal(g, spec)
+                fmt_ptr := fresh_tmp(g)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
             }
         } else {
             val := gen_expr(g, arg_expr)

@@ -39,47 +39,27 @@ emit_slice_store :: proc(g: ^Codegen, val: string, dst: string) {
 // addressed by `field_gep`, truncating to the layout's storage type if
 // narrower than i64. The caller does the GEP and passes the result here;
 // this lets sites that reuse the gep continue to do so.
-emit_typed_store_len :: proc(g: ^Codegen, val_i64: string, field_gep: string) {
-    if slice_layout.len_ir == "i64" {
-        emit_store(g, "i64", val_i64, field_gep)
-        return
-    }
-    t := fresh_tmp(g)
-    emit(g, "  %s = trunc i64 %s to %s", t, val_i64, slice_layout.len_ir)
-    emit_store(g, slice_layout.len_ir, t, field_gep)
+// Store at the slice header's natural len/cap width. Caller must pass
+// the value already at slice_layout.len_ir / cap_ir width. Integer
+// literals are width-agnostic in IR so they pass through unchanged.
+emit_typed_store_len :: proc(g: ^Codegen, val: string, field_gep: string) {
+    emit_store(g, slice_layout.len_ir, val, field_gep)
 }
 
-emit_typed_store_cap :: proc(g: ^Codegen, val_i64: string, field_gep: string) {
-    if slice_layout.cap_ir == "i64" {
-        emit_store(g, "i64", val_i64, field_gep)
-        return
-    }
-    t := fresh_tmp(g)
-    emit(g, "  %s = trunc i64 %s to %s", t, val_i64, slice_layout.cap_ir)
-    emit_store(g, slice_layout.cap_ir, t, field_gep)
+emit_typed_store_cap :: proc(g: ^Codegen, val: string, field_gep: string) {
+    emit_store(g, slice_layout.cap_ir, val, field_gep)
 }
 
-// Load len/cap from `field_gep` into a fresh SSA name. The returned name
-// is always i64-typed (zext'd from the layout's storage type if narrower)
-// so downstream arithmetic doesn't need to know the underlying width.
-emit_typed_load_len :: proc(g: ^Codegen, result_i64: string, field_gep: string) {
-    if slice_layout.len_ir == "i64" {
-        emit_load_into(g, result_i64, "i64", field_gep)
-        return
-    }
-    raw := fresh_tmp(g)
-    emit_load_into(g, raw, slice_layout.len_ir, field_gep)
-    emit(g, "  %s = zext %s %s to i64", result_i64, slice_layout.len_ir, raw)
+// Load len/cap from `field_gep` at natural width — no zext to i64.
+// Callers operate at slice_layout.len_ir / cap_ir (today: i32). Sites
+// that genuinely need a wider arithmetic context insert an explicit
+// conversion at use rather than paying for the round-trip here.
+emit_typed_load_len :: proc(g: ^Codegen, result: string, field_gep: string) {
+    emit_load_into(g, result, slice_layout.len_ir, field_gep)
 }
 
-emit_typed_load_cap :: proc(g: ^Codegen, result_i64: string, field_gep: string) {
-    if slice_layout.cap_ir == "i64" {
-        emit_load_into(g, result_i64, "i64", field_gep)
-        return
-    }
-    raw := fresh_tmp(g)
-    emit_load_into(g, raw, slice_layout.cap_ir, field_gep)
-    emit(g, "  %s = zext %s %s to i64", result_i64, slice_layout.cap_ir, raw)
+emit_typed_load_cap :: proc(g: ^Codegen, result: string, field_gep: string) {
+    emit_load_into(g, result, slice_layout.cap_ir, field_gep)
 }
 
 // Slice args are passed by pointer-to-header — fat pointers are reference
@@ -459,8 +439,9 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         dst_name = fa.field
     }
 
-    // Compute low
-    low := gen_expr(g, sl.low)
+    // Compute low at the slice header's natural width so the bounds
+    // check and arithmetic below stay homogeneous.
+    low := gen_expr(g, sl.low, slice_layout.len_ir)
 
     // Resolve the RHS into an Array_Var (or slice).
     // Must happen before high computation to support open-ended slices [low:].
@@ -508,18 +489,23 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         codegen_fatal(g, s.span, CODE_SLICE_RHS_NAMED_ARRAY_SLICE)
     }
 
+    // All slice arithmetic in this function operates at the header's
+    // natural width — low, high, rhs_slice_len, the loop counter, and
+    // the bounds checks are all w-typed. No widening/truncating dance.
+    w := slice_layout.len_ir
+
     // Compute high — explicit or derived from RHS length for open-ended [low:]
     high: string
     if sl.high != nil {
-        high = gen_expr(g, sl.high)
+        high = gen_expr(g, sl.high, w)
     } else if rhs_is_slice {
         // Open-ended slice with slice RHS: high = low + slice.len
         high = fresh_tmp(g)
-        emit(g, "  %s = add i64 %s, %s", high, low, rhs_slice_len)
+        emit(g, "  %s = add %s %s, %s", high, w, low, rhs_slice_len)
     } else {
         // Open-ended slice with fixed array RHS: high = low + capacity
         high = fresh_tmp(g)
-        emit(g, "  %s = add i64 %s, %d", high, low, rhs_av.capacity)
+        emit(g, "  %s = add %s %s, %d", high, w, low, rhs_av.capacity)
     }
 
     // Bounds check against capacity (not current len) — we're writing, not reading.
@@ -533,14 +519,14 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     high_ok_lbl  := fresh_label(g, "slice.high.ok")
     high_err_lbl := fresh_label(g, "slice.high.err")
     high_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp sgt i64 %s, %s", high_cmp, high, dst_len)
+    emit(g, "  %s = icmp sgt %s %s, %s", high_cmp, w, high, dst_len)
     emit_cond_br(g, high_cmp, high_err_lbl, high_ok_lbl)
     emit_label(g, high_err_lbl)
-    err_msg := fmt.tprintf("runtime error: slice assignment out of bounds: high %%lld > capacity %%lld for '%s'\n", dst_name)
+    err_msg := fmt.tprintf("runtime error: slice assignment out of bounds: high %%d > capacity %%d for '%s'\n", dst_name)
     err_name, err_len := get_string_literal(g, err_msg)
     err_ptr := fresh_tmp(g)
     emit_string_gep(g, err_ptr, err_len, err_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s, i64 %s)", err_ptr, high, dst_len)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", err_ptr, w, high, w, dst_len)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, high_ok_lbl)
@@ -552,45 +538,46 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     end_lbl   := fresh_label(g, "slice.end")
 
     i_ptr := fresh_tmp(g)
-    emit_alloca(g, i_ptr, "i64")
-    emit_store(g, "i64", "0", i_ptr)
+    emit_alloca(g, i_ptr, w)
+    emit_store(g, w, "0", i_ptr)
 
     count := fresh_tmp(g)
-    emit(g, "  %s = sub i64 %s, %s", count, high, low)
+    emit(g, "  %s = sub %s %s, %s", count, w, high, low)
 
     emit_br(g, loop_lbl)
     emit_label(g, loop_lbl)
     i_cur := fresh_tmp(g)
-    emit_load_into(g, i_cur, "i64", i_ptr)
+    emit_load_into(g, i_cur, w, i_ptr)
     cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt i64 %s, %s", cmp, i_cur, count)
+    emit(g, "  %s = icmp slt %s %s, %s", cmp, w, i_cur, count)
     emit_cond_br(g, cmp, body_lbl, end_lbl)
 
     emit_label(g, body_lbl)
 
-    // Load src[i] — use flat GEP for slices, array GEP for fixed arrays
+    // Load src[i] — use flat GEP for slices, array GEP for fixed arrays.
+    // GEP index is at the slice header's width (i_cur is `w`).
     src_gep := fresh_tmp(g)
     if rhs_is_slice {
-        emit_elem_gep(g, src_gep, rhs_av.elem_type, rhs_av.alloca, i_cur)
+        emit_elem_gep(g, src_gep, rhs_av.elem_type, rhs_av.alloca, i_cur, w)
     } else {
         rhs_arr_type := array_var_type(&rhs_av)
-        emit_array_gep_var(g, src_gep, rhs_arr_type, rhs_av.alloca, i_cur)
+        emit_array_gep_var(g, src_gep, rhs_arr_type, rhs_av.alloca, i_cur, w)
     }
     src_val := fresh_tmp(g)
     emit_load_into(g, src_val, dst_elem_type, src_gep)
 
     // Store into dst[low + i]
     dst_idx := fresh_tmp(g)
-    emit(g, "  %s = add i64 %s, %s", dst_idx, low, i_cur)
+    emit(g, "  %s = add %s %s, %s", dst_idx, w, low, i_cur)
     dst_arr_type := fmt.tprintf("[%d x %s]", dst_capacity, dst_elem_type)
     dst_gep := fresh_tmp(g)
-    emit_array_gep_var(g, dst_gep, dst_arr_type, dst_data_ptr, dst_idx)
+    emit_array_gep_var(g, dst_gep, dst_arr_type, dst_data_ptr, dst_idx, w)
     emit_store(g, dst_elem_type, src_val, dst_gep)
 
     // i++
     i_next := fresh_tmp(g)
-    emit(g, "  %s = add i64 %s, 1", i_next, i_cur)
-    emit_store(g, "i64", i_next, i_ptr)
+    emit(g, "  %s = add %s %s, 1", i_next, w, i_cur)
+    emit_store(g, w, i_next, i_ptr)
     emit_br(g, loop_lbl)
 
     emit_label(g, end_lbl)
@@ -617,11 +604,11 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         room_ok_lbl  := fresh_label(g, "sentinel.ok")
         room_skip_lbl := fresh_label(g, "sentinel.skip")
         room_cmp := fresh_tmp(g)
-        emit(g, "  %s = icmp slt i64 %s, %s", room_cmp, high, phys_cap)
+        emit(g, "  %s = icmp slt %s %s, %s", room_cmp, w, high, phys_cap)
         emit_cond_br(g, room_cmp, room_ok_lbl, room_skip_lbl)
         emit_label(g, room_ok_lbl)
         sent_gep := fresh_tmp(g)
-        emit_elem_gep(g, sent_gep, dst_elem_type, dst_data_ptr, high)
+        emit_elem_gep(g, sent_gep, dst_elem_type, dst_data_ptr, high, w)
         // GEP strides by elem type (so `[10, -1]i64` lands at the correct
         // byte offset) and the store is element-typed too, with the
         // declared sentinel value rather than a hardcoded 0.

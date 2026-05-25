@@ -1457,26 +1457,24 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
 // reference types, so any path that produces the header alloca pointer can
 // also feed this — ident slice vars, slice fields, indexed slice elements.
 gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string, value: Expr, span: Span) {
+    field_ir: string
     field_idx := 0
     switch field {
-    case "len": field_idx = SLICE.len
-    case "cap": field_idx = SLICE.cap
+    case "len":
+        field_idx = SLICE.len
+        field_ir  = slice_layout.len_ir
+    case "cap":
+        field_idx = SLICE.cap
+        field_ir  = slice_layout.cap_ir
     case:
         codegen_fatal(g, span, CODE_CANNOT_ASSIGN_SLICE_FIELD_ONLY, field)
     }
     gep := fresh_tmp(g)
     emit_slice_gep(g, gep, slice_hdr_ptr, field_idx)
-    // Slice .len/.cap are i32 in storage but the codegen convention runs
-    // arithmetic at i64 (overflow headroom, consistent with the i64-wide
-    // load helpers). ensure_i64 normalises narrow sources into the
-    // convention before emit_typed_store_len truncs to the storage width.
-    // To be revisited when the i32-everywhere migration lands.
-    val := ensure_i64(g, gen_expr(g, value, "i64"), value)
-    if field == "len" {
-        emit_typed_store_len(g, val, gep)
-    } else {
-        emit_typed_store_cap(g, val, gep)
-    }
+    // Type checker enforces the value is field-width — store directly,
+    // no extend/trunc dance.
+    val := gen_expr(g, value, field_ir)
+    emit_store(g, field_ir, val, gep)
 }
 
 gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {

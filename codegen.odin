@@ -1385,9 +1385,12 @@ emit_array_gep_const :: proc(g: ^Codegen, dst, arr_type, base: string, idx: int)
     strings.write_byte(b, '\n')
 }
 
-// `  <dst> = getelementptr <arr_type>, ptr <base>, i64 0, i64 <idx>\n`
+// `  <dst> = getelementptr <arr_type>, ptr <base>, i64 0, <idx_ir> <idx>\n`
 // Variable-index array GEP — `idx` is an SSA name string, not a constant.
-emit_array_gep_var :: proc(g: ^Codegen, dst, arr_type, base, idx: string) {
+// `idx_ir` defaults to "i64" for compat with sites that haven't been
+// audited yet; new sites should pass the index's actual IR type to avoid
+// silent codegen-level widens.
+emit_array_gep_var :: proc(g: ^Codegen, dst, arr_type, base, idx: string, idx_ir: string = "i64") {
     b := emit_target(g)
     strings.write_string(b, "  ")
     strings.write_string(b, dst)
@@ -1395,16 +1398,18 @@ emit_array_gep_var :: proc(g: ^Codegen, dst, arr_type, base, idx: string) {
     strings.write_string(b, arr_type)
     strings.write_string(b, ", ptr ")
     strings.write_string(b, base)
-    strings.write_string(b, ", i64 0, i64 ")
+    strings.write_string(b, ", i64 0, ")
+    strings.write_string(b, idx_ir)
+    strings.write_byte(b, ' ')
     strings.write_string(b, idx)
     strings.write_byte(b, '\n')
 }
 
-// `  <dst> = getelementptr <elem_type>, ptr <base>, i64 <idx>\n`
+// `  <dst> = getelementptr <elem_type>, ptr <base>, <idx_ir> <idx>\n`
 // Element-step GEP for raw element pointers (slice data pointers, VLA bases).
 // One-dimensional version: no outer `i64 0` because base already points at
 // the element-typed array.
-emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx: string) {
+emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx: string, idx_ir: string = "i64") {
     b := emit_target(g)
     strings.write_string(b, "  ")
     strings.write_string(b, dst)
@@ -1412,7 +1417,9 @@ emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx: string) {
     strings.write_string(b, elem_type)
     strings.write_string(b, ", ptr ")
     strings.write_string(b, base)
-    strings.write_string(b, ", i64 ")
+    strings.write_string(b, ", ")
+    strings.write_string(b, idx_ir)
+    strings.write_byte(b, ' ')
     strings.write_string(b, idx)
     strings.write_byte(b, '\n')
 }
@@ -2388,7 +2395,7 @@ __MARA_DIVZ_FAIL     :: "@__mara_divz_fail"
 
 runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // Register format strings as deduped globals via the normal literals path.
-    fmt_bounds,   _ := get_string_literal(g, "%s runtime error: index %lld out of bounds [0, %lld) for '%s'\n")
+    fmt_bounds,   _ := get_string_literal(g, "%s runtime error: index %d out of bounds [0, %d) for '%s'\n")
     fmt_overflow, _ := get_string_literal(g, "%s runtime error: integer overflow\n")
     fmt_null,     _ := get_string_literal(g, "%s runtime error: null pointer dereference: '%s' is null\n")
     fmt_divz,     _ := get_string_literal(g, "%s runtime error: division by zero\n")
@@ -2397,17 +2404,17 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.builder_init(&b)
     strings.write_string(&b, "; Runtime fail-block helpers (hoisted)\n")
 
-    // bounds: (loc, idx, len, name)
+    // bounds: (loc, idx, len, name). idx / len at slice header width (i32).
     //
     // Default (external) linkage so per-module .ll files can reference these
     // via `declare` lines instead of duplicating the definition. Main TU
     // owns the definition; every other TU gets just the declare.
     strings.write_string(&b, "define void ")
     strings.write_string(&b, __MARA_BOUNDS_FAIL)
-    strings.write_string(&b, "(ptr %loc, i64 %idx, i64 %len, ptr %name) {\n")
+    strings.write_string(&b, "(ptr %loc, i32 %idx, i32 %len, ptr %name) {\n")
     strings.write_string(&b, strings.concatenate({
         "  call i32 (ptr, ...) @printf(ptr ", fmt_bounds,
-        ", ptr %loc, i64 %idx, i64 %len, ptr %name)\n",
+        ", ptr %loc, i32 %idx, i32 %len, ptr %name)\n",
     }))
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
@@ -2453,25 +2460,24 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     ok_label   := fresh_label(g, "bounds.ok")
     fail_label := fresh_label(g, "bounds.fail")
 
-    // Merged neg + upper into a single branch — saves a basic block,
-    // a compare, and a fail-target pair vs the old two-stage form.
+    // Both idx and len_val are at slice_layout.len_ir (i32 today) —
+    // caller guarantees by passing values from the natural-width load
+    // helpers or matching-width arithmetic.
+    w := slice_layout.len_ir
     neg_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt i64 %s, 0", neg_cmp, idx)
+    emit(g, "  %s = icmp slt %s %s, 0", neg_cmp, w, idx)
     upper_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp sge i64 %s, %s", upper_cmp, idx, len_val)
+    emit(g, "  %s = icmp sge %s %s, %s", upper_cmp, w, idx, len_val)
     combined := fresh_tmp(g)
     emit(g, "  %s = or i1 %s, %s", combined, neg_cmp, upper_cmp)
     emit_cond_br(g, combined, fail_label, ok_label)
 
-    // Fail tail: call the hoisted helper with loc + idx + len + name.
-    // The two ptr args reference deduped string globals (same loc / same
-    // variable name across sites collapse to one global each).
     emit_label(g, fail_label)
     loc := format_location(span.file, span.line, span.col)
     loc_global,  _ := get_string_literal(g, loc)
     name_global, _ := get_string_literal(g, name)
-    emit(g, "  call void %s(ptr %s, i64 %s, i64 %s, ptr %s)",
-        __MARA_BOUNDS_FAIL, loc_global, idx, len_val, name_global)
+    emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
+        __MARA_BOUNDS_FAIL, loc_global, w, idx, w, len_val, name_global)
     emit(g, "  unreachable")
 
     emit_label(g, ok_label)
@@ -3352,13 +3358,12 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         args_ptr := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", args_ptr, " = getelementptr %class.Program, ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
 
-        // Compute effective len = min(argc, 64)
-        argc_i64 := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argc_i64, " = sext i32 %argc to i64"}))
+        // Compute effective len = min(argc, 64). argc is already i32 from
+        // the main signature; slice header len is i32 too.
         argc_cmp := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argc_cmp, " = icmp slt i64 ", argc_i64, ", ", ARGS_CAP}))
+        emit_raw(&g, strings.concatenate({"  ", argc_cmp, " = icmp slt i32 %argc, ", ARGS_CAP}))
         argc_min := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argc_min, " = select i1 ", argc_cmp, ", i64 ", argc_i64, ", i64 ", ARGS_CAP}))
+        emit_raw(&g, strings.concatenate({"  ", argc_min, " = select i1 ", argc_cmp, ", i32 %argc, i32 ", ARGS_CAP}))
 
         // Store len at field 0
         len_ptr := fresh_tmp(&g)
@@ -3380,9 +3385,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         emit_raw(&g, strings.concatenate({"  store ptr ", elements_ptr, ", ptr ", ptr_field}))
 
         // Loop: for i = 0; i < len; i++ — fill elements[i] = { strlen, strlen, argv[i] }
+        // Counter is i32 to match argc and the slice header — no widen/trunc.
         loop_i := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", loop_i, " = alloca i64"}))
-        emit_raw(&g, strings.concatenate({"  store i64 0, ptr ", loop_i}))
+        emit_raw(&g, strings.concatenate({"  ", loop_i, " = alloca i32"}))
+        emit_raw(&g, strings.concatenate({"  store i32 0, ptr ", loop_i}))
         loop_lbl := fmt.tprintf("args_loop_%d", g.label_counter)
         body_lbl := fmt.tprintf("args_body_%d", g.label_counter)
         done_lbl := fmt.tprintf("args_done_%d", g.label_counter)
@@ -3391,28 +3397,30 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
         emit_raw(&g, strings.concatenate({loop_lbl, ":"}))
         cur_i := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", cur_i, " = load i64, ptr ", loop_i}))
+        emit_raw(&g, strings.concatenate({"  ", cur_i, " = load i32, ptr ", loop_i}))
         cmp := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", cmp, " = icmp slt i64 ", cur_i, ", ", argc_min}))
+        emit_raw(&g, strings.concatenate({"  ", cmp, " = icmp slt i32 ", cur_i, ", ", argc_min}))
         emit_raw(&g, strings.concatenate({"  br i1 ", cmp, ", label %", body_lbl, ", label %", done_lbl}))
 
         emit_raw(&g, strings.concatenate({body_lbl, ":"}))
         argv_i_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %argv, i64 ", cur_i}))
+        emit_raw(&g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %argv, i32 ", cur_i}))
         argv_i := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", argv_i, " = load ptr, ptr ", argv_i_ptr}))
+        // strlen returns size_t (i64 / i32 platform-dependent). Bootstrap
+        // narrowing to i32 for the slice header — argv strings fit
+        // trivially. Explicit cast, not an implicit codegen widen.
         str_len := fresh_tmp(&g)
         if g.web {
-            // wasm32 strlen returns i32; sext to i64 to match Mara's int width.
-            str_len_32 := fresh_tmp(&g)
-            emit_raw(&g, strings.concatenate({"  ", str_len_32, " = call i32 @strlen(ptr ", argv_i, ")"}))
-            emit_raw(&g, strings.concatenate({"  ", str_len, " = sext i32 ", str_len_32, " to i64"}))
+            emit_raw(&g, strings.concatenate({"  ", str_len, " = call i32 @strlen(ptr ", argv_i, ")"}))
         } else {
-            emit_raw(&g, strings.concatenate({"  ", str_len, " = call i64 @strlen(ptr ", argv_i, ")"}))
+            str_len_64 := fresh_tmp(&g)
+            emit_raw(&g, strings.concatenate({"  ", str_len_64, " = call i64 @strlen(ptr ", argv_i, ")"}))
+            emit_raw(&g, strings.concatenate({"  ", str_len, " = trunc i64 ", str_len_64, " to i32"}))
         }
         // elements[i] is a slice — write len, cap, ptr.
         elem_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i64 0, i64 ", cur_i}))
+        emit_raw(&g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i32 0, i32 ", cur_i}))
         slen_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, slen_ptr, elem_ptr, SLICE.len)
         emit_typed_store_len(&g, str_len, slen_ptr)
@@ -3424,8 +3432,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         emit_raw(&g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))
         // i++
         next_i := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", next_i, " = add i64 ", cur_i, ", 1"}))
-        emit_raw(&g, strings.concatenate({"  store i64 ", next_i, ", ptr ", loop_i}))
+        emit_raw(&g, strings.concatenate({"  ", next_i, " = add i32 ", cur_i, ", 1"}))
+        emit_raw(&g, strings.concatenate({"  store i32 ", next_i, ", ptr ", loop_i}))
         emit_raw(&g, strings.concatenate({"  br label %", loop_lbl}))
 
         emit_raw(&g, strings.concatenate({done_lbl, ":"}))
@@ -3661,7 +3669,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, fail_helpers_ir)
     } else {
         strings.write_string(&b, "; Runtime fail-block helpers (extern)\n")
-        strings.write_string(&b, "declare void @__mara_bounds_fail(ptr, i64, i64, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_bounds_fail(ptr, i32, i32, ptr)\n")
         strings.write_string(&b, "declare void @__mara_overflow_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_null_fail(ptr, ptr)\n")
         strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")

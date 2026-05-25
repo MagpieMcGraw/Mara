@@ -7632,7 +7632,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     }
     if is_slice_or_partial {
         switch fa_expr.field {
-        case "len", "cap": field_type = Type_Int{}
+        case "len", "cap": field_type = Type_Numeric{kind = .Signed, bits = 32}
         case "ptr":
             pt := new(Type_Ptr)
             pt.elem = elem
@@ -10011,11 +10011,9 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         check_error(c, e.span, TYPE_CANNOT_ACCESS_FIELD_ARRAY_TYPE, e.field, type_name(obj_type))
         return Type_Error{}
     }
-    // Slice field access: sl.ptr, sl.len, sl.cap. Returns Type_Int (i64)
-    // today because the codegen's slice-len arithmetic convention is also
-    // i64 — keeping these in sync. The storage is actually i32; switching
-    // both type-check and codegen to i32 is a coordinated migration we'll
-    // tackle separately under "remove implicit trunc/widen from codegen."
+    // Slice .len / .cap match the header's storage width (i32 today).
+    // Typed codegen operates at this width throughout — no implicit
+    // widening to i64. Users wanting i64 arithmetic write i64(slice.len).
     if sl, ok := obj_type.(^Type_Slice); ok {
         if e.field == "ptr" {
             pt := new(Type_Ptr)
@@ -10023,12 +10021,11 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
             return pt
         }
         if e.field == "len" || e.field == "cap" {
-            return Type_Int{}
+            return Type_Numeric{kind = .Signed, bits = 32}
         }
         check_error(c, e.span, TYPE_SLICE_TYPE_FIELD, type_name(obj_type), e.field)
         return Type_Error{}
     }
-    // Partial array field access: pa.ptr, pa.len, pa.cap — same header shape.
     if pa, ok := obj_type.(^Type_Partial_Array); ok {
         if e.field == "ptr" {
             pt := new(Type_Ptr)
@@ -10036,7 +10033,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
             return pt
         }
         if e.field == "len" || e.field == "cap" {
-            return Type_Int{}
+            return Type_Numeric{kind = .Signed, bits = 32}
         }
         check_error(c, e.span, TYPE_PARTIAL_ARRAY_TYPE_FIELD, type_name(obj_type), e.field)
         return Type_Error{}
@@ -10077,7 +10074,9 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
                 check_error(c, e.span, TYPE_LEN_REQUIRES_ARRAY_SLICE, type_name(arg_type))
             }
         }
-        return Type_Int{}, true
+        // Slice header's len is i32; match it here so codegen and
+        // type checker agree on the SSA width.
+        return Type_Numeric{kind = .Signed, bits = 32}, true
     case "cap":
         if len(args) != 1 {
             check_error(c, e.span, TYPE_CAP_EXPECTS_ARGUMENT, len(args))
@@ -10087,7 +10086,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
                 check_error(c, e.span, TYPE_CAP_REQUIRES_ARRAY_SLICE, type_name(arg_type))
             }
         }
-        return Type_Int{}, true
+        return Type_Numeric{kind = .Signed, bits = 32}, true
     case "print":
         for arg in args { check_expr(c, arg, env) }
         // Format-string mode: when the first arg resolves to a string literal
