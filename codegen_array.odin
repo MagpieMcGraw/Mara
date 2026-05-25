@@ -1187,16 +1187,19 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
     elem_t := "i64"
     utf8 := false
     sentinel := false
+    sentinel_val := 0
     if sl, ok := value.(^Expr_Slice); ok {
         if ident, id_ok := sl.expr.(^Expr_Ident); id_ok {
             if av, av_ok := get_array(g, ident.name); av_ok {
                 elem_t = av.elem_type
                 utf8 = av.is_utf8
                 sentinel = av.has_sentinel
+                sentinel_val = av.sentinel
             } else if sv, sv_ok := get_slice(g, ident.name); sv_ok {
                 elem_t = sv.elem_type
                 utf8 = sv.is_utf8
                 sentinel = sv.has_sentinel
+                sentinel_val = sv.sentinel
             }
         } else if sl.expr != nil {
             // Field access or other expr — check type annotation
@@ -1205,10 +1208,12 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
                 elem_t = llvm_type_from_checker(slice_t.elem)
                 _, utf8 = slice_t.elem.(Type_Utf8)
                 sentinel = slice_t.has_sentinel
+                sentinel_val = slice_t.sentinel
             } else if fa_t, fa_ok := sl_type.(^Type_Fixed_Array); fa_ok {
                 elem_t = llvm_type_from_checker(fa_t.elem)
                 _, utf8 = fa_t.elem.(Type_Utf8)
                 sentinel = fa_t.has_sentinel
+                sentinel_val = fa_t.sentinel
             }
         }
     }
@@ -1223,6 +1228,7 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
             elem_type    = elem_t,
             is_utf8      = utf8,
             has_sentinel = sentinel,
+            sentinel     = sentinel_val,
         }
     }
 
@@ -1256,7 +1262,7 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
 
 // Assign a slice-typed expression (e.g. alloc()) to a named variable.
 // The expression must return a { len, cap, ptr } alloca.
-gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: string, is_utf8: bool = false, has_sentinel: bool = false) {
+gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: string, is_utf8: bool = false, has_sentinel: bool = false, sentinel: int = 0) {
     // NRVO: if value is a slice-returning Mara call, route its sret
     // straight to our dest's alloca. When `name` is the function's NRVO
     // candidate, its alloca is %sret — so the inner call writes directly
@@ -1273,6 +1279,7 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
                     elem_type    = elem_type,
                     is_utf8      = is_utf8,
                     has_sentinel = has_sentinel,
+                    sentinel     = sentinel,
                 }
             }
             sv, _ := get_slice(g, name)
@@ -1291,6 +1298,7 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
             elem_type    = elem_type,
             is_utf8      = is_utf8,
             has_sentinel = has_sentinel,
+            sentinel     = sentinel,
         }
     }
 

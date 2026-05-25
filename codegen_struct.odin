@@ -582,19 +582,22 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             }
             elem_t := ""
             sentinel := false
+            sentinel_val := 0
             utf8 := false
             if sl, sl_ok := distinct_base(sf.field_def.type_).(^Type_Slice); sl_ok {
                 elem_t = llvm_type_from_checker(sl.elem)
                 sentinel = sl.has_sentinel
+                sentinel_val = sl.sentinel
                 _, utf8 = sl.elem.(Type_Utf8)
             } else if pa, pa_ok := distinct_base(sf.field_def.type_).(^Type_Partial_Array); pa_ok {
                 elem_t = llvm_type_from_checker(pa.elem)
                 sentinel = pa.has_sentinel
+                sentinel_val = pa.sentinel
                 _, utf8 = pa.elem.(Type_Utf8)
             } else {
                 codegen_fatal(g, e.span, CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST_2)
             }
-            set_field_result(g, Slice_Var{alloca = addr, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
+            set_field_result(g, Slice_Var{alloca = addr, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel, sentinel = sentinel_val})
             return addr
         }
     }
@@ -681,13 +684,15 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                         if ft == SLICE_IR_TYPE {
                             elem_t := "i8"
                             sentinel := false
+                            sentinel_val := 0
                             utf8 := false
                             if sl, sl_ok := f.type_.(^Type_Slice); sl_ok {
                                 elem_t = llvm_type_from_checker(sl.elem)
                                 sentinel = sl.has_sentinel
+                                sentinel_val = sl.sentinel
                                 _, utf8 = sl.elem.(Type_Utf8)
                             }
-                            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
+                            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel, sentinel = sentinel_val})
                             return gep
                         }
                         // Sub-struct field in chained access
@@ -758,13 +763,15 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     if ft == SLICE_IR_TYPE {
                         elem_t := "i8"
                         sentinel := false
+                        sentinel_val := 0
                         utf8 := false
                         if sl, sl_ok := f.type_.(^Type_Slice); sl_ok {
                             elem_t = llvm_type_from_checker(sl.elem)
                             sentinel = sl.has_sentinel
+                            sentinel_val = sl.sentinel
                             _, utf8 = sl.elem.(Type_Utf8)
                         }
-                        set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
+                        set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel, sentinel = sentinel_val})
                         return gep
                     }
                     // Sub-struct field
@@ -870,17 +877,20 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         if ft == SLICE_IR_TYPE || strings.has_prefix(ft, PARTIAL_ARRAY_HEADER_PREFIX) {
             elem_t := "i8"
             sentinel := false
+            sentinel_val := 0
             utf8 := false
             if sl, sl_ok := distinct_base(f.type_).(^Type_Slice); sl_ok {
                 elem_t = llvm_type_from_checker(sl.elem)
                 sentinel = sl.has_sentinel
+                sentinel_val = sl.sentinel
                 _, utf8 = sl.elem.(Type_Utf8)
             } else if pa, pa_ok := distinct_base(f.type_).(^Type_Partial_Array); pa_ok {
                 elem_t = llvm_type_from_checker(pa.elem)
                 sentinel = pa.has_sentinel
+                sentinel_val = pa.sentinel
                 _, utf8 = pa.elem.(Type_Utf8)
             }
-            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel})
+            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel, sentinel = sentinel_val})
             return gep
         }
         // If the field is a sub-struct (not using), register for chained access

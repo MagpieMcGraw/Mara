@@ -122,6 +122,7 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
             elem_type    = elem_t,
             is_utf8      = utf8,
             has_sentinel = v.has_sentinel,
+            sentinel     = v.sentinel,
         }
         return
     case ^Type_Partial_Array:
@@ -133,6 +134,7 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
             elem_type    = elem_t,
             is_utf8      = utf8,
             has_sentinel = v.has_sentinel,
+            sentinel     = v.sentinel,
         }
         // Partial-array header lives at the start of the field's slot, followed
         // by the inline [N x T] elements. The caller's memset zeroed both, but
@@ -189,6 +191,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     ret_slice_elem := ""
     ret_slice_utf8 := false
     ret_slice_sentinel := false
+    ret_slice_sentinel_val := 0
     if sd := as_struct_body(cf.return_type); sd != nil {
         ret_type = "void"
         ret_struct_name = sd.name
@@ -204,6 +207,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         ret_slice_elem = llvm_type_from_checker(sl.elem)
         _, ret_slice_utf8 = sl.elem.(Type_Utf8)
         ret_slice_sentinel = sl.has_sentinel
+        ret_slice_sentinel_val = sl.sentinel
     } else if cf.return_type == nil || is_untyped(cf.return_type) {
         ret_type = "void"
     } else {
@@ -351,6 +355,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             elem_type    = ret_slice_elem,
             is_utf8      = ret_slice_utf8,
             has_sentinel = ret_slice_sentinel,
+            sentinel     = ret_slice_sentinel_val,
         }
         // NRVO: if every `return X` returns the same named local, alias it
         // to %sret. Body writes the slice header directly into the caller's
@@ -364,6 +369,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 elem_type    = ret_slice_elem,
                 is_utf8      = ret_slice_utf8,
                 has_sentinel = ret_slice_sentinel,
+                sentinel     = ret_slice_sentinel_val,
             }
         }
     }
@@ -483,6 +489,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 elem_type    = elem_t,
                 is_utf8      = sl_utf8,
                 has_sentinel = sl.has_sentinel,
+                sentinel     = sl.sentinel,
             }
         } else if pa, pa_ok := partial_through_distinct_and_ptr(p.type_); pa_ok {
             // Partial-array param via pointer: same fat-pointer-ref ABI as
@@ -495,6 +502,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 elem_type    = elem_t,
                 is_utf8      = pa_utf8,
                 has_sentinel = pa.has_sentinel,
+                sentinel     = pa.sentinel,
             }
         } else if pt, pt_ok := p.type_.(^Type_Ptr); pt_ok {
             if as_struct_body(pt.elem) != nil {

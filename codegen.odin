@@ -119,8 +119,9 @@ Array_Var :: struct {
 Slice_Var :: struct {
     alloca:       string, // alloca for the { ptr, i64, i64 } struct
     elem_type:    string, // LLVM element type: "i64", "double", etc.
-    is_utf8:      bool,   // true for []utf8 slices — affects how print formats elements
+    is_utf8:      bool,   // true for []utf8 slices — drives string-vs-array print formatting
     has_sentinel: bool,   // true for [, S]T sentinel-terminated slices — last element reserved
+    sentinel:     int,    // sentinel value (e.g. 0 for null-terminated utf8). Meaningful only when has_sentinel.
     // Sized slice of slice-bearing struct: the appended elements' slice
     // fields point into this pool buffer instead of fresh per-call allocas.
     // Empty when the slice has no associated pool.

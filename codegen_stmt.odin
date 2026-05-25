@@ -129,6 +129,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             elem_t := llvm_type_from_checker(sl.elem)
             _, sl_utf8 := sl.elem.(Type_Utf8)
             sl_sentinel := sl.has_sentinel
+            sl_sentinel_val := sl.sentinel
             // Sized slice declaration `name : []T(N)` — allocate backing
             // storage + slice header, init to (ptr, 0, N). Same stack-vs-arena
             // policy as fixed-array decls. Sentinel slices (`[,0]T`) reserve
@@ -215,6 +216,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     elem_type    = elem_t,
                     is_utf8      = sl_utf8,
                     has_sentinel = sl_sentinel,
+                    sentinel     = sl_sentinel_val,
                     pool_alloca  = pool_alloca,
                 }
                 // Initialize from a string literal: `s : String = "hello"` (or
@@ -255,10 +257,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 cap_gep := fresh_tmp(g)
                 emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
                 emit_typed_store_cap(g, "0", cap_gep)
-                g.all_vars[s.name] = Slice_Var{alloca = alloca_name, elem_type = elem_t, is_utf8 = sl_utf8, has_sentinel = sl_sentinel}
+                g.all_vars[s.name] = Slice_Var{alloca = alloca_name, elem_type = elem_t, is_utf8 = sl_utf8, has_sentinel = sl_sentinel, sentinel = sl_sentinel_val}
                 return
             }
-            gen_slice_from_expr(g, s.name, s.value, elem_t, sl_utf8, sl_sentinel)
+            gen_slice_from_expr(g, s.name, s.value, elem_t, sl_utf8, sl_sentinel, sl_sentinel_val)
             return
         }
 
@@ -313,6 +315,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 elem_type    = elem_t,
                 is_utf8      = pa_utf8,
                 has_sentinel = pa.has_sentinel,
+                sentinel     = pa.sentinel,
             }
             // Optional initial value: string literal into a byte/utf8 partial
             // array, or another partial array of the same shape. Mirrors the
@@ -753,6 +756,7 @@ gen_take_decl :: proc(g: ^Codegen, name: string, e: ^Expr_Take) {
             elem_type    = elem_ir,
             is_utf8      = is_utf8,
             has_sentinel = sl.has_sentinel,
+            sentinel     = sl.sentinel,
         }
         return
     }

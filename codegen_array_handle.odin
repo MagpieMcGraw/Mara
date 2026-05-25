@@ -103,7 +103,7 @@ array_handle_from_slice_var :: proc(sv: ^Slice_Var) -> Array_Handle {
         header_ptr     = sv.alloca,
         elem_type      = sv.elem_type,
         has_sentinel   = sv.has_sentinel,
-        sentinel_value = 0, // current convention: only 0-sentinels exist (utf8)
+        sentinel_value = sv.sentinel,
         is_utf8        = sv.is_utf8,
     }
 }
