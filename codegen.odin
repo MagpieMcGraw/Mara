@@ -1997,9 +1997,14 @@ array_var_type :: proc(av: ^Array_Var) -> string {
     return fmt.tprintf("[%d x %s]", alloc_cap, av.elem_type)
 }
 
-// Usable capacity: for utf8 arrays, reserve the last byte for the null terminator.
+// Usable capacity: hide the sentinel slot from user-facing bounds.
+// Switched from is_utf8 to has_sentinel — the bit that actually says "one
+// slot is reserved". They coincide for every utf8 array today (the type
+// checker forces utf8 storage to declare a sentinel), but a hypothetical
+// `[10, -1]i64` would have has_sentinel=true and is_utf8=false; the right
+// rule is to hide the slot whenever it exists.
 usable_cap :: proc(av: ^Array_Var) -> int {
-    if av.is_utf8 {
+    if av.has_sentinel {
         return av.capacity - 1
     }
     return av.capacity
@@ -2083,6 +2088,18 @@ field_array_elem :: proc(f: ^Struct_Type_Field) -> string {
         return llvm_type_from_checker(fa.elem)
     }
     return ""
+}
+
+// Pull array-field metadata out of the Mara type. Returns ok=false for
+// non-fixed-array fields. Centralises what was previously open-coded at
+// each Array_Var construction site, including the brittle inference
+// `is_utf8 = (aelem == "i8")` that would have falsely tagged a [N]byte
+// field as utf8.
+field_array_info :: proc(f: ^Struct_Type_Field) -> (cap: int, elem_ir: string, is_utf8: bool, has_sentinel: bool, sentinel: int, ok: bool) {
+    fa, fa_ok := distinct_base(f.type_).(^Type_Fixed_Array)
+    if !fa_ok { return }
+    _, is_utf8 = fa.elem.(Type_Utf8)
+    return fa.size, llvm_type_from_checker(fa.elem), is_utf8, fa.has_sentinel, fa.sentinel, true
 }
 
 // Get the LLVM type name for a union, e.g. "%union.Shape"

@@ -146,23 +146,19 @@ emit_array_raw_cap :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     return out
 }
 
-// User-facing capacity: raw cap with the sentinel slot hidden. Matches
-// what the `cap()` builtin returns.
+// User-facing capacity: raw cap with the sentinel slot hidden whenever
+// the storage has one. Both shapes (fixed and dynamic) now key off
+// has_sentinel — the bit that actually says "one slot is reserved".
 //
-// Two pre-refactor quirks preserved verbatim so the migration is purely
-// mechanical:
-//   - Fixed arrays subtract 1 for is_utf8, not has_sentinel (usable_cap's
-//     rule). They coincide today since utf8 requires a sentinel, but the
-//     conditions differ in principle. Slice / partial-array paths subtract
-//     on has_sentinel.
-//   - Runtime-sized fixed arrays (VLA) return capacity_val raw, no
-//     subtraction. Today's VLAs aren't utf8 / sentinel-bearing.
-// Both deserve a separate normalization pass once the abstraction is in.
+// One quirk still here: a runtime-sized fixed array (VLA) returns its
+// capacity_val verbatim. Today's VLAs aren't sentinel-bearing, so the
+// subtraction would be a no-op anyway; the path is left simple. Revisit
+// if sentinel VLAs ever become a thing.
 emit_array_cap_user :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     if handle_is_fixed(h) {
         if h.static_cap_str != "" { return h.static_cap_str }
         n := h.static_cap
-        if h.is_utf8 { n -= 1 }
+        if h.has_sentinel { n -= 1 }
         return fmt.tprintf("%d", n)
     }
     raw := emit_array_raw_cap(g, h)

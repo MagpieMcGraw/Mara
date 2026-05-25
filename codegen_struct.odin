@@ -669,14 +669,14 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                         gep := fresh_tmp(g)
                         emit_field_gep_into(g, gep, inner_llvm, fr.alloca, idx)
                         // Array field in chained access
-                        acap := field_array_cap(f)
-                        aelem := field_array_elem(f)
-                        if acap > 0 {
+                        if acap, aelem, autf8, asent, asentv, ok := field_array_info(f); ok {
                             set_field_result(g, Array_Var{
-                                alloca    = gep,
-                                capacity  = acap,
-                                elem_type = aelem,
-                                is_utf8   = aelem == "i8",
+                                alloca       = gep,
+                                capacity     = acap,
+                                elem_type    = aelem,
+                                is_utf8      = autf8,
+                                has_sentinel = asent,
+                                sentinel     = asentv,
                             })
                             return gep
                         }
@@ -748,14 +748,14 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     gep := fresh_tmp(g)
                     emit_field_gep_into(g, gep, inner_llvm, ptr, fidx)
                     // Fixed-array field
-                    acap := field_array_cap(f)
-                    aelem := field_array_elem(f)
-                    if acap > 0 {
+                    if acap, aelem, autf8, asent, asentv, ok := field_array_info(f); ok {
                         set_field_result(g, Array_Var{
-                            alloca    = gep,
-                            capacity  = acap,
-                            elem_type = aelem,
-                            is_utf8   = aelem == "i8",
+                            alloca       = gep,
+                            capacity     = acap,
+                            elem_type    = aelem,
+                            is_utf8      = autf8,
+                            has_sentinel = asent,
+                            sentinel     = asentv,
                         })
                         return gep
                     }
@@ -860,14 +860,14 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             return gep
         }
         // Array field — register as Array_Var and return data pointer
-        acap := field_array_cap(f)
-        aelem := field_array_elem(f)
-        if acap > 0 {
+        if acap, aelem, autf8, asent, asentv, ok := field_array_info(f); ok {
             set_field_result(g, Array_Var{
-                alloca    = gep,
-                capacity  = acap,
-                elem_type = aelem,
-                is_utf8   = aelem == "i8",
+                alloca       = gep,
+                capacity     = acap,
+                elem_type    = aelem,
+                is_utf8      = autf8,
+                has_sentinel = asent,
+                sentinel     = asentv,
             })
             return gep
         }
