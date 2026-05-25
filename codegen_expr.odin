@@ -1697,12 +1697,23 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                     emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %d, ptr %s)", fmt_ptr, av.capacity, av.alloca)
                     printed = true
                 } else if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.is_utf8 {
-                    // utf8 slice — load data ptr, print with %s
+                    // utf8 slice — bound by len via %.*s. Mirrors the
+                    // fixed-array branch above: a plain %s walks until it
+                    // hits a 0, which leaks stack garbage when the sentinel
+                    // was never written (non-sentinel slices) or got out of
+                    // sync with len (partial overwrites). %.*s reads exactly
+                    // len bytes regardless.
                     data_ptr := slice_var_data_ptr(g, &sv)
-                    fmt_name, fmt_len := get_string_literal(g, "%s")
+                    len_gep := fresh_tmp(g)
+                    emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
+                    len_i64 := fresh_tmp(g)
+                    emit_typed_load_len(g, len_i64, len_gep)
+                    len_i32 := fresh_tmp(g)
+                    emit(g, "  %s = trunc i64 %s to i32", len_i32, len_i64)
+                    fmt_name, fmt_len := get_string_literal(g, "%.*s")
                     fmt_ptr := fresh_tmp(g)
                     emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                    emit_printf_ptr(g, fmt_ptr, data_ptr)
+                    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, len_i32, data_ptr)
                     printed = true
                 }
             } else if _, str_ok := arg_expr.(^Expr_String); str_ok {

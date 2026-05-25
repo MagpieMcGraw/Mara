@@ -424,6 +424,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     dst_elem_type: string
     dst_name: string
     dst_is_utf8: bool
+    dst_has_sentinel: bool
     dst_resolved := false
 
     ident, ident_ok := sl.expr.(^Expr_Ident)
@@ -439,6 +440,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
                 dst_cap_str   = av.capacity_val != "" ? av.capacity_val : fmt.tprintf("%d", av.capacity)
                 dst_elem_type = av.elem_type
                 dst_is_utf8   = av.is_utf8
+                dst_has_sentinel = av.has_sentinel
                 dst_name      = fa.field
                 dst_resolved  = true
             }
@@ -467,6 +469,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             dst_cap_str   = cap_val
             dst_elem_type = sv.elem_type
             dst_is_utf8   = sv.is_utf8
+            dst_has_sentinel = sv.has_sentinel
             dst_name      = ident.name
             dst_resolved  = true
         }
@@ -483,6 +486,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         dst_cap_str   = av.capacity_val != "" ? av.capacity_val : fmt.tprintf("%d", av.capacity)
         dst_elem_type = av.elem_type
         dst_is_utf8   = av.is_utf8
+        dst_has_sentinel = av.has_sentinel
         dst_name      = ident.name
         dst_resolved  = true
     }
@@ -622,6 +626,41 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     emit_br(g, loop_lbl)
 
     emit_label(g, end_lbl)
+
+    // Sentinel destinations rely on a terminator immediately after the written
+    // region so C-style consumers stop at the right spot. Stamp dst[high] = 0
+    // after the copy. Only safe when `high` is inside the physical buffer:
+    // sentinel slices/partial-arrays reserve one extra slot (cap is N+1), so
+    // writing at high <= N stays in-bounds; sentinel fixed arrays have
+    // capacity = N with [N+1 x T] storage, so dst[high] hits the reserved
+    // slot when high == capacity. Skip the write only when there is genuinely
+    // no spare slot (high == physical buffer size); the bounds check above
+    // already accepted high == raw cap, so emit a runtime guard.
+    if dst_has_sentinel {
+        // Physical buffer size: cap for slices/partial arrays (already includes
+        // the +1), cap+1 for fixed arrays (capacity is user-visible N).
+        phys_cap: string
+        if dst_capacity != 0 {
+            // Fixed array path: compile-time capacity, +1 reserved slot.
+            phys_cap = fmt.tprintf("%d", dst_capacity + 1)
+        } else {
+            phys_cap = dst_cap_str
+        }
+        room_ok_lbl  := fresh_label(g, "sentinel.ok")
+        room_skip_lbl := fresh_label(g, "sentinel.skip")
+        room_cmp := fresh_tmp(g)
+        emit(g, "  %s = icmp slt i64 %s, %s", room_cmp, high, phys_cap)
+        emit_cond_br(g, room_cmp, room_ok_lbl, room_skip_lbl)
+        emit_label(g, room_ok_lbl)
+        sent_gep := fresh_tmp(g)
+        emit_elem_gep(g, sent_gep, dst_elem_type, dst_data_ptr, high)
+        // Sentinel value is 0 across all currently-supported sentinel types
+        // (utf8 cstrings). If non-zero sentinels enter the language, thread
+        // the value through Slice_Var / Array_Var.
+        emit_store(g, dst_elem_type, "0", sent_gep)
+        emit_br(g, room_skip_lbl)
+        emit_label(g, room_skip_lbl)
+    }
 }
 
 // Handle: arr[idx] — read element from array or slice

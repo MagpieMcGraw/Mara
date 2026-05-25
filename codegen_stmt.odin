@@ -161,6 +161,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         emit(g, "  %s = alloca [%d x %s]", data_name, alloc_cap, elem_t)
                     }
                 }
+                // Sentinel slices need byte `cap` of the backing storage to hold
+                // the terminator on day zero — before any append happens. Zeroing
+                // the whole region is the cheapest way to guarantee that and
+                // also gives the slice a defined initial state for C consumers
+                // that walk the pointer until they hit a 0.
+                if sl.has_sentinel {
+                    emit_memset_zero(g, data_name, total_bytes)
+                }
                 alloca_name := fmt.tprintf("%%%s", s.name)
                 emit_slice_alloca(g, alloca_name)
                 ptr_gep := fresh_tmp(g)
@@ -285,6 +293,12 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             // Initialise header: ptr → elements, len → 0, cap → N.
             elements_ptr := fresh_tmp(g)
             emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+            // Sentinel partial arrays need byte `cap` of the inline storage to
+            // hold the terminator before any append happens. Zero the storage
+            // (not the header) so C consumers walking the pointer stop cleanly.
+            if pa.has_sentinel {
+                emit_memset_zero(g, elements_ptr, total_bytes)
+            }
             ptr_gep := fresh_tmp(g)
             emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
             emit_store(g, "ptr", elements_ptr, ptr_gep)

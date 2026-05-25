@@ -1,0 +1,35 @@
+module test_sentinel_append
+
+use mara.string
+
+main :: fun() {
+	// Empty sentinel partial array — should print nothing, not garbage.
+	empty : String
+	print(empty)
+
+	// Single append — sentinel must land at byte 11, no stack garbage trailing.
+	one : String
+	&one + "Escaping..."
+	print(one)
+
+	// Multiple appends — sentinel must follow the last write each time.
+	many : String
+	&many + "ab"
+	&many + "cd"
+	&many + "ef"
+	print(many)
+
+	// Sized sentinel slice form.
+	sized : [, 0]utf8(64)
+	&sized + "from sized"
+	print(sized)
+
+	// Sentinel partial array with literal init — keep the literal-init path
+	// (codegen_stmt.odin:316-320 terminator) honest.
+	greet : String = "hello"
+	print(greet)
+
+	// Append after literal init.
+	&greet + " world"
+	print(greet)
+}
