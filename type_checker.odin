@@ -2902,21 +2902,24 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
 // Type comparison
 // ---------------------------------------------------------------------------
 
+// Flat name of the one and only cstring type — the stdlib's
+// `mara.string.cstring :: distinct ^utf8`. Name-matched here rather
+// than recognized structurally; a structural rule ("any nominal
+// distinct ^utf8") would also accept unrelated user types that happen
+// to wrap ^utf8 and silently grant them utf8 sentinel coercion, which
+// is exactly the kind of accidental coupling we don't want.
+CSTRING_FLAT_NAME :: "mara_string_cstring"
+
 // Recognize the cstring type — either the legacy built-in (Type_CString,
 // no longer produced from source after the keyword removal but retained
-// for transitional safety) or the stdlib definition
-// `cstring :: distinct ^utf8`. The latter is a nominal Type_Distinct
-// whose base unwraps to `^Type_Ptr{elem: Type_Utf8}`.
-//
-// Conversion rule lives in the matching `case` arms below — utf8 storage
-// with a sentinel coerces to a cstring receiver via data-pointer
-// extraction in codegen. Documented in mara.string's `cstring` decl.
+// for transitional safety) or the stdlib's named distinct decl. The
+// conversion rule (utf8 sentinel storage → cstring via data-pointer
+// extraction) lives in the matching `case` arms below; pointed at from
+// a comment near the stdlib decl.
 is_cstring :: proc(t: Type) -> bool {
     if _, ok := t.(Type_CString); ok { return true }
     if dt, ok := t.(^Type_Distinct); ok && !dt.is_alias {
-        if pt, pt_ok := dt.base_type.(^Type_Ptr); pt_ok {
-            if _, utf8_ok := pt.elem.(Type_Utf8); utf8_ok { return true }
-        }
+        return dt.name == CSTRING_FLAT_NAME
     }
     return false
 }
