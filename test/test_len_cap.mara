@@ -1,0 +1,13 @@
+module test_len_cap
+
+main :: fun() {
+	// Fixed sentinel utf8 array: cap() hides sentinel slot.
+	fa : [16, 0]utf8 = "hi"
+	print(len(fa))   // 16 — fixed has no len; capacity stands in
+	print(cap(fa))   // 15 — utf8 reserves a byte
+
+	// Sentinel sized slice.
+	ss : [, 0]utf8(32)
+	print(len(ss))   // 0
+	print(cap(ss))   // 32
+}

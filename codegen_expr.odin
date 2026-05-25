@@ -970,70 +970,20 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         return "0"
     }
 
-    // Built-in: len(arr) — returns capacity for plain arrays, runtime len for array class/slices
+    // Built-in: len(arr) — capacity for fixed arrays (no separate len), runtime
+    // len for slices and partial arrays. Array class len() is desugared to a
+    // buf.len field access by the type checker, so it doesn't land here.
     if e.name == "len" && len(e.args) == 1 {
-        if ident, ok := e.args[0].(^Expr_Ident); ok {
-            if av, av_ok := get_array(g, ident.name); av_ok {
-                if av.capacity_val != "" { return av.capacity_val } // VLA: runtime size
-                return fmt.tprintf("%d", av.capacity)
-            }
-            if sv, sv_ok := get_slice(g, ident.name); sv_ok {
-                _ = sv
-                return gen_slice_len(g, ident.name)
-            }
-            // Array class len() is desugared to buf.len field access by the type checker
-        }
-        // Field access argument: len(obj.field) — array class case desugared by type checker
-        if fa, fa_ok := e.args[0].(^Expr_Field_Access); fa_ok {
-            gen_field_access(g, fa)
-            if av, av_ok := claim_field_array(g); av_ok {
-                return fmt.tprintf("%d", av.capacity)
-            }
-            // Slice field: load field 1 (len cursor) from the slice header.
-            if sv, sv_ok := claim_field_slice(g); sv_ok {
-                len_gep := fresh_tmp(g)
-                emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
-                len_val := fresh_tmp(g)
-                emit_typed_load_len(g, len_val, len_gep)
-                return len_val
-            }
+        if h, ok := resolve_array_handle(g, e.args[0]); ok {
+            return emit_array_len(g, &h)
         }
     }
 
-    // Built-in: cap(arr) — returns usable capacity (utf8 arrays reserve last byte for null)
+    // Built-in: cap(arr) — user-facing capacity (sentinel slot hidden).
+    // Array class cap() likewise gets desugared upstream.
     if e.name == "cap" && len(e.args) == 1 {
-        if ident, ok := e.args[0].(^Expr_Ident); ok {
-            if av, av_ok := get_array(g, ident.name); av_ok {
-                if av.capacity_val != "" { return av.capacity_val } // VLA: runtime size
-                return fmt.tprintf("%d", usable_cap(&av))
-            }
-            if sv, sv_ok := get_slice(g, ident.name); sv_ok {
-                raw_cap := gen_slice_cap(g, ident.name)
-                if sv.has_sentinel {
-                    // Hide the sentinel slot from the user-facing capacity.
-                    result := fresh_tmp(g)
-                    emit(g, "  %s = sub i64 %s, 1", result, raw_cap)
-                    return result
-                }
-                return raw_cap
-            }
-            // Array class cap() is desugared to buf.cap field access or compile-time constant by the type checker
-        }
-        // Field access argument: cap(obj.slice_field) — load field 2 from the slice header.
-        if fa, fa_ok := e.args[0].(^Expr_Field_Access); fa_ok {
-            gen_field_access(g, fa)
-            if sv, sv_ok := claim_field_slice(g); sv_ok {
-                cap_gep := fresh_tmp(g)
-                emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
-                cap_val := fresh_tmp(g)
-                emit_typed_load_cap(g, cap_val, cap_gep)
-                if sv.has_sentinel {
-                    result := fresh_tmp(g)
-                    emit(g, "  %s = sub i64 %s, 1", result, cap_val)
-                    return result
-                }
-                return cap_val
-            }
+        if h, ok := resolve_array_handle(g, e.args[0]); ok {
+            return emit_array_cap_user(g, &h)
         }
     }
 
