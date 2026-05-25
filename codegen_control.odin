@@ -315,10 +315,15 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         codegen_fatal(g, s.span, CODE_UNKNOWN_COLLECTION_VARIABLE, coll_name)
     }
 
-    // Alloca index variable, init to 0
+    // Loop counter runs at slice header width — length_val is loaded
+    // from emit_typed_load_len for slice iteration (slice_layout.len_ir
+    // wide) or is a compile-time int literal for fixed-array iteration.
+    // Either way the counter at the same width keeps the comparison and
+    // GEP homogeneous.
+    w := slice_layout.len_ir
     idx_alloca := fresh_tmp(g)
-    emit_alloca(g, idx_alloca, "i64")
-    emit_store(g, "i64", "0", idx_alloca)
+    emit_alloca(g, idx_alloca, w)
+    emit_store(g, w, "0", idx_alloca)
     if s.index_var != "" {
         g.all_vars[s.index_var] = Scalar_Var{idx_alloca}
     }
@@ -335,9 +340,9 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     // Condition: idx < length
     emit_label(g, cond_label)
     cur_idx := fresh_tmp(g)
-    emit_load_into(g, cur_idx, "i64", idx_alloca)
+    emit_load_into(g, cur_idx, w, idx_alloca)
     cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt i64 %s, %s", cmp, cur_idx, length_val)
+    emit(g, "  %s = icmp slt %s %s, %s", cmp, w, cur_idx, length_val)
     emit_cond_br(g, cmp, body_label, end_label)
 
     // Body
@@ -347,14 +352,14 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     if s.elem_var != "" {
         // Reload index for element access
         body_idx := fresh_tmp(g)
-        emit_load_into(g, body_idx, "i64", idx_alloca)
+        emit_load_into(g, body_idx, w, idx_alloca)
 
-        // GEP to element
+        // GEP to element — index is at slice width.
         elem_ptr := fresh_tmp(g)
         if use_array_gep {
-            emit_array_gep_var(g, elem_ptr, arr_type_str, data_ptr, body_idx)
+            emit_array_gep_var(g, elem_ptr, arr_type_str, data_ptr, body_idx, w)
         } else {
-            emit_elem_gep(g, elem_ptr, elem_ir, data_ptr, body_idx)
+            emit_elem_gep(g, elem_ptr, elem_ir, data_ptr, body_idx, w)
         }
 
         // Check element kind: struct, slice, or scalar
@@ -405,10 +410,10 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     // Post: idx += 1
     emit_label(g, post_label)
     inc_load := fresh_tmp(g)
-    emit_load_into(g, inc_load, "i64", idx_alloca)
+    emit_load_into(g, inc_load, w, idx_alloca)
     inc_val := fresh_tmp(g)
-    emit(g, "  %s = add i64 %s, 1", inc_val, inc_load)
-    emit_store(g, "i64", inc_val, idx_alloca)
+    emit(g, "  %s = add %s %s, 1", inc_val, w, inc_load)
+    emit_store(g, w, inc_val, idx_alloca)
     emit_br(g, cond_label)
 
     // End

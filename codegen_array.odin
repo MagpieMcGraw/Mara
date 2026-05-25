@@ -894,15 +894,20 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     count_runtime: string
     elem_size: int
     type_align: int
+    // Everything below operates at slice_layout.len_ir — cursor / advance /
+    // aligned_cursor / new_len / cap_val all live at the storage slice's
+    // natural width. No widen/trunc dance.
+    w := slice_layout.len_ir
     if e.count_expr != nil {
         // Runtime-counted slice: resolved_type is []T; elem is T.
         sl, _ := distinct_base(e.resolved_type).(^Type_Slice)
         elem_ir := llvm_type_from_checker(sl.elem)
         elem_size = elem_byte_size(elem_ir, g.checked)
         type_align = elem_alignment(elem_ir, g.checked)
-        count_runtime = gen_expr(g, e.count_expr)
+        count_raw := gen_expr(g, e.count_expr, w)
+        count_runtime = emit_type_convert(g, count_raw, expr_ir_type(g, e.count_expr), w)
         advance_amount = fresh_tmp(g)
-        emit(g, "  %s = mul i64 %s, %d", advance_amount, count_runtime, elem_size)
+        emit(g, "  %s = mul %s %s, %d", advance_amount, w, count_runtime, elem_size)
     } else {
         elem_ir := llvm_type_from_checker(e.resolved_type)
         elem_size = elem_byte_size(elem_ir, g.checked)
@@ -912,19 +917,19 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     aligned_cursor := cursor
     if type_align > 1 {
         bumped := fresh_tmp(g)
-        emit(g, "  %s = add i64 %s, %d", bumped, cursor, type_align - 1)
+        emit(g, "  %s = add %s %s, %d", bumped, w, cursor, type_align - 1)
         aligned_cursor = fresh_tmp(g)
-        // Mask is -type_align (e.g. -8 = 0xFFFFFFFFFFFFFFF8), the two's-complement
-        // pattern that clears the low log2(align) bits. LLVM accepts signed decimals.
-        emit(g, "  %s = and i64 %s, %d", aligned_cursor, bumped, -type_align)
+        // Mask is -type_align — the two's-complement pattern that clears the
+        // low log2(align) bits. LLVM accepts signed decimals at any width.
+        emit(g, "  %s = and %s %s, %d", aligned_cursor, w, bumped, -type_align)
     }
 
     // Compute typed_ptr = &storage.data[aligned_cursor] (GEP by i8 to step bytes).
     typed_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", typed_ptr, data_ptr, aligned_cursor)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", typed_ptr, data_ptr, w, aligned_cursor)
 
     new_len := fresh_tmp(g)
-    emit(g, "  %s = add i64 %s, %s", new_len, aligned_cursor, advance_amount)
+    emit(g, "  %s = add %s %s, %s", new_len, w, aligned_cursor, advance_amount)
 
     // Bounds check: new_len must not exceed cap. Take in a loop or take from
     // a too-small buffer triggers this rather than silently walking past the
@@ -934,18 +939,18 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     cap_val := fresh_tmp(g)
     emit_typed_load_cap(g, cap_val, cap_gep)
     overflow := fresh_tmp(g)
-    emit(g, "  %s = icmp sgt i64 %s, %s", overflow, new_len, cap_val)
+    emit(g, "  %s = icmp sgt %s %s, %s", overflow, w, new_len, cap_val)
     fail_label := fresh_label(g, "take.fail")
     ok_label := fresh_label(g, "take.ok")
     emit_cond_br(g, overflow, fail_label, ok_label)
     emit_label(g, fail_label)
     loc := format_location(e.span.file, e.span.line, e.span.col)
-    msg := fmt.tprintf("%s runtime error: take overflows storage: advance to %%lld exceeds cap %%lld for '%s'\n",
+    msg := fmt.tprintf("%s runtime error: take overflows storage: advance to %%d exceeds cap %%d for '%s'\n",
         loc, name)
     msg_global, msg_byte_len := get_string_literal(g, msg)
     msg_ptr := fresh_tmp(g)
     emit_string_gep(g, msg_ptr, msg_byte_len, msg_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i64 %s, i64 %s)", msg_ptr, new_len, cap_val)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", msg_ptr, w, new_len, w, cap_val)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, ok_label)
@@ -1054,10 +1059,16 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         codegen_fatal(g, e.span, CODE_SLICE_TARGET_VARIABLE)
     }
 
+    // Slice arithmetic runs at slice_layout.len_ir throughout — start /
+    // end / (end-start) all live at slice width. User indices are
+    // converted at this primitive's boundary (ensure_index_width).
+    w := slice_layout.len_ir
+
     // Resolve start index
     start: string
     if e.low != nil {
-        start = gen_expr(g, e.low)
+        raw := gen_expr(g, e.low, w)
+        start = ensure_index_width(g, raw, e.low)
     } else {
         start = "0"
     }
@@ -1067,7 +1078,8 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         // Slicing an array
         end: string
         if e.high != nil {
-            end = gen_expr(g, e.high)
+            raw := gen_expr(g, e.high, w)
+            end = ensure_index_width(g, raw, e.high)
         } else if src.capacity_val != "" {
             // VLA: use runtime capacity
             end = src.capacity_val
@@ -1076,12 +1088,12 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         }
 
         slice_cap := fresh_tmp(g)
-        emit(g, "  %s = sub i64 %s, %s", slice_cap, end, start)
+        emit(g, "  %s = sub %s %s, %s", slice_cap, w, end, start)
 
         av := src
         arr_type := array_var_type(&av)
         data_ptr := fresh_tmp(g)
-        emit_array_gep_var(g, data_ptr, arr_type, src.alloca, start)
+        emit_array_gep_var(g, data_ptr, arr_type, src.alloca, start, w)
         // Sub-slice gives len=cap=(end-start): no preserved growth room beyond the carved range.
         return emit_build_temp_slice(g, data_ptr, slice_cap, slice_cap)
 
@@ -1094,7 +1106,8 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
 
         end: string
         if e.high != nil {
-            end = gen_expr(g, e.high)
+            raw := gen_expr(g, e.high, w)
+            end = ensure_index_width(g, raw, e.high)
         } else {
             // Open-ended `s[a:]` defaults end to the source's capacity (raw-memory range).
             cap_gep := fresh_tmp(g)
@@ -1104,10 +1117,10 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         }
 
         new_cap := fresh_tmp(g)
-        emit(g, "  %s = sub i64 %s, %s", new_cap, end, start)
+        emit(g, "  %s = sub %s %s, %s", new_cap, w, end, start)
 
         new_data := fresh_tmp(g)
-        emit_elem_gep(g, new_data, src.elem_type, orig_data, start)
+        emit_elem_gep(g, new_data, src.elem_type, orig_data, start, w)
         // Sub-slice gives len=cap=(end-start).
         return emit_build_temp_slice(g, new_data, new_cap, new_cap)
     }

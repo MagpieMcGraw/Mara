@@ -3404,33 +3404,36 @@ is_infer :: proc(t: Type) -> bool {
 }
 
 // True when a type is a byte slice ([]byte). Auto-derefs one level of ^Ptr
-// so `^[]byte` (the "mutable slice" parameter shape) is recognized too —
-// codegen already binds it as a Slice_Var via slice_through_distinct_and_ptr.
+// (so `^[]byte` is recognized — codegen already binds it as a Slice_Var via
+// slice_through_distinct_and_ptr) and unwraps distinct/alias wrappers so
+// user-named byte containers (`Block :: type [16]byte`, etc.) get the
+// reinterpret-read/write machinery too.
 is_byte_slice :: proc(t: Type) -> bool {
-    cur := t
-    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
+    cur := distinct_base(t)
+    if pt, ok := cur.(^Type_Ptr); ok { cur = distinct_base(pt.elem) }
     sl, ok := cur.(^Type_Slice)
     if !ok { return false }
     _, is_byte := sl.elem.(Type_Byte)
     return is_byte
 }
 
-// True when a type is a byte-element fixed array [N]byte. Auto-derefs ^Ptr.
+// True when a type is a byte-element fixed array [N]byte. Same unwrap
+// shape as is_byte_slice so named-byte-container types work.
 is_byte_fixed_array :: proc(t: Type) -> bool {
-    cur := t
-    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
+    cur := distinct_base(t)
+    if pt, ok := cur.(^Type_Ptr); ok { cur = distinct_base(pt.elem) }
     fa, ok := cur.(^Type_Fixed_Array)
     if !ok { return false }
     _, is_byte := fa.elem.(Type_Byte)
     return is_byte
 }
 
-// True when a type is a byte-element partial array [..N]byte. Auto-derefs ^Ptr.
-// Distinct aliases unwrap so `^String`-style mutable buffer params register too.
+// True when a type is a byte-element partial array [..N]byte. Same unwrap
+// shape as the slice / fixed-array helpers — distinct/alias wrappers,
+// auto-deref of one ^Ptr.
 is_byte_partial_array :: proc(t: Type) -> bool {
-    cur := t
-    if pt, ok := cur.(^Type_Ptr); ok { cur = pt.elem }
-    if dt, ok := cur.(^Type_Distinct); ok { cur = dt.base_type }
+    cur := distinct_base(t)
+    if pt, ok := cur.(^Type_Ptr); ok { cur = distinct_base(pt.elem) }
     pa, ok := cur.(^Type_Partial_Array)
     if !ok { return false }
     _, is_byte := pa.elem.(Type_Byte)
