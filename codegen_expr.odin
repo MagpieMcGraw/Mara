@@ -1595,6 +1595,14 @@ gen_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Expr, call_span: 
         emit_print_literal(g, string(seg^[:]))
         clear(seg)
     }
+    is_format_marker :: proc(c: u8) -> bool {
+        // Letter chars after `%` are human-readable shorthand (`%d`, `%s`,
+        // `%g`, `%v`, `%x`, ...). Mara picks the actual printf spec from
+        // the arg's type, but the marker letter is consumed so it doesn't
+        // appear in output. Non-letter chars (spaces, commas, punctuation,
+        // digits) are bare-`%` placeholders followed by literal text.
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+    }
     i := 0
     for i < len(fmt_str) {
         ch := fmt_str[i]
@@ -1610,12 +1618,16 @@ gen_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Expr, call_span: 
             }
             emit_print_arg(g, args[arg_idx])
             arg_idx += 1
-            // Skip both the `%` and the marker character (d, g, s, v, etc.).
-            // The marker is human-readable shorthand only — Mara picks the
-            // actual printf spec from the arg's type. Used to advance by 1,
-            // which left the marker char to be appended as a literal in the
-            // next iteration (`%d` printed as `<value>d`).
-            i += i+1 < len(fmt_str) ? 2 : 1
+            // Advance past `%`. If a letter follows, treat it as a human-
+            // readable type marker and consume it too (`%d` → emit value,
+            // skip both). If anything else follows (space, comma, '0',
+            // etc.), the user meant a bare placeholder and we leave that
+            // char alone — it's part of the surrounding literal text.
+            if i+1 < len(fmt_str) && is_format_marker(fmt_str[i+1]) {
+                i += 2
+            } else {
+                i += 1
+            }
             continue
         }
         append(&seg_buf, ch)
