@@ -1677,80 +1677,15 @@ emit_print_newline :: proc(g: ^Codegen) {
 // Emit a single arg as printf output, dispatched on the arg's checker type.
 // Used by both variadic mode and format-string placeholders.
 emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
-        // Check if the expression is a utf8 array/array class/slice (string) — print with %s
+        // utf8 array shape (fixed array, slice, partial array, or string
+        // literal) — print via %.*s bounded by len. Resolves the expression
+        // to a unified Array_Handle once, then dispatches through the
+        // shared printer instead of branching by source-noun. Replaces four
+        // near-identical hand-rolled branches that drifted out of sync.
         if is_utf8_array_expr(g, arg_expr) {
-            // For utf8 arrays, pass the data pointer to printf with %s
-            printed := false
-            if ident, id_ok := arg_expr.(^Expr_Ident); id_ok {
-                if av, av_ok := get_array(g, ident.name); av_ok {
-                    // Use %.*s (length-bounded) instead of %s. A plain
-                    // [N]utf8 buffer might not be null-terminated, in
-                    // which case printf("%s", ...) walks past the buffer
-                    // into adjacent memory until it finds a 0 — leaking
-                    // garbage to the user's terminal at best, ringing
-                    // the BEL byte at worst. %.*s reads exactly cap
-                    // bytes (stops early on a null), so sentinel and
-                    // non-sentinel utf8 arrays both print cleanly.
-                    fmt_name, fmt_len := get_string_literal(g, "%.*s")
-                    fmt_ptr := fresh_tmp(g)
-                    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %d, ptr %s)", fmt_ptr, av.capacity, av.alloca)
-                    printed = true
-                } else if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.is_utf8 {
-                    // utf8 slice — bound by len via %.*s. Mirrors the
-                    // fixed-array branch above: a plain %s walks until it
-                    // hits a 0, which leaks stack garbage when the sentinel
-                    // was never written (non-sentinel slices) or got out of
-                    // sync with len (partial overwrites). %.*s reads exactly
-                    // len bytes regardless.
-                    data_ptr := slice_var_data_ptr(g, &sv)
-                    len_gep := fresh_tmp(g)
-                    emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
-                    len_i64 := fresh_tmp(g)
-                    emit_typed_load_len(g, len_i64, len_gep)
-                    len_i32 := fresh_tmp(g)
-                    emit(g, "  %s = trunc i64 %s to i32", len_i32, len_i64)
-                    fmt_name, fmt_len := get_string_literal(g, "%.*s")
-                    fmt_ptr := fresh_tmp(g)
-                    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, len_i32, data_ptr)
-                    printed = true
-                }
-            } else if fa, fa_ok := arg_expr.(^Expr_Field_Access); fa_ok {
-                // Field access yielding a utf8 slice or partial array
-                // (e.g. `print(h.name)` where name: String). The address
-                // chain bottoms out at .Slice for both shapes, so the same
-                // header-relative %.*s load works. Without this branch the
-                // outer `if printed` falls through to nothing and the call
-                // emits just a newline.
-                gen_field_access(g, fa)
-                if sv, sv_ok := claim_field_slice(g); sv_ok && sv.is_utf8 {
-                    data_gep := fresh_tmp(g)
-                    emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
-                    data_ptr := fresh_tmp(g)
-                    emit_load_into(g, data_ptr, "ptr", data_gep)
-                    len_gep := fresh_tmp(g)
-                    emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
-                    len_i64 := fresh_tmp(g)
-                    emit_typed_load_len(g, len_i64, len_gep)
-                    len_i32 := fresh_tmp(g)
-                    emit(g, "  %s = trunc i64 %s to i32", len_i32, len_i64)
-                    fmt_name, fmt_len := get_string_literal(g, "%.*s")
-                    fmt_ptr := fresh_tmp(g)
-                    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, len_i32, data_ptr)
-                    printed = true
-                }
-            } else if _, str_ok := arg_expr.(^Expr_String); str_ok {
-                // Bare string literal in print — use old ptr path
-                val := gen_expr(g, arg_expr)
-                fmt_name, fmt_len := get_string_literal(g, "%s")
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_ptr(g, fmt_ptr, val)
-                printed = true
+            if h, ok := resolve_array_handle(g, arg_expr); ok && h.is_utf8 {
+                emit_array_print(g, &h)
             }
-            _ = printed
         } else if is_array_expr(g, arg_expr) {
             // Check if the expression is a non-utf8 array variable
             gen_print_array(g, arg_expr)
