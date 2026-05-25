@@ -906,11 +906,13 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             append(&indices, GEP_Index{"i32", fmt.tprintf("%d", s.field_idx)})
 
         case Step_Index:
-            // Evaluate index, bounds check (must happen before the GEP uses it)
+            // Evaluate index, bounds check (must happen before the GEP uses it).
+            // Index uses slice_layout.len_ir width — matches both bounds-check
+            // and the natural width of any preceding slice header reads.
             idx_raw := gen_expr(g, s.index_expr)
-            idx := ensure_i64(g, idx_raw, s.index_expr)
+            idx := ensure_index_width(g, idx_raw, s.index_expr)
             emit_bounds_check(g, idx, fmt.tprintf("%d", s.capacity), s.name_hint, s.span)
-            append(&indices, GEP_Index{"i64", idx})
+            append(&indices, GEP_Index{slice_layout.len_ir, idx})
 
         case Step_Slice_Index:
             // Flush any pending GEP first — current_ptr must point at the
@@ -928,10 +930,10 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             cap_val := fresh_tmp(g)
             emit_typed_load_cap(g, cap_val, cap_gep)
             idx_raw := gen_expr(g, s.index_expr)
-            idx := ensure_i64(g, idx_raw, s.index_expr)
+            idx := ensure_index_width(g, idx_raw, s.index_expr)
             emit_bounds_check(g, idx, cap_val, s.name_hint, s.span)
             elem_ptr := fresh_tmp(g)
-            emit_elem_gep(g, elem_ptr, s.elem_type, data_ptr, idx)
+            emit_elem_gep(g, elem_ptr, s.elem_type, data_ptr, idx, slice_layout.len_ir)
             current_ptr = elem_ptr
             current_type = s.elem_type
             clear(&indices)
@@ -2311,6 +2313,16 @@ llvm_string_byte_length :: proc(s: string) -> int {
 // Runtime safety checks
 // ---------------------------------------------------------------------------
 
+// Convert an index-typed value to slice_layout.len_ir (the bounds-check
+// width, i32 today). Used by every array/slice indexing site so the
+// bounds check and the GEP operate at the same width as the array's
+// len/cap. An explicit conversion at the indexing primitive's boundary —
+// not a hidden codegen widen of user values elsewhere.
+ensure_index_width :: proc(g: ^Codegen, val: string, expr: Expr) -> string {
+    src_ir := expr_ir_type(g, expr)
+    return emit_type_convert(g, val, src_ir, slice_layout.len_ir)
+}
+
 // Ensure a value is i64 — if the expression is from a sub-i64 type (i32, i16, i8),
 // emit a sext to i64. Used for array index values before bounds checking.
 ensure_i64 :: proc(g: ^Codegen, val: string, expr: Expr) -> string {
@@ -2888,13 +2900,15 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     data_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", data_ptr, " = load ptr, ptr ", data_ptr_ptr}))
 
-    // Check the slice capacity — a zero-cap return means OOM
+    // Check the slice capacity — a zero-cap return means OOM. Comparison
+    // at the cap's natural width (slice_layout.cap_ir); the constant 0
+    // is width-agnostic in IR.
     cap_ptr := fresh_tmp(g)
     emit_slice_gep(g, cap_ptr, tmp_slice, SLICE.cap)
     cap_val := fresh_tmp(g)
     emit_typed_load_cap(g, cap_val, cap_ptr)
     is_oom := fresh_tmp(g)
-    emit(g, "  %s = icmp eq i64 %s, 0", is_oom, cap_val)
+    emit(g, "  %s = icmp eq %s %s, 0", is_oom, slice_layout.cap_ir, cap_val)
     ok_label := fresh_label(g, "arena.ok")
     fail_label := fresh_label(g, "arena.oom")
     emit_cond_br(g, is_oom, fail_label, ok_label)

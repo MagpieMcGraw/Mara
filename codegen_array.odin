@@ -339,7 +339,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     // the chain (chains model fixed-array indexing, not slice-deref).
     if sv, sv_ok := get_slice(g, ident.name); sv_ok {
         idx_raw := gen_expr(g, ix.index)
-        idx := ensure_i64(g, idx_raw, ix.index)
+        idx := ensure_index_width(g, idx_raw, ix.index)
         // Bound the index by .cap (the physical buffer size). Bounding by .len
         // would forbid append-at-len, which is exactly what `dst[dst.len] = src`
         // does. Cap is the storage extent.
@@ -369,7 +369,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         codegen_fatal(g, s.span, CODE_ARRAY, ident.name)
     }
     idx_raw := gen_expr(g, ix.index)
-    idx := ensure_i64(g, idx_raw, ix.index)
+    idx := ensure_index_width(g, idx_raw, ix.index)
     arr_cap: string
     if av.capacity_val != "" {
         arr_cap = av.capacity_val
@@ -645,7 +645,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
             gen_field_access(g, fa)
             if av, av_ok := claim_field_array(g); av_ok {
                 idx_raw := gen_expr(g, e.index)
-                idx := ensure_i64(g, idx_raw, e.index)
+                idx := ensure_index_width(g, idx_raw, e.index)
                 arr_len := fmt.tprintf("%d", usable_cap(&av))
                 emit_bounds_check(g, idx, arr_len, fa.field, e.span)
                 arr_type := array_var_type(&av)
@@ -670,7 +670,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
                 inner_elem := llvm_type_from_checker(inner_fa.elem)
                 inner_arr_type := fmt.tprintf("[%d x %s]", inner_fa.size, inner_elem)
                 idx_raw := gen_expr(g, e.index)
-                idx := ensure_i64(g, idx_raw, e.index)
+                idx := ensure_index_width(g, idx_raw, e.index)
                 arr_len := fmt.tprintf("%d", inner_fa.size)
                 emit_bounds_check(g, idx, arr_len, "array", e.span)
                 gep := fresh_tmp(g)
@@ -699,7 +699,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
             if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
                 global_name, byte_len := get_string_literal(g, lit.value)
                 idx_raw := gen_expr(g, e.index)
-                idx := ensure_i64(g, idx_raw, e.index)
+                idx := ensure_index_width(g, idx_raw, e.index)
                 emit_bounds_check(g, idx, fmt.tprintf("%d", byte_len), ident.name, e.span)
                 gep := fresh_tmp(g)
                 emit(g, "  %s = getelementptr [%d x i8], ptr %s, i64 0, i64 %s",
@@ -713,7 +713,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
     }
 
     idx_raw := gen_expr(g, e.index)
-    idx := ensure_i64(g, idx_raw, e.index)
+    idx := ensure_index_width(g, idx_raw, e.index)
 
     // Runtime bounds check — against capacity (compile-time) or capacity_val (VLA)
     arr_cap: string
@@ -751,7 +751,7 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
     if ident, ok := e.expr.(^Expr_Ident); ok {
         if sv, sv_ok := get_slice(g, ident.name); sv_ok {
             idx_raw := gen_expr(g, e.index)
-            idx := ensure_i64(g, idx_raw, e.index)
+            idx := ensure_index_width(g, idx_raw, e.index)
 
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
@@ -776,7 +776,7 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
         gen_field_access(g, fa)
         if sv, sv_ok := claim_field_slice(g); sv_ok {
             idx_raw := gen_expr(g, e.index)
-            idx := ensure_i64(g, idx_raw, e.index)
+            idx := ensure_index_width(g, idx_raw, e.index)
 
             cap_gep := fresh_tmp(g)
             emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
@@ -984,9 +984,17 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
 // Index into a slice: slice[idx] (value read).
 // Bounded by len (valid-data cursor) — you can only read what's been written.
 gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {
-    idx := gen_expr(g, e.index)
+    // Index normalised to the slice header's width for the bounds
+    // check. The type checker should ideally enforce this width at the
+    // source level (so users write i32(my_i64) at the indexing site),
+    // but for the migration period the indexing primitive accepts any
+    // numeric width and converts here — explicit codegen op, not a
+    // hidden widen of user values elsewhere.
+    raw_idx := gen_expr(g, e.index, slice_layout.len_ir)
+    idx_src_ir := expr_ir_type(g, e.index)
+    idx := emit_type_convert(g, raw_idx, idx_src_ir, slice_layout.len_ir)
 
-    // Load len from slice for bounds check
+    // Load len from slice for bounds check (natural width)
     len_gep := fresh_tmp(g)
     emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
     slice_len := fresh_tmp(g)
@@ -1005,9 +1013,9 @@ gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {
     data_ptr := fresh_tmp(g)
     emit_load_into(g, data_ptr, "ptr", data_gep)
 
-    // GEP to element
+    // GEP to element — idx is at slice header width per the conversion above.
     elem_ptr := fresh_tmp(g)
-    emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx)
+    emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx, slice_layout.len_ir)
     // Struct element: don't load. Hand back the address and tag it as a
     // struct-result so the caller (memcpy on assign, field-access, etc.)
     // works against the slot in place — same idiom as the field-access
