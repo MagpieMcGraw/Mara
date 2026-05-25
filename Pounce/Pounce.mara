@@ -98,8 +98,6 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game.vao = VAO_State()
 	gfx.primitives_init(&game.vao)
 
-	
-
 	game.running = true
 	game.initialized = true
 }

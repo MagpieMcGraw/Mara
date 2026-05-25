@@ -4,10 +4,7 @@ use mara.os
 
 str :: type [..128]utf8
 cstr :: type [..128, 0]utf8
-
-// str :: struct (n := 128 ) {
-// 	[..n]utf8
-// }
+cstring :: distinct ^utf8 // converts from cstr
 
 overload + add
 add :: dispatch {
