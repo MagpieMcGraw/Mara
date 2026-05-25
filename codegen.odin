@@ -2862,7 +2862,11 @@ emit_arena_bump_runtime :: proc(g: ^Codegen, size_val: string, name: string = "<
 
 // Call the Mara arena_alloc() function from the memory package.
 // arena_alloc(a: ^Arena, size: int, name: ^byte, span: ^byte) -> []byte
-// Returns the data pointer. Emits OOM check as safety net (arena_alloc crashes first).
+// Returns the data pointer. arena_alloc is responsible for aborting on
+// OOM — it already prints diagnostics with the name / loc strings we
+// pass in. No codegen-side check; if the user supplies a buggy arena
+// that returns an invalid slice, downstream code crashes when it
+// accesses the null ptr, same as any other broken function.
 emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<alloc>", loc: string = "<unknown>") -> string {
     // Deferred check: only fires if some code actually wants the arena. A
     // shared-build DLL with `#expose` fn(s) but no `context.scope_allocator
@@ -2876,7 +2880,7 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
         codegen_fatal(g, {}, CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR)
     }
     arena_ptr := get_context_arena_ptr(g)
-    // Alloca for the sret slice result { ptr, i64 }
+    // Alloca for the sret slice result { ptr, i64, i64 }
     tmp_slice := fresh_tmp(g)
     emit_slice_alloca(g, tmp_slice)
     // Get a pointer to the name string literal
@@ -2899,28 +2903,6 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     emit_slice_gep(g, data_ptr_ptr, tmp_slice, SLICE.ptr)
     data_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", data_ptr, " = load ptr, ptr ", data_ptr_ptr}))
-
-    // Check the slice capacity — a zero-cap return means OOM. Comparison
-    // at the cap's natural width (slice_layout.cap_ir); the constant 0
-    // is width-agnostic in IR.
-    cap_ptr := fresh_tmp(g)
-    emit_slice_gep(g, cap_ptr, tmp_slice, SLICE.cap)
-    cap_val := fresh_tmp(g)
-    emit_typed_load_cap(g, cap_val, cap_ptr)
-    is_oom := fresh_tmp(g)
-    emit(g, "  %s = icmp eq %s %s, 0", is_oom, slice_layout.cap_ir, cap_val)
-    ok_label := fresh_label(g, "arena.ok")
-    fail_label := fresh_label(g, "arena.oom")
-    emit_cond_br(g, is_oom, fail_label, ok_label)
-    emit_label(g, fail_label)
-    err_msg := "runtime error: arena out of memory\n"
-    err_name, err_len := get_string_literal(g, err_msg)
-    err_ptr := fresh_tmp(g)
-    emit_string_gep(g, err_ptr, err_len, err_name)
-    emit_printf_void(g, err_ptr)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
-    emit_label(g, ok_label)
 
     return data_ptr
 }
