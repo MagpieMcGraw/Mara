@@ -563,6 +563,8 @@ TYPE_PRINT_FLOAT_EXPECTS_ARGUMENT_FLOAT :: "print_float() expects 1 argument (fl
 TYPE_SLICE_PTR_EXPECTS_ARGUMENTS_PTR :: "slice_from_ptr() expects 2 arguments (ptr, size), got %d"
 TYPE_SLICE_PTR_FIRST_ARGUMENT_POINTER :: "slice_from_ptr() first argument must be a pointer, got %s"
 TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC :: "slice_from_ptr() second argument must be numeric, got %s"
+TYPE_SLICE_PTR_SECOND_ARGUMENT_WIDTH :: "slice_from_ptr() second argument must be %s to match slice header width, got %s — add an explicit cast"
+TYPE_INDEX_WIDTH :: "array/slice index must be %s to match slice header width, got %s — add an explicit cast"
 TYPE_SLICE_PTR_OUTSIDE_OS_MODULE :: "slice_from_ptr() outside the os module requires a comptime-known size "
 TYPE_EXPECTS_ARGUMENT_3 :: "%s() expects 1 argument, got %d"
 TYPE_LEFT_OPERAND_BOOL :: "left operand of '%s' must be bool, got %s"
@@ -603,8 +605,6 @@ TYPE_SLICE_HIGH_BOUND_NUMERIC :: "slice high bound must be numeric, got %s"
 // Codegen fatals — populated in next pass.
 // ============================================================
 
-CODE_ENSURE_I64_UNEXPECTED_IR_TYPE :: "ensure_i64: unexpected IR type '%s'"
-CODE_EMIT_TYPE_CONVERT_UNSUPPORTED_SCALAR :: "emit_type_convert: unsupported scalar conversion '%s' -> '%s'"
 CODE_DLL_EXPOSE_FN_USES_ARENA :: "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `program = Program(ArenaType(<args>))` somewhere in this module to specify the Context layout (must match the host's allocator type)"
 CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR :: "arena allocation requested but no scope_allocator declared"
 CODE_ARRAY :: "'%s' is not an array"

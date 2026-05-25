@@ -10,7 +10,7 @@ Texture :: struct {
 
 Mesh :: struct {
     name:  str,
-    index: i64,
+    index: i32,
 }
 
 Font :: struct {

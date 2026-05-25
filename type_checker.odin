@@ -3337,6 +3337,50 @@ is_integer :: proc(t: Type) -> bool {
     return false
 }
 
+// Slice header width — kept in sync with codegen's slice_layout.len_ir.
+// Currently i32; flip both sides together when widening to i64.
+slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 32}
+
+// Does `t` coerce to slice-header width without an implicit cast at the
+// codegen boundary? Used by indexing / slice-bound / take-count / slice_from_ptr
+// — every site where the codegen used to silently sext/trunc.
+coerces_to_slice_width :: proc(t: Type) -> bool {
+    #partial switch v in t {
+    case Type_Infer_Int: return true   // comptime literal
+    case Type_Any:       return true   // error recovery
+    case Type_Error:     return true   // error suppression
+    case Type_Numeric:
+        return v.kind == slice_header_width_type.kind && v.bits == slice_header_width_type.bits
+    case ^Type_Enum:
+        // Enums lower to their tag width — accept if tag IR matches.
+        return tag_type_matches_slice_width(v.tag_type)
+    case ^Type_Union:
+        // Tagged unions used as indices (e.g. SDL's `union(tag u32) Scancode`)
+        // — accept if the tag IR matches.
+        return tag_type_matches_slice_width(v.tag_type)
+    case ^Type_Distinct:
+        return coerces_to_slice_width(v.base_type)
+    }
+    return false
+}
+
+// `tag_type` strings on Type_Enum/Type_Union are "" (default, currently i64),
+// "i8"/"i16"/"i32"/"i64", or "u8"/.../u64. Width comparison only — sign
+// doesn't matter at the GEP-index level.
+tag_type_matches_slice_width :: proc(tag: string) -> bool {
+    // Default tag is i64 (matches Type_Int). Today's slice width is i32, so
+    // default-tag enums/unions don't coerce — same rule as a bare `int` index.
+    expected_bits := slice_header_width_type.bits
+    switch tag {
+    case "":               return expected_bits == 64
+    case "i8",  "u8":      return expected_bits == 8
+    case "i16", "u16":     return expected_bits == 16
+    case "i32", "u32":     return expected_bits == 32
+    case "i64", "u64":     return expected_bits == 64
+    }
+    return false
+}
+
 // Check if the checker is currently processing a given package. Accepts the
 // bare name (e.g. "os") and matches when current_package is either the bare
 // name (user packages) or its dotted stdlib form ("mara.os").
@@ -6030,6 +6074,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         size_type := check_expr(c, s.vla_size_expr, env)
                         if !is_any(size_type) && !is_numeric(size_type) {
                             check_error(c, s.span, TYPE_SIZE_EXPRESSION_INTEGER, type_name(size_type))
+                        } else if !coerces_to_slice_width(size_type) {
+                            check_error(c, s.span, TYPE_INDEX_WIDTH,
+                                type_name(slice_header_width_type), type_name(size_type))
                         }
                     }
                 }
@@ -6730,7 +6777,10 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
             type_env_set(&child, s.elem_var, elem_type)
         }
         if s.index_var != "" {
-            type_env_set(&child, s.index_var, Type_Int{})
+            // Index lives at slice header width — that's what codegen allocates
+            // the counter as. Typing it as i64 here would force users to cast
+            // when feeding it back into other slice ops.
+            type_env_set(&child, s.index_var, Type_Numeric{kind = .Signed, bits = 32})
         }
 
         s.elem_type_ = distinct_base(elem_type)
@@ -6747,10 +6797,13 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         } else {
             iter_type = promote_numeric(c, low_type, high_type, s.span)
             if _, ok := iter_type.(Type_Error); ok {
-                iter_type = Type_Int{}
+                iter_type = slice_header_width_type
             }
             if is_infer(iter_type) {
-                iter_type = Type_Int{}
+                // Default `for k in 0..N` ranges to slice header width so the
+                // index can flow into array/slice access without a cast. Users
+                // wanting i64 still get it via `for k: i64 in 0..N`.
+                iter_type = slice_header_width_type
             }
         }
 
@@ -7387,6 +7440,9 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 
     if !is_numeric(idx_type) && !is_any(idx_type) {
         check_error(c, s.span, TYPE_ARRAY_INDEX_NUMBER, type_name(idx_type))
+    } else if !coerces_to_slice_width(idx_type) {
+        check_error(c, s.span, TYPE_INDEX_WIDTH,
+            type_name(slice_header_width_type), type_name(idx_type))
     }
 
     if pname, immut := write_root_immutable_param(s.target, env); immut {
@@ -7440,9 +7496,15 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 
     if !is_numeric(low_type) && !is_any(low_type) {
         check_error(c, s.span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(low_type))
+    } else if !coerces_to_slice_width(low_type) {
+        check_error(c, s.span, TYPE_INDEX_WIDTH,
+            type_name(slice_header_width_type), type_name(low_type))
     }
     if sl.high != nil && !is_numeric(high_type) && !is_any(high_type) {
         check_error(c, s.span, TYPE_SLICE_UPPER_BOUND_NUMBER, type_name(high_type))
+    } else if sl.high != nil && !coerces_to_slice_width(high_type) {
+        check_error(c, s.span, TYPE_INDEX_WIDTH,
+            type_name(slice_header_width_type), type_name(high_type))
     }
 
     if pname, immut := write_root_immutable_param(s.target, env); immut {
@@ -9630,12 +9692,17 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         if _, is_err := resolved.(Type_Error); is_err {
             check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
         }
-        // Runtime-counted form: validate count is integer, resolved is a slice.
+        // Runtime-counted form: validate count is integer at slice header
+        // width, resolved is a slice. Codegen does NOT emit an implicit
+        // narrow/widen on the count.
         if e.count_expr != nil {
             count_type := check_expr(c, e.count_expr, env)
             if !is_any(count_type) && !is_numeric(count_type) {
                 check_error(c, e.span,
                     TYPE_TAKE_COUNT_INTEGER, type_name(count_type))
+            } else if !coerces_to_slice_width(count_type) {
+                check_error(c, e.span, TYPE_INDEX_WIDTH,
+                    type_name(slice_header_width_type), type_name(count_type))
             }
             if _, is_slice := distinct_base(resolved).(^Type_Slice); !is_slice {
                 check_error(c, e.span,
@@ -10196,6 +10263,13 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             size_type := check_expr(c, args[1], env)
             if !is_numeric(size_type) && !is_any(size_type) {
                 check_error(c, e.span, TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC, type_name(size_type))
+            } else if !coerces_to_slice_width(size_type) {
+                // Codegen does NOT emit an implicit narrow/widen — user must
+                // cast at the boundary.
+                check_error(c, e.span,
+                    TYPE_SLICE_PTR_SECOND_ARGUMENT_WIDTH,
+                    type_name(slice_header_width_type),
+                    type_name(size_type))
             }
             if !is_package(c, "os") {
                 if _, comptime_ok := evaluate_comptime_int(c, args[1]); !comptime_ok {
@@ -11293,6 +11367,12 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
 
     if !is_numeric(idx_type) {
         check_error(c, e.span, TYPE_INDEX_NUMBER, type_name(idx_type))
+    } else if !coerces_to_slice_width(idx_type) {
+        // Index width must match slice header; codegen does NOT emit an
+        // implicit narrow/widen.
+        check_error(c, e.span, TYPE_INDEX_WIDTH,
+            type_name(slice_header_width_type),
+            type_name(idx_type))
     }
 
     // Array indexing returns element type
@@ -11320,7 +11400,7 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
     }
 
     // Partial array indexing — same as slice; the header has matching first
-    // 24 bytes so codegen can reuse the slice indexing path.
+    // slice_header_bytes so codegen can reuse the slice indexing path.
     if pa, ok := target_type.(^Type_Partial_Array); ok {
         return pa.elem
     }
@@ -11354,17 +11434,24 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Env) -> Type {
         return Type_Error{}
     }
 
-    // Check that low/high are numeric
+    // Check that low/high are numeric AND match slice header width — codegen
+    // does NOT emit an implicit narrow/widen.
     if e.low != nil {
         lt := check_expr(c, e.low, env)
         if !is_numeric(lt) && !is_any(lt) {
             check_error(c, e.span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
+        } else if !coerces_to_slice_width(lt) {
+            check_error(c, e.span, TYPE_INDEX_WIDTH,
+                type_name(slice_header_width_type), type_name(lt))
         }
     }
     if e.high != nil {
         ht := check_expr(c, e.high, env)
         if !is_numeric(ht) && !is_any(ht) {
             check_error(c, e.span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
+        } else if !coerces_to_slice_width(ht) {
+            check_error(c, e.span, TYPE_INDEX_WIDTH,
+                type_name(slice_header_width_type), type_name(ht))
         }
     }
 

@@ -51,7 +51,7 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
 
     // Mesh tracking
     meshes:         [MAX_VAO_MESHES]VAO_Mesh
-    mesh_count:     i64
+    mesh_count:     i32
 
     // Create OpenGL objects
     gl.GenVertexArrays(1, &vao)
@@ -133,7 +133,7 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
 
 // Add geometry to the VAO, returns the mesh index
 // Returns 0 on error (not enough space)
-vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i64 {
+vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i32 {
     vertex_count := len(geom.vertices)
     index_count := len(geom.indices)
 

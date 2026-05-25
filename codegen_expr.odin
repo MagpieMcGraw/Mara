@@ -1001,15 +1001,12 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     }
 
     // Built-in: slice_from_ptr(ptr, cap) -> []byte — wraps a raw pointer + capacity into a byte slice.
-    // cap is normalised to the slice header's width via emit_type_convert.
-    // The conversion is from the user's expression width to the header
-    // width, an explicit narrowing at this primitive's boundary.
+    // Type checker enforces cap's width matches slice_layout.cap_ir; codegen
+    // does not narrow/widen — pass straight through.
     if e.name == "slice_from_ptr" && len(e.args) == 2 {
         ptr_val := gen_expr(g, e.args[0])
-        cap_val := gen_expr(g, e.args[1])
-        cap_ir  := expr_ir_type(g, e.args[1])
-        cap_at_width := emit_type_convert(g, cap_val, cap_ir, slice_layout.cap_ir)
-        return emit_build_temp_slice(g, ptr_val, cap_at_width, cap_at_width)
+        cap_val := gen_expr(g, e.args[1], slice_layout.cap_ir)
+        return emit_build_temp_slice(g, ptr_val, cap_val, cap_val)
     }
 
     // Type casts: i32(x), f64(x), etc.
@@ -1145,14 +1142,6 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             args_joined := strings.join(arg_strs[:], ", ")
             tmp := fresh_tmp(g)
             emit(g, "  %s = call %s %s(%s)", tmp, info.ret_type, ir_name, args_joined)
-            // Reconcile: call IR type may differ from type checker annotation.
-            // Convert so the returned value matches what expr_ir_type reports.
-            if e.type_ != nil && !is_untyped(e.type_) {
-                expected := llvm_type_from_checker(e.type_)
-                if expected != info.ret_type {
-                    tmp = emit_type_convert(g, tmp, info.ret_type, expected)
-                }
-            }
             return tmp
         }
     }
@@ -1304,13 +1293,9 @@ emit_c_scalar_arg :: proc(g: ^Codegen, arg_expr: Expr, pt: string, arg_strs: ^[d
             }
         }
     }
+    // Type checker enforces arg matches declared param type — pass the target
+    // through gen_expr's hint so infer literals produce the right width.
     val := gen_expr(g, arg_expr, pt)
-    if !is_infer_expr(g, arg_expr) {
-        val_type := expr_ir_type(g, arg_expr)
-        if val_type != pt {
-            val = emit_type_convert(g, val, val_type, pt)
-        }
-    }
     if pt == "ptr" && val == "0" {
         val = "null"
     }
@@ -1366,9 +1351,9 @@ emit_escape_storage_args :: proc(g: ^Codegen, arg_strs: ^[dynamic]string, info: 
             cur := fresh_tmp(g)
             emit_typed_load_len(g, cur, len_gep)
             ptr = fresh_tmp(g)
-            emit(g, "  %s = getelementptr i8, ptr %s, i64 %s", ptr, base, cur)
+            emit(g, "  %s = getelementptr i8, ptr %s, %s %s", ptr, base, slice_layout.len_ir, cur)
             next := fresh_tmp(g)
-            emit(g, "  %s = add i64 %s, %d", next, cur, total_bytes)
+            emit(g, "  %s = add %s %s, %d", next, slice_layout.len_ir, cur, total_bytes)
             emit_typed_store_len(g, next, len_gep)
         } else if g.context_enabled && total_bytes >= 1024 {
             name := fmt.tprintf("<%s.%s>", call_name, el.name)
@@ -2016,33 +2001,35 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     // Element count is always capacity (full arrays)
     arr_len := fmt.tprintf("%d", av.capacity)
 
-    // Loop through elements
+    // Loop through elements. Counter runs at slice header width; array
+    // capacities fit by construction.
+    w := slice_layout.len_ir
     cond_label := fresh_label(g, "print.cond")
     body_label := fresh_label(g, "print.body")
     end_label  := fresh_label(g, "print.end")
 
     idx_ptr := fresh_tmp(g)
-    emit_alloca(g, idx_ptr, "i64")
-    emit_store(g, "i64", "0", idx_ptr)
+    emit_alloca(g, idx_ptr, w)
+    emit_store(g, w, "0", idx_ptr)
     emit_br(g, cond_label)
 
     emit_label(g, cond_label)
     idx := fresh_tmp(g)
-    emit_load_into(g, idx, "i64", idx_ptr)
+    emit_load_into(g, idx, w, idx_ptr)
     cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt i64 %s, %s", cmp, idx, arr_len)
+    emit(g, "  %s = icmp slt %s %s, %s", cmp, w, idx, arr_len)
     emit_cond_br(g, cmp, body_label, end_label)
 
     emit_label(g, body_label)
     idx2 := fresh_tmp(g)
-    emit_load_into(g, idx2, "i64", idx_ptr)
+    emit_load_into(g, idx2, w, idx_ptr)
 
     // Print comma+space if not first element
     comma_label := fresh_label(g, "print.comma")
     no_comma_label := fresh_label(g, "print.nocomma")
     after_comma_label := fresh_label(g, "print.aftercomma")
     is_first := fresh_tmp(g)
-    emit(g, "  %s = icmp eq i64 %s, 0", is_first, idx2)
+    emit(g, "  %s = icmp eq %s %s, 0", is_first, w, idx2)
     emit_cond_br(g, is_first, no_comma_label, comma_label)
 
     emit_label(g, comma_label)
@@ -2058,9 +2045,9 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     emit_label(g, after_comma_label)
     // Load and print the element
     idx3 := fresh_tmp(g)
-    emit_load_into(g, idx3, "i64", idx_ptr)
+    emit_load_into(g, idx3, w, idx_ptr)
     gep := fresh_tmp(g)
-    emit_array_gep_var(g, gep, arr_type, av.alloca, idx3)
+    emit_array_gep_var(g, gep, arr_type, av.alloca, idx3, w)
     val := fresh_tmp(g)
     emit_load_into(g, val, av.elem_type, gep)
 
@@ -2087,8 +2074,8 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
 
     // Increment index
     next := fresh_tmp(g)
-    emit(g, "  %s = add i64 %s, 1", next, idx3)
-    emit_store(g, "i64", next, idx_ptr)
+    emit(g, "  %s = add %s %s, 1", next, w, idx3)
+    emit_store(g, w, next, idx_ptr)
     emit_br(g, cond_label)
 
     emit_label(g, end_label)

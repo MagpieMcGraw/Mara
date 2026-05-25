@@ -3,7 +3,7 @@ module mara.os
 use mara.string
 
 // DANGER BELOW
-read_cstring :: fun(cap: i64, src: ^byte) -> [, 0]utf8 {
+read_cstring :: fun(cap: i32, src: ^byte) -> [, 0]utf8 {
 	cstring : [, 0]utf8 = slice_from_ptr(src, cap)
 	for utf8_byte, i in cstring {
 		if utf8_byte == 0 do return cstring[:i]
@@ -16,10 +16,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	#if #native {
 		raw := vm_reserve(cap)
 		vm_commit(raw, cap)
-    	return slice_from_ptr(raw, cap)
+    	return slice_from_ptr(raw, i32(cap))
 	}
 	#if #web {
-		return slice_from_ptr(malloc(usize(cap)), cap)
+		return slice_from_ptr(malloc(usize(cap)), i32(cap))
 	}
 }
 

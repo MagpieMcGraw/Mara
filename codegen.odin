@@ -24,7 +24,7 @@ import os_old "core:os/old"
 // (16-byte slices on 64-bit, 32-bit ptr on embedded, etc.) without touching
 // every codegen site.
 //
-// Defaults are set at package init for 64-bit / i64 len+cap (slice = 24
+// Defaults are set at package init for 64-bit / i32 len+cap (slice = 16
 // bytes). `init_slice_layout` in generate_program updates ptr_size and the
 // derived strings for the actual target.
 Slice_Layout :: struct {
@@ -87,7 +87,7 @@ partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
 }
 
 // Open design note: partial arrays reuse the slice layout via pointer-pun on
-// the first 24 bytes, which lets one set of field-access codegen paths serve
+// the first slice_header_bytes, which lets one set of field-access codegen paths serve
 // both. Cost: shared code concentrates bugs (see the stale-index bug fixed
 // in gen_slice_field_store — it survived because there's no parallel
 // partial-array writer to disagree), and the address chain collapses both
@@ -115,9 +115,10 @@ Array_Var :: struct {
 }
 
 // Info about a slice variable in codegen
-// A slice is a fat pointer: { ptr data, i64 len, i64 cap }
+// A slice is a fat pointer: { ptr data, <len_ir> len, <cap_ir> cap }
+// (widths configured via slice_layout — see codegen.odin top of file).
 Slice_Var :: struct {
-    alloca:       string, // alloca for the { ptr, i64, i64 } struct
+    alloca:       string, // alloca for the slice header struct
     elem_type:    string, // LLVM element type: "i64", "double", etc.
     is_utf8:      bool,   // true for []utf8 slices — drives string-vs-array print formatting
     has_sentinel: bool,   // true for [, S]T sentinel-terminated slices — last element reserved
@@ -187,7 +188,7 @@ Step_Index :: struct {
 }
 
 // Index into a slice (dynamic cap, runtime-loaded). current_ptr points at a
-// slice header { ptr, i64 len, i64 cap }; emission loads data+cap, bounds-checks
+// slice header (see Slice_Var for layout); emission loads data+cap, bounds-checks
 // against cap (writes-at-len need to be legal so use cap, not len), and GEPs
 // elem_type from the data pointer. Resets the index segment so subsequent field
 // steps GEP into the element struct.
@@ -712,8 +713,8 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             }
             if strings.has_prefix(ft, "{ ") {
                 // Slice OR partial-array field — both layouts share the first
-                // 24 bytes ({len, cap, ptr}), so the same chain end-state and
-                // subsequent .len/.cap/.ptr access work for both.
+                // slice_header_bytes ({len, cap, ptr}), so the same chain end-state
+                // and subsequent .len/.cap/.ptr access work for both.
                 chain.final_type = ft
                 chain.final_kind = .Slice
                 chain.struct_name = ""
@@ -907,10 +908,8 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
 
         case Step_Index:
             // Evaluate index, bounds check (must happen before the GEP uses it).
-            // Index uses slice_layout.len_ir width — matches both bounds-check
-            // and the natural width of any preceding slice header reads.
-            idx_raw := gen_expr(g, s.index_expr)
-            idx := ensure_index_width(g, idx_raw, s.index_expr)
+            // Type checker guarantees idx_expr is already at slice header width.
+            idx := gen_expr(g, s.index_expr, slice_layout.len_ir)
             emit_bounds_check(g, idx, fmt.tprintf("%d", s.capacity), s.name_hint, s.span)
             append(&indices, GEP_Index{slice_layout.len_ir, idx})
 
@@ -929,8 +928,7 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             emit_slice_gep(g, cap_gep, current_ptr, SLICE.cap)
             cap_val := fresh_tmp(g)
             emit_typed_load_cap(g, cap_val, cap_gep)
-            idx_raw := gen_expr(g, s.index_expr)
-            idx := ensure_index_width(g, idx_raw, s.index_expr)
+            idx := gen_expr(g, s.index_expr, slice_layout.len_ir)
             emit_bounds_check(g, idx, cap_val, s.name_hint, s.span)
             elem_ptr := fresh_tmp(g)
             emit_elem_gep(g, elem_ptr, s.elem_type, data_ptr, idx, slice_layout.len_ir)
@@ -1389,10 +1387,12 @@ emit_array_gep_const :: proc(g: ^Codegen, dst, arr_type, base: string, idx: int)
 
 // `  <dst> = getelementptr <arr_type>, ptr <base>, i64 0, <idx_ir> <idx>\n`
 // Variable-index array GEP — `idx` is an SSA name string, not a constant.
-// `idx_ir` defaults to "i64" for compat with sites that haven't been
-// audited yet; new sites should pass the index's actual IR type to avoid
-// silent codegen-level widens.
-emit_array_gep_var :: proc(g: ^Codegen, dst, arr_type, base, idx: string, idx_ir: string = "i64") {
+// `idx_ir` is the LLVM IR type of `idx`; callers pass slice_layout.len_ir
+// when the index comes from a user expression / slice header, "i32" when
+// it comes from a fixed-position counter, etc. No default — every call
+// site states the index width explicitly so the slice-header width flip
+// (i32 ↔ i64) propagates correctly.
+emit_array_gep_var :: proc(g: ^Codegen, dst, arr_type, base, idx, idx_ir: string) {
     b := emit_target(g)
     strings.write_string(b, "  ")
     strings.write_string(b, dst)
@@ -1410,8 +1410,9 @@ emit_array_gep_var :: proc(g: ^Codegen, dst, arr_type, base, idx: string, idx_ir
 // `  <dst> = getelementptr <elem_type>, ptr <base>, <idx_ir> <idx>\n`
 // Element-step GEP for raw element pointers (slice data pointers, VLA bases).
 // One-dimensional version: no outer `i64 0` because base already points at
-// the element-typed array.
-emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx: string, idx_ir: string = "i64") {
+// the element-typed array. `idx_ir` is the LLVM type of `idx` — no default
+// so every call site states the index width.
+emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx, idx_ir: string) {
     b := emit_target(g)
     strings.write_string(b, "  ")
     strings.write_string(b, dst)
@@ -2193,14 +2194,27 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case Type_Numeric:
         switch v.kind {
         case .Signed, .Unsigned:
-            // bits=0 → word-sized (usize/isize). Read the module-local flag
+            // Width comes from a closed set — return interned constants
+            // instead of allocating a fresh "i%d" string each call. This is
+            // a hot path (every expr_ir_type query).
+            // bits=0 → word-sized (usize/isize); read the module-local flag
             // set by generate_program — wasm32 → i32, x86-64 → i64.
-            if v.bits == 0 { return "i32" if word_size_is_32 else "i64" }
-            return fmt.tprintf("i%d", v.bits)
+            switch v.bits {
+            case 0:   return "i32" if word_size_is_32 else "i64"
+            case 8:   return "i8"
+            case 16:  return "i16"
+            case 32:  return "i32"
+            case 64:  return "i64"
+            case 128: return "i128"
+            }
+            panic(fmt.tprintf("llvm_type_from_checker: unexpected integer width %d", v.bits))
         case .Float:
-            if v.bits == 16 { return "half" }
-            if v.bits == 32 { return "float" }
-            return "double"
+            switch v.bits {
+            case 16: return "half"
+            case 32: return "float"
+            case 64: return "double"
+            }
+            panic(fmt.tprintf("llvm_type_from_checker: unexpected float width %d", v.bits))
         }
     case Type_Bool:         return "i1"
     case Type_C8:           return "i8"
@@ -2313,86 +2327,8 @@ llvm_string_byte_length :: proc(s: string) -> int {
 // Runtime safety checks
 // ---------------------------------------------------------------------------
 
-// Convert an index-typed value to slice_layout.len_ir (the bounds-check
-// width, i32 today). Used by every array/slice indexing site so the
-// bounds check and the GEP operate at the same width as the array's
-// len/cap. An explicit conversion at the indexing primitive's boundary —
-// not a hidden codegen widen of user values elsewhere.
-ensure_index_width :: proc(g: ^Codegen, val: string, expr: Expr) -> string {
-    src_ir := expr_ir_type(g, expr)
-    return emit_type_convert(g, val, src_ir, slice_layout.len_ir)
-}
-
-// Ensure a value is i64 — if the expression is from a sub-i64 type (i32, i16, i8),
-// emit a sext to i64. Used for array index values before bounds checking.
-ensure_i64 :: proc(g: ^Codegen, val: string, expr: Expr) -> string {
-    ir := expr_ir_type(g, expr)
-    if ir == "i64" || ir == "double" || ir == "float" || ir == "ptr" || ir == "i1" {
-        return val
-    }
-    if ir == "i32" || ir == "i16" || ir == "i8" {
-        ext := fresh_tmp(g)
-        emit(g, "  %s = sext %s %s to i64", ext, ir, val)
-        return ext
-    }
-    codegen_fatal(g, {}, CODE_ENSURE_I64_UNEXPECTED_IR_TYPE, ir)
-}
-
-// Emit an LLVM type conversion between scalar types.
-// Returns the (possibly converted) value register.
-emit_type_convert :: proc(g: ^Codegen, val: string, from: string, to: string) -> string {
-    if from == to { return val }
-    is_int :: proc(t: string) -> bool {
-        return t == "i64" || t == "i32" || t == "i16" || t == "i8" || t == "i1"
-    }
-    is_float :: proc(t: string) -> bool {
-        return t == "double" || t == "float"
-    }
-    // Constant short-circuits: type-converting a literal zero produces the
-    // zero of the destination type, with no IR. Saves a few thousand
-    // sext/zext/trunc/sitofp instructions on struct-init-heavy modules
-    // (every defaulted-to-0 numeric field hit this).
-    if val == "0" {
-        if is_int(to) { return "0" }
-        if is_float(to) { return "0.0" }
-    }
-    conv := fresh_tmp(g)
-    int_bits :: proc(t: string) -> int {
-        switch t {
-        case "i64": return 64
-        case "i32": return 32
-        case "i16": return 16
-        case "i8":  return 8
-        case "i1":  return 1
-        }
-        panic(fmt.tprintf("int_bits: unknown integer type '%s'", t))
-    }
-    if is_int(from) && is_int(to) {
-        fb := int_bits(from)
-        tb := int_bits(to)
-        if fb > tb {
-            emit(g, "  %s = trunc %s %s to %s", conv, from, val, to)
-        } else {
-            emit(g, "  %s = sext %s %s to %s", conv, from, val, to)
-        }
-    } else if is_float(from) && is_float(to) {
-        if from == "double" && to == "float" {
-            emit(g, "  %s = fptrunc double %s to float", conv, val)
-        } else {
-            emit(g, "  %s = fpext float %s to double", conv, val)
-        }
-    } else if is_float(from) && is_int(to) {
-        emit(g, "  %s = fptosi %s %s to %s", conv, from, val, to)
-    } else if is_int(from) && is_float(to) {
-        emit(g, "  %s = sitofp %s %s to %s", conv, from, val, to)
-    } else {
-        codegen_fatal(g, {}, CODE_EMIT_TYPE_CONVERT_UNSUPPORTED_SCALAR, from, to)
-    }
-    return conv
-}
-
 // Emit a runtime bounds check: if idx < 0 or idx >= len, print error and exit(1).
-// `idx` is the i64 index value, `len` is the i64 length value (or compile-time constant string).
+// Both `idx` and `len` are at slice header width (slice_layout.len_ir).
 // `name` is the variable name for the error message.
 // Module-level helpers for the runtime fail blocks. Emitted once per module;
 // per-site fail blocks shrink to `call helper(...) + unreachable`. `loc` and
@@ -2891,12 +2827,15 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
     span_global, span_len := get_string_literal(g, loc)
     span_ptr := fresh_tmp(g)
     emit_string_gep(g, span_ptr, span_len, span_global)
-    // sret goes last, after the regular params
+    // sret goes last, after the regular params. The size operand width matches
+    // the arena's declared `alloc(..., size: <int-type>, ...)` — since every
+    // alloc hands back a `[]byte`, the size shares the slice header width.
     alloc_ir := mara_fn_name(g, g.arena_alloc_name)
+    w := slice_layout.len_ir
     if g.arena_alloc_has_debug {
-        emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", i64 ", size_val, ", ptr ", name_ptr, ", ptr ", span_ptr, ", ptr ", tmp_slice, ")"}))
+        emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", ", w, " ", size_val, ", ptr ", name_ptr, ", ptr ", span_ptr, ", ptr ", tmp_slice, ")"}))
     } else {
-        emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", i64 ", size_val, ", ptr ", tmp_slice, ")"}))
+        emit_raw(g, strings.concatenate({"  call void ", alloc_ir, "(ptr ", arena_ptr, ", ", w, " ", size_val, ", ptr ", tmp_slice, ")"}))
     }
     // Extract raw data pointer from the returned slice header
     data_ptr_ptr := fresh_tmp(g)

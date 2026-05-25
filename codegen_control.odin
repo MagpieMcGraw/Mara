@@ -260,7 +260,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
 
     // Field access whose result is a partial array, e.g. `context.args`.
     // Read len from field 0 and data ptr from field 2 of the partial-array
-    // header (shared layout with slice for the first 24 bytes).
+    // header (shared layout with slice for the first slice_header_bytes).
     resolved := false
     if coll_fa != nil {
         if pa, pa_ok := expr_type(coll_fa).(^Type_Partial_Array); pa_ok {

@@ -13,3 +13,8 @@ Memory management is manual, but almost invisible. Variables either go on the st
 Fixed sized variables, including arrays, can be declared in functions and returned from them. RVO makes sure they are valid in the higher scope they are returned to.
 
 Slices are used to return runtime sized data from functions, by carving a buffer passed from a higher scope.
+
+Important learnings:
+
+Define codegen types and stick to them. No hardcoded sizes
+

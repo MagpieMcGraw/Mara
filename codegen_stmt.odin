@@ -534,6 +534,33 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             ir_type = expr_ir_type(g, s.value)
         }
 
+        // No initializer: alloca + zero-init below is the final state.
+        // Mostly fires for class-body field decls (`x: f32`) which desugar to
+        // Stmt_Assigns with nil .value; storing again from gen_expr's "0"
+        // fallthrough would clobber float/double slots with `store float 0`,
+        // which LLVM rejects.
+        if s.value == nil {
+            alloca_name := fmt.tprintf("%%%s", s.name)
+            emit_alloca(g, alloca_name, ir_type)
+            if ir_type == "ptr" {
+                emit_store(g, "ptr", "null", alloca_name)
+            } else if ir_type == "double" {
+                emit(g, "  store double 0.0, ptr %s", alloca_name)
+            } else if ir_type == "float" {
+                emit(g, "  store float 0.0, ptr %s", alloca_name)
+            } else if ir_type == "half" {
+                emit(g, "  store half 0xH0000, ptr %s", alloca_name)
+            } else if ir_type == "i1" {
+                emit(g, "  store i1 false, ptr %s", alloca_name)
+            } else if strings.has_prefix(ir_type, "[") || strings.has_prefix(ir_type, "%") {
+                emit(g, "  store %s zeroinitializer, ptr %s", ir_type, alloca_name)
+            } else {
+                emit_store(g, ir_type, "0", alloca_name)
+            }
+            g.all_vars[s.name] = Scalar_Var{alloca_name}
+            return
+        }
+
         val := gen_expr(g, s.value, ir_type)
 
         // Check if gen_expr produced a swizzle result (e.g. sub := arr.xy)
@@ -571,14 +598,8 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             g.all_vars[s.name] = Scalar_Var{alloca_name}
         }
 
-        // Convert value to target type if needed (only for concrete-typed exprs)
-        if !is_infer_expr(g, s.value) {
-            val_type := expr_ir_type(g, s.value)
-            if val_type != ir_type {
-                val = emit_type_convert(g, val, val_type, ir_type)
-            }
-        }
-
+        // Type checker enforces val_type == ir_type for concrete exprs;
+        // infer literals already produce the target type via gen_expr's hint.
         alloca, _ := get_scalar(g, s.name)
         emit_store(g, ir_type, val, alloca)
 
@@ -1053,35 +1074,36 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
             src_type := array_var_type(&src_av)
             copy_bound := fmt.tprintf("%d", src_av.capacity)
 
+            w := slice_layout.len_ir
             cond_label := fresh_label(g, "ret.copy.cond")
             body_label := fresh_label(g, "ret.copy.body")
             end_label  := fresh_label(g, "ret.copy.end")
 
             idx_ptr := fresh_tmp(g)
-            emit_alloca(g, idx_ptr, "i64")
-            emit_store(g, "i64", "0", idx_ptr)
+            emit_alloca(g, idx_ptr, w)
+            emit_store(g, w, "0", idx_ptr)
             emit_br(g, cond_label)
 
             emit_label(g, cond_label)
             idx := fresh_tmp(g)
-            emit_load_into(g, idx, "i64", idx_ptr)
+            emit_load_into(g, idx, w, idx_ptr)
             cmp := fresh_tmp(g)
-            emit(g, "  %s = icmp slt i64 %s, %s", cmp, idx, copy_bound)
+            emit(g, "  %s = icmp slt %s %s, %s", cmp, w, idx, copy_bound)
             emit_cond_br(g, cmp, body_label, end_label)
 
             emit_label(g, body_label)
             idx2 := fresh_tmp(g)
-            emit_load_into(g, idx2, "i64", idx_ptr)
+            emit_load_into(g, idx2, w, idx_ptr)
             src_gep := fresh_tmp(g)
-            emit_array_gep_var(g, src_gep, src_type, src_av.alloca, idx2)
+            emit_array_gep_var(g, src_gep, src_type, src_av.alloca, idx2, w)
             val := fresh_tmp(g)
             emit_load_into(g, val, sret_av.elem_type, src_gep)
             dst_gep := fresh_tmp(g)
-            emit_array_gep_var(g, dst_gep, sret_type, sret_av.alloca, idx2)
+            emit_array_gep_var(g, dst_gep, sret_type, sret_av.alloca, idx2, w)
             emit_store(g, sret_av.elem_type, val, dst_gep)
             next := fresh_tmp(g)
-            emit(g, "  %s = add i64 %s, 1", next, idx2)
-            emit_store(g, "i64", next, idx_ptr)
+            emit(g, "  %s = add %s %s, 1", next, w, idx2)
+            emit_store(g, w, next, idx_ptr)
             emit_br(g, cond_label)
 
             emit_label(g, end_label)
@@ -1157,24 +1179,14 @@ gen_return_slice :: proc(g: ^Codegen, s: Stmt_Return, sret_slv: Slice_Var) {
     emit_ret_void(g)
 }
 
-// Scalar return: convert value to declared return type if needed, then ret.
+// Scalar return: emit `ret <type> <value>` at the declared return type.
+// Type checker enforces value type matches; the only special case is the
+// `return 0` for ptr returns where infer-int 0 becomes the ptr null literal.
 gen_return_scalar :: proc(g: ^Codegen, s: Stmt_Return) {
     val := gen_expr(g, s.values[0], g.current_ret_type)
-    ret_type := expr_ir_type(g, s.values[0])
-    if g.current_ret_type != "" && g.current_ret_type != ret_type {
-        if g.current_ret_type == "ptr" && val == "0" {
-            val = "null"
-            ret_type = "ptr"
-        } else if g.current_ret_type == "i64" && (ret_type == "i32" || ret_type == "i16" || ret_type == "i8") {
-            conv := fresh_tmp(g)
-            emit(g, "  %s = sext %s %s to i64", conv, ret_type, val)
-            val = conv
-        } else if g.current_ret_type == "double" && ret_type == "float" {
-            conv := fresh_tmp(g)
-            emit(g, "  %s = fpext float %s to double", conv, val)
-            val = conv
-        }
-        ret_type = g.current_ret_type
+    ret_type := g.current_ret_type
+    if ret_type == "ptr" && val == "0" {
+        val = "null"
     }
     emit_return_resets(g)
     emit(g, "  ret %s %s", ret_type, val)

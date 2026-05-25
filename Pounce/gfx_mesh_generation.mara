@@ -4,7 +4,7 @@ use mara.math
 
 // Sphere with given subdivisions, radius 0.5 centered at origin
 primitive_sphere :: fun(
-	subdivisions: i64,
+	subdivisions: i32,
 	storage: ^[]byte) -> Mesh_Data
 {
     rings := subdivisions
@@ -16,7 +16,7 @@ primitive_sphere :: fun(
     verts := take([]Vertex(n_verts), storage)
     inds  := take([]u32(n_inds), storage)
 
-    vi := 0
+    vi: i32 = 0
     for r in 0..rings + 1 {
         phi := 3.14159265 * f32(r) / f32(rings)
         y := 0.5 * cos(phi)
@@ -40,7 +40,7 @@ primitive_sphere :: fun(
         }
     }
 
-    ii := 0
+    ii: i32 = 0
     for r in 0..rings {
         for s in 0..sectors {
             cur := u32(r * (sectors + 1) + s)

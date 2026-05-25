@@ -130,8 +130,14 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
     // Compute fixed header size (all fields except the VLA, which is [0 x T] in the struct type)
     header_size := struct_byte_size(st, g.checked) // This uses [0 x T] for the VLA field
 
-    // Evaluate the per-variable VLA size expression to get runtime element count
-    size_val := gen_expr(g, vla_size_expr)
+    // All allocation byte counts run at slice header width — that's the type
+    // arena_alloc takes (allocations are byte slices, so they share the slice
+    // header width). 2GB cap with i32; flip slice_layout to widen.
+    w := slice_layout.len_ir
+
+    // Evaluate the per-variable VLA size expression — type checker guarantees
+    // it's already at slice header width.
+    size_val := gen_expr(g, vla_size_expr, w)
 
     // Compute VLA array bytes: count * elem_size (+ 1 for sentinel if needed)
     elem_type := llvm_type_from_checker(vla_fa.elem)
@@ -139,25 +145,26 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
     array_count := size_val
     if vla_fa.has_sentinel {
         array_count = fresh_tmp(g)
-        emit(g, "  %s = add i64 %s, 1", array_count, size_val)
+        emit(g, "  %s = add %s %s, 1", array_count, w, size_val)
     }
     array_bytes: string
     if elem_size == 1 {
         array_bytes = array_count
     } else {
         array_bytes = fresh_tmp(g)
-        emit(g, "  %s = mul i64 %s, %d", array_bytes, array_count, elem_size)
+        emit(g, "  %s = mul %s %s, %d", array_bytes, w, array_count, elem_size)
     }
 
     // Total allocation: header + array data
     total_bytes := fresh_tmp(g)
-    emit(g, "  %s = add i64 %d, %s", total_bytes, header_size, array_bytes)
+    emit(g, "  %s = add %s %d, %s", total_bytes, w, header_size, array_bytes)
 
     // Allocate from scope arena
     data_ptr := emit_arena_bump_runtime(g, total_bytes, name, loc)
 
-    // Zero-initialize
-    emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %s, i1 false)", data_ptr, total_bytes)
+    // Zero-initialize. memset.p0.<w> matches the byte-count width — no need to
+    // widen total_bytes for the intrinsic call.
+    emit(g, "  call void @llvm.memset.p0.%s(ptr %s, i8 0, %s %s, i1 false)", w, data_ptr, w, total_bytes)
 
     // Register as struct variable with runtime VLA capacity
     g.all_vars[name] = Struct_Var{
@@ -571,8 +578,8 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         case .Slice:
             // Determine elem type / sentinel from the last step's field def.
             // .Slice covers both Type_Slice and Type_Partial_Array fields — they
-            // share the first 24 bytes of layout, so a Slice_Var pointing at
-            // the field's storage handles .len/.cap/.ptr reads for either.
+            // share the first slice_header_bytes of layout, so a Slice_Var pointing
+            // at the field's storage handles .len/.cap/.ptr reads for either.
             if len(chain.steps) == 0 {
                 codegen_fatal(g, e.span, CODE_ADDRESS_CHAIN_ENDED_SLICE_STEPS)
             }
@@ -871,7 +878,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             })
             return gep
         }
-        // Slice OR partial-array field — both share the first 24 bytes
+        // Slice OR partial-array field — both share the first slice_header_bytes
         // ({len, cap, ptr}), so a Slice_Var pointing at the field's storage
         // handles subsequent .len/.cap/.ptr reads for either shape.
         if ft == SLICE_IR_TYPE || strings.has_prefix(ft, PARTIAL_ARRAY_HEADER_PREFIX) {
@@ -1045,32 +1052,33 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
     if ident, ok := value.(^Expr_Ident); ok {
         if src, src_ok := get_array(g, ident.name); src_ok {
             src_type := array_var_type(&src)
+            w := slice_layout.len_ir
             cond_label := fresh_label(g, "copy.cond")
             body_label := fresh_label(g, "copy.body")
             end_label  := fresh_label(g, "copy.end")
             idx_ptr := fresh_tmp(g)
-            emit_alloca(g, idx_ptr, "i64")
-            emit_store(g, "i64", "0", idx_ptr)
+            emit_alloca(g, idx_ptr, w)
+            emit_store(g, w, "0", idx_ptr)
             emit_br(g, cond_label)
             emit_label(g, cond_label)
             idx := fresh_tmp(g)
-            emit_load_into(g, idx, "i64", idx_ptr)
+            emit_load_into(g, idx, w, idx_ptr)
             cmp := fresh_tmp(g)
-            emit(g, "  %s = icmp slt i64 %s, %d", cmp, idx, src.capacity)
+            emit(g, "  %s = icmp slt %s %s, %d", cmp, w, idx, src.capacity)
             emit_cond_br(g, cmp, body_label, end_label)
             emit_label(g, body_label)
             idx2 := fresh_tmp(g)
-            emit_load_into(g, idx2, "i64", idx_ptr)
+            emit_load_into(g, idx2, w, idx_ptr)
             src_gep := fresh_tmp(g)
-            emit_array_gep_var(g, src_gep, src_type, src.alloca, idx2)
+            emit_array_gep_var(g, src_gep, src_type, src.alloca, idx2, w)
             val := fresh_tmp(g)
             emit_load_into(g, val, elem_type, src_gep)
             dst_gep := fresh_tmp(g)
-            emit_array_gep_var(g, dst_gep, arr_type, dst_ptr, idx2)
+            emit_array_gep_var(g, dst_gep, arr_type, dst_ptr, idx2, w)
             emit_store(g, elem_type, val, dst_gep)
             next := fresh_tmp(g)
-            emit(g, "  %s = add i64 %s, 1", next, idx2)
-            emit_store(g, "i64", next, idx_ptr)
+            emit(g, "  %s = add %s %s, 1", next, w, idx2)
+            emit_store(g, w, next, idx_ptr)
             emit_br(g, cond_label)
             emit_label(g, end_label)
             return
@@ -1678,13 +1686,9 @@ gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     }
 
     apply_compound_load_substitute(g, s, ptr_val, store_type)
-    val := gen_expr(g, s.value)
-
-    // Convert value to target type if needed
-    val_type := expr_ir_type(g, s.value)
-    if val_type != store_type {
-        val = emit_type_convert(g, val, val_type, store_type)
-    }
+    // Type checker enforces value type matches store_type; pass the target
+    // type so infer literals produce the right width directly.
+    val := gen_expr(g, s.value, store_type)
 
     emit_store(g, store_type, val, ptr_val)
 }

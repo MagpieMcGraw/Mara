@@ -21,7 +21,7 @@ slice_through_distinct_and_ptr :: proc(t: Type) -> (^Type_Slice, bool) {
 }
 
 // Same as slice_through_distinct_and_ptr but for partial-array params. The
-// first 24 bytes of a partial array's layout match a slice header, so the
+// first slice_header_bytes of a partial array's layout match a slice header, so the
 // fat-pointer-ref ABI works identically: `dst: ^String` where String is a
 // `type([..N, 0]utf8)` partial array binds as a Slice_Var with the same
 // access shape as a slice param.
@@ -228,7 +228,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             // `s: ^String` (explicit pointer, same ABI).
             append(&param_strs, fmt.tprintf("ptr %%%s.arg", p.name))
         } else if _, pa_ok := partial_through_distinct_and_ptr(p.type_); pa_ok {
-            // Partial-array param: same ABI as slice (first 24 bytes match).
+            // Partial-array param: same ABI as slice (first slice_header_bytes match).
             // `s: ^String` where String is `type([..N, 0]utf8)` binds here.
             append(&param_strs, fmt.tprintf("ptr %%%s.arg", p.name))
         } else {
@@ -493,7 +493,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             }
         } else if pa, pa_ok := partial_through_distinct_and_ptr(p.type_); pa_ok {
             // Partial-array param via pointer: same fat-pointer-ref ABI as
-            // slice. First 24 bytes of the partial-array layout match a
+            // slice. First slice_header_bytes of the partial-array layout match a
             // slice header — codegen accesses ptr/len/cap identically.
             elem_t := llvm_type_from_checker(pa.elem)
             _, pa_utf8 := pa.elem.(Type_Utf8)
