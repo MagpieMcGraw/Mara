@@ -1688,10 +1688,17 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             // #caller_name); print them as text rather than addresses.
             spec := "%p"
             t := expr_type(arg_expr)
-            if pt, ok := t.(^Type_Ptr); ok {
+            // Print-as-string for any pointer-to-utf8 / pointer-to-byte
+            // shape, unwrapping distinct types so user wrappers (like the
+            // stdlib's `cstring :: distinct ^utf8`) inherit the rule
+            // structurally. Codegen sees only the IR shape; the distinct
+            // identity is the type checker's concern.
+            base := distinct_base(t)
+            if pt, ok := base.(^Type_Ptr); ok {
                 if _, is_byte := pt.elem.(Type_Byte); is_byte { spec = "%s" }
+                if _, is_utf8 := pt.elem.(Type_Utf8); is_utf8 { spec = "%s" }
             }
-            if is_cstring(t) { spec = "%s" }
+            if _, is_cs := t.(Type_CString); is_cs { spec = "%s" }
             fmt_name, fmt_len := get_string_literal(g, spec)
             fmt_ptr := fresh_tmp(g)
             emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
@@ -2082,7 +2089,13 @@ is_c8_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
 
 is_string_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if _, ok := expr.(^Expr_String); ok { return true }
-    return is_cstring(expr_type(expr))
+    t := expr_type(expr)
+    base := distinct_base(t)
+    if pt, ok := base.(^Type_Ptr); ok {
+        if _, utf8_ok := pt.elem.(Type_Utf8); utf8_ok { return true }
+    }
+    if _, is_cs := t.(Type_CString); is_cs { return true }
+    return false
 }
 
 // Check if an expression is a utf8 array variable (string stored as [N]utf8),
@@ -2145,8 +2158,12 @@ is_ptr_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if call, ok := expr.(^Expr_Call); ok {
         if cs, cs_ok := g.checked.functions[call_resolved_name(call)]; cs_ok {
             if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
-                if _, is_ptr := cs.return_type.(^Type_Ptr); is_ptr { return true }
-                if is_cstring(cs.return_type) { return true }
+                // Foreign returns: unwrap distinct so a `distinct ^utf8`
+                // return type (the new cstring) is recognized as a pointer
+                // via its underlying shape — no cstring-specific check.
+                base := distinct_base(cs.return_type)
+                if _, is_ptr := base.(^Type_Ptr); is_ptr { return true }
+                if _, is_cs := cs.return_type.(Type_CString); is_cs { return true }
             }
         }
     }
