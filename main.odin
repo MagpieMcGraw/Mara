@@ -652,7 +652,8 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
 Compile_Task :: struct {
     ll_path:   string,
     o_path:    string,
-    clang_cmd: string,  // full quoted command for libc.system
+    err_path:  string,  // per-task stderr capture file
+    clang_cmd: string,  // full quoted command for libc.system (redirects stderr to err_path)
     exit_code: i32,
 }
 
@@ -703,6 +704,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         for t in tasks {
             delete(t.clang_cmd)
             delete(t.o_path)
+            delete(t.err_path)
             free(t)
         }
         delete(tasks)
@@ -711,6 +713,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         t := new(Compile_Task)
         t.ll_path = ll_path
         t.o_path = ll_to_o_path(ll_path)
+        t.err_path = strings.concatenate({t.ll_path, ".err"})
         // Per-TU compile command. -Wno-override-module silences the
         // "overriding the module target triple" warning that emcc/clang
         // raises when our IR's target triple differs from the host's
@@ -723,6 +726,10 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         strings.write_byte(&cb, '"'); strings.write_string(&cb, t.o_path); strings.write_byte(&cb, '"')
         strings.write_string(&cb, " -Wno-override-module -mf16c")
         if release { strings.write_string(&cb, " -O3") }
+        // Redirect stderr to a per-task file so parallel clangs don't
+        // interleave their diagnostics on the shared parent stderr.
+        // Read back and print serially after the pool finishes.
+        strings.write_string(&cb, ` 2>"`); strings.write_string(&cb, t.err_path); strings.write_byte(&cb, '"')
         // Pull -I and -D flags from lf.extra_inputs only if they're
         // compile-level options (we exclude .obj/.lib paths which only
         // matter at link). For now: skip extra_inputs entirely on the
@@ -747,12 +754,27 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     }
     thread.pool_finish(&pool)
 
+    // Print captured stderr in deterministic per-task order so parallel
+    // workers' diagnostics don't shred each other on the shared stderr.
+    // Print before deciding to bail so the user sees every failing TU's
+    // errors, not just the first one's existence.
+    any_failed := false
     for t in tasks {
+        if t.err_path != "" {
+            if data, ok := os_old.read_entire_file(t.err_path); ok {
+                if len(data) > 0 {
+                    fmt.eprint(string(data))
+                }
+                delete(data)
+            }
+            os_old.remove(t.err_path)
+        }
         if t.exit_code != 0 {
             fmt.printf("clang -c failed for '%s' (exit %d)\n", t.ll_path, t.exit_code)
-            return false
+            any_failed = true
         }
     }
+    if any_failed { return false }
 
     // ---- Stage 2: link all .o files ----
     b: strings.Builder
