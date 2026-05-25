@@ -4,15 +4,15 @@ use mara.memory
 use mara.string
 
 Holder :: struct {
-	name:  String
+	name:  str
 	count: i64
 }
 
 main :: fun() -> i64 {
 	program = Program(Arena_Basic(1 * MB))
 
-	// Sanity: local String works
-	s : String
+	// Sanity: local str works
+	s : str
 	&s + "world"
 	print(s)
 	print(s.len)

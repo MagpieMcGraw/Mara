@@ -3,102 +3,102 @@ module warlock
 use mara.os
 use mara.string
 
-shader_load_text :: fun(filepath: string) -> (vtext: string, ftext: string) {
-	file_contents, read_ok := os.read_entire_file(filepath)
-	if !read_ok {
-		fmt.eprintln("Failed to load shader file:", filepath)
-	}
-	defer delete(file_contents)
+// shader_load_text :: fun(filepath: string) -> (vtext: string, ftext: string) {
+// 	file_contents, read_ok := os.read_entire_file(filepath)
+// 	if !read_ok {
+// 		fmt.eprintln("Failed to load shader file:", filepath)
+// 	}
+// 	defer delete(file_contents)
 
-	file_text := string(file_contents)
+// 	file_text := string(file_contents)
 
-	// Find second occurrence of "#version" to split vertex and fragment shaders
-	VERSION_TAG :: "#version"
-	first_version := strings.index(file_text, VERSION_TAG)
-	if first_version == -1 {
-		fmt.eprintln("Shader file missing #version tag:", filepath)
-	}
+// 	// Find second occurrence of "#version" to split vertex and fragment shaders
+// 	VERSION_TAG :: "#version"
+// 	first_version := strings.index(file_text, VERSION_TAG)
+// 	if first_version == -1 {
+// 		fmt.eprintln("Shader file missing #version tag:", filepath)
+// 	}
 
-	// Search for second #version tag after the first one
-	search_start := first_version + len(VERSION_TAG)
-	second_version := strings.index(file_text[search_start:], VERSION_TAG)
-	if second_version == -1 {
-		fmt.eprintln("Shader file missing second #version tag (fragment shader):", filepath)
-	}
+// 	// Search for second #version tag after the first one
+// 	search_start := first_version + len(VERSION_TAG)
+// 	second_version := strings.index(file_text[search_start:], VERSION_TAG)
+// 	if second_version == -1 {
+// 		fmt.eprintln("Shader file missing second #version tag (fragment shader):", filepath)
+// 	}
 
-	split_index := search_start + second_version
-	vertex_shader := strings.clone(file_text[0:split_index])
-	fragment_shader := strings.clone(file_text[split_index:])
+// 	split_index := search_start + second_version
+// 	vertex_shader := strings.clone(file_text[0:split_index])
+// 	fragment_shader := strings.clone(file_text[split_index:])
 
-	return vertex_shader, fragment_shader
-}
+// 	return vertex_shader, fragment_shader
+// }
 
-shader_compile :: fun(shader_text: string, shader_type: u32) -> u32 {
-	shader_cstr := strings.clone_to_cstring(shader_text)
-	defer delete_cstring(shader_cstr)
-	shader_len := i32(len(shader_text))
+// shader_compile :: fun(shader_text: string, shader_type: u32) -> u32 {
+// 	shader_cstr := strings.clone_to_cstring(shader_text)
+// 	defer delete_cstring(shader_cstr)
+// 	shader_len := i32(len(shader_text))
 
-	shader := gl.CreateShader(shader_type)
-	gl.ShaderSource(shader, 1, &shader_cstr, &shader_len)
-	gl.CompileShader(shader)
+// 	shader := gl.CreateShader(shader_type)
+// 	gl.ShaderSource(shader, 1, &shader_cstr, &shader_len)
+// 	gl.CompileShader(shader)
 
-	// Check compilation status
-	success: i32
-	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success)
+// 	// Check compilation status
+// 	success: i32
+// 	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success)
 
-	// Always check for logs
-	log_buff: [512]u8
-	log_length: i32
-	gl.GetShaderInfoLog(shader, 512, &log_length, &log_buff[0])
+// 	// Always check for logs
+// 	log_buff: [512]u8
+// 	log_length: i32
+// 	gl.GetShaderInfoLog(shader, 512, &log_length, &log_buff[0])
 
-	if log_length > 0 {
-		shader_type_name := shader_type == gl.VERTEX_SHADER ? "VERTEX" : "FRAGMENT"
-		fmt.eprintln(shader_type_name, "SHADER COMPILE LOG:")
-		fmt.eprintln(string(log_buff[0:log_length]))
-	}
+// 	if log_length > 0 {
+// 		shader_type_name := shader_type == gl.VERTEX_SHADER ? "VERTEX" : "FRAGMENT"
+// 		fmt.eprintln(shader_type_name, "SHADER COMPILE LOG:")
+// 		fmt.eprintln(string(log_buff[0:log_length]))
+// 	}
 
-	if success == 0 {
-		gl.DeleteShader(shader)
-	}
+// 	if success == 0 {
+// 		gl.DeleteShader(shader)
+// 	}
 
-	return shader
-}
+// 	return shader
+// }
 
-shader_create_program :: fun(filepath: string) -> u32 {
-	vtext, ftext := shader_load_text(filepath)
-	defer delete(vtext)
-	defer delete(ftext)
+// shader_create_program :: fun(filepath: string) -> u32 {
+// 	vtext, ftext := shader_load_text(filepath)
+// 	defer delete(vtext)
+// 	defer delete(ftext)
 
-	vshader := shader_compile(vtext, gl.VERTEX_SHADER)
-	defer gl.DeleteShader(vshader)
+// 	vshader := shader_compile(vtext, gl.VERTEX_SHADER)
+// 	defer gl.DeleteShader(vshader)
 
-	fshader := shader_compile(ftext, gl.FRAGMENT_SHADER)
-	defer gl.DeleteShader(fshader)
+// 	fshader := shader_compile(ftext, gl.FRAGMENT_SHADER)
+// 	defer gl.DeleteShader(fshader)
 
-	program := gl.CreateProgram()
-	gl.AttachShader(program, vshader)
-	gl.AttachShader(program, fshader)
-	gl.LinkProgram(program)
+// 	program := gl.CreateProgram()
+// 	gl.AttachShader(program, vshader)
+// 	gl.AttachShader(program, fshader)
+// 	gl.LinkProgram(program)
 
-	// Check link status
-	success: i32
-	gl.GetProgramiv(program, gl.LINK_STATUS, &success)
+// 	// Check link status
+// 	success: i32
+// 	gl.GetProgramiv(program, gl.LINK_STATUS, &success)
 
-	log_buff: [1024]u8
-	log_length: i32
-	gl.GetProgramInfoLog(program, 1024, &log_length, &log_buff[0])
+// 	log_buff: [1024]u8
+// 	log_length: i32
+// 	gl.GetProgramInfoLog(program, 1024, &log_length, &log_buff[0])
 
-	if log_length > 0 {
-		fmt.eprintln("SHADER PROGRAM LINK LOG:")
-		fmt.eprintln(string(log_buff[0:log_length]))
-	}
+// 	if log_length > 0 {
+// 		fmt.eprintln("SHADER PROGRAM LINK LOG:")
+// 		fmt.eprintln(string(log_buff[0:log_length]))
+// 	}
 
-	if success == 0 {
-		gl.DeleteProgram(program)
-	}
+// 	if success == 0 {
+// 		gl.DeleteProgram(program)
+// 	}
 
-	gl.DetachShader(program, vshader)
-	gl.DetachShader(program, fshader)
+// 	gl.DetachShader(program, vshader)
+// 	gl.DetachShader(program, fshader)
 
-	return program
-}
+// 	return program
+// }

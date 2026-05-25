@@ -2974,9 +2974,18 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         return ok
     case Type_CString:
         if _, ok := b.(Type_CString); ok { return true }
-        // cstring is compatible with utf8 arrays (full or partial) — pass data_ptr as C string
+        // cstring accepts any utf8 storage as long as the source has a
+        // trailing 0 (sentinel). Covers `c_func("literal")` after the
+        // literal-type change — literals are now `[..N, 0]utf8` (partial
+        // sentinel array) — as well as legacy fixed-array sentinel forms.
         if fa, ok := b.(^Type_Fixed_Array); ok {
-            if _, utf8_ok := fa.elem.(Type_Utf8); utf8_ok { return true }
+            if _, utf8_ok := fa.elem.(Type_Utf8); utf8_ok && fa.has_sentinel { return true }
+        }
+        if pa, ok := b.(^Type_Partial_Array); ok {
+            if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok && pa.has_sentinel { return true }
+        }
+        if sl, ok := b.(^Type_Slice); ok {
+            if _, utf8_ok := sl.elem.(Type_Utf8); utf8_ok && sl.has_sentinel { return true }
         }
         return false
     case Type_C8:
@@ -3030,6 +3039,16 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
             return types_equal(va.elem, sl.elem)
         }
+        // Implicit coercion: [N]T is compatible with [..M]T (partial array
+        // view). Lets fixed-array decls take partial-array sources — most
+        // importantly `fa : [N, 0]utf8 = "lit"` after the literal-type
+        // change made literals partial. Sentinel direction matches the
+        // partial-to-partial rule.
+        if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
+            if !types_equal(va.elem, pa.elem) { return false }
+            if va.has_sentinel && !pa.has_sentinel { return false }
+            return true
+        }
         vb, ok := b.(^Type_Fixed_Array)
         if !ok { return false }
         return types_equal(va.elem, vb.elem)
@@ -3040,9 +3059,14 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
             return types_equal(va.elem, fa.elem)
         }
-        // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view)
+        // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view).
+        // Sentinel direction matches partial-to-partial: source can drop a
+        // sentinel guarantee, but can't synthesize one — reject when dest
+        // expects a sentinel the source doesn't have.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            return types_equal(va.elem, pa.elem) && va.has_sentinel == pa.has_sentinel
+            if !types_equal(va.elem, pa.elem) { return false }
+            if va.has_sentinel && !pa.has_sentinel { return false }
+            return true
         }
         vb, ok := b.(^Type_Slice)
         if !ok { return false }
@@ -3053,14 +3077,35 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // match a slice header, so `^[..N]T` flows safely into `^[:]T` param
         // slots — cursor mutations propagate back through the aliased memory.
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
-            return types_equal(va.elem, sl.elem) && va.has_sentinel == sl.has_sentinel
+            if !types_equal(va.elem, sl.elem) { return false }
+            if va.has_sentinel && !sl.has_sentinel { return false }
+            return true
+        }
+        // utf8 partial array with sentinel → cstring: the trailing 0 in
+        // storage is exactly what cstring requires; FFI receives the
+        // data pointer.
+        if _, cstr_ok := b.(Type_CString); cstr_ok {
+            if _, utf8_ok := va.elem.(Type_Utf8); utf8_ok && va.has_sentinel { return true }
         }
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
             return types_equal(va.elem, fa.elem)
         }
         if pa, ok := b.(^Type_Partial_Array); ok {
-            return va.size == pa.size && types_equal(va.elem, pa.elem) &&
-                   va.has_sentinel == pa.has_sentinel
+            // Partial-to-partial interop is by header shape: same elem
+            // type and a permissible sentinel direction. In a types_equal
+            // call from assignment / parameter passing, `va` is the
+            // destination's expected type and `pa` is the source's
+            // actual type. Allow source-sentinel-drop (source has the
+            // terminator, dest doesn't care) — safe, the dest just
+            // ignores the trailing-slot guarantee. Reject the reverse:
+            // dest expects a sentinel the source can't synthesize.
+            // Size doesn't gate compatibility because params are passed
+            // by header pointer (cap is read at runtime); assignment
+            // paths in codegen are responsible for fitting source bytes
+            // into dest storage.
+            if !types_equal(va.elem, pa.elem) { return false }
+            if va.has_sentinel && !pa.has_sentinel { return false }
+            return true
         }
         return false
     case ^Type_Enum:
@@ -7239,6 +7284,17 @@ check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixe
             check_error(c, span, TYPE_ARRAY_ELEMENTS_CAPACITY,
                 fv.size, name, fa.size)
         }
+    } else if pv, pv_ok := val_type.(^Type_Partial_Array); pv_ok {
+        // Source is a partial array (e.g. a string literal post the
+        // literal-type change). Same element check; size check ensures
+        // the source content fits in the fixed-array storage.
+        if types_incompatible(fa.elem, pv.elem) {
+            check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
+                type_name(val_type), name, type_name(fa))
+        } else if pv.size > 0 && pv.size > fa.size {
+            check_error(c, span, TYPE_ARRAY_ELEMENTS_CAPACITY,
+                pv.size, name, fa.size)
+        }
     } else if !is_any(val_type) {
         check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
             type_name(val_type), name, type_name(fa))
@@ -9128,21 +9184,22 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         return Type_Infer_Int{}
     case ^Expr_String:
-        // String literals are sentinel-terminated arrays of utf8 bytes:
-        // the visible content is `byte_len` glyphs and the trailing null
-        // is the sentinel. `size` is the visible byte count (matches
-        // cap()/len() reported to the user); has_sentinel = true tells
-        // codegen to reserve one extra storage slot for the null. Without
-        // the sentinel flag, `name : [N]utf8 = "..."` was incorrectly
-        // accepted — the type system couldn't tell a string literal apart
-        // from a plain `[N]utf8` of the same total size.
-        byte_len := len(e.value)  // UTF-8 byte count (already decoded by lexer)
-        fa := new(Type_Fixed_Array)
-        fa.size = byte_len
-        fa.elem = Type_Utf8{}
-        fa.has_sentinel = true
-        fa.sentinel = 0
-        return fa
+        // String literals are sentinel-terminated partial arrays of utf8 —
+        // shape `[..N, 0]utf8`. The bytes live in rodata (one global per
+        // unique literal, deduped at codegen), and the partial-array
+        // header is synthesized on the stack at the use site, pointing at
+        // the global. Choosing partial-array over fixed-array makes the
+        // literal's type match the `cstr` shape directly (and via the
+        // header-compatible drop, the `str` shape too), so `&s + "x"`
+        // and `c_func("y")` and `s : str = "z"` all flow through one
+        // type-checking rule.
+        byte_len := len(e.value)
+        pa := new(Type_Partial_Array)
+        pa.size = byte_len
+        pa.elem = Type_Utf8{}
+        pa.has_sentinel = true
+        pa.sentinel = 0
+        return pa
     case ^Expr_Char:
         return Type_C8{}
     case ^Expr_Bool:

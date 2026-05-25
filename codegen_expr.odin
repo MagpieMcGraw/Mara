@@ -757,6 +757,19 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
 // strings, memcpy sources for struct field stores, etc.).
 gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
     arg_checker_type := expr_type(arg)
+    // String literal: typed as a sentinel partial array since the
+    // literal-type change, but it still lives as raw bytes in rodata.
+    // Synthesize a slice header pointing at the global, len = cap = N
+    // (the literal's byte count), and pass `&header`. Receivers (which
+    // expect `{len, cap, ptr}`-shaped headers) then see a normal partial
+    // array view of the literal.
+    if lit, lit_ok := arg.(^Expr_String); lit_ok {
+        global, _ := get_string_literal(g, lit.value)
+        data_ptr := fresh_tmp(g)
+        emit_string_gep(g, data_ptr, len(lit.value)+1, global)
+        size_str := fmt.tprintf("%d", len(lit.value))
+        return emit_build_temp_slice(g, data_ptr, size_str, size_str)
+    }
     if fa, fa_ok := distinct_base(arg_checker_type).(^Type_Fixed_Array); fa_ok {
         // Array literal: materialize on stack, then build slice
         if al, al_ok := arg.(^Expr_Array); al_ok {

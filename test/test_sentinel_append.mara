@@ -4,16 +4,16 @@ use mara.string
 
 main :: fun() {
 	// Empty sentinel partial array — should print nothing, not garbage.
-	empty : String
+	empty : str
 	print(empty)
 
 	// Single append — sentinel must land at byte 11, no stack garbage trailing.
-	one : String
+	one : str
 	&one + "Escaping..."
 	print(one)
 
 	// Multiple appends — sentinel must follow the last write each time.
-	many : String
+	many : str
 	&many + "ab"
 	&many + "cd"
 	&many + "ef"
@@ -26,7 +26,7 @@ main :: fun() {
 
 	// Sentinel partial array with literal init — keep the literal-init path
 	// (codegen_stmt.odin:316-320 terminator) honest.
-	greet : String = "hello"
+	greet : str = "hello"
 	print(greet)
 
 	// Append after literal init.
