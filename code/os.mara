@@ -172,15 +172,24 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return size, true
 	}
 
-	// Read up to buf.cap bytes into buf. Returns (data, true) where data is a
-	// slice into buf covering the bytes actually read (data.len = 0 means EOF).
-	// Returns (empty slice, false) on error. The returned slice shares storage
-	// with buf — caller doesn't own a separate buffer. buf is `^[]byte` because
-	// the bytes are written through FFI; the slice header itself is unchanged.
-	file_read :: fun(id: File_Id, buf: ^[]byte) -> ([]byte, bool) {
+	file_read :: fun(id: File_Id, data: ^[]byte) -> bool {
 		read: u32 = 0
-		if not bool(ReadFile(id, &buf[0], u32(buf.len), &read, void)) do return buf[0:0], false
-		return buf[0:i64(read)], true
+		res := bool(ReadFile(id, &data[0], u32(data.cap), &read, void))
+		// ReadFile's out param is u32 (Win32 DWORD); slice .len is int
+		// (i64) per the codegen convention. Explicit cast required by
+		// the type checker — no implicit widening.
+		data.len = i64(read)
+		return res
+	}
+
+	read_entire_file :: fun(path: cstr, data: ^[]byte) -> bool {
+	    id, ok := file_open_read(path)
+	    defer file_close(id)
+	    if not ok do return false
+
+	    size, _ := file_size(id)
+	   	read_ok := file_read(id, data)
+	    return read_ok
 	}
 
 	// Write data to the file. Returns (n, true) where n is bytes written, or

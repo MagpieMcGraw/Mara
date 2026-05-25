@@ -1466,18 +1466,11 @@ gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string,
     }
     gep := fresh_tmp(g)
     emit_slice_gep(g, gep, slice_hdr_ptr, field_idx)
-    // The slice layout's i64 convention: load helpers (emit_typed_load_len /
-    // emit_typed_load_cap) always return i64, so the rest of codegen
-    // operates on i64 SSA values; the store helpers then trunc to the
-    // narrow header field width (i32). The hint to gen_expr isn't a forcing
-    // widen — narrow sources (u32, etc.) come back IR-i32 and need an
-    // explicit ensure_i64 to keep the convention consistent before the
-    // trunc fires.
-    //
-    // Worth a future cleanup: have load/store helpers both work at the
-    // natural field width and skip the no-op extend-trunc round-trip.
-    // That's a coordinated change since every site that consumes a len/cap
-    // SSA value would also need to drop its i64-assumption.
+    // Slice .len/.cap are i32 in storage but the codegen convention runs
+    // arithmetic at i64 (overflow headroom, consistent with the i64-wide
+    // load helpers). ensure_i64 normalises narrow sources into the
+    // convention before emit_typed_store_len truncs to the storage width.
+    // To be revisited when the i32-everywhere migration lands.
     val := ensure_i64(g, gen_expr(g, value, "i64"), value)
     if field == "len" {
         emit_typed_store_len(g, val, gep)

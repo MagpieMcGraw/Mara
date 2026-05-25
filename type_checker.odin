@@ -7601,10 +7601,59 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
         return
     }
 
-    // Unwrap distinct types for swizzle assignment
+    // Auto-deref ^Slice / ^Partial_Array — `data.len = ...` where data is
+    // `^[]byte` writes through the pointer. Mirrors the read-side unwrap in
+    // check_field_access.
+    if pt, ok := obj_type.(^Type_Ptr); ok {
+        inner := pt.elem
+        if dt, dt_ok := inner.(^Type_Distinct); dt_ok {
+            inner = dt.base_type
+        }
+        obj_type = inner
+    }
     if dt, dt_ok := obj_type.(^Type_Distinct); dt_ok {
         obj_type = distinct_base(dt)
     }
+
+    // Slice / partial-array .len / .cap / .ptr writes. Previously this path
+    // had no type check at all — any value type silently flowed into the
+    // slice's narrow header fields, and the codegen had to trunc/widen at
+    // its end with no real ABI contract. Match the read-side type the
+    // field-access resolver returns and run the standard compat check.
+    is_slice_or_partial := false
+    field_type: Type
+    elem: Type
+    if sl, ok := obj_type.(^Type_Slice); ok {
+        is_slice_or_partial = true
+        elem = sl.elem
+    } else if pa, ok := obj_type.(^Type_Partial_Array); ok {
+        is_slice_or_partial = true
+        elem = pa.elem
+    }
+    if is_slice_or_partial {
+        switch fa_expr.field {
+        case "len", "cap": field_type = Type_Int{}
+        case "ptr":
+            pt := new(Type_Ptr)
+            pt.elem = elem
+            field_type = pt
+        case:
+            // Unknown field on a slice/partial. Read path would error;
+            // mirror that here for symmetry.
+            check_error(c, s.span, TYPE_SLICE_TYPE_FIELD, type_name(obj_type), fa_expr.field)
+            return
+        }
+        s.target_type = field_type
+        if types_incompatible(field_type, val_type) && !is_infer(val_type) {
+            check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
+                type_name(val_type), fa_expr.field, type_name(field_type))
+        }
+        if is_infer(val_type) {
+            check_literal_overflow(c, s.value, field_type, s.span)
+        }
+        return
+    }
+
     // Array swizzle assignment: arr.x = val, arr.xy = [a, b]
     if fa, fa_ok := obj_type.(^Type_Fixed_Array); fa_ok {
         if is_swizzle_field(fa_expr.field, fa.size) {
@@ -9962,7 +10011,11 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         check_error(c, e.span, TYPE_CANNOT_ACCESS_FIELD_ARRAY_TYPE, e.field, type_name(obj_type))
         return Type_Error{}
     }
-    // Slice field access: sl.ptr, sl.len, sl.cap
+    // Slice field access: sl.ptr, sl.len, sl.cap. Returns Type_Int (i64)
+    // today because the codegen's slice-len arithmetic convention is also
+    // i64 — keeping these in sync. The storage is actually i32; switching
+    // both type-check and codegen to i32 is a coordinated migration we'll
+    // tackle separately under "remove implicit trunc/widen from codegen."
     if sl, ok := obj_type.(^Type_Slice); ok {
         if e.field == "ptr" {
             pt := new(Type_Ptr)
@@ -9975,7 +10028,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         check_error(c, e.span, TYPE_SLICE_TYPE_FIELD, type_name(obj_type), e.field)
         return Type_Error{}
     }
-    // Partial array field access: pa.ptr, pa.len, pa.cap — shape matches slice.
+    // Partial array field access: pa.ptr, pa.len, pa.cap — same header shape.
     if pa, ok := obj_type.(^Type_Partial_Array); ok {
         if e.field == "ptr" {
             pt := new(Type_Ptr)
