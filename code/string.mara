@@ -2,7 +2,12 @@ module mara.string
 
 use mara.os
 
-String :: type [..128, 0]utf8
+string :: type [..128]utf8
+cstring :: type [..128, 0]utf8
+
+// string :: struct (n := 128 ) {
+// 	[..n]utf8
+// }
 
 overload + add
 add :: dispatch {
@@ -11,11 +16,11 @@ add :: dispatch {
 }
 
 // Append all elements from a slice in place.
-add_string :: fun(dst: ^String, src: String) {
+add_string :: fun(dst: ^string, src: string) {
 	dst[dst.len:] = src
 	dst.len += src.len
 }
 
-add_cstring :: fun(dst: ^String, src: ^byte) {
+add_cstring :: fun(dst: ^string, src: ^byte) {
 	dst + os.read_cstring(dst.cap, src)
 }
