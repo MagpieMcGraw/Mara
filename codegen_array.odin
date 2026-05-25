@@ -814,36 +814,6 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
 // Slice codegen
 // ---------------------------------------------------------------------------
 
-// Load the data pointer from a slice variable's { ptr, i64 } struct
-gen_slice_data_ptr :: proc(g: ^Codegen, name: string) -> string {
-    sv, _ := get_slice(g, name)
-    data_gep := fresh_tmp(g)
-    emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
-    data_ptr := fresh_tmp(g)
-    emit_load_into(g, data_ptr, "ptr", data_gep)
-    return data_ptr
-}
-
-// Load the data pointer (field 0) from a slice variable's { ptr, i64, i64 } struct
-gen_slice_ptr :: proc(g: ^Codegen, name: string) -> string {
-    sv, _ := get_slice(g, name)
-    ptr_gep := fresh_tmp(g)
-    emit_slice_gep(g, ptr_gep, sv.alloca, SLICE.ptr)
-    ptr_val := fresh_tmp(g)
-    emit_load_into(g, ptr_val, "ptr", ptr_gep)
-    return ptr_val
-}
-
-// Load the cursor / valid-data length from a slice variable.
-gen_slice_len :: proc(g: ^Codegen, name: string) -> string {
-    sv, _ := get_slice(g, name)
-    len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
-    len_val := fresh_tmp(g)
-    emit_typed_load_len(g, len_val, len_gep)
-    return len_val
-}
-
 // take(T, storage) — two forms:
 //   take(T, &slice)     — cursor form: carve from slice.len, advance it.
 //                         Cursor lives in the caller's slice header; multiple
@@ -1023,15 +993,6 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
 }
 
 // Load the total capacity from a slice variable.
-gen_slice_cap :: proc(g: ^Codegen, name: string) -> string {
-    sv, _ := get_slice(g, name)
-    cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
-    cap_val := fresh_tmp(g)
-    emit_typed_load_cap(g, cap_val, cap_gep)
-    return cap_val
-}
-
 // Index into a slice: slice[idx] (value read).
 // Bounded by len (valid-data cursor) — you can only read what's been written.
 gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {

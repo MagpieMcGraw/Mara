@@ -820,23 +820,17 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         }
     }
 
-    // Slice field access: sl.ptr, sl.len, sl.cap
-    if sv, sv_ok := get_slice(g, ident.name); sv_ok {
-        if e.field == "ptr" {
-            return gen_slice_ptr(g, ident.name)
-        }
-        if e.field == "len" {
-            return gen_slice_len(g, ident.name)
-        }
-        if e.field == "cap" {
-            raw_cap := gen_slice_cap(g, ident.name)
-            if sv.has_sentinel {
-                // Sentinel slot is hidden from .cap (consistent with cap() builtin).
-                result := fresh_tmp(g)
-                emit(g, "  %s = sub i64 %s, 1", result, raw_cap)
-                return result
+    // Slice / partial-array field access: sl.ptr, sl.len, sl.cap.
+    // Routes through the array handle so the sentinel-hidden cap convention
+    // matches the cap() builtin and emit_print_arg.
+    if _, sv_ok := get_slice(g, ident.name); sv_ok {
+        if e.field == "ptr" || e.field == "len" || e.field == "cap" {
+            h, _ := resolve_array_handle(g, ident)
+            switch e.field {
+            case "ptr": return emit_array_data(g, &h)
+            case "len": return emit_array_len(g, &h)
+            case "cap": return emit_array_cap_user(g, &h)
             }
-            return raw_cap
         }
     }
 
