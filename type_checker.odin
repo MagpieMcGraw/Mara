@@ -3051,10 +3051,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         }
         return types_equal(va.return_type, vb.return_type)
     case ^Type_Fixed_Array:
-        // utf8 arrays are compatible with cstring (pass data_ptr as C string)
-        if _, utf8_ok := va.elem.(Type_Utf8); utf8_ok {
-            if _, ok := b.(Type_CString); ok { return true }
-        }
         // Implicit coercion: [N]T is compatible with []T (array → slice)
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
             return types_equal(va.elem, sl.elem)
@@ -3100,12 +3096,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
             if !types_equal(va.elem, sl.elem) { return false }
             if va.has_sentinel && !sl.has_sentinel { return false }
             return true
-        }
-        // utf8 partial array with sentinel → cstring: the trailing 0 in
-        // storage is exactly what cstring requires; FFI receives the
-        // data pointer.
-        if _, cstr_ok := b.(Type_CString); cstr_ok {
-            if _, utf8_ok := va.elem.(Type_Utf8); utf8_ok && va.has_sentinel { return true }
         }
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
             return types_equal(va.elem, fa.elem)
