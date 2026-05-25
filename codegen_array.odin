@@ -416,79 +416,46 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
 // Handle: arr[low:high] = rhs — copy rhs elements into arr[low..high)
 gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     sl := s.target.(^Expr_Slice)
-    // Resolve destination into (data_ptr, capacity, elem_type, name).
-    // Supports: plain arrays, array classes, and field access chains.
-    dst_data_ptr: string
-    dst_cap_str: string   // capacity as LLVM value (literal or register)
-    dst_capacity: int     // compile-time capacity (0 if runtime only)
-    dst_elem_type: string
-    dst_name: string
-    dst_is_utf8: bool
-    dst_has_sentinel: bool
-    dst_resolved := false
-
-    ident, ident_ok := sl.expr.(^Expr_Ident)
-
-    // Path 1: Field access (e.g. result.indices[0:6])
-    if !ident_ok {
-        if fa, fa_ok := sl.expr.(^Expr_Field_Access); fa_ok {
-            gen_field_access(g, fa)
-            // Try as plain array field
-            if av, av_ok := claim_field_array(g); av_ok {
-                dst_data_ptr    = av.alloca
-                dst_capacity  = av.capacity
-                dst_cap_str   = av.capacity_val != "" ? av.capacity_val : fmt.tprintf("%d", av.capacity)
-                dst_elem_type = av.elem_type
-                dst_is_utf8   = av.is_utf8
-                dst_has_sentinel = av.has_sentinel
-                dst_name      = fa.field
-                dst_resolved  = true
-            }
-        }
-        if !dst_resolved {
+    // Resolve destination through the unified array handle. Replaces three
+    // hand-rolled paths (field-access, slice ident, array ident) that all
+    // produced the same set of locals from different starting points.
+    h, h_ok := resolve_array_handle(g, sl.expr)
+    if !h_ok {
+        // Match prior error: field access without an array/slice claim is a
+        // different code than a bare unresolved ident.
+        if _, fa_ok := sl.expr.(^Expr_Field_Access); fa_ok {
             codegen_fatal(g, s.span, CODE_SLICE_ASSIGNMENT_TARGET_VARIABLE)
         }
-    }
-
-    // Path 2: Ident + slice variable (load data ptr + cap from header)
-    if !dst_resolved && ident_ok {
-        if sv, sv_ok := get_slice(g, ident.name); sv_ok {
-            // Pull data ptr from field 0 and cap from field 2 (raw-memory range).
-            data_gep := fresh_tmp(g)
-            emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
-            data_ptr := fresh_tmp(g)
-            emit_load_into(g, data_ptr, "ptr", data_gep)
-
-            cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
-            cap_val := fresh_tmp(g)
-            emit_typed_load_cap(g, cap_val, cap_gep)
-
-            dst_data_ptr  = data_ptr
-            dst_capacity  = 0  // runtime
-            dst_cap_str   = cap_val
-            dst_elem_type = sv.elem_type
-            dst_is_utf8   = sv.is_utf8
-            dst_has_sentinel = sv.has_sentinel
-            dst_name      = ident.name
-            dst_resolved  = true
-        }
-    }
-
-    // Path 3: Ident + plain array / array class
-    if !dst_resolved && ident_ok {
-        av, av_ok := get_array(g, ident.name)
-        if !av_ok {
+        if ident, ok := sl.expr.(^Expr_Ident); ok {
             codegen_fatal(g, s.span, CODE_ARRAY_ARRAY_CLASS_SLICE, ident.name)
         }
-        dst_data_ptr    = av.alloca
-        dst_capacity  = av.capacity
-        dst_cap_str   = av.capacity_val != "" ? av.capacity_val : fmt.tprintf("%d", av.capacity)
-        dst_elem_type = av.elem_type
-        dst_is_utf8   = av.is_utf8
-        dst_has_sentinel = av.has_sentinel
-        dst_name      = ident.name
-        dst_resolved  = true
+        codegen_fatal(g, s.span, CODE_SLICE_ASSIGNMENT_TARGET_VARIABLE)
+    }
+
+    dst_data_ptr   := emit_array_data(g, &h)
+    dst_elem_type  := h.elem_type
+    dst_is_utf8    := h.is_utf8
+    dst_has_sentinel := h.has_sentinel
+    // Pre-refactor bounds rule (preserved literally): fixed arrays bound
+    // against user-visible capacity (excludes the sentinel slot), slices
+    // and partial arrays bound against the raw header cap (which includes
+    // the sentinel slot — so a brim-fill of a sentinel slice can still
+    // overwrite the terminator). The sentinel write below guards that case
+    // at runtime so the terminator survives whenever there's room for it.
+    dst_capacity:  int     // compile-time fixed cap, 0 = runtime
+    dst_cap_str:   string  // SSA value of the bounds-check upper limit
+    if handle_is_fixed(&h) {
+        dst_capacity = h.static_cap
+        dst_cap_str  = h.static_cap_str != "" ? h.static_cap_str : fmt.tprintf("%d", h.static_cap)
+    } else {
+        dst_capacity = 0
+        dst_cap_str  = emit_array_raw_cap(g, &h)
+    }
+    dst_name := ""
+    if ident, ok := sl.expr.(^Expr_Ident); ok {
+        dst_name = ident.name
+    } else if fa, ok := sl.expr.(^Expr_Field_Access); ok {
+        dst_name = fa.field
     }
 
     // Compute low
