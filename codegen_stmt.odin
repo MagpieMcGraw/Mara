@@ -540,6 +540,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // fallthrough would clobber float/double slots with `store float 0`,
         // which LLVM rejects.
         if s.value == nil {
+            // Already prebound (struct-constructor field path): the name
+            // resolves to a sret-field GEP, so a fresh local alloca would
+            // be dead. Leave the prebind alone — the field stays at its
+            // caller-provided storage (typically zeroed by an outer memset).
+            if _, already := g.all_vars[s.name]; already {
+                return
+            }
             alloca_name := fmt.tprintf("%%%s", s.name)
             emit_alloca(g, alloca_name, ir_type)
             if ir_type == "ptr" {

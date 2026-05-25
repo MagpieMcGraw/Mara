@@ -644,15 +644,21 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             chain.array_cap = 0              // unused; cap is dynamic
             return true
         }
-        // Pointer-to-struct: auto-deref
+        // Pointer-to-struct: auto-deref. Pointer value may live in a
+        // Scalar_Var alloca (mutable local) or directly as an SSA value
+        // (immutable param — no alloca emitted, no load needed).
         if pt, pt_ok := e.type_.(^Type_Ptr); pt_ok {
             if sd := as_struct_body(pt.elem); sd != nil {
-                alloca, sc_ok := get_scalar(g, e.name)
-                if !sc_ok { return false }
-                // Load pointer and null check during emission
-                loaded := emit_load(g, "ptr", alloca)
-                emit_null_check(g, loaded, e.name, e.span)
-                chain.base_ptr = loaded
+                ptr_val: string
+                entry, entry_ok := g.all_vars[e.name]
+                if !entry_ok { return false }
+                #partial switch v in entry {
+                case SSA_Var:    ptr_val = v.ssa
+                case Scalar_Var: ptr_val = emit_load(g, "ptr", v.alloca)
+                case:            return false
+                }
+                emit_null_check(g, ptr_val, e.name, e.span)
+                chain.base_ptr = ptr_val
                 chain.base_type = struct_llvm_name(sd.name)
                 chain.final_type = chain.base_type
                 chain.final_kind = .Struct
@@ -3438,11 +3444,18 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // references (arena init, args setup, dispatch into user `main`).
     compute_module_imports(&g, checked.main_package, main_builder_str)
 
-    // Pre-build the foreign declare block once; the same set is included
-    // in every per-module .ll. Intrinsic declares are computed per-module
-    // inside build_module_ll, since each TU only needs the intrinsics it
-    // actually references.
+    // Pre-build foreign declares as a name→declare map. Each per-module .ll
+    // emits only the foreign symbols its function bodies actually reference,
+    // mirroring the cross-module import filtering below.
     foreign_declares := build_foreign_declares(&g, checked)
+    defer delete(foreign_declares)
+
+    // Build a name→decl map for struct/union types so each per-module .ll
+    // emits only the types it (transitively) references. The IR-level type
+    // name namespace is per-TU so the full set isn't needed everywhere;
+    // each TU previously paid ~144 decls of duplication.
+    struct_decl_by_name := build_struct_decl_index(g.struct_decls[:])
+    defer delete(struct_decl_by_name)
 
     // Walk every module's emitted IR for `define ... @name(args) {` lines
     // and convert each to its corresponding `declare ... @name(args)` form.
@@ -3478,6 +3491,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
                                     fail_helpers_ir, main_builder_str,
                                     foreign_declares,
                                     fn_declares,
+                                    struct_decl_by_name,
                                     task_by_module[module_name])
         path := module_ll_path(build_dir, module_name)
         werr := os.write_entire_file(path, transmute([]u8)content)
@@ -3499,9 +3513,10 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 @(private="file")
 build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
                         module_name: string, is_main_tu: bool, web: bool,
-                        fail_helpers_ir, main_builder_str,
-                        foreign_declares: string,
+                        fail_helpers_ir, main_builder_str: string,
+                        foreign_declares: map[string]string,
                         fn_declares: map[string]string,
+                        struct_decl_by_name: map[string]string,
                         module_task: ^Module_Task) -> string {
     b: strings.Builder
     strings.builder_init_len_cap(&b, 0, 1024 * 1024)
@@ -3521,14 +3536,39 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "\"\n\n")
     }
 
-    // Struct/union type definitions — TU-local in LLVM IR (the LLVM type
-    // name namespace is per-TU at the IR level, not at the linker level),
-    // so every TU emits the full set. clang dedups intra-TU.
-    for decl in g.struct_decls {
-        strings.write_string(&b, decl)
-        strings.write_byte(&b, '\n')
+    // Struct/union type definitions — TU-local LLVM type namespace means we
+    // only need the types this module actually references (plus the transitive
+    // closure of their field types). Collect from the module's own IR + the
+    // main TU's @main / fail-helper IR.
+    {
+        used := collect_used_types(g.module_outs[module_name], struct_decl_by_name)
+        if is_main_tu {
+            collect_used_types_into(main_builder_str, struct_decl_by_name, &used)
+            collect_used_types_into(fail_helpers_ir, struct_decl_by_name, &used)
+        }
+        // The `@__mara_program_storage` global below references %class.Program
+        // in every TU (main TU defines it, others extern-declare it), so seed
+        // its transitive closure into the used set even if the module's body
+        // never names the type directly.
+        program_name :: "%class.Program"
+        if _, ok := struct_decl_by_name[program_name]; ok && !(program_name in used) {
+            used[program_name] = true
+            seed_ir := struct_decl_by_name[program_name]
+            collect_used_types_into(seed_ir, struct_decl_by_name, &used)
+        }
+        // Emit in the same order as g.struct_decls so the output stays
+        // deterministic and matches the original layout for diffability.
+        wrote_any := false
+        for decl in g.struct_decls {
+            name := struct_decl_name(decl)
+            if name == "" || !(name in used) { continue }
+            strings.write_string(&b, decl)
+            strings.write_byte(&b, '\n')
+            wrote_any = true
+        }
+        if wrote_any { strings.write_byte(&b, '\n') }
+        delete(used)
     }
-    if len(g.struct_decls) > 0 { strings.write_byte(&b, '\n') }
 
     // String literal globals — private linkage means no link collision
     // between TUs. Per-module workers contribute their own @.<module>_str.N
@@ -3596,7 +3636,23 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
             strings.write_string(&b, strings.concatenate({"declare { ", it, ", i1 } @", name, "(", it, ", ", it, ")\n"}))
         }
     }
-    strings.write_string(&b, foreign_declares)
+    // Per-module foreign declares: emit only the C symbols this module
+    // actually references. Iterate via module_imports (the imports computed
+    // by compute_module_imports). Sorted for deterministic output.
+    if imports, has_imports := g.module_imports[module_name]; has_imports {
+        sorted_foreigns: [dynamic]string
+        defer delete(sorted_foreigns)
+        for name in imports {
+            if _, is_foreign := foreign_declares[name]; is_foreign {
+                append(&sorted_foreigns, name)
+            }
+        }
+        slice.sort(sorted_foreigns[:])
+        for name in sorted_foreigns {
+            strings.write_string(&b, foreign_declares[name])
+            strings.write_byte(&b, '\n')
+        }
+    }
     strings.write_byte(&b, '\n')
 
     // Runtime helpers: main TU defines, others extern-declare.
@@ -3717,23 +3773,97 @@ build_intrinsic_declares :: proc(g: ^Codegen) -> string {
     return strings.to_string(b)
 }
 
-// Pre-build the foreign `declare` block: one declare per foreign symbol,
-// sorted by name. Same content in every TU.
+// Extract the type name (`%class.X` or `%union.X`) from a type-decl line
+// like `%class.X = type { ... }`. Returns "" if the line isn't shaped that
+// way (defensive — every entry in struct_decls follows the convention).
 @(private="file")
-build_foreign_declares :: proc(g: ^Codegen, checked: ^Checked_Program) -> string {
-    b: strings.Builder
-    foreign_keys: [dynamic]string
-    defer delete(foreign_keys)
-    for k in checked.functions { append(&foreign_keys, k) }
-    slice.sort(foreign_keys[:])
-    for k in foreign_keys {
+struct_decl_name :: proc(decl: string) -> string {
+    if len(decl) == 0 || decl[0] != '%' { return "" }
+    eq := strings.index_byte(decl, '=')
+    if eq <= 1 { return "" }
+    end := eq
+    for end > 1 && decl[end-1] == ' ' { end -= 1 }
+    return decl[:end]
+}
+
+// Build the name → decl-line index used by per-module struct-decl filtering.
+@(private="file")
+build_struct_decl_index :: proc(decls: []string) -> map[string]string {
+    result := make(map[string]string)
+    for d in decls {
+        if name := struct_decl_name(d); name != "" {
+            result[name] = d
+        }
+    }
+    return result
+}
+
+// Collect every `%class.X` / `%union.X` name referenced in `ir`, then add
+// the transitive closure (types whose fields mention other types). Anything
+// not in `index` (LLVM's own anonymous struct shapes etc.) is ignored.
+@(private="file")
+collect_used_types :: proc(buf: strings.Builder, index: map[string]string) -> map[string]bool {
+    used: map[string]bool
+    collect_used_types_into(strings.to_string(buf), index, &used)
+    return used
+}
+
+@(private="file")
+collect_used_types_into :: proc(ir: string, index: map[string]string, used: ^map[string]bool) {
+    // Scan `ir` for `%class.<ident>` and `%union.<ident>` occurrences. The
+    // hot loop uses strings.index_byte to jump straight from one `%` to the
+    // next, skipping the (much more common) non-`%` bytes in one step
+    // instead of one-byte-at-a-time.
+    add :: proc(name: string, index: map[string]string, used: ^map[string]bool) -> bool {
+        if name in used { return false }
+        if _, ok := index[name]; !ok { return false }
+        used[name] = true
+        return true
+    }
+    scan :: proc(s: string, index: map[string]string, used: ^map[string]bool, worklist: ^[dynamic]string) {
+        pos := 0
+        for pos < len(s) {
+            jump := strings.index_byte(s[pos:], '%')
+            if jump < 0 { break }
+            i := pos + jump
+            j := i + 1
+            for j < len(s) && is_ir_ident_byte(s[j]) { j += 1 }
+            if j > i + 1 {
+                name := s[i:j]
+                // Only %class.* / %union.* are user struct/union types.
+                if strings.has_prefix(name, "%class.") || strings.has_prefix(name, "%union.") {
+                    if add(name, index, used) { append(worklist, name) }
+                }
+            }
+            pos = j
+            if pos == i { pos += 1 }  // defensive — never re-scan the same byte
+        }
+    }
+    worklist: [dynamic]string
+    defer delete(worklist)
+    scan(ir, index, used, &worklist)
+    // Transitive closure: each used type's decl may reference more types
+    // in its field list (`{ ..., %class.Y, ... }`). Drain the worklist.
+    for len(worklist) > 0 {
+        name := pop(&worklist)
+        scan(index[name], index, used, &worklist)
+    }
+}
+
+// Pre-build foreign `declare` entries keyed by C link_name (the actual
+// IR symbol the import set references). Per-module emission filters this
+// to just the foreign symbols the module actually calls — dropping the
+// other ~140 dead declares each TU otherwise duplicated.
+@(private="file")
+build_foreign_declares :: proc(g: ^Codegen, checked: ^Checked_Program) -> map[string]string {
+    result := make(map[string]string)
+    for k in checked.functions {
         cs := checked.functions[k]
         fo, is_foreign := cs.origin.(Origin_Foreign)
         if !is_foreign { continue }
-        strings.write_string(&b, build_c_declare(&cs, fo.link_name, checked.target_os))
-        strings.write_byte(&b, '\n')
+        result[fo.link_name] = build_c_declare(&cs, fo.link_name, checked.target_os)
     }
-    return strings.to_string(b)
+    return result
 }
 
 // `<output_path>` typically ends in `.ll`; strip that and append `_build`

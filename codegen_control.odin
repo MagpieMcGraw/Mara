@@ -185,10 +185,11 @@ gen_for_range :: proc(g: ^Codegen, s: ^Stmt_For) {
     low_val  := gen_expr(g, s.range_low, ir_type)
     high_val := gen_expr(g, s.range_high, ir_type)
 
-    // Alloca + init loop variable
+    // Alloca + init loop variable. Skip the pre-store-0 step that previously
+    // shadowed the low_val store — LLVM still emits both as separate
+    // instructions, and the first one is always dead.
     alloca_name := fmt.tprintf("%%%s", s.loop_var)
     emit_alloca(g, alloca_name, ir_type)
-    emit_store(g, ir_type, "0", alloca_name)
     emit_store(g, ir_type, low_val, alloca_name)
     g.all_vars[s.loop_var] = Scalar_Var{alloca_name}
 

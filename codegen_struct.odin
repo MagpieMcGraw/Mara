@@ -493,12 +493,26 @@ resolve_struct_for_field :: proc(g: ^Codegen, ident_name: string, ident_type: Ty
     }
     if ptr_struct_name != "" {
         if st, st_ok := lookup_struct(g, ptr_struct_name); st_ok {
-            alloca_name, _ := get_scalar(g, ident_name)
-            loaded_ptr := fresh_tmp(g)
-            emit_load_into(g, loaded_ptr, "ptr", alloca_name)
-            // Null pointer check before auto-deref field access
-            emit_null_check(g, loaded_ptr, ident_name, span)
-            return st, loaded_ptr, true
+            // The pointer value may live in a Scalar_Var alloca (locals) or
+            // directly as an SSA value (params — they're immutable, no alloca).
+            ptr_val: string
+            if entry, entry_ok := g.all_vars[ident_name]; entry_ok {
+                #partial switch v in entry {
+                case SSA_Var:
+                    ptr_val = v.ssa
+                case Scalar_Var:
+                    ptr_val = fresh_tmp(g)
+                    emit_load_into(g, ptr_val, "ptr", v.alloca)
+                }
+            }
+            if ptr_val == "" {
+                if alloca_name, ok := get_scalar(g, ident_name); ok {
+                    ptr_val = fresh_tmp(g)
+                    emit_load_into(g, ptr_val, "ptr", alloca_name)
+                }
+            }
+            emit_null_check(g, ptr_val, ident_name, span)
+            return st, ptr_val, true
         }
     }
     return nil, "", false

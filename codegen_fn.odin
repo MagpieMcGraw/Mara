@@ -504,20 +504,13 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 has_sentinel = pa.has_sentinel,
                 sentinel     = pa.sentinel,
             }
-        } else if pt, pt_ok := p.type_.(^Type_Ptr); pt_ok {
-            if as_struct_body(pt.elem) != nil {
-                // Pointer-to-struct param: alloca a ptr slot, store the arg
-                alloca_name := fmt.tprintf("%%%s", p.name)
-                emit_alloca(g, alloca_name, "ptr")
-                emit(g, "  store ptr %%%s.arg, ptr %s", p.name, alloca_name)
-                g.all_vars[p.name] = Scalar_Var{alloca = alloca_name}
-            } else {
-                ir_t := llvm_type_from_checker(p.type_)
-                alloca_name := fmt.tprintf("%%%s", p.name)
-                emit_alloca(g, alloca_name, ir_t)
-                emit(g, "  store %s %%%s.arg, ptr %s", ir_t, p.name, alloca_name)
-                g.all_vars[p.name] = Scalar_Var{alloca = alloca_name}
-            }
+        } else if _, pt_ok := p.type_.(^Type_Ptr); pt_ok {
+            // Pointer params: bind directly to the .arg SSA value. Mara
+            // params are immutable, so the alloca+store+load dance the
+            // codegen used to emit was pure waste — every read can just
+            // use `%<name>.arg` directly.
+            ssa := fmt.tprintf("%%%s.arg", p.name)
+            g.all_vars[p.name] = SSA_Var{ssa = ssa, ir_type = "ptr"}
         } else if fa, fa_ok := p.type_.(^Type_Fixed_Array); fa_ok {
             // Array param (including distinct arrays like Vec3 :: distinct [3]f32)
             elem_t := llvm_type_from_checker(fa.elem)
@@ -534,11 +527,10 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 is_utf8   = utf8,
             }
         } else {
+            // Scalar param: same SSA-direct treatment as pointer params.
             ir_t := llvm_type_from_checker(p.type_)
-            alloca_name := fmt.tprintf("%%%s", p.name)
-            emit_alloca(g, alloca_name, ir_t)
-            emit(g, "  store %s %%%s.arg, ptr %s", ir_t, p.name, alloca_name)
-            g.all_vars[p.name] = Scalar_Var{alloca = alloca_name}
+            ssa := fmt.tprintf("%%%s.arg", p.name)
+            g.all_vars[p.name] = SSA_Var{ssa = ssa, ir_type = ir_t}
         }
     }
 
