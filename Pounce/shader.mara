@@ -3,35 +3,35 @@ module warlock
 use mara.os
 use mara.string
 
-// shader_load_text :: fun(filepath: string) -> (vtext: string, ftext: string) {
-// 	file_contents, read_ok := os.read_entire_file(filepath)
-// 	if !read_ok {
-// 		fmt.eprintln("Failed to load shader file:", filepath)
-// 	}
-// 	defer delete(file_contents)
+shader_load_text :: fun(filepath: string) -> (vtext: string, ftext: string) {
+	file_contents, read_ok := os.read_entire_file(filepath)
+	if !read_ok {
+		fmt.eprintln("Failed to load shader file:", filepath)
+	}
+	defer delete(file_contents)
 
-// 	file_text := string(file_contents)
+	file_text := string(file_contents)
 
-// 	// Find second occurrence of "#version" to split vertex and fragment shaders
-// 	VERSION_TAG :: "#version"
-// 	first_version := strings.index(file_text, VERSION_TAG)
-// 	if first_version == -1 {
-// 		fmt.eprintln("Shader file missing #version tag:", filepath)
-// 	}
+	// Find second occurrence of "#version" to split vertex and fragment shaders
+	VERSION_TAG :: "#version"
+	first_version := strings.index(file_text, VERSION_TAG)
+	if first_version == -1 {
+		fmt.eprintln("Shader file missing #version tag:", filepath)
+	}
 
-// 	// Search for second #version tag after the first one
-// 	search_start := first_version + len(VERSION_TAG)
-// 	second_version := strings.index(file_text[search_start:], VERSION_TAG)
-// 	if second_version == -1 {
-// 		fmt.eprintln("Shader file missing second #version tag (fragment shader):", filepath)
-// 	}
+	// Search for second #version tag after the first one
+	search_start := first_version + len(VERSION_TAG)
+	second_version := strings.index(file_text[search_start:], VERSION_TAG)
+	if second_version == -1 {
+		fmt.eprintln("Shader file missing second #version tag (fragment shader):", filepath)
+	}
 
-// 	split_index := search_start + second_version
-// 	vertex_shader := strings.clone(file_text[0:split_index])
-// 	fragment_shader := strings.clone(file_text[split_index:])
+	split_index := search_start + second_version
+	vertex_shader := strings.clone(file_text[0:split_index])
+	fragment_shader := strings.clone(file_text[split_index:])
 
-// 	return vertex_shader, fragment_shader
-// }
+	return vertex_shader, fragment_shader
+}
 
 // shader_compile :: fun(shader_text: string, shader_type: u32) -> u32 {
 // 	shader_cstr := strings.clone_to_cstring(shader_text)
