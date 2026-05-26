@@ -8,19 +8,25 @@ gl :: use mara.open_gl
 load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 	data: [..32 * KB]byte
 	read_ok := os.read_entire_file(filepath, &data)
+	if not read_ok {
+		print("Shader load failed — couldn't open file:", filepath)
+		crash("aborting")
+	}
 
 	text : []utf8 = data[:]
 	VERSION_TAG :: "#version"
 	vs_tag, vs_found := text.find(VERSION_TAG)
+	if not vs_found do crash("Shader load: no #version directive found")
 
 	next := vs_tag + VERSION_TAG.len
 	fs_tag, fs_found := text.find(VERSION_TAG, next)
+	if not fs_found do crash("Shader load: only one #version directive found (need two: vertex + fragment)")
 
 	vtext := text[:fs_tag]
 	ftext := text[fs_tag:]
 
 	compile :: fun(text: ^[]utf8, shader_type: u32) -> u32 {
-		shader := gl.CreateShader(shader_type)		
+		shader := gl.CreateShader(shader_type)
 		gl.ShaderSource(shader, 1, &text.ptr, &text.len)
 		gl.CompileShader(shader)
 
