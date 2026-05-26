@@ -663,6 +663,24 @@ is_ir_float :: proc(t: string) -> bool {
     return t == "half" || t == "float" || t == "double"
 }
 
+// Narrow or widen an integer SSA value from `src_type` to `target` (sext for
+// signed widen — the conventional default; trunc for narrow). No-op when
+// widths match. Caller is responsible for src_type accurately describing the
+// SSA value's actual IR type.
+coerce_int_to_ir :: proc(g: ^Codegen, val: string, src_type: string, target: string) -> string {
+    if src_type == target { return val }
+    src_bits := ir_type_bits(src_type)
+    tgt_bits := ir_type_bits(target)
+    if src_bits == 0 || tgt_bits == 0 || src_bits == tgt_bits { return val }
+    tmp := fresh_tmp(g)
+    if src_bits < tgt_bits {
+        emit(g, "  %s = sext %s %s to %s", tmp, src_type, val, target)
+    } else {
+        emit(g, "  %s = trunc %s %s to %s", tmp, src_type, val, target)
+    }
+    return tmp
+}
+
 is_unsigned_cast :: proc(name: string) -> bool {
     switch name {
     case "u8", "u16", "u32", "u64", "u128", "uint", "usize", "bool":

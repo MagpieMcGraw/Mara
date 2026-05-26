@@ -6871,14 +6871,15 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         if s.iter_type != nil {
             iter_type = resolve_type_expr(s.iter_type, c, s.span)
         } else {
-            iter_type = promote_numeric(c, low_type, high_type, s.span)
+            // Silent promote — the loop will gracefully fall back to slice
+            // header width if low/high don't agree (common when one side is
+            // an `int` default param and the other is an i32-typed `.len`).
+            // Users who genuinely want i64 spell it: `for k: i64 in a..b`.
+            iter_type = try_promote_numeric(low_type, high_type)
             if _, ok := iter_type.(Type_Error); ok {
                 iter_type = slice_header_width_type
             }
             if is_infer(iter_type) {
-                // Default `for k in 0..N` ranges to slice header width so the
-                // index can flow into array/slice access without a cast. Users
-                // wanting i64 still get it via `for k: i64 in 0..N`.
                 iter_type = slice_header_width_type
             }
         }
@@ -10688,30 +10689,38 @@ coerce_infer_to_hint :: proc(t, hint: Type) -> Type {
 // Promote numeric types for binary operations.
 // Infer types yield to concrete types; if both infer, stay inferred.
 // Both concrete operands must have matching types (no implicit widening/narrowing).
-promote_numeric :: proc(c: ^Checker, a: Type, b: Type, span: Span) -> Type {
+// Silent variant: returns Type_Error on irreconcilable mismatch without
+// emitting a diagnostic. Used by callers that want to inspect-and-recover
+// (the for-range loop falls back to slice-header width). Same rules
+// otherwise: float beats int among inferred sides, infer adopts concrete,
+// concrete requires exact match.
+try_promote_numeric :: proc(a: Type, b: Type) -> Type {
     a_infer := is_infer(a)
     b_infer := is_infer(b)
 
-    // Both infer: float wins over int
     if a_infer && b_infer {
         if _, ok := a.(Type_Infer_Float); ok { return Type_Infer_Float{} }
         if _, ok := b.(Type_Infer_Float); ok { return Type_Infer_Float{} }
         return Type_Infer_Int{}
     }
 
-    // One side infer, one side concrete: adopt the concrete type
     if a_infer { return b }
     if b_infer { return a }
 
-    // Either side is untyped: suppress error
     if is_any(a) || is_any(b) { return Type_Error{} }
 
-    // Both concrete: require exact match
     if types_equal(a, b) { return a }
 
-    check_error(c, span, TYPE_MISMATCHED_TYPES_ARITHMETIC_USE_EXPLICIT,
-        type_name(a), type_name(b))
     return Type_Error{}
+}
+
+promote_numeric :: proc(c: ^Checker, a: Type, b: Type, span: Span) -> Type {
+    result := try_promote_numeric(a, b)
+    if _, ok := result.(Type_Error); ok && !is_any(a) && !is_any(b) {
+        check_error(c, span, TYPE_MISMATCHED_TYPES_ARITHMETIC_USE_EXPLICIT,
+            type_name(a), type_name(b))
+    }
+    return result
 }
 
 // Check if any param has a default value.

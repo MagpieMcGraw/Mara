@@ -1280,7 +1280,12 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
         }
     }
 
-    src := gen_expr(g, value)
+    // Slice-coercible source (string literal, fixed array, existing slice
+    // var, etc.) — route through gen_slice_value_ptr which knows how to
+    // synthesize a real slice header. Without this, a bare string literal
+    // would memcpy 24 bytes of string data through emit_memcpy and leave the
+    // slice header pointing at garbage.
+    src := gen_slice_value_ptr(g, value)
 
     if _, slice_exists := get_slice(g, name); !slice_exists {
         alloca_name := fmt.tprintf("%%%s.slice", name)

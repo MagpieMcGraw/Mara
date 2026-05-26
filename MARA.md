@@ -14,6 +14,14 @@ Fixed sized variables, including arrays, can be declared in functions and return
 
 Slices are used to return runtime sized data from functions, by carving a buffer passed from a higher scope.
 
+Quirks:
+
+Slice from slice/array copies reference
+some_slice := other_slice[0:128]
+
+Array from slice copies data
+my_array : [..256]byte = some_slice[64:128]
+
 Important learnings:
 
 Define codegen types and stick to them. No hardcoded sizes

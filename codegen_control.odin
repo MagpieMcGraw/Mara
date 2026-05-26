@@ -181,9 +181,14 @@ gen_for_range :: proc(g: ^Codegen, s: ^Stmt_For) {
     // Determine the LLVM IR type for the iterator
     ir_type := llvm_type_from_checker(s.var_type)
 
-    // Evaluate bounds
-    low_val  := gen_expr(g, s.range_low, ir_type)
-    high_val := gen_expr(g, s.range_high, ir_type)
+    // Evaluate bounds. Bounds whose source IR width differs from the loop's
+    // iter type (e.g. `for i in start..end` with start: i64, end: i32 and
+    // iter resolved to i32 via slice-header default) get narrowed/widened
+    // to ir_type so the store / icmp at iter width is well-typed.
+    low_val  := coerce_int_to_ir(g, gen_expr(g, s.range_low, ir_type),
+        expr_ir_type(g, s.range_low), ir_type)
+    high_val := coerce_int_to_ir(g, gen_expr(g, s.range_high, ir_type),
+        expr_ir_type(g, s.range_high), ir_type)
 
     // Alloca + init loop variable. Skip the pre-store-0 step that previously
     // shadowed the low_val store — LLVM still emits both as separate

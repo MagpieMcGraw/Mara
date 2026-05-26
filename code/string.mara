@@ -19,12 +19,12 @@ add_str :: fun(dst: ^str, src: str) {
 // on match, (-1, false) when not present. Naive O(n*m) search — fine for
 // typical use (shader source < 100KB, directives a handful of bytes); swap
 // for KMP/Boyer-Moore later if it ever matters.
-find :: fun(haystack: []utf8, needle: []utf8) -> (i32, bool) {
+find :: fun(needle: []utf8, haystack: []utf8, start := 0) -> i32, bool {
 	if needle.len == 0 do return 0, true
 	if haystack.len < needle.len do return -1, false
 
 	end := haystack.len - needle.len + 1
-	for i in 0..end {
+	for i in start..end {
 		matched := true
 		for j in 0..needle.len {
 			if haystack[i + j] != needle[j] {

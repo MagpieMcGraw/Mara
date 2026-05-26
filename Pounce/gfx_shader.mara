@@ -10,11 +10,12 @@ shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [16 * KB]utf8 {
 
 	// Split shader file at second occurence of #version
 	VERSION_TAG :: "#version"
-	vs_tag, vs_found := string.find(as_str, VERSION_TAG)
+	vs_tag, vs_found := string.find(VERSION_TAG, as_str)
 
 	next := vs_tag + VERSION_TAG.len
-	fs_tag, fs_found := string.find(as_str[next:], VERSION_TAG)
+	fs_tag, fs_found := string.find(VERSION_TAG, as_str, vs_tag)
 
+	// because these are fixed arrays, they copy data from the slice
 	vtext = as_str[0:fs_tag]
 	ftext = as_str[fs_tag:]
 
