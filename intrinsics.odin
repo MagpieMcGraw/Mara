@@ -137,9 +137,10 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
         }
     }
 
-    if !types_equal(distinct_base(ft.return_type), expected_type) {
+    primary := fn_primary_return(ft)
+    if len(ft.return_types) != 1 || !types_equal(distinct_base(primary), expected_type) {
         check_error(c, span, "intrinsic `@%s` expects return type `%s`, got `%s`",
-            name, type_name(expected_type), type_name(ft.return_type))
+            name, type_name(expected_type), type_name(primary))
         return false
     }
 

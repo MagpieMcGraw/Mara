@@ -250,7 +250,7 @@ Fun_Info :: struct {
     ret_struct:        string,            // "" for non-struct, or struct name (e.g. "Point")
     ret_array_cap:     int,              // >0 if returning a fixed array (sret convention)
     ret_array_elem:    string,           // LLVM element type (e.g. "i64", "double")
-    ret_tuple:         ^Type_Tuple,      // non-nil if returning a tuple (multi-return)
+    ret_types:         []Type,           // multi-return list (len > 1 → multi-return via sret)
     ret_slice_elem:    string,           // non-"" if returning a slice (sret convention)
     param_types:       [dynamic]string,   // per-param IR types ("i64", "ptr", etc.)
     param_structs:     [dynamic]string,   // "" or struct name per param
@@ -371,8 +371,8 @@ Codegen :: struct {
     ctx_alloca:       string,                     // LLVM tmp for Context alloca in @main
     // NRVO: name of variable aliased to sret (skipped in scope_has_big_values)
     nrvo_var:         string,
-    // Multi-return: tuple type of current function (nil if not a tuple-returning function)
-    ret_tuple:        ^Type_Tuple,
+    // Multi-return: list of return types for current function (empty if not multi-return)
+    ret_types:        []Type,
     // Tuple call result: temp alloca pointers from the most recent tuple-returning call
     tuple_result_ptrs:  [dynamic]string,  // alloca names for each tuple element
     tuple_result_types: [dynamic]string,  // LLVM types for each tuple element
@@ -1010,24 +1010,29 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
 
     info := Fun_Info{}
 
-    // Return type: struct/array/tuple/slice returns use void + sret convention
-    if sd := as_struct_body(cf.return_type); sd != nil {
+    // Return type: struct/array/multi-return/slice returns use void + sret convention
+    if len(cf.return_types) > 1 {
         info.ret_type = "void"
-        info.ret_struct = sd.name
-    } else if fa, fa_ok := cf.return_type.(^Type_Fixed_Array); fa_ok {
-        info.ret_type = "void"
-        info.ret_array_cap = fa.size
-        info.ret_array_elem = llvm_type_from_checker(fa.elem)
-    } else if tup, tup_ok := cf.return_type.(^Type_Tuple); tup_ok {
-        info.ret_type = "void"
-        info.ret_tuple = tup
-    } else if sl, sl_ok := cf.return_type.(^Type_Slice); sl_ok {
-        info.ret_type = "void"
-        info.ret_slice_elem = llvm_type_from_checker(sl.elem)
-    } else if cf.return_type == nil || is_untyped(cf.return_type) {
+        info.ret_types = cf.return_types[:]
+    } else if len(cf.return_types) == 0 {
         info.ret_type = "void"
     } else {
-        info.ret_type = llvm_type_from_checker(cf.return_type)
+        single := cf.return_types[0]
+        if sd := as_struct_body(single); sd != nil {
+            info.ret_type = "void"
+            info.ret_struct = sd.name
+        } else if fa, fa_ok := single.(^Type_Fixed_Array); fa_ok {
+            info.ret_type = "void"
+            info.ret_array_cap = fa.size
+            info.ret_array_elem = llvm_type_from_checker(fa.elem)
+        } else if sl, sl_ok := single.(^Type_Slice); sl_ok {
+            info.ret_type = "void"
+            info.ret_slice_elem = llvm_type_from_checker(sl.elem)
+        } else if single == nil || is_untyped(single) {
+            info.ret_type = "void"
+        } else {
+            info.ret_type = llvm_type_from_checker(single)
+        }
     }
 
     // Parameter types
@@ -2256,7 +2261,6 @@ llvm_type_from_checker :: proc(t: Type) -> string {
         if v.tag_type != "" { return tag_type_to_ir(v.tag_type) }
         return "i64"
     case ^Type_Union:       return fmt.tprintf("%%union.%s", union_key(v))
-    case ^Type_Tuple:       return "void" // tuple returns use sret convention
     case ^Type_Distinct:    return llvm_type_from_checker(v.base_type)
     case Type_Const_Int:    return "i64" // const generic param — should not appear in codegen
     case Type_Runtime_Size: return "i64" // runtime size — should not appear as field type

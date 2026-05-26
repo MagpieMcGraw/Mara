@@ -182,36 +182,41 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     case Origin_Foreign:   return
     }
 
-    // Determine return type — struct/array/tuple returns use void + sret param(s)
+    // Determine return type — struct/array/multi-return returns use void + sret param(s)
     ret_type := "i64"
     ret_struct_name := ""
     ret_array_cap := 0
     ret_array_elem := ""
-    ret_tuple: ^Type_Tuple = nil
+    ret_types: []Type = nil
     ret_slice_elem := ""
     ret_slice_utf8 := false
     ret_slice_sentinel := false
     ret_slice_sentinel_val := 0
-    if sd := as_struct_body(cf.return_type); sd != nil {
+    if len(cf.return_types) > 1 {
         ret_type = "void"
-        ret_struct_name = sd.name
-    } else if fa, fa_ok := cf.return_type.(^Type_Fixed_Array); fa_ok {
-        ret_type = "void"
-        ret_array_cap = fa.size
-        ret_array_elem = llvm_type_from_checker(fa.elem)
-    } else if tup, tup_ok := cf.return_type.(^Type_Tuple); tup_ok {
-        ret_type = "void"
-        ret_tuple = tup
-    } else if sl, sl_ok := cf.return_type.(^Type_Slice); sl_ok {
-        ret_type = "void"
-        ret_slice_elem = llvm_type_from_checker(sl.elem)
-        _, ret_slice_utf8 = sl.elem.(Type_Utf8)
-        ret_slice_sentinel = sl.has_sentinel
-        ret_slice_sentinel_val = sl.sentinel
-    } else if cf.return_type == nil || is_untyped(cf.return_type) {
+        ret_types = cf.return_types[:]
+    } else if len(cf.return_types) == 0 {
         ret_type = "void"
     } else {
-        ret_type = llvm_type_from_checker(cf.return_type)
+        single := cf.return_types[0]
+        if sd := as_struct_body(single); sd != nil {
+            ret_type = "void"
+            ret_struct_name = sd.name
+        } else if fa, fa_ok := single.(^Type_Fixed_Array); fa_ok {
+            ret_type = "void"
+            ret_array_cap = fa.size
+            ret_array_elem = llvm_type_from_checker(fa.elem)
+        } else if sl, sl_ok := single.(^Type_Slice); sl_ok {
+            ret_type = "void"
+            ret_slice_elem = llvm_type_from_checker(sl.elem)
+            _, ret_slice_utf8 = sl.elem.(Type_Utf8)
+            ret_slice_sentinel = sl.has_sentinel
+            ret_slice_sentinel_val = sl.sentinel
+        } else if single == nil || is_untyped(single) {
+            ret_type = "void"
+        } else {
+            ret_type = llvm_type_from_checker(single)
+        }
     }
 
     // Build parameter list — struct params passed as ptr, slices as { ptr, i64 }
@@ -237,15 +242,15 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         }
     }
 
-    // Struct/array/tuple/slice return: add hidden sret output parameter(s)
+    // Struct/array/multi-return/slice return: add hidden sret output parameter(s)
     if ret_struct_name != "" {
         append(&param_strs, "ptr %sret")
     } else if ret_array_cap > 0 {
         append(&param_strs, "ptr %sret")
     } else if ret_slice_elem != "" {
         append(&param_strs, "ptr %sret")
-    } else if ret_tuple != nil {
-        for i in 0..<len(ret_tuple.elems) {
+    } else if ret_types != nil {
+        for i in 0..<len(ret_types) {
             append(&param_strs, fmt.tprintf("ptr %%sret.%d", i))
         }
     }
@@ -374,17 +379,17 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         }
     }
 
-    // Register sret pointers for tuple-returning functions
-    old_ret_tuple := g.ret_tuple
-    g.ret_tuple = ret_tuple
+    // Register sret pointers for multi-return functions
+    old_ret_types := g.ret_types
+    g.ret_types = ret_types
 
     // Register named return bindings as local variables (e.g. fun() -> (fwd, up: Vec3)).
     // NRVO: the binding's alloca IS the sret slot, so writes go directly into
     // the caller's slot. gen_return_tuple detects the self-copy at return and skips it.
-    if ret_tuple != nil && cf.ast != nil && len(cf.ast.return_bindings) > 0 {
+    if ret_types != nil && cf.ast != nil && len(cf.ast.return_bindings) > 0 {
         for rb, i in cf.ast.return_bindings {
-            if i >= len(ret_tuple.elems) { break }
-            rb_type := distinct_base(ret_tuple.elems[i])
+            if i >= len(ret_types) { break }
+            rb_type := distinct_base(ret_types[i])
             sret_slot := fmt.tprintf("%%sret.%d", i)
             if fa, fa_ok := rb_type.(^Type_Fixed_Array); fa_ok {
                 elem_t := llvm_type_from_checker(fa.elem)
@@ -412,17 +417,17 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 g.all_vars[rb.name] = Scalar_Var{alloca = alloca_name}
             }
         }
-    } else if ret_tuple != nil {
+    } else if ret_types != nil {
         // Positional multi-return NRVO: if every `return v0, v1, ...` uses the
         // same identifier at each position, alias that local to %sret.<i>.
         // Mirrors the single-return NRVO path below. Currently only fixed-array
         // positions are NRVO'd — other shapes still take the alloca+copy route
         // through gen_return_tuple.
-        candidates := find_nrvo_candidates(cf.body[:], len(ret_tuple.elems))
+        candidates := find_nrvo_candidates(cf.body[:], len(ret_types))
         defer delete(candidates)
         for cand, i in candidates {
             if cand == "" { continue }
-            rb_type := distinct_base(ret_tuple.elems[i])
+            rb_type := distinct_base(ret_types[i])
             sret_slot := fmt.tprintf("%%sret.%d", i)
             if fa, fa_ok := rb_type.(^Type_Fixed_Array); fa_ok {
                 elem_t := llvm_type_from_checker(fa.elem)
@@ -557,7 +562,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     if !has_ret {
         pop_scope(g)  // normal exit: emit reset before default return
 
-        if ret_struct_name != "" || ret_array_cap > 0 || ret_tuple != nil || ret_type == "void" {
+        if ret_struct_name != "" || ret_array_cap > 0 || ret_types != nil || ret_type == "void" {
             emit(g, "  ret void")
         } else if ret_type == "i1" {
             emit(g, "  ret i1 false")
@@ -583,7 +588,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     g.scope_stack = old_scope_stack
     g.current_ret_type = old_ret_type
     g.nrvo_var = old_nrvo_var
-    g.ret_tuple = old_ret_tuple
+    g.ret_types = old_ret_types
     g.emitted_allocas = old_emitted_allocas
     g.current_fun_body = old_fun_body
 }

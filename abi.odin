@@ -240,7 +240,7 @@ classify_leaf :: proc(t: Type) -> ABI_Class {
          Type_CString, ^Type_Ptr, ^Type_Enum,
          Type_Const_Int, Type_Runtime_Size, Type_Any:
         return .Integer
-    case ^Type_Slice, ^Type_Partial_Array, ^Type_Tuple, ^Type_Union:
+    case ^Type_Slice, ^Type_Partial_Array, ^Type_Union:
         // These exceed an eightbyte on their own; landing here as a sub-field
         // of an aggregate ≤ 16 bytes shouldn't happen. Treat as MEMORY to
         // force the parent into the indirect path conservatively.
@@ -361,7 +361,7 @@ is_aggregate :: proc(t: Type) -> bool {
     #partial switch v in t {
     case ^Type_Scope:
         return v.kind == .Struct
-    case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array, ^Type_Tuple, ^Type_Union:
+    case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array, ^Type_Union:
         return true
     case ^Type_Distinct:
         return is_aggregate(v.base_type)
@@ -402,16 +402,19 @@ build_c_declare :: proc(cs: ^Checked_Scope, link_name: string, os: Target_OS) ->
     parts: [dynamic]string
     defer delete(parts)
 
-    // Return lowering.
+    // Return lowering. C ABI has no multi-return; foreign return list is 0 or 1.
     ret_ir := "void"
-    has_void_return := cs.return_type == nil || is_untyped(cs.return_type)
+    ret_single: Type
+    has_void_return := len(cs.return_types) == 0
+    if !has_void_return { ret_single = cs.return_types[0] }
+    if !has_void_return && is_untyped(ret_single) { has_void_return = true }
     if !has_void_return {
-        ret_low := classify_ret(cs.return_type, conv, os)
+        ret_low := classify_ret(ret_single, conv, os)
         switch r in ret_low {
         case Lowering_Direct:
             ret_ir = direct_ir_for_return(r.parts[:])
         case Lowering_Indirect:
-            ret_struct_ir := llvm_type_from_checker(cs.return_type)
+            ret_struct_ir := llvm_type_from_checker(ret_single)
             sret := strings.concatenate({"ptr sret(", ret_struct_ir, ")"})
             append(&parts, sret)
         }
@@ -454,7 +457,7 @@ type_alignment :: proc(t: Type) -> int {
         return v.bits / 8
     case Type_Int, Type_Infer_Int, ^Type_Ptr, Type_CString,
          Type_Const_Int, Type_Runtime_Size,
-         ^Type_Union, ^Type_Tuple, Type_Any, Type_Error:
+         ^Type_Union, Type_Any, Type_Error:
         return 8
     case Type_Bool, Type_C8, Type_Utf8, Type_Byte:
         return 1

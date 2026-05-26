@@ -28,7 +28,6 @@ Type :: union {
     ^Type_Partial_Array, // [..N]T — partial array (value with inline storage + cursor)
     ^Type_Enum,
     ^Type_Union,
-    ^Type_Tuple,      // (int, string) — tuple for multi-return
     ^Type_Distinct,   // named wrapper around another type (same layout, different identity)
     Type_Const_Int,      // compile-time integer value — used as const generic param (e.g., n=256)
     Type_Runtime_Size,   // runtime-sized const generic param (e.g., String(n) where n is a variable)
@@ -58,10 +57,6 @@ Type_Runtime_Size :: struct {
 Type_Any :: struct {}
 Type_Void :: struct {}
 Type_Error :: struct {}
-
-Type_Tuple :: struct {
-    elems: [dynamic]Type,
-}
 
 Numeric_Kind :: enum { Signed, Unsigned, Float }
 Type_Numeric :: struct {
@@ -176,14 +171,66 @@ Type_Scope :: struct {
     // Callable params (function parameters / constructor params)
     params:         [dynamic]Struct_Type_Field,
 
-    // Return type — data types return themselves, functions return their declared type
-    return_type:    Type,
+    // Return types for callable scopes (kind=.Fun). Empty for data scopes and
+    // for void-returning funs. Single-return funs have one element; multi-return
+    // funs have N. Mara has no tuple type — multi-return is a list, not a tuple.
+    return_types:   [dynamic]Type,
 
     // ABI calling convention. Defaults to .Mara (zero value). Foreign declarations
     // set this to .C so the codegen lowers the signature per the platform C ABI.
     // See abi.odin for the classifier; phases 3+ consume this at signature /
     // call-site emission time.
     calling_conv:   Calling_Conv,
+}
+
+// True if a callable scope returns more than one value.
+fn_has_multi_return :: proc(ft: ^Type_Scope) -> bool {
+    return len(ft.return_types) > 1
+}
+
+// Primary return type — the only return for single-return funs, the first for
+// multi-return funs, nil for void. Multi-return callers should iterate the list
+// directly rather than relying on this.
+fn_primary_return :: proc(ft: ^Type_Scope) -> Type {
+    if len(ft.return_types) == 0 { return nil }
+    return ft.return_types[0]
+}
+
+// If `e` is a call to a callable scope, return that callee's return-types list.
+// Returns nil for non-calls, calls whose callee can't be resolved, or non-fun
+// callees (struct constructors). The caller decides whether nil + non-call vs
+// nil + bad-call is an error.
+//
+// Must be invoked AFTER check_expr on the call, so resolved_func is populated
+// (UFCS / package-qualified call names like `string.find` get rewritten to a
+// flat name like `mara_string_find` during type checking).
+call_return_list :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> []Type {
+    call, ok := e.(^Expr_Call)
+    if !ok { return nil }
+    // Prefer the resolved flat name (set by check_expr) over the AST name.
+    lookup_name := call.name
+    if rf, rf_ok := call.resolved_func.?; rf_ok && rf.name != "" {
+        lookup_name = rf.name
+    }
+    if lookup_name == "" { return nil }
+    // Global function table is keyed by flat name — covers module-qualified
+    // calls (e.g. `string.find` → `mara_string_find`) that the local env
+    // doesn't expose under their flat name.
+    if ft, ok2 := c.table.funs[lookup_name]; ok2 && ft.kind == .Fun {
+        return ft.return_types[:]
+    }
+    // Env fallbacks for locally-visible names (UFCS, generics, etc.).
+    t, t_ok := type_env_get(env, lookup_name)
+    if !t_ok && c.current_package != "" {
+        t, t_ok = type_env_get(env, make_flat_name(c.current_package, lookup_name))
+    }
+    if !t_ok && c.top_env != nil {
+        t, t_ok = type_env_get(c.top_env, lookup_name)
+    }
+    if !t_ok { return nil }
+    ft, ft_ok := t.(^Type_Scope)
+    if !ft_ok || ft.kind != .Fun { return nil }
+    return ft.return_types[:]
 }
 
 // Get the C-ified flat/mangled name of a named Type. Returns "" for
@@ -224,7 +271,8 @@ is_struct_type :: proc(t: Type) -> bool {
 
 // Check if a fun's return type is its own name (self-returning data fun pattern).
 is_self_return :: proc(s: ^Stmt_Scope) -> bool {
-    if tn, ok := s.return_type.(Type_Name); ok && tn.name == s.name { return true }
+    if len(s.return_types) != 1 { return false }
+    if tn, ok := s.return_types[0].(Type_Name); ok && tn.name == s.name { return true }
     return false
 }
 
@@ -421,9 +469,9 @@ prov_local :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env
 prov_param :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env.scope_depth - 1} }
 
 Type_Env :: struct {
-    types:       map[string]Type,
-    parent:      ^Type_Env,
-    return_type: Type,       // expected return type for current function
+    types:        map[string]Type,
+    parent:       ^Type_Env,
+    return_types: [dynamic]Type, // expected return types for current function (empty = void)
     param_names: map[string]bool, // function parameter names (for escape analysis)
     let_names:   map[string]bool, // take-bound view names (storage aliased at source bytes); kept for legacy field name
     provenance:  map[string]Provenance, // where pointer/slice data lives
@@ -600,7 +648,6 @@ raw_type_key :: proc(t: Type) -> rawptr {
     case ^Type_Distinct: return rawptr(v)
     case ^Type_Ptr:      return rawptr(v)
     case ^Type_Slice:    return rawptr(v)
-    case ^Type_Tuple:    return rawptr(v)
     case ^Type_Fixed_Array: return rawptr(v)
     }
     return nil
@@ -784,7 +831,7 @@ type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
     // Inner blocks (if/for/match) inherit their parent's frame depth. Only
     // function-body envs bump scope_depth — see the explicit bump in
     // check_scope_body's `.Fun` path.
-    return Type_Env{parent = parent, return_type = parent.return_type, fn_name = parent.fn_name, scope_depth = parent.scope_depth}
+    return Type_Env{parent = parent, return_types = parent.return_types, fn_name = parent.fn_name, scope_depth = parent.scope_depth}
 }
 
 // Walk up the env chain to find the enclosing function name (for #caller_name).
@@ -1212,7 +1259,7 @@ Checked_Scope :: struct {
     home_package: string,                // owning module flat name; mirrored from the Type_Scope at registration so post-check phases can partition by module without env lookups
     type_:        ^Type_Scope,           // resolved param + return types
     params:       [dynamic]Checked_Param,
-    return_type:  Type,
+    return_types: [dynamic]Type,         // empty = void; len 1 = single; len > 1 = multi-return
     body:         [dynamic]Stmt,         // original AST body
     ast:          ^Stmt_Scope,           // original AST node (for auto-monomorphization)
     origin:       Function_Origin,       // Source / Intrinsic / Foreign — codegen dispatch
@@ -1933,12 +1980,6 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         }
         pa.size = t.size
         return pa
-    case ^Type_Tuple_Expr:
-        tt := new(Type_Tuple)
-        for e in t.elems {
-            append(&tt.elems, resolve_type_expr(e, c, span, env = env))
-        }
-        return tt
     case ^Type_Generic_Instance:
         if c == nil {
             return Type_Error{}
@@ -2052,8 +2093,8 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         for p in t.params {
             append(&ft.params, Struct_Type_Field{type_ = resolve_type_expr(p, c, span, env = env)})
         }
-        if t.return_type != nil {
-            ft.return_type = resolve_type_expr(t.return_type, c, span, env = env)
+        for rte in t.return_types {
+            append(&ft.return_types, resolve_type_expr(rte, c, span, env = env))
         }
         return ft
     case Type_Of_Name:
@@ -2269,12 +2310,6 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
             pa.size = t.size
         }
         return pa
-    case ^Type_Tuple_Expr:
-        tt := new(Type_Tuple)
-        for e in t.elems {
-            append(&tt.elems, resolve_type_expr_with_subst(e, c, span, subst))
-        }
-        return tt
     case ^Type_Generic_Instance:
         // Recursive generic instantiation: a field type like Map(T, int) inside a generic
         type_args: [dynamic]Type
@@ -2301,8 +2336,8 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
         for p in t.params {
             append(&ft.params, Struct_Type_Field{type_ = resolve_type_expr_with_subst(p, c, span, subst)})
         }
-        if t.return_type != nil {
-            ft.return_type = resolve_type_expr_with_subst(t.return_type, c, span, subst)
+        for rte in t.return_types {
+            append(&ft.return_types, resolve_type_expr_with_subst(rte, c, span, subst))
         }
         return ft
     case Type_Of_Name:
@@ -2537,14 +2572,6 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual:
     case Type_Const_Expr:
         // Nothing to infer — this is a runtime expression
         break
-    case ^Type_Tuple_Expr:
-        if tup, ok := actual.(^Type_Tuple); ok {
-            for e, i in t.elems {
-                if i < len(tup.elems) {
-                    infer_type_params(subst, e, tup.elems[i], c)
-                }
-            }
-        }
     case ^Type_Func_Expr:
         if ft, ok := actual.(^Type_Scope); ok {
             for p, i in t.params {
@@ -2552,8 +2579,10 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual:
                     infer_type_params(subst, p, ft.params[i].type_, c)
                 }
             }
-            if t.return_type != nil && ft.return_type != nil {
-                infer_type_params(subst, t.return_type, ft.return_type, c)
+            for rt, i in t.return_types {
+                if i < len(ft.return_types) {
+                    infer_type_params(subst, rt, ft.return_types[i], c)
+                }
             }
         }
     case Type_Of_Name:
@@ -2574,7 +2603,9 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
         pt := resolve_type_expr_with_subst(tp.type_expr, c, ast.span, subst)
         append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
     }
-    fun_type.return_type = resolve_type_expr_with_subst(ast.return_type, c, ast.span, subst)
+    for rte in ast.return_types {
+        append(&fun_type.return_types, resolve_type_expr_with_subst(rte, c, ast.span, subst))
+    }
     build_param_map(fun_type)
 
     // Register in type env and cache for Phase 2.5 extraction.
@@ -2596,7 +2627,8 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
 
     // Create child scope for body checking
     child := type_env_child(env)
-    child.return_type = fun_type.return_type
+    clear(&child.return_types)
+    for rt in fun_type.return_types { append(&child.return_types, rt) }
     child.fn_name = ast.name
 
     // Bind regular params with their concrete types
@@ -2708,7 +2740,7 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
             append(&mono_ft.params, ft.params[i])
         }
     }
-    mono_ft.return_type = ft.return_type
+    for rt in ft.return_types { append(&mono_ft.return_types, rt) }
     build_param_map(mono_ft)
 
     // Register in type env
@@ -2722,7 +2754,8 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
 
     // Clone body and type-check with new param types
     child := type_env_child(env)
-    child.return_type = mono_ft.return_type
+    clear(&child.return_types)
+    for rt in mono_ft.return_types { append(&child.return_types, rt) }
     child.fn_name = ast.name
     for tp, i in ast.typed_params {
         if i < len(mono_ft.params) {
@@ -2809,12 +2842,12 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
                     name         = st.name,
                     home_package = tmpl.home_package,
                     type_        = st,
-                    return_type  = st,
                     body         = tmpl.ast.body,
                     ast          = tmpl.ast,
                     origin       = Origin_Source{},
                     span         = e.span,
                 }
+                append(&cs.return_types, Type(st))
                 c.checked.functions[st.name] = cs
                 append(&c.checked.function_order, st.name)
             }
@@ -2895,7 +2928,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         check_error(c, e.span, TYPE_EXPECTS_ARGUMENT, tmpl.name, len(fun_type.params), len(args))
     }
 
-    return fun_type.return_type
+    return fn_primary_return(fun_type)
 }
 
 // ---------------------------------------------------------------------------
@@ -3044,12 +3077,16 @@ types_equal :: proc(a: Type, b: Type) -> bool {
             if va.name == vb.name { return true }
             return false
         }
-        // Structural: compare params + return type (for anonymous/callable funs)
+        // Structural: compare params + return types (for anonymous/callable funs)
         if len(va.params) != len(vb.params) { return false }
         for p, i in va.params {
             if !types_equal(p.type_, vb.params[i].type_) { return false }
         }
-        return types_equal(va.return_type, vb.return_type)
+        if len(va.return_types) != len(vb.return_types) { return false }
+        for rt, i in va.return_types {
+            if !types_equal(rt, vb.return_types[i]) { return false }
+        }
+        return true
     case ^Type_Fixed_Array:
         // Implicit coercion: [N]T is compatible with []T (array → slice)
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
@@ -3131,14 +3168,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         vb, ok := b.(^Type_Union)
         if !ok { return false }
         return va.name == vb.name  // nominal typing
-    case ^Type_Tuple:
-        vb, ok := b.(^Type_Tuple)
-        if !ok { return false }
-        if len(va.elems) != len(vb.elems) { return false }
-        for e, i in va.elems {
-            if !types_equal(e, vb.elems[i]) { return false }
-        }
-        return true
     case ^Type_Distinct:
         // After unwrap_alias at types_equal's entry, only nominal distinct
         // types reach this case. Match strictly by name.
@@ -3265,15 +3294,6 @@ type_name :: proc(t: Type) -> string {
     case Type_Utf8:         return "utf8"
     case Type_Byte:         return "byte"
     case ^Type_Ptr:         return fmt.tprintf("^%s", type_name(v.elem))
-    case ^Type_Tuple:
-        b := strings.builder_make()
-        strings.write_byte(&b, '(')
-        for e, i in v.elems {
-            if i > 0 { strings.write_string(&b, ", ") }
-            strings.write_string(&b, type_name(e))
-        }
-        strings.write_byte(&b, ')')
-        return strings.to_string(b)
     case ^Type_Scope:
         if v.name != "" {
             return v.name
@@ -3284,8 +3304,22 @@ type_name :: proc(t: Type) -> string {
             if i > 0 { strings.write_string(&b, ", ") }
             strings.write_string(&b, type_name(p.type_))
         }
-        strings.write_string(&b, ") -> ")
-        strings.write_string(&b, type_name(v.return_type))
+        strings.write_string(&b, ")")
+        switch len(v.return_types) {
+        case 0:
+            // void: omit
+        case 1:
+            strings.write_string(&b, " -> ")
+            strings.write_string(&b, type_name(v.return_types[0]))
+        case:
+            // Multi-return: `fun(...) -> T, U` — parens are cosmetic at the
+            // source level so we leave them out here.
+            strings.write_string(&b, " -> ")
+            for rt, i in v.return_types {
+                if i > 0 { strings.write_string(&b, ", ") }
+                strings.write_string(&b, type_name(rt))
+            }
+        }
         return strings.to_string(b)
     case ^Type_Fixed_Array:
         if v.has_sentinel {
@@ -3427,7 +3461,6 @@ is_composite :: proc(t: Type) -> bool {
     if sd := as_scope_body(t); sd != nil && len(sd.fields) > 0 { return true }
     if _, ok := t.(^Type_Union); ok { return true }
     if _, ok := t.(^Type_Fixed_Array); ok { return true }
-    if _, ok := t.(^Type_Tuple); ok { return true }
     return false
 }
 
@@ -3549,7 +3582,7 @@ checker_type_alignment :: proc(t: Type) -> int {
     switch v in t {
     case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float,
          Type_CString, ^Type_Ptr, ^Type_Slice, ^Type_Partial_Array,
-         ^Type_Enum, ^Type_Union, ^Type_Tuple,
+         ^Type_Enum, ^Type_Union,
          Type_Const_Int, Type_Runtime_Size,
          Type_Any, Type_Error:
         return 8
@@ -3821,14 +3854,21 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
                     ct_fn.params[i].name, type_name(ct_p), type_name(arg_p))
             }
         }
-        // Return-type compatibility. Treat (nil, nil) as match — fns
-        // declared without a return type. Otherwise both must be present
-        // and Self-equivalent.
-        ct_ret  := ct_fn.return_type
-        arg_ret := arg_fn.return_type
-        if ct_ret == nil && arg_ret == nil { /* both void — ok */ }
-        else if ct_ret == nil || arg_ret == nil ||
-                !self_equivalent(ct_ret, arg_ret, ct, arg_scope) {
+        // Return-type compatibility. Same arity, each Self-equivalent.
+        // Void (empty list) matches void.
+        ret_mismatch := len(ct_fn.return_types) != len(arg_fn.return_types)
+        if !ret_mismatch {
+            for ct_ret, i in ct_fn.return_types {
+                arg_ret := arg_fn.return_types[i]
+                if !self_equivalent(ct_ret, arg_ret, ct, arg_scope) {
+                    ret_mismatch = true
+                    break
+                }
+            }
+        }
+        if ret_mismatch {
+            ct_ret  := fn_primary_return(ct_fn)
+            arg_ret := fn_primary_return(arg_fn)
             check_error(c, span,
                 TYPE_TYPE_SATISFY_METHOD_EXPECTED_RETURN,
                 arg_scope.name, constraint_name, fn_name, type_name(ct_ret), type_name(arg_ret))
@@ -3848,7 +3888,7 @@ checker_type_byte_size :: proc(t: Type) -> int {
     switch v in t {
     case Type_Int, Type_Infer_Int, Type_F64, Type_Infer_Float,
          ^Type_Ptr, Type_CString,
-         ^Type_Union, ^Type_Tuple,
+         ^Type_Union,
          Type_Const_Int, Type_Runtime_Size,
          Type_Any, Type_Error, nil:
         return 8
@@ -4723,7 +4763,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     }
     // Call expressions: look up the callee's Type_Scope in the env.
     //   struct constructor (kind=.Struct with params)  → the struct type itself
-    //   function call       (kind=.Fun with return_type) → the return type
+    //   function call       (kind=.Fun with returns)   → primary return type
     if call, ok := value.(^Expr_Call); ok && call.name != "" {
         lookup := proc(env: ^Type_Env, name: string) -> (Type, bool) {
             return type_env_get(env, name)
@@ -4735,7 +4775,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         if t_ok {
             if ft, ft_ok := t.(^Type_Scope); ft_ok {
                 if ft.kind == .Struct { return ft }
-                if ft.kind == .Fun && ft.return_type != nil { return ft.return_type }
+                if ft.kind == .Fun && len(ft.return_types) > 0 { return ft.return_types[0] }
             }
         }
     }
@@ -4770,20 +4810,25 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     if un, ok := value.(^Expr_Unary); ok {
         return infer_field_type_from_default(c, un.operand, env, ft)
     }
-    // Tuple-destructure default: when source resolves to a Type_Tuple this
-    // binding's type is the i-th slot. Mirrors the Expr_Call branch above,
-    // then unwraps the tuple. Non-tuple source is the broadcast case
-    // (`a, b := 1 << 16` — three names sharing one scalar default), so each
-    // binding takes the source's type directly — matches check_expr's
-    // Expr_Tuple_Default fallback at the body-check pass.
+    // Multi-return destructure default: source is a multi-return call. Look
+    // up the call's resolved fun to pick the i-th return type. Non-call
+    // source is the broadcast case (`a, b := 1 << 16` — three names sharing
+    // one scalar default), so each binding takes the source's type directly.
     if td, ok := value.(^Expr_Tuple_Default); ok {
-        src_type := infer_field_type_from_default(c, td.source, env, ft)
-        if tup, is_tup := src_type.(^Type_Tuple); is_tup {
-            if td.index >= 0 && td.index < len(tup.elems) {
-                return tup.elems[td.index]
+        if call, call_ok := td.source.(^Expr_Call); call_ok && call.name != "" {
+            t, t_ok := type_env_get(env, call.name)
+            if !t_ok && c.current_package != "" {
+                t, t_ok = type_env_get(env, make_flat_name(c.current_package, call.name))
+            }
+            if t_ok {
+                if fnt, fnt_ok := t.(^Type_Scope); fnt_ok && fnt.kind == .Fun {
+                    if td.index >= 0 && td.index < len(fnt.return_types) {
+                        return fnt.return_types[td.index]
+                    }
+                }
             }
         }
-        return src_type
+        return infer_field_type_from_default(c, td.source, env, ft)
     }
     return Type_Any{}
 }
@@ -4852,9 +4897,9 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
             // This replaces the old body-walking heuristic (which couldn't
             // tell a method's `:=` locals from a class body's init computation).
             def_is_struct := s.kind == .Struct
-            if def_is_struct && s.return_type != nil {
+            if def_is_struct && len(s.return_types) > 0 {
                 check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, bare_name)
-                s.return_type = nil  // suppress cascading return-path errors
+                clear(&s.return_types)  // suppress cascading return-path errors
             }
             if def_is_struct && len(s.typed_params) == 0 {
                 // Pure data struct — create Type_Scope with kind=.Struct, no params
@@ -4904,8 +4949,10 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                     }
                     build_param_map(def_ft)
                 }
-                if is_callable && s.return_type != nil {
-                    def_ft.return_type = resolve_type_expr(s.return_type, c, s.span, env=&scope_env)
+                if is_callable && len(s.return_types) > 0 {
+                    for rte in s.return_types {
+                        append(&def_ft.return_types, resolve_type_expr(rte, c, s.span, env=&scope_env))
+                    }
                 }
                 // Register mangled name in the root (persistent) env, bare name in scope env
                 type_env_set(root_env, mangled, def_ft)
@@ -4949,7 +4996,9 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                     pt := resolve_type_expr(tp.type_expr, c, decl.span, env=&scope_env)
                     append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt})
                 }
-                fun_type.return_type = resolve_type_expr(decl.return_type, c, decl.span, env=&scope_env)
+                for rte in decl.return_types {
+                    append(&fun_type.return_types, resolve_type_expr(rte, c, decl.span, env=&scope_env))
+                }
                 build_param_map(fun_type)
                 if st.functions == nil { st.functions = make(map[string]^Type_Scope) }
                 st.functions[bare_name] = fun_type
@@ -5196,7 +5245,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 continue
             }
             is_struct_type := s.kind == .Struct
-            if is_struct_type && s.return_type != nil {
+            if is_struct_type && len(s.return_types) > 0 {
                 // Will diagnose properly in Pass 1b; suppress here.
                 continue
             }
@@ -5489,10 +5538,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             build_param_map(fun_type)
                         }
                         is_callable := !is_struct || len(s.typed_params) > 0
-                        if is_callable && s.return_type != nil {
-                            fun_type.return_type = resolve_type_expr(s.return_type, c, s.span, env = env)
-                            if fa, fa_ok := fun_type.return_type.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-                                check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
+                        if is_callable && len(s.return_types) > 0 {
+                            for rte in s.return_types {
+                                rt := resolve_type_expr(rte, c, s.span, env = env)
+                                if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {
+                                    check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
+                                }
+                                append(&fun_type.return_types, rt)
                             }
                         }
                     }
@@ -5526,9 +5578,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // set by the parser from the declaration keyword (see the matching
             // comment in register_scope_defs for details).
             is_struct_type := s.kind == .Struct
-            if is_struct_type && s.return_type != nil {
+            if is_struct_type && len(s.return_types) > 0 {
                 check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, s.name)
-                s.return_type = nil  // suppress cascading return-path errors
+                clear(&s.return_types)  // suppress cascading return-path errors
             }
             if is_struct_type && len(s.typed_params) == 0 {
                 // Pure data struct — create Type_Scope with kind=.Struct, no params
@@ -5610,10 +5662,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     build_param_map(fun_type)
                 }
                 is_callable := !is_struct_type || len(s.typed_params) > 0
-                if is_callable && s.return_type != nil {
-                    fun_type.return_type = resolve_type_expr(s.return_type, c, s.span, env = env)
-                    if fa, fa_ok := fun_type.return_type.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-                        check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
+                if is_callable && len(s.return_types) > 0 {
+                    for rte in s.return_types {
+                        rt := resolve_type_expr(rte, c, s.span, env = env)
+                        if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {
+                            check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
+                        }
+                        append(&fun_type.return_types, rt)
                     }
                 }
                 // Register name in scope
@@ -5667,7 +5722,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     pt := resolve_type_expr(tp.type_expr, c, decl.span, env = env)
                     append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt})
                 }
-                fun_type.return_type = resolve_type_expr(decl.return_type, c, decl.span, env = env)
+                for rte in decl.return_types {
+                    append(&fun_type.return_types, resolve_type_expr(rte, c, decl.span, env = env))
+                }
                 build_param_map(fun_type)
                 type_env_set(pub, decl.name, fun_type)
                 c.declared_funs[decl.name] = true
@@ -6129,6 +6186,19 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 
             c.expected_hint = ann_type
             val_type := check_expr(c, s.value, env)
+            // Reject single-name binding from a multi-return call. Without
+            // this, the binding would silently take on the call's primary
+            // (first) return type and the user would lose the rest with no
+            // diagnostic. `x, y := f()` (multi-return assign) is the supported
+            // form — that path goes through Stmt_Multi_Return_Assign.
+            if s.is_decl {
+                if returns := call_return_list(c, s.value, env); len(returns) > 1 {
+                    check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE,
+                        1, len(returns))
+                    type_env_set(env, s.name, Type_Error{})
+                    continue
+                }
+            }
             // Reject copies of structs whose layout transitively contains a
             // partial-array field. A byte-for-byte copy of such a struct would
             // leave the inner partial array's `ptr` still aliasing the source's
@@ -6364,18 +6434,20 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             if len(s.values) == 1 {
                 // Single RHS (multi-return call): x, y := call()
                 val_type := check_expr(c, s.values[0], env)
-                if tup, ok := val_type.(^Type_Tuple); ok {
-                    if len(s.names) != len(tup.elems) {
+                // Source the return arity from the resolved fun directly —
+                // there is no tuple value on the frontend. The call must be
+                // an Expr_Call whose callee is a multi-return fun.
+                returns := call_return_list(c, s.values[0], env)
+                if returns != nil {
+                    if len(s.names) != len(returns) {
                         check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE,
-                            len(s.names), len(tup.elems))
+                            len(s.names), len(returns))
                     } else {
                         for name, i in s.names {
-                            resolved_type := solidify_type(tup.elems[i])
+                            resolved_type := solidify_type(returns[i])
                             if name != "" {
-                                // Bare identifier: declare new variable
                                 type_env_set(env, name, resolved_type)
                             } else if i < len(s.targets) && s.targets[i] != nil {
-                                // Expression target (field access, index, etc.): check type compatibility
                                 target_type := check_expr(c, s.targets[i], env)
                                 if !is_any(target_type) && !is_any(resolved_type) {
                                     if !types_equal(target_type, resolved_type) {
@@ -6674,10 +6746,13 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         }
         build_param_map(ft)
     }
-    if ft.return_type == nil && s.return_type != nil {
-        ft.return_type = resolve_type_expr(s.return_type, c, s.span, env=&child)
-        if fa, fa_ok := ft.return_type.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-            check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
+    if len(ft.return_types) == 0 && len(s.return_types) > 0 {
+        for rte in s.return_types {
+            rt := resolve_type_expr(rte, c, s.span, env=&child)
+            if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {
+                check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
+            }
+            append(&ft.return_types, rt)
         }
     }
 
@@ -6697,7 +6772,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     }
 
     // Register params in scope
-    child.return_type = ft.return_type
+    clear(&child.return_types)
+    for rt in ft.return_types { append(&child.return_types, rt) }
     child.fn_name = s.name
     for tp, i in s.typed_params {
         if i < len(ft.params) {
@@ -6737,8 +6813,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
 
     check_scope(c, s.body, &child)
 
-    // Return check — functions with nil return_type don't need return statements
-    if ft.return_type != nil && !is_any(ft.return_type) && !always_returns(s.body) {
+    // Return check — void functions (return_types empty) don't need return statements
+    if len(ft.return_types) > 0 && !is_any(ft.return_types[0]) && !always_returns(s.body) {
         check_error(c, s.span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, s.name)
     }
 }
@@ -6762,7 +6838,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
             elem_type = Type_Any{}
         case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
              Type_CString, Type_C8, Type_Utf8, Type_Byte, Type_Numeric,
-             ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Tuple, ^Type_Distinct,
+             ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Distinct,
              Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Void, Type_Error,
              nil:
             check_error(c, s.span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(coll_type))
@@ -6844,44 +6920,44 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
 // Phase-2 checker for a `return` statement.
 check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
     if len(s.values) > 1 {
-        tup, is_tup := env.return_type.(^Type_Tuple)
-        if !is_tup && !is_any(env.return_type) {
+        if len(env.return_types) <= 1 {
             check_error(c, s.span, TYPE_MULTI_VALUE_RETURN_FUNCTION_DOESN)
-        } else if is_tup && len(s.values) != len(tup.elems) {
+        } else if len(s.values) != len(env.return_types) {
             check_error(c, s.span, TYPE_RETURN_VALUE_COUNT_MATCH_EXPECTED,
-                len(s.values), len(tup.elems))
-        } else if is_tup {
+                len(s.values), len(env.return_types))
+        } else {
             for val, i in s.values {
-                c.expected_hint = tup.elems[i]
+                expected := env.return_types[i]
+                c.expected_hint = expected
                 vt := check_expr(c, val, env)
-                if !is_any(vt) && !is_any(tup.elems[i]) {
-                    if !types_equal(tup.elems[i], vt) {
+                if !is_any(vt) && !is_any(expected) {
+                    if !types_equal(expected, vt) {
                         check_error(c, s.span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED,
-                            i+1, type_name(vt), type_name(tup.elems[i]))
+                            i+1, type_name(vt), type_name(expected))
                     }
                 }
-                maybe_stamp_byte_view(c, tup.elems[i], val)
+                maybe_stamp_byte_view(c, expected, val)
                 if is_infer(vt) {
-                    check_literal_overflow(c, val, tup.elems[i], s.span)
+                    check_literal_overflow(c, val, expected, s.span)
                 }
-            }
-        } else {
-            for val in s.values {
-                check_expr(c, val, env)
             }
         }
     } else if len(s.values) == 1 {
-        c.expected_hint = env.return_type
+        // Single-value return. For a multi-return function we'd error; for
+        // single-return funs the value's type must match the lone return.
+        expected: Type
+        if len(env.return_types) >= 1 { expected = env.return_types[0] }
+        c.expected_hint = expected
         val_type := check_expr(c, s.values[0], env)
-        if !is_any(env.return_type) && !is_any(val_type) {
-            if !types_equal(env.return_type, val_type) {
+        if !is_any(expected) && !is_any(val_type) {
+            if !types_equal(expected, val_type) {
                 check_error(c, s.span, TYPE_RETURN_TYPE_MATCH_EXPECTED,
-                    type_name(val_type), type_name(env.return_type))
+                    type_name(val_type), type_name(expected))
             }
         }
-        maybe_stamp_byte_view(c, env.return_type, s.values[0])
+        maybe_stamp_byte_view(c, expected, s.values[0])
         if is_infer(val_type) {
-            check_literal_overflow(c, s.values[0], env.return_type, s.span)
+            check_literal_overflow(c, s.values[0], expected, s.span)
         }
     }
     // Escape analysis: prevent returning pointers/slices to local memory.
@@ -7162,17 +7238,18 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
 check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: ^Scope_Body, span: Span, env: ^Type_Env) {
     // Positional form (`Foo{a, b, c}`): match entries to struct fields by index.
     if lit.positional {
-        // Multi-return spread: `Foo{call()}` where call returns a tuple whose
-        // shape matches Foo's fields one-to-one (with normal compatibility,
-        // including array→slice coercion). Codegen detects the same pattern
-        // and routes the call's sret args into temps then into the struct.
+        // Multi-return spread: `Foo{call()}` where call's return list matches
+        // Foo's fields one-to-one (with normal compatibility, including
+        // array→slice coercion). Codegen detects the same pattern and routes
+        // the call's sret args into temps then into the struct.
         if len(lit.fields) == 1 && len(st.fields) > 1 {
             single_val := lit.fields[0].value
-            single_type := check_expr(c, single_val, env)
-            if tup, tup_ok := single_type.(^Type_Tuple); tup_ok && len(tup.elems) == len(st.fields) {
+            check_expr(c, single_val, env)
+            returns := call_return_list(c, single_val, env)
+            if len(returns) == len(st.fields) {
                 all_ok := true
                 for sf, i in st.fields {
-                    if types_incompatible(sf.type_, tup.elems[i]) {
+                    if types_incompatible(sf.type_, returns[i]) {
                         all_ok = false
                         break
                     }
@@ -7183,7 +7260,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                 }
             }
             // Fall through to the regular positional path so the user gets a
-            // useful error if the tuple shape doesn't match the struct.
+            // useful error if the call's return list doesn't match the struct.
         }
         if len(lit.fields) > len(st.fields) {
             check_error(c, span, TYPE_CLASS_FIELDS_POSITIONAL_VALUES,
@@ -8089,15 +8166,8 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
     // Skip funs that have no callable signature (pure parameterless data funs without parens)
     // Exception: struct-kind scopes (struct/class) always get an init function emitted so
     // every construction path (including bare declaration `x: Foo`) can go through it.
-    if len(ft.params) == 0 && ft.return_type == nil && !s.has_parens && ft.kind != .Struct {
+    if len(ft.params) == 0 && len(ft.return_types) == 0 && !s.has_parens && ft.kind != .Struct {
         return {}, false
-    }
-
-    // Data funs with fields return their own layout via sret.
-    // Bound calls get the struct; unbound calls discard it (dummy alloca).
-    ret_type := ft.return_type
-    if ret_type == nil && ft.kind == .Struct && len(ft.fields) > 0 {
-        ret_type = ft
     }
 
     origin: Function_Origin = Origin_Source{}
@@ -8108,11 +8178,19 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
         name         = s.name,
         home_package = ft.home_package,
         type_        = ft,
-        return_type  = distinct_base(ret_type),
         body         = s.body,
         ast          = s,
         origin       = origin,
         span         = s.span,
+    }
+    // Returns. Data funs with fields produce their own layout via sret when
+    // the fun has no declared return.
+    if len(ft.return_types) == 0 && ft.kind == .Struct && len(ft.fields) > 0 {
+        append(&cf.return_types, distinct_base(Type(ft)))
+    } else {
+        for rt in ft.return_types {
+            append(&cf.return_types, distinct_base(rt))
+        }
     }
 
     for p in ft.params {
@@ -8414,7 +8492,6 @@ make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Sco
         name         = decl.name,
         home_package = ft.home_package,
         type_        = ft,
-        return_type  = distinct_base(ft.return_type),
         ast          = nil,
         origin       = Origin_Foreign{
             library    = library,
@@ -8423,6 +8500,7 @@ make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Sco
         },
         span        = decl.span,
     }
+    for rt in ft.return_types { append(&cs.return_types, distinct_base(rt)) }
     for p in ft.params {
         append(&cs.params, Checked_Param{name = p.name, type_ = distinct_base(p.type_)})
     }
@@ -8763,12 +8841,19 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
         case ^Stmt_Scope:
             if s.name == "main" {
                 found_main^ = true
-                ret := resolve_type_expr(s.return_type, c, s.span)
-                is_void := ret == nil || is_any(ret)
+                is_void := len(s.return_types) == 0
                 is_int := false
-                if _, ok := ret.(Type_Int); ok { is_int = true }
-                // i64 is the same type as int — accept it spelled either way.
-                if vn, ok := ret.(Type_Numeric); ok && vn.kind == .Signed && vn.bits == 64 { is_int = true }
+                if !is_void {
+                    if len(s.return_types) > 1 {
+                        check_error(c, s.span, TYPE_FUN_MAIN_RETURN_INT_RETURN)
+                    } else {
+                        ret := resolve_type_expr(s.return_types[0], c, s.span)
+                        if is_any(ret) { is_void = true }
+                        if _, ok := ret.(Type_Int); ok { is_int = true }
+                        // i64 is the same type as int — accept it spelled either way.
+                        if vn, ok := ret.(Type_Numeric); ok && vn.kind == .Signed && vn.bits == 64 { is_int = true }
+                    }
+                }
                 if !is_void && !is_int {
                     check_error(c, s.span, TYPE_FUN_MAIN_RETURN_INT_RETURN)
                 }
@@ -9150,10 +9235,10 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
             name         = flat_key,
             home_package = tmpl_home,
             type_        = ft,
-            return_type  = distinct_base(ft.return_type),
             body         = body,
             span         = tmpl_ast.span,
         }
+        for rt in ft.return_types { append(&cf.return_types, distinct_base(rt)) }
         for p in ft.params {
             append(&cf.params, Checked_Param{name = p.name, type_ = distinct_base(p.type_)})
         }
@@ -9506,7 +9591,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                                 if types_name_equal(ft.params[0].type_, operand_type) { score = 3 }
                                 if score > best_score {
                                     best_flat = make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
-                                    best_ret = ft.return_type
+                                    best_ret = fn_primary_return(ft)
                                     best_score = score
                                 }
                             }
@@ -9830,20 +9915,21 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
     case ^Expr_Tuple_Default:
         // Type-check the source once (idempotent — the same source pointer is
         // shared by every binding in the destructure group). If the source is
-        // a tuple, this binding's type is the i-th slot. Otherwise the user
-        // wrote a single non-tuple value with N names — that's the broadcast
-        // case (`a, b: i64 = 7`), so each binding takes the source's type
-        // directly and codegen just re-evaluates the source per binding.
+        // a multi-return call, this binding's type is the i-th return slot.
+        // Otherwise the user wrote a single non-multi value with N names —
+        // that's the broadcast case (`a, b: i64 = 7`), so each binding takes
+        // the source's type directly and codegen re-evaluates per binding.
         src_type := check_expr(c, e.source, env)
         if _, is_err := src_type.(Type_Error); is_err { return Type_Error{} }
-        if tup, is_tup := src_type.(^Type_Tuple); is_tup {
-            if e.index < 0 || e.index >= len(tup.elems) {
+        returns := call_return_list(c, e.source, env)
+        if len(returns) > 1 {
+            if e.index < 0 || e.index >= len(returns) {
                 check_error(c, e.span,
                     TYPE_TUPLE_DESTRUCTURE_INDEX_OUT_RANGE,
-                    e.index, len(tup.elems))
+                    e.index, len(returns))
                 return Type_Error{}
             }
-            return tup.elems[e.index]
+            return returns[e.index]
         }
         return src_type
     case ^Expr_Self:
@@ -10380,7 +10466,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                                     } else {
                                         best_flat = make_flat_name(resolve_fn_home(c, env,fn_name), fn_name)
                                     }
-                                    best_ret = ft.return_type
+                                    best_ret = fn_primary_return(ft)
                                     best_score = score
                                 }
                             }
@@ -10452,7 +10538,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                                !types_incompatible(fun_type.params[1].type_, right_type) {
                                 if best_score < 1 {
                                     best_flat = make_flat_name(gtmpl.home_package, mangled)
-                                    best_ret = fun_type.return_type
+                                    best_ret = fn_primary_return(fun_type)
                                     best_score = 1
                                 }
                             }
@@ -11076,7 +11162,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     disp_flat := make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
     e.name = fn_name  // rewrite call target for codegen
     e.resolved_func = Resolved_Func{name = disp_flat}
-    return ft.return_type
+    return fn_primary_return(ft)
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
@@ -11213,7 +11299,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     // which have data fields. Codegen can skip the call overhead and write
     // fields directly to memory. Covers old Type_Struct usages plus classes
     // declared with empty parens `class Foo() { x: int }`.
-    if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.fields) > 0 && fun_type.return_type == nil {
+    if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.fields) > 0 && len(fun_type.return_types) == 0 {
         return check_pure_struct_construction(c, e, fun_type, env)
     }
 
@@ -11237,7 +11323,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     check_call_args(c, check_args[:], fun_type, e.name, e.span, env)
 
     // Constructor with params: returns the struct type itself
-    if fun_type.return_type == nil && fun_type.kind == .Struct && len(fun_type.params) > 0 {
+    if len(fun_type.return_types) == 0 && fun_type.kind == .Struct && len(fun_type.params) > 0 {
         e.type_ = fun_type
         if e.overrides != nil {
             check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env)
@@ -11248,7 +11334,12 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     if e.overrides != nil {
         check_error(c, e.span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, e.name)
     }
-    return fun_type.return_type
+    // Multi-return call in scalar context: caller must destructure via
+    // `x, y := f()`. Single-return funs return their one type; void returns nil.
+    if fn_has_multi_return(fun_type) {
+        return fn_primary_return(fun_type)
+    }
+    return fn_primary_return(fun_type)
 }
 
 // Pure-struct positional construction: parameterless struct called with positional

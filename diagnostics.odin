@@ -158,15 +158,6 @@ type_expr_str :: proc(te: Type_Expr) -> string {
             return fmt.tprintf("[..%s, %d]%s", size_str, v.sentinel, type_expr_str(v.elem))
         }
         return fmt.tprintf("[..%s]%s", size_str, type_expr_str(v.elem))
-    case ^Type_Tuple_Expr:
-        b: strings.Builder
-        strings.write_string(&b, "(")
-        for elem, i in v.elems {
-            if i > 0 { strings.write_string(&b, ", ") }
-            strings.write_string(&b, type_expr_str(elem))
-        }
-        strings.write_string(&b, ")")
-        return strings.to_string(b)
     case ^Type_Generic_Instance:
         b: strings.Builder
         strings.write_string(&b, v.name)
@@ -185,9 +176,12 @@ type_expr_str :: proc(te: Type_Expr) -> string {
             strings.write_string(&b, type_expr_str(p))
         }
         strings.write_string(&b, ")")
-        if v.return_type != nil {
+        if len(v.return_types) > 0 {
             strings.write_string(&b, " -> ")
-            strings.write_string(&b, type_expr_str(v.return_type))
+            for rt, i in v.return_types {
+                if i > 0 { strings.write_string(&b, ", ") }
+                strings.write_string(&b, type_expr_str(rt))
+            }
         }
         return strings.to_string(b)
     case Type_Const_Value:
@@ -360,6 +354,7 @@ PARSE_NESTED_IF_EXPR              :: "nested if-expressions are not allowed"
 PARSE_RANGE_FOR_ONE_VAR           :: "range-for loop takes one variable, not two"
 PARSE_VAR_WITH_CONSTANT           :: "'var' cannot be combined with '::' (comptime constant)"
 PARSE_EXPECTED_TYPE               :: "expected type, got %v \"%s\""
+PARSE_TUPLE_TYPE_NOT_SUPPORTED    :: "tuple types are not supported — multiple types in parens are only valid in a function's return signature"
 PARSE_RANGE_NEEDS_DOTS            :: "expected '..' after `%sin` in range-membership check"
 PARSE_STRUCT_LIT_MIXED_FIELDS     :: "struct literal cannot mix positional and named fields"
 PARSE_HEX_OVERFLOWS_U64           :: "hex literal '%s' overflows u64 (max 0xFFFFFFFFFFFFFFFF) — Mara's integer-literal precision tops out at 64 bits"

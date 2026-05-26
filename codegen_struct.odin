@@ -279,15 +279,15 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             codegen_fatal(g, lit.span, CODE_SPREAD_SET_LIT_FIELDS_CALL)
         }
         info, info_ok := lookup_fun_info(g, call_resolved_name(call))
-        if !info_ok || info.ret_tuple == nil {
+        if !info_ok || info.ret_types == nil {
             codegen_fatal(g, lit.span, CODE_SPREAD_CALL_TUPLE_RETURN_INFO)
         }
-        ret_tuple := info.ret_tuple
+        ret_types := info.ret_types
         gen_call(g, call)
         for sf, i in st.fields {
-            if i >= len(ret_tuple.elems) { break }
+            if i >= len(ret_types) { break }
             src_ptr := g.tuple_result_ptrs[i]
-            src_sem := distinct_base(ret_tuple.elems[i])
+            src_sem := distinct_base(ret_types[i])
             dst_field_gep := fresh_tmp(g)
             emit_field_gep_into(g, dst_field_gep, llvm_name, base_ptr, i)
             // Slice field + array tuple element: build slice header at the field

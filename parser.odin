@@ -27,7 +27,6 @@ Type_Expr :: union {
     ^Type_Pointer,              // ^T — pointer to T
     ^Type_Slice_Expr,           // [:]T — slice (view into array)
     ^Type_Partial_Array_Expr,   // [..N]T — partial array (inline storage + cursor)
-    ^Type_Tuple_Expr,           // (int, string) — tuple type for multi-return
     ^Type_Generic_Instance,     // Array(int), Map(string, int) — parameterized type
     ^Type_Func_Expr,            // fun(int, int) -> int — function type
     Type_Const_Value,           // 256 — compile-time integer value in generic args
@@ -88,15 +87,10 @@ Type_Partial_Array_Expr :: struct {
     span:         Span,
 }
 
-Type_Tuple_Expr :: struct {
-    elems: [dynamic]Type_Expr, // element types
-    span:  Span,
-}
-
 Type_Func_Expr :: struct {
-    params:      [dynamic]Type_Expr, // parameter types
-    return_type: Type_Expr,          // return type (nil = void)
-    span:        Span,
+    params:       [dynamic]Type_Expr,  // parameter types
+    return_types: [dynamic]Type_Expr,  // return types (empty = void)
+    span:         Span,
 }
 
 Type_Generic_Instance :: struct {
@@ -549,7 +543,7 @@ Stmt_Scope :: struct {
     generic_params: [dynamic]Generic_Param, // empty for non-generic funs
     typed_params:    [dynamic]Scope_Binding, // callable params (in parens) — empty for data-type funs
     fields:          [dynamic]Scope_Binding, // data fields — non-empty means this is a data-type (struct-like) fun
-    return_type:     Type_Expr, // nil if untyped
+    return_types:    [dynamic]Type_Expr,     // function return types: void = empty, single = 1 elem, multi-return = 2+
     return_bindings: [dynamic]Scope_Binding, // named return values: fun() -> (x, y: int)
     body:           [dynamic]Stmt,
     has_parens:     bool,      // true if fun was written with parens: fun() vs fun
@@ -666,7 +660,7 @@ Stmt_Match :: struct {
 Foreign_Fun :: struct {
     name:         string,
     typed_params: [dynamic]Scope_Binding,
-    return_type:  Type_Expr,       // nil = void
+    return_types: [dynamic]Type_Expr,  // empty = void; foreign C funs are always 0 or 1
     span:         Span,
 }
 
@@ -1248,37 +1242,46 @@ parse_typed_param_loop :: proc(p: ^Parser, typed_params: ^[dynamic]Scope_Binding
     skip_newlines(p)
 }
 
-// Parse an optional `-> Type` or bare `Type` return clause. Returns nil
-// Type_Expr if neither is present. Used after every parameter list — function
-// definitions, foreign-block prototypes, lambda signatures.
+// Parse an optional `-> Type` or bare `Type` return clause. Appends parsed
+// return types to `out` — void returns leave it empty, single-return appends
+// one element, multi-return appends multiple. Used after every parameter list
+// — function definitions, foreign-block prototypes, lambda signatures.
 //
 // After `->`, supports four shapes:
 //   single:                -> Type
 //   positional multi:      -> Type1, Type2
 //   named multi:           -> name: Type, name: Type   (populates return_bindings)
-//   parenthesized:         -> (...)  — single or multi, named or not — goes through parse_type_expr
+//   parenthesized:         -> (Type1, Type2, ...)      — cosmetic parens around any of the above
 //
 // Newlines are tolerated between `)` and `->` and between `->` and the type,
 // so wide signatures can wrap. We peek past newlines for an arrow or type
 // starter; if neither follows, the position is restored so the trailing
 // newline stays available for the caller's body parser.
-parse_optional_return_type :: proc(p: ^Parser) -> Type_Expr {
+parse_optional_return_types :: proc(p: ^Parser, out: ^[dynamic]Type_Expr) {
     saved := p.pos
     for current_kind(p) == .Newline { advance(p) }
     if current_kind(p) == .Arrow {
         advance(p) // consume '->'
         skip_newlines(p)
-        return parse_return_type_clause(p)
+        parse_return_type_clause(p, out)
+        return
     }
     if can_start_type_expr(p) {
-        return parse_type_expr(p)
+        append(out, parse_type_expr(p))
+        return
     }
     p.pos = saved
-    return nil
 }
 
-parse_return_type_clause :: proc(p: ^Parser) -> Type_Expr {
-    start := token_span(current(p))
+parse_return_type_clause :: proc(p: ^Parser, out: ^[dynamic]Type_Expr) {
+    // Cosmetic outer parens: `-> (T, U)` and `-> T, U` are equivalent.
+    // Parens are pure decoration — they do not produce a tuple type.
+    wrapped := false
+    if current_kind(p) == .Left_Paren {
+        wrapped = true
+        advance(p) // consume the wrapping '('
+        skip_newlines(p)
+    }
 
     // Named multi-return detection: `name:` or `name, name, ... : T`
     // Walk identifier-comma pairs until we see a colon (named) or anything
@@ -1303,35 +1306,26 @@ parse_return_type_clause :: proc(p: ^Parser) -> Type_Expr {
 
     if is_named {
         clear(&p.return_bindings)
-        elems: [dynamic]Type_Expr
-        parse_typed_decl_group(p, &p.return_bindings, &elems, false, false)
+        parse_typed_decl_group(p, &p.return_bindings, out, false, false)
         for current_kind(p) == .Comma {
             advance(p)
             skip_newlines(p)
-            parse_typed_decl_group(p, &p.return_bindings, &elems, false, false)
+            parse_typed_decl_group(p, &p.return_bindings, out, false, false)
         }
-        tt := new(Type_Tuple_Expr)
-        tt.elems = elems
-        tt.span = start
-        return tt
+    } else {
+        // Positional: parse first type, then optional commas for multi-return
+        append(out, parse_type_expr(p))
+        for current_kind(p) == .Comma {
+            advance(p)
+            skip_newlines(p)
+            append(out, parse_type_expr(p))
+        }
     }
 
-    // Positional: parse first type, then optional comma for multi-return
-    first := parse_type_expr(p)
-    if current_kind(p) != .Comma {
-        return first
-    }
-    elems: [dynamic]Type_Expr
-    append(&elems, first)
-    for current_kind(p) == .Comma {
-        advance(p)
+    if wrapped {
         skip_newlines(p)
-        append(&elems, parse_type_expr(p))
+        expect(p, .Right_Paren)
     }
-    tt := new(Type_Tuple_Expr)
-    tt.elems = elems
-    tt.span = start
-    return tt
 }
 
 // Parse one group of typed declarations: `name [, name ...] : [var]? T [= default]?`
@@ -1505,11 +1499,6 @@ type_expr_refs_name :: proc(te: Type_Expr, name: string) -> bool {
     case ^Type_Partial_Array_Expr:
         if t.size_name == name { return true }
         return type_expr_refs_name(t.elem, name)
-    case ^Type_Tuple_Expr:
-        for elem in t.elems {
-            if type_expr_refs_name(elem, name) { return true }
-        }
-        return false
     case ^Type_Generic_Instance:
         for arg in t.type_args {
             if type_expr_refs_name(arg, name) { return true }
@@ -1519,8 +1508,8 @@ type_expr_refs_name :: proc(te: Type_Expr, name: string) -> bool {
         for pt in t.params {
             if type_expr_refs_name(pt, name) { return true }
         }
-        if t.return_type != nil {
-            if type_expr_refs_name(t.return_type, name) { return true }
+        for rt in t.return_types {
+            if type_expr_refs_name(rt, name) { return true }
         }
         return false
     case Type_Const_Value:
@@ -1623,13 +1612,14 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
 
         if current_kind(p) == .Arrow || can_start_type_expr(p) {
             // fun($T: type) -> T { body } or fun($T: type) T { body }
-            // Also: fun() -> Type, Type ... { body } — multi-return goes
-            // through parse_return_type_clause so it can build a tuple.
+            // Also: fun() -> Type, Type ... { body } — multi-return appends
+            // each type into return_types directly (no tuple wrapping).
             if current_kind(p) == .Arrow {
                 advance(p) // consume optional '->'
                 skip_newlines(p) // allow newline between -> and the return type
             }
-            return_type := parse_return_type_clause(p)
+            return_types: [dynamic]Type_Expr
+            parse_return_type_clause(p, &return_types)
             for dp in p.dollar_params {
                 already_exists := false
                 for gp in generic_params { if gp.name == dp.name { already_exists = true; break } }
@@ -1641,7 +1631,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
             stmt.name = name
             stmt.kind = kind
             stmt.generic_params = generic_params
-            stmt.return_type = return_type
+            stmt.return_types = return_types
             stmt.return_bindings = p.return_bindings
             p.return_bindings = {}
             stmt.body = body
@@ -1669,13 +1659,14 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         }
 
         // fun() Type { body } or fun() -> Type { body } or fun() { body }
-        return_type := parse_optional_return_type(p)
+        return_types: [dynamic]Type_Expr
+        parse_optional_return_types(p, &return_types)
         skip_newlines(p)
         body, is_intrinsic, intrinsic_name := parse_scope_body(p)
         stmt := new(Stmt_Scope)
         stmt.name = name
         stmt.kind = kind
-        stmt.return_type = return_type
+        stmt.return_types = return_types
         stmt.return_bindings = p.return_bindings
         p.return_bindings = {}
         stmt.body = body
@@ -1693,7 +1684,8 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
     parse_typed_param_loop(p, &typed_params, true)
     expect(p, .Right_Paren)
 
-    return_type := parse_optional_return_type(p)
+    return_types: [dynamic]Type_Expr
+    parse_optional_return_types(p, &return_types)
 
     skip_newlines(p)
     body, is_intrinsic, intrinsic_name := parse_scope_body(p)
@@ -1792,7 +1784,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
     stmt.kind = kind
     stmt.generic_params = generic_params
     stmt.typed_params = typed_params
-    stmt.return_type = return_type
+    stmt.return_types = return_types
     stmt.return_bindings = p.return_bindings
     p.return_bindings = {}
     stmt.body = body
@@ -2038,12 +2030,13 @@ parse_foreign :: proc(p: ^Parser) -> Stmt {
         parse_typed_param_loop(p, &typed_params, false)
         expect(p, .Right_Paren)
 
-        return_type := parse_optional_return_type(p)
+        return_types: [dynamic]Type_Expr
+        parse_optional_return_types(p, &return_types)
 
         append(&decls, Foreign_Fun{
             name = name_tok.text,
             typed_params = typed_params,
-            return_type = return_type,
+            return_types = return_types,
             span = fun_start,
         })
         skip_newlines(p)
@@ -2967,68 +2960,28 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         return Type_Name{name = name_tok.text, span = start, tilde = true}
     }
 
-    // Tuple type: (int, string) or named multi-return: (fwd, up, right: Vec3)
+    // Parenthesized type expression: `(T)` is cosmetic — same as bare `T`.
+    // Mara has no tuple type, so `(T, U)` in a non-return position is a
+    // syntax error. Multi-return is handled by parse_return_type_clause,
+    // which strips its own outer parens before this point.
     if current_kind(p) == .Left_Paren {
-        start := token_span(current(p))
+        paren_tok := current(p)
+        start := token_span(paren_tok)
         advance(p) // consume '('
-        elems: [dynamic]Type_Expr
-
-        // Detect named return groups: (name: Type) or (a, b, c: Type)
-        // Peek: if Identifier followed by ':' or Identifier ',' Identifier ... ':' → named groups
-        is_named := false
-        if current_kind(p) == .Identifier {
-            if peek_kind(p, 1) == .Colon {
-                is_named = true
-            } else if peek_kind(p, 1) == .Comma && peek_kind(p, 2) == .Identifier &&
-                      (peek_kind(p, 3) == .Colon || peek_kind(p, 3) == .Comma) {
-                is_named = true
-            }
-        }
-
-        if is_named {
-            // Parse param-style groups: name, name: Type, ...
-            // Also stores bindings on p.return_bindings for the enclosing fun def.
-            parse_return_group :: proc(p: ^Parser, elems: ^[dynamic]Type_Expr) {
-                names: [dynamic]string
-                defer delete(names)
-                append(&names, expect(p, .Identifier).text)
-                for current_kind(p) == .Comma {
-                    if peek_kind(p, 1) == .Identifier && (peek_kind(p, 2) == .Comma || peek_kind(p, 2) == .Colon) {
-                        advance(p) // consume ','
-                        skip_newlines(p)
-                        append(&names, expect(p, .Identifier).text)
-                    } else {
-                        break
-                    }
-                }
-                expect(p, .Colon)
-                type_expr := parse_type_expr(p)
-                for pname in names {
-                    append(elems, type_expr)
-                    append(&p.return_bindings, Scope_Binding{name = pname, type_expr = type_expr})
-                }
-            }
-            clear(&p.return_bindings)
-            parse_return_group(p, &elems)
+        inner := parse_type_expr(p)
+        if current_kind(p) == .Comma {
+            parse_error(p, paren_tok, PARSE_TUPLE_TYPE_NOT_SUPPORTED)
+            // Consume the rest of the bogus list so error recovery has a chance.
             for current_kind(p) == .Comma {
-                advance(p) // consume ','
+                advance(p)
                 skip_newlines(p)
-                if current_kind(p) == .Right_Paren { break }
-                parse_return_group(p, &elems)
+                _ = parse_type_expr(p)
             }
-        } else {
-            append(&elems, parse_type_expr(p))
-            for current_kind(p) == .Comma {
-                advance(p) // consume ','
-                append(&elems, parse_type_expr(p))
-            }
+            expect(p, .Right_Paren)
+            return Type_Name{name = "_error_", span = start}
         }
-
         expect(p, .Right_Paren)
-        tt := new(Type_Tuple_Expr)
-        tt.elems = elems
-        tt.span = start
-        return tt
+        return inner
     }
 
     // Pointer type: ^T
@@ -3054,7 +3007,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         if current_kind(p) == .Left_Paren {
             advance(p) // consume '('
             params: [dynamic]Type_Expr
-            ret: Type_Expr
+            return_types: [dynamic]Type_Expr
             // Params (optional). Stop at -> or ).
             if current_kind(p) != .Arrow && current_kind(p) != .Right_Paren {
                 append(&params, parse_type_expr(p))
@@ -3065,12 +3018,12 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
             }
             if current_kind(p) == .Arrow {
                 advance(p) // consume '->'
-                ret = parse_type_expr(p)
+                parse_return_type_clause(p, &return_types)
             }
             expect(p, .Right_Paren)
             fe := new(Type_Func_Expr)
             fe.params = params
-            fe.return_type = ret
+            fe.return_types = return_types
             fe.span = start
             return fe
         }
@@ -3100,14 +3053,14 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
             }
         }
         expect(p, .Right_Paren)
-        ret: Type_Expr
+        return_types: [dynamic]Type_Expr
         if current_kind(p) == .Arrow {
             advance(p) // consume '->'
-            ret = parse_type_expr(p)
+            parse_return_type_clause(p, &return_types)
         }
         fe := new(Type_Func_Expr)
         fe.params = params
-        fe.return_type = ret
+        fe.return_types = return_types
         fe.span = start
         return fe
     }

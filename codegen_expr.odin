@@ -346,13 +346,13 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
 // as if the parser had cloned X into each binding's default_value.
 gen_tuple_default :: proc(g: ^Codegen, e: ^Expr_Tuple_Default) -> string {
     call, is_call := e.source.(^Expr_Call)
-    is_tuple := false
+    is_multi := false
     if is_call {
         if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok {
-            is_tuple = info.ret_tuple != nil
+            is_multi = info.ret_types != nil
         }
     }
-    if !is_tuple {
+    if !is_multi {
         // Broadcast fallback: evaluate the source for this binding. The
         // same source Expr is shared by all bindings in the group but
         // gen_expr emits fresh IR each time, matching the historical
@@ -1118,11 +1118,11 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             args_joined := strings.join(arg_strs[:], ", ")
             emit(g, "  call void %s(%s)", ir_name, args_joined)
             return tmp_slice
-        } else if info.ret_tuple != nil {
-            // Tuple return: alloca temp pointers for each element, pass as sret, call void
+        } else if info.ret_types != nil {
+            // Multi-return: alloca temp pointers for each element, pass as sret, call void
             clear(&g.tuple_result_ptrs)
             clear(&g.tuple_result_types)
-            for elem, i in info.ret_tuple.elems {
+            for elem, i in info.ret_types {
                 et := llvm_type_from_checker(elem)
                 tmp_ptr := fresh_tmp(g)
                 emit_alloca(g, tmp_ptr, et)
@@ -1195,17 +1195,21 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
     arg_strs: [dynamic]string
 
     // Return lowering: prepend hidden sret slot for Indirect, set ret_ir for Direct.
-    has_void_return := cs.return_type == nil || is_untyped(cs.return_type)
+    // C ABI has no multi-return; cs.return_types has 0 or 1 elements for foreign funs.
+    ret_single: Type
+    has_void_return := len(cs.return_types) == 0
+    if !has_void_return { ret_single = cs.return_types[0] }
+    if !has_void_return && is_untyped(ret_single) { has_void_return = true }
     ret_low: Lowering
     ret_ir := "void"
     sret_slot := ""
     if !has_void_return {
-        ret_low = classify_ret(cs.return_type, conv, os)
+        ret_low = classify_ret(ret_single, conv, os)
         switch r in ret_low {
         case Lowering_Direct:
             ret_ir = direct_ir_for_return(r.parts[:])
         case Lowering_Indirect:
-            ret_struct_ir := llvm_type_from_checker(cs.return_type)
+            ret_struct_ir := llvm_type_from_checker(ret_single)
             sret_slot = fresh_tmp(g)
             emit_alloca(g, sret_slot, ret_struct_ir)
             append(&arg_strs, fmt.tprintf("ptr sret(%s) %s", ret_struct_ir, sret_slot))
@@ -1256,8 +1260,8 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
     // For Direct aggregate returns, materialize the SSA result into a memory
     // slot so callers — which expect aggregate values via pointer — can use it.
     if direct, ok := ret_low.(Lowering_Direct); ok {
-        if is_aggregate(cs.return_type) {
-            ret_struct_ir := llvm_type_from_checker(cs.return_type)
+        if is_aggregate(ret_single) {
+            ret_struct_ir := llvm_type_from_checker(ret_single)
             slot := fresh_tmp(g)
             emit_alloca(g, slot, ret_struct_ir)
             if len(direct.parts) == 1 {
@@ -2176,13 +2180,14 @@ is_ptr_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if _, is_ptr := t.(^Type_Ptr); is_ptr { return true }
     if call, ok := expr.(^Expr_Call); ok {
         if cs, cs_ok := g.checked.functions[call_resolved_name(call)]; cs_ok {
-            if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
+            if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign && len(cs.return_types) > 0 {
                 // Foreign returns: unwrap distinct so a `distinct ^utf8`
                 // return type (the new cstring) is recognized as a pointer
                 // via its underlying shape — no cstring-specific check.
-                base := distinct_base(cs.return_type)
+                ret_single := cs.return_types[0]
+                base := distinct_base(ret_single)
                 if _, is_ptr := base.(^Type_Ptr); is_ptr { return true }
-                if _, is_cs := cs.return_type.(Type_CString); is_cs { return true }
+                if _, is_cs := ret_single.(Type_CString); is_cs { return true }
             }
         }
     }

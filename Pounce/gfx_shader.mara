@@ -3,30 +3,22 @@ module gfx.shader
 use mara.os
 use mara.string
 
-shader_load_text :: fun(filepath: cstr) -> (vtext: str, ftext: str) {
+shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [16 * KB]utf8 {
 	data: [..32 * KB]byte
 	read_ok := os.read_entire_file(filepath, &data)
 	as_str : []utf8 = data[:]
 
-	// Find second occurrence of "#version" to split vertex and fragment shaders
+	// Split shader file at second occurence of #version
 	VERSION_TAG :: "#version"
-	first_version := string.find(as_str, VERSION_TAG)
-	if first_version == -1 {
-		fmt.eprintln("Shader file missing #version tag:", filepath)
-	}
+	vs_tag, vs_found := string.find(as_str, VERSION_TAG)
 
-	// Search for second #version tag after the first one
-	search_start := first_version + VERSION_TAG.len
-	second_version := strings.index(file_text[search_start:], VERSION_TAG)
-	if second_version == -1 {
-		fmt.eprintln("Shader file missing second #version tag (fragment shader):", filepath)
-	}
+	next := vs_tag + VERSION_TAG.len
+	fs_tag, fs_found := string.find(as_str[next:], VERSION_TAG)
 
-	split_index := search_start + second_version
-	vertex_shader := strings.clone(file_text[0:split_index])
-	fragment_shader := strings.clone(file_text[split_index:])
+	vtext = as_str[0:fs_tag]
+	ftext = as_str[fs_tag:]
 
-	return vertex_shader, fragment_shader
+	return vtext, ftext
 }
 
 // shader_compile :: fun(shader_text: string, shader_type: u32) -> u32 {

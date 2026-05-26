@@ -817,10 +817,10 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
         codegen_fatal(g, s.span, CODE_MULTI_ASSIGN_RHS_FUNCTION_CALL)
     }
 
-    // Look up the function's tuple return type BEFORE calling gen_call
-    tuple_type: ^Type_Tuple = nil
+    // Look up the function's multi-return list BEFORE calling gen_call
+    ret_types: []Type
     if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok {
-        tuple_type = info.ret_tuple
+        ret_types = info.ret_types
     }
 
     gen_call(g, call)
@@ -837,8 +837,8 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
 
         // Struct element: alloca the struct, memcpy from sret slot, register
         // as Struct_Var so subsequent field access (info.size) works.
-        if tuple_type != nil && i < len(tuple_type.elems) {
-            if sd := as_struct_body(distinct_base(tuple_type.elems[i])); sd != nil {
+        if ret_types != nil && i < len(ret_types) {
+            if sd := as_struct_body(distinct_base(ret_types[i])); sd != nil {
                 if name == "" {
                     codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
                 }
@@ -939,11 +939,11 @@ emit_ret_void :: proc(g: ^Codegen) {
     emit(g, "  ret void")
 }
 
-// Tuple return: store each value into its sret param.
+// Multi-return: store each value into its sret param.
 gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
     for val, i in s.values {
-        resolved_type := distinct_base(g.ret_tuple.elems[i])
-        elem_type := llvm_type_from_checker(g.ret_tuple.elems[i])
+        resolved_type := distinct_base(g.ret_types[i])
+        elem_type := llvm_type_from_checker(g.ret_types[i])
         sret_ptr := fmt.tprintf("%%sret.%d", i)
         // Array/fixed-array returns: memcpy from alloca to sret. When the
         // local's alloca IS the sret slot (named-return NRVO), the memcpy is
@@ -1200,7 +1200,7 @@ gen_return_scalar :: proc(g: ^Codegen, s: Stmt_Return) {
 }
 
 gen_return :: proc(g: ^Codegen, s: Stmt_Return) {
-    if g.ret_tuple != nil && len(s.values) > 1 {
+    if g.ret_types != nil && len(s.values) > 1 {
         gen_return_tuple(g, s)
         return
     }
