@@ -3112,10 +3112,14 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Note: we don't compare size here — arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
-        // Implicit slice ← fixed-array conversion removed (see the mirror
-        // comment in the ^Type_Fixed_Array case). Callers form the slice
-        // with `arr[:]` at the call site so the header construction is
-        // visible at the source level.
+        // Implicit coercion: [:]T is compatible with [N]T (slice ← array).
+        // A fixed array is fully-populated by contract — `[N]T` means N
+        // elements, period. So a slice header {len = N, cap = N} reading
+        // off it is honest by the type's own promise. Callers who want
+        // variable-length tracking use partial arrays (`[..N]T`).
+        if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
+            return types_equal(va.elem, fa.elem)
+        }
         // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view).
         // Sentinel direction matches partial-to-partial: source can drop a
         // sentinel guarantee, but can't synthesize one — reject when dest

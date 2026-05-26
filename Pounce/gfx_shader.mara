@@ -4,7 +4,7 @@ use mara.os
 use mara.string
 gl :: use mara.open_gl
 
-shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [16 * KB]utf8 {
+shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [..16 * KB]utf8 {
 	data: [..32 * KB]byte
 	read_ok := os.read_entire_file(filepath, &data)
 	text : []utf8 = data[:]
