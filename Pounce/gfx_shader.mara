@@ -16,32 +16,26 @@ load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 	next := vs_tag + VERSION_TAG.len
 	fs_tag, fs_found := text.find(VERSION_TAG, next)
 
-	// because these are fixed arrays, they copy data from the slice
 	vtext := text[0:fs_tag]
 	ftext := text[fs_tag:]
 
-	vshader := gl.CreateShader(gl.VERTEX_SHADER)
-	fshader := gl.CreateShader(gl.FRAGMENT_SHADER)
+	compile :: fun(text: ^[]utf8, stype: u32) -> u32 {
+		shader := gl.CreateShader(stype)		
+		gl.ShaderSource(shader, 1, &text.ptr, &text.len)
+		gl.CompileShader(shader)
 
-	gl.ShaderSource(vshader, 1, &vtext.ptr, &vtext.len)
-	gl.ShaderSource(fshader, 1, &ftext.ptr, &ftext.len)
+		status : u32
+		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
 
-	gl.CompileShader(vshader)
-	gl.CompileShader(fshader)
+		log: [..512]utf8
+		gl.GetShaderInfoLog(shader, log.cap, &log.len, &log[0])
+		if status == 0 do gl.DeleteShader(shader)
 
-	// Check compilation status
-	vstatus fstatus: i32
-	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success)
-
-	// Always check for logs
-	log_buff: [512]u8
-	log_length: i32
-	gl.GetShaderInfoLog(shader, 512, &log_length, &log_buff[0])
-
-	if success == 0 {
-		gl.DeleteShader(shader)
+		return shader
 	}
 
+	vshader := compile(&vtext, gl.VERTEX_SHADER)
+	fshader := compile(&ftext, gl.FRAGMENT_SHADER)
 	return vshader, fshader
 }
 

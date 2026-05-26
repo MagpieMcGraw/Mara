@@ -149,14 +149,14 @@ foreign static_lib "opengl32" prefix gl {
     fun Viewport(x: i32, y: i32, w: i32, h: i32)
     fun BlendFunc(sfactor: GL_Blend_Factor, dfactor: GL_Blend_Factor)
     fun CullFace(mode: GL_Face)
-    fun DepthMask(flag: u32)
+    fun DepthMask(flag: u8)                                             // GLboolean
     fun DrawArrays(mode: GL_Draw_Mode, first: i32, count: i32)
-    fun DrawElements(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: ^byte)
+    fun DrawElements(mode: GL_Draw_Mode, count: i32, type: GL_Type, indices: ^byte)   // const void* indices
     fun BindTexture(target: GL_Texture_Target, texture: u32)
     fun TexParameteri(target: GL_Texture_Target, pname: GL_Tex_Param, param: i32)
     fun GetError() -> u32
-    fun GenTextures(n: i32, textures: ^byte)
-    fun DeleteTextures(n: i32, textures: ^byte)
+    fun GenTextures(n: i32, textures: ^u32)                             // GLuint* textures
+    fun DeleteTextures(n: i32, textures: ^u32)                          // const GLuint* textures
     fun TexImage2D(target: GL_Texture_Target, level: i32, internalformat: i32, width: i32, height: i32, border: i32, format: GL_Tex_Format, type: GL_Type, pixels: ^byte)
     fun DepthFunc(func: GL_Depth_Func)
     fun PolygonMode(face: GL_Face, mode: GL_Polygon_Mode)
@@ -209,22 +209,22 @@ foreign static_lib "open_gl" prefix gl {
     fun Uniform1i(location: i32, v0: i32)
     fun Uniform2f(location: i32, v0: f32, v1: f32)
     fun Uniform3f(location: i32, v0: f32, v1: f32, v2: f32)
-    fun UniformMatrix4fv(location: i32, count: i32, transpose: u32, value: ^byte)
+    fun UniformMatrix4fv(location: i32, count: i32, transpose: u8, value: ^f32)   // GLboolean transpose, const GLfloat* value
 
     // VAOs
-    fun GenVertexArrays(n: i32, arrays: ^byte)
+    fun GenVertexArrays(n: i32, arrays: ^u32)                           // GLuint* arrays
     fun BindVertexArray(array: u32)
 
     // Buffers
-    fun GenBuffers(n: i32, buffers: ^byte)
+    fun GenBuffers(n: i32, buffers: ^u32)                               // GLuint* buffers
     fun BindBuffer(target: GL_Buffer_Target, buffer: u32)
-    fun BufferData(target: GL_Buffer_Target, size: isize, data: ^byte, usage: GL_Buffer_Usage)   // GLsizeiptr
-    fun BufferSubData(target: GL_Buffer_Target, offset: isize, size: isize, data: ^byte)         // GLintptr, GLsizeiptr
+    fun BufferData(target: GL_Buffer_Target, size: isize, data: ^byte, usage: GL_Buffer_Usage)   // GLsizeiptr size, const void* data
+    fun BufferSubData(target: GL_Buffer_Target, offset: isize, size: isize, data: ^byte)         // GLintptr offset, GLsizeiptr size, const void* data
 
     // Vertex attributes
     fun EnableVertexAttribArray(index: u32)
-    fun VertexAttribPointer(index: u32, size: i32, type: GL_Type, normalized: u32, stride: i32, pointer: usize)   // pointer is uintptr_t cast
-    fun VertexAttribIPointer(index: u32, size: i32, type: GL_Type, stride: i32, pointer: usize)
+    fun VertexAttribPointer(index: u32, size: i32, type: GL_Type, normalized: u8, stride: i32, pointer: usize)   // GLboolean normalized; pointer is uintptr_t cast (byte offset)
+    fun VertexAttribIPointer(index: u32, size: i32, type: GL_Type, stride: i32, pointer: usize)                  // pointer is byte offset
     fun VertexAttribDivisor(index: u32, divisor: u32)
 
     // Texture
@@ -234,18 +234,18 @@ foreign static_lib "open_gl" prefix gl {
     fun GenerateMipmap(target: GL_Texture_Target)
 
     // Shader info
-    fun GetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^byte)
+    fun GetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^i32)           // GLint* params
     fun GetShaderInfoLog(shader: u32, bufSize: i32, length: ^i32, infoLog: ^utf8)
     fun GetProgramiv(program: u32, pname: GL_Shader_Param, params: ^i32)
-    fun GetProgramInfoLog(program: u32, bufSize: i32, length: ^i32, infoLog: ^byte)
+    fun GetProgramInfoLog(program: u32, bufSize: i32, length: ^i32, infoLog: ^utf8)   // GLchar* infoLog
 
     // Shader management
     fun DetachShader(program: u32, shader: u32)
 
     // Cleanup
-    fun DeleteVertexArrays(n: i32, arrays: ^byte)
-    fun DeleteBuffers(n: i32, buffers: ^byte)
+    fun DeleteVertexArrays(n: i32, arrays: ^u32)                        // const GLuint* arrays
+    fun DeleteBuffers(n: i32, buffers: ^u32)                            // const GLuint* buffers
 
     // Multi-draw indirect
-    fun MultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: ^byte, drawcount: i32, stride: i32)
+    fun MultiDrawElementsIndirect(mode: GL_Draw_Mode, type: GL_Type, indirect: ^byte, drawcount: i32, stride: i32)   // const void* indirect
 }
