@@ -7737,6 +7737,27 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
         return
     }
 
+    // Byte partial-array reinterpret write: same semantics as []byte. Partial
+    // arrays carry a slice header at the front of their inline storage and
+    // codegen treats them as Slice_Vars, so the byte-target write helper
+    // resolves the data pointer the same way.
+    if is_byte_partial_array(target_type) {
+        solid_val_type := solidify_type(val_type)
+        s.assign_value_type = solid_val_type
+        if low_num, low_ok := const_eval_int(sl.low); low_ok {
+            if high_num, high_ok := const_eval_int(sl.high); high_ok {
+                span_size := high_num - low_num
+                val_size := checker_type_byte_size(solid_val_type)
+                if span_size != val_size {
+                    check_error(c, s.span,
+                        TYPE_BYTE_SLICE_WRITE_BYTES_SLICE,
+                        type_name(solid_val_type), val_size, span_size)
+                }
+            }
+        }
+        return
+    }
+
     // Byte fixed-array reinterpret write: buf[off:off+N] = value
     // (array-class byte buffers reach here post-desugar as [N]byte)
     // Reinterpret only applies to scalar/struct writes — fixed-array or slice

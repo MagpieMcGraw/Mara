@@ -30,7 +30,8 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 // `assign_value_type` is set by the checker only on the reinterpret
                 // path, so its presence distinguishes a scalar/struct reinterpret
                 // from an array-to-array copy between byte buffers.
-                if (is_byte_slice(s.target_type) || is_byte_fixed_array(s.target_type)) &&
+                if (is_byte_slice(s.target_type) || is_byte_fixed_array(s.target_type) ||
+                    is_byte_partial_array(s.target_type)) &&
                    s.assign_value_type != nil {
                     gen_byte_target_write(g, s, t.expr, t.low)
                 } else {
