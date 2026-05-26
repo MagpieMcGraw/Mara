@@ -560,6 +560,7 @@ Stmt_Union_Def :: struct {
     tag_pad:        Type_Expr,                     // type of padding between tag and payload (nil = none)
     variants:       [dynamic]Union_Variant_Def,    // variant definitions with fields
     generic_params: [dynamic]Generic_Param,        // non-empty for `Name :: union($T: type) { ... }` — monomorphized per use
+    is_error_kind:  bool,                          // true for `Name :: error { ... }` — flat tag set, contributes to global `err`
     span:           Span,
 }
 
@@ -1940,6 +1941,36 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
     return union_stmt
 }
 
+// `Name :: error { Variant_A, Variant_B, ... }`. Flat tag set — no header
+// options, no payloads, no explicit tag assignments. Variants get globally
+// unique u32 IDs at type-check time so any error_kind variant satisfies the
+// open `err` type (Stage 2). Lowers to Stmt_Union_Def with is_error_kind=true
+// so downstream stages share the existing enum machinery.
+parse_error_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt {
+    advance(p) // consume 'error'
+    skip_newlines(p)
+    expect(p, .Left_Brace)
+    skip_newlines(p)
+
+    variant_defs: [dynamic]Union_Variant_Def
+    for current_kind(p) != .Right_Brace && current_kind(p) != .EOF {
+        variant_name := expect(p, .Identifier).text
+        // Tag value is filled in at type-check time (set_id<<16 | local_tag).
+        append(&variant_defs, Union_Variant_Def{name = variant_name})
+        if current_kind(p) == .Comma { advance(p) }
+        skip_newlines(p)
+    }
+    expect(p, .Right_Brace)
+
+    s := new(Stmt_Union_Def)
+    s.name = name
+    s.tag_type = "u32"   // packed (set_id, tag) — see type-checker for assignment
+    s.variants = variant_defs
+    s.is_error_kind = true
+    s.span = start
+    return s
+}
+
 parse_dispatch_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt {
     advance(p) // consume 'dispatch'
     expect(p, .Left_Brace)
@@ -2655,6 +2686,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         case .Struct:
             return parse_scope_def(p, name_tok.text, start, .Struct), true
         case .Union:    return parse_union_def_with_name(p, name_tok.text, start), true
+        case .Error:    return parse_error_def_with_name(p, name_tok.text, start), true
         case .Dispatch: return parse_dispatch_def_with_name(p, name_tok.text, start), true
         case .Distinct:
             advance(p) // consume 'distinct'

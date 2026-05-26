@@ -20,6 +20,8 @@ Token_Kind :: enum {
     Fn,  // fn — nominal function type from a named function
     Struct, // struct / class
     Union,
+    Error,    // error { Not_Found ... } — flat tag set, member of the global open `err` type
+    Or_Return,
     Use,      // use <path> — private import (names visible in this file only)
     Include,  // include <path> — re-export (names visible here AND to consumers)
     Sealed,
@@ -138,6 +140,8 @@ keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
     case "struct":   return .Struct, true
     case "class":    return .Struct, true
     case "union":    return .Union, true
+    case "error":    return .Error, true
+    case "or_return": return .Or_Return, true
     case "use":      return .Use, true
     case "include":  return .Include, true
     case "sealed":   return .Sealed, true

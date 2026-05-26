@@ -2052,14 +2052,24 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum)
     strings.write_string(&sw, "  ]")
     emit_raw(g, strings.to_string(sw))
 
+    // error_kinds print namespaced (`File_Error.Not_Found`) so the variant
+    // name alone — which can collide across sets — stays unambiguous in logs.
+    // Regular enums print just the variant for compactness (Tag_u8.B -> "B").
+    name_prefix := ""
+    if et.is_error_kind {
+        prefix_name := et.source_name
+        if prefix_name == "" { prefix_name = et.name }
+        name_prefix = strings.concatenate({prefix_name, "."}, context.temp_allocator)
+    }
+
     for entry, i in dedup {
         emit_label(g, case_labels[i])
-        emit_print_literal(g, entry.name)
+        emit_print_literal(g, strings.concatenate({name_prefix, entry.name}, context.temp_allocator))
         emit_br(g, done_lbl)
     }
 
     emit_label(g, unknown_lbl)
-    emit_print_literal(g, fmt.tprintf("%s(", et.name))
+    emit_print_literal(g, fmt.tprintf("%s(", et.source_name if et.source_name != "" else et.name))
     fmt_name, fmt_len := get_string_literal(g, tag_ir == "i64" ? "%lld" : "%d")
     fmt_ptr := fresh_tmp(g)
     emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)

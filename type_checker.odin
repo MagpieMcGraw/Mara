@@ -332,10 +332,13 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
 }
 
 Type_Enum :: struct {
-    name:         string,  // C-ified flat name
-    home_package: string,  // owning module flat name (see Scope_Body.home_package)
-    tag_type:     string,                    // "" = default (i64), or "i32", "i16", etc.
-    variants:     map[string]int,
+    name:          string,  // C-ified flat name
+    source_name:   string,  // user-written name (used for namespaced printing of error_kinds)
+    home_package:  string,  // owning module flat name (see Scope_Body.home_package)
+    tag_type:      string,                    // "" = default (i64), or "i32", "i16", etc.
+    variants:      map[string]int,
+    is_error_kind: bool,    // true for `Name :: error { ... }` — flat tag set in the global `err` type
+    error_set_id:  int,     // 1-based set ID assigned at type-check end; 0 = not an error_kind
 }
 
 Type_Union :: struct {
@@ -1338,6 +1341,12 @@ SymbolTable :: struct {
     enums:          map[string]^Type_Enum,
     unions:         map[string]^Type_Union,
     distinct_types: map[string]^Type_Distinct,
+
+    // Error_kind set ID assignment counter — incremented as each
+    // `Name :: error { ... }` is registered. Encoded as the high 16 bits of
+    // each variant's u32 tag so any error_kind variant fits in the open
+    // `err` type with a globally unique value.
+    error_set_counter: int,
 
     // Generic templates (unified — data-type and callable)
     generic_templates:       map[string]Generic_Template,
@@ -5218,10 +5227,24 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 }
                 et := new(Type_Enum)
                 et.name = flat
+                et.source_name = s.name
                 et.home_package = c.current_package
                 et.tag_type = s.tag_type
-                for vdef in s.variants {
-                    et.variants[vdef.name] = vdef.tag
+                et.is_error_kind = s.is_error_kind
+                if s.is_error_kind {
+                    // Assign 1-based set_id; high 16 bits of each variant's
+                    // u32 value. set_id 0 + tag 0 reserved for the universal
+                    // `.Ok` zero-value (added implicitly below).
+                    c.table.error_set_counter += 1
+                    et.error_set_id = c.table.error_set_counter
+                    et.variants["Ok"] = 0
+                    for vdef, i in s.variants {
+                        et.variants[vdef.name] = (et.error_set_id << 16) | (i + 1)
+                    }
+                } else {
+                    for vdef in s.variants {
+                        et.variants[vdef.name] = vdef.tag
+                    }
                 }
                 c.table.enums[flat] = et
                 type_env_set(pub, s.name, et)
@@ -5515,13 +5538,24 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Pure-enum union: register as a Type_Enum with the union's name
                 et := new(Type_Enum)
                 et.name = make_flat_name(c.current_package, s.name)
+                et.source_name = s.name
                 et.home_package = c.current_package
                 et.tag_type = s.tag_type
+                et.is_error_kind = s.is_error_kind
                 if et.name in c.table.enums {
                     check_error(c, s.span, TYPE_ENUM_ALREADY_DEFINED, s.name)
                 } else {
-                    for vdef in s.variants {
-                        et.variants[vdef.name] = vdef.tag
+                    if s.is_error_kind {
+                        c.table.error_set_counter += 1
+                        et.error_set_id = c.table.error_set_counter
+                        et.variants["Ok"] = 0
+                        for vdef, i in s.variants {
+                            et.variants[vdef.name] = (et.error_set_id << 16) | (i + 1)
+                        }
+                    } else {
+                        for vdef in s.variants {
+                            et.variants[vdef.name] = vdef.tag
+                        }
                     }
                     c.table.enums[et.name] = et
                     type_env_set(pub, s.name, et)
