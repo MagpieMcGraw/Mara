@@ -326,6 +326,10 @@ dump_parse_expr :: proc(b: ^strings.Builder, expr: Expr) {
     case ^Expr_Self:
         fmt.sbprintf(b, "#self")
 
+    case ^Expr_Try:
+        dump_parse_expr(b, e.inner)
+        fmt.sbprintf(b, "?")
+
     case nil:
         fmt.sbprintf(b, "<nil>")
     }
@@ -503,6 +507,10 @@ TYPE_UNION_VARIANT :: "union '%s' has no variant '%s'"
 TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING :: "dot shorthand '.%s' can only be used when matching on an enum or union"
 TYPE_MATCH_MISSING_VARIANT_ADD_ARM :: "match on '%s' is missing variant '%s' (add an arm, or `else` to opt out)"
 TYPE_MATCH_ERR_REQUIRES_ELSE :: "match on `err` requires an `else` arm — the error universe is open, so exhaustive matching is impossible"
+TYPE_TRY_OPERAND_MUST_BE_CALL :: "`?` propagation can only be applied to a call expression"
+TYPE_TRY_REQUIRES_ERR_RETURN :: "`?` requires the called function's trailing return slot to be an error type"
+TYPE_TRY_OUTSIDE_ERR_FUNCTION :: "`?` can only be used inside a function whose trailing return slot is an error type"
+TYPE_TRY_TOO_MANY_VALUES :: "`?` on a call with %d non-error return values isn't supported yet (only single-value or err-only)"
 TYPE_ALLOWED_MATCH_STRUCT_ARMS_FIRE :: "'else' is not allowed in match on a struct — arms fire independently, so there is no single 'no match' branch"
 TYPE_MATCH_STRUCT_EXPECTS_PREDICATE_ARMS :: "match on struct '%s' expects predicate arms (`field do …` or `expr do …`)"
 TYPE_PREDICATE_ARM_BOOL_MARA_DOESN :: "predicate arm must be bool, got %s — Mara doesn't auto-truthy non-bool values; write an explicit comparison"

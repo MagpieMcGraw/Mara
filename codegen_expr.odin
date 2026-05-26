@@ -336,6 +336,8 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         // codegen_fn.odin GEPs every field off %sret, so %sret IS the
         // under-construction instance pointer.
         return "%sret"
+    case ^Expr_Try:
+        return gen_try(g, e, target_type)
     }
     return "0"
 }
@@ -1332,6 +1334,69 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
         }
     }
     return tmp
+}
+
+// `?` postfix propagation. Evaluate the inner call; if its trailing err
+// slot is non-zero, fill the enclosing function's trailing err return with
+// it (zero-initialize any other return slots) and return early. Otherwise
+// yield the call's non-err value (or void for err-only calls). The type
+// checker (check_try) already validated both the call shape and the
+// enclosing function's return shape, so codegen treats them as given.
+gen_try :: proc(g: ^Codegen, e: ^Expr_Try, target_type: string) -> string {
+    call := e.inner.(^Expr_Call)
+    call_result := gen_call(g, call)
+
+    // Determine the err value and the optional success value.
+    err_val: string
+    success_val := ""
+    multi := len(g.tuple_result_ptrs) > 0
+    if multi {
+        n := len(g.tuple_result_ptrs)
+        err_slot := g.tuple_result_ptrs[n-1]
+        err_val = fresh_tmp(g)
+        emit_load_into(g, err_val, "i32", err_slot)
+        if n == 2 {
+            val_ir := g.tuple_result_types[0]
+            tmp := fresh_tmp(g)
+            emit_load_into(g, tmp, val_ir, g.tuple_result_ptrs[0])
+            success_val = tmp
+        }
+    } else {
+        // Single-return call: result IS the err.
+        err_val = call_result
+    }
+
+    // Snapshot tuple state — the propagation block emits stores into %sret,
+    // and any subsequent gen_expr below should see a clean slate.
+    clear(&g.tuple_result_ptrs)
+    clear(&g.tuple_result_types)
+
+    prop_lbl := fresh_label(g, "try.propagate")
+    cont_lbl := fresh_label(g, "try.continue")
+    cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp ne i32 %s, 0", cmp, err_val)
+    emit_cond_br(g, cmp, prop_lbl, cont_lbl)
+
+    emit_label(g, prop_lbl)
+    if g.ret_types != nil {
+        // Multi-return enclosing function: zero the non-err slots, write err
+        // into the trailing slot, ret void. zeroinitializer is the universal
+        // "default value" — works for primitives, structs, arrays, slices,
+        // ptrs alike, so we don't have to fan out by type.
+        n_ret := len(g.ret_types)
+        for i in 0..<n_ret - 1 {
+            ir_t := llvm_type_from_checker(g.ret_types[i])
+            emit(g, "  store %s zeroinitializer, ptr %%sret.%d", ir_t, i)
+        }
+        emit(g, "  store i32 %s, ptr %%sret.%d", err_val, n_ret - 1)
+        emit(g, "  ret void")
+    } else {
+        // Single-return err function — just return the err value.
+        emit(g, "  ret i32 %s", err_val)
+    }
+
+    emit_label(g, cont_lbl)
+    return success_val
 }
 
 // When a call's param expects a raw `^utf8` (e.g. `cstring`, which is

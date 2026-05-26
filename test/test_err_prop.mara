@@ -1,0 +1,40 @@
+module test_err_prop
+
+File_Error :: error {
+    Not_Found
+    Too_Large
+}
+
+// Err-only return.
+maybe_fail :: fun(flag: bool) -> err {
+    if flag do return File_Error.Not_Found
+    return File_Error.Ok
+}
+
+// (T, err) multi-return.
+get_or_fail :: fun(flag: bool) -> i64, err {
+    if flag do return 0, File_Error.Too_Large
+    return 42, File_Error.Ok
+}
+
+// Propagates through both shapes.
+chain_fails :: fun(should_fail_a: bool, should_fail_b: bool) -> i64, err {
+    maybe_fail(should_fail_a)?
+    print("past err-only call")
+    x := get_or_fail(should_fail_b)?
+    print("past (T,err) call; x =", x)
+    return x + 100, File_Error.Ok
+}
+
+main :: fun() -> i64 {
+    n, e := chain_fails(false, false)
+    print("n =", n, " err =", e)
+
+    _, e2 := chain_fails(true, false)
+    print("err on first call:", e2)
+
+    _, e3 := chain_fails(false, true)
+    print("err on second call:", e3)
+
+    return 0
+}

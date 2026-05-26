@@ -164,6 +164,7 @@ Expr :: union {
     ^Expr_Type_Name,
     ^Expr_Tuple_Default,
     ^Expr_Self,
+    ^Expr_Try,
 }
 
 Expr_Number :: struct {
@@ -410,6 +411,18 @@ Expr_Tuple_Default :: struct {
 Expr_Self :: struct {
     span:  Span,
     type_: Type,    // filled by type checker — ^Type_Scope of enclosing struct
+}
+
+// Postfix `?` err-propagation. The inner expression must produce a value
+// whose trailing return slot is `err`-compatible (concrete error_kind or the
+// open `err` type). At codegen, the call is evaluated, the err slot tested
+// against 0, and on non-zero the enclosing function returns immediately with
+// that err in its own trailing slot. The expression's value is whatever the
+// inner expression yielded *without* the err slot.
+Expr_Try :: struct {
+    inner: Expr,
+    span:  Span,
+    type_: Type,    // filled by type checker — inner type minus the trailing err
 }
 
 // Statements
@@ -3524,8 +3537,18 @@ parse_struct_literal :: proc(p: ^Parser) -> Expr {
 // &events.process() parses as (&events).process() while &arr[0] stays &(arr[0]).
 parse_postfix :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
     result := expr
-    for current_kind(p) == .Left_Bracket || (allow_dot && current_kind(p) == .Dot) || current_kind(p) == .Caret {
-        if current_kind(p) == .Caret {
+    for current_kind(p) == .Left_Bracket || (allow_dot && current_kind(p) == .Dot) || current_kind(p) == .Caret || current_kind(p) == .Question {
+        if current_kind(p) == .Question {
+            // Postfix `?` — err propagation. Wraps the LHS in an Expr_Try
+            // which the type checker validates and codegen lowers to a
+            // check-and-return-early sequence.
+            q_span := token_span(current(p))
+            advance(p) // consume '?'
+            try_node := new(Expr_Try)
+            try_node.inner = result
+            try_node.span = q_span
+            result = try_node
+        } else if current_kind(p) == .Caret {
             // Postfix dereference: expr^
             caret_span := token_span(current(p))
             advance(p) // consume '^'
@@ -4276,6 +4299,11 @@ clone_expr :: proc(e: Expr) -> Expr {
         return c
     case ^Expr_Self:
         c := new_clone(v^)
+        c.type_ = nil
+        return c
+    case ^Expr_Try:
+        c := new_clone(v^)
+        c.inner = clone_expr(v.inner)
         c.type_ = nil
         return c
     }

@@ -21,7 +21,6 @@ Token_Kind :: enum {
     Struct, // struct / class
     Union,
     Error,    // error { Not_Found ... } — flat tag set, member of the global open `err` type
-    Or_Return,
     Use,      // use <path> — private import (names visible in this file only)
     Include,  // include <path> — re-export (names visible here AND to consumers)
     Sealed,
@@ -83,6 +82,7 @@ Token_Kind :: enum {
 
     Arrow,        // ->
     Bang,         // !
+    Question,     // ?  — postfix err propagation
     Double_Colon, // ::
     Ampersand,    // &
     Pipe,         // |
@@ -141,7 +141,6 @@ keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
     case "class":    return .Struct, true
     case "union":    return .Union, true
     case "error":    return .Error, true
-    case "or_return": return .Or_Return, true
     case "use":      return .Use, true
     case "include":  return .Include, true
     case "sealed":   return .Sealed, true
@@ -478,6 +477,7 @@ next_token :: proc(l: ^Lexer) -> Token {
     case ':': return make_token(l, .Colon,          l.source[start:l.pos], tok_line, tok_col)
     case ';': return make_token(l, .Semicolon,     l.source[start:l.pos], tok_line, tok_col)
     case '!': return make_token(l, .Bang,           l.source[start:l.pos], tok_line, tok_col)
+    case '?': return make_token(l, .Question,       l.source[start:l.pos], tok_line, tok_col)
     case '&': return make_token(l, .Ampersand,      l.source[start:l.pos], tok_line, tok_col)
     case '|': return make_token(l, .Pipe,            l.source[start:l.pos], tok_line, tok_col)
     case '~': return make_token(l, .Tilde,           l.source[start:l.pos], tok_line, tok_col)

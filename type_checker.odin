@@ -2995,6 +2995,16 @@ is_cstring :: proc(t: Type) -> bool {
     return false
 }
 
+// True for the open `err` type and for any concrete `error { ... }` decl.
+// Used at the `?` propagation boundary: both the inner call's trailing
+// return slot and the enclosing function's trailing return slot must be
+// err-compatible for the propagation to type-check.
+is_err_type :: proc(t: Type) -> bool {
+    if _, ok := t.(Type_Err); ok { return true }
+    if et, ok := distinct_base(t).(^Type_Enum); ok { return et.is_error_kind }
+    return false
+}
+
 types_equal :: proc(a: Type, b: Type) -> bool {
     // nil return type (void) — only matches itself
     if a == nil && b == nil { return true }
@@ -9614,6 +9624,7 @@ expr_type_ptr :: proc(e: Expr) -> ^Type {
     case ^Expr_Type_Name:          return &v.type_
     case ^Expr_Tuple_Default:      return &v.type_
     case ^Expr_Self:               return &v.type_
+    case ^Expr_Try:                return &v.type_
     case nil:                      return nil
     }
     return nil
@@ -9881,6 +9892,8 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         return check_binary(c, e, env)
     case ^Expr_Call:
         return check_call(c, e, env)
+    case ^Expr_Try:
+        return check_try(c, e, env)
     case ^Expr_Array:
         return check_array_literal(c, e, env)
     case ^Expr_Index:
@@ -11417,6 +11430,41 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     e.name = fn_name  // rewrite call target for codegen
     e.resolved_func = Resolved_Func{name = disp_flat}
     return fn_primary_return(ft)
+}
+
+// `?` postfix propagation. Validates that the inner expression produces an
+// err-compatible trailing slot AND that the enclosing function has an
+// err-compatible trailing return slot to bubble into. The Expr_Try's value
+// type is the inner return list minus the trailing err — void for err-only
+// calls, the single value for `(T, err)` calls. Multi-value calls (`(T, U,
+// err)`) aren't supported yet since Mara doesn't have true value tuples; the
+// flat err-set design is what the user signed up for and that's covered.
+check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Env) -> Type {
+    inner_t := check_expr(c, e.inner, env)
+    _ = inner_t
+
+    call, is_call := e.inner.(^Expr_Call)
+    if !is_call {
+        check_error(c, e.span, TYPE_TRY_OPERAND_MUST_BE_CALL)
+        return Type_Error{}
+    }
+    rets := call_return_list(c, call, env)
+    if len(rets) == 0 || !is_err_type(rets[len(rets)-1]) {
+        check_error(c, e.span, TYPE_TRY_REQUIRES_ERR_RETURN)
+        return Type_Error{}
+    }
+    if len(env.return_types) == 0 || !is_err_type(env.return_types[len(env.return_types)-1]) {
+        check_error(c, e.span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
+        return Type_Error{}
+    }
+    if len(rets) == 1 {
+        return Type_Void{}     // err-only call: `?` discards err, no value to yield
+    }
+    if len(rets) == 2 {
+        return rets[0]         // (T, err): `?` yields T
+    }
+    check_error(c, e.span, TYPE_TRY_TOO_MANY_VALUES, len(rets) - 1)
+    return Type_Error{}
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
