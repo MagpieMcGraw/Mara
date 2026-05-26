@@ -756,6 +756,15 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
 // to a `{ ptr, i64, i64 }` slice header — callers wrap as needed (arg
 // strings, memcpy sources for struct field stores, etc.).
 gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
+    // Constant ident: inline the value expression and let the shape-aware
+    // paths below (string-literal, array-literal, ...) fire on the
+    // underlying value. Covers `TAG :: "x"` then `f(TAG)` where f takes a
+    // slice — without this, the Expr_String case never matches the ident.
+    if ident, id_ok := arg.(^Expr_Ident); id_ok {
+        if const_expr, ck := g.checked.table.constants[ident.name]; ck {
+            return gen_slice_value_ptr(g, const_expr)
+        }
+    }
     arg_checker_type := expr_type(arg)
     // String literal: typed as a sentinel partial array since the
     // literal-type change, but it still lives as raw bytes in rodata.

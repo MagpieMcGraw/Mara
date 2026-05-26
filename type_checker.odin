@@ -7163,6 +7163,12 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
     // their own constant of the same name; the user disambiguates with
     // `Module.name` when both are visible.
 
+    // `::` is constant-by-definition — register the value expression so
+    // codegen can inline-substitute every use site. Module-level constants
+    // are pre-registered by register_module_constant; this covers function-
+    // body and nested-scope `::` declarations regardless of value type.
+    c.table.constants[s.name] = s.value
+
     ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
     val_type := check_expr(c, s.value, env)
 
@@ -7228,9 +7234,6 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
     s.env_type = val_type
     type_env_set(pub, s.name, val_type)
     set_provenance(env, s.name, expr_provenance(c, s.value, env))
-    if is_infer(val_type) {
-        c.table.constants[s.name] = s.value
-    }
 }
 
 // Validate that a struct literal's fields match a struct definition:
@@ -10189,6 +10192,17 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
             return pt
         }
         if e.field == "len" || e.field == "cap" {
+            // Constant-string `.len` / `.cap` folds to the literal's byte
+            // count: `TAG :: "hello"` then `TAG.len` is the compile-time
+            // value 5, not a runtime header read. Codegen consumes the
+            // Resolved_Constant annotation directly.
+            if ident, id_ok := e.expr.(^Expr_Ident); id_ok {
+                if const_expr, ck := c.table.constants[ident.name]; ck {
+                    if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
+                        e.resolved = Resolved_Constant{name = e.field, int_value = len(lit.value)}
+                    }
+                }
+            }
             return Type_Numeric{kind = .Signed, bits = 32}
         }
         check_error(c, e.span, TYPE_PARTIAL_ARRAY_TYPE_FIELD, type_name(obj_type), e.field)
