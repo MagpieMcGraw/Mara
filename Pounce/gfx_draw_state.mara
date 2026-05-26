@@ -1,6 +1,9 @@
 module gfx
 
 use mara.math
+use mara.string
+
+use gfx.shader
 gl :: use mara.open_gl
 
 use object
@@ -50,12 +53,14 @@ DrawState :: struct {
 
 // Create a draw state
 draw_state_create :: fun(
-	shader: u32,
+	shader_file: cstr,
 	vao_state: ^VAO_State,
 	max_instances: i64,
 	max_commands: isize,) -> DrawState
 {
 	// Create persistent command buffer for MDI
+	shader_id := make_program(shader_file)
+
 	command_buffer: u32
 	gl.GenBuffers(1, &command_buffer)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, command_buffer)
@@ -66,7 +71,7 @@ draw_state_create :: fun(
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
 
 	return DrawState{
-		shader = shader,
+		shader = shader_id,
 		vao_state = vao_state,
 		command_buffer = command_buffer,
 		instance_capacity = max_instances,
