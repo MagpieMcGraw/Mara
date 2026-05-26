@@ -3135,7 +3135,14 @@ types_equal :: proc(a: Type, b: Type) -> bool {
             return true
         }
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
-            return types_equal(va.elem, fa.elem)
+            if !types_equal(va.elem, fa.elem) { return false }
+            // Sentinel direction matches the mirror rule (fixed ← partial)
+            // above: if the dest demands a terminator the source can't
+            // promise, reject. Without this, `cstr` (`[..N, 0]utf8`) would
+            // silently accept any `[N]utf8` and downstream C consumers
+            // walking until `\0` could run off the end.
+            if va.has_sentinel && !fa.has_sentinel { return false }
+            return true
         }
         if pa, ok := b.(^Type_Partial_Array); ok {
             // Partial-to-partial interop is by header shape: same elem
