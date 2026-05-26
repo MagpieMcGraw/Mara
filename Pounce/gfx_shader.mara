@@ -4,7 +4,7 @@ use mara.os
 use mara.string
 gl :: use mara.open_gl
 
-shader_load_and_compile :: fun(filepath: cstr) -> u32, u32 {
+load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 	data: [..32 * KB]byte
 	read_ok := os.read_entire_file(filepath, &data)
 	text : []utf8 = data[:]
@@ -17,17 +17,20 @@ shader_load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 	fs_tag, fs_found := text.find(VERSION_TAG, next)
 
 	// because these are fixed arrays, they copy data from the slice
-	vtext = text[0:fs_tag]
-	ftext = text[fs_tag:]
+	vtext := text[0:fs_tag]
+	ftext := text[fs_tag:]
 
 	vshader := gl.CreateShader(gl.VERTEX_SHADER)
 	fshader := gl.CreateShader(gl.FRAGMENT_SHADER)
 
-	gl.ShaderSource(shader, 1, &shader_cstr, &shader_len)
-	gl.CompileShader(shader)
+	gl.ShaderSource(vshader, 1, &vtext.ptr, &vtext.len)
+	gl.ShaderSource(fshader, 1, &ftext.ptr, &ftext.len)
+
+	gl.CompileShader(vshader)
+	gl.CompileShader(fshader)
 
 	// Check compilation status
-	success: i32
+	vstatus fstatus: i32
 	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success)
 
 	// Always check for logs
@@ -42,19 +45,8 @@ shader_load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 	return vshader, fshader
 }
 
-shader_compile :: fun(shader_text: []utf8, shader_type: u32) -> u32 {
-	
-	return 0
-}
-
-shader_create_program :: fun(filepath: cstr) -> u32 {
-	vtext, ftext := shader_load_text(filepath)
-
-	vshader := shader_compile(vtext, gl.VERTEX_SHADER)
-	defer gl.DeleteShader(vshader)
-
-	fshader := shader_compile(ftext, gl.FRAGMENT_SHADER)
-	defer gl.DeleteShader(fshader)
+make_program :: fun(filepath: cstr) -> u32 {
+	vshader, fshader := load_and_compile(filepath)
 
 	program := gl.CreateProgram()
 	gl.AttachShader(program, vshader)

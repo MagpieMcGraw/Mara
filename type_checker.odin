@@ -8396,18 +8396,15 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_struct.scope = mod_env
     mod_env.owner_module = mod_struct
 
-    // Self-registration: register the module under its bare name in its own
-    // env so code inside the module can disambiguate via `<modname>.X` —
-    // useful when a local type collides with an imported one (e.g.
-    // time.Timer vs SDL2's Init_Flags.Timer enum-variant alias). For dotted
-    // module names, the bare name is the last segment.
-    bare_name := module_name
-    if dot := strings.last_index(module_name, "."); dot >= 0 {
-        bare_name = module_name[dot+1:]
-    }
-    if bare_name != "" {
-        type_env_set(mod_env, bare_name, mod_struct)
-    }
+    // Self-binding under the module's bare name was removed: the feature
+    // (write `time.Timer` inside `module mara.time` to disambiguate from a
+    // same-named imported type) cost more friction than it earned. Locals
+    // and params named after the module's last path segment (e.g. `shader`
+    // inside `module gfx.shader`) collided with the magic binding, and
+    // undefined-identifier bugs got absorbed into confusing "expected u32,
+    // got <module-type>" errors instead of surfacing as missing decls.
+    // Authors can still disambiguate via fully-qualified `pkg.sub.Name` or
+    // by renaming one side of the collision.
 
     // Save/restore checker state
     saved_package := c.current_package

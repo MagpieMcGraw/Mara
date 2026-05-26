@@ -32,12 +32,12 @@ time_since :: fun(last: u64) -> (f64, u64) {
     return seconds, now
 }
 
-tally_up :: fun(frame : ^time.Timer, fixed: ^Fixed_Timer) {
+tally_up :: fun(frame : ^Timer, fixed: ^Fixed_Timer) {
 	frame.seconds, frame.counter = time_since(frame.counter)
 	fixed.tally += min(fixed.limit, frame.seconds)
 }
 
-sleep :: fun(work: time.Timer, fps: f64) {
+sleep :: fun(work: Timer, fps: f64) {
 	work.seconds, _ = time_since(work.counter)
 	sleep_time := 1.0 / fps - work.seconds
 	if sleep_time > 0 do delay_ns(seconds_to_ns(sleep_time))
