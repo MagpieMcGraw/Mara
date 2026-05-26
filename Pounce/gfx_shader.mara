@@ -17,6 +17,7 @@ load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 
 	vtext := text[:fs_tag]
 	ftext := text[fs_tag:]
+	vshader := compile(&vtext, gl.VERTEX_SHADER)
 
 	compile :: fun(text: ^[]utf8, shader_type: u32) -> u32 {
 		shader := gl.CreateShader(shader_type)		
@@ -33,7 +34,6 @@ load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 		return shader
 	}
 
-	vshader := compile(&vtext, gl.VERTEX_SHADER)
 	fshader := compile(&ftext, gl.FRAGMENT_SHADER)
 	return vshader, fshader
 }

@@ -4888,13 +4888,20 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
 }
 
 check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
-    // Pass 1: register all declarations in this scope.
-    // When owner is non-nil, top-level decls are attached to it as
-    // functions/types/pseudo-fields (so modules own their members
-    // uniformly with nested-struct ownership via register_scope_defs).
-    // public_env (when non-nil) is the scope that should receive top-level
-    // PUBLIC defined names (functions, types, constants) — used by check_module
-    // so file privates land in env (file_env) while public defs land in mod_env.
+    // Pass 1a: pre-register every `name :: ...` definition in this scope —
+    // nested funs, unions, distincts — and resolve fun signatures so any
+    // statement in the body can call them via forward reference regardless
+    // of source order. Module scope already does this via check_module's
+    // explicit register_type_names call (no eager signatures there because
+    // includes haven't been processed yet — types like `cstr` aren't in
+    // env until Pass 1b runs them). Nested scopes opt into eager
+    // signatures because by the time we're inside a function body, all
+    // upstream includes are already resolved.
+    register_type_names(c, stmts, env, owner, public_env, eager_signatures = true)
+
+    // Pass 1b: register the rest (Stmt_Decl, Stmt_Assign, includes, etc.)
+    // and run the deferred-body work for any Stmt_Scope that was pre-
+    // registered above. The pre_registered_stmts map drives that handoff.
     register_and_check_declarations(c, stmts, env, owner, public_env)
 
     // Pass 2: check everything, descending into child scopes
@@ -5178,7 +5185,7 @@ find_operator_overload :: proc(c: ^Checker, env: ^Type_Env, op: Token_Kind) -> (
 // register_and_check_declarations handle both halves in one go.
 // ---------------------------------------------------------------------------
 
-register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
+register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil, eager_signatures: bool = false) {
     pub := public_env if public_env != nil else env
     for stmt in stmts {
         #partial switch s in stmt {
@@ -5285,6 +5292,15 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             type_env_set(pub, s.name, dt)
             c.pre_registered_stmts[rawptr(s)] = true
         case ^Stmt_Scope:
+            // Already registered by a parent struct's register_scope_defs
+            // pass (e.g. AllocHeader inside Arena_Debug). Its s.name has
+            // been mutated to the mangled form and re-running registration
+            // here would prepend the package prefix a second time, creating
+            // duplicate empty entries. Mirrors the matching guard in
+            // register_and_check_declarations.
+            if s.name in c.table.fun_asts && c.table.fun_asts[s.name] == s {
+                continue
+            }
             // Generic templates store the AST — no resolution to defer.
             if len(s.generic_params) > 0 {
                 if _, exists := c.table.generic_templates[s.name]; exists { continue }
@@ -5367,6 +5383,48 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                         owner.functions[s.name] = fun_type
                     }
                 }
+                // Resolve params and return_types eagerly for non-struct funs
+                // so any statement in this scope (including a Stmt_Decl init
+                // expression sitting BEFORE this Stmt_Scope in source order)
+                // sees the fully-typed signature at type-check time. The
+                // deferred Pass 1b handler below is now idempotent on these
+                // fields — re-running on already-populated lists is a no-op.
+                //
+                // Only fires for nested scopes (check_scope passes
+                // eager_signatures=true). Top-level callers leave it false
+                // because at top-level Pass 1a runs BEFORE includes are
+                // processed; trying to resolve `filepath: cstr` here would
+                // fail because cstr isn't yet visible from mara.string.
+                if !is_struct_type && eager_signatures {
+                    if len(s.typed_params) > 0 {
+                        for tp in s.typed_params {
+                            pt: Type
+                            if tp.type_expr != nil {
+                                pt = resolve_type_expr(tp.type_expr, c, s.span, env = env)
+                            } else if tp.default_value != nil {
+                                if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
+                                    check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
+                                    pt = Type_Error{}
+                                } else {
+                                    pt = infer_param_type_from_default(c, tp.default_value, env)
+                                }
+                            } else {
+                                pt = Type_Error{}
+                            }
+                            append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
+                        }
+                        build_param_map(fun_type)
+                    }
+                    if len(s.return_types) > 0 {
+                        for rte in s.return_types {
+                            rt := resolve_type_expr(rte, c, s.span, env = env)
+                            if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {
+                                check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
+                            }
+                            append(&fun_type.return_types, rt)
+                        }
+                    }
+                }
                 c.pre_registered_stmts[rawptr(s)] = true
             }
         case ^Stmt_If:
@@ -5376,9 +5434,9 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             live, ok := evaluate_comptime_bool(c, s.condition)
             if !ok { continue }  // Pass 1b will report the error.
             if live {
-                register_type_names(c, s.body, env, owner, public_env)
+                register_type_names(c, s.body, env, owner, public_env, eager_signatures)
             } else if len(s.else_body) > 0 {
-                register_type_names(c, s.else_body, env, owner, public_env)
+                register_type_names(c, s.else_body, env, owner, public_env, eager_signatures)
             }
         }
     }
@@ -5572,7 +5630,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         if is_struct {
                             register_scope_defs(c, fun_type, &fun_type.sd, s.body, env)
                         }
-                        if len(s.typed_params) > 0 {
+                        // Idempotent: register_type_names resolves these
+                        // eagerly for nested-scope funs (so forward refs from
+                        // sibling Stmt_Decls find a fully-typed signature).
+                        // Skip re-resolution if params/return_types are
+                        // already populated.
+                        if len(s.typed_params) > 0 && len(fun_type.params) == 0 {
                             for tp in s.typed_params {
                                 pt: Type
                                 if tp.type_expr != nil {
@@ -5592,7 +5655,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             build_param_map(fun_type)
                         }
                         is_callable := !is_struct || len(s.typed_params) > 0
-                        if is_callable && len(s.return_types) > 0 {
+                        if is_callable && len(s.return_types) > 0 && len(fun_type.return_types) == 0 {
                             for rte in s.return_types {
                                 rt := resolve_type_expr(rte, c, s.span, env = env)
                                 if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {

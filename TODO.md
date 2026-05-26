@@ -29,3 +29,5 @@ Can we drop fn from function pointers?
 Storage buffers as a type? Can that help out the depth analysis?
 
 Language features that enable less IR generation. Functional stuff?
+
+When parsing, put defs and decls in two different arrays. Can loop over each without interdependence?
