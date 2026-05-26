@@ -5945,12 +5945,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             if s.target != nil {
                 continue
             }
-            // `program = Program(...)` is a compiler-managed marker — Phase 0
-            // already extracted the arena type info; the assignment is a
-            // no-op at codegen, the storage gets synthesized in main's
+            // `this_program = Program(...)` is a compiler-managed marker —
+            // Phase 0 already extracted the arena type info; the assignment
+            // is a no-op at codegen, the storage gets synthesized in main's
             // entry. Skip the regular type-check so the user can write the
             // configuration line without satisfying a strict LHS type.
-            if s.name == "program" && !s.is_decl { continue }
+            if s.name == "this_program" && !s.is_decl { continue }
             // Include expressions: scope-based resolution.
             // mara.X → look up X in std scope (stdlib modules)
             // bare Y → walk scope chain for sibling, lazy-load if not found
@@ -8327,7 +8327,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_env.is_module_scope = true
 
     if c.top_env != nil {
-        for name in ([]string{"program", "Program", "std", "void"}) {
+        for name in ([]string{"this_program", "Program", "std", "void"}) {
             if t, ok := c.top_env.types[name]; ok {
                 type_env_set(mod_env, name, t)
             }
@@ -8973,7 +8973,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     c.std_fun = std_fun
     type_env_set(env, "std", std_fun)
 
-    // Phase 0: Pre-scan main's body for `program = Program(...)` setup.
+    // Phase 0: Pre-scan main's body for `this_program = Program(...)` setup.
     // Must happen before package checking so big-array errors in imported
     // packages know whether a scope allocator is available.
     //
@@ -8981,18 +8981,19 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // type-check time, but Phase 0 runs before desugar — so we peel the
     // shapes here directly):
     //
-    //   program = Program(Arena_Debug(50 * MB))   // shortcut form
-    //   program = Program(Arena_Debug)            // type-only; user assigns
-    //                                             //   to program.scope_allocator
-    //                                             //   later (not yet supported
-    //                                             //   in this scan)
+    //   this_program = Program(Arena_Debug(50 * MB))   // shortcut form
+    //   this_program = Program(Arena_Debug)            // type-only; user
+    //                                                  //   assigns to
+    //                                                  //   this_program.scope_allocator
+    //                                                  //   later (not yet supported
+    //                                                  //   in this scan)
     //
-    // Bare `program = Program()` and `program : Program` mean the void
-    // default — no arena, allocation sites fail with a clear diagnostic.
+    // Bare `this_program = Program()` and `this_program : Program` mean the
+    // void default — no arena, allocation sites fail with a clear diagnostic.
     scan_allocator :: proc(c: ^Checker, target: Expr, value: Expr) {
         ident, id_ok := target.(^Expr_Ident)
-        if !id_ok || ident.name != "program" { return }
-        // Drill: `program = Program(<arena_ctor_or_type>)`.
+        if !id_ok || ident.name != "this_program" { return }
+        // Drill: `this_program = Program(<arena_ctor_or_type>)`.
         outer_call, outer_ok := value.(^Expr_Call)
         if !outer_ok || outer_call.name != "Program" { return }
         if len(outer_call.args) == 0 { return } // Program() -> void default
@@ -9052,7 +9053,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
                 for body_stmt in fn_stmt.body {
                     if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target == nil && !a.is_decl {
                         // Bare-name reassignment: synthesise an Expr_Ident for
-                        // the LHS so scan_allocator can match against `program`.
+                        // the LHS so scan_allocator can match against `this_program`.
                         synth := new(Expr_Ident)
                         synth.name = a.name
                         synth.span = a.span
@@ -9092,10 +9093,11 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         // Program struct (the compiler-managed global). Shape mirrors the
         // user's `Program` declaration in mara.core (a generic struct over
         // `~Arena`). Here we synthesize a parallel type bound in env as
-        // `program` so allocation sites can resolve `program.scope_allocator`
-        // and `program.args` without depending on the user having loaded
-        // mara.core. The user's generic `Program` template stays in
-        // generic_templates under the bare name "Program" — separate path.
+        // `this_program` so allocation sites can resolve
+        // `this_program.scope_allocator` and `this_program.args` without
+        // depending on the user having loaded mara.core. The user's generic
+        // `Program` template stays in generic_templates under the bare name
+        // "Program" — separate path.
         prog_type := new(Type_Scope)
         prog_type.name = "Program"
         // Synthetic Program belongs to the main package — that's the only TU
@@ -9114,7 +9116,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         append(&prog_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
         prog_type.field_map["args"] = field_idx
         c.table.funs["Program"] = prog_type
-        type_env_set(env, "program", prog_type)
+        type_env_set(env, "this_program", prog_type)
         // Expose `Program` (the type name) for cross-DLL signatures like
         // `game_run : fn(^Program, ...)`. The user's generic Program template
         // also lives in c.table.generic_templates under the same bare name —

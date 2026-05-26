@@ -469,9 +469,9 @@ gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
 // Returns (type_struct, base_ptr, ok)
 resolve_struct_for_field :: proc(g: ^Codegen, ident_name: string, ident_type: Type = nil, span: Span = {}) -> (^Scope_Body, string, bool) {
     // Program global: load from @__mara_program (accessible from any function).
-    // `program` is the compiler-managed name; the synthesized Program struct
-    // sits in c.table.funs["Program"] and the env binds `program` (lowercase).
-    if ident_name == "program" {
+    // `this_program` is the compiler-managed name; the synthesized Program
+    // struct sits in c.table.funs["Program"] and the env binds `this_program`.
+    if ident_name == "this_program" {
         if st, st_ok := lookup_struct(g, "Program"); st_ok {
             ctx_ptr := fresh_tmp(g)
             emit_raw(g, strings.concatenate({"  ", ctx_ptr, " = load ptr, ptr @__mara_program"}))

@@ -11,7 +11,7 @@ Big :: struct {
 }
 
 main :: fun() -> i64 {
-    program = Program(Arena_Basic)
+    this_program = Program(Arena_Basic)
     buf : [..16]byte
     // sizeof(Big) is 32 bytes, capacity is 16: offset 0 + 32 > 16 → trap.
     p : ^Big = &buf[0]

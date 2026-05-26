@@ -37,7 +37,7 @@ use test_compound_eval
 use mara.memory
 
 main :: fun() -> i64 {
-	program = Program(Arena_Basic)
+	this_program = Program(Arena_Basic)
 
 	test_args()
 	test_io_arrow()

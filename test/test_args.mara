@@ -2,8 +2,8 @@ module test
 
 test_args :: fun() {
 	print("arg count:")
-	print(program.args.len)
-	for arg in program.args {
+	print(this_program.args.len)
+	for arg in this_program.args {
 		print(arg)
 	}
 }

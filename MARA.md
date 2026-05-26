@@ -22,6 +22,9 @@ some_slice := other_slice[0:128]
 Array from slice copies data
 my_array : [..256]byte = some_slice[64:128]
 
+Must clarify which operations modify slice headers and which don't
+Suppose mutability helps there.
+
 Important learnings:
 
 Define codegen types and stick to them. No hardcoded sizes

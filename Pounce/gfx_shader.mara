@@ -2,92 +2,90 @@ module gfx.shader
 
 use mara.os
 use mara.string
+gl :: use mara.open_gl
 
 shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [16 * KB]utf8 {
 	data: [..32 * KB]byte
 	read_ok := os.read_entire_file(filepath, &data)
-	as_str : []utf8 = data[:]
+	text : []utf8 = data[:]
 
 	// Split shader file at second occurence of #version
 	VERSION_TAG :: "#version"
-	vs_tag, vs_found := string.find(VERSION_TAG, as_str)
+	vs_tag, vs_found := text.find(VERSION_TAG)
 
 	next := vs_tag + VERSION_TAG.len
-	fs_tag, fs_found := string.find(VERSION_TAG, as_str, next)
+	fs_tag, fs_found := text.find(VERSION_TAG, next)
 
 	// because these are fixed arrays, they copy data from the slice
-	vtext = as_str[0:fs_tag]
-	ftext = as_str[fs_tag:]
+	vtext = text[0:fs_tag]
+	ftext = text[fs_tag:]
 
 	return vtext, ftext
 }
 
-// shader_compile :: fun(shader_text: string, shader_type: u32) -> u32 {
-// 	shader_cstr := strings.clone_to_cstring(shader_text)
-// 	defer delete_cstring(shader_cstr)
-// 	shader_len := i32(len(shader_text))
+shader_compile :: fun(shader_text: string, shader_type: u32) -> u32 {
+	// shader_cstr := strings.clone_to_cstring(shader_text)
+	// defer delete_cstring(shader_cstr)
+	// shader_len := i32(len(shader_text))
 
-// 	shader := gl.CreateShader(shader_type)
-// 	gl.ShaderSource(shader, 1, &shader_cstr, &shader_len)
-// 	gl.CompileShader(shader)
+	// shader := gl.CreateShader(shader_type)
+	// gl.ShaderSource(shader, 1, &shader_cstr, &shader_len)
+	// gl.CompileShader(shader)
 
-// 	// Check compilation status
-// 	success: i32
-// 	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success)
+	// // Check compilation status
+	// success: i32
+	// gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success)
 
-// 	// Always check for logs
-// 	log_buff: [512]u8
-// 	log_length: i32
-// 	gl.GetShaderInfoLog(shader, 512, &log_length, &log_buff[0])
+	// // Always check for logs
+	// log_buff: [512]u8
+	// log_length: i32
+	// gl.GetShaderInfoLog(shader, 512, &log_length, &log_buff[0])
 
-// 	if log_length > 0 {
-// 		shader_type_name := shader_type == gl.VERTEX_SHADER ? "VERTEX" : "FRAGMENT"
-// 		fmt.eprintln(shader_type_name, "SHADER COMPILE LOG:")
-// 		fmt.eprintln(string(log_buff[0:log_length]))
-// 	}
+	// if log_length > 0 {
+	// 	shader_type_name := shader_type == gl.VERTEX_SHADER ? "VERTEX" : "FRAGMENT"
+	// 	fmt.eprintln(shader_type_name, "SHADER COMPILE LOG:")
+	// 	fmt.eprintln(string(log_buff[0:log_length]))
+	// }
 
-// 	if success == 0 {
-// 		gl.DeleteShader(shader)
-// 	}
+	// if success == 0 {
+	// 	gl.DeleteShader(shader)
+	// }
 
-// 	return shader
-// }
+	return 0
+}
 
-// shader_create_program :: fun(filepath: string) -> u32 {
-// 	vtext, ftext := shader_load_text(filepath)
-// 	defer delete(vtext)
-// 	defer delete(ftext)
+shader_create_program :: fun(filepath: cstr) -> u32 {
+	vtext, ftext := shader_load_text(filepath)
 
-// 	vshader := shader_compile(vtext, gl.VERTEX_SHADER)
-// 	defer gl.DeleteShader(vshader)
+	vshader := shader_compile(vtext, gl.VERTEX_SHADER)
+	defer gl.DeleteShader(vshader)
 
-// 	fshader := shader_compile(ftext, gl.FRAGMENT_SHADER)
-// 	defer gl.DeleteShader(fshader)
+	fshader := shader_compile(ftext, gl.FRAGMENT_SHADER)
+	defer gl.DeleteShader(fshader)
 
-// 	program := gl.CreateProgram()
-// 	gl.AttachShader(program, vshader)
-// 	gl.AttachShader(program, fshader)
-// 	gl.LinkProgram(program)
+	program := gl.CreateProgram()
+	gl.AttachShader(program, vshader)
+	gl.AttachShader(program, fshader)
+	gl.LinkProgram(program)
 
-// 	// Check link status
-// 	success: i32
-// 	gl.GetProgramiv(program, gl.LINK_STATUS, &success)
+	// Check link status
+	success: i32
+	gl.GetProgramiv(program, gl.LINK_STATUS, &success)
 
-// 	log_buff: [1024]u8
-// 	log_length: i32
-// 	gl.GetProgramInfoLog(program, 1024, &log_length, &log_buff[0])
+	log: [..1024]utf8
+	gl.GetProgramInfoLog(program, log.cap, &log.length, &log[0])
 
-// 	if log_length > 0 {
-// 		fmt.eprintln("SHADER PROGRAM LINK LOG:")
-// 		fmt.eprintln(string(log_buff[0:log_length]))
-// 	}
+	if log_length > 0 {
+		fmt.eprintln("SHADER PROGRAM LINK LOG:")
+		fmt.eprintln(string(log_buff[0:log_length]))
+	}
 
-// 	if success == 0 {
-// 		gl.DeleteProgram(program)
-// 	}
+	if success == 0 {
+		gl.DeleteProgram(program)
+	}
 
-// 	gl.DetachShader(program, vshader)
-// 	gl.DetachShader(program, fshader)
+	gl.DetachShader(program, vshader)
+	gl.DetachShader(program, fshader)
 
-// 	return program
-// }
+	return program
+}

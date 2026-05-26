@@ -146,7 +146,7 @@ mand8 :: fun(cr: F64x8, ci_scalar: f64) -> u8 {
 }
 
 main :: fun() {
-	program = Program(Arena_Basic(16 * MB))
+	this_program = Program(Arena_Basic(16 * MB))
 
 	inv := 2.0 / f64(N)
 	in_set_count : i64 = 0

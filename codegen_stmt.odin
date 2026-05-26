@@ -44,10 +44,11 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Skip include statements — desugared into imports before codegen
         if _, is_include := s.value.(^Expr_Include); is_include { return }
 
-        // `program = Program(...)` is a compiler-managed marker — Phase 0
-        // already extracted the arena info; the actual program global is
-        // synthesized at main entry. Skip codegen of the assignment itself.
-        if s.name == "program" && !s.is_decl { return }
+        // `this_program = Program(...)` is a compiler-managed marker —
+        // Phase 0 already extracted the arena info; the actual program
+        // global is synthesized at main entry. Skip codegen of the
+        // assignment itself.
+        if s.name == "this_program" && !s.is_decl { return }
 
         // take(T, storage) decl — let-style binding into storage's bytes. The
         // variable's alloca IS the typed pointer returned by take; no fresh

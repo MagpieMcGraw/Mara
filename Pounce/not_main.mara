@@ -3,7 +3,7 @@ module Pounce
 use mara.memory
 
 main :: fun() -> i64 {
-    program = Program(Arena_Debug(192 * MB))
+    this_program = Program(Arena_Debug(192 * MB))
 
     // Game state lives in this block; Megastruct gets carved out at game_init.
     memory_block : [..50 * MB]byte

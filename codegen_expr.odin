@@ -149,10 +149,11 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 if alloca_name, v_ok := get_scalar(g, ident.name); v_ok {
                     return alloca_name
                 }
-                // `&program` — the compiler-managed program global is stored
-                // at @__mara_program_storage; the address is the storage label.
-                // Used in cross-DLL handover (`game_run(&program, ...)`).
-                if ident.name == "program" {
+                // `&this_program` — the compiler-managed program global is
+                // stored at @__mara_program_storage; the address is the
+                // storage label. Used in cross-DLL handover
+                // (`game_run(&this_program, ...)`).
+                if ident.name == "this_program" {
                     return "@__mara_program_storage"
                 }
             }
