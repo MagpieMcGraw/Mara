@@ -1,0 +1,13 @@
+module test_pa_slice
+
+fill_some :: fun(d: ^[]byte, n: i32) {
+	d.len = n
+}
+
+main :: fun() {
+	data: [..32]byte
+	fill_some(&data, 5)
+	s : []byte = data[:]
+	print(i64(s.len))   // now expect 5 (was 32 before the change)
+	print(i64(s.cap))
+}

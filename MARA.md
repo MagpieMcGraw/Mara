@@ -29,8 +29,8 @@ some_slice := other_slice[0:128]
 Array from slice copies data
 my_array : [..256]byte = some_slice[64:128]
 
-Must clarify which operations modify slice headers and which don't
-Suppose mutability helps there.
+The default slice notation [:] slices up to len
+If you want cap, be explicit
 
 Slice parameters accept fixed arrays, BUT!
 Only do this if your fixed array is full

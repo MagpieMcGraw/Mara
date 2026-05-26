@@ -7,9 +7,8 @@ gl :: use mara.open_gl
 load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 	data: [..32 * KB]byte
 	read_ok := os.read_entire_file(filepath, &data)
-	text : []utf8 = data[:]
 
-	// Split shader file at second occurence of #version
+	text : []utf8 = data[:]
 	VERSION_TAG :: "#version"
 	vs_tag, vs_found := text.find(VERSION_TAG)
 

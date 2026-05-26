@@ -1092,11 +1092,17 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         if e.high != nil {
             end = gen_expr(g, e.high, w)
         } else {
-            // Open-ended `s[a:]` defaults end to the source's capacity (raw-memory range).
-            cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, src.alloca, SLICE.cap)
+            // Open-ended `s[a:]` defaults end to the source's LEN — the
+            // active-data extent. For partial arrays this is the count
+            // tracked by .len (bytes filled by file_read, push, etc.); for
+            // pure slices it's the slice's len (usually == cap, which is
+            // why this rule used to be cap-based and worked anyway). The
+            // raw-memory range is reachable via `data[a:data.cap]` when
+            // genuinely needed.
+            len_gep := fresh_tmp(g)
+            emit_slice_gep(g, len_gep, src.alloca, SLICE.len)
             end = fresh_tmp(g)
-            emit_typed_load_cap(g, end, cap_gep)
+            emit_typed_load_len(g, end, len_gep)
         }
 
         new_cap := fresh_tmp(g)
