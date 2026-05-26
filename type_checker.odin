@@ -545,6 +545,28 @@ type_env_locate :: proc(env: ^Type_Env, name: string) -> (Type, ^Type_Env, bool)
     return nil, nil, false
 }
 
+// Like type_env_locate but stops BEFORE entering the enclosing module scope —
+// matches the shadowing-check policy (function bodies are allowed to shadow
+// module-level names). Used for `:=` declarations so e.g. a local `shader :=
+// gl.CreateShader(...)` doesn't conflate with the module's own auto-injected
+// name binding (when the file's module is `gfx.shader`).
+type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Type_Env, bool) {
+    cur := env
+    for cur != nil {
+        if cur.is_module_scope { break }
+        if t, ok := cur.types[name]; ok {
+            return t, cur, true
+        }
+        for inc in cur.includes {
+            if t, ok := inc.types[name]; ok {
+                return t, inc, true
+            }
+        }
+        cur = cur.parent
+    }
+    return nil, nil, false
+}
+
 // Like type_env_get but with own-types-first semantics across the whole chain:
 // every enclosing scope's own definitions are checked BEFORE any scope's
 // includes. Used by type-name resolution so a local `Timer :: struct {...}`
@@ -6385,6 +6407,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         loc_env = env
                         already_declared = true
                     }
+                } else if s.is_decl {
+                    // Declarations skip module-scope bindings: function bodies
+                    // are free to shadow module-level names (including the
+                    // module's own self-binding, e.g. `shader` inside
+                    // `module gfx.shader`). Matches the shadowing-check
+                    // policy at the top of this branch.
+                    existing_type, loc_env, already_declared = type_env_locate_below_module(env, s.name)
                 } else {
                     existing_type, loc_env, already_declared = type_env_locate(env, s.name)
                 }
