@@ -865,6 +865,33 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                 emit_struct_copy(g, sd, struct_llvm, src_ptr, alloca_name)
                 continue
             }
+            // Fixed-array element: same shape as the struct case — alloca
+            // an array, memcpy the bytes from the sret slot, register as
+            // Array_Var so downstream `vtext[i]` and slice coercions see
+            // the right Var_Entry kind. Without this, the load-as-value /
+            // store-as-value default treats the whole `[N x T]` as a
+            // scalar and breaks any call site that wants a slice of it.
+            if fa, fa_ok := distinct_base(ret_types[i]).(^Type_Fixed_Array); fa_ok {
+                if name == "" {
+                    codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
+                }
+                arr_elem_t := llvm_type_from_checker(fa.elem)
+                arr_utf8 := false
+                if _, u_ok := fa.elem.(Type_Utf8); u_ok { arr_utf8 = true }
+                alloca_name := fmt.tprintf("%%%s", name)
+                emit_alloca(g, alloca_name, elem_type)
+                total_bytes := fa.size * elem_byte_size(arr_elem_t, g.checked)
+                emit_memcpy(g, alloca_name, src_ptr, total_bytes)
+                g.all_vars[name] = Array_Var{
+                    alloca       = alloca_name,
+                    capacity     = fa.size,
+                    elem_type    = arr_elem_t,
+                    is_utf8      = arr_utf8,
+                    has_sentinel = fa.has_sentinel,
+                    sentinel     = fa.sentinel,
+                }
+                continue
+            }
         }
 
         val := fresh_tmp(g)

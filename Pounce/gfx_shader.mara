@@ -23,7 +23,7 @@ shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [16 * KB]utf8 {
 	return vtext, ftext
 }
 
-shader_compile :: fun(shader_text: string, shader_type: u32) -> u32 {
+shader_compile :: fun(shader_text: cstr, shader_type: u32) -> u32 {
 	// shader_cstr := strings.clone_to_cstring(shader_text)
 	// defer delete_cstring(shader_cstr)
 	// shader_len := i32(len(shader_text))
@@ -68,21 +68,13 @@ shader_create_program :: fun(filepath: cstr) -> u32 {
 	gl.AttachShader(program, fshader)
 	gl.LinkProgram(program)
 
-	// Check link status
 	success: i32
 	gl.GetProgramiv(program, gl.LINK_STATUS, &success)
 
 	log: [..1024]utf8
-	gl.GetProgramInfoLog(program, log.cap, &log.length, &log[0])
+	gl.GetProgramInfoLog(program, log.cap, &log.len, &log[0])
 
-	if log_length > 0 {
-		fmt.eprintln("SHADER PROGRAM LINK LOG:")
-		fmt.eprintln(string(log_buff[0:log_length]))
-	}
-
-	if success == 0 {
-		gl.DeleteProgram(program)
-	}
+	if success == 0 do gl.DeleteProgram(program)
 
 	gl.DetachShader(program, vshader)
 	gl.DetachShader(program, fshader)
