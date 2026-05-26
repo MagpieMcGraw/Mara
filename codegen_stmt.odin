@@ -97,7 +97,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         //     x : T = buf[lo:hi]   (slice form)
         //     x : T = buf[off]     (index form)
         // Source may be []byte, [N]byte, or Array(byte, N) (post-desugar `.items`).
-        if var_type != nil && !is_byte_buffer(var_type) {
+        // Slice/partial-array destinations are NOT a reinterpret — they're a
+        // slice-header copy (`as_str : []utf8 = data[:]` views the same bytes
+        // through a utf8-typed header), so let those fall through to the
+        // standard slice-decl path below.
+        target_is_slice_shaped := false
+        if _, sl_ok := var_type.(^Type_Slice); sl_ok { target_is_slice_shaped = true }
+        if _, pa_ok := var_type.(^Type_Partial_Array); pa_ok { target_is_slice_shaped = true }
+        if var_type != nil && !is_byte_buffer(var_type) && !target_is_slice_shaped {
             if sl_expr, ok := s.value.(^Expr_Slice); ok {
                 if codegen_is_byte_buffer_source(g, sl_expr.expr) {
                     gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type)

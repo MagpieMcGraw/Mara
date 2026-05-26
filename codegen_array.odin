@@ -1314,19 +1314,14 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
 // Used by gen_stmt to decide whether a typed declaration should route through
 // the reinterpret-read path. Mirrors the shapes resolve_byte_target accepts.
 codegen_is_byte_buffer_source :: proc(g: ^Codegen, expr: Expr) -> bool {
-    if ident, ok := expr.(^Expr_Ident); ok {
-        if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.elem_type == "i8" {
+    // Source must be a true byte buffer at the Mara type level. Both `[..N]byte`
+    // and `[..N]utf8` lower to IR `i8`, so checking the LLVM elem_type would
+    // misclassify utf8 containers — fall back to the type-level check.
+    src_type := expr_type(expr)
+    if src_type != nil {
+        if is_byte_slice(src_type) || is_byte_fixed_array(src_type) || is_byte_partial_array(src_type) {
             return true
         }
-        if av, av_ok := get_array(g, ident.name); av_ok && av.elem_type == "i8" {
-            return true
-        }
-        return false
-    }
-    if _, ok := expr.(^Expr_Field_Access); ok {
-        // Field access carries a checker type from type-checking; inspect it.
-        src_type := expr_type(expr)
-        return is_byte_slice(src_type) || is_byte_fixed_array(src_type)
     }
     return false
 }
