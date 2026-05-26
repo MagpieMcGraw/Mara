@@ -236,7 +236,7 @@ foreign static_lib "open_gl" prefix gl {
     // Shader info
     fun GetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^byte)
     fun GetShaderInfoLog(shader: u32, bufSize: i32, length: ^byte, infoLog: ^utf8)
-    fun GetProgramiv(program: u32, pname: GL_Shader_Param, params: ^byte)
+    fun GetProgramiv(program: u32, pname: GL_Shader_Param, params: ^i32)
     fun GetProgramInfoLog(program: u32, bufSize: i32, length: ^i32, infoLog: ^byte)
 
     // Shader management

@@ -23,33 +23,23 @@ shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [16 * KB]utf8 {
 	return vtext, ftext
 }
 
-shader_compile :: fun(shader_text: cstr, shader_type: u32) -> u32 {
-	// shader_cstr := strings.clone_to_cstring(shader_text)
-	// defer delete_cstring(shader_cstr)
-	// shader_len := i32(len(shader_text))
+shader_compile :: fun(shader_text: []utf8, shader_type: u32) -> u32 {
+	shader := gl.CreateShader(shader_type)
+	gl.ShaderSource(shader, 1, &shader_cstr, &shader_len)
+	gl.CompileShader(shader)
 
-	// shader := gl.CreateShader(shader_type)
-	// gl.ShaderSource(shader, 1, &shader_cstr, &shader_len)
-	// gl.CompileShader(shader)
+	// Check compilation status
+	success: i32
+	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success)
 
-	// // Check compilation status
-	// success: i32
-	// gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success)
+	// Always check for logs
+	log_buff: [512]u8
+	log_length: i32
+	gl.GetShaderInfoLog(shader, 512, &log_length, &log_buff[0])
 
-	// // Always check for logs
-	// log_buff: [512]u8
-	// log_length: i32
-	// gl.GetShaderInfoLog(shader, 512, &log_length, &log_buff[0])
-
-	// if log_length > 0 {
-	// 	shader_type_name := shader_type == gl.VERTEX_SHADER ? "VERTEX" : "FRAGMENT"
-	// 	fmt.eprintln(shader_type_name, "SHADER COMPILE LOG:")
-	// 	fmt.eprintln(string(log_buff[0:log_length]))
-	// }
-
-	// if success == 0 {
-	// 	gl.DeleteShader(shader)
-	// }
+	if success == 0 {
+		gl.DeleteShader(shader)
+	}
 
 	return 0
 }

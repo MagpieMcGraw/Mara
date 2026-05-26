@@ -3088,7 +3088,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         }
         return true
     case ^Type_Fixed_Array:
-        // Implicit coercion: [N]T is compatible with []T (array → slice)
+        // Implicit coercion: [N]T destination accepts a []T source — this
+        // is the slice-bytes-into-array COPY direction (memcpy at assign
+        // time), not the hidden-header auto-promote that the mirror rule
+        // used to allow at call sites. Kept for `arr = slice[lo:hi]` style
+        // copies; the auto-promote direction is gone (see ^Type_Slice arm).
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
             return types_equal(va.elem, sl.elem)
         }
@@ -3108,10 +3112,10 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Note: we don't compare size here — arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
-        // Implicit coercion: [:]T is compatible with [N]T (slice ← array)
-        if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
-            return types_equal(va.elem, fa.elem)
-        }
+        // Implicit slice ← fixed-array conversion removed (see the mirror
+        // comment in the ^Type_Fixed_Array case). Callers form the slice
+        // with `arr[:]` at the call site so the header construction is
+        // visible at the source level.
         // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view).
         // Sentinel direction matches partial-to-partial: source can drop a
         // sentinel guarantee, but can't synthesize one — reject when dest
