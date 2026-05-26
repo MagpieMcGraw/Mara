@@ -1,0 +1,49 @@
+module test_err_open
+
+File_Error :: error {
+    Not_Found
+    Too_Large
+    Read_Failed
+}
+
+Shader_Error :: error {
+    Bad_Text
+    Failed_Compilation
+    Failed_Link
+}
+
+main :: fun() -> i64 {
+    // Concrete error_kind variants assign into the open `err` type.
+    a : err = File_Error.Not_Found
+    b : err = Shader_Error.Failed_Link
+    ok : err = File_Error.Ok
+
+    print(a)
+    print(b)
+    print(ok)
+
+    // err-typed value compares against any error_kind variant
+    if a == File_Error.Not_Found do print("a matched")
+    if b != File_Error.Ok do print("b is not Ok")
+
+    // match across error_kinds with mandatory else arm
+    match a {
+        File_Error.Not_Found  do print("match a: not found")
+        File_Error.Too_Large  do print("match a: too large")
+        Shader_Error.Bad_Text do print("match a: bad text")
+        else                  do print("match a: other")
+    }
+
+    match b {
+        File_Error.Not_Found     do print("match b: not found")
+        Shader_Error.Failed_Link do print("match b: failed link")
+        else                     do print("match b: other")
+    }
+
+    match ok {
+        File_Error.Ok    do print("match ok: ok")
+        else             do print("match ok: other")
+    }
+
+    return 0
+}

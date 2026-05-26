@@ -2267,6 +2267,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case Type_Any:          return "i64" // default to i64 for untyped
     case Type_Void:         return "{}"  // zero-sized struct — LLVM coalesces
     case Type_Error:        return "i64" // error recovery default
+    case Type_Err:          return "i32" // open error type — u32 (set_id<<16 | tag)
     case nil:               return "i64" // nil type (unresolved)
     }
     unreachable()
@@ -2415,8 +2416,74 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
         "  call i32 (ptr, ...) @printf(ptr ", fmt_slice_len,
         ", ptr %loc, i32 %new_len, i32 %cap, ptr %name)\n",
     }))
-    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n")
+    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
+    // print_err: prints the qualified name of a u32 error value (set_id<<16 |
+    // tag). One switch case per (set_id, tag) pair across all error_kinds
+    // in the program; the 0 case is the universal `.Ok` and the default falls
+    // back to "?(<val>)" for stray bits / out-of-range tags. Open-`err`-typed
+    // print sites call this; concrete error_kind print sites still use the
+    // inline switch from gen_print_enum.
+    strings.write_string(&b, runtime_print_err_helper_ir(g))
+
+    return strings.to_string(b)
+}
+
+runtime_print_err_helper_ir :: proc(g: ^Codegen) -> string {
+    Variant_Case :: struct { value: int, qualified_name: string }
+    cases := make([dynamic]Variant_Case, 0, 16, context.temp_allocator)
+    for _, et in g.checked.table.enums {
+        if !et.is_error_kind { continue }
+        for vname, value in et.variants {
+            if value == 0 { continue }  // .Ok handled once below
+            qname := strings.concatenate({et.source_name, ".", vname}, context.temp_allocator)
+            append(&cases, Variant_Case{value = value, qualified_name = qname})
+        }
+    }
+    slice.sort_by(cases[:], proc(a, b: Variant_Case) -> bool { return a.value < b.value })
+
+    // Register all the format strings via the global literal cache so each
+    // one becomes a stable rodata global the helper can GEP.
+    ok_str, _ := get_string_literal(g, "Ok")
+    fmt_str_s, _ := get_string_literal(g, "%s")
+    fmt_unknown, _ := get_string_literal(g, "?(%u)")
+    case_strs := make([dynamic]string, 0, len(cases), context.temp_allocator)
+    for c in cases {
+        s, _ := get_string_literal(g, c.qualified_name)
+        append(&case_strs, s)
+    }
+
+    b: strings.Builder
+    strings.builder_init(&b)
+    strings.write_string(&b, "define void @__mara_print_err(i32 %val) {\nentry:\n")
+    strings.write_string(&b, "  switch i32 %val, label %unknown [\n")
+    strings.write_string(&b, "    i32 0, label %ok\n")
+    for c, i in cases {
+        strings.write_string(&b, fmt.tprintf("    i32 %d, label %%case_%d\n", c.value, i))
+    }
+    strings.write_string(&b, "  ]\nok:\n")
+    strings.write_string(&b, strings.concatenate({
+        "  %ok_s = getelementptr [3 x i8], ptr ", ok_str, ", i64 0, i64 0\n",
+        "  %fmt_s = getelementptr [3 x i8], ptr ", fmt_str_s, ", i64 0, i64 0\n",
+        "  call i32 (ptr, ...) @printf(ptr %fmt_s, ptr %ok_s)\n",
+        "  ret void\n",
+    }))
+    for c, i in cases {
+        lit_global := case_strs[i]
+        lit_len := len(c.qualified_name) + 1
+        strings.write_string(&b, fmt.tprintf("case_%d:\n", i))
+        strings.write_string(&b, fmt.tprintf("  %%cs_%d = getelementptr [%d x i8], ptr %s, i64 0, i64 0\n", i, lit_len, lit_global))
+        strings.write_string(&b, fmt.tprintf("  %%fs_%d = getelementptr [3 x i8], ptr %s, i64 0, i64 0\n", i, fmt_str_s))
+        strings.write_string(&b, fmt.tprintf("  call i32 (ptr, ...) @printf(ptr %%fs_%d, ptr %%cs_%d)\n", i, i))
+        strings.write_string(&b, "  ret void\n")
+    }
+    strings.write_string(&b, "unknown:\n")
+    strings.write_string(&b, strings.concatenate({
+        "  %unk_fmt = getelementptr [6 x i8], ptr ", fmt_unknown, ", i64 0, i64 0\n",
+        "  call i32 (ptr, ...) @printf(ptr %unk_fmt, i32 %val)\n",
+        "  ret void\n",
+    }))
+    strings.write_string(&b, "}\n")
     return strings.to_string(b)
 }
 
@@ -3683,6 +3750,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_null_fail(ptr, ptr)\n")
         strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_slice_len_fail(ptr, i32, i32, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_print_err(i32)\n")
     }
     strings.write_byte(&b, '\n')
 

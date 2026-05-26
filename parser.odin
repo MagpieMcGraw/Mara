@@ -2382,7 +2382,18 @@ parse_match :: proc(p: ^Parser) -> Stmt {
             // the inner if must terminate (have its own else, or use a do-form
             // without else). Standard C-family behavior.
             advance(p) // consume 'else'
-            body := parse_match_arm_body(p)
+            body: [dynamic]Stmt
+            // Allow `else do <stmt>` as a single-line arm, mirroring the value-arm
+            // shape. Without this, `else` is forced into a multi-line indented
+            // body block — fine for big handlers, awkward when you just want
+            // "anything else, do this one thing."
+            if current_kind(p) == .Do {
+                advance(p) // consume 'do'
+                append(&body, parse_stmt(p))
+                skip_newlines(p)
+            } else {
+                body = parse_match_arm_body(p)
+            }
             append(&arms, Match_Arm{is_else = true, body = body})
         } else if current_kind(p) == .Dot && peek_kind(p) == .Identifier {
             // Dot shorthand arm: .Variant

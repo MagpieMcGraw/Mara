@@ -37,6 +37,7 @@ Type :: union {
                          //   trivially; reading or method-calling a void value is
                          //   a type error.
     Type_Error,       // error recovery — suppresses cascading type errors
+    Type_Err,         // open error type — accepts any variant from any `error { ... }` decl
 }
 
 Type_Int :: struct {}
@@ -57,6 +58,7 @@ Type_Runtime_Size :: struct {
 Type_Any :: struct {}
 Type_Void :: struct {}
 Type_Error :: struct {}
+Type_Err :: struct {}
 
 Numeric_Kind :: enum { Signed, Unsigned, Float }
 Type_Numeric :: struct {
@@ -1762,6 +1764,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         case "utf8":   return Type_Utf8{}
         case "byte":   return Type_Byte{}
         case "void":   return Type_Void{}
+        case "err":    return Type_Err{}
         case "i8":     return Type_Numeric{kind = .Signed,   bits = 8}
         case "i16":    return Type_Numeric{kind = .Signed,   bits = 16}
         case "i32":    return Type_Numeric{kind = .Signed,   bits = 32}
@@ -3001,6 +3004,19 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     if _, ok := a.(Type_Error); ok { return true }
     if _, ok := b.(Type_Error); ok { return true }
 
+    // Open `err` type accepts any error_kind variant. Symmetric: a value of
+    // a specific error_kind flows into an `err`-typed slot, and `err`-typed
+    // values compare against specific error_kind variants. Both directions
+    // route through the same u32 IR shape, so codegen treats this as a
+    // no-op coercion.
+    if _, ok := a.(Type_Err); ok {
+        if _, ok2 := b.(Type_Err); ok2 { return true }
+        if et, ok2 := b.(^Type_Enum); ok2 { return et.is_error_kind }
+    }
+    if _, ok := b.(Type_Err); ok {
+        if et, ok2 := a.(^Type_Enum); ok2 { return et.is_error_kind }
+    }
+
     // Transparent type aliases (`Name :: type(T)`) unwrap to their base
     // before any other comparison. They have no nominal identity — they
     // exist purely as renames. `distinct` types do not unwrap here.
@@ -3260,6 +3276,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         return ok
     case Type_Error:
         return true
+    case Type_Err:
+        // Symmetric handling lives at the top of types_equal so we can short-
+        // circuit before alias unwrapping; reaching this arm means neither
+        // side matched there — be conservative and report inequality.
+        return false
     }
     return false
 }
@@ -3396,6 +3417,7 @@ type_name :: proc(t: Type) -> string {
     case Type_Any:          return "any"
     case Type_Void:         return "void"
     case Type_Error:        return "<error>"
+    case Type_Err:          return "err"
     }
     return "void"
 }
@@ -3636,6 +3658,8 @@ checker_type_alignment :: proc(t: Type) -> int {
          Type_Const_Int, Type_Runtime_Size,
          Type_Any, Type_Error:
         return 8
+    case Type_Err:
+        return 4   // u32 (set_id<<16 | tag)
     case Type_Void:
         return 1
     case Type_Numeric:
@@ -3942,6 +3966,7 @@ checker_type_byte_size :: proc(t: Type) -> int {
          Type_Const_Int, Type_Runtime_Size,
          Type_Any, Type_Error, nil:
         return 8
+    case Type_Err:         return 4
     case Type_Void:
         return 0
     case Type_Numeric:     return v.bits / 8
@@ -6997,7 +7022,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
              Type_CString, Type_C8, Type_Utf8, Type_Byte, Type_Numeric,
              ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Distinct,
-             Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Void, Type_Error,
+             Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Void, Type_Error, Type_Err,
              nil:
             check_error(c, s.span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(coll_type))
             elem_type = Type_Any{}
@@ -8025,6 +8050,21 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
     subj_type := check_expr(c, s.subject, env)
     ut, is_union_match := subj_type.(^Type_Union)
     et, is_enum_match := subj_type.(^Type_Enum)
+    _, is_err_match := subj_type.(Type_Err)
+
+    // Open `err` matches can never be exhaustive — the universe of error
+    // variants is open across the whole program. Force an explicit `else`
+    // arm so unhandled errors stay structurally visible rather than
+    // silently falling through.
+    if is_err_match {
+        has_else := false
+        for arm in s.arms {
+            if arm.is_else { has_else = true; break }
+        }
+        if !has_else {
+            check_error(c, s.span, TYPE_MATCH_ERR_REQUIRES_ELSE)
+        }
+    }
 
     // Namespace-form match: subject is a struct. Each arm is a bool predicate
     // — either an explicit expression (`expr do stmt`) or a bare field name

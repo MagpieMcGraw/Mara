@@ -1832,6 +1832,11 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             fmt_ptr := fresh_tmp(g)
             emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
             emit_printf_ptr(g, fmt_ptr, val)
+        } else if _, is_err := expr_type(arg_expr).(Type_Err); is_err {
+            // Open `err` value: route through the program-wide runtime
+            // helper since the specific error_kind isn't known statically.
+            val := gen_expr(g, arg_expr, "i32")
+            emit(g, "  call void @__mara_print_err(i32 %s)", val)
         } else if et, is_enum := enum_type_of(arg_expr); is_enum {
             // Enum value: print the variant name via an inline switch. Falls
             // back to "EnumName(<tag>)" for unknown tags (out-of-range or
