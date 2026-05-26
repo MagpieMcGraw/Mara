@@ -8,6 +8,13 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 
 gen_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
+    // Subject-less form: `match { cond1...; cond2... }` lowers as a chain
+    // of independent bool tests, same shape as the struct-namespace form
+    // (multi-fire: every true arm runs its body, fall through to next).
+    if s.subject == nil {
+        gen_namespace_match(g, s)
+        return
+    }
     // Use the type checker's resolved type to decide the codegen path.
     // Pure-enum unions are registered as Type_Enum, so only payload-bearing
     // unions land here — everything else (scalars, enums) goes to value match.

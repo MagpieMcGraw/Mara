@@ -2319,10 +2319,22 @@ parse_match :: proc(p: ^Parser) -> Stmt {
     // Strict-default: every match on an enum/union must cover all variants
     // (or use `else` as an explicit opt-out). The previous `match all` opt-in
     // form is gone — exhaustiveness is the default, not a mode.
-    p.no_struct_lit = true
-    subject := parse_expr(p)
-    p.no_struct_lit = false
-    skip_newlines(p)
+    //
+    // Subject-less form: `match { <bool-arm>... }` — read past newlines
+    // to detect `{` directly. Used as a multi-fire predicate chain, same
+    // semantics as the struct-namespace form: each arm is an independent
+    // bool, all true arms fire in order.
+    subject: Expr
+    saved_pos := p.pos
+    for current_kind(p) == .Newline { advance(p) }
+    if current_kind(p) != .Left_Brace {
+        // Rewind any newlines we consumed and parse the subject normally.
+        p.pos = saved_pos
+        p.no_struct_lit = true
+        subject = parse_expr(p)
+        p.no_struct_lit = false
+        skip_newlines(p)
+    }
     expect(p, .Left_Brace)
     skip_newlines(p)
 

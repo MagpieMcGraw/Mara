@@ -906,9 +906,13 @@ always_returns :: proc(body: [dynamic]Stmt) -> bool {
             if len(s.else_body) == 0 { return false }
             return always_returns(s.body) && always_returns(s.else_body)
         case ^Stmt_Match:
-            // Strict-default match: every match either covers all variants
-            // (enforced by the type checker) or has an else arm. So if every
-            // arm always returns, the match as a whole always returns too.
+            // Subject-less / namespace form has no exhaustiveness guarantee
+            // (each arm is an independent bool predicate, no arm is forced
+            // to fire), so the match can't be proven to always return.
+            if s.subject == nil { return false }
+            // Strict-default match on enum/union: every match either covers
+            // all variants (enforced by the type checker) or has an else arm.
+            // So if every arm always returns, the match as a whole does too.
             for arm in s.arms {
                 if !always_returns(arm.body) { return false }
             }
@@ -7891,6 +7895,15 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 }
 
 check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
+    // Subject-less form: `match { cond1 ...; cond2 ... }` — each arm is a
+    // standalone bool predicate, multi-fire semantics (every true arm runs
+    // its body). Routed through check_namespace_match for the predicate
+    // validation since the arm shape and semantics are identical to the
+    // struct-namespace form.
+    if s.subject == nil {
+        check_namespace_match(c, s, env, nil)
+        return
+    }
     subj_type := check_expr(c, s.subject, env)
     ut, is_union_match := subj_type.(^Type_Union)
     et, is_enum_match := subj_type.(^Type_Enum)
@@ -8121,6 +8134,9 @@ check_namespace_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env, scope
 
     // Set up the namespace context so identifier resolution falls back to
     // subject-field lookup. Saved/restored to handle nested namespace matches.
+    // Subject-less form (scope == nil) doesn't have a namespace fallback —
+    // every predicate resolves through the normal env, which is what you
+    // want: it's a flat if-chain replacement, not a field shortcut.
     saved_subject      := c.namespace_subject
     saved_subject_type := c.namespace_subject_type
     c.namespace_subject      = s.subject
@@ -8151,7 +8167,8 @@ check_namespace_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env, scope
             predicate            = arm.value
             arm.is_predicate_arm = true
         } else {
-            check_error(c, s.span, TYPE_MATCH_STRUCT_EXPECTS_PREDICATE_ARMS, scope.name)
+            ctx_name := scope.name if scope != nil else "match"
+            check_error(c, s.span, TYPE_MATCH_STRUCT_EXPECTS_PREDICATE_ARMS, ctx_name)
             continue
         }
 

@@ -16,15 +16,15 @@ load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 	next := vs_tag + VERSION_TAG.len
 	fs_tag, fs_found := text.find(VERSION_TAG, next)
 
-	vtext := text[0:fs_tag]
+	vtext := text[:fs_tag]
 	ftext := text[fs_tag:]
 
-	compile :: fun(text: ^[]utf8, stype: u32) -> u32 {
-		shader := gl.CreateShader(stype)		
+	compile :: fun(text: ^[]utf8, shader_type: u32) -> u32 {
+		shader := gl.CreateShader(shader_type)		
 		gl.ShaderSource(shader, 1, &text.ptr, &text.len)
 		gl.CompileShader(shader)
 
-		status : u32
+		status : i32
 		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
 
 		log: [..512]utf8
@@ -47,13 +47,13 @@ make_program :: fun(filepath: cstr) -> u32 {
 	gl.AttachShader(program, fshader)
 	gl.LinkProgram(program)
 
-	success: i32
-	gl.GetProgramiv(program, gl.LINK_STATUS, &success)
+	status: i32
+	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
 
 	log: [..1024]utf8
 	gl.GetProgramInfoLog(program, log.cap, &log.len, &log[0])
 
-	if success == 0 do gl.DeleteProgram(program)
+	if status == 0 do gl.DeleteProgram(program)
 
 	gl.DetachShader(program, vshader)
 	gl.DetachShader(program, fshader)
