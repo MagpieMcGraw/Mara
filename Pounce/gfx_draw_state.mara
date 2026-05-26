@@ -58,8 +58,20 @@ draw_state_create :: fun(
 	max_instances: i64,
 	max_commands: isize,) -> DrawState
 {
+	// Shader load is fatal at this layer — game init can't recover from a
+	// missing or malformed shader, so match the err and crash with a
+	// pointed diagnostic instead of bubbling further up.
+	shader_id, shader_err := make_program(shader_file)
+	if shader_err != shader.Err.Ok {
+		match shader_err {
+			shader.Err.Bad_Text            do crash("shader: source has fewer than two `#version` blocks")
+			shader.Err.Failed_Compilation  do crash("shader: vertex/fragment compilation failed")
+			shader.Err.Failed_Link         do crash("shader: program link failed")
+			else                           do crash("shader load failed (file open/read)")
+		}
+	}
+
 	// Create persistent command buffer for MDI
-	shader_id := make_program(shader_file)
 
 	command_buffer: u32
 	gl.GenBuffers(1, &command_buffer)

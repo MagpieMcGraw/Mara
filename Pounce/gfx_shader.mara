@@ -5,47 +5,56 @@ use mara.os
 use mara.string
 gl :: use mara.open_gl
 
-load_and_compile :: fun(filepath: cstr) -> u32, u32 {
+Err :: error {
+    Bad_Text
+    Failed_Compilation
+    Failed_Link
+}
+
+// Read the shader source and compile both stages. vshader / fshader are
+// out-params (Mara doesn't have value tuples beyond `(T, err)`, so two
+// shader handles + err = three slots, which the trailing-err propagation
+// doesn't allow). The trailing err carries either a File_Error from the
+// os.read_entire_file call or one of this module's Err variants.
+load_and_compile :: fun(filepath: cstring, vshader: ^u32, fshader: ^u32) -> err {
 	data: [..32 * KB]byte
-	read_ok := os.read_entire_file(filepath, &data)
-	if not read_ok {
-		print("Shader load failed — couldn't open file:", filepath)
-		crash("aborting")
-	}
+	os.read_entire_file(filepath, &data)?
 
 	text : []utf8 = data[:]
 	VERSION_TAG :: "#version"
 	vs_tag, vs_found := text.find(VERSION_TAG)
-	if not vs_found do crash("Shader load: no #version directive found")
+	if not vs_found do return Err.Bad_Text
 
 	next := vs_tag + VERSION_TAG.len
 	fs_tag, fs_found := text.find(VERSION_TAG, next)
-	if not fs_found do crash("Shader load: only one #version directive found (need two: vertex + fragment)")
+	if not fs_found do return Err.Bad_Text
 
 	vtext := text[:fs_tag]
 	ftext := text[fs_tag:]
 
-	compile :: fun(text: ^[]utf8, shader_type: u32) -> u32 {
+	compile :: fun(text: ^[]utf8, shader_type: u32, out: ^u32) -> err {
 		shader := gl.CreateShader(shader_type)
 		gl.ShaderSource(shader, 1, &text.ptr, &text.len)
 		gl.CompileShader(shader)
 
 		status : i32
 		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
-
-		log: [..512]utf8
-		gl.GetShaderInfoLog(shader, log.cap, &log.len, &log[0])
-		if status == 0 do gl.DeleteShader(shader)
-
-		return shader
+		if status == 0 {
+			gl.DeleteShader(shader)
+			return Err.Failed_Compilation
+		}
+		out^ = shader
+		return Err.Ok
 	}
-	vshader := compile(&vtext, gl.VERTEX_SHADER)
-	fshader := compile(&ftext, gl.FRAGMENT_SHADER)
-	return vshader, fshader
+	compile(&vtext, gl.VERTEX_SHADER,   vshader)?
+	compile(&ftext, gl.FRAGMENT_SHADER, fshader)?
+	return Err.Ok
 }
 
-make_program :: fun(filepath: cstr) -> u32 {
-	vshader, fshader := load_and_compile(filepath)
+make_program :: fun(filepath: cstring) -> u32, err {
+	vshader: u32
+	fshader: u32
+	load_and_compile(filepath, &vshader, &fshader)?
 
 	program := gl.CreateProgram()
 	gl.AttachShader(program, vshader)
@@ -54,14 +63,15 @@ make_program :: fun(filepath: cstr) -> u32 {
 
 	status: i32
 	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
-
-	log: [..1024]utf8
-	gl.GetProgramInfoLog(program, log.cap, &log.len, &log[0])
-
-	if status == 0 do gl.DeleteProgram(program)
+	if status == 0 {
+		gl.DeleteProgram(program)
+		gl.DeleteShader(vshader)
+		gl.DeleteShader(fshader)
+		return 0, Err.Failed_Link
+	}
 
 	gl.DetachShader(program, vshader)
 	gl.DetachShader(program, fshader)
 
-	return program
+	return program, Err.Ok
 }
