@@ -16,11 +16,9 @@ main :: fun() {
 
 And real code looks like that
 
-![main loop](readme/mainloop.png)
+![shader loading](readme/shader.png)
 
 Main feature of Mara is stack-like memory allocation. Everything in Mara lives until the end of scope. You can get data out of functions by returning it, or by passing in a block of memory and writing to it.
-
-![basic mesh loading](readme/prim.png)
 
 ## Building the compiler
 
