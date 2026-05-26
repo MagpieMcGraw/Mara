@@ -1491,11 +1491,46 @@ gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string,
     case:
         codegen_fatal(g, span, CODE_CANNOT_ASSIGN_SLICE_FIELD_ONLY, field)
     }
-    gep := fresh_tmp(g)
-    emit_slice_gep(g, gep, slice_hdr_ptr, field_idx)
     // Type checker enforces the value is field-width — store directly,
     // no extend/trunc dance.
     val := gen_expr(g, value, field_ir)
+
+    // Enforce slice invariant on `.len` writes: 0 <= new_len <= cap. Without
+    // this, FFI fill patterns (`data.len = i32(bytes_read)`) and other manual
+    // bookkeeping could lie about the populated extent, and subsequent
+    // indexing would honor the lie. Compile-time elision applies when both
+    // new_len and cap are integer literals at codegen time.
+    if field == "len" {
+        cap_gep := fresh_tmp(g)
+        emit_slice_gep(g, cap_gep, slice_hdr_ptr, SLICE.cap)
+        cap_val := fresh_tmp(g)
+        emit_typed_load_cap(g, cap_val, cap_gep)
+
+        w := slice_layout.len_ir
+        ok_label   := fresh_label(g, "slice_len.ok")
+        fail_label := fresh_label(g, "slice_len.fail")
+
+        neg_cmp := fresh_tmp(g)
+        emit(g, "  %s = icmp slt %s %s, 0", neg_cmp, w, val)
+        upper_cmp := fresh_tmp(g)
+        emit(g, "  %s = icmp sgt %s %s, %s", upper_cmp, w, val, cap_val)
+        combined := fresh_tmp(g)
+        emit(g, "  %s = or i1 %s, %s", combined, neg_cmp, upper_cmp)
+        emit_cond_br(g, combined, fail_label, ok_label)
+
+        emit_label(g, fail_label)
+        loc := format_location(span.file, span.line, span.col)
+        loc_global,  _ := get_string_literal(g, loc)
+        name_global, _ := get_string_literal(g, "slice")
+        emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
+            __MARA_SLICE_LEN_FAIL, loc_global, w, val, w, cap_val, name_global)
+        emit(g, "  unreachable")
+
+        emit_label(g, ok_label)
+    }
+
+    gep := fresh_tmp(g)
+    emit_slice_gep(g, gep, slice_hdr_ptr, field_idx)
     emit_store(g, field_ir, val, gep)
 }
 

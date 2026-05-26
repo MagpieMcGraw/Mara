@@ -1,26 +1,22 @@
-module warlock
+module gfx.shader
 
 use mara.os
 use mara.string
 
-shader_load_text :: fun(filepath: string) -> (vtext: string, ftext: string) {
-	file_contents, read_ok := os.read_entire_file(filepath)
-	if !read_ok {
-		fmt.eprintln("Failed to load shader file:", filepath)
-	}
-	defer delete(file_contents)
-
-	file_text := string(file_contents)
+shader_load_text :: fun(filepath: cstr) -> (vtext: str, ftext: str) {
+	data: [..32 * KB]byte
+	read_ok := os.read_entire_file(filepath, &data)
+	as_str : []utf8 = data[:]
 
 	// Find second occurrence of "#version" to split vertex and fragment shaders
 	VERSION_TAG :: "#version"
-	first_version := strings.index(file_text, VERSION_TAG)
+	first_version := string.find(as_str, VERSION_TAG)
 	if first_version == -1 {
 		fmt.eprintln("Shader file missing #version tag:", filepath)
 	}
 
 	// Search for second #version tag after the first one
-	search_start := first_version + len(VERSION_TAG)
+	search_start := first_version + VERSION_TAG.len
 	second_version := strings.index(file_text[search_start:], VERSION_TAG)
 	if second_version == -1 {
 		fmt.eprintln("Shader file missing second #version tag (fragment shader):", filepath)

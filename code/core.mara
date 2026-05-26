@@ -1,5 +1,11 @@
 module mara.core
 
+// Slice :: class {
+// 	len: i8..=isize
+// 	cap: i8..=isize
+// 	ptr: isize
+// }
+
 Arena :: class {
 	size: [64]byte
 

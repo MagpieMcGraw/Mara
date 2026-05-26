@@ -2342,17 +2342,19 @@ llvm_string_byte_length :: proc(s: string) -> int {
 // those already dedupe, so identical loc/name across many sites share
 // storage. Functions are `internal` linkage so the linker dead-strips any
 // unused kind. Helper names are constants so call sites stay readable.
-__MARA_BOUNDS_FAIL   :: "@__mara_bounds_fail"
-__MARA_OVERFLOW_FAIL :: "@__mara_overflow_fail"
-__MARA_NULL_FAIL     :: "@__mara_null_fail"
-__MARA_DIVZ_FAIL     :: "@__mara_divz_fail"
+__MARA_BOUNDS_FAIL    :: "@__mara_bounds_fail"
+__MARA_OVERFLOW_FAIL  :: "@__mara_overflow_fail"
+__MARA_NULL_FAIL      :: "@__mara_null_fail"
+__MARA_DIVZ_FAIL      :: "@__mara_divz_fail"
+__MARA_SLICE_LEN_FAIL :: "@__mara_slice_len_fail"
 
 runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // Register format strings as deduped globals via the normal literals path.
-    fmt_bounds,   _ := get_string_literal(g, "%s runtime error: index %d out of bounds [0, %d) for '%s'\n")
-    fmt_overflow, _ := get_string_literal(g, "%s runtime error: integer overflow\n")
-    fmt_null,     _ := get_string_literal(g, "%s runtime error: null pointer dereference: '%s' is null\n")
-    fmt_divz,     _ := get_string_literal(g, "%s runtime error: division by zero\n")
+    fmt_bounds,    _ := get_string_literal(g, "%s runtime error: index %d out of bounds [0, %d) for '%s'\n")
+    fmt_overflow,  _ := get_string_literal(g, "%s runtime error: integer overflow\n")
+    fmt_null,      _ := get_string_literal(g, "%s runtime error: null pointer dereference: '%s' is null\n")
+    fmt_divz,      _ := get_string_literal(g, "%s runtime error: division by zero\n")
+    fmt_slice_len, _ := get_string_literal(g, "%s runtime error: slice len %d not in [0, %d] (cap) for '%s'\n")
 
     b: strings.Builder
     strings.builder_init(&b)
@@ -2396,6 +2398,18 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, "(ptr %loc) {\n")
     strings.write_string(&b, strings.concatenate({
         "  call i32 (ptr, ...) @printf(ptr ", fmt_divz, ", ptr %loc)\n",
+    }))
+    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
+
+    // slice_len: (loc, new_len, cap, name). Fires on direct `s.len = X` writes
+    // where X is outside [0, cap] — keeps the slice invariant honest even when
+    // user code (FFI fill patterns, manual bookkeeping) sets len directly.
+    strings.write_string(&b, "define void ")
+    strings.write_string(&b, __MARA_SLICE_LEN_FAIL)
+    strings.write_string(&b, "(ptr %loc, i32 %new_len, i32 %cap, ptr %name) {\n")
+    strings.write_string(&b, strings.concatenate({
+        "  call i32 (ptr, ...) @printf(ptr ", fmt_slice_len,
+        ", ptr %loc, i32 %new_len, i32 %cap, ptr %name)\n",
     }))
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n")
 
@@ -3664,6 +3678,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_overflow_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_null_fail(ptr, ptr)\n")
         strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")
+        strings.write_string(&b, "declare void @__mara_slice_len_fail(ptr, i32, i32, ptr)\n")
     }
     strings.write_byte(&b, '\n')
 

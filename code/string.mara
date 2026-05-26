@@ -14,3 +14,44 @@ add_str :: fun(dst: ^str, src: str) {
 	dst[dst.len:] = src
 	dst.len += src.len
 }
+
+// Find the first occurrence of `needle` in `haystack`. Returns (offset, true)
+// on match, (-1, false) when not present. Naive O(n*m) search — fine for
+// typical use (shader source < 100KB, directives a handful of bytes); swap
+// for KMP/Boyer-Moore later if it ever matters.
+find :: fun(haystack: []utf8, needle: []utf8) -> (i32, bool) {
+	if needle.len == 0 do return 0, true
+	if haystack.len < needle.len do return -1, false
+
+	end := haystack.len - needle.len + 1
+	for i in 0..end {
+		matched := true
+		for j in 0..needle.len {
+			if haystack[i + j] != needle[j] {
+				matched = false
+				break
+			}
+		}
+		if matched do return i, true
+	}
+	return -1, false
+}
+
+// Single-byte variant of find — cheap, no inner loop. Useful for locating
+// quotes, newlines, separators in shader source / paths / error parsing.
+find_byte :: fun(s: []utf8, b: utf8) -> (i32, bool) {
+	for c, i in s {
+		if c == b do return i, true
+	}
+	return -1, false
+}
+
+// True if `s` begins with `prefix`. Cheaper than full find when you only
+// care about the head of the string (`#include`, `#version`, etc.).
+starts_with :: fun(s: []utf8, prefix: []utf8) -> bool {
+	if s.len < prefix.len do return false
+	for i in 0..prefix.len {
+		if s[i] != prefix[i] do return false
+	}
+	return true
+}

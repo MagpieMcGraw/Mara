@@ -23,13 +23,12 @@ oom_string :: "
 
 	Failed allocation: %, % bytes in %
 	"
-Block :: type [16]byte
 
 // Arena_Basic :: class(cap: i64) {
-// 	base: []Block = sys_alloc(cap)
-// 	capacity: i32 = i32(cap / 16)
-// 	offset: i32 = 0
-// 	current_mark: i32 = -1
+// 	base: Big_Slice = sys_alloc_big(cap)
+// 	capacity: i64 = cap
+// 	offset: i64 = 0
+// 	current_mark: i64 = -1
 
 // 	mark :: fun(a: ^Self) {
 // 		prev := a.current_mark
@@ -44,9 +43,9 @@ Block :: type [16]byte
 
 // 	alloc :: fun(
 // 		a: ^Self,
-// 		size: i32,
+// 		size: i64,
 // 		name: ^byte = #caller_name,
-// 		span: ^byte = #caller_span) -> []Block
+// 		span: ^byte = #caller_span) -> []byte
 // 	{
 // 		off := (a.offset + 15) & -16
 // 		end := off + size
@@ -64,7 +63,7 @@ Block :: type [16]byte
 // 	reset :: fun(a: ^Self) {
 // 		cm := a.current_mark
 
-// 		prev : i32 = a.base[cm][0]
+// 		prev : i64 = a.base[cm]
 
 // 		a.offset = cm
 // 		a.current_mark = prev
@@ -72,7 +71,7 @@ Block :: type [16]byte
 
 // 	dump :: fun(
 // 		a: ^Self,
-// 		failed_size: i32,
+// 		failed_size: i64,
 // 		failed_name: ^byte,
 // 		failed_span: ^byte)
 // 	{

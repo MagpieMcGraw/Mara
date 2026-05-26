@@ -23,6 +23,25 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 }
 
+Big_Slice :: struct {
+	len, cap : i64
+	ptr : ^byte
+}
+
+sys_alloc_big :: fun(cap: i64) -> Big_Slice {
+	#if #native {
+		raw := vm_reserve(cap)
+		vm_commit(raw, cap)
+		block := Big_Slice{0, cap, raw}
+
+		return block
+	}
+	#if #web {
+		block := Big_Slice{0, cap, malloc(usize(cap)), cap}
+		return block
+	}
+}
+
 // File_Id is the public token for an open file. Treat it as opaque — flow it
 // from file_open_* through file_read / file_write / file_close without
 // inspecting the bits. The kernel checks validity on every syscall, so the
@@ -160,7 +179,13 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return id, true
 	}
 
+	// Null-safe close — NO_FILE early-returns so `defer file_close(id)` placed
+	// right after `file_open_read` is safe even when the open failed. Mirrors
+	// the Linux side; both platforms benefit from skipping the syscall on the
+	// sentinel handle (Win32 CloseHandle(NULL) is documented-safe but the
+	// extra branch costs nothing and keeps semantics identical across OSes).
 	file_close :: fun(id: File_Id) {
+		if id == NO_FILE do return
 		CloseHandle(id)
 	}
 
@@ -174,22 +199,33 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 	file_read :: fun(id: File_Id, data: ^[]byte) -> bool {
 		read: u32 = 0
-		res := bool(ReadFile(id, &data[0], u32(data.cap), &read, void))
-		// ReadFile's out param is u32 (Win32 DWORD); slice .len is i32
-		// (the header's natural width). Explicit cast required — no
-		// implicit conversion in the typed codegen.
+		ok := bool(ReadFile(id, &data[0], u32(data.cap), &read, void))
+		if not ok {
+			print("Couldn't read file")
+			return false
+		}
 		data.len = i32(read)
-		return res
+		return ok
 	}
 
-	read_entire_file :: fun(path: cstr, data: ^[]byte) -> bool {
-	    id, ok := file_open_read(path)
+	// ADD AN ERROR ENUM
+	read_entire_file :: fun(path: cstring, data: ^[]byte) -> bool {
+	    id, read_ok := file_open_read(path)
 	    defer file_close(id)
-	    if not ok do return false
-
-	    size, _ := file_size(id)
-	   	read_ok := file_read(id, data)
-	    return read_ok
+	    if not read_ok {
+	    	print("Couldn't open file")
+	    	return false
+	    }
+	    size, size_ok := file_size(id)
+	    if not size_ok {
+	    	print("File opened, but size couldn't be read")
+	    	return false
+	    }
+	    if size > i64(data.cap) {
+	    	print("File bigger than buffer")
+	    	return false
+	    }
+	    return file_read(id, data)
 	}
 
 	// Write data to the file. Returns (n, true) where n is bytes written, or
@@ -384,7 +420,11 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return id, true
 	}
 
+	// Null-safe close — NO_FILE early-returns so `defer file_close(id)` placed
+	// right after `file_open_read` is safe even when the open failed. Critical
+	// here: `close(0)` would close stdin, since fd 0 is a real file descriptor.
 	file_close :: fun(id: File_Id) {
+		if id == NO_FILE do return
 		close(id)
 	}
 
