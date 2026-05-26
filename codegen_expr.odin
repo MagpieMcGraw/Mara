@@ -1081,6 +1081,15 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     }
     if info, info_ok := lookup_fun_info(g, lookup_name); info_ok {
         arg_strs: [dynamic]string
+        // Pull the resolved Checked_Scope for param checker types — needed for
+        // shape-sensitive conversions (cstr → cstring, etc.) that the IR type
+        // string alone can't disambiguate.
+        cs_resolved: Checked_Scope
+        has_cs := false
+        if cs_val, cs_ok := g.checked.functions[lookup_name]; cs_ok {
+            cs_resolved = cs_val
+            has_cs = true
+        }
         for arg, i in e.args {
             if i < len(info.param_structs) && info.param_structs[i] != "" {
                 // Struct arg: pass as ptr (no target_type needed)
@@ -1094,6 +1103,12 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                 if pt == SLICE_IR_TYPE {
                     append(&arg_strs, gen_slice_param_arg(g, arg))
                     continue
+                }
+                if has_cs && i < len(cs_resolved.params) {
+                    if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
+                        append(&arg_strs, fmt.tprintf("ptr %s", extracted))
+                        continue
+                    }
                 }
                 val := gen_expr(g, arg, pt)
                 if strings.has_prefix(pt, "[") {
@@ -1260,7 +1275,11 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
             if is_aggregate(pt) {
                 emit_c_aggregate_direct_arg(g, arg_expr, pp.parts[:], &arg_strs)
             } else {
-                emit_c_scalar_arg(g, arg_expr, pp.parts[0], &arg_strs)
+                if extracted, ok := emit_cstring_data_ptr(g, arg_expr, pt); ok {
+                    append(&arg_strs, fmt.tprintf("ptr %s", extracted))
+                } else {
+                    emit_c_scalar_arg(g, arg_expr, pp.parts[0], &arg_strs)
+                }
             }
         case Lowering_Indirect:
             arg_addr := gen_expr(g, arg_expr)
@@ -1312,6 +1331,57 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
         }
     }
     return tmp
+}
+
+// When a call's param expects a raw `^utf8` (e.g. `cstring`, which is
+// `distinct ^utf8` and lowers to ^utf8 after distinct_base in type-checker
+// param storage) and the arg carries utf8-sentinel slice-header shape (cstr
+// / utf8-sentinel slice), extract the header's data pointer and return it.
+// The type checker permits this flow (see is_cstring's case in types_equal);
+// `^utf8` is the FFI boundary shape — callees treat the value as a raw
+// character pointer. Without extraction the slice header pointer would
+// arrive instead, and string reads would walk the header's len/cap bytes
+// instead of the path. String literals already lower to raw ptrs via
+// emit_string_gep, so they short-circuit here.
+emit_cstring_data_ptr :: proc(g: ^Codegen, arg_expr: Expr, param_type: Type) -> (string, bool) {
+    target_utf8 := false
+    if pt, ok := param_type.(^Type_Ptr); ok {
+        if _, is_utf8 := pt.elem.(Type_Utf8); is_utf8 { target_utf8 = true }
+    }
+    if is_cstring(param_type) { target_utf8 = true }
+    if !target_utf8 { return "", false }
+
+    // We can only extract from a true slice-header in memory. Limit to idents
+    // bound as a slice or partial-array variable — string literals and
+    // constant idents both lower to raw rodata pointers via emit_string_gep,
+    // and GEPing those as if they were slice headers would read garbage.
+    ident, is_ident := arg_expr.(^Expr_Ident)
+    if !is_ident { return "", false }
+    is_var := false
+    if _, ok := get_slice(g, ident.name); ok { is_var = true }
+    if !is_var {
+        if _, ok := get_array(g, ident.name); ok { is_var = true }
+    }
+    if !is_var { return "", false }
+
+    arg_t := expr_type(arg_expr)
+    if arg_t == nil { return "", false }
+    arg_t = unwrap_alias(arg_t)
+
+    has_header := false
+    if pa, ok := arg_t.(^Type_Partial_Array); ok {
+        if _, utf8 := pa.elem.(Type_Utf8); utf8 && pa.has_sentinel { has_header = true }
+    } else if sl, ok := arg_t.(^Type_Slice); ok {
+        if _, utf8 := sl.elem.(Type_Utf8); utf8 && sl.has_sentinel { has_header = true }
+    }
+    if !has_header { return "", false }
+
+    slice_header := gen_expr(g, arg_expr)
+    data_field := fresh_tmp(g)
+    emit_slice_gep(g, data_field, slice_header, SLICE.ptr)
+    data_ptr := fresh_tmp(g)
+    emit_load_into(g, data_ptr, "ptr", data_field)
+    return data_ptr, true
 }
 
 // Emit a scalar-typed C call argument. Preserves the legacy primitive paths:
@@ -1411,6 +1481,12 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
         ir_name = mara_fn_name(g, cn)
     }
 
+    cs_resolved: Checked_Scope
+    has_cs := false
+    if cs_val, cs_ok := g.checked.functions[cn]; cs_ok {
+        cs_resolved = cs_val
+        has_cs = true
+    }
     arg_strs: [dynamic]string
     for arg, i in e.args {
         if i < len(info.param_structs) && info.param_structs[i] != "" {
@@ -1424,6 +1500,12 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
             if pt == SLICE_IR_TYPE {
                 append(&arg_strs, gen_slice_param_arg(g, arg))
                 continue
+            }
+            if has_cs && i < len(cs_resolved.params) {
+                if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
+                    append(&arg_strs, fmt.tprintf("ptr %s", extracted))
+                    continue
+                }
             }
             val := gen_expr(g, arg, pt)
             if strings.has_prefix(pt, "[") {
@@ -1451,6 +1533,12 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
         ir_name = mara_fn_name(g, cn)
     }
 
+    cs_resolved: Checked_Scope
+    has_cs := false
+    if cs_val, cs_ok := g.checked.functions[cn]; cs_ok {
+        cs_resolved = cs_val
+        has_cs = true
+    }
     // Build normal arguments
     arg_strs: [dynamic]string
     for arg, i in e.args {
@@ -1461,6 +1549,12 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
             pt := "i64"
             if i < len(info.param_types) {
                 pt = info.param_types[i]
+            }
+            if has_cs && i < len(cs_resolved.params) {
+                if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
+                    append(&arg_strs, fmt.tprintf("ptr %s", extracted))
+                    continue
+                }
             }
             val := gen_expr(g, arg, pt)
             // Array param passed by value: route through the shared helper so
