@@ -418,7 +418,7 @@ gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         return emit_address_chain(g, &chain)
     }
     // Helper: given a resolved struct type and base pointer, GEP to the named field
-    field_gep :: proc(g: ^Codegen, st: ^Scope_Body, base_ptr: string, field: string) -> string {
+    field_gep :: proc(g: ^Codegen, st: ^Scope_Body, base_ptr: string, field: string, span: Span) -> string {
         llvm_n := struct_llvm_name(struct_key(st))
         idx := struct_field_index(st, field)
         if idx >= 0 {
@@ -435,7 +435,22 @@ gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             emit_field_gep_into(g, gep2, struct_llvm_name(struct_key(up.inner_st)), gep1, up.inner_index)
             return gep2
         }
-        return "null"
+        codegen_fatal(g, span, CODE_STRUCT_FIELD, struct_key(st), field)
+    }
+
+    // Slice-header field address: &x.ptr, &x.len, &x.cap. The header IR layout
+    // is `{ len, cap, ptr }`; this case GEPs into that layout regardless of
+    // how `x` is held — slice var (alloca IS the header), partial array
+    // (alloca's prefix IS the header), or pointer-to-slice/partial-array
+    // param/local (the SSA / loaded value IS the header pointer). Without
+    // this, callers like `glShaderSource(.., &text.ptr, &text.len)` would
+    // get a silent "null" pointer and crash at the FFI boundary.
+    if ident, id_ok := e.expr.(^Expr_Ident); id_ok && is_slice_header_field(e.field) {
+        if header_ptr, header_ok := slice_header_ptr_for_ident(g, ident); header_ok {
+            gep := fresh_tmp(g)
+            emit_slice_gep(g, gep, header_ptr, slice_field_index(e.field))
+            return gep
+        }
     }
 
     // Case 1: direct ident — struct var or pointer-to-struct (auto-deref)
@@ -447,8 +462,10 @@ gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             return gen_field_address(g, new_e)
         }
         st, base_ptr, found := resolve_struct_for_field(g, ident.name, ident.type_, ident.span)
-        if !found { return "null" }
-        return field_gep(g, st, base_ptr, e.field)
+        if !found {
+            codegen_fatal(g, e.span, CODE_STRUCT_POINTER_STRUCT, ident.name)
+        }
+        return field_gep(g, st, base_ptr, e.field, e.span)
     }
 
     // Case 2: chained field access — e.g. &events.dropfile.name
@@ -456,12 +473,71 @@ gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         gen_field_access(g, inner_fa)
         if fr, fr_ok := claim_field_struct(g); fr_ok {
             if inner_st, isd_ok := lookup_struct(g, fr.struct_name); isd_ok {
-                return field_gep(g, inner_st, fr.alloca, e.field)
+                return field_gep(g, inner_st, fr.alloca, e.field, e.span)
             }
         }
     }
 
-    return "null"
+    codegen_fatal(g, e.span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
+}
+
+is_slice_header_field :: proc(field: string) -> bool {
+    return field == "ptr" || field == "len" || field == "cap"
+}
+
+slice_field_index :: proc(field: string) -> int {
+    switch field {
+    case "ptr": return SLICE.ptr
+    case "len": return SLICE.len
+    case "cap": return SLICE.cap
+    }
+    return SLICE.ptr
+}
+
+// Return a ptr-typed value that points at the slice header for `ident`. The
+// caller GEPs into this with SLICE_IR_TYPE to reach .len/.cap/.ptr.
+// Empty `header` / false means `ident` is not slice-shaped (fixed arrays in
+// particular have no header — their alloca is raw element storage).
+slice_header_ptr_for_ident :: proc(g: ^Codegen, ident: ^Expr_Ident) -> (header: string, ok: bool) {
+    if sv, sv_ok := get_slice(g, ident.name); sv_ok {
+        return sv.alloca, true
+    }
+    if av, av_ok := get_array(g, ident.name); av_ok {
+        // Array_Var covers both partial arrays (alloca's first
+        // slice_header_bytes ARE the header) and fixed arrays (alloca is
+        // raw element storage, no header). Gate on the ident's declared
+        // type so a fixed-array `.ptr` doesn't GEP into element data.
+        base := unwrap_alias(ident.type_)
+        if _, is_pa := base.(^Type_Partial_Array); is_pa {
+            return av.alloca, true
+        }
+        return "", false
+    }
+    // Pointer-to-slice or pointer-to-partial-array param/local: the SSA /
+    // loaded value IS the header pointer.
+    if pt, pt_ok := ident.type_.(^Type_Ptr); pt_ok {
+        base := unwrap_alias(pt.elem)
+        is_slice_like := false
+        if _, sl := base.(^Type_Slice); sl { is_slice_like = true }
+        if _, pa := base.(^Type_Partial_Array); pa { is_slice_like = true }
+        if !is_slice_like { return "", false }
+        if entry, entry_ok := g.all_vars[ident.name]; entry_ok {
+            #partial switch v in entry {
+            case SSA_Var:
+                return v.ssa, true
+            case Scalar_Var:
+                tmp := fresh_tmp(g)
+                emit_load_into(g, tmp, "ptr", v.alloca)
+                return tmp, true
+            }
+        }
+        if alloca_name, sok := get_scalar(g, ident.name); sok {
+            tmp := fresh_tmp(g)
+            emit_load_into(g, tmp, "ptr", alloca_name)
+            return tmp, true
+        }
+    }
+    return "", false
 }
 
 // Resolve a struct definition and base pointer for field access.
