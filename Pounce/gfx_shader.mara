@@ -4,7 +4,7 @@ use mara.os
 use mara.string
 gl :: use mara.open_gl
 
-shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [..16 * KB]utf8 {
+shader_load_and_compile :: fun(filepath: cstr) -> u32, u32 {
 	data: [..32 * KB]byte
 	read_ok := os.read_entire_file(filepath, &data)
 	text : []utf8 = data[:]
@@ -20,11 +20,9 @@ shader_load_text :: fun(filepath: cstr) -> vtext, ftext: [..16 * KB]utf8 {
 	vtext = text[0:fs_tag]
 	ftext = text[fs_tag:]
 
-	return vtext, ftext
-}
+	vshader := gl.CreateShader(gl.VERTEX_SHADER)
+	fshader := gl.CreateShader(gl.FRAGMENT_SHADER)
 
-shader_compile :: fun(shader_text: []utf8, shader_type: u32) -> u32 {
-	shader := gl.CreateShader(shader_type)
 	gl.ShaderSource(shader, 1, &shader_cstr, &shader_len)
 	gl.CompileShader(shader)
 
@@ -41,6 +39,11 @@ shader_compile :: fun(shader_text: []utf8, shader_type: u32) -> u32 {
 		gl.DeleteShader(shader)
 	}
 
+	return vshader, fshader
+}
+
+shader_compile :: fun(shader_text: []utf8, shader_type: u32) -> u32 {
+	
 	return 0
 }
 

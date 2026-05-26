@@ -192,7 +192,7 @@ foreign static_lib "open_gl" {
 foreign static_lib "open_gl" prefix gl {
     // Shaders
     fun CreateShader(type: GL_Shader_Type) -> u32
-    fun ShaderSource(shader: u32, count: i32, strings: ^byte, lengths: ^byte)
+    fun ShaderSource(shader: u32, count: i32, strings: ^^utf8, lengths: ^i32)
     fun CompileShader(shader: u32)
     fun DeleteShader(shader: u32)
 
@@ -235,7 +235,7 @@ foreign static_lib "open_gl" prefix gl {
 
     // Shader info
     fun GetShaderiv(shader: u32, pname: GL_Shader_Param, params: ^byte)
-    fun GetShaderInfoLog(shader: u32, bufSize: i32, length: ^byte, infoLog: ^utf8)
+    fun GetShaderInfoLog(shader: u32, bufSize: i32, length: ^i32, infoLog: ^utf8)
     fun GetProgramiv(program: u32, pname: GL_Shader_Param, params: ^i32)
     fun GetProgramInfoLog(program: u32, bufSize: i32, length: ^i32, infoLog: ^byte)
 
