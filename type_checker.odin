@@ -4721,6 +4721,19 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
 // This means by the time we check a function body, every sibling declaration
 // at the same scope level is already known. Forward references just work.
 
+// Param-only variant: integer-literal defaults default to slice-header width
+// (the indexing convention) instead of `int` (i64). The `name := 0` shape is
+// overwhelmingly used for indices/offsets — making it i32 avoids forcing
+// every call site to cast a slice-width value down to fit the param. Users
+// wanting i64 spell it explicitly: `name: int = 0` or `name: i64 = 0`.
+// Floats and non-literal defaults fall through to infer_field_type_from_default.
+infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) -> Type {
+    if n, ok := value.(^Expr_Number); ok && !n.is_float {
+        return slice_header_width_type
+    }
+    return infer_field_type_from_default(c, value, env)
+}
+
 // Infer a field's type from its default value without full check_expr
 // (which would fail because the enclosing fun's params/locals aren't in scope yet).
 // Handles: identifiers (constants/variables in env), number/string/bool literals,
@@ -5528,7 +5541,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                         check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
                                         pt = Type_Error{}
                                     } else {
-                                        pt = infer_field_type_from_default(c, tp.default_value, env)
+                                        pt = infer_param_type_from_default(c, tp.default_value, env)
                                     }
                                 } else {
                                     pt = Type_Error{}
@@ -5652,7 +5665,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 pt = Type_Error{}
                             } else {
                                 // `name(s) := default` — infer the param's type from the default expression.
-                                pt = infer_field_type_from_default(c, tp.default_value, env)
+                                pt = infer_param_type_from_default(c, tp.default_value, env)
                             }
                         } else {
                             pt = Type_Error{}
