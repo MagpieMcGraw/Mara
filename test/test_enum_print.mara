@@ -1,0 +1,31 @@
+module test_enum_print
+
+File_Error :: union {
+    Ok
+    NotFound
+    TooLarge
+    ReadFailed
+}
+
+Tag_u8 :: union(tag u8) {
+    A = 1
+    B = 4
+    C = 16
+}
+
+main :: fun() -> i64 {
+    err := File_Error.NotFound
+    print(err)
+    print(File_Error.Ok)
+    print(File_Error.ReadFailed)
+
+    // Format-string variant
+    print("got error: %", err)
+
+    // Smaller-width enum with explicit non-contiguous values
+    t : Tag_u8 = .B
+    print(t)
+    print(Tag_u8.A, Tag_u8.C)
+
+    return 0
+}

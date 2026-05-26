@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -1831,6 +1832,15 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             fmt_ptr := fresh_tmp(g)
             emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
             emit_printf_ptr(g, fmt_ptr, val)
+        } else if et, is_enum := enum_type_of(arg_expr); is_enum {
+            // Enum value: print the variant name via an inline switch. Falls
+            // back to "EnumName(<tag>)" for unknown tags (out-of-range or
+            // bitwise-OR'd flag combos). Caught before is_numeric_expr so
+            // raw enums don't render as plain integers.
+            tag_ir := "i64"
+            if et.tag_type != "" { tag_ir = tag_type_to_ir(et.tag_type) }
+            val := gen_expr(g, arg_expr, tag_ir)
+            gen_print_enum(g, val, tag_ir, et)
         } else if is_numeric_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
             nt := get_numeric_type(g, arg_expr)
@@ -1993,6 +2003,84 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
     close_ptr := fresh_tmp(g)
     emit_string_gep(g, close_ptr, close_len, close_name)
     emit_printf_void(g, close_ptr)
+}
+
+// Pull out the enum type behind an expression, unwrapping distinct so
+// `Status :: distinct File_Error` still prints by name. Returns (nil, false)
+// for non-enum expressions.
+enum_type_of :: proc(expr: Expr) -> (^Type_Enum, bool) {
+    t := expr_type(expr)
+    if t == nil { return nil, false }
+    et, ok := distinct_base(t).(^Type_Enum)
+    return et, ok
+}
+
+// Inline switch that prints the variant name matching `val`, or
+// "EnumName(<tag>)" when nothing matches (e.g. flag-combo, out-of-range raw
+// tag). Variants are sorted by value for stable IR; same-value aliases keep
+// the first in name order — LLVM's switch requires unique case values, so
+// duplicates are folded into one case.
+gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum) {
+    Variant :: struct { name: string, value: int }
+    entries := make([dynamic]Variant, 0, len(et.variants), context.temp_allocator)
+    for name, value in et.variants {
+        append(&entries, Variant{name = name, value = value})
+    }
+    slice.sort_by(entries[:], proc(a, b: Variant) -> bool {
+        if a.value != b.value { return a.value < b.value }
+        return a.name < b.name
+    })
+    // Fold same-value aliases: first wins.
+    dedup := make([dynamic]Variant, 0, len(entries), context.temp_allocator)
+    for entry in entries {
+        if len(dedup) > 0 && dedup[len(dedup)-1].value == entry.value { continue }
+        append(&dedup, entry)
+    }
+
+    unknown_lbl := fresh_label(g, "enum.unknown")
+    done_lbl    := fresh_label(g, "enum.done")
+    case_labels := make([]string, len(dedup), context.temp_allocator)
+    for _, i in dedup {
+        case_labels[i] = fresh_label(g, "enum.case")
+    }
+
+    sw: strings.Builder
+    strings.write_string(&sw, fmt.tprintf("  switch %s %s, label %%%s [\n", tag_ir, val, unknown_lbl))
+    for entry, i in dedup {
+        strings.write_string(&sw, fmt.tprintf("    %s %d, label %%%s\n", tag_ir, entry.value, case_labels[i]))
+    }
+    strings.write_string(&sw, "  ]")
+    emit_raw(g, strings.to_string(sw))
+
+    for entry, i in dedup {
+        emit_label(g, case_labels[i])
+        emit_print_literal(g, entry.name)
+        emit_br(g, done_lbl)
+    }
+
+    emit_label(g, unknown_lbl)
+    emit_print_literal(g, fmt.tprintf("%s(", et.name))
+    fmt_name, fmt_len := get_string_literal(g, tag_ir == "i64" ? "%lld" : "%d")
+    fmt_ptr := fresh_tmp(g)
+    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+    switch tag_ir {
+    case "i64":
+        emit_printf_i64(g, fmt_ptr, val)
+    case "i32":
+        // Already at printf's default-int width — pass through.
+        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, val)
+    case:
+        // i16 / i8: zext to i32 for printf's default-int varargs promotion.
+        // zext (not sext) — enum tags are unsigned-shaped values, no two's-
+        // complement bits to preserve.
+        ext := fresh_tmp(g)
+        emit(g, "  %s = zext %s %s to i32", ext, tag_ir, val)
+        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
+    }
+    emit_print_literal(g, ")")
+    emit_br(g, done_lbl)
+
+    emit_label(g, done_lbl)
 }
 
 // Print a flat array inline: [v1, v2, v3]
