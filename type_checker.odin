@@ -6625,42 +6625,94 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
 
             if len(s.values) == 1 {
-                // Single RHS (multi-return call): x, y := call()
-                val_type := check_expr(c, s.values[0], env)
-                // Source the return arity from the resolved fun directly —
-                // there is no tuple value on the frontend. The call must be
-                // an Expr_Call whose callee is a multi-return fun.
-                returns := call_return_list(c, s.values[0], env)
-                if returns != nil {
-                    if len(s.names) != len(returns) {
-                        check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE,
-                            len(s.names), len(returns))
+                // Detect Expr_Try wrapping a multi-return call: `x, y := foo()?`.
+                // The trailing err is consumed by propagation; the LHS binds
+                // the remaining values. We bypass check_expr on the Try here
+                // because check_try restricts single-bind to 0 or 1 non-err
+                // values — the destructure context is precisely where 2+
+                // non-err values is legal.
+                try_node, is_try := s.values[0].(^Expr_Try)
+                inner_call: ^Expr_Call
+                if is_try {
+                    inner_call, _ = try_node.inner.(^Expr_Call)
+                }
+
+                if is_try && inner_call != nil {
+                    check_call(c, inner_call, env)
+                    returns := call_return_list(c, inner_call, env)
+                    if len(returns) == 0 || !is_err_type(returns[len(returns)-1]) {
+                        check_error(c, s.span, TYPE_TRY_REQUIRES_ERR_RETURN)
+                    } else if len(env.return_types) == 0 || !is_err_type(env.return_types[len(env.return_types)-1]) {
+                        check_error(c, s.span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
                     } else {
-                        for name, i in s.names {
-                            resolved_type := solidify_type(returns[i])
-                            if name != "" {
-                                type_env_set(env, name, resolved_type)
-                            } else if i < len(s.targets) && s.targets[i] != nil {
-                                target_type := check_expr(c, s.targets[i], env)
-                                if !is_any(target_type) && !is_any(resolved_type) {
-                                    if !types_equal(target_type, resolved_type) {
-                                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
-                                            type_name(resolved_type), type_name(target_type))
+                        non_err := returns[:len(returns)-1]
+                        // Set Try's type to the first non-err return so any
+                        // downstream code reading it (codegen) has a sensible
+                        // value. The full destructure uses call_return_list.
+                        if len(non_err) > 0 {
+                            set_expr_type(try_node, non_err[0])
+                        } else {
+                            set_expr_type(try_node, Type_Void{})
+                        }
+                        if len(s.names) != len(non_err) {
+                            check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE,
+                                len(s.names), len(non_err))
+                        } else {
+                            for name, i in s.names {
+                                resolved_type := solidify_type(non_err[i])
+                                if name != "" {
+                                    type_env_set(env, name, resolved_type)
+                                } else if i < len(s.targets) && s.targets[i] != nil {
+                                    target_type := check_expr(c, s.targets[i], env)
+                                    if !is_any(target_type) && !is_any(resolved_type) {
+                                        if !types_equal(target_type, resolved_type) {
+                                            check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
+                                                type_name(resolved_type), type_name(target_type))
+                                        }
                                     }
                                 }
+                                append(&s.var_types, distinct_base(resolved_type))
                             }
-                            append(&s.var_types, distinct_base(resolved_type))
-                        }
-                    }
-                } else if is_any(val_type) {
-                    for name in s.names {
-                        if name != "" {
-                            type_env_set(env, name, Type_Error{})
                         }
                     }
                 } else {
-                    check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_REQUIRES_FUNCTION,
-                        type_name(val_type))
+                    // Single RHS (multi-return call): x, y := call()
+                    val_type := check_expr(c, s.values[0], env)
+                    // Source the return arity from the resolved fun directly —
+                    // there is no tuple value on the frontend. The call must be
+                    // an Expr_Call whose callee is a multi-return fun.
+                    returns := call_return_list(c, s.values[0], env)
+                    if returns != nil {
+                        if len(s.names) != len(returns) {
+                            check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE,
+                                len(s.names), len(returns))
+                        } else {
+                            for name, i in s.names {
+                                resolved_type := solidify_type(returns[i])
+                                if name != "" {
+                                    type_env_set(env, name, resolved_type)
+                                } else if i < len(s.targets) && s.targets[i] != nil {
+                                    target_type := check_expr(c, s.targets[i], env)
+                                    if !is_any(target_type) && !is_any(resolved_type) {
+                                        if !types_equal(target_type, resolved_type) {
+                                            check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
+                                                type_name(resolved_type), type_name(target_type))
+                                        }
+                                    }
+                                }
+                                append(&s.var_types, distinct_base(resolved_type))
+                            }
+                        }
+                    } else if is_any(val_type) {
+                        for name in s.names {
+                            if name != "" {
+                                type_env_set(env, name, Type_Error{})
+                            }
+                        }
+                    } else {
+                        check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_REQUIRES_FUNCTION,
+                            type_name(val_type))
+                    }
                 }
             }
         case ^Stmt_Dispatch_Def:
@@ -11457,14 +11509,14 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Env) -> Type {
         check_error(c, e.span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
         return Type_Error{}
     }
-    if len(rets) == 1 {
-        return Type_Void{}     // err-only call: `?` discards err, no value to yield
-    }
-    if len(rets) == 2 {
-        return rets[0]         // (T, err): `?` yields T
-    }
-    check_error(c, e.span, TYPE_TRY_TOO_MANY_VALUES, len(rets) - 1)
-    return Type_Error{}
+    if len(rets) == 1 { return Type_Void{} }    // err-only call: `?` discards err
+    // For 1+ non-err returns the Try's value is the first; multi-bind
+    // destructuring (Stmt_Multi_Return_Assign) consults the full return list
+    // directly, so 2+ non-err returns are still legal in that context.
+    // Single-bind callers (`x := foo()?` on a 2+ non-err call) get only the
+    // first value bound — flagged at the multi-vs-single assignment layer
+    // (the bind shape determines the right error message, not us here).
+    return rets[0]
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {

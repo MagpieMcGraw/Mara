@@ -817,12 +817,21 @@ gen_take_decl :: proc(g: ^Codegen, name: string, e: ^Expr_Take) {
 // ---------------------------------------------------------------------------
 
 gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
-    // Multi-return function call: x, y := call()
+    // Multi-return function call: x, y := call()  or  x, y := call()?
     if len(s.values) == 0 {
         codegen_fatal(g, s.span, CODE_MULTI_ASSIGN_RHS_VALUES)
     }
-    call, call_ok := s.values[0].(^Expr_Call)
-    if !call_ok {
+    call: ^Expr_Call
+    is_try := false
+    if direct, direct_ok := s.values[0].(^Expr_Call); direct_ok {
+        call = direct
+    } else if try_node, try_ok := s.values[0].(^Expr_Try); try_ok {
+        if inner, inner_ok := try_node.inner.(^Expr_Call); inner_ok {
+            call = inner
+            is_try = true
+        }
+    }
+    if call == nil {
         codegen_fatal(g, s.span, CODE_MULTI_ASSIGN_RHS_FUNCTION_CALL)
     }
 
@@ -837,6 +846,48 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
     if len(g.tuple_result_ptrs) == 0 {
         codegen_fatal(g, s.span, CODE_MULTI_ASSIGN_CALL_DID_PRODUCE)
     }
+
+    // `?` propagation: the trailing slot is the err. Test it, propagate on
+    // non-zero, and shrink the bind window so the err slot isn't bound to a
+    // user variable.
+    bind_count := len(g.tuple_result_ptrs)
+    if is_try {
+        n := len(g.tuple_result_ptrs)
+        err_slot := g.tuple_result_ptrs[n-1]
+        err_val := fresh_tmp(g)
+        emit_load_into(g, err_val, "i32", err_slot)
+
+        prop_lbl := fresh_label(g, "try.propagate")
+        cont_lbl := fresh_label(g, "try.continue")
+        cmp := fresh_tmp(g)
+        emit(g, "  %s = icmp ne i32 %s, 0", cmp, err_val)
+        emit_cond_br(g, cmp, prop_lbl, cont_lbl)
+
+        emit_label(g, prop_lbl)
+        if g.ret_types != nil {
+            n_ret := len(g.ret_types)
+            for i in 0..<n_ret - 1 {
+                ir_t := llvm_type_from_checker(g.ret_types[i])
+                emit(g, "  store %s zeroinitializer, ptr %%sret.%d", ir_t, i)
+            }
+            emit(g, "  store i32 %s, ptr %%sret.%d", err_val, n_ret - 1)
+            emit(g, "  ret void")
+        } else {
+            emit(g, "  ret i32 %s", err_val)
+        }
+        emit_label(g, cont_lbl)
+
+        // The err slot has been peeled off; downstream bind loop should see
+        // only the value slots. Drop the trailing entry from the tuple
+        // tracking arrays so the loop's bound check shortens with us.
+        bind_count = n - 1
+        resize(&g.tuple_result_ptrs, bind_count)
+        resize(&g.tuple_result_types, bind_count)
+        if ret_types != nil && len(ret_types) == n {
+            ret_types = ret_types[:n-1]
+        }
+    }
+    _ = bind_count
 
     for name, i in s.names {
         if i >= len(g.tuple_result_ptrs) { break }
