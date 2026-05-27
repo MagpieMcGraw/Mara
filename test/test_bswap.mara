@@ -13,9 +13,9 @@ main :: fun() -> i64 {
     print("bswap64:", bswap64(c))                  // expect 0xEFCDAB8967452301
 
     // BE readers — TTF/PNG/network-format building blocks.
-    buf : [8]byte
+    buf : [8]u8
     buf[0] = u8(0xDE)
-    buf[1] = u8(0xAD)
+    buf[1] = 0xAD
     buf[2] = u8(0xBE)
     buf[3] = u8(0xEF)
     buf[4] = u8(0x01)

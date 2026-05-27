@@ -3146,20 +3146,14 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         return false
     case Type_Utf8:
         if _, ok := b.(Type_Utf8); ok { return true }
-        if _, ok := b.(Type_Byte); ok { return true }
         if _, ok := b.(Type_Infer_Int); ok { return true }
         if nb, ok := b.(Type_Numeric); ok {
             return (nb.kind == .Unsigned || nb.kind == .Signed) && nb.bits == 8
         }
         return false
     case Type_Byte:
-        // byte and utf8 are both 8-bit "view" types over the same memory.
-        // The arithmetic restriction on byte is enforced elsewhere (binary-op
-        // checking), not by keeping the types disjoint — so allowing the
-        // assignment-level conversion here doesn't open arithmetic loopholes.
-        if _, ok := b.(Type_Byte); ok { return true }
-        if _, ok := b.(Type_Utf8); ok { return true }
-        return false
+        _, ok := b.(Type_Byte)
+        return ok
     case ^Type_Ptr:
         vb, ok := b.(^Type_Ptr)
         if !ok { return false }
@@ -3195,7 +3189,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // used to allow at call sites. Kept for `arr = slice[lo:hi]` style
         // copies; the auto-promote direction is gone (see ^Type_Slice arm).
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
-            return types_equal(va.elem, sl.elem)
+            return buffer_elem_compatible(va.elem, sl.elem)
         }
         // Implicit coercion: [N]T is compatible with [..M]T (partial array
         // view). Lets fixed-array decls take partial-array sources — most
@@ -3203,13 +3197,13 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // change made literals partial. Sentinel direction matches the
         // partial-to-partial rule.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            if !types_equal(va.elem, pa.elem) { return false }
+            if !buffer_elem_compatible(va.elem, pa.elem) { return false }
             if va.has_sentinel && !pa.has_sentinel { return false }
             return true
         }
         vb, ok := b.(^Type_Fixed_Array)
         if !ok { return false }
-        return types_equal(va.elem, vb.elem)
+        return buffer_elem_compatible(va.elem, vb.elem)
         // Note: we don't compare size here — arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
@@ -3219,32 +3213,32 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // off it is honest by the type's own promise. Callers who want
         // variable-length tracking use partial arrays (`[..N]T`).
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
-            return types_equal(va.elem, fa.elem)
+            return buffer_elem_compatible(va.elem, fa.elem)
         }
         // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view).
         // Sentinel direction matches partial-to-partial: source can drop a
         // sentinel guarantee, but can't synthesize one — reject when dest
         // expects a sentinel the source doesn't have.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            if !types_equal(va.elem, pa.elem) { return false }
+            if !buffer_elem_compatible(va.elem, pa.elem) { return false }
             if va.has_sentinel && !pa.has_sentinel { return false }
             return true
         }
         vb, ok := b.(^Type_Slice)
         if !ok { return false }
-        return types_equal(va.elem, vb.elem)
+        return buffer_elem_compatible(va.elem, vb.elem)
     case ^Type_Partial_Array:
         // Partial arrays coerce to [:]T (slice view) and to [N]T (fixed array)
         // by element type. The first 24 bytes of a partial array's layout
         // match a slice header, so `^[..N]T` flows safely into `^[:]T` param
         // slots — cursor mutations propagate back through the aliased memory.
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
-            if !types_equal(va.elem, sl.elem) { return false }
+            if !buffer_elem_compatible(va.elem, sl.elem) { return false }
             if va.has_sentinel && !sl.has_sentinel { return false }
             return true
         }
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
-            if !types_equal(va.elem, fa.elem) { return false }
+            if !buffer_elem_compatible(va.elem, fa.elem) { return false }
             // Sentinel direction matches the mirror rule (fixed ← partial)
             // above: if the dest demands a terminator the source can't
             // promise, reject. Without this, `cstr` (`[..N, 0]utf8`) would
@@ -3266,7 +3260,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
             // by header pointer (cap is read at runtime); assignment
             // paths in codegen are responsible for fitting source bytes
             // into dest storage.
-            if !types_equal(va.elem, pa.elem) { return false }
+            if !buffer_elem_compatible(va.elem, pa.elem) { return false }
             if va.has_sentinel && !pa.has_sentinel { return false }
             return true
         }
@@ -3482,6 +3476,33 @@ is_numeric :: proc(t: Type) -> bool {
     if _, ok := t.(^Type_Enum); ok { return true }
     if _, ok := t.(Type_Error); ok { return true }
     return false
+}
+
+// True for the 8-bit "memory view" scalar types — byte, utf8, c8, u8/i8.
+// All four occupy one byte with the same memory layout; they differ only in
+// what operations the type system permits on the scalar.
+is_byte_sized_memory_type :: proc(t: Type) -> bool {
+    base := distinct_base(t)
+    if _, ok := base.(Type_Byte); ok { return true }
+    if _, ok := base.(Type_Utf8); ok { return true }
+    if _, ok := base.(Type_C8); ok { return true }
+    if n, ok := base.(Type_Numeric); ok {
+        return (n.kind == .Signed || n.kind == .Unsigned) && n.bits == 8
+    }
+    return false
+}
+
+// Element compatibility for buffer types (slice / fixed-array / partial-array).
+// Looser than scalar types_equal: any two 8-bit memory-view types are mutually
+// compatible at the buffer element level, so `[]u8 → []byte`, `[8]u8 → []byte`,
+// `[]byte → []utf8` etc. all flow without explicit casts. The arithmetic
+// restriction on byte still holds at the scalar binop level (is_numeric
+// excludes Type_Byte), so this doesn't enable `byte + byte` — it only enables
+// reinterpreting a buffer's element view, which is the natural shape for
+// raw-memory work like file parsing.
+buffer_elem_compatible :: proc(a, b: Type) -> bool {
+    if types_equal(a, b) { return true }
+    return is_byte_sized_memory_type(a) && is_byte_sized_memory_type(b)
 }
 
 is_integer :: proc(t: Type) -> bool {
