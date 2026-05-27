@@ -140,6 +140,60 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             }
         }
 
+        // Sized-slice repoint: `name : [:N]T = bytes[off]` — build a fresh
+        // slice header whose ptr aims at &bytes[off] and len/cap = N. Has to
+        // be checked BEFORE the existing-slice reassign path below, because
+        // struct-constructor field decls pre-bind table_dir as a Slice_Var
+        // pointing into the sret slot. Without this check, the existing-slice
+        // path would dispatch to gen_slice_assign_inferred, which treats
+        // `bytes[12]` as a generic source and emits a wrong-shape memcpy.
+        if s.slice_cap_expr != nil {
+            if sl, sl_ok := s.var_type.(^Type_Slice); sl_ok {
+                if idx_expr, idx_ok := s.value.(^Expr_Index); idx_ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
+                    elem_t := llvm_type_from_checker(sl.elem)
+                    w := slice_layout.len_ir
+                    elem_bytes := elem_byte_size(elem_t, g.checked)
+                    cap_raw := gen_expr(g, s.slice_cap_expr)
+                    // Normalise the cap to slice header width — the user's cap
+                    // expression may be a wider int (i64 by default for `:=`-
+                    // inferred locals) than the slice header field stores.
+                    count_runtime := fresh_tmp(g)
+                    emit(g, "  %s = trunc i64 %s to %s", count_runtime, cap_raw, w)
+                    bytes_ssa := fresh_tmp(g)
+                    emit(g, "  %s = mul %s %s, %d", bytes_ssa, w, count_runtime, elem_bytes)
+                    elem_ptr, op_ok := emit_byte_offset_ptr_runtime(g, idx_expr.expr, idx_expr.index, bytes_ssa, "slice", idx_expr.span)
+                    if !op_ok {
+                        codegen_fatal(g, s.span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+                    }
+                    alloca_name := ""
+                    if existing, ex_ok := get_slice(g, s.name); ex_ok {
+                        alloca_name = existing.alloca
+                    } else {
+                        alloca_name = fmt.tprintf("%%%s", s.name)
+                        emit_slice_alloca(g, alloca_name)
+                    }
+                    ptr_gep := fresh_tmp(g)
+                    emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
+                    emit_store(g, "ptr", elem_ptr, ptr_gep)
+                    len_gep := fresh_tmp(g)
+                    emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
+                    emit_typed_store_len(g, count_runtime, len_gep)
+                    cap_gep := fresh_tmp(g)
+                    emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
+                    emit_typed_store_cap(g, count_runtime, cap_gep)
+                    _, sl_utf8 := sl.elem.(Type_Utf8)
+                    g.all_vars[s.name] = Slice_Var{
+                        alloca       = alloca_name,
+                        elem_type    = elem_t,
+                        is_utf8      = sl_utf8,
+                        has_sentinel = sl.has_sentinel,
+                        sentinel     = sl.sentinel,
+                    }
+                    return
+                }
+            }
+        }
+
         // Check if value is a slice expression (inferred type)
         if _, ok := s.value.(^Expr_Slice); ok {
             gen_slice_assign_inferred(g, s.name, s.value)
@@ -158,12 +212,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             _, sl_utf8 := sl.elem.(Type_Utf8)
             sl_sentinel := sl.has_sentinel
             sl_sentinel_val := sl.sentinel
-            // Sized slice declaration `name : []T(N)` — allocate backing
-            // storage + slice header, init to (ptr, 0, N). Same stack-vs-arena
-            // policy as fixed-array decls. Sentinel slices (`[,0]T`) reserve
-            // one extra element for the terminator and store the physical cap;
-            // the `cap()` builtin subtracts 1 for utf8 slices so the user
-            // sees N usable elements.
+            // Sized slice declaration `name : [:N]T` without a byte-buffer
+            // source — allocate backing storage + slice header, init to
+            // (ptr, 0, N). The repoint case (byte-buffer source) is handled
+            // earlier in gen_stmt. Stack-vs-arena policy mirrors fixed-array
+            // decls. Sentinel slices (`[:N, 0]T`) reserve one extra element
+            // for the terminator and store the physical cap; the `cap()`
+            // builtin subtracts 1 for utf8 slices so the user sees N usable
+            // elements.
             if s.slice_cap_expr != nil {
                 cap_val, cap_ok := codegen_const_eval_int(g, s.slice_cap_expr)
                 if !cap_ok {
