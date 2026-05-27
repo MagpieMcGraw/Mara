@@ -1710,6 +1710,26 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     if sl_expr.low != nil { src_low = gen_expr(g, sl_expr.low, w) }
     src_high := src_cap
     if sl_expr.high != nil { src_high = gen_expr(g, sl_expr.high, w) }
+
+    // Runtime check 0: high >= low. Fires before the divisibility check below
+    // so an inverted slice (e.g. `bytes[12 : table_section]` when table_section
+    // happens to be < 12) reports the actual problem instead of producing a
+    // negative span that confuses the modulo check downstream.
+    inv_ok := fresh_label(g, "pa.inv.ok")
+    inv_err := fresh_label(g, "pa.inv.err")
+    inv_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %s", inv_cmp, w, src_high, src_low)
+    emit_cond_br(g, inv_cmp, inv_err, inv_ok)
+    emit_label(g, inv_err)
+    inv_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds inverted (low=%%d, high=%%d) for '%s'\n", name)
+    inv_global, inv_byte_len := get_string_literal(g, inv_msg)
+    inv_ptr := fresh_tmp(g)
+    emit_string_gep(g, inv_ptr, inv_byte_len, inv_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", inv_ptr, w, src_low, w, src_high)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, inv_ok)
+
     src_bytes := fresh_tmp(g)
     emit(g, "  %s = sub %s %s, %s", src_bytes, w, src_high, src_low)
 
