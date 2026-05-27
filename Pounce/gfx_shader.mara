@@ -22,7 +22,7 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 	text : []utf8 = data[:]
 	VERSION_TAG :: "#version"
 	vs_tag, vs_found := text.find(VERSION_TAG)
-	if not vs_found do return 0, 0, Err.Bad_Text
+	if not vs_found do return 0, 0, .Bad_Text
 
 	next := vs_tag + VERSION_TAG.len
 	fs_tag, fs_found := text.find(VERSION_TAG, next)
