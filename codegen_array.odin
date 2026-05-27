@@ -1507,6 +1507,25 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         emit_alloca(g, alloca_name, target_ir_type)
         emit_memcpy(g, alloca_name, elem_ptr, target_size)
         g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
+    } else if fa, fa_ok := target_type.(^Type_Fixed_Array); fa_ok {
+        // Fixed-array reinterpret target: allocate the destination using the
+        // `<name>.data` naming convention used elsewhere for array storage,
+        // memcpy the source bytes in, register the local as an Array_Var so
+        // subsequent indexing / further reinterpret-reads find it.
+        data_name := fmt.tprintf("%%%s.data", name)
+        emit_alloca(g, data_name, target_ir_type)
+        emit_memcpy(g, data_name, elem_ptr, target_size)
+        elem_t := llvm_type_from_checker(fa.elem)
+        utf8 := false
+        if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
+        g.all_vars[name] = Array_Var{
+            alloca       = data_name,
+            capacity     = fa.size,
+            elem_type    = elem_t,
+            is_utf8      = utf8,
+            has_sentinel = fa.has_sentinel,
+            sentinel     = fa.sentinel,
+        }
     } else {
         val := fresh_tmp(g)
         // `align 1` on the byte-buffer load (offset user-chosen); the store
@@ -1516,6 +1535,25 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         emit_store(g, target_ir_type, val, alloca_name)
         g.all_vars[name] = Scalar_Var{alloca_name}
     }
+}
+
+// Reinterpret-read a byte-buffer source into a fresh [N x T] SSA value at a
+// call site: `f(buf[off])` or `f(buf[lo:hi])` where the param expects a fixed
+// array. Allocates a temporary, memcpys the bytes in, loads as [N x T], and
+// returns the loaded SSA name. Bounds-checked via emit_byte_offset_ptr.
+emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, pt: string, span: Span) -> string {
+    arr_cap, arr_elem, _ := parse_array_ir_type(pt)
+    size_bytes := arr_cap * elem_byte_size(arr_elem, g.checked)
+    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, size_bytes, "read", span)
+    if !ok {
+        codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+    }
+    arr_alloca := fresh_tmp(g)
+    emit_alloca(g, arr_alloca, pt)
+    emit_memcpy(g, arr_alloca, elem_ptr, size_bytes)
+    loaded := fresh_tmp(g)
+    emit_load_into(g, loaded, pt, arr_alloca)
+    return loaded
 }
 
 // Byte-buffer reinterpret read into a struct field: obj.field = buf[lo:hi] or obj.field = buf[off].

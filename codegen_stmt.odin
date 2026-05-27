@@ -68,6 +68,21 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             elem_t := llvm_type_from_checker(fa.elem)
             utf8 := false
             if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
+            // Byte-buffer reinterpret read: `arr : [N]T = buf[off]` /
+            // `arr : [N]T = buf[lo:hi]`. Source is a byte-buffer index or
+            // slice; allocate + memcpy sizeof([N]T) bytes from the source.
+            if sl_expr, ok := s.value.(^Expr_Slice); ok {
+                if codegen_is_byte_buffer_source(g, sl_expr.expr) {
+                    gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type)
+                    return
+                }
+            }
+            if idx_expr, ok := s.value.(^Expr_Index); ok {
+                if codegen_is_byte_buffer_source(g, idx_expr.expr) {
+                    gen_byte_target_read(g, s.name, idx_expr.expr, idx_expr.index, idx_expr.span, var_type)
+                    return
+                }
+            }
             // Array-returning call: use sret convention
             if call, call_ok := s.value.(^Expr_Call); call_ok {
                 info, info_ok := lookup_fun_info(g, call_resolved_name(call))
@@ -102,11 +117,15 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Slice/partial-array destinations are NOT a reinterpret — they're a
         // slice-header copy (`as_str : []utf8 = data[:]` views the same bytes
         // through a utf8-typed header), so let those fall through to the
-        // standard slice-decl path below.
+        // standard slice-decl path below. Fixed-array destinations ARE valid
+        // reinterpret targets even when they themselves are byte arrays —
+        // the destination is a concrete value, not a view.
         target_is_slice_shaped := false
         if _, sl_ok := var_type.(^Type_Slice); sl_ok { target_is_slice_shaped = true }
         if _, pa_ok := var_type.(^Type_Partial_Array); pa_ok { target_is_slice_shaped = true }
-        if var_type != nil && !is_byte_buffer(var_type) && !target_is_slice_shaped {
+        target_is_fixed_array := false
+        if _, fa_ok := var_type.(^Type_Fixed_Array); fa_ok { target_is_fixed_array = true }
+        if var_type != nil && !target_is_slice_shaped && (target_is_fixed_array || !is_byte_buffer(var_type)) {
             if sl_expr, ok := s.value.(^Expr_Slice); ok {
                 if codegen_is_byte_buffer_source(g, sl_expr.expr) {
                     gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type)

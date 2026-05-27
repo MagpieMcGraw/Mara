@@ -6531,7 +6531,29 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     continue
                 }
                 if fa, ok := check_ann.(^Type_Fixed_Array); ok {
-                    check_array_assign(c, s.span, s.name, fa, val_type)
+                    // Byte-buffer reinterpret read into a fixed-array destination:
+                    // `arr : [2]byte = bytes[0]` reads sizeof([2]byte) = 2 bytes
+                    // from `bytes` at offset 0. Same shape as the scalar
+                    // reinterpret-read paths below, generalized: destination
+                    // type drives read size, fixed-array fits the pattern.
+                    is_byte_reinterpret := is_byte_buffer_index_read(s.value) || is_byte_buffer(val_type)
+                    if is_byte_reinterpret {
+                        if sl, sl_ok := s.value.(^Expr_Slice); sl_ok {
+                            ann_size := checker_type_byte_size(check_ann)
+                            if low_num, low_ok := const_eval_int(sl.low); low_ok {
+                                if high_num, high_ok := const_eval_int(sl.high); high_ok {
+                                    span_size := high_num - low_num
+                                    if span_size != ann_size {
+                                        check_error(c, s.span,
+                                            TYPE_BYTE_BUFFER_READ_BYTES_SLICE,
+                                            type_name(check_ann), ann_size, span_size)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        check_array_assign(c, s.span, s.name, fa, val_type)
+                    }
                     // Big-array check: require scope allocator for large stack arrays
                     total_bytes := fa.size * checker_type_byte_size(fa.elem)
                     if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {

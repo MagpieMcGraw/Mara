@@ -1,0 +1,31 @@
+module test_fixed_array_read
+
+main :: fun() -> i64 {
+    buf : [8]u8
+    buf[0] = 0xDE
+    buf[1] = 0xAD
+    buf[2] = 0xBE
+    buf[3] = 0xEF
+    buf[4] = 0x01
+    buf[5] = 0x23
+    buf[6] = 0x45
+    buf[7] = 0x67
+    bytes : []byte = buf[:]
+
+    // Index form: reinterpret-read 2 bytes at offset 0 into [2]byte.
+    a_two : [2]byte = bytes[0]
+    // Read those 2 bytes back as u16 to verify content (avoids print-on-byte issue).
+    a_check : u16 = a_two[0]
+    print("a_two as u16:", a_check)  // expect 0xDEAD in LE = 44510
+
+    // Slice form: reinterpret 4 bytes at offset 2 into [4]byte.
+    b_four : [4]byte = bytes[2:6]
+    b_check : u32 = b_four[0]
+    print("b_four as u32:", b_check)  // expect 0x0123EFBE = 19132862
+
+    // Scalar reinterpret still works alongside the new array form.
+    n : u16 = bytes[0]   // 0xDEAD in LE
+    print("u16 from slice:", n)
+
+    return 0
+}

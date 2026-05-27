@@ -1113,6 +1113,24 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                         continue
                     }
                 }
+                // Byte-buffer source → fixed-array param: reinterpret-read
+                // sizeof(pt) bytes from `buf[offset:]` / `buf[offset]` into a
+                // freshly-allocated `[N x T]` and load it. Mirrors the same
+                // pattern that fires at declaration sites (`arr : [N]T = buf[off]`).
+                // gen_expr would produce a slice header for `bytes[lo:hi]` —
+                // the wrong shape — so we short-circuit before calling it.
+                if strings.has_prefix(pt, "[") {
+                    materialized := ""
+                    if sl_expr, sl_ok := arg.(^Expr_Slice); sl_ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
+                        materialized = emit_array_from_byte_buffer(g, sl_expr.expr, sl_expr.low, pt, sl_expr.span)
+                    } else if idx_expr, idx_ok := arg.(^Expr_Index); idx_ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
+                        materialized = emit_array_from_byte_buffer(g, idx_expr.expr, idx_expr.index, pt, idx_expr.span)
+                    }
+                    if materialized != "" {
+                        append(&arg_strs, fmt.tprintf("%s %s", pt, materialized))
+                        continue
+                    }
+                }
                 val := gen_expr(g, arg, pt)
                 if strings.has_prefix(pt, "[") {
                     val = gen_array_param_arg(g, arg, pt, val)
