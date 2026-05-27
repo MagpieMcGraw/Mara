@@ -193,17 +193,11 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 		return id
 	}
 
-	// Null-safe close — NO_FILE early-returns so `defer file_close(id)` placed
-	// right after `file_open_read` is safe even when the open failed. Mirrors
-	// the Linux side; both platforms benefit from skipping the syscall on the
-	// sentinel handle (Win32 CloseHandle(NULL) is documented-safe but the
-	// extra branch costs nothing and keeps semantics identical across OSes).
 	file_close :: fun(id: File_Id) {
 		if id == NO_FILE do return
 		CloseHandle(id)
 	}
 
-	// File size in bytes.
 	file_size :: fun(id: File_Id) -> i64, err {
 		size: i64 = 0
 		if not bool(GetFileSizeEx(id, &size)) do return 0, Size_Failed

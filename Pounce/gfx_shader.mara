@@ -5,16 +5,12 @@ use mara.os
 use mara.string
 gl :: use mara.open_gl
 
-Err :: error {
+Shader_Error :: error {
     Bad_Text
     Failed_Compilation
     Failed_Link
 }
 
-// Read the shader source and compile both stages. The trailing err
-// carries either a File_Error from os.read_entire_file or one of this
-// module's Err variants — the open `err` type lets both flow through
-// without wrapping.
 load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 	data: [..32 * KB]byte
 	os.read_entire_file(filepath, &data)?
@@ -22,11 +18,11 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 	text : []utf8 = data[:]
 	VERSION_TAG :: "#version"
 	vs_tag, vs_found := text.find(VERSION_TAG)
-	if not vs_found do return 0, 0, .Bad_Text
+	if not vs_found do return 0, 0, Bad_Text
 
 	next := vs_tag + VERSION_TAG.len
 	fs_tag, fs_found := text.find(VERSION_TAG, next)
-	if not fs_found do return 0, 0, Err.Bad_Text
+	if not fs_found do return 0, 0, Bad_Text
 
 	vtext := text[:fs_tag]
 	ftext := text[fs_tag:]
@@ -40,7 +36,7 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
 		if status == 0 {
 			gl.DeleteShader(shader)
-			return 0, Err.Failed_Compilation
+			return 0, Failed_Compilation
 		}
 		return shader
 	}
@@ -63,7 +59,7 @@ make_program :: fun(filepath: cstring) -> u32, err {
 		gl.DeleteProgram(program)
 		gl.DeleteShader(vshader)
 		gl.DeleteShader(fshader)
-		return 0, Err.Failed_Link
+		return 0, Failed_Link
 	}
 
 	gl.DetachShader(program, vshader)

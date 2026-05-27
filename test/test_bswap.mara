@@ -14,18 +14,18 @@ main :: fun() -> i64 {
 
     // BE readers — TTF/PNG/network-format building blocks.
     buf : [8]u8
-    buf[0] = u8(0xDE)
+    buf[0] = 0xDE
     buf[1] = 0xAD
-    buf[2] = u8(0xBE)
-    buf[3] = u8(0xEF)
-    buf[4] = u8(0x01)
-    buf[5] = u8(0x23)
-    buf[6] = u8(0x45)
-    buf[7] = u8(0x67)
+    buf[2] = 0xBE
+    buf[3] = 0xEF
+    buf[4] = 0x01
+    buf[5] = 0x23
+    buf[6] = 0x45
+    buf[7] = 0x67
     bytes : []byte = buf[:]
-    print("read_u16be:", read_u16be(bytes, 0))    // 0xDEAD = 57005
-    print("read_u32be:", read_u32be(bytes, 0))    // 0xDEADBEEF = 3735928559
-    print("read_u64be:", read_u64be(bytes, 0))    // 0xDEADBEEF01234567 = 16045690984833335655
+    print("read_u16be:", read_u16be(bytes[0]))    // 0xDEAD = 57005
+    print("read_u32be:", read_u32be(bytes[0]))    // 0xDEADBEEF = 3735928559
+    print("read_u64be:", read_u64be(bytes[0]))    // 0xDEADBEEF01234567 = 16045690984833335655
 
     return 0
 }

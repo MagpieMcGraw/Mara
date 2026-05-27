@@ -20,6 +20,10 @@ And real code looks like that
 
 Main feature of Mara is stack-like memory allocation. Everything in Mara lives until the end of scope. You can get data out of functions by returning it, or by passing in a block of memory and writing to it.
 
+NEW! Mara now has error handling! Define an error enum, and return it when you have an error. If you're calling a function that can error, just slap a question mark on it and you're good to go. You can check the error value if you want, or you can print it, and you'll see the first error that occured.
+
+![file system error handling](readme/file_error.png)
+
 ## Building the compiler
 
 The Mara compiler is written in [Odin](https://odin-lang.org/). You need
