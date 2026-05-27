@@ -1489,6 +1489,40 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
                 return ut, true
             }
         }
+        // Open `err` hint: the slot doesn't pin down a single enum, so we
+        // search visible error_kind enums by name — same shape as the
+        // dot-fallback below, but restricted to error sets so a non-error
+        // variant with a matching name can't accidentally satisfy the slot.
+        // Lets `return File_Open_Failed` work in an err return position
+        // without requiring the `.` prefix.
+        if _, is_err := hint.(Type_Err); is_err {
+            err_owners: [dynamic]string
+            defer delete(err_owners)
+            for ename, edef in c.table.enums {
+                if !edef.is_error_kind { continue }
+                if e.name not_in edef.variants { continue }
+                if is_enum_visible(env, ename) { append(&err_owners, ename) }
+            }
+            if len(err_owners) > 1 {
+                owners := strings.join(err_owners[:], ", ")
+                check_error(c, e.span, TYPE_AMBIGUOUS_DEFINED_USE_QUALIFIED_ACCESS,
+                    e.name, owners, err_owners[0], e.name)
+                return Type_Error{}, true
+            }
+            if len(err_owners) == 1 {
+                ename := err_owners[0]
+                if et, et_ok := c.table.enums[ename]; et_ok {
+                    if val, v_ok := et.variants[e.name]; v_ok {
+                        e.resolved = Resolved_Enum_Variant{
+                            enum_name = ename,
+                            variant   = e.name,
+                            value     = val,
+                        }
+                        return et, true
+                    }
+                }
+            }
+        }
     }
     if !dot { return nil, false }
     // 2. Dot-shorthand fallback: search all visible enums/unions.

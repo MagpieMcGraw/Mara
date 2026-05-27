@@ -182,14 +182,14 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
 	file_open_read :: fun(path: cstring) -> File_Id, err {
 		id := CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, void, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
-		if id == INVALID_HANDLE_VALUE do return NO_FILE, File_Error.Open_Failed
+		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
 		return id
 	}
 
 	// Open a file for writing, creating it if missing and truncating if present.
 	file_open_write :: fun(path: cstring) -> File_Id, err {
 		id := CreateFileA(path, GENERIC_WRITE, 0, void, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
-		if id == INVALID_HANDLE_VALUE do return NO_FILE, File_Error.Open_Failed
+		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
 		return id
 	}
 
@@ -206,14 +206,14 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	// File size in bytes.
 	file_size :: fun(id: File_Id) -> i64, err {
 		size: i64 = 0
-		if not bool(GetFileSizeEx(id, &size)) do return 0, File_Error.Size_Failed
+		if not bool(GetFileSizeEx(id, &size)) do return 0, Size_Failed
 		return size
 	}
 
 	file_read :: fun(id: File_Id, data: ^[]byte) -> err {
 		read: u32 = 0
 		if not bool(ReadFile(id, &data[0], u32(data.cap), &read, void)) {
-			return File_Error.Read_Failed
+			return Read_Failed
 		}
 		data.len = i32(read)
 	}
@@ -222,7 +222,7 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 		id := file_open_read(path)?
 		defer file_close(id)
 		size := file_size(id)?
-		if size > i64(data.cap) do return File_Error.Too_Large
+		if size > i64(data.cap) do return Too_Large
 		file_read(id, data)?
 	}
 
@@ -231,12 +231,12 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	// compare n against data.len for partial-write detection.
 	file_write :: fun(id: File_Id, data: ^[]byte) -> i64, err {
 		written: u32 = 0
-		if not bool(WriteFile(id, &data[0], u32(data.len), &written, void)) do return 0, File_Error.Write_Failed
+		if not bool(WriteFile(id, &data[0], u32(data.len), &written, void)) do return 0, Write_Failed
 		return i64(written)
 	}
 
 	file_delete :: fun(path: cstring) -> err {
-		if not bool(DeleteFileA(path)) do return File_Error.Delete_Failed
+		if not bool(DeleteFileA(path)) do return Delete_Failed
 	}
 
 	// Copy `src` to `dst`. Overwrites `dst` if it exists. Used by hot-reload
@@ -244,7 +244,7 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	// can LoadLibraryA — the original on disk stays unlocked so the build can
 	// overwrite it for the next reload.
 	copy_file :: fun(src: cstring, dst: cstring) -> err {
-		if not bool(CopyFileA(src, dst, 0)) do return File_Error.Copy_Failed
+		if not bool(CopyFileA(src, dst, 0)) do return Copy_Failed
 	}
 
 	// Last-write time of a file, as Windows' 100-nanosecond FILETIME packed

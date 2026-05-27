@@ -16,14 +16,16 @@ ok_only_falloff :: fun() -> err {
 }
 
 // (T, err) — return one value, trailing err filled with .Ok.
+// Also exercises bare-name resolution in the err slot (Too_Large vs File_Error.Too_Large).
 make_value :: fun(flag: bool) -> i64, err {
-    if flag do return 0, File_Error.Too_Large
+    if flag do return 0, Too_Large
     return 42
 }
 
 // (T1, T2, err) — return two values, trailing err filled with .Ok.
+// Bare-name in the err slot via leading-dot also still works.
 make_two :: fun(flag: bool) -> i64, i64, err {
-    if flag do return 0, 0, File_Error.Not_Found
+    if flag do return 0, 0, .Not_Found
     return 10, 20
 }
 
