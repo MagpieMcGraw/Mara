@@ -1,0 +1,30 @@
+module mara.endian
+
+// LLVM's `iN` is sign-agnostic, so the bswap intrinsic is exposed as
+// unsigned by default — bytes don't have a sign. Use casts at the call
+// site if you have a signed integer that genuinely needs byte-reversal
+// (uncommon outside specific binary formats).
+bswap16 :: fun(x: u16) -> u16 { @llvm.bswap.i16 }
+bswap32 :: fun(x: u32) -> u32 { @llvm.bswap.i32 }
+bswap64 :: fun(x: u64) -> u64 { @llvm.bswap.i64 }
+
+// Big-endian readers — file formats specced before x86 ate the world
+// (TTF, PNG, network protocols, Java class files) almost universally use
+// BE. The shift-and-or form is what LLVM pattern-matches into a single
+// wide load + bswap at -O2; same machine code as a `bswap16(load_u16)`
+// pair would produce, but without requiring an unaligned-load idiom.
+read_u16be :: fun(data: []byte, offset: i32) -> u16 {
+    return (u16(data[offset]) << 8) | u16(data[offset + 1])
+}
+
+read_u32be :: fun(data: []byte, offset: i32) -> u32 {
+    hi : u32 = (u32(data[offset]) << 24) | (u32(data[offset + 1]) << 16)
+    lo : u32 = (u32(data[offset + 2]) << 8) | u32(data[offset + 3])
+    return hi | lo
+}
+
+read_u64be :: fun(data: []byte, offset: i32) -> u64 {
+    hi : u64 = u64(read_u32be(data, offset)) << 32
+    lo : u64 = u64(read_u32be(data, offset + 4))
+    return hi | lo
+}

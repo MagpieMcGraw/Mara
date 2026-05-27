@@ -1,24 +1,31 @@
 module test_bswap
 
-bswap16 :: fun(x: u16) -> u16 { @llvm.bswap.i16 }
-bswap32 :: fun(x: u32) -> u32 { @llvm.bswap.i32 }
-bswap64 :: fun(x: u64) -> u64 { @llvm.bswap.i64 }
-
-// Signed variant should also type-check — sign-agnostic at the LLVM level.
-bswap32_signed :: fun(x: i32) -> i32 { @llvm.bswap.i32 }
+use mara.endian
 
 main :: fun() -> i64 {
     a : u16 = 0x1234
     print("bswap16(0x1234):", bswap16(a))         // expect 0x3412 = 13330
 
     b : u32 = 0xDEADBEEF
-    print("bswap32(0xDEADBEEF):", bswap32(b))     // expect 0xEFBEADDE
+    print("bswap32(0xDEADBEEF):", bswap32(b))     // expect 0xEFBEADDE = 4022250974
 
     c : u64 = 0x0123456789ABCDEF
     print("bswap64:", bswap64(c))                  // expect 0xEFCDAB8967452301
 
-    d : i32 = 0x12345678
-    print("bswap32_signed:", bswap32_signed(d))   // expect 0x78563412
+    // BE readers — TTF/PNG/network-format building blocks.
+    buf : [8]byte
+    buf[0] = u8(0xDE)
+    buf[1] = u8(0xAD)
+    buf[2] = u8(0xBE)
+    buf[3] = u8(0xEF)
+    buf[4] = u8(0x01)
+    buf[5] = u8(0x23)
+    buf[6] = u8(0x45)
+    buf[7] = u8(0x67)
+    bytes : []byte = buf[:]
+    print("read_u16be:", read_u16be(bytes, 0))    // 0xDEAD = 57005
+    print("read_u32be:", read_u32be(bytes, 0))    // 0xDEADBEEF = 3735928559
+    print("read_u64be:", read_u64be(bytes, 0))    // 0xDEADBEEF01234567 = 16045690984833335655
 
     return 0
 }
