@@ -3146,14 +3146,20 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         return false
     case Type_Utf8:
         if _, ok := b.(Type_Utf8); ok { return true }
+        if _, ok := b.(Type_Byte); ok { return true }
         if _, ok := b.(Type_Infer_Int); ok { return true }
         if nb, ok := b.(Type_Numeric); ok {
             return (nb.kind == .Unsigned || nb.kind == .Signed) && nb.bits == 8
         }
         return false
     case Type_Byte:
-        _, ok := b.(Type_Byte)
-        return ok
+        // byte and utf8 are both 8-bit "view" types over the same memory.
+        // The arithmetic restriction on byte is enforced elsewhere (binary-op
+        // checking), not by keeping the types disjoint — so allowing the
+        // assignment-level conversion here doesn't open arithmetic loopholes.
+        if _, ok := b.(Type_Byte); ok { return true }
+        if _, ok := b.(Type_Utf8); ok { return true }
+        return false
     case ^Type_Ptr:
         vb, ok := b.(^Type_Ptr)
         if !ok { return false }
