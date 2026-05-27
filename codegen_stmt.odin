@@ -189,6 +189,18 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             }
         }
 
+        // Partial-array byte-buffer reinterpret read:
+        //   arr : [..N]T = bytes[lo:hi]
+        // Allocate the partial array's inline backing, memcpy source bytes in,
+        // auto-add to len = (source.len / size_of(elem)). Runtime checks:
+        // source.len is a multiple of sizeof(elem); resulting count fits in cap.
+        if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
+            if sl_expr, ok := s.value.(^Expr_Slice); ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
+                gen_partial_array_byte_read(g, s.name, pa, sl_expr, s.span)
+                return
+            }
+        }
+
         // Check if value is a slice expression (inferred type)
         if _, ok := s.value.(^Expr_Slice); ok {
             gen_slice_assign_inferred(g, s.name, s.value)

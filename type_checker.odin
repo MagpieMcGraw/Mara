@@ -6586,6 +6586,30 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             TYPE_ARRAY_TOO_LARGE_STACK_BYTES,
                             s.name, total_bytes)
                     }
+                } else if pa, ok := check_ann.(^Type_Partial_Array); ok && is_byte_buffer(val_type) {
+                    // Partial-array byte-buffer reinterpret read:
+                    //   arr : [..N]T = bytes[lo:hi]
+                    // Source bytes must divide evenly by sizeof(T) and yield
+                    // at most N elements. Runtime sets arr.len += (count read);
+                    // cap stays at the compile-time N.
+                    elem_size := checker_type_byte_size(pa.elem)
+                    backing_bytes := pa.size * elem_size
+                    if sl, sl_ok := s.value.(^Expr_Slice); sl_ok {
+                        if low_num, low_ok := const_eval_int(sl.low); low_ok {
+                            if high_num, high_ok := const_eval_int(sl.high); high_ok {
+                                span_size := high_num - low_num
+                                if elem_size > 0 && span_size % elem_size != 0 {
+                                    check_error(c, s.span,
+                                        TYPE_BYTE_BUFFER_READ_BYTES_SLICE,
+                                        type_name(check_ann), backing_bytes, span_size)
+                                } else if span_size > backing_bytes {
+                                    check_error(c, s.span,
+                                        TYPE_BYTE_BUFFER_READ_BYTES_SLICE,
+                                        type_name(check_ann), backing_bytes, span_size)
+                                }
+                            }
+                        }
+                    }
                 } else if is_byte_buffer(val_type) {
                     // Byte buffer reinterpret read: x : i64 = mem[0:8]
                     // Works for []byte, [N]byte, and Array(byte, N) (post-desugar source)

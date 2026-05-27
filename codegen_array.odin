@@ -1657,3 +1657,132 @@ gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: strin
         emit_store(g, ft, val, gep)
     }
 }
+
+// Partial-array byte-buffer reinterpret read:
+//   arr : [..N]T = bytes[lo:hi]
+// Allocates the partial array's inline backing (struct of ptr/len/cap +
+// [N x T] elements), initialises the header (ptr → elements, len → 0,
+// cap → N), then memcpys the source byte slice into the elements area
+// and adds `source.len / sizeof(T)` to `len`. Runtime checks:
+//   1. source.len is a multiple of sizeof(T) — partial reads of a typed
+//      element are loud failures, not silent truncation.
+//   2. resulting count fits in cap — caller declared N as the static
+//      upper bound; a longer source is malformed input or a wrong type.
+gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array, sl_expr: ^Expr_Slice, span: Span) {
+    elem_t := llvm_type_from_checker(pa.elem)
+    _, pa_utf8 := pa.elem.(Type_Utf8)
+    cap_n := pa.size
+    alloc_cap := cap_n
+    if pa.has_sentinel { alloc_cap += 1 }
+    ir_type := partial_array_ir_type(elem_t, alloc_cap)
+    alloca_name := fmt.tprintf("%%%s", name)
+    elem_bytes := elem_byte_size(elem_t, g.checked)
+
+    if elem_t == "i8" {
+        emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type, ", align 16"}))
+    } else {
+        emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type}))
+    }
+
+    // Initialise header: ptr → elements, len → 0, cap → N.
+    elements_ptr := fresh_tmp(g)
+    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+    ptr_gep := fresh_tmp(g)
+    emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
+    emit_store(g, "ptr", elements_ptr, ptr_gep)
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
+    emit_typed_store_len(g, "0", len_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
+    emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
+
+    // Resolve the source byte slice: produce a data ptr at sl_expr.low and a
+    // byte count = sl_expr.high - sl_expr.low. Routes through the same
+    // byte-buffer machinery that take/let/slice use.
+    src_data_ptr, src_cap, resolved := resolve_byte_target(g, sl_expr.expr, span)
+    if !resolved {
+        codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+    }
+
+    w := slice_layout.len_ir
+    src_low := "0"
+    if sl_expr.low != nil { src_low = gen_expr(g, sl_expr.low, w) }
+    src_high := src_cap
+    if sl_expr.high != nil { src_high = gen_expr(g, sl_expr.high, w) }
+    src_bytes := fresh_tmp(g)
+    emit(g, "  %s = sub %s %s, %s", src_bytes, w, src_high, src_low)
+
+    // Runtime check 1: src_bytes % elem_bytes == 0.
+    rem := fresh_tmp(g)
+    emit(g, "  %s = urem %s %s, %d", rem, w, src_bytes, elem_bytes)
+    rem_ok := fresh_label(g, "pa.div.ok")
+    rem_err := fresh_label(g, "pa.div.err")
+    rem_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp ne %s %s, 0", rem_cmp, w, rem)
+    emit_cond_br(g, rem_cmp, rem_err, rem_ok)
+    emit_label(g, rem_err)
+    rem_msg := fmt.tprintf("runtime error: partial-array byte read source %%d bytes not divisible by elem size %d for '%s'\n", elem_bytes, name)
+    rem_global, rem_byte_len := get_string_literal(g, rem_msg)
+    rem_ptr := fresh_tmp(g)
+    emit_string_gep(g, rem_ptr, rem_byte_len, rem_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s)", rem_ptr, w, src_bytes)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, rem_ok)
+
+    // count = src_bytes / elem_bytes.
+    count := fresh_tmp(g)
+    emit(g, "  %s = udiv %s %s, %d", count, w, src_bytes, elem_bytes)
+
+    // Runtime check 2: count <= cap.
+    cap_str := fmt.tprintf("%d", cap_n)
+    cap_ok := fresh_label(g, "pa.cap.ok")
+    cap_err := fresh_label(g, "pa.cap.err")
+    cap_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp ugt %s %s, %s", cap_cmp, w, count, cap_str)
+    emit_cond_br(g, cap_cmp, cap_err, cap_ok)
+    emit_label(g, cap_err)
+    cap_msg := fmt.tprintf("runtime error: partial-array byte read produced %%d elements, exceeds cap %d for '%s'\n", cap_n, name)
+    cap_global, cap_byte_len := get_string_literal(g, cap_msg)
+    cap_msg_ptr := fresh_tmp(g)
+    emit_string_gep(g, cap_msg_ptr, cap_byte_len, cap_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s)", cap_msg_ptr, w, count)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, cap_ok)
+
+    // memcpy(elements_ptr, src_data_ptr + src_low, src_bytes).
+    src_offset_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", src_offset_ptr, src_data_ptr, w, src_low)
+    emit_memcpy_runtime(g, elements_ptr, src_offset_ptr, src_bytes)
+
+    // Auto-add to len. For a fresh decl this is + 0, so the final len = count.
+    cur_len := fresh_tmp(g)
+    emit_typed_load_len(g, cur_len, len_gep)
+    new_len := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, %s", new_len, w, cur_len, count)
+    emit_typed_store_len(g, new_len, len_gep)
+
+    g.all_vars[name] = Slice_Var{
+        alloca       = alloca_name,
+        elem_type    = elem_t,
+        is_utf8      = pa_utf8,
+        has_sentinel = pa.has_sentinel,
+        sentinel     = pa.sentinel,
+    }
+}
+
+// Runtime-sized memcpy. Used when the byte count is an SSA value, not a
+// compile-time literal — e.g. partial-array byte-buffer reads where the
+// source span size is computed from runtime slice bounds. `bytes` is at
+// slice header width (i32); the memcpy intrinsic takes i64, so we zext.
+emit_memcpy_runtime :: proc(g: ^Codegen, dst, src, bytes: string) {
+    w := slice_layout.len_ir
+    n64 := bytes
+    if w != "i64" {
+        n64 = fresh_tmp(g)
+        emit(g, "  %s = zext %s %s to i64", n64, w, bytes)
+    }
+    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", dst, src, n64)
+}
