@@ -5004,6 +5004,19 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
     // upstream includes are already resolved.
     register_type_names(c, stmts, env, owner, public_env, eager_signatures = true)
 
+    // Pass 1a.5: signature-only pass on nested struct definitions, so their
+    // fields are populated before Stmt_Decl defaults that reference them get
+    // type-checked. Without this, `body := head.count` (where `head` is a
+    // sibling of type `Inner`, and `Inner` is defined later in the same
+    // scope) fails with "cannot access field" because Inner's field list
+    // is still empty when the default expression is checked.
+    for stmt in stmts {
+        if s, ok := stmt.(^Stmt_Scope); ok && s.kind == .Struct &&
+            len(s.typed_params) == 0 && len(s.generic_params) == 0 {
+            check_scope_body(c, s, env, signature_only = true)
+        }
+    }
+
     // Pass 1b: register the rest (Stmt_Decl, Stmt_Assign, includes, etc.)
     // and run the deferred-body work for any Stmt_Scope that was pre-
     // registered above. The pre_registered_stmts map drives that handoff.
