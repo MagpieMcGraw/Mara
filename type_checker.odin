@@ -7058,10 +7058,24 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
 
     check_scope(c, s.body, &child)
 
-    // Return check — void functions (return_types empty) don't need return statements
+    // Return check — void functions (return_types empty) don't need return statements.
+    // Functions whose return slots are all err can also fall off the end —
+    // each slot gets implicitly filled with `.Ok`.
     if len(ft.return_types) > 0 && !is_any(ft.return_types[0]) && !always_returns(s.body) {
-        check_error(c, s.span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, s.name)
+        if !all_err_returns(ft.return_types) {
+            check_error(c, s.span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, s.name)
+        }
     }
+}
+
+// True when every return slot is err-typed — the function can fall off the
+// end and each slot gets implicitly filled with `.Ok`.
+all_err_returns :: proc(types: [dynamic]Type) -> bool {
+    if len(types) == 0 { return false }
+    for t in types {
+        if !is_err_type(t) { return false }
+    }
+    return true
 }
 
 // Phase-2 checker for a `for` statement: dispatches to collection-for, range-for, or C-style.
@@ -7165,45 +7179,69 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
 
 // Phase-2 checker for a `return` statement.
 check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
-    if len(s.values) > 1 {
-        if len(env.return_types) <= 1 {
-            check_error(c, s.span, TYPE_MULTI_VALUE_RETURN_FUNCTION_DOESN)
-        } else if len(s.values) != len(env.return_types) {
-            check_error(c, s.span, TYPE_RETURN_VALUE_COUNT_MATCH_EXPECTED,
-                len(s.values), len(env.return_types))
+    n_expected := len(env.return_types)
+    n_supplied := len(s.values)
+
+    // Trailing err return slots can be implicitly filled with `.Ok` (the err
+    // type's zero value), so `return id` in a `(File_Id, err)` fn is shorthand
+    // for `return id, .Ok`. n_min is the minimum number of values a return
+    // must supply: everything except trailing err slots.
+    n_err_trailing := 0
+    for i := n_expected - 1; i >= 0; i -= 1 {
+        if is_err_type(env.return_types[i]) {
+            n_err_trailing += 1
         } else {
-            for val, i in s.values {
-                expected := env.return_types[i]
-                c.expected_hint = expected
-                vt := check_expr(c, val, env)
-                if !is_any(vt) && !is_any(expected) {
-                    if !types_equal(expected, vt) {
+            break
+        }
+    }
+    n_min := n_expected - n_err_trailing
+
+    count_ok := true
+    if n_expected == 0 {
+        if n_supplied > 0 {
+            check_error(c, s.span, TYPE_MULTI_VALUE_RETURN_FUNCTION_DOESN)
+            count_ok = false
+        }
+    } else if n_expected == 1 {
+        if n_supplied > 1 {
+            check_error(c, s.span, TYPE_MULTI_VALUE_RETURN_FUNCTION_DOESN)
+            count_ok = false
+        } else if n_supplied == 0 && n_min > 0 {
+            check_error(c, s.span, TYPE_RETURN_VALUE_COUNT_MATCH_EXPECTED,
+                n_supplied, n_expected)
+            count_ok = false
+        }
+    } else {
+        if n_supplied > n_expected || n_supplied < n_min {
+            check_error(c, s.span, TYPE_RETURN_VALUE_COUNT_MATCH_EXPECTED,
+                n_supplied, n_expected)
+            count_ok = false
+        }
+    }
+
+    // Per-value type check for each supplied value against its positional slot.
+    // Skip when count is wrong — the count error already explains the shape.
+    if count_ok {
+        for val, i in s.values {
+            if i >= n_expected { break }
+            expected := env.return_types[i]
+            c.expected_hint = expected
+            vt := check_expr(c, val, env)
+            if !is_any(vt) && !is_any(expected) {
+                if !types_equal(expected, vt) {
+                    if n_expected > 1 {
                         check_error(c, s.span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED,
                             i+1, type_name(vt), type_name(expected))
+                    } else {
+                        check_error(c, s.span, TYPE_RETURN_TYPE_MATCH_EXPECTED,
+                            type_name(vt), type_name(expected))
                     }
                 }
-                maybe_stamp_byte_view(c, expected, val)
-                if is_infer(vt) {
-                    check_literal_overflow(c, val, expected, s.span)
-                }
             }
-        }
-    } else if len(s.values) == 1 {
-        // Single-value return. For a multi-return function we'd error; for
-        // single-return funs the value's type must match the lone return.
-        expected: Type
-        if len(env.return_types) >= 1 { expected = env.return_types[0] }
-        c.expected_hint = expected
-        val_type := check_expr(c, s.values[0], env)
-        if !is_any(expected) && !is_any(val_type) {
-            if !types_equal(expected, val_type) {
-                check_error(c, s.span, TYPE_RETURN_TYPE_MATCH_EXPECTED,
-                    type_name(val_type), type_name(expected))
+            maybe_stamp_byte_view(c, expected, val)
+            if is_infer(vt) {
+                check_literal_overflow(c, val, expected, s.span)
             }
-        }
-        maybe_stamp_byte_view(c, expected, s.values[0])
-        if is_infer(val_type) {
-            check_literal_overflow(c, s.values[0], expected, s.span)
         }
     }
     // Escape analysis: prevent returning pointers/slices to local memory.

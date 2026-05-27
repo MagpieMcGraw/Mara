@@ -1088,6 +1088,13 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
         v := gen_expr(g, val, elem_type)
         emit_store(g, elem_type, v, sret_ptr)
     }
+    // Implicit `.Ok` fill for trailing err slots the user omitted. The type
+    // checker guarantees the missing positions are err-typed (i32 in IR), and
+    // .Ok is the zero value (set_id 0, tag 0).
+    for i in len(s.values)..<len(g.ret_types) {
+        sret_ptr := fmt.tprintf("%%sret.%d", i)
+        emit_store(g, "i32", "0", sret_ptr)
+    }
     emit_ret_void(g)
 }
 
@@ -1287,7 +1294,10 @@ gen_return_scalar :: proc(g: ^Codegen, s: Stmt_Return) {
 }
 
 gen_return :: proc(g: ^Codegen, s: Stmt_Return) {
-    if g.ret_types != nil && len(s.values) > 1 {
+    // Multi-return functions always route through the tuple path. The value
+    // count may be short of the slot count when trailing err slots are being
+    // implicitly filled with `.Ok` (see gen_return_tuple).
+    if g.ret_types != nil && len(g.ret_types) > 1 {
         gen_return_tuple(g, s)
         return
     }

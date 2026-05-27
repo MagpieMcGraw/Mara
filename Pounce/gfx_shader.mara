@@ -42,11 +42,11 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 			gl.DeleteShader(shader)
 			return 0, Err.Failed_Compilation
 		}
-		return shader, Err.Ok
+		return shader
 	}
 	vshader := compile(&vtext, gl.VERTEX_SHADER)?
 	fshader := compile(&ftext, gl.FRAGMENT_SHADER)?
-	return vshader, fshader, Err.Ok
+	return vshader, fshader
 }
 
 make_program :: fun(filepath: cstring) -> u32, err {
@@ -69,5 +69,5 @@ make_program :: fun(filepath: cstring) -> u32, err {
 	gl.DetachShader(program, vshader)
 	gl.DetachShader(program, fshader)
 
-	return program, Err.Ok
+	return program
 }

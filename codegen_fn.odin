@@ -562,7 +562,15 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     if !has_ret {
         pop_scope(g)  // normal exit: emit reset before default return
 
-        if ret_struct_name != "" || ret_array_cap > 0 || ret_types != nil || ret_type == "void" {
+        if ret_types != nil {
+            // Multi-return fall-off. The type checker only permits this when
+            // every slot is err-typed; fill each `%sret.N` with `.Ok` before
+            // the bare `ret void`.
+            for i in 0..<len(ret_types) {
+                emit(g, "  store i32 0, ptr %%sret.%d", i)
+            }
+            emit(g, "  ret void")
+        } else if ret_struct_name != "" || ret_array_cap > 0 || ret_type == "void" {
             emit(g, "  ret void")
         } else if ret_type == "i1" {
             emit(g, "  ret i1 false")
