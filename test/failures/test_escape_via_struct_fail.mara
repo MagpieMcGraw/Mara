@@ -11,7 +11,7 @@ Holder :: struct {
 }
 
 inner :: fun(storage: ^[]byte) -> Holder {
-	return Holder{take([:3]i64, storage)}
+	return Holder{slice([:3]i64, storage)}
 }
 
 outer :: fun() -> Holder {

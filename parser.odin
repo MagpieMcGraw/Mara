@@ -336,7 +336,8 @@ Expr_Size_Of :: struct {
 Expr_Take :: struct {
     type_expr:     Type_Expr,
     storage:       Expr,
-    count_expr:    Expr,      // set for runtime-counted slice form `take([]T(n), ...)`
+    count_expr:    Expr,      // set for the slice form `slice([:n]T, ...)`
+    keyword:       string,    // "let" or "slice" — discriminates value vs slice carve
     span:          Span,
     type_:         Type,
     resolved_type: Type,      // the resolved type argument (filled by type checker)
@@ -3829,13 +3830,20 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             so.type_expr = type_arg
             so.span = token_span(tok)
             result = so
-        } else if tok.text == "take" && current_kind(p) == .Left_Paren {
-            // Special case: take(Type, storage) — first arg is a type expression,
-            // second is a value expression naming a []byte slice.
+        } else if (tok.text == "let" || tok.text == "slice") && current_kind(p) == .Left_Paren {
+            // `let(T, storage)` — carve a value of type T from `storage`.
+            // `slice([:N]T, storage)` — carve N elements as a slice header.
             //
-            // Runtime-counted slice form: take([:n]T, storage). The cap is parsed
-            // into Type_Slice_Expr.cap_expr; we lift it onto Expr_Take.count_expr
-            // (the field downstream code reads).
+            // Both keywords accept two storage shapes:
+            //   cursor form: `^[]byte` slice variable (advances .len cursor).
+            //   exact form:  `&buf[off]` (typed pointer at offset; no cursor).
+            //
+            // Shared AST (Expr_Take); the type checker validates that:
+            //   - `let` has a non-slice type and no count_expr.
+            //   - `slice` has a slice type and count_expr (from [:N]T).
+            //
+            // Replaces the older `take` keyword, which conflated both.
+            kind := tok.text
             advance(p) // consume '('
             type_arg := parse_type_expr(p)
             count_arg: Expr
@@ -3851,6 +3859,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             tk.type_expr = type_arg
             tk.storage = storage_arg
             tk.count_expr = count_arg
+            tk.keyword = kind
             tk.span = token_span(tok)
             result = tk
         } else if tok.text == "all" && is_broadcast_value_start(current_kind(p)) {

@@ -6,8 +6,8 @@ module test_escape_via_reassign_fail
 // and accepts when every write tracks the same parameter.
 
 leaf :: fun(storage: ^[]byte) -> []i64 {
-	out := take([:3]i64, storage)
-	out = take([:3]i64, storage)
+	out := slice([:3]i64, storage)
+	out = slice([:3]i64, storage)
 	return out
 }
 

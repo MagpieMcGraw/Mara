@@ -9,6 +9,8 @@ use mara.time
 use mara.open_gl
 use mara.sdl
 
+use mara.lazy_font
+
 use gfx
 use event
 use object
@@ -141,7 +143,7 @@ game_draw :: fun(game: ^Megastruct) {
 }
 
 game_run :: fun(memory: ^[]byte) -> bool {
-	game := take(Megastruct, &memory[0])
+	game := let(Megastruct, &memory[0])
 	if not game.initialized do game_init(&game, memory)
 
 	timer := &game.timers

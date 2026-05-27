@@ -288,7 +288,8 @@ dump_parse_expr :: proc(b: ^strings.Builder, expr: Expr) {
         fmt.sbprintf(b, "size_of(%s)", type_expr_str(e.type_expr))
 
     case ^Expr_Take:
-        fmt.sbprintf(b, "take(%s, ", type_expr_str(e.type_expr))
+        kw := e.keyword if e.keyword != "" else "let"
+        fmt.sbprintf(b, "%s(%s, ", kw, type_expr_str(e.type_expr))
         dump_parse_expr(b, e.storage)
         fmt.sbprintf(b, ")")
 
@@ -536,11 +537,11 @@ TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER :: "cannot take address of immutabl
 TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE :: "cannot dereference non-pointer type %s"
 TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED :: "typed array literal: type %s is not a fixed-size array"
 TYPE_SIZE_UNKNOWN_TYPE :: "size_of: unknown type"
-TYPE_TAKE_UNKNOWN_TYPE :: "take: unknown type"
-TYPE_TAKE_COUNT_INTEGER :: "take count must be an integer, got %s"
-TYPE_TAKE_COUNT_REQUIRES_SLICE_TYPE :: "take with a count requires a slice type, got %s"
-TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM :: "take requires ^[]byte (cursor form, pass &slice_var) or ^byte (positional form), got %s"
-TYPE_TAKE_STORAGE_POINTS_INTO_LOCAL :: "take storage points into local stack memory, which would not outlive a returning view"
+TYPE_TAKE_UNKNOWN_TYPE :: "let/slice: unknown type"
+TYPE_TAKE_COUNT_INTEGER :: "slice count must be an integer, got %s"
+TYPE_TAKE_COUNT_REQUIRES_SLICE_TYPE :: "slice([:N]T, ...) requires a slice type, got %s"
+TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM :: "let/slice requires ^[]byte (cursor form, pass &slice_var) or ^byte (positional form), got %s"
+TYPE_TAKE_STORAGE_POINTS_INTO_LOCAL :: "let/slice storage points into local stack memory, which would not outlive a returning view"
 TYPE_EXPRESSION_CONDITION_BOOL :: "if-expression condition must be bool, got %s"
 TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS :: "if-expression branches have incompatible types: %s vs %s"
 TYPE_TUPLE_DESTRUCTURE_INDEX_OUT_RANGE :: "tuple-destructure index %d out of range for %d-tuple"
@@ -619,9 +620,9 @@ CODE_ARRAY_SLICE :: "'%s' is not an array or slice"
 CODE_SLICE_RHS_NAMED_ARRAY_SLICE :: "slice RHS must be a named array, slice, or array literal"
 CODE_INDEX_TARGET_VARIABLE :: "index target must be a variable"
 CODE_CANNOT_TAKE_ADDRESS_INDEX_EXPRESSION :: "cannot take address of this index expression"
-CODE_POSITIONAL_TAKE_REQUIRES_BUF_SOURCE :: "positional take requires a &buf[i] source (byte slice or [N]byte) so the carve can be bounds-checked"
-CODE_TAKE_STORAGE_SLICE_VAR_SLICE :: "take's storage must be &slice_var or a slice-pointer parameter"
-CODE_TAKE_SLICE_VARIABLE :: "take: '%s' is not a slice variable"
+CODE_POSITIONAL_TAKE_REQUIRES_BUF_SOURCE :: "positional let/slice requires a &buf[i] source (byte slice or [N]byte) so the carve can be bounds-checked"
+CODE_TAKE_STORAGE_SLICE_VAR_SLICE :: "let/slice storage must be &slice_var or a slice-pointer parameter"
+CODE_TAKE_SLICE_VARIABLE :: "let/slice: '%s' is not a slice variable"
 CODE_SLICE_TARGET_VARIABLE :: "slice target must be a variable"
 CODE_SLICE_TARGET_ARRAY_SLICE :: "slice target is not an array or slice"
 CODE_BYTE_VIEW_SOURCE_BYTE_SLICE :: "byte view source must be a byte slice or [N]byte"

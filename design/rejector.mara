@@ -3,12 +3,12 @@ module rejector
 use mara.math
 
 five_deep :: fun(storage: ^[]byte) -> []Vec3 {
-	my_vec := take([5]Vec3, storage)
+	my_vec := let([5]Vec3, storage)
 	return my_vec[:]
 }
 
 seven_deep :: fun(storage: ^[]byte) -> []Vec3 {
-	my_vec := take([7]Vec3, storage)
+	my_vec := let([7]Vec3, storage)
 	return my_vec[:]
 }
 

@@ -13,8 +13,8 @@ primitive_sphere :: fun(
     n_verts := (rings + 1) * (sectors + 1)
     n_inds  := rings * sectors * 6
 
-    verts := take([:n_verts]Vertex, storage)
-    inds  := take([:n_inds]u32, storage)
+    verts := slice([:n_verts]Vertex, storage)
+    inds  := slice([:n_inds]u32, storage)
 
     vi: i32 = 0
     for r in 0..rings + 1 {

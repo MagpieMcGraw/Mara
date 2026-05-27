@@ -35,7 +35,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 	}
 
 	num_tables32 := i32(h.num_tables)
-	table_dir := take([:num_tables32]Table_Directory, &bytes[12])
+	table_dir := slice([:num_tables32]Table_Directory, &bytes[12])
 	Table_Directory :: struct {
 		tag: [4]utf8
 		check_sum : u32

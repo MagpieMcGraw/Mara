@@ -46,7 +46,7 @@ mod_a :: fun() -> Pair {
 // --- Slice variants -------------------------------------------------------
 
 sl_c :: fun(storage: ^[]byte) -> []i64 {
-	out := take([:3]i64, storage)
+	out := slice([:3]i64, storage)
 	out[0] = 100
 	out[1] = 200
 	out[2] = 300
@@ -62,7 +62,7 @@ sl_a :: fun(storage: ^[]byte) -> []i64 {
 }
 
 sl_mod_c :: fun(storage: ^[]byte) -> []i64 {
-	out := take([:3]i64, storage)
+	out := slice([:3]i64, storage)
 	out[0] = 1
 	out[1] = 2
 	out[2] = 3

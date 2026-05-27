@@ -819,19 +819,66 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
 gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> string {
     src_type := distinct_base(expr_type(e.storage))
 
-    // Positional form: `take(T, &buf[i])` — view at the given address.
-    // Required shape: source must be `&<byte_buffer>[<offset>]` so we can
-    // bounds-check `offset + size_of(T) <= buf.cap`. Routes through
-    // emit_byte_offset_ptr (same path as the byte-view mechanism).
-    // Other ^byte sources (function returns, casts, FFI ptrs) carry no
-    // size info — those are rejected here. Use the cursor form, or
-    // construct a slice over the unchecked memory if you need it.
+    // Positional form: `let(T, &buf[i])` or `slice([:n]T, &buf[i])` — view at
+    // the given address. Required shape: source is `&<byte_buffer>[<offset>]`
+    // so we can bounds-check `offset + bytes <= buf.cap`. Routes through
+    // emit_byte_offset_ptr (same path as the byte-view mechanism). Other
+    // ^byte sources (function returns, casts, FFI ptrs) carry no size info —
+    // those are rejected here.
     if pt, ok := src_type.(^Type_Ptr); ok {
         if _, is_byte := pt.elem.(Type_Byte); is_byte {
+            w := slice_layout.len_ir
+            // Bytes to view depends on the form. For `let(T, ...)` it's
+            // sizeof(T). For `slice([:n]T, ...)` it's n * sizeof(elem).
             t_size := elem_byte_size(llvm_type_from_checker(e.resolved_type), g.checked)
+            bytes_str := fmt.tprintf("%d", t_size)
+            count_runtime := ""
+            elem_size := t_size
+            if e.count_expr != nil {
+                // Slice form: compute count * sizeof(elem) at runtime.
+                sl, _ := distinct_base(e.resolved_type).(^Type_Slice)
+                elem_ir := llvm_type_from_checker(sl.elem)
+                elem_size = elem_byte_size(elem_ir, g.checked)
+                count_runtime = gen_expr(g, e.count_expr, w)
+                bytes_tmp := fresh_tmp(g)
+                emit(g, "  %s = mul %s %s, %d", bytes_tmp, w, count_runtime, elem_size)
+                bytes_str = bytes_tmp
+            }
             if un, un_ok := e.storage.(^Expr_Unary); un_ok && un.op == .Ampersand {
                 if idx, idx_ok := un.operand.(^Expr_Index); idx_ok {
-                    if elem_ptr, ok := emit_byte_offset_ptr(g, idx.expr, idx.index, t_size, "take", idx.span); ok {
+                    elem_ptr := ""
+                    ok2 := false
+                    if e.count_expr != nil {
+                        elem_ptr, ok2 = emit_byte_offset_ptr_runtime(g, idx.expr, idx.index, bytes_str, "slice", idx.span)
+                    } else {
+                        elem_ptr, ok2 = emit_byte_offset_ptr(g, idx.expr, idx.index, t_size, "let", idx.span)
+                    }
+                    if ok2 {
+                        if e.count_expr != nil {
+                            // Build a fresh slice header pointing at elem_ptr
+                            // with len = cap = count. Header lives in writable
+                            // local memory (or NRVO'd into dest_hdr). Mirrors
+                            // the cursor-form header construction below — the
+                            // bytes the header points at are the source's, but
+                            // the header itself is never reinterpreted from
+                            // file bytes.
+                            hdr := dest_hdr
+                            if hdr == "" {
+                                hdr = fmt.tprintf("%%slice.hdr.%d", g.tmp_counter)
+                                g.tmp_counter += 1
+                                emit_slice_alloca(g, hdr)
+                            }
+                            h_ptr_gep := fresh_tmp(g)
+                            emit_slice_gep(g, h_ptr_gep, hdr, SLICE.ptr)
+                            emit_store(g, "ptr", elem_ptr, h_ptr_gep)
+                            h_len_gep := fresh_tmp(g)
+                            emit_slice_gep(g, h_len_gep, hdr, SLICE.len)
+                            emit_typed_store_len(g, count_runtime, h_len_gep)
+                            h_cap_gep := fresh_tmp(g)
+                            emit_slice_gep(g, h_cap_gep, hdr, SLICE.cap)
+                            emit_typed_store_cap(g, count_runtime, h_cap_gep)
+                            return hdr
+                        }
                         return elem_ptr
                     }
                 }
@@ -1416,6 +1463,40 @@ emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, siz
 
     elem_ptr = fresh_tmp(g)
     emit(g, "  %s = getelementptr i8, ptr %s, %s %s", elem_ptr, data_ptr, slice_layout.len_ir, offset)
+    return elem_ptr, true
+}
+
+// Runtime-sized variant of emit_byte_offset_ptr. Used by `slice([:n]T, &buf[off])`
+// where the carved region's size is `n * sizeof(elem)` — a runtime SSA value,
+// not a compile-time constant.
+emit_byte_offset_ptr_runtime :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, byte_count_ssa: string, label: string, span: Span) -> (elem_ptr: string, ok: bool) {
+    data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span)
+    if !resolved { return "", false }
+
+    w := slice_layout.len_ir
+    offset := "0"
+    if offset_expr != nil {
+        offset = gen_expr(g, offset_expr, w)
+    }
+    end_offset := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, %s", end_offset, w, offset, byte_count_ssa)
+    ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
+    err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
+    cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp ugt %s %s, %s", cmp, w, end_offset, cap_val)
+    emit_cond_br(g, cmp, err_lbl, ok_lbl)
+    emit_label(g, err_lbl)
+    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%d + %%d > capacity %%d\n", label)
+    err_name, err_len := get_string_literal(g, err_msg)
+    err_ptr := fresh_tmp(g)
+    emit_string_gep(g, err_ptr, err_len, err_name)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", err_ptr, w, offset, w, byte_count_ssa, w, cap_val)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, ok_lbl)
+
+    elem_ptr = fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", elem_ptr, data_ptr, w, offset)
     return elem_ptr, true
 }
 

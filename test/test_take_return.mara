@@ -1,6 +1,6 @@
 module test_take_return
 
-// Returning a take-bound view by value is safe: the bytes get memcpy'd into
+// Returning a let-bound view by value is safe: the bytes get memcpy'd into
 // the caller's sret slot, the source memory still belongs to the caller, and
 // nothing dangles. Used to be wrongly rejected as "view binding is scoped to
 // the function" — see commit log for the relaxation.
@@ -14,7 +14,7 @@ Pair :: struct {
 // returned Pair is a *copy* of the bytes — the caller's memory still owns
 // them. This is the pattern the rejected rule used to disallow.
 roundtrip :: fun(memory: ^[]byte) -> Pair {
-	p : Pair = take(Pair, memory)
+	p : Pair = let(Pair, memory)
 	p.a = 100
 	p.b = 200
 	return p
