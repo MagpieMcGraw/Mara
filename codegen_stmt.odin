@@ -153,12 +153,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     elem_t := llvm_type_from_checker(sl.elem)
                     w := slice_layout.len_ir
                     elem_bytes := elem_byte_size(elem_t, g.checked)
-                    cap_raw := gen_expr(g, s.slice_cap_expr)
-                    // Normalise the cap to slice header width — the user's cap
-                    // expression may be a wider int (i64 by default for `:=`-
-                    // inferred locals) than the slice header field stores.
-                    count_runtime := fresh_tmp(g)
-                    emit(g, "  %s = trunc i64 %s to %s", count_runtime, cap_raw, w)
+                    count_runtime := gen_expr(g, s.slice_cap_expr, w)
                     bytes_ssa := fresh_tmp(g)
                     emit(g, "  %s = mul %s %s, %d", bytes_ssa, w, count_runtime, elem_bytes)
                     elem_ptr, op_ok := emit_byte_offset_ptr_runtime(g, idx_expr.expr, idx_expr.index, bytes_ssa, "slice", idx_expr.span)

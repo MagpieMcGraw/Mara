@@ -6444,6 +6444,18 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 continue
             }
 
+            // Sized slice cap: validate N is numeric and stamp its expression's
+            // type before the value check runs. Same shape as the no-initializer
+            // branch above; without this, `name : [:N]T = ...` left
+            // slice_cap_expr's ident untyped and codegen fell back to i64 loads
+            // for the cap, mismatching i32-typed cap variables.
+            if s.slice_cap_expr != nil {
+                cap_type := check_expr(c, s.slice_cap_expr, env)
+                if !is_any(cap_type) && !is_numeric(cap_type) {
+                    check_error(c, s.span,
+                        TYPE_SLICE_CAPACITY_INTEGER, type_name(cap_type))
+                }
+            }
             c.expected_hint = ann_type
             val_type := check_expr(c, s.value, env)
             // Reject single-name binding from a multi-return call. Without
