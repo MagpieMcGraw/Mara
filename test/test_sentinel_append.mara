@@ -20,7 +20,7 @@ main :: fun() {
 	print(many)
 
 	// Sized sentinel slice form.
-	sized : [, 0]utf8(64)
+	sized : [:64, 0]utf8
 	&sized + "from sized"
 	print(sized)
 

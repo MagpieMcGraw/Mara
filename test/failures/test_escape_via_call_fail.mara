@@ -5,12 +5,12 @@ module test_escape_via_call_fail
 // so it would dangle past outer's frame.
 //
 // The provenance analysis walks leaf's body — leaf returns
-// `take([]i64(3), storage)` whose provenance follows parameter 0 — and
+// `take([:3]i64, storage)` whose provenance follows parameter 0 — and
 // inherits that arg's provenance at outer's call site. `&storage` resolves
 // to .Stack, so outer's return is rejected.
 
 leaf :: fun(storage: ^[]byte) -> []i64 {
-	return take([]i64(3), storage)
+	return take([:3]i64, storage)
 }
 
 outer :: fun() -> []i64 {

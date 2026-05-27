@@ -13,7 +13,7 @@ seven_deep :: fun(storage: ^[]byte) -> []Vec3 {
 }
 
 shallow :: fun(storage: ^[]byte) -> []Vec3 {
-	buf: []byte(1024)
+	buf: [..1024]byte
 	five_vecs := five_deep(&buf)
 	seven_vecs := seven_deep(storage)
 	return seven_vecs

@@ -7,7 +7,7 @@ main :: fun() {
 	print(cap(fa))   // 15 — utf8 reserves a byte
 
 	// Sentinel sized slice.
-	ss : [, 0]utf8(32)
+	ss : [:32, 0]utf8
 	print(len(ss))   // 0
 	print(cap(ss))   // 32
 }

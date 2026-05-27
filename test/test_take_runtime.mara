@@ -1,6 +1,6 @@
 module test_take_runtime
 
-// take([]T(n), storage) — runtime-counted slice form.
+// take([:n]T, storage) — runtime-counted slice form.
 // Advances storage.len by n*sizeof(T), returns []T with len=cap=n;
 // the data pointer aliases the carved range of storage.
 
@@ -21,11 +21,11 @@ run :: fun(storage: ^[]byte, n: i64) {
     print("=== test_take_runtime ===")
 
     // Literal count: compiler folds the 2, runtime path still kicks in.
-    fixed : []Pair = take([]Pair(2), storage)
+    fixed : []Pair = take([:2]Pair, storage)
     fill(&fixed, 100)
 
     // Runtime count from a parameter.
-    runtime : []Pair = take([]Pair(n), storage)
+    runtime : []Pair = take([:n]Pair, storage)
     fill(&runtime, 500)
 
     print(fixed.len)        // 2

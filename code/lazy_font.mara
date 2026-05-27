@@ -1,2 +1,147 @@
-module lazy_font
 
+module mara.lazy_font
+
+// Data type 	Description
+// shortFrac 	16-bit signed fraction
+// Fixed 		16.16-bit signed fixed-point number
+// FWord 		16-bit signed integer that describes a quantity in FUnits, the smallest measurable distance in em space.
+// uFWord 		16-bit unsigned integer that describes a quantity in FUnits, the smallest measurable distance in em space.
+// F2Dot14 		16-bit signed fixed number with the low 14 bits representing fraction.
+// longDateTime The long internal format of a date in seconds since 12:00 midnight, January 1, 1904. It is represented as a signed 64-bit integer.
+
+// Spec type aliases. Transparent aliases over the underlying integer width —
+// arithmetic on them behaves like the underlying int. The fixed-point ones
+// need explicit conversion to f32 to get their real-number value.
+Fixed          :: type i32  // 16.16 signed fixed-point
+F2_Dot_14      :: type i16  // 2.14 signed fixed-point
+Short_Frac     :: type i16  // 1.15 signed fraction
+F_Word         :: type i16  // signed integer in font design units (FUnits)
+U_F_Word       :: type u16  // unsigned integer in FUnits
+Long_Date_Time :: type i64  // seconds since 1904-01-01 00:00
+
+fixed_to_f32      :: fun(x: Fixed)      -> f32 { return f32(x) / 65536.0 }
+f2_dot_14_to_f32  :: fun(x: F2_Dot_14)  -> f32 { return f32(x) / 16384.0 }
+short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
+
+TTF_Layout :: struct (bytes: ^[]byte) {
+
+	h: Offset_Table = bytes[0]
+	Offset_Table :: struct {
+		scaler_type : u32 // this identifies the file type?
+		num_tables : u16
+		search_range : u16
+		entry_selector: u16
+		range_shift : u16
+	}
+
+	num_tables32 := i32(h.num_tables)
+	table_dir := take([:num_tables32]Table_Directory, &bytes[12])
+	Table_Directory :: struct {
+		tag: [4]utf8
+		check_sum : u32
+		offset: u32 // offset and len... could be a slice?
+		len: u32
+	}
+
+	head : Head
+	Head :: struct {
+		version              : Fixed          // 0x00010000 = version 1.0
+		font_revision        : Fixed          // set by font manufacturer
+		check_sum_adjustment : u32            // sum the font as u32, store 0xB1B0AFBA - sum
+		magic_number         : u32            // must be 0x5F0F3CF5
+		flags                : u16            // bit 0 baseline at y=0, 1 lsb at x=0, 7 needs layout, 9 contains RTL, ...
+		units_per_em         : u16            // 64..16384
+		created              : Long_Date_Time
+		modified             : Long_Date_Time
+		x_min                : F_Word         // min over all glyph bboxes
+		y_min                : F_Word
+		x_max                : F_Word
+		y_max                : F_Word
+		mac_style            : u16            // bit 0 bold, 1 italic, 2 underline, 3 outline, 4 shadow, 5 condensed, 6 extended
+		lowest_rec_ppem      : u16            // smallest readable size in pixels
+		font_direction_hint  : i16            // 0 mixed, 1 LTR, 2 LTR+neutrals, -1 RTL, -2 RTL+neutrals
+		index_to_loc_format  : i16            // 0 = short (u16) offsets in loca, 1 = long (u32)
+		glyph_data_format    : i16            // 0 for current format
+	}
+
+	maxp : Maxp
+	Maxp :: struct {
+		version                  : Fixed // 0x00010000 (TrueType v1.0) or 0x00005000 (CFF v0.5)
+		num_glyphs               : u16   // total glyph count in the font
+		max_points               : u16   // max points in a non-composite glyph
+		max_contours             : u16   // max contours in a non-composite glyph
+		max_composite_points     : u16   // max points in a composite glyph
+		max_composite_contours   : u16   // max contours in a composite glyph
+		max_zones                : u16   // bytecode hinting; 1 if no twilight zone, else 2
+		max_twilight_points      : u16   // bytecode hinting; max twilight zone points
+		max_storage              : u16   // bytecode hinting; max storage area locations
+		max_function_defs        : u16   // bytecode hinting; max FDEFs
+		max_instruction_defs     : u16   // bytecode hinting; max IDEFs
+		max_stack_elements       : u16   // bytecode hinting; max stack depth
+		max_size_of_instructions : u16   // bytecode hinting; max byte count for any glyph's instructions
+		max_component_elements   : u16   // max top-level components per composite glyph
+		max_component_depth      : u16   // max recursion depth of composite glyphs
+	}
+
+	cmap : Cmap
+	Cmap :: struct {
+		version       : u16              // 0
+		num_subtables : u16
+		encodings     : []Encoding_Record // num_subtables entries
+		subtable_data : []byte            // raw bytes; encoding offsets are absolute within the full cmap table
+	}
+
+	Encoding_Record :: struct {
+		platform_id          : u16 // 0 Unicode, 1 Mac, 3 Microsoft
+		platform_specific_id : u16
+		offset               : u32 // byte offset from start of cmap table to this encoding's subtable
+	}
+
+	loca : Loca
+	Loca :: struct {
+		// offsets array has num_glyphs + 1 entries (last entry gives the end of the final glyph).
+		// Each entry is u16 (short — multiply by 2 for actual byte offset into glyf)
+		// or u32 (long — already a byte offset). Format chosen by head.index_to_loc_format.
+		offsets : []byte
+	}
+
+	glyf : Glyf
+	Glyf :: struct {
+		// Raw glyph data. Each glyph i lives at offsets [loca[i]..loca[i+1]).
+		// Per-glyph header is i16 num_contours (negative for composite), then 4xi16 bbox,
+		// then either simple-glyph contours or composite component records.
+		data : []byte
+	}
+
+	hhea : Hhea
+	Hhea :: struct {
+		version                 : Fixed     // 0x00010000
+		ascent                  : F_Word    // typographic ascent
+		descent                 : F_Word    // typographic descent (negative)
+		line_gap                : F_Word    // extra recommended leading
+		advance_width_max       : U_F_Word
+		min_left_side_bearing   : F_Word
+		min_right_side_bearing  : F_Word
+		x_max_extent            : F_Word
+		caret_slope_rise        : i16       // 1 for vertical caret
+		caret_slope_run         : i16       // 0 for vertical caret
+		caret_offset            : F_Word    // 0 for non-slanted fonts
+		reserved1               : i16       // must be 0
+		reserved2               : i16       // must be 0
+		reserved3               : i16       // must be 0
+		reserved4               : i16       // must be 0
+		metric_data_format      : i16       // 0 for current format
+		num_of_long_hor_metrics : u16       // count of full metrics records in hmtx; trailing glyphs share advance
+	}
+
+	hmtx : Hmtx
+	Hmtx :: struct {
+		long_metrics  : []Long_Hor_Metric // num_of_long_hor_metrics entries (from hhea)
+		side_bearings : []F_Word          // (num_glyphs - num_of_long_hor_metrics) entries; same advance as last long_metric
+	}
+
+	Long_Hor_Metric :: struct {
+		advance_width     : U_F_Word
+		left_side_bearing : F_Word
+	}
+}

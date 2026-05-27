@@ -70,6 +70,7 @@ Type_Slice_Expr :: struct {
     elem:         Type_Expr, // element type
     has_sentinel: bool,      // true for [:, 0]T sentinel-terminated slices
     sentinel:     int,       // sentinel value (e.g. 0 for null-terminated)
+    cap_expr:     Expr,      // [:N]T — cap stored in the slice header; nil for plain []T
     span:         Span,
 }
 
@@ -1012,19 +1013,19 @@ make_single_decl :: proc(name: string, type_expr: Type_Expr, value: Expr, span: 
     })
 }
 
-// After parsing a type expression in a declaration, recognize the `(N)` suffix
-// that turns `[]T` into a sized slice declaration: `name : []T(N)` allocates
-// `N` elements of backing storage and initializes the slice header to
-// `(ptr, 0, N)`. Caller stores the returned expression on Stmt_Decl /
-// Stmt_Assign. Returns nil if no suffix is present (regular `[]T` view).
+// After parsing a type expression in a declaration, return the slice cap from
+// the `[:N]T` form (cap was parsed into Type_Slice_Expr.cap_expr). Caller
+// lifts the returned expression onto Stmt_Decl/Stmt_Assign's slice_cap_expr
+// field so downstream codegen reads it the same way it always has.
 try_parse_slice_cap_suffix :: proc(p: ^Parser, type_expr: Type_Expr) -> Expr {
-    _, is_slice := type_expr.(^Type_Slice_Expr)
+    ts, is_slice := type_expr.(^Type_Slice_Expr)
     if !is_slice { return nil }
-    if current_kind(p) != .Left_Paren { return nil }
-    advance(p) // consume '('
-    cap_expr := parse_expr(p, 0)
-    expect(p, .Right_Paren)
-    return cap_expr
+    if ts.cap_expr != nil {
+        cap := ts.cap_expr
+        ts.cap_expr = nil  // single-source-of-truth: cap lives on Stmt_Decl now.
+        return cap
+    }
+    return nil
 }
 
 // Parse the RHS of a multi-name declaration or assignment after the '='.
@@ -3160,6 +3161,33 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
             ts.span = start
             return ts
         }
+        // Sized slice header: [:N]T or [:N, 0]T — slice with cap = N at
+        // construction (and optional sentinel). No backing storage is
+        // allocated; the header lives in writable memory and its ptr/len are
+        // populated by assignment (e.g. from a `take`). Replaces the older
+        // `[]T(N)` / `[, 0]T(N)` suffix syntaxes.
+        if current_kind(p) == .Colon {
+            advance(p) // consume ':'
+            cap_expr := parse_expr(p, 0)
+            has_sentinel := false
+            sentinel_val := 0
+            if current_kind(p) == .Comma {
+                advance(p) // consume ','
+                skip_newlines(p)
+                sentinel_tok := expect(p, .Number)
+                sentinel_val = parse_int_token(sentinel_tok.text)
+                has_sentinel = true
+            }
+            expect(p, .Right_Bracket)
+            elem := parse_type_expr(p)
+            ts := new(Type_Slice_Expr)
+            ts.elem = elem
+            ts.cap_expr = cap_expr
+            ts.has_sentinel = has_sentinel
+            ts.sentinel = sentinel_val
+            ts.span = start
+            return ts
+        }
         // Partial array: [..N]T — value type, inline storage, cursor.
         // Sentinel partial array: [..N, 0]T
         if current_kind(p) == .Dot_Dot {
@@ -3805,21 +3833,15 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             // Special case: take(Type, storage) — first arg is a type expression,
             // second is a value expression naming a []byte slice.
             //
-            // Runtime-counted slice form: take([]T(n), storage). Two shapes can
-            // reach us depending on whether T is a keyword or an identifier:
-            //   keyword T (i64, u32, byte, …): parse_type_expr returns the bare
-            //     []T (it doesn't consume `(args)` after keyword types). We see
-            //     the trailing `(N)` ourselves and stash it on count_expr.
-            //   identifier T (Vec3, Mesh_Data, …): parse_type_expr greedily eats
-            //     `(args)` into a Type_Generic_Instance inside the slice elem.
-            //     The type checker lifts the count out at check time.
+            // Runtime-counted slice form: take([:n]T, storage). The cap is parsed
+            // into Type_Slice_Expr.cap_expr; we lift it onto Expr_Take.count_expr
+            // (the field downstream code reads).
             advance(p) // consume '('
             type_arg := parse_type_expr(p)
             count_arg: Expr
-            if _, is_slice := type_arg.(^Type_Slice_Expr); is_slice && current_kind(p) == .Left_Paren {
-                advance(p) // consume '('
-                count_arg = parse_expr(p, 0)
-                expect(p, .Right_Paren)
+            if ts, is_slice := type_arg.(^Type_Slice_Expr); is_slice && ts.cap_expr != nil {
+                count_arg = ts.cap_expr
+                ts.cap_expr = nil
             }
             expect(p, .Comma)
             skip_newlines(p)

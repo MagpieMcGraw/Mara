@@ -7,7 +7,7 @@ module test_escape_via_chain_fail
 // &storage (.Stack) as middle's first arg → outer's return is rejected.
 
 leaf :: fun(storage: ^[]byte) -> []i64 {
-	return take([]i64(3), storage)
+	return take([:3]i64, storage)
 }
 
 middle :: fun(storage: ^[]byte) -> []i64 {
