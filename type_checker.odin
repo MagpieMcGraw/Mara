@@ -11242,7 +11242,19 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             // `Init(Video)` can resolve `Video` against `Init_Flags`.
             c.expected_hint = fun_type.params[i].type_
             arg_type := check_expr(c, arg, env)
-            if types_incompatible(fun_type.params[i].type_, arg_type) {
+            // Byte-buffer reinterpret-read at the call boundary: a param
+            // typed `[N]T` accepts `buf[off]` or `buf[lo:hi]` from a byte
+            // buffer — same shape as `arr : [N]T = buf[off]` at decl sites.
+            // The size is in the param type; codegen materializes the
+            // fixed-array value via alloca + memcpy + load.
+            is_byte_reinterpret := false
+            if _, fa_ok := fun_type.params[i].type_.(^Type_Fixed_Array); fa_ok {
+                if is_byte_buffer_index_read(arg) { is_byte_reinterpret = true }
+                if _, sl_ok := arg.(^Expr_Slice); sl_ok && is_byte_buffer(arg_type) {
+                    is_byte_reinterpret = true
+                }
+            }
+            if !is_byte_reinterpret && types_incompatible(fun_type.params[i].type_, arg_type) {
                 check_error(c, span, TYPE_ARGUMENT_EXPECTED,
                     i + 1, display_name, type_name(fun_type.params[i].type_), type_name(arg_type))
             }

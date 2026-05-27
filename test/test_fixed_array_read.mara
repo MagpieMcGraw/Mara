@@ -27,5 +27,16 @@ main :: fun() -> i64 {
     n : u16 = bytes[0]   // 0xDEAD in LE
     print("u16 from slice:", n)
 
+    // Same reinterpret semantics at the call boundary — index and slice
+    // forms both materialize the [N]byte arg from the source buffer.
+    print("via call (index):", take_two_idx(bytes[0]))
+    print("via call (slice):", take_two_idx(bytes[0:2]))
+    print("via call (idx+2):", take_two_idx(bytes[2]))
+
     return 0
+}
+
+// Reinterpret-read 2 bytes and return them in BE order as u16.
+take_two_idx :: fun(data: [2]byte) -> u16 {
+    return u16(data[0]) << 8 | u16(data[1])
 }
