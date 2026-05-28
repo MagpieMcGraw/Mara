@@ -35,3 +35,5 @@ If you want cap, be explicit
 Slice parameters accept fixed arrays, BUT!
 Only do this if your fixed array is full
 If it's partially full, make a partial array [..n]Item
+
+Direct reads from byte buffers advance the cursor(len)
