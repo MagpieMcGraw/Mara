@@ -10206,6 +10206,21 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 e.type_ = resolved
                 return resolved
             }
+            // Empty partial-array literal: `[..N]T{}` — a default-init
+            // constructor that yields a fresh partial array with .len = 0,
+            // .cap = N, .ptr aimed at the destination's inline elements.
+            // Codegen emits the in-place init; the literal itself doesn't
+            // need any element values (any fields would currently be
+            // rejected as the codegen doesn't fill elements through this
+            // path).
+            if _, pa_ok := resolved.(^Type_Partial_Array); pa_ok {
+                if len(e.fields) > 0 {
+                    check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
+                    return Type_Error{}
+                }
+                e.type_ = resolved
+                return resolved
+            }
             check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
             return Type_Error{}
         }

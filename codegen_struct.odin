@@ -1568,6 +1568,13 @@ gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string,
     case "cap":
         field_idx = SLICE.cap
         field_ir  = slice_layout.cap_ir
+    case "ptr":
+        // Same risk profile as .len/.cap writes — the compiler trusts the
+        // user to maintain slice invariants either way. Unblocks pointing
+        // a slice/partial-array view at external buffer bytes (the TTF
+        // cmap-encodings pattern) without needing a builtin constructor.
+        field_idx = SLICE.ptr
+        field_ir  = "ptr"
     case:
         codegen_fatal(g, span, CODE_CANNOT_ASSIGN_SLICE_FIELD_ONLY, field)
     }
@@ -1664,7 +1671,13 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             inner_type := distinct_base(expr_type(inner_fa))
             _, inner_is_array := inner_type.(^Type_Fixed_Array)
             _, inner_is_slice := inner_type.(^Type_Slice)
-            if inner_is_array || inner_is_slice {
+            // Partial arrays share the slice header's {len,cap,ptr} layout, so
+            // `obj.pa_field.len = N` and friends route through the same slice-
+            // field-store path used for slice fields below. Without this case
+            // the chained write fell through to resolve_lhs_struct and errored
+            // with "field assignment target must be a struct or pointer to struct".
+            _, inner_is_pa := inner_type.(^Type_Partial_Array)
+            if inner_is_array || inner_is_slice || inner_is_pa {
                 gen_field_access(g, inner_fa)
                 if ar, ar_ok := claim_field_array(g); ar_ok {
                     if is_swizzle_field(fa_expr.field, ar.capacity) {
@@ -1759,6 +1772,20 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
             gen_store_slice_into(g, gep, s.value)
             return
+        }
+        // Partial-array field — has the slice header layout up front and an
+        // inline elements area after. An empty literal `[..N]T{}` from the
+        // user means "init this field in place" — set .ptr to the elements
+        // area, .len = 0, .cap = N. The .ptr fixup is the whole point of
+        // the construction; storing a header byte-wise would otherwise
+        // leave .ptr aliasing wherever the literal was synthesized.
+        if pa, pa_ok := f.type_.(^Type_Partial_Array); pa_ok {
+            if lit, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok && lit.type_expr != nil && len(lit.fields) == 0 {
+                field_ptr := fresh_tmp(g)
+                emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
+                gen_partial_array_init_in_place(g, field_ptr, pa)
+                return
+            }
         }
         // Scalar field — compute the GEP first so the compound-load substitute
         // can pre-load the current value through it before gen_expr runs.

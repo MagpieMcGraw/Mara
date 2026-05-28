@@ -1878,6 +1878,33 @@ gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: strin
 //      element are loud failures, not silent truncation.
 //   2. resulting count fits in cap — caller declared N as the static
 //      upper bound; a longer source is malformed input or a wrong type.
+// Initialize a partial-array slot in place: set .ptr to aim at the inline
+// elements area (right after the header), .len = 0, .cap = N from the type.
+// Used by the `[..N]T{}` empty-literal path in gen_field_assign to handle
+// the .ptr-fixup invariant that the user can't easily express by hand
+// (the elements area's address is a GEP into the slot at the well-known
+// PARTIAL_ELEMENTS_FIELD offset).
+gen_partial_array_init_in_place :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array) {
+    elem_t := llvm_type_from_checker(pa.elem)
+    cap_n := pa.size
+    if pa.has_sentinel { cap_n += 1 }
+    ir_type := partial_array_ir_type(elem_t, cap_n)
+    elements_ptr := fresh_tmp(g)
+    emit_raw(g, strings.concatenate({
+        "  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ",
+        slot_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0",
+    }))
+    ptr_gep := fresh_tmp(g)
+    emit_slice_gep(g, ptr_gep, slot_ptr, SLICE.ptr)
+    emit_store(g, "ptr", elements_ptr, ptr_gep)
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, slot_ptr, SLICE.len)
+    emit_typed_store_len(g, "0", len_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, slot_ptr, SLICE.cap)
+    emit_typed_store_cap(g, fmt.tprintf("%d", cap_n), cap_gep)
+}
+
 gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array, sl_expr: ^Expr_Slice, span: Span) {
     elem_t := llvm_type_from_checker(pa.elem)
     _, pa_utf8 := pa.elem.(Type_Utf8)

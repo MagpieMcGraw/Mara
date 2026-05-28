@@ -1,0 +1,15 @@
+module test_pa_literal
+
+Item :: struct { v: i32 }
+
+Container :: struct {
+	items : [..8]Item
+}
+
+main :: fun() -> i64 {
+	c : Container
+	// Probe: does this parse / type-check?
+	c.items = [..8]Item{}
+	print("len:", c.items.len, "cap:", c.items.cap)
+	return 0
+}
