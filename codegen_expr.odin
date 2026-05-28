@@ -532,16 +532,16 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
         }
         #partial switch e.op {
         case .Plus:
-            tmp = emit_checked_arith(g, is_unsigned ? "uadd" : "sadd", ir_type, left, right)
+            tmp = emit_checked_arith(g, is_unsigned ? "uadd" : "sadd", ir_type, left, right, e.span)
         case .Minus:
-            tmp = emit_checked_arith(g, is_unsigned ? "usub" : "ssub", ir_type, left, right)
+            tmp = emit_checked_arith(g, is_unsigned ? "usub" : "ssub", ir_type, left, right, e.span)
         case .Star:
-            tmp = emit_checked_arith(g, is_unsigned ? "umul" : "smul", ir_type, left, right)
+            tmp = emit_checked_arith(g, is_unsigned ? "umul" : "smul", ir_type, left, right, e.span)
         case .Slash:
-            emit_div_zero_check(g, right, ir_type)
+            emit_div_zero_check(g, right, ir_type, e.span)
             emit(g, "  %s = %s %s %s, %s", tmp, is_unsigned ? "udiv" : "sdiv", ir_type, left, right)
         case .Modulo:
-            emit_div_zero_check(g, right, ir_type)
+            emit_div_zero_check(g, right, ir_type, e.span)
             emit(g, "  %s = %s %s %s, %s", tmp, is_unsigned ? "urem" : "srem", ir_type, left, right)
         case .Equal_Equal:
             emit(g, "  %s = icmp eq %s %s, %s", tmp, ir_type, left, right)
