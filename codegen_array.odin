@@ -1705,8 +1705,20 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         // `<name>.data` naming convention used elsewhere for array storage,
         // memcpy the source bytes in, register the local as an Array_Var so
         // subsequent indexing / further reinterpret-reads find it.
-        data_name := fmt.tprintf("%%%s.data", name)
-        emit_alloca(g, data_name, target_ir_type)
+        // Arena fallback past 1024 bytes mirrors the standard fixed-array
+        // allocation path (gen_array_assign) — otherwise large reinterpret
+        // reads (e.g. `[65537]u16 = bytes[off]` for a TTF loca short-format
+        // staging buffer) put hundreds of KB on the function's stack frame
+        // and have, in practice, tripped clang's x86 backend on big enough
+        // arrays.
+        loc := format_location(span.file, span.line, span.col)
+        data_name: string
+        if g.context_enabled && target_size >= 1024 {
+            data_name = emit_arena_bump(g, target_size, name, loc)
+        } else {
+            data_name = fmt.tprintf("%%%s.data", name)
+            emit_alloca(g, data_name, target_ir_type)
+        }
         emit_memcpy(g, data_name, elem_ptr, target_size)
         if is_big_endian {
             emit_bswap_in_place(g, data_name, target_ir_type, target_type)
@@ -1862,7 +1874,16 @@ gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: strin
     }
     gep := fresh_tmp(g)
     emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
-    if as_struct_body(f.type_) != nil {
+    is_struct := as_struct_body(f.type_) != nil
+    _, is_fa := f.type_.(^Type_Fixed_Array)
+    if is_struct || is_fa {
+        // Struct or fixed-array field — memcpy the bytes in. The load-then-
+        // store path below would synthesize a single aggregate SSA value of
+        // the field's full size, which clang's x86 instruction selector
+        // chokes on past a few KB (a TTF loca's [65537]u32 field produced
+        // a 512KB-aggregate load/store that segfaulted clang). Memcpy
+        // lowers cleanly regardless of size, and the bswap walk handles
+        // multi-byte integer leaves the same way it does for structs.
         emit_memcpy(g, gep, elem_ptr, field_size)
         if is_big_endian {
             emit_bswap_in_place(g, gep, ft, f.type_)
