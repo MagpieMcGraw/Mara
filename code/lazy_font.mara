@@ -28,7 +28,6 @@ short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
 TTF_Layout :: struct (bytes: ^[]byte) {
 	print("TTF Loading...")
 
-	h: Offset_Table = #big_endian bytes[0]
 	Offset_Table :: struct {
 		scaler_type : u32
 		num_tables : u16
@@ -36,15 +35,16 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		entry_selector: u16
 		range_shift : u16
 	}
+	h: Offset_Table = #big_endian bytes[0]
 
-	table_section := i32(h.num_tables * size_of(Table))
-	table_dir: [..32]Table = #big_endian bytes[12: 12 + table_section]
 	Table :: struct {
 		tag: [4]utf8
 		check_sum : u32
 		offset: u32
 		len: u32
 	}
+	table_section := i32(h.num_tables * size_of(Table))
+	table_dir: [..32]Table = #big_endian bytes[12: 12 + table_section]
 
 	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
 		for table in tables {
@@ -57,7 +57,6 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		return 0
 	}
 
-	head : Head = #big_endian bytes[table_dir.get_offset("head")]
 	Head :: struct {
 		version              : Fixed          // 0x00010000 = version 1.0
 		font_revision        : Fixed          // set by font manufacturer
@@ -77,8 +76,8 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		index_to_loc_format  : i16            // 0 = short (u16) offsets in loca, 1 = long (u32)
 		glyph_data_format    : i16            // 0 for current format
 	}
+	head : Head = #big_endian bytes[table_dir.get_offset("head")]
 
-	maxp : Maxp = #big_endian bytes[table_dir.get_offset("maxp")]
 	Maxp :: struct {
 		version                  : Fixed // 0x00010000 (TrueType v1.0) or 0x00005000 (CFF v0.5)
 		num_glyphs               : u16   // total glyph count in the font
@@ -96,6 +95,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		max_component_elements   : u16   // max top-level components per composite glyph
 		max_component_depth      : u16   // max recursion depth of composite glyphs
 	}
+	maxp : Maxp = #big_endian bytes[table_dir.get_offset("maxp")]
 
 	Cmap :: struct {
 		version       : u16
@@ -105,7 +105,6 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 	}
 	cmap_loc := table_dir.get_offset("cmap")
 	cmap : Cmap = #big_endian bytes[cmap_loc]
-	// Expr_Index source: fills to cap (16). User trims .len to num_subtables.
 	cmap.encodings = #big_endian bytes[cmap_loc + 4]
 	cmap.encodings.len = i32(cmap.num_subtables)
 
@@ -120,13 +119,13 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		offset               : u32 // byte offset from start of cmap table to this encoding's subtable
 	}
 
-	loca : Loca = #big_endian bytes[table_dir.get_offset("loca")]
 	Loca :: struct {
-		// offsets array has num_glyphs + 1 entries (last entry gives the end of the final glyph).
-		// Each entry is u16 (short — multiply by 2 for actual byte offset into glyf)
-		// or u32 (long — already a byte offset). Format chosen by head.index_to_loc_format.
-		offsets : []byte
+		offsets : [1<<16 + 1]u32
 	}
+	loca : Loca = #big_endian bytes[table_dir.get_offset("loca")]
+	print("loca type", head.index_to_loc_format)
+
+
 
 	glyf : Glyf = #big_endian bytes[table_dir.get_offset("glyf")]
 	Glyf :: struct {

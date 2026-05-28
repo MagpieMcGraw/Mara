@@ -971,14 +971,28 @@ main :: proc() {
         return false
     }
 
-    // Abort early on parse errors in the requested package. Print the
-    // perf-so-far, then the parse-error details (buffered), then the
-    // summary — so a failed build reads top-to-bottom like a successful
-    // one with the errors interleaved at the right phase.
-    if main_errs, has := parse_errors[args.pkg_name]; has {
+    // Abort early on ANY parse errors — not just in the requested package.
+    // Imported modules with broken parses produce partial ASTs that the
+    // type checker may quietly accept (as Type_Error placeholders) and the
+    // codegen then silently fails on. Aborting at the parse phase keeps
+    // the failure attributable to the bad source, not a downstream symptom.
+    // Print the perf-so-far, flush the queued diagnostics, then a summary
+    // listing every package that errored.
+    if len(parse_errors) > 0 {
         perf_timer_end(&perf)
         flush_diagnostics()
-        fmt.printf(BUILD_PARSE_ERRORS_ABORT, main_errs, args.pkg_name)
+        total_errs := 0
+        for _, n in parse_errors { total_errs += n }
+        if len(parse_errors) == 1 {
+            for pkg, n in parse_errors {
+                fmt.printf(BUILD_PARSE_ERRORS_ABORT, n, pkg)
+            }
+        } else {
+            fmt.printf("Found %d parse error(s) across %d package(s). Aborting.\n", total_errs, len(parse_errors))
+            for pkg, n in parse_errors {
+                fmt.printf("  - %s: %d error(s)\n", pkg, n)
+            }
+        }
         return
     }
 
