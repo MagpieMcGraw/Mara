@@ -1,0 +1,22 @@
+module test_multi_assign
+
+S :: struct {
+	a: i32
+	b: i32
+}
+
+main :: fun() -> i64 {
+	x : i32
+	y : i32
+
+	// Broadcast: one source to multiple bare-name targets.
+	x, y = 7
+	print("locals:", x, y)
+
+	// Broadcast into struct field targets.
+	s : S
+	s.a, s.b = 42
+	print("fields:", s.a, s.b)
+
+	return 0
+}

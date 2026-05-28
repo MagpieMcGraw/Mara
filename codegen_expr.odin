@@ -1875,6 +1875,19 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                     }
                 }
             }
+        } else if is_indexed_struct_expr(g, arg_expr) {
+            // Indexed struct element (`arr[i]` where arr's elements are
+            // structs). Without this, the fallback path treats the GEP'd
+            // pointer as i64 and emits a printf type mismatch. Compute the
+            // element address and route through gen_print_struct with a
+            // synthetic Struct_Var anchored at that address.
+            idx_expr := arg_expr.(^Expr_Index)
+            sd := as_struct_body(expr_type(arg_expr))
+            if print_st, ps_ok := lookup_struct(g, sd.name); ps_ok {
+                elem_ptr := gen_index_address(g, idx_expr)
+                stv := Struct_Var{alloca = elem_ptr, struct_name = sd.name}
+                gen_print_struct(g, &stv, print_st)
+            }
         } else if is_c8_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
             // c8 prints as a character using %c
@@ -2002,6 +2015,15 @@ is_array_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     t := distinct_base(expr_type(expr))
     if _, ok := t.(^Type_Fixed_Array); ok { return true }
     return false
+}
+
+// True when the expression is an Expr_Index whose element type is a struct.
+// Used by the print dispatcher to route `arr[i]` (struct elements) through
+// the struct printer instead of the numeric fallback.
+is_indexed_struct_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
+    idx, ok := expr.(^Expr_Index)
+    if !ok { return false }
+    return as_struct_body(expr_type(idx)) != nil
 }
 
 is_plain_struct_expr :: proc(g: ^Codegen, expr: Expr) -> bool {

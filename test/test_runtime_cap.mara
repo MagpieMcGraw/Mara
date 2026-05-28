@@ -1,0 +1,26 @@
+module test_runtime_cap
+
+main :: fun() -> i64 {
+	// Standalone slice decl with runtime cap from a sibling variable —
+	// previously gated as "must be compile-time constant"; now goes through
+	// the runtime-cap path (alloca with i32 %count, .cap stored at runtime).
+	n : i32 = 7
+	buf : [:n]i32
+	print("buf.len:", buf.len, "buf.cap:", buf.cap)
+
+	// Populate via index assignment to confirm backing storage is usable.
+	for i in 0..7 {
+		buf[i32(i)] = i32(i) * 10
+		buf.len += 1
+	}
+	for v, i in buf {
+		print(i, ":", v)
+	}
+
+	// Runtime cap from arithmetic.
+	m : i32 = 3
+	buf2 : [:m * 2 + 1]i32   // cap = 7
+	print("buf2.cap:", buf2.cap)
+
+	return 0
+}

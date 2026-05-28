@@ -224,12 +224,42 @@ Address_Chain :: struct {
     final_type:  string,             // LLVM IR type of the final element
     final_kind:  Chain_Result,
     struct_name: string,             // if final is struct
-    array_cap:   int,                // if final is array
-    array_elem:  string,             // if final is array
-    array_utf8:        bool,         // if final is array — element type is utf8 (drives string-format print path)
-    array_has_sentinel: bool,        // if final is array — sentinel-terminated
-    array_sentinel:     int,         // if final is array — sentinel value
+    array_cap:   int,                // if final is array — used during walks for index steps
+    array_elem:  string,             // if final is array — used during walks for index steps
+    // Source-of-truth for array-destination flag info (is_utf8 / has_sentinel /
+    // sentinel). The chain doesn't snapshot these on itself — consumers call
+    // chain_array_flags() which reads through to either the originating field
+    // (via field_array_info) or to the root Var's captured flags. Adding a new
+    // flag means one helper change, not one assignment per chain-build site —
+    // that was the drift that caused tag prints to silently emit nothing.
+    array_source: Chain_Array_Source,
     elem_signed: bool,               // if final scalar is signed
+}
+
+// Source-of-truth for an Array destination on an Address_Chain.
+Chain_Array_Source :: union {
+    ^Struct_Type_Field,    // chain ended on a struct field — field_array_info is the truth
+    Chain_Array_Root,      // chain is just a root ident — captures the Var's flag fields
+}
+
+Chain_Array_Root :: struct {
+    is_utf8:      bool,
+    has_sentinel: bool,
+    sentinel:     int,
+}
+
+// Resolve an array destination's flag fields from the chain's array_source.
+// Returns false if the chain doesn't have an array destination at all.
+chain_array_flags :: proc(chain: ^Address_Chain) -> (is_utf8: bool, has_sentinel: bool, sentinel: int, ok: bool) {
+    switch s in chain.array_source {
+    case ^Struct_Type_Field:
+        if _, _, autf8, asent, asentv, info_ok := field_array_info(s); info_ok {
+            return autf8, asent, asentv, true
+        }
+    case Chain_Array_Root:
+        return s.is_utf8, s.has_sentinel, s.sentinel, true
+    }
+    return false, false, 0, false
 }
 
 // One local variable in a struct-returning function whose backing storage
@@ -635,9 +665,11 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             chain.final_kind = .Array
             chain.array_cap = av.capacity
             chain.array_elem = av.elem_type
-            chain.array_utf8 = av.is_utf8
-            chain.array_has_sentinel = av.has_sentinel
-            chain.array_sentinel = av.sentinel
+            chain.array_source = Chain_Array_Root{
+                is_utf8      = av.is_utf8,
+                has_sentinel = av.has_sentinel,
+                sentinel     = av.sentinel,
+            }
             return true
         }
         // Slice as chain base: header lives at sv.alloca; data and cap get
@@ -707,15 +739,13 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             })
 
             // Determine what this field resolves to
-            if acap, aelem, autf8, asent, asentv, ok := field_array_info(f); ok {
-                // Array field
+            if acap, aelem, _, _, _, ok := field_array_info(f); ok {
+                // Array field — flag info comes from `f` via chain_array_flags
                 chain.final_type = fmt.tprintf("[%d x %s]", acap, aelem)
                 chain.final_kind = .Array
                 chain.array_cap = acap
                 chain.array_elem = aelem
-                chain.array_utf8 = autf8
-                chain.array_has_sentinel = asent
-                chain.array_sentinel = asentv
+                chain.array_source = f
                 chain.struct_name = ""
                 return true
             }
@@ -788,14 +818,12 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             // can itself be an array/struct/slice, and subsequent steps in
             // the chain need to keep drilling into it.
             inner_f := &up.inner_st.fields[up.inner_index]
-            if acap, aelem, autf8, asent, asentv, ok := field_array_info(inner_f); ok {
+            if acap, aelem, _, _, _, ok := field_array_info(inner_f); ok {
                 chain.final_type = fmt.tprintf("[%d x %s]", acap, aelem)
                 chain.final_kind = .Array
                 chain.array_cap = acap
                 chain.array_elem = aelem
-                chain.array_utf8 = autf8
-                chain.array_has_sentinel = asent
-                chain.array_sentinel = asentv
+                chain.array_source = inner_f
                 chain.struct_name = ""
                 return true
             }
@@ -1473,6 +1501,27 @@ emit_alloca :: proc(g: ^Codegen, dst, ir_type: string) {
     strings.write_string(b, " = alloca ")
     strings.write_string(b, ir_type)
     strings.write_byte(b, '\n')
+}
+
+// Emit an `alloca T, <w> %count` form where the count is a runtime SSA. This
+// must stay at the point of use rather than the entry block (the standard
+// emit_alloca hoists for static allocas), because an entry-block alloca
+// referencing a later-computed SSA would fail LLVM's domination check.
+// Writes straight to the body buffer to bypass the hoist.
+emit_alloca_runtime :: proc(g: ^Codegen, dst, elem_ir, count_ir, count_ssa: string, align: int) {
+    line: string
+    if align > 0 {
+        line = fmt.tprintf("  %s = alloca %s, %s %s, align %d", dst, elem_ir, count_ir, count_ssa, align)
+    } else {
+        line = fmt.tprintf("  %s = alloca %s, %s %s", dst, elem_ir, count_ir, count_ssa)
+    }
+    if g.hoist_allocas {
+        strings.write_string(&g.body_buf, line)
+        strings.write_byte(&g.body_buf, '\n')
+    } else {
+        strings.write_string(&g.out, line)
+        strings.write_byte(&g.out, '\n')
+    }
 }
 
 // `  <dst> = getelementptr [<byte_len> x i8], ptr <global>, i64 0, i64 0\n`

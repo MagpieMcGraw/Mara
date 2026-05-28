@@ -658,13 +658,14 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             set_field_result(g, Struct_Var{alloca = addr, struct_name = chain.struct_name})
             return addr
         case .Array:
+            autf8, asent, asentv, _ := chain_array_flags(&chain)
             av := Array_Var{
                 alloca       = addr,
                 capacity     = chain.array_cap,
                 elem_type    = chain.array_elem,
-                is_utf8      = chain.array_utf8,
-                has_sentinel = chain.array_has_sentinel,
-                sentinel     = chain.array_sentinel,
+                is_utf8      = autf8,
+                has_sentinel = asent,
+                sentinel     = asentv,
             }
             set_field_result(g, av)
             return addr

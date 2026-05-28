@@ -1164,6 +1164,78 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
     codegen_fatal(g, e.span, CODE_SLICE_TARGET_ARRAY_SLICE)
 }
 
+// Runtime-cap variant of the sized-slice declaration path. Mirrors the
+// comptime-cap path in gen_stmt — alloca backing storage + slice header,
+// init to (ptr, len=0, cap=N) — but the cap evaluates at runtime via
+// gen_expr, and the backing storage uses LLVM's runtime-sized alloca
+// (`alloca T, i32 %count`) instead of `alloca [N x T]`. Pool allocation
+// and string-literal init aren't supported here; both assume a comptime
+// known size.
+gen_slice_decl_runtime_cap :: proc(g: ^Codegen, s: ^Stmt_Assign, sl: ^Type_Slice,
+                                    elem_t: string, sl_utf8, sl_sentinel: bool, sl_sentinel_val: int) {
+    w := slice_layout.len_ir
+    // Evaluate the user-visible count at runtime. cap_user = N (no sentinel
+    // adjustment) — what `.cap()` returns and what we store in the header
+    // for non-sentinel slices.
+    cap_user := gen_expr(g, s.slice_cap_expr, w)
+    // Physical allocation count adds one slot for the sentinel terminator.
+    alloc_cap := cap_user
+    if sl_sentinel {
+        bumped := fresh_tmp(g)
+        emit(g, "  %s = add %s %s, 1", bumped, w, cap_user)
+        alloc_cap = bumped
+    }
+    // Backing storage alloca with runtime count. `alloca T, <w> %count`
+    // allocates `count * sizeof(T)` bytes. For utf8/byte/i8 element types
+    // we over-align to 16 to match the comptime path's `take(T, ...)`-
+    // friendly alignment policy. Goes through emit_alloca_runtime so the
+    // alloca stays at the point of use — the count SSA isn't visible from
+    // the entry block where static allocas live.
+    data_name := fmt.tprintf("%%%s.data", s.name)
+    if elem_t == "i8" {
+        emit_alloca_runtime(g, data_name, "i8", w, alloc_cap, 16)
+    } else {
+        emit_alloca_runtime(g, data_name, elem_t, w, alloc_cap, 0)
+    }
+    // Sentinel slices need the trailing slot to start at zero so C-style
+    // consumers that walk-until-null see a defined boundary on day zero.
+    // Zeroing the full region matches the comptime path.
+    if sl_sentinel {
+        elem_bytes := elem_byte_size(elem_t, g.checked)
+        size_ssa := fresh_tmp(g)
+        emit(g, "  %s = mul %s %s, %d", size_ssa, w, alloc_cap, elem_bytes)
+        // memset uses i64 size — extend if header width is narrower.
+        size64 := size_ssa
+        if w != "i64" {
+            zext := fresh_tmp(g)
+            emit(g, "  %s = zext %s %s to i64", zext, w, size_ssa)
+            size64 = zext
+        }
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %s, i1 false)",
+            data_name, size64)
+    }
+    // Build the slice header. Stores cap_user (not alloc_cap) so callers
+    // see N usable elements regardless of the hidden sentinel slot.
+    alloca_name := fmt.tprintf("%%%s", s.name)
+    emit_slice_alloca(g, alloca_name)
+    ptr_gep := fresh_tmp(g)
+    emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
+    emit_store(g, "ptr", data_name, ptr_gep)
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
+    emit_typed_store_len(g, "0", len_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
+    emit_typed_store_cap(g, cap_user, cap_gep)
+    g.all_vars[s.name] = Slice_Var{
+        alloca       = alloca_name,
+        elem_type    = elem_t,
+        is_utf8      = sl_utf8,
+        has_sentinel = sl_sentinel,
+        sentinel     = sl_sentinel_val,
+    }
+}
+
 // Assign a slice expression to an inferred-type variable: x := arr[1:3]
 gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
     // Pre-bound slice with no body initializer (e.g. `name: String` as a struct
@@ -1301,8 +1373,43 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
         emit_typed_store_cap(g, "0", cap_gep)
         return
     }
+    // 1-arg `slice(source)` — the parser produces an Expr_Take with no
+    // type_expr and no count_expr. The slice's element type / cap come from
+    // the LHS (already in dst_ptr's slot, set by a prior assignment to
+    // `.cap` and `.len`). We just rewrite `.ptr` to aim at the new source;
+    // len/cap stay as the user already set them.
+    if take, take_ok := value.(^Expr_Take); take_ok &&
+       take.keyword == "slice" && take.type_expr == nil && take.count_expr == nil {
+        elem_ptr := gen_slice_one_arg_source_ptr(g, take.storage, take.span)
+        ptr_gep := fresh_tmp(g)
+        emit_slice_gep(g, ptr_gep, dst_ptr, SLICE.ptr)
+        emit_store(g, "ptr", elem_ptr, ptr_gep)
+        return
+    }
     src := gen_expr(g, value)
     emit_memcpy(g, dst_ptr, src, slice_header_bytes)
+}
+
+// Resolve the source pointer for a 1-arg `slice(source)`. Currently accepts
+// `&bytes[offset]` (typed pointer at a byte-buffer offset) — the same shape
+// the 2-arg form already takes for its byte-buffer source. Other shapes
+// (cursor form / arbitrary ^byte) are deferred; the byte-buffer case covers
+// the binary-parsing pattern this feature was introduced for.
+gen_slice_one_arg_source_ptr :: proc(g: ^Codegen, storage: Expr, span: Span) -> string {
+    if un, un_ok := storage.(^Expr_Unary); un_ok && un.op == .Ampersand {
+        if idx, idx_ok := un.operand.(^Expr_Index); idx_ok {
+            // The byte span is unknown to slice() here — we deferred bounds
+            // checking against the LHS cap. Use a 1-byte minimum so the
+            // existing emit_byte_offset_ptr machinery still validates the
+            // starting offset is in range.
+            ptr, ok := emit_byte_offset_ptr(g, idx.expr, idx.index, 1, "slice", idx.span)
+            if !ok {
+                codegen_fatal(g, span, CODE_POSITIONAL_TAKE_REQUIRES_BUF_SOURCE)
+            }
+            return ptr
+        }
+    }
+    codegen_fatal(g, span, CODE_POSITIONAL_TAKE_REQUIRES_BUF_SOURCE)
 }
 
 // Assign a slice-typed expression (e.g. alloc()) to a named variable.

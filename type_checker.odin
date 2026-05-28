@@ -6874,8 +6874,29 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             }
                         }
                     } else {
-                        check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_REQUIRES_FUNCTION,
-                            type_name(val_type))
+                        // Broadcast: `a, b = single_value` — store the same value
+                        // into every target. Each target must accept val_type. New
+                        // names get val_type bound. Expression targets get type-
+                        // checked against val_type for compatibility. The
+                        // codegen path uses is_broadcast to choose the right
+                        // generation (one RHS eval, N stores).
+                        s.is_broadcast = true
+                        target_val_type := distinct_base(val_type)
+                        for name, i in s.names {
+                            if name != "" {
+                                type_env_set(env, name, val_type)
+                                append(&s.var_types, target_val_type)
+                            } else if i < len(s.targets) && s.targets[i] != nil {
+                                target_type := check_expr(c, s.targets[i], env)
+                                if !is_any(target_type) && types_incompatible(target_type, val_type) {
+                                    check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
+                                        type_name(val_type), type_name(target_type))
+                                }
+                                append(&s.var_types, distinct_base(target_type))
+                            } else {
+                                append(&s.var_types, target_val_type)
+                            }
+                        }
                     }
                 }
             }
@@ -8127,7 +8148,25 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     fa_expr := s.target.(^Expr_Field_Access)
     obj_type := check_expr(c, fa_expr.expr, env)
+
+    // Pre-resolve the field's type so check_expr(s.value) can pick it up via
+    // c.expected_hint. The 1-arg `slice(source)` form needs this to infer
+    // its element type; without the hint it has nowhere to derive T from.
+    pre_st: ^Scope_Body
+    if sd := as_scope_body(obj_type); sd != nil && len(sd.fields) > 0 {
+        pre_st = sd
+    } else if pt, ok := obj_type.(^Type_Ptr); ok {
+        if sd := as_scope_body(pt.elem); sd != nil && len(sd.fields) > 0 {
+            pre_st = sd
+        }
+    }
+    if pre_st != nil {
+        if ft := resolve_struct_field(pre_st, fa_expr.field, c.table); ft != nil {
+            c.expected_hint = ft
+        }
+    }
     val_type := check_expr(c, s.value, env)
+    c.expected_hint = nil
 
     // Same partial-array-aliasing rejection as the simple-target path: a
     // memcpy of a struct containing a `Type_Partial_Array` field would leave
@@ -8142,14 +8181,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     }
 
     // Auto-deref: if obj is ^Struct, check field on the inner struct
-    st: ^Scope_Body
-    if sd := as_scope_body(obj_type); sd != nil && len(sd.fields) > 0 {
-        st = sd
-    } else if pt, ok := obj_type.(^Type_Ptr); ok {
-        if sd := as_scope_body(pt.elem); sd != nil && len(sd.fields) > 0 {
-            st = sd
-        }
-    }
+    st: ^Scope_Body = pre_st
 
     if st != nil {
         ft := resolve_struct_field(st, fa_expr.field, c.table)
@@ -10275,9 +10307,28 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 }
             }
         }
-        resolved := resolve_type_expr(e.type_expr, c, e.span, env=env)
-        if _, is_err := resolved.(Type_Error); is_err {
-            check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
+        // 1-arg `slice(source)` — no type_expr. Pull the slice's element type
+        // from the expected_hint set by check_field_assign (the LHS field
+        // being assigned to). Without the hint there's nowhere to derive T,
+        // so we error.
+        resolved: Type
+        if e.type_expr == nil {
+            if hint := c.expected_hint; hint != nil {
+                if _, is_slice := distinct_base(hint).(^Type_Slice); is_slice {
+                    resolved = hint
+                } else {
+                    check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
+                    resolved = Type_Error{}
+                }
+            } else {
+                check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
+                resolved = Type_Error{}
+            }
+        } else {
+            resolved = resolve_type_expr(e.type_expr, c, e.span, env=env)
+            if _, is_err := resolved.(Type_Error); is_err {
+                check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
+            }
         }
         // Runtime-counted form: validate count is integer at slice header
         // width, resolved is a slice. Codegen does NOT emit an implicit

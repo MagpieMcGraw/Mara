@@ -639,7 +639,6 @@ CODE_CALL_UNKNOWN_FUNCTION_FUN_INFO :: "call to unknown function '%s' — no fun
 CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN :: "format string has more `%%` placeholders than args"
 CODE_PRINT_ARRAY_EXPRESSION_DID_RESOLVE :: "print: array expression did not resolve to an Array_Var"
 CODE_CANNOT_MATCH_KIND_UNION_EXPRESSION :: "cannot match on this kind of union expression"
-CODE_SLICE_CAPACITY_COMPILE_TIME_CONSTANT :: "slice capacity must be a compile-time constant"
 CODE_PARTIAL_ARRAY_INITIALIZER_STRING_LITERAL :: "partial array '%s' initializer must be a string literal or another partial array, got %s"
 CODE_BREAK_OUTSIDE_LOOP :: "break outside of loop"
 CODE_CONTINUE_OUTSIDE_LOOP :: "continue outside of loop"

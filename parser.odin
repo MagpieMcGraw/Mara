@@ -534,6 +534,9 @@ Stmt_Multi_Return_Assign :: struct {
     type_expr: Type_Expr,
     span:      Span,
     var_types: [dynamic]Type,   // per-name resolved types, filled by type checker
+    is_broadcast: bool,         // true when RHS is a single non-multi-return value broadcast
+                                // to every target. Set by the type checker; codegen
+                                // evaluates the RHS once and stores it into each target.
 }
 
 Stmt_Call :: struct {
@@ -3839,34 +3842,49 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         } else if (tok.text == "let" || tok.text == "slice") && current_kind(p) == .Left_Paren {
             // `let(T, storage)` — carve a value of type T from `storage`.
             // `slice([:N]T, storage)` — carve N elements as a slice header.
+            // `slice(storage)` — 1-arg form: element type and cap come from the
+            //                    assignment LHS (the field/var being assigned to).
+            //                    Only valid in assignment context.
             //
-            // Both keywords accept two storage shapes:
+            // The 2-arg form's storage shapes:
             //   cursor form: `^[]byte` slice variable (advances .len cursor).
             //   exact form:  `&buf[off]` (typed pointer at offset; no cursor).
             //
             // Shared AST (Expr_Take); the type checker validates that:
             //   - `let` has a non-slice type and no count_expr.
-            //   - `slice` has a slice type and count_expr (from [:N]T).
+            //   - `slice` 2-arg has a slice type and count_expr (from [:N]T).
+            //   - `slice` 1-arg has nil type_expr; LHS-driven inference in checker.
             //
             // Replaces the older `take` keyword, which conflated both.
             kind := tok.text
             advance(p) // consume '('
-            type_arg := parse_type_expr(p)
-            count_arg: Expr
-            if ts, is_slice := type_arg.(^Type_Slice_Expr); is_slice && ts.cap_expr != nil {
-                count_arg = ts.cap_expr
-                ts.cap_expr = nil
-            }
-            expect(p, .Comma)
-            skip_newlines(p)
-            storage_arg := parse_expr(p)
-            expect(p, .Right_Paren)
+            // Disambiguate by the first token after `(`:
+            //   `[` starts a type expression (the 2-arg form's [:N]T).
+            //   anything else starts a value expression (the 1-arg form's source).
+            // `let` always requires the type-arg form — it has no LHS-cap
+            // story, so a bare value source would have nowhere to derive T.
+            is_one_arg := kind == "slice" && current_kind(p) != .Left_Bracket
             tk := new(Expr_Take)
-            tk.type_expr = type_arg
-            tk.storage = storage_arg
-            tk.count_expr = count_arg
             tk.keyword = kind
             tk.span = token_span(tok)
+            if is_one_arg {
+                tk.type_expr = nil
+                tk.count_expr = nil
+                tk.storage = parse_expr(p)
+            } else {
+                type_arg := parse_type_expr(p)
+                count_arg: Expr
+                if ts, is_slice := type_arg.(^Type_Slice_Expr); is_slice && ts.cap_expr != nil {
+                    count_arg = ts.cap_expr
+                    ts.cap_expr = nil
+                }
+                expect(p, .Comma)
+                skip_newlines(p)
+                tk.type_expr = type_arg
+                tk.count_expr = count_arg
+                tk.storage = parse_expr(p)
+            }
+            expect(p, .Right_Paren)
             result = tk
         } else if tok.text == "all" && is_broadcast_value_start(current_kind(p)) {
             // Bare `all <expr>` desugars to the `{all <expr>}` broadcast struct

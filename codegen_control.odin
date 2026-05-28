@@ -269,20 +269,34 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     // header (shared layout with slice for the first slice_header_bytes).
     resolved := false
     if coll_fa != nil {
+        // Partial-array and slice fields share the same first slice_header_bytes
+        // ({len, cap, ptr}), so reading .len and .ptr is identical for both —
+        // the only thing that differs is the element type lookup.
+        elem_t: Type
+        is_pa_or_sl := false
+        ir_type: string
         if pa, pa_ok := expr_type(coll_fa).(^Type_Partial_Array); pa_ok {
-            pa_ptr := gen_field_address(g, coll_fa)
-            pa_ir := llvm_type_from_checker(pa)
+            elem_t = pa.elem
+            ir_type = llvm_type_from_checker(pa)
+            is_pa_or_sl = true
+        } else if sl, sl_ok := expr_type(coll_fa).(^Type_Slice); sl_ok {
+            elem_t = sl.elem
+            ir_type = llvm_type_from_checker(sl)
+            is_pa_or_sl = true
+        }
+        if is_pa_or_sl {
+            hdr_ptr := gen_field_address(g, coll_fa)
             len_gep := fresh_tmp(g)
-            emit_field_gep_into(g, len_gep, pa_ir, pa_ptr, SLICE.len)
+            emit_field_gep_into(g, len_gep, ir_type, hdr_ptr, SLICE.len)
             len_val := fresh_tmp(g)
             emit_typed_load_len(g, len_val, len_gep)
             length_val = len_val
             ptr_gep := fresh_tmp(g)
-            emit_field_gep_into(g, ptr_gep, pa_ir, pa_ptr, SLICE.ptr)
+            emit_field_gep_into(g, ptr_gep, ir_type, hdr_ptr, SLICE.ptr)
             data_val := fresh_tmp(g)
             emit_load_into(g, data_val, "ptr", ptr_gep)
             data_ptr = data_val
-            elem_ir = llvm_type_from_checker(pa.elem)
+            elem_ir = llvm_type_from_checker(elem_t)
             resolved = true
         }
     }
