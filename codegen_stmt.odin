@@ -199,6 +199,12 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 gen_partial_array_byte_read(g, s.name, pa, sl_expr, s.span)
                 return
             }
+            if idx_expr, ok := s.value.(^Expr_Index); ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
+                // Expr_Index source: read cap * sizeof(elem) bytes starting
+                // at the index. .len = cap. User trims afterward if needed.
+                gen_partial_array_byte_read_index(g, s.name, pa, idx_expr, s.span)
+                return
+            }
         }
 
         // Check if value is a slice expression (inferred type)

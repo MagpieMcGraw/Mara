@@ -1905,7 +1905,11 @@ gen_partial_array_init_in_place :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type
     emit_typed_store_cap(g, fmt.tprintf("%d", cap_n), cap_gep)
 }
 
-gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array, sl_expr: ^Expr_Slice, span: Span) {
+// Allocate a fresh partial-array's backing storage and register it as a
+// Slice_Var. Returns the alloca's name so the caller can populate the
+// elements area (e.g. via gen_partial_array_byte_fill_at_*). Used by the
+// two standalone-decl entry points (Expr_Slice and Expr_Index sources).
+gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array) -> string {
     elem_t := llvm_type_from_checker(pa.elem)
     _, pa_utf8 := pa.elem.(Type_Utf8)
     cap_n := pa.size
@@ -1919,7 +1923,6 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     } else {
         emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type}))
     }
-    gen_partial_array_byte_fill_at(g, alloca_name, pa, sl_expr, span)
     g.all_vars[name] = Slice_Var{
         alloca       = alloca_name,
         elem_type    = elem_t,
@@ -1927,6 +1930,17 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
         has_sentinel = pa.has_sentinel,
         sentinel     = pa.sentinel,
     }
+    return alloca_name
+}
+
+gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array, sl_expr: ^Expr_Slice, span: Span) {
+    alloca_name := gen_partial_array_alloc_and_register(g, name, pa)
+    gen_partial_array_byte_fill_at(g, alloca_name, pa, sl_expr, span)
+}
+
+gen_partial_array_byte_read_index :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array, idx_expr: ^Expr_Index, span: Span) {
+    alloca_name := gen_partial_array_alloc_and_register(g, name, pa)
+    gen_partial_array_byte_fill_at_from_index(g, alloca_name, pa, idx_expr, span)
 }
 
 // Convenience entry: byte-fill from an Expr_Slice source. Computes the byte
