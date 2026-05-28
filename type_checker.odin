@@ -629,7 +629,15 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
     }
     matches: [dynamic]Match
     cur := env
+    // Walk the parent chain with lexical shadowing: collect matches at the
+    // current level (own .types + sibling includes), and if any are found,
+    // stop. Otherwise climb to the parent. Without the stop, an inner
+    // `Self` binding (set per-class by register_scope_defs / check_scope_body)
+    // appears alongside the enclosing class's `Self`, the same-name pair gets
+    // flagged as ambiguous, and both lookups fail — breaking `^Self` in any
+    // nested type.
     for cur != nil {
+        level_start := len(matches)
         if t, found := cur.types[name]; found {
             owner: string
             if cur.owner_module != nil {
@@ -645,6 +653,7 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
                 append(&matches, Match{typ = t, owner = owner})
             }
         }
+        if len(matches) > level_start { break }
         if cur.is_module_scope { break }
         cur = cur.parent
     }
@@ -11521,9 +11530,22 @@ resolve_qualified_call :: proc(
     if !resolved_assoc {
         // Not a package alias or associated function — UFCS: x.f(args) -> f(x, args).
         // Rewrite the AST so codegen sees a plain call with qualifier prepended as first arg.
-        // Leave fn_type nil — UFCS keeps e.name bare, so the env lookup in
-        // check_call will resolve it through the includes chain.
-        ufcs_flat := make_flat_name(resolve_fn_home(c, env,e.name), e.name)
+        //
+        // For the flat (mangled) name, prefer a direct env lookup: a function
+        // declared in an enclosing class/struct body is registered there under
+        // its bare name with a mangled `.name` like
+        // `<module>_<parent>_<bare>` — make_flat_name(home, bare) would mint
+        // `<module>_<bare>` and miss it. Fall back to the home-based mint only
+        // when the bare name doesn't resolve to a known function in scope.
+        ufcs_flat := ""
+        if t, found := type_env_get(env, e.name); found {
+            if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun && ts.name != "" {
+                ufcs_flat = ts.name
+            }
+        }
+        if ufcs_flat == "" {
+            ufcs_flat = make_flat_name(resolve_fn_home(c, env, e.name), e.name)
+        }
         resolution = Resolved_Func{name = ufcs_flat}
         new_args: [dynamic]Expr
         append(&new_args, e.qualifier)

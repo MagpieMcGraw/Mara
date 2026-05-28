@@ -1,0 +1,29 @@
+module test_nested_self
+
+// Minimal repro: nested struct with ^Self method.
+
+// Reference: top-level struct with ^Self method (this works in Pounce/camera.mara).
+Top :: struct {
+	n: i32
+
+	read :: fun(p: ^Self) -> i32 {
+		return p.n
+	}
+}
+
+// Failing case: same shape, nested inside another struct.
+Outer :: struct(x: i32) {
+	value := x
+
+	Inner :: struct {
+		n: i32
+
+		read :: fun(p: ^Self) -> i32 {
+			return p.n
+		}
+	}
+}
+
+main :: fun() -> i64 {
+	return 0
+}
