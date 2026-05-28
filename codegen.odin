@@ -226,6 +226,9 @@ Address_Chain :: struct {
     struct_name: string,             // if final is struct
     array_cap:   int,                // if final is array
     array_elem:  string,             // if final is array
+    array_utf8:        bool,         // if final is array — element type is utf8 (drives string-format print path)
+    array_has_sentinel: bool,        // if final is array — sentinel-terminated
+    array_sentinel:     int,         // if final is array — sentinel value
     elem_signed: bool,               // if final scalar is signed
 }
 
@@ -632,6 +635,9 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             chain.final_kind = .Array
             chain.array_cap = av.capacity
             chain.array_elem = av.elem_type
+            chain.array_utf8 = av.is_utf8
+            chain.array_has_sentinel = av.has_sentinel
+            chain.array_sentinel = av.sentinel
             return true
         }
         // Slice as chain base: header lives at sv.alloca; data and cap get
@@ -701,14 +707,15 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             })
 
             // Determine what this field resolves to
-            acap := field_array_cap(f)
-            if acap > 0 {
+            if acap, aelem, autf8, asent, asentv, ok := field_array_info(f); ok {
                 // Array field
-                aelem := field_array_elem(f)
                 chain.final_type = fmt.tprintf("[%d x %s]", acap, aelem)
                 chain.final_kind = .Array
                 chain.array_cap = acap
                 chain.array_elem = aelem
+                chain.array_utf8 = autf8
+                chain.array_has_sentinel = asent
+                chain.array_sentinel = asentv
                 chain.struct_name = ""
                 return true
             }
@@ -781,13 +788,14 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             // can itself be an array/struct/slice, and subsequent steps in
             // the chain need to keep drilling into it.
             inner_f := &up.inner_st.fields[up.inner_index]
-            acap := field_array_cap(inner_f)
-            if acap > 0 {
-                aelem := field_array_elem(inner_f)
+            if acap, aelem, autf8, asent, asentv, ok := field_array_info(inner_f); ok {
                 chain.final_type = fmt.tprintf("[%d x %s]", acap, aelem)
                 chain.final_kind = .Array
                 chain.array_cap = acap
                 chain.array_elem = aelem
+                chain.array_utf8 = autf8
+                chain.array_has_sentinel = asent
+                chain.array_sentinel = asentv
                 chain.struct_name = ""
                 return true
             }

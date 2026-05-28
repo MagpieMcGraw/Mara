@@ -659,9 +659,12 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             return addr
         case .Array:
             av := Array_Var{
-                alloca    = addr,
-                capacity  = chain.array_cap,
-                elem_type = chain.array_elem,
+                alloca       = addr,
+                capacity     = chain.array_cap,
+                elem_type    = chain.array_elem,
+                is_utf8      = chain.array_utf8,
+                has_sentinel = chain.array_has_sentinel,
+                sentinel     = chain.array_sentinel,
             }
             set_field_result(g, av)
             return addr
