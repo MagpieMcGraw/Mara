@@ -1,6 +1,8 @@
 
 module mara.lazy_font
 
+use mara.string
+
 // Data type 	Description
 // shortFrac 	16-bit signed fraction
 // Fixed 		16.16-bit signed fixed-point number
@@ -37,7 +39,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 
 	h.num_tables = 5
 	table_section := i32(h.num_tables * size_of(Table))
-	table_dir: [..32]Table = bytes[12: 12 + table_section]
+	table_dir: [..32]Table = #big_endian bytes[12: 12 + table_section]
 	Table :: struct {
 		tag: [4]utf8
 		check_sum : u32
@@ -45,7 +47,17 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		len: u32
 	}
 
-	head : Head
+	get_offset :: fun(tables: [..32]Table, target: []utf8) -> u32 {
+		for table in tables {
+			if starts_with(table.tag[:], target) {
+				return table.offset
+			}
+		}
+		print("Table '%' not found.", target)
+		return 0
+	}
+
+	head : Head = bytes[i32(table_dir.get_offset("head"))]
 	Head :: struct {
 		version              : Fixed          // 0x00010000 = version 1.0
 		font_revision        : Fixed          // set by font manufacturer
@@ -146,4 +158,8 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		advance_width     : U_F_Word
 		left_side_bearing : F_Word
 	}
+}
+
+table_get_offset :: fun(tag: []utf8, ){
+
 }
