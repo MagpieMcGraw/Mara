@@ -33,3 +33,5 @@ Language features that enable less IR generation. Functional stuff?
 When parsing, put defs and decls in two different arrays. Can loop over each without interdependence?
 
 Byte reads might need new syntax. Maybe an = to read without auto-len, and a += to read with auto len...
+
+Take a personal look at gen address chain. I have a bad feeling about it.
