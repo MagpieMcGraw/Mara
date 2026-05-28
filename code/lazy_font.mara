@@ -98,15 +98,17 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 	}
 
 	Cmap :: struct {
-		version       : u16              // 0
+		version       : u16
 		num_subtables : u16
-		encodings     : [..16]Encoding_Record // num_subtables entries
-		subtable_data : []byte            // raw bytes; encoding offsets are absolute within the full cmap table
+		encodings     : [..16]Encoding_Record
+		subtable_data : []byte
 	}
 	cmap_loc := table_dir.get_offset("cmap")
-	cmap.encodings.len = num_subtables
 	cmap : Cmap = #big_endian bytes[cmap_loc]
-	cmap.encodings = bytes[cmap_loc + 4]
+	// Re-init the partial-array slot after the parent struct memcpy clobbered
+	// it with file bytes. Patches .ptr to aim at the inline elements area,
+	// resets .len = 0, .cap = 16 from the type.
+	cmap.encodings = [..16]Encoding_Record{}
 
 	print(cmap.encodings[0])
 
