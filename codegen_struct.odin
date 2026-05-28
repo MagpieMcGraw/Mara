@@ -1726,6 +1726,26 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if idx >= 0 {
         f := &st.fields[idx]
         ft := field_ir_type(f)
+        // Partial-array field with a byte-buffer slice source: fill the
+        // inline elements area, init the header (.ptr → elements, .cap from
+        // type, .len from the source's element count). Needs to dispatch
+        // BEFORE the generic byte-buffer field read below — that path
+        // treats the slot as opaque and ends up copying the file bytes over
+        // the partial-array header (clobbering the carefully-anchored .ptr).
+        if pa, pa_ok := f.type_.(^Type_Partial_Array); pa_ok {
+            if sl_expr, sl_ok := s.value.(^Expr_Slice); sl_ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
+                field_ptr := fresh_tmp(g)
+                emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
+                gen_partial_array_byte_fill_at(g, field_ptr, pa, sl_expr, s.span)
+                return
+            }
+            if lit, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok && lit.type_expr != nil && len(lit.fields) == 0 {
+                field_ptr := fresh_tmp(g)
+                emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
+                gen_partial_array_init_in_place(g, field_ptr, pa)
+                return
+            }
+        }
         // Byte-buffer reinterpret read: obj.field = mem[lo:hi] or obj.field = mem[off].
         // Memcpys field-sized bytes from the source into the field GEP.
         if sl_expr, ok := s.value.(^Expr_Slice); ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
@@ -1773,20 +1793,10 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             gen_store_slice_into(g, gep, s.value)
             return
         }
-        // Partial-array field — has the slice header layout up front and an
-        // inline elements area after. An empty literal `[..N]T{}` from the
-        // user means "init this field in place" — set .ptr to the elements
-        // area, .len = 0, .cap = N. The .ptr fixup is the whole point of
-        // the construction; storing a header byte-wise would otherwise
-        // leave .ptr aliasing wherever the literal was synthesized.
-        if pa, pa_ok := f.type_.(^Type_Partial_Array); pa_ok {
-            if lit, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok && lit.type_expr != nil && len(lit.fields) == 0 {
-                field_ptr := fresh_tmp(g)
-                emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
-                gen_partial_array_init_in_place(g, field_ptr, pa)
-                return
-            }
-        }
+        // (Partial-array field cases are handled above, before the generic
+        // byte-buffer field-read path. See the dispatch at the top of this
+        // block — both `[..N]T{}` and `bytes[lo:hi]` route through there
+        // so the partial-array header gets initialized correctly.)
         // Scalar field — compute the GEP first so the compound-load substitute
         // can pre-load the current value through it before gen_expr runs.
         gep := fresh_tmp(g)

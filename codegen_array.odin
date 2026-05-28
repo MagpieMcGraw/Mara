@@ -1913,25 +1913,49 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     if pa.has_sentinel { alloc_cap += 1 }
     ir_type := partial_array_ir_type(elem_t, alloc_cap)
     alloca_name := fmt.tprintf("%%%s", name)
-    elem_bytes := elem_byte_size(elem_t, g.checked)
 
     if elem_t == "i8" {
         emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type, ", align 16"}))
     } else {
         emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type}))
     }
+    gen_partial_array_byte_fill_at(g, alloca_name, pa, sl_expr, span)
+    g.all_vars[name] = Slice_Var{
+        alloca       = alloca_name,
+        elem_type    = elem_t,
+        is_utf8      = pa_utf8,
+        has_sentinel = pa.has_sentinel,
+        sentinel     = pa.sentinel,
+    }
+}
 
-    // Initialise header: ptr → elements, len → 0, cap → N.
+// Initialize a partial-array slot in place AND populate its inline elements
+// from a byte-buffer slice. Used by both the standalone-decl path (after
+// `alloca`) and the field-assign path (slot_ptr is the field's GEP). Handles
+// the header init (.ptr → elements, .len = count, .cap = N), the byte-span
+// memcpy into the elements area, and optional `#big_endian` per-element
+// bswap. Runtime checks: source span is non-negative, divisible by elem
+// size, and produces count <= cap.
+gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array, sl_expr: ^Expr_Slice, span: Span) {
+    elem_t := llvm_type_from_checker(pa.elem)
+    cap_n := pa.size
+    alloc_cap := cap_n
+    if pa.has_sentinel { alloc_cap += 1 }
+    ir_type := partial_array_ir_type(elem_t, alloc_cap)
+    elem_bytes := elem_byte_size(elem_t, g.checked)
+
+    // Initialise header: ptr → elements, len → 0 (auto-add at the end),
+    // cap → N. Mirrors the literal init helper.
     elements_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", slot_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
     ptr_gep := fresh_tmp(g)
-    emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
+    emit_slice_gep(g, ptr_gep, slot_ptr, SLICE.ptr)
     emit_store(g, "ptr", elements_ptr, ptr_gep)
     len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
+    emit_slice_gep(g, len_gep, slot_ptr, SLICE.len)
     emit_typed_store_len(g, "0", len_gep)
     cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
+    emit_slice_gep(g, cap_gep, slot_ptr, SLICE.cap)
     emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
 
     // Resolve the source byte slice: produce a data ptr at sl_expr.low and a
@@ -1958,7 +1982,7 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     emit(g, "  %s = icmp slt %s %s, %s", inv_cmp, w, src_high, src_low)
     emit_cond_br(g, inv_cmp, inv_err, inv_ok)
     emit_label(g, inv_err)
-    inv_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds inverted (low=%%d, high=%%d) for '%s'\n", name)
+    inv_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds inverted (low=%%d, high=%%d) for partial-array byte read\n")
     inv_global, inv_byte_len := get_string_literal(g, inv_msg)
     inv_ptr := fresh_tmp(g)
     emit_string_gep(g, inv_ptr, inv_byte_len, inv_global)
@@ -1979,7 +2003,7 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     emit(g, "  %s = icmp ne %s %s, 0", rem_cmp, w, rem)
     emit_cond_br(g, rem_cmp, rem_err, rem_ok)
     emit_label(g, rem_err)
-    rem_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds [%%d : %%d] = %%d bytes, not divisible by elem size %d for '%s'\n", elem_bytes, name)
+    rem_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds [%%d : %%d] = %%d bytes, not divisible by elem size %d\n", elem_bytes)
     rem_global, rem_byte_len := get_string_literal(g, rem_msg)
     rem_ptr := fresh_tmp(g)
     emit_string_gep(g, rem_ptr, rem_byte_len, rem_global)
@@ -2000,7 +2024,7 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     emit(g, "  %s = icmp ugt %s %s, %s", cap_cmp, w, count, cap_str)
     emit_cond_br(g, cap_cmp, cap_err, cap_ok)
     emit_label(g, cap_err)
-    cap_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds [%%d : %%d] produced %%d elements, exceeds cap %d for '%s'\n", cap_n, name)
+    cap_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds [%%d : %%d] produced %%d elements, exceeds cap %d\n", cap_n)
     cap_global, cap_byte_len := get_string_literal(g, cap_msg)
     cap_msg_ptr := fresh_tmp(g)
     emit_string_gep(g, cap_msg_ptr, cap_byte_len, cap_global)
@@ -2027,14 +2051,6 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     new_len := fresh_tmp(g)
     emit(g, "  %s = add %s %s, %s", new_len, w, cur_len, count)
     emit_typed_store_len(g, new_len, len_gep)
-
-    g.all_vars[name] = Slice_Var{
-        alloca       = alloca_name,
-        elem_type    = elem_t,
-        is_utf8      = pa_utf8,
-        has_sentinel = pa.has_sentinel,
-        sentinel     = pa.sentinel,
-    }
 }
 
 // Counter-driven loop that calls emit_bswap_in_place on each of `count`
