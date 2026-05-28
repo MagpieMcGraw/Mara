@@ -105,7 +105,9 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 	}
 	cmap_loc := table_dir.get_offset("cmap")
 	cmap : Cmap = #big_endian bytes[cmap_loc]
-	cmap.encodings = #big_endian bytes[cmap_loc + 4 : cmap_loc + 4 + i32(cmap.num_subtables) * 8]
+	// Expr_Index source: fills to cap (16). User trims .len to num_subtables.
+	cmap.encodings = #big_endian bytes[cmap_loc + 4]
+	cmap.encodings.len = i32(cmap.num_subtables)
 
 	print(cmap.encodings.len)
 	for e, i in cmap.encodings {
