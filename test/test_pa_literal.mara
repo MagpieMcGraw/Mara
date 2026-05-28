@@ -8,8 +8,21 @@ Container :: struct {
 
 main :: fun() -> i64 {
 	c : Container
-	// Probe: does this parse / type-check?
+	// Empty-literal in-place init.
 	c.items = [..8]Item{}
-	print("len:", c.items.len, "cap:", c.items.cap)
+	print("after literal: len:", c.items.len, "cap:", c.items.cap)
+
+	// Byte-buffer Expr_Index source — should fill to cap.
+	storage : [..256]byte
+	storage.len = 64
+	for i in 0..32 {
+		storage[i*2] = 0
+		storage[i*2 + 1] = u8(i + 1)
+	}
+	c.items = #big_endian storage[0]
+	print("after byte-index: len:", c.items.len, "cap:", c.items.cap)
+	for it, i in c.items {
+		print("  item", i, ":", it.v)
+	}
 	return 0
 }

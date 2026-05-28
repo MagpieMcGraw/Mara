@@ -1739,6 +1739,16 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
                 gen_partial_array_byte_fill_at(g, field_ptr, pa, sl_expr, s.span)
                 return
             }
+            if idx_expr, idx_ok := s.value.(^Expr_Index); idx_ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
+                // Expr_Index source: no explicit end offset, so we read
+                // `cap * sizeof(elem)` bytes starting at the index. The
+                // resulting .len = cap; user can trim by assigning .len
+                // afterwards if the source actually has fewer valid records.
+                field_ptr := fresh_tmp(g)
+                emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
+                gen_partial_array_byte_fill_at_from_index(g, field_ptr, pa, idx_expr, s.span)
+                return
+            }
             if lit, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok && lit.type_expr != nil && len(lit.fields) == 0 {
                 field_ptr := fresh_tmp(g)
                 emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)

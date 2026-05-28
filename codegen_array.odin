@@ -1929,14 +1929,75 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     }
 }
 
-// Initialize a partial-array slot in place AND populate its inline elements
-// from a byte-buffer slice. Used by both the standalone-decl path (after
-// `alloca`) and the field-assign path (slot_ptr is the field's GEP). Handles
-// the header init (.ptr → elements, .len = count, .cap = N), the byte-span
-// memcpy into the elements area, and optional `#big_endian` per-element
-// bswap. Runtime checks: source span is non-negative, divisible by elem
-// size, and produces count <= cap.
+// Convenience entry: byte-fill from an Expr_Slice source. Computes the byte
+// span from sl_expr.low/sl_expr.high and forwards to the core helper.
 gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array, sl_expr: ^Expr_Slice, span: Span) {
+    w := slice_layout.len_ir
+    src_data_ptr, src_cap, resolved := resolve_byte_target(g, sl_expr.expr, span)
+    if !resolved {
+        codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+    }
+    src_low := "0"
+    if sl_expr.low != nil { src_low = gen_expr(g, sl_expr.low, w) }
+    src_high := src_cap
+    if sl_expr.high != nil { src_high = gen_expr(g, sl_expr.high, w) }
+
+    // Runtime check 0: high >= low (slice form only — Expr_Index path skips
+    // this since byte_count comes from a static cap × elem_size product
+    // that can't be negative).
+    inv_ok := fresh_label(g, "pa.inv.ok")
+    inv_err := fresh_label(g, "pa.inv.err")
+    inv_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %s", inv_cmp, w, src_high, src_low)
+    emit_cond_br(g, inv_cmp, inv_err, inv_ok)
+    emit_label(g, inv_err)
+    inv_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds inverted (low=%%d, high=%%d) for partial-array byte read\n")
+    inv_global, inv_byte_len := get_string_literal(g, inv_msg)
+    inv_ptr := fresh_tmp(g)
+    emit_string_gep(g, inv_ptr, inv_byte_len, inv_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", inv_ptr, w, src_low, w, src_high)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, inv_ok)
+
+    src_bytes := fresh_tmp(g)
+    emit(g, "  %s = sub %s %s, %s", src_bytes, w, src_high, src_low)
+
+    gen_partial_array_byte_fill_at_core(g, slot_ptr, pa, src_data_ptr, src_low, src_bytes, sl_expr.is_big_endian, span)
+}
+
+// Convenience entry: byte-fill from an Expr_Index source. The static cap is
+// the only count signal available, so we read `cap_n * elem_bytes` bytes
+// starting at idx_expr.index and set .len = cap. Useful when the source is
+// "I have a pointer into a buffer, fill this fixed-cap array from there"
+// without needing to compute an explicit end offset.
+gen_partial_array_byte_fill_at_from_index :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array, idx_expr: ^Expr_Index, span: Span) {
+    w := slice_layout.len_ir
+    src_data_ptr, _, resolved := resolve_byte_target(g, idx_expr.expr, span)
+    if !resolved {
+        codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+    }
+    src_low := "0"
+    if idx_expr.index != nil { src_low = gen_expr(g, idx_expr.index, w) }
+    elem_bytes := elem_byte_size(llvm_type_from_checker(pa.elem), g.checked)
+    cap_n := pa.size
+    if pa.has_sentinel { cap_n += 1 }
+    src_bytes := fmt.tprintf("%d", cap_n * elem_bytes)
+    gen_partial_array_byte_fill_at_core(g, slot_ptr, pa, src_data_ptr, src_low, src_bytes, idx_expr.is_big_endian, span)
+}
+
+// Initialize a partial-array slot in place AND populate its inline elements
+// from a byte-buffer span. Used by both the standalone-decl path (after
+// `alloca`) and the field-assign path (slot_ptr is the field's GEP).
+// Handles the header init (.ptr → elements, .len = count, .cap = N), the
+// byte-span memcpy into the elements area, and optional `#big_endian`
+// per-element bswap. Runtime checks: source bytes is divisible by elem
+// size, and produces count <= cap. The slice-range inverted-bounds check
+// lives in the Expr_Slice entry — the Expr_Index entry uses a static byte
+// count that can't be negative.
+gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array,
+                                             src_data_ptr, src_low, src_bytes: string,
+                                             is_big_endian: bool, span: Span) {
     elem_t := llvm_type_from_checker(pa.elem)
     cap_n := pa.size
     alloc_cap := cap_n
@@ -1958,41 +2019,7 @@ gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_
     emit_slice_gep(g, cap_gep, slot_ptr, SLICE.cap)
     emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
 
-    // Resolve the source byte slice: produce a data ptr at sl_expr.low and a
-    // byte count = sl_expr.high - sl_expr.low. Routes through the same
-    // byte-buffer machinery that take/let/slice use.
-    src_data_ptr, src_cap, resolved := resolve_byte_target(g, sl_expr.expr, span)
-    if !resolved {
-        codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
-    }
-
     w := slice_layout.len_ir
-    src_low := "0"
-    if sl_expr.low != nil { src_low = gen_expr(g, sl_expr.low, w) }
-    src_high := src_cap
-    if sl_expr.high != nil { src_high = gen_expr(g, sl_expr.high, w) }
-
-    // Runtime check 0: high >= low. Fires before the divisibility check below
-    // so an inverted slice (e.g. `bytes[12 : table_section]` when table_section
-    // happens to be < 12) reports the actual problem instead of producing a
-    // negative span that confuses the modulo check downstream.
-    inv_ok := fresh_label(g, "pa.inv.ok")
-    inv_err := fresh_label(g, "pa.inv.err")
-    inv_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt %s %s, %s", inv_cmp, w, src_high, src_low)
-    emit_cond_br(g, inv_cmp, inv_err, inv_ok)
-    emit_label(g, inv_err)
-    inv_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds inverted (low=%%d, high=%%d) for partial-array byte read\n")
-    inv_global, inv_byte_len := get_string_literal(g, inv_msg)
-    inv_ptr := fresh_tmp(g)
-    emit_string_gep(g, inv_ptr, inv_byte_len, inv_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", inv_ptr, w, src_low, w, src_high)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
-    emit_label(g, inv_ok)
-
-    src_bytes := fresh_tmp(g)
-    emit(g, "  %s = sub %s %s, %s", src_bytes, w, src_high, src_low)
 
     // Runtime check 1: src_bytes % elem_bytes == 0.
     rem := fresh_tmp(g)
@@ -2003,11 +2030,11 @@ gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_
     emit(g, "  %s = icmp ne %s %s, 0", rem_cmp, w, rem)
     emit_cond_br(g, rem_cmp, rem_err, rem_ok)
     emit_label(g, rem_err)
-    rem_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds [%%d : %%d] = %%d bytes, not divisible by elem size %d\n", elem_bytes)
+    rem_msg := fmt.tprintf("runtime error: partial-array byte read at offset %%d: %%d bytes not divisible by elem size %d\n", elem_bytes)
     rem_global, rem_byte_len := get_string_literal(g, rem_msg)
     rem_ptr := fresh_tmp(g)
     emit_string_gep(g, rem_ptr, rem_byte_len, rem_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", rem_ptr, w, src_low, w, src_high, w, src_bytes)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", rem_ptr, w, src_low, w, src_bytes)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, rem_ok)
@@ -2024,11 +2051,11 @@ gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_
     emit(g, "  %s = icmp ugt %s %s, %s", cap_cmp, w, count, cap_str)
     emit_cond_br(g, cap_cmp, cap_err, cap_ok)
     emit_label(g, cap_err)
-    cap_msg := fmt.tprintf("runtime error: partial-array byte read slice bounds [%%d : %%d] produced %%d elements, exceeds cap %d\n", cap_n)
+    cap_msg := fmt.tprintf("runtime error: partial-array byte read at offset %%d: produced %%d elements, exceeds cap %d\n", cap_n)
     cap_global, cap_byte_len := get_string_literal(g, cap_msg)
     cap_msg_ptr := fresh_tmp(g)
     emit_string_gep(g, cap_msg_ptr, cap_byte_len, cap_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", cap_msg_ptr, w, src_low, w, src_high, w, count)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", cap_msg_ptr, w, src_low, w, count)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, cap_ok)
@@ -2038,10 +2065,10 @@ gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_
     emit(g, "  %s = getelementptr i8, ptr %s, %s %s", src_offset_ptr, src_data_ptr, w, src_low)
     emit_memcpy_runtime(g, elements_ptr, src_offset_ptr, src_bytes)
 
-    // `#big_endian` decorator on the source slice: byte-swap each element in
+    // `#big_endian` decorator on the source: byte-swap each element in
     // place. Count is runtime, so we emit a counter-driven loop wrapping the
     // per-element bswap.
-    if sl_expr.is_big_endian {
+    if is_big_endian {
         emit_partial_bswap_loop(g, elements_ptr, count, pa.elem)
     }
 
