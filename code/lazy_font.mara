@@ -42,14 +42,14 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 	Table :: struct {
 		tag: [4]utf8
 		check_sum : u32
-		offset: u32 // offset and len... could be a slice?
+		offset: u32
 		len: u32
 	}
 
 	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
 		for table in tables {
 			if starts_with(table.tag[:], target) {
-				print(target, table.tag)
+				// print(target, table.tag)
 				return i32(table.offset)
 			}
 		}
@@ -97,13 +97,18 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		max_component_depth      : u16   // max recursion depth of composite glyphs
 	}
 
-	cmap : Cmap = #big_endian bytes[table_dir.get_offset("cmap")]
 	Cmap :: struct {
 		version       : u16              // 0
 		num_subtables : u16
-		encodings     : []Encoding_Record // num_subtables entries
+		encodings     : [..16]Encoding_Record // num_subtables entries
 		subtable_data : []byte            // raw bytes; encoding offsets are absolute within the full cmap table
 	}
+	cmap_loc := table_dir.get_offset("cmap")
+	cmap.encodings.len = num_subtables
+	cmap : Cmap = #big_endian bytes[cmap_loc]
+	cmap.encodings = bytes[cmap_loc + 4]
+
+	print(cmap.encodings[0])
 
 	Encoding_Record :: struct {
 		platform_id          : u16 // 0 Unicode, 1 Mac, 3 Microsoft
