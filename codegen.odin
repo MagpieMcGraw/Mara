@@ -391,6 +391,9 @@ Codegen :: struct {
     temp_swizzle_result: Maybe(Array_Var),   // multi-component swizzle read
     // Overflow-checking intrinsics used (for declaration at end of module)
     overflow_intrinsics: map[string]bool,
+    // `llvm.bswap.iN` widths used by `#big_endian` byte-buffer reads.
+    // Declared per-module the same way overflow_intrinsics is.
+    bswap_intrinsics: map[int]bool,
     // Web build (wasm32-unknown-emscripten): adjusts size_t-shaped libc decls
     // (strlen returns i32 on wasm32, not i64), among other target tweaks.
     web: bool,
@@ -1630,6 +1633,7 @@ Module_Task :: struct {
     string_decls:        [dynamic]string,
     string_counter:      int,
     overflow_intrinsics: map[string]bool,
+    bswap_intrinsics:    map[int]bool,
     imports:             map[string]bool,
 }
 
@@ -1672,6 +1676,7 @@ module_codegen_worker :: proc(t: thread.Task) {
     task.string_decls        = local.string_decls
     task.string_counter      = local.string_counter
     task.overflow_intrinsics = local.overflow_intrinsics
+    task.bswap_intrinsics    = local.bswap_intrinsics
 }
 
 // Build a Codegen suitable for one worker. Read-only fields (checked,
@@ -3719,6 +3724,21 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
             }
             it := name[dot_idx+1:]
             strings.write_string(&b, strings.concatenate({"declare { ", it, ", i1 } @", name, "(", it, ", ", it, ")\n"}))
+        }
+        // `llvm.bswap.iN` declares — same module-union pattern as overflow.
+        bswap_used: map[int]bool
+        if module_task != nil {
+            for w in module_task.bswap_intrinsics { bswap_used[w] = true }
+        }
+        if is_main_tu {
+            for w in g.bswap_intrinsics { bswap_used[w] = true }
+        }
+        bswap_widths: [dynamic]int
+        defer delete(bswap_widths)
+        for w in bswap_used { append(&bswap_widths, w) }
+        slice.sort(bswap_widths[:])
+        for w in bswap_widths {
+            strings.write_string(&b, fmt.tprintf("declare i%d @llvm.bswap.i%d(i%d)\n", w, w, w))
         }
     }
     // Per-module foreign declares: emit only the C symbols this module

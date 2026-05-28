@@ -1121,10 +1121,12 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                 // the wrong shape — so we short-circuit before calling it.
                 if strings.has_prefix(pt, "[") {
                     materialized := ""
+                    param_ty: Type
+                    if has_cs && i < len(cs_resolved.params) { param_ty = cs_resolved.params[i].type_ }
                     if sl_expr, sl_ok := arg.(^Expr_Slice); sl_ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
-                        materialized = emit_array_from_byte_buffer(g, sl_expr.expr, sl_expr.low, pt, sl_expr.span)
+                        materialized = emit_array_from_byte_buffer(g, sl_expr.expr, sl_expr.low, pt, sl_expr.span, param_ty, sl_expr.is_big_endian)
                     } else if idx_expr, idx_ok := arg.(^Expr_Index); idx_ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
-                        materialized = emit_array_from_byte_buffer(g, idx_expr.expr, idx_expr.index, pt, idx_expr.span)
+                        materialized = emit_array_from_byte_buffer(g, idx_expr.expr, idx_expr.index, pt, idx_expr.span, param_ty, idx_expr.is_big_endian)
                     }
                     if materialized != "" {
                         append(&arg_strs, fmt.tprintf("%s %s", pt, materialized))

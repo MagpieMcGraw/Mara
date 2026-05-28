@@ -1712,11 +1712,11 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         // Byte-buffer reinterpret read: obj.field = mem[lo:hi] or obj.field = mem[off].
         // Memcpys field-sized bytes from the source into the field GEP.
         if sl_expr, ok := s.value.(^Expr_Slice); ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
-            gen_byte_target_field_read(g, st_llvm, base_ptr, idx, f, sl_expr.expr, sl_expr.low, s.span)
+            gen_byte_target_field_read(g, st_llvm, base_ptr, idx, f, sl_expr.expr, sl_expr.low, s.span, sl_expr.is_big_endian)
             return
         }
         if idx_expr, ok := s.value.(^Expr_Index); ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
-            gen_byte_target_field_read(g, st_llvm, base_ptr, idx, f, idx_expr.expr, idx_expr.index, s.span)
+            gen_byte_target_field_read(g, st_llvm, base_ptr, idx, f, idx_expr.expr, idx_expr.index, s.span, idx_expr.is_big_endian)
             return
         }
         // Array field — dispatch to array store helper

@@ -1574,7 +1574,9 @@ gen_byte_target_write :: proc(g: ^Codegen, s: ^Stmt_Assign, buf_expr: Expr, offs
 //     x : T = buf[offset]       (index form)
 //     x : T = buf[low:low+N]    (slice form — caller passes sl.low as offset_expr)
 // `offset_expr` may be nil, in which case offset is 0.
-gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_expr: Expr, span: Span, target_type: Type) {
+// `is_big_endian` (from a `#big_endian` decorator) byte-swaps every multi-byte
+// integer leaf in the destination after the load/memcpy.
+gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_expr: Expr, span: Span, target_type: Type, is_big_endian: bool) {
     target_ir_type := llvm_type_from_checker(target_type)
     target_size := checker_type_byte_size(target_type)
 
@@ -1587,6 +1589,9 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
     if sd := as_struct_body(target_type); sd != nil {
         emit_alloca(g, alloca_name, target_ir_type)
         emit_memcpy(g, alloca_name, elem_ptr, target_size)
+        if is_big_endian {
+            emit_bswap_in_place(g, alloca_name, target_ir_type, target_type)
+        }
         g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
     } else if fa, fa_ok := target_type.(^Type_Fixed_Array); fa_ok {
         // Fixed-array reinterpret target: allocate the destination using the
@@ -1596,6 +1601,9 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         data_name := fmt.tprintf("%%%s.data", name)
         emit_alloca(g, data_name, target_ir_type)
         emit_memcpy(g, data_name, elem_ptr, target_size)
+        if is_big_endian {
+            emit_bswap_in_place(g, data_name, target_ir_type, target_type)
+        }
         elem_t := llvm_type_from_checker(fa.elem)
         utf8 := false
         if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
@@ -1612,17 +1620,94 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         // `align 1` on the byte-buffer load (offset user-chosen); the store
         // into the local alloca stays natural since the alloca is aligned.
         emit(g, "  %s = load %s, ptr %s, align 1", val, target_ir_type, elem_ptr)
+        if is_big_endian && is_swappable_integer(target_type) {
+            bits := checker_type_byte_size(target_type) * 8
+            if bits >= 16 {
+                intrinsic := fmt.tprintf("llvm.bswap.i%d", bits)
+                g.bswap_intrinsics[bits] = true
+                swapped := fresh_tmp(g)
+                emit(g, "  %s = call i%d @%s(i%d %s)", swapped, bits, intrinsic, bits, val)
+                val = swapped
+            }
+        }
         emit_alloca(g, alloca_name, target_ir_type)
         emit_store(g, target_ir_type, val, alloca_name)
         g.all_vars[name] = Scalar_Var{alloca_name}
     }
 }
 
+// Big-endian byte-swap in place: walks `ty` rooted at `base_ptr` and emits
+// llvm.bswap on every multi-byte integer leaf. Used by `#big_endian` byte-
+// buffer reads after the load/memcpy.
+//
+// `base_ir_type` is the LLVM aggregate type at `base_ptr` (used for struct/
+// array GEPs). For scalar leaves it's unused — the bit width comes from
+// checker_type_byte_size.
+//
+// Skipped leaves: 1-byte primitives (byte/utf8/c8/u8/i8/bool — already in
+// order); floats, pointers, slices, partial arrays (bswap is meaningless).
+emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: string, base_ir_type: string, ty: Type) {
+    base := distinct_base(ty)
+
+    if sd := as_struct_body(base); sd != nil {
+        st_llvm := struct_llvm_name(struct_key(sd))
+        for &f, idx in sd.fields {
+            field_ir := field_ir_type(&f)
+            field_gep := fresh_tmp(g)
+            emit_field_gep_into(g, field_gep, st_llvm, base_ptr, idx)
+            emit_bswap_in_place(g, field_gep, field_ir, f.type_)
+        }
+        return
+    }
+
+    if fa, ok := base.(^Type_Fixed_Array); ok {
+        elem_bytes := checker_type_byte_size(fa.elem)
+        if elem_bytes <= 1 { return }
+        elem_ir := llvm_type_from_checker(fa.elem)
+        for i in 0..<fa.size {
+            elem_gep := fresh_tmp(g)
+            emit_array_gep_const(g, elem_gep, base_ir_type, base_ptr, i)
+            emit_bswap_in_place(g, elem_gep, elem_ir, fa.elem)
+        }
+        return
+    }
+
+    if !is_swappable_integer(base) { return }
+    bits := checker_type_byte_size(base) * 8
+    if bits < 16 { return }
+    intrinsic := fmt.tprintf("llvm.bswap.i%d", bits)
+    g.bswap_intrinsics[bits] = true
+    loaded := fresh_tmp(g)
+    emit(g, "  %s = load i%d, ptr %s, align 1", loaded, bits, base_ptr)
+    swapped := fresh_tmp(g)
+    emit(g, "  %s = call i%d @%s(i%d %s)", swapped, bits, intrinsic, bits, loaded)
+    emit(g, "  store i%d %s, ptr %s, align 1", bits, swapped, base_ptr)
+}
+
+// True when `t` is a multi-byte integer type — the kind bswap is meaningful for.
+// Returns true for Type_Int (i64), signed/unsigned Type_Numeric, Type_Enum
+// (integer tag). Returns false for byte/utf8/c8/bool (1 byte), floats, pointers,
+// slices, etc. Caller filters out widths < 16 bits.
+is_swappable_integer :: proc(t: Type) -> bool {
+    bt := distinct_base(t)
+    #partial switch v in bt {
+    case Type_Int:
+        return true
+    case Type_Numeric:
+        return v.kind == .Signed || v.kind == .Unsigned
+    case ^Type_Enum:
+        return true
+    }
+    return false
+}
+
 // Reinterpret-read a byte-buffer source into a fresh [N x T] SSA value at a
 // call site: `f(buf[off])` or `f(buf[lo:hi])` where the param expects a fixed
 // array. Allocates a temporary, memcpys the bytes in, loads as [N x T], and
 // returns the loaded SSA name. Bounds-checked via emit_byte_offset_ptr.
-emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, pt: string, span: Span) -> string {
+// `arr_ty` is the Mara fixed-array type; consulted when `is_big_endian` is
+// set so we can byte-swap each element after the memcpy.
+emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, pt: string, span: Span, arr_ty: Type, is_big_endian: bool) -> string {
     arr_cap, arr_elem, _ := parse_array_ir_type(pt)
     size_bytes := arr_cap * elem_byte_size(arr_elem, g.checked)
     elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, size_bytes, "read", span)
@@ -1632,6 +1717,9 @@ emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Ex
     arr_alloca := fresh_tmp(g)
     emit_alloca(g, arr_alloca, pt)
     emit_memcpy(g, arr_alloca, elem_ptr, size_bytes)
+    if is_big_endian && arr_ty != nil {
+        emit_bswap_in_place(g, arr_alloca, pt, arr_ty)
+    }
     loaded := fresh_tmp(g)
     emit_load_into(g, loaded, pt, arr_alloca)
     return loaded
@@ -1640,7 +1728,9 @@ emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Ex
 // Byte-buffer reinterpret read into a struct field: obj.field = buf[lo:hi] or obj.field = buf[off].
 // Memcpys `size_of(field)` bytes from the byte-buffer source into the field GEP.
 // Scalar fields use load+store (align 1 on the load; natural alignment at the GEP).
-gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: string, idx: int, f: ^Struct_Type_Field, buf_expr: Expr, offset_expr: Expr, span: Span) {
+// `is_big_endian` byte-swaps every multi-byte integer leaf written into the
+// field after the load/memcpy.
+gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: string, idx: int, f: ^Struct_Type_Field, buf_expr: Expr, offset_expr: Expr, span: Span, is_big_endian: bool) {
     ft := field_ir_type(f)
     field_size := checker_type_byte_size(f.type_)
     elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, field_size, "read", span)
@@ -1651,9 +1741,22 @@ gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: strin
     emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
     if as_struct_body(f.type_) != nil {
         emit_memcpy(g, gep, elem_ptr, field_size)
+        if is_big_endian {
+            emit_bswap_in_place(g, gep, ft, f.type_)
+        }
     } else {
         val := fresh_tmp(g)
         emit(g, "  %s = load %s, ptr %s, align 1", val, ft, elem_ptr)
+        if is_big_endian && is_swappable_integer(f.type_) {
+            bits := checker_type_byte_size(f.type_) * 8
+            if bits >= 16 {
+                intrinsic := fmt.tprintf("llvm.bswap.i%d", bits)
+                g.bswap_intrinsics[bits] = true
+                swapped := fresh_tmp(g)
+                emit(g, "  %s = call i%d @%s(i%d %s)", swapped, bits, intrinsic, bits, val)
+                val = swapped
+            }
+        }
         emit_store(g, ft, val, gep)
     }
 }
@@ -1777,6 +1880,13 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
     emit(g, "  %s = getelementptr i8, ptr %s, %s %s", src_offset_ptr, src_data_ptr, w, src_low)
     emit_memcpy_runtime(g, elements_ptr, src_offset_ptr, src_bytes)
 
+    // `#big_endian` decorator on the source slice: byte-swap each element in
+    // place. Count is runtime, so we emit a counter-driven loop wrapping the
+    // per-element bswap.
+    if sl_expr.is_big_endian {
+        emit_partial_bswap_loop(g, elements_ptr, count, pa.elem)
+    }
+
     // Auto-add to len. For a fresh decl this is + 0, so the final len = count.
     cur_len := fresh_tmp(g)
     emit_typed_load_len(g, cur_len, len_gep)
@@ -1791,6 +1901,61 @@ gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial
         has_sentinel = pa.has_sentinel,
         sentinel     = pa.sentinel,
     }
+}
+
+// Counter-driven loop that calls emit_bswap_in_place on each of `count`
+// elements rooted at `elements_ptr`. Count is an SSA value at slice-header
+// width. Used by `#big_endian` on partial-array reads — the count is only
+// known at runtime, so the per-element swap can't be unrolled.
+//
+// If `elem_ty` contains no multi-byte integer leaves (e.g. `[..N]byte`), the
+// inner body is a no-op and an optimizer will see through it — but skip the
+// loop entirely as a cheap source-level guard.
+emit_partial_bswap_loop :: proc(g: ^Codegen, elements_ptr: string, count: string, elem_ty: Type) {
+    if !type_has_swappable_leaf(elem_ty) { return }
+
+    w := slice_layout.len_ir
+    elem_ir := llvm_type_from_checker(elem_ty)
+    idx_slot := fresh_tmp(g)
+    emit(g, "  %s = alloca %s", idx_slot, w)
+    emit_typed_store_len(g, "0", idx_slot)
+    loop_lbl := fresh_label(g, "bswap.loop")
+    body_lbl := fresh_label(g, "bswap.body")
+    end_lbl  := fresh_label(g, "bswap.end")
+    emit(g, "  br label %%%s", loop_lbl)
+    emit_label(g, loop_lbl)
+    cur := fresh_tmp(g)
+    emit_typed_load_len(g, cur, idx_slot)
+    done := fresh_tmp(g)
+    emit(g, "  %s = icmp uge %s %s, %s", done, w, cur, count)
+    emit_cond_br(g, done, end_lbl, body_lbl)
+    emit_label(g, body_lbl)
+    elem_gep := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_gep, elem_ir, elements_ptr, w, cur)
+    emit_bswap_in_place(g, elem_gep, elem_ir, elem_ty)
+    next := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, 1", next, w, cur)
+    emit_typed_store_len(g, next, idx_slot)
+    emit(g, "  br label %%%s", loop_lbl)
+    emit_label(g, end_lbl)
+}
+
+// True if `ty` contains any multi-byte integer leaf — i.e. emit_bswap_in_place
+// would emit at least one bswap. Lets callers skip the wrapping loop entirely
+// when the element layout has nothing to swap.
+type_has_swappable_leaf :: proc(ty: Type) -> bool {
+    base := distinct_base(ty)
+    if sd := as_struct_body(base); sd != nil {
+        for &f in sd.fields {
+            if type_has_swappable_leaf(f.type_) { return true }
+        }
+        return false
+    }
+    if fa, ok := base.(^Type_Fixed_Array); ok {
+        return type_has_swappable_leaf(fa.elem)
+    }
+    if !is_swappable_integer(base) { return false }
+    return checker_type_byte_size(base) >= 2
 }
 
 // Runtime-sized memcpy. Used when the byte count is an SSA value, not a

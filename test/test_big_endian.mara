@@ -1,0 +1,85 @@
+module test_big_endian
+
+// `#big_endian buf[off]` / `#big_endian buf[lo:hi]` — byte-swap every
+// multi-byte integer leaf in the destination after the load/memcpy. Targets
+// the same byte-buffer reinterpret-read shapes (scalar, struct, partial array)
+// as the plain forms.
+
+Header :: struct {
+	magic : u32     // 4 bytes
+	count : u16     // 2 bytes
+	flags : u16     // 2 bytes
+	tag   : [4]byte // 4 bytes — single-byte elems, no swap
+	stamp : i64     // 8 bytes
+}
+
+Row :: struct {
+	id  : u32
+	val : i16
+}
+
+main :: fun() -> i64 {
+	buf : [..64]byte
+	buf.len = 64
+
+	// Encode big-endian: magic = 0xDEADBEEF, count = 0x1234, flags = 0xCAFE,
+	// tag = "MARA", stamp = 0x0102030405060708.
+	buf[0]  = u8(0xDE)
+	buf[1]  = u8(0xAD)
+	buf[2]  = u8(0xBE)
+	buf[3]  = u8(0xEF)
+	buf[4]  = u8(0x12)
+	buf[5]  = u8(0x34)
+	buf[6]  = u8(0xCA)
+	buf[7]  = u8(0xFE)
+	buf[8]  = u8('M')
+	buf[9]  = u8('A')
+	buf[10] = u8('R')
+	buf[11] = u8('A')
+	buf[12] = u8(0x01)
+	buf[13] = u8(0x02)
+	buf[14] = u8(0x03)
+	buf[15] = u8(0x04)
+	buf[16] = u8(0x05)
+	buf[17] = u8(0x06)
+	buf[18] = u8(0x07)
+	buf[19] = u8(0x08)
+
+	h : Header = #big_endian buf[0]
+	print("magic:", i64(h.magic))    // expect 3735928559 (0xDEADBEEF)
+	print("count:", i64(h.count))    // expect 4660 (0x1234)
+	print("flags:", i64(h.flags))    // expect 51966 (0xCAFE)
+	print("tag0:", i64(h.tag[0]))    // expect 77 ('M')
+	print("tag3:", i64(h.tag[3]))    // expect 65 ('A')
+	print("stamp:", h.stamp)         // expect 72623859790382856 (0x0102030405060708)
+
+	// Scalar #big_endian via slice form.
+	x : u32 = #big_endian buf[0:4]
+	print("scalar:", i64(x))         // expect 3735928559
+
+	// Two Row entries encoded big-endian: (0x11223344, 0x5566) and (0xAABBCCDD, -1).
+	buf2 : [..32]byte
+	buf2.len = 32
+	buf2[0] = u8(0x11)
+	buf2[1] = u8(0x22)
+	buf2[2] = u8(0x33)
+	buf2[3] = u8(0x44)
+	buf2[4] = u8(0x55)
+	buf2[5] = u8(0x66)
+	// skip padding [6..8) — Row aligns to 8 bytes
+	buf2[8]  = u8(0xAA)
+	buf2[9]  = u8(0xBB)
+	buf2[10] = u8(0xCC)
+	buf2[11] = u8(0xDD)
+	buf2[12] = u8(0xFF)
+	buf2[13] = u8(0xFF)
+
+	rows : [..4]Row = #big_endian buf2[0:16]
+	print("rows.len:", i64(rows.len))    // expect 2
+	print("row0.id:", i64(rows[0].id))   // expect 287454020 (0x11223344)
+	print("row0.val:", i64(rows[0].val)) // expect 21862 (0x5566)
+	print("row1.id:", i64(rows[1].id))   // expect 2864434397 (0xAABBCCDD)
+	print("row1.val:", i64(rows[1].val)) // expect -1 (0xFFFF as i16)
+
+	return 0
+}

@@ -3680,6 +3680,15 @@ is_byte_buffer_index_read :: proc(e: Expr) -> bool {
     return is_byte_buffer(expr_type(idx.expr))
 }
 
+// True when `e` is a `#big_endian` decorated byte-buffer read.
+expr_is_big_endian :: proc(e: Expr) -> bool {
+    #partial switch v in e {
+    case ^Expr_Index: return v.is_big_endian
+    case ^Expr_Slice: return v.is_big_endian
+    }
+    return false
+}
+
 // When a typed-pointer site receives `&buf[i]` over a byte buffer, the existing
 // ^byte → ^T compatibility rule (types_equal) accepts the assignment but loses
 // the size information needed for a runtime bounds check. Stamp the address-of
@@ -6458,6 +6467,20 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             }
             c.expected_hint = ann_type
             val_type := check_expr(c, s.value, env)
+            // `#big_endian buf[off]` / `#big_endian buf[lo:hi]` — the flag has
+            // no meaning unless the source is a byte buffer. Codegen would
+            // silently drop the flag in that case; flag it loudly here.
+            if expr_is_big_endian(s.value) {
+                src_type: Type
+                #partial switch v in s.value {
+                case ^Expr_Index: src_type = expr_type(v.expr)
+                case ^Expr_Slice: src_type = expr_type(v.expr)
+                }
+                if !is_byte_buffer(src_type) {
+                    check_error(c, s.span, TYPE_BIG_ENDIAN_NEEDS_BYTE_BUFFER,
+                        type_name(src_type))
+                }
+            }
             // Reject single-name binding from a multi-return call. Without
             // this, the binding would silently take on the call's primary
             // (first) return type and the user would lose the rest with no

@@ -104,6 +104,9 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 		"data/shaders/instanced.glsl",
 		&game.vao, 8192, 32)
 
+	temp : [..32 * MB]byte
+	test_ttf := TTF_Layout(&temp)
+
 	game.running = true
 	game.initialized = true
 }

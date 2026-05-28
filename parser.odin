@@ -265,6 +265,10 @@ Expr_Index :: struct {
     index: Expr,
     span:  Span,
     type_: Type,   // element type
+    // `#big_endian buf[off]` — byte-buffer reinterpret read that byte-swaps every
+    // multi-byte integer in the destination after the load/memcpy. Only meaningful
+    // when the index targets a byte buffer; the type checker rejects other shapes.
+    is_big_endian: bool,
 }
 
 Expr_Slice :: struct {
@@ -273,6 +277,8 @@ Expr_Slice :: struct {
     high:  Expr,   // end index (nil = len)
     span:  Span,
     type_: Type,
+    // `#big_endian buf[lo:hi]` — see Expr_Index above.
+    is_big_endian: bool,
 }
 
 Struct_Field :: struct {
@@ -4116,6 +4122,23 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
                 result = new_clone(Expr_Skip_Constructor{span = token_span(hash_tok)})
             } else if name_tok.text == "self" {
                 result = new_clone(Expr_Self{span = token_span(hash_tok)})
+            } else if name_tok.text == "big_endian" {
+                // `#big_endian buf[off]` / `#big_endian buf[lo:hi]` — decorator
+                // on a byte-buffer reinterpret read. Parsed as a prefix on a
+                // primary expression; we expect the next thing to parse as an
+                // Expr_Index or Expr_Slice (the byte-buffer read forms). The
+                // flag flows through to codegen, which emits bswap on every
+                // multi-byte integer leaf of the destination after the load.
+                inner := parse_primary(p, allow_dot)
+                #partial switch v in inner {
+                case ^Expr_Index:
+                    v.is_big_endian = true
+                case ^Expr_Slice:
+                    v.is_big_endian = true
+                case:
+                    parse_error(p, hash_tok, PARSE_BIG_ENDIAN_NEEDS_BYTE_READ)
+                }
+                result = inner
             } else {
                 intrinsic_kind: Intrinsic_Kind
                 intrinsic_ok := true

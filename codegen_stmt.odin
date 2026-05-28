@@ -73,13 +73,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             // slice; allocate + memcpy sizeof([N]T) bytes from the source.
             if sl_expr, ok := s.value.(^Expr_Slice); ok {
                 if codegen_is_byte_buffer_source(g, sl_expr.expr) {
-                    gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type)
+                    gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type, sl_expr.is_big_endian)
                     return
                 }
             }
             if idx_expr, ok := s.value.(^Expr_Index); ok {
                 if codegen_is_byte_buffer_source(g, idx_expr.expr) {
-                    gen_byte_target_read(g, s.name, idx_expr.expr, idx_expr.index, idx_expr.span, var_type)
+                    gen_byte_target_read(g, s.name, idx_expr.expr, idx_expr.index, idx_expr.span, var_type, idx_expr.is_big_endian)
                     return
                 }
             }
@@ -128,13 +128,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if var_type != nil && !target_is_slice_shaped && (target_is_fixed_array || !is_byte_buffer(var_type)) {
             if sl_expr, ok := s.value.(^Expr_Slice); ok {
                 if codegen_is_byte_buffer_source(g, sl_expr.expr) {
-                    gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type)
+                    gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type, sl_expr.is_big_endian)
                     return
                 }
             }
             if idx_expr, ok := s.value.(^Expr_Index); ok {
                 if codegen_is_byte_buffer_source(g, idx_expr.expr) {
-                    gen_byte_target_read(g, s.name, idx_expr.expr, idx_expr.index, idx_expr.span, var_type)
+                    gen_byte_target_read(g, s.name, idx_expr.expr, idx_expr.index, idx_expr.span, var_type, idx_expr.is_big_endian)
                     return
                 }
             }

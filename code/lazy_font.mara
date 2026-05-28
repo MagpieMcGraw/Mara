@@ -24,19 +24,21 @@ f2_dot_14_to_f32  :: fun(x: F2_Dot_14)  -> f32 { return f32(x) / 16384.0 }
 short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
 
 TTF_Layout :: struct (bytes: ^[]byte) {
+	print("TTF Loading...")
 
-	h: Offset_Table = bytes[0]
+	h: Offset_Table = #big_endian bytes[0]
 	Offset_Table :: struct {
-		scaler_type : u32 // this identifies the file type?
+		scaler_type : u32
 		num_tables : u16
 		search_range : u16
 		entry_selector: u16
 		range_shift : u16
 	}
 
-	num_tables32 := i32(h.num_tables)
-	table_dir := slice([:num_tables32]Table_Directory, &bytes[12])
-	Table_Directory :: struct {
+	h.num_tables = 5
+	table_section := i32(h.num_tables * size_of(Table))
+	table_dir: [..32]Table = bytes[12: 12 + table_section]
+	Table :: struct {
 		tag: [4]utf8
 		check_sum : u32
 		offset: u32 // offset and len... could be a slice?
