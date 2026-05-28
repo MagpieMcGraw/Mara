@@ -73,7 +73,6 @@ process :: fun(events: ^Event_State) {
             events.dropfile.was_dropped = true
             &events.dropfile.name + read_cstring(128, e.data)
         else
-        	print(e.tag)
         }
     }
 }

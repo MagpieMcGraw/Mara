@@ -104,8 +104,11 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 		"data/shaders/instanced.glsl",
 		&game.vao, 8192, 32)
 
-	temp : [..32 * MB]byte
-	test_ttf := TTF_Layout(&temp)
+	ttf_data : [..32 * MB]byte
+	err := read_entire_file(
+		"data/fonts/Inter_18pt-Regular.ttf", &ttf_data)
+	print("TTF file read", err)
+	test_ttf := TTF_Layout(&ttf_data)
 
 	game.running = true
 	game.initialized = true

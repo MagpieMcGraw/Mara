@@ -37,7 +37,6 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		range_shift : u16
 	}
 
-	h.num_tables = 5
 	table_section := i32(h.num_tables * size_of(Table))
 	table_dir: [..32]Table = #big_endian bytes[12: 12 + table_section]
 	Table :: struct {
@@ -47,17 +46,18 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		len: u32
 	}
 
-	get_offset :: fun(tables: [..32]Table, target: []utf8) -> u32 {
+	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
 		for table in tables {
 			if starts_with(table.tag[:], target) {
-				return table.offset
+				print(target, table.tag)
+				return i32(table.offset)
 			}
 		}
 		print("Table '%' not found.", target)
 		return 0
 	}
 
-	head : Head = bytes[i32(table_dir.get_offset("head"))]
+	head : Head = #big_endian bytes[table_dir.get_offset("head")]
 	Head :: struct {
 		version              : Fixed          // 0x00010000 = version 1.0
 		font_revision        : Fixed          // set by font manufacturer
@@ -78,7 +78,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		glyph_data_format    : i16            // 0 for current format
 	}
 
-	maxp : Maxp
+	maxp : Maxp = #big_endian bytes[table_dir.get_offset("maxp")]
 	Maxp :: struct {
 		version                  : Fixed // 0x00010000 (TrueType v1.0) or 0x00005000 (CFF v0.5)
 		num_glyphs               : u16   // total glyph count in the font
@@ -97,7 +97,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		max_component_depth      : u16   // max recursion depth of composite glyphs
 	}
 
-	cmap : Cmap
+	cmap : Cmap = #big_endian bytes[table_dir.get_offset("cmap")]
 	Cmap :: struct {
 		version       : u16              // 0
 		num_subtables : u16
@@ -111,7 +111,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		offset               : u32 // byte offset from start of cmap table to this encoding's subtable
 	}
 
-	loca : Loca
+	loca : Loca = #big_endian bytes[table_dir.get_offset("loca")]
 	Loca :: struct {
 		// offsets array has num_glyphs + 1 entries (last entry gives the end of the final glyph).
 		// Each entry is u16 (short — multiply by 2 for actual byte offset into glyf)
@@ -119,7 +119,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		offsets : []byte
 	}
 
-	glyf : Glyf
+	glyf : Glyf = #big_endian bytes[table_dir.get_offset("glyf")]
 	Glyf :: struct {
 		// Raw glyph data. Each glyph i lives at offsets [loca[i]..loca[i+1]).
 		// Per-glyph header is i16 num_contours (negative for composite), then 4xi16 bbox,
@@ -127,7 +127,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		data : []byte
 	}
 
-	hhea : Hhea
+	hhea : Hhea = #big_endian bytes[table_dir.get_offset("hhea")]
 	Hhea :: struct {
 		version                 : Fixed     // 0x00010000
 		ascent                  : F_Word    // typographic ascent
@@ -148,7 +148,7 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		num_of_long_hor_metrics : u16       // count of full metrics records in hmtx; trailing glyphs share advance
 	}
 
-	hmtx : Hmtx
+	hmtx : Hmtx = #big_endian bytes[table_dir.get_offset("hmtx")]
 	Hmtx :: struct {
 		long_metrics  : []Long_Hor_Metric // num_of_long_hor_metrics entries (from hhea)
 		side_bearings : []F_Word          // (num_glyphs - num_of_long_hor_metrics) entries; same advance as last long_metric
@@ -158,8 +158,4 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 		advance_width     : U_F_Word
 		left_side_bearing : F_Word
 	}
-}
-
-table_get_offset :: fun(tag: []utf8, ){
-
 }
