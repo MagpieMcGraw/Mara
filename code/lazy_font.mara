@@ -49,7 +49,6 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
 		for table in tables {
 			if starts_with(table.tag[:], target) {
-				// print(target, table.tag)
 				return i32(table.offset)
 			}
 		}
@@ -120,13 +119,22 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 	}
 
 	Loca :: struct {
+		// offsets array has num_glyphs + 1 entries (last entry gives the end of the final glyph).
+		// Each entry is u16 (short — multiply by 2 for actual byte offset into glyf)
+		// or u32 (long — already a byte offset). Format chosen by head.index_to_loc_format.
 		offsets : [1<<16 + 1]u32
 	}
-	loca : Loca = #big_endian bytes[table_dir.get_offset("loca")]
-	print("loca type", head.index_to_loc_format)
-
-
-
+	loca_loc := table_dir.get_offset("loca")
+	loca : Loca
+	if head.index_to_loc_format == 0 {
+		off_u16: [1<<16 + 1]u16 = #big_endian bytes[loca_loc]
+		for _, i in off_u16 {
+			loca.offsets[i] = u32(off_u16[i]) * 2
+		}
+	else
+		loca.offsets = #big_endian bytes[loca_loc]
+	}
+	
 	glyf : Glyf = #big_endian bytes[table_dir.get_offset("glyf")]
 	Glyf :: struct {
 		// Raw glyph data. Each glyph i lives at offsets [loca[i]..loca[i+1]).
@@ -165,5 +173,181 @@ TTF_Layout :: struct (bytes: ^[]byte) {
 	Long_Hor_Metric :: struct {
 		advance_width     : U_F_Word
 		left_side_bearing : F_Word
+	}
+
+	// Glyph parse sanity check: pick a glyph by index, decode it, print
+	// structural info. Iterate once a real cmap-lookup wires character codes
+	// to indices.
+	test_idx : i32 = 36   // arbitrary mid-range glyph; usually has contours
+	test_off := loca.offsets[test_idx]
+	test_len := loca.offsets[test_idx + 1] - test_off
+	g : Glyph
+	parse_glyph(bytes, table_dir.get_offset("glyf"), test_off, test_len, &g)
+	print("glyph", test_idx,
+		"contours:", i32(g.num_contours),
+		"points:", g.points.len,
+		"composite:", i32(g.is_composite),
+		"bbox:", i32(g.x_min), i32(g.y_min), i32(g.x_max), i32(g.y_max))
+}
+
+// ============================================================================
+// Glyph parsing
+// ============================================================================
+//
+// A parsed glyph lives outside the file-format Layout struct — it's the
+// usable form for rendering. parse_glyph reads from the raw glyf-table bytes
+// and writes into a caller-allocated Glyph. The Glyph's partial arrays bound
+// per-glyph contour/point counts statically; the per-glyph .len gets set to
+// what the glyph actually contains.
+
+MAX_GLYPH_CONTOURS :: 256    // covers anything realistic; CJK rarely past ~80
+MAX_GLYPH_POINTS   :: 4096   // bound on points per glyph; maxp.max_points
+                              // is the tight bound but we size statically here
+
+Glyph_Point :: struct {
+	x        : i16
+	y        : i16
+	on_curve : bool
+}
+
+Glyph :: struct {
+	num_contours : i16   // < 0 means composite — see is_composite
+	is_composite : bool
+
+	// Bounding box in FUnits, copied from the per-glyph header.
+	x_min : i16
+	y_min : i16
+	x_max : i16
+	y_max : i16
+
+	// Simple-glyph: end_pts[i] is the LAST point index of contour i.
+	// points is the flattened per-glyph point list across all contours.
+	end_pts : [..MAX_GLYPH_CONTOURS]u16
+	points  : [..MAX_GLYPH_POINTS]Glyph_Point
+}
+
+// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
+GLYPH_FLAG_ON_CURVE :: u8(0x01)
+GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
+GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
+GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
+GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
+GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
+
+// Inline BE-decode helpers operating on a byte buffer at a runtime offset.
+// stdlib's mara.endian read helpers take [N]byte; we have ^[]byte + a cursor.
+read_be_u16 :: fun(data: ^[]byte, off: i32) -> u16 {
+	return (u16(data[off]) << 8) | u16(data[off + 1])
+}
+read_be_i16 :: fun(data: ^[]byte, off: i32) -> i16 {
+	return i16(read_be_u16(data, off))
+}
+
+// Parse a single glyph. `glyf_start` is the byte offset of the glyf table
+// within the full file; `glyph_offset` and `glyph_length` come from loca
+// (loca.offsets[i] and loca.offsets[i+1] - loca.offsets[i] respectively).
+// Empty length (length == 0) is a valid encoding for whitespace-shaped
+// glyphs — the parser fills `out` with zeros and returns cleanly.
+parse_glyph :: fun(bytes: ^[]byte, glyf_start: i32, glyph_offset: u32, glyph_length: u32, out: ^Glyph) {
+	if glyph_length == 0 {
+		out.num_contours = 0
+		out.is_composite = false
+		out.x_min = 0
+		out.y_min = 0
+		out.x_max = 0
+		out.y_max = 0
+		out.end_pts.len = 0
+		out.points.len = 0
+		return
+	}
+
+	cursor := glyf_start + i32(glyph_offset)
+	out.num_contours = read_be_i16(bytes, cursor); cursor += 2
+	out.x_min        = read_be_i16(bytes, cursor); cursor += 2
+	out.y_min        = read_be_i16(bytes, cursor); cursor += 2
+	out.x_max        = read_be_i16(bytes, cursor); cursor += 2
+	out.y_max        = read_be_i16(bytes, cursor); cursor += 2
+
+	if out.num_contours < 0 {
+		// Composite glyph — references other glyphs with optional 2D
+		// transforms. Skipped for now; caller checks is_composite.
+		out.is_composite = true
+		out.end_pts.len = 0
+		out.points.len = 0
+		return
+	}
+
+	out.is_composite = false
+	parse_simple_glyph_body(bytes, cursor, out)
+}
+
+parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
+	cursor := cursor_in
+	n_contours := i32(out.num_contours)
+
+	// End-point index per contour. Last entry + 1 is the total point count.
+	out.end_pts.len = n_contours
+	for i in 0..n_contours {
+		out.end_pts[i] = read_be_u16(bytes, cursor)
+		cursor += 2
+	}
+	n_points := i32(out.end_pts[n_contours - 1]) + 1
+	out.points.len = n_points
+
+	// TrueType hinting bytecode — the spec keeps it inline between the
+	// endpoints and the flags. We don't interpret it; skip past.
+	instr_len := i32(read_be_u16(bytes, cursor)); cursor += 2
+	cursor += instr_len
+
+	// Per-point flag bytes, with REPEAT-byte run-length decoding: when bit 3
+	// of a flag is set, the NEXT byte is a count of additional points that
+	// share the same flag. Decoded into a flat flags-per-point local array
+	// so the coord-decode loops below can index by point index cheaply.
+	flags : [..MAX_GLYPH_POINTS]u8
+	flags.len = n_points
+	p : i32 = 0
+	for p < n_points {
+		f := u8(bytes[cursor]); cursor += 1
+		flags[p] = f
+		p += 1
+		if (f & GLYPH_FLAG_REPEAT) != 0 {
+			repeat := i32(bytes[cursor]); cursor += 1
+			for r in 0..repeat {
+				flags[p] = f
+				p += 1
+			}
+		}
+	}
+
+	// X coordinates: each point's x is a signed delta from the previous
+	// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte) and
+	// X_SAME (sign-bit-for-short, or same-as-prev-for-long).
+	x : i32 = 0
+	for i in 0..n_points {
+		f := flags[i]
+		if (f & GLYPH_FLAG_X_SHORT) != 0 {
+			dx := i32(bytes[cursor]); cursor += 1
+			if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
+			x += dx
+		else if (f & GLYPH_FLAG_X_SAME) == 0
+			x += i32(read_be_i16(bytes, cursor)); cursor += 2
+		}
+		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
+		out.points[i].x = i16(x)
+		out.points[i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
+	}
+
+	// Y coordinates: same shape with Y_SHORT/Y_SAME bits.
+	y : i32 = 0
+	for i in 0..n_points {
+		f := flags[i]
+		if (f & GLYPH_FLAG_Y_SHORT) != 0 {
+			dy := i32(bytes[cursor]); cursor += 1
+			if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
+			y += dy
+		else if (f & GLYPH_FLAG_Y_SAME) == 0
+			y += i32(read_be_i16(bytes, cursor)); cursor += 2
+		}
+		out.points[i].y = i16(y)
 	}
 }
