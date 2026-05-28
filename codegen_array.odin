@@ -1771,6 +1771,22 @@ emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: string, base_ir_type: string,
         elem_bytes := checker_type_byte_size(fa.elem)
         if elem_bytes <= 1 { return }
         elem_ir := llvm_type_from_checker(fa.elem)
+        // Bounded unroll: large fixed arrays (e.g. `[65536]u32` for a TTF loca
+        // table) produce ~4 IR lines per element times fa.size — a few hundred
+        // is fine, tens of thousands ruins the IR file and clang. Past the
+        // threshold, emit the same counter-driven loop the partial-array path
+        // uses. The threshold is empirical: 16 keeps small Mat4/Vec swizzles
+        // and per-table-entry record bswaps unrolled (fast paths) while
+        // catching the bulk-array case.
+        BSWAP_UNROLL_THRESHOLD :: 16
+        if fa.size > BSWAP_UNROLL_THRESHOLD {
+            // Build a ptr to element 0, then loop count = fa.size.
+            elem0 := fresh_tmp(g)
+            emit_array_gep_const(g, elem0, base_ir_type, base_ptr, 0)
+            count_str := fmt.tprintf("%d", fa.size)
+            emit_partial_bswap_loop(g, elem0, count_str, fa.elem)
+            return
+        }
         for i in 0..<fa.size {
             elem_gep := fresh_tmp(g)
             emit_array_gep_const(g, elem_gep, base_ir_type, base_ptr, i)
