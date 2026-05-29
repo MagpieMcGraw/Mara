@@ -1412,11 +1412,6 @@ parse_decl_tail :: proc(p: ^Parser, names: [dynamic]string, start: Span, allow_v
         return decl
     }
 
-    if allow_var && current_kind(p) == .Var {
-        advance(p)
-        decl.is_var = true
-    }
-
     decl.type_expr = parse_type_expr(p)
 
     if allow_defaults && current_kind(p) == .Equals {
@@ -2768,10 +2763,6 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         }
         // x : type = expr  OR  x : type : expr  OR  x : type (uninitialized)
         is_var := false
-        if current_kind(p) == .Var {
-            is_var = true
-            advance(p) // consume 'var'
-        }
         type_expr := parse_type_expr(p)
         slice_cap := try_parse_slice_cap_suffix(p, type_expr)
         if current_kind(p) == .Equals {
