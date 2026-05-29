@@ -93,6 +93,50 @@ find_nrvo_candidates :: proc(body: []Stmt, n_positions: int) -> [dynamic]string 
     return candidates
 }
 
+// Stamp a valid partial-array header at `addr` over a zero-filled slot:
+// ptr → &inline elements, cap = N. A flat zero-fill leaves cap=0 / ptr=null —
+// an unusable partial array, even though the static capacity is right there in
+// the type. `len` is left as the zero-fill set it (0).
+stamp_partial_array_header :: proc(g: ^Codegen, addr: string, v: ^Type_Partial_Array) {
+    elem_t := llvm_type_from_checker(v.elem)
+    alloc_cap := v.size
+    if v.has_sentinel { alloc_cap += 1 }
+    ir_type := partial_array_ir_type(elem_t, alloc_cap)
+    elements_ptr := fresh_tmp(g)
+    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+    ptr_gep := fresh_tmp(g)
+    emit_slice_gep(g, ptr_gep, addr, SLICE.ptr)
+    emit_store(g, "ptr", elements_ptr, ptr_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, addr, SLICE.cap)
+    emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
+}
+
+// Walk a zero-filled struct instance at `base_ptr` and stamp valid headers for
+// every partial-array field, recursing into nested struct fields. Makes a
+// struct *value* with partial-array fields usable straight out of zero-init —
+// e.g. a function's named struct return, whose %sret the caller zero-filled.
+// The constructor path binds field names AND stamps (via prebind_field_var);
+// this is the stamp-only half, for non-constructor struct returns.
+fixup_partial_array_fields :: proc(g: ^Codegen, base_ptr: string, sd: ^Scope_Body) {
+    st_llvm := struct_llvm_name(sd.name)
+    for &f, i in sd.fields {
+        ft := distinct_base(f.type_)
+        #partial switch v in ft {
+        case ^Type_Partial_Array:
+            addr := fresh_tmp(g)
+            emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", addr, st_llvm, base_ptr, i)
+            stamp_partial_array_header(g, addr, v)
+        case ^Type_Scope:
+            if v.kind == .Struct {
+                addr := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", addr, st_llvm, base_ptr, i)
+                fixup_partial_array_fields(g, addr, &v.sd)
+            }
+        }
+    }
+}
+
 // Register `name` in g.all_vars as the right Var_Entry shape for a field of
 // type `ft` whose storage lives at LLVM pointer `addr`. Used to pre-bind a
 // struct constructor's fields to GEPs into %sret so the body's references
@@ -136,23 +180,10 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
             has_sentinel = v.has_sentinel,
             sentinel     = v.sentinel,
         }
-        // Partial-array header lives at the start of the field's slot, followed
-        // by the inline [N x T] elements. The caller's memset zeroed both, but
-        // a valid partial array needs header.ptr → &elements and header.cap = N.
-        // Mirrors the local-decl init at codegen_stmt.odin's Type_Partial_Array
-        // branch — same shape, the storage base is the sret GEP rather than a
-        // fresh alloca.
-        alloc_cap := v.size
-        if v.has_sentinel { alloc_cap += 1 }
-        ir_type := partial_array_ir_type(elem_t, alloc_cap)
-        elements_ptr := fresh_tmp(g)
-        emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-        ptr_gep := fresh_tmp(g)
-        emit_slice_gep(g, ptr_gep, addr, SLICE.ptr)
-        emit_store(g, "ptr", elements_ptr, ptr_gep)
-        cap_gep := fresh_tmp(g)
-        emit_slice_gep(g, cap_gep, addr, SLICE.cap)
-        emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
+        // The caller's memset zeroed the field; stamp a valid header over it
+        // (ptr → &elements, cap = N). Same fixup for non-constructor struct
+        // returns lives in fixup_partial_array_fields.
+        stamp_partial_array_header(g, addr, v)
         return
     case ^Type_Union:
         g.all_vars[name] = Union_Var{
@@ -349,6 +380,14 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                     emit(g, "  %s = getelementptr %s, ptr %%sret, i32 0, i32 %d", addr, sret_llvm, i)
                     prebind_field_var(g, f.name, addr, f.type_)
                 }
+            }
+        } else {
+            // Regular function with a struct return (not a struct constructor):
+            // the caller-provided %sret is zero-filled, so partial-array fields
+            // come up cap=0 / ptr=null. Stamp valid headers so the body can
+            // populate them — e.g. `-> loca: Loca` where Loca has a [..N] field.
+            if ret_st, rs_ok := lookup_struct(g, ret_struct_name); rs_ok {
+                fixup_partial_array_fields(g, "%sret", ret_st)
             }
         }
     }
