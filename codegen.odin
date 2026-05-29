@@ -697,7 +697,6 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
                 case Scalar_Var: ptr_val = emit_load(g, "ptr", v.alloca)
                 case:            return false
                 }
-                emit_null_check(g, ptr_val, e.name, e.span)
                 chain.base_ptr = ptr_val
                 chain.base_type = struct_llvm_name(sd.name)
                 chain.final_type = chain.base_type
@@ -988,7 +987,6 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             }
             // Load pointer
             current_ptr = emit_load(g, "ptr", current_ptr)
-            emit_null_check(g, current_ptr, s.name_hint, s.span)
             // Reset for next segment
             clear(&indices)
             append(&indices, GEP_Index{"i32", "0"})
@@ -2406,7 +2404,6 @@ llvm_string_byte_length :: proc(s: string) -> int {
 // unused kind. Helper names are constants so call sites stay readable.
 __MARA_BOUNDS_FAIL    :: "@__mara_bounds_fail"
 __MARA_OVERFLOW_FAIL  :: "@__mara_overflow_fail"
-__MARA_NULL_FAIL      :: "@__mara_null_fail"
 __MARA_DIVZ_FAIL      :: "@__mara_divz_fail"
 __MARA_SLICE_LEN_FAIL :: "@__mara_slice_len_fail"
 
@@ -2414,7 +2411,6 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // Register format strings as deduped globals via the normal literals path.
     fmt_bounds,    _ := get_string_literal(g, "%s runtime error: index %d out of bounds [0, %d) for '%s'\n")
     fmt_overflow,  _ := get_string_literal(g, "%s runtime error: integer overflow\n")
-    fmt_null,      _ := get_string_literal(g, "%s runtime error: null pointer dereference: '%s' is null\n")
     fmt_divz,      _ := get_string_literal(g, "%s runtime error: division by zero\n")
     fmt_slice_len, _ := get_string_literal(g, "%s runtime error: slice len %d not in [0, %d] (cap) for '%s'\n")
 
@@ -2442,15 +2438,6 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, "(ptr %loc) {\n")
     strings.write_string(&b, strings.concatenate({
         "  call i32 (ptr, ...) @printf(ptr ", fmt_overflow, ", ptr %loc)\n",
-    }))
-    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
-
-    // null: (loc, name)
-    strings.write_string(&b, "define void ")
-    strings.write_string(&b, __MARA_NULL_FAIL)
-    strings.write_string(&b, "(ptr %loc, ptr %name) {\n")
-    strings.write_string(&b, strings.concatenate({
-        "  call i32 (ptr, ...) @printf(ptr ", fmt_null, ", ptr %loc, ptr %name)\n",
     }))
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
@@ -2590,26 +2577,6 @@ can_elide_bounds_check :: proc(idx: string, len_val: string) -> bool {
     len_i, len_ok := strconv.parse_i64(len_val)
     if !len_ok { return false }
     return idx_i >= 0 && idx_i < len_i
-}
-
-// Emit a runtime null pointer check: if ptr == null, dispatch to the hoisted
-// fail helper. Per-site cost is the compare + branch + 2 lines fail tail.
-emit_null_check :: proc(g: ^Codegen, ptr_val: string, name: string, span: Span = {}) {
-    ok_label := fresh_label(g, "null.ok")
-    fail_label := fresh_label(g, "null.fail")
-
-    cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp eq ptr %s, null", cmp, ptr_val)
-    emit_cond_br(g, cmp, fail_label, ok_label)
-
-    emit_label(g, fail_label)
-    loc := format_location(span.file, span.line, span.col)
-    loc_global,  _ := get_string_literal(g, loc)
-    name_global, _ := get_string_literal(g, name)
-    emit(g, "  call void %s(ptr %s, ptr %s)", __MARA_NULL_FAIL, loc_global, name_global)
-    emit(g, "  unreachable")
-
-    emit_label(g, ok_label)
 }
 
 // Emit a runtime division-by-zero check. Compile-time elide when the divisor
@@ -3815,7 +3782,6 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "; Runtime fail-block helpers (extern)\n")
         strings.write_string(&b, "declare void @__mara_bounds_fail(ptr, i32, i32, ptr)\n")
         strings.write_string(&b, "declare void @__mara_overflow_fail(ptr)\n")
-        strings.write_string(&b, "declare void @__mara_null_fail(ptr, ptr)\n")
         strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_slice_len_fail(ptr, i32, i32, ptr)\n")
         strings.write_string(&b, "declare void @__mara_print_err(i32)\n")

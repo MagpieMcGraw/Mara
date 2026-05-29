@@ -471,7 +471,6 @@ resolve_struct_for_field :: proc(g: ^Codegen, ident_name: string, ident_type: Ty
                     emit_load_into(g, ptr_val, "ptr", alloca_name)
                 }
             }
-            emit_null_check(g, ptr_val, ident_name, span)
             return st, ptr_val, true
         }
     }
@@ -1719,13 +1718,6 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
 gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     un := s.target.(^Expr_Unary)
     ptr_val := gen_expr(g, un.operand)
-
-    // Null pointer check before dereference-assign
-    deref_name := "ptr"
-    if ident, ok := un.operand.(^Expr_Ident); ok {
-        deref_name = ident.name
-    }
-    emit_null_check(g, ptr_val, deref_name, s.span)
 
     // Determine the store type from the typed AST annotation
     store_type := "i64"

@@ -174,13 +174,6 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
             // Dereference: load through pointer
             ptr_val := gen_expr(g, e.operand)
 
-            // Null pointer check
-            deref_name := "ptr"
-            if ident, ok := e.operand.(^Expr_Ident); ok {
-                deref_name = ident.name
-            }
-            emit_null_check(g, ptr_val, deref_name, e.span)
-
             // Determine what type to load from the operand's type annotation
             deref_type := "i64"
             operand_type := expr_type(e.operand)
