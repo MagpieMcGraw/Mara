@@ -108,7 +108,7 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	err := read_entire_file(
 		"data/fonts/Inter_18pt-Regular.ttf", &ttf_data)
 	print("TTF file read", err)
-	test_ttf := TTF_Layout(&ttf_data)
+	test_ttf := TTF(&ttf_data)
 
 	game.running = true
 	game.initialized = true

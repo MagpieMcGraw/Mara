@@ -34,4 +34,4 @@ When parsing, put defs and decls in two different arrays. Can loop over each wit
 
 Byte reads might need new syntax. Maybe an = to read without auto-len, and a += to read with auto len...
 
-Take a personal look at gen address chain. I have a bad feeling about it.
+Maybe constructors need return values? Could be good for error handling.

@@ -30,10 +30,15 @@ Array from slice copies data
 my_array : [..256]byte = some_slice[64:128]
 
 The default slice notation [:] slices up to len
-If you want cap, be explicit
+If you want up to cap, be explicit
 
 Slice parameters accept fixed arrays, BUT!
 Only do this if your fixed array is full
 If it's partially full, make a partial array [..n]Item
 
-Direct reads from byte buffers advance the cursor(len)
+Reads from byte buffers:
+Index read fills entire destination type
+	[..4]Table = bytes[0] // reads 4 Tables
+Slice read fills as much of the destination as was read.
+	[..16]Table = bytes[32:64] // reads 32 bytes worth of Tables
+Slice read also sets the len.
