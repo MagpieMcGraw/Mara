@@ -1841,51 +1841,176 @@ dump_module_imports :: proc(g: ^Codegen) {
 // (typically the @main entry-point block) into the main TU's import set.
 compute_module_imports :: proc(g: ^Codegen, main_package, main_extras_ir: string) {
     g.module_imports = make(map[string]map[string]bool)
-    skip_libc :: proc(name: string) -> bool {
-        return name == "printf" || name == "exit" || name == "strlen"
+    // Parallel pass: each module with an emission task computes its own import
+    // set into its task slot, reusing that task's arena.
+    itasks := make([dynamic]^Module_Imports_Task, 0, len(g.module_tasks))
+    datas  := make([dynamic]rawptr, 0, len(g.module_tasks))
+    in_tasks: map[string]bool
+    defer {
+        for it in itasks { free(it) }
+        delete(itasks)
+        delete(datas)
+        delete(in_tasks)
     }
-    scan :: proc(ir: string, defined, referenced: ^map[string]bool) {
-        i := 0
-        for i < len(ir) {
-            if ir[i] != '@' { i += 1; continue }
-            start := i + 1
-            end := start
-            for end < len(ir) && is_ir_ident_byte(ir[end]) { end += 1 }
-            if end == start { i += 1; continue }
-            name := ir[start:end]
-            if is_ir_definition(ir, i, end) {
-                defined[name] = true
-            } else {
-                referenced[name] = true
-            }
-            i = end
-        }
+    for mt in g.module_tasks {
+        in_tasks[mt.module_name] = true
+        it := new(Module_Imports_Task)
+        it.mt = mt
+        it.main_package = main_package
+        it.main_extras_ir = main_extras_ir
+        append(&itasks, it)
+        append(&datas, rawptr(it))
     }
+    run_module_pool(datas[:], module_imports_worker)
+    for mt in g.module_tasks {
+        g.module_imports[mt.module_name] = mt.imports
+    }
+    // Serial pass: module_order entries without an emission task (e.g. the main
+    // TU when the main package has no non-`main` functions — its only content
+    // is @main, emitted into main_builder). Few in number; main allocator.
     for module_name in g.module_order {
-        defined: map[string]bool
-        referenced: map[string]bool
-        buf := g.module_outs[module_name]
-        scan(strings.to_string(buf), &defined, &referenced)
-        // The main TU also gets @main's references — those calls
-        // (Arena init, args setup, dispatch into user `main`) are emitted
-        // into main_builder, not into the module's own buffer.
-        if module_name == main_package && main_extras_ir != "" {
-            scan(main_extras_ir, &defined, &referenced)
+        if module_name in in_tasks { continue }
+        module_ir := ""
+        if buf, ok := g.module_outs[module_name]; ok {
+            module_ir = strings.to_string(buf)
         }
-        imports: map[string]bool
-        for name in referenced {
-            if name in defined { continue }
-            if strings.has_prefix(name, "llvm.") { continue }
-            // String globals: `.str.N` (main-thread namespace) or
-            // `.<module>_str.N` (per-worker namespace). All start with '.'
-            // and live in the local TU's `private` linkage block; never
-            // imports.
-            if len(name) > 0 && name[0] == '.' { continue }
-            if skip_libc(name) { continue }
-            imports[name] = true
-        }
-        g.module_imports[module_name] = imports
+        g.module_imports[module_name] = imports_from_ir(
+            module_ir, main_extras_ir, module_name == main_package)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Parallel post-emission passes
+//
+// Import-set computation and per-module .ll assembly are both independent per
+// module — each reads already-frozen shared state (g.module_outs, the declare
+// indexes) and writes only its own slot — so they reuse the emission phase's
+// worker-pool pattern. Each worker allocates into its module's existing
+// per-emission arena (alive for all of generate_program); the main thread
+// collects results after pool_finish.
+// ---------------------------------------------------------------------------
+
+@(private="file")
+import_skip_libc :: proc(name: string) -> bool {
+    return name == "printf" || name == "exit" || name == "strlen"
+}
+
+@(private="file")
+scan_ir_symbols :: proc(ir: string, defined, referenced: ^map[string]bool) {
+    i := 0
+    for i < len(ir) {
+        if ir[i] != '@' { i += 1; continue }
+        start := i + 1
+        end := start
+        for end < len(ir) && is_ir_ident_byte(ir[end]) { end += 1 }
+        if end == start { i += 1; continue }
+        name := ir[start:end]
+        if is_ir_definition(ir, i, end) {
+            defined[name] = true
+        } else {
+            referenced[name] = true
+        }
+        i = end
+    }
+}
+
+// Compute one module's import set: symbols it references but doesn't define,
+// minus llvm intrinsics, private `.`-locals, and the libc trio. The main TU
+// folds in @main's references (main_extras_ir). Result is allocated in the
+// caller's context.allocator.
+@(private="file")
+imports_from_ir :: proc(module_ir, main_extras_ir: string, is_main: bool) -> map[string]bool {
+    defined: map[string]bool
+    referenced: map[string]bool
+    defer { delete(defined); delete(referenced) }
+    scan_ir_symbols(module_ir, &defined, &referenced)
+    if is_main && main_extras_ir != "" {
+        scan_ir_symbols(main_extras_ir, &defined, &referenced)
+    }
+    imports: map[string]bool
+    for name in referenced {
+        if name in defined { continue }
+        if strings.has_prefix(name, "llvm.") { continue }
+        // String globals (`.str.N` / `.<module>_str.N`) are private-linkage
+        // locals, never imports.
+        if len(name) > 0 && name[0] == '.' { continue }
+        if import_skip_libc(name) { continue }
+        imports[name] = true
+    }
+    return imports
+}
+
+// Run `worker` over each pointer in `datas` on a core-sized pool. Pool
+// bookkeeping uses the caller's (main-thread) allocator; each worker installs
+// its own arena allocator on entry.
+@(private="file")
+run_module_pool :: proc(datas: []rawptr, worker: thread.Task_Proc) {
+    if len(datas) == 0 { return }
+    pool: thread.Pool
+    num_workers := os_old.processor_core_count()
+    if num_workers < 1 { num_workers = 1 }
+    if num_workers > len(datas) { num_workers = len(datas) }
+    thread.pool_init(&pool, context.allocator, num_workers)
+    defer thread.pool_destroy(&pool)
+    thread.pool_start(&pool)
+    for d in datas {
+        thread.pool_add_task(&pool, context.allocator, worker, d)
+    }
+    thread.pool_finish(&pool)
+}
+
+@(private="file")
+Module_Imports_Task :: struct {
+    mt:             ^Module_Task,
+    main_package:   string,
+    main_extras_ir: string,
+}
+
+@(private="file")
+module_imports_worker :: proc(t: thread.Task) {
+    it := cast(^Module_Imports_Task)t.data
+    mt := it.mt
+    context.allocator = virtual.arena_allocator(&mt.arena)
+    context.temp_allocator = context.allocator
+    mt.imports = imports_from_ir(strings.to_string(mt.out), it.main_extras_ir,
+                                 mt.module_name == it.main_package)
+}
+
+@(private="file")
+Module_Build_Shared :: struct {
+    g:                   ^Codegen,
+    checked:             ^Checked_Program,
+    web:                 bool,
+    fail_helpers_ir:     string,
+    main_builder_str:    string,
+    foreign_declares:    map[string]string,
+    fn_declares:         map[string]string,
+    struct_decl_by_name: map[string]string,
+    build_dir:           string,
+}
+
+@(private="file")
+Module_Build_Task :: struct {
+    shared:    ^Module_Build_Shared,
+    mt:        ^Module_Task,
+    write_err: bool,
+}
+
+@(private="file")
+module_build_worker :: proc(t: thread.Task) {
+    bt := cast(^Module_Build_Task)t.data
+    s := bt.shared
+    mt := bt.mt
+    context.allocator = virtual.arena_allocator(&mt.arena)
+    context.temp_allocator = context.allocator
+    is_main_tu := mt.module_name == s.checked.main_package
+    content := build_module_ll(s.g, s.checked, mt.module_name, is_main_tu, s.web,
+                               s.fail_helpers_ir, s.main_builder_str,
+                               s.foreign_declares, s.fn_declares,
+                               s.struct_decl_by_name, mt)
+    path := module_ll_path(s.build_dir, mt.module_name)
+    werr := os.write_entire_file(path, transmute([]u8)content)
+    bt.write_err = werr != nil
 }
 
 // Begin alloca hoisting: emit() will redirect allocas to alloca_buf, body code to body_buf.
@@ -3581,23 +3706,63 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         return nil, false
     }
 
-    // Build a quick name → task lookup so each per-module .ll write can
-    // find its own string_decls / overflow_intrinsics blob.
-    task_by_module: map[string]^Module_Task
-    defer delete(task_by_module)
-    for t in g.module_tasks {
-        task_by_module[t.module_name] = t
+    // Per-module .ll assembly + write, in parallel. Each module reads only
+    // frozen shared state (g.module_outs, the declare indexes) and writes its
+    // own distinct file, so the work parallelizes like emission. build_module_ll
+    // is read-only on `g`; each worker assembles into its module's arena.
+    bshared := Module_Build_Shared{
+        g                   = &g,
+        checked             = checked,
+        web                 = web,
+        fail_helpers_ir     = fail_helpers_ir,
+        main_builder_str    = main_builder_str,
+        foreign_declares    = foreign_declares,
+        fn_declares         = fn_declares,
+        struct_decl_by_name = struct_decl_by_name,
+        build_dir           = build_dir,
+    }
+    btasks := make([dynamic]^Module_Build_Task, 0, len(g.module_tasks))
+    bdatas := make([dynamic]rawptr, 0, len(g.module_tasks))
+    in_tasks: map[string]bool
+    defer {
+        for bt in btasks { free(bt) }
+        delete(btasks)
+        delete(bdatas)
+        delete(in_tasks)
+    }
+    for mt in g.module_tasks {
+        in_tasks[mt.module_name] = true
+        bt := new(Module_Build_Task)
+        bt.shared = &bshared
+        bt.mt = mt
+        append(&btasks, bt)
+        append(&bdatas, rawptr(bt))
+    }
+    run_module_pool(bdatas[:], module_build_worker)
+
+    // Collect paths serially (in module_tasks order) — module_ll_path is
+    // deterministic, so re-derive into the durable allocator here rather than
+    // holding the workers' arena-local copies.
+    g.module_ll_paths = make([dynamic]string)
+    for bt in btasks {
+        if bt.write_err {
+            fmt.printf("Error: could not write '%s'\n", module_ll_path(build_dir, bt.mt.module_name))
+            return nil, false
+        }
+        append(&g.module_ll_paths, module_ll_path(build_dir, bt.mt.module_name))
     }
 
-    g.module_ll_paths = make([dynamic]string)
+    // Serial: module_order entries without an emission task (the main TU's
+    // @main lives here). build_module_ll gets a nil task — its strings come
+    // from g.string_decls under the is_main_tu branch, matching the prior
+    // single-threaded path exactly.
     for module_name in g.module_order {
+        if module_name in in_tasks { continue }
         is_main_tu := module_name == checked.main_package
         content := build_module_ll(&g, checked, module_name, is_main_tu, web,
                                     fail_helpers_ir, main_builder_str,
-                                    foreign_declares,
-                                    fn_declares,
-                                    struct_decl_by_name,
-                                    task_by_module[module_name])
+                                    foreign_declares, fn_declares,
+                                    struct_decl_by_name, nil)
         path := module_ll_path(build_dir, module_name)
         werr := os.write_entire_file(path, transmute([]u8)content)
         if werr != nil {
