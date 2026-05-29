@@ -115,7 +115,6 @@ Scope_Binding :: struct {
     type_expr:     Type_Expr, // nil union if untyped
     default_value: Expr,      // nil if no default
     is_using:      bool,      // only meaningful for data-type funs (struct fields)
-    is_var:        bool,      // on params: caller is allowed to pass a VLA-shaped (runtime-sized) instantiation
 }
 
 Generic_Param :: struct {
@@ -466,7 +465,6 @@ Stmt_Assign :: struct {
     var_type:      Type,       // resolved type (distinct-unwrapped), filled by type checker
     env_type:      Type,       // full type for env updates (preserves distinct), filled by type checker
     slice_cap_expr: Expr,      // capacity expression for `name : []T(N)` — allocates backing storage + slice header
-    is_var:        bool,       // true for `var` keyword: variable-size, arena-allocated
     is_using:      bool,       // true for `using name := include ...`
     is_decl:       bool,       // true for desugared Stmt_Decl entries; false for reassignment (`x = 10`)
     // Complex LHS assignment (field/index/slice/deref). When non-nil, `name`,
@@ -489,13 +487,11 @@ Stmt_Assign :: struct {
 //   x := 10             -> names=[x], type=nil, init=[10]
 //   x, y := f()         -> names=[x,y], type=nil, init=[f()]
 //   x : int             -> names=[x], type=int, init=[]
-//   var xs : [n]int     -> is_var=true, type=[n]int, init=[]
 Stmt_Decl :: struct {
     names:         [dynamic]string,
     type_expr:     Type_Expr,       // nil if inferred from init
     init_values:   [dynamic]Expr,   // empty if uninitialized; len 1 for tuple destructure
     slice_cap_expr: Expr,           // capacity expression for `name : []T(N)`
-    is_var:        bool,
     is_using:      bool,
     span:          Span,
     // Type checker fills `checked` with the desugared underlying statements
@@ -1004,7 +1000,7 @@ parse_module :: proc(p: ^Parser) -> Stmt {
 }
 
 // Build a single-name Stmt_Decl. Most callers want this shape.
-make_single_decl :: proc(name: string, type_expr: Type_Expr, value: Expr, span: Span, is_var := false, is_using := false, slice_cap_expr: Expr = nil) -> ^Stmt_Decl {
+make_single_decl :: proc(name: string, type_expr: Type_Expr, value: Expr, span: Span, is_using := false, slice_cap_expr: Expr = nil) -> ^Stmt_Decl {
     names: [dynamic]string
     append(&names, name)
     init_values: [dynamic]Expr
@@ -1016,7 +1012,6 @@ make_single_decl :: proc(name: string, type_expr: Type_Expr, value: Expr, span: 
         type_expr      = type_expr,
         init_values    = init_values,
         slice_cap_expr = slice_cap_expr,
-        is_var         = is_var,
         is_using       = is_using,
         span           = span,
     })
@@ -1430,8 +1425,8 @@ validate_init_count :: proc(p: ^Parser, init_n: int, n_names: int) {
 }
 
 // Distribute a parsed multi-name decl into the param/return-context
-// Scope_Binding shape. Each name gets its own binding with type and
-// is_var copied from the decl, and a default_value taken from
+// Scope_Binding shape. Each name gets its own binding with type copied
+// from the decl and a default_value taken from
 // init_values per the distribution rule:
 //
 //   N names, init_n=0 → no defaults.
@@ -1465,7 +1460,6 @@ stmt_decl_to_bindings :: proc(decl: ^Stmt_Decl, out_bindings: ^[dynamic]Scope_Bi
             name          = name,
             type_expr     = decl.type_expr,
             default_value = dv,
-            is_var        = decl.is_var,
         })
         if out_types != nil {
             append(out_types, decl.type_expr)
@@ -2761,13 +2755,12 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             return make_single_decl(name_tok.text, nil, value, start), true
         }
         // x : type = expr  OR  x : type : expr  OR  x : type (uninitialized)
-        is_var := false
         type_expr := parse_type_expr(p)
         slice_cap := try_parse_slice_cap_suffix(p, type_expr)
         if current_kind(p) == .Equals {
             advance(p) // consume '='
             value := parse_expr(p)
-            return make_single_decl(name_tok.text, type_expr, value, start, is_var = is_var, slice_cap_expr = slice_cap), true
+            return make_single_decl(name_tok.text, type_expr, value, start, slice_cap_expr = slice_cap), true
         }
         if current_kind(p) == .Colon {
             // x : type : expr — typed comptime constant
@@ -2776,7 +2769,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             return new_clone(Stmt_Define{name = name_tok.text, type_expr = type_expr, value = value, span = start}), true
         }
         // No '=' — declaration without initializer (e.g. ev : SDL_Event)
-        return make_single_decl(name_tok.text, type_expr, nil, start, is_var = is_var, slice_cap_expr = slice_cap), true
+        return make_single_decl(name_tok.text, type_expr, nil, start, slice_cap_expr = slice_cap), true
 
     // name = expr
     case .Equals:

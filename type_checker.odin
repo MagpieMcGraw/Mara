@@ -100,7 +100,6 @@ Struct_Type_Field :: struct {
     type_:         Type,
     default_value: Expr, // nil if no default
     is_using:      bool,
-    is_var:        bool, // on fun params: caller may pass VLA-shaped instantiations
 }
 
 // The body of a Type_Scope — embedded via `using sd: Scope_Body`.
@@ -2669,7 +2668,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     fun_type.home_package = tmpl.home_package
     for tp in ast.typed_params {
         pt := resolve_type_expr_with_subst(tp.type_expr, c, ast.span, subst)
-        append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
+        append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
     }
     for rte in ast.return_types {
         append(&fun_type.return_types, resolve_type_expr_with_subst(rte, c, ast.span, subst))
@@ -5129,7 +5128,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 if len(s.typed_params) > 0 {
                     for tp in s.typed_params {
                         pt := resolve_type_expr(tp.type_expr, c, s.span, env=&scope_env)
-                        append(&def_ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
+                        append(&def_ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                     }
                     build_param_map(def_ft)
                 }
@@ -5548,7 +5547,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                             } else {
                                 pt = Type_Error{}
                             }
-                            append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
+                            append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                         }
                         build_param_map(fun_type)
                     }
@@ -5795,7 +5794,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 } else {
                                     pt = Type_Error{}
                                 }
-                                append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
+                                append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                             }
                             build_param_map(fun_type)
                         }
@@ -5916,7 +5915,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         } else {
                             pt = Type_Error{}
                         }
-                        append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
+                        append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                     }
                     build_param_map(fun_type)
                 }
@@ -6171,7 +6170,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         a.name = name
                         a.span = s.span
                         a.type_expr = s.type_expr
-                        a.is_var = s.is_var
                         a.is_using = s.is_using
                         a.is_decl = true
                         a.slice_cap_expr = s.slice_cap_expr
@@ -7083,7 +7081,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if len(ft.params) == 0 && len(s.typed_params) > 0 {
         for tp in s.typed_params {
             pt := resolve_type_expr(tp.type_expr, c, s.span, env=&child)
-            append(&ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value, is_var = tp.is_var})
+            append(&ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
         }
         build_param_map(ft)
     }
