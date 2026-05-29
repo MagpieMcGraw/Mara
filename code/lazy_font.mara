@@ -223,7 +223,7 @@ TTF :: struct (bytes: ^[]byte) {
 	ag : Glyph
 	parse_glyph(bytes, glyf_loc, a_off, a_len, &ag)
 	print("glyph 'A' =", a_gi, "contours", i32(ag.num_contours), "units_per_em", i32(head.units_per_em))
-	dump_glyph_sdf(&ag, head.units_per_em, 48)
+	dump_glyph_msdf(&ag, head.units_per_em, 48)
 }
 
 // ============================================================================
@@ -473,9 +473,34 @@ Raster_Edge :: struct {
 	y0 : f32
 	x1 : f32
 	y1 : f32
+	color : i32   // channel mask: 1=R, 2=G, 4=B; 7=all (smooth)
 }
 
-dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
+// Rotate among the three two-channel edge colors (YELLOW=R+G=3, MAGENTA=R+B=5,
+// CYAN=G+B=6). Any two share exactly one channel, so switching at a corner
+// makes that corner the channels' crossing — which the median preserves.
+next_edge_color :: fun(c: i32) -> i32 {
+	if c == 3 { return 5 }
+	if c == 5 { return 6 }
+	return 3
+}
+
+// Corner: the two segments at a shared point turn sharply (cos(angle) below
+// the threshold ≈ a >45° turn). Flattened curve steps stay well above it.
+edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
+	dax := a.x1 - a.x0
+	day := a.y1 - a.y0
+	dbx := b.x1 - b.x0
+	dby := b.y1 - b.y0
+	la := sqrt(dax*dax + day*day)
+	lb := sqrt(dbx*dbx + dby*dby)
+	if la <= 0.0 { return false }
+	if lb <= 0.0 { return false }
+	cosang := (dax*dbx + day*dby) / (la * lb)
+	return cosang < 0.7
+}
+
+dump_glyph_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 	if g.num_contours <= 0 { print("(no contours)") return }
 	scale := f32(px_em) / f32(units_per_em)
 	gx_min := f32(i32(g.x_min))
@@ -486,6 +511,9 @@ dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 	edges : [..MAX_RASTER_EDGES]Raster_Edge
 	edges.len = MAX_RASTER_EDGES
 	ne : i32 = 0
+	cont_first : [..512]i32   // edge-index where each contour's edges begin (+sentinel)
+	cont_first.len = 512
+	nc : i32 = 0              // number of contours that produced edges
 
 	nx  : [..1024]f32
 	ny  : [..1024]f32
@@ -498,6 +526,7 @@ dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 		cend := i32(g.end_pts[ci])
 		n := cend - cstart + 1
 		if n >= 2 {
+			c_lo := ne
 			// first on-curve point in the contour (relative index)
 			first_on : i32 = -1
 			for k in 0..n {
@@ -547,7 +576,7 @@ dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 			i : i32 = 1
 			for i < nn {
 				if non[i] {
-					if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{penx, peny, nx[i], ny[i]} ne += 1 }
+					if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{penx, peny, nx[i], ny[i], 0} ne += 1 }
 					penx = nx[i] peny = ny[i]
 					i += 1
 				else
@@ -564,16 +593,59 @@ dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 						omt := 1.0 - t
 						bx := omt*omt*penx + 2.0*omt*t*cx + t*t*exx
 						by := omt*omt*peny + 2.0*omt*t*cy + t*t*eyy
-						if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{pvx, pvy, bx, by} ne += 1 }
+						if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{pvx, pvy, bx, by, 0} ne += 1 }
 						pvx = bx pvy = by
 					}
 					penx = exx peny = eyy
 					i += 2
 				}
 			}
-			if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{penx, peny, nx[0], ny[0]} ne += 1 }
+			if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{penx, peny, nx[0], ny[0], 0} ne += 1 }
+			if ne > c_lo { cont_first[nc] = c_lo nc += 1 }
 		}
 		cstart = cend + 1
+	}
+	cont_first[nc] = ne
+
+	// edge coloring: per contour, switch color at corners so adjacent spans
+	// share exactly one channel (the median then keeps the corner sharp).
+	// Smooth / single-corner contours stay white (all channels = plain SDF).
+	corner_at : [..MAX_RASTER_EDGES]bool
+	corner_at.len = MAX_RASTER_EDGES
+	for j in 0..nc {
+		lo := cont_first[j]
+		hi := cont_first[j + 1]
+		m := hi - lo
+		if m >= 1 {
+			ncorner := 0
+			for k in 0..m {
+				pk := k - 1
+				if pk < 0 { pk = m - 1 }
+				if edge_is_corner(edges[lo + pk], edges[lo + k]) {
+					corner_at[k] = true
+					ncorner += 1
+				else
+					corner_at[k] = false
+				}
+			}
+			if ncorner <= 1 {
+				for k in 0..m { edges[lo + k].color = 7 }
+			else
+				c0 : i32 = -1
+				for k in 0..m {
+					if corner_at[k] {
+						if c0 < 0 { c0 = k }
+					}
+				}
+				col : i32 = 3
+				for jj in 0..m {
+					k := c0 + jj
+					if k >= m { k = k - m }
+					if corner_at[k] { col = next_edge_color(col) }
+					edges[lo + k].color = col
+				}
+			}
+		}
 	}
 
 	// fill + dump: per pixel, signed distance — magnitude = min distance to any
@@ -584,7 +656,9 @@ dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 		for pxi in 0..w {
 			qx := f32(pxi) + 0.5
 			qy := f32(py) + 0.5
-			mind2 : f32 = 1000000.0
+			md_r : f32 = 1000000.0
+			md_g : f32 = 1000000.0
+			md_b : f32 = 1000000.0
 			wnd : i32 = 0
 			for e in 0..ne {
 				ax := edges[e].x0
@@ -609,8 +683,12 @@ dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 				rx := qx - prx
 				ry := qy - pry
 				d2 := rx*rx + ry*ry
-				if d2 < mind2 { mind2 = d2 }
-				// winding contribution (sign)
+				// per-channel min distance (this edge contributes to its colors)
+				col := edges[e].color
+				if (col & 1) != 0 { if d2 < md_r { md_r = d2 } }
+				if (col & 2) != 0 { if d2 < md_g { md_g = d2 } }
+				if (col & 4) != 0 { if d2 < md_b { md_b = d2 } }
+				// winding contribution (sign, shared across channels)
 				crosses := false
 				if ay <= qy {
 					if by > qy { crosses = true }
@@ -625,13 +703,18 @@ dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 					}
 				}
 			}
-			sd := sqrt(mind2)
-			if wnd != 0 { sd = -sd }
-			if sd < -1.5 {
+			// signed per-channel distances (positive inside), then the median
+			s : f32 = -1.0
+			if wnd != 0 { s = 1.0 }
+			dr := s * sqrt(md_r)
+			dg := s * sqrt(md_g)
+			db := s * sqrt(md_b)
+			med := max(min(dr, dg), min(max(dr, dg), db))
+			if med > 1.5 {
 				&row + "#"
-			else if sd < 0.0
+			else if med > 0.0
 				&row + "+"
-			else if sd < 1.5
+			else if med > -1.5
 				&row + "."
 			else
 				&row + " "
