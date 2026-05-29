@@ -518,14 +518,6 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Struct-typed variable (covers Type_Name, generic instances, imported types)
         if sd := as_struct_body(var_type); sd != nil {
             if checked_st, cs_ok := lookup_struct(g, sd.name); cs_ok {
-                // VLA struct, `var` declaration, or any struct large enough that
-                // a stack alloca would be unsafe — entire struct goes on the
-                // scope arena. The 1024-byte threshold matches the type
-                // checker's big-array gate.
-                if checked_st.has_vla_field || s.is_var || struct_byte_size(checked_st, g.checked) > 1024 {
-                    gen_vla_struct_assign(g, s.name, checked_st, s.value, s.vla_size_expr, s.span)
-                    return
-                }
                 // Overloaded binary returning this struct type — use the dispatch path
                 if bin, bin_ok := s.value.(^Expr_Binary); bin_ok {
                     if rf, rf_ok := bin.overload_fn.?; rf_ok {
@@ -537,7 +529,8 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         return
                     }
                 }
-                gen_struct_assign(g, s.name, checked_st, s.value)
+                // gen_struct_assign arena-allocates large structs internally.
+                gen_struct_assign(g, s.name, checked_st, s.value, s.span)
                 return
             }
         }
@@ -578,7 +571,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Check if reassigning to an existing struct variable
         if sv, ok := get_struct(g, s.name); ok {
             if checked_st, cs_ok := lookup_struct(g, sv.struct_name); cs_ok {
-                gen_struct_assign(g, s.name, checked_st, s.value)
+                gen_struct_assign(g, s.name, checked_st, s.value, s.span)
                 return
             }
         }

@@ -120,7 +120,6 @@ Scope_Body :: struct {
     fields:         [dynamic]Struct_Type_Field,
     field_map:      map[string]int,  // field name -> index into fields (for O(1) lookup)
 
-    has_vla_field:  bool,    // true if any field is a VLA (struct must be arena-allocated)
     backing_bytes:  int,     // size of hidden trailing buffer for sized-slice fields' backing
                              // storage. Computed by codegen at register-struct time so the
                              // backing rides along with the struct on sret/memcpy — slice
@@ -6247,25 +6246,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 
             ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
 
-            // For VLA struct instantiations (e.g. String(n)), extract the runtime size
-            // expression and store it on the Stmt_Assign for codegen.
-            if gi, gi_ok := s.type_expr.(^Type_Generic_Instance); gi_ok {
-                if tmpl, tmpl_ok := &c.table.generic_templates[gi.name]; tmpl_ok {
-                    for arg, i in gi.type_args {
-                        if i < len(tmpl.generic_params) && tmpl.generic_params[i].is_const {
-                            if ce, ce_ok := arg.(Type_Const_Expr); ce_ok {
-                                s.vla_size_expr = ce.expr
-                            } else if tn, tn_ok := arg.(Type_Name); tn_ok {
-                                // Check if it's a runtime variable (not a compile-time constant)
-                                if _, found := c.table.constants[tn.name]; !found {
-                                    s.vla_size_expr = new_clone(Expr_Ident{name = tn.name, span = tn.span})
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             // Reject same-scope redeclarations (`x := 5` then `x := 7`) and shadowing
             // of any local binding in an enclosing scope up to the module boundary.
             // Reassignment with `=` is unaffected — those parse as Stmt_Assign with
@@ -6339,25 +6319,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         check_error(c, s.span,
                             TYPE_ARRAY_TOO_LARGE_STACK_BYTES,
                             s.name, total_bytes)
-                    }
-                }
-                // VLA struct: require var keyword, type-check size expression
-                if sd := as_scope_body(base_ann); sd != nil && sd.has_vla_field {
-                    if !s.is_var {
-                        // Use the generic base name for a cleaner error message
-                        user_type := sd.generic_base != "" ? sd.generic_base : type_name(ann_type)
-                        check_error(c, s.span,
-                            TYPE_RUNTIME_SIZED_TYPES_REQUIRE_VAR,
-                            s.name, user_type)
-                    }
-                    if s.vla_size_expr != nil {
-                        size_type := check_expr(c, s.vla_size_expr, env)
-                        if !is_any(size_type) && !is_numeric(size_type) {
-                            check_error(c, s.span, TYPE_SIZE_EXPRESSION_INTEGER, type_name(size_type))
-                        } else if !coerces_to_slice_width(size_type) {
-                            check_error(c, s.span, TYPE_INDEX_WIDTH,
-                                type_name(slice_header_width_type), type_name(size_type))
-                        }
                     }
                 }
                 // Function type from named source: auto-initialize to the function itself.

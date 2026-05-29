@@ -50,76 +50,8 @@ resolve_using_field :: proc(g: ^Codegen, st: ^Scope_Body, field_name: string) ->
 
 // Handle VLA struct allocation: the entire struct is bump-allocated on the scope arena
 // as one contiguous block (fixed header + variable-length array data).
-gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Expr, vla_size_expr: Expr, span: Span = {}) {
-    skey := struct_key(st)
-    llvm_name := struct_llvm_name(skey)
-    loc := format_location(span.file, span.line, span.col)
-
-    // Arena-allocate the whole struct (large structs route here). No VLA
-    // fields exist anymore, so this is always a fixed-size arena allocation.
-    {
-        data_ptr: string
-        // NRVO: if this is the function's NRVO candidate (pre-registered as
-        // Struct_Var aliased to %sret in codegen_fn.odin), reuse that slot
-        // instead of allocating a fresh one. Caller has already memset'd it.
-        if g.nrvo_var == name {
-            if existing_sv, ok := get_struct(g, name); ok && existing_sv.alloca == "%sret" {
-                data_ptr = existing_sv.alloca
-            }
-        }
-        if data_ptr == "" {
-            total := struct_byte_size(st, g.checked)
-            data_ptr = emit_arena_bump(g, total, name, loc)
-            emit_memset_zero(g, data_ptr, total)
-            g.all_vars[name] = Struct_Var{
-                alloca      = data_ptr,
-                struct_name = skey,
-            }
-        }
-        // Explicit `#skip_constructor`: alloca only, skip everything else.
-        if _, is_uninit := value.(^Expr_Skip_Constructor); is_uninit {
-            return
-        }
-        // Generic value: route through the unified struct-store primitive.
-        // Handles literals (with constructor + defaults + overrides), ident
-        // copies, field-access copies, struct-returning calls (NRVO into the
-        // arena slot), pure-struct constructor calls, and overloaded binary
-        // ops. Before this, big-struct decls like `quad := primitive_quad()`
-        // silently dropped the RHS, leaving the local zero-initialized.
-        if value != nil {
-            gen_store_struct_into(g, data_ptr, st, value)
-            if !value_is_nrvo_call(g, value) {
-                emit_nested_sized_slice_init(g, data_ptr, st)
-            }
-            return
-        }
-        // No value: call the struct's init function to apply defaults.
-        if init_fn, has_init := g.checked.functions[st.name]; has_init {
-            if init_fn.type_ != nil && len(init_fn.type_.params) > 0 {
-                arg_strs: [dynamic]string
-                for &param in init_fn.type_.params {
-                    pt := llvm_type_from_checker(param.type_)
-                    if param.default_value != nil {
-                        val := gen_expr(g, param.default_value, pt)
-                        append(&arg_strs, fmt.tprintf("%s %s", pt, val))
-                    } else {
-                        append(&arg_strs, fmt.tprintf("%s zeroinitializer", pt))
-                    }
-                }
-                append(&arg_strs, fmt.tprintf("ptr %s", data_ptr))
-                args_joined := strings.join(arg_strs[:], ", ")
-                emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(", args_joined, ")"}))
-            } else {
-                emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", data_ptr, ")"}))
-            }
-        }
-        emit_nested_sized_slice_init(g, data_ptr, st)
-        return
-    }
-}
-
 // Handle: name : ClassName = { field: value, ... }
-gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Expr) {
+gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Expr, span: Span = {}) {
     skey := struct_key(st)
     llvm_name := struct_llvm_name(skey)
 
@@ -127,18 +59,26 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     existing_sv, already_exists := get_struct(g, name)
     needs_alloca := !already_exists || existing_sv.struct_name != skey
     if needs_alloca {
-        alloca_name := fmt.tprintf("%%%s", name)
-        if already_exists && existing_sv.struct_name != skey {
-            // Re-declaration with different struct type — use a fresh name for the alloca
-            alloca_name = fresh_tmp(g)
+        total := struct_byte_size(st, g.checked)
+        alloca_name: string
+        // Large structs go on the scope arena — a stack alloca would be unsafe.
+        // (1024-byte threshold matches the type checker's big-array gate.)
+        if total > 1024 {
+            loc := format_location(span.file, span.line, span.col)
+            alloca_name = emit_arena_bump(g, total, name, loc)
+        } else {
+            alloca_name = fmt.tprintf("%%%s", name)
+            if already_exists && existing_sv.struct_name != skey {
+                // Re-declaration with different struct type — fresh alloca name
+                alloca_name = fresh_tmp(g)
+            }
+            emit_alloca(g, alloca_name, llvm_name)
         }
-        emit_alloca(g, alloca_name, llvm_name)
         g.all_vars[name] = Struct_Var{
             alloca = alloca_name,
             struct_name = skey,
         }
-        // Always zero-init struct allocas (ensures null ptrs, zero ints, etc.)
-        total := struct_byte_size(st, g.checked)
+        // Always zero-init (ensures null ptrs, zero ints, etc.)
         emit_memset_zero(g, alloca_name, total)
 
         // Sized-slice fields are NOT init'd here — the struct's auto-init

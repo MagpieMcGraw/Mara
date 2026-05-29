@@ -407,7 +407,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
                 sz := struct_byte_size(st_def, g.checked)
                 emit_memcpy(g, elem_alloca, elem_ptr, sz)
             }
-            g.all_vars[s.elem_var] = Struct_Var{elem_alloca, struct_name, ""}
+            g.all_vars[s.elem_var] = Struct_Var{elem_alloca, struct_name}
         } else if is_slice_elem {
             // Slice element: alloca slice header + memcpy
             elem_alloca := fmt.tprintf("%%%s", s.elem_var)

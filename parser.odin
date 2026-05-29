@@ -465,7 +465,6 @@ Stmt_Assign :: struct {
     span:          Span,
     var_type:      Type,       // resolved type (distinct-unwrapped), filled by type checker
     env_type:      Type,       // full type for env updates (preserves distinct), filled by type checker
-    vla_size_expr: Expr,       // runtime size expr for VLA struct instantiation (filled by type checker)
     slice_cap_expr: Expr,      // capacity expression for `name : []T(N)` — allocates backing storage + slice header
     is_var:        bool,       // true for `var` keyword: variable-size, arena-allocated
     is_using:      bool,       // true for `using name := include ...`
@@ -2772,10 +2771,6 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         }
         if current_kind(p) == .Colon {
             // x : type : expr — typed comptime constant
-            if is_var {
-                tok := current(p)
-                parse_error(p, tok, PARSE_VAR_WITH_CONSTANT)
-            }
             advance(p) // consume ':'
             value := parse_expr(p)
             return new_clone(Stmt_Define{name = name_tok.text, type_expr = type_expr, value = value, span = start}), true

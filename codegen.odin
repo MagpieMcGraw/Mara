@@ -133,7 +133,6 @@ Slice_Var :: struct {
 Struct_Var :: struct {
     alloca:      string,     // %varname
     struct_name: string,     // class name (e.g. "Point")
-    vla_cap:     string,     // runtime capacity for VLA array class structs ("" for fixed)
 }
 
 // No shadow Struct_Def — codegen reads directly from checked.table.funs (Type_Scope).
@@ -2889,12 +2888,9 @@ scope_has_big_values :: proc(stmts: []Stmt, g: ^Codegen) -> bool {
             if total >= 1024 { return true }
         }
         if sd := as_struct_body(vt); sd != nil {
-            if sd.has_vla_field { return true }
-            // Match the codegen routing rule in gen_stmt's struct branch:
             // structs over 1024 bytes are auto-routed to the scope arena.
             if struct_byte_size(sd, g.checked) > 1024 { return true }
         }
-        if assign.is_var { return true }
         return false
     }
     for stmt in stmts {
