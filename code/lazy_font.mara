@@ -152,22 +152,14 @@ TTF :: struct (bytes: ^[]byte) {
 	loca_correct_format :: fun(head: Head, maxp: Maxp,
 		bytes: []byte) -> loca: Loca 
 	{
-		n := i32(maxp.num_glyphs + 1)
-		loca.offsets.len = n
-		// Decode straight into loca.offsets with a manual indexed loop. A
-		// runtime-cap scratch (`[..n]u16`) comes up empty (cap 0), and
-		// #big_endian only honours compile-time fill bounds — neither sizes to
-		// num_glyphs at runtime.
+		loca.offsets.len = i32(maxp.num_glyphs + 1)
 		if head.index_to_loc_format == 0 {
-			// short: u16 entries, each stored as the real byte offset / 2.
-			for i in 0..n {
-				loca.offsets[i] = ((u32(bytes[i*2]) << 8) | u32(bytes[i*2 + 1])) * 2
+			off16 : [..loca.offsets.len]u16 = #big_endian bytes[0]
+			for item, i in off16 {
+				loca.offsets[i] = i32(item) * 2
 			}
 		else
-			// long: u32 byte offsets, big-endian.
-			for i in 0..n {
-				loca.offsets[i] = (u32(bytes[i*4]) << 24) | (u32(bytes[i*4 + 1]) << 16) | (u32(bytes[i*4 + 2]) << 8) | u32(bytes[i*4 + 3])
-			}
+			loca.offsets = #big_endian bytes[0]
 		}
 		return loca
 	}
