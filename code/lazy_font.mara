@@ -2,6 +2,7 @@
 module mara.lazy_font
 
 use mara.string
+use mara.math
 
 // Data type 	Description
 // shortFrac 	16-bit signed fraction
@@ -222,7 +223,7 @@ TTF :: struct (bytes: ^[]byte) {
 	ag : Glyph
 	parse_glyph(bytes, glyf_loc, a_off, a_len, &ag)
 	print("glyph 'A' =", a_gi, "contours", i32(ag.num_contours), "units_per_em", i32(head.units_per_em))
-	dump_glyph_raster(&ag, head.units_per_em, 48)
+	dump_glyph_sdf(&ag, head.units_per_em, 48)
 }
 
 // ============================================================================
@@ -455,13 +456,14 @@ parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
 }
 
 // ============================================================================
-// Glyph rasterization → coverage (font-atlas pixels)
+// Glyph → signed distance field (toward MSDF)
 // ============================================================================
 // Reconstruct a glyph's contours from parse_glyph's points (synthesizing the
-// TrueType implied on-curve midpoints), flatten the quadratics to line
-// segments, then fill with NxN-supersampled non-zero winding. First cut dumps
-// ASCII-art so the outline pipeline can be eyeballed before atlas/GPU work.
-// The contour reconstruction is what MSDF will reuse; only the fill changes.
+// TrueType implied on-curve midpoints) and flatten the quadratics to line
+// segments — the shared edge list. This step fills a single-channel SDF: per
+// pixel, magnitude = min distance to any edge, sign from non-zero winding.
+// MSDF extends this to 3 channels with edge coloring; the distance math here
+// carries over unchanged. Dumps ASCII so the field can be eyeballed.
 
 RASTER_QUAD_STEPS :: 6
 MAX_RASTER_EDGES  :: 4096
@@ -473,7 +475,7 @@ Raster_Edge :: struct {
 	y1 : f32
 }
 
-dump_glyph_raster :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
+dump_glyph_sdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 	if g.num_contours <= 0 { print("(no contours)") return }
 	scale := f32(px_em) / f32(units_per_em)
 	gx_min := f32(i32(g.x_min))
@@ -574,42 +576,62 @@ dump_glyph_raster :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
 		cstart = cend + 1
 	}
 
-	// fill + dump (4x4 supersampled non-zero winding)
-	ss : i32 = 4
+	// fill + dump: per pixel, signed distance — magnitude = min distance to any
+	// edge, sign from non-zero winding (negative inside). One sample per pixel;
+	// the field is smooth, so no supersampling.
 	for py in 0..h {
 		row : str
 		for pxi in 0..w {
-			cov : i32 = 0
-			for sy in 0..ss {
-				for sx in 0..ss {
-					sxp := f32(pxi) + (f32(sx) + 0.5) / f32(ss)
-					syp := f32(py)  + (f32(sy) + 0.5) / f32(ss)
-					wnd : i32 = 0
-					for e in 0..ne {
-						y0 := edges[e].y0
-						y1 := edges[e].y1
-						cross := false
-						if y0 <= syp {
-							if y1 > syp { cross = true }
-						else if y1 <= syp
-							cross = true
-						}
-						if cross {
-							tt := (syp - y0) / (y1 - y0)
-							xint := edges[e].x0 + tt * (edges[e].x1 - edges[e].x0)
-							if sxp < xint {
-								if y1 > y0 { wnd += 1 else wnd -= 1 }
-							}
-						}
+			qx := f32(pxi) + 0.5
+			qy := f32(py) + 0.5
+			mind2 : f32 = 1000000.0
+			wnd : i32 = 0
+			for e in 0..ne {
+				ax := edges[e].x0
+				ay := edges[e].y0
+				bx := edges[e].x1
+				by := edges[e].y1
+				// squared distance from q to segment a→b
+				dx := bx - ax
+				dy := by - ay
+				l2 := dx*dx + dy*dy
+				t : f32 = 0.0
+				if l2 > 0.0 {
+					t = ((qx - ax)*dx + (qy - ay)*dy) / l2
+					if t < 0.0 {
+						t = 0.0
+					else if t > 1.0
+						t = 1.0
 					}
-					if wnd != 0 { cov += 1 }
+				}
+				prx := ax + t*dx
+				pry := ay + t*dy
+				rx := qx - prx
+				ry := qy - pry
+				d2 := rx*rx + ry*ry
+				if d2 < mind2 { mind2 = d2 }
+				// winding contribution (sign)
+				crosses := false
+				if ay <= qy {
+					if by > qy { crosses = true }
+				else if by <= qy
+					crosses = true
+				}
+				if crosses {
+					tt := (qy - ay) / (by - ay)
+					xint := ax + tt * (bx - ax)
+					if qx < xint {
+						if by > ay { wnd += 1 else wnd -= 1 }
+					}
 				}
 			}
-			if cov >= 12 {
+			sd := sqrt(mind2)
+			if wnd != 0 { sd = -sd }
+			if sd < -1.5 {
 				&row + "#"
-			else if cov >= 6
+			else if sd < 0.0
 				&row + "+"
-			else if cov >= 2
+			else if sd < 1.5
 				&row + "."
 			else
 				&row + " "
