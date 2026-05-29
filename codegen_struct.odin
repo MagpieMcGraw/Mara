@@ -55,19 +55,9 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
     llvm_name := struct_llvm_name(skey)
     loc := format_location(span.file, span.line, span.col)
 
-    // Find the VLA field and compute sizes
-    vla_field_idx := -1
-    vla_fa: ^Type_Fixed_Array
-    for &f, i in st.fields {
-        if fa, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-            vla_field_idx = i
-            vla_fa = fa
-            break
-        }
-    }
-
-    // No VLA field — fixed-size struct being arena-allocated via `var`
-    if vla_field_idx < 0 {
+    // Arena-allocate the whole struct (large structs route here). No VLA
+    // fields exist anymore, so this is always a fixed-size arena allocation.
+    {
         data_ptr: string
         // NRVO: if this is the function's NRVO candidate (pre-registered as
         // Struct_Var aliased to %sret in codegen_fn.odin), reuse that slot
@@ -125,52 +115,6 @@ gen_vla_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value:
         }
         emit_nested_sized_slice_init(g, data_ptr, st)
         return
-    }
-
-    // Compute fixed header size (all fields except the VLA, which is [0 x T] in the struct type)
-    header_size := struct_byte_size(st, g.checked) // This uses [0 x T] for the VLA field
-
-    // All allocation byte counts run at slice header width — that's the type
-    // arena_alloc takes (allocations are byte slices, so they share the slice
-    // header width). 2GB cap with i32; flip slice_layout to widen.
-    w := slice_layout.len_ir
-
-    // Evaluate the per-variable VLA size expression — type checker guarantees
-    // it's already at slice header width.
-    size_val := gen_expr(g, vla_size_expr, w)
-
-    // Compute VLA array bytes: count * elem_size (+ 1 for sentinel if needed)
-    elem_type := llvm_type_from_checker(vla_fa.elem)
-    elem_size := elem_byte_size(elem_type)
-    array_count := size_val
-    if vla_fa.has_sentinel {
-        array_count = fresh_tmp(g)
-        emit(g, "  %s = add %s %s, 1", array_count, w, size_val)
-    }
-    array_bytes: string
-    if elem_size == 1 {
-        array_bytes = array_count
-    } else {
-        array_bytes = fresh_tmp(g)
-        emit(g, "  %s = mul %s %s, %d", array_bytes, w, array_count, elem_size)
-    }
-
-    // Total allocation: header + array data
-    total_bytes := fresh_tmp(g)
-    emit(g, "  %s = add %s %d, %s", total_bytes, w, header_size, array_bytes)
-
-    // Allocate from scope arena
-    data_ptr := emit_arena_bump_runtime(g, total_bytes, name, loc)
-
-    // Zero-initialize. memset.p0.<w> matches the byte-count width — no need to
-    // widen total_bytes for the intrinsic call.
-    emit(g, "  call void @llvm.memset.p0.%s(ptr %s, i8 0, %s %s, i1 false)", w, data_ptr, w, total_bytes)
-
-    // Register as struct variable with runtime VLA capacity
-    g.all_vars[name] = Struct_Var{
-        alloca      = data_ptr,
-        struct_name = skey,
-        vla_cap     = size_val,
     }
 }
 

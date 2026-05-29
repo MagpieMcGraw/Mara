@@ -2303,9 +2303,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case ^Type_Fixed_Array:
         elem_t := llvm_type_from_checker(v.elem)
         alloc_size := v.size
-        if v.is_vla {
-            alloc_size = 0 // VLA: [0 x T] in struct layout, actual size at runtime
-        } else if v.has_sentinel {
+        if v.has_sentinel {
             alloc_size += 1
         }
         return fmt.tprintf("[%d x %s]", alloc_size, elem_t)
@@ -2313,9 +2311,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case ^Type_Partial_Array:
         elem_t := llvm_type_from_checker(v.elem)
         alloc_size := v.size
-        if v.is_vla {
-            alloc_size = 0
-        } else if v.has_sentinel {
+        if v.has_sentinel {
             alloc_size += 1
         }
         return partial_array_ir_type(elem_t, alloc_size)
@@ -2888,7 +2884,6 @@ scope_has_big_values :: proc(stmts: []Stmt, g: ^Codegen) -> bool {
         if g.nrvo_var != "" && assign.name == g.nrvo_var { return false }
         vt := assign.var_type
         if fa, fa_ok := vt.(^Type_Fixed_Array); fa_ok {
-            if fa.is_vla { return true }
             elem_t := llvm_type_from_checker(fa.elem)
             total := fa.size * elem_byte_size(elem_t)
             if total >= 1024 { return true }

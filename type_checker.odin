@@ -73,8 +73,6 @@ Type_Ptr :: struct {
 Type_Fixed_Array :: struct {
     size:         int,
     elem:         Type,
-    is_vla:       bool,       // true for variable-length arrays (runtime size)
-    size_expr:    Expr,       // AST expression for runtime size (VLA only)
     has_sentinel: bool,       // true for [N, 0]T sentinel-terminated arrays
     sentinel:     int,        // sentinel value (e.g. 0 for null-terminated)
     index_type:   Type,       // index type for [N IT]T (nil = plain integer index)
@@ -93,8 +91,6 @@ Type_Slice :: struct {
 Type_Partial_Array :: struct {
     size:         int,
     elem:         Type,
-    is_vla:       bool,       // true for variable-length partial arrays (runtime size)
-    size_expr:    Expr,       // AST expression for runtime size (VLA only)
     has_sentinel: bool,
     sentinel:     int,
 }
@@ -2326,11 +2322,9 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
                 if ci, ci_ok := sub_type.(Type_Const_Int); ci_ok {
                     fa.size = ci.value
                     resolved = true
-                } else if rs, rs_ok := sub_type.(Type_Runtime_Size); rs_ok {
-                    // Runtime-sized: mark as VLA
-                    fa.is_vla = true
-                    fa.size_expr = rs.expr
-                    resolved = true
+                } else if _, rs_ok := sub_type.(Type_Runtime_Size); rs_ok {
+                    check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+                    return Type_Error{}
                 }
             }
             // Fall back to named constants
@@ -2342,9 +2336,8 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
                 }
             }
         } else if t.size_expr != nil {
-            // Expression-based size (VLA)
-            fa.is_vla = true
-            fa.size_expr = t.size_expr
+            check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+            return Type_Error{}
         } else {
             fa.size = t.size
         }
@@ -2372,9 +2365,9 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
             if val, found := subst[t.size_name]; found {
                 if cv, ok := val.(Type_Const_Int); ok {
                     pa.size = cv.value
-                } else if rt, ok := val.(Type_Runtime_Size); ok {
-                    pa.is_vla = true
-                    pa.size_expr = rt.expr
+                } else if _, rt_ok := val.(Type_Runtime_Size); rt_ok {
+                    check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+                    return Type_Error{}
                 }
             } else if c != nil {
                 if const_expr, found2 := c.table.constants[t.size_name]; found2 {
@@ -2384,8 +2377,8 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
                 }
             }
         } else if t.size_expr != nil {
-            pa.is_vla = true
-            pa.size_expr = t.size_expr
+            check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+            return Type_Error{}
         } else {
             pa.size = t.size
         }
@@ -2475,10 +2468,6 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
     tmpl_fields := tmpl.ast.fields if len(tmpl.ast.fields) > 0 else extract_fields_from_body(tmpl.ast.body)
     for field in tmpl_fields {
         ft := resolve_type_expr_with_subst(field.type_expr, c, span, &subst)
-        // Check for VLA fields
-        if fa, fa_ok := ft.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-            st.has_vla_field = true
-        }
         // Substitute generic value params in default values: a field default
         // like `cap: i64 = n` references the const generic n; at instantiation
         // we replace that ident with the bound value (e.g. 256) so codegen
@@ -5567,9 +5556,6 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                     if len(s.return_types) > 0 {
                         for rte in s.return_types {
                             rt := resolve_type_expr(rte, c, s.span, env = env)
-                            if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-                                check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
-                            }
                             append(&fun_type.return_types, rt)
                         }
                     }
@@ -5818,9 +5804,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         if is_callable && len(s.return_types) > 0 && len(fun_type.return_types) == 0 {
                             for rte in s.return_types {
                                 rt := resolve_type_expr(rte, c, s.span, env = env)
-                                if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-                                    check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
-                                }
                                 append(&fun_type.return_types, rt)
                             }
                         }
@@ -5942,9 +5925,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_callable && len(s.return_types) > 0 {
                     for rte in s.return_types {
                         rt := resolve_type_expr(rte, c, s.span, env = env)
-                        if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-                            check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
-                        }
                         append(&fun_type.return_types, rt)
                     }
                 }
@@ -7149,9 +7129,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if len(ft.return_types) == 0 && len(s.return_types) > 0 {
         for rte in s.return_types {
             rt := resolve_type_expr(rte, c, s.span, env=&child)
-            if fa, fa_ok := rt.(^Type_Fixed_Array); fa_ok && fa.is_vla {
-                check_error(c, s.span, TYPE_VARIABLE_LENGTH_ARRAYS_CANNOT_RETURNED)
-            }
             append(&ft.return_types, rt)
         }
     }
@@ -11333,22 +11310,6 @@ fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env
     }
 }
 
-// is_vla_shape reports whether a type carries any runtime-sized aggregate
-// component — a VLA fixed-array directly, a struct (or pointer to one) whose
-// instantiation has any VLA field, or a pointer chain to either. Used to gate
-// VLA values against parameters that didn't opt in via `var`.
-//
-// Slices (`[]T`) are intentionally NOT counted: their runtime length is
-// part of how slices work everywhere, and forcing every slice-taking
-// function to mark its param `var` would be pure noise.
-is_vla_shape :: proc(t: Type) -> bool {
-    if fa, ok := t.(^Type_Fixed_Array); ok && fa.is_vla { return true }
-    if pa, ok := t.(^Type_Partial_Array); ok && pa.is_vla { return true }
-    if pt, ok := t.(^Type_Ptr); ok { return is_vla_shape(pt.elem) }
-    if sd := as_scope_body(t); sd != nil { return sd.has_vla_field }
-    return false
-}
-
 // Shared helper: check that args match a function's parameter types.
 check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, display_name: string, span: Span, env: ^Type_Env) {
     required := count_required_params(fun_type)
@@ -11380,16 +11341,6 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             // Check that infer literal args fit in the parameter type
             if is_infer(arg_type) {
                 check_literal_overflow(c, arg, fun_type.params[i].type_, span)
-            }
-            // VLA-vs-var: refuse runtime-sized aggregate instantiations unless
-            // the parameter binding is marked `var`. The param signature is
-            // the public contract; a caller passing a VLA Array/Struct should
-            // see the rule at the call site rather than discover it later via
-            // a runtime bug.
-            if is_vla_shape(arg_type) && !fun_type.params[i].is_var {
-                check_error(c, span,
-                    TYPE_ARGUMENT_VALUE_VLA_SHAPED_TYPE,
-                    i + 1, display_name, type_name(arg_type))
             }
         }
     }
@@ -12091,12 +12042,10 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
         // not addressable), and a literal/const index folds via
         // evaluate_comptime_int. Lets `s := "hello"; s[5]` be a
         // compile error instead of a runtime trap.
-        if !fa.is_vla {
-            if idx_val, idx_ok := evaluate_comptime_int(c, e.index); idx_ok {
-                if idx_val < 0 || idx_val >= i64(fa.size) {
-                    check_error(c, e.span, TYPE_INDEX_OUT_OF_BOUNDS_CONST,
-                        idx_val, fa.size, fa.size - 1)
-                }
+        if idx_val, idx_ok := evaluate_comptime_int(c, e.index); idx_ok {
+            if idx_val < 0 || idx_val >= i64(fa.size) {
+                check_error(c, e.span, TYPE_INDEX_OUT_OF_BOUNDS_CONST,
+                    idx_val, fa.size, fa.size - 1)
             }
         }
         return fa.elem

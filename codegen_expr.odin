@@ -820,19 +820,7 @@ gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
             return emit_build_temp_slice(g, arr_alloca, size_str, size_str)
         }
         val := gen_expr(g, arg)  // returns data_ptr for arrays
-        len_val: string
-        if fa.is_vla {
-            len_val = "0"
-            if ident, id_ok := arg.(^Expr_Ident); id_ok {
-                if entry, av_ok := g.all_vars[ident.name]; av_ok {
-                    if av, is_arr := entry.(Array_Var); is_arr && av.capacity_val != "" {
-                        len_val = av.capacity_val
-                    }
-                }
-            }
-        } else {
-            len_val = fmt.tprintf("%d", fa.size)
-        }
+        len_val := fmt.tprintf("%d", fa.size)
         // Fixed-array → slice: populated view (len=N, cap=N). Fixed arrays
         // are populated buffers — coercing them gives a view the receiver
         // can iterate / index naturally. For a fresh-cursor scratch buffer,
