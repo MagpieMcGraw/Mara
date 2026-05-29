@@ -9819,6 +9819,7 @@ expr_type_ptr :: proc(e: Expr) -> ^Type {
     case ^Expr_Struct_Literal:     return &v.type_
     case ^Expr_Field_Access:       return &v.type_
     case ^Expr_Size_Of:            return &v.type_
+    case ^Expr_Assert:             return &v.type_
     case ^Expr_Take:                return &v.type_
     case ^Expr_If:                 return &v.type_
     case ^Expr_Compiler_Intrinsic: return &v.type_
@@ -10195,6 +10196,14 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         e.resolved_type = resolved
         return Type_Infer_Int{}
+    case ^Expr_Assert:
+        // assert(cond) — cond must be boolean; the expression yields no value.
+        cond_type := check_expr(c, e.cond, env)
+        if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
+            check_error(c, e.span, TYPE_CONDITION_BOOL, type_name(cond_type))
+        }
+        e.type_ = Type_Void{}
+        return Type_Void{}
     case ^Expr_Take:
         // Two forms:
         //   take(T, slice)      — carve from slice's cursor; advances slice.len

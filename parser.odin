@@ -157,6 +157,7 @@ Expr :: union {
     ^Expr_Struct_Literal,
     ^Expr_Field_Access,
     ^Expr_Size_Of,
+    ^Expr_Assert,
     ^Expr_Take,
     ^Expr_If,
     ^Expr_Compiler_Intrinsic,
@@ -325,6 +326,16 @@ Expr_Size_Of :: struct {
     span:          Span,
     type_:         Type,
     resolved_type: Type,      // the resolved type argument (filled by type checker)
+}
+
+// `assert(cond)` — debug-only runtime invariant check. cond_text is the
+// condition's source text (captured at parse time, since later phases have no
+// source) for the failure message. Compiled out entirely in -release builds.
+Expr_Assert :: struct {
+    cond:          Expr,
+    cond_text:     string,
+    span:          Span,
+    type_:         Type,      // always Type_Void — assert is a statement, no value
 }
 
 // take(T, storage) — carve a typed view from storage's current cursor,
@@ -3837,6 +3848,24 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             so.type_expr = type_arg
             so.span = token_span(tok)
             result = so
+        } else if tok.text == "assert" && current_kind(p) == .Left_Paren {
+            // `assert(cond)` — capture the condition's source text now (later
+            // phases have no source) by concatenating the tokens it spans.
+            // No separators keeps member/index access readable.
+            advance(p) // consume '('
+            cond_start := p.pos
+            cond := parse_expr(p)
+            cond_end := p.pos
+            expect(p, .Right_Paren)
+            sb := strings.builder_make()
+            for i in cond_start..<cond_end {
+                strings.write_string(&sb, p.tokens[i].text)
+            }
+            a := new(Expr_Assert)
+            a.cond = cond
+            a.cond_text = strings.clone(strings.to_string(sb))
+            a.span = token_span(tok)
+            result = a
         } else if (tok.text == "let" || tok.text == "slice") && current_kind(p) == .Left_Paren {
             // `let(T, storage)` — carve a value of type T from `storage`.
             // `slice([:N]T, storage)` — carve N elements as a slice header.
@@ -4280,6 +4309,11 @@ clone_expr :: proc(e: Expr) -> Expr {
     case ^Expr_Unary:
         c := new_clone(v^)
         c.operand = clone_expr(v.operand)
+        c.type_ = nil
+        return c
+    case ^Expr_Assert:
+        c := new_clone(v^)
+        c.cond = clone_expr(v.cond)
         c.type_ = nil
         return c
     case ^Expr_Binary:

@@ -430,6 +430,7 @@ Codegen :: struct {
     // (strlen returns i32 on wasm32, not i64), among other target tweaks.
     web: bool,
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
+    release: bool, // -release build mode — compile out asserts
 }
 
 // Look up a foreign function's IR name (link_name or fallback to fn_name).
@@ -1742,6 +1743,7 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.checked            = task.checked
     g.web                = task.web
     g.shared             = task.shared_mode
+    g.release            = task.main_g.release
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
     g.arena_mark_name    = task.main_g.arena_mark_name
@@ -2531,6 +2533,7 @@ __MARA_BOUNDS_FAIL    :: "@__mara_bounds_fail"
 __MARA_OVERFLOW_FAIL  :: "@__mara_overflow_fail"
 __MARA_DIVZ_FAIL      :: "@__mara_divz_fail"
 __MARA_SLICE_LEN_FAIL :: "@__mara_slice_len_fail"
+__MARA_ASSERT_FAIL    :: "@__mara_assert_fail"
 
 runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // Register format strings as deduped globals via the normal literals path.
@@ -2538,6 +2541,7 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     fmt_overflow,  _ := get_string_literal(g, "%s runtime error: integer overflow\n")
     fmt_divz,      _ := get_string_literal(g, "%s runtime error: division by zero\n")
     fmt_slice_len, _ := get_string_literal(g, "%s runtime error: slice len %d not in [0, %d] (cap) for '%s'\n")
+    fmt_assert,    _ := get_string_literal(g, "%s assertion failed: %s\n")
 
     b: strings.Builder
     strings.builder_init(&b)
@@ -2572,6 +2576,17 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, "(ptr %loc) {\n")
     strings.write_string(&b, strings.concatenate({
         "  call i32 (ptr, ...) @printf(ptr ", fmt_divz, ", ptr %loc)\n",
+    }))
+    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
+
+    // assert: (loc, cond). User-facing `assert(cond)`; cond is the condition's
+    // source text. Only reached in non-release builds (codegen omits the call
+    // under -release).
+    strings.write_string(&b, "define void ")
+    strings.write_string(&b, __MARA_ASSERT_FAIL)
+    strings.write_string(&b, "(ptr %loc, ptr %cond) {\n")
+    strings.write_string(&b, strings.concatenate({
+        "  call i32 (ptr, ...) @printf(ptr ", fmt_assert, ", ptr %loc, ptr %cond)\n",
     }))
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
@@ -3267,11 +3282,12 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, release: bool = false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
     g.shared = shared
+    g.release = release
     word_size_is_32 = web
     init_slice_layout()
 
@@ -3957,6 +3973,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_overflow_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_slice_len_fail(ptr, i32, i32, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_assert_fail(ptr, ptr)\n")
         strings.write_string(&b, "declare void @__mara_print_err(i32)\n")
     }
     strings.write_byte(&b, '\n')

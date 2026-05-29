@@ -300,6 +300,22 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         ir_type := llvm_type_from_checker(e.resolved_type)
         size := elem_byte_size(ir_type, g.checked)
         return fmt.tprintf("%d", size)
+    case ^Expr_Assert:
+        // assert(cond): if cond is false, report `<file:line:col> assertion
+        // failed: <cond text>` and exit. Compiled out entirely in -release.
+        if g.release { return "0" }
+        cond_val := gen_expr(g, e.cond)
+        ok_label := fresh_label(g, "assert.ok")
+        fail_label := fresh_label(g, "assert.fail")
+        emit_cond_br(g, cond_val, ok_label, fail_label)
+        emit_label(g, fail_label)
+        loc := format_location(e.span.file, e.span.line, e.span.col)
+        loc_global,  _ := get_string_literal(g, loc)
+        cond_global, _ := get_string_literal(g, e.cond_text)
+        emit(g, "  call void %s(ptr %s, ptr %s)", __MARA_ASSERT_FAIL, loc_global, cond_global)
+        emit(g, "  unreachable")
+        emit_label(g, ok_label)
+        return "0"
     case ^Expr_Take:
         return gen_expr_take(g, e)
     case ^Expr_If:

@@ -206,6 +206,9 @@ dump_parse_expr :: proc(b: ^strings.Builder, expr: Expr) {
     case ^Expr_String:
         fmt.sbprintf(b, "\"%s\"", e.value)
 
+    case ^Expr_Assert:
+        fmt.sbprintf(b, "assert(%s)", e.cond_text)
+
     case ^Expr_Char:
         if e.value == '\n' { fmt.sbprintf(b, "'\\n'") }
         else if e.value == '\t' { fmt.sbprintf(b, "'\\t'") }

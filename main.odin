@@ -1035,7 +1035,7 @@ main :: proc() {
 
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
-    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared)
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, release = args.release)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         return
