@@ -1,0 +1,28 @@
+module test_runtime_pa
+
+// Runtime-cap partial arrays (`[..n]T`) come up cap=0/len=0 — the runtime cap is
+// never stamped. Robust pattern for a runtime count: a compile-time-cap array,
+// set .len, fill with a manual indexed loop (same shape parse_glyph uses).
+
+fill_manual :: fun(n: i32, buf: []byte) {
+    off : [..64]u16
+    off.len = n
+    for i in 0..n {
+        off[i] = (u16(buf[i*2]) << 8) | u16(buf[i*2 + 1])
+    }
+    print("manual -> len:", off.len, "cap:", off.cap)
+    for v, i in off {
+        print("  ", i, ":", i32(v))
+    }
+}
+
+main :: fun() -> i64 {
+    buf : [..64]byte
+    buf.len = 64
+    for i in 0..32 {
+        buf[i*2]     = u8(0)
+        buf[i*2 + 1] = u8(i + 1)
+    }
+    fill_manual(5, buf[:])   // expect len 5, cap 64, values 1 2 3 4 5
+    return 0
+}
