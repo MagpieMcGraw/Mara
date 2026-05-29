@@ -766,7 +766,18 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
         // Same width, just return the value (e.g. i32 signed vs unsigned)
         return val, true
     } else if src_bits < tgt_bits {
-        if is_unsigned_cast(e.name) || src_type == "i1" {
+        // Widening preserves the SOURCE value, so the extension is chosen by
+        // the source's signedness, not the target's: an unsigned source is
+        // non-negative and must zero-extend even into a signed target
+        // (`i32(some_u16)` must NOT sign-extend). bool/byte/char are unsigned.
+        src_unsigned := src_type == "i1"
+        #partial switch t in distinct_base(expr_type(e.args[0])) {
+        case Type_Numeric:
+            src_unsigned = t.kind == .Unsigned
+        case Type_Byte, Type_C8, Type_Utf8, Type_Bool:
+            src_unsigned = true
+        }
+        if src_unsigned {
             emit(g, "  %s = zext %s %s to %s", tmp, src_type, val, target)
         } else {
             emit(g, "  %s = sext %s %s to %s", tmp, src_type, val, target)
