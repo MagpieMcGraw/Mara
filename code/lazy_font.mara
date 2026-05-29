@@ -214,24 +214,15 @@ TTF :: struct (bytes: ^[]byte) {
 	cmap.encodings.len = i32(cmap.num_subtables)
 	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
 
-	// Glyph parse sanity check: map a few characters through the cmap and
-	// decode each resulting glyph. Contour counts cross-check both the cmap
-	// (right glyph for the char) and the loca/glyf decode.
-	probe : [..8]u32
-	probe.len = 5
-	probe[0] = u32(' ')   // space: expect 0 contours (empty)
-	probe[1] = u32('l')   // expect 1
-	probe[2] = u32('o')   // expect 2 (outer + counter)
-	probe[3] = u32('A')   // expect 2
-	probe[4] = u32('M')   // expect 1
-	for c in probe {
-		gi := i32(cmap_glyph_index(bytes, cmap_sub, c))
-		goff := loca.offsets[gi]
-		glen := loca.offsets[gi + 1] - goff
-		gg : Glyph
-		parse_glyph(bytes, glyf_loc, goff, glen, &gg)
-		print("char", i32(c), "glyph", gi, "contours", i32(gg.num_contours), "points", i32(gg.points.len))
-	}
+	// Rasterizer sanity check: map 'A' through the cmap, decode the glyph, and
+	// dump its coverage as ASCII so the outline → fill pipeline is eyeballable.
+	a_gi := i32(cmap_glyph_index(bytes, cmap_sub, u32('A')))
+	a_off := loca.offsets[a_gi]
+	a_len := loca.offsets[a_gi + 1] - a_off
+	ag : Glyph
+	parse_glyph(bytes, glyf_loc, a_off, a_len, &ag)
+	print("glyph 'A' =", a_gi, "contours", i32(ag.num_contours), "units_per_em", i32(head.units_per_em))
+	dump_glyph_raster(&ag, head.units_per_em, 48)
 }
 
 // ============================================================================
@@ -460,5 +451,170 @@ parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
 			y += i32(read_be_i16(bytes, cursor)); cursor += 2
 		}
 		out.points[i].y = i16(y)
+	}
+}
+
+// ============================================================================
+// Glyph rasterization → coverage (font-atlas pixels)
+// ============================================================================
+// Reconstruct a glyph's contours from parse_glyph's points (synthesizing the
+// TrueType implied on-curve midpoints), flatten the quadratics to line
+// segments, then fill with NxN-supersampled non-zero winding. First cut dumps
+// ASCII-art so the outline pipeline can be eyeballed before atlas/GPU work.
+// The contour reconstruction is what MSDF will reuse; only the fill changes.
+
+RASTER_QUAD_STEPS :: 6
+MAX_RASTER_EDGES  :: 4096
+
+Raster_Edge :: struct {
+	x0 : f32
+	y0 : f32
+	x1 : f32
+	y1 : f32
+}
+
+dump_glyph_raster :: fun(g: ^Glyph, units_per_em: u16, px_em: i32) {
+	if g.num_contours <= 0 { print("(no contours)") return }
+	scale := f32(px_em) / f32(units_per_em)
+	gx_min := f32(i32(g.x_min))
+	gy_max := f32(i32(g.y_max))
+	w := i32(f32(i32(g.x_max) - i32(g.x_min)) * scale) + 2
+	h := i32(f32(i32(g.y_max) - i32(g.y_min)) * scale) + 2
+
+	edges : [..MAX_RASTER_EDGES]Raster_Edge
+	edges.len = MAX_RASTER_EDGES
+	ne : i32 = 0
+
+	nx  : [..1024]f32
+	ny  : [..1024]f32
+	non : [..1024]bool
+	nx.len = 1024 ny.len = 1024 non.len = 1024
+
+	n_contours := i32(g.num_contours)
+	cstart : i32 = 0
+	for ci in 0..n_contours {
+		cend := i32(g.end_pts[ci])
+		n := cend - cstart + 1
+		if n >= 2 {
+			// first on-curve point in the contour (relative index)
+			first_on : i32 = -1
+			for k in 0..n {
+				if g.points[cstart + k].on_curve {
+					if first_on < 0 { first_on = k }
+				}
+			}
+			if first_on < 0 { first_on = 0 }
+
+			// build node ring starting on-curve, inserting implied on-curve
+			// midpoints between consecutive off-curve control points
+			nn : i32 = 0
+			nx[nn] = (f32(i32(g.points[cstart + first_on].x)) - gx_min) * scale
+			ny[nn] = (gy_max - f32(i32(g.points[cstart + first_on].y))) * scale
+			non[nn] = true
+			nn += 1
+			have_off := false
+			ox : f32 = 0.0
+			oy : f32 = 0.0
+			for j in 1..n {
+				idx := first_on + j
+				if idx >= n { idx = idx - n }
+				p := g.points[cstart + idx]
+				ppx := (f32(i32(p.x)) - gx_min) * scale
+				ppy := (gy_max - f32(i32(p.y))) * scale
+				if p.on_curve {
+					if have_off {
+						nx[nn] = ox ny[nn] = oy non[nn] = false nn += 1
+						have_off = false
+					}
+					nx[nn] = ppx ny[nn] = ppy non[nn] = true nn += 1
+				else if have_off
+					// two consecutive off-curve controls — TrueType implies an
+					// on-curve point at their midpoint
+					nx[nn] = ox ny[nn] = oy non[nn] = false nn += 1
+					nx[nn] = (ox + ppx) * 0.5 ny[nn] = (oy + ppy) * 0.5 non[nn] = true nn += 1
+					ox = ppx oy = ppy have_off = true
+				else
+					ox = ppx oy = ppy have_off = true
+				}
+			}
+			if have_off { nx[nn] = ox ny[nn] = oy non[nn] = false nn += 1 }
+
+			// walk the ring, emitting flattened edges; close back to node 0
+			penx := nx[0]
+			peny := ny[0]
+			i : i32 = 1
+			for i < nn {
+				if non[i] {
+					if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{penx, peny, nx[i], ny[i]} ne += 1 }
+					penx = nx[i] peny = ny[i]
+					i += 1
+				else
+					cx := nx[i]
+					cy := ny[i]
+					exx : f32 = 0.0
+					eyy : f32 = 0.0
+					ni := i + 1
+					if ni >= nn { exx = nx[0] eyy = ny[0] else exx = nx[ni] eyy = ny[ni] }
+					pvx := penx
+					pvy := peny
+					for s in 0..RASTER_QUAD_STEPS {
+						t := f32(s + 1) / f32(RASTER_QUAD_STEPS)
+						omt := 1.0 - t
+						bx := omt*omt*penx + 2.0*omt*t*cx + t*t*exx
+						by := omt*omt*peny + 2.0*omt*t*cy + t*t*eyy
+						if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{pvx, pvy, bx, by} ne += 1 }
+						pvx = bx pvy = by
+					}
+					penx = exx peny = eyy
+					i += 2
+				}
+			}
+			if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{penx, peny, nx[0], ny[0]} ne += 1 }
+		}
+		cstart = cend + 1
+	}
+
+	// fill + dump (4x4 supersampled non-zero winding)
+	ss : i32 = 4
+	for py in 0..h {
+		row : str
+		for pxi in 0..w {
+			cov : i32 = 0
+			for sy in 0..ss {
+				for sx in 0..ss {
+					sxp := f32(pxi) + (f32(sx) + 0.5) / f32(ss)
+					syp := f32(py)  + (f32(sy) + 0.5) / f32(ss)
+					wnd : i32 = 0
+					for e in 0..ne {
+						y0 := edges[e].y0
+						y1 := edges[e].y1
+						cross := false
+						if y0 <= syp {
+							if y1 > syp { cross = true }
+						else if y1 <= syp
+							cross = true
+						}
+						if cross {
+							tt := (syp - y0) / (y1 - y0)
+							xint := edges[e].x0 + tt * (edges[e].x1 - edges[e].x0)
+							if sxp < xint {
+								if y1 > y0 { wnd += 1 else wnd -= 1 }
+							}
+						}
+					}
+					if wnd != 0 { cov += 1 }
+				}
+			}
+			if cov >= 12 {
+				&row + "#"
+			else if cov >= 6
+				&row + "+"
+			else if cov >= 2
+				&row + "."
+			else
+				&row + " "
+			}
+		}
+		print(row)
 	}
 }
