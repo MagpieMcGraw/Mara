@@ -6766,8 +6766,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         // Also clear any field-level uninit entries (whole struct reassignment)
                         clear_struct_invalid_fields(env, s.name)
                     }
-                    // Reassignment: check value type matches existing variable type
-                    if types_incompatible(existing_type, val_type) {
+                    // Reassignment: check value type matches existing variable type.
+                    // A byte-buffer reinterpret read (off16 = mem[off] or mem[lo:hi])
+                    // is recognized here too — same as the decl-init and field-assign
+                    // paths: the read size comes from the target type, not the byte
+                    // value. Without this the RHS types as a bare `byte` and fails.
+                    is_byte_reinterpret := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
+                    if !is_byte_reinterpret && types_incompatible(existing_type, val_type) {
                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(existing_type))
                     }

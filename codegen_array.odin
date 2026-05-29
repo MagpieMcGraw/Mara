@@ -1947,6 +1947,14 @@ gen_partial_array_init_in_place :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type
 // elements area (e.g. via gen_partial_array_byte_fill_at_*). Used by the
 // two standalone-decl entry points (Expr_Slice and Expr_Index sources).
 gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array) -> string {
+    // Reassignment into an existing partial array — `off16 = mem[off]` after a
+    // prior `off16 : [..N]u16` decl — reuses the existing alloca. Emitting a
+    // second `alloca %name` would be invalid LLVM SSA ("multiple definition of
+    // local value '%name'"); the fill helpers write into the elements area, so
+    // the already-constructed header (ptr -> elements, cap = N) stays valid.
+    if sv, ok := get_slice(g, name); ok {
+        return sv.alloca
+    }
     elem_t := llvm_type_from_checker(pa.elem)
     _, pa_utf8 := pa.elem.(Type_Utf8)
     cap_n := pa.size

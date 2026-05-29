@@ -152,9 +152,10 @@ TTF :: struct (bytes: ^[]byte) {
 	loca_correct_format :: fun(head: Head, maxp: Maxp,
 		bytes: []byte) -> loca: Loca 
 	{
-		loca.offsets.len = i32(maxp.num_glyphs + 1)
+		loca.offsets.len = i32(maxp.num_glyphs + 1)		
 		if head.index_to_loc_format == 0 {
-			off16 : [..loca.offsets.len]u16 = #big_endian bytes[0]
+			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
+			off16.len = loca.offsets.len
 			for item, i in off16 {
 				loca.offsets[i] = i32(item) * 2
 			}
