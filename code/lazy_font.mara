@@ -86,7 +86,6 @@ TTF :: struct (bytes: ^[]byte) {
 		version       : u16
 		num_subtables : u16
 		encodings     : [..16]Encoding_Record
-		subtable_data : []byte
 	}
 
 	Encoding_Record :: struct {
@@ -165,6 +164,28 @@ TTF :: struct (bytes: ^[]byte) {
 		return loca
 	}
 
+	// Choose which cmap subtable to map characters through, returning its
+	// absolute file offset (0 if none). Prefer Microsoft Unicode BMP (3,1) —
+	// the format-4 table nearly every font ships — then any Unicode-platform
+	// (0,*) table, then whatever's first as a fallback.
+	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i32) -> i32 {
+		best : i32 = -1
+		best_score : i32 = -1
+		for e, i in cmap.encodings {
+			score : i32 = 1
+			if e.platform_id == 0 { score = 2 }
+			if e.platform_id == 3 {
+				if e.platform_specific_id == 1 { score = 3 }
+			}
+			if score > best_score {
+				best_score = score
+				best = i
+			}
+		}
+		if best < 0 { return 0 }
+		return cmap_loc + i32(cmap.encodings[best].offset)
+	}
+
 	// Gonna parse in the constructor, due to namespace
 	h: Offset_Table = #big_endian bytes[0]
 	h.tables = #big_endian bytes[12]
@@ -187,19 +208,107 @@ TTF :: struct (bytes: ^[]byte) {
 	hhea : Hhea = #big_endian bytes[hhea_loc]
 	hmtx : Hmtx = #big_endian bytes[hmtx_loc]
 
+	// cmap: the encoding records sit right after the 4-byte header. Fill them,
+	// then choose a Unicode subtable to map character codes through.
+	cmap.encodings = #big_endian bytes[cmap_loc + 4]
+	cmap.encodings.len = i32(cmap.num_subtables)
+	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
+
 	// Glyph parse sanity check: pick a glyph by index, decode it, print
 	// structural info. Iterate once a real cmap-lookup wires character codes
 	// to indices.
-	test_idx : i32 = 36   // arbitrary mid-range glyph; usually has contours
+	probe : [..8]u32
+	probe.len = 5
+	probe[0] = u32(' ')   // space: expect 0 contours
+	probe[1] = u32('l')   // expect 1
+	probe[2] = u32('o')   // expect 2 (outer + counter)
+	probe[3] = u32('A')   // expect 2
+	probe[4] = u32('M')   // expect 1
+	// Map a real character through the cmap, then decode that glyph.
+	// NOTE: glyph geometry is only meaningful once the Head-table read is
+	// fixed — its i64 created/modified fields force struct alignment padding
+	// the packed TTF layout doesn't have, so index_to_loc_format is misread
+	// and the loca table decodes wrong. The cmap lookup itself is unaffected
+	// (Cmap/Encoding_Record have no over-aligned fields).
+	test_char : u32 = u32('A')
+	test_idx := i32(cmap_glyph_index(bytes, cmap_sub, test_char))
+	print("cmap: 'A' ->", test_idx)
 	test_off := loca.offsets[test_idx]
 	test_len := loca.offsets[test_idx + 1] - test_off
 	g : Glyph
-	parse_glyph(bytes, h.tables.get_offset("glyf"), test_off, test_len, &g)
+	parse_glyph(bytes, glyf_loc, test_off, test_len, &g)
 	print("glyph", test_idx,
 		"contours:", i32(g.num_contours),
 		"points:", g.points.len,
 		"composite:", i32(g.is_composite),
 		"bbox:", i32(g.x_min), i32(g.y_min), i32(g.x_max), i32(g.y_max))
+}
+
+// ============================================================================
+// Character map (cmap)
+// ============================================================================
+//
+// Maps a character code to a glyph index. The cmap table holds one or more
+// encoding subtables; the TTF constructor (pick_cmap_subtable) chose one,
+// preferring a Unicode mapping, and passes its absolute file offset here.
+// Only format 4 (segment-mapped BMP — the near-universal desktop format) and
+// format 0 (legacy 256-byte) are decoded; anything else hits a diagnostic
+// rather than silently returning .notdef (glyph 0).
+
+cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
+	if subtable_start == 0 { return 0 }
+	format := read_be_u16(bytes, subtable_start)
+	if format == 4 {
+		return cmap_format4_lookup(bytes, subtable_start, char)
+	else if format == 0
+		return cmap_format0_lookup(bytes, subtable_start, char)
+	else
+		print("cmap: unsupported subtable format %", i64(format))
+		return 0
+	}
+}
+
+// Format 4: four parallel u16 arrays of seg_count entries — end codes, start
+// codes, idDelta, idRangeOffset — then the glyphIdArray. Subtable layout:
+// format(2) length(2) language(2) segCountX2(2) searchRange(2)
+// entrySelector(2) rangeShift(2), so the arrays begin at +14 with a 2-byte
+// reservedPad between the end-code and start-code arrays.
+cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+	seg_x2 := i32(read_be_u16(bytes, sub + 6))
+	end_codes   := sub + 14
+	start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
+	id_deltas   := start_codes + seg_x2
+	id_ranges   := id_deltas + seg_x2
+	seg_count := seg_x2 / 2
+	for s in 0..seg_count {
+		end_code := u32(read_be_u16(bytes, end_codes + s * 2))
+		if char <= end_code {
+			start_code := u32(read_be_u16(bytes, start_codes + s * 2))
+			if char < start_code { return 0 }
+			id_delta := read_be_u16(bytes, id_deltas + s * 2)
+			id_range := i32(read_be_u16(bytes, id_ranges + s * 2))
+			if id_range == 0 {
+				// Direct: (char + idDelta) mod 65536. Mask to 16 bits before
+				// the u16 conversion — u16() is range-checked and would trap on
+				// the wrap (idDelta is a u16-encoded signed value).
+				return u16((char + u32(id_delta)) & u32(0xFFFF))
+			else
+				// Indirect: glyphIdArray address, relative to this
+				// idRangeOffset entry's own location.
+				addr := id_ranges + s * 2 + id_range + 2 * (i32(char) - i32(start_code))
+				g := read_be_u16(bytes, addr)
+				if g == 0 { return 0 }
+				return u16((u32(g) + u32(id_delta)) & u32(0xFFFF))
+			}
+		}
+	}
+	return 0
+}
+
+// Format 0: a flat 256-entry byte map at +6 (after format/length/language).
+cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+	if char > 255 { return 0 }
+	return u16(bytes[sub + 6 + i32(char)])
 }
 
 // ============================================================================

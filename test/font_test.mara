@@ -1,0 +1,17 @@
+module font_test
+
+use mara.os
+use mara.memory
+use mara.lazy_font
+
+// Exercises the TTF parser (and the new cmap lookup) on a real font without
+// launching the game. The TTF constructor does the parse + prints the cmap
+// 'A' -> glyph-index result and a glyph sanity line.
+main :: fun() -> i64 {
+	this_program = Program(Arena_Debug(64 * MB))
+	ttf_data : [..2 * MB]byte
+	err := read_entire_file("../Pounce/data/fonts/Inter_18pt-Regular.ttf", &ttf_data)
+	print("TTF file read", err)
+	test_ttf := TTF(&ttf_data)
+	return 0
+}
