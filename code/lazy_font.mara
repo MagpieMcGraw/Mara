@@ -44,7 +44,7 @@ TTF :: struct (bytes: ^[]byte) {
 		len: u32
 	}
 
-	Head :: struct {
+	#packed Head :: struct {
 		version              : Fixed          // 0x00010000 = version 1.0
 		font_revision        : Fixed          // set by font manufacturer
 		check_sum_adjustment : u32            // sum the font as u32, store 0xB1B0AFBA - sum
@@ -214,34 +214,24 @@ TTF :: struct (bytes: ^[]byte) {
 	cmap.encodings.len = i32(cmap.num_subtables)
 	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
 
-	// Glyph parse sanity check: pick a glyph by index, decode it, print
-	// structural info. Iterate once a real cmap-lookup wires character codes
-	// to indices.
+	// Glyph parse sanity check: map a few characters through the cmap and
+	// decode each resulting glyph. Contour counts cross-check both the cmap
+	// (right glyph for the char) and the loca/glyf decode.
 	probe : [..8]u32
 	probe.len = 5
-	probe[0] = u32(' ')   // space: expect 0 contours
+	probe[0] = u32(' ')   // space: expect 0 contours (empty)
 	probe[1] = u32('l')   // expect 1
 	probe[2] = u32('o')   // expect 2 (outer + counter)
 	probe[3] = u32('A')   // expect 2
 	probe[4] = u32('M')   // expect 1
-	// Map a real character through the cmap, then decode that glyph.
-	// NOTE: glyph geometry is only meaningful once the Head-table read is
-	// fixed — its i64 created/modified fields force struct alignment padding
-	// the packed TTF layout doesn't have, so index_to_loc_format is misread
-	// and the loca table decodes wrong. The cmap lookup itself is unaffected
-	// (Cmap/Encoding_Record have no over-aligned fields).
-	test_char : u32 = u32('A')
-	test_idx := i32(cmap_glyph_index(bytes, cmap_sub, test_char))
-	print("cmap: 'A' ->", test_idx)
-	test_off := loca.offsets[test_idx]
-	test_len := loca.offsets[test_idx + 1] - test_off
-	g : Glyph
-	parse_glyph(bytes, glyf_loc, test_off, test_len, &g)
-	print("glyph", test_idx,
-		"contours:", i32(g.num_contours),
-		"points:", g.points.len,
-		"composite:", i32(g.is_composite),
-		"bbox:", i32(g.x_min), i32(g.y_min), i32(g.x_max), i32(g.y_max))
+	for c in probe {
+		gi := i32(cmap_glyph_index(bytes, cmap_sub, c))
+		goff := loca.offsets[gi]
+		glen := loca.offsets[gi + 1] - goff
+		gg : Glyph
+		parse_glyph(bytes, glyf_loc, goff, glen, &gg)
+		print("char", i32(c), "glyph", gi, "contours", i32(gg.num_contours), "points", i32(gg.points.len))
+	}
 }
 
 // ============================================================================

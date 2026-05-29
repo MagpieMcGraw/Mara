@@ -346,6 +346,7 @@ PARSE_EXPECTED_INTRINSIC_AFTER_DOT :: "expected intrinsic name part after `.`, g
 PARSE_BARE_INTRINSIC_REMOVED      :: "bare `intrinsic` body is no longer supported — use `{{ @llvm.<name> }}` instead"
 PARSE_MALFORMED_USE_INCLUDE       :: "malformed use/include statement"
 PARSE_EXPOSE_NEEDS_FUN_DECL       :: "`#expose` must precede a `name :: fun(...)` declaration"
+PARSE_PACKED_NEEDS_STRUCT_DECL    :: "`#packed` must precede a `name :: struct { ... }` declaration"
 PARSE_BIG_ENDIAN_NEEDS_BYTE_READ  :: "`#big_endian` must precede a byte-buffer read — `buf[off]` or `buf[lo:hi]`"
 PARSE_USING_NOT_ALLOWED_ON_INCLUDE :: "`using` is not allowed before `use`/`include` — use bare `use %s` (private) or `include %s` (re-export), or `name :: use path` for qualified access"
 PARSE_INCLUDE_NEEDS_COLON_COLON   :: "`:=` is not allowed for `use`/`include` — modules are comptime, use `name :: use path` (private) or `name :: include path` (re-export)"

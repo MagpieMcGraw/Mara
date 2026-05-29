@@ -119,6 +119,12 @@ Scope_Body :: struct {
     fields:         [dynamic]Struct_Type_Field,
     field_map:      map[string]int,  // field name -> index into fields (for O(1) lookup)
 
+    // `#packed`: drop inter-field alignment padding so the layout maps 1:1 onto
+    // packed binary formats. Set from the AST decorator in register_scope_defs;
+    // consumed by every layout computation (size/offset/alignment) and by the
+    // LLVM struct-type emission (`<{ ... }>`).
+    is_packed:      bool,
+
     backing_bytes:  int,     // size of hidden trailing buffer for sized-slice fields' backing
                              // storage. Computed by codegen at register-struct time so the
                              // backing rides along with the struct on sret/memcpy — slice
@@ -3709,12 +3715,12 @@ checker_struct_data_byte_size :: proc(sd: ^Scope_Body) -> int {
     for &f in sd.fields {
         a := checker_type_alignment(f.type_)
         if a > max_align { max_align = a }
-        if offset % a != 0 {
+        if !sd.is_packed && offset % a != 0 {
             offset += a - (offset % a)
         }
         offset += checker_type_byte_size(f.type_)
     }
-    if max_align > 0 && offset % max_align != 0 {
+    if !sd.is_packed && max_align > 0 && offset % max_align != 0 {
         offset += max_align - (offset % max_align)
     }
     return offset
@@ -5091,6 +5097,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_st.name = mangled
                 def_st.home_package = c.current_package
                 def_st.kind = .Struct
+                def_st.is_packed = s.is_packed
                 c.table.structs[mangled] = def_st
                 if st.types == nil { st.types = make(map[string]Type) }
                 st.types[bare_name] = def_st
@@ -5112,6 +5119,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_ft.has_parens = s.has_parens
                 if def_is_struct {
                     def_ft.kind = .Struct
+                    def_ft.is_packed = s.is_packed
                     // Phase 2 (check_bodies) resolves fields; we only register the name here.
                     c.table.funs[mangled] = def_ft
                     if st.types == nil { st.types = make(map[string]Type) }
@@ -5465,6 +5473,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 struct_type.name = flat
                 struct_type.home_package = c.current_package
                 struct_type.kind = .Struct
+                struct_type.is_packed = s.is_packed
                 c.table.structs[flat] = struct_type
                 // Body fields deferred to Pass 1b (register_scope_defs).
                 type_env_set(pub, s.name, struct_type)
@@ -5846,6 +5855,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 struct_type.name = make_flat_name(c.current_package, s.name)
                 struct_type.home_package = c.current_package
                 struct_type.kind = .Struct
+                struct_type.is_packed = s.is_packed
                 if struct_type.name in c.table.structs || struct_type.name in c.table.funs {
                     check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
                     continue

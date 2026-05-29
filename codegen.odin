@@ -2934,8 +2934,8 @@ struct_byte_size_sd :: proc(sd: ^Scope_Body, checked: ^Checked_Program = nil) ->
         ft := field_ir_type(&f)
         a := elem_alignment(ft, checked)
         if a > max_align { max_align = a }
-        // Align the current offset
-        if offset % a != 0 {
+        // Align the current offset (skipped for #packed — no inter-field pad)
+        if !sd.is_packed && offset % a != 0 {
             offset += a - (offset % a)
         }
         offset += elem_byte_size(ft, checked)
@@ -2943,8 +2943,8 @@ struct_byte_size_sd :: proc(sd: ^Scope_Body, checked: ^Checked_Program = nil) ->
     // Hidden trailing buffer for sized-slice fields' backing storage.
     // Always byte-typed so no alignment bump needed.
     offset += sd.backing_bytes
-    // Pad to struct alignment
-    if offset % max_align != 0 {
+    // Pad to struct alignment (skipped for #packed — alignment is 1)
+    if !sd.is_packed && offset % max_align != 0 {
         offset += max_align - (offset % max_align)
     }
     return offset
@@ -3160,7 +3160,15 @@ register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
         append(&field_types, fmt.tprintf("[%d x i8]", sd.backing_bytes))
     }
     fields_joined := strings.join(field_types[:], ", ")
-    type_decl := strings.concatenate({llvm_name, " = type { ", fields_joined, " }"})
+    // #packed → LLVM packed struct `<{ ... }>` (no inter-field padding), so
+    // field indices map 1:1 to byte offsets and #big_endian reads of on-disk
+    // packed formats land correctly.
+    type_decl: string
+    if sd.is_packed {
+        type_decl = strings.concatenate({llvm_name, " = type <{ ", fields_joined, " }>"})
+    } else {
+        type_decl = strings.concatenate({llvm_name, " = type { ", fields_joined, " }"})
+    }
     append(&g.struct_decls, type_decl)
 }
 

@@ -11,8 +11,8 @@ use mara.memory
 // index_to_loc_format). There is no #packed attribute to opt out of the
 // alignment.
 //
-// Expected: marker = 0xBEEF (48879). Bug: reads 0 (from offset 32, not 28).
-Rec :: struct {
+// Expected: marker = 0xBEEF (48879). Without #packed it misreads (offset 32).
+#packed Rec :: struct {
 	a : u32   // packed 0
 	b : u32   // packed 4
 	c : u32   // packed 8
@@ -27,10 +27,10 @@ main :: fun() -> i64 {
 	this_program = Program(Arena_Debug(1 * MB))
 	buf : [..64]byte
 	buf.len = 64
-	buf[28] = u8(0xBE)   // marker, big-endian, at PACKED offset 28
-	buf[29] = u8(0xEF)
+	buf[28] = u8(0x12)   // marker, big-endian, at PACKED offset 28
+	buf[29] = u8(0x34)
 
 	r : Rec = #big_endian buf[0]
-	print("marker: expect 48879 (0xBEEF), got", i32(r.marker))
+	print("marker: expect 4660 (0x1234), got", i32(r.marker))  // #packed: reads offset 28
 	return 0
 }

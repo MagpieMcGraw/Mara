@@ -196,7 +196,7 @@ walk_leaf_fields :: proc(t: Type, start, length: int, base_offset: int, cls: ^AB
             for &f in v.fields {
                 ft := f.type_
                 a := type_alignment(ft)
-                if a > 0 && offset % a != 0 {
+                if !v.is_packed && a > 0 && offset % a != 0 {
                     offset += a - (offset % a)
                 }
                 fsize := checker_type_byte_size(ft)
@@ -308,7 +308,7 @@ count_floats_doubles :: proc(t: Type, start, length: int, base_offset: int) -> (
             for &f in v.fields {
                 ft := f.type_
                 a := type_alignment(ft)
-                if a > 0 && offset % a != 0 {
+                if !v.is_packed && a > 0 && offset % a != 0 {
                     offset += a - (offset % a)
                 }
                 fsize := checker_type_byte_size(ft)
@@ -465,6 +465,7 @@ type_alignment :: proc(t: Type) -> int {
         return slice_header_align
     case ^Type_Scope:
         if v.kind == .Struct {
+            if v.is_packed { return 1 }  // #packed — byte-aligned, no padding
             max_a := 1
             for &f in v.fields {
                 a := type_alignment(f.type_)

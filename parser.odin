@@ -569,6 +569,7 @@ Stmt_Scope :: struct {
     is_intrinsic:   bool,      // body was `{ @llvm.<name> }` — compiler generates body at call sites
     intrinsic_name: string,    // LLVM intrinsic mnemonic (e.g. "llvm.sqrt.f32"); set when is_intrinsic is true
     is_exposed:    bool,      // `#expose fun ...` — DLL entry point: dllexport linkage, unmangled symbol name
+    is_packed:     bool,      // `#packed struct ...` — drop inter-field alignment padding (maps 1:1 to packed binary formats)
     span:           Span,
 }
 
@@ -1138,6 +1139,24 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
                 return inner
             }
             scope.is_exposed = true
+            return scope
+        }
+        // `#packed struct ...` — decorator that drops inter-field alignment
+        // padding so the struct's layout maps 1:1 onto packed binary formats
+        // (e.g. on-disk file headers read via `#big_endian`). Same on-line /
+        // own-line placement as `#expose`.
+        if peek_kind(p, 1) == .Identifier && peek_token(p, 1).text == "packed" {
+            hash_tok := current(p)
+            advance(p) // consume '#'
+            advance(p) // consume 'packed'
+            skip_newlines(p)
+            inner := parse_stmt(p)
+            scope, ok := inner.(^Stmt_Scope)
+            if !ok || scope.kind != .Struct {
+                parse_error(p, hash_tok, PARSE_PACKED_NEEDS_STRUCT_DECL)
+                return inner
+            }
+            scope.is_packed = true
             return scope
         }
         // Fall through to the expression-statement path below.
