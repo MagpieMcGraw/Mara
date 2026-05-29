@@ -195,6 +195,9 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // auto-add to len = (source.len / size_of(elem)). Runtime checks:
         // source.len is a multiple of sizeof(elem); resulting count fits in cap.
         if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
+            if pa.is_vla {
+                codegen_fatal(g, s.span, "codegen for `var [..N]T` (runtime partial arrays) is not yet implemented")
+            }
             if sl_expr, ok := s.value.(^Expr_Slice); ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
                 gen_partial_array_byte_read(g, s.name, pa, sl_expr, s.span)
                 return
@@ -373,6 +376,9 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // so the first slice_header_bytes are layout-compatible with a slice
         // header.
         if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
+            if pa.is_vla {
+                codegen_fatal(g, s.span, "codegen for `var [..N]T` (runtime partial arrays) is not yet implemented")
+            }
             elem_t := llvm_type_from_checker(pa.elem)
             _, pa_utf8 := pa.elem.(Type_Utf8)
             cap_n := pa.size

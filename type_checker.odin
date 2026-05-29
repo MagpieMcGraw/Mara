@@ -1776,7 +1776,7 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
 // Resolve a parser Type_Expr to a checker Type
 // ---------------------------------------------------------------------------
 
-resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Env = nil) -> Type {
+resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Env = nil, allow_vla := false) -> Type {
     // `~T` outside a generic-parameter declaration: the tilde modifier is
     // only meaningful as a shape constraint on a generic param's type
     // (`Foo :: struct (s: ~T)`). At any other use site it's a syntax
@@ -2031,9 +2031,13 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     pa.size = int(val)
                     return pa
                 }
-                // Runtime size on a plain partial array: same gate as fixed
-                // arrays above — opt in via `var`, don't silently accept (which
-                // used to miscompile to a cap-0 empty array).
+                if allow_vla {
+                    // `var [..expr]T` — runtime-sized partial array (VLA).
+                    pa.is_vla = true
+                    pa.size_expr = t.size_expr
+                    return pa
+                }
+                // Runtime size without `var`: opt in via `var` (the gate).
                 check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
             }
             return Type_Error{}
@@ -2048,7 +2052,13 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     check_error(c, span, TYPE_PARTIAL_ARRAY_SIZE_CONSTANT_COMPILE, t.size_name)
                     return Type_Error{}
                 }
-                // Non-constant named size: same gate — opt in via `var`.
+                if allow_vla {
+                    // `var [..name]T` — runtime-sized partial array (VLA).
+                    pa.is_vla = true
+                    pa.size_expr = new_clone(Expr_Ident{name = t.size_name, span = span})
+                    return pa
+                }
+                // Non-constant named size without `var`: opt in via `var`.
                 check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, t.size_name, type_name(elem))
                 return Type_Error{}
             }
@@ -6286,15 +6296,17 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
             }
 
-            ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
+            ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env, allow_vla = s.is_var)
 
-            // `var` only allowed on Array and String types
+            // `var` allowed on Array/String types and runtime partial arrays
             if s.is_var {
                 _, is_type_err := ann_type.(Type_Error)
                 if !is_type_err && ann_type != nil {
                     base := distinct_base(ann_type)
                     is_var_type := false
-                    if sd := as_scope_body(base); sd != nil && len(sd.fields) > 0 {
+                    if _, pa_ok := base.(^Type_Partial_Array); pa_ok {
+                        is_var_type = true   // var [..N]T — runtime partial array
+                    } else if sd := as_scope_body(base); sd != nil && len(sd.fields) > 0 {
                         is_var_type = sd.generic_base == "Array" || sd.generic_base == "String"
                     }
                     if !is_var_type {
