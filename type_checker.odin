@@ -2031,9 +2031,10 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     pa.size = int(val)
                     return pa
                 }
-                pa.is_vla = true
-                pa.size_expr = t.size_expr
-                return pa
+                // Runtime size on a plain partial array: same gate as fixed
+                // arrays above — opt in via `var`, don't silently accept (which
+                // used to miscompile to a cap-0 empty array).
+                check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
             }
             return Type_Error{}
         }
@@ -2047,9 +2048,9 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     check_error(c, span, TYPE_PARTIAL_ARRAY_SIZE_CONSTANT_COMPILE, t.size_name)
                     return Type_Error{}
                 }
-                pa.is_vla = true
-                pa.size_expr = new_clone(Expr_Ident{name = t.size_name, span = span})
-                return pa
+                // Non-constant named size: same gate — opt in via `var`.
+                check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, t.size_name, type_name(elem))
+                return Type_Error{}
             }
             if const_values != nil {
                 if val, found := const_values[t.size_name]; found {
@@ -11373,6 +11374,7 @@ fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env
 // function to mark its param `var` would be pure noise.
 is_vla_shape :: proc(t: Type) -> bool {
     if fa, ok := t.(^Type_Fixed_Array); ok && fa.is_vla { return true }
+    if pa, ok := t.(^Type_Partial_Array); ok && pa.is_vla { return true }
     if pt, ok := t.(^Type_Ptr); ok { return is_vla_shape(pt.elem) }
     if sd := as_scope_body(t); sd != nil { return sd.has_vla_field }
     return false
