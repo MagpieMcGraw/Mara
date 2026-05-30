@@ -20,35 +20,13 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte 
 	read_err := read_entire_file(font, &ttf)
 	print("font read:", read_err)
 	tb : []byte = ttf[:]
+	t := TTF(&ttf)
 
-	// Table directory + the tables we read from.
-	h : Offset_Table = #big_endian tb[0]
-	h.tables = #big_endian tb[12]
-	h.tables.len = i32(h.num_tables)
-
-	head_loc := h.tables.get_offset("head")
-	maxp_loc := h.tables.get_offset("maxp")
-	cmap_loc := h.tables.get_offset("cmap")
-	loca_loc := h.tables.get_offset("loca")
-	glyf_loc := h.tables.get_offset("glyf")
-	hhea_loc := h.tables.get_offset("hhea")
-	hmtx_loc := h.tables.get_offset("hmtx")
-
-	head : Head = #big_endian tb[head_loc]
-	maxp : Maxp = #big_endian tb[maxp_loc]
-	cmap : Cmap = #big_endian tb[cmap_loc]
-	loca : Loca = loca_correct_format(head, maxp, tb[loca_loc:])
-	hhea : Hhea = #big_endian tb[hhea_loc]
-
-	cmap.encodings = #big_endian tb[cmap_loc + 4]
-	cmap.encodings.len = i32(cmap.num_subtables)
-	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
-
-	num_long := i32(hhea.num_of_long_hor_metrics)
 	px := i32(ATLAS_PX)
 	pad := i32(ATLAS_PAD)
 	cell := i32(ATLAS_CELL)
-	px_scale := f32(ATLAS_PX) / f32(head.units_per_em)
+	px_scale := f32(ATLAS_PX) / f32(t.head.units_per_em)
+	num_long := i32(t.hhea.num_of_long_hor_metrics)
 
 	// 1024x1024 RGB atlas = 3 MB; glyphs pack into a fixed grid of CELL-px cells.
 	atlas : [3 * MB]byte
@@ -62,18 +40,18 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte 
 		dst_x := (i % per_row) * cell
 		dst_y := (i / per_row) * cell
 
-		gi := i32(cmap_glyph_index(&tb, cmap_sub, cp))
-		goff := loca.offsets[gi]
-		glen := loca.offsets[gi + 1] - goff
-		gstart := glyf_loc + i32(goff)
+		gi := i32(cmap_glyph_index(&tb, t.cmap_sub, cp))
+		goff := t.loca.offsets[gi]
+		glen := t.loca.offsets[gi + 1] - goff
+		gstart := t.glyf_loc + i32(goff)
 		outline := parse_glyph(tb[gstart : gstart + i32(glen)])
 
 		slot : Glyph_Slot
-		rasterize_msdf(&outline, head.units_per_em, px, pad, &ab, atlas_w, dst_x, dst_y, &slot)
+		rasterize_msdf(&outline, t.head.units_per_em, px, pad, &ab, atlas_w, dst_x, dst_y, &slot)
 
 		mi := gi
 		if mi >= num_long { mi = num_long - 1 }
-		adv_units := i32(read_u16be(tb[hmtx_loc + mi * 4]))
+		adv_units := i32(read_u16be(tb[t.hmtx_loc + mi * 4]))
 
 		glyphs[i].x = dst_x
 		glyphs[i].y = dst_y
@@ -102,7 +80,6 @@ f2_dot_14_to_f32  :: fun(x: F2_Dot_14)  -> f32 { return f32(x) / 16384.0 }
 short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
 
 // ─── on-disk TTF layout (transcribed from the spec; read via #big_endian) ───
-
 	Offset_Table :: struct {
 		scaler_type : u32
 		num_tables : u16
@@ -259,6 +236,37 @@ short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
 		return cmap_loc + i32(cmap.encodings[best].offset)
 	}
 
+// The parsed font, shaped after the on-disk file: the table directory and the
+// tables we read, filled into fields by the constructor. load_glyphs builds one
+// and bakes from it — it parses nothing of its own. (Spec types are module-level
+// above: nesting them in TTF breaks forward-referenced field access from
+// load_glyphs, which is defined first.)
+TTF :: struct (bytes: ^[]byte) {
+	// read the table directory, then the tables we use, into the fields below.
+	h : Offset_Table = #big_endian bytes[0]
+	h.tables = #big_endian bytes[12]
+	h.tables.len = i32(h.num_tables)
+
+	head_loc := h.tables.get_offset("head")
+	maxp_loc := h.tables.get_offset("maxp")
+	cmap_loc := h.tables.get_offset("cmap")
+	loca_loc := h.tables.get_offset("loca")
+	glyf_loc := h.tables.get_offset("glyf")
+	hhea_loc := h.tables.get_offset("hhea")
+	hmtx_loc := h.tables.get_offset("hmtx")
+
+	head : Head = #big_endian bytes[head_loc]
+	maxp : Maxp = #big_endian bytes[maxp_loc]
+	cmap : Cmap = #big_endian bytes[cmap_loc]
+	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
+	hhea : Hhea = #big_endian bytes[hhea_loc]
+
+	// cmap encoding records sit right after the 4-byte header; fill them, then
+	// pick a Unicode subtable to map character codes through.
+	cmap.encodings = #big_endian bytes[cmap_loc + 4]
+	cmap.encodings.len = i32(cmap.num_subtables)
+	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
+}
 
 // ============================================================================
 // Character map (cmap)
