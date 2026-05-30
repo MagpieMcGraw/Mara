@@ -167,9 +167,7 @@ TTF :: struct (bytes: ^[]byte) {
 		for e, i in cmap.encodings {
 			score : i32 = 1
 			if e.platform_id == 0 { score = 2 }
-			if e.platform_id == 3 {
-				if e.platform_specific_id == 1 { score = 3 }
-			}
+			if e.platform_id == 3 and e.platform_specific_id == 1 { score = 3 }
 			if score > best_score {
 				best_score = score
 				best = i
@@ -480,14 +478,14 @@ parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
 }
 
 // ============================================================================
-// Glyph → signed distance field (toward MSDF)
+// Glyph → MSDF atlas
 // ============================================================================
 // Reconstruct a glyph's contours from parse_glyph's points (synthesizing the
 // TrueType implied on-curve midpoints) and flatten the quadratics to line
-// segments — the shared edge list. This step fills a single-channel SDF: per
-// pixel, magnitude = min distance to any edge, sign from non-zero winding.
-// MSDF extends this to 3 channels with edge coloring; the distance math here
-// carries over unchanged. Dumps ASCII so the field can be eyeballed.
+// segments. Color the edges across the 3 channels (switching at corners), then
+// per pixel take the min distance per channel with a shared winding sign and
+// write the normalized signed distances as RGB into the atlas. The median of
+// the three channels reconstructs the glyph, with corners kept sharp.
 
 RASTER_QUAD_STEPS :: 6
 MAX_RASTER_EDGES  :: 4096
@@ -536,8 +534,7 @@ edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
 	dby := b.y1 - b.y0
 	la := sqrt(dax*dax + day*day)
 	lb := sqrt(dbx*dbx + dby*dby)
-	if la <= 0.0 { return false }
-	if lb <= 0.0 { return false }
+	if la <= 0.0 or lb <= 0.0 { return false }
 	cosang := (dax*dbx + day*dby) / (la * lb)
 	return cosang < 0.7
 }
@@ -725,12 +722,7 @@ rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
 				l2 := dx*dx + dy*dy
 				t : f32 = 0.0
 				if l2 > 0.0 {
-					t = ((qx - ax)*dx + (qy - ay)*dy) / l2
-					if t < 0.0 {
-						t = 0.0
-					elif t > 1.0
-						t = 1.0
-					}
+					t = max(0.0, min(1.0, ((qx - ax)*dx + (qy - ay)*dy) / l2))
 				}
 				prx := ax + t*dx
 				pry := ay + t*dy
@@ -739,16 +731,12 @@ rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
 				d2 := rx*rx + ry*ry
 				// per-channel min distance (this edge contributes to its colors)
 				col := edges[e].color
-				if (col & 1) != 0 { if d2 < md_r { md_r = d2 } }
-				if (col & 2) != 0 { if d2 < md_g { md_g = d2 } }
-				if (col & 4) != 0 { if d2 < md_b { md_b = d2 } }
-				// winding contribution (sign, shared across channels)
-				crosses := false
-				if ay <= qy {
-					if by > qy { crosses = true }
-				elif by <= qy
-					crosses = true
-				}
+				if (col & 1) != 0 and d2 < md_r { md_r = d2 }
+				if (col & 2) != 0 and d2 < md_g { md_g = d2 }
+				if (col & 4) != 0 and d2 < md_b { md_b = d2 }
+				// winding contribution (sign, shared): edge crosses the scanline
+				// when exactly one endpoint is at/above it
+				crosses := (ay <= qy and by > qy) or (ay > qy and by <= qy)
 				if crosses {
 					tt := (qy - ay) / (by - ay)
 					xint := ax + tt * (bx - ax)
@@ -760,12 +748,9 @@ rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
 			// signed per-channel distances (positive inside) → normalized RGB
 			s : f32 = -1.0
 			if wnd != 0 { s = 1.0 }
-			vr := 0.5 + (s * sqrt(md_r)) / MSDF_PX_RANGE
-			vg := 0.5 + (s * sqrt(md_g)) / MSDF_PX_RANGE
-			vb := 0.5 + (s * sqrt(md_b)) / MSDF_PX_RANGE
-			if vr < 0.0 { vr = 0.0 elif vr > 1.0 vr = 1.0 }
-			if vg < 0.0 { vg = 0.0 elif vg > 1.0 vg = 1.0 }
-			if vb < 0.0 { vb = 0.0 elif vb > 1.0 vb = 1.0 }
+			vr := max(0.0, min(1.0, 0.5 + (s * sqrt(md_r)) / MSDF_PX_RANGE))
+			vg := max(0.0, min(1.0, 0.5 + (s * sqrt(md_g)) / MSDF_PX_RANGE))
+			vb := max(0.0, min(1.0, 0.5 + (s * sqrt(md_b)) / MSDF_PX_RANGE))
 			idx := ((dst_y + py) * atlas_w + (dst_x + pxi)) * 3
 			atlas[idx + 0] = u8(vr * 255.0)
 			atlas[idx + 1] = u8(vg * 255.0)
