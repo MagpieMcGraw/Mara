@@ -431,13 +431,13 @@ quat_from_fwd_and_up :: fun(fwd: Vec3, up: Vec3) -> Quat {
 		q.x = (u.z - f.y) / s
 		q.y = (f.x - r.z) / s
 		q.z = (r.y - u.x) / s
-	else if r.x > u.y and r.x > f.z
+	elif r.x > u.y and r.x > f.z
 		s := sqrt(1.0 + r.x - u.y - f.z) * 2.0
 		q.w = (u.z - f.y) / s
 		q.x = 0.25 * s
 		q.y = (r.y + u.x) / s
 		q.z = (f.x + r.z) / s
-	else if u.y > f.z
+	elif u.y > f.z
 		s := sqrt(1.0 + u.y - r.x - f.z) * 2.0
 		q.w = (f.x - r.z) / s
 		q.x = (r.y + u.x) / s

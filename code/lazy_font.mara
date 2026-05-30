@@ -4,14 +4,6 @@ module mara.lazy_font
 use mara.string
 use mara.math
 
-// Data type 	Description
-// shortFrac 	16-bit signed fraction
-// Fixed 		16.16-bit signed fixed-point number
-// FWord 		16-bit signed integer that describes a quantity in FUnits, the smallest measurable distance in em space.
-// uFWord 		16-bit unsigned integer that describes a quantity in FUnits, the smallest measurable distance in em space.
-// F2Dot14 		16-bit signed fixed number with the low 14 bits representing fraction.
-// longDateTime The long internal format of a date in seconds since 12:00 midnight, January 1, 1904. It is represented as a signed 64-bit integer.
-
 // Spec type aliases. Transparent aliases over the underlying integer width —
 // arithmetic on them behaves like the underlying int. The fixed-point ones
 // need explicit conversion to f32 to get their real-number value.
@@ -274,7 +266,7 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
 	format := read_be_u16(bytes, subtable_start)
 	if format == 4 {
 		return cmap_format4_lookup(bytes, subtable_start, char)
-	else if format == 0
+	elif format == 0
 		return cmap_format0_lookup(bytes, subtable_start, char)
 	else
 		print("cmap: unsupported subtable format %", i64(format))
@@ -464,7 +456,7 @@ parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
 			dx := i32(bytes[cursor]); cursor += 1
 			if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
 			x += dx
-		else if (f & GLYPH_FLAG_X_SAME) == 0
+		elif (f & GLYPH_FLAG_X_SAME) == 0
 			x += i32(read_be_i16(bytes, cursor)); cursor += 2
 		}
 		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
@@ -480,7 +472,7 @@ parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
 			dy := i32(bytes[cursor]); cursor += 1
 			if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
 			y += dy
-		else if (f & GLYPH_FLAG_Y_SAME) == 0
+		elif (f & GLYPH_FLAG_Y_SAME) == 0
 			y += i32(read_be_i16(bytes, cursor)); cursor += 2
 		}
 		out.points[i].y = i16(y)
@@ -620,7 +612,7 @@ rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
 						have_off = false
 					}
 					nx[nn] = ppx ny[nn] = ppy non[nn] = true nn += 1
-				else if have_off
+				elif have_off
 					// two consecutive off-curve controls — TrueType implies an
 					// on-curve point at their midpoint
 					nx[nn] = ox ny[nn] = oy non[nn] = false nn += 1
@@ -630,6 +622,7 @@ rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
 					ox = ppx oy = ppy have_off = true
 				}
 			}
+			// didn't know this was possible
 			if have_off { nx[nn] = ox ny[nn] = oy non[nn] = false nn += 1 }
 
 			// walk the ring, emitting flattened edges; close back to node 0
@@ -735,7 +728,7 @@ rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
 					t = ((qx - ax)*dx + (qy - ay)*dy) / l2
 					if t < 0.0 {
 						t = 0.0
-					else if t > 1.0
+					elif t > 1.0
 						t = 1.0
 					}
 				}
@@ -753,7 +746,7 @@ rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
 				crosses := false
 				if ay <= qy {
 					if by > qy { crosses = true }
-				else if by <= qy
+				elif by <= qy
 					crosses = true
 				}
 				if crosses {
@@ -770,9 +763,9 @@ rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
 			vr := 0.5 + (s * sqrt(md_r)) / MSDF_PX_RANGE
 			vg := 0.5 + (s * sqrt(md_g)) / MSDF_PX_RANGE
 			vb := 0.5 + (s * sqrt(md_b)) / MSDF_PX_RANGE
-			if vr < 0.0 { vr = 0.0 else if vr > 1.0 vr = 1.0 }
-			if vg < 0.0 { vg = 0.0 else if vg > 1.0 vg = 1.0 }
-			if vb < 0.0 { vb = 0.0 else if vb > 1.0 vb = 1.0 }
+			if vr < 0.0 { vr = 0.0 elif vr > 1.0 vr = 1.0 }
+			if vg < 0.0 { vg = 0.0 elif vg > 1.0 vg = 1.0 }
+			if vb < 0.0 { vb = 0.0 elif vb > 1.0 vb = 1.0 }
 			idx := ((dst_y + py) * atlas_w + (dst_x + pxi)) * 3
 			atlas[idx + 0] = u8(vr * 255.0)
 			atlas[idx + 1] = u8(vg * 255.0)
@@ -794,9 +787,9 @@ dump_atlas_cell :: fun(atlas: ^[]byte, atlas_w: i32, ax: i32, ay: i32, cw: i32, 
 			med := max(min(dr, dg), min(max(dr, dg), db))
 			if med > 1.5 {
 				&row + "#"
-			else if med > 0.0
+			elif med > 0.0
 				&row + "+"
-			else if med > -1.5
+			elif med > -1.5
 				&row + "."
 			else
 				&row + " "

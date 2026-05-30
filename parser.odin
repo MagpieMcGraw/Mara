@@ -2188,6 +2188,7 @@ is_if_branch_end :: proc(p: ^Parser) -> bool {
     kind := current_kind(p)
     if kind == .Right_Brace do return true
     if kind == .Else do return true
+    if kind == .Elif do return true
     if kind == .EOF do return true
     return false
 }
@@ -2252,17 +2253,16 @@ parse_if :: proc(p: ^Parser, is_comptime := false) -> Stmt {
 
     body := parse_if_branch_body(p)
 
-    // Parse else/else-if chain (all inside the outer { })
+    // Parse elif/else chain (all inside the outer { }). `elif` is the chain
+    // keyword; a plain `else` is the final branch — so an `if` appearing inside
+    // an `else` body is now just an ordinary nested if-statement.
     else_body: [dynamic]Stmt
-    if current_kind(p) == .Else {
+    if current_kind(p) == .Elif {
+        append(&else_body, parse_elif_chain(p))
+    } else if current_kind(p) == .Else {
         advance(p) // consume 'else'
         skip_newlines(p)
-        if current_kind(p) == .If {
-            // else if — recursively parse the chain
-            append(&else_body, parse_else_if_chain(p))
-        } else {
-            else_body = parse_if_branch_body(p)
-        }
+        else_body = parse_if_branch_body(p)
     }
 
     expect(p, .Right_Brace)
@@ -2276,10 +2276,10 @@ parse_if :: proc(p: ^Parser, is_comptime := false) -> Stmt {
     return stmt
 }
 
-// Helper for deeply nested else-if chains (3+ branches)
-parse_else_if_chain :: proc(p: ^Parser) -> Stmt {
+// Helper for elif chains (3+ branches)
+parse_elif_chain :: proc(p: ^Parser) -> Stmt {
     start := token_span(current(p))
-    advance(p) // consume 'if'
+    advance(p) // consume 'elif'
     p.no_struct_lit = true
     condition := parse_expr(p)
     p.no_struct_lit = false
@@ -2287,14 +2287,12 @@ parse_else_if_chain :: proc(p: ^Parser) -> Stmt {
     body := parse_if_branch_body(p)
 
     else_body: [dynamic]Stmt
-    if current_kind(p) == .Else {
+    if current_kind(p) == .Elif {
+        append(&else_body, parse_elif_chain(p))
+    } else if current_kind(p) == .Else {
         advance(p) // consume 'else'
         skip_newlines(p)
-        if current_kind(p) == .If {
-            append(&else_body, parse_else_if_chain(p))
-        } else {
-            else_body = parse_if_branch_body(p)
-        }
+        else_body = parse_if_branch_body(p)
     }
 
     stmt := new(Stmt_If)

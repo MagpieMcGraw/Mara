@@ -16,6 +16,7 @@ Token_Kind :: enum {
     False,
     If,
     Else,
+    Elif,
     Fun, // fun / method
     Fn,  // fn — nominal function type from a named function
     Struct, // struct / class
@@ -134,6 +135,7 @@ keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
     case "false":    return .False, true
     case "if":       return .If, true
     case "else":     return .Else, true
+    case "elif":     return .Elif, true
     case "fun":      return .Fun, true
     case "method":   return .Fun, true
     case "fn":       return .Fn, true
