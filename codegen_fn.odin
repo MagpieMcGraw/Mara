@@ -35,23 +35,55 @@ partial_through_distinct_and_ptr :: proc(t: Type) -> (^Type_Partial_Array, bool)
 
 // Scan function body for NRVO candidate: if every return statement returns
 // the same named variable, return that name. Otherwise return "".
+Nrvo_Scan :: struct { name: string, found: bool, blocked: bool }
+
+// Recursively gather the NRVO candidate from a function body. Returns the
+// identifier that EVERY `return` yields, or "" when any return yields no value,
+// a non-ident (literal/call), or a different name — or when there are no
+// returns at all. Descends into nested blocks (if/else, for, defer, match arms)
+// so a function that only returns from inside branches still qualifies — e.g.
+// parse_glyph, whose three `return glyph`s all sit inside if-statements. A
+// top-level-only scan saw zero returns there and silently skipped NRVO, forcing
+// an alloca + whole-struct copy at each return.
+//
+// Does NOT descend into Stmt_Scope: that's a nested fn/type definition whose
+// returns belong to the inner function, not this one. New block-bearing
+// statement kinds must be added to nrvo_scan or NRVO will silently miss their
+// returns.
 find_nrvo_candidate :: proc(body: []Stmt) -> string {
-    candidate := ""
-    found_any := false
+    st := Nrvo_Scan{}
+    nrvo_scan(body, &st)
+    if st.blocked || !st.found { return "" }
+    return st.name
+}
+
+nrvo_scan :: proc(body: []Stmt, st: ^Nrvo_Scan) {
     for s in body {
-        ret, ok := s.(Stmt_Return)
-        if !ok { continue }
-        if len(ret.values) == 0 { return "" }
-        ident, id_ok := ret.values[0].(^Expr_Ident)
-        if !id_ok { return "" }  // returns a literal or call — can't NRVO
-        if !found_any {
-            candidate = ident.name
-            found_any = true
-        } else if candidate != ident.name {
-            return ""  // different variables returned — can't NRVO
+        if st.blocked { return }
+        #partial switch v in s {
+        case Stmt_Return:
+            if len(v.values) == 0 { st.blocked = true; return }
+            ident, id_ok := v.values[0].(^Expr_Ident)
+            if !id_ok { st.blocked = true; return }  // returns a literal or call
+            if !st.found {
+                st.name = ident.name
+                st.found = true
+            } else if st.name != ident.name {
+                st.blocked = true; return  // different variables returned
+            }
+        case ^Stmt_If:
+            nrvo_scan(v.body[:], st)
+            nrvo_scan(v.else_body[:], st)
+        case ^Stmt_For:
+            nrvo_scan(v.body[:], st)
+        case ^Stmt_Defer:
+            nrvo_scan(v.body[:], st)
+        case ^Stmt_Match:
+            for &arm in v.arms {
+                nrvo_scan(arm.body[:], st)
+            }
         }
     }
-    return candidate
 }
 
 // Multi-return version: per-position NRVO candidate. Returns one name per
