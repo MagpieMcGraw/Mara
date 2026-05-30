@@ -79,7 +79,13 @@ fixed_to_f32      :: fun(x: Fixed)      -> f32 { return f32(x) / 65536.0 }
 f2_dot_14_to_f32  :: fun(x: F2_Dot_14)  -> f32 { return f32(x) / 16384.0 }
 short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
 
-// ─── on-disk TTF layout (transcribed from the spec; read via #big_endian) ───
+// The parsed font, shaped after the on-disk file: the spec types nested (reach
+// them as TTF.Head etc.) and the tables we read, filled into fields by the
+// constructor's parse body at the bottom. load_glyphs builds one of these and
+// bakes from it — it parses nothing of its own.
+TTF :: struct (bytes: ^[]byte) {
+
+	// ─── on-disk TTF layout (transcribed from the spec; read via #big_endian) ───
 	Offset_Table :: struct {
 		scaler_type : u32
 		num_tables : u16
@@ -236,13 +242,7 @@ short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
 		return cmap_loc + i32(cmap.encodings[best].offset)
 	}
 
-// The parsed font, shaped after the on-disk file: the table directory and the
-// tables we read, filled into fields by the constructor. load_glyphs builds one
-// and bakes from it — it parses nothing of its own. (Spec types are module-level
-// above: nesting them in TTF breaks forward-referenced field access from
-// load_glyphs, which is defined first.)
-TTF :: struct (bytes: ^[]byte) {
-	// read the table directory, then the tables we use, into the fields below.
+	// ─── parse: read the table directory, then the tables we use, into fields ───
 	h : Offset_Table = #big_endian bytes[0]
 	h.tables = #big_endian bytes[12]
 	h.tables.len = i32(h.num_tables)
