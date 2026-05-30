@@ -7120,6 +7120,18 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         }
     }
 
+    // Recurse into nested struct definitions so their field lists are populated
+    // too — a sibling field default or a forward-referencing outer function that
+    // reaches `x.nested.field` needs the nested type's fields, not just its name.
+    // Mirrors the module-level signature hoist (check_module Pass 2a), one level
+    // down. Idempotent: the field loop skips already-mapped fields.
+    for stmt in s.body {
+        if nested, ok := stmt.(^Stmt_Scope); ok && nested.kind == .Struct &&
+            len(nested.typed_params) == 0 && len(nested.generic_params) == 0 {
+            check_scope_body(c, nested, &child, signature_only = true)
+        }
+    }
+
     // Pre-pass bails here — signature resolved, body deferred to main pass.
     if signature_only { return }
 
