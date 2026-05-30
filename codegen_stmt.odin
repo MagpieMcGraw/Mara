@@ -69,11 +69,11 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             utf8 := false
             if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
             // Byte-buffer reinterpret read: `arr : [N]T = buf[off]` /
-            // `arr : [N]T = buf[lo:hi]`. Source is a byte-buffer index or
-            // slice; allocate + memcpy sizeof([N]T) bytes from the source.
+            // `arr : [N]T = buf[lo:hi]`. Index form reads sizeof([N]T) exactly;
+            // slice form is a destination-bounded sized read (partial fill OK).
             if sl_expr, ok := s.value.(^Expr_Slice); ok {
                 if codegen_is_byte_buffer_source(g, sl_expr.expr) {
-                    gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type, sl_expr.is_big_endian)
+                    gen_byte_target_read_span(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.high, sl_expr.span, var_type, sl_expr.is_big_endian)
                     return
                 }
             }
@@ -128,7 +128,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if var_type != nil && !target_is_slice_shaped && (target_is_fixed_array || !is_byte_buffer(var_type)) {
             if sl_expr, ok := s.value.(^Expr_Slice); ok {
                 if codegen_is_byte_buffer_source(g, sl_expr.expr) {
-                    gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type, sl_expr.is_big_endian)
+                    // Struct target via the slice form is a destination-bounded
+                    // sized read (partial fill OK); scalars stay exact-size.
+                    if as_struct_body(var_type) != nil {
+                        gen_byte_target_read_span(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.high, sl_expr.span, var_type, sl_expr.is_big_endian)
+                    } else {
+                        gen_byte_target_read(g, s.name, sl_expr.expr, sl_expr.low, sl_expr.span, var_type, sl_expr.is_big_endian)
+                    }
                     return
                 }
             }

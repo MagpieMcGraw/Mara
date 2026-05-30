@@ -6481,6 +6481,22 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Validate assignment compatibility (same as in check_assign)
                 if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 {
                     check_struct_literal_assign(c, s.span, s.value, sd, env)
+                    // Byte-buffer reinterpret read into a struct (slice form): a
+                    // span shorter than the struct is a partial fill (tail zero);
+                    // only a span LARGER than the struct overruns it -> error.
+                    if sl, sl_ok := s.value.(^Expr_Slice); sl_ok && (is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)) {
+                        if low_num, low_ok := const_eval_int(sl.low); low_ok {
+                            if high_num, high_ok := const_eval_int(sl.high); high_ok {
+                                span_size := high_num - low_num
+                                ann_size := checker_type_byte_size(check_ann)
+                                if span_size > ann_size {
+                                    check_error(c, s.span,
+                                        TYPE_BYTE_BUFFER_READ_BYTES_SLICE,
+                                        type_name(check_ann), ann_size, span_size)
+                                }
+                            }
+                        }
+                    }
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
                     type_env_set(env, s.name, ann_type)
@@ -6514,7 +6530,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             if low_num, low_ok := const_eval_int(sl.low); low_ok {
                                 if high_num, high_ok := const_eval_int(sl.high); high_ok {
                                     span_size := high_num - low_num
-                                    if span_size != ann_size {
+                                    // Aggregate target: a shorter span partial-fills
+                                    // (tail zero); only an over-large span errors.
+                                    if span_size > ann_size {
                                         check_error(c, s.span,
                                             TYPE_BYTE_BUFFER_READ_BYTES_SLICE,
                                             type_name(check_ann), ann_size, span_size)

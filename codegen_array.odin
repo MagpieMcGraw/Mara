@@ -1755,6 +1755,107 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
     }
 }
 
+// Slice-form reinterpret read into a struct / fixed-array destination:
+//   dst : T = src[lo:hi]   (or src[lo:], where the omitted high bound is cap)
+// Destination-bounded sized read: `span = hi - lo` bytes are copied into a
+// zero-initialised dst, so a span SHORTER than T leaves the tail at zero; a span
+// LARGER than T traps (it would overrun the destination). Source is bounds-
+// checked (lo + span <= cap). Mirrors gen_partial_array_byte_fill_at_core, but
+// for a single aggregate destination rather than an element-divided one. The
+// index form (src[i]) stays on gen_byte_target_read — an exact sizeof(T) read.
+gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low_expr: Expr, high_expr: Expr, span_loc: Span, target_type: Type, is_big_endian: bool) {
+    target_ir_type := llvm_type_from_checker(target_type)
+    target_size := checker_type_byte_size(target_type)
+    w := slice_layout.len_ir
+
+    data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span_loc)
+    if !resolved {
+        codegen_fatal(g, span_loc, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+    }
+
+    low := "0"
+    if low_expr != nil { low = gen_expr(g, low_expr, w) }
+    high := cap_val
+    if high_expr != nil { high = gen_expr(g, high_expr, w) }
+
+    // span = high - low
+    span_ssa := fresh_tmp(g)
+    emit(g, "  %s = sub %s %s, %s", span_ssa, w, high, low)
+
+    // Source bound: low + span <= cap.
+    end_off := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, %s", end_off, w, low, span_ssa)
+    src_ok := fresh_label(g, "span.src.ok")
+    src_err := fresh_label(g, "span.src.err")
+    src_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp ugt %s %s, %s", src_cmp, w, end_off, cap_val)
+    emit_cond_br(g, src_cmp, src_err, src_ok)
+    emit_label(g, src_err)
+    src_global, src_len := get_string_literal(g, "runtime error: sized read runs past the source buffer\n")
+    src_msg_ptr := fresh_tmp(g)
+    emit_string_gep(g, src_msg_ptr, src_len, src_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", src_msg_ptr)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, src_ok)
+
+    // Destination bound: span <= sizeof(T), else trap. Catches the dynamic case;
+    // a statically over-large span is rejected by the type checker.
+    size_str := fmt.tprintf("%d", target_size)
+    dst_ok := fresh_label(g, "span.dst.ok")
+    dst_err := fresh_label(g, "span.dst.err")
+    dst_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp ugt %s %s, %s", dst_cmp, w, span_ssa, size_str)
+    emit_cond_br(g, dst_cmp, dst_err, dst_ok)
+    emit_label(g, dst_err)
+    dst_msg := fmt.tprintf("runtime error: sized read of %%d bytes exceeds destination (%d bytes)\n", target_size)
+    dst_global, dst_len := get_string_literal(g, dst_msg)
+    dst_msg_ptr := fresh_tmp(g)
+    emit_string_gep(g, dst_msg_ptr, dst_len, dst_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s)", dst_msg_ptr, w, span_ssa)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, dst_ok)
+
+    // src element ptr = data_ptr + low
+    src_off_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", src_off_ptr, data_ptr, w, low)
+
+    // Destination: zero-init the whole value, then copy `span` bytes; the tail
+    // past `span` keeps its zero init.
+    alloca_name := fmt.tprintf("%%%s", name)
+    if sd := as_struct_body(target_type); sd != nil {
+        emit_alloca(g, alloca_name, target_ir_type)
+        emit_memset_zero(g, alloca_name, target_size)
+        emit_memcpy_runtime(g, alloca_name, src_off_ptr, span_ssa)
+        if is_big_endian {
+            emit_bswap_in_place(g, alloca_name, target_ir_type, target_type)
+        }
+        g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
+    } else if fa, fa_ok := target_type.(^Type_Fixed_Array); fa_ok {
+        data_name := fmt.tprintf("%%%s.data", name)
+        emit_alloca(g, data_name, target_ir_type)
+        emit_memset_zero(g, data_name, target_size)
+        emit_memcpy_runtime(g, data_name, src_off_ptr, span_ssa)
+        if is_big_endian {
+            emit_bswap_in_place(g, data_name, target_ir_type, target_type)
+        }
+        elem_t := llvm_type_from_checker(fa.elem)
+        utf8 := false
+        if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
+        g.all_vars[name] = Array_Var{
+            alloca       = data_name,
+            capacity     = fa.size,
+            elem_type    = elem_t,
+            is_utf8      = utf8,
+            has_sentinel = fa.has_sentinel,
+            sentinel     = fa.sentinel,
+        }
+    } else {
+        codegen_fatal(g, span_loc, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+    }
+}
+
 // Big-endian byte-swap in place: walks `ty` rooted at `base_ptr` and emits
 // llvm.bswap on every multi-byte integer leaf. Used by `#big_endian` byte-
 // buffer reads after the load/memcpy.

@@ -1560,6 +1560,57 @@ test_underscore_default :: fun() {
 	print(disp_trail(5, 7))    // 507
 }
 
+// ============================================================================
+// sized reinterpret read (slice form, destination-bounded partial fill)
+// ============================================================================
+
+Sized_Rec :: struct {
+	a : i32
+	b : i32
+	c : i32
+}
+
+test_sized_read :: fun() {
+	buf : [..16]byte
+	buf.len = 16
+	i : i32 = 0
+	for i < 16 {
+		buf[i] = u8(0)
+		i += 1
+	}
+	buf[3] = u8(1)
+	buf[7] = u8(2)
+
+	// Exact span (12 == sizeof(Sized_Rec)).
+	full : Sized_Rec = #big_endian buf[0:12]
+	assert(full.a == 1)
+	assert(full.b == 2)
+	assert(full.c == 0)
+
+	// Short span (8 < 12): a,b filled, c keeps its zero-init.
+	part : Sized_Rec = #big_endian buf[0:8]
+	assert(part.a == 1)
+	assert(part.b == 2)
+	assert(part.c == 0)
+
+	// Omitted high (= cap). cap 8 < sizeof -> partial fill.
+	buf8 : [..8]byte
+	buf8.len = 8
+	j : i32 = 0
+	for j < 8 {
+		buf8[j] = u8(0)
+		j += 1
+	}
+	buf8[3] = u8(5)
+	buf8[7] = u8(6)
+	whole : Sized_Rec = #big_endian buf8[0:]
+	assert(whole.a == 5)
+	assert(whole.b == 6)
+	assert(whole.c == 0)
+
+	print("sized read ok")
+}
+
 // <<< FUNCS END >>>
 
 main :: fun() -> i64 {
@@ -1616,6 +1667,7 @@ main :: fun() -> i64 {
 	test_struct_pack_repro()
 	test_nested_self()
 	test_method_call()
+	test_sized_read()
 	test_context_arena()
 	test_dedent()
 	test_multiline_str()
