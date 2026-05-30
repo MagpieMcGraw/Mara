@@ -104,6 +104,8 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 		"data/shaders/instanced.glsl",
 		&game.vao, 8192, 32)
 
+	font : Font
+
 	ttf_data : [..32 * MB]byte
 	err := read_entire_file(
 		"data/fonts/Inter_18pt-Regular.ttf", &ttf_data)

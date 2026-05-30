@@ -18,6 +18,16 @@ Font :: struct {
     name: str,
     layer: u32,
     offset_x, offset_y: i32,  // Position within atlas layer
-	//info: stbtt.fontinfo,
-	//packed_chars: []stbtt.packedchar,
+    glyphs: [256]Glyph
 }
+
+Glyph :: struct {
+	x, y, w, h: i32
+	bearing_x, bearing_y, advance :i32
+}
+
+// load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: str) -> [3 * MB]byte {
+
+// }
+// font : Font
+// font_atlas := load_glyphs(font.glyphs, 0, "int")

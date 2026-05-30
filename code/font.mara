@@ -1,9 +1,18 @@
 
-module mara.lazy_font
+module mara.font
 
 use mara.string
 use mara.math
 use mara.endian
+
+Glyph :: struct {
+	x, y, w, h: i32
+	bearing_x, bearing_y, advance :i32
+}
+
+load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
+
+}
 
 // Spec type aliases. Transparent aliases over the underlying integer width —
 // arithmetic on them behaves like the underlying int. The fixed-point ones
