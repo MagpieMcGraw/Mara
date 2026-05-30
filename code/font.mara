@@ -4,14 +4,87 @@ module mara.font
 use mara.string
 use mara.math
 use mara.endian
+use mara.os
 
 Glyph :: struct {
 	x, y, w, h: i32
 	bearing_x, bearing_y, advance :i32
 }
 
-load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
+// Bake `glyphs.len` glyphs, starting at codepoint `first`, from the TTF file at
+// `font`. For each codepoint: look up its glyph, rasterize the MSDF into a cell
+// of the returned 1024x1024 RGB atlas, and fill the matching Glyph slot (atlas
+// rect + bearings + advance). The returned atlas bytes are the GPU-upload input.
+load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte {
+	ttf : [..2 * MB]byte
+	read_err := read_entire_file(font, &ttf)
+	print("font read:", read_err)
+	tb : []byte = ttf[:]
 
+	// Table directory + the tables we read from.
+	h : Offset_Table = #big_endian tb[0]
+	h.tables = #big_endian tb[12]
+	h.tables.len = i32(h.num_tables)
+
+	head_loc := h.tables.get_offset("head")
+	maxp_loc := h.tables.get_offset("maxp")
+	cmap_loc := h.tables.get_offset("cmap")
+	loca_loc := h.tables.get_offset("loca")
+	glyf_loc := h.tables.get_offset("glyf")
+	hhea_loc := h.tables.get_offset("hhea")
+	hmtx_loc := h.tables.get_offset("hmtx")
+
+	head : Head = #big_endian tb[head_loc]
+	maxp : Maxp = #big_endian tb[maxp_loc]
+	cmap : Cmap = #big_endian tb[cmap_loc]
+	loca : Loca = loca_correct_format(head, maxp, tb[loca_loc:])
+	hhea : Hhea = #big_endian tb[hhea_loc]
+
+	cmap.encodings = #big_endian tb[cmap_loc + 4]
+	cmap.encodings.len = i32(cmap.num_subtables)
+	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
+
+	num_long := i32(hhea.num_of_long_hor_metrics)
+	px := i32(ATLAS_PX)
+	pad := i32(ATLAS_PAD)
+	cell := i32(ATLAS_CELL)
+	px_scale := f32(ATLAS_PX) / f32(head.units_per_em)
+
+	// 1024x1024 RGB atlas = 3 MB; glyphs pack into a fixed grid of CELL-px cells.
+	atlas : [3 * MB]byte
+	ab : []byte = atlas[:]
+	atlas_w : i32 = 1024
+	per_row := atlas_w / cell
+
+	count := glyphs.len
+	for i in 0..count {
+		cp := first + u32(i)
+		dst_x := (i % per_row) * cell
+		dst_y := (i / per_row) * cell
+
+		gi := i32(cmap_glyph_index(&tb, cmap_sub, cp))
+		goff := loca.offsets[gi]
+		glen := loca.offsets[gi + 1] - goff
+		gstart := glyf_loc + i32(goff)
+		outline := parse_glyph(tb[gstart : gstart + i32(glen)])
+
+		slot : Glyph_Slot
+		rasterize_msdf(&outline, head.units_per_em, px, pad, &ab, atlas_w, dst_x, dst_y, &slot)
+
+		mi := gi
+		if mi >= num_long { mi = num_long - 1 }
+		adv_units := i32(read_u16be(tb[hmtx_loc + mi * 4]))
+
+		glyphs[i].x = dst_x
+		glyphs[i].y = dst_y
+		glyphs[i].w = slot.cw
+		glyphs[i].h = slot.ch
+		glyphs[i].bearing_x = slot.bx
+		glyphs[i].bearing_y = slot.by
+		glyphs[i].advance = i32(f32(adv_units) * px_scale)
+	}
+
+	return atlas
 }
 
 // Spec type aliases. Transparent aliases over the underlying integer width —
@@ -28,7 +101,7 @@ fixed_to_f32      :: fun(x: Fixed)      -> f32 { return f32(x) / 65536.0 }
 f2_dot_14_to_f32  :: fun(x: F2_Dot_14)  -> f32 { return f32(x) / 16384.0 }
 short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
 
-TTF :: struct (bytes: ^[]byte) {
+// ─── on-disk TTF layout (transcribed from the spec; read via #big_endian) ───
 
 	Offset_Table :: struct {
 		scaler_type : u32
@@ -186,79 +259,6 @@ TTF :: struct (bytes: ^[]byte) {
 		return cmap_loc + i32(cmap.encodings[best].offset)
 	}
 
-	// Gonna parse in the constructor, due to namespace
-	h: Offset_Table = #big_endian bytes[0]
-	h.tables = #big_endian bytes[12]
-	h.tables.len = i32(h.num_tables) // do we care about this?
-
-	// get the locations of everything
-	head_loc := h.tables.get_offset("head")
-	maxp_loc := h.tables.get_offset("maxp")
-	cmap_loc := h.tables.get_offset("cmap")
-	loca_loc := h.tables.get_offset("loca")
-	glyf_loc := h.tables.get_offset("glyf")
-	hhea_loc := h.tables.get_offset("hhea")
-	hmtx_loc := h.tables.get_offset("hmtx")
-
-	head : Head = #big_endian bytes[head_loc]
-	maxp : Maxp = #big_endian bytes[maxp_loc]
-	cmap : Cmap = #big_endian bytes[cmap_loc]
-	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
-	glyf : Glyf = #big_endian bytes[glyf_loc]
-	hhea : Hhea = #big_endian bytes[hhea_loc]
-	hmtx : Hmtx = #big_endian bytes[hmtx_loc]
-
-	// cmap: the encoding records sit right after the 4-byte header. Fill them,
-	// then choose a Unicode subtable to map character codes through.
-	cmap.encodings = #big_endian bytes[cmap_loc + 4]
-	cmap.encodings.len = i32(cmap.num_subtables)
-	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
-
-	// Atlas sanity check: build a small MSDF atlas for a few glyphs (advance
-	// from hmtx), then read a cell back to verify the buffer write + packing.
-	// GPU upload of the atlas is the downstream Odin port.
-	num_long := i32(hhea.num_of_long_hor_metrics)
-	cell := i32(ATLAS_CELL)
-	px := i32(ATLAS_PX)
-	pad := i32(ATLAS_PAD)
-	px_scale := f32(ATLAS_PX) / f32(head.units_per_em)
-
-	chars : [..8]u32
-	chars.len = 5
-	chars[0] = u32('A')
-	chars[1] = u32('g')
-	chars[2] = u32('o')
-	chars[3] = u32(' ')
-	chars[4] = u32('M')
-
-	atlas_w := cell * chars.len
-	atlas : [..ATLAS_CAP]byte
-	atlas.len = atlas_w * cell * 3
-	slots : [..8]Glyph_Slot
-	slots.len = chars.len
-
-	for c, ci in chars {
-		gi := i32(cmap_glyph_index(bytes, cmap_sub, c))
-		goff := loca.offsets[gi]
-		glen := loca.offsets[gi + 1] - goff
-		gstart := glyf_loc + i32(goff)
-		gend := gstart + i32(glen)
-		glyph := parse_glyph(bytes[gstart:gend])
-
-		mi := gi
-		if mi >= num_long { mi = num_long - 1 }
-		adv_units := i32(read_u16be(bytes[hmtx_loc + mi * 4]))
-		rasterize_msdf(&glyph, head.units_per_em, px, pad, &atlas, atlas_w, ci * cell, 0, &slots[ci])
-		slots[ci].glyph = gi
-		slots[ci].ax = ci * cell
-		slots[ci].ay = 0
-		slots[ci].advance = i32(f32(adv_units) * px_scale)
-		print("char", i32(c), "glyph", gi, "cell", slots[ci].cw, "x", slots[ci].ch,
-			"bearing", slots[ci].bx, slots[ci].by, "advance", slots[ci].advance)
-	}
-	print("--- atlas cell 0 ('A') readback (median) ---")
-	dump_atlas_cell(&atlas, atlas_w, slots[0].ax, slots[0].ay, slots[0].cw, slots[0].ch)
-}
 
 // ============================================================================
 // Character map (cmap)
@@ -347,7 +347,7 @@ Glyph_Point :: struct {
 	on_curve : bool
 }
 
-Glyph :: struct {
+Outline :: struct {
 	num_contours : i16   // < 0 means composite — see is_composite
 
 	// Bounding box in FUnits, copied from the per-glyph header.
@@ -377,8 +377,8 @@ GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
 // glyphs — the parser fills `out` with zeros and returns cleanly.
 // On-disk TTF glyph header: five big-endian i16s, 10 bytes, no padding.
 
-parse_glyph :: fun(glyph_bytes: []byte) -> Glyph {
-	glyph : Glyph = #big_endian glyph_bytes[:]
+parse_glyph :: fun(glyph_bytes: []byte) -> Outline {
+	glyph : Outline = #big_endian glyph_bytes[:]
 	if glyph_bytes.len == 0 do return glyph
 
 	if glyph.num_contours < 0 {
@@ -393,7 +393,7 @@ parse_glyph :: fun(glyph_bytes: []byte) -> Glyph {
 	}
 }
 
-parse_simple_glyph_body :: fun(glyph: ^Glyph, bytes : []byte) {
+parse_simple_glyph_body :: fun(glyph: ^Outline, bytes : []byte) {
 	n_contours := i32(glyph.num_contours)
 	// glyph end points start rght aftre the glyph header?
 	// so we just add 10 to cursor and we're good to go?
@@ -532,7 +532,7 @@ edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
 // Rasterize g's MSDF into `atlas` (RGB, row stride atlas_w*3) at cell origin
 // (dst_x, dst_y), and fill `slot` with the cell size + bearings. `pad` is the
 // distance-field margin around the glyph. Caller fills slot.glyph/ax/ay/advance.
-rasterize_msdf :: fun(g: ^Glyph, units_per_em: u16, px_em: i32, pad: i32,
+rasterize_msdf :: fun(g: ^Outline, units_per_em: u16, px_em: i32, pad: i32,
 	atlas: ^[]byte, atlas_w: i32, dst_x: i32, dst_y: i32, slot: ^Glyph_Slot)
 {
 	scale := f32(px_em) / f32(units_per_em)
