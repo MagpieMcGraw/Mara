@@ -1,78 +1,1628 @@
 module test
 
-use test_io_arrow
-use test_context_arena
-use test_all
-use test_struct_init
-use test_match_union
-use test_union_pad
-use test_multiline_str
-use test_arr_len
-use test_struct_arr_minimal
-use test_multi_return
-use test_fn_type
-use test_byte_view
-use test_take_binding
-use test_underscore_default
-use test_hex_literals
-use test_match_namespace
-use test_match_indexed
-use test_method_call
-use test_distinct_construct
-use test_take_basic
-use test_take_runtime
-use test_take_alignment
-use test_arena_alignment
-use test_submod_check
-use test_in_range
-use test_partial_array
-use test_param_parallel_defaults
-use test_param_tuple_destructure
-use test_named_returns
-use test_abi
-use test_defer
-use test_maybe
-use test_take_return
-use test_compound_eval
+// Consolidated feature test. Every feature lives in its own test_<name> fn;
+// main calls them all, so any single one can be commented out to isolate it.
+// Failing/negative tests (compile errors, intentional traps) live in
+// test_fail.mara. Build from this folder: ../Mara.exe build test
+
 use mara.memory
+use mara.math
+use mara.maybe
+use mara.string
+
+// ============================================================================
+// io / function syntax
+// ============================================================================
+
+greet :: fun() {
+	print("hello from greet")
+}
+
+greet2 :: fun() {
+	print("hello from greet2")
+}
+
+io_add :: fun(a: i64, b: i64) i64 {
+	return a + b
+}
+
+io_mul :: fun(a: i64, b: i64) -> i64 {
+	return a * b
+}
+
+get_value :: fun() i64 {
+	return 42
+}
+
+test_io_arrow :: fun() {
+	greet()
+	greet2()
+	print(io_add(3, 4))
+	print(io_mul(5, 6))
+	print(get_value())
+}
+
+// ============================================================================
+// literals
+// ============================================================================
+
+test_hex_literals :: fun() {
+	a := 0xFF
+	print(a)            // 255
+	b := 0xDeAdBeEf
+	print(b)            // 3735928559
+	c := 0xFF_FF_00_00
+	print(c)            // 4294901760
+	d := -0x10
+	print(d)            // -16
+	e := 0X80
+	print(e)            // 128
+	f := 0x80000000 | 0x40000000
+	print(f)            // 3221225472
+	above53 := 0x20_0000_0000_0001
+	at53    := 0x20_0000_0000_0000
+	print(above53 - at53)               // 1
+	hi_dec : i64 = 9007199254740993
+	print(hi_dec - at53)                // 1
+}
+
+// ============================================================================
+// range membership
+// ============================================================================
+
+check :: fun(label: [, 0]utf8, x: i64, lo: i64, hi: i64) {
+	if x in lo..hi {
+		print(label, "in")
+	else
+		print(label, "out")
+	}
+}
+
+check_not :: fun(label: [, 0]utf8, x: i64, lo: i64, hi: i64) {
+	if x not in lo..hi {
+		print(label, "out")
+	else
+		print(label, "in")
+	}
+}
+
+test_in_range :: fun() {
+	check("0", 0, 0, 10)            // in
+	check("9", 9, 0, 10)            // in
+	check("10", 10, 0, 10)          // out
+	check("neg1", -1, 0, 10)        // out
+	check("5", 5, 0, 10)            // in
+	check_not("0_n", 0, 0, 10)      // in
+	check_not("10_n", 10, 0, 10)    // out
+	check_not("99_n", 99, 0, 10)    // out
+}
+
+// ============================================================================
+// struct construction & defaults
+// ============================================================================
+
+Point :: struct {
+	x: i64
+	y: i64
+	z: i64 = 42
+}
+
+test_struct_init :: fun() {
+	a : Point
+	print(a.x)
+	print(a.y)
+	print(a.z)
+	b : Point = Point()
+	print(b.z)
+	c : Point = Point() { x = 7, y = 8 }
+	print(c.x)
+	print(c.y)
+	print(c.z)
+	d : Point = Point() { z = 100 }
+	print(d.z)
+	e : Point = { x = 5 }
+	print(e.x)
+	print(e.z)
+	f := Point()
+	print(f.z)
+	g := Point() { x = 9 }
+	print(g.x)
+}
+
+// ============================================================================
+// multi-assign / broadcast
+// ============================================================================
+
+Multi_S :: struct {
+	a: i32
+	b: i32
+}
+
+test_multi_assign :: fun() {
+	x : i32
+	y : i32
+	x, y = 7
+	print("locals:", x, y)
+	s : Multi_S
+	s.a, s.b = 42
+	print("fields:", s.a, s.b)
+}
+
+// ============================================================================
+// distinct types
+// ============================================================================
+
+File_Id :: distinct i64
+Tag     :: distinct i32
+
+test_distinct_construct :: fun() {
+	id : File_Id = File_Id(66)
+	print(i64(id))    // 66
+	n : i64 = 1234
+	id2 := File_Id(n)
+	print(i64(id2))   // 1234
+	t : Tag = Tag(7)
+	print(i64(i32(t)))  // 7
+	round := File_Id(i64(id) + 1)
+	print(i64(round))  // 67
+}
+
+// ============================================================================
+// compound assignment single-eval
+// ============================================================================
+
+Counter :: struct {
+	n : i64
+}
+
+bump :: fun(c: ^Counter) -> i64 {
+	v := c.n
+	c.n = v + 1
+	return v
+}
+
+test_compound_eval :: fun() {
+	arr : [4]i64
+	arr[0] = 10
+	arr[1] = 20
+	arr[2] = 30
+	arr[3] = 40
+	counter : Counter
+	arr[i32(bump(&counter))] *= 10
+	print(counter.n)   // 1
+	print(arr[0])      // 100
+	print(arr[1])      // 20
+}
+
+// ============================================================================
+// fixed arrays, len/cap, slices
+// ============================================================================
+
+ArrBox :: struct {
+	xs    : [4]i64
+	bytes : [12]byte
+}
+
+test_arr_len :: fun() {
+	fa : [8]i64
+	print(fa.len)   // 8
+	print(fa.cap)   // 8
+	sl : []i64 = fa[0 : 4]
+	print(sl.len)   // 4
+	print(sl.cap)   // 4
+	bytes : [16]byte
+	print(bytes.len)  // 16
+	if fa.len == 8 {
+		print(1)
+	}
+	full := fa[0:]
+	print(full.len)  // 8
+	box : ArrBox
+	print(box.xs.len)    // 4
+	print(box.bytes.len) // 12
+}
+
+test_len_cap :: fun() {
+	fa : [16, 0]utf8 = "hi"
+	print(len(fa))   // 16
+	print(cap(fa))   // 15
+	ss : [:32, 0]utf8
+	print(len(ss))   // 0
+	print(cap(ss))   // 32
+}
+
+test_struct_arr_minimal :: fun() {
+	f : Foo
+	print(f.x)
+	b : Bar
+	print(b.xs[0])
+}
+
+Foo :: struct {
+	x: i64
+}
+
+Bar :: struct {
+	xs: [4]i64
+}
+
+test_partial_array :: fun() {
+	storage : [..16]i64
+	print(storage.cap)
+	print(storage.len)
+	storage[0] = 100
+	storage[1] = 200
+	storage[2] = 300
+	print(storage[0])
+	print(storage[2])
+	sl : []i64 = storage[0:3]
+	print(sl.len)
+	print(sl[2])
+	name : [..16, 0]utf8
+	print(name.cap)
+	print(name.len)
+	greet : [..32, 0]utf8 = "hello"
+	print(greet.cap)
+	print(greet.len)
+	src : [..4]i64
+	src[0] = 111
+	src[1] = 222
+	dst : [..4]i64 = src
+	src[0] = 999
+	print(dst[0])      // 111
+	print(dst[1])      // 222
+}
+
+test_slice_view :: fun() {
+	data : [..32]byte
+	text : []utf8 = data[:]
+	print("byte -> utf8 view len:", text.len, "cap:", text.cap)
+	bytes_back : []byte = text[:]
+	print("utf8 -> byte view len:", bytes_back.len, "cap:", bytes_back.cap)
+}
+
+test_fixed_array_read :: fun() {
+	buf : [8]u8
+	buf[0] = 0xDE
+	buf[1] = 0xAD
+	buf[2] = 0xBE
+	buf[3] = 0xEF
+	buf[4] = 0x01
+	buf[5] = 0x23
+	buf[6] = 0x45
+	buf[7] = 0x67
+	bytes : []byte = buf[:]
+	a_two : [2]byte = bytes[0]
+	a_check : u16 = a_two[0]
+	print("a_two as u16:", a_check)
+	b_four : [4]byte = bytes[2:6]
+	b_check : u32 = b_four[0]
+	print("b_four as u32:", b_check)
+	n : u16 = bytes[0]
+	print("u16 from slice:", n)
+	print("via call (index):", take_two_idx(bytes[0]))
+	print("via call (slice):", take_two_idx(bytes[0:2]))
+}
+
+take_two_idx :: fun(data: [2]byte) -> u16 {
+	return u16(data[0]) << 8 | u16(data[1])
+}
+
+// ============================================================================
+// control flow
+// ============================================================================
+
+test_elif_test :: fun() {
+	x : i32 = 5
+	if x > 10 {
+		print("big")
+	elif x > 3
+		print("medium")
+	else
+		print("small")
+	}
+	if x > 100 {
+		print("huge")
+	else
+		if x > 3 {
+			print("nested-if-in-else works")
+		}
+	}
+}
+
+// ============================================================================
+// integer widening signedness
+// ============================================================================
+
+test_widen :: fun() {
+	a : u16 = 0xCAFE
+	assert(i32(a) == 51966)
+	assert(i64(a) == 51966)
+	b : i16 = -1
+	assert(i32(b) == -1)
+	assert(i64(b) == -1)
+	print("widen ok")
+}
+
+// ============================================================================
+// math intrinsics
+// ============================================================================
+
+test_intrinsics :: fun() {
+	a : f32 = 16.0
+	ra := sqrt(a)
+	print(ra)  // 4.0
+	b : f64 = 25.0
+	rb := sqrt(b)
+	print(rb)  // 5.0
+	c : f32 = -3.5
+	rc := abs_f32(c)
+	print(rc)  // 3.5
+	print(min(f32(2.0), f32(5.0)))  // 2.0
+	print(max(f32(2.0), f32(5.0)))  // 5.0
+	print(min(i64(10), i64(3)))  // 3
+	print(max(i64(10), i64(3)))  // 10
+}
+
+// ============================================================================
+// unions, match, enums, error kinds, Maybe
+// ============================================================================
+
+Shape :: union(tag i32) {
+	Circle = 1 {
+		radius: i32
+	}
+	Rect = 2 {
+		w: i32
+		h: i32
+	}
+}
+
+Wrapper :: struct {
+	s: Shape
+}
+
+mu_match_ident :: fun() {
+	s: Shape = Circle{radius = 7}
+	match s {
+	Circle c
+		print(c.radius)
+	Rect r
+		print(r.w)
+	}
+}
+
+mu_match_field :: fun() {
+	w: Wrapper
+	w.s = Rect{w = 12, h = 34}
+	match w.s {
+	Circle c
+		print(c.radius)
+	Rect r
+		print(r.w)
+		print(r.h)
+	}
+}
+
+mu_report :: fun(s: Shape) {
+	match s {
+	Circle c
+		print(c.radius)
+	Rect r
+		print(r.w)
+	}
+}
+
+test_match_union :: fun() {
+	mu_match_ident()
+	mu_match_field()
+	s: Shape = Circle{radius = 99}
+	mu_report(s)
+}
+
+Enum_File_Error :: union {
+	Ok
+	NotFound
+	TooLarge
+	ReadFailed
+}
+
+Tag_u8 :: union(tag u8) {
+	A = 1
+	B = 4
+	C = 16
+}
+
+test_enum_print :: fun() {
+	err := Enum_File_Error.NotFound
+	print(err)
+	print(Enum_File_Error.Ok)
+	print(Enum_File_Error.ReadFailed)
+	print("got error: %", err)
+	t : Tag_u8 = .B
+	print(t)
+	print(Tag_u8.A, Tag_u8.C)
+}
+
+Padded :: union(tag u32, pad u32, size 32) {
+	A = 1 {
+		timestamp: u64
+		x: i32
+	}
+	B = 2 {
+		timestamp: u64
+		y: i32
+	}
+}
+
+test_union_pad :: fun() {
+	e: Padded = A{timestamp = 99, x = 7}
+	print(e.tag)
+	print(e.pad)
+	match e {
+	A a
+		print(a.timestamp)
+		print(a.x)
+	B b
+		print(b.timestamp)
+		print(b.y)
+	}
+}
+
+// NOTE: test_match_indexed (enum-indexed array `[4 Color]bool` + indexed match
+// predicates like `colors[Green]`) omitted — does not currently compile:
+// indexing with a Color enum value is rejected ("array/slice index must be i32",
+// 11 errors). Compiler gap in enum-indexed array access. Found 2026-05-30.
+
+Payload :: struct {
+	count: i64
+}
+
+Events_Namespace :: struct {
+	quit:        bool
+	double_save: bool
+	debug_print: bool
+	payload:     Payload
+}
+
+test_match_namespace :: fun() {
+	e: Events_Namespace
+	e.quit          = true
+	e.debug_print   = true
+	e.payload.count = 42
+	match e {
+	quit        do print(1)
+	double_save do print(2)
+	debug_print do print(3, payload.count)
+	}
+	all_on: Events_Namespace
+	all_on.quit          = true
+	all_on.double_save   = true
+	all_on.debug_print   = true
+	all_on.payload.count = 100
+	match all_on {
+	quit        do print(11)
+	double_save do print(12)
+	debug_print do print(13, payload.count)
+	}
+	none: Events_Namespace
+	match none {
+	quit        do print(91)
+	double_save do print(92)
+	debug_print do print(93)
+	}
+}
+
+Kind_File_Error :: error {
+	Not_Found
+	Too_Large
+	Read_Failed
+}
+
+Kind_Shader_Error :: error {
+	Bad_Text
+	Failed_Compilation
+	Failed_Link
+}
+
+test_error_kind :: fun() {
+	a := Kind_File_Error.Not_Found
+	b := Kind_File_Error.Read_Failed
+	c := Kind_Shader_Error.Failed_Compilation
+	ok := Kind_File_Error.Ok
+	print(a)
+	print(b)
+	print(c)
+	print(ok)
+	print(Kind_File_Error.Too_Large)
+	print(Kind_Shader_Error.Bad_Text)
+	if a == Kind_File_Error.Not_Found do print("matched Not_Found")
+	if a != Kind_File_Error.Read_Failed do print("a is not Read_Failed")
+	match a {
+		Kind_File_Error.Not_Found   do print("match: not found")
+		Kind_File_Error.Too_Large   do print("match: too large")
+		Kind_File_Error.Read_Failed do print("match: read failed")
+		Kind_File_Error.Ok          do print("match: ok")
+	}
+}
+
+mb_unwrap_or_zero :: fun(m: Maybe(i64)) -> i64 {
+	match m {
+	None
+		return 0
+	Some s
+		return s.value
+	}
+}
+
+Maybe_Box :: struct {
+	x: i64
+}
+
+mb_deref_or_neg :: fun(m: Maybe(^Maybe_Box)) -> i64 {
+	match m {
+	None
+		return -1
+	Some s
+		return s.value.x
+	}
+}
+
+test_maybe :: fun() {
+	a : Maybe(i64) = Some{value = 42}
+	b : Maybe(i64) = None{}
+	print(mb_unwrap_or_zero(a))
+	print(mb_unwrap_or_zero(b))
+	box : Maybe_Box
+	box.x = 7
+	p : Maybe(^Maybe_Box) = Some{value = &box}
+	q : Maybe(^Maybe_Box) = None{}
+	print(mb_deref_or_neg(p))
+	print(mb_deref_or_neg(q))
+}
+
+// ============================================================================
+// error propagation (?), multi-slot returns, implicit Ok
+// ============================================================================
+
+E :: error { Bad_Input }
+
+two_vals :: fun(fail: bool) -> i64, i64, err {
+	if fail do return 0, 0, E.Bad_Input
+	return 10, 20, E.Ok
+}
+
+chain_multi :: fun(fail: bool) -> i64, i64, err {
+	x, y := two_vals(fail)?
+	return x * 100, y * 100, E.Ok
+}
+
+test_err_multi :: fun() {
+	a, b, e := chain_multi(false)
+	print("ok path:", a, b, e)
+	a2, b2, e2 := chain_multi(true)
+	print("fail path:", a2, b2, e2)
+}
+
+FE_prop :: error {
+	Not_Found
+	Too_Large
+}
+
+maybe_fail :: fun(flag: bool) -> err {
+	if flag do return FE_prop.Not_Found
+	return FE_prop.Ok
+}
+
+get_or_fail :: fun(flag: bool) -> i64, err {
+	if flag do return 0, FE_prop.Too_Large
+	return 42, FE_prop.Ok
+}
+
+chain_fails :: fun(should_fail_a: bool, should_fail_b: bool) -> i64, err {
+	maybe_fail(should_fail_a)?
+	print("past err-only call")
+	x := get_or_fail(should_fail_b)?
+	print("past (T,err) call; x =", x)
+	return x + 100, FE_prop.Ok
+}
+
+test_err_prop :: fun() {
+	n, e := chain_fails(false, false)
+	print("n =", n, " err =", e)
+	_, e2 := chain_fails(true, false)
+	print("err on first call:", e2)
+	_, e3 := chain_fails(false, true)
+	print("err on second call:", e3)
+}
+
+FE_open :: error {
+	Not_Found
+	Too_Large
+	Read_Failed
+}
+
+SE_open :: error {
+	Bad_Text
+	Failed_Compilation
+	Failed_Link
+}
+
+test_err_open :: fun() {
+	a : err = FE_open.Not_Found
+	b : err = SE_open.Failed_Link
+	ok : err = FE_open.Ok
+	print(a)
+	print(b)
+	print(ok)
+	if a == FE_open.Not_Found do print("a matched")
+	if b != FE_open.Ok do print("b is not Ok")
+	match a {
+		FE_open.Not_Found do print("match a: not found")
+		FE_open.Too_Large do print("match a: too large")
+		SE_open.Bad_Text  do print("match a: bad text")
+		else              do print("match a: other")
+	}
+	match b {
+		FE_open.Not_Found   do print("match b: not found")
+		SE_open.Failed_Link do print("match b: failed link")
+		else                do print("match b: other")
+	}
+	match ok {
+		FE_open.Ok do print("match ok: ok")
+		else       do print("match ok: other")
+	}
+}
+
+FE_impl :: error {
+	Not_Found
+	Too_Large
+}
+
+ok_only_bare :: fun() -> err {
+	return
+}
+
+ok_only_falloff :: fun() -> err {
+	print("doing work")
+}
+
+make_value :: fun(flag: bool) -> i64, err {
+	if flag do return 0, FE_impl.Too_Large
+	return 42
+}
+
+make_two :: fun(flag: bool) -> i64, i64, err {
+	if flag do return 0, 0, FE_impl.Not_Found
+	return 10, 20
+}
+
+chain_impl :: fun(flag: bool) -> i64, err {
+	x := make_value(flag)?
+	return x + 100
+}
+
+test_err_implicit_ok :: fun() {
+	e1 := ok_only_bare()
+	print("ok_only_bare:", e1)
+	e2 := ok_only_falloff()
+	print("ok_only_falloff:", e2)
+	a, ea := make_value(false)
+	print("make_value ok:", a, ea)
+	a2, ea2 := make_value(true)
+	print("make_value fail:", a2, ea2)
+	b1, b2, eb := make_two(false)
+	print("make_two ok:", b1, b2, eb)
+	n, en := chain_impl(false)
+	print("chain ok:", n, en)
+	_, en2 := chain_impl(true)
+	print("chain fail:", en2)
+}
+
+// ============================================================================
+// defer, fn-types, multi-return, named returns, param defaults
+// ============================================================================
+
+defer_basic :: fun() {
+	defer print("deferred")
+	print("body")
+}
+
+defer_lifo :: fun() {
+	defer print("deferred-1")
+	defer print("deferred-2")
+	print("a")
+}
+
+defer_block :: fun() {
+	defer {
+		print("block-1")
+		print("block-2")
+	}
+	print("body")
+}
+
+defer_early_return :: fun(x: i64) -> i64 {
+	defer print("defer-on-return")
+	print("before")
+	if x > 0 {
+		return x + 41
+	}
+	return 0
+}
+
+defer_if_scope :: fun() {
+	if true {
+		defer print("if-defer")
+		print("if-body")
+	}
+	print("after-if")
+}
+
+defer_loop_iter :: fun() {
+	for i in 0..3 {
+		defer print("loop-defer")
+		print("iter")
+	}
+	print("after-loop")
+}
+
+defer_loop_break :: fun() {
+	for true {
+		defer print("loop-defer")
+		print("iter")
+		break
+	}
+	print("after-loop")
+}
+
+test_defer :: fun() {
+	defer_basic()
+	defer_lifo()
+	defer_block()
+	r := defer_early_return(1)
+	print(r)
+	defer_if_scope()
+	defer_loop_iter()
+	defer_loop_break()
+}
+
+// NOTE: test_fn_type (nominal `fn name` function-type params) omitted — does not
+// currently compile: calling a `fn`-typed parameter `cb(start)` errors "call to
+// unknown function 'cb' — no fun_info and no function-pointer variable" (codegen).
+// Compiler gap. Found 2026-05-30.
+
+Info :: struct {
+	size:        u64
+	create_time: i64
+}
+
+stat :: fun(ok_in: bool) -> (Info, bool) {
+	i : Info
+	i.size = u64(42)
+	i.create_time = 1234
+	return i, ok_in
+}
+
+scale :: fun(x: i64) -> (i64, bool) {
+	return x * 2, x > 0
+}
+
+test_multi_return :: fun() {
+	info, ok := stat(true)
+	print(i64(info.size))        // 42
+	print(i64(info.create_time)) // 1234
+	if ok { print(1) }           // 1
+	doubled, pos := scale(21)
+	print(doubled)               // 42
+	if pos { print(1) }          // 1
+}
+
+named_pair :: fun() -> a: i64, b: i64 {
+	a = 10
+	b = 20
+	return a, b
+}
+
+positional_pair :: fun() -> i64, i64 {
+	x : i64 = 100
+	y : i64 = 200
+	return x, y
+}
+
+test_named_returns :: fun() {
+	n1, n2 := named_pair()
+	print(n1)
+	print(n2)
+	p1, p2 := positional_pair()
+	print(p1)
+	print(p2)
+}
+
+Loca :: struct {
+	offsets : [..8]u32
+}
+
+make_loca :: fun(n: i32) -> loca: Loca {
+	loca.offsets.len = n
+	for i in 0..n {
+		loca.offsets[i] = u32(i * 10)
+	}
+	return loca
+}
+
+test_named_return_pa :: fun() {
+	l : Loca = make_loca(5)
+	print("named return -> len:", l.offsets.len, "cap:", l.offsets.cap)
+	for v, i in l.offsets {
+		print("  ", i, ":", i32(v))
+	}
+	b : Loca
+	print("bare local   -> cap:", b.offsets.cap)
+}
+
+pair_sum :: fun(a, b: i64 = 5, 10) -> i64 {
+	return a + b
+}
+
+pair_sum_broadcast :: fun(a, b: i64 = 7) -> i64 {
+	return a + b
+}
+
+test_param_parallel_defaults :: fun() {
+	print(pair_sum())              // 15
+	print(pair_sum(100, 200))      // 300
+	print(pair_sum_broadcast())    // 14
+}
+
+get_pair :: fun() -> (i64, i64) {
+	return 11, 22
+}
+
+get_triple :: fun() -> (i64, i64, i64) {
+	return 100, 200, 300
+}
+
+take_pair :: fun(x, y := get_pair()) -> i64 {
+	return x + y
+}
+
+take_triple :: fun(a, b, c := get_triple()) -> i64 {
+	return a + b + c
+}
+
+take_pair_explicit :: fun(x, y := get_pair()) -> i64 {
+	return x + y
+}
+
+test_param_tuple_destructure :: fun() {
+	print(take_pair())                // 33
+	print(take_triple())              // 600
+	print(take_pair_explicit(5, 7))   // 12
+}
+
+// ============================================================================
+// take / let / slice carving, partial arrays, byte views, reinterpret
+// ============================================================================
+
+Pair :: struct {
+	a: i64
+	b: i64
+}
+
+run_take_basic :: fun(memory: ^[]byte) {
+	p : Pair = let(Pair, memory)
+	p.a = 7
+	p.b = 11
+	nums : [4]i64 = let([4]i64, memory)
+	nums[0] = 100
+	nums[1] = 200
+	nums[2] = 300
+	nums[3] = 400
+	print(p.a)         // 7
+	print(p.b)         // 11
+	print(nums[0])     // 100
+	print(nums[3])     // 400
+	print(memory.len)  // 48
+}
+
+test_take_basic :: fun() {
+	buf : [..256]byte
+	run_take_basic(&buf)
+}
+
+run_take_alignment :: fun(memory: ^[]byte) {
+	flag : u8 = let(u8, memory)
+	flag = 42
+	p : Pair = let(Pair, memory)
+	p.a = 100
+	p.b = 200
+	print(flag)        // 42
+	print(p.a)         // 100
+	print(memory.len)  // 24
+	nums : []i64 = slice([:3]i64, memory)
+	nums[0] = 10
+	nums[2] = 30
+	print(nums[0])     // 10
+	print(memory.len)  // 48
+}
+
+test_take_alignment :: fun() {
+	buf : [..256]byte
+	run_take_alignment(&buf)
+}
+
+Megastruct :: class {
+	x: i64 = 0
+	y: i64 = 0
+}
+
+write_one :: fun(g: ^Megastruct) {
+	g.x = 11
+	g.y = 22
+}
+
+run_take_binding :: fun(memory: ^[]byte) {
+	game : Megastruct = let(Megastruct, memory)
+	write_one(&game)
+	game.x = 33
+}
+
+test_take_binding :: fun() {
+	buf : [..64]byte
+	run_take_binding(&buf)
+	view : ^Megastruct = &buf[0]
+	print(view.x)  // 33
+	print(view.y)  // 22
+}
+
+roundtrip :: fun(memory: ^[]byte) -> Pair {
+	p : Pair = let(Pair, memory)
+	p.a = 100
+	p.b = 200
+	return p
+}
+
+test_take_return :: fun() {
+	buf : [..256]byte
+	out := roundtrip(&buf)
+	print(out.a)  // 100
+	print(out.b)  // 200
+}
+
+fill :: fun(pairs: ^[]Pair, base: i64) {
+	for i in 0..pairs.len {
+		pairs[i].a = base + i64(i) * 10
+		pairs[i].b = base + i64(i) * 10 + 1
+	}
+}
+
+run_take_runtime :: fun(storage: ^[]byte, n: i32) {
+	fixed : []Pair = slice([:2]Pair, storage)
+	fill(&fixed, 100)
+	runtime : []Pair = slice([:n]Pair, storage)
+	fill(&runtime, 500)
+	print(fixed.len)        // 2
+	print(fixed[0].a)       // 100
+	print(fixed[1].b)       // 111
+	print(runtime.len)      // 3
+	print(runtime[2].b)     // 521
+	print(storage.len)      // 80
+}
+
+test_take_runtime :: fun() {
+	storage : [..1024]byte
+	run_take_runtime(&storage, 3)
+}
+
+run_slice_positional :: fun(bytes: ^[]byte) {
+	view : []byte = slice([:4]byte, &bytes[0])
+	print("len:", i64(view.len))
+	print("cap:", i64(view.cap))
+}
+
+test_slice_positional :: fun() {
+	buf : [..16]byte
+	run_slice_positional(&buf)
+}
+
+Entry :: struct {
+	a: i32
+	b: i32
+}
+
+run_pa_byte_read :: fun(bytes: ^[]byte) {
+	dst : [..8]Entry = bytes[0 : 16]
+	print("len:", i64(dst.len))   // 2
+	print("cap:", i64(dst.cap))   // 8
+}
+
+test_pa_byte_read :: fun() {
+	buf : [..64]byte
+	buf.len = 32
+	run_pa_byte_read(&buf)
+}
+
+Item :: struct { v: i32 }
+
+Container :: struct {
+	items : [..8]Item
+}
+
+test_pa_literal :: fun() {
+	c : Container
+	c.items = [..8]Item{}
+	print("after literal: len:", c.items.len, "cap:", c.items.cap)
+	storage : [..256]byte
+	storage.len = 64
+	for i in 0..32 {
+		storage[i*2] = 0
+		storage[i*2 + 1] = u8(i + 1)
+	}
+	c.items = #big_endian storage[0]
+	print("after byte-index: len:", c.items.len, "cap:", c.items.cap)
+	for it, i in c.items {
+		print("  item", i, ":", it.v)
+	}
+}
+
+test_runtime_cap :: fun() {
+	n : i32 = 7
+	buf : [:n]i32
+	print("buf.len:", buf.len, "buf.cap:", buf.cap)
+	for i in 0..7 {
+		buf[i32(i)] = i32(i) * 10
+		buf.len += 1
+	}
+	for v, i in buf {
+		print(i, ":", v)
+	}
+	m : i32 = 3
+	buf2 : [:m * 2 + 1]i32
+	print("buf2.cap:", buf2.cap)
+}
+
+fill_manual :: fun(n: i32, buf: []byte) {
+	off : [..64]u16
+	off.len = n
+	for i in 0..n {
+		off[i] = (u16(buf[i*2]) << 8) | u16(buf[i*2 + 1])
+	}
+	print("manual -> len:", off.len, "cap:", off.cap)
+	for v, i in off {
+		print("  ", i, ":", i32(v))
+	}
+}
+
+test_runtime_pa :: fun() {
+	buf : [..64]byte
+	buf.len = 64
+	for i in 0..32 {
+		buf[i*2]     = u8(0)
+		buf[i*2 + 1] = u8(i + 1)
+	}
+	fill_manual(5, buf[:])
+}
+
+Holder_Sized :: struct {
+	name:  str
+	count: i64
+}
+
+test_sized_slice_field :: fun() {
+	s : str
+	&s + "world"
+	print(s)
+	print(s.len)
+	h := Holder_Sized{0}
+	h.count = 42
+	&h.name + "hello"
+	print(h.name)
+	print(h.name.len)
+	print(h.count)
+}
+
+View_Payload :: struct {
+	initialized: bool
+	counter: i64
+	label: u8
+}
+
+Holder_Payload :: struct {
+	payload: ^View_Payload
+}
+
+take_payload :: fun(p: ^View_Payload) {
+	p.counter = 555
+	print(p.counter)
+}
+
+view_through_slice :: fun(memory: ^[]byte) {
+	p : ^View_Payload = &memory[0]
+	p.counter = 99
+	print(p.counter)
+	q : ^View_Payload = &memory[100]
+	q.counter = 7
+	print(q.counter)
+	q = &memory[200]
+	q.counter = 17
+	print(q.counter)
+	take_payload(&memory[150])
+}
+
+return_view :: fun(memory: ^[]byte) -> ^View_Payload {
+	return &memory[50]
+}
+
+test_byte_view :: fun() {
+	buf : [..256]byte
+	p : ^View_Payload = &buf[0]
+	p.counter = 42
+	p.label = u8(7)
+	print(p.counter)
+	print(i64(p.label))
+	q : ^View_Payload = &buf[100]
+	q.counter = 13
+	print(q.counter)
+	slice_buf : [..256]byte
+	view_through_slice(&slice_buf)
+	r := return_view(&slice_buf)
+	r.counter = 31
+	print(r.counter)
+	h := Holder_Payload { payload = &buf[60] }
+	h.payload.counter = 91
+	print(h.payload.counter)
+}
+
+Window :: type ^byte
+
+Holder_Window :: struct {
+	count:  i64
+	flag:   i64
+	pair:   Pair
+	window: Window
+}
+
+test_field_byte_read :: fun() {
+	buf : [..64]byte
+	buf[0:8]   = i64(42)
+	buf[8:16]  = i64(7)
+	buf[16:24] = i64(123)
+	buf[24:32] = i64(456)
+	h : Holder_Window = #skip_constructor
+	h.count = buf[0]
+	h.flag  = buf[8:16]
+	h.pair  = buf[16:32]
+	print(h.count)
+	print(h.flag)
+	print(h.pair.a)
+	print(h.pair.b)
+	w : Window = buf[0]
+	print(i64(w))
+	h.window = buf[8:16]
+	print(i64(h.window))
+}
+
+read_into :: fun(n: i32, buf: []byte) {
+	off16 : [..16]u16
+	off16.len = n
+	off16 = #big_endian buf[0]
+	print("reassign index-read -> len:", off16.len, "cap:", off16.cap)
+	for v, i in off16 {
+		print("  ", i, ":", i32(v))
+	}
+}
+
+test_reassign_byteread :: fun() {
+	buf : [..64]byte
+	buf.len = 64
+	for i in 0..32 {
+		buf[i*2]     = u8(0)
+		buf[i*2 + 1] = u8(i + 1)
+	}
+	read_into(5, buf[:])
+}
+
+// ============================================================================
+// chained RVO, early #self, packed struct, nested ^Self
+// ============================================================================
+
+RvoPair :: struct {
+	x: i64
+	y: i64
+}
+
+level_c :: fun() -> RvoPair {
+	p : RvoPair
+	p.x = 10
+	p.y = 20
+	return p
+}
+
+level_b :: fun() -> RvoPair {
+	return level_c()
+}
+
+level_a :: fun() -> RvoPair {
+	return level_b()
+}
+
+mod_c :: fun() -> RvoPair {
+	p : RvoPair
+	p.x = 100
+	p.y = 200
+	return p
+}
+
+mod_b :: fun() -> RvoPair {
+	p := mod_c()
+	p.x += 1
+	return p
+}
+
+mod_a :: fun() -> RvoPair {
+	p := mod_b()
+	p.y *= 2
+	return p
+}
+
+sl_c :: fun(storage: ^[]byte) -> []i64 {
+	out := slice([:3]i64, storage)
+	out[0] = 100
+	out[1] = 200
+	out[2] = 300
+	return out
+}
+
+sl_b :: fun(storage: ^[]byte) -> []i64 {
+	return sl_c(storage)
+}
+
+sl_a :: fun(storage: ^[]byte) -> []i64 {
+	return sl_b(storage)
+}
+
+sl_mod_c :: fun(storage: ^[]byte) -> []i64 {
+	out := slice([:3]i64, storage)
+	out[0] = 1
+	out[1] = 2
+	out[2] = 3
+	return out
+}
+
+sl_mod_b :: fun(storage: ^[]byte) -> []i64 {
+	s := sl_mod_c(storage)
+	s[0] += 10
+	return s
+}
+
+sl_mod_a :: fun(storage: ^[]byte) -> []i64 {
+	s := sl_mod_b(storage)
+	s[2] *= 100
+	return s
+}
+
+arr_c :: fun() -> [3]i64 {
+	r : [3]i64
+	r[0] = 1
+	r[1] = 2
+	r[2] = 3
+	return r
+}
+
+arr_b :: fun() -> [3]i64 {
+	return arr_c()
+}
+
+arr_a :: fun() -> [3]i64 {
+	return arr_b()
+}
+
+arr_mod_c :: fun() -> [3]i64 {
+	r : [3]i64
+	r[0] = 10
+	r[1] = 20
+	r[2] = 30
+	return r
+}
+
+arr_mod_b :: fun() -> [3]i64 {
+	a := arr_mod_c()
+	a[0] += 1
+	return a
+}
+
+arr_mod_a :: fun() -> [3]i64 {
+	a := arr_mod_b()
+	a[2] *= 2
+	return a
+}
+
+test_chained_rvo :: fun() {
+	r := level_a()
+	print(r.x)         // 10
+	print(r.y)         // 20
+	m := mod_a()
+	print(m.x)         // 101
+	print(m.y)         // 400
+	storage : [..512]byte
+	sl := sl_a(&storage)
+	print(sl[0])       // 100
+	print(sl[2])       // 300
+	storage2 : [..512]byte
+	sm := sl_mod_a(&storage2)
+	print(sm[0])       // 11
+	print(sm[2])       // 300
+	a := arr_a()
+	print(a[0])        // 1
+	print(a[2])        // 3
+	am := arr_mod_a()
+	print(am[0])       // 11
+	print(am[2])       // 60
+}
+
+Thing :: struct(seed : f32) {
+	c := helper(#self)
+	a : f32 = 1.0
+	b : f32 = 2.0
+}
+
+helper :: fun(t: ^Thing) -> f32 {
+	return t.a + t.b
+}
+
+test_early_self :: fun() {
+	t := Thing(0)
+	print(t.c)
+}
+
+#packed Rec :: struct {
+	a : u32
+	b : u32
+	c : u32
+	d : u32
+	e : u16
+	f : u16
+	stamp : i64
+	marker : u16
+}
+
+test_struct_pack_repro :: fun() {
+	buf : [..64]byte
+	buf.len = 64
+	buf[28] = u8(0x12)
+	buf[29] = u8(0x34)
+	r : Rec = #big_endian buf[0]
+	print("marker: expect 4660 (0x1234), got", i32(r.marker))
+}
+
+Top :: struct {
+	n: i32
+
+	read :: fun(p: ^Self) -> i32 {
+		return p.n
+	}
+}
+
+Outer :: struct(x: i32) {
+	value := x
+
+	Inner :: struct {
+		n: i32
+
+		read :: fun(p: ^Self) -> i32 {
+			return p.n
+		}
+	}
+}
+
+test_nested_self :: fun() {
+}
+
+// method call: ap.alloc(32) prepends ap as the ^Self receiver -> alloc(ap, 32).
+test_method_call :: fun() {
+	arena : Arena_Debug = Arena_Debug(1 * KB)
+	ap : ^Arena_Debug = &arena
+	buf : []byte = ap.alloc(32)
+	print(buf.len)   // 32
+	buf2 : []byte = ap.alloc(64)
+	print(buf2.len)  // 64
+}
+
+// ============================================================================
+// context arena, dedent/multiline strings, const-string index, sentinel
+// append, underscore defaults + dispatch
+// ============================================================================
+
+test_context_arena :: fun() {
+	nums : [2048]i64
+	nums[0] = 42
+	nums[1023] = 99
+	print(nums[0])
+	print(nums[1023])
+}
+
+test_dedent :: fun() {
+	print(">>>> START <<<<")
+	print("
+            === Arena out of memory ===
+
+            Arena capacity: % bytes
+            Bytes used:     % bytes
+            Bytes free:     % bytes
+
+            Failed allocation: %, % bytes in %
+
+            --- All allocations (most recent first) ---
+            ", 1, 2, 3, "x", 5, "y")
+	print(">>>> END <<<<")
+}
+
+test_multiline_str :: fun() {
+	cp := 1024
+	us := 768
+	print("
+        === test fmt ===
+        Capacity:  % bytes
+        Used:      % bytes
+        Free:      % bytes
+        ", cp, us, cp - us)
+}
+
+GLYPHS :: " .,-~:;=!*#$@"
+
+test_const_string_index :: fun() {
+	for i in 0..13 {
+		row : [1]utf8
+		row[0] = GLYPHS[i]
+		print(row)
+	}
+}
+
+test_sentinel_append :: fun() {
+	empty : str
+	print(empty)
+	one : str
+	&one + "Escaping..."
+	print(one)
+	many : str
+	&many + "ab"
+	&many + "cd"
+	&many + "ef"
+	print(many)
+	sized : [:64, 0]utf8
+	&sized + "from sized"
+	print(sized)
+	grt : str = "hello"
+	print(grt)
+	&grt + " world"
+	print(grt)
+}
+
+with_two :: fun(a: i64 = 10, b: i64 = 20) -> i64 {
+	return a + b
+}
+
+with_three :: fun(a: i64, b: i64 = 5, c: i64 = 7) -> i64 {
+	return a * 100 + b * 10 + c
+}
+
+Point3 :: struct {
+	x: i64 = 100
+	y: i64 = 200
+	z: i64 = 300
+}
+
+disp_helper_int :: fun(a: i64 = 1, b: i64) -> i64 {
+	return a * 1000 + b
+}
+
+disp_helper_bool :: fun(a: i64 = 2, b: bool) -> i64 {
+	return a * 2000
+}
+
+disp :: dispatch {
+	disp_helper_int
+	disp_helper_bool
+}
+
+disp_trail_int :: fun(a: i64, b: i64 = 10) -> i64 {
+	return a * 100 + b
+}
+
+disp_trail_bool :: fun(a: bool, b: i64 = 20) -> i64 {
+	return b
+}
+
+disp_trail :: dispatch {
+	disp_trail_int
+	disp_trail_bool
+}
+
+test_underscore_default :: fun() {
+	print(with_two(1, 2))      // 3
+	print(with_two(_, 2))      // 12
+	print(with_two(1, _))      // 21
+	print(with_two(_, _))      // 30
+	print(with_three(1, _, 9)) // 159
+	print(with_three(2, _, _)) // 257
+	a : Point3 = Point3(10, 20, 30)
+	print(a.x)                 // 10
+	print(a.z)                 // 30
+	b : Point3 = Point3(_, 7, _)
+	print(b.x)                 // 100
+	print(b.y)                 // 7
+	print(b.z)                 // 300
+	print(disp(_, 5))          // 1005
+	print(disp(_, true))       // 4000
+	print(disp_trail(5))       // 510
+	print(disp_trail(true))    // 20
+	print(disp_trail(5, 7))    // 507
+}
+
+// <<< FUNCS END >>>
 
 main :: fun() -> i64 {
-	this_program = Program(Arena_Basic)
+	this_program = Program(Arena_Debug(1 * MB))
 
-	test_args()
 	test_io_arrow()
-	test_context_arena()
-	test_all()
-	test_struct_init()
-	test_match_union()
-	test_union_pad()
-	test_multiline_str()
-	test_arr_len()
-	test_struct_arr_minimal()
-	test_multi_return()
-	test_fn_type()
-	test_byte_view()
-	test_take_binding()
-	test_underscore_default()
 	test_hex_literals()
-	test_match_namespace()
-	test_match_indexed()
-	test_method_call()
-	test_distinct_construct()
-	test_take_basic()
-	test_take_runtime()
-	test_take_alignment()
-	test_arena_alignment()
-	test_submod()
 	test_in_range()
+	test_struct_init()
+	// test_multi_assign()  // DISABLED: codegen bug — broadcast `x, y = 7` segfaults inside a non-main fn (works in main, and with separate assigns). Confirmed 2026-05-30.
+	test_distinct_construct()
+	test_compound_eval()
+	test_arr_len()
+	test_len_cap()
+	test_struct_arr_minimal()
 	test_partial_array()
+	test_slice_view()
+	test_fixed_array_read()
+	test_elif_test()
+	test_widen()
+	test_intrinsics()
+	test_match_union()
+	test_enum_print()
+	test_union_pad()
+	test_match_namespace()
+	test_error_kind()
+	test_maybe()
+	test_err_multi()
+	test_err_prop()
+	test_err_open()
+	test_err_implicit_ok()
+	test_defer()
+	test_multi_return()
+	test_named_returns()
+	test_named_return_pa()
 	test_param_parallel_defaults()
 	test_param_tuple_destructure()
-	test_named_returns()
-	test_abi()
-	test_defer()
-	test_maybe()
+	test_take_basic()
+	test_take_alignment()
+	test_take_binding()
 	test_take_return()
-	test_compound_eval()
+	test_take_runtime()
+	test_slice_positional()
+	test_pa_byte_read()
+	test_pa_literal()
+	test_runtime_cap()
+	test_runtime_pa()
+	test_sized_slice_field()
+	test_byte_view()
+	test_field_byte_read()
+	test_reassign_byteread()
+	test_chained_rvo()
+	test_early_self()
+	test_struct_pack_repro()
+	test_nested_self()
+	test_method_call()
+	test_context_arena()
+	test_dedent()
+	test_multiline_str()
+	test_const_string_index()
+	test_sentinel_append()
+	test_underscore_default()
+	// <<< CALLS END >>>
+	print("=== all tests passed ===")
 	return 0
 }

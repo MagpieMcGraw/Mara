@@ -1,7 +1,0 @@
-module test_const_write
-
-GLYPHS :: " .,-~:;=!*#$@"
-
-main :: fun() {
-	GLYPHS[0] = 'x'
-}

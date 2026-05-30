@@ -1,0 +1,91 @@
+module test_fail
+
+// Negative tests — each is EXPECTED to fail. They can't all be live at once
+// (a compile error would break the whole build; a runtime trap aborts the
+// process), so this file ships INERT and you enable one at a time:
+//
+//   * Runtime-trap tests (compile fine, abort when run): uncomment its call in
+//     main, rebuild, run — confirm it aborts with the noted diagnostic.
+//   * Compile-error tests: uncomment the function AND its call, rebuild —
+//     confirm the build fails with the noted error, then re-comment.
+//
+// As shipped (every negative commented/uncalled) this builds and runs clean.
+
+use mara.memory
+
+// ============================================================================
+// runtime traps — compile OK, abort at runtime. Uncomment a call in main.
+// ============================================================================
+
+// Out-of-bounds reinterpret read: sizeof(Big)=32 > buf cap 16 -> bounds trap.
+Big :: struct {
+	a: i64
+	b: i64
+	c: i64
+	d: i64
+}
+
+fail_byte_view_oob :: fun() {
+	buf : [..16]byte
+	p : ^Big = &buf[0]
+	p.a = 1
+}
+
+// assert(false) in debug: prints "<loc> assertion failed: x<y" and exit(1).
+fail_assert :: fun() {
+	x : i32 = 5
+	y : i32 = 3
+	assert(x > y)                  // passes
+	print("after passing assert")
+	assert(x < y)                  // fails — aborts here
+	print("should NOT reach here")
+}
+
+// ============================================================================
+// compile errors — uncomment the fn AND its call to verify the diagnostic.
+// ============================================================================
+
+// Stray C-style else: `} else {`. Mara wants the else INSIDE one brace pair.
+// Expected: Parse error: stray `else`.
+// fail_stray_else :: fun() {
+// 	x := 5
+// 	if x < 10 {
+// 		print("small")
+// 	} else {
+// 		print("big")
+// 	}
+// }
+
+// Write to a `::` const string. Expected: cannot write to immutable constant.
+// FAIL_GLYPHS :: " .,-~:;=!*#$@"
+// fail_const_write :: fun() {
+// 	FAIL_GLYPHS[0] = 'x'
+// }
+
+// `var` keyword in a type position (removed). Expected: parse/type error on `var`.
+// fail_var_gone :: fun() {
+// 	x : var [4]i32
+// 	x[0] = 1
+// }
+
+// u8-typed index from a function. Expected: index must be i32 to match width.
+// fail_reads_u8 :: fun() -> u8 { return 3 }
+// fail_width_check :: fun() {
+// 	arr : [6]bool
+// 	arr[fail_reads_u8()] = true
+// }
+
+main :: fun() -> i64 {
+	this_program = Program(Arena_Debug(1 * MB))
+
+	// Uncomment exactly ONE:
+	// fail_byte_view_oob()
+	// fail_assert()
+	// fail_stray_else()
+	// fail_const_write()
+	// fail_var_gone()
+	// fail_width_check()
+
+	print("test_fail: inert (all negatives disabled)")
+	return 0
+}
