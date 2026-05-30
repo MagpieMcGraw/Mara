@@ -219,6 +219,37 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             return
         }
 
+        // Top-level partial-array copy into an EXISTING var (`a = b`, both
+        // [..N]T — incl. distinct-over-partial-array like `str`). The
+        // existing-slice reassign path below does a header-only memcpy, which
+        // leaves dst.ptr aliasing src's inline elements — the two silently
+        // share storage. Route through partial_array_copy, which re-anchors
+        // dst.ptr to its own backing, matching the decl path's semantics
+        // (`c : [..N]T = b`). Only genuine copy sources (ident / field access
+        // reading existing storage) need this; the `{all expr}` broadcast and
+        // slice-returning calls construct in place and stay in
+        // gen_slice_assign_inferred. Decls (var not yet bound) fall through to
+        // the partial-array decl path, which already uses the same helper.
+        if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
+            is_copy_source := false
+            #partial switch _ in s.value {
+            case ^Expr_Ident:        is_copy_source = true
+            case ^Expr_Field_Access: is_copy_source = true
+            }
+            if is_copy_source {
+                if _, src_pa := distinct_base(expr_type(s.value)).(^Type_Partial_Array); src_pa {
+                    if existing, ex_ok := get_slice(g, s.name); ex_ok {
+                        elem_t := llvm_type_from_checker(pa.elem)
+                        alloc_cap := pa.size
+                        if pa.has_sentinel { alloc_cap += 1 }
+                        src_ptr := gen_expr(g, s.value)
+                        partial_array_copy(g, existing.alloca, src_ptr, elem_t, alloc_cap)
+                        return
+                    }
+                }
+            }
+        }
+
         // Check if reassigning to an existing slice variable
         if _, sl_ok := get_slice(g, s.name); sl_ok {
             gen_slice_assign_inferred(g, s.name, s.value)

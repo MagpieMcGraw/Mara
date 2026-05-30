@@ -1352,6 +1352,11 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
     sv, _ := get_slice(g, name)
 
     // Copy whole slice header { len, cap, ptr } from source into destination.
+    // This shares the source's ptr — correct for a slice/view destination, but
+    // WRONG for a partial array, which owns its inline elements. A top-level
+    // partial-array destination reassignment (`pa = other`) is intercepted in
+    // gen_stmt and deep-copied via partial_array_copy (which re-anchors ptr);
+    // by the time it reaches here the destination is a genuine view.
     emit_memcpy(g, sv.alloca, src, slice_header_bytes)
 }
 

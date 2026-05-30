@@ -271,6 +271,31 @@ test_partial_array :: fun() {
 	src[0] = 999
 	print(dst[0])      // 111
 	print(dst[1])      // 222
+	assert(dst[0] == 111)   // decl copy is a deep copy, not an alias
+	assert(dst[1] == 222)
+
+	// Reassignment (`a = b`, a already bound) must deep-copy too — regression:
+	// it used to fall to a header-only memcpy, leaving dst.ptr aliasing src's
+	// inline elements so the two silently shared storage. Both directions:
+	rsrc : [..4]i64
+	rsrc.len = 4
+	rsrc[0] = 11
+	rsrc[1] = 22
+	rdst : [..4]i64
+	rdst.len = 4
+	rdst[0] = 0
+	rdst = rsrc
+	rsrc[0] = 999           // mutate source after the copy
+	assert(rdst[0] == 11)   // deep copy => 11 ; alias bug => 999
+	rdst[1] = 777           // write through the copy
+	assert(rsrc[1] == 22)   // independent => 22 ; alias bug => 777
+
+	// Same path for a distinct-over-partial-array (str :: type [..128]utf8).
+	a : str = "B"
+	b : str = "A"
+	b = a
+	a[0] = 'Z'
+	assert(b[0] == 'B')     // deep copy => 'B' ; alias bug => 'Z'
 }
 
 test_slice_view :: fun() {
