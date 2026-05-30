@@ -1767,6 +1767,7 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
     target_ir_type := llvm_type_from_checker(target_type)
     target_size := checker_type_byte_size(target_type)
     w := slice_layout.len_ir
+    loc := format_location(span_loc.file, span_loc.line, span_loc.col)
 
     data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span_loc)
     if !resolved {
@@ -1791,7 +1792,7 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
     emit(g, "  %s = icmp ugt %s %s, %s", src_cmp, w, end_off, cap_val)
     emit_cond_br(g, src_cmp, src_err, src_ok)
     emit_label(g, src_err)
-    src_global, src_len := get_string_literal(g, "runtime error: sized read runs past the source buffer\n")
+    src_global, src_len := get_string_literal(g, fmt.tprintf("<%s> runtime error: sized read runs past the source buffer\n", loc))
     src_msg_ptr := fresh_tmp(g)
     emit_string_gep(g, src_msg_ptr, src_len, src_global)
     emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", src_msg_ptr)
@@ -1808,7 +1809,7 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
     emit(g, "  %s = icmp ugt %s %s, %s", dst_cmp, w, span_ssa, size_str)
     emit_cond_br(g, dst_cmp, dst_err, dst_ok)
     emit_label(g, dst_err)
-    dst_msg := fmt.tprintf("runtime error: sized read of %%d bytes exceeds destination (%d bytes)\n", target_size)
+    dst_msg := fmt.tprintf("<%s> runtime error: sized read of %%d bytes exceeds destination (%d bytes)\n", loc, target_size)
     dst_global, dst_len := get_string_literal(g, dst_msg)
     dst_msg_ptr := fresh_tmp(g)
     emit_string_gep(g, dst_msg_ptr, dst_len, dst_global)
@@ -1823,11 +1824,25 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
 
     // Destination: zero-init the whole value, then copy `span` bytes; the tail
     // past `span` keeps its zero init.
-    alloca_name := fmt.tprintf("%%%s", name)
     if sd := as_struct_body(target_type); sd != nil {
-        emit_alloca(g, alloca_name, target_ir_type)
+        // Reuse the destination's existing storage when it's already bound: a
+        // bare-declared return var is NRVO-aliased to %sret, so writing there
+        // keeps the self-referential partial-array ptr valid through the return
+        // copy. A fresh alloca would dangle that ptr once the struct is copied
+        // out of this frame.
+        alloca_name := fmt.tprintf("%%%s", name)
+        if existing, ex_ok := get_struct(g, name); ex_ok {
+            alloca_name = existing.alloca
+        } else {
+            emit_alloca(g, alloca_name, target_ir_type)
+        }
         emit_memset_zero(g, alloca_name, target_size)
         emit_memcpy_runtime(g, alloca_name, src_off_ptr, span_ssa)
+        // The zero-fill leaves any [..N]T field header cap=0 / ptr=null; stamp
+        // them (cap=N, ptr -> inline backing) so the struct is usable, exactly
+        // as a normal decl's constructor would. Those fields sit past the header
+        // span, so the memcpy above doesn't touch them.
+        fixup_partial_array_fields(g, alloca_name, sd)
         if is_big_endian {
             emit_bswap_in_place(g, alloca_name, target_ir_type, target_type)
         }

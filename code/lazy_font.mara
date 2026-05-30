@@ -215,11 +215,12 @@ TTF :: struct (bytes: ^[]byte) {
 	px_scale := f32(ATLAS_PX) / f32(head.units_per_em)
 
 	chars : [..8]u32
-	chars.len = 4
+	chars.len = 5
 	chars[0] = u32('A')
 	chars[1] = u32('g')
 	chars[2] = u32('o')
-	chars[3] = u32('M')
+	chars[3] = u32(' ')
+	chars[4] = u32('M')
 
 	atlas_w := cell * chars.len
 	atlas : [..ATLAS_CAP]byte
@@ -339,7 +340,6 @@ Glyph_Point :: struct {
 
 Glyph :: struct {
 	num_contours : i16   // < 0 means composite — see is_composite
-	is_composite : bool
 
 	// Bounding box in FUnits, copied from the per-glyph header.
 	x_min : i16
@@ -366,9 +366,6 @@ GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
 read_be_u16 :: fun(data: ^[]byte, off: i32) -> u16 {
 	return (u16(data[off]) << 8) | u16(data[off + 1])
 }
-read_be_i16 :: fun(data: ^[]byte, off: i32) -> i16 {
-	return i16(read_be_u16(data, off))
-}
 
 // Parse a single glyph. `glyf_start` is the byte offset of the glyf table
 // within the full file; `glyph_offset` and `glyph_length` come from loca
@@ -376,38 +373,21 @@ read_be_i16 :: fun(data: ^[]byte, off: i32) -> i16 {
 // Empty length (length == 0) is a valid encoding for whitespace-shaped
 // glyphs — the parser fills `out` with zeros and returns cleanly.
 // On-disk TTF glyph header: five big-endian i16s, 10 bytes, no padding.
-Glyph_Header :: struct {
-	num_contours : i16
-	x_min : i16
-	y_min : i16
-	x_max : i16
-	y_max : i16
-}
 
 parse_glyph :: fun(glyph_bytes: []byte) -> Glyph {
-	glyph : Glyph
-	// Read just the 10-byte on-disk header — NOT the whole ~25KB Glyph, whose
-	// inline end_pts/points arrays would run #big_endian off the end of bytes.
-	h : Glyph_Header = #big_endian glyph_bytes[0]
-	glyph.num_contours = h.num_contours
-	glyph.x_min = h.x_min
-	glyph.y_min = h.y_min
-	glyph.x_max = h.x_max
-	glyph.y_max = h.y_max
+	glyph : Glyph = #big_endian glyph_bytes[:]
+	if glyph_bytes.len == 0 do return glyph
 
 	if glyph.num_contours < 0 {
-		// Composite glyph — references other glyphs with optional 2D
-		// transforms. Skipped for now; caller checks is_composite.
-		glyph.is_composite = true
+		// Composite glyph — skip for now
 		glyph.end_pts.len = 0
 		glyph.points.len = 0
 		return glyph
+	else 
+		// this function only does simple glyphs
+		parse_simple_glyph_body(&glyph, glyph_bytes)
+		return glyph
 	}
-
-	// this function only does simple glyphs
-	glyph.is_composite = false
-	parse_simple_glyph_body(&glyph, glyph_bytes)
-	return glyph
 }
 
 parse_simple_glyph_body :: fun(glyph: ^Glyph, bytes : []byte) {

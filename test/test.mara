@@ -1570,6 +1570,12 @@ Sized_Rec :: struct {
 	c : i32
 }
 
+Sized_Glyph :: struct {
+	n   : i16
+	pad : i16
+	pts : [..8]i32
+}
+
 test_sized_read :: fun() {
 	buf : [..16]byte
 	buf.len = 16
@@ -1607,6 +1613,17 @@ test_sized_read :: fun() {
 	assert(whole.a == 5)
 	assert(whole.b == 6)
 	assert(whole.c == 0)
+
+	// Struct with a [..N]T field: the partial-array header must come out
+	// stamped (cap=N), not zeroed, after a sized read of the leading fields.
+	gh : Sized_Glyph = #big_endian buf[0:4]
+	assert(gh.pad == 1)         // bytes 2..3 = 00 01 (buf[3]=1), big-endian
+	assert(gh.pts.cap == 8)     // stamped, NOT 0
+	gh.pts.len = 2
+	gh.pts[0] = 100
+	gh.pts[1] = 200
+	assert(gh.pts[0] == 100)
+	assert(gh.pts[1] == 200)
 
 	print("sized read ok")
 }
