@@ -3,6 +3,7 @@ module mara.lazy_font
 
 use mara.string
 use mara.math
+use mara.endian
 
 // Spec type aliases. Transparent aliases over the underlying integer width —
 // arithmetic on them behaves like the underlying int. The fixed-point ones
@@ -29,7 +30,6 @@ TTF :: struct (bytes: ^[]byte) {
 		tables: [..32]Table
 	}
 
-	// there's an array of these tables
 	Table :: struct {
 		tag: [4]utf8
 		check_sum : u32
@@ -231,12 +231,14 @@ TTF :: struct (bytes: ^[]byte) {
 		gi := i32(cmap_glyph_index(bytes, cmap_sub, c))
 		goff := loca.offsets[gi]
 		glen := loca.offsets[gi + 1] - goff
-		gg : Glyph
-		parse_glyph(bytes, glyf_loc, goff, glen, &gg)
+		gstart := glyf_loc + i32(goff)
+		gend := gstart + i32(glen)
+		glyph := parse_glyph(bytes[gstart:gend])
+
 		mi := gi
 		if mi >= num_long { mi = num_long - 1 }
 		adv_units := i32(read_be_u16(bytes, hmtx_loc + mi * 4))
-		rasterize_msdf(&gg, head.units_per_em, px, pad, &atlas, atlas_w, ci * cell, 0, &slots[ci])
+		rasterize_msdf(&glyph, head.units_per_em, px, pad, &atlas, atlas_w, ci * cell, 0, &slots[ci])
 		slots[ci].glyph = gi
 		slots[ci].ax = ci * cell
 		slots[ci].ay = 0
@@ -373,55 +375,60 @@ read_be_i16 :: fun(data: ^[]byte, off: i32) -> i16 {
 // (loca.offsets[i] and loca.offsets[i+1] - loca.offsets[i] respectively).
 // Empty length (length == 0) is a valid encoding for whitespace-shaped
 // glyphs — the parser fills `out` with zeros and returns cleanly.
-parse_glyph :: fun(bytes: ^[]byte, glyf_start: i32, glyph_offset: u32, glyph_length: u32, out: ^Glyph) {
-	if glyph_length == 0 {
-		out.num_contours = 0
-		out.is_composite = false
-		out.x_min = 0
-		out.y_min = 0
-		out.x_max = 0
-		out.y_max = 0
-		out.end_pts.len = 0
-		out.points.len = 0
-		return
-	}
-
-	cursor := glyf_start + i32(glyph_offset)
-	out.num_contours = read_be_i16(bytes, cursor); cursor += 2
-	out.x_min        = read_be_i16(bytes, cursor); cursor += 2
-	out.y_min        = read_be_i16(bytes, cursor); cursor += 2
-	out.x_max        = read_be_i16(bytes, cursor); cursor += 2
-	out.y_max        = read_be_i16(bytes, cursor); cursor += 2
-
-	if out.num_contours < 0 {
-		// Composite glyph — references other glyphs with optional 2D
-		// transforms. Skipped for now; caller checks is_composite.
-		out.is_composite = true
-		out.end_pts.len = 0
-		out.points.len = 0
-		return
-	}
-
-	out.is_composite = false
-	parse_simple_glyph_body(bytes, cursor, out)
+// On-disk TTF glyph header: five big-endian i16s, 10 bytes, no padding.
+Glyph_Header :: struct {
+	num_contours : i16
+	x_min : i16
+	y_min : i16
+	x_max : i16
+	y_max : i16
 }
 
-parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
-	cursor := cursor_in
-	n_contours := i32(out.num_contours)
+parse_glyph :: fun(glyph_bytes: []byte) -> Glyph {
+	glyph : Glyph
+	// Read just the 10-byte on-disk header — NOT the whole ~25KB Glyph, whose
+	// inline end_pts/points arrays would run #big_endian off the end of bytes.
+	h : Glyph_Header = #big_endian glyph_bytes[0]
+	glyph.num_contours = h.num_contours
+	glyph.x_min = h.x_min
+	glyph.y_min = h.y_min
+	glyph.x_max = h.x_max
+	glyph.y_max = h.y_max
+
+	if glyph.num_contours < 0 {
+		// Composite glyph — references other glyphs with optional 2D
+		// transforms. Skipped for now; caller checks is_composite.
+		glyph.is_composite = true
+		glyph.end_pts.len = 0
+		glyph.points.len = 0
+		return glyph
+	}
+
+	// this function only does simple glyphs
+	glyph.is_composite = false
+	parse_simple_glyph_body(&glyph, glyph_bytes)
+	return glyph
+}
+
+parse_simple_glyph_body :: fun(glyph: ^Glyph, bytes : []byte) {
+	n_contours := i32(glyph.num_contours)
+	// glyph end points start rght aftre the glyph header?
+	// so we just add 10 to cursor and we're good to go?
+	cursor : i32 = 10
 
 	// End-point index per contour. Last entry + 1 is the total point count.
-	out.end_pts.len = n_contours
+	glyph.end_pts.len = n_contours
 	for i in 0..n_contours {
-		out.end_pts[i] = read_be_u16(bytes, cursor)
+		glyph.end_pts[i] = read_u16be(bytes[cursor])
 		cursor += 2
 	}
-	n_points := i32(out.end_pts[n_contours - 1]) + 1
-	out.points.len = n_points
+	n_points := i32(glyph.end_pts[n_contours - 1]) + 1
+	glyph.points.len = n_points
 
 	// TrueType hinting bytecode — the spec keeps it inline between the
 	// endpoints and the flags. We don't interpret it; skip past.
-	instr_len := i32(read_be_u16(bytes, cursor)); cursor += 2
+	instr_len := i32(read_u16be(bytes[cursor]))
+	cursor += 2
 	cursor += instr_len
 
 	// Per-point flag bytes, with REPEAT-byte run-length decoding: when bit 3
@@ -455,11 +462,11 @@ parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
 			if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
 			x += dx
 		elif (f & GLYPH_FLAG_X_SAME) == 0
-			x += i32(read_be_i16(bytes, cursor)); cursor += 2
+			x += i32(read_i16be(bytes[cursor])); cursor += 2
 		}
 		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
-		out.points[i].x = i16(x)
-		out.points[i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
+		glyph.points[i].x = i16(x)
+		glyph.points[i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
 	}
 
 	// Y coordinates: same shape with Y_SHORT/Y_SAME bits.
@@ -471,9 +478,9 @@ parse_simple_glyph_body :: fun(bytes: ^[]byte, cursor_in: i32, out: ^Glyph) {
 			if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
 			y += dy
 		elif (f & GLYPH_FLAG_Y_SAME) == 0
-			y += i32(read_be_i16(bytes, cursor)); cursor += 2
+			y += i32(read_i16be(bytes[cursor])); cursor += 2
 		}
-		out.points[i].y = i16(y)
+		glyph.points[i].y = i16(y)
 	}
 }
 

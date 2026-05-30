@@ -20,3 +20,7 @@ read_u64be :: fun(data: [8]byte) -> u64 {
     lo : u64 = u64(read_u32be(data[4]))
     return hi | lo
 }
+
+read_i16be :: fun(data: [2]byte) -> i16 {
+	return i16(read_u16be(data))
+}
