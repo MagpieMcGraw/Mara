@@ -169,6 +169,12 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 }
                 return gen_index_address(g, idx)
             }
+            // Address-of a temporary slice (`&buf[a:b]`) — usually an attempt
+            // to pass it to a ^[]T parameter. A slice expression builds a fresh
+            // header with no address to point at; give the targeted fix.
+            if _, is_slice := e.operand.(^Expr_Slice); is_slice {
+                codegen_fatal(g, e.span, CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP)
+            }
             codegen_fatal(g, e.span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
         case .Caret:
             // Dereference: load through pointer
