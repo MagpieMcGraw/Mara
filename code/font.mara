@@ -16,11 +16,11 @@ Glyph :: struct {
 // of the returned 1024x1024 RGB atlas, and fill the matching Glyph slot (atlas
 // rect + bearings + advance). The returned atlas bytes are the GPU-upload input.
 load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte {
-	ttf : [..2 * MB]byte
-	read_err := read_entire_file(font, &ttf)
+	ttf_file : [..2 * MB]byte
+	read_err := read_entire_file(font, &ttf_file)
 	print("font read:", read_err)
-	tb : []byte = ttf[:]
-	t := TTF(&ttf)
+	tb : []byte = ttf_file[:]
+	t := TTF(&ttf_file)
 
 	px := i32(ATLAS_PX)
 	pad := i32(ATLAS_PAD)
