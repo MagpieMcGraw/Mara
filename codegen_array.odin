@@ -1699,12 +1699,23 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
 
     alloca_name := fmt.tprintf("%%%s", name)
     if sd := as_struct_body(target_type); sd != nil {
-        emit_alloca(g, alloca_name, target_ir_type)
+        // Reuse pre-bound storage when the destination is already a struct var —
+        // e.g. a struct-fun field NRVO'd to %sret. Without this the read lands in
+        // a throwaway local and the field reads back zero after construction.
+        // Mirrors the span-form path (gen_byte_target_read_span).
+        existing, ex_ok := get_struct(g, name)
+        if ex_ok {
+            alloca_name = existing.alloca
+        } else {
+            emit_alloca(g, alloca_name, target_ir_type)
+        }
         emit_memcpy(g, alloca_name, elem_ptr, target_size)
         if is_big_endian {
             emit_bswap_in_place(g, alloca_name, target_ir_type, target_type)
         }
-        g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
+        if !ex_ok {
+            g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
+        }
     } else if fa, fa_ok := target_type.(^Type_Fixed_Array); fa_ok {
         // Fixed-array reinterpret target: allocate the destination using the
         // `<name>.data` naming convention used elsewhere for array storage,
