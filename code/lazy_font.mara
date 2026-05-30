@@ -238,7 +238,7 @@ TTF :: struct (bytes: ^[]byte) {
 
 		mi := gi
 		if mi >= num_long { mi = num_long - 1 }
-		adv_units := i32(read_be_u16(bytes, hmtx_loc + mi * 4))
+		adv_units := i32(read_u16be(bytes[hmtx_loc + mi * 4]))
 		rasterize_msdf(&glyph, head.units_per_em, px, pad, &atlas, atlas_w, ci * cell, 0, &slots[ci])
 		slots[ci].glyph = gi
 		slots[ci].ax = ci * cell
@@ -264,7 +264,7 @@ TTF :: struct (bytes: ^[]byte) {
 
 cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
 	if subtable_start == 0 { return 0 }
-	format := read_be_u16(bytes, subtable_start)
+	format := read_u16be(bytes[subtable_start])
 	if format == 4 {
 		return cmap_format4_lookup(bytes, subtable_start, char)
 	elif format == 0
@@ -281,19 +281,19 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
 // entrySelector(2) rangeShift(2), so the arrays begin at +14 with a 2-byte
 // reservedPad between the end-code and start-code arrays.
 cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
-	seg_x2 := i32(read_be_u16(bytes, sub + 6))
+	seg_x2 := i32(read_u16be(bytes[sub + 6]))
 	end_codes   := sub + 14
 	start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
 	id_deltas   := start_codes + seg_x2
 	id_ranges   := id_deltas + seg_x2
 	seg_count := seg_x2 / 2
 	for s in 0..seg_count {
-		end_code := u32(read_be_u16(bytes, end_codes + s * 2))
+		end_code := u32(read_u16be(bytes[end_codes + s * 2]))
 		if char <= end_code {
-			start_code := u32(read_be_u16(bytes, start_codes + s * 2))
+			start_code := u32(read_u16be(bytes[start_codes + s * 2]))
 			if char < start_code { return 0 }
-			id_delta := read_be_u16(bytes, id_deltas + s * 2)
-			id_range := i32(read_be_u16(bytes, id_ranges + s * 2))
+			id_delta := read_u16be(bytes[id_deltas + s * 2])
+			id_range := i32(read_u16be(bytes[id_ranges + s * 2]))
 			if id_range == 0 {
 				// Direct: (char + idDelta) mod 65536. u16() truncates the wide
 				// u32 sum to its low 16 bits, which is the modular reduction
@@ -303,7 +303,7 @@ cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
 				// Indirect: glyphIdArray address, relative to this
 				// idRangeOffset entry's own location.
 				addr := id_ranges + s * 2 + id_range + 2 * (i32(char) - i32(start_code))
-				g := read_be_u16(bytes, addr)
+				g := read_u16be(bytes[addr])
 				if g == 0 { return 0 }
 				return u16(u32(g) + u32(id_delta))
 			}
@@ -360,12 +360,6 @@ GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
 GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
 GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
 GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
-
-// Inline BE-decode helpers operating on a byte buffer at a runtime offset.
-// stdlib's mara.endian read helpers take [N]byte; we have ^[]byte + a cursor.
-read_be_u16 :: fun(data: ^[]byte, off: i32) -> u16 {
-	return (u16(data[off]) << 8) | u16(data[off + 1])
-}
 
 // Parse a single glyph. `glyf_start` is the byte offset of the glyf table
 // within the full file; `glyph_offset` and `glyph_length` come from loca
