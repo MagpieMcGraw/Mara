@@ -558,12 +558,30 @@ emit_field_store :: proc(g: ^Codegen, llvm_type: string, base_ptr: string, field
     emit_store(g, ir_type, val, gep)
 }
 
-// Copy all fields from src to dst (same struct type). Emits GEP+load+store per field.
+// Copy all fields from src to dst (same struct type). Scalar fields go through
+// GEP+load+store; aggregate fields (arrays, nested structs, partial arrays) are
+// memcpy'd by their byte size.
+//
+// An aggregate field must NEVER be copied as a whole-value `load {…}`/`store
+// {…}`: clang's -O0 SelectionDAG scalarizes the aggregate into one operation
+// per element and DAG-combines them superlinearly. A single `[4096 x T]`
+// partial-array field (Glyph.points) made `clang -c` on the font module take
+// ~0.9s on its own — the entire build's clang cost. memcpy moves the identical
+// bytes in one call. (Same bytes either way: the partial-array ptr field is
+// carried verbatim, exactly as the per-field load+store did.)
 emit_struct_copy :: proc(g: ^Codegen, sd: ^Scope_Body, llvm_type: string, src_ptr: string, dst_ptr: string) {
     for &field, fi in sd.fields {
         ft := field_ir_type(&field)
-        val := emit_field_load(g, llvm_type, src_ptr, fi, ft)
-        emit_field_store(g, llvm_type, dst_ptr, fi, ft, val)
+        // Aggregate IR types start with '{' (anon struct), '[' (array), or '%'
+        // (named struct/class). Scalars (iN, ptr, float, double) never do.
+        if len(ft) > 0 && (ft[0] == '{' || ft[0] == '[' || ft[0] == '%') {
+            src_gep := emit_field_gep(g, llvm_type, src_ptr, fi)
+            dst_gep := emit_field_gep(g, llvm_type, dst_ptr, fi)
+            emit_memcpy(g, dst_gep, src_gep, checker_type_byte_size(field.type_))
+        } else {
+            val := emit_field_load(g, llvm_type, src_ptr, fi, ft)
+            emit_field_store(g, llvm_type, dst_ptr, fi, ft, val)
+        }
     }
 }
 
