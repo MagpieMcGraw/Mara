@@ -217,8 +217,10 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
 }
 
 // Walk the use graph from `target` and return the subset of `all_files` we
-// need to lex + parse. Same prefix-match rule the type checker uses:
-// a `use foo` enqueues `foo` plus any `foo.*` dotted submodule.
+// need to lex + parse. Same exact-match rule the type checker uses: a `use foo`
+// enqueues exactly the module `foo`. Submodules `foo.*` are pulled in only when
+// something issues an explicit `use foo.bar`, riding in via that import like
+// any other dependency rather than being globbed in by the parent.
 compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target: string) -> map[string][dynamic]^Source_File {
     result: map[string][dynamic]^Source_File
     visited: map[string]bool
@@ -234,11 +236,8 @@ compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target:
         result[module] = files
         for f in files {
             for path in f.imports {
-                prefix_dot := strings.concatenate({path, "."})
-                for fmod in all_files {
-                    if fmod == path || strings.has_prefix(fmod, prefix_dot) {
-                        if !visited[fmod] { append(&worklist, fmod) }
-                    }
+                if path in all_files && !visited[path] {
+                    append(&worklist, path)
                 }
             }
         }

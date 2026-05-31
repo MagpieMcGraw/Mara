@@ -1,0 +1,6 @@
+module shapes.extra
+
+// Submodule of shapes. Reachable only via an explicit `use shapes.extra`.
+extra_value :: fun() -> i32 {
+	return 32
+}

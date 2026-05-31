@@ -1,0 +1,7 @@
+module shapes
+
+// Parent module. Deliberately does NOT `use shapes.extra` — the submodule is
+// not part of what a consumer gets from `use shapes`.
+shapes_area :: fun() -> i32 {
+	return 10
+}

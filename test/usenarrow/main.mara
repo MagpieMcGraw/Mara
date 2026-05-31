@@ -1,0 +1,9 @@
+module usenarrow
+
+use shapes        // pulls in `shapes` ONLY — not shapes.extra
+use shapes.extra  // submodule must be pulled in explicitly
+
+main :: fun() {
+	total := shapes_area() + extra_value()
+	print("total:", total)   // total: 42
+}

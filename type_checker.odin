@@ -6172,10 +6172,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // spelling; `::` is the comptime-correct one since includes are
             // comptime-only).
             if inc, is_include := s.value.(^Expr_Include); is_include {
-                // `name :: use path` — explicit aliasing form. Find every
-                // matching module (parent + parent.* submodules), load and
-                // flatten each. The "main" module (name == inc.path) is what
-                // binds to s.name so qualified access like `name.X` works.
+                // `name :: use path` — explicit aliasing form. Resolve `path`
+                // to exactly that module (no parent-glob; submodules are pulled
+                // in by their own explicit `use`), load and flatten it. That
+                // module binds to s.name so qualified access like `name.X` works.
                 matching := find_matching_modules(c, inc.path)
                 defer delete(matching)
                 if len(matching) == 0 {
@@ -6350,9 +6350,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // mara.X → look up X in std scope (stdlib modules)
             // bare Y → walk scope chain for sibling, lazy-load if not found
             if inc, is_include := s.value.(^Expr_Include); is_include {
-                // Bare `use path` (mara-prefixed or not — the path is just a
-                // dotted module name now). Find every matching module
-                // (parent + parent.* submodules), load and flatten each.
+                // Bare `use path` — the path is a dotted module name. Resolve
+                // it to exactly that module (no parent-glob; submodules are
+                // pulled in by their own explicit `use`), load and flatten it.
                 matching := find_matching_modules(c, inc.path)
                 defer delete(matching)
                 if len(matching) == 0 {
@@ -8848,21 +8848,20 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
 // Module system — modules are pre-parsed; checker looks up by name
 // ---------------------------------------------------------------------------
 
-// Find all module names whose declared package name equals `prefix` OR starts
-// with `prefix.`. Returns the dotted names (e.g. for prefix "gfx", returns
-// ["gfx", "gfx.vao", "gfx.prim"] if all three exist).
+// Resolve a `use <path>` to the module it names. Matching is EXACT: `use foo`
+// pulls in the module declared `module foo` and nothing else. A submodule
+// `foo.bar` is an independent module, reached only by an explicit `use foo.bar`
+// (typically written inside `foo` itself — the way `gfx` does `use gfx.shader`).
+// So a submodule stays private to whoever uses it, like any other dependency;
+// there is no parent-glob that drags `foo.*` into a `use foo`.
 //
-// Used by `use parent` to collect the parent module AND all parent.X
-// submodules in one go. Output is sorted for reproducible load order.
-find_matching_modules :: proc(c: ^Checker, prefix: string) -> [dynamic]string {
+// Returned as a 0-or-1 element list because the call sites iterate the result
+// (empty = no such module; the caller reports TYPE_MODULE_FOUND).
+find_matching_modules :: proc(c: ^Checker, path: string) -> [dynamic]string {
     result: [dynamic]string
-    prefix_dot := strings.concatenate({prefix, "."})
-    for pkg in c.programs {
-        if pkg == prefix || strings.has_prefix(pkg, prefix_dot) {
-            append(&result, pkg)
-        }
+    if path in c.programs {
+        append(&result, path)
     }
-    slice.sort(result[:])
     return result
 }
 
