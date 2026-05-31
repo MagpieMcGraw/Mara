@@ -81,12 +81,12 @@ oom_string :: "
 // 	}
 // }
 
-Arena_Debug :: class(cap: i32) {
-	base: []byte = sys_alloc(i64(cap))
-	capacity: i32 = cap
-	offset: i32 = 0
-	current_mark: i32 = -1
-	last_alloc: i32 = -1
+Arena_Debug :: class(cap: i64) {
+	base: []byte = sys_alloc(cap)
+	capacity: i64 = cap
+	offset: i64 = 0
+	current_mark: i64 = -1
+	last_alloc: i64 = -1
 
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
@@ -100,8 +100,8 @@ Arena_Debug :: class(cap: i32) {
 	}
 
 	AllocHeader :: class{
-		prev: i32
-		size: i32
+		prev: i64
+		size: i64
 		name: ^byte
 		span: ^byte
 	}
@@ -109,7 +109,7 @@ Arena_Debug :: class(cap: i32) {
 
 	alloc :: fun(
 		a: ^Self,
-		size: i32,
+		size: i64,
 		name: ^byte = #caller_name,
 		span: ^byte = #caller_span) -> []byte
 	{
@@ -139,8 +139,8 @@ Arena_Debug :: class(cap: i32) {
 	reset :: fun(a: ^Self) {
 		cm := a.current_mark
 
-		prev : i32 = a.base[cm]
-		saved_last : i32 = a.base[cm + size_of(prev)]
+		prev : i64 = a.base[cm]
+		saved_last : i64 = a.base[cm + size_of(prev)]
 
 		a.offset = cm
 		a.last_alloc = saved_last
@@ -149,7 +149,7 @@ Arena_Debug :: class(cap: i32) {
 
 	dump :: fun(
 		a: ^Self,
-		failed_size: i32,
+		failed_size: i64,
 		failed_name: ^byte,
 		failed_span: ^byte)
 	{
