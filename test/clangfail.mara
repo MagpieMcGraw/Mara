@@ -1,0 +1,13 @@
+module clangfail
+
+// This binds a symbol that does not exist in kernel32. The library name
+// resolves (so build_link_flags is happy and we reach codegen + clang), the
+// IR is valid (clang -c succeeds), but the link step cannot resolve the
+// symbol -> clang/lld fails. Exercises the clang-invocation failure path.
+foreign static_lib "kernel32" {
+	fun NoSuchFunctionXYZ_98765() -> i32
+}
+
+main :: fun() {
+	_ = NoSuchFunctionXYZ_98765()
+}

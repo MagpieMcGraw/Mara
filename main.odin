@@ -927,7 +927,7 @@ main :: proc() {
     }
 
     args := parse_args()
-    if !args.ok { return }
+    if !args.ok { os.exit(1) }
 
     perf: Performance_Timer
     perf_timer_begin(&perf, "discover")
@@ -941,7 +941,7 @@ main :: proc() {
         fmt.printf("  %s\n", args.pkg_name)
         fmt.println("Available modules:")
         for name in all_files { fmt.printf("  %s\n", name) }
-        return
+        os.exit(1)
     }
 
     // Prune to the use-closure starting from the target. Modules outside
@@ -993,7 +993,7 @@ main :: proc() {
                 fmt.printf("  - %s: %d error(s)\n", pkg, n)
             }
         }
-        return
+        os.exit(1)
     }
 
     // A build needs an entry point — `main` for an exe or an `#expose`
@@ -1012,7 +1012,7 @@ main :: proc() {
             perf_timer_end(&perf)
             flush_diagnostics()
             fmt.printf(BUILD_NO_ENTRY_POINT, args.pkg_name)
-            return
+            os.exit(1)
         }
     }
 
@@ -1030,7 +1030,7 @@ main :: proc() {
         perf_timer_end(&perf)
         flush_diagnostics()
         fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
-        return
+        os.exit(1)
     }
 
     perf_timer_mark(&perf, "codegen")
@@ -1038,7 +1038,7 @@ main :: proc() {
     ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, release = args.release)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
-        return
+        os.exit(1)
     }
 
     // Output extension: .html for web, .dll/.so for shared, native exe otherwise.
@@ -1057,9 +1057,9 @@ main :: proc() {
         // builds aren't supported yet. Falls back to single-file behavior
         // if there's just one module, which is the common case for the
         // wasm32 targets we test.
-        if !link_web(ll_paths[0], out_name, checked) { return }
+        if !link_web(ll_paths[0], out_name, checked) { os.exit(1) }
     } else {
-        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release) { return }
+        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release) { os.exit(1) }
     }
 
     perf_timer_end(&perf)
