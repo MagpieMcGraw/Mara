@@ -198,6 +198,22 @@ fn_primary_return :: proc(ft: ^Type_Scope) -> Type {
     return ft.return_types[0]
 }
 
+// A parameterized constructor's effective return list as callers see it: the
+// struct itself (the implicit, in-place sret slot 0) followed by its declared
+// returns (the trailing err). The constructor BODY only ever returns the
+// declared slots — Self is built in place, never named in a `return` — so this
+// prepend lives at the call boundary, not in the stored return_types. Returns
+// (nil, false) for anything that isn't a fallible constructor.
+constructor_effective_returns :: proc(ft: ^Type_Scope) -> ([]Type, bool) {
+    if ft == nil || ft.kind != .Struct || len(ft.params) == 0 || len(ft.return_types) == 0 {
+        return nil, false
+    }
+    list := make([]Type, 1 + len(ft.return_types))
+    list[0] = ft
+    for rt, i in ft.return_types { list[i + 1] = rt }
+    return list, true
+}
+
 // If `e` is a call to a callable scope, return that callee's return-types list.
 // Returns nil for non-calls, calls whose callee can't be resolved, or non-fun
 // callees (struct constructors). The caller decides whether nil + non-call vs
@@ -218,8 +234,13 @@ call_return_list :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> []Type {
     // Global function table is keyed by flat name — covers module-qualified
     // calls (e.g. `string.find` → `mara_string_find`) that the local env
     // doesn't expose under their flat name.
-    if ft, ok2 := c.table.funs[lookup_name]; ok2 && ft.kind == .Fun {
-        return ft.return_types[:]
+    if ft, ok2 := c.table.funs[lookup_name]; ok2 {
+        if list, is_ctor := constructor_effective_returns(ft); is_ctor {
+            return list
+        }
+        if ft.kind == .Fun {
+            return ft.return_types[:]
+        }
     }
     // Env fallbacks for locally-visible names (UFCS, generics, etc.).
     t, t_ok := type_env_get(env, lookup_name)
@@ -231,7 +252,11 @@ call_return_list :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> []Type {
     }
     if !t_ok { return nil }
     ft, ft_ok := t.(^Type_Scope)
-    if !ft_ok || ft.kind != .Fun { return nil }
+    if !ft_ok { return nil }
+    if list, is_ctor := constructor_effective_returns(ft); is_ctor {
+        return list
+    }
+    if ft.kind != .Fun { return nil }
     return ft.return_types[:]
 }
 
@@ -5086,7 +5111,10 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
             // This replaces the old body-walking heuristic (which couldn't
             // tell a method's `:=` locals from a class body's init computation).
             def_is_struct := s.kind == .Struct
-            if def_is_struct && len(s.return_types) > 0 {
+            // A parameterized constructor MAY declare return types (its trailing
+            // err); a pure-data struct (no params) may not — there's no body to
+            // run, so nothing to return besides the layout.
+            if def_is_struct && len(s.return_types) > 0 && len(s.typed_params) == 0 {
                 check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, bare_name)
                 clear(&s.return_types)  // suppress cascading return-path errors
             }
@@ -5845,7 +5873,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // set by the parser from the declaration keyword (see the matching
             // comment in register_scope_defs for details).
             is_struct_type := s.kind == .Struct
-            if is_struct_type && len(s.return_types) > 0 {
+            // Parameterized constructors may declare returns (trailing err);
+            // pure-data structs (no params) may not.
+            if is_struct_type && len(s.return_types) > 0 && len(s.typed_params) == 0 {
                 check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, s.name)
                 clear(&s.return_types)  // suppress cascading return-path errors
             }
@@ -8678,6 +8708,15 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
     // the fun has no declared return.
     if len(ft.return_types) == 0 && ft.kind == .Struct && len(ft.fields) > 0 {
         append(&cf.return_types, distinct_base(Type(ft)))
+    } else if len(ft.return_types) > 0 && ft.kind == .Struct {
+        // Fallible constructor: Self is the implicit, in-place sret slot 0,
+        // then the declared returns (the trailing err) follow. The body only
+        // ever returns the declared slots — Self is built in place — so this
+        // prepend is the codegen-facing mirror of constructor_effective_returns.
+        append(&cf.return_types, distinct_base(Type(ft)))
+        for rt in ft.return_types {
+            append(&cf.return_types, distinct_base(rt))
+        }
     } else {
         for rt in ft.return_types {
             append(&cf.return_types, distinct_base(rt))
@@ -11912,8 +11951,11 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 
     check_call_args(c, check_args[:], fun_type, e.name, e.span, env)
 
-    // Constructor with params: returns the struct type itself
-    if len(fun_type.return_types) == 0 && fun_type.kind == .Struct && len(fun_type.params) > 0 {
+    // Constructor with params: the call's value IS the struct itself (Self).
+    // A fallible constructor also declares a trailing err — that's exposed to
+    // `?` and `t, e := ...` via constructor_effective_returns / call_return_list;
+    // in plain scalar context the result type is still Self.
+    if fun_type.kind == .Struct && len(fun_type.params) > 0 {
         e.type_ = fun_type
         if e.overrides != nil {
             check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env)

@@ -1,0 +1,52 @@
+module ctorerr
+
+Build_Error :: error {
+	Bad_Value
+}
+
+// Fallible constructor: implicit Self in slot 0, trailing err.
+Thing :: struct(x: i32) -> err {
+	doubled := x * 2
+	if x < 0 do return Bad_Value
+}
+
+make_thing :: fun(x: i32) -> Thing, err {
+	t := Thing(x)?            // success binds t: Thing; failure propagates
+	return t
+}
+
+lookup :: fun(x: i32) -> i32, err {
+	if x < 0 do return 0, Bad_Value
+	return x * 10
+}
+
+// `?` INSIDE a constructor body: a helper's err propagates into the
+// constructor's own trailing err slot. This is the shape TTF needs
+// (get_offset(...)? inside the TTF constructor).
+Gadget :: struct(x: i32) -> err {
+	base : i32 = lookup(x)?
+	scaled : i32 = base * 3
+}
+
+main :: fun() {
+	// via `?` inside a fallible function
+	t, e := make_thing(5)
+	print("ok e:", e, "doubled:", t.doubled)   // expect Ok, 10
+
+	_, e2 := make_thing(-1)
+	print("bad e:", e2)                         // expect Bad_Value
+
+	// direct (Self, err) destructuring at the construction site
+	d, de := Thing(7)
+	print("direct e:", de, "doubled:", d.doubled)   // expect Ok, 14
+
+	_, be := Thing(-5)
+	print("direct bad e:", be)                       // expect Bad_Value
+
+	// `?`-in-body constructor
+	g, ge := Gadget(4)
+	print("gadget e:", ge, "scaled:", g.scaled)      // expect Ok, 120 (4*10*3)
+
+	_, ge2 := Gadget(-2)
+	print("gadget bad e:", ge2)                       // expect Bad_Value (from lookup)
+}

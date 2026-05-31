@@ -357,6 +357,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     old_nrvo_var := g.nrvo_var
     old_emitted_allocas := g.emitted_allocas
     old_fun_body := g.current_fun_body
+    old_ctor_self := g.ctor_has_self_sret
     g.all_vars = {}
     g.tmp_counter = 0
     g.scope_stack = {}
@@ -425,6 +426,27 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             // populate them — e.g. `-> loca: Loca` where Loca has a [..N] field.
             if ret_st, rs_ok := lookup_struct(g, ret_struct_name); rs_ok {
                 fixup_partial_array_fields(g, "%sret", ret_st)
+            }
+        }
+    }
+
+    // Fallible constructor: Self is multi-return sret slot 0, built in place.
+    // Pre-bind each field to a GEP into %sret.0 (mirroring the single-return
+    // constructor's bind into %sret); the declared returns (trailing err) are
+    // slots 1+. The g.ctor_has_self_sret flag tells the return machinery to skip
+    // slot 0 — Self is never named in a `return`, only built field-by-field.
+    g.ctor_has_self_sret = false
+    if ret_struct_name == "" && cf.type_ != nil && cf.type_.kind == .Struct && ret_types != nil {
+        if self_sd := as_struct_body(ret_types[0]); self_sd != nil {
+            g.ctor_has_self_sret = true
+            sret_llvm := struct_llvm_name(self_sd.name)
+            if ret_st, rs_ok := lookup_struct(g, self_sd.name); rs_ok {
+                for &f, i in ret_st.fields {
+                    if _, already := g.all_vars[f.name]; already { continue }
+                    addr := fresh_tmp(g)
+                    emit(g, "  %s = getelementptr %s, ptr %%sret.0, i32 0, i32 %d", addr, sret_llvm, i)
+                    prebind_field_var(g, f.name, addr, f.type_)
+                }
             }
         }
     }
@@ -640,9 +662,12 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
 
         if ret_types != nil {
             // Multi-return fall-off. The type checker only permits this when
-            // every slot is err-typed; fill each `%sret.N` with `.Ok` before
-            // the bare `ret void`.
-            for i in 0..<len(ret_types) {
+            // every (declared) slot is err-typed; fill each `%sret.N` with
+            // `.Ok` before the bare `ret void`. For a fallible constructor,
+            // slot 0 is the in-place Self struct — skip it; it's already built.
+            start := 0
+            if g.ctor_has_self_sret { start = 1 }
+            for i in start..<len(ret_types) {
                 emit(g, "  store i32 0, ptr %%sret.%d", i)
             }
             emit(g, "  ret void")
@@ -675,4 +700,5 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     g.ret_types = old_ret_types
     g.emitted_allocas = old_emitted_allocas
     g.current_fun_body = old_fun_body
+    g.ctor_has_self_sret = old_ctor_self
 }

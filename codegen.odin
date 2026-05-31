@@ -431,6 +431,11 @@ Codegen :: struct {
     web: bool,
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
     release: bool, // -release build mode — compile out asserts
+    // Fallible constructor: the current function is a `struct(params) -> err`
+    // whose multi-return sret slot 0 is the implicit Self (built in place via
+    // field prebind). When true, the return machinery skips slot 0 — explicit
+    // `return <err>` fills the trailing declared slots, never Self.
+    ctor_has_self_sret: bool,
 }
 
 // Look up a foreign function's IR name (link_name or fallback to fn_name).

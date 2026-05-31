@@ -1391,9 +1391,17 @@ gen_try :: proc(g: ^Codegen, e: ^Expr_Try, target_type: string) -> string {
         emit_load_into(g, err_val, "i32", err_slot)
         if n == 2 {
             val_ir := g.tuple_result_types[0]
-            tmp := fresh_tmp(g)
-            emit_load_into(g, tmp, val_ir, g.tuple_result_ptrs[0])
-            success_val = tmp
+            // Aggregates (struct `%...`, array `[...]`, slice `{...}`) come back
+            // by pointer — the binding memcpy's from the sret slot. Returning a
+            // loaded aggregate *value* would hand a struct/array value to a copy
+            // that expects a pointer (invalid IR). Scalars load into an SSA value.
+            if len(val_ir) > 0 && (val_ir[0] == '%' || val_ir[0] == '[' || val_ir[0] == '{') {
+                success_val = g.tuple_result_ptrs[0]
+            } else {
+                tmp := fresh_tmp(g)
+                emit_load_into(g, tmp, val_ir, g.tuple_result_ptrs[0])
+                success_val = tmp
+            }
         }
     } else {
         // Single-return call: result IS the err.

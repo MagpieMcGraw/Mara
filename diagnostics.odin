@@ -418,7 +418,7 @@ TYPE_CONSTANT_OVERFLOWS_RANGE_128 :: "constant %d overflows %s (range 0..2^128-1
 TYPE_CONSTANT_OVERFLOWS_RANGE_2 :: "constant %d overflows %s (range 0..%d)"
 TYPE_CONSTANT_OVERFLOWS_F16 :: "constant %v overflows f16"
 TYPE_CONSTANT_OVERFLOWS_F32 :: "constant %v overflows f32"
-TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN :: "struct/class '%s' cannot declare a return type"
+TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN :: "struct/class '%s' without constructor parameters cannot declare a return type (only a parameterized constructor may return, e.g. a trailing err)"
 TYPE_ENUM_ALREADY_DEFINED :: "enum '%s' already defined"
 TYPE_UNION_ALREADY_DEFINED :: "union '%s' already defined"
 TYPE_ALREADY_DEFINED :: "%s '%s' already defined"

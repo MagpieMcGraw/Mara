@@ -1194,10 +1194,16 @@ emit_ret_void :: proc(g: ^Codegen) {
 
 // Multi-return: store each value into its sret param.
 gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
+    // Fallible constructor: sret slot 0 is the implicit Self (built in place),
+    // so the explicit return values map onto the trailing declared slots —
+    // `return <err>` fills slot 1, never Self. offset is 0 for ordinary funs.
+    offset := 0
+    if g.ctor_has_self_sret { offset = 1 }
     for val, i in s.values {
-        resolved_type := distinct_base(g.ret_types[i])
-        elem_type := llvm_type_from_checker(g.ret_types[i])
-        sret_ptr := fmt.tprintf("%%sret.%d", i)
+        slot := i + offset
+        resolved_type := distinct_base(g.ret_types[slot])
+        elem_type := llvm_type_from_checker(g.ret_types[slot])
+        sret_ptr := fmt.tprintf("%%sret.%d", slot)
         // Array/fixed-array returns: memcpy from alloca to sret. When the
         // local's alloca IS the sret slot (named-return NRVO), the memcpy is
         // a self-copy — skip it. LLVM memcpy with overlapping src/dst is UB.
@@ -1256,8 +1262,9 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
     }
     // Implicit `.Ok` fill for trailing err slots the user omitted. The type
     // checker guarantees the missing positions are err-typed (i32 in IR), and
-    // .Ok is the zero value (set_id 0, tag 0).
-    for i in len(s.values)..<len(g.ret_types) {
+    // .Ok is the zero value (set_id 0, tag 0). With a Self slot 0 (constructor)
+    // the offset keeps the fill on the declared err slots and never on Self.
+    for i in (len(s.values) + offset)..<len(g.ret_types) {
         sret_ptr := fmt.tprintf("%%sret.%d", i)
         emit_store(g, "i32", "0", sret_ptr)
     }
