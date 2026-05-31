@@ -105,8 +105,6 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 
 	test_font : Font
 	atlas := &test_font.glyphs.load_glyphs(0, "data/fonts/Inter_18pt-Regular.ttf")
-	// TODO: upload `atlas` (RGB MSDF atlas bytes) into the glyph texture array
-	//       via gl.TexSubImage3D — until then it's computed and held, not used.
 
 	game.running = true
 	game.initialized = true

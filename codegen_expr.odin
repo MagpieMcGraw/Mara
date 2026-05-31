@@ -1958,6 +1958,11 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             if et.tag_type != "" { tag_ir = tag_type_to_ir(et.tag_type) }
             val := gen_expr(g, arg_expr, tag_ir)
             gen_print_enum(g, val, tag_ir, et)
+        } else if _, is_bool := expr_type(arg_expr).(Type_Bool); is_bool {
+            // bool prints as true/false (see gen_print_bool). Without an
+            // explicit case it falls to the final %lld branch, which passes an
+            // i1 where printf's i64 vararg is expected — invalid IR.
+            gen_print_bool(g, gen_expr(g, arg_expr, "i1"))
         } else if is_numeric_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
             nt := get_numeric_type(g, arg_expr)
@@ -2015,6 +2020,26 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
             emit_printf_i64(g, fmt_ptr, val)
         }
+}
+
+// Print an i1 as `true`/`false`. Shared by scalar args, struct fields, and
+// array elements so bool renders consistently everywhere — and never reaches
+// an integer printf format, which would either mistype the i1 (scalar: i1 in
+// an i64 vararg slot → invalid IR) or sext it to a garbage value (array: true
+// → -1).
+gen_print_bool :: proc(g: ^Codegen, val_i1: string) {
+    true_name, true_len := get_string_literal(g, "true")
+    false_name, false_len := get_string_literal(g, "false")
+    true_ptr := fresh_tmp(g)
+    emit_string_gep(g, true_ptr, true_len, true_name)
+    false_ptr := fresh_tmp(g)
+    emit_string_gep(g, false_ptr, false_len, false_name)
+    bool_str := fresh_tmp(g)
+    emit(g, "  %s = select i1 %s, ptr %s, ptr %s", bool_str, val_i1, true_ptr, false_ptr)
+    fmt_name, fmt_len := get_string_literal(g, "%s")
+    fmt_ptr := fresh_tmp(g)
+    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+    emit_printf_ptr(g, fmt_ptr, bool_str)
 }
 
 // Check if an expression refers to an array variable
@@ -2107,12 +2132,7 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
                 emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
                 emit_printf_double(g, fmt_ptr, ext)
             case ft == "i1":
-                fmt_name, fmt_len := get_string_literal(g, "%d")
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                ext := fresh_tmp(g)
-                emit(g, "  %s = zext i1 %s to i32", ext, val)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
+                gen_print_bool(g, val)
             case:
                 ext := fresh_tmp(g)
                 emit(g, "  %s = sext %s %s to i64", ext, ft, val)
@@ -2251,6 +2271,8 @@ gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_typ
             fmt_ptr := fresh_tmp(g)
             emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
             emit_printf_double(g, fmt_ptr, ext)
+        case elem_type == "i1":
+            gen_print_bool(g, val)
         case:
             ext := fresh_tmp(g)
             emit(g, "  %s = sext %s %s to i64", ext, elem_type, val)
@@ -2334,8 +2356,8 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
         print_fmt = "%s"
         print_llvm_type = "ptr"
     case "i1":
-        // Print booleans as 0/1 (i1 gets zero-extended to i64 for printf)
-        print_fmt = "%lld"
+        // Booleans print as true/false via gen_print_bool; print_fmt unused.
+        print_fmt = "%s"
         print_llvm_type = "i1"
     case:
         print_fmt = "%lld"
@@ -2413,9 +2435,7 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
         emit(g, "  %s = fpext float %s to double", promoted, val)
         emit_printf_double(g, fmt_ptr, promoted)
     } else if print_llvm_type == "i1" {
-        ext := fresh_tmp(g)
-        emit(g, "  %s = zext i1 %s to i64", ext, val)
-        emit_printf_i64(g, fmt_ptr, ext)
+        gen_print_bool(g, val)
     } else if print_llvm_type == "ptr" {
         emit_printf_ptr(g, fmt_ptr, val)
     } else {

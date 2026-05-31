@@ -1,0 +1,23 @@
+module booltest
+
+S :: struct {
+	flag: bool
+	n: i32
+}
+
+main :: fun() {
+	b : bool = true
+	c : bool = false
+	print("scalar:", b, c)            // scalar: true false
+
+	s : S
+	s.flag = true
+	s.n = 7
+	print("struct:", s)               // flag: true ...
+
+	arr : [3]bool
+	arr[0] = true
+	arr[1] = false
+	arr[2] = true
+	print("array:", arr)              // [true, false, true]
+}
