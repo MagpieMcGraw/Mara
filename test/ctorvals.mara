@@ -1,0 +1,25 @@
+module ctorvals
+
+E :: error { Bad }
+
+// Non-err extra return: Self (slot 0) + an i32. No err, so the body must
+// `return` the extra explicitly (fall-off isn't allowed for a non-err slot).
+Pair :: struct(x: i32) -> i32 {
+	stored := x
+	return x * 2
+}
+
+// Extra value AND a trailing err: (Self, i32, err).
+Triple :: struct(x: i32) -> i32, err {
+	stored := x
+	if x < 0 do return 0, Bad
+	return x * 10
+}
+
+main :: fun() {
+	p, n := Pair(5)
+	print("pair stored:", p.stored, "extra:", n)              // 5, 10
+
+	t, m, e := Triple(4)
+	print("triple stored:", t.stored, "extra:", m, "e:", e)   // 4, 40, Ok
+}
