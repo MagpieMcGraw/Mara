@@ -22,7 +22,7 @@ producer :: fun(slot: ^[]i32, first: u32, name: cstring) -> [1000]byte {
 
 init_fn :: fun() {
 	h : Holder
-	&h.slot.producer(0, "data/fonts/Inter.ttf")   // UFCS, big return discarded
+	_ = &h.slot.producer(0, "data/fonts/Inter.ttf")   // UFCS, big return explicitly discarded
 }
 
 run_fn :: fun(focus: bool, fps: f64) -> bool {
@@ -33,6 +33,6 @@ run_fn :: fun(focus: bool, fps: f64) -> bool {
 
 main :: fun() {
 	init_fn()
-	run_fn(true, 60.0)     // expect: consume 1 60
+	_ = run_fn(true, 60.0)     // expect: consume 1 60
 	print("done")
 }

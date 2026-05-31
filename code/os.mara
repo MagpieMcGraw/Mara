@@ -29,7 +29,7 @@ read_cstring :: fun(cap: i32, src: ^byte) -> [, 0]utf8 {
 sys_alloc :: fun(cap: i64) -> []byte {
 	#if #native {
 		raw := vm_reserve(cap)
-		vm_commit(raw, cap)
+		_ = vm_commit(raw, cap)
     	return slice_from_ptr(raw, i32(cap))
 	}
 	#if #web {
@@ -45,7 +45,7 @@ Big_Slice :: struct {
 sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	#if #native {
 		raw := vm_reserve(cap)
-		vm_commit(raw, cap)
+		_ = vm_commit(raw, cap)
 		block := Big_Slice{0, cap, raw}
 
 		return block
@@ -159,7 +159,7 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	// exactly the pointer returned by vm_reserve; partial releases are
 	// not supported.
 	vm_release :: fun(base: ^byte) {
-		VirtualFree(base, usize(0), MEM_RELEASE)
+		_ = VirtualFree(base, usize(0), MEM_RELEASE)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 
 	file_close :: fun(id: File_Id) {
 		if id == NO_FILE do return
-		CloseHandle(id)
+		_ = CloseHandle(id)
 	}
 
 	file_size :: fun(id: File_Id) -> i64, err {
@@ -288,7 +288,7 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	}
 
 	free_library :: fun(mod: ^byte) {
-	FreeLibrary(mod)
+	_ = FreeLibrary(mod)
 	}
 
 	// ---------------------------------------------------------------------------

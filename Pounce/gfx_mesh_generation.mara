@@ -141,7 +141,7 @@ primitives_init :: fun(vao: ^VAO_State) {
     quad := Mesh_Data{primitive_quad()}
     cube := Mesh_Data{primitive_cube()}
     sphere := primitive_sphere(32, &storage)
-    vao_add_mesh(vao, &quad)
-    vao_add_mesh(vao, &cube)
-    vao_add_mesh(vao, &sphere)
+    _ = vao_add_mesh(vao, &quad)
+    _ = vao_add_mesh(vao, &cube)
+    _ = vao_add_mesh(vao, &sphere)
 }

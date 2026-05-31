@@ -81,15 +81,15 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 
 	init_err := sdl.Init(Video)
 
-	sdl.GL_SetAttribute(ContextProfileMask, .Core)
-	sdl.GL_SetAttribute(ContextMajorVersion, 4)
-	sdl.GL_SetAttribute(ContextMinorVersion, 5)
+	_ = sdl.GL_SetAttribute(ContextProfileMask, .Core)
+	_ = sdl.GL_SetAttribute(ContextMajorVersion, 4)
+	_ = sdl.GL_SetAttribute(ContextMinorVersion, 5)
 
 	game.window = sdl.CreateWindow("Not main...", 960, 540,
 		OpenGL | Resizable)
 
 	game.gl_context = sdl.GL_CreateContext(game.window)
-	sdl.GL_MakeCurrent(game.window, game.gl_context)
+	_ = sdl.GL_MakeCurrent(game.window, game.gl_context)
 	gl_load(GL_GetProcAddress)
 
 	quad_init(&game.quad)
@@ -104,7 +104,9 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 		&game.vao, 8192, 32)
 
 	test_font : Font
-	&test_font.glyphs.load_glyphs(0, "data/fonts/Inter_18pt-Regular.ttf")
+	atlas := &test_font.glyphs.load_glyphs(0, "data/fonts/Inter_18pt-Regular.ttf")
+	// TODO: upload `atlas` (RGB MSDF atlas bytes) into the glyph texture array
+	//       via gl.TexSubImage3D — until then it's computed and held, not used.
 
 	game.running = true
 	game.initialized = true
@@ -141,7 +143,7 @@ game_draw :: fun(game: ^Megastruct) {
 	p := &game.player
 	draw_quad(&game.quad, 960.0, 540.0,
 		f32(p.x), f32(p.y), f32(p.size), f32(p.size), p.color)
-	GL_SwapWindow(game.window)
+	_ = GL_SwapWindow(game.window)
 }
 
 game_run :: fun(memory: ^[]byte) -> bool {

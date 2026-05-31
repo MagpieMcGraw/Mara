@@ -7477,7 +7477,20 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             check_match(c, s, env)
 
         case Stmt_Call:
-            check_expr(c, s.expr, env)
+            rt := check_expr(c, s.expr, env)
+            // Must-use: a bare call that yields a value silently discards it.
+            // void calls (the side-effect case) type to nil and are fine, as
+            // are append-style operator statements (`&slice + x`), which are
+            // Expr_Binary, not Expr_Call. Capture the value (`x := f()`) or
+            // discard it explicitly (`_ = f()`). Skip Type_Error so a failed
+            // call doesn't draw a second, redundant diagnostic.
+            if call, is_call := s.expr.(^Expr_Call); is_call && rt != nil {
+                _, is_void := rt.(Type_Void)
+                _, is_errd := rt.(Type_Error)
+                if !is_void && !is_errd {
+                    check_error(c, s.span, TYPE_DISCARDED_RETURN, call.name)
+                }
+            }
 
         case ^Stmt_Multi_Assign:
             // Already checked in register_and_check_declarations (iterates assigns)

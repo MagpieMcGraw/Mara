@@ -75,6 +75,14 @@ fail_assert :: fun() {
 // 	arr[fail_reads_u8()] = true
 // }
 
+// Discarded non-void return (must-use). Expected: return value of
+// 'fail_returns_int' is discarded — capture it (`x := ...`) or discard it
+// explicitly (`_ = ...`). The `_ = fail_returns_int()` form compiles clean.
+// fail_returns_int :: fun() -> i32 { return 7 }
+// fail_discarded_return :: fun() {
+// 	fail_returns_int()
+// }
+
 main :: fun() -> i64 {
 	this_program = Program(Arena_Debug(1 * MB))
 
@@ -85,6 +93,7 @@ main :: fun() -> i64 {
 	// fail_const_write()
 	// fail_var_gone()
 	// fail_width_check()
+	// fail_discarded_return()
 
 	print("test_fail: inert (all negatives disabled)")
 	return 0
