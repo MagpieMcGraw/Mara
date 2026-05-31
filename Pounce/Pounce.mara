@@ -8,6 +8,7 @@ use mara.string
 use mara.time
 use mara.open_gl
 use mara.sdl
+use mara.font
 
 use gfx
 use event
@@ -102,8 +103,8 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 		"data/shaders/instanced.glsl",
 		&game.vao, 8192, 32)
 
-	// TODO: bake fonts here via mara.font.load_glyphs once asset.Glyph is
-	// unified with font.Glyph (they're duplicate structs in two modules today).
+	test_font : Font
+	&test_font.glyphs.load_glyphs(0, "data/fonts/Inter_18pt-Regular.ttf")
 
 	game.running = true
 	game.initialized = true
