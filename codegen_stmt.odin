@@ -702,7 +702,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             return
         }
 
-        val := gen_expr(g, s.value, ir_type)
+        val := gen_expr_coerced(g, s.value, ir_type)
 
         // Check if gen_expr produced a swizzle result (e.g. sub := arr.xy)
         if sr, sr_ok := claim_swizzle_result(g); sr_ok {
@@ -1257,7 +1257,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
             emit_memcpy(g, sret_ptr, src, slice_header_bytes)
             continue
         }
-        v := gen_expr(g, val, elem_type)
+        v := gen_expr_coerced(g, val, elem_type)
         emit_store(g, elem_type, v, sret_ptr)
     }
     // Implicit `.Ok` fill for trailing err slots the user omitted. The type
@@ -1457,7 +1457,7 @@ gen_return_slice :: proc(g: ^Codegen, s: Stmt_Return, sret_slv: Slice_Var) {
 // Type checker enforces value type matches; the only special case is the
 // `return 0` for ptr returns where infer-int 0 becomes the ptr null literal.
 gen_return_scalar :: proc(g: ^Codegen, s: Stmt_Return) {
-    val := gen_expr(g, s.values[0], g.current_ret_type)
+    val := gen_expr_coerced(g, s.values[0], g.current_ret_type)
     ret_type := g.current_ret_type
     if ret_type == "ptr" && val == "0" {
         val = "null"

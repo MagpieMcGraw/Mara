@@ -288,7 +288,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             continue
         }
         // Scalar field.
-        val := gen_expr(g, field.value, ft)
+        val := gen_expr_coerced(g, field.value, ft)
         gep := fresh_tmp(g)
         emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
         emit_store(g, ft, val, gep)
@@ -1941,7 +1941,7 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
         idx := struct_field_index(vst, field.name)
         if idx < 0 { continue }
         ft := field_ir_type(&vst.fields[idx])
-        val := gen_expr(g, field.value, ft)
+        val := gen_expr_coerced(g, field.value, ft)
         gep := fresh_tmp(g)
         emit_field_gep_into(g, gep, vst_llvm, payload_ptr, idx)
         emit_store(g, ft, val, gep)

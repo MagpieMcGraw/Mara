@@ -1,0 +1,16 @@
+module widenneg
+
+// Each line below must be a type error — these are NOT value-preserving.
+src_i64 :: fun() -> i64 { return 5 }
+src_u32 :: fun() -> u32 { return 5 }
+src_i32 :: fun() -> i32 { return 5 }
+src_f64 :: fun() -> f64 { return 1.5 }
+
+main :: fun() {
+	a : i32 = src_i64()    // narrowing i64 -> i32
+	b : u32 = src_i32()    // signed -> unsigned
+	c : i32 = src_u32()    // same-width cross-sign u32 -> i32
+	d : f64 = src_i32()    // int -> float (must be explicit)
+	ee : f32 = src_f64()   // float narrowing f64 -> f32
+	print("never", a, b, c, d, ee)
+}

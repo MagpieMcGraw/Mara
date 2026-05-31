@@ -794,6 +794,40 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
     return tmp, true
 }
 
+// Generate `e` for a known target IR type, widening the result when it's a
+// narrower numeric. The type checker only allows value-preserving widens at the
+// sites that call this (variable init, argument, return, field init), so this
+// just performs the already-approved conversion — sign/zero-extend by the
+// SOURCE's signedness for ints, fpext for f32 → f64. Literals/infer were already
+// emitted at the target width by gen_expr, so they pass through untouched.
+gen_expr_coerced :: proc(g: ^Codegen, e: Expr, target_ir: string) -> string {
+    val := gen_expr(g, e, target_ir)
+    if target_ir == "" { return val }
+    src_t := expr_type(e)
+    if is_infer(src_t) || is_any(src_t) { return val }
+    src_ir := llvm_type_from_checker(src_t)
+    if src_ir == target_ir { return val }
+    if src_ir == "float" && target_ir == "double" {
+        t := fresh_tmp(g)
+        emit(g, "  %s = fpext float %s to double", t, val)
+        return t
+    }
+    sb := ir_type_bits(src_ir)
+    tb := ir_type_bits(target_ir)
+    if sb > 0 && tb > sb {
+        unsigned := false
+        #partial switch v in distinct_base(src_t) {
+        case Type_Numeric:                              unsigned = v.kind == .Unsigned
+        case Type_Byte, Type_C8, Type_Utf8, Type_Bool:  unsigned = true
+        }
+        t := fresh_tmp(g)
+        op := unsigned ? "zext" : "sext"
+        emit(g, "  %s = %s %s %s to %s", t, op, src_ir, val, target_ir)
+        return t
+    }
+    return val
+}
+
 // ---------------------------------------------------------------------------
 // Function call codegen
 // ---------------------------------------------------------------------------
@@ -950,7 +984,7 @@ emit_intrinsic_call :: proc(g: ^Codegen, lookup_name: string, e: ^Expr_Call) -> 
     for arg, i in e.args {
         pt := "i64"
         if i < len(info.param_types) { pt = info.param_types[i] }
-        val := gen_expr(g, arg, pt)
+        val := gen_expr_coerced(g, arg, pt)
         append(&arg_strs, fmt.tprintf("%s %s", pt, val))
     }
     args_joined := strings.join(arg_strs[:], ", ")
@@ -1147,7 +1181,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                         continue
                     }
                 }
-                val := gen_expr(g, arg, pt)
+                val := gen_expr_coerced(g, arg, pt)
                 if strings.has_prefix(pt, "[") {
                     val = gen_array_param_arg(g, arg, pt, val)
                 }
@@ -1238,7 +1272,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             if at != nil && !is_untyped(at) {
                 pt = llvm_type_from_checker(at)
             }
-            val := gen_expr(g, arg, pt)
+            val := gen_expr_coerced(g, arg, pt)
             append(&arg_strs, fmt.tprintf("%s %s", pt, val))
         }
         args_joined := strings.join(arg_strs[:], ", ")
@@ -1615,7 +1649,7 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
                     continue
                 }
             }
-            val := gen_expr(g, arg, pt)
+            val := gen_expr_coerced(g, arg, pt)
             if strings.has_prefix(pt, "[") {
                 val = gen_array_param_arg(g, arg, pt, val)
             }
@@ -1664,7 +1698,7 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
                     continue
                 }
             }
-            val := gen_expr(g, arg, pt)
+            val := gen_expr_coerced(g, arg, pt)
             // Array param passed by value: route through the shared helper so
             // every arg shape (Ident, Field_Access, Call, overload-Binary,
             // string-literal, …) gets the same load-from-ptr treatment as

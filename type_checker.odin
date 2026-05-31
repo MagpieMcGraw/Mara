@@ -3547,6 +3547,45 @@ slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 32}
 // Does `t` coerce to slice-header width without an implicit cast at the
 // codegen boundary? Used by indexing / slice-bound / take-count / slice_from_ptr
 // — every site where the codegen used to silently sext/trunc.
+// Width, kind, and "is it numeric" for a scalar numeric type. Peels distinct
+// for the width/kind read, but value_preserving_widen guards distinctness
+// separately so a `distinct i32` stays nominal.
+numeric_info :: proc(t: Type) -> (bits: int, kind: Numeric_Kind, ok: bool) {
+    #partial switch v in distinct_base(t) {
+    case Type_Numeric:                   return v.bits, v.kind, true
+    case Type_Int:                       return 64, .Signed, true
+    case Type_Byte, Type_C8, Type_Utf8:  return 8, .Unsigned, true
+    case Type_F64:                       return 64, .Float, true
+    }
+    return 0, .Signed, false
+}
+
+// True when a value of type `from` converts to `to` with NO loss — the rule
+// for implicit widening (everything else stays an explicit cast). Same-kind
+// only: int→int and float→float. int↔float is always explicit (its lossless
+// cases are a precision table, not a rule). The integer test is value-
+// preserving, which is about representable range, not just bit width:
+//   signed → wider signed         (sign-extend)
+//   unsigned → wider-or-eq... no: wider unsigned (zero-extend)
+//   unsigned → STRICTLY wider signed (every unsigned value fits)
+//   signed → unsigned             : never (negatives have no representation)
+//   same width across signedness  : never (e.g. u32→i32 overflows)
+value_preserving_widen :: proc(from: Type, to: Type) -> bool {
+    // Distinct numerics are nominal — don't silently widen across the boundary.
+    if _, ok := from.(^Type_Distinct); ok { return false }
+    if _, ok := to.(^Type_Distinct);   ok { return false }
+    fb, fk, fok := numeric_info(from)
+    tb, tk, tok := numeric_info(to)
+    if !fok || !tok { return false }
+    if fk == .Float || tk == .Float {
+        return fk == .Float && tk == .Float && tb > fb   // f32 → f64 (and f16 → f32)
+    }
+    if fk == .Signed   && tk == .Signed   { return tb > fb }
+    if fk == .Unsigned && tk == .Unsigned { return tb > fb }
+    if fk == .Unsigned && tk == .Signed   { return tb > fb }  // strictly wider holds all
+    return false  // signed → unsigned: never
+}
+
 // A subscript index may be ANY integer: the runtime bounds check makes a
 // too-wide value safe (codegen bounds-checks at the index's width, before any
 // narrowing, so an out-of-range value traps rather than wrapping). This is
@@ -6358,7 +6397,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 val_type := check_expr(c, s.value, env)
                 // If an annotation was given, it must match take's resolved type.
                 if !is_any(ann_type) {
-                    if types_incompatible(ann_type, val_type) {
+                    if types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
                         check_error(c, s.span,
                             TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(ann_type))
@@ -6529,7 +6568,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 }
                             }
                         }
-                    } else if types_incompatible(ann_type, val_type) {
+                    } else if types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(ann_type))
                     }
@@ -6659,7 +6698,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 } else if is_byte_buffer_index_read(s.value) {
                     // Byte buffer reinterpret read via index: x : int = mem[0]
                     // Size comes from the annotation type; bounds checked at runtime
-                } else if types_incompatible(ann_type, val_type) {
+                } else if types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
                     check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                         type_name(val_type), s.name, type_name(ann_type))
                 }
@@ -6769,7 +6808,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // paths: the read size comes from the target type, not the byte
                     // value. Without this the RHS types as a bare `byte` and fails.
                     is_byte_reinterpret := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
-                    if !is_byte_reinterpret && types_incompatible(existing_type, val_type) {
+                    if !is_byte_reinterpret && types_incompatible(existing_type, val_type) && !value_preserving_widen(val_type, existing_type) {
                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(existing_type))
                     }
@@ -7425,7 +7464,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
             c.expected_hint = expected
             vt := check_expr(c, val, env)
             if !is_any(vt) && !is_any(expected) {
-                if !types_equal(expected, vt) {
+                if !types_equal(expected, vt) && !value_preserving_widen(vt, expected) {
                     if n_expected > 1 {
                         check_error(c, s.span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED,
                             i+1, type_name(vt), type_name(expected))
@@ -7774,7 +7813,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                 c.expected_hint = sf.type_
             }
             ft := check_expr(c, field.value, env)
-            if types_incompatible(sf.type_, ft) {
+            if types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
                 check_error(c, span, TYPE_FIELD_POSITION_EXPECTED,
                     sf.name, i, type_name(sf.type_), type_name(ft))
             }
@@ -7796,7 +7835,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                 c.expected_hint = sf.type_
             }
             ft := check_expr(c, field.value, env)
-            if types_incompatible(sf.type_, ft) {
+            if types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
                 check_error(c, span, TYPE_FIELD_EXPECTED,
                     field.name, type_name(sf.type_), type_name(ft))
             }
@@ -11429,7 +11468,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
                     is_byte_reinterpret = true
                 }
             }
-            if !is_byte_reinterpret && types_incompatible(fun_type.params[i].type_, arg_type) {
+            if !is_byte_reinterpret && types_incompatible(fun_type.params[i].type_, arg_type) && !value_preserving_widen(arg_type, fun_type.params[i].type_) {
                 check_error(c, span, TYPE_ARGUMENT_EXPECTED,
                     i + 1, display_name, type_name(fun_type.params[i].type_), type_name(arg_type))
             }
@@ -12070,7 +12109,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
         arg_type := check_expr(c, arg, env)
         if i < len(st.fields) {
             field := st.fields[i]
-            if types_incompatible(field.type_, arg_type) && !is_any(arg_type) {
+            if types_incompatible(field.type_, arg_type) && !is_any(arg_type) && !value_preserving_widen(arg_type, field.type_) {
                 check_error(c, e.span, TYPE_FIELD_EXPECTED,
                     field.name, type_name(field.type_), type_name(arg_type))
             }

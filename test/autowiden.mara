@@ -1,0 +1,36 @@
+module autowiden
+
+P :: struct { big: i64, wide: f64 }
+
+takes_i64 :: fun(x: i64) -> i64 { return x }
+widen_ret :: fun(x: i32) -> i64 { return x }      // return widen i32 -> i64
+takes_f64 :: fun(x: f64) -> f64 { return x }
+
+main :: fun() {
+	a : i32 = 100
+	b : i64 = a               // assign widen i32 -> i64
+	print("b:", b)            // 100
+
+	c : i64 = takes_i64(a)    // argument widen
+	print("c:", c)            // 100
+
+	d : i64 = widen_ret(7)    // return widen (inside widen_ret)
+	print("d:", d)            // 7
+
+	u : u8 = 200
+	e : i32 = u               // unsigned -> wider signed (zext), value-preserving
+	print("e:", e)            // 200
+
+	f : f32 = 1.5
+	gg : f64 = f              // f32 -> f64 (fpext)
+	print("gg:", gg)          // 1.5
+
+	h : f64 = takes_f64(f)    // f32 argument -> f64
+	print("h:", h)            // 1.5
+
+	b = a                     // reassignment widen i32 -> i64
+	print("b2:", b)           // 100
+
+	p : P = P{big = a, wide = f}   // struct field init widen (i32->i64, f32->f64)
+	print("p:", p.big, p.wide)   // 100 1.5
+}
