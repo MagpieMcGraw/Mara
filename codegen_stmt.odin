@@ -745,8 +745,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         emit_store(g, ir_type, val, alloca)
 
     case Stmt_Call:
-        // Bare function call — evaluate for side effects (e.g. print calls)
+        // Bare function call — evaluate for side effects (e.g. print calls).
+        // The result is discarded, so drop any pending temp result the call
+        // registered (e.g. the sret buffer of an array-returning call like
+        // `&font.glyphs.load_glyphs(...)`). Left dangling, it would be
+        // mis-claimed by the next scalar decl — even one in a later function.
         gen_expr(g, s.expr)
+        clear_temp_results(g)
 
     case ^Stmt_Multi_Assign:
         for a in s.assigns { gen_stmt(g, a) }

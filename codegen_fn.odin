@@ -362,6 +362,11 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     g.scope_stack = {}
     g.emitted_allocas = {}
     g.current_fun_body = cf.body[:]
+    // Pending producer/consumer temp results are per-expression state that must
+    // never cross a function boundary. The discard-point clear in gen_stmt
+    // (Stmt_Call) already enforces this, but reset here too so no future
+    // producer/consumer gap can leak a stale buffer into this function's body.
+    clear_temp_results(g)
     old_ret_type := g.current_ret_type
     g.current_ret_type = ret_type
 

@@ -1,0 +1,38 @@
+module iftmp_leak
+
+use mara.string
+
+// Mirror of the Pounce game_init / game_run shape that triggers an
+// undefined-temp ("%t56") in the if-expression consumer.
+
+Holder :: struct {
+	slot: [16]i32
+}
+
+consume :: fun(work: f64, fps: f64) {
+	print("consume", work, fps)
+}
+
+// Like load_glyphs: big array return, called with the result DISCARDED.
+producer :: fun(slot: ^[]i32, first: u32, name: cstring) -> [1000]byte {
+	out : [1000]byte
+	out[0] = u8(first)
+	return out
+}
+
+init_fn :: fun() {
+	h : Holder
+	&h.slot.producer(0, "data/fonts/Inter.ttf")   // UFCS, big return discarded
+}
+
+run_fn :: fun(focus: bool, fps: f64) -> bool {
+	use_fps := if focus do fps else 2.0
+	consume(1.0, use_fps)
+	return true
+}
+
+main :: fun() {
+	init_fn()
+	run_fn(true, 60.0)     // expect: consume 1 60
+	print("done")
+}

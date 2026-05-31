@@ -2215,6 +2215,19 @@ claim_swizzle_result :: proc(g: ^Codegen) -> (Array_Var, bool) {
     return {}, false
 }
 
+// Drop every pending producer/consumer temp result without claiming it. These
+// fields are a per-expression handshake: a producer (array-returning call,
+// aggregate field access, swizzle read) sets one; the enclosing decl/return
+// claims it. The invariant is that none survives past the statement that
+// produced it. A bare call statement discards its value, so nothing claims the
+// result — clear it here (and at each function boundary) so a later decl can't
+// mis-claim the dropped buffer and bind a local to a temp from elsewhere.
+clear_temp_results :: proc(g: ^Codegen) {
+    g.temp_call_result = nil
+    g.temp_field_result = nil
+    g.temp_swizzle_result = nil
+}
+
 // Get the LLVM array type string for an Array_Var
 array_var_type :: proc(av: ^Array_Var) -> string {
     alloc_cap := av.capacity
