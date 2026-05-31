@@ -1608,6 +1608,17 @@ emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, siz
 
     offset := "0"
     if offset_expr != nil {
+        // The sized bounds check and GEP below run at the i32 index width
+        // (slice_layout.len_ir). gen_expr honors that width for literals/infer,
+        // but a typed wider offset (e.g. an `int`/i64 cursor) comes back at its
+        // own width, so `add i32 <i64>` would be invalid IR. Catch it here with
+        // a located diagnostic instead of handing broken IR to clang. (Regular
+        // `buf[i]` subscripting reconciles any-width indices in gen_checked_index;
+        // the sized reinterpret-read path never got that and stays strict i32.)
+        ot := distinct_base(expr_type(offset_expr))
+        if !is_infer(ot) && !is_any(ot) && llvm_type_from_checker(ot) != slice_layout.len_ir {
+            codegen_fatal(g, span, CODE_BYTE_OFFSET_INDEX_WIDTH, type_name(ot))
+        }
         offset = gen_expr(g, offset_expr, slice_layout.len_ir)
     }
     emit_byte_size_bounds_check(g, cap_val, offset, size, label)
@@ -1627,6 +1638,12 @@ emit_byte_offset_ptr_runtime :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: E
     w := slice_layout.len_ir
     offset := "0"
     if offset_expr != nil {
+        // Same i32-width contract as emit_byte_offset_ptr — a wider typed
+        // offset would emit invalid IR; reject it with a located diagnostic.
+        ot := distinct_base(expr_type(offset_expr))
+        if !is_infer(ot) && !is_any(ot) && llvm_type_from_checker(ot) != w {
+            codegen_fatal(g, span, CODE_BYTE_OFFSET_INDEX_WIDTH, type_name(ot))
+        }
         offset = gen_expr(g, offset_expr, w)
     }
     end_offset := fresh_tmp(g)

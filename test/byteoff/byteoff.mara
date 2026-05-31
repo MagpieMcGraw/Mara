@@ -1,0 +1,24 @@
+module byteoff
+
+// Regression probe for the i64-vs-i32 byte-offset bug.
+// A reinterpret read `#big_endian buf[off]` computes its bounds check at the i32
+// index width. If `off` is wider (an `int`/i64 — the default for `:=` on a
+// literal), codegen used to emit `add i32 <i64>` and only LLVM caught it:
+//   error: '%tN' defined with type 'i64' but expected 'i32'
+//
+// Now emit_byte_offset_ptr rejects it before codegen finishes, with a located
+// diagnostic (CODE_BYTE_OFFSET_INDEX_WIDTH). Uncommenting the i64 line below:
+//   off := 2
+//   v : u16 = #big_endian buf[off]
+// => [byteoff.mara:..] Codegen error: byte-buffer reinterpret read: offset is
+//    int but the bounds check is computed at i32 — cast the offset to i32
+//
+// The remedy (and this passing fixture): cast the offset to i32.
+main :: fun() {
+	buf : [16]byte
+	buf[2] = 0
+	buf[3] = 5
+	off := 2                             // int → i64
+	v : u16 = #big_endian buf[i32(off)]  // cast → compiles
+	print("v:", v)                       // v: 5  (big-endian {0, 5})
+}
