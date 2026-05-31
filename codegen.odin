@@ -36,10 +36,10 @@ Slice_Layout :: struct {
 }
 
 slice_layout: Slice_Layout = {
-    len_ir   = "i32",
-    cap_ir   = "i32",
-    len_size = 4,
-    cap_size = 4,
+    len_ir   = "i64",
+    cap_ir   = "i64",
+    len_size = 8,
+    cap_size = 8,
     ptr_size = 8,
 }
 
@@ -47,9 +47,9 @@ slice_layout: Slice_Layout = {
 // init_slice_layout; defaults below cover the default 64-bit / i32+i32+ptr
 // case (16-byte header) so the type checker (which runs before
 // init_slice_layout) sees sensible values.
-SLICE_IR_TYPE:               string = "{ i32, i32, ptr }"
-PARTIAL_ARRAY_HEADER_PREFIX: string = "{ i32, i32, ptr,"
-slice_header_bytes:          int    = 16
+SLICE_IR_TYPE:               string = "{ i64, i64, ptr }"
+PARTIAL_ARRAY_HEADER_PREFIX: string = "{ i64, i64, ptr,"
+slice_header_bytes:          int    = 24
 slice_header_align:          int    = 8
 
 // Update slice_layout and derived strings for the current target. Called
@@ -3609,10 +3609,17 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         argc_min := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", argc_min, " = select i1 ", argc_cmp, ", i32 %argc, i32 ", ARGS_CAP}))
 
-        // Store len at field 0
+        // Store len at field 0. The header len is at slice_layout.len_ir;
+        // argc_min is i32 (matches argc + the i32 loop counter below), so widen
+        // it for the store when the header is wider.
         len_ptr := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", len_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 0"}))
-        emit_typed_store_len(&g, argc_min, len_ptr)
+        len_store_val := argc_min
+        if slice_layout.len_ir != "i32" {
+            len_store_val = fresh_tmp(&g)
+            emit_raw(&g, strings.concatenate({"  ", len_store_val, " = sext i32 ", argc_min, " to ", slice_layout.len_ir}))
+        }
+        emit_typed_store_len(&g, len_store_val, len_ptr)
 
         // Store cap = 64 at field 1
         cap_ptr := fresh_tmp(&g)
@@ -3651,16 +3658,25 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         emit_raw(&g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %argv, i32 ", cur_i}))
         argv_i := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", argv_i, " = load ptr, ptr ", argv_i_ptr}))
-        // strlen returns size_t (i64 / i32 platform-dependent). Bootstrap
-        // narrowing to i32 for the slice header — argv strings fit
-        // trivially. Explicit cast, not an implicit codegen widen.
+        // strlen returns size_t (i64 native / i32 on web). Coerce to the slice
+        // header width for the len/cap store — argv strings fit trivially.
         str_len := fresh_tmp(&g)
         if g.web {
-            emit_raw(&g, strings.concatenate({"  ", str_len, " = call i32 @strlen(ptr ", argv_i, ")"}))
+            if slice_layout.len_ir == "i32" {
+                emit_raw(&g, strings.concatenate({"  ", str_len, " = call i32 @strlen(ptr ", argv_i, ")"}))
+            } else {
+                str_len_32 := fresh_tmp(&g)
+                emit_raw(&g, strings.concatenate({"  ", str_len_32, " = call i32 @strlen(ptr ", argv_i, ")"}))
+                emit_raw(&g, strings.concatenate({"  ", str_len, " = zext i32 ", str_len_32, " to ", slice_layout.len_ir}))
+            }
         } else {
-            str_len_64 := fresh_tmp(&g)
-            emit_raw(&g, strings.concatenate({"  ", str_len_64, " = call i64 @strlen(ptr ", argv_i, ")"}))
-            emit_raw(&g, strings.concatenate({"  ", str_len, " = trunc i64 ", str_len_64, " to i32"}))
+            if slice_layout.len_ir == "i64" {
+                emit_raw(&g, strings.concatenate({"  ", str_len, " = call i64 @strlen(ptr ", argv_i, ")"}))
+            } else {
+                str_len_64 := fresh_tmp(&g)
+                emit_raw(&g, strings.concatenate({"  ", str_len_64, " = call i64 @strlen(ptr ", argv_i, ")"}))
+                emit_raw(&g, strings.concatenate({"  ", str_len, " = trunc i64 ", str_len_64, " to ", slice_layout.len_ir}))
+            }
         }
         // elements[i] is a slice — write len, cap, ptr.
         elem_ptr := fresh_tmp(&g)

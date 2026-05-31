@@ -34,7 +34,7 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte 
 	atlas_w : i32 = 1024
 	per_row := atlas_w / cell
 
-	count := glyphs.len
+	count := i32(glyphs.len)   // small glyph count drives an i32 atlas-cell loop
 	for i in 0..count {
 		cp := first + u32(i)
 		dst_x := (i % per_row) * cell
@@ -405,7 +405,7 @@ parse_simple_glyph_body :: fun(glyph: ^Outline, bytes : []byte) {
 	n_contours := i32(glyph.num_contours)
 	// glyph end points start rght aftre the glyph header?
 	// so we just add 10 to cursor and we're good to go?
-	cursor : i32 = 10
+	cursor := 10
 
 	// End-point index per contour. Last entry + 1 is the total point count.
 	glyph.end_pts.len = n_contours

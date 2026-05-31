@@ -437,9 +437,9 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         dst_name = fa.field
     }
 
-    // Compute low at the slice header's natural width so the bounds
-    // check and arithmetic below stay homogeneous.
-    low := gen_expr(g, sl.low, slice_layout.len_ir)
+    // Compute low at the slice header's natural width (widening a narrower
+    // bound) so the bounds check and arithmetic below stay homogeneous.
+    low := gen_int_at_slice_width(g, sl.low)
 
     // Resolve the RHS into an Array_Var (or slice).
     // Must happen before high computation to support open-ended slices [low:].
@@ -495,7 +495,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     // Compute high — explicit or derived from RHS length for open-ended [low:]
     high: string
     if sl.high != nil {
-        high = gen_expr(g, sl.high, w)
+        high = gen_int_at_slice_width(g, sl.high)
     } else if rhs_is_slice {
         // Open-ended slice with slice RHS: high = low + slice.len
         high = fresh_tmp(g)
@@ -640,31 +640,30 @@ index_is_signed :: proc(t: Type) -> bool {
 //     fits i32 (0 <= idx < len < 2^31), so the trunc is lossless.
 gen_checked_index :: proc(g: ^Codegen, idx_expr: Expr, len_val: string, name: string, span: Span) -> string {
     t := distinct_base(expr_type(idx_expr))
-    if !is_infer(t) && !is_any(t) {
+    ibits, _, iok := numeric_info(t)
+    wbits := slice_layout.len_size * 8
+    if iok && ibits > wbits {
+        // Index WIDER than the slice header (e.g. an i64 index, i32 header):
+        // bounds-check at the index's own width BEFORE narrowing, so an
+        // out-of-range value traps instead of wrapping, then trunc to header.
         ir := llvm_type_from_checker(t)
-        if ir == "i64" {
-            idx := gen_expr(g, idx_expr)
-            len64 := len_val
-            if len(len_val) > 0 && len_val[0] == '%' {
-                w := fresh_tmp(g)
-                emit(g, "  %s = sext %s %s to i64", w, slice_layout.len_ir, len_val)
-                len64 = w
-            }
-            emit_bounds_check(g, idx, len64, name, span, "i64")
-            narrowed := fresh_tmp(g)
-            emit(g, "  %s = trunc i64 %s to %s", narrowed, idx, slice_layout.len_ir)
-            return narrowed
+        idx := gen_expr(g, idx_expr)
+        wide_len := len_val
+        if len(len_val) > 0 && len_val[0] == '%' {
+            w := fresh_tmp(g)
+            emit(g, "  %s = sext %s %s to %s", w, slice_layout.len_ir, len_val, ir)
+            wide_len = w
         }
-        if ir == "i8" || ir == "i16" {
-            idx := gen_expr(g, idx_expr)
-            ext := fresh_tmp(g)
-            op := index_is_signed(t) ? "sext" : "zext"
-            emit(g, "  %s = %s %s %s to %s", ext, op, ir, idx, slice_layout.len_ir)
-            emit_bounds_check(g, ext, len_val, name, span)
-            return ext
-        }
+        emit_bounds_check(g, idx, wide_len, name, span, ir)
+        narrowed := fresh_tmp(g)
+        emit(g, "  %s = trunc %s %s to %s", narrowed, ir, idx, slice_layout.len_ir)
+        return narrowed
     }
-    idx := gen_expr(g, idx_expr, slice_layout.len_ir)
+    // Equal width, a narrower integer (i8/i16/i32/u32/byte/enum tag), or an
+    // infer/literal index: coerce to the slice-header width — a lossless widen —
+    // so the bounds check runs at that width. gen_int_at_slice_width centralises
+    // it (it's the same primitive the byte-buffer offset paths use).
+    idx := gen_int_at_slice_width(g, idx_expr)
     emit_bounds_check(g, idx, len_val, name, span)
     return idx
 }
@@ -880,7 +879,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
                 sl, _ := distinct_base(e.resolved_type).(^Type_Slice)
                 elem_ir := llvm_type_from_checker(sl.elem)
                 elem_size = elem_byte_size(elem_ir, g.checked)
-                count_runtime = gen_expr(g, e.count_expr, w)
+                count_runtime = gen_int_at_slice_width(g, e.count_expr)
                 bytes_tmp := fresh_tmp(g)
                 emit(g, "  %s = mul %s %s, %d", bytes_tmp, w, count_runtime, elem_size)
                 bytes_str = bytes_tmp
@@ -986,7 +985,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
         elem_ir := llvm_type_from_checker(sl.elem)
         elem_size = elem_byte_size(elem_ir, g.checked)
         type_align = elem_alignment(elem_ir, g.checked)
-        count_runtime = gen_expr(g, e.count_expr, w)
+        count_runtime = gen_int_at_slice_width(g, e.count_expr)
         advance_amount = fresh_tmp(g)
         emit(g, "  %s = mul %s %s, %d", advance_amount, w, count_runtime, elem_size)
     } else {
@@ -1132,14 +1131,15 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
     }
 
     // Slice arithmetic runs at slice_layout.len_ir throughout — start /
-    // end / (end-start) all live at slice width. Type checker guarantees
-    // user low/high are already at slice header width.
+    // end / (end-start) all live at slice width. A narrower user low/high
+    // (e.g. an i32 offset) widens losslessly into that width via
+    // gen_int_at_slice_width; the type checker permits the widen.
     w := slice_layout.len_ir
 
     // Resolve start index
     start: string
     if e.low != nil {
-        start = gen_expr(g, e.low, w)
+        start = gen_int_at_slice_width(g, e.low)
     } else {
         start = "0"
     }
@@ -1149,7 +1149,7 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         // Slicing an array
         end: string
         if e.high != nil {
-            end = gen_expr(g, e.high, w)
+            end = gen_int_at_slice_width(g, e.high)
         } else if src.capacity_val != "" {
             // VLA: use runtime capacity
             end = src.capacity_val
@@ -1176,7 +1176,7 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
 
         end: string
         if e.high != nil {
-            end = gen_expr(g, e.high, w)
+            end = gen_int_at_slice_width(g, e.high)
         } else {
             // Open-ended `s[a:]` defaults end to the source's LEN — the
             // active-data extent. For partial arrays this is the count
@@ -1216,7 +1216,7 @@ gen_slice_decl_runtime_cap :: proc(g: ^Codegen, s: ^Stmt_Assign, sl: ^Type_Slice
     // Evaluate the user-visible count at runtime. cap_user = N (no sentinel
     // adjustment) — what `.cap()` returns and what we store in the header
     // for non-sentinel slices.
-    cap_user := gen_expr(g, s.slice_cap_expr, w)
+    cap_user := gen_int_at_slice_width(g, s.slice_cap_expr)
     // Physical allocation count adds one slot for the sentinel terminator.
     alloc_cap := cap_user
     if sl_sentinel {
@@ -1592,6 +1592,28 @@ resolve_byte_target :: proc(g: ^Codegen, expr: Expr, span: Span) -> (data_ptr: s
 }
 
 // Emit size-aware bounds check: offset + size <= cap.
+// Emit an integer offset/count expr at slice-header width (slice_layout.len_ir),
+// extending a narrower integer (sext/zext by signedness); a value already at the
+// header width passes through, and literals/infer emit at the hint width. Callers
+// do their own bounds check at that width. Assumes len_ir is the widest integer
+// in play (true for the i64 header) — a strictly wider index would need
+// gen_checked_index's trap-before-narrow path instead.
+gen_int_at_slice_width :: proc(g: ^Codegen, expr: Expr) -> string {
+    t := distinct_base(expr_type(expr))
+    if is_infer(t) || is_any(t) {
+        return gen_expr(g, expr, slice_layout.len_ir)
+    }
+    ir := llvm_type_from_checker(t)
+    if ir == slice_layout.len_ir {
+        return gen_expr(g, expr, slice_layout.len_ir)
+    }
+    raw := gen_expr(g, expr)
+    ext := fresh_tmp(g)
+    op := index_is_signed(t) ? "sext" : "zext"
+    emit(g, "  %s = %s %s %s to %s", ext, op, ir, raw, slice_layout.len_ir)
+    return ext
+}
+
 // Resolve a byte-buffer expression + offset to a checked i8 element pointer.
 // Validates `[offset, offset+size)` lies within the buffer's capacity (compile-
 // time when both sides are known, runtime otherwise) and returns the GEP
@@ -1608,18 +1630,10 @@ emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, siz
 
     offset := "0"
     if offset_expr != nil {
-        // The sized bounds check and GEP below run at the i32 index width
-        // (slice_layout.len_ir). gen_expr honors that width for literals/infer,
-        // but a typed wider offset (e.g. an `int`/i64 cursor) comes back at its
-        // own width, so `add i32 <i64>` would be invalid IR. Catch it here with
-        // a located diagnostic instead of handing broken IR to clang. (Regular
-        // `buf[i]` subscripting reconciles any-width indices in gen_checked_index;
-        // the sized reinterpret-read path never got that and stays strict i32.)
-        ot := distinct_base(expr_type(offset_expr))
-        if !is_infer(ot) && !is_any(ot) && llvm_type_from_checker(ot) != slice_layout.len_ir {
-            codegen_fatal(g, span, CODE_BYTE_OFFSET_INDEX_WIDTH, type_name(ot))
-        }
-        offset = gen_expr(g, offset_expr, slice_layout.len_ir)
+        // Normalise the offset to slice-header width: a narrower integer (e.g. an
+        // i32 cursor) widens losslessly, an `int`/i64 passes through. Mirrors the
+        // index reconciliation in gen_checked_index.
+        offset = gen_int_at_slice_width(g, offset_expr)
     }
     emit_byte_size_bounds_check(g, cap_val, offset, size, label)
 
@@ -1638,13 +1652,7 @@ emit_byte_offset_ptr_runtime :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: E
     w := slice_layout.len_ir
     offset := "0"
     if offset_expr != nil {
-        // Same i32-width contract as emit_byte_offset_ptr — a wider typed
-        // offset would emit invalid IR; reject it with a located diagnostic.
-        ot := distinct_base(expr_type(offset_expr))
-        if !is_infer(ot) && !is_any(ot) && llvm_type_from_checker(ot) != w {
-            codegen_fatal(g, span, CODE_BYTE_OFFSET_INDEX_WIDTH, type_name(ot))
-        }
-        offset = gen_expr(g, offset_expr, w)
+        offset = gen_int_at_slice_width(g, offset_expr)  // widen narrower offsets to header width
     }
     end_offset := fresh_tmp(g)
     emit(g, "  %s = add %s %s, %s", end_offset, w, offset, byte_count_ssa)
@@ -1847,9 +1855,9 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
     }
 
     low := "0"
-    if low_expr != nil { low = gen_expr(g, low_expr, w) }
+    if low_expr != nil { low = gen_int_at_slice_width(g, low_expr) }
     high := cap_val
-    if high_expr != nil { high = gen_expr(g, high_expr, w) }
+    if high_expr != nil { high = gen_int_at_slice_width(g, high_expr) }
 
     // span = high - low
     span_ssa := fresh_tmp(g)
@@ -2185,9 +2193,9 @@ gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
     src_low := "0"
-    if sl_expr.low != nil { src_low = gen_expr(g, sl_expr.low, w) }
+    if sl_expr.low != nil { src_low = gen_int_at_slice_width(g, sl_expr.low) }
     src_high := src_cap
-    if sl_expr.high != nil { src_high = gen_expr(g, sl_expr.high, w) }
+    if sl_expr.high != nil { src_high = gen_int_at_slice_width(g, sl_expr.high) }
 
     // Runtime check 0: high >= low (slice form only — Expr_Index path skips
     // this since byte_count comes from a static cap × elem_size product
@@ -2225,7 +2233,7 @@ gen_partial_array_byte_fill_at_from_index :: proc(g: ^Codegen, slot_ptr: string,
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
     src_low := "0"
-    if idx_expr.index != nil { src_low = gen_expr(g, idx_expr.index, w) }
+    if idx_expr.index != nil { src_low = gen_int_at_slice_width(g, idx_expr.index) }
     elem_bytes := elem_byte_size(llvm_type_from_checker(pa.elem), g.checked)
     cap_n := pa.size
     if pa.has_sentinel { cap_n += 1 }

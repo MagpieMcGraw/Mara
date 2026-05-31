@@ -1461,9 +1461,15 @@ gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string,
     case:
         codegen_fatal(g, span, CODE_CANNOT_ASSIGN_SLICE_FIELD_ONLY, field)
     }
-    // Type checker enforces the value is field-width — store directly,
-    // no extend/trunc dance.
-    val := gen_expr(g, value, field_ir)
+    // .len/.cap accept any integer that value-preservingly widens to the header
+    // width (the type checker permits the widen), so coerce here — the invariant
+    // check and the store both run at field width. .ptr stores directly.
+    val: string
+    if field == "ptr" {
+        val = gen_expr(g, value, field_ir)
+    } else {
+        val = gen_int_at_slice_width(g, value)
+    }
 
     // Enforce slice invariant on `.len` writes: 0 <= new_len <= cap. Without
     // this, FFI fill patterns (`data.len = i32(bytes_read)`) and other manual

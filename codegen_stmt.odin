@@ -159,7 +159,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     elem_t := llvm_type_from_checker(sl.elem)
                     w := slice_layout.len_ir
                     elem_bytes := elem_byte_size(elem_t, g.checked)
-                    count_runtime := gen_expr(g, s.slice_cap_expr, w)
+                    count_runtime := gen_int_at_slice_width(g, s.slice_cap_expr)
                     bytes_ssa := fresh_tmp(g)
                     emit(g, "  %s = mul %s %s, %d", bytes_ssa, w, count_runtime, elem_bytes)
                     elem_ptr, op_ok := emit_byte_offset_ptr_runtime(g, idx_expr.expr, idx_expr.index, bytes_ssa, "slice", idx_expr.span)

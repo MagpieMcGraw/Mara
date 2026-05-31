@@ -3542,7 +3542,7 @@ is_integer :: proc(t: Type) -> bool {
 
 // Slice header width — kept in sync with codegen's slice_layout.len_ir.
 // Currently i32; flip both sides together when widening to i64.
-slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 32}
+slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 64}
 
 // Does `t` coerce to slice-header width without an implicit cast at the
 // codegen boundary? Used by indexing / slice-bound / take-count / slice_from_ptr
@@ -3647,8 +3647,6 @@ coerces_to_slice_width :: proc(t: Type) -> bool {
     case Type_Infer_Int: return true   // comptime literal
     case Type_Any:       return true   // error recovery
     case Type_Error:     return true   // error suppression
-    case Type_Numeric:
-        return v.kind == slice_header_width_type.kind && v.bits == slice_header_width_type.bits
     case ^Type_Enum:
         // Enums lower to their tag width — accept if tag IR matches.
         return tag_type_matches_slice_width(v.tag_type)
@@ -3659,7 +3657,18 @@ coerces_to_slice_width :: proc(t: Type) -> bool {
     case ^Type_Distinct:
         return coerces_to_slice_width(v.base_type)
     }
-    return false
+    // Numeric scalars (incl. `int`, byte/char): the exact header width, or any
+    // integer that value-preservingly WIDENS into it (codegen sext/zext at the
+    // boundary). With an i64 header that's every signed <=64 / unsigned <64, so a
+    // plain `n := 0` (i64) or a legacy i32 both flow into a count / bound / size
+    // losslessly. Genuine narrowing (i64->i32 header, or u64) stays an explicit
+    // cast. Brings counts/bounds in line with coerces_to_index_width — lossless only.
+    bits, kind, ok := numeric_info(t)
+    if !ok { return false }   // floats / non-numerics rejected
+    if kind == slice_header_width_type.kind && bits == slice_header_width_type.bits {
+        return true
+    }
+    return value_preserving_widen(t, slice_header_width_type)
 }
 
 // `tag_type` strings on Type_Enum/Type_Union are "" (default, currently i64),
@@ -8318,7 +8327,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             } else if is_byte_buffer_index_read(s.value) {
                 // Byte buffer reinterpret read via index: obj.field = mem[off]
                 // Size comes from field type; bounds checked at runtime
-            } else if types_incompatible(ft, val_type) {
+            } else if types_incompatible(ft, val_type) && !value_preserving_widen(val_type, ft) {
                 check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
                     type_name(val_type), fa_expr.field, type_name(ft))
             }
@@ -8381,7 +8390,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     }
     if is_slice_or_partial {
         switch fa_expr.field {
-        case "len", "cap": field_type = Type_Numeric{kind = .Signed, bits = 32}
+        case "len", "cap": field_type = slice_header_width_type
         case "ptr":
             pt := new(Type_Ptr)
             pt.elem = elem
@@ -8393,7 +8402,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             return
         }
         s.target_type = field_type
-        if types_incompatible(field_type, val_type) && !is_infer(val_type) {
+        if types_incompatible(field_type, val_type) && !is_infer(val_type) && !value_preserving_widen(val_type, field_type) {
             check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
                 type_name(val_type), fa_expr.field, type_name(field_type))
         }
@@ -10855,9 +10864,9 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         check_error(c, e.span, TYPE_CANNOT_ACCESS_FIELD_ARRAY_TYPE, e.field, type_name(obj_type))
         return Type_Error{}
     }
-    // Slice .len / .cap match the header's storage width (i32 today).
-    // Typed codegen operates at this width throughout — no implicit
-    // widening to i64. Users wanting i64 arithmetic write i64(slice.len).
+    // Slice .len / .cap match the header's storage width (slice_header_width_type).
+    // Typed codegen operates at this width throughout; a narrower value widens
+    // losslessly into it (value_preserving_widen), so `n := s.len` infers i64.
     if sl, ok := obj_type.(^Type_Slice); ok {
         if e.field == "ptr" {
             pt := new(Type_Ptr)
@@ -10865,7 +10874,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
             return pt
         }
         if e.field == "len" || e.field == "cap" {
-            return Type_Numeric{kind = .Signed, bits = 32}
+            return slice_header_width_type
         }
         check_error(c, e.span, TYPE_SLICE_TYPE_FIELD, type_name(obj_type), e.field)
         return Type_Error{}
@@ -10888,7 +10897,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
                     }
                 }
             }
-            return Type_Numeric{kind = .Signed, bits = 32}
+            return slice_header_width_type
         }
         check_error(c, e.span, TYPE_PARTIAL_ARRAY_TYPE_FIELD, type_name(obj_type), e.field)
         return Type_Error{}
@@ -10929,9 +10938,9 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
                 check_error(c, e.span, TYPE_LEN_REQUIRES_ARRAY_SLICE, type_name(arg_type))
             }
         }
-        // Slice header's len is i32; match it here so codegen and
-        // type checker agree on the SSA width.
-        return Type_Numeric{kind = .Signed, bits = 32}, true
+        // Match the slice header's len width so codegen and the type
+        // checker agree on the SSA width.
+        return slice_header_width_type, true
     case "cap":
         if len(args) != 1 {
             check_error(c, e.span, TYPE_CAP_EXPECTS_ARGUMENT, len(args))
@@ -10941,7 +10950,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
                 check_error(c, e.span, TYPE_CAP_REQUIRES_ARRAY_SLICE, type_name(arg_type))
             }
         }
-        return Type_Numeric{kind = .Signed, bits = 32}, true
+        return slice_header_width_type, true
     case "print":
         for arg in args { check_expr(c, arg, env) }
         // Format-string mode: when the first arg resolves to a string literal

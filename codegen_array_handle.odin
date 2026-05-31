@@ -183,8 +183,14 @@ emit_array_print :: proc(g: ^Codegen, h: ^Array_Handle) {
     fmt_ptr := fresh_tmp(g)
     emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
     data_ptr := emit_array_data(g, h)
-    // emit_array_len returns the value at the slice header's natural
-    // width (i32 today) — exactly what %.*s wants for its precision arg.
+    // C's printf `%.*s` precision is an `int` (i32). emit_array_len returns the
+    // value at the slice header width, so narrow it to i32 for the call when the
+    // header is wider.
     len_val := emit_array_len(g, h)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, len_val, data_ptr)
+    prec := len_val
+    if slice_layout.len_ir != "i32" {
+        prec = fresh_tmp(g)
+        emit(g, "  %s = trunc %s %s to i32", prec, slice_layout.len_ir, len_val)
+    }
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, prec, data_ptr)
 }
