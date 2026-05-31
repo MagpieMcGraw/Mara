@@ -3586,6 +3586,45 @@ value_preserving_widen :: proc(from: Type, to: Type) -> bool {
     return false  // signed → unsigned: never
 }
 
+// The smallest numeric type that represents EVERY value of both a and b — the
+// common type for value-preserving operand mixing in binary ops. (nil,false)
+// when none exists, so the op stays an explicit cast. Same-kind → the wider;
+// cross-sign → a SIGNED type wide enough for the unsigned operand's range and
+// the signed operand (u32 vs i32 → i64; i64 vs u64 → none); int↔float → none.
+// Two-sided analogue of value_preserving_widen, and the rule that keeps mixed
+// arithmetic out of C's "unsigned wins" swamp: -1 stays -1, 4e9 stays 4e9.
+common_numeric_type :: proc(a: Type, b: Type) -> (Type, bool) {
+    if _, ok := a.(^Type_Distinct); ok { return nil, false }
+    if _, ok := b.(^Type_Distinct); ok { return nil, false }
+    ab, ak, aok := numeric_info(a)
+    bb, bk, bok := numeric_info(b)
+    if !aok || !bok { return nil, false }
+    if ak == .Float || bk == .Float {
+        if ak == .Float && bk == .Float { return ab >= bb ? a : b, true }
+        return nil, false  // int <-> float stays explicit
+    }
+    if ak == bk { return ab >= bb ? a : b, true }  // same signedness → wider
+    // cross-sign: signed type strictly wider than the unsigned operand AND at
+    // least as wide as the signed operand.
+    ubits := ak == .Unsigned ? ab : bb
+    sbits := ak == .Signed   ? ab : bb
+    need := ubits + 1
+    if need < sbits { need = sbits }
+    w := 0
+    if need <= 8 {
+        w = 8
+    } else if need <= 16 {
+        w = 16
+    } else if need <= 32 {
+        w = 32
+    } else if need <= 64 {
+        w = 64
+    } else {
+        return nil, false  // u64 vs a signed type: no value-preserving common
+    }
+    return Type_Numeric{kind = .Signed, bits = w}, true
+}
+
 // A subscript index may be ANY integer: the runtime bounds check makes a
 // too-wide value safe (codegen bounds-checks at the index's width, before any
 // narrowing, so an out-of-range value traps rather than wrapping). This is
@@ -11356,6 +11395,11 @@ try_promote_numeric :: proc(a: Type, b: Type) -> Type {
     if is_any(a) || is_any(b) { return Type_Error{} }
 
     if types_equal(a, b) { return a }
+
+    // Value-preserving operand mixing: widen both to the smallest type that
+    // holds every value of both (i32 vs i64 → i64, i32 vs u32 → i64). No such
+    // type (i64 vs u64, int vs float) → Type_Error → explicit cast required.
+    if common, ok := common_numeric_type(a, b); ok { return common }
 
     return Type_Error{}
 }

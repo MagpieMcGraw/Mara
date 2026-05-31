@@ -1,0 +1,25 @@
+module mixwiden
+
+main :: fun() {
+	size : i64 = 5000
+	cap  : i32 = 4096
+
+	// the line that started this: i64 vs i32 comparison, no cast
+	if size > cap do print("over by", size - cap)   // over by 904
+
+	// same-sign width mix in arithmetic
+	a : i32 = 100
+	b : i64 = 1000000
+	print("a+b:", a + b)        // 1000100  (i32 widens to i64)
+
+	// cross-sign mix: i32 vs u32 -> i64 common, value-preserving
+	neg : i32 = -1
+	u   : u32 = 5
+	print("neg<u:", neg < u)    // true  (-1 < 5, NOT C's "huge unsigned")
+	print("neg+u:", neg + u)    // 4     (-1 + 5 in i64)
+
+	// unsigned same-sign mix
+	x : u8  = 200
+	y : u16 = 1000
+	print("x+y:", x + y)        // 1200  (u8 zext to u16)
+}

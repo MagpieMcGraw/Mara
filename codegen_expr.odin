@@ -441,21 +441,49 @@ gen_if_expr :: proc(g: ^Codegen, e: ^Expr_If, target_type: string = "") -> strin
 // Priority: target_type from context > concrete operand > defaults.
 // Comparisons (==, !=, <, <=, >, >=) always yield i1 regardless of operand
 // width, so the target hint (the result type) must NOT override operand type.
-resolve_binary_type :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string) -> string {
+// The IR type the operands are computed in, plus whether the op is unsigned.
+// For arithmetic/bitwise this is the checker's promoted result (e.type_ — the
+// value-preserving common type). For a comparison (whose result is bool) it's
+// the common type of the two operands. Operands are coerced to this width
+// before the op; a cross-sign mix lands on a SIGNED common type, so the op runs
+// signed even though one operand was unsigned (-1 stays -1, not a huge u-value).
+binary_op_type :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string) -> (ir: string, unsigned: bool) {
     is_comparison := false
     #partial switch e.op {
     case .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
         is_comparison = true
     }
-    if target_type != "" && !is_comparison { return target_type }
-    left_type := expr_ir_type(g, e.left)
-    right_type := expr_ir_type(g, e.right)
-    left_infer := is_infer_expr(g, e.left)
-    right_infer := is_infer_expr(g, e.right)
-    if !left_infer { return left_type }
-    if !right_infer { return right_type }
-    // Both infer — use left's default
-    return left_type
+    work: Type
+    if !is_comparison && e.type_ != nil && !is_infer(e.type_) && !is_any(e.type_) {
+        work = e.type_
+    } else {
+        l_infer := is_infer_expr(g, e.left)
+        r_infer := is_infer_expr(g, e.right)
+        lt := distinct_base(expr_type(e.left))
+        rt := distinct_base(expr_type(e.right))
+        if !l_infer && !r_infer {
+            if c, ok := common_numeric_type(lt, rt); ok {
+                work = c
+            } else {
+                work = lt
+            }
+        } else if !l_infer {
+            work = lt
+        } else if !r_infer {
+            work = rt
+        }
+    }
+    if work == nil || is_infer(work) || is_any(work) {
+        // all-infer (no concrete side, no resolved hint): honor target, else default.
+        if target_type != "" && !is_comparison { return target_type, false }
+        return expr_ir_type(g, e.left), false
+    }
+    ir = llvm_type_from_checker(work)
+    #partial switch n in distinct_base(work) {
+    case Type_Numeric:                   unsigned = n.kind == .Unsigned
+    case Type_Byte, Type_C8, Type_Utf8:  unsigned = true
+    }
+    return
 }
 
 gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> string {
@@ -497,10 +525,13 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
     }
 
     // Resolve the working IR type: target_type > concrete side > defaults
-    ir_type := resolve_binary_type(g, e, target_type)
+    ir_type, is_unsigned := binary_op_type(g, e, target_type)
 
-    left := gen_expr(g, e.left, ir_type)
-    right := gen_expr(g, e.right, ir_type)
+    // Coerce each operand to the working type — value-preserving widening makes
+    // a narrower operand match (sext/zext by its own signedness, fpext); for
+    // same-type operands this is a no-op.
+    left := gen_expr_coerced(g, e.left, ir_type)
+    right := gen_expr_coerced(g, e.right, ir_type)
     tmp := fresh_tmp(g)
 
     is_float := ir_type == "double" || ir_type == "float" || ir_type == "half"
@@ -533,18 +564,9 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
             emit(g, "  %s = fadd %s %s, %s", tmp, ir_type, left, right)
         }
     } else {
-        // Signedness flows from the resolved type. For arithmetic, e.type_ is
-        // the operand type (catches the literal-on-literal case where both
-        // operands are infer-typed). For comparisons, e.type_ is bool, so we
-        // fall back to operand types.
-        is_unsigned := false
-        if n, ok := distinct_base(e.type_).(Type_Numeric); ok && n.kind == .Unsigned {
-            is_unsigned = true
-        } else if n, ok := distinct_base(expr_type(e.left)).(Type_Numeric); ok && n.kind == .Unsigned {
-            is_unsigned = true
-        } else if n, ok := distinct_base(expr_type(e.right)).(Type_Numeric); ok && n.kind == .Unsigned {
-            is_unsigned = true
-        }
+        // is_unsigned is the working type's signedness (from binary_op_type):
+        // a cross-sign mix lands on a signed common type, so the op is signed
+        // even though one operand was unsigned.
         #partial switch e.op {
         case .Plus:
             tmp = emit_checked_arith(g, is_unsigned ? "uadd" : "sadd", ir_type, left, right, e.span)
