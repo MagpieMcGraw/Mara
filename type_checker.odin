@@ -4973,6 +4973,25 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
             }
         }
     }
+    // `field := call()?` — the `?` strips the trailing err, so the field's type
+    // is the inner call's first (non-err) return, mirroring check_try. Without
+    // this the Expr_Try falls through to the int default and a fallible helper's
+    // i32 result would size the field as i64. A fallible constructor inner
+    // yields Self (the struct).
+    if try_node, ok := value.(^Expr_Try); ok {
+        if call, call_ok := try_node.inner.(^Expr_Call); call_ok && call.name != "" {
+            t, t_ok := type_env_get(env, call.name)
+            if !t_ok && c.current_package != "" {
+                t, t_ok = type_env_get(env, make_flat_name(c.current_package, call.name))
+            }
+            if t_ok {
+                if fnt, fnt_ok := t.(^Type_Scope); fnt_ok {
+                    if fnt.kind == .Struct { return fnt }
+                    if fnt.kind == .Fun && len(fnt.return_types) > 0 { return fnt.return_types[0] }
+                }
+            }
+        }
+    }
     // Struct literals: `obj := Object { ... }` — look up the named struct
     // type. Without this, the field's type falls through to Type_Any and
     // lowers to i64 in IR, which silently corrupts later nested-field

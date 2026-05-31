@@ -24,8 +24,8 @@ lookup :: fun(x: i32) -> i32, err {
 // constructor's own trailing err slot. This is the shape TTF needs
 // (get_offset(...)? inside the TTF constructor).
 Gadget :: struct(x: i32) -> err {
-	base : i32 = lookup(x)?
-	scaled : i32 = base * 3
+	base := lookup(x)?         // field type inferred through `?` (→ i32)
+	scaled := base * 3
 }
 
 main :: fun() {
