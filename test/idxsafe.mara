@@ -1,0 +1,18 @@
+module idxsafe
+
+main :: fun() {
+	bytes : [16]u8
+	bytes[3] = 99
+
+	a : i64 = 3
+	print("wide in-range:", bytes[a])    // 99
+
+	b : u8 = 3
+	print("narrow u8:", bytes[b])        // 99
+
+	// 2^32 + 3: truncating to i32 BEFORE the check would wrap to 3 and
+	// silently read bytes[3]. The check must run at i64 and TRAP instead.
+	big : i64 = 4294967299
+	print("danger:", bytes[big])         // must abort here, not print 99
+	print("SHOULD NOT REACH")
+}

@@ -3547,6 +3547,23 @@ slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 32}
 // Does `t` coerce to slice-header width without an implicit cast at the
 // codegen boundary? Used by indexing / slice-bound / take-count / slice_from_ptr
 // — every site where the codegen used to silently sext/trunc.
+// A subscript index may be ANY integer: the runtime bounds check makes a
+// too-wide value safe (codegen bounds-checks at the index's width, before any
+// narrowing, so an out-of-range value traps rather than wrapping). This is
+// looser than coerces_to_slice_width, which still gates counts / sizes /
+// capacities — those have no bounds check to lean on, so a silent narrow there
+// could under-allocate. Floats are excluded (callers check is_numeric first,
+// then this rejects the non-integer). infer/any/error pass for flexibility.
+coerces_to_index_width :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(t) {
+    case Type_Infer_Int, Type_Any, Type_Error: return true
+    case Type_Int, Type_Numeric:               return true
+    case Type_Byte, Type_C8, Type_Utf8:        return true
+    case ^Type_Enum, ^Type_Union:              return true  // index by integer tag
+    }
+    return false
+}
+
 coerces_to_slice_width :: proc(t: Type) -> bool {
     #partial switch v in t {
     case Type_Infer_Int: return true   // comptime literal
@@ -7997,7 +8014,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 
     if !is_numeric(idx_type) && !is_any(idx_type) {
         check_error(c, s.span, TYPE_ARRAY_INDEX_NUMBER, type_name(idx_type))
-    } else if !coerces_to_slice_width(idx_type) {
+    } else if !coerces_to_index_width(idx_type) {
         check_error(c, s.span, TYPE_INDEX_WIDTH,
             type_name(slice_header_width_type), type_name(idx_type))
     }
@@ -12109,9 +12126,9 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
 
     if !is_numeric(idx_type) {
         check_error(c, e.span, TYPE_INDEX_NUMBER, type_name(idx_type))
-    } else if !coerces_to_slice_width(idx_type) {
-        // Index width must match slice header; codegen does NOT emit an
-        // implicit narrow/widen.
+    } else if !coerces_to_index_width(idx_type) {
+        // Index may be any integer; the runtime bounds check (emitted at the
+        // index's width before narrowing) makes a too-wide value safe.
         check_error(c, e.span, TYPE_INDEX_WIDTH,
             type_name(slice_header_width_type),
             type_name(idx_type))

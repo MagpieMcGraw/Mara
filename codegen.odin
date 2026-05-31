@@ -974,10 +974,9 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             append(&indices, GEP_Index{"i32", fmt.tprintf("%d", s.field_idx)})
 
         case Step_Index:
-            // Evaluate index, bounds check (must happen before the GEP uses it).
-            // Type checker guarantees idx_expr is already at slice header width.
-            idx := gen_expr(g, s.index_expr, slice_layout.len_ir)
-            emit_bounds_check(g, idx, fmt.tprintf("%d", s.capacity), s.name_hint, s.span)
+            // Evaluate + bounds-check the index (gen_checked_index reconciles
+            // any integer width to a safe i32, checking before any narrowing).
+            idx := gen_checked_index(g, s.index_expr, fmt.tprintf("%d", s.capacity), s.name_hint, s.span)
             append(&indices, GEP_Index{slice_layout.len_ir, idx})
 
         case Step_Slice_Index:
@@ -995,8 +994,7 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             emit_slice_gep(g, cap_gep, current_ptr, SLICE.cap)
             cap_val := fresh_tmp(g)
             emit_typed_load_cap(g, cap_val, cap_gep)
-            idx := gen_expr(g, s.index_expr, slice_layout.len_ir)
-            emit_bounds_check(g, idx, cap_val, s.name_hint, s.span)
+            idx := gen_checked_index(g, s.index_expr, cap_val, s.name_hint, s.span)
             elem_ptr := fresh_tmp(g)
             emit_elem_gep(g, elem_ptr, s.elem_type, data_ptr, idx, slice_layout.len_ir)
             current_ptr = elem_ptr
@@ -2707,7 +2705,7 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) -> string {
     return strings.to_string(b)
 }
 
-emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: string, span: Span = {}) {
+emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: string, span: Span = {}, w_override: string = "") {
     // Compile-time elision: if both idx and len_val are integer literals
     // and 0 <= idx < len_val, the check would always pass — skip emission
     // entirely. Covers `arr[3]` against a fixed-size array, sentinel index
@@ -2719,10 +2717,12 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     ok_label   := fresh_label(g, "bounds.ok")
     fail_label := fresh_label(g, "bounds.fail")
 
-    // Both idx and len_val are at slice_layout.len_ir (i32 today) —
-    // caller guarantees by passing values from the natural-width load
-    // helpers or matching-width arithmetic.
+    // idx and len_val are both at width `w`. Default is the slice header
+    // width (i32); gen_checked_index passes "i64" when the index is a wide
+    // integer so the comparison happens before any narrowing (a large value
+    // that would wrap into a valid-looking i32 traps here instead).
     w := slice_layout.len_ir
+    if w_override != "" { w = w_override }
     neg_cmp := fresh_tmp(g)
     emit(g, "  %s = icmp slt %s %s, 0", neg_cmp, w, idx)
     upper_cmp := fresh_tmp(g)
@@ -2735,8 +2735,21 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     loc := format_location(span.file, span.line, span.col)
     loc_global,  _ := get_string_literal(g, loc)
     name_global, _ := get_string_literal(g, name)
+    // __mara_bounds_fail takes i32 idx/len (diagnostic only). When the compare
+    // ran wider, truncate for the message — we're on the abort path, and the
+    // i64-width comparison above already decided the trap.
+    fail_idx := idx
+    fail_len := len_val
+    if w != slice_layout.len_ir {
+        fi := fresh_tmp(g)
+        emit(g, "  %s = trunc %s %s to %s", fi, w, idx, slice_layout.len_ir)
+        fail_idx = fi
+        fl := fresh_tmp(g)
+        emit(g, "  %s = trunc %s %s to %s", fl, w, len_val, slice_layout.len_ir)
+        fail_len = fl
+    }
     emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
-        __MARA_BOUNDS_FAIL, loc_global, w, idx, w, len_val, name_global)
+        __MARA_BOUNDS_FAIL, loc_global, slice_layout.len_ir, fail_idx, slice_layout.len_ir, fail_len, name_global)
     emit(g, "  unreachable")
 
     emit_label(g, ok_label)
