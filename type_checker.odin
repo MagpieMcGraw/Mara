@@ -1597,6 +1597,36 @@ check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
     emit_diagnostic(.Warning, format_location(span.file, span.line, span.col), msg, ..args)
 }
 
+// Render a readable source-level name for an expression used in a diagnostic —
+// e.g. `dst_x`, `glyphs[i].x`, `ttf.head`. Returns "" for expressions with no
+// natural name (literals, calls, arithmetic) so callers can omit the clause.
+expr_diag_name :: proc(e: Expr) -> string {
+    #partial switch v in e {
+    case ^Expr_Ident:
+        return v.name
+    case ^Expr_Field_Access:
+        base := expr_diag_name(v.expr)
+        if base == "" { return v.field }
+        return fmt.tprintf("%s.%s", base, v.field)
+    case ^Expr_Index:
+        base := expr_diag_name(v.expr)
+        if base == "" { return "" }
+        idx := expr_diag_name(v.index)
+        if idx == "" { return base }
+        return fmt.tprintf("%s[%s]", base, idx)
+    }
+    return ""
+}
+
+// "name (type)" when the source expression has a nameable form, else just the
+// bare type. Used by assignment/field diagnostics so the offending variable is
+// visible next to its inferred type.
+assign_source_desc :: proc(e: Expr, t: Type) -> string {
+    n := expr_diag_name(e)
+    if n == "" { return type_name(t) }
+    return fmt.tprintf("%s (%s)", n, type_name(t))
+}
+
 // Walk an expression looking for `Expr_Call` whose direct args include
 // `Expr_Self`. Returns the call's name on first hit. DFS order means
 // nested-most hits first — `wrap(view_and_projections(#self))` reports
@@ -8329,7 +8359,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                 // Size comes from field type; bounds checked at runtime
             } else if types_incompatible(ft, val_type) && !value_preserving_widen(val_type, ft) {
                 check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
-                    type_name(val_type), fa_expr.field, type_name(ft))
+                    assign_source_desc(s.value, val_type), expr_diag_name(fa_expr), type_name(ft))
             }
             // Check that infer literal fits in the field type
             if is_infer(val_type) {
@@ -8404,7 +8434,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
         s.target_type = field_type
         if types_incompatible(field_type, val_type) && !is_infer(val_type) && !value_preserving_widen(val_type, field_type) {
             check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
-                type_name(val_type), fa_expr.field, type_name(field_type))
+                assign_source_desc(s.value, val_type), expr_diag_name(fa_expr), type_name(field_type))
         }
         if is_infer(val_type) {
             check_literal_overflow(c, s.value, field_type, s.span)
@@ -11521,8 +11551,13 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
                 }
             }
             if !is_byte_reinterpret && types_incompatible(fun_type.params[i].type_, arg_type) && !value_preserving_widen(arg_type, fun_type.params[i].type_) {
+                arg_clause := ""
+                if an := expr_diag_name(arg); an != "" {
+                    arg_clause = fmt.tprintf(" ('%s')", an)
+                }
                 check_error(c, span, TYPE_ARGUMENT_EXPECTED,
-                    i + 1, display_name, type_name(fun_type.params[i].type_), type_name(arg_type))
+                    i + 1, arg_clause, display_name, fun_type.params[i].name,
+                    type_name(fun_type.params[i].type_), type_name(arg_type))
             }
             maybe_stamp_byte_view(c, fun_type.params[i].type_, arg)
             // Check that infer literal args fit in the parameter type
