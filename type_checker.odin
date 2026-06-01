@@ -11,7 +11,6 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 
 Type :: union {
-    Type_Int,
     Type_F64,
     Type_Infer_Int,   // numeric literal (integer) — adopts concrete type from context
     Type_Infer_Float, // numeric literal (float) — adopts concrete float type from context
@@ -40,7 +39,6 @@ Type :: union {
     Type_Err,         // open error type — accepts any variant from any `error { ... }` decl
 }
 
-Type_Int :: struct {}
 Type_F64 :: struct {}
 Type_Infer_Int :: struct {}
 Type_Infer_Float :: struct {}
@@ -152,7 +150,7 @@ Scope_Body :: struct {
 
     // Generic monomorphization metadata
     generic_base:   string,        // "Array" if monomorphized from a template, "" otherwise
-    generic_args:   [dynamic]Type, // [Type_Int{}] for Array__int — for reverse inference
+    generic_args:   [dynamic]Type, // e.g. [i64] for an Array(i64) instance — for reverse inference
 }
 
 // Unified scope type — holds struct/class definitions and callable funs.
@@ -2499,7 +2497,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
         return cached
     }
 
-    // Build substitution map: "T" -> Type_Int{}, etc.
+    // Build substitution map: "T" -> i64, etc.
     subst: map[string]Type
     for param, i in tmpl.generic_params {
         subst[param.name] = type_args[i]
@@ -3134,17 +3132,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if _, ok := b.(Type_Infer_Int); ok { return true }
         if nb, ok := b.(Type_Numeric); ok { return nb.kind == .Float }
         return false
-    case Type_Int:
-        if _, ok := b.(Type_Int); ok { return true }
-        if _, ok := b.(Type_Infer_Int); ok { return true }
-        // Enums are compatible with int (symmetric with the Type_Enum case)
-        if _, ok := b.(^Type_Enum); ok { return true }
-        // `int` and `i64` are the same type — Type_Int is the special-cased
-        // form, Type_Numeric{Signed, 64} is the same value spelled with the
-        // exact-width name. Builtin returns (slice.len, len(), etc.) still
-        // produce Type_Int; user code now writes i64 — they need to match.
-        if vb, vb_ok := b.(Type_Numeric); vb_ok && vb.kind == .Signed && vb.bits == 64 { return true }
-        return false
     case Type_Numeric:
         // Same numeric type (exact match on kind and bits)
         if vb, ok := b.(Type_Numeric); ok {
@@ -3154,8 +3141,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if _, ok := b.(Type_Infer_Int); ok { return true }
         // Infer float compatible with float numeric types only
         if _, ok := b.(Type_Infer_Float); ok { return va.kind == .Float }
-        // Symmetric with the Type_Int case above: i64 == int.
-        if _, ok := b.(Type_Int); ok { return va.kind == .Signed && va.bits == 64 }
         // c8 is compatible with i8/u8
         if _, ok := b.(Type_C8); ok {
             return (va.kind == .Unsigned || va.kind == .Signed) && va.bits == 8
@@ -3322,8 +3307,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         }
         return false
     case ^Type_Enum:
-        // Enums are compatible with int, infer_int, numeric integer types, and the same enum
-        if _, ok := b.(Type_Int); ok { return true }
+        // Enums are compatible with infer_int, numeric integer types, and the same enum
         if _, ok := b.(Type_Infer_Int); ok { return true }
         if nb, ok := b.(Type_Numeric); ok {
             return nb.kind == .Signed || nb.kind == .Unsigned
@@ -3445,7 +3429,6 @@ unwrap_alias :: proc(t: Type) -> Type {
 
 type_name :: proc(t: Type) -> string {
     switch v in t {
-    case Type_Int:          return "int"
     case Type_F64:          return "f64"
     case Type_Infer_Int:    return "infer_int"
     case Type_Infer_Float:  return "infer_float"
@@ -3524,7 +3507,6 @@ type_name :: proc(t: Type) -> string {
 
 // Is this a numeric type?
 is_numeric :: proc(t: Type) -> bool {
-    if _, ok := t.(Type_Int); ok { return true }
     if _, ok := t.(Type_F64); ok { return true }
     if _, ok := t.(Type_Infer_Int); ok { return true }
     if _, ok := t.(Type_Infer_Float); ok { return true }
@@ -3562,7 +3544,6 @@ buffer_elem_compatible :: proc(a, b: Type) -> bool {
 }
 
 is_integer :: proc(t: Type) -> bool {
-    if _, ok := t.(Type_Int); ok { return true }
     if _, ok := t.(Type_Infer_Int); ok { return true }
     if n, ok := t.(Type_Numeric); ok { return n.kind != .Float }
     if _, ok := t.(^Type_Enum); ok { return true }
@@ -3583,7 +3564,6 @@ slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 64}
 numeric_info :: proc(t: Type) -> (bits: int, kind: Numeric_Kind, ok: bool) {
     #partial switch v in distinct_base(t) {
     case Type_Numeric:                   return v.bits, v.kind, true
-    case Type_Int:                       return 64, .Signed, true
     case Type_Byte, Type_C8, Type_Utf8:  return 8, .Unsigned, true
     case Type_F64:                       return 64, .Float, true
     }
@@ -3665,7 +3645,7 @@ common_numeric_type :: proc(a: Type, b: Type) -> (Type, bool) {
 coerces_to_index_width :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(t) {
     case Type_Infer_Int, Type_Any, Type_Error: return true
-    case Type_Int, Type_Numeric:               return true
+    case Type_Numeric:                         return true
     case Type_Byte, Type_C8, Type_Utf8:        return true
     case ^Type_Enum, ^Type_Union:              return true  // index by integer tag
     }
@@ -3705,8 +3685,8 @@ coerces_to_slice_width :: proc(t: Type) -> bool {
 // "i8"/"i16"/"i32"/"i64", or "u8"/.../u64. Width comparison only — sign
 // doesn't matter at the GEP-index level.
 tag_type_matches_slice_width :: proc(tag: string) -> bool {
-    // Default tag is i64 (matches Type_Int). Today's slice width is i32, so
-    // default-tag enums/unions don't coerce — same rule as a bare `int` index.
+    // Default tag is i64, and the slice header is also i64, so a default-tag
+    // enum/union coerces to a slice index; a narrower tag (e.g. i32) does not.
     expected_bits := slice_header_width_type.bits
     switch tag {
     case "":               return expected_bits == 64
@@ -3892,7 +3872,7 @@ checker_struct_byte_size :: proc(st: ^Type_Scope) -> int {
 // Alignment of a checker Type (matches LLVM defaults).
 checker_type_alignment :: proc(t: Type) -> int {
     switch v in t {
-    case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float,
+    case Type_F64, Type_Infer_Int, Type_Infer_Float,
          Type_CString, ^Type_Ptr, ^Type_Slice, ^Type_Partial_Array,
          ^Type_Enum, ^Type_Union,
          Type_Const_Int, Type_Runtime_Size,
@@ -4200,7 +4180,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
 // Byte size of a checker type (for big-array threshold checks).
 checker_type_byte_size :: proc(t: Type) -> int {
     switch v in t {
-    case Type_Int, Type_Infer_Int, Type_F64, Type_Infer_Float,
+    case Type_Infer_Int, Type_F64, Type_Infer_Float,
          ^Type_Ptr, Type_CString,
          ^Type_Union,
          Type_Const_Int, Type_Runtime_Size,
@@ -4929,7 +4909,7 @@ returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> b
 
 // Solidify inferred types to their defaults (for := variable declarations)
 solidify_type :: proc(t: Type) -> Type {
-    if _, ok := t.(Type_Infer_Int); ok { return Type_Int{} }
+    if _, ok := t.(Type_Infer_Int); ok { return Type_Numeric{kind = .Signed, bits = 64} }
     if _, ok := t.(Type_Infer_Float); ok { return Type_F64{} }
     return t
 }
@@ -5012,8 +4992,6 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
                 }
             }
         }
-    case Type_Int:
-        // Type_Int is reserved (rejected by name lookup) — nothing to check here.
     case Type_F64:
         // f64 — no meaningful overflow from a literal
     case:
@@ -5082,7 +5060,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     }
     if n, ok := value.(^Expr_Number); ok {
         if n.is_float { return Type_F64{} }
-        return Type_Int{}
+        return Type_Numeric{kind = .Signed, bits = 64}
     }
     // String literals default to Type_Any (no simple string type)
 
@@ -5144,7 +5122,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     }
     // Binary ops: arithmetic / bitwise / shift preserve the operand type.
     // Comparison ops produce bool. Recurse on the left operand so e.g.
-    // `1 << 16` (Number << Number) → Type_Int.
+    // `1 << 16` (Number << Number) → i64.
     if bin, ok := value.(^Expr_Binary); ok {
         #partial switch bin.op {
         case .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .And, .Or:
@@ -7409,7 +7387,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         case ^Type_Scope:
             check_error(c, s.span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, ct.name)
             elem_type = Type_Any{}
-        case Type_Int, Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
+        case Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
              Type_CString, Type_C8, Type_Utf8, Type_Byte, Type_Numeric,
              ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Distinct,
              Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Void, Type_Error, Type_Err,
@@ -9528,8 +9506,7 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                     } else {
                         ret := resolve_type_expr(s.return_types[0], c, s.span)
                         if is_any(ret) { is_void = true }
-                        if _, ok := ret.(Type_Int); ok { is_int = true }
-                        // i64 is the same type as int — accept it spelled either way.
+                        // main may return i64 — the process exit code.
                         if vn, ok := ret.(Type_Numeric); ok && vn.kind == .Signed && vn.bits == 64 { is_int = true }
                     }
                 }
@@ -10874,7 +10851,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         // Fixed arrays have no distinct len (cap == len always). Accept both names.
         if e.field == "len" || e.field == "cap" {
             e.resolved = Resolved_Constant{name = e.field, int_value = fa.size}
-            return Type_Int{}
+            return Type_Numeric{kind = .Signed, bits = 64}
         }
         if is_swizzle_field(e.field, fa.size) {
             if len(e.field) == 1 {

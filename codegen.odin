@@ -2418,7 +2418,6 @@ tag_type_to_ir :: proc(tag: string) -> string {
 
 llvm_type_from_checker :: proc(t: Type) -> string {
     switch v in t {
-    case Type_Int:          return "i64"
     case Type_F64:          return "double"
     case Type_Infer_Int:    return "i64"    // default when no context
     case Type_Infer_Float:  return "double" // default when no context

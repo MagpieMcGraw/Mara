@@ -57,7 +57,7 @@ type_from_llvm_suffix :: proc(suffix: string) -> (Type, bool) {
     case "f32": return Type_Numeric{kind = .Float, bits = 32}, true
     case "f64": return Type_F64{}, true
     case "i128": return Type_Numeric{kind = .Signed, bits = 128}, true
-    case "i64": return Type_Int{}, true
+    case "i64": return Type_Numeric{kind = .Signed, bits = 64}, true
     case "i32": return Type_Numeric{kind = .Signed, bits = 32}, true
     case "i16": return Type_Numeric{kind = .Signed, bits = 16}, true
     case "i8":  return Type_Numeric{kind = .Signed, bits = 8}, true
@@ -104,7 +104,6 @@ int_width_from_suffix :: proc(suffix: string) -> int {
 // LLVM ops.
 int_type_matches_width :: proc(t: Type, bits: int) -> bool {
     base := distinct_base(t)
-    if _, ok := base.(Type_Int); ok { return bits == 64 }
     if n, ok := base.(Type_Numeric); ok {
         if n.kind != .Signed && n.kind != .Unsigned { return false }
         return n.bits == bits

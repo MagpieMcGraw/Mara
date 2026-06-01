@@ -2016,14 +2016,12 @@ emit_bswap_in_place :: proc(g: ^Codegen, base_ptr: string, base_ir_type: string,
 }
 
 // True when `t` is a multi-byte integer type — the kind bswap is meaningful for.
-// Returns true for Type_Int (i64), signed/unsigned Type_Numeric, Type_Enum
+// Returns true for signed/unsigned Type_Numeric (incl. i64), Type_Enum
 // (integer tag). Returns false for byte/utf8/c8/bool (1 byte), floats, pointers,
 // slices, etc. Caller filters out widths < 16 bits.
 is_swappable_integer :: proc(t: Type) -> bool {
     bt := distinct_base(t)
     #partial switch v in bt {
-    case Type_Int:
-        return true
     case Type_Numeric:
         return v.kind == .Signed || v.kind == .Unsigned
     case ^Type_Enum:
