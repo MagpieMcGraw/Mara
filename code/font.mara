@@ -11,22 +11,22 @@ Glyph :: struct {
 	bearing_x, bearing_y, advance :i32
 }
 
-// Bake `glyphs.len` glyphs, starting at codepoint `first`, from the TTF file at
-// `font`. For each codepoint: look up its glyph, rasterize the MSDF into a cell
-// of the returned 1024x1024 RGB atlas, and fill the matching Glyph slot (atlas
-// rect + bearings + advance). The returned atlas bytes are the GPU-upload input.
+ATLAS_PX   :: 32              // glyph em size in px for the atlas
+ATLAS_PAD  :: 4               // msdf distance margin around each glyph
+ATLAS_CELL :: 48              // fixed grid cell size (px); glyphs must fit
+
 load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte {
 	ttf_file : [..2 * MB]byte
 	read_err := read_entire_file(font, &ttf_file)
-	print("font read:", read_err)
-	tb : []byte = ttf_file[:]
-	t := TTF(&ttf_file)
+	if bool(read_err) do print(read_err)
 
-	px := i32(ATLAS_PX)
-	pad := i32(ATLAS_PAD)
-	cell := i32(ATLAS_CELL)
-	px_scale := f32(ATLAS_PX) / f32(t.head.units_per_em)
-	num_long := i32(t.hhea.num_of_long_hor_metrics)
+	ttf := TTF(&ttf_file)
+
+	//px := ATLAS_PX
+	pad := ATLAS_PAD
+	cell := ATLAS_CELL
+	px_scale := f32(ATLAS_PX) / f32(ttf.head.units_per_em)
+	num_long := ttf.hhea.num_of_long_hor_metrics
 
 	// 1024x1024 RGB atlas = 3 MB; glyphs pack into a fixed grid of CELL-px cells.
 	atlas : [3 * MB]byte
@@ -40,18 +40,18 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte 
 		dst_x := (i % per_row) * cell
 		dst_y := (i / per_row) * cell
 
-		gi := i32(cmap_glyph_index(&tb, t.cmap_sub, cp))
-		goff := t.loca.offsets[gi]
-		glen := t.loca.offsets[gi + 1] - goff
-		gstart := t.glyf_loc + i32(goff)
-		outline := parse_glyph(tb[gstart : gstart + i32(glen)])
+		gi := i32(cmap_glyph_index(&ttf_file, ttf.cmap_sub, cp))
+		goff := ttf.loca.offsets[gi]
+		glen := ttf.loca.offsets[gi + 1] - goff
+		gstart := ttf.glyf_loc + i32(goff)
+		outline := parse_glyph(ttf_file[gstart : gstart + i32(glen)])
 
 		slot : Glyph_Slot
-		rasterize_msdf(&outline, t.head.units_per_em, px, pad, &ab, atlas_w, dst_x, dst_y, &slot)
+		rasterize_msdf(&outline, ttf.head.units_per_em, ATLAS_PX, pad, &ab, atlas_w, dst_x, dst_y, &slot)
 
 		mi := gi
 		if mi >= num_long { mi = num_long - 1 }
-		adv_units := i32(read_u16be(tb[t.hmtx_loc + mi * 4]))
+		adv_units := i32(read_u16be(ttf_file[ttf.hmtx_loc + mi * 4]))
 
 		glyphs[i].x = dst_x
 		glyphs[i].y = dst_y
@@ -75,17 +75,12 @@ F_Word         :: type i16  // signed integer in font design units (FUnits)
 U_F_Word       :: type u16  // unsigned integer in FUnits
 Long_Date_Time :: type i64  // seconds since 1904-01-01 00:00
 
-fixed_to_f32      :: fun(x: Fixed)      -> f32 { return f32(x) / 65536.0 }
-f2_dot_14_to_f32  :: fun(x: F2_Dot_14)  -> f32 { return f32(x) / 16384.0 }
-short_frac_to_f32 :: fun(x: Short_Frac) -> f32 { return f32(x) / 32768.0 }
-
 // The parsed font, shaped after the on-disk file: the spec types nested (reach
 // them as TTF.Head etc.) and the tables we read, filled into fields by the
 // constructor's parse body at the bottom. load_glyphs builds one of these and
 // bakes from it — it parses nothing of its own.
 TTF :: struct (bytes: ^[]byte) {
 
-	// ─── on-disk TTF layout (transcribed from the spec; read via #big_endian) ───
 	Offset_Table :: struct {
 		scaler_type : u32
 		num_tables : u16
@@ -501,10 +496,6 @@ Glyph_Slot :: struct {
 	advance : i32   // pen advance
 }
 
-ATLAS_PX   :: 32              // glyph em size in px for the atlas
-ATLAS_PAD  :: 4               // msdf distance margin around each glyph
-ATLAS_CELL :: 48              // fixed grid cell size (px); glyphs must fit
-ATLAS_CAP  :: 331776          // atlas byte cap = 48*8 * 48 * 3: up to 8 CELL×CELL cells, RGB
 
 Raster_Edge :: struct {
 	x0 : f32
