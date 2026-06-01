@@ -1,0 +1,14 @@
+module inferconflict
+
+// `n` is pinned to i32 by the first use, then used where i16 is required —
+// a non-widening conflict. Per the chosen policy this is a hard error asking
+// for an explicit annotation, not a silent narrow. Must fail to compile.
+
+take_i32 :: fun(x: i32) {}
+take_i16 :: fun(x: i16) {}
+
+main :: fun() {
+	n := 5
+	take_i32(n)   // pins n = i32
+	take_i16(n)   // conflict: i32 cannot narrow to i16
+}

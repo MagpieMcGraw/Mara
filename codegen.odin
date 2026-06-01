@@ -2417,6 +2417,7 @@ tag_type_to_ir :: proc(tag: string) -> string {
 }
 
 llvm_type_from_checker :: proc(t: Type) -> string {
+    t := resolve_infer(t)
     switch v in t {
     case Type_F64:          return "double"
     case Type_Infer_Int:    return "i64"    // default when no context

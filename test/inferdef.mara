@@ -1,0 +1,37 @@
+module inferdef
+
+// Deferred integer inference: an un-annotated `:=` binding stays open until a
+// concrete use fixes its width. If any binding below kept the old i64 default,
+// the i32 use sites would fail to type-check — so compiling at all proves the
+// adoption, and the asserts prove the values survive at the chosen width.
+
+take_i32 :: fun(x: i32) -> i32 { return x * 2 }
+
+main :: fun() {
+	// Adopt via argument: `a` is used only as an i32 arg, so it becomes i32.
+	a := 21
+	assert(take_i32(a) == 42)
+
+	// Adopt via arithmetic against a sized operand.
+	w : i32 = 100
+	b := 4              // open
+	cols := w / b       // b adopts i32; cols is i32
+	assert(cols == 25)
+
+	// Chain: a pinned binding feeds another open one.
+	cell := 48          // open
+	px := cols * cell   // cell adopts i32; px is i32
+	assert(px == 1200)
+
+	// Two open bindings combined, then pinned together via one i32 use.
+	p := 3              // open
+	q := 7              // open
+	s := p + q          // both open → linked
+	assert(take_i32(s) == 20)   // pins the shared width to i32
+
+	// Never forced to a width → defaults to i64, so a >2^31 value fits.
+	big := 5000000000
+	assert(big == 5000000000)
+
+	print("defer ok")
+}

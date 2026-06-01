@@ -1,0 +1,30 @@
+module infersites
+
+// Each binding below is open and flows into exactly ONE kind of concrete
+// context. If that site doesn't pin the width, the binding defaults to i64 and
+// the i32 use mismatches (LLVM type error at build, or a wrong value at run).
+
+Box :: struct { v: i32 }
+
+ret_open :: fun() -> i32 {
+	n := 7          // open → returned where i32 is expected
+	return n
+}
+
+main :: fun() {
+	assert(ret_open() == 7)        // return site
+
+	k := 9
+	bx := Box{ k }                 // struct field-init site
+	assert(bx.v == 9)
+
+	m := 11
+	j : i32 = m                    // annotated-decl site
+	assert(j == 11)
+
+	p := 3
+	bx.v = p                       // field-assign site
+	assert(bx.v == 3)
+
+	print("sites ok")
+}

@@ -40,8 +40,8 @@ Type :: union {
 }
 
 Type_F64 :: struct {}
-Type_Infer_Int :: struct {}
-Type_Infer_Float :: struct {}
+Type_Infer_Int :: struct { cell: ^Infer_Cell }    // nil cell = anonymous literal/const; non-nil = a deferred `:=` binding
+Type_Infer_Float :: struct { cell: ^Infer_Cell }
 Type_Bool :: struct {}
 Type_CString :: struct {}
 Type_C8 :: struct {}
@@ -3118,8 +3118,8 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     // Transparent type aliases (`Name :: type(T)`) unwrap to their base
     // before any other comparison. They have no nominal identity — they
     // exist purely as renames. `distinct` types do not unwrap here.
-    a := unwrap_alias(a)
-    b := unwrap_alias(b)
+    a := unwrap_alias(resolve_infer(a))
+    b := unwrap_alias(resolve_infer(b))
 
     switch va in a {
     case Type_Infer_Int:
@@ -3428,6 +3428,7 @@ unwrap_alias :: proc(t: Type) -> Type {
 }
 
 type_name :: proc(t: Type) -> string {
+    t := resolve_infer(t)
     switch v in t {
     case Type_F64:          return "f64"
     case Type_Infer_Int:    return "infer_int"
@@ -3562,7 +3563,7 @@ slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 64}
 // for the width/kind read, but value_preserving_widen guards distinctness
 // separately so a `distinct i32` stays nominal.
 numeric_info :: proc(t: Type) -> (bits: int, kind: Numeric_Kind, ok: bool) {
-    #partial switch v in distinct_base(t) {
+    #partial switch v in distinct_base(resolve_infer(t)) {
     case Type_Numeric:                   return v.bits, v.kind, true
     case Type_Byte, Type_C8, Type_Utf8:  return 8, .Unsigned, true
     case Type_F64:                       return 64, .Float, true
@@ -3758,8 +3759,9 @@ is_untyped :: proc(t: Type) -> bool {
 
 // True for inferred-type constants (literals that adopt type from context)
 is_infer :: proc(t: Type) -> bool {
-    if _, ok := t.(Type_Infer_Int); ok { return true }
-    if _, ok := t.(Type_Infer_Float); ok { return true }
+    rt := resolve_infer(t)
+    if _, ok := rt.(Type_Infer_Int); ok { return true }
+    if _, ok := rt.(Type_Infer_Float); ok { return true }
     return false
 }
 
@@ -4909,9 +4911,111 @@ returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> b
 
 // Solidify inferred types to their defaults (for := variable declarations)
 solidify_type :: proc(t: Type) -> Type {
-    if _, ok := t.(Type_Infer_Int); ok { return Type_Numeric{kind = .Signed, bits = 64} }
-    if _, ok := t.(Type_Infer_Float); ok { return Type_F64{} }
+    rt := resolve_infer(t)
+    if _, ok := rt.(Type_Infer_Int); ok { return Type_Numeric{kind = .Signed, bits = 64} }
+    if _, ok := rt.(Type_Infer_Float); ok { return Type_F64{} }
+    return rt
+}
+
+// ---------------------------------------------------------------------------
+// Deferred integer/float inference (the `:=` binding width problem)
+// ---------------------------------------------------------------------------
+// A `:=` binding whose initializer is an untyped literal/const no longer
+// solidifies to i64 at the declaration. It gets a fresh Infer_Cell and stays
+// open; its width is decided the first time it flows into a concrete context —
+// arithmetic against a sized operand, an argument, an assignment, a return.
+// Still open at codegen → i64/f64. Two open bindings combined in arithmetic are
+// union-find linked so they resolve together. A binding pinned to one width and
+// then used at a narrower / cross-sign width is a hard error asking for an
+// explicit annotation (no silent narrowing). Literals and constant references
+// stay ANONYMOUS (nil cell): each use adopts its own context independently, as
+// before — only a named binding carries a cell, since only it has one storage
+// slot to pin.
+Infer_Cell :: struct {
+    resolved: Type,        // concrete type once decided; nil while open
+    link:     ^Infer_Cell, // union-find parent; nil at the root
+    name:     string,      // binding name — for the conflict diagnostic
+    span:     Span,        // binding decl site — for the conflict diagnostic
+}
+
+infer_cell_of :: proc(t: Type) -> ^Infer_Cell {
+    #partial switch v in t {
+    case Type_Infer_Int:   return v.cell
+    case Type_Infer_Float: return v.cell
+    }
+    return nil
+}
+
+infer_root :: proc(cell: ^Infer_Cell) -> ^Infer_Cell {
+    root := cell
+    for root.link != nil { root = root.link }
+    node := cell
+    for node.link != nil { next := node.link; node.link = root; node = next } // path-compress
+    return root
+}
+
+// Follow a bound inference cell to its concrete type. Unbound / anonymous /
+// non-infer types return unchanged. Every helper that inspects a type's
+// concreteness routes through here, so a pinned binding behaves as its width.
+resolve_infer :: proc(t: Type) -> Type {
+    cell := infer_cell_of(t)
+    if cell == nil { return t }
+    r := infer_root(cell)
+    if r.resolved != nil { return resolve_infer(r.resolved) }
     return t
+}
+
+// Pin (or re-check) an open binding's cell against a concrete numeric target.
+// Widening from the decided width is fine; a narrower / cross-sign target is
+// the conflict case. Callers pass a target already known to be numeric.
+unify_infer_concrete :: proc(c: ^Checker, cell: ^Infer_Cell, target: Type, span: Span) {
+    tgt := resolve_infer(target)
+    if is_infer(tgt) { return }   // target still open — nothing concrete to pin to yet
+    r := infer_root(cell)
+    if r.resolved == nil {
+        r.resolved = tgt
+        return
+    }
+    if types_equal(r.resolved, tgt) || value_preserving_widen(r.resolved, tgt) { return }
+    if c != nil {
+        check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS,
+            r.name, type_name(r.resolved), type_name(tgt))
+    }
+}
+
+// Union two open bindings so they resolve to a single width.
+unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Span) {
+    ra := infer_root(a); rb := infer_root(b)
+    if ra == rb { return }
+    if ra.resolved != nil && rb.resolved != nil {
+        if types_equal(ra.resolved, rb.resolved) ||
+           value_preserving_widen(ra.resolved, rb.resolved) ||
+           value_preserving_widen(rb.resolved, ra.resolved) { return }
+        if c != nil {
+            check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS,
+                ra.name, type_name(ra.resolved), type_name(rb.resolved))
+        }
+        return
+    }
+    if rb.resolved != nil { ra.link = rb } else { rb.link = ra }
+}
+
+// At a site where `val` flows into a concrete `target` (argument, assignment,
+// field init, return): if val is a deferred binding whose family matches the
+// target's (int→int, float→float), pin its cell to target and report handled,
+// so the caller skips its normal compat check (the pin owns the diagnostic).
+// Anonymous infers, concretes, and cross-family (int↔float) return false so the
+// normal check still runs.
+coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> bool {
+    cell := infer_cell_of(val)
+    if cell == nil { return false }
+    tgt := resolve_infer(target)
+    _, tkind, tok := numeric_info(tgt)
+    if !tok { return false }
+    _, is_float_infer := val.(Type_Infer_Float)
+    if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
+    unify_infer_concrete(c, cell, tgt, span)
+    return true
 }
 
 // Try to extract a compile-time constant numeric value from an expression.
@@ -6624,7 +6728,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 }
                             }
                         }
-                    } else if types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
+                    } else if !coerce_deferred(c, val_type, ann_type, s.span) && types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(ann_type))
                     }
@@ -6754,7 +6858,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 } else if is_byte_buffer_index_read(s.value) {
                     // Byte buffer reinterpret read via index: x : int = mem[0]
                     // Size comes from the annotation type; bounds checked at runtime
-                } else if types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
+                } else if !coerce_deferred(c, val_type, ann_type, s.span) && types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
                     check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                         type_name(val_type), s.name, type_name(ann_type))
                 }
@@ -6828,17 +6932,37 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         type_env_set(env, s.name, Type_Error{})
                         continue
                     }
-                    solid := solidify_type(val_type)
-                    if is_untyped(solid) {
-                        check_warning(c, s.span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, s.name)
+                    // Deferred inference: an un-annotated binding whose
+                    // initializer is still open (untyped literal/const, or
+                    // another open binding) gets a fresh inference cell rather
+                    // than solidifying to i64 here — its width is decided by the
+                    // first concrete use; unbound at codegen → i64/f64.
+                    binding_type: Type
+                    if is_infer(val_type) {
+                        cell := new(Infer_Cell)
+                        cell.name = s.name
+                        cell.span = s.span
+                        if src := infer_cell_of(val_type); src != nil {
+                            unify_infer_cells(c, cell, src, s.span)  // `y := x`: co-resolve
+                        }
+                        if _, is_f := val_type.(Type_Infer_Float); is_f {
+                            binding_type = Type_Infer_Float{cell = cell}
+                        } else {
+                            binding_type = Type_Infer_Int{cell = cell}
+                        }
+                    } else {
+                        binding_type = solidify_type(val_type)
+                        if is_untyped(binding_type) {
+                            check_warning(c, s.span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, s.name)
+                        }
                     }
-                    s.var_type = distinct_base(solid)
-                    s.env_type = solid
-                    type_env_set(env, s.name, solid)
+                    s.var_type = distinct_base(binding_type)
+                    s.env_type = binding_type
+                    type_env_set(env, s.name, binding_type)
                     set_provenance(env, s.name, expr_provenance(c, s.value, env))
                     mark_local_slice_backed_if_needed(c, env, s.name, s.value)
                     update_alias_from_value(env, s.name, s.value)
-                    if _, is_ptr := distinct_base(solid).(^Type_Ptr); is_ptr {
+                    if _, is_ptr := distinct_base(binding_type).(^Type_Ptr); is_ptr {
                         if is_void_literal(s.value) {
                             env.invalid_refs[s.name] = true
                         }
@@ -6864,7 +6988,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // paths: the read size comes from the target type, not the byte
                     // value. Without this the RHS types as a bare `byte` and fails.
                     is_byte_reinterpret := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
-                    if !is_byte_reinterpret && types_incompatible(existing_type, val_type) && !value_preserving_widen(val_type, existing_type) {
+                    if !is_byte_reinterpret && !coerce_deferred(c, val_type, existing_type, s.span) && !coerce_deferred(c, existing_type, val_type, s.span) && types_incompatible(existing_type, val_type) && !value_preserving_widen(val_type, existing_type) {
                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                             type_name(val_type), s.name, type_name(existing_type))
                     }
@@ -7520,7 +7644,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
             c.expected_hint = expected
             vt := check_expr(c, val, env)
             if !is_any(vt) && !is_any(expected) {
-                if !types_equal(expected, vt) && !value_preserving_widen(vt, expected) {
+                if !coerce_deferred(c, vt, expected, s.span) && !types_equal(expected, vt) && !value_preserving_widen(vt, expected) {
                     if n_expected > 1 {
                         check_error(c, s.span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED,
                             i+1, type_name(vt), type_name(expected))
@@ -7869,7 +7993,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                 c.expected_hint = sf.type_
             }
             ft := check_expr(c, field.value, env)
-            if types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
+            if !coerce_deferred(c, ft, sf.type_, span) && types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
                 check_error(c, span, TYPE_FIELD_POSITION_EXPECTED,
                     sf.name, i, type_name(sf.type_), type_name(ft))
             }
@@ -7891,7 +8015,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                 c.expected_hint = sf.type_
             }
             ft := check_expr(c, field.value, env)
-            if types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
+            if !coerce_deferred(c, ft, sf.type_, span) && types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
                 check_error(c, span, TYPE_FIELD_EXPECTED,
                     field.name, type_name(sf.type_), type_name(ft))
             }
@@ -8335,7 +8459,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             } else if is_byte_buffer_index_read(s.value) {
                 // Byte buffer reinterpret read via index: obj.field = mem[off]
                 // Size comes from field type; bounds checked at runtime
-            } else if types_incompatible(ft, val_type) && !value_preserving_widen(val_type, ft) {
+            } else if !coerce_deferred(c, val_type, ft, s.span) && types_incompatible(ft, val_type) && !value_preserving_widen(val_type, ft) {
                 check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
                     assign_source_desc(s.value, val_type), expr_diag_name(fa_expr), type_name(ft))
             }
@@ -8410,7 +8534,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             return
         }
         s.target_type = field_type
-        if types_incompatible(field_type, val_type) && !is_infer(val_type) && !value_preserving_widen(val_type, field_type) {
+        if !coerce_deferred(c, val_type, field_type, s.span) && types_incompatible(field_type, val_type) && !is_infer(val_type) && !value_preserving_widen(val_type, field_type) {
             check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
                 assign_source_desc(s.value, val_type), expr_diag_name(fa_expr), type_name(field_type))
         }
@@ -11420,10 +11544,34 @@ try_promote_numeric :: proc(a: Type, b: Type) -> Type {
 }
 
 promote_numeric :: proc(c: ^Checker, a: Type, b: Type, span: Span) -> Type {
-    result := try_promote_numeric(a, b)
-    if _, ok := result.(Type_Error); ok && !is_any(a) && !is_any(b) {
+    // Deferred-inference aware: an open binding meeting a sized operand is
+    // pinned to that width; two open bindings are union-linked so they
+    // co-resolve. ca/cb are the raw cells (nil for anonymous/concrete); a_open
+    // / b_open ask whether each side is still unbound after resolution.
+    ca := infer_cell_of(a)
+    cb := infer_cell_of(b)
+    ra := resolve_infer(a)
+    rb := resolve_infer(b)
+    a_open := is_infer(ra)
+    b_open := is_infer(rb)
+    if a_open && b_open {
+        if ca != nil && cb != nil { unify_infer_cells(c, ca, cb, span) }
+        if ca != nil { return a }   // carry a binding cell so the result still defers
+        if cb != nil { return b }
+        return ra
+    }
+    if a_open {
+        if ca != nil { unify_infer_concrete(c, ca, rb, span) }
+        return rb
+    }
+    if b_open {
+        if cb != nil { unify_infer_concrete(c, cb, ra, span) }
+        return ra
+    }
+    result := try_promote_numeric(ra, rb)
+    if _, ok := result.(Type_Error); ok && !is_any(ra) && !is_any(rb) {
         check_error(c, span, TYPE_MISMATCHED_TYPES_ARITHMETIC_USE_EXPLICIT,
-            type_name(a), type_name(b))
+            type_name(ra), type_name(rb))
     }
     return result
 }
@@ -11527,7 +11675,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
                     is_byte_reinterpret = true
                 }
             }
-            if !is_byte_reinterpret && types_incompatible(fun_type.params[i].type_, arg_type) && !value_preserving_widen(arg_type, fun_type.params[i].type_) {
+            if !is_byte_reinterpret && !coerce_deferred(c, arg_type, fun_type.params[i].type_, span) && types_incompatible(fun_type.params[i].type_, arg_type) && !value_preserving_widen(arg_type, fun_type.params[i].type_) {
                 arg_clause := ""
                 if an := expr_diag_name(arg); an != "" {
                     arg_clause = fmt.tprintf(" ('%s')", an)
@@ -12173,7 +12321,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
         arg_type := check_expr(c, arg, env)
         if i < len(st.fields) {
             field := st.fields[i]
-            if types_incompatible(field.type_, arg_type) && !is_any(arg_type) && !value_preserving_widen(arg_type, field.type_) {
+            if !coerce_deferred(c, arg_type, field.type_, e.span) && types_incompatible(field.type_, arg_type) && !is_any(arg_type) && !value_preserving_widen(arg_type, field.type_) {
                 check_error(c, e.span, TYPE_FIELD_EXPECTED,
                     field.name, type_name(field.type_), type_name(arg_type))
             }
