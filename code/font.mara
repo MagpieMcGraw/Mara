@@ -11,10 +11,6 @@ Glyph :: struct {
 	bearing_x, bearing_y, advance :i32
 }
 
-ATLAS_PX   :: 32              // glyph em size in px for the atlas
-ATLAS_PAD  :: 4               // msdf distance margin around each glyph
-ATLAS_CELL :: 48              // fixed grid cell size (px); glyphs must fit
-
 load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte {
 	ttf_file : [..2 * MB]byte
 	read_err := read_entire_file(font, &ttf_file)
@@ -22,23 +18,23 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte 
 
 	ttf := TTF(&ttf_file)
 
-	//px := ATLAS_PX
-	pad := ATLAS_PAD
-	cell := ATLAS_CELL
-	px_scale := f32(ATLAS_PX) / f32(ttf.head.units_per_em)
+	px := 32
+	pad := 4
+	cell := 48
+	px_scale := f32(px) / f32(ttf.head.units_per_em)
 	num_long := ttf.hhea.num_of_long_hor_metrics
 
 	// 1024x1024 RGB atlas = 3 MB; glyphs pack into a fixed grid of CELL-px cells.
 	atlas : [3 * MB]byte
 	ab : []byte = atlas[:]
-	atlas_w : i32 = 1024
+	atlas_w := 1024
 	per_row := atlas_w / cell
 
 	count := i32(glyphs.len)   // small glyph count drives an i32 atlas-cell loop
 	for i in 0..count {
 		cp := first + u32(i)
-		dst_x := (i % per_row) * cell
-		dst_y := (i / per_row) * cell
+		dst_x : i32 = (i % per_row) * cell
+		dst_y : i32 = (i / per_row) * cell
 
 		gi := i32(cmap_glyph_index(&ttf_file, ttf.cmap_sub, cp))
 		goff := ttf.loca.offsets[gi]
@@ -47,7 +43,8 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte 
 		outline := parse_glyph(ttf_file[gstart : gstart + i32(glen)])
 
 		slot : Glyph_Slot
-		rasterize_msdf(&outline, ttf.head.units_per_em, ATLAS_PX, pad, &ab, atlas_w, dst_x, dst_y, &slot)
+		rasterize_msdf(&outline, ttf.head.units_per_em,
+			px, pad, &ab, atlas_w, dst_x, dst_y, &slot)
 
 		mi := gi
 		if mi >= num_long { mi = num_long - 1 }
@@ -532,7 +529,7 @@ edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
 // (dst_x, dst_y), and fill `slot` with the cell size + bearings. `pad` is the
 // distance-field margin around the glyph. Caller fills slot.glyph/ax/ay/advance.
 rasterize_msdf :: fun(g: ^Outline, units_per_em: u16, px_em: i32, pad: i32,
-	atlas: ^[]byte, atlas_w: i32, dst_x: i32, dst_y: i32, slot: ^Glyph_Slot)
+	atlas: ^[]byte, atlas_w: i32, dst_x, dst_y: i32, slot: ^Glyph_Slot)
 {
 	scale := f32(px_em) / f32(units_per_em)
 	if g.num_contours <= 0 { slot.cw = 0 slot.ch = 0 return }
