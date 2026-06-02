@@ -4932,10 +4932,11 @@ solidify_type :: proc(t: Type) -> Type {
 // before — only a named binding carries a cell, since only it has one storage
 // slot to pin.
 Infer_Cell :: struct {
-    resolved: Type,        // concrete type once decided; nil while open
-    link:     ^Infer_Cell, // union-find parent; nil at the root
-    name:     string,      // binding name — for the conflict diagnostic
-    span:     Span,        // binding decl site — for the conflict diagnostic
+    resolved:      Type,        // concrete type once decided; nil while open
+    resolved_span: Span,        // where `resolved` was first pinned — for the conflict diagnostic
+    link:          ^Infer_Cell, // union-find parent; nil at the root
+    name:          string,      // binding name — for the conflict diagnostic
+    span:          Span,        // binding decl site — for the conflict diagnostic
 }
 
 infer_cell_of :: proc(t: Type) -> ^Infer_Cell {
@@ -4974,12 +4975,13 @@ unify_infer_concrete :: proc(c: ^Checker, cell: ^Infer_Cell, target: Type, span:
     r := infer_root(cell)
     if r.resolved == nil {
         r.resolved = tgt
+        r.resolved_span = span   // remember where the width was first fixed
         return
     }
     if types_equal(r.resolved, tgt) || value_preserving_widen(r.resolved, tgt) { return }
     if c != nil {
         check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS,
-            r.name, type_name(r.resolved), type_name(tgt))
+            r.name, type_name(r.resolved), span_loc(r.resolved_span), type_name(tgt), span_loc(span))
     }
 }
 
@@ -4993,7 +4995,8 @@ unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Spa
            value_preserving_widen(rb.resolved, ra.resolved) { return }
         if c != nil {
             check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS,
-                ra.name, type_name(ra.resolved), type_name(rb.resolved))
+                ra.name, type_name(ra.resolved), span_loc(ra.resolved_span),
+                type_name(rb.resolved), span_loc(rb.resolved_span))
         }
         return
     }
