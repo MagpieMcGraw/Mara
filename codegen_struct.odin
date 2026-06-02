@@ -145,6 +145,27 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     emit_nested_sized_slice_init(g, sv.alloca, st)
 }
 
+// Store a value into a freshly-constructed struct/variant field at `gep` (a
+// pointer to the field slot). A partial-array / string field — including
+// distinct-over-partial-array like `cstr` — needs its header stamped and the
+// value copied element-wise (string → bytes + len + sentinel; partial-array
+// source → partial_array_copy). A plain typed store of a string literal would
+// store a `ptr` where the `{len,cap,ptr,[N x T]}` aggregate is expected
+// (invalid IR) and never set len. Returns true if it handled the field; false
+// means the caller does its normal scalar/aggregate store. The enclosing struct
+// should be memset-zeroed first (the stamp sets ptr/cap; the copy sets len).
+gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr, span: Span) -> bool {
+    pa, pa_ok := distinct_base(field.type_).(^Type_Partial_Array)
+    if !pa_ok { return false }
+    elem_t := llvm_type_from_checker(pa.elem)
+    alloc_cap := pa.size
+    if pa.has_sentinel { alloc_cap += 1 }
+    elem_bytes := elem_byte_size(elem_t, g.checked)
+    stamp_partial_array_header(g, gep, pa)
+    gen_partial_array_init_value(g, gep, value, elem_t, elem_bytes, alloc_cap, pa, span, field.name)
+    return true
+}
+
 // Apply the named fields of a struct literal onto a struct at base_ptr.
 // Used both for bare struct-literal rvalues (`x : Foo = { a: 1 }`) and for
 // `{...}` overrides attached to a call (`x : Foo = Foo() { a: 1 }`). Handles
@@ -1247,20 +1268,24 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             for arg, i in call.args {
                 if i >= len(st.fields) { break }
                 field := &st.fields[i]
-                ft := field_ir_type(field)
-                val := gen_expr(g, arg, ft)
                 gep := fresh_tmp(g)
                 emit_field_gep_into(g, gep, llvm_name, dst_ptr, i)
-                emit_store(g, ft, val, gep)
+                if !gen_partial_array_field_store(g, field, gep, arg, call.span) {
+                    ft := field_ir_type(field)
+                    val := gen_expr(g, arg, ft)
+                    emit_store(g, ft, val, gep)
+                }
             }
             for fi := len(call.args); fi < len(st.fields); fi += 1 {
                 field := &st.fields[fi]
                 if field.default_value != nil {
-                    ft := field_ir_type(field)
-                    val := gen_expr(g, field.default_value, ft)
                     gep := fresh_tmp(g)
                     emit_field_gep_into(g, gep, llvm_name, dst_ptr, fi)
-                    emit_store(g, ft, val, gep)
+                    if !gen_partial_array_field_store(g, field, gep, field.default_value, call.span) {
+                        ft := field_ir_type(field)
+                        val := gen_expr(g, field.default_value, ft)
+                        emit_store(g, ft, val, gep)
+                    }
                 }
             }
             if call.overrides != nil {
@@ -1946,11 +1971,13 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
     for field in lit.fields {
         idx := struct_field_index(vst, field.name)
         if idx < 0 { continue }
-        ft := field_ir_type(&vst.fields[idx])
-        val := gen_expr_coerced(g, field.value, ft)
         gep := fresh_tmp(g)
         emit_field_gep_into(g, gep, vst_llvm, payload_ptr, idx)
-        emit_store(g, ft, val, gep)
+        if !gen_partial_array_field_store(g, &vst.fields[idx], gep, field.value, lit.span) {
+            ft := field_ir_type(&vst.fields[idx])
+            val := gen_expr_coerced(g, field.value, ft)
+            emit_store(g, ft, val, gep)
+        }
     }
     // Fill in defaults for variant fields (skip for {0} zero-init)
     if !lit.zero_init {
@@ -1961,11 +1988,13 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
                 if field.name == sdf.name { provided = true; break }
             }
             if !provided {
-                sdf_ft := field_ir_type(&sdf)
-                val := gen_expr(g, sdf.default_value, sdf_ft)
                 gep := fresh_tmp(g)
                 emit_field_gep_into(g, gep, vst_llvm, payload_ptr, sdf_i)
-                emit_store(g, sdf_ft, val, gep)
+                if !gen_partial_array_field_store(g, &sdf, gep, sdf.default_value, lit.span) {
+                    sdf_ft := field_ir_type(&sdf)
+                    val := gen_expr(g, sdf.default_value, sdf_ft)
+                    emit_store(g, sdf_ft, val, gep)
+                }
             }
         }
     }

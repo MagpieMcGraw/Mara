@@ -1,0 +1,53 @@
+module pafieldctor
+
+// Regression: partial-array / string fields in the positional pure-struct
+// constructor and the union-variant constructor. Before the fix these did
+// gen_expr + emit_store, which stored a `ptr` where the partial-array aggregate
+// was expected (invalid IR — clang rejected `Config("hello")`).
+
+use mara.string
+
+Config :: struct {
+	greet := "x"   // partial-array field
+	n     := 0
+}
+
+Msg :: union(tag i32) {
+	Text = 1 {
+		body: [..16, 0]utf8 = "hi"   // string field default (typed; variants need a type)
+	}
+	Blank = 2 {
+		pad: i32
+	}
+}
+
+main :: fun() {
+	// Positional pure-struct: greet (partial-array) PROVIDED + trailing DEFAULT n.
+	c := Config("hello")
+	assert(c.greet.len == 5)
+	assert(c.greet[0] == 'h')
+	assert(c.greet[4] == 'o')
+	assert(c.n == 0)
+
+	// Union variant: string field DEFAULT (Text{} uses body := "hi").
+	m1: Msg = Text{}
+	match m1 {
+	Text t
+		assert(t.body.len == 2)
+		assert(t.body[0] == 'h')
+	Blank b
+		assert(false)
+	}
+
+	// Union variant: string field PROVIDED.
+	m2: Msg = Text{body = "yo"}
+	match m2 {
+	Text t
+		assert(t.body.len == 2)
+		assert(t.body[1] == 'o')
+	Blank b
+		assert(false)
+	}
+
+	print("pafieldctor ok")
+}
