@@ -431,6 +431,7 @@ TYPE_VARIABLE_ALREADY_DECLARED_SCOPE :: "variable '%s' already declared in this 
 TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING :: "variable '%s' shadows an enclosing binding"
 TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE :: "variable '%s' shadows a constant from an outer scope"
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE :: "cannot assign %s to variable '%s' of type %s"
+TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM :: "cannot assign %s to variable '%s' of type %s — from %s"
 TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE :: "declaration without initializer requires a type annotation"
 TYPE_ARRAY_TOO_LARGE_STACK_BYTES :: "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    program = Program(Arena_Basic)"
 TYPE_SIZE_EXPRESSION_INTEGER :: "size expression must be an integer, got %s"

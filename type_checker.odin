@@ -1612,8 +1612,59 @@ expr_diag_name :: proc(e: Expr) -> string {
         idx := expr_diag_name(v.index)
         if idx == "" { return base }
         return fmt.tprintf("%s[%s]", base, idx)
+    case ^Expr_Call:
+        if v.name != "" { return fmt.tprintf("%s()", v.name) }
     }
     return ""
+}
+
+// Collect the named sub-expressions of `e` whose stamped type is a wider
+// numeric than `target` can hold — the operands that pushed a compound
+// expression past the assignment's width. Each renders as "name (type)". Used
+// to point a numeric-mismatch error at where the offending width entered.
+collect_wide_sources :: proc(e: Expr, target: Type, out: ^[dynamic]string) {
+    #partial switch v in e {
+    case ^Expr_Binary:
+        collect_wide_sources(v.left, target, out)
+        collect_wide_sources(v.right, target, out)
+    case ^Expr_Unary:
+        collect_wide_sources(v.operand, target, out)
+    case:
+        p := expr_type_ptr(e)
+        if p == nil { return }
+        t := p^
+        if t == nil || !is_numeric(t) || is_infer(t) { return }
+        if !types_incompatible(target, t) || value_preserving_widen(t, target) { return }
+        name := expr_diag_name(e)
+        if name == "" { return }
+        entry := fmt.tprintf("%s (%s)", name, type_name(t))
+        for s in out^ { if s == entry { return } }   // dedup
+        append(out, entry)
+    }
+}
+
+// "atlas.per_row (i64), atlas.cell (i64)" for the operands of `e` that don't
+// fit `target`, or "" if none are nameable. Best-effort: literals and
+// unnameable sub-expressions are skipped.
+wide_source_clause :: proc(e: Expr, target: Type) -> string {
+    srcs: [dynamic]string
+    defer delete(srcs)
+    collect_wide_sources(e, target, &srcs)
+    if len(srcs) == 0 { return "" }
+    return strings.join(srcs[:], ", ")
+}
+
+// Emit "cannot assign X to variable 'v' of type Y", appending a "— from
+// <sources>" trailer that names the wide operands when the RHS is a compound
+// expression whose extra width traces to named sub-expressions.
+emit_assign_var_error :: proc(c: ^Checker, span: Span, val_type: Type, name: string, target: Type, rhs: Expr) {
+    if clause := wide_source_clause(rhs, target); clause != "" {
+        check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM,
+            type_name(val_type), name, type_name(target), clause)
+    } else {
+        check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
+            type_name(val_type), name, type_name(target))
+    }
 }
 
 // "name (type)" when the source expression has a nameable form, else just the
@@ -6732,8 +6783,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             }
                         }
                     } else if !coerce_deferred(c, val_type, ann_type, s.span) && types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
-                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
-                            type_name(val_type), s.name, type_name(ann_type))
+                        emit_assign_var_error(c, s.span, val_type, s.name, ann_type, s.value)
                     }
                     if is_infer(val_type) {
                         check_literal_overflow(c, s.value, ann_type, s.span)
@@ -6862,8 +6912,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // Byte buffer reinterpret read via index: x : int = mem[0]
                     // Size comes from the annotation type; bounds checked at runtime
                 } else if !coerce_deferred(c, val_type, ann_type, s.span) && types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
-                    check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
-                        type_name(val_type), s.name, type_name(ann_type))
+                    emit_assign_var_error(c, s.span, val_type, s.name, ann_type, s.value)
                 }
                 // Tag `&buf[i]` widened from ^byte to a typed pointer so codegen
                 // emits a runtime bounds check against the byte buffer's capacity.
@@ -6992,8 +7041,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // value. Without this the RHS types as a bare `byte` and fails.
                     is_byte_reinterpret := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
                     if !is_byte_reinterpret && !coerce_deferred(c, val_type, existing_type, s.span) && !coerce_deferred(c, existing_type, val_type, s.span) && types_incompatible(existing_type, val_type) && !value_preserving_widen(val_type, existing_type) {
-                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
-                            type_name(val_type), s.name, type_name(existing_type))
+                        emit_assign_var_error(c, s.span, val_type, s.name, existing_type, s.value)
                     }
                     maybe_stamp_byte_view(c, existing_type, s.value)
                     if is_infer(val_type) {

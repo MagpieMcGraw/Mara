@@ -1,0 +1,17 @@
+module spantest
+
+// Does a slice span accept bounds wider than i32 now that the header is i64?
+
+main :: fun() {
+	buf : [..64]byte
+
+	lo : i64 = 8
+	hi : i64 = 24
+	s := buf[lo:hi]        // i64 bounds
+	print(s.len)
+
+	a : u32 = 4
+	b : u32 = 16
+	t := buf[a:b]          // u32 bounds (like a TTF offset)
+	print(t.len)
+}
