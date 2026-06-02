@@ -6,7 +6,7 @@ module mara.core
 // 	ptr: isize
 // }
 
-Arena :: class {
+Arena :: struct {
 	size: [64]byte
 
 	mark :: fun(a: ^Self) {

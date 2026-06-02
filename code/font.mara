@@ -8,463 +8,45 @@ use mara.os
 
 Glyph :: struct {
 	x, y, w, h: i32
-	bearing_x, bearing_y, advance :i32
+	bearing_x, bearing_y, advance :f32
 }
 
-load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring) -> [3 * MB]byte {
+load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 	ttf_file : [..2 * MB]byte
 	read_err := read_entire_file(font, &ttf_file)
 	if bool(read_err) do print(read_err)
-
 	ttf := TTF(&ttf_file)
 
-	px := 32
-	pad := 4
-	cell := 48
-	px_scale := f32(px) / f32(ttf.head.units_per_em)
-	num_long := ttf.hhea.num_of_long_hor_metrics
+	Atlas :: struct (bytes: []byte, u_per_em: u16) {
+		size := 1024
+		cell := 48
+		pixels := 32 // used to scale em to pixels
+		pad := 4
+		per_row : i32 = size / cell
+		px_scale := f32(pixels) / f32(u_per_em)
+		data := bytes
+	}
+	storage : [3 * MB]byte
+	atlas := Atlas(storage[:], ttf.head.units_per_em)
 
-	// 1024x1024 RGB atlas = 3 MB; glyphs pack into a fixed grid of CELL-px cells.
-	atlas : [3 * MB]byte
-	ab : []byte = atlas[:]
-	atlas_w := 1024
-	per_row := atlas_w / cell
+	for i in 0..i32(glyphs.len) {
+		codepoint := first + u32(i)
 
-	count := i32(glyphs.len)   // small glyph count drives an i32 atlas-cell loop
-	for i in 0..count {
-		cp := first + u32(i)
-		dst_x : i32 = (i % per_row) * cell
-		dst_y : i32 = (i / per_row) * cell
+		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, codepoint)
+		goff := ttf.loca.offsets[glyph_index]
+		glen := ttf.loca.offsets[glyph_index + 1] - goff
+		gstart := ttf.glyf_loc + goff
+		outline := parse_glyph(ttf_file[gstart : gstart + glen])
 
-		gi := i32(cmap_glyph_index(&ttf_file, ttf.cmap_sub, cp))
-		goff := ttf.loca.offsets[gi]
-		glen := ttf.loca.offsets[gi + 1] - goff
-		gstart := ttf.glyf_loc + i32(goff)
-		outline := parse_glyph(ttf_file[gstart : gstart + i32(glen)])
+		glyphs[i].x = (i % atlas.per_row) * atlas.cell
+		glyphs[i].y = (i / atlas.per_row) * atlas.cell
+		adv_units := f32(read_u16be(ttf_file[ttf.hmtx_loc + glyph_index * 4]))
+		glyphs[i].advance = adv_units * atlas.px_scale
 
-		slot : Glyph_Slot
-		rasterize_msdf(&outline, ttf.head.units_per_em,
-			px, pad, &ab, atlas_w, dst_x, dst_y, &slot)
-
-		mi := gi
-		if mi >= num_long { mi = num_long - 1 }
-		adv_units := i32(read_u16be(ttf_file[ttf.hmtx_loc + mi * 4]))
-
-		glyphs[i].x = dst_x
-		glyphs[i].y = dst_y
-		glyphs[i].w = slot.cw
-		glyphs[i].h = slot.ch
-		glyphs[i].bearing_x = slot.bx
-		glyphs[i].bearing_y = slot.by
-		glyphs[i].advance = i32(f32(adv_units) * px_scale)
+		rasterize_msdf()
 	}
 
-	return atlas
-}
-
-// Spec type aliases. Transparent aliases over the underlying integer width —
-// arithmetic on them behaves like the underlying int. The fixed-point ones
-// need explicit conversion to f32 to get their real-number value.
-Fixed          :: type i32  // 16.16 signed fixed-point
-F2_Dot_14      :: type i16  // 2.14 signed fixed-point
-Short_Frac     :: type i16  // 1.15 signed fraction
-F_Word         :: type i16  // signed integer in font design units (FUnits)
-U_F_Word       :: type u16  // unsigned integer in FUnits
-Long_Date_Time :: type i64  // seconds since 1904-01-01 00:00
-
-// The parsed font, shaped after the on-disk file: the spec types nested (reach
-// them as TTF.Head etc.) and the tables we read, filled into fields by the
-// constructor's parse body at the bottom. load_glyphs builds one of these and
-// bakes from it — it parses nothing of its own.
-TTF :: struct (bytes: ^[]byte) {
-
-	Offset_Table :: struct {
-		scaler_type : u32
-		num_tables : u16
-		search_range : u16
-		entry_selector: u16
-		range_shift : u16
-		tables: [..32]Table
-	}
-
-	Table :: struct {
-		tag: [4]utf8
-		check_sum : u32
-		offset: u32
-		len: u32
-	}
-
-	#packed Head :: struct {
-		version              : Fixed          // 0x00010000 = version 1.0
-		font_revision        : Fixed          // set by font manufacturer
-		check_sum_adjustment : u32            // sum the font as u32, store 0xB1B0AFBA - sum
-		magic_number         : u32            // must be 0x5F0F3CF5
-		flags                : u16            // bit 0 baseline at y=0, 1 lsb at x=0, 7 needs layout, 9 contains RTL, ...
-		units_per_em         : u16            // 64..16384
-		created              : Long_Date_Time
-		modified             : Long_Date_Time
-		x_min                : F_Word         // min over all glyph bboxes
-		y_min                : F_Word
-		x_max                : F_Word
-		y_max                : F_Word
-		mac_style            : u16            // bit 0 bold, 1 italic, 2 underline, 3 outline, 4 shadow, 5 condensed, 6 extended
-		lowest_rec_ppem      : u16            // smallest readable size in pixels
-		font_direction_hint  : i16            // 0 mixed, 1 LTR, 2 LTR+neutrals, -1 RTL, -2 RTL+neutrals
-		index_to_loc_format  : i16            // 0 = short (u16) offsets in loca, 1 = long (u32)
-		glyph_data_format    : i16            // 0 for current format
-	}
-
-	Maxp :: struct {
-		version                  : Fixed // 0x00010000 (TrueType v1.0) or 0x00005000 (CFF v0.5)
-		num_glyphs               : u16   // total glyph count in the font
-		max_points               : u16   // max points in a non-composite glyph
-		max_contours             : u16   // max contours in a non-composite glyph
-		max_composite_points     : u16   // max points in a composite glyph
-		max_composite_contours   : u16   // max contours in a composite glyph
-		max_zones                : u16   // bytecode hinting; 1 if no twilight zone, else 2
-		max_twilight_points      : u16   // bytecode hinting; max twilight zone points
-		max_storage              : u16   // bytecode hinting; max storage area locations
-		max_function_defs        : u16   // bytecode hinting; max FDEFs
-		max_instruction_defs     : u16   // bytecode hinting; max IDEFs
-		max_stack_elements       : u16   // bytecode hinting; max stack depth
-		max_size_of_instructions : u16   // bytecode hinting; max byte count for any glyph's instructions
-		max_component_elements   : u16   // max top-level components per composite glyph
-		max_component_depth      : u16   // max recursion depth of composite glyphs
-	}
-
-	Cmap :: struct {
-		version       : u16
-		num_subtables : u16
-		encodings     : [..16]Encoding_Record
-	}
-
-	Encoding_Record :: struct {
-		platform_id          : u16 // 0 Unicode, 1 Mac, 3 Microsoft
-		platform_specific_id : u16
-		offset               : u32 // byte offset from start of cmap table to this encoding's subtable
-	}
-
-	Loca :: struct {
-		// offsets array has num_glyphs + 1 entries (last entry gives the end of the final glyph).
-		// Each entry is u16 (short — multiply by 2 for actual byte offset into glyf)
-		// or u32 (long — already a byte offset). Format chosen by head.index_to_loc_format.
-		offsets : [..1 + (1<<16)]u32
-	}
-
-	Glyf :: struct {
-		// Raw glyph data. Each glyph i lives at offsets [loca[i]..loca[i+1]).
-		// Per-glyph header is i16 num_contours (negative for composite), then 4xi16 bbox,
-		// then either simple-glyph contours or composite component records.
-		data : []byte
-	}
-
-	Hhea :: struct {
-		version                 : Fixed     // 0x00010000
-		ascent                  : F_Word    // typographic ascent
-		descent                 : F_Word    // typographic descent (negative)
-		line_gap                : F_Word    // extra recommended leading
-		advance_width_max       : U_F_Word
-		min_left_side_bearing   : F_Word
-		min_right_side_bearing  : F_Word
-		x_max_extent            : F_Word
-		caret_slope_rise        : i16       // 1 for vertical caret
-		caret_slope_run         : i16       // 0 for vertical caret
-		caret_offset            : F_Word    // 0 for non-slanted fonts
-		reserved1               : i16       // must be 0
-		reserved2               : i16       // must be 0
-		reserved3               : i16       // must be 0
-		reserved4               : i16       // must be 0
-		metric_data_format      : i16       // 0 for current format
-		num_of_long_hor_metrics : u16       // count of full metrics records in hmtx; trailing glyphs share advance
-	}
-
-	Hmtx :: struct {
-		long_metrics  : []Long_Hor_Metric // num_of_long_hor_metrics entries (from hhea)
-		side_bearings : []F_Word          // (num_glyphs - num_of_long_hor_metrics) entries; same advance as last long_metric
-	}
-
-	Long_Hor_Metric :: struct {
-		advance_width     : U_F_Word
-		left_side_bearing : F_Word
-	}
-
-	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
-		for table in tables {
-			if starts_with(table.tag[:], target) {
-				return i32(table.offset)
-			}
-		}
-		print("Table '%' not found.", target)
-		return 0
-	}
-
-	loca_correct_format :: fun(head: Head, maxp: Maxp,
-		bytes: []byte) -> loca: Loca 
-	{
-		loca.offsets.len = i32(maxp.num_glyphs + 1)		
-		if head.index_to_loc_format == 0 {
-			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
-			off16.len = loca.offsets.len
-			for item, i in off16 {
-				loca.offsets[i] = i32(item) * 2
-			}
-		else
-			loca.offsets = #big_endian bytes[0]
-		}
-		return loca
-	}
-
-	// Choose which cmap subtable to map characters through, returning its
-	// absolute file offset (0 if none). Prefer Microsoft Unicode BMP (3,1) —
-	// the format-4 table nearly every font ships — then any Unicode-platform
-	// (0,*) table, then whatever's first as a fallback.
-	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i32) -> i32 {
-		best : i32 = -1
-		best_score : i32 = -1
-		for e, i in cmap.encodings {
-			score : i32 = 1
-			if e.platform_id == 0 { score = 2 }
-			if e.platform_id == 3 and e.platform_specific_id == 1 { score = 3 }
-			if score > best_score {
-				best_score = score
-				best = i
-			}
-		}
-		if best < 0 { return 0 }
-		return cmap_loc + i32(cmap.encodings[best].offset)
-	}
-
-	// ─── parse: read the table directory, then the tables we use, into fields ───
-	h : Offset_Table = #big_endian bytes[0]
-	h.tables = #big_endian bytes[12]
-	h.tables.len = i32(h.num_tables)
-
-	head_loc := h.tables.get_offset("head")
-	maxp_loc := h.tables.get_offset("maxp")
-	cmap_loc := h.tables.get_offset("cmap")
-	loca_loc := h.tables.get_offset("loca")
-	glyf_loc := h.tables.get_offset("glyf")
-	hhea_loc := h.tables.get_offset("hhea")
-	hmtx_loc := h.tables.get_offset("hmtx")
-
-	head : Head = #big_endian bytes[head_loc]
-	maxp : Maxp = #big_endian bytes[maxp_loc]
-	cmap : Cmap = #big_endian bytes[cmap_loc]
-	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
-	hhea : Hhea = #big_endian bytes[hhea_loc]
-
-	// cmap encoding records sit right after the 4-byte header; fill them, then
-	// pick a Unicode subtable to map character codes through.
-	cmap.encodings = #big_endian bytes[cmap_loc + 4]
-	cmap.encodings.len = i32(cmap.num_subtables)
-	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
-}
-
-// ============================================================================
-// Character map (cmap)
-// ============================================================================
-//
-// Maps a character code to a glyph index. The cmap table holds one or more
-// encoding subtables; the TTF constructor (pick_cmap_subtable) chose one,
-// preferring a Unicode mapping, and passes its absolute file offset here.
-// Only format 4 (segment-mapped BMP — the near-universal desktop format) and
-// format 0 (legacy 256-byte) are decoded; anything else hits a diagnostic
-// rather than silently returning .notdef (glyph 0).
-
-cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
-	if subtable_start == 0 { return 0 }
-	format := read_u16be(bytes[subtable_start])
-	if format == 4 {
-		return cmap_format4_lookup(bytes, subtable_start, char)
-	elif format == 0
-		return cmap_format0_lookup(bytes, subtable_start, char)
-	else
-		print("cmap: unsupported subtable format %", i64(format))
-		return 0
-	}
-}
-
-// Format 4: four parallel u16 arrays of seg_count entries — end codes, start
-// codes, idDelta, idRangeOffset — then the glyphIdArray. Subtable layout:
-// format(2) length(2) language(2) segCountX2(2) searchRange(2)
-// entrySelector(2) rangeShift(2), so the arrays begin at +14 with a 2-byte
-// reservedPad between the end-code and start-code arrays.
-cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
-	seg_x2 := i32(read_u16be(bytes[sub + 6]))
-	end_codes   := sub + 14
-	start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
-	id_deltas   := start_codes + seg_x2
-	id_ranges   := id_deltas + seg_x2
-	seg_count := seg_x2 / 2
-	for s in 0..seg_count {
-		end_code := u32(read_u16be(bytes[end_codes + s * 2]))
-		if char <= end_code {
-			start_code := u32(read_u16be(bytes[start_codes + s * 2]))
-			if char < start_code { return 0 }
-			id_delta := read_u16be(bytes[id_deltas + s * 2])
-			id_range := i32(read_u16be(bytes[id_ranges + s * 2]))
-			if id_range == 0 {
-				// Direct: (char + idDelta) mod 65536. u16() truncates the wide
-				// u32 sum to its low 16 bits, which is the modular reduction
-				// the spec wants (idDelta is a u16-encoded signed value).
-				return u16(char + u32(id_delta))
-			else
-				// Indirect: glyphIdArray address, relative to this
-				// idRangeOffset entry's own location.
-				addr := id_ranges + s * 2 + id_range + 2 * (i32(char) - i32(start_code))
-				g := read_u16be(bytes[addr])
-				if g == 0 { return 0 }
-				return u16(u32(g) + u32(id_delta))
-			}
-		}
-	}
-	return 0
-}
-
-// Format 0: a flat 256-entry byte map at +6 (after format/length/language).
-cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
-	if char > 255 { return 0 }
-	return u16(bytes[sub + 6 + i32(char)])
-}
-
-// ============================================================================
-// Glyph parsing
-// ============================================================================
-//
-// A parsed glyph lives outside the file-format Layout struct — it's the
-// usable form for rendering. parse_glyph reads from the raw glyf-table bytes
-// and writes into a caller-allocated Glyph. The Glyph's partial arrays bound
-// per-glyph contour/point counts statically; the per-glyph .len gets set to
-// what the glyph actually contains.
-
-MAX_GLYPH_CONTOURS :: 256    // covers anything realistic; CJK rarely past ~80
-MAX_GLYPH_POINTS   :: 4096   // bound on points per glyph; maxp.max_points
-                              // is the tight bound but we size statically here
-
-Glyph_Point :: struct {
-	x        : i16
-	y        : i16
-	on_curve : bool
-}
-
-Outline :: struct {
-	num_contours : i16   // < 0 means composite — see is_composite
-
-	// Bounding box in FUnits, copied from the per-glyph header.
-	x_min : i16
-	y_min : i16
-	x_max : i16
-	y_max : i16
-
-	// Simple-glyph: end_pts[i] is the LAST point index of contour i.
-	// points is the flattened per-glyph point list across all contours.
-	end_pts : [..MAX_GLYPH_CONTOURS]u16
-	points  : [..MAX_GLYPH_POINTS]Glyph_Point
-}
-
-// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
-GLYPH_FLAG_ON_CURVE :: u8(0x01)
-GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
-GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
-GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
-GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
-GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
-
-// Parse a single glyph. `glyf_start` is the byte offset of the glyf table
-// within the full file; `glyph_offset` and `glyph_length` come from loca
-// (loca.offsets[i] and loca.offsets[i+1] - loca.offsets[i] respectively).
-// Empty length (length == 0) is a valid encoding for whitespace-shaped
-// glyphs — the parser fills `out` with zeros and returns cleanly.
-// On-disk TTF glyph header: five big-endian i16s, 10 bytes, no padding.
-
-parse_glyph :: fun(glyph_bytes: []byte) -> Outline {
-	glyph : Outline = #big_endian glyph_bytes[:]
-	if glyph_bytes.len == 0 do return glyph
-
-	if glyph.num_contours < 0 {
-		// Composite glyph — skip for now
-		glyph.end_pts.len = 0
-		glyph.points.len = 0
-		return glyph
-	else 
-		// this function only does simple glyphs
-		parse_simple_glyph_body(&glyph, glyph_bytes)
-		return glyph
-	}
-}
-
-parse_simple_glyph_body :: fun(glyph: ^Outline, bytes : []byte) {
-	n_contours := i32(glyph.num_contours)
-	// glyph end points start rght aftre the glyph header?
-	// so we just add 10 to cursor and we're good to go?
-	cursor := 10
-
-	// End-point index per contour. Last entry + 1 is the total point count.
-	glyph.end_pts.len = n_contours
-	for i in 0..n_contours {
-		glyph.end_pts[i] = read_u16be(bytes[cursor])
-		cursor += 2
-	}
-	n_points := i32(glyph.end_pts[n_contours - 1]) + 1
-	glyph.points.len = n_points
-
-	// TrueType hinting bytecode — the spec keeps it inline between the
-	// endpoints and the flags. We don't interpret it; skip past.
-	instr_len := i32(read_u16be(bytes[cursor]))
-	cursor += 2
-	cursor += instr_len
-
-	// Per-point flag bytes, with REPEAT-byte run-length decoding: when bit 3
-	// of a flag is set, the NEXT byte is a count of additional points that
-	// share the same flag. Decoded into a flat flags-per-point local array
-	// so the coord-decode loops below can index by point index cheaply.
-	flags : [..MAX_GLYPH_POINTS]u8
-	flags.len = n_points
-	p : i32 = 0
-	for p < n_points {
-		f := u8(bytes[cursor]); cursor += 1
-		flags[p] = f
-		p += 1
-		if (f & GLYPH_FLAG_REPEAT) != 0 {
-			repeat := i32(bytes[cursor]); cursor += 1
-			for r in 0..repeat {
-				flags[p] = f
-				p += 1
-			}
-		}
-	}
-
-	// X coordinates: each point's x is a signed delta from the previous
-	// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte) and
-	// X_SAME (sign-bit-for-short, or same-as-prev-for-long).
-	x : i32 = 0
-	for i in 0..n_points {
-		f := flags[i]
-		if (f & GLYPH_FLAG_X_SHORT) != 0 {
-			dx := i32(bytes[cursor]); cursor += 1
-			if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
-			x += dx
-		elif (f & GLYPH_FLAG_X_SAME) == 0
-			x += i32(read_i16be(bytes[cursor])); cursor += 2
-		}
-		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
-		glyph.points[i].x = i16(x)
-		glyph.points[i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
-	}
-
-	// Y coordinates: same shape with Y_SHORT/Y_SAME bits.
-	y : i32 = 0
-	for i in 0..n_points {
-		f := flags[i]
-		if (f & GLYPH_FLAG_Y_SHORT) != 0 {
-			dy := i32(bytes[cursor]); cursor += 1
-			if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
-			y += dy
-		elif (f & GLYPH_FLAG_Y_SAME) == 0
-			y += i32(read_i16be(bytes[cursor])); cursor += 2
-		}
-		glyph.points[i].y = i16(y)
-	}
+	return atlas.data
 }
 
 // ============================================================================
@@ -483,7 +65,6 @@ MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..2
 
 // One glyph's place in the atlas + its layout metrics, all in pixels.
 Glyph_Slot :: struct {
-	glyph   : i32   // glyph index
 	ax      : i32   // atlas cell origin (top-left) x
 	ay      : i32   // atlas cell origin y
 	cw      : i32   // cell width  (0 = no pixels, e.g. space)
@@ -769,3 +350,423 @@ dump_atlas_cell :: fun(atlas: ^[]byte, atlas_w: i32, ax: i32, ay: i32, cw: i32, 
 		print(row)
 	}
 }
+
+// Spec type aliases. Transparent aliases over the underlying integer width —
+// arithmetic on them behaves like the underlying int. The fixed-point ones
+// need explicit conversion to f32 to get their real-number value.
+Fixed          :: type i32  // 16.16 signed fixed-point
+F2_Dot_14      :: type i16  // 2.14 signed fixed-point
+Short_Frac     :: type i16  // 1.15 signed fraction
+F_Word         :: type i16  // signed integer in font design units (FUnits)
+U_F_Word       :: type u16  // unsigned integer in FUnits
+Long_Date_Time :: type i64  // seconds since 1904-01-01 00:00
+
+// The parsed font, shaped after the on-disk file: the spec types nested (reach
+// them as TTF.Head etc.) and the tables we read, filled into fields by the
+// constructor's parse body at the bottom. load_glyphs builds one of these and
+// bakes from it — it parses nothing of its own.
+TTF :: struct (bytes: ^[]byte) {
+
+	Offset_Table :: struct {
+		scaler_type : u32
+		num_tables : u16
+		search_range : u16
+		entry_selector: u16
+		range_shift : u16
+		tables: [..32]Table
+	}
+
+	Table :: struct {
+		tag: [4]utf8
+		check_sum : u32
+		offset: u32
+		len: u32
+	}
+
+	#packed Head :: struct {
+		version              : Fixed          // 0x00010000 = version 1.0
+		font_revision        : Fixed          // set by font manufacturer
+		check_sum_adjustment : u32            // sum the font as u32, store 0xB1B0AFBA - sum
+		magic_number         : u32            // must be 0x5F0F3CF5
+		flags                : u16            // bit 0 baseline at y=0, 1 lsb at x=0, 7 needs layout, 9 contains RTL, ...
+		units_per_em         : u16            // 64..16384
+		created              : Long_Date_Time
+		modified             : Long_Date_Time
+		x_min                : F_Word         // min over all glyph bboxes
+		y_min                : F_Word
+		x_max                : F_Word
+		y_max                : F_Word
+		mac_style            : u16            // bit 0 bold, 1 italic, 2 underline, 3 outline, 4 shadow, 5 condensed, 6 extended
+		lowest_rec_ppem      : u16            // smallest readable size in pixels
+		font_direction_hint  : i16            // 0 mixed, 1 LTR, 2 LTR+neutrals, -1 RTL, -2 RTL+neutrals
+		index_to_loc_format  : i16            // 0 = short (u16) offsets in loca, 1 = long (u32)
+		glyph_data_format    : i16            // 0 for current format
+	}
+
+	Maxp :: struct {
+		version                  : Fixed // 0x00010000 (TrueType v1.0) or 0x00005000 (CFF v0.5)
+		num_glyphs               : u16   // total glyph count in the font
+		max_points               : u16   // max points in a non-composite glyph
+		max_contours             : u16   // max contours in a non-composite glyph
+		max_composite_points     : u16   // max points in a composite glyph
+		max_composite_contours   : u16   // max contours in a composite glyph
+		max_zones                : u16   // bytecode hinting; 1 if no twilight zone, else 2
+		max_twilight_points      : u16   // bytecode hinting; max twilight zone points
+		max_storage              : u16   // bytecode hinting; max storage area locations
+		max_function_defs        : u16   // bytecode hinting; max FDEFs
+		max_instruction_defs     : u16   // bytecode hinting; max IDEFs
+		max_stack_elements       : u16   // bytecode hinting; max stack depth
+		max_size_of_instructions : u16   // bytecode hinting; max byte count for any glyph's instructions
+		max_component_elements   : u16   // max top-level components per composite glyph
+		max_component_depth      : u16   // max recursion depth of composite glyphs
+	}
+
+	Cmap :: struct {
+		version       : u16
+		num_subtables : u16
+		encodings     : [..16]Encoding_Record
+	}
+
+	Encoding_Record :: struct {
+		platform_id          : u16 // 0 Unicode, 1 Mac, 3 Microsoft
+		platform_specific_id : u16
+		offset               : u32 // byte offset from start of cmap table to this encoding's subtable
+	}
+
+	Loca :: struct {
+		// offsets array has num_glyphs + 1 entries (last entry gives the end of the final glyph).
+		// Each entry is u16 (short — multiply by 2 for actual byte offset into glyf)
+		// or u32 (long — already a byte offset). Format chosen by head.index_to_loc_format.
+		offsets : [..1 + (1<<16)]u32
+	}
+
+	Glyf :: struct {
+		// Raw glyph data. Each glyph i lives at offsets [loca[i]..loca[i+1]).
+		// Per-glyph header is i16 num_contours (negative for composite), then 4xi16 bbox,
+		// then either simple-glyph contours or composite component records.
+		data : []byte
+	}
+
+	Hhea :: struct {
+		version                 : Fixed     // 0x00010000
+		ascent                  : F_Word    // typographic ascent
+		descent                 : F_Word    // typographic descent (negative)
+		line_gap                : F_Word    // extra recommended leading
+		advance_width_max       : U_F_Word
+		min_left_side_bearing   : F_Word
+		min_right_side_bearing  : F_Word
+		x_max_extent            : F_Word
+		caret_slope_rise        : i16       // 1 for vertical caret
+		caret_slope_run         : i16       // 0 for vertical caret
+		caret_offset            : F_Word    // 0 for non-slanted fonts
+		reserved1               : i16       // must be 0
+		reserved2               : i16       // must be 0
+		reserved3               : i16       // must be 0
+		reserved4               : i16       // must be 0
+		metric_data_format      : i16       // 0 for current format
+		num_of_long_hor_metrics : u16       // count of full metrics records in hmtx; trailing glyphs share advance
+	}
+
+	Hmtx :: struct {
+		// hhea.num_of_long_hor_metrics
+		long_metrics  : []Long_Hor_Metric
+		// num_glyphs - num_of_long_hor_metrics 
+		side_bearings : []F_Word
+	}
+
+	hmtx_prepare ::fun(hhea: Hhea, maxp: Maxp, bytes: []byte) -> Hmtx {
+		hmtx : Hmtx
+		long_m : [:hhea.num_of_long_hor_metrics]Long_Hor_Metric
+		hmtx.long_metrics = long_m
+		hmtx.side_bearings.cap = 0
+
+		return hmtx
+	}
+
+
+
+	Long_Hor_Metric :: struct {
+		advance_width     : U_F_Word
+		left_side_bearing : F_Word
+	}
+
+	// ─── parse: read the table directory, then the tables we use, into fields ───
+	h : Offset_Table = #big_endian bytes[0]
+	h.tables = #big_endian bytes[12]
+	h.tables.len = i32(h.num_tables)
+
+	head_loc := h.tables.get_offset("head")
+	maxp_loc := h.tables.get_offset("maxp")
+	cmap_loc := h.tables.get_offset("cmap")
+	loca_loc := h.tables.get_offset("loca")
+	glyf_loc := h.tables.get_offset("glyf")
+	hhea_loc := h.tables.get_offset("hhea")
+	hmtx_loc := h.tables.get_offset("hmtx")
+
+	head : Head = #big_endian bytes[head_loc]
+	maxp : Maxp = #big_endian bytes[maxp_loc]
+	cmap : Cmap = #big_endian bytes[cmap_loc]
+	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
+	hhea : Hhea = #big_endian bytes[hhea_loc]
+	hmtx : Hmtx = hmtx_prepare(hhea, maxp, bytes[hmtx_loc:])
+
+	// cmap encoding records sit right after the 4-byte header; fill them, then
+	// pick a Unicode subtable to map character codes through.
+	cmap.encodings = #big_endian bytes[cmap_loc + 4]
+	cmap.encodings.len = i32(cmap.num_subtables)
+	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
+
+	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
+		for table in tables {
+			if starts_with(table.tag[:], target) {
+				return i32(table.offset)
+			}
+		}
+		print("Table '%' not found.", target)
+		return 0
+	}
+
+	loca_correct_format :: fun(head: Head, maxp: Maxp,
+		bytes: []byte) -> loca: Loca 
+	{
+		loca.offsets.len = i32(maxp.num_glyphs + 1)		
+		if head.index_to_loc_format == 0 {
+			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
+			off16.len = loca.offsets.len
+			for item, i in off16 {
+				loca.offsets[i] = i32(item) * 2
+			}
+		else
+			loca.offsets = #big_endian bytes[0]
+		}
+		return loca
+	}
+
+	// Choose which cmap subtable to map characters through, returning its
+	// absolute file offset (0 if none). Prefer Microsoft Unicode BMP (3,1) —
+	// the format-4 table nearly every font ships — then any Unicode-platform
+	// (0,*) table, then whatever's first as a fallback.
+	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i32) -> i32 {
+		best : i32 = -1
+		best_score : i32 = -1
+		for e, i in cmap.encodings {
+			score : i32 = 1
+			if e.platform_id == 0 { score = 2 }
+			if e.platform_id == 3 and e.platform_specific_id == 1 { score = 3 }
+			if score > best_score {
+				best_score = score
+				best = i
+			}
+		}
+		if best < 0 { return 0 }
+		return cmap_loc + i32(cmap.encodings[best].offset)
+	}
+}
+
+// ============================================================================
+// Character map (cmap)
+// ============================================================================
+//
+// Maps a character code to a glyph index. The cmap table holds one or more
+// encoding subtables; the TTF constructor (pick_cmap_subtable) chose one,
+// preferring a Unicode mapping, and passes its absolute file offset here.
+// Only format 4 (segment-mapped BMP — the near-universal desktop format) and
+// format 0 (legacy 256-byte) are decoded; anything else hits a diagnostic
+// rather than silently returning .notdef (glyph 0).
+
+cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
+	if subtable_start == 0 { return 0 }
+	format := read_u16be(bytes[subtable_start])
+	if format == 4 {
+		return cmap_format4_lookup(bytes, subtable_start, char)
+	elif format == 0
+		return cmap_format0_lookup(bytes, subtable_start, char)
+	else
+		print("cmap: unsupported subtable format %", i64(format))
+		return 0
+	}
+}
+
+// Format 4: four parallel u16 arrays of seg_count entries — end codes, start
+// codes, idDelta, idRangeOffset — then the glyphIdArray. Subtable layout:
+// format(2) length(2) language(2) segCountX2(2) searchRange(2)
+// entrySelector(2) rangeShift(2), so the arrays begin at +14 with a 2-byte
+// reservedPad between the end-code and start-code arrays.
+cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+	seg_x2 := i32(read_u16be(bytes[sub + 6]))
+	end_codes   := sub + 14
+	start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
+	id_deltas   := start_codes + seg_x2
+	id_ranges   := id_deltas + seg_x2
+	seg_count := seg_x2 / 2
+	for s in 0..seg_count {
+		end_code := u32(read_u16be(bytes[end_codes + s * 2]))
+		if char <= end_code {
+			start_code := u32(read_u16be(bytes[start_codes + s * 2]))
+			if char < start_code { return 0 }
+			id_delta := read_u16be(bytes[id_deltas + s * 2])
+			id_range := i32(read_u16be(bytes[id_ranges + s * 2]))
+			if id_range == 0 {
+				// Direct: (char + idDelta) mod 65536. u16() truncates the wide
+				// u32 sum to its low 16 bits, which is the modular reduction
+				// the spec wants (idDelta is a u16-encoded signed value).
+				return u16(char + u32(id_delta))
+			else
+				// Indirect: glyphIdArray address, relative to this
+				// idRangeOffset entry's own location.
+				addr := id_ranges + s * 2 + id_range + 2 * (i32(char) - i32(start_code))
+				g := read_u16be(bytes[addr])
+				if g == 0 { return 0 }
+				return u16(u32(g) + u32(id_delta))
+			}
+		}
+	}
+	return 0
+}
+
+// Format 0: a flat 256-entry byte map at +6 (after format/length/language).
+cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+	if char > 255 { return 0 }
+	return u16(bytes[sub + 6 + i32(char)])
+}
+
+// ============================================================================
+// Glyph parsing
+// ============================================================================
+//
+// A parsed glyph lives outside the file-format Layout struct — it's the
+// usable form for rendering. parse_glyph reads from the raw glyf-table bytes
+// and writes into a caller-allocated Glyph. The Glyph's partial arrays bound
+// per-glyph contour/point counts statically; the per-glyph .len gets set to
+// what the glyph actually contains.
+
+MAX_GLYPH_CONTOURS :: 256    // covers anything realistic; CJK rarely past ~80
+MAX_GLYPH_POINTS   :: 4096   // bound on points per glyph; maxp.max_points
+                              // is the tight bound but we size statically here
+
+Glyph_Point :: struct {
+	x        : i16
+	y        : i16
+	on_curve : bool
+}
+
+Outline :: struct {
+	num_contours : i16   // < 0 means composite — see is_composite
+
+	// Bounding box in FUnits, copied from the per-glyph header.
+	x_min : i16
+	y_min : i16
+	x_max : i16
+	y_max : i16
+
+	// Simple-glyph: end_pts[i] is the LAST point index of contour i.
+	// points is the flattened per-glyph point list across all contours.
+	end_pts : [..MAX_GLYPH_CONTOURS]u16
+	points  : [..MAX_GLYPH_POINTS]Glyph_Point
+}
+
+// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
+GLYPH_FLAG_ON_CURVE :: u8(0x01)
+GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
+GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
+GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
+GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
+GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
+
+// Parse a single glyph. `glyf_start` is the byte offset of the glyf table
+// within the full file; `glyph_offset` and `glyph_length` come from loca
+// (loca.offsets[i] and loca.offsets[i+1] - loca.offsets[i] respectively).
+// Empty length (length == 0) is a valid encoding for whitespace-shaped
+// glyphs — the parser fills `out` with zeros and returns cleanly.
+// On-disk TTF glyph header: five big-endian i16s, 10 bytes, no padding.
+
+parse_glyph :: fun(glyph_bytes: []byte) -> Outline {
+	glyph : Outline = #big_endian glyph_bytes[:]
+	if glyph_bytes.len == 0 do return glyph
+
+	if glyph.num_contours < 0 {
+		// Composite glyph — skip for now
+		glyph.end_pts.len = 0
+		glyph.points.len = 0
+		return glyph
+	else 
+		// this function only does simple glyphs
+		parse_simple_glyph_body(&glyph, glyph_bytes)
+		return glyph
+	}
+}
+
+parse_simple_glyph_body :: fun(glyph: ^Outline, bytes : []byte) {
+	n_contours := i32(glyph.num_contours)
+	// glyph end points start rght aftre the glyph header?
+	// so we just add 10 to cursor and we're good to go?
+	cursor := 10
+
+	// End-point index per contour. Last entry + 1 is the total point count.
+	glyph.end_pts.len = n_contours
+	for i in 0..n_contours {
+		glyph.end_pts[i] = read_u16be(bytes[cursor])
+		cursor += 2
+	}
+	n_points := i32(glyph.end_pts[n_contours - 1]) + 1
+	glyph.points.len = n_points
+
+	// TrueType hinting bytecode — the spec keeps it inline between the
+	// endpoints and the flags. We don't interpret it; skip past.
+	instr_len := i32(read_u16be(bytes[cursor]))
+	cursor += 2
+	cursor += instr_len
+
+	// Per-point flag bytes, with REPEAT-byte run-length decoding: when bit 3
+	// of a flag is set, the NEXT byte is a count of additional points that
+	// share the same flag. Decoded into a flat flags-per-point local array
+	// so the coord-decode loops below can index by point index cheaply.
+	flags : [..MAX_GLYPH_POINTS]u8
+	flags.len = n_points
+	p : i32 = 0
+	for p < n_points {
+		f := u8(bytes[cursor]); cursor += 1
+		flags[p] = f
+		p += 1
+		if (f & GLYPH_FLAG_REPEAT) != 0 {
+			repeat := i32(bytes[cursor]); cursor += 1
+			for r in 0..repeat {
+				flags[p] = f
+				p += 1
+			}
+		}
+	}
+
+	// X coordinates: each point's x is a signed delta from the previous
+	// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte) and
+	// X_SAME (sign-bit-for-short, or same-as-prev-for-long).
+	x : i32 = 0
+	for i in 0..n_points {
+		f := flags[i]
+		if (f & GLYPH_FLAG_X_SHORT) != 0 {
+			dx := i32(bytes[cursor]); cursor += 1
+			if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
+			x += dx
+		elif (f & GLYPH_FLAG_X_SAME) == 0
+			x += i32(read_i16be(bytes[cursor])); cursor += 2
+		}
+		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
+		glyph.points[i].x = i16(x)
+		glyph.points[i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
+	}
+
+	// Y coordinates: same shape with Y_SHORT/Y_SAME bits.
+	y : i32 = 0
+	for i in 0..n_points {
+		f := flags[i]
+		if (f & GLYPH_FLAG_Y_SHORT) != 0 {
+			dy := i32(bytes[cursor]); cursor += 1
+			if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
+			y += dy
+		elif (f & GLYPH_FLAG_Y_SAME) == 0
+			y += i32(read_i16be(bytes[cursor])); cursor += 2
+		}
+		glyph.points[i].y = i16(y)
+	}
+}
+
