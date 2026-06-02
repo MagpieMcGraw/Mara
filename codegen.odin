@@ -2493,7 +2493,13 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case Type_Void:         return "{}"  // zero-sized struct — LLVM coalesces
     case Type_Error:        return "i64" // error recovery default
     case Type_Err:          return "i32" // open error type — u32 (set_id<<16 | tag)
-    case nil:               return "i64" // nil type (unresolved)
+    case nil:
+        // An unresolved (nil) type reaching type lowering is the same invariant
+        // violation as Type_Any above — abort loudly instead of silently sizing
+        // it i64. Callers that legitimately hold a typeless expression (e.g.
+        // gen_expr_coerced, where a constant operand may carry no .type_) must
+        // guard nil themselves before asking for its IR type.
+        panic("llvm_type_from_checker: nil (unresolved) type reached codegen — the checker left a type unresolved without a diagnostic")
     }
     unreachable()
 }

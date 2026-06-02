@@ -825,8 +825,14 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
 gen_expr_coerced :: proc(g: ^Codegen, e: Expr, target_ir: string) -> string {
     val := gen_expr(g, e, target_ir)
     if target_ir == "" { return val }
+    // No concrete source type to widen from: nil (the checker didn't stamp a
+    // .type_ — e.g. a constant operand in the synthesized Program/Arena
+    // construction path), infer (a literal), or any. gen_expr already emitted
+    // the value at target_ir, so coercion is a no-op — pass through, exactly as
+    // the infer/any cases always did. (nil formerly lowered to i64 here; with
+    // the nil panic in llvm_type_from_checker this guard is what keeps it out.)
     src_t := expr_type(e)
-    if is_infer(src_t) || is_any(src_t) { return val }
+    if src_t == nil || is_infer(src_t) || is_any(src_t) { return val }
     src_ir := llvm_type_from_checker(src_t)
     if src_ir == target_ir { return val }
     if src_ir == "float" && target_ir == "double" {
