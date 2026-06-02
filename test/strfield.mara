@@ -1,30 +1,38 @@
 module strfield
 
-// Regression for infer_field_type_from_default: an UNANNOTATED literal struct
-// field default must infer a real type, not fall through to Type_Any (which
-// lowered to a silent i64). The proof that the type is correct is COMPILE-TIME:
-//   - `.cap` / `.len` / indexing only compile on a partial-array field, never
-//     on the old i64 — so a build failure here is the type regressing.
-//   - the char/int scalar defaults are asserted at runtime (those paths work).
-//
-// KNOWN PRE-EXISTING GAP (orthogonal to the type fix): struct constructors do
-// not yet copy a partial-array/string FIELD default into the field, so
-// `greet.len` / the bytes are uninitialised. This affects the annotated form
-// (`greet : [..128,0]utf8 = "hello"`) identically — it is not a Type_Any issue.
-// Hence we assert `.cap` (type-driven, deterministic) but not `.len`/content.
+// Regression for TWO fixes:
+//  1. infer_field_type_from_default: an UNANNOTATED literal struct-field
+//     default infers a real type (string -> cstr [..128,0]utf8, char -> c8),
+//     not Type_Any -> i64.
+//  2. constructor codegen: a partial-array / string FIELD default is actually
+//     copied into the field (len + bytes + sentinel), instead of allocating a
+//     dead local and leaving the field's len uninitialised. This affected the
+//     annotated form too, so both are checked here.
 
 use mara.string
 
-Config :: struct {
-	greet := "hello"   // unannotated -> cstr shape [..128, 0]utf8 (was Type_Any -> i64)
-	sep   := '/'       // unannotated -> c8                        (was Type_Any -> i64)
-	n     := 7         // scalar sanity
+Inferred :: struct {
+	greet := "hello"   // unannotated -> cstr shape [..128,0]utf8
+	sep   := '/'       // unannotated -> c8
+	n     := 7
+}
+
+Annotated :: struct {
+	greet : [..128, 0]utf8 = "hello"
 }
 
 main :: fun() {
-	c := Config()
-	assert(c.greet.cap >= 128)   // partial-array-shaped field, not i64
-	assert(c.sep == '/')         // c8 field default, not i64
-	assert(c.n == 7)
+	i := Inferred()
+	assert(i.greet.cap >= 128)   // partial-array-shaped field, not i64
+	assert(i.greet.len == 5)     // default actually copied in
+	assert(i.greet[0] == 'h')
+	assert(i.greet[4] == 'o')
+	assert(i.sep == '/')         // c8 field default, not i64
+	assert(i.n == 7)
+
+	a := Annotated()
+	assert(a.greet.len == 5)     // annotated form copies in too
+	assert(a.greet[0] == 'h')
+
 	print("strfield ok")
 }

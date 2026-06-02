@@ -87,6 +87,45 @@ partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_i
     emit_store(g, "ptr", elements_ptr, ptr_gep)
 }
 
+// Write an initial value into an already-allocated, header-stamped partial
+// array at `pa_ptr` (pointer to a `{len, cap, ptr, [N x T]}` structure):
+//   - string literal into a byte/utf8 array: memcpy the bytes, set len, and
+//     write the sentinel terminator.
+//   - another partial array of the same shape: deep copy via partial_array_copy.
+//   - anything else: a located codegen error.
+// Shared by the local partial-array decl path and the struct-field-default path
+// (constructor body) so both initialise len/elements identically — a field
+// default used to skip this entirely and leave the field's len uninitialised.
+gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, elem_t: string, elem_bytes, alloc_cap: int, pa: ^Type_Partial_Array, span: Span, name: string) {
+    if str_lit, str_ok := value.(^Expr_String); str_ok && elem_bytes == 1 {
+        ir_type := partial_array_ir_type(elem_t, alloc_cap)
+        elements_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", pa_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+        str_bytes := str_lit.value
+        if len(str_bytes) > 0 {
+            global, _ := get_string_literal(g, str_bytes)
+            src_ptr := fresh_tmp(g)
+            emit_string_gep(g, src_ptr, len(str_bytes)+1, global)
+            emit_memcpy(g, elements_ptr, src_ptr, len(str_bytes))
+        }
+        len_gep := fresh_tmp(g)
+        emit_slice_gep(g, len_gep, pa_ptr, SLICE.len)
+        emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
+        if pa.has_sentinel {
+            term_ptr := fresh_tmp(g)
+            emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", term_ptr, elements_ptr, len(str_bytes))
+            emit_store(g, "i8", "0", term_ptr)
+        }
+    } else if _, src_pa_ok := distinct_base(expr_type(value)).(^Type_Partial_Array); src_pa_ok {
+        src_ptr := gen_expr(g, value)
+        partial_array_copy(g, pa_ptr, src_ptr, elem_t, alloc_cap)
+    } else {
+        codegen_fatal(g, span,
+            CODE_PARTIAL_ARRAY_INITIALIZER_STRING_LITERAL,
+            name, type_name(expr_type(value)))
+    }
+}
+
 // Alloca a slice header (SLICE_IR_TYPE) and store data_ptr / len / cap into
 // its fields. Returns the alloca ptr. Callers load from it to get the slice value.
 emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, cap_val: string) -> string {

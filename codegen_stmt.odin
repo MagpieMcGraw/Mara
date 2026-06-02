@@ -231,21 +231,34 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // gen_slice_assign_inferred. Decls (var not yet bound) fall through to
         // the partial-array decl path, which already uses the same helper.
         if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
-            is_copy_source := false
+            // Init-value into an EXISTING partial-array var — a prebound struct
+            // field (constructor body) or a genuine `a = b` reassign. Two source
+            // shapes need the partial-array semantics rather than the slice
+            // header-only memcpy in gen_slice_assign_inferred below:
+            //   - a string literal: memcpy bytes + set len + sentinel. Without
+            //     this the field/var kept len = 0 (a struct string-field default
+            //     read back empty / garbage).
+            //   - another partial array (ident / field access): deep copy that
+            //     re-anchors dst.ptr, else the two silently share storage.
+            // Broadcast `{all expr}` and slice-returning calls construct in place
+            // and stay in gen_slice_assign_inferred.
+            init_value := false
             #partial switch _ in s.value {
-            case ^Expr_Ident:        is_copy_source = true
-            case ^Expr_Field_Access: is_copy_source = true
-            }
-            if is_copy_source {
+            case ^Expr_String:
+                init_value = true
+            case ^Expr_Ident, ^Expr_Field_Access:
                 if _, src_pa := distinct_base(expr_type(s.value)).(^Type_Partial_Array); src_pa {
-                    if existing, ex_ok := get_slice(g, s.name); ex_ok {
-                        elem_t := llvm_type_from_checker(pa.elem)
-                        alloc_cap := pa.size
-                        if pa.has_sentinel { alloc_cap += 1 }
-                        src_ptr := gen_expr(g, s.value)
-                        partial_array_copy(g, existing.alloca, src_ptr, elem_t, alloc_cap)
-                        return
-                    }
+                    init_value = true
+                }
+            }
+            if init_value {
+                if existing, ex_ok := get_slice(g, s.name); ex_ok {
+                    elem_t := llvm_type_from_checker(pa.elem)
+                    alloc_cap := pa.size
+                    if pa.has_sentinel { alloc_cap += 1 }
+                    elem_bytes := elem_byte_size(elem_t, g.checked)
+                    gen_partial_array_init_value(g, existing.alloca, s.value, elem_t, elem_bytes, alloc_cap, pa, s.span, s.name)
+                    return
                 }
             }
         }
@@ -459,33 +472,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 sentinel     = pa.sentinel,
             }
             // Optional initial value: string literal into a byte/utf8 partial
-            // array, or another partial array of the same shape. Mirrors the
-            // sized-slice path.
+            // array, or another partial array of the same shape. Shared with the
+            // struct-field-default path above.
             if s.value != nil {
-                if str_lit, str_ok := s.value.(^Expr_String); str_ok && elem_bytes == 1 {
-                    str_bytes := str_lit.value
-                    if len(str_bytes) > 0 {
-                        global, _ := get_string_literal(g, str_bytes)
-                        src_ptr := fresh_tmp(g)
-                        emit_string_gep(g, src_ptr, len(str_bytes)+1, global)
-                        emit_memcpy(g, elements_ptr, src_ptr, len(str_bytes))
-                    }
-                    emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
-                    if pa.has_sentinel {
-                        term_ptr := fresh_tmp(g)
-                        emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", term_ptr, elements_ptr, len(str_bytes))
-                        emit_store(g, "i8", "0", term_ptr)
-                    }
-                } else if _, src_pa_ok := distinct_base(expr_type(s.value)).(^Type_Partial_Array); src_pa_ok {
-                    // Partial-to-partial copy: memcpy the header + inline elements,
-                    // then re-anchor dst.ptr (which still aliases src.elements).
-                    src_ptr := gen_expr(g, s.value)
-                    partial_array_copy(g, alloca_name, src_ptr, elem_t, alloc_cap)
-                } else {
-                    codegen_fatal(g, s.span,
-                        CODE_PARTIAL_ARRAY_INITIALIZER_STRING_LITERAL,
-                        s.name, type_name(expr_type(s.value)))
-                }
+                gen_partial_array_init_value(g, alloca_name, s.value, elem_t, elem_bytes, alloc_cap, pa, s.span, s.name)
             }
             return
         }
