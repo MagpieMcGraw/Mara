@@ -5209,6 +5209,34 @@ infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
     return infer_field_type_from_default(c, value, env)
 }
 
+// The result type of a primitive cast `name(x)` — f32(x) → f32, i32(x) → i32.
+// Returns (_, false) for non-cast names. Pure mapping, no checks/side effects;
+// shared by the cast checker and the field-default mini-evaluator so the latter
+// doesn't mistake a cast for an unknown function and fall back to `any`.
+cast_result_type :: proc(name: string) -> (Type, bool) {
+    switch name {
+    case "i8":   return Type_Numeric{kind = .Signed,   bits = 8},   true
+    case "i16":  return Type_Numeric{kind = .Signed,   bits = 16},  true
+    case "i32":  return Type_Numeric{kind = .Signed,   bits = 32},  true
+    case "i64":  return Type_Numeric{kind = .Signed,   bits = 64},  true
+    case "i128": return Type_Numeric{kind = .Signed,   bits = 128}, true
+    case "isize": return Type_Numeric{kind = .Signed,  bits = 0},   true
+    case "u8":   return Type_Numeric{kind = .Unsigned, bits = 8},   true
+    case "u16":  return Type_Numeric{kind = .Unsigned, bits = 16},  true
+    case "u32":  return Type_Numeric{kind = .Unsigned, bits = 32},  true
+    case "u64":  return Type_Numeric{kind = .Unsigned, bits = 64},  true
+    case "u128": return Type_Numeric{kind = .Unsigned, bits = 128}, true
+    case "usize": return Type_Numeric{kind = .Unsigned, bits = 0},  true
+    case "f16":  return Type_Numeric{kind = .Float,    bits = 16},  true
+    case "f32":  return Type_Numeric{kind = .Float,    bits = 32},  true
+    case "f64":  return Type_F64{},  true
+    case "c8":   return Type_C8{},   true
+    case "utf8": return Type_Utf8{}, true
+    case "bool": return Type_Bool{}, true
+    }
+    return nil, false
+}
+
 // Infer a field's type from its default value without full check_expr
 // (which would fail because the enclosing fun's params/locals aren't in scope yet).
 // Handles: identifiers (constants/variables in env), number/string/bool literals,
@@ -5261,6 +5289,12 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     //   struct constructor (kind=.Struct with params)  → the struct type itself
     //   function call       (kind=.Fun with returns)   → primary return type
     if call, ok := value.(^Expr_Call); ok && call.name != "" {
+        // Primitive cast: f32(x) → f32, i32(x) → i32. Must precede the env
+        // lookup — the cast name isn't a function symbol, so the lookup would
+        // miss and the proc would silently fall through to Type_Any.
+        if ct, is_cast := cast_result_type(call.name); is_cast {
+            return ct
+        }
         lookup := proc(env: ^Type_Env, name: string) -> (Type, bool) {
             return type_env_get(env, name)
         }

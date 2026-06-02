@@ -1,0 +1,14 @@
+module castfield
+
+// A cast in a struct field default must type as the cast's type, not `any`.
+Box :: struct (n: u16) {
+	scale := f32(48) / f32(n)   // was leaking Type_Any via the field mini-evaluator
+}
+
+use_f32 :: fun(x: f32) -> f32 { return x }
+
+main :: fun() {
+	b := Box(24)
+	assert(use_f32(b.scale * 2.0) == 4.0)   // 48/24=2, *2=4 — only compiles if scale is f32
+	print("castfield ok")
+}
