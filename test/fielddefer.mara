@@ -1,0 +1,17 @@
+module fielddefer
+
+take_i32 :: fun(x: i32) -> i32 { return x }
+
+Box :: struct (seed: i32) {
+	size := 1024
+	cell := 48
+	per_row : i32 = size / cell    // annotation should pin size & cell to i32
+}
+
+main :: fun() {
+	b := Box(7)
+	assert(take_i32(b.size) == 1024)   // only compiles if b.size is i32
+	assert(take_i32(b.cell) == 48)
+	assert(b.per_row == 21)            // 1024/48
+	print("fielddefer ok")
+}

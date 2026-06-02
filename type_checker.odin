@@ -5072,6 +5072,30 @@ coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> boo
     return true
 }
 
+// Pin any deferred (inference-cell) struct fields referenced in `expr` to the
+// concrete `target` width — so an annotated field's default settles the fields
+// that feed it (`per_row : i32 = size / cell` → size and cell become i32). Runs
+// during the register loop, where field_map isn't built yet, so it linear-scans
+// ft.fields.
+pin_field_refs :: proc(c: ^Checker, expr: Expr, target: Type, ft: ^Type_Scope, span: Span) {
+    #partial switch v in expr {
+    case ^Expr_Binary:
+        pin_field_refs(c, v.left, target, ft, span)
+        pin_field_refs(c, v.right, target, ft, span)
+    case ^Expr_Unary:
+        pin_field_refs(c, v.operand, target, ft, span)
+    case ^Expr_Ident:
+        for &f in ft.fields {
+            if f.name == v.name {
+                if cell := infer_cell_of(f.type_); cell != nil {
+                    unify_infer_concrete(c, cell, target, span)
+                }
+                break
+            }
+        }
+    }
+}
+
 // Try to extract a compile-time constant numeric value from an expression.
 // Returns both forms — f64 (for fractional/range-vs-float comparisons) and
 // i128 (exact for integer literals up to u64 width). Callers use whichever
@@ -5217,6 +5241,14 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         }
     }
     if n, ok := value.(^Expr_Number); ok {
+        // Struct field (ft != nil): defer to an inference cell so a later
+        // annotated field's default can pin it (e.g. `per_row : i32 = size /
+        // cell` pinning size/cell). Finalized to concrete right after the
+        // register loop. Param defaults (ft == nil) keep the eager width.
+        if ft != nil {
+            if n.is_float { return Type_Infer_Float{cell = new(Infer_Cell)} }
+            return Type_Infer_Int{cell = new(Infer_Cell)}
+        }
         if n.is_float { return Type_F64{} }
         return Type_Numeric{kind = .Signed, bits = 64}
     }
@@ -6947,6 +6979,25 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // a same-named binding in an outer file / module scope. Suppress
                 // the walk-up lookup when we're directly inside a struct body.
                 in_struct_body := env.parent != nil && env.parent.class_scope != nil
+                // Un-annotated struct field: adopt the finalized layout width
+                // (resolved in the register pass) for numeric fields, so the
+                // constructor local's var_type matches the field slot codegen
+                // GEPs into. Slice/struct fields fall through to the normal decl
+                // path (which sets up slice-backing / aliasing).
+                if in_struct_body {
+                    if cs := env.parent.class_scope; cs != nil {
+                        if idx, fm := cs.field_map[s.name]; fm && idx < len(cs.fields) && is_numeric(cs.fields[idx].type_) {
+                            lt := cs.fields[idx].type_
+                            s.var_type = distinct_base(lt)
+                            s.env_type = lt
+                            type_env_set(env, s.name, lt)
+                            if is_infer(val_type) {
+                                check_literal_overflow(c, s.value, lt, s.span)
+                            }
+                            continue
+                        }
+                    }
+                }
                 existing_type: Type
                 loc_env: ^Type_Env
                 already_declared: bool
@@ -7418,6 +7469,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             field_type = resolve_type_expr(field.type_expr, c, s.span, env=&child)
             if field.default_value == nil {
                 check_uninitialized_class_decl(c, s.span, field.name, field_type)
+            } else if is_numeric(field_type) {
+                // Pin earlier deferred fields feeding this annotated field's
+                // default to its width: `per_row : i32 = size / cell` settles
+                // size and cell at i32.
+                pin_field_refs(c, field.default_value, field_type, ft, s.span)
             }
         } else if field.default_value != nil {
             if _, is_uninit := field.default_value.(^Expr_Skip_Constructor); is_uninit {
@@ -7436,11 +7492,23 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
                 check_error(c, s.span, TYPE_USING_FIELD_STRUCT_FIXED_ARRAY, field.name)
             }
         }
+        // Tag a freshly-minted field cell with its name/span for diagnostics.
+        if cell := infer_cell_of(field_type); cell != nil && cell.name == "" {
+            cell.name = field.name
+            cell.span = s.span
+        }
         append(&ft.fields, Struct_Type_Field{name = field.name, type_ = field_type, default_value = field.default_value, is_using = field.is_using})
         added_any_field = true
     }
     if added_any_field {
         build_field_map(&ft.sd)
+    }
+    // Finalize deferred field-default widths: resolve each inference cell to its
+    // pinned width (or i64/f64 if never pinned). After this the layout is
+    // concrete, so external `obj.field` readers — checked in a later pass —
+    // never see a pinnable cell (which would be unsound cross-scope adoption).
+    for &f in ft.fields {
+        f.type_ = solidify_type(f.type_)
     }
     if len(ft.params) == 0 && len(s.typed_params) > 0 {
         for tp in s.typed_params {
