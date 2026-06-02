@@ -5172,11 +5172,11 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
 // This means by the time we check a function body, every sibling declaration
 // at the same scope level is already known. Forward references just work.
 
-// Param-only variant: integer-literal defaults default to slice-header width
-// (the indexing convention) instead of `int` (i64). The `name := 0` shape is
-// overwhelmingly used for indices/offsets — making it i32 avoids forcing
-// every call site to cast a slice-width value down to fit the param. Users
-// wanting i64 spell it explicitly: `name: int = 0` or `name: i64 = 0`.
+// Param-only variant: an integer-literal default takes the slice-header width
+// (`slice_header_width_type` — i64 since the 8-8-8 migration; was i32 under
+// 4-4-8). It tracks the slice width on purpose: `name := 0` is overwhelmingly
+// an index / offset / count, so a slice length flows into the param cast-free.
+// Want a narrower param? annotate it: `name: i32 = 0`.
 // Floats and non-literal defaults fall through to infer_field_type_from_default.
 infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) -> Type {
     if n, ok := value.(^Expr_Number); ok && !n.is_float {
