@@ -5280,8 +5280,25 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         if n.is_float { return Type_F64{} }
         return Type_Numeric{kind = .Signed, bits = 64}
     }
-    // String literals default to Type_Any (no simple string type)
-
+    // A bare string-literal default takes the `cstr` shape (`[..128, 0]utf8`):
+    // a stable field layout independent of the literal's length, unlike
+    // check_expr's literal-sized `[..len, 0]utf8`. (Annotated string fields like
+    // `name : [..16, 0]utf8 = "..."` take the type_expr branch instead.) A
+    // string default longer than 128 bytes is a fixed-size overflow to be
+    // handled later. Without this the field fell through to Type_Any → i64.
+    if _, ok := value.(^Expr_String); ok {
+        pa := new(Type_Partial_Array)
+        pa.size = 128
+        pa.elem = Type_Utf8{}
+        pa.has_sentinel = true
+        pa.sentinel = 0
+        return pa
+    }
+    // Char literal default — an 8-bit character. Without this it fell through
+    // to Type_Any → i64 (wrong width: a char field is i8, not i64).
+    if _, ok := value.(^Expr_Char); ok {
+        return Type_C8{}
+    }
     if _, ok := value.(^Expr_Bool); ok {
         return Type_Bool{}
     }
@@ -5379,6 +5396,14 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         }
         return infer_field_type_from_default(c, td.source, env, ft)
     }
+    // Unhandled default-expr form. Stay Type_Any (NOT Type_Error): codegen now
+    // panics on a Type_Any value type, so an unhandled form surfaces as a loud
+    // abort rather than a silent miscompile. Type_Error would be worse here —
+    // it lowers to i64 silently in codegen, reintroducing the fallback. The
+    // right long-term fix is a real "cannot infer field type — annotate it"
+    // diagnostic, but the register pass silences errors (check_expr can't run:
+    // the enclosing scope's locals aren't bound yet), so that belongs in a
+    // later body-pass refinement.
     return Type_Any{}
 }
 
@@ -7663,14 +7688,14 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
             elem_type = ct.elem
         case ^Type_Scope:
             check_error(c, s.span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, ct.name)
-            elem_type = Type_Any{}
+            elem_type = Type_Error{}  // error recovery: suppress cascades (Type_Any would lower to i64)
         case Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
              Type_CString, Type_C8, Type_Utf8, Type_Byte, Type_Numeric,
              ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Distinct,
              Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Void, Type_Error, Type_Err,
              nil:
             check_error(c, s.span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(coll_type))
-            elem_type = Type_Any{}
+            elem_type = Type_Error{}  // error recovery: suppress cascades (Type_Any would lower to i64)
         }
 
         if s.iter_type != nil {

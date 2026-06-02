@@ -2478,9 +2478,18 @@ llvm_type_from_checker :: proc(t: Type) -> string {
         return "i64"
     case ^Type_Union:       return fmt.tprintf("%%union.%s", union_key(v))
     case ^Type_Distinct:    return llvm_type_from_checker(v.base_type)
-    case Type_Const_Int:    return "i64" // const generic param — should not appear in codegen
-    case Type_Runtime_Size: return "i64" // runtime size — should not appear as field type
-    case Type_Any:          return "i64" // default to i64 for untyped
+    // The following three never legitimately reach codegen as a value type:
+    // codegen only runs when the checker reported zero errors (see main.odin),
+    // so any of these arriving here means the checker minted a bad type WITHOUT
+    // a diagnostic — a silent miscompile. Abort loudly instead of defaulting to
+    // i64 (which silently produced wrong-sized storage). Per "errors over
+    // fallbacks": emit and abort, don't continue.
+    case Type_Const_Int:
+        panic("llvm_type_from_checker: Type_Const_Int reached codegen — a const generic parameter should have been substituted to a concrete value before codegen")
+    case Type_Runtime_Size:
+        panic("llvm_type_from_checker: Type_Runtime_Size reached codegen — a runtime-size generic parameter should not appear as a value or field type")
+    case Type_Any:
+        panic("llvm_type_from_checker: Type_Any reached codegen as a value type — the checker minted an untyped value without a diagnostic. Type_Any is only valid as an opaque-pointer element (^Type_Ptr.elem)")
     case Type_Void:         return "{}"  // zero-sized struct — LLVM coalesces
     case Type_Error:        return "i64" // error recovery default
     case Type_Err:          return "i32" // open error type — u32 (set_id<<16 | tag)

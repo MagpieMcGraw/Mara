@@ -1,0 +1,30 @@
+module strfield
+
+// Regression for infer_field_type_from_default: an UNANNOTATED literal struct
+// field default must infer a real type, not fall through to Type_Any (which
+// lowered to a silent i64). The proof that the type is correct is COMPILE-TIME:
+//   - `.cap` / `.len` / indexing only compile on a partial-array field, never
+//     on the old i64 — so a build failure here is the type regressing.
+//   - the char/int scalar defaults are asserted at runtime (those paths work).
+//
+// KNOWN PRE-EXISTING GAP (orthogonal to the type fix): struct constructors do
+// not yet copy a partial-array/string FIELD default into the field, so
+// `greet.len` / the bytes are uninitialised. This affects the annotated form
+// (`greet : [..128,0]utf8 = "hello"`) identically — it is not a Type_Any issue.
+// Hence we assert `.cap` (type-driven, deterministic) but not `.len`/content.
+
+use mara.string
+
+Config :: struct {
+	greet := "hello"   // unannotated -> cstr shape [..128, 0]utf8 (was Type_Any -> i64)
+	sep   := '/'       // unannotated -> c8                        (was Type_Any -> i64)
+	n     := 7         // scalar sanity
+}
+
+main :: fun() {
+	c := Config()
+	assert(c.greet.cap >= 128)   // partial-array-shaped field, not i64
+	assert(c.sep == '/')         // c8 field default, not i64
+	assert(c.n == 7)
+	print("strfield ok")
+}
