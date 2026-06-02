@@ -1,0 +1,21 @@
+module ctorstr
+
+use mara.string
+
+// Parameterized struct (constructor with a param) + a string field default.
+// These prebind fields into %sret and run defaults via gen_stmt, so the
+// line-233 fix should cover them too.
+P :: struct(x: i32) {
+	label := "node"
+	val := x
+}
+
+main :: fun() {
+	p := P(5)
+	print(p.label.len)        // expect 4 ("node")
+	print(p.val)              // 5
+	assert(p.label.len == 4)
+	assert(p.label[0] == 'n')
+	assert(p.val == 5)
+	print("ctorstr ok")
+}
