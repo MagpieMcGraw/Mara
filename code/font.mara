@@ -11,21 +11,22 @@ Glyph :: struct {
 	bearing_x, bearing_y, advance :f32
 }
 
+Atlas :: struct (bytes: []byte, u_per_em: u16) {
+	size := 1024
+	cell := 48
+	pixels := 32 // used to scale em to pixels
+	pad := 4
+	per_row : i32 = size / cell
+	px_scale := f32(pixels) / f32(u_per_em)
+	data := bytes
+}
+
 load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 	ttf_file : [..2 * MB]byte
 	read_err := read_entire_file(font, &ttf_file)
 	if bool(read_err) do print(read_err)
 	ttf := TTF(&ttf_file)
 
-	Atlas :: struct (bytes: []byte, u_per_em: u16) {
-		size := 1024
-		cell := 48
-		pixels := 32 // used to scale em to pixels
-		pad := 4
-		per_row : i32 = size / cell
-		px_scale := f32(pixels) / f32(u_per_em)
-		data := bytes
-	}
 	storage : [3 * MB]byte
 	atlas := Atlas(storage[:], ttf.head.units_per_em)
 
@@ -43,7 +44,7 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 		adv_units := f32(read_u16be(ttf_file[ttf.hmtx_loc + glyph_index * 4]))
 		glyphs[i].advance = adv_units * atlas.px_scale
 
-		rasterize_msdf()
+		rasterize_msdf(&outline, &glyphs[i], &atlas)
 	}
 
 	return atlas.data
@@ -73,7 +74,6 @@ Glyph_Slot :: struct {
 	by      : i32   // baseline→cell-top offset (above baseline, incl. pad)
 	advance : i32   // pen advance
 }
-
 
 Raster_Edge :: struct {
 	x0 : f32
@@ -109,8 +109,7 @@ edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
 // Rasterize g's MSDF into `atlas` (RGB, row stride atlas_w*3) at cell origin
 // (dst_x, dst_y), and fill `slot` with the cell size + bearings. `pad` is the
 // distance-field margin around the glyph. Caller fills slot.glyph/ax/ay/advance.
-rasterize_msdf :: fun(g: ^Outline, units_per_em: u16, px_em: i32, pad: i32,
-	atlas: ^[]byte, atlas_w: i32, dst_x, dst_y: i32, slot: ^Glyph_Slot)
+rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 {
 	scale := f32(px_em) / f32(units_per_em)
 	if g.num_contours <= 0 { slot.cw = 0 slot.ch = 0 return }
@@ -305,6 +304,7 @@ rasterize_msdf :: fun(g: ^Outline, units_per_em: u16, px_em: i32, pad: i32,
 				// when exactly one endpoint is at/above it
 				crosses := (ay <= qy and by > qy) or (ay > qy and by <= qy)
 				if crosses {
+
 					tt := (qy - ay) / (by - ay)
 					xint := ax + tt * (bx - ax)
 					if qx < xint {
@@ -640,10 +640,7 @@ cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
 // per-glyph contour/point counts statically; the per-glyph .len gets set to
 // what the glyph actually contains.
 
-MAX_GLYPH_CONTOURS :: 256    // covers anything realistic; CJK rarely past ~80
-MAX_GLYPH_POINTS   :: 4096   // bound on points per glyph; maxp.max_points
-                              // is the tight bound but we size statically here
-
+MAX_GLYPH_POINTS   :: 4096
 Glyph_Point :: struct {
 	x        : i16
 	y        : i16
@@ -651,7 +648,7 @@ Glyph_Point :: struct {
 }
 
 Outline :: struct {
-	num_contours : i16   // < 0 means composite — see is_composite
+	num_contours : i16   // < 0 means composite
 
 	// Bounding box in FUnits, copied from the per-glyph header.
 	x_min : i16
@@ -661,24 +658,9 @@ Outline :: struct {
 
 	// Simple-glyph: end_pts[i] is the LAST point index of contour i.
 	// points is the flattened per-glyph point list across all contours.
-	end_pts : [..MAX_GLYPH_CONTOURS]u16
+	end_pts : [..256]u16
 	points  : [..MAX_GLYPH_POINTS]Glyph_Point
 }
-
-// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
-GLYPH_FLAG_ON_CURVE :: u8(0x01)
-GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
-GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
-GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
-GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
-GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
-
-// Parse a single glyph. `glyf_start` is the byte offset of the glyf table
-// within the full file; `glyph_offset` and `glyph_length` come from loca
-// (loca.offsets[i] and loca.offsets[i+1] - loca.offsets[i] respectively).
-// Empty length (length == 0) is a valid encoding for whitespace-shaped
-// glyphs — the parser fills `out` with zeros and returns cleanly.
-// On-disk TTF glyph header: five big-endian i16s, 10 bytes, no padding.
 
 parse_glyph :: fun(glyph_bytes: []byte) -> Outline {
 	glyph : Outline = #big_endian glyph_bytes[:]
@@ -696,6 +678,13 @@ parse_glyph :: fun(glyph_bytes: []byte) -> Outline {
 	}
 }
 
+// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
+GLYPH_FLAG_ON_CURVE :: u8(0x01)
+GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
+GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
+GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
+GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
+GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
 parse_simple_glyph_body :: fun(glyph: ^Outline, bytes : []byte) {
 	n_contours := i32(glyph.num_contours)
 	// glyph end points start rght aftre the glyph header?
