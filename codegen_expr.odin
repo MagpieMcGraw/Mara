@@ -1042,6 +1042,61 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     return result
 }
 
+// Lower one argument of a Mara-convention call to its single "type val" IR
+// operand string. Shared by gen_call_inner, gen_call_into_struct, and
+// gen_call_into_array so the per-arg lowering rules can't drift between the
+// scalar-return, struct-return (NRVO), and array-return (NRVO) paths — they
+// already diverged twice (the SLICE_IR_TYPE and byte-buffer materialization
+// branches were each missing from a subset). Every branch produces exactly one
+// arg string, so a single return value suffices.
+gen_mara_call_arg :: proc(g: ^Codegen, arg: Expr, i: int, info: ^Fun_Info, cs_resolved: ^Checked_Scope, has_cs: bool) -> string {
+    if i < len(info.param_structs) && info.param_structs[i] != "" {
+        // Struct arg: pass as ptr (no target_type needed)
+        val := gen_expr(g, arg)
+        return fmt.tprintf("ptr %s", val)
+    }
+
+    pt := "i64"
+    if i < len(info.param_types) {
+        pt = info.param_types[i]
+    }
+    // Slice / partial-array param: pass a pointer to the header (the
+    // fat-pointer-ref ABI). Without this a cstr/partial-array arg (e.g. a
+    // string literal to a `cstr` param) is emitted as `{i64,i64,ptr} %val`
+    // while the callee declares the param `ptr` — an IR mismatch clang rejects.
+    if pt == SLICE_IR_TYPE {
+        return gen_slice_param_arg(g, arg)
+    }
+    if has_cs && i < len(cs_resolved.params) {
+        if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
+            return fmt.tprintf("ptr %s", extracted)
+        }
+    }
+    // Byte-buffer source → fixed-array param: reinterpret-read sizeof(pt) bytes
+    // from `buf[offset:]` / `buf[offset]` into a freshly-allocated `[N x T]` and
+    // load it. Mirrors the same pattern that fires at declaration sites
+    // (`arr : [N]T = buf[off]`). gen_expr would produce a slice header for
+    // `bytes[lo:hi]` — the wrong shape — so we short-circuit before calling it.
+    if strings.has_prefix(pt, "[") {
+        materialized := ""
+        param_ty: Type
+        if has_cs && i < len(cs_resolved.params) { param_ty = cs_resolved.params[i].type_ }
+        if sl_expr, sl_ok := arg.(^Expr_Slice); sl_ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
+            materialized = emit_array_from_byte_buffer(g, sl_expr.expr, sl_expr.low, pt, sl_expr.span, param_ty, sl_expr.is_big_endian)
+        } else if idx_expr, idx_ok := arg.(^Expr_Index); idx_ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
+            materialized = emit_array_from_byte_buffer(g, idx_expr.expr, idx_expr.index, pt, idx_expr.span, param_ty, idx_expr.is_big_endian)
+        }
+        if materialized != "" {
+            return fmt.tprintf("%s %s", pt, materialized)
+        }
+    }
+    val := gen_expr_coerced(g, arg, pt)
+    if strings.has_prefix(pt, "[") {
+        val = gen_array_param_arg(g, arg, pt, val)
+    }
+    return fmt.tprintf("%s %s", pt, val)
+}
+
 gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     // Desugared builtin: type checker rewrote this call to a simpler expression
     if e.desugared != nil {
@@ -1170,51 +1225,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             has_cs = true
         }
         for arg, i in e.args {
-            if i < len(info.param_structs) && info.param_structs[i] != "" {
-                // Struct arg: pass as ptr (no target_type needed)
-                val := gen_expr(g, arg)
-                append(&arg_strs, fmt.tprintf("ptr %s", val))
-            } else {
-                pt := "i64"
-                if i < len(info.param_types) {
-                    pt = info.param_types[i]
-                }
-                if pt == SLICE_IR_TYPE {
-                    append(&arg_strs, gen_slice_param_arg(g, arg))
-                    continue
-                }
-                if has_cs && i < len(cs_resolved.params) {
-                    if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
-                        append(&arg_strs, fmt.tprintf("ptr %s", extracted))
-                        continue
-                    }
-                }
-                // Byte-buffer source → fixed-array param: reinterpret-read
-                // sizeof(pt) bytes from `buf[offset:]` / `buf[offset]` into a
-                // freshly-allocated `[N x T]` and load it. Mirrors the same
-                // pattern that fires at declaration sites (`arr : [N]T = buf[off]`).
-                // gen_expr would produce a slice header for `bytes[lo:hi]` —
-                // the wrong shape — so we short-circuit before calling it.
-                if strings.has_prefix(pt, "[") {
-                    materialized := ""
-                    param_ty: Type
-                    if has_cs && i < len(cs_resolved.params) { param_ty = cs_resolved.params[i].type_ }
-                    if sl_expr, sl_ok := arg.(^Expr_Slice); sl_ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
-                        materialized = emit_array_from_byte_buffer(g, sl_expr.expr, sl_expr.low, pt, sl_expr.span, param_ty, sl_expr.is_big_endian)
-                    } else if idx_expr, idx_ok := arg.(^Expr_Index); idx_ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
-                        materialized = emit_array_from_byte_buffer(g, idx_expr.expr, idx_expr.index, pt, idx_expr.span, param_ty, idx_expr.is_big_endian)
-                    }
-                    if materialized != "" {
-                        append(&arg_strs, fmt.tprintf("%s %s", pt, materialized))
-                        continue
-                    }
-                }
-                val := gen_expr_coerced(g, arg, pt)
-                if strings.has_prefix(pt, "[") {
-                    val = gen_array_param_arg(g, arg, pt, val)
-                }
-                append(&arg_strs, fmt.tprintf("%s %s", pt, val))
-            }
+            append(&arg_strs, gen_mara_call_arg(g, arg, i, &info, &cs_resolved, has_cs))
         }
 
         if info.ret_struct != "" {
@@ -1659,30 +1670,7 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
     }
     arg_strs: [dynamic]string
     for arg, i in e.args {
-        if i < len(info.param_structs) && info.param_structs[i] != "" {
-            val := gen_expr(g, arg)
-            append(&arg_strs, fmt.tprintf("ptr %s", val))
-        } else {
-            pt := "i64"
-            if i < len(info.param_types) {
-                pt = info.param_types[i]
-            }
-            if pt == SLICE_IR_TYPE {
-                append(&arg_strs, gen_slice_param_arg(g, arg))
-                continue
-            }
-            if has_cs && i < len(cs_resolved.params) {
-                if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
-                    append(&arg_strs, fmt.tprintf("ptr %s", extracted))
-                    continue
-                }
-            }
-            val := gen_expr_coerced(g, arg, pt)
-            if strings.has_prefix(pt, "[") {
-                val = gen_array_param_arg(g, arg, pt, val)
-            }
-            append(&arg_strs, fmt.tprintf("%s %s", pt, val))
-        }
+        append(&arg_strs, gen_mara_call_arg(g, arg, i, info, &cs_resolved, has_cs))
     }
 
     append(&arg_strs, fmt.tprintf("ptr %s", dest_ptr))
@@ -1712,40 +1700,7 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
     // Build normal arguments
     arg_strs: [dynamic]string
     for arg, i in e.args {
-        if i < len(info.param_structs) && info.param_structs[i] != "" {
-            val := gen_expr(g, arg)
-            append(&arg_strs, fmt.tprintf("ptr %s", val))
-        } else {
-            pt := "i64"
-            if i < len(info.param_types) {
-                pt = info.param_types[i]
-            }
-            // Slice / partial-array param: pass a pointer to the header (the
-            // fat-pointer-ref ABI), exactly as gen_call_inner and
-            // gen_call_into_struct do. Without this, a cstr/partial-array arg
-            // (e.g. a string literal to a `cstr` param) was emitted as
-            // `{i64,i64,ptr} %val` while the callee declares the param `ptr` —
-            // an IR type mismatch clang rejects.
-            if pt == SLICE_IR_TYPE {
-                append(&arg_strs, gen_slice_param_arg(g, arg))
-                continue
-            }
-            if has_cs && i < len(cs_resolved.params) {
-                if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
-                    append(&arg_strs, fmt.tprintf("ptr %s", extracted))
-                    continue
-                }
-            }
-            val := gen_expr_coerced(g, arg, pt)
-            // Array param passed by value: route through the shared helper so
-            // every arg shape (Ident, Field_Access, Call, overload-Binary,
-            // string-literal, …) gets the same load-from-ptr treatment as
-            // the regular gen_call path.
-            if strings.has_prefix(pt, "[") {
-                val = gen_array_param_arg(g, arg, pt, val)
-            }
-            append(&arg_strs, fmt.tprintf("%s %s", pt, val))
-        }
+        append(&arg_strs, gen_mara_call_arg(g, arg, i, info, &cs_resolved, has_cs))
     }
 
     // Append the destination's data pointer as sret arg
