@@ -1720,6 +1720,16 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
             if i < len(info.param_types) {
                 pt = info.param_types[i]
             }
+            // Slice / partial-array param: pass a pointer to the header (the
+            // fat-pointer-ref ABI), exactly as gen_call_inner and
+            // gen_call_into_struct do. Without this, a cstr/partial-array arg
+            // (e.g. a string literal to a `cstr` param) was emitted as
+            // `{i64,i64,ptr} %val` while the callee declares the param `ptr` —
+            // an IR type mismatch clang rejects.
+            if pt == SLICE_IR_TYPE {
+                append(&arg_strs, gen_slice_param_arg(g, arg))
+                continue
+            }
             if has_cs && i < len(cs_resolved.params) {
                 if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
                     append(&arg_strs, fmt.tprintf("ptr %s", extracted))
