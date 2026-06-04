@@ -1,0 +1,25 @@
+module localstruct
+
+// Regression: a struct defined inside a function body must be usable as the
+// element type of that function's own local declarations. Before the fix, a
+// function's nested defs were never registered into ft.types (only a struct's
+// were), so the field-resolution loop couldn't resolve `Node` here and reported
+// "unknown type 'Node'" against the function head.
+
+main :: fun() {
+	Node :: struct {
+		x, y: f32
+		on_curve: bool
+	}
+	nodes : [..8]Node
+	nodes[0].x = 1.0
+	nodes[0].y = 2.0
+	nodes[0].on_curve = true
+	nodes.len = 1
+
+	sum : f32 = 0.0
+	for i in 0..i32(nodes.len) {
+		sum = sum + nodes[i].x + nodes[i].y
+	}
+	assert(sum > 2.9)
+}

@@ -7487,6 +7487,18 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.kind == .Fun && !is_method {
         type_env_set(&child, "Self", ft)
     }
+    // A struct's nested defs are registered into ft.types during module
+    // registration (register_scope_defs); a function's are NOT. Without that,
+    // a body-local type used in the function's own local declarations — e.g.
+    // `nodes : [..N]Node` where `Node :: struct {…}` is defined in the same
+    // body — can't be resolved by the field loop below (it runs before the
+    // body pass that would otherwise hoist these). Register them here, ahead
+    // of that loop, mirroring the struct path. The ft.types guard keeps a
+    // re-entry from re-mangling the nested names. (TTF is the precedent that
+    // register_scope_defs + the later body pass coexist safely.)
+    if ft.kind == .Fun && ft.types == nil && len(s.body) > 0 {
+        register_scope_defs(c, ft, &ft.sd, s.body, parent_env)
+    }
     if ft.kind == .Fun {
         if ft.types != nil {
             for bare, t in ft.types { type_env_set(&child, bare, t) }
