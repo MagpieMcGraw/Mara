@@ -64,17 +64,6 @@ RASTER_QUAD_STEPS :: 6
 MAX_RASTER_EDGES  :: 4096
 MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
 
-// One glyph's place in the atlas + its layout metrics, all in pixels.
-Glyph_Slot :: struct {
-	ax      : i32   // atlas cell origin (top-left) x
-	ay      : i32   // atlas cell origin y
-	cw      : i32   // cell width  (0 = no pixels, e.g. space)
-	ch      : i32   // cell height
-	bx      : i32   // pen→cell-left offset (left bearing, incl. msdf pad)
-	by      : i32   // baseline→cell-top offset (above baseline, incl. pad)
-	advance : i32   // pen advance
-}
-
 Raster_Edge :: struct {
 	x0 : f32
 	y0 : f32
@@ -106,222 +95,229 @@ edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
 	return cosang < 0.7
 }
 
-// Rasterize g's MSDF into `atlas` (RGB, row stride atlas_w*3) at cell origin
-// (dst_x, dst_y), and fill `slot` with the cell size + bearings. `pad` is the
-// distance-field margin around the glyph. Caller fills slot.glyph/ax/ay/advance.
+// Rasterize the glyph's MSDF into the atlas. The caller has already placed the
+// glyph: `glyph.x/y` are the cell's top-left pixel origin and `glyph.advance` is
+// set, so this fills the rest — `glyph.w/h` (cell size in px) and
+// `glyph.bearing_x/y` (pen→cell offsets) — then writes the cell's RGB distance
+// field into `atlas.data`. The median of the three channels reconstructs the
+// glyph with corners kept sharp.
 rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 {
-	scale := f32(px_em) / f32(units_per_em)
-	if g.num_contours <= 0 { slot.cw = 0 slot.ch = 0 return }
-	pf := f32(pad)
-	// fold the pad into the transform origins, so the existing
-	// (gx - gx_min)*scale / (gy_max - gy)*scale below pick it up for free
-	gx_min := f32(i32(g.x_min)) - pf / scale
-	gy_max := f32(i32(g.y_max)) + pf / scale
-	w := i32(f32(i32(g.x_max) - i32(g.x_min)) * scale) + 2 * pad + 1
-	h := i32(f32(i32(g.y_max) - i32(g.y_min)) * scale) + 2 * pad + 1
-	slot.cw = w
-	slot.ch = h
-	slot.bx = i32(f32(i32(g.x_min)) * scale) - pad
-	slot.by = i32(f32(i32(g.y_max)) * scale) + pad
+	if outline.num_contours <= 0 { glyph.w = 0 glyph.h = 0 return }
+
+	scale     := atlas.px_scale     // font units → pixels
+	pad       := i32(atlas.pad)     // distance-field margin (px) around the glyph
+	pad_units := f32(pad) / scale   // that margin expressed back in font units
+
+	// Fold the pad into the transform origins so the (x - x_origin)*scale and
+	// (y_origin - y)*scale conversions below pick it up for free. x grows right;
+	// y is flipped (font y grows up, pixel rows grow down).
+	x_origin_units := f32(i32(outline.x_min)) - pad_units
+	y_origin_units := f32(i32(outline.y_max)) + pad_units
+
+	cell_w := i32(f32(i32(outline.x_max) - i32(outline.x_min)) * scale) + 2 * pad + 1
+	cell_h := i32(f32(i32(outline.y_max) - i32(outline.y_min)) * scale) + 2 * pad + 1
+	glyph.w = cell_w
+	glyph.h = cell_h
+	glyph.bearing_x = f32(i32(outline.x_min)) * scale - f32(pad)
+	glyph.bearing_y = f32(i32(outline.y_max)) * scale + f32(pad)
 
 	edges : [..MAX_RASTER_EDGES]Raster_Edge
 	edges.len = MAX_RASTER_EDGES
-	ne : i32 = 0
-	cont_first : [..512]i32   // edge-index where each contour's edges begin (+sentinel)
-	cont_first.len = 512
-	nc : i32 = 0              // number of contours that produced edges
+	edge_count : i32 = 0
+	contour_start : [..512]i32   // edge index where each contour's run begins (+sentinel)
+	contour_start.len = 512
+	contour_count : i32 = 0      // contours that actually produced edges
 
-	nx  : [..1024]f32
-	ny  : [..1024]f32
-	non : [..1024]bool
-	nx.len = 1024 ny.len = 1024 non.len = 1024
+	node_x        : [..1024]f32
+	node_y        : [..1024]f32
+	node_on_curve : [..1024]bool
+	node_x.len = 1024 node_y.len = 1024 node_on_curve.len = 1024
 
-	n_contours := i32(g.num_contours)
-	cstart : i32 = 0
+	n_contours := i32(outline.num_contours)
+	point_start : i32 = 0
 	for ci in 0..n_contours {
-		cend := i32(g.end_pts[ci])
-		n := cend - cstart + 1
-		if n >= 2 {
-			c_lo := ne
+		point_end := i32(outline.end_pts[ci])
+		n_points := point_end - point_start + 1
+		if n_points >= 2 {
+			first_edge := edge_count
 			// first on-curve point in the contour (relative index)
-			first_on : i32 = -1
-			for k in 0..n {
-				if g.points[cstart + k].on_curve {
-					if first_on < 0 { first_on = k }
+			first_on_curve : i32 = -1
+			for k in 0..n_points {
+				if outline.points[point_start + k].on_curve {
+					if first_on_curve < 0 { first_on_curve = k }
 				}
 			}
-			if first_on < 0 { first_on = 0 }
+			if first_on_curve < 0 { first_on_curve = 0 }
 
-			// build node ring starting on-curve, inserting implied on-curve
-			// midpoints between consecutive off-curve control points
-			nn : i32 = 0
-			nx[nn] = (f32(i32(g.points[cstart + first_on].x)) - gx_min) * scale
-			ny[nn] = (gy_max - f32(i32(g.points[cstart + first_on].y))) * scale
-			non[nn] = true
-			nn += 1
+			// Build the node ring starting on-curve, inserting the implied
+			// on-curve midpoints between consecutive off-curve control points.
+			node_count : i32 = 0
+			node_x[node_count] = (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin_units) * scale
+			node_y[node_count] = (y_origin_units - f32(i32(outline.points[point_start + first_on_curve].y))) * scale
+			node_on_curve[node_count] = true
+			node_count += 1
 			have_off := false
-			ox : f32 = 0.0
-			oy : f32 = 0.0
-			for j in 1..n {
-				idx := first_on + j
-				if idx >= n { idx = idx - n }
-				p := g.points[cstart + idx]
-				ppx := (f32(i32(p.x)) - gx_min) * scale
-				ppy := (gy_max - f32(i32(p.y))) * scale
-				if p.on_curve {
+			off_x : f32 = 0.0
+			off_y : f32 = 0.0
+			for j in 1..n_points {
+				ring_idx := first_on_curve + j
+				if ring_idx >= n_points { ring_idx = ring_idx - n_points }
+				point := outline.points[point_start + ring_idx]
+				point_x := (f32(i32(point.x)) - x_origin_units) * scale
+				point_y := (y_origin_units - f32(i32(point.y))) * scale
+				if point.on_curve {
 					if have_off {
-						nx[nn] = ox ny[nn] = oy non[nn] = false nn += 1
+						node_x[node_count] = off_x node_y[node_count] = off_y node_on_curve[node_count] = false node_count += 1
 						have_off = false
 					}
-					nx[nn] = ppx ny[nn] = ppy non[nn] = true nn += 1
+					node_x[node_count] = point_x node_y[node_count] = point_y node_on_curve[node_count] = true node_count += 1
 				elif have_off
 					// two consecutive off-curve controls — TrueType implies an
 					// on-curve point at their midpoint
-					nx[nn] = ox ny[nn] = oy non[nn] = false nn += 1
-					nx[nn] = (ox + ppx) * 0.5 ny[nn] = (oy + ppy) * 0.5 non[nn] = true nn += 1
-					ox = ppx oy = ppy have_off = true
+					node_x[node_count] = off_x node_y[node_count] = off_y node_on_curve[node_count] = false node_count += 1
+					node_x[node_count] = (off_x + point_x) * 0.5 node_y[node_count] = (off_y + point_y) * 0.5 node_on_curve[node_count] = true node_count += 1
+					off_x = point_x off_y = point_y have_off = true
 				else
-					ox = ppx oy = ppy have_off = true
+					off_x = point_x off_y = point_y have_off = true
 				}
 			}
-			// didn't know this was possible
-			if have_off { nx[nn] = ox ny[nn] = oy non[nn] = false nn += 1 }
+			// a contour can end on a trailing off-curve control
+			if have_off { node_x[node_count] = off_x node_y[node_count] = off_y node_on_curve[node_count] = false node_count += 1 }
 
-			// walk the ring, emitting flattened edges; close back to node 0
-			penx := nx[0]
-			peny := ny[0]
-			i : i32 = 1
-			for i < nn {
-				if non[i] {
-					if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{penx, peny, nx[i], ny[i], 0} ne += 1 }
-					penx = nx[i] peny = ny[i]
-					i += 1
+			// Walk the ring, emitting flattened edges; close back to node 0.
+			pen_x := node_x[0]
+			pen_y := node_y[0]
+			node_i : i32 = 1
+			for node_i < node_count {
+				if node_on_curve[node_i] {
+					if edge_count < MAX_RASTER_EDGES { edges[edge_count] = Raster_Edge{pen_x, pen_y, node_x[node_i], node_y[node_i], 0} edge_count += 1 }
+					pen_x = node_x[node_i] pen_y = node_y[node_i]
+					node_i += 1
 				else
-					cx := nx[i]
-					cy := ny[i]
-					exx : f32 = 0.0
-					eyy : f32 = 0.0
-					ni := i + 1
-					if ni >= nn { exx = nx[0] eyy = ny[0] else exx = nx[ni] eyy = ny[ni] }
-					pvx := penx
-					pvy := peny
-					for s in 0..RASTER_QUAD_STEPS {
-						t := f32(s + 1) / f32(RASTER_QUAD_STEPS)
-						omt := 1.0 - t
-						bx := omt*omt*penx + 2.0*omt*t*cx + t*t*exx
-						by := omt*omt*peny + 2.0*omt*t*cy + t*t*eyy
-						if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{pvx, pvy, bx, by, 0} ne += 1 }
-						pvx = bx pvy = by
+					ctrl_x := node_x[node_i]
+					ctrl_y := node_y[node_i]
+					end_x : f32 = 0.0
+					end_y : f32 = 0.0
+					next_i := node_i + 1
+					if next_i >= node_count { end_x = node_x[0] end_y = node_y[0] else end_x = node_x[next_i] end_y = node_y[next_i] }
+					prev_x := pen_x
+					prev_y := pen_y
+					for step in 0..RASTER_QUAD_STEPS {
+						t := f32(step + 1) / f32(RASTER_QUAD_STEPS)
+						inv_t := 1.0 - t
+						curve_x := inv_t*inv_t*pen_x + 2.0*inv_t*t*ctrl_x + t*t*end_x
+						curve_y := inv_t*inv_t*pen_y + 2.0*inv_t*t*ctrl_y + t*t*end_y
+						if edge_count < MAX_RASTER_EDGES { edges[edge_count] = Raster_Edge{prev_x, prev_y, curve_x, curve_y, 0} edge_count += 1 }
+						prev_x = curve_x prev_y = curve_y
 					}
-					penx = exx peny = eyy
-					i += 2
+					pen_x = end_x pen_y = end_y
+					node_i += 2
 				}
 			}
-			if ne < MAX_RASTER_EDGES { edges[ne] = Raster_Edge{penx, peny, nx[0], ny[0], 0} ne += 1 }
-			if ne > c_lo { cont_first[nc] = c_lo nc += 1 }
+			if edge_count < MAX_RASTER_EDGES { edges[edge_count] = Raster_Edge{pen_x, pen_y, node_x[0], node_y[0], 0} edge_count += 1 }
+			if edge_count > first_edge { contour_start[contour_count] = first_edge contour_count += 1 }
 		}
-		cstart = cend + 1
+		point_start = point_end + 1
 	}
-	cont_first[nc] = ne
+	contour_start[contour_count] = edge_count
 
-	// edge coloring: per contour, switch color at corners so adjacent spans
+	// Edge coloring: per contour, switch color at corners so adjacent spans
 	// share exactly one channel (the median then keeps the corner sharp).
 	// Smooth / single-corner contours stay white (all channels = plain SDF).
-	corner_at : [..MAX_RASTER_EDGES]bool
-	corner_at.len = MAX_RASTER_EDGES
-	for j in 0..nc {
-		lo := cont_first[j]
-		hi := cont_first[j + 1]
-		m := hi - lo
-		if m >= 1 {
-			ncorner := 0
-			for k in 0..m {
-				pk := k - 1
-				if pk < 0 { pk = m - 1 }
-				if edge_is_corner(edges[lo + pk], edges[lo + k]) {
-					corner_at[k] = true
-					ncorner += 1
+	is_corner : [..MAX_RASTER_EDGES]bool
+	is_corner.len = MAX_RASTER_EDGES
+	for ci in 0..contour_count {
+		edge_lo := contour_start[ci]
+		edge_hi := contour_start[ci + 1]
+		n_edges := edge_hi - edge_lo
+		if n_edges >= 1 {
+			corner_total := 0
+			for ei in 0..n_edges {
+				prev_ei := ei - 1
+				if prev_ei < 0 { prev_ei = n_edges - 1 }
+				if edge_is_corner(edges[edge_lo + prev_ei], edges[edge_lo + ei]) {
+					is_corner[ei] = true
+					corner_total += 1
 				else
-					corner_at[k] = false
+					is_corner[ei] = false
 				}
 			}
-			if ncorner <= 1 {
-				for k in 0..m { edges[lo + k].color = 7 }
+			if corner_total <= 1 {
+				for ei in 0..n_edges { edges[edge_lo + ei].color = 7 }
 			else
-				c0 : i32 = -1
-				for k in 0..m {
-					if corner_at[k] {
-						if c0 < 0 { c0 = k }
+				first_corner : i32 = -1
+				for ei in 0..n_edges {
+					if is_corner[ei] {
+						if first_corner < 0 { first_corner = ei }
 					}
 				}
-				col : i32 = 3
-				for jj in 0..m {
-					k := c0 + jj
-					if k >= m { k = k - m }
-					if corner_at[k] { col = next_edge_color(col) }
-					edges[lo + k].color = col
+				color : i32 = 3
+				for step in 0..n_edges {
+					ei := first_corner + step
+					if ei >= n_edges { ei = ei - n_edges }
+					if is_corner[ei] { color = next_edge_color(color) }
+					edges[edge_lo + ei].color = color
 				}
 			}
 		}
 	}
 
-	// fill + dump: per pixel, signed distance — magnitude = min distance to any
-	// edge, sign from non-zero winding (negative inside). One sample per pixel;
-	// the field is smooth, so no supersampling.
-	for py in 0..h {
-		for pxi in 0..w {
-			qx := f32(pxi) + 0.5
-			qy := f32(py) + 0.5
-			md_r : f32 = 1000000.0
-			md_g : f32 = 1000000.0
-			md_b : f32 = 1000000.0
-			wnd : i32 = 0
-			for e in 0..ne {
-				ax := edges[e].x0
-				ay := edges[e].y0
-				bx := edges[e].x1
-				by := edges[e].y1
-				// squared distance from q to segment a→b
-				dx := bx - ax
-				dy := by - ay
-				l2 := dx*dx + dy*dy
+	// Fill: per pixel, the signed distance — magnitude is the min distance to
+	// any edge, sign from the non-zero winding rule (positive inside). One
+	// sample per pixel; the field is smooth, so no supersampling.
+	for py in 0..cell_h {
+		for px in 0..cell_w {
+			sample_x := f32(px) + 0.5
+			sample_y := f32(py) + 0.5
+			min_d2_r : f32 = 1000000.0
+			min_d2_g : f32 = 1000000.0
+			min_d2_b : f32 = 1000000.0
+			winding : i32 = 0
+			for ei in 0..edge_count {
+				x0 := edges[ei].x0
+				y0 := edges[ei].y0
+				x1 := edges[ei].x1
+				y1 := edges[ei].y1
+				// squared distance from the sample to segment (x0,y0)→(x1,y1)
+				dx := x1 - x0
+				dy := y1 - y0
+				len2 := dx*dx + dy*dy
 				t : f32 = 0.0
-				if l2 > 0.0 {
-					t = max(0.0, min(1.0, ((qx - ax)*dx + (qy - ay)*dy) / l2))
+				if len2 > 0.0 {
+					t = max(0.0, min(1.0, ((sample_x - x0)*dx + (sample_y - y0)*dy) / len2))
 				}
-				prx := ax + t*dx
-				pry := ay + t*dy
-				rx := qx - prx
-				ry := qy - pry
-				d2 := rx*rx + ry*ry
-				// per-channel min distance (this edge contributes to its colors)
-				col := edges[e].color
-				if (col & 1) != 0 and d2 < md_r { md_r = d2 }
-				if (col & 2) != 0 and d2 < md_g { md_g = d2 }
-				if (col & 4) != 0 and d2 < md_b { md_b = d2 }
-				// winding contribution (sign, shared): edge crosses the scanline
-				// when exactly one endpoint is at/above it
-				crosses := (ay <= qy and by > qy) or (ay > qy and by <= qy)
+				proj_x := x0 + t*dx
+				proj_y := y0 + t*dy
+				dist_x := sample_x - proj_x
+				dist_y := sample_y - proj_y
+				d2 := dist_x*dist_x + dist_y*dist_y
+				// this edge contributes to the channels it is colored for
+				color := edges[ei].color
+				if (color & 1) != 0 and d2 < min_d2_r { min_d2_r = d2 }
+				if (color & 2) != 0 and d2 < min_d2_g { min_d2_g = d2 }
+				if (color & 4) != 0 and d2 < min_d2_b { min_d2_b = d2 }
+				// winding contribution (shared sign): the edge crosses this
+				// scanline when exactly one endpoint is at/above it
+				crosses := (y0 <= sample_y and y1 > sample_y) or (y0 > sample_y and y1 <= sample_y)
 				if crosses {
-
-					tt := (qy - ay) / (by - ay)
-					xint := ax + tt * (bx - ax)
-					if qx < xint {
-						if by > ay { wnd += 1 else wnd -= 1 }
+					cross_t := (sample_y - y0) / (y1 - y0)
+					x_crossing := x0 + cross_t * (x1 - x0)
+					if sample_x < x_crossing {
+						if y1 > y0 { winding += 1 else winding -= 1 }
 					}
 				}
 			}
 			// signed per-channel distances (positive inside) → normalized RGB
-			s : f32 = -1.0
-			if wnd != 0 { s = 1.0 }
-			vr := max(0.0, min(1.0, 0.5 + (s * sqrt(md_r)) / MSDF_PX_RANGE))
-			vg := max(0.0, min(1.0, 0.5 + (s * sqrt(md_g)) / MSDF_PX_RANGE))
-			vb := max(0.0, min(1.0, 0.5 + (s * sqrt(md_b)) / MSDF_PX_RANGE))
-			idx := ((dst_y + py) * atlas_w + (dst_x + pxi)) * 3
-			atlas[idx + 0] = u8(vr * 255.0)
-			atlas[idx + 1] = u8(vg * 255.0)
-			atlas[idx + 2] = u8(vb * 255.0)
+			dist_sign : f32 = -1.0
+			if winding != 0 { dist_sign = 1.0 }
+			out_r := max(0.0, min(1.0, 0.5 + (dist_sign * sqrt(min_d2_r)) / MSDF_PX_RANGE))
+			out_g := max(0.0, min(1.0, 0.5 + (dist_sign * sqrt(min_d2_g)) / MSDF_PX_RANGE))
+			out_b := max(0.0, min(1.0, 0.5 + (dist_sign * sqrt(min_d2_b)) / MSDF_PX_RANGE))
+			dst_idx := ((glyph.y + py) * atlas.size + (glyph.x + px)) * 3
+			atlas.data[dst_idx + 0] = u8(out_r * 255.0)
+			atlas.data[dst_idx + 1] = u8(out_g * 255.0)
+			atlas.data[dst_idx + 2] = u8(out_b * 255.0)
 		}
 	}
 }
@@ -474,16 +470,14 @@ TTF :: struct (bytes: ^[]byte) {
 		side_bearings : []F_Word
 	}
 
-	hmtx_prepare ::fun(hhea: Hhea, maxp: Maxp, bytes: []byte) -> Hmtx {
-		hmtx : Hmtx
-		long_m : [:hhea.num_of_long_hor_metrics]Long_Hor_Metric
-		hmtx.long_metrics = long_m
-		hmtx.side_bearings.cap = 0
+	// hmtx_prepare ::fun(hhea: Hhea, maxp: Maxp, bytes: []byte) -> Hmtx {
+	// 	hmtx : Hmtx
+	// 	long_m : [:hhea.num_of_long_hor_metrics]Long_Hor_Metric
+	// 	hmtx.long_metrics = long_m
+	// 	hmtx.side_bearings.cap = 0
 
-		return hmtx
-	}
-
-
+	// 	return hmtx
+	// }
 
 	Long_Hor_Metric :: struct {
 		advance_width     : U_F_Word
@@ -508,7 +502,7 @@ TTF :: struct (bytes: ^[]byte) {
 	cmap : Cmap = #big_endian bytes[cmap_loc]
 	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
 	hhea : Hhea = #big_endian bytes[hhea_loc]
-	hmtx : Hmtx = hmtx_prepare(hhea, maxp, bytes[hmtx_loc:])
+	// hmtx : Hmtx = hmtx_prepare(hhea, maxp, bytes[hmtx_loc:])
 
 	// cmap encoding records sit right after the 4-byte header; fill them, then
 	// pick a Unicode subtable to map character codes through.
