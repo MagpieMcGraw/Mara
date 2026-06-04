@@ -307,14 +307,22 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
     for stmt in body {
         #partial switch s in stmt {
         case ^Stmt_Assign:
-            // name : type = value → field (explicit type)
-            // name := value → field (inferred type)
-            append(&fields, Scope_Binding{
-                name          = s.name,
-                type_expr     = s.type_expr,
-                default_value = s.value,
-                is_using      = s.is_using,
-            })
+            // Only a genuine declaration introduces a field:
+            //   name := value        (inferred type)
+            //   name : type = value  (explicit type)
+            // A reassignment (is_decl == false) mutates an existing binding and
+            // is NOT a new field — whether simple (`x = 10`) or to a complex
+            // target (`h.tables = ...`, `arr[i] = v`). Complex targets also
+            // carry name == "", so extracting them minted a bogus empty-named
+            // field whose default couldn't be inferred → Type_Any → codegen panic.
+            if s.is_decl {
+                append(&fields, Scope_Binding{
+                    name          = s.name,
+                    type_expr     = s.type_expr,
+                    default_value = s.value,
+                    is_using      = s.is_using,
+                })
+            }
         case ^Stmt_Multi_Assign:
             // x, y, z : type → multiple fields
             for a in s.assigns {
