@@ -6,6 +6,15 @@ module mara.core
 // 	ptr: isize
 // }
 
+overload + add
+add :: dispatch{ array_add }
+
+slice_add :: fun(dst: ^[]$T, src: []$T) {
+	dst[dst.len:] = src[:src.cap] // would this even work?
+	dst.len += src.len
+}
+
+// maybe make these private?
 Arena :: struct {
 	size: [64]byte
 

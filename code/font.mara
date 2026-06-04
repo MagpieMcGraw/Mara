@@ -1,6 +1,7 @@
 
 module mara.font
 
+use mara.core
 use mara.string
 use mara.math
 use mara.endian
@@ -15,7 +16,7 @@ Atlas :: struct (bytes: []byte, u_per_em: u16) {
 	size := 1024
 	cell := 48
 	pixels := 32 // used to scale em to pixels
-	pad := 4
+	pad : f32 = 4
 	per_row : i32 = size / cell
 	px_scale := f32(pixels) / f32(u_per_em)
 	data := bytes
@@ -105,22 +106,21 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 {
 	if outline.num_contours <= 0 { glyph.w = 0 glyph.h = 0 return }
 
-	scale     := atlas.px_scale     // font units → pixels
-	pad       := i32(atlas.pad)     // distance-field margin (px) around the glyph
-	pad_units := f32(pad) / scale   // that margin expressed back in font units
+	scale := atlas.px_scale
+	pad   := atlas.pad
 
-	// Fold the pad into the transform origins so the (x - x_origin)*scale and
-	// (y_origin - y)*scale conversions below pick it up for free. x grows right;
-	// y is flipped (font y grows up, pixel rows grow down).
-	x_origin_units := f32(i32(outline.x_min)) - pad_units
-	y_origin_units := f32(i32(outline.y_max)) + pad_units
+	xmin := f32(outline.x_min)
+	xmax := f32(outline.x_max)
+	ymin := f32(outline.y_min)
+	ymax := f32(outline.y_max)
 
-	cell_w := i32(f32(i32(outline.x_max) - i32(outline.x_min)) * scale) + 2 * pad + 1
-	cell_h := i32(f32(i32(outline.y_max) - i32(outline.y_min)) * scale) + 2 * pad + 1
-	glyph.w = cell_w
-	glyph.h = cell_h
-	glyph.bearing_x = f32(i32(outline.x_min)) * scale - f32(pad)
-	glyph.bearing_y = f32(i32(outline.y_max)) * scale + f32(pad)
+	x_origin  := xmin - pad / scale
+	y_origin  := ymax + pad / scale
+
+	glyph.w = i32((xmax - xmin) * scale + 2.0 * pad) + 1
+	glyph.h = i32((ymax - ymin) * scale + 2.0 * pad) + 1
+	glyph.bearing_x = xmin * scale - pad
+	glyph.bearing_y = ymax * scale + pad
 
 	edges : [..MAX_RASTER_EDGES]Raster_Edge
 	edges.len = MAX_RASTER_EDGES
@@ -129,10 +129,11 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	contour_start.len = 512
 	contour_count : i32 = 0      // contours that actually produced edges
 
-	node_x        : [..1024]f32
-	node_y        : [..1024]f32
-	node_on_curve : [..1024]bool
-	node_x.len = 1024 node_y.len = 1024 node_on_curve.len = 1024
+	Node :: struct {
+		x, y: f32
+		on_curve : bool
+	}
+	nodes : [..1024]Node
 
 	n_contours := i32(outline.num_contours)
 	point_start : i32 = 0
@@ -153,8 +154,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			// Build the node ring starting on-curve, inserting the implied
 			// on-curve midpoints between consecutive off-curve control points.
 			node_count : i32 = 0
-			node_x[node_count] = (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin_units) * scale
-			node_y[node_count] = (y_origin_units - f32(i32(outline.points[point_start + first_on_curve].y))) * scale
+			node_x[node_count] = (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin) * atlas.px_scale
+			node_y[node_count] = (y_origin - f32(i32(outline.points[point_start + first_on_curve].y))) * atlas.px_scale
 			node_on_curve[node_count] = true
 			node_count += 1
 			have_off := false
@@ -164,8 +165,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 				ring_idx := first_on_curve + j
 				if ring_idx >= n_points { ring_idx = ring_idx - n_points }
 				point := outline.points[point_start + ring_idx]
-				point_x := (f32(i32(point.x)) - x_origin_units) * scale
-				point_y := (y_origin_units - f32(i32(point.y))) * scale
+				point_x := (f32(i32(point.x)) - x_origin) * atlas.px_scale
+				point_y := (y_origin - f32(i32(point.y))) * atlas.px_scale
 				if point.on_curve {
 					if have_off {
 						node_x[node_count] = off_x node_y[node_count] = off_y node_on_curve[node_count] = false node_count += 1
@@ -266,8 +267,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	// Fill: per pixel, the signed distance — magnitude is the min distance to
 	// any edge, sign from the non-zero winding rule (positive inside). One
 	// sample per pixel; the field is smooth, so no supersampling.
-	for py in 0..cell_h {
-		for px in 0..cell_w {
+	for py in 0..glyph.h {
+		for px in 0..glyph.w {
 			sample_x := f32(px) + 0.5
 			sample_y := f32(py) + 0.5
 			min_d2_r : f32 = 1000000.0
