@@ -1,12 +1,9 @@
 
 module all
 
-A_CONSTANT : i32 : 33
-B_CONSTANT :: 34
-
 The_Basics :: struct {
 	something_true: bool = true // default values supported
-	something_false: bool = false
+	something_false := false // there's even type inference
 
 	smallest_int : i8
 	biggest_int: i128
@@ -42,8 +39,6 @@ main :: fun() {
 	basics_uninitialized : The_Basics = #skip_constructor
 
 	advanced_basics := The_Basics() {smallest_int = -128}
-	// specific fields can be written to by using the {}
-	// only works during construction, after constructor runs
 
 	advanced_basics.smallest_float = -1.5
 	print(advanced_basics.smallest_float)
