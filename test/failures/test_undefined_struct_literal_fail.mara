@@ -1,0 +1,11 @@
+module test_undefined_struct_literal_fail
+
+// Expected to FAIL type checking: `bogus` names neither a type, a struct
+// variable, nor a variant. A `name{...}` statement with an unbound name used to
+// silently no-op (the in-place-override fallthrough); now it's a hard error.
+// Real overrides (`s{ a = 1 }` on a struct var) and real literals (`T{ a = 1 }`)
+// are unaffected — only a genuinely unbound name errors here.
+main :: fun() -> i64 {
+	bogus{ x = 1 }
+	return 0
+}

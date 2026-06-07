@@ -8064,6 +8064,21 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
                         check_error(c, s.span, TYPE_DISCARDED_RETURN, call.name)
                     }
                 }
+                // A NAMED struct-literal statement whose name resolved to nothing
+                // (Type_Error comes only from the unresolved-name fallthrough; a
+                // real construction returns its type) is an undefined name — e.g.
+                // `bogus{ x = 1 }`, which used to no-op silently. A struct-variable
+                // override was already handled above, so this only fires for genuine
+                // garbage (or a variant misused as a bare statement).
+                if lit, is_lit := s.expr.(^Expr_Struct_Literal); is_lit && lit.name != "" {
+                    // Only "undefined" if the name is truly unbound. A name that
+                    // IS a binding — e.g. a local struct variable whose in-place
+                    // override didn't resolve — is defined; don't mislabel it.
+                    _, _, name_bound := type_env_locate(env, lit.name)
+                    if _, is_err := rt.(Type_Error); is_err && !name_bound {
+                        check_error(c, s.span, TYPE_UNDEFINED_IDENTIFIER, lit.name)
+                    }
+                }
             }
 
         case ^Stmt_Multi_Assign:
