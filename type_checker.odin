@@ -8033,18 +8033,36 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             check_match(c, s, env)
 
         case Stmt_Call:
-            rt := check_expr(c, s.expr, env)
-            // Must-use: a bare call that yields a value silently discards it.
-            // void calls (the side-effect case) type to nil and are fine, as
-            // are append-style operator statements (`&slice + x`), which are
-            // Expr_Binary, not Expr_Call. Capture the value (`x := f()`) or
-            // discard it explicitly (`_ = f()`). Skip Type_Error so a failed
-            // call doesn't draw a second, redundant diagnostic.
-            if call, is_call := s.expr.(^Expr_Call); is_call && rt != nil {
-                _, is_void := rt.(Type_Void)
-                _, is_errd := rt.(Type_Error)
-                if !is_void && !is_errd {
-                    check_error(c, s.span, TYPE_DISCARDED_RETURN, call.name)
+            // In-place struct override: `var{ a = x; b = y }` as a statement,
+            // where the literal's name is a struct VARIABLE — validate the
+            // fields against the variable's struct and tag the node so codegen
+            // applies the writes in place. Detected at STATEMENT position so a
+            // value-position literal (`p := P{...}`) is never mistaken for an
+            // override; codegen's get_struct makes the final var-vs-type call.
+            handled_override := false
+            if lit, is_lit := s.expr.(^Expr_Struct_Literal); is_lit && lit.name != "" {
+                if vt, _, found := type_env_locate(env, lit.name); found {
+                    if sd := resolve_to_struct_type(c, vt); sd != nil {
+                        check_struct_literal_fields(c, lit, sd, lit.span, env)
+                        lit.override_target = lit.name
+                        handled_override = true
+                    }
+                }
+            }
+            if !handled_override {
+                rt := check_expr(c, s.expr, env)
+                // Must-use: a bare call that yields a value silently discards it.
+                // void calls (the side-effect case) type to nil and are fine, as
+                // are append-style operator statements (`&slice + x`), which are
+                // Expr_Binary, not Expr_Call. Capture the value (`x := f()`) or
+                // discard it explicitly (`_ = f()`). Skip Type_Error so a failed
+                // call doesn't draw a second, redundant diagnostic.
+                if call, is_call := s.expr.(^Expr_Call); is_call && rt != nil {
+                    _, is_void := rt.(Type_Void)
+                    _, is_errd := rt.(Type_Error)
+                    if !is_void && !is_errd {
+                        check_error(c, s.span, TYPE_DISCARDED_RETURN, call.name)
+                    }
                 }
             }
 
@@ -10787,7 +10805,11 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 return hint
             }
         }
-        // Anonymous struct literal: just check each field value.
+        // Anonymous struct literal: just check each field value. A name that
+        // matched no type, struct variable, variant, or hint reaches here and
+        // stays a suppressed Type_Error (e.g. context-typed variant literals
+        // are validated by the enclosing decl, not here) — so we can't turn
+        // this into a hard "undefined" error without false-flagging them.
         for field in e.fields {
             check_expr(c, field.value, env)
         }

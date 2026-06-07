@@ -272,6 +272,18 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
     case ^Expr_Slice:
         return gen_slice_expr(g, e)
     case ^Expr_Struct_Literal:
+        // In-place struct override: `var{ a = x; b = y }` applies the field
+        // writes directly to the existing variable's storage (statement form;
+        // yields no value). Reuses the same applier as construct-time overrides.
+        if e.override_target != "" {
+            if sv, ok := get_struct(g, e.override_target); ok {
+                if sd, sd_ok := lookup_struct(g, sv.struct_name); sd_ok {
+                    llvm_name := struct_llvm_name(struct_key(sd))
+                    apply_struct_literal_fields(g, e, sd, llvm_name, sv.alloca)
+                }
+            }
+            return "0"
+        }
         // Distinct-fixed-array literal (Quat{...} / Vec3{...}): emit as an inline
         // LLVM array constant, with nil slots rendered as `elem 0`.
         if e.array_values != nil {

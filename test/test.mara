@@ -129,6 +129,23 @@ test_struct_init :: fun() {
 	print(g.x)
 }
 
+test_struct_override :: fun() {
+	// In-place struct override: `var{ field = val }` mutates an existing struct
+	// variable in place — the statement form, distinct from the construct-time
+	// `Point(){...}` override above. Single- and multi-field both work; fields
+	// not named keep their current value.
+	p := Point() { x = 1, y = 2, z = 3 }
+	p{ x = 10 }
+	assert(p.x == 10)
+	assert(p.y == 2)
+	p{ y = 20
+	   z = 30 }
+	assert(p.x == 10)
+	assert(p.y == 20)
+	assert(p.z == 30)
+	print("struct override ok")
+}
+
 // ============================================================================
 // multi-assign / broadcast
 // ============================================================================
@@ -1662,6 +1679,7 @@ main :: fun() -> i64 {
 	test_hex_literals()
 	test_in_range()
 	test_struct_init()
+	test_struct_override()
 	// test_multi_assign()  // DISABLED: codegen bug — broadcast `x, y = 7` segfaults inside a non-main fn (works in main, and with separate assigns). Confirmed 2026-05-30.
 	test_distinct_construct()
 	test_compound_eval()

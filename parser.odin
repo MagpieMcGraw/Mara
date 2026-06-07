@@ -309,6 +309,12 @@ Expr_Struct_Literal :: struct {
     // element values after swizzle-name → index resolution. nil entries mean
     // "zero this slot". Populated by the checker; codegen emits from this.
     array_values: [dynamic]Expr,
+    // In-place override target: set by the type checker when `name` resolves to
+    // a local VARIABLE of struct type (not a type name) — `var{ a = x; b = y }`
+    // updates the variable's fields in place. Codegen applies the field writes
+    // to that variable's storage via apply_struct_literal_fields and yields no
+    // value (statement-position mutation).
+    override_target: string,
     span:       Span,
     type_:      Type,
 }
