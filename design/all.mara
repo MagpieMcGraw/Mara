@@ -2,7 +2,7 @@
 module all
 
 A_CONSTANT : i32 : 33
-B_CONSTANT :: 34 // type is inferred, defaults to i64
+B_CONSTANT :: 34
 
 The_Basics :: struct {
 	something_true: bool = true // default values supported
@@ -43,7 +43,8 @@ main :: fun() {
 
 	advanced_basics := The_Basics() {smallest_int = -128}
 	// specific fields can be written to by using the {}
-	advanced_basics{smallest_float = -1.5} // this works?
+	// only works during construction, after constructor runs
 
+	advanced_basics.smallest_float = -1.5
 	print(advanced_basics.smallest_float)
 }

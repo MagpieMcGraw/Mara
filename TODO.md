@@ -35,3 +35,9 @@ When parsing, put defs and decls in two different arrays. Can loop over each wit
 Byte reads might need new syntax. Maybe an = to read without auto-len, and a += to read with auto len. Also figure out what ops should set the len.
 
 Maybe constructors need return values? Could be good for error handling.
+
+	// ASPIRATIONAL
+	// advanced_basics{ 
+	// 	smallest_float = -3
+	// 	biggest_float = 333
+	// }
