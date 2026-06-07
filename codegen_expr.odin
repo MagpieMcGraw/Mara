@@ -2020,6 +2020,17 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                 fmt_ptr := fresh_tmp(g)
                 emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
                 emit_printf_double(g, fmt_ptr, ext)
+            case "half":
+                // f16 → double for printf varargs, same default-promotion as
+                // f32. The half→double widen is fpext; the integer `case:`
+                // default below would emit `sext half` — an integer op on a
+                // float, which is invalid IR.
+                ext := fresh_tmp(g)
+                emit(g, "  %s = fpext half %s to double", ext, val)
+                fmt_name, fmt_len := get_string_literal(g, "%g")
+                fmt_ptr := fresh_tmp(g)
+                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+                emit_printf_double(g, fmt_ptr, ext)
             case "i64":
                 spec := is_unsigned ? "%llu" : "%lld"
                 fmt_name, fmt_len := get_string_literal(g, spec)

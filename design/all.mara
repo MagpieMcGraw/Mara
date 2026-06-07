@@ -1,0 +1,49 @@
+
+module all
+
+A_CONSTANT : i32 : 33
+B_CONSTANT :: 34 // type is inferred, defaults to i64
+
+The_Basics :: struct {
+	something_true: bool = true // default values supported
+	something_false: bool = false
+
+	smallest_int : i8
+	biggest_int: i128
+
+	smallest_uint: u8
+	biggest_uint: u128
+
+	smallest_float: f16
+	biggest_float: f64
+
+	untyped_memory: byte
+	string_byte: utf8 // could be a distict type?
+
+	array_of_numbers : [64]i32 // value, holds it's own data
+	slice : []i32 // reference, points to someone else's data
+
+	partial_array: [..64]i32
+	// has a slice header, but is a value type, like array
+	// codegen does special copying to keep the header valid
+	// slice header is len cap ptr, 8 bytes each.
+
+	array_with_sentinel: [64, 0]i32
+	// same as array, but has a 0 after all the elements
+}
+
+main :: fun() {
+	basics_declare : The_Basics
+	basics_declare_assign : The_Basics = The_Basics()
+	basics_with_type_inference := The_Basics()
+	// structs get 0 init, and then run their constructor
+	// that's what sets the default values
+
+	basics_uninitialized : The_Basics = #skip_constructor
+
+	advanced_basics := The_Basics() {smallest_int = -128}
+	// specific fields can be written to by using the {}
+	advanced_basics{smallest_float = -1.5} // this works?
+
+	print(advanced_basics.smallest_float)
+}
