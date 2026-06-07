@@ -2082,6 +2082,10 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         // if the expression genuinely depends on runtime values.
         if t.size_expr != nil {
             if c != nil {
+                if bad, has_bad := first_invisible_const_ref(c, env, t.size_expr); has_bad {
+                    check_error(c, span, TYPE_UNDEFINED_IDENTIFIER, bad)
+                    return Type_Error{}
+                }
                 if val, comptime_ok := evaluate_comptime_int(c, t.size_expr); comptime_ok {
                     fa.size = int(val)
                     fa.elem = elem
@@ -2095,6 +2099,10 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             resolved := false
             // Path 1: checker available (type checking phase)
             if c != nil {
+                if _, is_const := c.table.constant_owners[t.size_name]; is_const && !module_constant_visible(c, env, t.size_name) {
+                    check_error(c, span, TYPE_UNDEFINED_IDENTIFIER, t.size_name)
+                    return Type_Error{}
+                }
                 if const_expr, found := c.table.constants[t.size_name]; found {
                     if _, i_val, ok := extract_constant_value(const_expr); ok {
                         fa.size = int(i_val)
@@ -2139,6 +2147,10 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         pa.sentinel = t.sentinel
         if t.size_expr != nil {
             if c != nil {
+                if bad, has_bad := first_invisible_const_ref(c, env, t.size_expr); has_bad {
+                    check_error(c, span, TYPE_UNDEFINED_IDENTIFIER, bad)
+                    return Type_Error{}
+                }
                 if val, comptime_ok := evaluate_comptime_int(c, t.size_expr); comptime_ok {
                     pa.size = int(val)
                     return pa
@@ -2150,6 +2162,10 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         }
         if t.size_name != "" {
             if c != nil {
+                if _, is_const := c.table.constant_owners[t.size_name]; is_const && !module_constant_visible(c, env, t.size_name) {
+                    check_error(c, span, TYPE_UNDEFINED_IDENTIFIER, t.size_name)
+                    return Type_Error{}
+                }
                 if const_expr, found := c.table.constants[t.size_name]; found {
                     if _, i_val, ok := extract_constant_value(const_expr); ok {
                         pa.size = int(i_val)
@@ -2188,6 +2204,14 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             if is_const_param {
                 // Const param position: resolve as const value or runtime expression
                 if tn, tn_ok := arg.(Type_Name); tn_ok {
+                    // Visibility gate: a registered module constant used as a
+                    // const generic arg must be reachable from env, same as in
+                    // array sizes / ordinary expressions.
+                    if _, is_const := c.table.constant_owners[tn.name]; is_const && !module_constant_visible(c, env, tn.name) {
+                        check_error(c, span, TYPE_UNDEFINED_IDENTIFIER, tn.name)
+                        append(&type_args, Type_Const_Int{value = 0})
+                        continue
+                    }
                     // Bare identifier in const position — check if it's a compile-time constant
                     if const_expr, found := c.table.constants[tn.name]; found {
                         if _, i_val, ok := extract_constant_value(const_expr); ok {
@@ -5670,6 +5694,57 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
         cur = cur.parent
     }
     return false
+}
+
+// module_constant_visible reports whether a bare module constant `bare` is
+// reachable from `env` — i.e. defined by the current module or by one that's
+// been `use`/`include`d. Constants live in the global c.table.constants under
+// both a flat (module-qualified) and a bare key, so unlike types they are NOT
+// gated by the env walk at lookup time; this is what reintroduces visibility.
+// It mirrors type_env_get / is_enum_visible: own scope, then each include's
+// scope, stop at the module boundary. Matching is by the flat key
+// make_flat_name(M.name, bare), which lines up with registration because a
+// module's owner_module.name == the module_name used to register its constants.
+module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bool {
+    if env == nil { return true }  // no env context to gate against — don't reject
+    cur := env
+    for cur != nil {
+        if cur.owner_module != nil {
+            if _, ok := c.table.constants[make_flat_name(cur.owner_module.name, bare)]; ok { return true }
+        }
+        for inc in cur.includes {
+            if inc.owner_module != nil {
+                if _, ok := c.table.constants[make_flat_name(inc.owner_module.name, bare)]; ok { return true }
+            }
+        }
+        if cur.is_module_scope { break }
+        cur = cur.parent
+    }
+    return false
+}
+
+// first_invisible_const_ref walks an array-size / const-generic expression and
+// returns the first bare identifier that names a registered module constant
+// which is NOT visible from `env`. Array sizes and const-generic args resolve
+// constants straight out of the global table (bypassing the env walk that gates
+// ordinary expression idents), so without this a module could size an array
+// with another module's constant it never `use`d. Returns ("", false) when
+// every constant ref is visible (or the name isn't a module constant at all,
+// in which case evaluate_comptime_int / the size-name path handles it).
+first_invisible_const_ref :: proc(c: ^Checker, env: ^Type_Env, e: Expr) -> (string, bool) {
+    if env == nil { return "", false }
+    #partial switch v in e {
+    case ^Expr_Ident:
+        if _, is_const := c.table.constant_owners[v.name]; is_const {
+            if !module_constant_visible(c, env, v.name) { return v.name, true }
+        }
+    case ^Expr_Binary:
+        if n, ok := first_invisible_const_ref(c, env, v.left);  ok { return n, true }
+        if n, ok := first_invisible_const_ref(c, env, v.right); ok { return n, true }
+    case ^Expr_Unary:
+        return first_invisible_const_ref(c, env, v.operand)
+    }
+    return "", false
 }
 
 // find_dispatch collects all functions associated with a dispatch group `name`,

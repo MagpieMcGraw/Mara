@@ -3,6 +3,7 @@ module gfx.shader
 
 use mara.os
 use mara.string
+use mara.memory
 gl :: use mara.open_gl
 
 Shader_Error :: error {

@@ -1,0 +1,11 @@
+module helper
+
+// Expected to FAIL type checking: MB belongs to mara.memory, which the ENTRY
+// module pulls into the build — but this module never `use mara.memory`. A
+// constant must be imported to be referenced, even in an array size, exactly
+// like a type (constants are no longer globally visible by bare name).
+// Diagnostic: undefined identifier 'MB'.
+make_buf :: fun() -> i64 {
+	buf : [..2 * MB]byte
+	return i64(buf.cap)
+}

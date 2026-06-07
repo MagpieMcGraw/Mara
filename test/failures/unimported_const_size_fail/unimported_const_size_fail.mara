@@ -1,0 +1,8 @@
+module unimported_const_size_fail
+
+use mara.memory
+use helper
+
+main :: fun() -> i64 {
+	return helper.make_buf()
+}

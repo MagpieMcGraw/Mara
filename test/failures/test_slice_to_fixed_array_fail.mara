@@ -1,0 +1,19 @@
+module test_slice_to_fixed_array_fail
+
+// Expected to FAIL type checking: a slice ([]T) is a reference {ptr,len,cap}
+// and a fixed array ([N]T) is a value of N inline elements — they are distinct
+// types, so a slice may not stand in for a fixed-array return (the conversion is
+// a copy and must be explicit). This previously type-checked and codegen then
+// silently returned a zeroed array. Diagnostic: return type []byte does not
+// match expected [8]byte.
+
+as_arr :: fun(src: []byte) -> [8]byte {
+	return src
+}
+
+main :: fun() -> i64 {
+	buf : [..8]byte
+	buf.len = 8
+	a := as_arr(buf[:])
+	return i64(a[0])
+}
