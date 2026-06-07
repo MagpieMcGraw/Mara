@@ -1,0 +1,26 @@
+module test_return_array_unhandled_fail
+
+// Expected to FAIL at codegen (loudly, not silently): returning a struct's
+// fixed-array field by value reaches gen_return_array as an Expr_Field_Access,
+// which is not one of its handled value shapes (array var / array literal /
+// array-returning call / distinct-array struct literal). It type-checks ([4]i32
+// == [4]i32) but codegen has no path to copy the field into the sret slot.
+//
+// Before the hardening this fell through to `ret void` with the sret slot
+// unwritten — the caller silently got a zeroed array. Now it's a hard codegen
+// error: "gen_return_array: unhandled return value shape for a fixed-array
+// return ...". This fixture guards the no-silent-zeros guarantee; if struct
+// array-field returns ever get real copy support, replace the body with another
+// unhandled shape (e.g. `return matrix[i]`) rather than deleting the fixture.
+
+Holder :: struct { data: [4]i32 }
+
+get :: fun(h: Holder) -> [4]i32 {
+	return h.data
+}
+
+main :: fun() -> i64 {
+	h := Holder{[4]i32{10, 20, 30, 40}}
+	a := get(h)
+	return i64(a[0])
+}

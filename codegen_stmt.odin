@@ -1332,9 +1332,16 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
     sret_type := fmt.tprintf("[%d x %s]", sret_av.capacity, sret_av.elem_type)
     arr_ret_val := len(s.values) > 0 ? s.values[0] : nil
 
+    // Every supported value shape sets handled; an unhandled shape must be a
+    // loud codegen error, never a silent fall-through to `ret void` that leaves
+    // the sret slot unwritten (= a zeroed array returned to the caller).
+    handled := false
     if ident, id_ok := arr_ret_val.(^Expr_Ident); id_ok {
-        // Case A: returning an array variable (NRVO if aliased to sret, else loop-copy)
-        if src_av, av_ok := get_array(g, ident.name); av_ok && src_av.alloca != sret_av.alloca {
+        // Case A: returning an array variable (NRVO if aliased to sret, else loop-copy).
+        // A non-array ident (e.g. a slice) leaves handled=false → error below.
+        src_av, av_ok := get_array(g, ident.name)
+        if av_ok { handled = true }
+        if av_ok && src_av.alloca != sret_av.alloca {
             src_type := array_var_type(&src_av)
             copy_bound := fmt.tprintf("%d", src_av.capacity)
 
@@ -1374,6 +1381,7 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         }
     } else if arr_lit, lit_ok := arr_ret_val.(^Expr_Array); lit_ok {
         // Case B: returning an array literal
+        handled = true
         for elem, i in arr_lit.elements {
             val := gen_expr(g, elem, sret_av.elem_type)
             gep := fresh_tmp(g)
@@ -1383,6 +1391,7 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
     } else if call, call_ok := arr_ret_val.(^Expr_Call); call_ok {
         // Case C: returning result of another array-returning call
         // Pass sret pointers directly to the inner call — no intermediate copy
+        handled = true
         if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_array_cap > 0 {
             gen_call_into_array(g, call, &sret_av, &info)
         } else {
@@ -1396,6 +1405,7 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         // just a GEP+store into sret. Without this case the return was
         // silently emitting `ret void` with no writes — every distinct-
         // array literal return produced uninitialized output.
+        handled = true
         for elem, i in sl.array_values {
             if elem == nil { continue }   // nil slot — leave as zero
             val := gen_expr(g, elem, sret_av.elem_type)
@@ -1403,6 +1413,9 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
             emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
             emit_store(g, sret_av.elem_type, val, gep)
         }
+    }
+    if !handled {
+        codegen_fatal(g, s.span, CODE_GEN_RETURN_ARRAY_UNHANDLED_VALUE)
     }
     emit_ret_void(g)
 }
