@@ -123,11 +123,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	glyph.bearing_y = ymax * scale + pad
 
 	edges : [..MAX_RASTER_EDGES]Raster_Edge
-	edges.len = MAX_RASTER_EDGES
-	edge_count : i32 = 0
 	contour_start : [..512]i32   // edge index where each contour's run begins (+sentinel)
-	contour_start.len = 512
-	contour_count : i32 = 0      // contours that actually produced edges
 
 	Node :: struct {
 		x, y: f32
