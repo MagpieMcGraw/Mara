@@ -3283,14 +3283,12 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         }
         return true
     case ^Type_Fixed_Array:
-        // Implicit coercion: [N]T destination accepts a []T source — this
-        // is the slice-bytes-into-array COPY direction (memcpy at assign
-        // time), not the hidden-header auto-promote that the mirror rule
-        // used to allow at call sites. Kept for `arr = slice[lo:hi]` style
-        // copies; the auto-promote direction is gone (see ^Type_Slice arm).
-        if sl, sl_ok := b.(^Type_Slice); sl_ok {
-            return buffer_elem_compatible(va.elem, sl.elem)
-        }
+        // A slice (`[]T`) is NOT accepted as a fixed-array source: a fixed
+        // array is a value (N inline elements) and a slice is a reference
+        // ({ptr,len,cap}). Converting one to the other is a copy with a
+        // runtime-length question, so it must be explicit — never an implicit
+        // coercion. (This arm used to accept []T; codegen then silently
+        // dropped the copy on the return path and zeroed the result.)
         // Implicit coercion: [N]T is compatible with [..M]T (partial array
         // view). Lets fixed-array decls take partial-array sources — most
         // importantly `fa : [N, 0]utf8 = "lit"` after the literal-type
