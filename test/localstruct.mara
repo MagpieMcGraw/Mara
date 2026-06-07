@@ -22,4 +22,14 @@ main :: fun() {
 		sum = sum + nodes[i].x + nodes[i].y
 	}
 	assert(sum > 2.9)
+
+	// Regression: a function-local struct used in a `:=` / annotated struct
+	// literal. This used to fail codegen ("'p' is not a struct") because local
+	// struct types are keyed in c.table.structs under a mangled name the literal
+	// path didn't resolve; it now finds them through the env.
+	n := Node{ x = 5.0, y = 6.0, on_curve = false }
+	assert(n.x == 5.0)
+	assert(n.y == 6.0)
+	m : Node = Node{ x = 7.0, y = 8.0, on_curve = true }
+	assert(m.y == 8.0)
 }

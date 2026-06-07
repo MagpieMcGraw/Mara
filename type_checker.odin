@@ -10807,6 +10807,26 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return st
             }
+            // Function-LOCAL struct types are keyed in c.table.structs by a
+            // MANGLED name (enclosing + "_" + bare); resolve_type_name produces
+            // a module-flat name that doesn't match, so a local `LocalStruct{...}`
+            // misses the lookups above. Find it through the env, which binds the
+            // nested type directly (codegen's lookup_struct then finds it by the
+            // same mangled name). Guard with a name match — the type's mangled
+            // name equals or ends with `_<e.name>` — so a VARIABLE of that struct
+            // type (`var{...}`, the copy form) isn't silently turned into a
+            // construct-new; that stays unsupported for now.
+            if tv, found := type_env_get(env, e.name); found {
+                if ts, ts_ok := tv.(^Type_Scope); ts_ok && ts.kind == .Struct {
+                    names_type := ts.name == e.name ||
+                        strings.has_suffix(ts.name, strings.concatenate({"_", e.name}))
+                    if names_type {
+                        check_struct_literal_fields(c, e, &ts.sd, e.span, env)
+                        e.type_ = ts
+                        return ts
+                    }
+                }
+            }
         }
         // Anonymous literal with a context-supplied type. Used for things like
         // `quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})` where the parameter type
