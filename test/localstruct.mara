@@ -32,4 +32,10 @@ main :: fun() {
 	assert(n.y == 6.0)
 	m : Node = Node{ x = 7.0, y = 8.0, on_curve = true }
 	assert(m.y == 8.0)
+
+	// In-place override of a local-struct var works too: once the literal gives
+	// the var a proper type, the Stmt_Call override detection resolves it.
+	n{ x = 11.0 }
+	assert(n.x == 11.0)
+	assert(n.y == 6.0)   // untouched
 }
