@@ -6,6 +6,7 @@ use mara.string
 use mara.math
 use mara.endian
 use mara.os
+use mara.memory
 
 Glyph :: struct {
 	x, y, w, h: i32
@@ -48,7 +49,7 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 		rasterize_msdf(&outline, &glyphs[i], &atlas)
 	}
 
-	return atlas.data
+	return storage
 }
 
 // ============================================================================
@@ -137,7 +138,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 		point_end := i32(outline.end_pts[ci])
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
-			first_edge := edge_count
+			first_edge := i32(edges.len)
 			// first on-curve point in the contour (relative index)
 			first_on_curve : i32 = -1
 			for k in 0..n_points {
@@ -149,11 +150,10 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 
 			// Build the node ring starting on-curve, inserting the implied
 			// on-curve midpoints between consecutive off-curve control points.
-			node_count : i32 = 0
-			node_x[node_count] = (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin) * atlas.px_scale
-			node_y[node_count] = (y_origin - f32(i32(outline.points[point_start + first_on_curve].y))) * atlas.px_scale
-			node_on_curve[node_count] = true
-			node_count += 1
+			nodes.len = 0
+			first_x := (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin) * atlas.px_scale
+			first_y := (y_origin - f32(i32(outline.points[point_start + first_on_curve].y))) * atlas.px_scale
+			nodes[nodes.len] = Node{first_x, first_y, true} nodes.len += 1
 			have_off := false
 			off_x : f32 = 0.0
 			off_y : f32 = 0.0
@@ -165,39 +165,39 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 				point_y := (y_origin - f32(i32(point.y))) * atlas.px_scale
 				if point.on_curve {
 					if have_off {
-						node_x[node_count] = off_x node_y[node_count] = off_y node_on_curve[node_count] = false node_count += 1
+						nodes[nodes.len] = Node{off_x, off_y, false} nodes.len += 1
 						have_off = false
 					}
-					node_x[node_count] = point_x node_y[node_count] = point_y node_on_curve[node_count] = true node_count += 1
+					nodes[nodes.len] = Node{point_x, point_y, true} nodes.len += 1
 				elif have_off
 					// two consecutive off-curve controls — TrueType implies an
 					// on-curve point at their midpoint
-					node_x[node_count] = off_x node_y[node_count] = off_y node_on_curve[node_count] = false node_count += 1
-					node_x[node_count] = (off_x + point_x) * 0.5 node_y[node_count] = (off_y + point_y) * 0.5 node_on_curve[node_count] = true node_count += 1
+					nodes[nodes.len] = Node{off_x, off_y, false} nodes.len += 1
+					nodes[nodes.len] = Node{(off_x + point_x) * 0.5, (off_y + point_y) * 0.5, true} nodes.len += 1
 					off_x = point_x off_y = point_y have_off = true
 				else
 					off_x = point_x off_y = point_y have_off = true
 				}
 			}
 			// a contour can end on a trailing off-curve control
-			if have_off { node_x[node_count] = off_x node_y[node_count] = off_y node_on_curve[node_count] = false node_count += 1 }
+			if have_off { nodes[nodes.len] = Node{off_x, off_y, false} nodes.len += 1 }
 
 			// Walk the ring, emitting flattened edges; close back to node 0.
-			pen_x := node_x[0]
-			pen_y := node_y[0]
+			pen_x := nodes[0].x
+			pen_y := nodes[0].y
 			node_i : i32 = 1
-			for node_i < node_count {
-				if node_on_curve[node_i] {
-					if edge_count < MAX_RASTER_EDGES { edges[edge_count] = Raster_Edge{pen_x, pen_y, node_x[node_i], node_y[node_i], 0} edge_count += 1 }
-					pen_x = node_x[node_i] pen_y = node_y[node_i]
+			for node_i < nodes.len {
+				if nodes[node_i].on_curve {
+					if edges.len < MAX_RASTER_EDGES { edges[edges.len] = Raster_Edge{pen_x, pen_y, nodes[node_i].x, nodes[node_i].y, 0} edges.len += 1 }
+					pen_x = nodes[node_i].x pen_y = nodes[node_i].y
 					node_i += 1
 				else
-					ctrl_x := node_x[node_i]
-					ctrl_y := node_y[node_i]
+					ctrl_x := nodes[node_i].x
+					ctrl_y := nodes[node_i].y
 					end_x : f32 = 0.0
 					end_y : f32 = 0.0
 					next_i := node_i + 1
-					if next_i >= node_count { end_x = node_x[0] end_y = node_y[0] else end_x = node_x[next_i] end_y = node_y[next_i] }
+					if next_i >= nodes.len { end_x = nodes[0].x end_y = nodes[0].y else end_x = nodes[next_i].x end_y = nodes[next_i].y }
 					prev_x := pen_x
 					prev_y := pen_y
 					for step in 0..RASTER_QUAD_STEPS {
@@ -205,26 +205,29 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 						inv_t := 1.0 - t
 						curve_x := inv_t*inv_t*pen_x + 2.0*inv_t*t*ctrl_x + t*t*end_x
 						curve_y := inv_t*inv_t*pen_y + 2.0*inv_t*t*ctrl_y + t*t*end_y
-						if edge_count < MAX_RASTER_EDGES { edges[edge_count] = Raster_Edge{prev_x, prev_y, curve_x, curve_y, 0} edge_count += 1 }
+						if edges.len < MAX_RASTER_EDGES { edges[edges.len] = Raster_Edge{prev_x, prev_y, curve_x, curve_y, 0} edges.len += 1 }
 						prev_x = curve_x prev_y = curve_y
 					}
 					pen_x = end_x pen_y = end_y
 					node_i += 2
 				}
 			}
-			if edge_count < MAX_RASTER_EDGES { edges[edge_count] = Raster_Edge{pen_x, pen_y, node_x[0], node_y[0], 0} edge_count += 1 }
-			if edge_count > first_edge { contour_start[contour_count] = first_edge contour_count += 1 }
+			if edges.len < MAX_RASTER_EDGES { edges[edges.len] = Raster_Edge{pen_x, pen_y, nodes[0].x, nodes[0].y, 0} edges.len += 1 }
+			if edges.len > first_edge { contour_start[contour_start.len] = first_edge contour_start.len += 1 }
 		}
 		point_start = point_end + 1
 	}
-	contour_start[contour_count] = edge_count
+	// Sentinel: cap the last contour's edge range and count it too, so
+	// contour_start holds (contours + 1) fenceposts — the coloring loop
+	// reads contour ci as the span [contour_start[ci], contour_start[ci+1]).
+	contour_start[contour_start.len] = i32(edges.len) contour_start.len += 1
 
 	// Edge coloring: per contour, switch color at corners so adjacent spans
 	// share exactly one channel (the median then keeps the corner sharp).
 	// Smooth / single-corner contours stay white (all channels = plain SDF).
 	is_corner : [..MAX_RASTER_EDGES]bool
 	is_corner.len = MAX_RASTER_EDGES
-	for ci in 0..contour_count {
+	for ci in 0..(i32(contour_start.len) - 1) {
 		edge_lo := contour_start[ci]
 		edge_hi := contour_start[ci + 1]
 		n_edges := edge_hi - edge_lo
@@ -271,7 +274,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			min_d2_g : f32 = 1000000.0
 			min_d2_b : f32 = 1000000.0
 			winding : i32 = 0
-			for ei in 0..edge_count {
+			for ei in 0..i32(edges.len) {
 				x0 := edges[ei].x0
 				y0 := edges[ei].y0
 				x1 := edges[ei].x1
