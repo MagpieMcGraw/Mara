@@ -397,7 +397,7 @@ Expr_Compiler_Intrinsic :: struct {
 // expression positions the same way user-defined type names (Player, etc.)
 // do via Expr_Ident → env lookup → Type_Scope.
 Expr_Type_Name :: struct {
-    kind: Token_Kind,   // Bool_Type / I8 / I64 / U8 / Byte / F32 / F64 / C8 / Utf8 etc.
+    kind: Token_Kind,   // Bool_Type / I8 / I64 / U8 / Byte / F32 / F64 / Utf8 etc.
     span: Span,
     type_: Type,        // filled by type checker
 }
@@ -923,7 +923,7 @@ is_intrinsic_part_kind :: proc(kind: Token_Kind) -> bool {
     case .Identifier, .Int, .F64, .F32,
          .I8, .I16, .I32, .I64,
          .U8, .U16, .U32, .U64,
-         .C8, .Utf8, .Byte, .Bool_Type,
+         .Utf8, .Byte, .Bool_Type,
          .Number:
         return true
     }
@@ -2960,7 +2960,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
 is_type_keyword :: proc(kind: Token_Kind) -> bool {
     #partial switch kind {
     case .Int, .F64, .Bool_Type,
-         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .C8, .Utf8, .Byte: return true
+         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .Utf8, .Byte: return true
     }
     return false
 }
@@ -3505,7 +3505,7 @@ is_broadcast_value_start :: proc(k: Token_Kind) -> bool {
          .Left_Bracket, .Left_Brace,
          .Fun, .Match, .If, .Hash,
          .Bool_Type, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64,
-         .F32, .F64, .C8, .Utf8, .Byte:
+         .F32, .F64, .Utf8, .Byte:
         return true
     }
     return false
@@ -3760,7 +3760,7 @@ is_type_token :: proc(k: Token_Kind) -> bool {
     #partial switch k {
     case .Identifier, .Int, .F64, .F32, .Bool_Type,
          .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64,
-         .C8, .Utf8, .Byte:
+         .Utf8, .Byte:
         return true
     }
     return false
@@ -4122,7 +4122,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         result = parse_if_expr(p)
 
     case .Int, .F64, .Bool_Type,
-         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .C8, .Utf8, .Byte:
+         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .Utf8, .Byte:
         // Type keyword in expression context. With `(` it's a cast call —
         // i32(x), f64(y) — same form for any user-facing primitive. Without
         // `(` it's a type-as-value, useful as a generic-call argument like

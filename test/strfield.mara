@@ -2,7 +2,7 @@ module strfield
 
 // Regression for TWO fixes:
 //  1. infer_field_type_from_default: an UNANNOTATED literal struct-field
-//     default infers a real type (string -> cstr [..128,0]utf8, char -> c8),
+//     default infers a real type (string -> cstr [..128,0]utf8, char -> utf8),
 //     not Type_Any -> i64.
 //  2. constructor codegen: a partial-array / string FIELD default is actually
 //     copied into the field (len + bytes + sentinel), instead of allocating a
@@ -13,7 +13,7 @@ use mara.string
 
 Inferred :: struct {
 	greet := "hello"   // unannotated -> cstr shape [..128,0]utf8
-	sep   := '/'       // unannotated -> c8
+	sep   := '/'       // unannotated -> utf8
 	n     := 7
 }
 
@@ -27,7 +27,7 @@ main :: fun() {
 	assert(i.greet.len == 5)     // default actually copied in
 	assert(i.greet[0] == 'h')
 	assert(i.greet[4] == 'o')
-	assert(i.sep == '/')         // c8 field default, not i64
+	assert(i.sep == '/')         // utf8 field default, not i64
 	assert(i.n == 7)
 
 	a := Annotated()

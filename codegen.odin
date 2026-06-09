@@ -2448,7 +2448,6 @@ llvm_type_from_checker :: proc(t: Type) -> string {
             panic(fmt.tprintf("llvm_type_from_checker: unexpected float width %d", v.bits))
         }
     case Type_Bool:         return "i1"
-    case Type_C8:           return "i8"
     case Type_Utf8:         return "i8"
     case Type_Byte:         return "i8"
     case Type_CString:      return "ptr"

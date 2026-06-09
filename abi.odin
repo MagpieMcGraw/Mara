@@ -236,7 +236,7 @@ classify_leaf :: proc(t: Type) -> ABI_Class {
     case Type_Numeric:
         if v.kind == .Float { return .SSE }
         return .Integer
-    case Type_Infer_Int, Type_Bool, Type_C8, Type_Utf8, Type_Byte,
+    case Type_Infer_Int, Type_Bool, Type_Utf8, Type_Byte,
          Type_CString, ^Type_Ptr, ^Type_Enum,
          Type_Const_Int, Type_Runtime_Size, Type_Any:
         return .Integer
@@ -459,7 +459,7 @@ type_alignment :: proc(t: Type) -> int {
          Type_Const_Int, Type_Runtime_Size,
          ^Type_Union, Type_Any, Type_Error:
         return 8
-    case Type_Bool, Type_C8, Type_Utf8, Type_Byte:
+    case Type_Bool, Type_Utf8, Type_Byte:
         return 1
     case ^Type_Slice, ^Type_Partial_Array:
         return slice_header_align

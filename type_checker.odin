@@ -16,8 +16,7 @@ Type :: union {
     Type_Infer_Float, // numeric literal (float) — adopts concrete float type from context
     Type_Bool,
     Type_CString,
-    Type_C8,          // 8-bit character (ASCII byte)
-    Type_Utf8,        // UTF-8 byte (used as element type for strings)
+    Type_Utf8,        // UTF-8 byte: string element type AND the type of a character literal ('A')
     Type_Byte,        // raw memory byte — no arithmetic, used in []byte for reinterpret
     Type_Numeric,
     ^Type_Ptr,
@@ -44,7 +43,6 @@ Type_Infer_Int :: struct { cell: ^Infer_Cell }    // nil cell = anonymous litera
 Type_Infer_Float :: struct { cell: ^Infer_Cell }
 Type_Bool :: struct {}
 Type_CString :: struct {}
-Type_C8 :: struct {}
 Type_Utf8 :: struct {}
 Type_Byte :: struct {}
 Type_Const_Int :: struct {
@@ -1915,7 +1913,6 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
             return Type_Error{}
         case "f64":    return Type_F64{}
         case "bool":   return Type_Bool{}
-        case "c8":     return Type_C8{}
         case "utf8":   return Type_Utf8{}
         case "byte":   return Type_Byte{}
         case "void":   return Type_Void{}
@@ -3224,11 +3221,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if _, ok := b.(Type_Infer_Int); ok { return true }
         // Infer float compatible with float numeric types only
         if _, ok := b.(Type_Infer_Float); ok { return va.kind == .Float }
-        // c8 is compatible with i8/u8
-        if _, ok := b.(Type_C8); ok {
-            return (va.kind == .Unsigned || va.kind == .Signed) && va.bits == 8
-        }
-        // utf8 is compatible with i8/u8
+        // utf8 (incl. char literals) is compatible with i8/u8
         if _, ok := b.(Type_Utf8); ok {
             return (va.kind == .Unsigned || va.kind == .Signed) && va.bits == 8
         }
@@ -3258,14 +3251,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         }
         if sl, ok := b.(^Type_Slice); ok {
             if _, utf8_ok := sl.elem.(Type_Utf8); utf8_ok && sl.has_sentinel { return true }
-        }
-        return false
-    case Type_C8:
-        if _, ok := b.(Type_C8); ok { return true }
-        if _, ok := b.(Type_Infer_Int); ok { return true }
-        // c8 is compatible with u8 (same underlying size)
-        if nb, ok := b.(Type_Numeric); ok {
-            return (nb.kind == .Unsigned || nb.kind == .Signed) && nb.bits == 8
         }
         return false
     case Type_Utf8:
@@ -3526,7 +3511,6 @@ type_name :: proc(t: Type) -> string {
         }
     case Type_Bool:         return "bool"
     case Type_CString:      return "cstring"
-    case Type_C8:           return "c8"
     case Type_Utf8:         return "utf8"
     case Type_Byte:         return "byte"
     case ^Type_Ptr:         return fmt.tprintf("^%s", type_name(v.elem))
@@ -3605,7 +3589,6 @@ is_byte_sized_memory_type :: proc(t: Type) -> bool {
     base := distinct_base(t)
     if _, ok := base.(Type_Byte); ok { return true }
     if _, ok := base.(Type_Utf8); ok { return true }
-    if _, ok := base.(Type_C8); ok { return true }
     if n, ok := base.(Type_Numeric); ok {
         return (n.kind == .Signed || n.kind == .Unsigned) && n.bits == 8
     }
@@ -3646,7 +3629,7 @@ slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 64}
 numeric_info :: proc(t: Type) -> (bits: int, kind: Numeric_Kind, ok: bool) {
     #partial switch v in distinct_base(resolve_infer(t)) {
     case Type_Numeric:                   return v.bits, v.kind, true
-    case Type_Byte, Type_C8, Type_Utf8:  return 8, .Unsigned, true
+    case Type_Byte, Type_Utf8:  return 8, .Unsigned, true
     case Type_F64:                       return 64, .Float, true
     }
     return 0, .Signed, false
@@ -3728,7 +3711,7 @@ coerces_to_index_width :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(t) {
     case Type_Infer_Int, Type_Any, Type_Error: return true
     case Type_Numeric:                         return true
-    case Type_Byte, Type_C8, Type_Utf8:        return true
+    case Type_Byte, Type_Utf8:        return true
     case ^Type_Enum, ^Type_Union:              return true  // index by integer tag
     }
     return false
@@ -3973,7 +3956,7 @@ checker_type_alignment :: proc(t: Type) -> int {
         case 16: return 2
         case 8:  return 1
         }
-    case Type_Bool, Type_C8, Type_Utf8, Type_Byte:
+    case Type_Bool, Type_Utf8, Type_Byte:
         return 1
     case ^Type_Fixed_Array:
         return checker_type_alignment(v.elem)
@@ -4273,7 +4256,7 @@ checker_type_byte_size :: proc(t: Type) -> int {
     case Type_Void:
         return 0
     case Type_Numeric:     return v.bits / 8
-    case Type_C8, Type_Utf8, Type_Byte, Type_Bool:
+    case Type_Utf8, Type_Byte, Type_Bool:
         return 1
     case ^Type_Slice:      return slice_header_bytes
     case ^Type_Partial_Array:
@@ -5260,7 +5243,6 @@ cast_result_type :: proc(name: string) -> (Type, bool) {
     case "f16":  return Type_Numeric{kind = .Float,    bits = 16},  true
     case "f32":  return Type_Numeric{kind = .Float,    bits = 32},  true
     case "f64":  return Type_F64{},  true
-    case "c8":   return Type_C8{},   true
     case "utf8": return Type_Utf8{}, true
     case "bool": return Type_Bool{}, true
     }
@@ -5327,7 +5309,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     // Char literal default — an 8-bit character. Without this it fell through
     // to Type_Any → i64 (wrong width: a char field is i8, not i64).
     if _, ok := value.(^Expr_Char); ok {
-        return Type_C8{}
+        return Type_Utf8{}
     }
     if _, ok := value.(^Expr_Bool); ok {
         return Type_Bool{}
@@ -7783,7 +7765,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
             check_error(c, s.span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, ct.name)
             elem_type = Type_Error{}  // error recovery: suppress cascades (Type_Any would lower to i64)
         case Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool,
-             Type_CString, Type_C8, Type_Utf8, Type_Byte, Type_Numeric,
+             Type_CString, Type_Utf8, Type_Byte, Type_Numeric,
              ^Type_Ptr, ^Type_Enum, ^Type_Union, ^Type_Distinct,
              Type_Const_Int, Type_Runtime_Size, Type_Any, Type_Void, Type_Error, Type_Err,
              nil:
@@ -10548,7 +10530,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         pa.sentinel = 0
         return pa
     case ^Expr_Char:
-        return Type_C8{}
+        return Type_Utf8{}
     case ^Expr_Bool:
         return Type_Bool{}
     case ^Expr_Skip_Constructor:
@@ -11094,7 +11076,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         case .U64:       return Type_Numeric{kind = .Unsigned, bits = 64}
         case .F32:       return Type_Numeric{kind = .Float,    bits = 32}
         case .F64:       return Type_F64{}
-        case .C8:        return Type_C8{}
         case .Utf8:      return Type_Utf8{}
         case .Byte:      return Type_Byte{}
         case .Int:
@@ -11579,7 +11560,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
              "i8", "i16", "i32", "i64", "i128",
              "u8", "u16", "u32", "u64", "u128",
              "usize", "isize",
-             "f16", "f32", "f64", "c8", "utf8", "bool":
+             "f16", "f32", "f64", "utf8", "bool":
             return true   // int / uint kept here so the cast site emits the
                           // same "reserved" error as a type position would,
                           // instead of a generic "unknown function".
@@ -11614,7 +11595,6 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         case "f16": return Type_Numeric{kind = .Float, bits = 16}, true
         case "f32": return Type_Numeric{kind = .Float, bits = 32}, true
         case "f64": return Type_F64{}, true
-        case "c8":  return Type_C8{}, true
         case "utf8": return Type_Utf8{}, true
         case "bool": return Type_Bool{}, true
         }

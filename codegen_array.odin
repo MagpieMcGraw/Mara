@@ -662,7 +662,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
 index_is_signed :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(t) {
     case Type_Numeric:                       return v.kind == .Signed
-    case Type_Byte, Type_C8, Type_Utf8, Type_Bool: return false
+    case Type_Byte, Type_Utf8, Type_Bool: return false
     }
     return true
 }

@@ -493,7 +493,7 @@ binary_op_type :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string) -> (ir
     ir = llvm_type_from_checker(work)
     #partial switch n in distinct_base(work) {
     case Type_Numeric:                   unsigned = n.kind == .Unsigned
-    case Type_Byte, Type_C8, Type_Utf8:  unsigned = true
+    case Type_Byte, Type_Utf8:  unsigned = true
     }
     return
 }
@@ -682,7 +682,7 @@ cast_target_ir_type :: proc(name: string) -> (ir_type: string, is_float: bool, i
     case "u128":        return "i128", false, false, true
     case "i32":         return "i32", false, false, true
     case "i16":         return "i16", false, false, true
-    case "i8", "c8", "utf8": return "i8", false, false, true
+    case "i8", "utf8": return "i8", false, false, true
     case "u32":         return "i32", false, false, true
     case "u16":         return "i16", false, false, true
     case "u8":          return "i8", false, false, true
@@ -814,7 +814,7 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
         #partial switch t in distinct_base(expr_type(e.args[0])) {
         case Type_Numeric:
             src_unsigned = t.kind == .Unsigned
-        case Type_Byte, Type_C8, Type_Utf8, Type_Bool:
+        case Type_Byte, Type_Utf8, Type_Bool:
             src_unsigned = true
         }
         if src_unsigned {
@@ -858,7 +858,7 @@ gen_expr_coerced :: proc(g: ^Codegen, e: Expr, target_ir: string) -> string {
         unsigned := false
         #partial switch v in distinct_base(src_t) {
         case Type_Numeric:                              unsigned = v.kind == .Unsigned
-        case Type_Byte, Type_C8, Type_Utf8, Type_Bool:  unsigned = true
+        case Type_Byte, Type_Utf8, Type_Bool:  unsigned = true
         }
         t := fresh_tmp(g)
         op := unsigned ? "zext" : "sext"
@@ -1949,9 +1949,9 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                 stv := Struct_Var{alloca = elem_ptr, struct_name = sd.name}
                 gen_print_struct(g, &stv, print_st)
             }
-        } else if is_c8_expr(g, arg_expr) {
+        } else if is_char_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
-            // c8 prints as a character using %c
+            // utf8 / char literal prints as a character using %c
             ext := fresh_tmp(g)
             emit(g, "  %s = zext i8 %s to i32", ext, val)
             fmt_name, fmt_len := get_string_literal(g, "%c")
@@ -2519,17 +2519,13 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
 // Type query helpers
 // ---------------------------------------------------------------------------
 
-// Check if this expression is a single character byte — c8 literal,
-// c8 variable, or a Type_Utf8 byte (e.g. one element loaded out of a
-// utf8 string array). Both print the same way (%c via printf): they're
-// 8-bit values whose only meaningful rendering is as a glyph. Calling
-// the helper is_c8_expr is a slight name lie now that utf8 is included,
-// but every caller uses it for "should this print as a character?"
-// which is exactly the right semantic for both kinds.
-is_c8_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
+// Should this expression print as a character glyph (%c) rather than a
+// number? True for a character literal and for utf8 values (e.g. one
+// element loaded out of a string) — 8-bit code units whose meaningful
+// rendering is the glyph, not the integer.
+is_char_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if _, ok := expr.(^Expr_Char); ok { return true }
     t := expr_type(expr)
-    if _, is_c8 := t.(Type_C8); is_c8 { return true }
     if _, is_utf8 := t.(Type_Utf8); is_utf8 { return true }
     return false
 }

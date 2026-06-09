@@ -52,7 +52,6 @@ Token_Kind :: enum {
     I8, I16, I32, I64,
     U8, U16, U32, U64,
     F32,
-    C8,
     Utf8,
     Byte,
 
@@ -179,7 +178,6 @@ keyword_lookup :: proc(text: string) -> (Token_Kind, bool) {
     case "u32":      return .U32, true
     case "u64":      return .U64, true
     case "f32":      return .F32, true
-    case "c8":       return .C8, true
     case "utf8":     return .Utf8, true
     case "byte":     return .Byte, true
     }

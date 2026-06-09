@@ -1,0 +1,22 @@
+module chartest
+
+// After folding c8 into utf8: char literals are utf8, must still print as a
+// glyph (%c, not a number), compare, and store into utf8 buffers.
+
+main :: fun() -> i64 {
+	c := 'A'
+	print("char:", c)        // expect: char: A   (glyph, not 65)
+	if c != 'A' { print("compare FAIL"); return 1 }
+
+	s := "Hi"
+	print("elem:", s[0])     // expect: elem: H   (utf8 string element)
+
+	buf : [..8]utf8
+	buf.len = 0
+	buf[buf.len] = 'Z'       // char literal into a utf8 buffer
+	buf.len += 1
+	if buf[0] != 'Z' { print("store FAIL"); return 1 }
+
+	print("chartest ok")
+	return 0
+}
