@@ -361,7 +361,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         if chain.final_kind == .Struct {
             gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value)
         } else {
-            val := gen_expr(g, s.value, chain.final_type)
+            val := gen_expr_coerced(g, s.value, chain.final_type)
             emit_store(g, chain.final_type, val, elem_ptr)
         }
         return
@@ -398,7 +398,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             elem_struct := sv.elem_type[len("%class."):]
             gen_struct_store_at(g, elem_ptr, elem_struct, s.value)
         } else {
-            val := gen_expr(g, s.value, sv.elem_type)
+            val := gen_expr_coerced(g, s.value, sv.elem_type)
             emit_store(g, sv.elem_type, val, elem_ptr)
         }
         return
@@ -425,7 +425,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         elem_struct := av.elem_type[len("%class."):]
         gen_struct_store_at(g, gep, elem_struct, s.value)
     } else {
-        val := gen_expr(g, s.value, av.elem_type)
+        val := gen_expr_coerced(g, s.value, av.elem_type)
         emit_store(g, av.elem_type, val, gep)
     }
 }

@@ -1,0 +1,73 @@
+module idxelem
+
+// Positive companion to failures/test_index_narrow_fail: the element-assign
+// type check must still accept the valid forms it always did —
+//   - an infer literal (resolved to the element width via the hint)
+//   - an exact-width value
+//   - an explicit narrowing cast
+// across fixed arrays, partial arrays, and slices. Expected: builds and the
+// run returns 0.
+
+main :: fun() -> i64 {
+	edges : [..16]i32
+	edges.len = 5                       // edges.len is i64
+
+	// partial array, element i32
+	starts : [..8]i32
+	starts.len = 0
+	starts[starts.len] = 0              // infer literal -> i32 element
+	starts.len += 1
+	starts[starts.len] = i32(edges.len) // explicit narrowing cast i64 -> i32
+	starts.len += 1
+	exact : i32 = 2
+	starts[starts.len] = exact          // exact-width i32
+	starts.len += 1
+	// starts == [0, 5, 2]
+
+	// fixed array, element i32
+	fixed : [3]i32
+	fixed[0] = 1                        // infer literal
+	fixed[1] = i32(edges.len)           // cast
+	fixed[2] = exact                    // exact width
+	// fixed == [1, 5, 2]
+
+	// slice over backing storage, element i32
+	store : [4]i32
+	view : []i32 = store[:]
+	view[0] = 9                         // infer literal into slice element
+	view[1] = exact                     // exact width into slice element
+
+	got : i64 = 0
+	got = got + i64(starts[0]) + i64(starts[1]) + i64(starts[2])   // 0 + 5 + 2 = 7
+	got = got + i64(fixed[0])  + i64(fixed[1])  + i64(fixed[2])    // 1 + 5 + 2 = 8
+	got = got + i64(view[0])   + i64(view[1])                      // 9 + 2     = 11
+	expected : i64 = 26
+	if got != expected {
+		print("idxelem MISMATCH got:", got, "expected:", expected)
+		return 1
+	}
+
+	// value-preserving widening into a WIDER element — the index-store codegen
+	// must materialize the zext/sext (gen_expr_coerced), so no cast is needed.
+	wide : [..4]u32
+	wide.len = 0
+	small : u16 = 60000                 // high bit set: zext, not sext
+	wide[wide.len] = small              // u16 -> u32 element (zext)
+	wide.len += 1
+	if wide[0] != 60000 {
+		print("idxelem widen u16->u32 FAIL:", wide[0])
+		return 1
+	}
+	swide : [..4]i64
+	swide.len = 0
+	neg : i32 = -7
+	swide[swide.len] = neg              // i32 -> i64 element (sext)
+	swide.len += 1
+	if swide[0] != -7 {
+		print("idxelem widen i32->i64 FAIL:", swide[0])
+		return 1
+	}
+
+	print("idxelem ok")
+	return 0
+}

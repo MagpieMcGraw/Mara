@@ -8530,8 +8530,16 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
         c.expected_hint = fa.index_type
     }
     idx_type := check_expr(c, ix.index, env)
+    // Hint the value with the element type so an infer literal (`a[i] = 0`)
+    // resolves to the element width rather than defaulting. Byte targets are
+    // left unhinted — their reinterpret-write path (below) types the value on
+    // its own and accepts any width.
     if fa, ok := target_type.(^Type_Fixed_Array); ok {
         c.expected_hint = fa.elem
+    } else if pa, ok := target_type.(^Type_Partial_Array); ok {
+        if _, is_byte := pa.elem.(Type_Byte); !is_byte { c.expected_hint = pa.elem }
+    } else if sl, ok := target_type.(^Type_Slice); ok {
+        if _, is_byte := sl.elem.(Type_Byte); !is_byte { c.expected_hint = sl.elem }
     }
     val_type := check_expr(c, s.value, env)
 
@@ -8568,16 +8576,42 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             s.assign_value_type = solidify_type(val_type)
             return
         }
-        if types_incompatible(fa.elem, val_type) {
-            check_error(c, s.span, TYPE_CANNOT_ASSIGN_ELEMENT,
-                type_name(val_type), fa.size, type_name(fa.elem))
-        }
-        // Check that infer literal fits in the array element type
-        if is_infer(val_type) {
-            check_literal_overflow(c, s.value, fa.elem, s.span)
-        }
     }
 
+    // Non-byte element write into a fixed array, partial array, or slice. The
+    // value must reach the element slot without losing information:
+    //   - same type, or the 8-bit memory family (byte/c8/utf8/i8/u8) that all
+    //     lower to i8 and may alias a slot — buffer_elem_compatible; or
+    //   - a value-preserving widen (u16->u32, i32->i64, f32->f64), which
+    //     gen_index_assign materializes through gen_expr_coerced (zext/sext/
+    //     fpext) at the store.
+    // Anything else — narrowing (i64->i32) or a same-width cross-sign
+    // (i32->u32) — is a located error: the index-store codegen can't insert
+    // that conversion, so without this gate the mismatch reaches codegen and
+    // emits a typed store LLVM rejects. An explicit cast is the fix.
+    elem_type: Type
+    elem_size := -1   // >= 0 marks a fixed array, for the [%d]%s diagnostic
+    #partial switch t in target_type {
+    case ^Type_Fixed_Array:   elem_type = t.elem; elem_size = t.size
+    case ^Type_Partial_Array: elem_type = t.elem
+    case ^Type_Slice:         elem_type = t.elem
+    }
+    if elem_type != nil {
+        // Infer literals adopt the element width via the hint above, so they
+        // skip the compatibility gate and are range-checked instead.
+        if !is_infer(val_type) && !buffer_elem_compatible(elem_type, val_type) && !value_preserving_widen(val_type, elem_type) {
+            if elem_size >= 0 {
+                check_error(c, s.span, TYPE_CANNOT_ASSIGN_ELEMENT,
+                    type_name(val_type), elem_size, type_name(elem_type))
+            } else {
+                check_error(c, s.span, TYPE_CANNOT_ASSIGN_ELEMENT_TYPE,
+                    type_name(val_type), type_name(target_type))
+            }
+        }
+        if is_infer(val_type) {
+            check_literal_overflow(c, s.value, elem_type, s.span)
+        }
+    }
 }
 
 check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {

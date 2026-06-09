@@ -1,0 +1,24 @@
+module test_index_narrow_fail
+
+// Expected to FAIL type checking: storing an i64 into an [..N]i32 element is a
+// narrowing the index-assign codegen can't perform — gen_index_assign stores
+// the value raw (gen_expr + emit_store at the element type, no conversion), so
+// an i64 value would emit `store i32 <i64>` and LLVM rejects it. Previously the
+// partial-array element-assign path ran no element-type check at all, so this
+// reached codegen. It must now be a located type error.
+// Diagnostic: cannot assign i64 to element of [..8]i32.
+//
+// This is the reduced form of the font.mara bug: `contour_start[len] = first_edge`
+// where contour_start is [..512]i32 and first_edge was `edges.len` (i64).
+
+main :: fun() -> i64 {
+	starts : [..8]i32
+	starts.len = 0
+	edges : [..16]i32
+	edges.len = 5
+
+	first := edges.len           // i64 (partial-array .len)
+	starts[starts.len] = first   // i64 -> [..8]i32 element: must be a type error
+	starts.len += 1
+	return i64(starts[0])
+}

@@ -489,6 +489,7 @@ TYPE_CANNOT_WRITE_LOCAL_REFERENCE_THROUGH :: "cannot write local reference throu
 TYPE_ARRAY_INDEX_NUMBER :: "array index must be a number, got %s"
 TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER :: "cannot write to element of immutable parameter '%s' (declare it with ^ to allow mutation)"
 TYPE_CANNOT_ASSIGN_ELEMENT :: "cannot assign %s to element of [%d]%s"
+TYPE_CANNOT_ASSIGN_ELEMENT_TYPE :: "cannot assign %s to element of %s (add an explicit cast)"
 TYPE_SLICE_LOWER_BOUND_NUMBER :: "slice lower bound must be a number, got %s"
 TYPE_SLICE_UPPER_BOUND_NUMBER :: "slice upper bound must be a number, got %s"
 TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE :: "cannot slice-assign into immutable parameter '%s' (declare it with ^ to allow mutation)"
