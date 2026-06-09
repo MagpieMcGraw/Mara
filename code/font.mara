@@ -124,7 +124,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	glyph.bearing_y = ymax * scale + pad
 
 	edges : [..MAX_RASTER_EDGES]Raster_Edge
-	contour_start : [..512]i32   // edge index where each contour's run begins (+sentinel)
+	contour_start : [..512]i64   // edge index where each contour's run begins (+sentinel)
 
 	Node :: struct {
 		x, y: f32
@@ -132,15 +132,15 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	}
 	nodes : [..1024]Node
 
-	n_contours := i32(outline.num_contours)
-	point_start : i32 = 0
+	n_contours := outline.num_contours
+	point_start := 0
 	for ci in 0..n_contours {
-		point_end := i32(outline.end_pts[ci])
+		point_end := outline.end_pts[ci]
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
-			first_edge := i32(edges.len)
+			first_edge := edges.len
 			// first on-curve point in the contour (relative index)
-			first_on_curve : i32 = -1
+			first_on_curve := -1
 			for k in 0..n_points {
 				if outline.points[point_start + k].on_curve {
 					if first_on_curve < 0 { first_on_curve = k }
@@ -151,8 +151,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			// Build the node ring starting on-curve, inserting the implied
 			// on-curve midpoints between consecutive off-curve control points.
 			nodes.len = 0
-			first_x := (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin) * atlas.px_scale
-			first_y := (y_origin - f32(i32(outline.points[point_start + first_on_curve].y))) * atlas.px_scale
+			first_x := (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin) * scale
+			first_y := (y_origin - f32(i32(outline.points[point_start + first_on_curve].y))) * scale
 			nodes[nodes.len] = Node{first_x, first_y, true} nodes.len += 1
 			have_off := false
 			off_x : f32 = 0.0
@@ -161,8 +161,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 				ring_idx := first_on_curve + j
 				if ring_idx >= n_points { ring_idx = ring_idx - n_points }
 				point := outline.points[point_start + ring_idx]
-				point_x := (f32(i32(point.x)) - x_origin) * atlas.px_scale
-				point_y := (y_origin - f32(i32(point.y))) * atlas.px_scale
+				point_x := (f32(i32(point.x)) - x_origin) * scale
+				point_y := (y_origin - f32(i32(point.y))) * scale
 				if point.on_curve {
 					if have_off {
 						nodes[nodes.len] = Node{off_x, off_y, false} nodes.len += 1
@@ -212,15 +212,22 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 					node_i += 2
 				}
 			}
-			if edges.len < MAX_RASTER_EDGES { edges[edges.len] = Raster_Edge{pen_x, pen_y, nodes[0].x, nodes[0].y, 0} edges.len += 1 }
-			if edges.len > first_edge { contour_start[contour_start.len] = first_edge contour_start.len += 1 }
+			if edges.len < MAX_RASTER_EDGES {
+				edges[edges.len] = Raster_Edge{pen_x, pen_y, nodes[0].x, nodes[0].y, 0}
+				edges.len += 1
+			}
+			if edges.len > first_edge {
+				contour_start[contour_start.len] = first_edge
+				contour_start.len += 1
+			}
 		}
 		point_start = point_end + 1
 	}
 	// Sentinel: cap the last contour's edge range and count it too, so
 	// contour_start holds (contours + 1) fenceposts — the coloring loop
 	// reads contour ci as the span [contour_start[ci], contour_start[ci+1]).
-	contour_start[contour_start.len] = i32(edges.len) contour_start.len += 1
+	contour_start[contour_start.len] = i32(edges.len)
+	contour_start.len += 1
 
 	// Edge coloring: per contour, switch color at corners so adjacent spans
 	// share exactly one channel (the median then keeps the corner sharp).
@@ -246,13 +253,13 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			if corner_total <= 1 {
 				for ei in 0..n_edges { edges[edge_lo + ei].color = 7 }
 			else
-				first_corner : i32 = -1
+				first_corner := -1
 				for ei in 0..n_edges {
 					if is_corner[ei] {
 						if first_corner < 0 { first_corner = ei }
 					}
 				}
-				color : i32 = 3
+				color := 3
 				for step in 0..n_edges {
 					ei := first_corner + step
 					if ei >= n_edges { ei = ei - n_edges }
@@ -528,7 +535,7 @@ TTF :: struct (bytes: ^[]byte) {
 			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
 			off16.len = loca.offsets.len
 			for item, i in off16 {
-				loca.offsets[i] = i32(item) * 2
+				loca.offsets[i] = u32(item) * 2
 			}
 		else
 			loca.offsets = #big_endian bytes[0]
