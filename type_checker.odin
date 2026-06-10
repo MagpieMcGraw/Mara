@@ -941,6 +941,15 @@ always_returns :: proc(body: [dynamic]Stmt) -> bool {
             if len(live) == 0 { continue }
             return always_returns(live)
         }
+        // Definitions aren't executable — a body whose tail is nested fn /
+        // type / const definitions ends at the statement before them, so
+        // keep walking ("helpers at the bottom" layout). Stmt_Scope is a
+        // named fun/struct definition, not an executable block.
+        #partial switch _ in last {
+        case ^Stmt_Scope, ^Stmt_Define, ^Stmt_Union_Def, ^Stmt_Distinct_Def,
+             ^Stmt_Dispatch_Def, Stmt_Overload, ^Stmt_Foreign:
+            continue
+        }
         #partial switch s in last {
         case Stmt_Return:
             return true

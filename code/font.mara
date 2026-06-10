@@ -530,41 +530,6 @@ TTF :: struct (bytes: ^[]byte) {
 		left_side_bearing : F_Word
 	}
 
-	// ─── parse: read the table directory, then the tables we use, into fields ───
-	h : Offset_Table = #big_endian bytes[0]
-	h.tables = #big_endian bytes[12]
-	h.tables.len = h.num_tables
-
-	head_loc := h.tables.get_offset("head")
-	maxp_loc := h.tables.get_offset("maxp")
-	cmap_loc := h.tables.get_offset("cmap")
-	loca_loc := h.tables.get_offset("loca")
-	glyf_table_loc := h.tables.get_offset("glyf")
-	hhea_loc := h.tables.get_offset("hhea")
-	hmtx_loc := h.tables.get_offset("hmtx")
-
-	head : Head = #big_endian bytes[head_loc]
-	maxp : Maxp = #big_endian bytes[maxp_loc]
-	cmap : Cmap = #big_endian bytes[cmap_loc]
-	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
-	hhea : Hhea = #big_endian bytes[hhea_loc]
-
-	// cmap encoding records sit right after the 4-byte header; fill them, then
-	// pick a Unicode subtable to map character codes through.
-	cmap.encodings = #big_endian bytes[cmap_loc + 4]
-	cmap.encodings.len = cmap.num_subtables
-	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
-
-	// ─── decode every glyph up front; Decoded spans point into the pools ───
-	// After this, nothing needs the raw file bytes for outlines or metrics —
-	// ttf.glyphs[index] is the usable glyph.
-	end_pts : [..MAX_FONT_CONTOURS]u16
-	points  : [..MAX_FONT_POINTS]Glyph_Point
-	glyphs  : [..MAX_FONT_GLYPHS]Decoded
-	decode_glyphs(bytes, glyf_table_loc, hmtx_loc,
-		maxp.num_glyphs, hhea.num_of_long_hor_metrics,
-		loca.offsets[:], &end_pts, &points, &glyphs)
-
 	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
 		for table in tables {
 			if starts_with(table.tag[:], target) {
@@ -611,6 +576,42 @@ TTF :: struct (bytes: ^[]byte) {
 		if best < 0 { return 0 }
 		return cmap_loc + i32(cmap.encodings[best].offset)
 	}
+
+	// ─── parse: read the table directory, then the tables we use, into fields ───
+	h : Offset_Table = #big_endian bytes[0]
+	h.tables = #big_endian bytes[12]
+	h.tables.len = h.num_tables
+
+	head_loc := h.tables.get_offset("head")
+	maxp_loc := h.tables.get_offset("maxp")
+	cmap_loc := h.tables.get_offset("cmap")
+	loca_loc := h.tables.get_offset("loca")
+	glyf_table_loc := h.tables.get_offset("glyf")
+	hhea_loc := h.tables.get_offset("hhea")
+	hmtx_loc := h.tables.get_offset("hmtx")
+
+	head : Head = #big_endian bytes[head_loc]
+	maxp : Maxp = #big_endian bytes[maxp_loc]
+	cmap : Cmap = #big_endian bytes[cmap_loc]
+	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
+	hhea : Hhea = #big_endian bytes[hhea_loc]
+
+	// cmap encoding records sit right after the 4-byte header; fill them, then
+	// pick a Unicode subtable to map character codes through.
+	cmap.encodings = #big_endian bytes[cmap_loc + 4]
+	cmap.encodings.len = cmap.num_subtables
+	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
+
+	// ─── decode every glyph up front; Decoded spans point into the pools ───
+	// After this, nothing needs the raw file bytes for outlines or metrics —
+	// ttf.glyphs[index] is the usable glyph.
+	end_pts : [..MAX_FONT_CONTOURS]u16
+	points  : [..MAX_FONT_POINTS]Glyph_Point
+	glyphs  : [..MAX_FONT_GLYPHS]Decoded
+	decode_glyphs(bytes, glyf_table_loc, hmtx_loc,
+		maxp.num_glyphs, hhea.num_of_long_hor_metrics,
+		loca.offsets[:], &end_pts, &points, &glyphs)
+
 
 	// Decode the whole glyf table: one Decoded per glyph index, spans into
 	// the shared pools. The hmtx advance is baked in here too (clamped to
@@ -767,49 +768,43 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
 		print("cmap: unsupported subtable format %", i64(format))
 		return 0
 	}
-}
 
-// Format 4: four parallel u16 arrays of seg_count entries — end codes, start
-// codes, idDelta, idRangeOffset — then the glyphIdArray. Subtable layout:
-// format(2) length(2) language(2) segCountX2(2) searchRange(2)
-// entrySelector(2) rangeShift(2), so the arrays begin at +14 with a 2-byte
-// reservedPad between the end-code and start-code arrays.
-cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
-	seg_x2 := i32(read_u16be(bytes[sub + 6]))
-	end_codes   := sub + 14
-	start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
-	id_deltas   := start_codes + seg_x2
-	id_ranges   := id_deltas + seg_x2
-	seg_count := seg_x2 / 2
-	for s in 0..seg_count {
-		end_code := u32(read_u16be(bytes[end_codes + s * 2]))
-		if char <= end_code {
-			start_code := u32(read_u16be(bytes[start_codes + s * 2]))
-			if char < start_code { return 0 }
-			id_delta := read_u16be(bytes[id_deltas + s * 2])
-			id_range := i32(read_u16be(bytes[id_ranges + s * 2]))
-			if id_range == 0 {
-				// Direct: (char + idDelta) mod 65536. u16() truncates the wide
-				// u32 sum to its low 16 bits, which is the modular reduction
-				// the spec wants (idDelta is a u16-encoded signed value).
-				return u16(char + u32(id_delta))
-			else
-				// Indirect: glyphIdArray address, relative to this
-				// idRangeOffset entry's own location.
-				addr := id_ranges + s * 2 + id_range + 2 * (i32(char) - i32(start_code))
-				g := read_u16be(bytes[addr])
-				if g == 0 { return 0 }
-				return u16(u32(g) + u32(id_delta))
+	cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+		if char > 255 { return 0 }
+		return u16(bytes[sub + 6 + i32(char)])
+	}
+
+	cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+		seg_x2 := i32(read_u16be(bytes[sub + 6]))
+		end_codes   := sub + 14
+		start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
+		id_deltas   := start_codes + seg_x2
+		id_ranges   := id_deltas + seg_x2
+		seg_count := seg_x2 / 2
+		for s in 0..seg_count {
+			end_code := u32(read_u16be(bytes[end_codes + s * 2]))
+			if char <= end_code {
+				start_code := u32(read_u16be(bytes[start_codes + s * 2]))
+				if char < start_code { return 0 }
+				id_delta := read_u16be(bytes[id_deltas + s * 2])
+				id_range := i32(read_u16be(bytes[id_ranges + s * 2]))
+				if id_range == 0 {
+					// Direct: (char + idDelta) mod 65536. u16() truncates the wide
+					// u32 sum to its low 16 bits, which is the modular reduction
+					// the spec wants (idDelta is a u16-encoded signed value).
+					return u16(char + u32(id_delta))
+				else
+					// Indirect: glyphIdArray address, relative to this
+					// idRangeOffset entry's own location.
+					addr := id_ranges + s * 2 + id_range + 2 * (i32(char) - i32(start_code))
+					g := read_u16be(bytes[addr])
+					if g == 0 { return 0 }
+					return u16(u32(g) + u32(id_delta))
+				}
 			}
 		}
+		return 0
 	}
-	return 0
-}
-
-// Format 0: a flat 256-entry byte map at +6 (after format/length/language).
-cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
-	if char > 255 { return 0 }
-	return u16(bytes[sub + 6 + i32(char)])
 }
 
 // ============================================================================

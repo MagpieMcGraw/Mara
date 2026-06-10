@@ -1,0 +1,23 @@
+module tailfns
+
+// Helpers-at-the-bottom layout: a function whose tail is nested definitions
+// still returns on all paths — the missing-return analysis skips
+// non-executable statements (regression for cmap_glyph_index's refactor).
+
+pick :: fun(x: i64) -> i64 {
+	if x > 0 {
+		return double(x)
+	else
+		return 0
+	}
+
+	double :: fun(v: i64) -> i64 {
+		return v * 2
+	}
+}
+
+main :: fun() {
+	assert(pick(21) == 42)
+	assert(pick(-1) == 0)
+	print("tailfns ok")
+}
