@@ -378,10 +378,10 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 emit_cond_br(g, cond_val, ok_label, fail_label)
                 emit_label(g, fail_label)
 
-                Assert_Side :: struct { text, val: string, report: bool }
+                Assert_Side :: struct { text, val: string, ex: Expr, report: bool }
                 sides := [2]Assert_Side{
-                    {e.lhs_text, left,  !assert_side_is_literal(bin.left)},
-                    {e.rhs_text, right, !assert_side_is_literal(bin.right)},
+                    {e.lhs_text, left,  bin.left,  !assert_side_is_literal(bin.left)},
+                    {e.rhs_text, right, bin.right, !assert_side_is_literal(bin.right)},
                 }
                 spec := is_bool ? "%s" : (is_float ? "%g" : (is_unsigned ? "%llu" : "%lld"))
                 args: strings.Builder
@@ -389,8 +389,11 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 joiner := ", but "
                 for side in sides {
                     if !side.report { continue }
+                    // A utf8 side renders as the glyph, same as print() — the
+                    // value reads like the literal it's compared to: 'e'.
+                    is_char := !is_bool && !is_float && is_char_expr(g, side.ex)
                     esc_side, _ := strings.replace_all(side.text, "%", "%%")
-                    fmt.sbprintf(&msg, "%s%s was %s", joiner, esc_side, spec)
+                    fmt.sbprintf(&msg, "%s%s was %s", joiner, esc_side, is_char ? "'%c'" : spec)
                     joiner = " and "
                     if is_bool {
                         t_global, _ := get_string_literal(g, "true")
@@ -406,6 +409,15 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                             v = w
                         }
                         fmt.sbprintf(&args, ", double %s", v)
+                    } else if is_char {
+                        // %c reads an i32 vararg (default promotion).
+                        v := side.val
+                        if ir_type != "i32" {
+                            w := fresh_tmp(g)
+                            emit(g, "  %s = %s %s %s to i32", w, ir_type == "i64" ? "trunc" : "zext", ir_type, side.val)
+                            v = w
+                        }
+                        fmt.sbprintf(&args, ", i32 %s", v)
                     } else {
                         v := side.val
                         if ir_type != "i64" {

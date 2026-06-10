@@ -1,6 +1,7 @@
 # Mara
 
 A programming language written in Odin.
+The goal is a production ready compiler for under 50k lines.
 
 ## Building and running
 

@@ -1,0 +1,14 @@
+module assertc
+
+use mara.core
+use mara.string
+
+// utf8 operands render as glyphs in the failure, same as print() — the value
+// reads like the literal it's compared to:
+//   Expected greet[1] == 'h', but greet[1] was 'e'
+
+main :: fun() {
+	greet : str = "hello"
+	assert(greet[0] == 'h')   // passes
+	assert(greet[1] == 'h')   // fails — 'e', not 101
+}

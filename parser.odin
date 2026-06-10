@@ -336,19 +336,34 @@ Expr_Size_Of :: struct {
 
 // Reconstruct source text for tokens [lo, hi): any gap (or line break)
 // between consecutive tokens becomes one space, adjacent tokens stay fused —
-// `x < y` keeps its spacing, `a.b[i]` stays tight. Used by assert to carry
-// condition/operand text into the runtime failure message.
+// `x < y` keeps its spacing, `a.b[i]` stays tight. Char/string literal tokens
+// get their quotes back (the lexer stores the bare content). Used by assert
+// to carry condition/operand text into the runtime failure message.
 assert_token_text :: proc(p: ^Parser, lo, hi: int) -> string {
     sb := strings.builder_make()
     for i in lo..<hi {
         if i > lo {
             prev := p.tokens[i - 1]
             cur  := p.tokens[i]
-            if cur.line != prev.line || cur.col > prev.col + len(prev.text) {
+            // Quoted literals occupy text+2 columns in the source.
+            prev_width := len(prev.text)
+            if prev.kind == .Char || prev.kind == .String { prev_width += 2 }
+            if cur.line != prev.line || cur.col > prev.col + prev_width {
                 strings.write_byte(&sb, ' ')
             }
         }
-        strings.write_string(&sb, p.tokens[i].text)
+        #partial switch p.tokens[i].kind {
+        case .Char:
+            strings.write_byte(&sb, '\'')
+            strings.write_string(&sb, p.tokens[i].text)
+            strings.write_byte(&sb, '\'')
+        case .String:
+            strings.write_byte(&sb, '"')
+            strings.write_string(&sb, p.tokens[i].text)
+            strings.write_byte(&sb, '"')
+        case:
+            strings.write_string(&sb, p.tokens[i].text)
+        }
     }
     return strings.clone(strings.to_string(sb))
 }
