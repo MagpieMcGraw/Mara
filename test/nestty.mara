@@ -1,0 +1,28 @@
+module nestty
+
+// Nested type referenced in TYPE position (params, decls) via Parent.Inner.
+// use_inner sits BELOW Box; mirror_inner in front of it exercises the
+// forward-reference order too.
+
+mirror_inner :: fun(p: ^Box.Inner) -> i64 {
+	return p.a
+}
+
+Box :: struct (v: i64) {
+	Inner :: struct {
+		a : i64
+	}
+	x := v
+}
+
+use_inner :: fun(p: ^Box.Inner) -> i64 {
+	return p.a
+}
+
+main :: fun() {
+	i : Box.Inner
+	i.a = 7
+	assert(use_inner(&i) == 7)
+	assert(mirror_inner(&i) == 7)
+	print("nestty ok")
+}

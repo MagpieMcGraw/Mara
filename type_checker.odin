@@ -5495,6 +5495,36 @@ register_enum_variants :: proc(c: ^Checker, et: ^Type_Enum, env: ^Type_Env, enum
 }
 
 
+// Pre-register nested struct TYPE NAMES (recursively) so `Parent.Inner`
+// resolves in TYPE position — e.g. a `^TTF.Decoded` parameter — even when
+// the reference sits ABOVE the parent in the file. Pass 1b
+// (register_scope_defs) walks bodies in source order, which is too late for
+// forward signatures. Names only: fields/bodies still resolve in 1b/Phase 2,
+// and register_scope_defs REUSES these Type_Scopes (same pointer), so type
+// identity holds across both passes.
+pre_register_nested_struct_types :: proc(c: ^Checker, parent: ^Type_Scope, body: [dynamic]Stmt) {
+    for def in body {
+        s, is_scope := def.(^Stmt_Scope)
+        if !is_scope { continue }
+        if s.kind != .Struct { continue }
+        bare := s.name
+        mangled := fmt.aprintf("%s_%s", parent.name, bare)
+        nested := new(Type_Scope)
+        nested.name = mangled
+        nested.home_package = c.current_package
+        nested.kind = .Struct
+        nested.is_packed = s.is_packed
+        if len(s.typed_params) == 0 {
+            c.table.structs[mangled] = nested
+        } else {
+            c.table.funs[mangled] = nested
+        }
+        if parent.types == nil { parent.types = make(map[string]Type) }
+        parent.types[bare] = nested
+        pre_register_nested_struct_types(c, nested, s.body)
+    }
+}
+
 // Register :: definitions from a fun's scope as top-level entities with mangled names.
 // e.g., Mega :: fun { test_print :: fun() { ... } } → registers "Mega_test_print" as a function.
 // self_type is the Type value wrapping `st` (always ^Type_Scope). It gets bound to
@@ -5533,7 +5563,16 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
             if def_is_struct && len(s.typed_params) == 0 {
                 // Pure data struct — create Type_Scope with kind=.Struct, no params
                 // Phase 2 (check_bodies) resolves fields; we only register the name here.
-                def_st := new(Type_Scope)
+                // Reuse the Type_Scope when pre_register_nested_struct_types already
+                // minted it (Pass 2a) — forward signatures captured that pointer,
+                // so a fresh object here would split type identity.
+                def_st: ^Type_Scope
+                if st.types != nil {
+                    if existing, ex_ok := st.types[bare_name]; ex_ok {
+                        if ets, ets_ok := existing.(^Type_Scope); ets_ok { def_st = ets }
+                    }
+                }
+                if def_st == nil { def_st = new(Type_Scope) }
                 def_st.name = mangled
                 def_st.home_package = c.current_package
                 def_st.kind = .Struct
@@ -5552,8 +5591,16 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 type_env_set(&scope_env, bare_name, def_st)
                 c.table.fun_asts[mangled] = s
             } else {
-                // Function or struct constructor (has params) — create Type_Scope
-                def_ft := new(Type_Scope)
+                // Function or struct constructor (has params) — create Type_Scope.
+                // Struct kinds may have been pre-registered by Pass 2a (see the
+                // pure-data branch above) — reuse to keep type identity.
+                def_ft: ^Type_Scope
+                if def_is_struct && st.types != nil {
+                    if existing, ex_ok := st.types[bare_name]; ex_ok {
+                        if ets, ets_ok := existing.(^Type_Scope); ets_ok { def_ft = ets }
+                    }
+                }
+                if def_ft == nil { def_ft = new(Type_Scope) }
                 def_ft.name = mangled
                 def_ft.home_package = c.current_package
                 def_ft.has_parens = s.has_parens
@@ -5976,6 +6023,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                     append(&owner.fields, Struct_Type_Field{name = s.name, type_ = struct_type})
                     owner.field_map[s.name] = len(owner.fields) - 1
                 }
+                pre_register_nested_struct_types(c, struct_type, s.body)
                 c.pre_registered_stmts[rawptr(s)] = true
             } else {
                 flat_name := make_flat_name(c.current_package, s.name)
@@ -6019,6 +6067,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                         owner.functions[s.name] = fun_type
                     }
                 }
+                if is_struct_type { pre_register_nested_struct_types(c, fun_type, s.body) }
                 // Resolve params and return_types eagerly for non-struct funs
                 // so any statement in this scope (including a Stmt_Decl init
                 // expression sitting BEFORE this Stmt_Scope in source order)
