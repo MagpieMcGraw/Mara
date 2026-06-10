@@ -60,16 +60,18 @@ MAX_RASTER_EDGES  :: 4096
 MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
 rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 {
-	// Empty span = empty glyph (space) or an undecoded compound.
+	// Empty span = empty glyph (space) or an undecoded compound — the two
+	// are distinguishable via outline.header.num_contours (< 0 = compound)
+	// when composite resolution wants to route them differently.
 	if outline.contour_end.len == 0 { glyph.w = 0 glyph.h = 0 return }
 
 	scale := atlas.px_scale
 	pad   := atlas.pad
 
-	xmin := f32(outline.x_min)
-	xmax := f32(outline.x_max)
-	ymin := f32(outline.y_min)
-	ymax := f32(outline.y_max)
+	xmin := f32(outline.header.x_min)
+	xmax := f32(outline.header.x_max)
+	ymin := f32(outline.header.y_min)
+	ymax := f32(outline.header.y_max)
 
 	x_origin  := xmin - pad / scale
 	y_origin  := ymax + pad / scale
@@ -434,27 +436,31 @@ TTF :: struct (bytes: ^[]byte) {
 		y_max : i16
 	}
 
-	// On-file simple glyph body (follows the header). Variable-length —
-	// flags are run-length encoded and each delta is 1 or 2 bytes depending
-	// on flag bits — so this documents what decode_simple walks; it can
-	// never be materialized by a direct byte read.
-	Glyph_Simple :: struct {
-		end_pts_of_contours : []u16   // num_contours entries; last + 1 = point count
-		instruction_length  : u16     // hinting bytecode length
-		instructions        : []u8    // skipped — we don't hint
-		flags               : []u8    // GLYPH_FLAG_* bits, REPEAT-run-length compressed
-		x_deltas            : []byte  // per point: 1 byte if X_SHORT, else 2 (none if X_SAME)
-		y_deltas            : []byte  // same shape with the Y bits
-	}
+	// The on-file glyph record: header, then ONE of the two variable bodies,
+	// picked by the SIGN of header.num_contours (>= 0 Simple, < 0 Compound).
+	// Bodies are variable-length with flag-dependent widths — this documents
+	// what the decode walks; none of it can be materialized by a byte read.
+	// Conceptually `body : union { Simple, Compound }`, but unions can't
+	// nest inside structs yet (TODO) — the variants stand as nested structs.
+	Glyph_On_Disk :: struct {
+		header : Glyph_Header
 
-	// On-file compound glyph body: a run of component records, repeating
-	// while the MORE_COMPONENTS flag bit is set. Not decoded yet — the
-	// decode pass leaves compounds with empty spans.
-	Glyph_Compound :: struct {
-		flags       : u16   // arg widths, transform presence, MORE_COMPONENTS
-		glyph_index : u16   // the component glyph
-		// then: arg1, arg2 (offsets or point numbers; width chosen by flags),
-		// then an optional scale / x+y scale / 2x2 matrix in F2_Dot_14.
+		Simple :: struct {
+			end_pts_of_contours : []u16   // num_contours entries; last + 1 = point count
+			instruction_length  : u16     // hinting bytecode length
+			instructions        : []u8    // skipped — we don't hint
+			flags               : []u8    // GLYPH_FLAG_* bits, REPEAT-run-length compressed
+			x_deltas            : []byte  // per point: 1 byte if X_SHORT, else 2 (none if X_SAME)
+			y_deltas            : []byte  // same shape with the Y bits
+		}
+
+		Compound :: struct {
+			flags       : u16   // arg widths, transform presence, MORE_COMPONENTS
+			glyph_index : u16   // the component glyph
+			// then: arg1, arg2 (offsets or point numbers; width chosen by
+			// flags), then an optional scale / x+y scale / 2x2 matrix in
+			// F2_Dot_14. Repeats while MORE_COMPONENTS is set.
+		}
 	}
 
 	Glyph_Point :: struct {
@@ -463,21 +469,19 @@ TTF :: struct (bytes: ^[]byte) {
 		on_curve : bool
 	}
 
-	// The usable glyph — what Glyph_Simple / Glyph_Compound describe on disk,
-	// decoded. Spans alias the owning TTF's pools (end_pts / points fields):
-	// valid as long as the TTF lives, and a Decoded copies freely — the copy
-	// is a view, not the data.
+	// The usable glyph — what Glyph_On_Disk describes, decoded. Spans alias
+	// the owning TTF's pools (end_pts / points fields): valid as long as the
+	// TTF lives, and a Decoded copies freely — the copy is a view, not the
+	// data.
 	Decoded :: struct {
+		// Byte-read straight off the file. num_contours < 0 is the durable
+		// undecoded-compound marker (spans stay zero until resolution lands).
+		header : Glyph_Header
+
 		// contour_end[i] is the LAST point index of contour i (glyph-relative);
 		// points is this glyph's flattened point list across all contours.
 		contour_end : []u16
 		points      : []Glyph_Point
-
-		// Bounding box in FUnits, from the glyph header.
-		x_min : i16
-		y_min : i16
-		x_max : i16
-		y_max : i16
 
 		advance : u16   // FUnits, from hmtx (clamped to the last full record)
 	}
@@ -614,25 +618,17 @@ TTF :: struct (bytes: ^[]byte) {
 			if metric >= num_long { metric = num_long - 1 }
 			d.advance = read_u16be(bytes[t.hmtx_loc + metric * 4])
 
-			c_start := t.end_pts.len
-			p_start := t.points.len
 			goff := t.loca.offsets[gi]
 			glen := t.loca.offsets[gi + 1] - goff
 			if glen > 0 {
 				g_start := t.glyf_table_loc + goff
-				hdr : Glyph_Header = #big_endian bytes[g_start]
-				d.x_min = hdr.x_min
-				d.y_min = hdr.y_min
-				d.x_max = hdr.x_max
-				d.y_max = hdr.y_max
-				if hdr.num_contours > 0 {
-					decode_simple(t, bytes, g_start, hdr.num_contours, glen)
+				d.header = #big_endian bytes[g_start]
+				if d.header.num_contours > 0 {
+					decode_simple(t, &d, bytes[g_start : g_start + glen])
 				}
-				// num_contours < 0: compound — empty spans until composite
-				// resolution lands (it needs this decoded set to exist).
+				// num_contours < 0: compound — d's spans stay zero until
+				// composite resolution lands; the header keeps the marker.
 			}
-			d.contour_end = t.end_pts[c_start : t.end_pts.len]
-			d.points = t.points[p_start : t.points.len]
 			t.glyphs[gi] = d
 		}
 	}
@@ -645,19 +641,20 @@ TTF :: struct (bytes: ^[]byte) {
 	GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
 	GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
 
-	// Decode one simple glyph's body (what Glyph_Simple documents): contour
-	// end indices, run-length flags, x deltas, y deltas — appended to the
-	// instance's pools. Point indices stay glyph-relative, so a Decoded's
-	// spans index the same way the old per-glyph arrays did.
-	// n_contours arrives as the header's i16 (auto-widened); offsets and
-	// lengths ride at i64 like everywhere else.
-	decode_simple :: fun(t: ^Self, bytes: ^[]byte, g_start: i64, n_contours: i32, glen: i64)
+	// Decode one simple glyph's body (what Glyph_On_Disk's Simple variant
+	// documents) into the instance's pools, and set d's spans. Reads are
+	// bounds-checked against the glyph's OWN slice — a desynced decode traps
+	// at the bad read instead of wandering into the next glyph's bytes.
+	// Point indices stay glyph-relative.
+	decode_simple :: fun(t: ^Self, d: ^Decoded, glyph_bytes: []byte)
 	{
-		cursor := g_start + 10   // past the header
+		cursor : i64 = 10   // past the header
+		n_contours := i32(d.header.num_contours)
 
+		c_start := t.end_pts.len
 		assert(t.end_pts.len + n_contours <= MAX_FONT_CONTOURS)
 		for i in 0..n_contours {
-			t.end_pts[t.end_pts.len] = read_u16be(bytes[cursor])
+			t.end_pts[t.end_pts.len] = read_u16be(glyph_bytes[cursor])
 			t.end_pts.len += 1
 			cursor += 2
 		}
@@ -669,7 +666,7 @@ TTF :: struct (bytes: ^[]byte) {
 
 		// TrueType hinting bytecode sits inline between the endpoints and
 		// the flags. We don't interpret it; skip past.
-		instr_len := i32(read_u16be(bytes[cursor]))
+		instr_len := i32(read_u16be(glyph_bytes[cursor]))
 		cursor += 2 + instr_len
 
 		// Per-point flag bytes, with REPEAT-byte run-length decoding: when
@@ -679,11 +676,11 @@ TTF :: struct (bytes: ^[]byte) {
 		flags.len = n_points
 		p : i32 = 0
 		for p < n_points {
-			f := u8(bytes[cursor]); cursor += 1
+			f := u8(glyph_bytes[cursor]); cursor += 1
 			flags[p] = f
 			p += 1
 			if (f & GLYPH_FLAG_REPEAT) != 0 {
-				repeat := i32(bytes[cursor]); cursor += 1
+				repeat := i32(glyph_bytes[cursor]); cursor += 1
 				for r in 0..repeat {
 					flags[p] = f
 					p += 1
@@ -698,11 +695,11 @@ TTF :: struct (bytes: ^[]byte) {
 		for i in 0..n_points {
 			f := flags[i]
 			if (f & GLYPH_FLAG_X_SHORT) != 0 {
-				dx := i32(bytes[cursor]); cursor += 1
+				dx := i32(glyph_bytes[cursor]); cursor += 1
 				if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
 				x += dx
 			elif (f & GLYPH_FLAG_X_SAME) == 0
-				x += read_i16be(bytes[cursor]); cursor += 2
+				x += read_i16be(glyph_bytes[cursor]); cursor += 2
 			}
 			// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
 			t.points[p_base + i].x = i16(x)
@@ -714,17 +711,21 @@ TTF :: struct (bytes: ^[]byte) {
 		for i in 0..n_points {
 			f := flags[i]
 			if (f & GLYPH_FLAG_Y_SHORT) != 0 {
-				dy := i32(bytes[cursor]); cursor += 1
+				dy := i32(glyph_bytes[cursor]); cursor += 1
 				if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
 				y += dy
 			elif (f & GLYPH_FLAG_Y_SAME) == 0
-				y += read_i16be(bytes[cursor]); cursor += 2
+				y += read_i16be(glyph_bytes[cursor]); cursor += 2
 			}
 			t.points[p_base + i].y = i16(y)
 		}
-		// A well-formed glyph consumes at most its slice; past it means the
-		// flag/coord decode desynced (bounds checks catch reads, not drift).
-		assert(cursor <= g_start + glen)
+		// Every read above was checked against the slice; this catches the
+		// quieter failure where the decode finishes but consumed past the
+		// glyph's end without a read landing there.
+		assert(cursor <= glyph_bytes.len)
+
+		d.contour_end = t.end_pts[c_start : t.end_pts.len]
+		d.points = t.points[p_base : t.points.len]
 	}
 }
 
