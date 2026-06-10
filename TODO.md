@@ -44,7 +44,7 @@ BUG quat_slerp Taylor asin is off by 2x near d=0.99. Either drop the nlerp cutof
 
 BUG Arena_Debug.reset with current_mark == -1 reads base[-1]. Debug arena should crash loudly on reset-without-mark instead.
 
-BUG hmtx advance read in load_glyphs (hmtx_loc + glyph_index * 4) is only valid while glyph_index < hhea.num_of_long_hor_metrics. Past that, glyphs share the last advance and the array degrades to 2-byte entries. Clamp using the Hhea already parsed.
+BUG hmtx advance read in load_glyphs (hmtx_loc + glyph_index * 4) is only valid while glyph_index < hhea.num_of_long_hor_metrics. Past that, glyphs share the last advance and the array degrades to 2-byte entries. Clamp using the Hhea already parsed. (DONE 10 Jun 2026, commit 25cdbeb — metric index clamped via min; cell-fit asserts added in rasterize_msdf in the same pass.)
 
 BUG broadcast x, y = 7 segfaults in non-main fn (disabled test, dated 2026-05-30).
 
@@ -86,7 +86,7 @@ FIX retire Big_Slice / sys_alloc_big now that slices are 8/8/8. When Arena_Basic
 
 FIX Arena_Debug.offset duplicates base.len now that len is the cursor. One field can go.
 
-FIX load_glyphs first codepoint: 0 bakes control characters, want 32. Font data to persistent storage per plan.
+FIX font data to persistent storage per plan. (The other half — first codepoint 0 -> 32 — DONE 10 Jun 2026, commit 25cdbeb.)
 
 FIX mat4_inverse returns identity on singular input silently — the one quiet fallback in a codebase that prints diagnostics elsewhere.
 
