@@ -109,7 +109,7 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game.running = true
 	game.initialized = true
 
-	// assert(game.running == false)
+	assert(game.running == false)
 }
 
 game_events :: fun(game: ^Megastruct) {

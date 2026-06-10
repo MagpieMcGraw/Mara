@@ -21,3 +21,7 @@ When implementing a feature, prefer hard errors over silent fallbacks for unhand
 ## Testing
 
 Always build tests from inside the test folder so the resulting `test.exe` and `output.ll` land there instead of polluting the repo root.
+
+# Surprise
+
+I may make small edits to various files while you are working. Usually touching Mara code or my notes. I almost never touch the compiler code so a conflict there is unlilely. Don't worry about it.
