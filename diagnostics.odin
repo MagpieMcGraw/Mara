@@ -367,6 +367,7 @@ PARSE_TUPLE_TYPE_NOT_SUPPORTED    :: "tuple types are not supported — multiple
 PARSE_RANGE_NEEDS_DOTS            :: "expected '..' after `%sin` in range-membership check"
 PARSE_STRUCT_LIT_MIXED_FIELDS     :: "struct literal cannot mix positional and named fields"
 PARSE_HEX_OVERFLOWS_U64           :: "hex literal '%s' overflows u64 (max 0xFFFFFFFFFFFFFFFF) — Mara's integer-literal precision tops out at 64 bits"
+PARSE_DECIMAL_OVERFLOWS_U64       :: "integer literal '%s' overflows u64 (max 18446744073709551615) — Mara's integer-literal precision tops out at 64 bits"
 PARSE_INVALID_NUMBER              :: "invalid number '%s'"
 PARSE_EXPECTED_VARIANT_NAME       :: "expected variant name after '.'"
 PARSE_UNEXPECTED_LBRACE_IN_EXPR   :: "unexpected '{' in expression"

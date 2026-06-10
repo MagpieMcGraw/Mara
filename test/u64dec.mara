@@ -1,0 +1,26 @@
+module u64dec
+
+// Decimal integer literals above i64 max. The literal pipeline used to parse
+// decimals through an i64 path that silently wrapped, so u64 max became -1
+// before the range check ever ran ("constant -1 overflows u64"). Decimals now
+// accumulate in i128 like hex, exact up to u64 max.
+
+main :: fun() {
+	big : u64 = 18446744073709551615       // u64 max, written directly
+	assert(big == 0xFFFFFFFFFFFFFFFF)
+
+	top : u64 = 9223372036854775808        // 2^63 — first value past i64 max
+	assert(top == 0x8000000000000000)
+	assert(big - top == 9223372036854775807)
+
+	// the old workaround (build u64 max by arithmetic) must agree with the literal
+	built : u64 = 9223372036854775807
+	built += 9223372036854775807
+	built += 1
+	assert(built == big)
+
+	// i64 min as a folded negative literal (-(2^63) used to wrap positive and
+	// get rejected as overflowing i64)
+	low : i64 = -9223372036854775808
+	assert(low + 9223372036854775807 == -1)
+}

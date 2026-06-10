@@ -3771,14 +3771,15 @@ Number_Parse_Error :: enum {
     None,
     Invalid,        // malformed text (empty hex digits, garbage)
     Hex_Overflow,   // well-formed hex but > u64 max — beyond the simple wide-literal tier
+    Dec_Overflow,   // well-formed decimal integer but > u64 max — same tier as Hex_Overflow
 }
 
 // Parse a Number token's text into both an f64 and an i128 form. Hex literals
 // (`0x...`) and decimal-without-dot integers fill the i128 form exactly;
 // floats fill only the f64 form (i128 is set to the truncating cast for
-// fallback but should never be read when is_float is true). Hex values up
-// to u64 max (`0xFFFFFFFFFFFFFFFF`, 16 hex digits) round-trip exactly;
-// anything wider is flagged as Hex_Overflow.
+// fallback but should never be read when is_float is true). Integer values
+// up to u64 max (`0xFFFFFFFFFFFFFFFF` / `18446744073709551615`) round-trip
+// exactly; anything wider is flagged as Hex_Overflow/Dec_Overflow.
 parse_number_text :: proc(text: string) -> (f_val: f64, i_val: i128, err: Number_Parse_Error) {
     if len(text) > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') {
         // Strip prefix and any `_` separators before base-16 parse.
@@ -3802,12 +3803,29 @@ parse_number_text :: proc(text: string) -> (f_val: f64, i_val: i128, err: Number
         }
         return f64(n), i128(n), .None
     }
-    // Decimal: try int parsing first. If it succeeds, the integer form is
-    // exact and we derive the f64 from it. Otherwise (has `.`, exponent,
-    // etc.) fall back to parse_f64 — int_value gets a truncating cast that
-    // shouldn't be read for is_float = true literals anyway.
-    if n, int_ok := strconv.parse_int(text, 10); int_ok {
-        return f64(n), i128(n), .None
+    // Decimal: all-digits text is an integer literal — accumulate it in i128
+    // so values up to u64 max round-trip exactly (strconv.parse_int caps at
+    // i64 and silently wraps, which turned 18446744073709551615 into -1).
+    // Anything past u64 max is Dec_Overflow, the same precision tier as hex.
+    // Non-digit text (has `.`) falls back to parse_f64 — int_value gets a
+    // truncating cast that shouldn't be read for is_float = true anyway.
+    is_int := len(text) > 0
+    for i := 0; i < len(text); i += 1 {
+        if !(text[i] >= '0' && text[i] <= '9') {
+            is_int = false
+            break
+        }
+    }
+    if is_int {
+        DEC_U64_MAX :: i128(max(u64))
+        n: i128
+        for i := 0; i < len(text); i += 1 {
+            n = n * 10 + i128(text[i] - '0')
+            if n > DEC_U64_MAX {
+                return 0, 0, .Dec_Overflow
+            }
+        }
+        return f64(n), n, .None
     }
     f, f_ok := strconv.parse_f64(text)
     if !f_ok {
@@ -3825,6 +3843,8 @@ report_number_parse_error :: proc(p: ^Parser, tok: Token, err: Number_Parse_Erro
         // nothing to report
     case .Hex_Overflow:
         parse_error(p, tok, PARSE_HEX_OVERFLOWS_U64, tok.text)
+    case .Dec_Overflow:
+        parse_error(p, tok, PARSE_DECIMAL_OVERFLOWS_U64, tok.text)
     case .Invalid:
         parse_error(p, tok, PARSE_INVALID_NUMBER, tok.text)
     }

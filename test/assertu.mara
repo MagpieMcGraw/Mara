@@ -3,11 +3,7 @@ module assertu
 // Unsigned comparison assert — expect %llu printing, no bogus negatives.
 
 main :: fun() {
-	// NB u64 literals above i64 max don't parse (wrap to negative before the
-	// range check), so build u64 max by arithmetic: 2 * (i64 max) + 1.
-	big : u64 = 9223372036854775807
-	big += 9223372036854775807
-	big += 1
+	big : u64 = 18446744073709551615   // u64 max as a literal (see test/u64dec)
 	small : u64 = 7
 	assert(big > small)                // passes
 	assert(big < small)                // fails: left should print unsigned

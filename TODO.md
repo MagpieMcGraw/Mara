@@ -74,7 +74,7 @@ ADD err second field in debug builds: raise-site span (and on Windows, GetLastEr
 
 ADD seed asserts from the review: arena mark/reset well-nesting (when Arena_Basic is uncommented), partial-array fixup invariant (arr.ptr == own elements) where received by ref. (DONE 10 Jun 2026: slice_add capacity, parse_glyph point-count cap + end-of-parse cursor <= bytes.len.)
 
-BUG u64 literals above i64 max don't parse: 18446744073709551615 wraps to -1 internally, then the range check reports "constant -1 overflows u64". Literal pipeline needs an unsigned path (found writing assertu.mara).
+BUG u64 literals above i64 max don't parse: 18446744073709551615 wraps to -1 internally, then the range check reports "constant -1 overflows u64". Literal pipeline needs an unsigned path (found writing assertu.mara). (DONE 10 Jun 2026: decimal literals accumulate in i128 like hex, exact to u64 max; past that is a parse error with the literal text. Also fixed -9223372036854775808 (i64 min), which wrapped positive through the old i64 path. test/u64dec + test/failures/test_literal_overflow_dec_fail.)
 
 ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
 

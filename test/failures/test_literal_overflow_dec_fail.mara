@@ -1,0 +1,11 @@
+module test_literal_overflow_dec_fail
+
+// Decimal literals up to u64 max (`18446744073709551615`) now parse — see
+// `test/u64dec` for the positive case. One past that (2^64) must still fail,
+// at parse time, with the original literal text in the message (it used to
+// wrap silently and report the wrapped value).
+
+main :: fun() -> i64 {
+    x : u64 = 18446744073709551616
+    return i64(x)
+}
