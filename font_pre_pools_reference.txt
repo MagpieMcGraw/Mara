@@ -13,30 +13,6 @@ Glyph :: struct {
 	bearing_x, bearing_y, advance :f32
 }
 
-load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
-	ttf_file : [..2 * MB]byte
-	read_err := read_entire_file(font, &ttf_file)
-	if bool(read_err) do print(read_err)
-	ttf := TTF(&ttf_file, first, glyphs.cap)
-
-	storage : [3 * MB]byte
-	atlas := Atlas(storage[:], ttf.head.units_per_em)
-
-	for i in 0..i32(glyphs.len) {
-		codepoint := first + u32(i)
-		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, codepoint)
-		decoded := ttf.glyphs[glyph_index]
-
-		glyphs[i].x = (i % atlas.per_row) * atlas.cell
-		glyphs[i].y = (i / atlas.per_row) * atlas.cell
-		glyphs[i].advance = f32(decoded.advance) * atlas.px_scale
-
-		rasterize_msdf(&decoded, &glyphs[i], &atlas)
-	}
-
-	return storage
-}
-
 Atlas :: struct (bytes: []byte, u_per_em: u16) {
 	size := 1024
 	cell := 48
@@ -47,6 +23,53 @@ Atlas :: struct (bytes: []byte, u_per_em: u16) {
 	data := bytes
 }
 
+load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
+	ttf_file : [..2 * MB]byte
+	read_err := read_entire_file(font, &ttf_file)
+	if bool(read_err) do print(read_err)
+	ttf := TTF(&ttf_file)
+
+	storage : [3 * MB]byte
+	atlas := Atlas(storage[:], ttf.head.units_per_em)
+
+	for i in 0..i32(glyphs.len) {
+		codepoint := first + u32(i)
+
+		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, codepoint)
+		goff := ttf.loca.offsets[glyph_index]
+		glen := ttf.loca.offsets[glyph_index + 1] - goff
+		gstart := ttf.glyf_table_loc + goff
+		outline := parse_glyph(ttf_file[gstart : gstart + glen])
+
+		glyphs[i].x = (i % atlas.per_row) * atlas.cell
+		glyphs[i].y = (i / atlas.per_row) * atlas.cell
+		// hmtx holds full {advance, lsb} records only for the first
+		// num_of_long_hor_metrics glyphs; everything past that shares the
+		// last record's advance (the array degrades to 2-byte lsb entries).
+		metric := min(i64(glyph_index), i64(ttf.hhea.num_of_long_hor_metrics) - 1)
+		adv_units := f32(read_u16be(ttf_file[ttf.hmtx_loc + i32(metric) * 4]))
+		glyphs[i].advance = adv_units * atlas.px_scale
+
+		rasterize_msdf(&outline, &glyphs[i], &atlas)
+	}
+
+	return storage
+}
+
+// ============================================================================
+// Glyph → MSDF atlas
+// ============================================================================
+// Reconstruct a glyph's contours from parse_glyph's points (synthesizing the
+// TrueType implied on-curve midpoints) and flatten the quadratics to line
+// segments. Color the edges across the 3 channels (switching at corners), then
+// per pixel take the min distance per channel with a shared winding sign and
+// write the normalized signed distances as RGB into the atlas. The median of
+// the three channels reconstructs the glyph, with corners kept sharp.
+
+RASTER_QUAD_STEPS :: 6
+MAX_RASTER_EDGES  :: 4096
+MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
+
 Raster_Edge :: struct {
 	x0 : f32
 	y0 : f32
@@ -55,23 +78,46 @@ Raster_Edge :: struct {
 	color : i32   // channel mask: 1=R, 2=G, 4=B; 7=all (smooth)
 }
 
-RASTER_QUAD_STEPS :: 6
-MAX_RASTER_EDGES  :: 4096
-MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
-rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
+// Rotate among the three two-channel edge colors (YELLOW=R+G=3, MAGENTA=R+B=5,
+// CYAN=G+B=6). Any two share exactly one channel, so switching at a corner
+// makes that corner the channels' crossing — which the median preserves.
+next_edge_color :: fun(c: i32) -> i32 {
+	if c == 3 { return 5 }
+	if c == 5 { return 6 }
+	return 3
+}
+
+// Corner: the two segments at a shared point turn sharply (cos(angle) below
+// the threshold ≈ a >45° turn). Flattened curve steps stay well above it.
+edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
+	dax := a.x1 - a.x0
+	day := a.y1 - a.y0
+	dbx := b.x1 - b.x0
+	dby := b.y1 - b.y0
+	la := sqrt(dax*dax + day*day)
+	lb := sqrt(dbx*dbx + dby*dby)
+	if la <= 0.0 or lb <= 0.0 { return false }
+	cosang := (dax*dbx + day*dby) / (la * lb)
+	return cosang < 0.7
+}
+
+// Rasterize the glyph's MSDF into the atlas. The caller has already placed the
+// glyph: `glyph.x/y` are the cell's top-left pixel origin and `glyph.advance` is
+// set, so this fills the rest — `glyph.w/h` (cell size in px) and
+// `glyph.bearing_x/y` (pen→cell offsets) — then writes the cell's RGB distance
+// field into `atlas.data`. The median of the three channels reconstructs the
+// glyph with corners kept sharp.
+rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 {
-	// Empty span = empty glyph (space) or an undecoded compound — the two
-	// are distinguishable via outline.header.num_contours (< 0 = compound)
-	// when composite resolution wants to route them differently.
-	if outline.contour_end.len == 0 { glyph.w = 0 glyph.h = 0 return }
+	if outline.num_contours <= 0 { glyph.w = 0 glyph.h = 0 return }
 
 	scale := atlas.px_scale
 	pad   := atlas.pad
 
-	xmin := f32(outline.header.x_min)
-	xmax := f32(outline.header.x_max)
-	ymin := f32(outline.header.y_min)
-	ymax := f32(outline.header.y_max)
+	xmin := f32(outline.x_min)
+	xmax := f32(outline.x_max)
+	ymin := f32(outline.y_min)
+	ymax := f32(outline.y_max)
 
 	x_origin  := xmin - pad / scale
 	y_origin  := ymax + pad / scale
@@ -96,8 +142,8 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 	nodes : [..1024]Node
 
 	point_start := 0
-	for ci in 0..outline.contour_end.len {
-		point_end := outline.contour_end[ci]
+	for ci in 0..outline.num_contours {
+		point_end := outline.end_pts[ci]
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
 			first_edge := edges.len
@@ -114,8 +160,8 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 			// Build the node ring starting on-curve, inserting the implied
 			// on-curve midpoints between consecutive off-curve control points.
 			nodes.len = 0
-			first_x := (f32(outline.points[point_start + first_on_curve].x) - x_origin) * scale
-			first_y := (y_origin - f32(outline.points[point_start + first_on_curve].y)) * scale
+			first_x := (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin) * scale
+			first_y := (y_origin - f32(i32(outline.points[point_start + first_on_curve].y))) * scale
 			nodes[nodes.len] = Node{first_x, first_y, true}
 			nodes.len += 1
 			have_off := false
@@ -125,8 +171,8 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 				ring_idx := first_on_curve + j
 				if ring_idx >= n_points { ring_idx = ring_idx - n_points }
 				point := outline.points[point_start + ring_idx]
-				point_x := (f32(point.x) - x_origin) * scale
-				point_y := (y_origin - f32(point.y)) * scale
+				point_x := (f32(i32(point.x)) - x_origin) * scale
+				point_y := (y_origin - f32(i32(point.y))) * scale
 				if point.on_curve {
 					if have_off {
 						nodes[nodes.len] = Node{off_x, off_y, false}
@@ -192,12 +238,15 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 	// Sentinel: cap the last contour's edge range and count it too, so
 	// contour_start holds (contours + 1) fenceposts — the coloring loop
 	// reads contour ci as the span [contour_start[ci], contour_start[ci+1]).
-	contour_start[contour_start.len] = edges.len
+	contour_start[contour_start.len] = i32(edges.len)
 	contour_start.len += 1
 
+	// Edge coloring: per contour, switch color at corners so adjacent spans
+	// share exactly one channel (the median then keeps the corner sharp).
+	// Smooth / single-corner contours stay white (all channels = plain SDF).
 	is_corner : [..MAX_RASTER_EDGES]bool
 	is_corner.len = MAX_RASTER_EDGES
-	for ci in 0..(contour_start.len - 1) {
+	for ci in 0..(i32(contour_start.len) - 1) {
 		edge_lo := contour_start[ci]
 		edge_hi := contour_start[ci + 1]
 		n_edges := edge_hi - edge_lo
@@ -232,22 +281,6 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 			}
 		}
 	}
-	edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
-		dax := a.x1 - a.x0
-		day := a.y1 - a.y0
-		dbx := b.x1 - b.x0
-		dby := b.y1 - b.y0
-		la := sqrt(dax*dax + day*day)
-		lb := sqrt(dbx*dbx + dby*dby)
-		if la <= 0.0 or lb <= 0.0 { return false }
-		cosang := (dax*dbx + day*dby) / (la * lb)
-		return cosang < 0.7
-	}
-	next_edge_color :: fun(c: i32) -> i32 {
-		if c == 3 { return 5 }
-		if c == 5 { return 6 }
-		return 3
-	}
 
 	// Fill: per pixel, the signed distance — magnitude is the min distance to
 	// any edge, sign from the non-zero winding rule (positive inside). One
@@ -260,7 +293,7 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 			min_d2_g : f32 = 1000000.0
 			min_d2_b : f32 = 1000000.0
 			winding : i32 = 0
-			for ei in 0..edges.len {
+			for ei in 0..i32(edges.len) {
 				x0 := edges[ei].x0
 				y0 := edges[ei].y0
 				x1 := edges[ei].x1
@@ -310,16 +343,14 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 
 // Verify helper: read an atlas cell's RGB back, un-normalize, and ASCII-dump
 // the median — confirms both the channel math and the buffer write/packing.
-dump_atlas_cell :: fun(atlas: ^[]byte,
-	atlas_w: i32, ax: i32, ay: i32, cw: i32, ch: i32)
-{
+dump_atlas_cell :: fun(atlas: ^[]byte, atlas_w: i32, ax: i32, ay: i32, cw: i32, ch: i32) {
 	for py in 0..ch {
 		row : str
 		for pxi in 0..cw {
 			idx := ((ay + py) * atlas_w + (ax + pxi)) * 3
-			dr := (f32(atlas[idx + 0]) / 255.0 - 0.5) * MSDF_PX_RANGE
-			dg := (f32(atlas[idx + 1]) / 255.0 - 0.5) * MSDF_PX_RANGE
-			db := (f32(atlas[idx + 2]) / 255.0 - 0.5) * MSDF_PX_RANGE
+			dr := (f32(i32(atlas[idx + 0])) / 255.0 - 0.5) * MSDF_PX_RANGE
+			dg := (f32(i32(atlas[idx + 1])) / 255.0 - 0.5) * MSDF_PX_RANGE
+			db := (f32(i32(atlas[idx + 2])) / 255.0 - 0.5) * MSDF_PX_RANGE
 			med := max(min(dr, dg), min(max(dr, dg), db))
 			if med > 1.5 {
 				&row + "#"
@@ -347,12 +378,9 @@ Long_Date_Time :: type i64  // seconds since 1904-01-01 00:00
 
 // The parsed font, shaped after the on-disk file: the spec types nested (reach
 // them as TTF.Head etc.) and the tables we read, filled into fields by the
-// constructor's parse body at the bottom. The constructor also decodes every
-// glyph into the end_pts/points pools — ttf.glyphs[index] is the usable
-// glyph (spans + bbox + advance), and nothing after construction needs the
-// raw file for outlines or metrics. load_glyphs builds one of these and
+// constructor's parse body at the bottom. load_glyphs builds one of these and
 // bakes from it — it parses nothing of its own.
-TTF :: struct (bytes: ^[]byte, first, count: i64) {
+TTF :: struct (bytes: ^[]byte) {
 
 	Offset_Table :: struct {
 		scaler_type : u32
@@ -426,68 +454,35 @@ TTF :: struct (bytes: ^[]byte, first, count: i64) {
 		offsets : [..1 + (1<<16)]u32
 	}
 
-	// ─── glyph records: a fixed 10-byte header, then one of two variable bodies ───
-
 	Glyf :: struct {
-		data: []byte	
+		data : []Glyph // has to be decoded from raw bytes
 	}
 
-	Glyph_Header :: struct {
-		num_contours : i16   // >= 0 simple, < 0 compound
+	Glyph :: struct {
+		num_contours : i16   // < 0 means composite
+
 		x_min : i16
 		y_min : i16
 		x_max : i16
 		y_max : i16
-	}
+		// the first 5 fields can be byte read
 
-	// The on-file glyph record: header, then ONE of the two variable bodies,
-	// picked by the SIGN of header.num_contours (>= 0 Simple, < 0 Compound).
-	// Bodies are variable-length with flag-dependent widths — this documents
-	// what the decode walks; none of it can be materialized by a byte read.
-	// Conceptually `body : union { Simple, Compound }`, but unions can't
-	// nest inside structs yet (TODO) — the variants stand as nested structs.
-	Glyph_On_Disk :: struct {
-		header : Glyph_Header
+		data : Simple // can't be read, must be decoded
+
+		// GET A SECOND STRUCT THAT WILL STORE DECODED DATA
 
 		Simple :: struct {
-			end_pts_of_contours : []u16   // num_contours entries; last + 1 = point count
-			instruction_length  : u16     // hinting bytecode length
-			instructions        : []u8    // skipped — we don't hint
-			flags               : []u8    // GLYPH_FLAG_* bits, REPEAT-run-length compressed
-			x_deltas            : []byte  // per point: 1 byte if X_SHORT, else 2 (none if X_SAME)
-			y_deltas            : []byte  // same shape with the Y bits
+			contour_end_pts : []u16 // len is num_contours
+			instructions_len: u16
+			instructions: []u8
+			flags : []u8
+			rel_x : []byte // each x is relative to previous
+			rel_y : []byte // each y is relative to previous
+			// first elem relative to 0 in both arrays
 		}
-
-		Compound :: struct {
-			flags       : u16   // arg widths, transform presence, MORE_COMPONENTS
-			glyph_index : u16   // the component glyph
-			// then: arg1, arg2 (offsets or point numbers; width chosen by
-			// flags), then an optional scale / x+y scale / 2x2 matrix in
-			// F2_Dot_14. Repeats while MORE_COMPONENTS is set.
-		}
+		// skipping compound glyphs for now
 	}
 
-	// The usable glyph — what Glyph_On_Disk describes, decoded. Spans alias
-	// the owning TTF's pools (end_pts / points fields): valid as long as the
-	// TTF lives, and a Decoded copies freely — the copy is a view, not the
-	// data.
-	Decoded :: struct {
-		// Byte-read straight off the file. num_contours < 0 is the durable
-		// undecoded-compound marker (spans stay zero until resolution lands).
-		header : Glyph_Header
-
-		// contour_end[i] is the LAST point index of contour i (glyph-relative);
-		// points is this glyph's flattened point list across all contours.
-		contour_end : []u16
-		points      : []Glyph_Point
-
-		advance : u16   // FUnits, from hmtx (clamped to the last full record)
-	}
-	Glyph_Point :: struct {
-		x        : i16
-		y        : i16
-		on_curve : bool
-	}
 
 	Hhea :: struct {
 		version                 : Fixed     // 0x00010000
@@ -521,20 +516,36 @@ TTF :: struct (bytes: ^[]byte, first, count: i64) {
 		left_side_bearing : F_Word
 	}
 
-	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i64 {
-		for table in tables {
-			if starts_with(table.tag[:], target) {
-				return table.offset
-			}
-		}
-		print("Table '%' not found.", target)
-		return 0
-	}
+	// ─── parse: read the table directory, then the tables we use, into fields ───
+	h : Offset_Table = #big_endian bytes[0]
+	h.tables = #big_endian bytes[12]
+	h.tables.len = h.num_tables
 
-	get_len :: fun(tables: [..32]Table, target: []utf8) -> i64 {
+	head_loc := h.tables.get_offset("head")
+	maxp_loc := h.tables.get_offset("maxp")
+	cmap_loc := h.tables.get_offset("cmap")
+	loca_loc := h.tables.get_offset("loca")
+	glyf_table_loc := h.tables.get_offset("glyf")
+	hhea_loc := h.tables.get_offset("hhea")
+	hmtx_loc := h.tables.get_offset("hmtx")
+
+	head : Head = #big_endian bytes[head_loc]
+	maxp : Maxp = #big_endian bytes[maxp_loc]
+	cmap : Cmap = #big_endian bytes[cmap_loc]
+	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
+	hhea : Hhea = #big_endian bytes[hhea_loc]
+	// hmtx : Hmtx = hmtx_prepare(hhea, maxp, bytes[hmtx_loc:])
+
+	// cmap encoding records sit right after the 4-byte header; fill them, then
+	// pick a Unicode subtable to map character codes through.
+	cmap.encodings = #big_endian bytes[cmap_loc + 4]
+	cmap.encodings.len = i32(cmap.num_subtables)
+	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
+
+	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
 		for table in tables {
 			if starts_with(table.tag[:], target) {
-				return table.len
+				return i32(table.offset)
 			}
 		}
 		print("Table '%' not found.", target)
@@ -544,8 +555,7 @@ TTF :: struct (bytes: ^[]byte, first, count: i64) {
 	loca_correct_format :: fun(head: Head, maxp: Maxp,
 		bytes: []byte) -> loca: Loca 
 	{
-		// Widen BEFORE the +1: at u16 a 65535-glyph font would overflow-trap.
-		loca.offsets.len = i64(maxp.num_glyphs) + 1
+		loca.offsets.len = i32(maxp.num_glyphs + 1)		
 		if head.index_to_loc_format == 0 {
 			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
 			off16.len = loca.offsets.len
@@ -562,7 +572,7 @@ TTF :: struct (bytes: ^[]byte, first, count: i64) {
 	// absolute file offset (0 if none). Prefer Microsoft Unicode BMP (3,1) —
 	// the format-4 table nearly every font ships — then any Unicode-platform
 	// (0,*) table, then whatever's first as a fallback.
-	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i64) -> i64 {
+	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i32) -> i32 {
 		best : i32 = -1
 		best_score : i32 = -1
 		for e, i in cmap.encodings {
@@ -575,181 +585,22 @@ TTF :: struct (bytes: ^[]byte, first, count: i64) {
 			}
 		}
 		if best < 0 { return 0 }
-		return cmap_loc + cmap.encodings[best].offset
+		return cmap_loc + i32(cmap.encodings[best].offset)
 	}
+}
 
-	// ─── parse: read the table directory, then the tables we use, into fields ───
-	h : Offset_Table = #big_endian bytes[0]
-	h.tables = #big_endian bytes[12]
-	h.tables.len = h.num_tables
+// ============================================================================
+// Character map (cmap)
+// ============================================================================
+//
+// Maps a character code to a glyph index. The cmap table holds one or more
+// encoding subtables; the TTF constructor (pick_cmap_subtable) chose one,
+// preferring a Unicode mapping, and passes its absolute file offset here.
+// Only format 4 (segment-mapped BMP — the near-universal desktop format) and
+// format 0 (legacy 256-byte) are decoded; anything else hits a diagnostic
+// rather than silently returning .notdef (glyph 0).
 
-	head_loc := h.tables.get_offset("head")
-	maxp_loc := h.tables.get_offset("maxp")
-	cmap_loc := h.tables.get_offset("cmap")
-	loca_loc := h.tables.get_offset("loca")
-	glyf_table_loc := h.tables.get_offset("glyf")
-	glyf_table_end := glyf_table_loc + h.tables.get_len("glyf")
-	hhea_loc := h.tables.get_offset("hhea")
-	hmtx_loc := h.tables.get_offset("hmtx")
-
-	head : Head = #big_endian bytes[head_loc]
-	maxp : Maxp = #big_endian bytes[maxp_loc]
-	cmap : Cmap = #big_endian bytes[cmap_loc]
-	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
-	hhea : Hhea = #big_endian bytes[hhea_loc]
-	glyf := Glyf{data = bytes[glyf_table_loc : glyf_table_end]}
-	//print("contours, points", maxp.max_contours, maxp.max_points)
-	print("glyphs", maxp.num_glyphs)
-
-	// cmap encoding records sit right after the 4-byte header; fill them, then
-	// pick a Unicode subtable to map character codes through.
-	cmap.encodings = #big_endian bytes[cmap_loc + 4]
-	cmap.encodings.len = cmap.num_subtables
-	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
-
-
-	// ─── decode every glyph up front; Decoded spans point into the pools ───
-	// After this, nothing needs the raw file bytes for outlines or metrics —
-	// ttf.glyphs[index] is the usable glyph, advance included (clamped to
-	// hmtx's last full record; trailing glyphs share it).
-	// Decode capacities.
-	MAX_GLYPH_POINTS  :: 4096      // per-glyph cap (decode scratch + sanity)
-	MAX_FONT_GLYPHS   :: 1 << 16   // glyph indices are u16
-	MAX_FONT_CONTOURS :: 1 << 16   // pool cap, whole font
-	MAX_FONT_POINTS   :: 1 << 18   // pool cap, whole font
-
-	end_pts : [..MAX_FONT_CONTOURS]u16
-	points  : [..MAX_FONT_POINTS]Glyph_Point
-
-	glyphs  : [..MAX_FONT_GLYPHS]Decoded
-	glyphs.len = count
-	decode_glyphs(first, &glyphs, glyf, maxp, hhea)
-
-	// The decode pass, handed the under-construction instance via #self — a
-	// nested fun so its working variables stay LOCALS (top-level constructor
-	// decls become fields).
-	decode_glyphs :: fun(first: i64, glyphs: []Decoded,
-		glyf: Glyf, maxp: Maxp, hhea: Hhea)
-	{
-		num_long := hhea.num_of_long_hor_metrics
-		for gi in 0..t.glyphs.len {
-			d : Decoded
-			metric := gi
-			if metric >= num_long { metric = num_long - 1 }
-			d.advance = read_u16be(bytes[t.hmtx_loc + metric * 4])
-
-			goff := t.loca.offsets[gi]
-			glen := t.loca.offsets[gi + 1] - goff
-			if glen > 0 {
-				g_start := t.glyf_table_loc + goff
-				d.header = #big_endian bytes[g_start]
-				if d.header.num_contours > 0 {
-					decode_simple(t, &d, bytes[g_start : g_start + glen])
-				}
-				// num_contours < 0: compound — d's spans stay zero until
-				// composite resolution lands; the header keeps the marker.
-			}
-			t.glyphs[gi] = d
-		}
-	}
-
-	// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
-	GLYPH_FLAG_ON_CURVE :: u8(0x01)
-	GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
-	GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
-	GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
-	GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
-	GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
-
-	// Decode one simple glyph's body (what Glyph_On_Disk's Simple variant
-	// documents) into the instance's pools, and set d's spans. Reads are
-	// bounds-checked against the glyph's OWN slice — a desynced decode traps
-	// at the bad read instead of wandering into the next glyph's bytes.
-	// Point indices stay glyph-relative.
-	decode_simple :: fun(t: ^Self, d: ^Decoded, glyph_bytes: []byte)
-	{
-		cursor : i64 = 10   // past the header
-		n_contours := i32(d.header.num_contours)
-
-		c_start := t.end_pts.len
-		assert(t.end_pts.len + n_contours <= MAX_FONT_CONTOURS)
-		for i in 0..n_contours {
-			t.end_pts[t.end_pts.len] = read_u16be(glyph_bytes[cursor])
-			t.end_pts.len += 1
-			cursor += 2
-		}
-		n_points := i32(t.end_pts[t.end_pts.len - 1]) + 1
-		assert(n_points <= MAX_GLYPH_POINTS)
-		assert(t.points.len + n_points <= MAX_FONT_POINTS)
-		p_base := t.points.len
-		t.points.len += n_points
-
-		// TrueType hinting bytecode sits inline between the endpoints and
-		// the flags. We don't interpret it; skip past.
-		instr_len := i32(read_u16be(glyph_bytes[cursor]))
-		cursor += 2 + instr_len
-
-		// Per-point flag bytes, with REPEAT-byte run-length decoding: when
-		// bit 3 is set, the NEXT byte counts additional points sharing the
-		// flag. Decoded flat so the coord loops index by point cheaply.
-		flags : [..MAX_GLYPH_POINTS]u8
-		flags.len = n_points
-		p : i32 = 0
-		for p < n_points {
-			f := u8(glyph_bytes[cursor]); cursor += 1
-			flags[p] = f
-			p += 1
-			if (f & GLYPH_FLAG_REPEAT) != 0 {
-				repeat := i32(glyph_bytes[cursor]); cursor += 1
-				for r in 0..repeat {
-					flags[p] = f
-					p += 1
-				}
-			}
-		}
-
-		// X coordinates: each point's x is a signed delta from the previous
-		// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte)
-		// and X_SAME (sign-bit-for-short, or same-as-prev-for-long).
-		x : i32 = 0
-		for i in 0..n_points {
-			f := flags[i]
-			if (f & GLYPH_FLAG_X_SHORT) != 0 {
-				dx := i32(glyph_bytes[cursor]); cursor += 1
-				if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
-				x += dx
-			elif (f & GLYPH_FLAG_X_SAME) == 0
-				x += read_i16be(glyph_bytes[cursor]); cursor += 2
-			}
-			// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
-			t.points[p_base + i].x = i16(x)
-			t.points[p_base + i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
-		}
-
-		// Y coordinates: same shape with the Y bits.
-		y : i32 = 0
-		for i in 0..n_points {
-			f := flags[i]
-			if (f & GLYPH_FLAG_Y_SHORT) != 0 {
-				dy := i32(glyph_bytes[cursor]); cursor += 1
-				if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
-				y += dy
-			elif (f & GLYPH_FLAG_Y_SAME) == 0
-				y += read_i16be(glyph_bytes[cursor]); cursor += 2
-			}
-			t.points[p_base + i].y = i16(y)
-		}
-		// Every read above was checked against the slice; this catches the
-		// quieter failure where the decode finishes but consumed past the
-		// glyph's end without a read landing there.
-		assert(cursor <= glyph_bytes.len)
-
-		d.contour_end = t.end_pts[c_start : t.end_pts.len]
-		d.points = t.points[p_base : t.points.len]
-	}
-} // TTF END
-
-cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
+cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
 	if subtable_start == 0 { return 0 }
 	format := read_u16be(bytes[subtable_start])
 	if format == 4 {
@@ -757,43 +608,184 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
 	elif format == 0
 		return cmap_format0_lookup(bytes, subtable_start, char)
 	else
-		print("cmap: unsupported subtable format %", format)
-		return 0
-	}
-
-	cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i64, char: u32) -> u16 {
-		if char > 255 { return 0 }
-		return u16(bytes[sub + 6 + char])
-	}
-
-	cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i64, char: u32) -> u16 {
-		// i64 pin: every derived offset and s * 2 then ride at address width.
-		seg_x2 := read_u16be(bytes[sub + 6])
-		end_codes   := sub + 14
-		start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
-		id_deltas   := start_codes + seg_x2
-		id_ranges   := id_deltas + seg_x2
-		for s in 0..seg_x2 / 2 {
-			end_code := read_u16be(bytes[end_codes + s * 2])
-			if char <= end_code {
-				start_code := read_u16be(bytes[start_codes + s * 2])
-				if char < start_code do return 0
-				id_delta := read_u16be(bytes[id_deltas + s * 2])
-				id_range := read_u16be(bytes[id_ranges + s * 2])
-				if id_range == 0 {
-					// Direct: (char + idDelta) mod 65536. u16() truncates the
-					// u32 sum to its low 16 bits, which is the modular reduction
-					// the spec wants (idDelta is a u16-encoded signed value).
-					return u16(char + id_delta)
-				else
-					addr := id_ranges + s * 2 + id_range + 2 * (char - start_code)
-					g := read_u16be(bytes[addr])
-					if g == 0 { return 0 }
-					 // we do this because TTF modular arithmetic
-					return u16(u32(g) + id_delta)
-				}
-			}
-		}
+		print("cmap: unsupported subtable format %", i64(format))
 		return 0
 	}
 }
+
+// Format 4: four parallel u16 arrays of seg_count entries — end codes, start
+// codes, idDelta, idRangeOffset — then the glyphIdArray. Subtable layout:
+// format(2) length(2) language(2) segCountX2(2) searchRange(2)
+// entrySelector(2) rangeShift(2), so the arrays begin at +14 with a 2-byte
+// reservedPad between the end-code and start-code arrays.
+cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+	seg_x2 := i32(read_u16be(bytes[sub + 6]))
+	end_codes   := sub + 14
+	start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
+	id_deltas   := start_codes + seg_x2
+	id_ranges   := id_deltas + seg_x2
+	seg_count := seg_x2 / 2
+	for s in 0..seg_count {
+		end_code := u32(read_u16be(bytes[end_codes + s * 2]))
+		if char <= end_code {
+			start_code := u32(read_u16be(bytes[start_codes + s * 2]))
+			if char < start_code { return 0 }
+			id_delta := read_u16be(bytes[id_deltas + s * 2])
+			id_range := i32(read_u16be(bytes[id_ranges + s * 2]))
+			if id_range == 0 {
+				// Direct: (char + idDelta) mod 65536. u16() truncates the wide
+				// u32 sum to its low 16 bits, which is the modular reduction
+				// the spec wants (idDelta is a u16-encoded signed value).
+				return u16(char + u32(id_delta))
+			else
+				// Indirect: glyphIdArray address, relative to this
+				// idRangeOffset entry's own location.
+				addr := id_ranges + s * 2 + id_range + 2 * (i32(char) - i32(start_code))
+				g := read_u16be(bytes[addr])
+				if g == 0 { return 0 }
+				return u16(u32(g) + u32(id_delta))
+			}
+		}
+	}
+	return 0
+}
+
+// Format 0: a flat 256-entry byte map at +6 (after format/length/language).
+cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+	if char > 255 { return 0 }
+	return u16(bytes[sub + 6 + i32(char)])
+}
+
+// ============================================================================
+// Glyph parsing
+// ============================================================================
+//
+// A parsed glyph lives outside the file-format Layout struct — it's the
+// usable form for rendering. parse_glyph reads from the raw glyf-table bytes
+// and writes into a caller-allocated Glyph. The Glyph's partial arrays bound
+// per-glyph contour/point counts statically; the per-glyph .len gets set to
+// what the glyph actually contains.
+
+MAX_GLYPH_POINTS   :: 4096
+Glyph_Point :: struct {
+	x        : i16
+	y        : i16
+	on_curve : bool
+}
+
+Outline :: struct {
+	num_contours : i16   // < 0 means composite
+
+	// Bounding box in FUnits, copied from the per-glyph header.
+	x_min : i16
+	y_min : i16
+	x_max : i16
+	y_max : i16
+
+	// Simple-glyph: end_pts[i] is the LAST point index of contour i.
+	// points is the flattened per-glyph point list across all contours.
+	end_pts : [..256]u16
+	points  : [..MAX_GLYPH_POINTS]Glyph_Point
+}
+
+parse_glyph :: fun(glyph_bytes: []byte) -> Outline {
+	glyph : Outline = #big_endian glyph_bytes[:]
+	if glyph_bytes.len == 0 do return glyph
+
+	if glyph.num_contours < 0 {
+		// Composite glyph — skip for now
+		glyph.end_pts.len = 0
+		glyph.points.len = 0
+		return glyph
+	else 
+		// this function only does simple glyphs
+		parse_simple_glyph_body(&glyph, glyph_bytes)
+		return glyph
+	}
+}
+
+// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
+GLYPH_FLAG_ON_CURVE :: u8(0x01)
+GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
+GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
+GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
+GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
+GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
+parse_simple_glyph_body :: fun(glyph: ^Outline, bytes : []byte) {
+	n_contours := i32(glyph.num_contours)
+	// glyph end points start rght aftre the glyph header?
+	// so we just add 10 to cursor and we're good to go?
+	cursor := 10
+
+	// End-point index per contour. Last entry + 1 is the total point count.
+	glyph.end_pts.len = n_contours
+	for i in 0..n_contours {
+		glyph.end_pts[i] = read_u16be(bytes[cursor])
+		cursor += 2
+	}
+	n_points := i32(glyph.end_pts[n_contours - 1]) + 1
+	assert(n_points <= MAX_GLYPH_POINTS)
+	glyph.points.len = n_points
+
+	// TrueType hinting bytecode — the spec keeps it inline between the
+	// endpoints and the flags. We don't interpret it; skip past.
+	instr_len := i32(read_u16be(bytes[cursor]))
+	cursor += 2
+	cursor += instr_len
+
+	// Per-point flag bytes, with REPEAT-byte run-length decoding: when bit 3
+	// of a flag is set, the NEXT byte is a count of additional points that
+	// share the same flag. Decoded into a flat flags-per-point local array
+	// so the coord-decode loops below can index by point index cheaply.
+	flags : [..MAX_GLYPH_POINTS]u8
+	flags.len = n_points
+	p : i32 = 0
+	for p < n_points {
+		f := u8(bytes[cursor]); cursor += 1
+		flags[p] = f
+		p += 1
+		if (f & GLYPH_FLAG_REPEAT) != 0 {
+			repeat := i32(bytes[cursor]); cursor += 1
+			for r in 0..repeat {
+				flags[p] = f
+				p += 1
+			}
+		}
+	}
+
+	// X coordinates: each point's x is a signed delta from the previous
+	// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte) and
+	// X_SAME (sign-bit-for-short, or same-as-prev-for-long).
+	x : i32 = 0
+	for i in 0..n_points {
+		f := flags[i]
+		if (f & GLYPH_FLAG_X_SHORT) != 0 {
+			dx := i32(bytes[cursor]); cursor += 1
+			if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
+			x += dx
+		elif (f & GLYPH_FLAG_X_SAME) == 0
+			x += i32(read_i16be(bytes[cursor])); cursor += 2
+		}
+		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
+		glyph.points[i].x = i16(x)
+		glyph.points[i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
+	}
+
+	// Y coordinates: same shape with Y_SHORT/Y_SAME bits.
+	y : i32 = 0
+	for i in 0..n_points {
+		f := flags[i]
+		if (f & GLYPH_FLAG_Y_SHORT) != 0 {
+			dy := i32(bytes[cursor]); cursor += 1
+			if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
+			y += dy
+		elif (f & GLYPH_FLAG_Y_SAME) == 0
+			y += i32(read_i16be(bytes[cursor])); cursor += 2
+		}
+		glyph.points[i].y = i16(y)
+	}
+	// A well-formed glyph consumes exactly its slice; past the end means the
+	// flag/coord decode desynced (bounds checks catch reads, not the drift).
+	assert(cursor <= bytes.len)
+}
+
