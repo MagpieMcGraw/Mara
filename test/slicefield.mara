@@ -1,0 +1,59 @@
+module slicefield
+
+// Two regressions found via `glyf := bytes[lo:hi]` in the TTF constructor:
+//
+// 1. An UNANNOTATED constructor-body decl whose value is a slice expression
+//    is a FIELD whose type must be inferred (top-level ctor decls are fields).
+//    infer_field_type_from_default had no Expr_Slice branch, so `view :=
+//    bytes[2:5]` fell through to Type_Any and codegen panicked
+//    (llvm_type_from_checker) instead of typing the field []byte. Now it
+//    infers []elem, auto-dereffing a ^[]T / ^[N]T base like check_slice does.
+//
+// 2. A slice value passed to a pure-struct POSITIONAL constructor stored the
+//    header alloca POINTER where the {len,cap,ptr} aggregate was expected —
+//    invalid IR clang rejected ("'%t' defined with type 'ptr' but expected
+//    '{ i64, i64, ptr }'"). Now routed through gen_slice_value_ptr + header
+//    memcpy (gen_positional_ctor_field_store).
+
+Holder :: struct (bytes: ^[]byte) {
+	Wrap :: struct {
+		data: []byte
+	}
+
+	view := bytes[2:5]           // 1: inferred slice-expr field → []byte
+	head := view[0:1]            // 1: slice of an already-typed sibling field
+	wrap := Wrap(bytes[3:6])     // 2: slice expr as positional ctor arg
+	lit  := Wrap{data = view}    // slice var via struct-literal field value
+}
+
+main :: fun() {
+	buf : [..8]byte
+	buf.len = 8
+	for i in 0..7 {
+		buf[i] = u8(i * 10)
+	}
+	h := Holder(&buf)
+	assert(h.view.len == 3)
+	assert(h.view[0] == 20)
+	assert(h.view[2] == 40)
+	assert(h.head.len == 1)
+	assert(h.head[0] == 20)
+	assert(h.wrap.data.len == 3)
+	assert(h.wrap.data[0] == 30)
+	assert(h.lit.data.len == 3)
+	assert(h.lit.data[2] == 40)
+
+	// 2, outside any ctor: slice VAR and slice EXPR as positional args.
+	view := buf[2:5]
+	a := Wrap2(view)
+	assert(a.data.len == 3)
+	assert(a.data[0] == 20)
+	b := Wrap2(buf[2:5])
+	assert(b.data.len == 3)
+	assert(b.data[2] == 40)
+	print("slicefield ok")
+}
+
+Wrap2 :: struct {
+	data: []byte
+}

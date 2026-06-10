@@ -166,6 +166,22 @@ gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, ge
     return true
 }
 
+// Store one positional-constructor field (provided arg or trailing default)
+// into its GEP. Slice fields are an aggregate: gen_expr on a slice value
+// returns a POINTER to the header, so a scalar `store {i64,i64,ptr} %ptr`
+// would be invalid IR — memcpy the header instead (same shape as the struct
+// bug gen_store_slice_into guards against in gen_field_assign).
+gen_positional_ctor_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr) {
+    if _, sl_ok := distinct_base(field.type_).(^Type_Slice); sl_ok {
+        src := gen_slice_value_ptr(g, value)
+        emit_memcpy(g, gep, src, slice_header_bytes)
+        return
+    }
+    ft := field_ir_type(field)
+    val := gen_expr(g, value, ft)
+    emit_store(g, ft, val, gep)
+}
+
 // Apply the named fields of a struct literal onto a struct at base_ptr.
 // Used both for bare struct-literal rvalues (`x : Foo = { a: 1 }`) and for
 // `{...}` overrides attached to a call (`x : Foo = Foo() { a: 1 }`). Handles
@@ -1271,9 +1287,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
                 gep := fresh_tmp(g)
                 emit_field_gep_into(g, gep, llvm_name, dst_ptr, i)
                 if !gen_partial_array_field_store(g, field, gep, arg, call.span) {
-                    ft := field_ir_type(field)
-                    val := gen_expr(g, arg, ft)
-                    emit_store(g, ft, val, gep)
+                    gen_positional_ctor_field_store(g, field, gep, arg)
                 }
             }
             for fi := len(call.args); fi < len(st.fields); fi += 1 {
@@ -1282,9 +1296,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
                     gep := fresh_tmp(g)
                     emit_field_gep_into(g, gep, llvm_name, dst_ptr, fi)
                     if !gen_partial_array_field_store(g, field, gep, field.default_value, call.span) {
-                        ft := field_ir_type(field)
-                        val := gen_expr(g, field.default_value, ft)
-                        emit_store(g, ft, val, gep)
+                        gen_positional_ctor_field_store(g, field, gep, field.default_value)
                     }
                 }
             }

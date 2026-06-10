@@ -5393,6 +5393,28 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
             }
         }
     }
+    // Slice expressions: `view := buf[lo:hi]` — the field is a []elem view of
+    // the source. Mirrors check_slice's result derivation (auto-deref ^[]T /
+    // ^[N]T, element from slice / fixed array / partial array); bound checking
+    // stays in the body pass. Without this the field fell through to Type_Any
+    // and codegen panicked instead of diagnosing.
+    if sl, ok := value.(^Expr_Slice); ok {
+        base := infer_field_type_from_default(c, sl.expr, env, ft)
+        if pt, pt_ok := base.(^Type_Ptr); pt_ok {
+            inner := distinct_base(pt.elem)
+            if _, inner_sl := inner.(^Type_Slice); inner_sl { base = inner }
+            else if _, inner_fa := inner.(^Type_Fixed_Array); inner_fa { base = inner }
+        }
+        elem: Type
+        if fa, fa_ok := base.(^Type_Fixed_Array); fa_ok { elem = fa.elem }
+        else if bs, bs_ok := base.(^Type_Slice); bs_ok { elem = bs.elem }
+        else if pa, pa_ok := base.(^Type_Partial_Array); pa_ok { elem = pa.elem }
+        if elem != nil {
+            result := new(Type_Slice)
+            result.elem = elem
+            return result
+        }
+    }
     // Binary ops: arithmetic / bitwise / shift preserve the operand type.
     // Comparison ops produce bool. Recurse on the left operand so e.g.
     // `1 << 16` (Number << Number) → i64.
