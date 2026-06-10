@@ -2011,7 +2011,7 @@ gen_print :: proc(g: ^Codegen, e: ^Expr_Call) {
             // Print a space between arguments
             emit_print_literal(g, " ")
         }
-        emit_print_arg(g, arg_expr)
+        emit_print_arg(g, arg_expr, e.span)
     }
 
     emit_print_newline(g)
@@ -2094,7 +2094,7 @@ gen_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Expr, call_span: 
             if arg_idx >= len(args) {
                 codegen_fatal(g, call_span, CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN)
             }
-            emit_print_arg(g, args[arg_idx])
+            emit_print_arg(g, args[arg_idx], call_span)
             arg_idx += 1
             // Advance past `%`. If a letter follows, treat it as a human-
             // readable type marker and consume it too (`%d` → emit value,
@@ -2134,7 +2134,7 @@ emit_print_newline :: proc(g: ^Codegen) {
 
 // Emit a single arg as printf output, dispatched on the arg's checker type.
 // Used by both variadic mode and format-string placeholders.
-emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
+emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr, call_span: Span) {
         // utf8 array shape (fixed array, slice, partial array, or string
         // literal) — print via %.*s bounded by len. Resolves the expression
         // to a unified Array_Handle once, then dispatches through the
@@ -2237,9 +2237,13 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
             // sext/zext to a "convention" width. Mimics C varargs:
             // printf reads whichever width the spec says.
             is_unsigned := false
-            ft := expr_type(arg_expr)
+            ft := distinct_base(expr_type(arg_expr))
             if n, n_ok := ft.(Type_Numeric); n_ok {
                 is_unsigned = n.kind == .Unsigned
+            }
+            if _, b_ok := ft.(Type_Byte); b_ok {
+                // byte is a raw octet — always renders unsigned (0..255).
+                is_unsigned = true
             }
             switch nt {
             case "float":
@@ -2292,6 +2296,13 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr) {
                 emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
             }
         } else {
+            // No print rule matched. The fallback passes the raw value in
+            // printf's i64 vararg slot, so anything that isn't i64-shaped
+            // would emit invalid IR clang rejects with a cryptic type
+            // mismatch — hard error here instead, naming the Mara type.
+            if it := expr_ir_type(g, arg_expr); it != "i64" {
+                codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
+            }
             val := gen_expr(g, arg_expr)
             fmt_name, fmt_len := get_string_literal(g, "%lld")
             fmt_ptr := fresh_tmp(g)
@@ -2840,8 +2851,17 @@ is_ptr_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
 is_numeric_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     t := expr_type(expr)
     if t != nil {
-        if _, is_num := t.(Type_Numeric); is_num { return true }
-        if _, is_enum := t.(^Type_Enum); is_enum { return true }
+        // Unwrap distinct so a `distinct u8` (etc.) prints as its base
+        // number instead of falling to the i64 fallback with a sub-i64
+        // value — printf's vararg slot would mistype and clang rejects
+        // the module.
+        base := distinct_base(t)
+        if _, is_num := base.(Type_Numeric); is_num { return true }
+        // byte is numeric for print purposes: a raw memory octet renders
+        // as its unsigned value. utf8 is deliberately NOT here — it takes
+        // the %c glyph path via is_char_expr before this check.
+        if _, is_byte := base.(Type_Byte); is_byte { return true }
+        if _, is_enum := base.(^Type_Enum); is_enum { return true }
     }
     if bin, ok := expr.(^Expr_Binary); ok {
         return is_numeric_expr(g, bin.left)
@@ -2855,14 +2875,18 @@ is_numeric_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
 get_numeric_type :: proc(g: ^Codegen, expr: Expr) -> string {
     t := expr_type(expr)
     if t != nil {
-        if n, n_ok := t.(Type_Numeric); n_ok {
+        base := distinct_base(t)
+        if n, n_ok := base.(Type_Numeric); n_ok {
             return llvm_type_from_checker(n)
         }
-        if _, e_ok := t.(^Type_Enum); e_ok {
-            return llvm_type_from_checker(t)
+        if _, b_ok := base.(Type_Byte); b_ok {
+            return "i8"
+        }
+        if _, e_ok := base.(^Type_Enum); e_ok {
+            return llvm_type_from_checker(base)
         }
         // Pointer dereference: the expression's type is the dereferenced type
-        if pt, pt_ok := t.(^Type_Ptr); pt_ok {
+        if pt, pt_ok := base.(^Type_Ptr); pt_ok {
             return llvm_type_from_checker(pt.elem)
         }
     }

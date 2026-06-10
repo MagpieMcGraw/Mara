@@ -1,0 +1,49 @@
+module u8print
+
+// print() of 8-bit numeric values: byte was falling into the i64 printf
+// fallback as a raw i8 — invalid IR ("defined with type 'i8' but expected
+// 'i64'"). byte now rides the numeric path: zext to i32, %u (unsigned).
+// utf8 keeps the %c glyph path. Expected output is in the comments.
+
+Id :: distinct u8
+
+Pix :: struct {
+	v : u8 = 9
+}
+
+main :: fun() {
+	// u8 local
+	u : u8 = 65
+	print(u)         // 65
+
+	// partial-array element — high-bit-set value must print unsigned
+	buf : [..4]byte
+	buf.len = 2
+	buf[0] = u8(200)
+	buf[1] = u8(15)
+	print(buf[0])    // 200
+
+	// plain byte local (byte values originate from []byte reads)
+	b := buf[1]
+	print(b)         // 15
+
+	// slice element (the original repro)
+	view := buf[0:2]
+	print(view[0])   // 200
+	print(view[1])   // 15
+
+	// struct field
+	p := Pix()
+	print(p.v)       // 9
+
+	// distinct over u8 unwraps to its base number
+	i := Id(3)
+	print(i)         // 3
+
+	// utf8 still prints as a glyph, not a number
+	c := 'A'
+	print(c)         // A
+
+	// format-string placeholders share the same arg path
+	print("b=% u=%", view[0], u)  // b=200 u=65
+}
