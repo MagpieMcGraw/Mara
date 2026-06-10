@@ -1,0 +1,32 @@
+module recur
+
+// Can a fn call itself? Compound-glyph resolution needs this
+// (components can themselves be compound, up to maxp.max_component_depth).
+fib :: fun(n: i64) -> i64 {
+	if n < 2 { return n }
+	return fib(n - 1) + fib(n - 2)
+}
+
+// And mutual recursion through a helper, threading a ^struct like a
+// ^Self-threaded decode would.
+Pool :: struct {
+	vals : [..64]i64
+}
+
+descend :: fun(p: ^Pool, depth: i64) {
+	p.vals[p.vals.len] = depth
+	p.vals.len += 1
+	if depth > 0 {
+		descend(p, depth - 1)
+	}
+}
+
+main :: fun() {
+	assert(fib(10) == 55)
+	p : Pool
+	descend(&p, 5)
+	assert(p.vals.len == 6)
+	assert(p.vals[0] == 5)
+	assert(p.vals[5] == 0)
+	print("recursion ok")
+}
