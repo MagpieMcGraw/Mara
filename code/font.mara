@@ -626,7 +626,7 @@ TTF :: struct (bytes: ^[]byte) {
 				d.x_max = hdr.x_max
 				d.y_max = hdr.y_max
 				if hdr.num_contours > 0 {
-					decode_simple(bytes, g_start, hdr.num_contours, glen, &t.end_pts, &t.points)
+					decode_simple(t, bytes, g_start, hdr.num_contours, glen)
 				}
 				// num_contours < 0: compound — empty spans until composite
 				// resolution lands (it needs this decoded set to exist).
@@ -647,26 +647,25 @@ TTF :: struct (bytes: ^[]byte) {
 
 	// Decode one simple glyph's body (what Glyph_Simple documents): contour
 	// end indices, run-length flags, x deltas, y deltas — appended to the
-	// pools. Point indices stay glyph-relative, so a Decoded's spans index
-	// the same way the old per-glyph arrays did.
+	// instance's pools. Point indices stay glyph-relative, so a Decoded's
+	// spans index the same way the old per-glyph arrays did.
 	// n_contours arrives as the header's i16 (auto-widened); offsets and
 	// lengths ride at i64 like everywhere else.
-	decode_simple :: fun(bytes: ^[]byte, g_start: i64, n_contours: i32, glen: i64,
-		end_pts: ^[]u16, points: ^[]Glyph_Point)
+	decode_simple :: fun(t: ^Self, bytes: ^[]byte, g_start: i64, n_contours: i32, glen: i64)
 	{
 		cursor := g_start + 10   // past the header
 
-		assert(end_pts.len + n_contours <= MAX_FONT_CONTOURS)
+		assert(t.end_pts.len + n_contours <= MAX_FONT_CONTOURS)
 		for i in 0..n_contours {
-			end_pts[end_pts.len] = read_u16be(bytes[cursor])
-			end_pts.len += 1
+			t.end_pts[t.end_pts.len] = read_u16be(bytes[cursor])
+			t.end_pts.len += 1
 			cursor += 2
 		}
-		n_points := i32(end_pts[end_pts.len - 1]) + 1
+		n_points := i32(t.end_pts[t.end_pts.len - 1]) + 1
 		assert(n_points <= MAX_GLYPH_POINTS)
-		assert(points.len + n_points <= MAX_FONT_POINTS)
-		p_base := points.len
-		points.len += n_points
+		assert(t.points.len + n_points <= MAX_FONT_POINTS)
+		p_base := t.points.len
+		t.points.len += n_points
 
 		// TrueType hinting bytecode sits inline between the endpoints and
 		// the flags. We don't interpret it; skip past.
@@ -706,8 +705,8 @@ TTF :: struct (bytes: ^[]byte) {
 				x += read_i16be(bytes[cursor]); cursor += 2
 			}
 			// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
-			points[p_base + i].x = i16(x)
-			points[p_base + i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
+			t.points[p_base + i].x = i16(x)
+			t.points[p_base + i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
 		}
 
 		// Y coordinates: same shape with the Y bits.
@@ -721,7 +720,7 @@ TTF :: struct (bytes: ^[]byte) {
 			elif (f & GLYPH_FLAG_Y_SAME) == 0
 				y += read_i16be(bytes[cursor]); cursor += 2
 			}
-			points[p_base + i].y = i16(y)
+			t.points[p_base + i].y = i16(y)
 		}
 		// A well-formed glyph consumes at most its slice; past it means the
 		// flag/coord decode desynced (bounds checks catch reads, not drift).
