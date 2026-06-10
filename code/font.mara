@@ -308,7 +308,9 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 
 // Verify helper: read an atlas cell's RGB back, un-normalize, and ASCII-dump
 // the median — confirms both the channel math and the buffer write/packing.
-dump_atlas_cell :: fun(atlas: ^[]byte, atlas_w: i32, ax: i32, ay: i32, cw: i32, ch: i32) {
+dump_atlas_cell :: fun(atlas: ^[]byte,
+	atlas_w: i32, ax: i32, ay: i32, cw: i32, ch: i32)
+{
 	for py in 0..ch {
 		row : str
 		for pxi in 0..cw {
@@ -598,34 +600,41 @@ TTF :: struct (bytes: ^[]byte) {
 	end_pts : [..MAX_FONT_CONTOURS]u16
 	points  : [..MAX_FONT_POINTS]Glyph_Point
 	glyphs  : [..MAX_FONT_GLYPHS]Decoded
-	glyphs.len = maxp.num_glyphs
-	num_long := i64(hhea.num_of_long_hor_metrics)
-	for gi in 0..glyphs.len {
-		d : Decoded
-		metric := gi
-		if metric >= num_long { metric = num_long - 1 }
-		d.advance = read_u16be(bytes[hmtx_loc + metric * 4])
+	decode_glyphs(#self, bytes)
 
-		c_start := end_pts.len
-		p_start := points.len
-		goff := loca.offsets[gi]
-		glen := loca.offsets[gi + 1] - goff
-		if glen > 0 {
-			g_start := glyf_table_loc + goff
-			hdr : Glyph_Header = #big_endian bytes[g_start]
-			d.x_min = hdr.x_min
-			d.y_min = hdr.y_min
-			d.x_max = hdr.x_max
-			d.y_max = hdr.y_max
-			if hdr.num_contours > 0 {
-				decode_simple(bytes, g_start, hdr.num_contours, glen, &end_pts, &points)
+	// The decode pass, handed the under-construction instance via #self — a
+	// nested fun so its working variables stay LOCALS (top-level constructor
+	// decls become fields).
+	decode_glyphs :: fun(t: ^Self, bytes: ^[]byte) {
+		t.glyphs.len = t.maxp.num_glyphs
+		num_long := i64(t.hhea.num_of_long_hor_metrics)
+		for gi in 0..t.glyphs.len {
+			d : Decoded
+			metric := gi
+			if metric >= num_long { metric = num_long - 1 }
+			d.advance = read_u16be(bytes[t.hmtx_loc + metric * 4])
+
+			c_start := t.end_pts.len
+			p_start := t.points.len
+			goff := t.loca.offsets[gi]
+			glen := t.loca.offsets[gi + 1] - goff
+			if glen > 0 {
+				g_start := t.glyf_table_loc + goff
+				hdr : Glyph_Header = #big_endian bytes[g_start]
+				d.x_min = hdr.x_min
+				d.y_min = hdr.y_min
+				d.x_max = hdr.x_max
+				d.y_max = hdr.y_max
+				if hdr.num_contours > 0 {
+					decode_simple(bytes, g_start, hdr.num_contours, glen, &t.end_pts, &t.points)
+				}
+				// num_contours < 0: compound — empty spans until composite
+				// resolution lands (it needs this decoded set to exist).
 			}
-			// num_contours < 0: compound — empty spans until composite
-			// resolution lands (it needs this decoded set to exist).
+			d.contour_end = t.end_pts[c_start : t.end_pts.len]
+			d.points = t.points[p_start : t.points.len]
+			t.glyphs[gi] = d
 		}
-		d.contour_end = end_pts[c_start : end_pts.len]
-		d.points = points[p_start : points.len]
-		glyphs[gi] = d
 	}
 
 	// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
