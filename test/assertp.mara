@@ -1,0 +1,11 @@
+module assertp
+
+// Non-comparison condition — falls back to the plain message, and the
+// word-operator spacing must survive (was `aandb` with naive token concat).
+
+main :: fun() {
+	a := true
+	b := false
+	assert(a or b)    // passes
+	assert(a and b)   // fails — plain form, spaced text
+}

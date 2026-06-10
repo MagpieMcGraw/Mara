@@ -320,16 +320,88 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         return fmt.tprintf("%d", size)
     case ^Expr_Assert:
         // assert(cond): if cond is false, report `<file:line:col> assertion
-        // failed: <cond text>` and exit. Compiled out entirely in -release.
+        // failed: <cond text>` and exit. When cond is a direct numeric
+        // comparison, the operands are evaluated once and the failure also
+        // reports their values (`left: %v, right: %v`) — same shape as the
+        // bounds/overflow messages. Compiled out entirely in -release.
         if g.release { return "0" }
-        cond_val := gen_expr(g, e.cond)
         ok_label := fresh_label(g, "assert.ok")
         fail_label := fresh_label(g, "assert.fail")
-        emit_cond_br(g, cond_val, ok_label, fail_label)
-        emit_label(g, fail_label)
         loc := format_location(e.span.file, e.span.line, e.span.col)
         loc_global,  _ := get_string_literal(g, loc)
         cond_global, _ := get_string_literal(g, e.cond_text)
+
+        if bin, is_bin := e.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) {
+            _, overloaded := bin.overload_fn.?
+            ir_type, is_unsigned := binary_op_type(g, bin, "")
+            is_float := ir_type == "double" || ir_type == "float" || ir_type == "half"
+            // Value reporting covers what printf can carry: scalar ints up to
+            // 64 bits and floats. Anything else (ptr, i128, aggregates,
+            // overloaded compares) falls through to the plain message.
+            is_small_int := ir_type == "i1" || ir_type == "i8" || ir_type == "i16" ||
+                            ir_type == "i32" || ir_type == "i64"
+            if !overloaded && (is_float || is_small_int) {
+                left := gen_expr_coerced(g, bin.left, ir_type)
+                right := gen_expr_coerced(g, bin.right, ir_type)
+                cond_val := fresh_tmp(g)
+                pred := ""
+                if is_float {
+                    #partial switch bin.op {
+                    case .Equal_Equal:   pred = "oeq"
+                    case .Not_Equal:     pred = "une"
+                    case .Less:          pred = "olt"
+                    case .Less_Equal:    pred = "ole"
+                    case .Greater:       pred = "ogt"
+                    case .Greater_Equal: pred = "oge"
+                    }
+                    emit(g, "  %s = fcmp %s %s %s, %s", cond_val, pred, ir_type, left, right)
+                } else {
+                    #partial switch bin.op {
+                    case .Equal_Equal:   pred = "eq"
+                    case .Not_Equal:     pred = "ne"
+                    case .Less:          pred = is_unsigned ? "ult" : "slt"
+                    case .Less_Equal:    pred = is_unsigned ? "ule" : "sle"
+                    case .Greater:       pred = is_unsigned ? "ugt" : "sgt"
+                    case .Greater_Equal: pred = is_unsigned ? "uge" : "sge"
+                    }
+                    emit(g, "  %s = icmp %s %s %s, %s", cond_val, pred, ir_type, left, right)
+                }
+                emit_cond_br(g, cond_val, ok_label, fail_label)
+                emit_label(g, fail_label)
+                if is_float {
+                    lw, rw := left, right
+                    if ir_type != "double" {
+                        lw = fresh_tmp(g)
+                        emit(g, "  %s = fpext %s %s to double", lw, ir_type, left)
+                        rw = fresh_tmp(g)
+                        emit(g, "  %s = fpext %s %s to double", rw, ir_type, right)
+                    }
+                    emit(g, "  call void %s(ptr %s, ptr %s, double %s, double %s)",
+                         __MARA_ASSERT_FAIL_VALS_F, loc_global, cond_global, lw, rw)
+                } else {
+                    lw, rw := left, right
+                    if ir_type != "i64" {
+                        // Extend by the working type's signedness; i1 always
+                        // zero-extends so bools report 0/1.
+                        ext := (is_unsigned || ir_type == "i1") ? "zext" : "sext"
+                        lw = fresh_tmp(g)
+                        emit(g, "  %s = %s %s %s to i64", lw, ext, ir_type, left)
+                        rw = fresh_tmp(g)
+                        emit(g, "  %s = %s %s %s to i64", rw, ext, ir_type, right)
+                    }
+                    helper := is_unsigned ? __MARA_ASSERT_FAIL_VALS_U : __MARA_ASSERT_FAIL_VALS_I
+                    emit(g, "  call void %s(ptr %s, ptr %s, i64 %s, i64 %s)",
+                         helper, loc_global, cond_global, lw, rw)
+                }
+                emit(g, "  unreachable")
+                emit_label(g, ok_label)
+                return "0"
+            }
+        }
+
+        cond_val := gen_expr(g, e.cond)
+        emit_cond_br(g, cond_val, ok_label, fail_label)
+        emit_label(g, fail_label)
         emit(g, "  call void %s(ptr %s, ptr %s)", __MARA_ASSERT_FAIL, loc_global, cond_global)
         emit(g, "  unreachable")
         emit_label(g, ok_label)

@@ -66,13 +66,15 @@ DECIDE one return-type grammar. fun(a, b: i64) i64 and fun(a, b: i64) -> i64 bot
 
 DECIDE class vs struct canonical spelling. memory.mara says class, everything else says struct; a reader parses the difference as semantic. Keep the alias as the joke, lint for one spelling.
 
-DECIDE assert policy: keep asserts on in release (TigerStyle, restart-and-recover fits the hot-reload loop) or C-style strip. Then upgrade assert output to print condition source text plus operand values via spans — the parts (#caller_span, enum printing) already exist.
+DECIDE assert policy: keep asserts on in release (TigerStyle, restart-and-recover fits the hot-reload loop) or C-style strip. (Output upgrade DONE 10 Jun 2026: comparison asserts print operand values — `x < y  (left: 12, right: 3)` — and condition text keeps source spacing. Enum/char operands still print numerically; upgrade via gen_print_enum machinery if wanted.)
 
 ADD must-use err: warn when an err value is neither returned, branched on, nor discarded with _ =. Makes the return-the-error discipline mechanical while keeping ignoring legal.
 
 ADD err second field in debug builds: raise-site span (and on Windows, GetLastError at the os boundary). Same machinery as the arena debug headers. Print then says what failed, where, and why.
 
-ADD seed asserts from the review: slice_add capacity before the element copy, parse_glyph n_points > 0 and cursor <= bytes.len, arena mark/reset well-nesting, partial-array fixup invariant (arr.ptr == own elements) where received by ref.
+ADD seed asserts from the review: arena mark/reset well-nesting (when Arena_Basic is uncommented), partial-array fixup invariant (arr.ptr == own elements) where received by ref. (DONE 10 Jun 2026: slice_add capacity, parse_glyph point-count cap + end-of-parse cursor <= bytes.len.)
+
+BUG u64 literals above i64 max don't parse: 18446744073709551615 wraps to -1 internally, then the range check reports "constant -1 overflows u64". Literal pipeline needs an unsigned path (found writing assertu.mara).
 
 ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
 

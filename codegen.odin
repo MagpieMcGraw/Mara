@@ -2582,6 +2582,11 @@ __MARA_OVERFLOW_FAIL  :: "@__mara_overflow_fail"
 __MARA_DIVZ_FAIL      :: "@__mara_divz_fail"
 __MARA_SLICE_LEN_FAIL :: "@__mara_slice_len_fail"
 __MARA_ASSERT_FAIL    :: "@__mara_assert_fail"
+// Comparison asserts report operand values; one helper per printf carrier
+// (signed i64 / unsigned i64 / double).
+__MARA_ASSERT_FAIL_VALS_I :: "@__mara_assert_fail_vals_i"
+__MARA_ASSERT_FAIL_VALS_U :: "@__mara_assert_fail_vals_u"
+__MARA_ASSERT_FAIL_VALS_F :: "@__mara_assert_fail_vals_f"
 
 runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // Register format strings as deduped globals via the normal literals path.
@@ -2590,6 +2595,9 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     fmt_divz,      _ := get_string_literal(g, "%s runtime error: division by zero\n")
     fmt_slice_len, _ := get_string_literal(g, "%s runtime error: slice len %d not in [0, %d] (cap) for '%s'\n")
     fmt_assert,    _ := get_string_literal(g, "%s assertion failed: %s\n")
+    fmt_assert_vi, _ := get_string_literal(g, "%s assertion failed: %s  (left: %lld, right: %lld)\n")
+    fmt_assert_vu, _ := get_string_literal(g, "%s assertion failed: %s  (left: %llu, right: %llu)\n")
+    fmt_assert_vf, _ := get_string_literal(g, "%s assertion failed: %s  (left: %g, right: %g)\n")
 
     b: strings.Builder
     strings.builder_init(&b)
@@ -2635,6 +2643,36 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, "(ptr %loc, ptr %cond) {\n")
     strings.write_string(&b, strings.concatenate({
         "  call i32 (ptr, ...) @printf(ptr ", fmt_assert, ", ptr %loc, ptr %cond)\n",
+    }))
+    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
+
+    // assert with values: (loc, cond, left, right). Comparison asserts route
+    // here so the failure shows the operand values alongside the condition
+    // text. Three carriers: signed / unsigned (both i64) and double.
+    strings.write_string(&b, "define void ")
+    strings.write_string(&b, __MARA_ASSERT_FAIL_VALS_I)
+    strings.write_string(&b, "(ptr %loc, ptr %cond, i64 %l, i64 %r) {\n")
+    strings.write_string(&b, strings.concatenate({
+        "  call i32 (ptr, ...) @printf(ptr ", fmt_assert_vi,
+        ", ptr %loc, ptr %cond, i64 %l, i64 %r)\n",
+    }))
+    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
+
+    strings.write_string(&b, "define void ")
+    strings.write_string(&b, __MARA_ASSERT_FAIL_VALS_U)
+    strings.write_string(&b, "(ptr %loc, ptr %cond, i64 %l, i64 %r) {\n")
+    strings.write_string(&b, strings.concatenate({
+        "  call i32 (ptr, ...) @printf(ptr ", fmt_assert_vu,
+        ", ptr %loc, ptr %cond, i64 %l, i64 %r)\n",
+    }))
+    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
+
+    strings.write_string(&b, "define void ")
+    strings.write_string(&b, __MARA_ASSERT_FAIL_VALS_F)
+    strings.write_string(&b, "(ptr %loc, ptr %cond, double %l, double %r) {\n")
+    strings.write_string(&b, strings.concatenate({
+        "  call i32 (ptr, ...) @printf(ptr ", fmt_assert_vf,
+        ", ptr %loc, ptr %cond, double %l, double %r)\n",
     }))
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
@@ -4053,6 +4091,9 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_slice_len_fail(ptr, i32, i32, ptr)\n")
         strings.write_string(&b, "declare void @__mara_assert_fail(ptr, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_assert_fail_vals_i(ptr, ptr, i64, i64)\n")
+        strings.write_string(&b, "declare void @__mara_assert_fail_vals_u(ptr, ptr, i64, i64)\n")
+        strings.write_string(&b, "declare void @__mara_assert_fail_vals_f(ptr, ptr, double, double)\n")
         strings.write_string(&b, "declare void @__mara_print_err(i32)\n")
     }
     strings.write_byte(&b, '\n')

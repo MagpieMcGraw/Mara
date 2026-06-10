@@ -3855,7 +3855,9 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         } else if tok.text == "assert" && current_kind(p) == .Left_Paren {
             // `assert(cond)` — capture the condition's source text now (later
             // phases have no source) by concatenating the tokens it spans.
-            // No separators keeps member/index access readable.
+            // Token positions reconstruct the original spacing: any gap (or a
+            // line break) becomes one space, adjacent tokens stay fused — so
+            // `x < y` prints spaced while `a.b[i]` stays tight.
             advance(p) // consume '('
             cond_start := p.pos
             cond := parse_expr(p)
@@ -3863,6 +3865,13 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             expect(p, .Right_Paren)
             sb := strings.builder_make()
             for i in cond_start..<cond_end {
+                if i > cond_start {
+                    prev := p.tokens[i - 1]
+                    cur  := p.tokens[i]
+                    if cur.line != prev.line || cur.col > prev.col + len(prev.text) {
+                        strings.write_byte(&sb, ' ')
+                    }
+                }
                 strings.write_string(&sb, p.tokens[i].text)
             }
             a := new(Expr_Assert)

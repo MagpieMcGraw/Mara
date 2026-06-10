@@ -1,0 +1,13 @@
+module assertout
+
+// Scratch fixture for assert failure output. The first assert passes, the
+// second fails — run it to see what the failure line looks like.
+
+main :: fun() {
+	x := 12
+	y := 3
+	assert(x > y)
+	print("passing assert was silent, good")
+	assert(x < y)
+	print("unreachable")
+}

@@ -1,0 +1,11 @@
+module assertf
+
+// Float comparison assert — expect (left: %g, right: %g).
+
+main :: fun() {
+	a := 3.25
+	b := 10.5
+	scale : f32 = 0.5
+	assert(b * f64(scale) > a)   // passes: 5.25 > 3.25
+	assert(a * 2.0 == b)         // fails: 6.5 != 10.5
+}

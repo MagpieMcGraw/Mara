@@ -715,6 +715,7 @@ parse_simple_glyph_body :: fun(glyph: ^Outline, bytes : []byte) {
 		cursor += 2
 	}
 	n_points := i32(glyph.end_pts[n_contours - 1]) + 1
+	assert(n_points <= MAX_GLYPH_POINTS)
 	glyph.points.len = n_points
 
 	// TrueType hinting bytecode — the spec keeps it inline between the
@@ -774,5 +775,8 @@ parse_simple_glyph_body :: fun(glyph: ^Outline, bytes : []byte) {
 		}
 		glyph.points[i].y = i16(y)
 	}
+	// A well-formed glyph consumes exactly its slice; past the end means the
+	// flag/coord decode desynced (bounds checks catch reads, not the drift).
+	assert(cursor <= bytes.len)
 }
 
