@@ -43,7 +43,11 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 
 		glyphs[i].x = (i % atlas.per_row) * atlas.cell
 		glyphs[i].y = (i / atlas.per_row) * atlas.cell
-		adv_units := f32(read_u16be(ttf_file[ttf.hmtx_loc + glyph_index * 4]))
+		// hmtx holds full {advance, lsb} records only for the first
+		// num_of_long_hor_metrics glyphs; everything past that shares the
+		// last record's advance (the array degrades to 2-byte lsb entries).
+		metric := min(i64(glyph_index), i64(ttf.hhea.num_of_long_hor_metrics) - 1)
+		adv_units := f32(read_u16be(ttf_file[ttf.hmtx_loc + i32(metric) * 4]))
 		glyphs[i].advance = adv_units * atlas.px_scale
 
 		rasterize_msdf(&outline, &glyphs[i], &atlas)
@@ -120,6 +124,10 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 
 	glyph.w = i32((xmax - xmin) * scale + 2.0 * pad) + 1
 	glyph.h = i32((ymax - ymin) * scale + 2.0 * pad) + 1
+	// The fill loop below writes w*h pixels at the cell origin — a glyph
+	// bigger than its cell would bleed into the neighbor's pixels.
+	assert(glyph.w <= atlas.cell)
+	assert(glyph.h <= atlas.cell)
 	glyph.bearing_x = xmin * scale - pad
 	glyph.bearing_y = ymax * scale + pad
 
@@ -143,7 +151,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			first_on_curve := -1
 			for k in 0..n_points {
 				if outline.points[point_start + k].on_curve {
-					if first_on_curve < 0 { first_on_curve = k }
+					first_on_curve = k
+					break
 				}
 			}
 			if first_on_curve < 0 { first_on_curve = 0 }

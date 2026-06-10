@@ -5,15 +5,15 @@ use mara.memory
 use mara.font
 
 // Exercises the font loader on a real TTF without launching the game:
-// bake codepoints 0..256 into the atlas, then dump 'A' (codepoint 65).
+// bake printable ASCII (32..127) into the atlas, then dump 'A'.
 main :: fun() -> i64 {
 	this_program = Program(Arena_Debug(64 * MB))
 
-	glyphs : [..256]Glyph
-	glyphs.len = 256
-	atlas := load_glyphs(&glyphs, 0, "../Pounce/data/fonts/Inter_18pt-Regular.ttf")
+	glyphs : [..96]Glyph
+	glyphs.len = 96
+	atlas := load_glyphs(&glyphs, 32, "../Pounce/data/fonts/Inter_18pt-Regular.ttf")
 
-	a := glyphs[65]   // 'A'
+	a := glyphs[65 - 32]   // 'A'
 	print("glyph 'A': cell", a.w, "x", a.h, "bearing", a.bearing_x, a.bearing_y, "advance", a.advance)
 	print("--- atlas cell for 'A' (median) ---")
 	ab : []byte = atlas[:]
