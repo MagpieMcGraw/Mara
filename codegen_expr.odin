@@ -378,6 +378,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 }
                 emit_cond_br(g, cond_val, ok_label, fail_label)
                 emit_label(g, fail_label)
+                emit_crash_journal_begin(g)
 
                 Assert_Side :: struct { text, val: string, ex: Expr, report: bool }
                 sides := [2]Assert_Side{
@@ -451,6 +452,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 }
                 strings.write_string(&msg, "\n")
                 assert_flush_printf(g, &msg, &args)
+                emit_crash_journal_end(g)
                 emit(g, "  call void @exit(i32 1)")
                 emit(g, "  unreachable")
                 emit_label(g, ok_label)
@@ -463,9 +465,12 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         cond_val := gen_expr(g, e.cond)
         emit_cond_br(g, cond_val, ok_label, fail_label)
         emit_label(g, fail_label)
+        emit_crash_journal_begin(g)
         strings.write_string(&msg, ", but it was false\n")
-        msg_global, _ := get_string_literal(g, strings.to_string(msg))
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", msg_global)
+        args: strings.Builder
+        strings.builder_init(&args)
+        assert_flush_printf(g, &msg, &args)
+        emit_crash_journal_end(g)
         emit(g, "  call void @exit(i32 1)")
         emit(g, "  unreachable")
         emit_label(g, ok_label)
@@ -666,9 +671,25 @@ assert_side_is_literal :: proc(ex: Expr) -> bool {
 assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^strings.Builder) {
     if strings.builder_len(msg^) == 0 { return }
     msg_global, _ := get_string_literal(g, strings.to_string(msg^))
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s%s)", msg_global, strings.to_string(args^))
+    emit(g, "  call i32 (ptr, ...) %s(ptr %s%s)", printf_sym(g), msg_global, strings.to_string(args^))
     strings.builder_reset(msg)
     strings.builder_reset(args)
+}
+
+// Open/close a crash.txt journal entry around a fail block's message
+// emission (native builds only; web has no filesystem). Between the two,
+// g.tee routes every print-shaped emission through __mara_tee_printf so the
+// message lands in the journal as well as on stdout.
+emit_crash_journal_begin :: proc(g: ^Codegen) {
+    if g.web { return }
+    emit(g, "  call void @__mara_crash_begin()")
+    g.tee = true
+}
+
+emit_crash_journal_end :: proc(g: ^Codegen) {
+    if g.web { return }
+    g.tee = false
+    emit(g, "  call void @__mara_crash_end()")
 }
 
 gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> string {
@@ -1900,14 +1921,26 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
 // ---------------------------------------------------------------------------
 
 gen_crash :: proc(g: ^Codegen, e: ^Expr_Call) {
+    // Evaluate the message BEFORE the journal opens — the argument is
+    // ordinary user code and must not have its own prints teed.
+    val := ""
+    arg_type: Type
     if len(e.args) == 1 {
-        arg := e.args[0]
-        val := gen_expr(g, arg)
-        arg_type := expr_type(arg)
+        val = gen_expr(g, e.args[0])
+        arg_type = expr_type(e.args[0])
+    }
 
+    emit_crash_journal_begin(g)
+
+    // Location line, same family as the assert message.
+    loc := format_location(e.span.file, e.span.line, e.span.col)
+    esc_loc, _ := strings.replace_all(loc, "%", "%%")
+    loc_global, _ := get_string_literal(g, strings.concatenate({"Crashed at ", esc_loc, "\n"}))
+    emit(g, "  call i32 (ptr, ...) %s(ptr %s)", printf_sym(g), loc_global)
+
+    if len(e.args) == 1 {
         // Print the message (string literal or runtime string)
-        if _, ok := arg_type.(^Type_Fixed_Array); ok {
-            fa := arg_type.(^Type_Fixed_Array)
+        if fa, ok := arg_type.(^Type_Fixed_Array); ok {
             if _, is_utf8 := fa.elem.(Type_Utf8); is_utf8 {
                 fmt_name, fmt_len := get_string_literal(g, "%s")
                 fmt_ptr := fresh_tmp(g)
@@ -1929,6 +1962,7 @@ gen_crash :: proc(g: ^Codegen, e: ^Expr_Call) {
         emit_printf_void(g, nl_ptr)
     }
 
+    emit_crash_journal_end(g)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
 
@@ -2455,14 +2489,14 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum)
         emit_printf_i64(g, fmt_ptr, val)
     case "i32":
         // Already at printf's default-int width — pass through.
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, val)
+        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), fmt_ptr, val)
     case:
         // i16 / i8: zext to i32 for printf's default-int varargs promotion.
         // zext (not sext) — enum tags are unsigned-shaped values, no two's-
         // complement bits to preserve.
         ext := fresh_tmp(g)
         emit(g, "  %s = zext %s %s to i32", ext, tag_ir, val)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
+        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), fmt_ptr, ext)
     }
     emit_print_literal(g, ")")
     emit_br(g, done_lbl)

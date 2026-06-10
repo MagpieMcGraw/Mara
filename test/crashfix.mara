@@ -1,0 +1,10 @@
+module crashfix
+
+// crash() joins the journal: prints (and logs) a location line plus the
+// optional message:
+//   Crashed at crashfix.mara:9:2
+//   batch limit exceeded
+
+main :: fun() {
+	crash("batch limit exceeded")
+}

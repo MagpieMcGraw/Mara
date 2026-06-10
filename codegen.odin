@@ -432,6 +432,10 @@ Codegen :: struct {
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
     release: bool,   // -release build mode — -O3; asserts stay ON
     no_assert: bool, // -no assert — compile asserts out entirely
+    // Inside an assert/crash fail block (native builds): print-shaped
+    // emissions route through __mara_tee_printf, which mirrors the message
+    // into crash.txt (code/mara_crash.c). Off everywhere else.
+    tee: bool,
     // Fallible constructor: the current function is a `struct(params) -> err`
     // whose multi-return sret slot 0 is the implicit Self (built in place via
     // field prebind). When true, the return machinery skips slot 0 — explicit
@@ -1613,9 +1617,18 @@ emit_label :: proc(g: ^Codegen, name: string) {
 // one typed arg of the indicated LLVM type.
 
 // `  call i32 (ptr, ...) @printf(ptr <fmt>)\n`
+// The printf symbol for the current emission context: @printf normally,
+// @__mara_tee_printf inside an assert/crash fail block (g.tee) so the
+// message also lands in crash.txt.
+printf_sym :: proc(g: ^Codegen) -> string {
+    return g.tee ? "@__mara_tee_printf" : "@printf"
+}
+
 emit_printf_void :: proc(g: ^Codegen, fmt_ptr: string) {
     b := emit_target(g)
-    strings.write_string(b, "  call i32 (ptr, ...) @printf(ptr ")
+    strings.write_string(b, "  call i32 (ptr, ...) ")
+    strings.write_string(b, printf_sym(g))
+    strings.write_string(b, "(ptr ")
     strings.write_string(b, fmt_ptr)
     strings.write_string(b, ")\n")
 }
@@ -1623,7 +1636,9 @@ emit_printf_void :: proc(g: ^Codegen, fmt_ptr: string) {
 // `  call i32 (ptr, ...) @printf(ptr <fmt>, i64 <val>)\n`
 emit_printf_i64 :: proc(g: ^Codegen, fmt_ptr, val: string) {
     b := emit_target(g)
-    strings.write_string(b, "  call i32 (ptr, ...) @printf(ptr ")
+    strings.write_string(b, "  call i32 (ptr, ...) ")
+    strings.write_string(b, printf_sym(g))
+    strings.write_string(b, "(ptr ")
     strings.write_string(b, fmt_ptr)
     strings.write_string(b, ", i64 ")
     strings.write_string(b, val)
@@ -1633,7 +1648,9 @@ emit_printf_i64 :: proc(g: ^Codegen, fmt_ptr, val: string) {
 // `  call i32 (ptr, ...) @printf(ptr <fmt>, ptr <val>)\n`
 emit_printf_ptr :: proc(g: ^Codegen, fmt_ptr, val: string) {
     b := emit_target(g)
-    strings.write_string(b, "  call i32 (ptr, ...) @printf(ptr ")
+    strings.write_string(b, "  call i32 (ptr, ...) ")
+    strings.write_string(b, printf_sym(g))
+    strings.write_string(b, "(ptr ")
     strings.write_string(b, fmt_ptr)
     strings.write_string(b, ", ptr ")
     strings.write_string(b, val)
@@ -1643,7 +1660,9 @@ emit_printf_ptr :: proc(g: ^Codegen, fmt_ptr, val: string) {
 // `  call i32 (ptr, ...) @printf(ptr <fmt>, double <val>)\n`
 emit_printf_double :: proc(g: ^Codegen, fmt_ptr, val: string) {
     b := emit_target(g)
-    strings.write_string(b, "  call i32 (ptr, ...) @printf(ptr ")
+    strings.write_string(b, "  call i32 (ptr, ...) ")
+    strings.write_string(b, printf_sym(g))
+    strings.write_string(b, "(ptr ")
     strings.write_string(b, fmt_ptr)
     strings.write_string(b, ", double ")
     strings.write_string(b, val)
@@ -3973,6 +3992,13 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     strings.write_string(&b, "; External declarations\n")
     strings.write_string(&b, "declare i32 @printf(ptr, ...)\n")
     strings.write_string(&b, "declare void @exit(i32)\n")
+    if !g.web {
+        // Crash-journal runtime, defined in code/mara_crash.c and linked
+        // into every native build (see ensure_crash_runtime in main.odin).
+        strings.write_string(&b, "declare void @__mara_crash_begin()\n")
+        strings.write_string(&b, "declare i32 @__mara_tee_printf(ptr, ...)\n")
+        strings.write_string(&b, "declare void @__mara_crash_end()\n")
+    }
     if g.web {
         strings.write_string(&b, "declare i32 @strlen(ptr)\n")
     } else {

@@ -18,6 +18,9 @@
 *.js
 *.wasm
 
+# Crash journal written by asserts/crash() at runtime (code/mara_crash.c)
+crash.txt
+
 # Per-user Claude settings
 **/settings.local.json
 

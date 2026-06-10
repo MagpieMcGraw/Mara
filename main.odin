@@ -686,11 +686,44 @@ compile_task_proc :: proc(t: thread.Task) {
     data.exit_code = libc.system(cmd_cstr)
 }
 
+// Crash-journal runtime (code/mara_crash.c) — every native build links it so
+// asserts and crash() can tee their message into crash.txt. Compiled once to
+// a sibling .o and reused; recompiled when the .c is newer (compiler update).
+ensure_crash_runtime :: proc(clang_path, compiler_dir: string) -> (string, bool) {
+    c_path, _ := filepath.join({compiler_dir, "code", "mara_crash.c"})
+    o_path, _ := filepath.join({compiler_dir, "code", "mara_crash.o"})
+    c_time, c_err := os_old.last_write_time_by_name(c_path)
+    if c_err != nil {
+        fmt.printf("missing crash runtime source '%s'\n", c_path)
+        return "", false
+    }
+    o_time, o_err := os_old.last_write_time_by_name(o_path)
+    if o_err == nil && o_time >= c_time { return o_path, true }
+
+    cb: strings.Builder
+    strings.write_byte(&cb, '"'); strings.write_string(&cb, clang_path); strings.write_byte(&cb, '"')
+    strings.write_string(&cb, " -c -O2 -D_CRT_SECURE_NO_WARNINGS ")
+    strings.write_byte(&cb, '"'); strings.write_string(&cb, c_path); strings.write_byte(&cb, '"')
+    strings.write_string(&cb, " -o ")
+    strings.write_byte(&cb, '"'); strings.write_string(&cb, o_path); strings.write_byte(&cb, '"')
+    cmd := strings.to_string(cb)
+    when ODIN_OS == .Windows { cmd = strings.concatenate({`"`, cmd, `"`}) }
+    ret := libc.system(strings.clone_to_cstring(cmd))
+    if ret != 0 {
+        fmt.printf("clang failed compiling mara_crash.c (exit code %d)\n", ret)
+        return "", false
+    }
+    return o_path, true
+}
+
 link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
     clang_path := clang_resolve_path(compiler_dir)
+
+    crash_o, crash_ok := ensure_crash_runtime(clang_path, compiler_dir)
+    if !crash_ok { return false }
 
     // ---- Stage 1: parallel `clang -c <ll> -o <o>` per module ----
     //
@@ -786,6 +819,8 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         strings.write_byte(&b, ' ')
         strings.write_byte(&b, '"'); strings.write_string(&b, t.o_path); strings.write_byte(&b, '"')
     }
+    strings.write_byte(&b, ' ')
+    strings.write_byte(&b, '"'); strings.write_string(&b, crash_o); strings.write_byte(&b, '"')
     strings.write_string(&b, lf.extra_inputs)
     strings.write_string(&b, ` -o "`); strings.write_string(&b, exe_name); strings.write_byte(&b, '"')
     // Always use lld for consistency across platforms. Windows finds
