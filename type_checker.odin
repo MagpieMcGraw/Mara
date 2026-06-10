@@ -7643,6 +7643,33 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         }
     }
 
+    // Pre-register constants with bare-name aliases for sibling access.
+    // ft.consts maps bare → ^Stmt_Define (s.name has been mangled by
+    // register_scope_defs at this point, so we register both forms).
+    // For classes, the canonical home is the namespace env so methods reach
+    // them via walk-up. We also mirror onto child (the constructor body env)
+    // so check_define's "already pre-registered" early-return — which checks
+    // pub.types directly without walking — still recognises them.
+    // MUST run before the field-resolution loop below: a field declared as
+    // `pool : [..CAP]T` with `CAP :: 1 << 16` a sibling const needs CAP in
+    // c.table.constants when its array size resolves — scope consts Just
+    // Work regardless of where in the body they sit.
+    if ft.consts != nil {
+        for bare, def in ft.consts {
+            if def.value == nil { continue }
+            val_type := check_expr(c, def.value, &child)
+            def.var_type = val_type
+            c.table.constants[def.name] = def.value
+            c.table.constants[bare] = def.value
+            type_env_set(&child, def.name, val_type)
+            type_env_set(&child, bare, val_type)
+            if ft.kind == .Struct {
+                type_env_set(&ns_env, def.name, val_type)
+                type_env_set(&ns_env, bare, val_type)
+            }
+        }
+    }
+
     // Shape-shortcut pre-pass: rewrite `p : Foo(Bar(args))` decls in the
     // body to `p : Foo(Bar)` plus a synthesized init. Must precede the
     // field-resolution loop below — that loop resolves each Stmt_Decl's
@@ -7769,29 +7796,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     for rb in s.return_bindings {
         rb_type := resolve_type_expr(rb.type_expr, c, s.span, env=&child)
         type_env_set(&child, rb.name, rb_type)
-    }
-
-    // Pre-register constants with bare-name aliases for sibling access.
-    // ft.consts maps bare → ^Stmt_Define (s.name has been mangled by
-    // register_scope_defs at this point, so we register both forms).
-    // For classes, the canonical home is the namespace env so methods reach
-    // them via walk-up. We also mirror onto child (the constructor body env)
-    // so check_define's "already pre-registered" early-return — which checks
-    // pub.types directly without walking — still recognises them.
-    if ft.consts != nil {
-        for bare, def in ft.consts {
-            if def.value == nil { continue }
-            val_type := check_expr(c, def.value, &child)
-            def.var_type = val_type
-            c.table.constants[def.name] = def.value
-            c.table.constants[bare] = def.value
-            type_env_set(&child, def.name, val_type)
-            type_env_set(&child, bare, val_type)
-            if ft.kind == .Struct {
-                type_env_set(&ns_env, def.name, val_type)
-                type_env_set(&ns_env, bare, val_type)
-            }
-        }
     }
 
     check_scope(c, s.body, &child)

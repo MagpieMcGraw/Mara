@@ -12,6 +12,10 @@ Box :: struct (v: i64) {
 	Inner :: struct {
 		a : i64
 	}
+	// Scope consts work in sibling field array sizes regardless of position
+	// in the body (consts pre-register before field resolution).
+	pool : [..CAP]i64
+	CAP :: 1 << 4
 	x := v
 }
 
@@ -24,5 +28,9 @@ main :: fun() {
 	i.a = 7
 	assert(use_inner(&i) == 7)
 	assert(mirror_inner(&i) == 7)
+
+	b := Box(3)
+	assert(b.pool.cap == 16)
+	assert(b.x == 3)
 	print("nestty ok")
 }

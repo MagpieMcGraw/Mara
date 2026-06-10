@@ -13,16 +13,6 @@ Glyph :: struct {
 	bearing_x, bearing_y, advance :f32
 }
 
-Atlas :: struct (bytes: []byte, u_per_em: u16) {
-	size := 1024
-	cell := 48
-	pixels := 32 // used to scale em to pixels
-	pad : f32 = 4
-	per_row : i32 = size / cell
-	px_scale := f32(pixels) / f32(u_per_em)
-	data := bytes
-}
-
 load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 	ttf_file : [..2 * MB]byte
 	read_err := read_entire_file(font, &ttf_file)
@@ -47,34 +37,15 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 	return storage
 }
 
-// ============================================================================
-// Glyph → MSDF atlas
-// ============================================================================
-// Reconstruct a glyph's contours from its Decoded points (synthesizing the
-// TrueType implied on-curve midpoints) and flatten the quadratics to line
-// segments. Color the edges across the 3 channels (switching at corners), then
-// per pixel take the min distance per channel with a shared winding sign and
-// write the normalized signed distances as RGB into the atlas. The median of
-// the three channels reconstructs the glyph, with corners kept sharp.
-
-RASTER_QUAD_STEPS :: 6
-MAX_RASTER_EDGES  :: 4096
-MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
-
-// Decode capacities. NB these must stay declared above the TTF struct —
-// constants (unlike types) resolve in declaration order in array sizes.
-MAX_GLYPH_POINTS  :: 4096      // per-glyph cap (decode scratch + sanity)
-MAX_FONT_GLYPHS   :: 1 << 16   // glyph indices are u16
-MAX_FONT_CONTOURS :: 1 << 16   // pool cap, whole font
-MAX_FONT_POINTS   :: 1 << 18   // pool cap, whole font
-
-// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
-GLYPH_FLAG_ON_CURVE :: u8(0x01)
-GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
-GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
-GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
-GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
-GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
+Atlas :: struct (bytes: []byte, u_per_em: u16) {
+	size := 1024
+	cell := 48
+	pixels := 32 // used to scale em to pixels
+	pad : f32 = 4
+	per_row : i32 = size / cell
+	px_scale := f32(pixels) / f32(u_per_em)
+	data := bytes
+}
 
 Raster_Edge :: struct {
 	x0 : f32
@@ -84,35 +55,9 @@ Raster_Edge :: struct {
 	color : i32   // channel mask: 1=R, 2=G, 4=B; 7=all (smooth)
 }
 
-// Rotate among the three two-channel edge colors (YELLOW=R+G=3, MAGENTA=R+B=5,
-// CYAN=G+B=6). Any two share exactly one channel, so switching at a corner
-// makes that corner the channels' crossing — which the median preserves.
-next_edge_color :: fun(c: i32) -> i32 {
-	if c == 3 { return 5 }
-	if c == 5 { return 6 }
-	return 3
-}
-
-// Corner: the two segments at a shared point turn sharply (cos(angle) below
-// the threshold ≈ a >45° turn). Flattened curve steps stay well above it.
-edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
-	dax := a.x1 - a.x0
-	day := a.y1 - a.y0
-	dbx := b.x1 - b.x0
-	dby := b.y1 - b.y0
-	la := sqrt(dax*dax + day*day)
-	lb := sqrt(dbx*dbx + dby*dby)
-	if la <= 0.0 or lb <= 0.0 { return false }
-	cosang := (dax*dbx + day*dby) / (la * lb)
-	return cosang < 0.7
-}
-
-// Rasterize the glyph's MSDF into the atlas. The caller has already placed the
-// glyph: `glyph.x/y` are the cell's top-left pixel origin and `glyph.advance` is
-// set, so this fills the rest — `glyph.w/h` (cell size in px) and
-// `glyph.bearing_x/y` (pen→cell offsets) — then writes the cell's RGB distance
-// field into `atlas.data`. The median of the three channels reconstructs the
-// glyph with corners kept sharp.
+RASTER_QUAD_STEPS :: 6
+MAX_RASTER_EDGES  :: 4096
+MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
 rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 {
 	// Empty span = empty glyph (space) or an undecoded compound.
@@ -248,9 +193,6 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 	contour_start[contour_start.len] = edges.len
 	contour_start.len += 1
 
-	// Edge coloring: per contour, switch color at corners so adjacent spans
-	// share exactly one channel (the median then keeps the corner sharp).
-	// Smooth / single-corner contours stay white (all channels = plain SDF).
 	is_corner : [..MAX_RASTER_EDGES]bool
 	is_corner.len = MAX_RASTER_EDGES
 	for ci in 0..(contour_start.len - 1) {
@@ -287,6 +229,22 @@ rasterize_msdf :: fun(outline: ^TTF.Decoded, glyph: ^Glyph, atlas: ^Atlas)
 				}
 			}
 		}
+	}
+	edge_is_corner :: fun(a: Raster_Edge, b: Raster_Edge) -> bool {
+		dax := a.x1 - a.x0
+		day := a.y1 - a.y0
+		dbx := b.x1 - b.x0
+		dby := b.y1 - b.y0
+		la := sqrt(dax*dax + day*day)
+		lb := sqrt(dbx*dbx + dby*dby)
+		if la <= 0.0 or lb <= 0.0 { return false }
+		cosang := (dax*dbx + day*dby) / (la * lb)
+		return cosang < 0.7
+	}
+	next_edge_color :: fun(c: i32) -> i32 {
+		if c == 3 { return 5 }
+		if c == 5 { return 6 }
+		return 3
 	}
 
 	// Fill: per pixel, the signed distance — magnitude is the min distance to
@@ -631,6 +589,13 @@ TTF :: struct (bytes: ^[]byte) {
 	// After this, nothing needs the raw file bytes for outlines or metrics —
 	// ttf.glyphs[index] is the usable glyph, advance included (clamped to
 	// hmtx's last full record; trailing glyphs share it).
+	// Decode capacities. NB these must stay declared above the TTF struct —
+	// constants (unlike types) resolve in declaration order in array sizes.
+	MAX_GLYPH_POINTS  :: 4096      // per-glyph cap (decode scratch + sanity)
+	MAX_FONT_GLYPHS   :: 1 << 16   // glyph indices are u16
+	MAX_FONT_CONTOURS :: 1 << 16   // pool cap, whole font
+	MAX_FONT_POINTS   :: 1 << 18   // pool cap, whole font
+
 	end_pts : [..MAX_FONT_CONTOURS]u16
 	points  : [..MAX_FONT_POINTS]Glyph_Point
 	glyphs  : [..MAX_FONT_GLYPHS]Decoded
@@ -663,6 +628,14 @@ TTF :: struct (bytes: ^[]byte) {
 		d.points = points[p_start : points.len]
 		glyphs[gi] = d
 	}
+
+	// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
+	GLYPH_FLAG_ON_CURVE :: u8(0x01)
+	GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
+	GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
+	GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
+	GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
+	GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
 
 	// Decode one simple glyph's body (what Glyph_Simple documents): contour
 	// end indices, run-length flags, x deltas, y deltas — appended to the
@@ -748,17 +721,6 @@ TTF :: struct (bytes: ^[]byte) {
 	}
 }
 
-// ============================================================================
-// Character map (cmap)
-// ============================================================================
-//
-// Maps a character code to a glyph index. The cmap table holds one or more
-// encoding subtables; the TTF constructor (pick_cmap_subtable) chose one,
-// preferring a Unicode mapping, and passes its absolute file offset here.
-// Only format 4 (segment-mapped BMP — the near-universal desktop format) and
-// format 0 (legacy 256-byte) are decoded; anything else hits a diagnostic
-// rather than silently returning .notdef (glyph 0).
-
 cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
 	if subtable_start == 0 { return 0 }
 	format := read_u16be(bytes[subtable_start])
@@ -810,6 +772,3 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
 		return 0
 	}
 }
-
-
-
