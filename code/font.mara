@@ -757,7 +757,7 @@ TTF :: struct (bytes: ^[]byte) {
 // format 0 (legacy 256-byte) are decoded; anything else hits a diagnostic
 // rather than silently returning .notdef (glyph 0).
 
-cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
+cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
 	if subtable_start == 0 { return 0 }
 	format := read_u16be(bytes[subtable_start])
 	if format == 4 {
@@ -769,14 +769,14 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
 		return 0
 	}
 
-	cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+	cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i64, char: u32) -> u16 {
 		if char > 255 { return 0 }
 		return u16(bytes[sub + 6 + char])
 	}
 
-	cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
-		// i32 pin: every derived offset and s * 2 then ride at address width.
-		seg_x2 := i32(read_u16be(bytes[sub + 6]))
+	cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i64, char: u32) -> u16 {
+		// i64 pin: every derived offset and s * 2 then ride at address width.
+		seg_x2 := i64(read_u16be(bytes[sub + 6]))
 		end_codes   := sub + 14
 		start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
 		id_deltas   := start_codes + seg_x2
@@ -796,9 +796,8 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
 				else
 					// Indirect: glyphIdArray address, relative to this
 					// idRangeOffset entry's own location. char >= start_code is
-					// guarded above, so the u32 subtraction can't trap; i32()
-					// keeps addr at the byte-read width.
-					addr := id_ranges + s * 2 + id_range + 2 * i32(char - start_code)
+					// guarded above, so the u32 subtraction can't trap.
+					addr := id_ranges + s * 2 + id_range + 2 * (char - start_code)
 					g := read_u16be(bytes[addr])
 					if g == 0 { return 0 }
 					// u32(g) lifts the sum out of u16 so a legitimate modular
