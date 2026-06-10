@@ -1,5 +1,7 @@
 1 item per line, 1 line space between items.
 
+How about a span as a slice index? Could be good for the font loader
+
 Dynamic arena: if we allocate past the cap, commit more virtual memory. If we free to below the cap, decommit up to the cap. Allow users to manually commit more, some may want to comntrol the timing of the commit. Also allow modifying the cap at runtime?
 
 Modules are not structs. See register_and_check_declarations vs register scope defs for examples.
@@ -40,7 +42,7 @@ Findings from the Fable 5 code review, 10 Jun 2026. Same format: 1 item per line
 
 BUG draw_state_append writes batch.instances[i] using the object index and never increments instance_count. Should be instances[batch.instance_count] then increment, in both the main and highlight paths. As written, render sees count 0 and draws nothing.
 
-BUG quat_slerp Taylor asin is off by 2x near d=0.99. Either drop the nlerp cutoff from 0.9995 to ~0.9, or use a real acos (libm acosf, or llvm.acos intrinsic in LLVM 19+). Also replace sin(f32(theta)) with sqrt(1 - d*d), exact and free.
+BUG quat_slerp Taylor asin is off by 2x near d=0.99. Either drop the nlerp cutoff from 0.9995 to ~0.9, or use a real acos (libm acosf, or llvm.acos intrinsic in LLVM 19+). Also replace sin(f32(theta)) with sqrt(1 - d X d), exact and free.
 
 BUG Arena_Debug.reset with current_mark == -1 reads base[-1]. Debug arena should crash loudly on reset-without-mark instead.
 

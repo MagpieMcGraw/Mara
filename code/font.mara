@@ -428,6 +428,10 @@ TTF :: struct (bytes: ^[]byte) {
 
 	// ─── glyph records: a fixed 10-byte header, then one of two variable bodies ───
 
+	Glyf :: struct {
+		data: []byte	
+	}
+
 	Glyph_Header :: struct {
 		num_contours : i16   // >= 0 simple, < 0 compound
 		x_min : i16
@@ -463,12 +467,6 @@ TTF :: struct (bytes: ^[]byte) {
 		}
 	}
 
-	Glyph_Point :: struct {
-		x        : i16
-		y        : i16
-		on_curve : bool
-	}
-
 	// The usable glyph — what Glyph_On_Disk describes, decoded. Spans alias
 	// the owning TTF's pools (end_pts / points fields): valid as long as the
 	// TTF lives, and a Decoded copies freely — the copy is a view, not the
@@ -485,7 +483,11 @@ TTF :: struct (bytes: ^[]byte) {
 
 		advance : u16   // FUnits, from hmtx (clamped to the last full record)
 	}
-
+	Glyph_Point :: struct {
+		x        : i16
+		y        : i16
+		on_curve : bool
+	}
 
 	Hhea :: struct {
 		version                 : Fixed     // 0x00010000
@@ -523,6 +525,16 @@ TTF :: struct (bytes: ^[]byte) {
 		for table in tables {
 			if starts_with(table.tag[:], target) {
 				return table.offset
+			}
+		}
+		print("Table '%' not found.", target)
+		return 0
+	}
+
+	get_len :: fun(tables: [..32]Table, target: []utf8) -> i64 {
+		for table in tables {
+			if starts_with(table.tag[:], target) {
+				return table.len
 			}
 		}
 		print("Table '%' not found.", target)
@@ -576,6 +588,7 @@ TTF :: struct (bytes: ^[]byte) {
 	cmap_loc := h.tables.get_offset("cmap")
 	loca_loc := h.tables.get_offset("loca")
 	glyf_table_loc := h.tables.get_offset("glyf")
+	glyf_table_end := glyf_table_loc + h.tables.get_len("glyf")
 	hhea_loc := h.tables.get_offset("hhea")
 	hmtx_loc := h.tables.get_offset("hmtx")
 
@@ -584,6 +597,7 @@ TTF :: struct (bytes: ^[]byte) {
 	cmap : Cmap = #big_endian bytes[cmap_loc]
 	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
 	hhea : Hhea = #big_endian bytes[hhea_loc]
+	glyf := bytes[glyf_table_loc : glyf_table_end]
 
 	// cmap encoding records sit right after the 4-byte header; fill them, then
 	// pick a Unicode subtable to map character codes through.
@@ -727,7 +741,7 @@ TTF :: struct (bytes: ^[]byte) {
 		d.contour_end = t.end_pts[c_start : t.end_pts.len]
 		d.points = t.points[p_base : t.points.len]
 	}
-}
+} // TTF END
 
 cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
 	if subtable_start == 0 { return 0 }
