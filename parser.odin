@@ -393,7 +393,7 @@ assert_token_text :: proc(p: ^Parser, lo, hi: int) -> string {
 // source) for the failure message. When cond is a comparison, lhs_text and
 // rhs_text carry each operand's source text so the failure can name the
 // operand next to its value ("but game.running was true"); both empty
-// otherwise. Compiled out entirely in -release builds.
+// otherwise. On in every build mode; `-no assert` compiles them out.
 Expr_Assert :: struct {
     cond:          Expr,
     cond_text:     string,

@@ -880,8 +880,11 @@ CLI_Args :: struct {
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
     release:      bool,    // -release — pass -O3 to clang for an optimized build
+    no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     ok:           bool,
 }
+
+USAGE :: "Usage: mara build [package-name] [-web] [-shared] [-release] [-no assert]"
 
 parse_args :: proc() -> CLI_Args {
     args: CLI_Args
@@ -889,21 +892,41 @@ parse_args :: proc() -> CLI_Args {
     args.search_dir   = "."
 
     if len(os.args) < 2 {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-release]")
+        fmt.println(USAGE)
         return args
     }
 
     positional: [dynamic]string
-    for arg in os.args {
-        if arg == "-web"     { args.web     = true; continue }
-        if arg == "-shared"  { args.shared  = true; continue }
-        if arg == "-release" { args.release = true; continue }
+    i := 0
+    for i < len(os.args) {
+        arg := os.args[i]
+        if arg == "-web"     { args.web     = true; i += 1; continue }
+        if arg == "-shared"  { args.shared  = true; i += 1; continue }
+        if arg == "-release" { args.release = true; i += 1; continue }
+        if arg == "-no" {
+            // `-no <feature>` — explicit feature disabler, two argv tokens.
+            if i + 1 >= len(os.args) {
+                fmt.println("-no needs a feature to disable, e.g. `mara build -no assert`")
+                return args
+            }
+            feature := os.args[i + 1]
+            switch feature {
+            case "assert":
+                args.no_assert = true
+            case:
+                fmt.printf("unknown feature `-no %s` — features that can be disabled: assert\n", feature)
+                return args
+            }
+            i += 2
+            continue
+        }
         append(&positional, arg)
+        i += 1
     }
 
     // positional[0] is the exe name itself. positional[1] should be "build".
     if len(positional) < 2 || positional[1] != "build" {
-        fmt.println("Usage: mara build [package-name] [-web] [-shared] [-release]")
+        fmt.println(USAGE)
         return args
     }
 
@@ -1034,7 +1057,7 @@ main :: proc() {
 
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
-    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, release = args.release)
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, release = args.release, no_assert = args.no_assert)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         os.exit(1)

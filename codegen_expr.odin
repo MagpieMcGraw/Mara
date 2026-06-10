@@ -326,8 +326,9 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         // comparisons; a side that is itself a literal is omitted (its text
         // already states its value), and bools print as true/false. The whole
         // message is a per-site printf format assembled here at compile time —
-        // only the values are runtime arguments. Compiled out in -release.
-        if g.release { return "0" }
+        // only the values are runtime arguments. Asserts stay on in -release
+        // (TigerStyle); only an explicit `-no assert` compiles them out.
+        if g.no_assert { return "0" }
         ok_label := fresh_label(g, "assert.ok")
         fail_label := fresh_label(g, "assert.fail")
         loc := format_location(e.span.file, e.span.line, e.span.col)

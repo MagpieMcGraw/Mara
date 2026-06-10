@@ -66,7 +66,7 @@ DECIDE one return-type grammar. fun(a, b: i64) i64 and fun(a, b: i64) -> i64 bot
 
 DECIDE class vs struct canonical spelling. memory.mara says class, everything else says struct; a reader parses the difference as semantic. Keep the alias as the joke, lint for one spelling.
 
-DECIDE assert policy: keep asserts on in release (TigerStyle, restart-and-recover fits the hot-reload loop) or C-style strip. (Output upgrade DONE 10 Jun 2026: "Assert failed at <loc> / Expected game.running == false, but game.running was true" — comparison asserts name each non-literal operand with its value; bools print true/false, utf8 prints the glyph, enums print the variant name via gen_print_enum, escaped literals keep their source spelling, condition text keeps source spacing.)
+DECIDED 10 Jun 2026 — asserts stay ON in release (TigerStyle); explicit `-no assert` flag compiles them out (`-no <feature>` parses as two argv tokens, unknown feature = hard error). (Output upgrade DONE same day: "Assert failed at <loc> / Expected game.running == false, but game.running was true" — comparison asserts name each non-literal operand with its value; bools print true/false, utf8 prints the glyph, enums print the variant name via gen_print_enum, escaped literals keep their source spelling, condition text keeps source spacing.)
 
 ADD must-use err: warn when an err value is neither returned, branched on, nor discarded with _ =. Makes the return-the-error discipline mechanical while keeping ignoring legal.
 

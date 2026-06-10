@@ -430,7 +430,8 @@ Codegen :: struct {
     // (strlen returns i32 on wasm32, not i64), among other target tweaks.
     web: bool,
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
-    release: bool, // -release build mode — compile out asserts
+    release: bool,   // -release build mode — -O3; asserts stay ON
+    no_assert: bool, // -no assert — compile asserts out entirely
     // Fallible constructor: the current function is a `struct(params) -> err`
     // whose multi-return sret slot 0 is the implicit Self (built in place via
     // field prebind). When true, the return machinery skips slot 0 — explicit
@@ -1765,6 +1766,7 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.web                = task.web
     g.shared             = task.shared_mode
     g.release            = task.main_g.release
+    g.no_assert          = task.main_g.no_assert
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
     g.arena_mark_name    = task.main_g.arena_mark_name
@@ -3334,12 +3336,13 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, release: bool = false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, release: bool = false, no_assert: bool = false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
     g.shared = shared
     g.release = release
+    g.no_assert = no_assert
     word_size_is_32 = web
     init_slice_layout()
 
