@@ -987,9 +987,22 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
 
     // int → float
     if !src_is_float && target_is_float {
-        // Source arg name determines signedness for sitofp vs uitofp
-        // But we don't know the source signedness easily, default to signed
-        emit(g, "  %s = sitofp %s %s to %s", tmp, src_type, val, target)
+        // Conversion preserves the SOURCE value, so signedness comes from the
+        // source, same rule as int→int widening below: an unsigned source is
+        // non-negative and must uitofp — f32(some_byte) holding 200 is 200.0,
+        // not -56.0. bool/byte/char are unsigned.
+        src_unsigned := src_type == "i1"
+        #partial switch t in distinct_base(expr_type(e.args[0])) {
+        case Type_Numeric:
+            src_unsigned = t.kind == .Unsigned
+        case Type_Byte, Type_Utf8, Type_Bool:
+            src_unsigned = true
+        }
+        if src_unsigned {
+            emit(g, "  %s = uitofp %s %s to %s", tmp, src_type, val, target)
+        } else {
+            emit(g, "  %s = sitofp %s %s to %s", tmp, src_type, val, target)
+        }
         return tmp, true
     }
 

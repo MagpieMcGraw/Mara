@@ -149,7 +149,7 @@ rasterize_msdf :: fun(outline: ^Decoded, glyph: ^Glyph, atlas: ^Atlas)
 	nodes : [..1024]Node
 
 	point_start := 0
-	for ci in 0..i32(outline.contour_end.len) {
+	for ci in 0..outline.contour_end.len {
 		point_end := outline.contour_end[ci]
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
@@ -167,8 +167,8 @@ rasterize_msdf :: fun(outline: ^Decoded, glyph: ^Glyph, atlas: ^Atlas)
 			// Build the node ring starting on-curve, inserting the implied
 			// on-curve midpoints between consecutive off-curve control points.
 			nodes.len = 0
-			first_x := (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin) * scale
-			first_y := (y_origin - f32(i32(outline.points[point_start + first_on_curve].y))) * scale
+			first_x := (f32(outline.points[point_start + first_on_curve].x) - x_origin) * scale
+			first_y := (y_origin - f32(outline.points[point_start + first_on_curve].y)) * scale
 			nodes[nodes.len] = Node{first_x, first_y, true}
 			nodes.len += 1
 			have_off := false
@@ -178,8 +178,8 @@ rasterize_msdf :: fun(outline: ^Decoded, glyph: ^Glyph, atlas: ^Atlas)
 				ring_idx := first_on_curve + j
 				if ring_idx >= n_points { ring_idx = ring_idx - n_points }
 				point := outline.points[point_start + ring_idx]
-				point_x := (f32(i32(point.x)) - x_origin) * scale
-				point_y := (y_origin - f32(i32(point.y))) * scale
+				point_x := (f32(point.x) - x_origin) * scale
+				point_y := (y_origin - f32(point.y)) * scale
 				if point.on_curve {
 					if have_off {
 						nodes[nodes.len] = Node{off_x, off_y, false}
@@ -245,7 +245,7 @@ rasterize_msdf :: fun(outline: ^Decoded, glyph: ^Glyph, atlas: ^Atlas)
 	// Sentinel: cap the last contour's edge range and count it too, so
 	// contour_start holds (contours + 1) fenceposts — the coloring loop
 	// reads contour ci as the span [contour_start[ci], contour_start[ci+1]).
-	contour_start[contour_start.len] = i32(edges.len)
+	contour_start[contour_start.len] = edges.len
 	contour_start.len += 1
 
 	// Edge coloring: per contour, switch color at corners so adjacent spans
@@ -253,7 +253,7 @@ rasterize_msdf :: fun(outline: ^Decoded, glyph: ^Glyph, atlas: ^Atlas)
 	// Smooth / single-corner contours stay white (all channels = plain SDF).
 	is_corner : [..MAX_RASTER_EDGES]bool
 	is_corner.len = MAX_RASTER_EDGES
-	for ci in 0..(i32(contour_start.len) - 1) {
+	for ci in 0..(contour_start.len - 1) {
 		edge_lo := contour_start[ci]
 		edge_hi := contour_start[ci + 1]
 		n_edges := edge_hi - edge_lo
@@ -300,7 +300,7 @@ rasterize_msdf :: fun(outline: ^Decoded, glyph: ^Glyph, atlas: ^Atlas)
 			min_d2_g : f32 = 1000000.0
 			min_d2_b : f32 = 1000000.0
 			winding : i32 = 0
-			for ei in 0..i32(edges.len) {
+			for ei in 0..edges.len {
 				x0 := edges[ei].x0
 				y0 := edges[ei].y0
 				x1 := edges[ei].x1
@@ -355,9 +355,9 @@ dump_atlas_cell :: fun(atlas: ^[]byte, atlas_w: i32, ax: i32, ay: i32, cw: i32, 
 		row : str
 		for pxi in 0..cw {
 			idx := ((ay + py) * atlas_w + (ax + pxi)) * 3
-			dr := (f32(i32(atlas[idx + 0])) / 255.0 - 0.5) * MSDF_PX_RANGE
-			dg := (f32(i32(atlas[idx + 1])) / 255.0 - 0.5) * MSDF_PX_RANGE
-			db := (f32(i32(atlas[idx + 2])) / 255.0 - 0.5) * MSDF_PX_RANGE
+			dr := (f32(atlas[idx + 0]) / 255.0 - 0.5) * MSDF_PX_RANGE
+			dg := (f32(atlas[idx + 1]) / 255.0 - 0.5) * MSDF_PX_RANGE
+			db := (f32(atlas[idx + 2]) / 255.0 - 0.5) * MSDF_PX_RANGE
 			med := max(min(dr, dg), min(max(dr, dg), db))
 			if med > 1.5 {
 				&row + "#"
@@ -552,7 +552,7 @@ TTF :: struct (bytes: ^[]byte) {
 	// cmap encoding records sit right after the 4-byte header; fill them, then
 	// pick a Unicode subtable to map character codes through.
 	cmap.encodings = #big_endian bytes[cmap_loc + 4]
-	cmap.encodings.len = i32(cmap.num_subtables)
+	cmap.encodings.len = cmap.num_subtables
 	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
 
 	// ─── decode every glyph up front; Decoded spans point into the pools ───
@@ -562,7 +562,7 @@ TTF :: struct (bytes: ^[]byte) {
 	points  : [..MAX_FONT_POINTS]Glyph_Point
 	glyphs  : [..MAX_FONT_GLYPHS]Decoded
 	decode_glyphs(bytes, glyf_table_loc, hmtx_loc,
-		i32(maxp.num_glyphs), i32(hhea.num_of_long_hor_metrics),
+		maxp.num_glyphs, hhea.num_of_long_hor_metrics,
 		loca.offsets[:], &end_pts, &points, &glyphs)
 
 	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
@@ -578,7 +578,8 @@ TTF :: struct (bytes: ^[]byte) {
 	loca_correct_format :: fun(head: Head, maxp: Maxp,
 		bytes: []byte) -> loca: Loca 
 	{
-		loca.offsets.len = i32(maxp.num_glyphs + 1)		
+		// Widen BEFORE the +1: at u16 a 65535-glyph font would overflow-trap.
+		loca.offsets.len = i64(maxp.num_glyphs) + 1
 		if head.index_to_loc_format == 0 {
 			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
 			off16.len = loca.offsets.len
@@ -632,8 +633,9 @@ TTF :: struct (bytes: ^[]byte) {
 		glyphs.len = num_glyphs
 		for gi in 0..num_glyphs {
 			d : Decoded
-			metric := min(i64(gi), i64(num_long) - 1)
-			d.advance = read_u16be(bytes[hmtx_loc + i32(metric) * 4])
+			metric := gi
+			if metric >= num_long { metric = num_long - 1 }
+			d.advance = read_u16be(bytes[hmtx_loc + metric * 4])
 
 			c_start := end_pts.len
 			p_start := points.len
@@ -647,7 +649,7 @@ TTF :: struct (bytes: ^[]byte) {
 				d.x_max = hdr.x_max
 				d.y_max = hdr.y_max
 				if hdr.num_contours > 0 {
-					decode_simple(bytes, g_start, i32(hdr.num_contours), i32(glen), end_pts, points)
+					decode_simple(bytes, g_start, hdr.num_contours, glen, end_pts, points)
 				}
 				// num_contours < 0: compound — empty spans until composite
 				// resolution lands (it needs this decoded set, which is why
@@ -663,7 +665,9 @@ TTF :: struct (bytes: ^[]byte) {
 	// end indices, run-length flags, x deltas, y deltas — appended to the
 	// pools. Point indices stay glyph-relative, so a Decoded's spans index
 	// the same way the old per-glyph arrays did.
-	decode_simple :: fun(bytes: ^[]byte, g_start: i32, n_contours: i32, glen: i32,
+	// n_contours arrives as the header's i16 (auto-widened); glen is a
+	// length, so it rides at i64 like every other length.
+	decode_simple :: fun(bytes: ^[]byte, g_start: i32, n_contours: i32, glen: i64,
 		end_pts: ^[]u16, points: ^[]Glyph_Point)
 	{
 		cursor := g_start + 10   // past the header
@@ -715,7 +719,7 @@ TTF :: struct (bytes: ^[]byte) {
 				if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
 				x += dx
 			elif (f & GLYPH_FLAG_X_SAME) == 0
-				x += i32(read_i16be(bytes[cursor])); cursor += 2
+				x += read_i16be(bytes[cursor]); cursor += 2
 			}
 			// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
 			points[p_base + i].x = i16(x)
@@ -731,7 +735,7 @@ TTF :: struct (bytes: ^[]byte) {
 				if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
 				y += dy
 			elif (f & GLYPH_FLAG_Y_SAME) == 0
-				y += i32(read_i16be(bytes[cursor])); cursor += 2
+				y += read_i16be(bytes[cursor]); cursor += 2
 			}
 			points[p_base + i].y = i16(y)
 		}

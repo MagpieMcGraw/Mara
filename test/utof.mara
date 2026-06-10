@@ -1,0 +1,29 @@
+module utof
+
+// int -> float casts convert by SOURCE signedness (uitofp for unsigned /
+// byte / utf8 / bool, sitofp for signed). Regression for the high-bit case:
+// f32 of a byte holding 200 used to sitofp to -56.0.
+
+main :: fun() {
+	b : u8 = 200
+	assert(f32(b) == 200.0)
+
+	buf : [..4]byte
+	buf[buf.len] = u8(200)   // bare 200 adopts i64 -> 8-byte buffer write
+	buf.len += 1
+	assert(f32(buf[0]) == 200.0)   // the Type_Byte path (atlas reads)
+
+	big16 : u16 = 50000
+	assert(f32(big16) == 50000.0)
+
+	big32 : u32 = 3000000000
+	assert(f64(big32) == 3000000000.0)
+
+	neg : i16 = -1200
+	assert(f32(neg) == -1200.0)
+
+	c := 'z'   // utf8, value 122
+	assert(f32(c) == 122.0)
+
+	print("utof ok")
+}
