@@ -589,8 +589,7 @@ TTF :: struct (bytes: ^[]byte) {
 	// After this, nothing needs the raw file bytes for outlines or metrics —
 	// ttf.glyphs[index] is the usable glyph, advance included (clamped to
 	// hmtx's last full record; trailing glyphs share it).
-	// Decode capacities. NB these must stay declared above the TTF struct —
-	// constants (unlike types) resolve in declaration order in array sizes.
+	// Decode capacities.
 	MAX_GLYPH_POINTS  :: 4096      // per-glyph cap (decode scratch + sanity)
 	MAX_FONT_GLYPHS   :: 1 << 16   // glyph indices are u16
 	MAX_FONT_CONTOURS :: 1 << 16   // pool cap, whole font
