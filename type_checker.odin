@@ -4467,6 +4467,17 @@ fun_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     c.table.fun_return_arg_pending[scope] = true
     defer delete_key(&c.table.fun_return_arg_pending, scope)
 
+    // Constructor call: the returned value is Self, and a ctor body has no
+    // `return Self` for the walk below to find — without this arm a ctor
+    // call always produced the empty set (PROV_GLOBAL), so
+    // `return Font(&local_buf)` escaped the checker while the equivalent
+    // plain-fn laundering was caught.
+    if scope.kind == .Struct {
+        final := ctor_return_arg_set(c, scope)
+        c.table.fun_return_arg_set[scope] = final
+        return final
+    }
+
     // Flow-sensitive walk: each local carries a SET of parameter indices
     // it could trace back to. Branch merges are unions — if one path
     // assigns `out` from param 0 and another from param 1, post-join out
@@ -4487,6 +4498,86 @@ fun_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     final := arg_set_freeze(consensus[:])
     c.table.fun_return_arg_set[scope] = final
     return final
+}
+
+// Which constructor-arg indices can the constructed Self reference?
+// Pure-data structs (no ctor params): positional args ARE the fields, so the
+// set is every ref-carrying field's index. Parameterized ctors: walk the
+// top-level field bindings in body order (top-level ctor decls ARE fields of
+// Self) and union each binding's traced sources, threading `tracking` so a
+// later field chains through an earlier one (`wrap := Wrap{data = view}`
+// traces through `view := bytes[2:5]` back to the `bytes` param).
+ctor_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
+    consensus: [dynamic]int
+    defer delete(consensus)
+    if len(scope.typed_params) == 0 {
+        st := lookup_struct_type_scope(c, scope.name)
+        if st != nil {
+            for &f, i in st.fields {
+                if field_is_nested_type_def(&st.sd, &f) { continue }
+                if type_carries_ref(f.type_) { append_unique(&consensus, i) }
+            }
+        }
+        return arg_set_freeze(consensus[:])
+    }
+    tracking: map[string][dynamic]int
+    defer cleanup_arg_set_tracking(&tracking)
+    for s in scope.body {
+        #partial switch v in s {
+        case ^Stmt_Assign:
+            ctor_track_field_binding(c, v.name, v.value, v.target, scope, &tracking, &consensus)
+        case ^Stmt_Decl:
+            // Prefer the desugared Stmt_Assign list; fall back to the raw
+            // names/init_values pairing when the ctor body hasn't been
+            // checked yet (a fn ABOVE the struct can trigger this analysis
+            // before the struct's full body pass).
+            if len(v.checked) > 0 {
+                for cs in v.checked {
+                    if a, a_ok := cs.(^Stmt_Assign); a_ok {
+                        ctor_track_field_binding(c, a.name, a.value, a.target, scope, &tracking, &consensus)
+                    }
+                }
+            } else {
+                for name, i in v.names {
+                    init: Expr
+                    if i < len(v.init_values) {
+                        init = v.init_values[i]
+                    } else if len(v.init_values) == 1 {
+                        init = v.init_values[0]
+                    }
+                    ctor_track_field_binding(c, name, init, nil, scope, &tracking, &consensus)
+                }
+            }
+        }
+    }
+    return arg_set_freeze(consensus[:])
+}
+
+// Track one ctor-body binding: union its traced sources into consensus
+// (every top-level binding is a field of Self) and record them under the
+// name so later bindings chain through it.
+ctor_track_field_binding :: proc(c: ^Checker, name: string, value: Expr, target: Expr,
+    scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int, consensus: ^[dynamic]int)
+{
+    if value == nil || name == "" || target != nil { return }
+    new_set := eval_expr_arg_set(c, value, scope, tracking)
+    for idx in new_set { append_unique(consensus, idx) }
+    if existing, had := tracking^[name]; had { delete(existing) }
+    tracking^[name] = new_set
+}
+
+// Resolve a struct's Type_Scope from its AST name, trying the bare name and
+// the current package's flat mangling, in both the structs and funs tables
+// (parameterized ctors register under funs).
+lookup_struct_type_scope :: proc(c: ^Checker, name: string) -> ^Type_Scope {
+    if st, ok := c.table.structs[name]; ok { return st }
+    if st, ok := c.table.funs[name]; ok && st.kind == .Struct { return st }
+    if c.current_package != "" {
+        flat := make_flat_name(c.current_package, name)
+        if st, ok := c.table.structs[flat]; ok { return st }
+        if st, ok := c.table.funs[flat]; ok && st.kind == .Struct { return st }
+    }
+    return nil
 }
 
 cleanup_arg_set_tracking :: proc(t: ^map[string][dynamic]int) {
@@ -4621,10 +4712,14 @@ eval_expr_arg_set :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope, tracking:
         return eval_expr_arg_set(c, sl.expr, fn_scope, tracking)
     }
     if lit, ok := e.(^Expr_Struct_Literal); ok {
-        // Union over ref fields.
+        // Union over ref-carrying fields (deep: a struct-valued field whose
+        // nested fields hold refs propagates too). An unresolvable field type
+        // — e.g. a literal of a NESTED struct type, whose bare name isn't in
+        // the global tables — is treated as ref-carrying rather than skipped:
+        // missing it is how `Wrap{data = bytes[lo:hi]}` escaped.
         for field, i in lit.fields {
             ft := struct_lit_field_type(c, lit, i)
-            if ft == nil || !is_ref_type(ft) { continue }
+            if ft != nil && !type_carries_ref(ft) { continue }
             field_set := eval_expr_arg_set(c, field.value, fn_scope, tracking)
             for idx in field_set { append_unique(&out, idx) }
             delete(field_set)
@@ -4672,10 +4767,35 @@ is_ref_type :: proc(t: Type) -> bool {
     return false
 }
 
+// True when the struct carries a ref-typed field (ptr/slice) at any VALUE
+// depth — nested struct fields and array/partial-array elements included.
+// TTF is the motivating case: its only ref is glyf.data, one struct down,
+// so a shallow scan called it ref-free and returning one escaped the
+// checker. Nested TYPE DEFINITIONS registered as pseudo-fields are skipped
+// (defining a ref-carrying type is not storing one). Value nesting is
+// acyclic and ptr fields return true without recursing, so this terminates.
 struct_has_ref_field :: proc(sd: ^Scope_Body) -> bool {
     for &f in sd.fields {
-        if is_ref_type(f.type_) { return true }
+        if field_is_nested_type_def(sd, &f) { continue }
+        if type_carries_ref(f.type_) { return true }
     }
+    return false
+}
+
+// A nested type registered as a pseudo-field: the field's name maps to the
+// same Type in the scope's types table.
+field_is_nested_type_def :: proc(sd: ^Scope_Body, f: ^Struct_Type_Field) -> bool {
+    if sd.types == nil { return false }
+    t, ok := sd.types[f.name]
+    return ok && t == f.type_
+}
+
+type_carries_ref :: proc(t: Type) -> bool {
+    if is_ref_type(t) { return true }
+    bt := distinct_base(t)
+    if fa, ok := bt.(^Type_Fixed_Array); ok { return type_carries_ref(fa.elem) }
+    if pa, ok := bt.(^Type_Partial_Array); ok { return type_carries_ref(pa.elem) }
+    if inner := as_struct_body(bt); inner != nil { return struct_has_ref_field(inner) }
     return false
 }
 
@@ -4829,8 +4949,14 @@ report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Env)
                 if ci < 0 || ci >= len(call.args) { continue }
                 if expr_provenance(c, call.args[ci], env).depth < env.scope_depth { continue }
                 if unsafe_count > 0 { strings.write_string(&sb, ", ") }
-                pname := callee.typed_params[ci].name if ci < len(callee.typed_params) else "?"
-                fmt.sbprintf(&sb, "parameter `%s`", pname)
+                if ci < len(callee.typed_params) {
+                    fmt.sbprintf(&sb, "parameter `%s`", callee.typed_params[ci].name)
+                } else if st := lookup_struct_type_scope(c, callee.name); st != nil && ci < len(st.fields) {
+                    // Pure-data ctor: positional args are fields, name the field.
+                    fmt.sbprintf(&sb, "field `%s`", st.fields[ci].name)
+                } else {
+                    strings.write_string(&sb, "parameter `?`")
+                }
                 unsafe_count += 1
             }
             if unsafe_count > 0 {

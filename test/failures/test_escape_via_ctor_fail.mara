@@ -1,0 +1,47 @@
+module test_escape_via_ctor_fail
+
+// Should fail: a stack buffer is laundered through a parameterized
+// CONSTRUCTOR into the returned struct's view fields. The plain-fn variant
+// (test_escape_via_struct_fail) was caught, but a ctor body has no
+// Stmt_Return for the arg-set walk to find, so ctor calls produced the empty
+// set (PROV_GLOBAL) and escaped. fun_return_arg_set now unions the ctor's
+// FIELD bindings (ctor_return_arg_set), chaining later fields through
+// earlier ones. Also exercises the deep ref check: Deep's only ref sits one
+// struct down (wrap.data — the TTF.glyf.data shape), which the old shallow
+// struct_has_ref_field called ref-free.
+
+Font :: struct (bytes: ^[]byte) {
+	Wrap :: struct {
+		data : []byte
+	}
+
+	wrap := Wrap{data = bytes[2:5]}   // nested-literal view of the param
+	view := bytes[3:6]                // direct view of the param
+}
+
+// Only ref is INSIDE the nested struct field — needs the recursive check.
+Deep :: struct (bytes: ^[]byte) {
+	Wrap :: struct {
+		data : []byte
+	}
+	wrap := Wrap{data = bytes[0:4]}
+}
+
+leak_font :: fun() -> Font {
+	buf : [..8]byte
+	buf.len = 8
+	return Font(&buf)
+}
+
+leak_deep :: fun() -> Deep {
+	buf : [..8]byte
+	buf.len = 8
+	return Deep(&buf)
+}
+
+test_escape_via_ctor_fail :: fun() {
+	f := leak_font()
+	print(i64(f.view[0]))
+	d := leak_deep()
+	print(i64(d.wrap.data[0]))
+}
