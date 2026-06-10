@@ -530,10 +530,10 @@ TTF :: struct (bytes: ^[]byte) {
 		left_side_bearing : F_Word
 	}
 
-	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i32 {
+	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i64 {
 		for table in tables {
 			if starts_with(table.tag[:], target) {
-				return i32(table.offset)
+				return table.offset
 			}
 		}
 		print("Table '%' not found.", target)
@@ -561,7 +561,7 @@ TTF :: struct (bytes: ^[]byte) {
 	// absolute file offset (0 if none). Prefer Microsoft Unicode BMP (3,1) —
 	// the format-4 table nearly every font ships — then any Unicode-platform
 	// (0,*) table, then whatever's first as a fallback.
-	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i32) -> i32 {
+	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i64) -> i64 {
 		best : i32 = -1
 		best_score : i32 = -1
 		for e, i in cmap.encodings {
@@ -574,7 +574,7 @@ TTF :: struct (bytes: ^[]byte) {
 			}
 		}
 		if best < 0 { return 0 }
-		return cmap_loc + i32(cmap.encodings[best].offset)
+		return cmap_loc + cmap.encodings[best].offset
 	}
 
 	// ─── parse: read the table directory, then the tables we use, into fields ───
@@ -622,8 +622,8 @@ TTF :: struct (bytes: ^[]byte) {
 	// ^[..N]T directly isn't a thing yet — auto-deref redesign pending.)
 	decode_glyphs :: fun(
 		bytes: ^[]byte,
-		glyf_loc: i32,
-		hmtx_loc: i32,
+		glyf_loc: i64,
+		hmtx_loc: i64,
 		num_glyphs: i32,
 		num_long: i32,
 		offsets: []u32,
@@ -643,7 +643,7 @@ TTF :: struct (bytes: ^[]byte) {
 			goff := offsets[gi]
 			glen := offsets[gi + 1] - goff
 			if glen > 0 {
-				g_start := glyf_loc + i32(goff)
+				g_start := glyf_loc + goff
 				hdr : Glyph_Header = #big_endian bytes[g_start]
 				d.x_min = hdr.x_min
 				d.y_min = hdr.y_min
@@ -666,9 +666,9 @@ TTF :: struct (bytes: ^[]byte) {
 	// end indices, run-length flags, x deltas, y deltas — appended to the
 	// pools. Point indices stay glyph-relative, so a Decoded's spans index
 	// the same way the old per-glyph arrays did.
-	// n_contours arrives as the header's i16 (auto-widened); glen is a
-	// length, so it rides at i64 like every other length.
-	decode_simple :: fun(bytes: ^[]byte, g_start: i32, n_contours: i32, glen: i64,
+	// n_contours arrives as the header's i16 (auto-widened); offsets and
+	// lengths ride at i64 like everywhere else.
+	decode_simple :: fun(bytes: ^[]byte, g_start: i64, n_contours: i32, glen: i64,
 		end_pts: ^[]u16, points: ^[]Glyph_Point)
 	{
 		cursor := g_start + 10   // past the header
