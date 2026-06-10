@@ -100,6 +100,8 @@ FIX fps := 60.9 — comment it if it is the deliberate vsync-undershoot trick, c
 
 FIX Windows ANSI paths: CreateFileA breaks on non-ASCII paths (Lithuanian user dirs). One-line app manifest setting activeCodePage to UTF-8 fixes every A-suffix call at once.
 
+ADD self-hosted crash handler: rewrite code/mara_crash.c as runtime.mara, compiled+cached to a .o by the compiler's own pipeline (same ensure_crash_runtime trick — we wrap clang, so a .mara source works as well as a .c). Settled shape from the 10 Jun discussion: runtime module is dependency-free (own foreign fopen/fwrite/time declares, no `use` — avoids duplicate defines vs user TUs); interface is one buffer handoff crash_report(msg, len) with codegen snprintf-ing segments into a stack buffer (no C varargs, no held FILE*, no mutable global); compiler builds it with -no assert (handler can't recurse into itself; bounds traps already printf+exit directly, safe); cache invalidates on runtime.mara mtime OR compiler binary mtime (generated IR tracks compiler version). First tenant of the runtime module; self-hosting starts here.
+
 CHECK whether partial-array indexing in codegen loads the stored header pointer or computes base + offset. Direct compute is faster and shrinks the surface that depends on fixup correctness. One IR dump of a leaf function answers it.
 
 CHECK main bootstrap ordering: scope arena provisioning vs the this_program assignment that creates it. Works today; write down why.
