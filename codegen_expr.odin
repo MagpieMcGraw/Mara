@@ -389,10 +389,30 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 joiner := ", but "
                 for side in sides {
                     if !side.report { continue }
+                    esc_side, _ := strings.replace_all(side.text, "%", "%%")
+                    // An enum side prints its variant name through the same
+                    // inline switch print() uses. That machinery does its own
+                    // printf calls, so flush the message built so far and let
+                    // it take over mid-sentence.
+                    if et, is_enum := enum_type_of(side.ex); is_enum {
+                        fmt.sbprintf(&msg, "%s%s was ", joiner, esc_side)
+                        joiner = " and "
+                        assert_flush_printf(g, &msg, &args)
+                        tag_ir := "i64"
+                        if et.tag_type != "" { tag_ir = tag_type_to_ir(et.tag_type) }
+                        v := side.val
+                        if ir_type != tag_ir {
+                            w := fresh_tmp(g)
+                            op := ir_type_bits(ir_type) > ir_type_bits(tag_ir) ? "trunc" : "zext"
+                            emit(g, "  %s = %s %s %s to %s", w, op, ir_type, side.val, tag_ir)
+                            v = w
+                        }
+                        gen_print_enum(g, v, tag_ir, et)
+                        continue
+                    }
                     // A utf8 side renders as the glyph, same as print() — the
                     // value reads like the literal it's compared to: 'e'.
                     is_char := !is_bool && !is_float && is_char_expr(g, side.ex)
-                    esc_side, _ := strings.replace_all(side.text, "%", "%%")
                     fmt.sbprintf(&msg, "%s%s was %s", joiner, esc_side, is_char ? "'%c'" : spec)
                     joiner = " and "
                     if is_bool {
@@ -429,8 +449,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                     }
                 }
                 strings.write_string(&msg, "\n")
-                msg_global, _ := get_string_literal(g, strings.to_string(msg))
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s%s)", msg_global, strings.to_string(args))
+                assert_flush_printf(g, &msg, &args)
                 emit(g, "  call void @exit(i32 1)")
                 emit(g, "  unreachable")
                 emit_label(g, ok_label)
@@ -615,8 +634,10 @@ binary_op_type :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string) -> (ir
 }
 
 // A comparison side whose source text already states its value — a number,
-// bool, or char literal (incl. a negated number) — is omitted from the assert
-// failure report: `game.running == false` reports only game.running.
+// bool, or char literal (incl. a negated number), or an enum/union variant
+// reference (.Paused, State.Paused) — is omitted from the assert failure
+// report: `game.running == false` reports only game.running. Named constants
+// are NOT literals: their text doesn't show their value, so they report.
 assert_side_is_literal :: proc(ex: Expr) -> bool {
     #partial switch v in ex {
     case ^Expr_Number: return true
@@ -626,8 +647,27 @@ assert_side_is_literal :: proc(ex: Expr) -> bool {
         if v.op == .Minus {
             if _, is_num := v.operand.(^Expr_Number); is_num { return true }
         }
+    case ^Expr_Ident:
+        #partial switch _ in v.resolved {
+        case Resolved_Enum_Variant, Resolved_Union_Variant: return true
+        }
+    case ^Expr_Field_Access:
+        #partial switch _ in v.resolved {
+        case Resolved_Enum_Variant, Resolved_Union_Variant: return true
+        }
     }
     return false
+}
+
+// Emit the pending assert-message segment as one printf and reset the
+// builders. Segmented because enum sides print through gen_print_enum's
+// inline switch, which does its own printf calls mid-message.
+assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^strings.Builder) {
+    if strings.builder_len(msg^) == 0 { return }
+    msg_global, _ := get_string_literal(g, strings.to_string(msg^))
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s%s)", msg_global, strings.to_string(args^))
+    strings.builder_reset(msg)
+    strings.builder_reset(args)
 }
 
 gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> string {

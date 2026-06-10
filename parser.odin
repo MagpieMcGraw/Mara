@@ -334,36 +334,56 @@ Expr_Size_Of :: struct {
     resolved_type: Type,      // the resolved type argument (filled by type checker)
 }
 
+// Re-escape processed literal text for display: the lexer stores '\n' as the
+// raw byte, but a failure message must show the source spelling, not emit a
+// real newline mid-line. Mirrors the lexer's escape set; `quote` is the
+// enclosing quote character, escaped when it appears in the content.
+assert_escape_literal :: proc(text: string, quote: u8) -> string {
+    sb := strings.builder_make()
+    for i in 0..<len(text) {
+        c := text[i]
+        switch {
+        case c == '\n':  strings.write_string(&sb, "\\n")
+        case c == '\t':  strings.write_string(&sb, "\\t")
+        case c == '\r':  strings.write_string(&sb, "\\r")
+        case c == '\\':  strings.write_string(&sb, "\\\\")
+        case c == 0:     strings.write_string(&sb, "\\0")
+        case c == quote: strings.write_byte(&sb, '\\'); strings.write_byte(&sb, quote)
+        case:            strings.write_byte(&sb, c)
+        }
+    }
+    return strings.to_string(sb)
+}
+
+// Display form of one token: char/string literals get their quotes back and
+// their content re-escaped (each lexer escape was 2 source chars and
+// re-escapes to 2 chars, so the display width matches the source width —
+// which the spacing math below relies on).
+assert_token_display :: proc(tok: Token) -> string {
+    #partial switch tok.kind {
+    case .Char:
+        return strings.concatenate({"'", assert_escape_literal(tok.text, '\''), "'"})
+    case .String:
+        return strings.concatenate({"\"", assert_escape_literal(tok.text, '"'), "\""})
+    }
+    return tok.text
+}
+
 // Reconstruct source text for tokens [lo, hi): any gap (or line break)
 // between consecutive tokens becomes one space, adjacent tokens stay fused —
-// `x < y` keeps its spacing, `a.b[i]` stays tight. Char/string literal tokens
-// get their quotes back (the lexer stores the bare content). Used by assert
-// to carry condition/operand text into the runtime failure message.
+// `x < y` keeps its spacing, `a.b[i]` stays tight. Used by assert to carry
+// condition/operand text into the runtime failure message.
 assert_token_text :: proc(p: ^Parser, lo, hi: int) -> string {
     sb := strings.builder_make()
     for i in lo..<hi {
         if i > lo {
             prev := p.tokens[i - 1]
             cur  := p.tokens[i]
-            // Quoted literals occupy text+2 columns in the source.
-            prev_width := len(prev.text)
-            if prev.kind == .Char || prev.kind == .String { prev_width += 2 }
-            if cur.line != prev.line || cur.col > prev.col + prev_width {
+            if cur.line != prev.line || cur.col > prev.col + len(assert_token_display(prev)) {
                 strings.write_byte(&sb, ' ')
             }
         }
-        #partial switch p.tokens[i].kind {
-        case .Char:
-            strings.write_byte(&sb, '\'')
-            strings.write_string(&sb, p.tokens[i].text)
-            strings.write_byte(&sb, '\'')
-        case .String:
-            strings.write_byte(&sb, '"')
-            strings.write_string(&sb, p.tokens[i].text)
-            strings.write_byte(&sb, '"')
-        case:
-            strings.write_string(&sb, p.tokens[i].text)
-        }
+        strings.write_string(&sb, assert_token_display(p.tokens[i]))
     }
     return strings.clone(strings.to_string(sb))
 }

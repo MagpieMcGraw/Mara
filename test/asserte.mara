@@ -1,0 +1,17 @@
+module asserte
+
+// Enum operands print their variant name, same as print(). The variant-
+// literal side (State.Paused) is omitted — its text already says its value:
+//   Expected s == State.Paused, but s was Running
+
+State :: union(tag u8) {
+	Idle = 1
+	Running
+	Paused
+}
+
+main :: fun() {
+	s : State = .Running
+	assert(s == State.Running)   // passes
+	assert(s == State.Paused)    // fails — variant name, not a number
+}

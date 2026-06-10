@@ -1,0 +1,11 @@
+module assertesc
+
+// Escaped char literals keep their source spelling in the condition text —
+// a real newline byte must not split the message:
+//   Expected c == '\n', but c was 'x'
+
+main :: fun() {
+	c := 'x'
+	assert(c != '\n')   // passes
+	assert(c == '\n')   // fails — shows \n, not a line break
+}
