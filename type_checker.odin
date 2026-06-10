@@ -2104,6 +2104,11 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     if _, i_val, ok := extract_constant_value(const_expr); ok {
                         fa.size = int(i_val)
                         resolved = true
+                    } else if val, comptime_ok := evaluate_comptime_int(c, const_expr); comptime_ok {
+                        // Constant defined by an expression (1 << 16, 3 * MB):
+                        // fold it like an inline size expression would be.
+                        fa.size = int(val)
+                        resolved = true
                     } else {
                         check_error(c, span, TYPE_ARRAY_SIZE_CONSTANT_COMPILE_TIME, t.size_name)
                     }
@@ -2166,6 +2171,12 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                 if const_expr, found := c.table.constants[t.size_name]; found {
                     if _, i_val, ok := extract_constant_value(const_expr); ok {
                         pa.size = int(i_val)
+                        return pa
+                    }
+                    // Constant defined by an expression (1 << 16, 3 * MB):
+                    // fold it like an inline size expression would be.
+                    if val, comptime_ok := evaluate_comptime_int(c, const_expr); comptime_ok {
+                        pa.size = int(val)
                         return pa
                     }
                     check_error(c, span, TYPE_PARTIAL_ARRAY_SIZE_CONSTANT_COMPILE, t.size_name)
