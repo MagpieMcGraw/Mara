@@ -1,6 +1,7 @@
 module assertf
 
-// Float comparison assert — expect (left: %g, right: %g).
+// Float comparison assert — values print via %g (6.5, not 6.500000), and a
+// compound operand keeps its source text: "but a * 2.0 was 6.5".
 
 main :: fun() {
 	a := 3.25

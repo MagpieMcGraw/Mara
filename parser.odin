@@ -334,12 +334,36 @@ Expr_Size_Of :: struct {
     resolved_type: Type,      // the resolved type argument (filled by type checker)
 }
 
+// Reconstruct source text for tokens [lo, hi): any gap (or line break)
+// between consecutive tokens becomes one space, adjacent tokens stay fused —
+// `x < y` keeps its spacing, `a.b[i]` stays tight. Used by assert to carry
+// condition/operand text into the runtime failure message.
+assert_token_text :: proc(p: ^Parser, lo, hi: int) -> string {
+    sb := strings.builder_make()
+    for i in lo..<hi {
+        if i > lo {
+            prev := p.tokens[i - 1]
+            cur  := p.tokens[i]
+            if cur.line != prev.line || cur.col > prev.col + len(prev.text) {
+                strings.write_byte(&sb, ' ')
+            }
+        }
+        strings.write_string(&sb, p.tokens[i].text)
+    }
+    return strings.clone(strings.to_string(sb))
+}
+
 // `assert(cond)` — debug-only runtime invariant check. cond_text is the
 // condition's source text (captured at parse time, since later phases have no
-// source) for the failure message. Compiled out entirely in -release builds.
+// source) for the failure message. When cond is a comparison, lhs_text and
+// rhs_text carry each operand's source text so the failure can name the
+// operand next to its value ("but game.running was true"); both empty
+// otherwise. Compiled out entirely in -release builds.
 Expr_Assert :: struct {
     cond:          Expr,
     cond_text:     string,
+    lhs_text:      string,
+    rhs_text:      string,
     span:          Span,
     type_:         Type,      // always Type_Void — assert is a statement, no value
 }
@@ -3883,20 +3907,31 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             cond := parse_expr(p)
             cond_end := p.pos
             expect(p, .Right_Paren)
-            sb := strings.builder_make()
-            for i in cond_start..<cond_end {
-                if i > cond_start {
-                    prev := p.tokens[i - 1]
-                    cur  := p.tokens[i]
-                    if cur.line != prev.line || cur.col > prev.col + len(prev.text) {
-                        strings.write_byte(&sb, ' ')
-                    }
-                }
-                strings.write_string(&sb, p.tokens[i].text)
-            }
             a := new(Expr_Assert)
             a.cond = cond
-            a.cond_text = strings.clone(strings.to_string(sb))
+            a.cond_text = assert_token_text(p, cond_start, cond_end)
+            // For a comparison, also capture each operand's text by splitting
+            // at the top operator token: the LAST depth-0 token of the op's
+            // kind (left-associativity puts the tree root rightmost; anything
+            // further right would itself be the root).
+            if bin, is_bin := cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) {
+                op_idx := -1
+                depth := 0
+                for i in cond_start..<cond_end {
+                    k := p.tokens[i].kind
+                    if k == .Left_Paren || k == .Left_Bracket || k == .Left_Brace {
+                        depth += 1
+                    } else if k == .Right_Paren || k == .Right_Bracket || k == .Right_Brace {
+                        depth -= 1
+                    } else if depth == 0 && k == bin.op {
+                        op_idx = i
+                    }
+                }
+                if op_idx > cond_start && op_idx < cond_end - 1 {
+                    a.lhs_text = assert_token_text(p, cond_start, op_idx)
+                    a.rhs_text = assert_token_text(p, op_idx + 1, cond_end)
+                }
+            }
             a.span = token_span(tok)
             result = a
         } else if (tok.text == "let" || tok.text == "slice") && current_kind(p) == .Left_Paren {

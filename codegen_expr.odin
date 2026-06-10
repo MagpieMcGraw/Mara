@@ -319,28 +319,37 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         size := elem_byte_size(ir_type, g.checked)
         return fmt.tprintf("%d", size)
     case ^Expr_Assert:
-        // assert(cond): if cond is false, report `<file:line:col> assertion
-        // failed: <cond text>` and exit. When cond is a direct numeric
-        // comparison, the operands are evaluated once and the failure also
-        // reports their values (`left: %v, right: %v`) — same shape as the
-        // bounds/overflow messages. Compiled out entirely in -release.
+        // assert(cond): on failure print
+        //   Assert failed at <file:line:col>
+        //   Expected <cond>, but <operand> was <value> [and <operand> was <value>]
+        // and exit. Operand values are reported for direct numeric/bool
+        // comparisons; a side that is itself a literal is omitted (its text
+        // already states its value), and bools print as true/false. The whole
+        // message is a per-site printf format assembled here at compile time —
+        // only the values are runtime arguments. Compiled out in -release.
         if g.release { return "0" }
         ok_label := fresh_label(g, "assert.ok")
         fail_label := fresh_label(g, "assert.fail")
         loc := format_location(e.span.file, e.span.line, e.span.col)
-        loc_global,  _ := get_string_literal(g, loc)
-        cond_global, _ := get_string_literal(g, e.cond_text)
 
-        if bin, is_bin := e.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) {
+        // Embedded source text must not smuggle conversion specs into the
+        // format string (`a % b == 0`), so escape every %.
+        esc_cond, _ := strings.replace_all(e.cond_text, "%", "%%")
+        msg: strings.Builder
+        strings.builder_init(&msg)
+        fmt.sbprintf(&msg, "Assert failed at %s\nExpected %s", loc, esc_cond)
+
+        if bin, is_bin := e.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) &&
+           e.lhs_text != "" && e.rhs_text != "" {
             _, overloaded := bin.overload_fn.?
             ir_type, is_unsigned := binary_op_type(g, bin, "")
             is_float := ir_type == "double" || ir_type == "float" || ir_type == "half"
-            // Value reporting covers what printf can carry: scalar ints up to
-            // 64 bits and floats. Anything else (ptr, i128, aggregates,
+            is_bool  := ir_type == "i1"
+            // Value reporting covers what printf can carry: bools, scalar ints
+            // up to 64 bits, floats. Anything else (ptr, i128, aggregates,
             // overloaded compares) falls through to the plain message.
-            is_small_int := ir_type == "i1" || ir_type == "i8" || ir_type == "i16" ||
-                            ir_type == "i32" || ir_type == "i64"
-            if !overloaded && (is_float || is_small_int) {
+            is_int := ir_type == "i8" || ir_type == "i16" || ir_type == "i32" || ir_type == "i64"
+            if !overloaded && (is_float || is_bool || is_int) {
                 left := gen_expr_coerced(g, bin.left, ir_type)
                 right := gen_expr_coerced(g, bin.right, ir_type)
                 cond_val := fresh_tmp(g)
@@ -368,41 +377,64 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 }
                 emit_cond_br(g, cond_val, ok_label, fail_label)
                 emit_label(g, fail_label)
-                if is_float {
-                    lw, rw := left, right
-                    if ir_type != "double" {
-                        lw = fresh_tmp(g)
-                        emit(g, "  %s = fpext %s %s to double", lw, ir_type, left)
-                        rw = fresh_tmp(g)
-                        emit(g, "  %s = fpext %s %s to double", rw, ir_type, right)
-                    }
-                    emit(g, "  call void %s(ptr %s, ptr %s, double %s, double %s)",
-                         __MARA_ASSERT_FAIL_VALS_F, loc_global, cond_global, lw, rw)
-                } else {
-                    lw, rw := left, right
-                    if ir_type != "i64" {
-                        // Extend by the working type's signedness; i1 always
-                        // zero-extends so bools report 0/1.
-                        ext := (is_unsigned || ir_type == "i1") ? "zext" : "sext"
-                        lw = fresh_tmp(g)
-                        emit(g, "  %s = %s %s %s to i64", lw, ext, ir_type, left)
-                        rw = fresh_tmp(g)
-                        emit(g, "  %s = %s %s %s to i64", rw, ext, ir_type, right)
-                    }
-                    helper := is_unsigned ? __MARA_ASSERT_FAIL_VALS_U : __MARA_ASSERT_FAIL_VALS_I
-                    emit(g, "  call void %s(ptr %s, ptr %s, i64 %s, i64 %s)",
-                         helper, loc_global, cond_global, lw, rw)
+
+                Assert_Side :: struct { text, val: string, report: bool }
+                sides := [2]Assert_Side{
+                    {e.lhs_text, left,  !assert_side_is_literal(bin.left)},
+                    {e.rhs_text, right, !assert_side_is_literal(bin.right)},
                 }
+                spec := is_bool ? "%s" : (is_float ? "%g" : (is_unsigned ? "%llu" : "%lld"))
+                args: strings.Builder
+                strings.builder_init(&args)
+                joiner := ", but "
+                for side in sides {
+                    if !side.report { continue }
+                    esc_side, _ := strings.replace_all(side.text, "%", "%%")
+                    fmt.sbprintf(&msg, "%s%s was %s", joiner, esc_side, spec)
+                    joiner = " and "
+                    if is_bool {
+                        t_global, _ := get_string_literal(g, "true")
+                        f_global, _ := get_string_literal(g, "false")
+                        sel := fresh_tmp(g)
+                        emit(g, "  %s = select i1 %s, ptr %s, ptr %s", sel, side.val, t_global, f_global)
+                        fmt.sbprintf(&args, ", ptr %s", sel)
+                    } else if is_float {
+                        v := side.val
+                        if ir_type != "double" {
+                            w := fresh_tmp(g)
+                            emit(g, "  %s = fpext %s %s to double", w, ir_type, side.val)
+                            v = w
+                        }
+                        fmt.sbprintf(&args, ", double %s", v)
+                    } else {
+                        v := side.val
+                        if ir_type != "i64" {
+                            w := fresh_tmp(g)
+                            emit(g, "  %s = %s %s %s to i64", w, is_unsigned ? "zext" : "sext", ir_type, side.val)
+                            v = w
+                        }
+                        fmt.sbprintf(&args, ", i64 %s", v)
+                    }
+                }
+                strings.write_string(&msg, "\n")
+                msg_global, _ := get_string_literal(g, strings.to_string(msg))
+                emit(g, "  call i32 (ptr, ...) @printf(ptr %s%s)", msg_global, strings.to_string(args))
+                emit(g, "  call void @exit(i32 1)")
                 emit(g, "  unreachable")
                 emit_label(g, ok_label)
                 return "0"
             }
         }
 
+        // General condition (and/or chains, calls, unsupported operand
+        // types): no operand breakdown — the condition evaluated false.
         cond_val := gen_expr(g, e.cond)
         emit_cond_br(g, cond_val, ok_label, fail_label)
         emit_label(g, fail_label)
-        emit(g, "  call void %s(ptr %s, ptr %s)", __MARA_ASSERT_FAIL, loc_global, cond_global)
+        strings.write_string(&msg, ", but it was false\n")
+        msg_global, _ := get_string_literal(g, strings.to_string(msg))
+        emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", msg_global)
+        emit(g, "  call void @exit(i32 1)")
         emit(g, "  unreachable")
         emit_label(g, ok_label)
         return "0"
@@ -568,6 +600,22 @@ binary_op_type :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string) -> (ir
     case Type_Byte, Type_Utf8:  unsigned = true
     }
     return
+}
+
+// A comparison side whose source text already states its value — a number,
+// bool, or char literal (incl. a negated number) — is omitted from the assert
+// failure report: `game.running == false` reports only game.running.
+assert_side_is_literal :: proc(ex: Expr) -> bool {
+    #partial switch v in ex {
+    case ^Expr_Number: return true
+    case ^Expr_Bool:   return true
+    case ^Expr_Char:   return true
+    case ^Expr_Unary:
+        if v.op == .Minus {
+            if _, is_num := v.operand.(^Expr_Number); is_num { return true }
+        }
+    }
+    return false
 }
 
 gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> string {

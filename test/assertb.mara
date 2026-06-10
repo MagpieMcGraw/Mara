@@ -1,0 +1,17 @@
+module assertb
+
+// Bool comparison against a literal — the literal side is omitted from the
+// report and the value prints as true/false, reading as a sentence:
+//   Expected game.running == false, but game.running was true
+
+Game :: struct {
+	running: bool
+	frame := 0
+}
+
+main :: fun() {
+	game : Game
+	game.running = true
+	assert(game.running == true)    // passes
+	assert(game.running == false)   // fails
+}
