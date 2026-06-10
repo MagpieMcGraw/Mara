@@ -60,6 +60,7 @@ draw_state_create :: fun(
 {
 	shader_id, shader_err := make_program(shader_file)
 	if bool(shader_err) do print(shader_err)
+	print("Shader status:", shader_err)
 
 	// Create persistent command buffer for MDI
 	command_buffer: u32
@@ -137,6 +138,7 @@ draw_state_append :: fun(
 		}
 		batch.instances[i] = instance
 
+		print(highlight_state.command_buffer)
 		if highlight_state != void and obj.highlighted {
 			highlight_batch := get_or_create_batch(highlight_state, mesh_id)
 			// Fixed offset gives consistent outline thickness

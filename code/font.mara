@@ -38,7 +38,7 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, codepoint)
 		goff := ttf.loca.offsets[glyph_index]
 		glen := ttf.loca.offsets[glyph_index + 1] - goff
-		gstart := ttf.glyf_loc + goff
+		gstart := ttf.glyf_table_loc + goff
 		outline := parse_glyph(ttf_file[gstart : gstart + glen])
 
 		glyphs[i].x = (i % atlas.per_row) * atlas.cell
@@ -124,17 +124,17 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	glyph.bearing_y = ymax * scale + pad
 
 	edges : [..MAX_RASTER_EDGES]Raster_Edge
-	contour_start : [..512]i64   // edge index where each contour's run begins (+sentinel)
+	contour_start : [..512]i64
 
+	// similar to glyph point, but we won't merge them
 	Node :: struct {
 		x, y: f32
 		on_curve : bool
 	}
 	nodes : [..1024]Node
 
-	n_contours := outline.num_contours
 	point_start := 0
-	for ci in 0..n_contours {
+	for ci in 0..outline.num_contours {
 		point_end := outline.end_pts[ci]
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
@@ -153,7 +153,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			nodes.len = 0
 			first_x := (f32(i32(outline.points[point_start + first_on_curve].x)) - x_origin) * scale
 			first_y := (y_origin - f32(i32(outline.points[point_start + first_on_curve].y))) * scale
-			nodes[nodes.len] = Node{first_x, first_y, true} nodes.len += 1
+			nodes[nodes.len] = Node{first_x, first_y, true}
+			nodes.len += 1
 			have_off := false
 			off_x : f32 = 0.0
 			off_y : f32 = 0.0
@@ -165,10 +166,12 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 				point_y := (y_origin - f32(i32(point.y))) * scale
 				if point.on_curve {
 					if have_off {
-						nodes[nodes.len] = Node{off_x, off_y, false} nodes.len += 1
+						nodes[nodes.len] = Node{off_x, off_y, false}
+						nodes.len += 1
 						have_off = false
 					}
-					nodes[nodes.len] = Node{point_x, point_y, true} nodes.len += 1
+					nodes[nodes.len] = Node{point_x, point_y, true}
+					nodes.len += 1
 				elif have_off
 					// two consecutive off-curve controls — TrueType implies an
 					// on-curve point at their midpoint
@@ -437,18 +440,40 @@ TTF :: struct (bytes: ^[]byte) {
 	}
 
 	Loca :: struct {
-		// offsets array has num_glyphs + 1 entries (last entry gives the end of the final glyph).
-		// Each entry is u16 (short — multiply by 2 for actual byte offset into glyf)
-		// or u32 (long — already a byte offset). Format chosen by head.index_to_loc_format.
+		// we read this with a function rather than directly
+		// because the data here can be either u16 or u32
 		offsets : [..1 + (1<<16)]u32
 	}
 
 	Glyf :: struct {
-		// Raw glyph data. Each glyph i lives at offsets [loca[i]..loca[i+1]).
-		// Per-glyph header is i16 num_contours (negative for composite), then 4xi16 bbox,
-		// then either simple-glyph contours or composite component records.
-		data : []byte
+		data : []Glyph // has to be decoded from raw bytes
 	}
+
+	Glyph :: struct {
+		num_contours : i16   // < 0 means composite
+
+		x_min : i16
+		y_min : i16
+		x_max : i16
+		y_max : i16
+		// the first 5 fields can be byte read
+
+		data : Simple // can't be read, must be decoded
+
+		// GET A SECOND STRUCT THAT WILL STORE DECODED DATA
+
+		Simple :: struct {
+			contour_end_pts : []u16 // len is num_contours
+			instructions_len: u16
+			instructions: []u8
+			flags : []u8
+			rel_x : []byte // each x is relative to previous
+			rel_y : []byte // each y is relative to previous
+			// first elem relative to 0 in both arrays
+		}
+		// skipping compound glyphs for now
+	}
+
 
 	Hhea :: struct {
 		version                 : Fixed     // 0x00010000
@@ -477,15 +502,6 @@ TTF :: struct (bytes: ^[]byte) {
 		side_bearings : []F_Word
 	}
 
-	// hmtx_prepare ::fun(hhea: Hhea, maxp: Maxp, bytes: []byte) -> Hmtx {
-	// 	hmtx : Hmtx
-	// 	long_m : [:hhea.num_of_long_hor_metrics]Long_Hor_Metric
-	// 	hmtx.long_metrics = long_m
-	// 	hmtx.side_bearings.cap = 0
-
-	// 	return hmtx
-	// }
-
 	Long_Hor_Metric :: struct {
 		advance_width     : U_F_Word
 		left_side_bearing : F_Word
@@ -494,13 +510,13 @@ TTF :: struct (bytes: ^[]byte) {
 	// ─── parse: read the table directory, then the tables we use, into fields ───
 	h : Offset_Table = #big_endian bytes[0]
 	h.tables = #big_endian bytes[12]
-	h.tables.len = i32(h.num_tables)
+	h.tables.len = h.num_tables
 
 	head_loc := h.tables.get_offset("head")
 	maxp_loc := h.tables.get_offset("maxp")
 	cmap_loc := h.tables.get_offset("cmap")
 	loca_loc := h.tables.get_offset("loca")
-	glyf_loc := h.tables.get_offset("glyf")
+	glyf_table_loc := h.tables.get_offset("glyf")
 	hhea_loc := h.tables.get_offset("hhea")
 	hmtx_loc := h.tables.get_offset("hmtx")
 

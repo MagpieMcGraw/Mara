@@ -106,8 +106,15 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	test_font : Font
 	atlas := &test_font.glyphs.load_glyphs(0, "data/fonts/Inter_18pt-Regular.ttf")
 
+	test_void : ^Glyph = void
+	if test_void != void do print(test_void.y)
+	print(test_void.x)
+
+
 	game.running = true
 	game.initialized = true
+
+	assert(game.running == false)
 }
 
 game_events :: fun(game: ^Megastruct) {

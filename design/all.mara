@@ -17,7 +17,7 @@ The_Basics :: struct {
 	untyped_memory: byte
 	string_byte: utf8 // could be a distict type?
 
-	array_of_numbers : [64]i32 // value, holds it's own data
+	array_of_numbers : [64]i32 // value, holds its own data
 	slice : []i32 // reference, points to someone else's data
 
 	partial_array: [..64]i32

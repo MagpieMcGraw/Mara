@@ -36,8 +36,78 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 
 Maybe constructors need return values? Could be good for error handling.
 
-	// ASPIRATIONAL
-	// advanced_basics{ 
-	// 	smallest_float = -3
-	// 	biggest_float = 333
-	// }
+Findings from the Fable 5 code review, 10 Jun 2026. Same format: 1 item per line, 1 line space between items. Roughly ordered: bugs, then language decisions, then stdlib fixes, then docs/tooling.
+
+BUG draw_state_append writes batch.instances[i] using the object index and never increments instance_count. Should be instances[batch.instance_count] then increment, in both the main and highlight paths. As written, render sees count 0 and draws nothing.
+
+BUG quat_slerp Taylor asin is off by 2x near d=0.99. Either drop the nlerp cutoff from 0.9995 to ~0.9, or use a real acos (libm acosf, or llvm.acos intrinsic in LLVM 19+). Also replace sin(f32(theta)) with sqrt(1 - d*d), exact and free.
+
+BUG Arena_Debug.reset with current_mark == -1 reads base[-1]. Debug arena should crash loudly on reset-without-mark instead.
+
+BUG hmtx advance read in load_glyphs (hmtx_loc + glyph_index * 4) is only valid while glyph_index < hhea.num_of_long_hor_metrics. Past that, glyphs share the last advance and the array degrades to 2-byte entries. Clamp using the Hhea already parsed.
+
+BUG broadcast x, y = 7 segfaults in non-main fn (disabled test, dated 2026-05-30).
+
+BUG enum-indexed array access rejected ("index must be i32") — omitted test, dated 2026-05-30.
+
+BUG calling a fn-typed parameter fails in codegen — omitted test, dated 2026-05-30.
+
+LEAK load_and_compile: if the fragment shader fails to compile, the vertex shader is never deleted. Harmless today (fatal path), becomes real the day live shader reload exists. errdefer or restructure to one cleanup site.
+
+DECIDE the slice law, then assert it in all.mara: explicit high bound claims the window as data (len = cap = hi - lo, even over unfilled storage); open high bound inherits fullness (len = parent.len - lo, cap = parent.cap - lo). Convert test_slice_view prints to asserts; expected len 0 cap 32 under this rule.
+
+DECIDE #self construction order. Zero-init then decl-order initializers means c := helper(#self) in test_early_self sees a = b = 0, so c == 0.0, not 3.0. Assert whichever is intended and write the rule in all.mara.
+
+DECIDE mixed signed/unsigned arithmetic under auto-widening. Suggest: widen both to the smallest lossless common type, compile error if none exists (u64 vs i64). Also decide int-to-float: i32 to f32 and i64 to f64 are lossy and should require casts if the rule is honest.
+
+DECIDE union containing partial arrays: copy fixup needs the tag, so either consult it in copy codegen or forbid element-owning members in unions. Same question for the disk-load relocate walk.
+
+DECIDE one return-type grammar. fun(a, b: i64) i64 and fun(a, b: i64) -> i64 both parse today (test_io_arrow exists to prove it). Pick one.
+
+DECIDE class vs struct canonical spelling. memory.mara says class, everything else says struct; a reader parses the difference as semantic. Keep the alias as the joke, lint for one spelling.
+
+DECIDE assert policy: keep asserts on in release (TigerStyle, restart-and-recover fits the hot-reload loop) or C-style strip. Then upgrade assert output to print condition source text plus operand values via spans — the parts (#caller_span, enum printing) already exist.
+
+ADD must-use err: warn when an err value is neither returned, branched on, nor discarded with _ =. Makes the return-the-error discipline mechanical while keeping ignoring legal.
+
+ADD err second field in debug builds: raise-site span (and on Windows, GetLastError at the os boundary). Same machinery as the arena debug headers. Print then says what failed, where, and why.
+
+ADD seed asserts from the review: slice_add capacity before the element copy, parse_glyph n_points > 0 and cursor <= bytes.len, arena mark/reset well-nesting, partial-array fixup invariant (arr.ptr == own elements) where received by ref.
+
+ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
+
+FIX retire string.mara add_str in favor of core's generic slice_add (the fix already exists; resolve the duplicate + dispatch). If keeping a string-specific one, src should be []utf8 not str.
+
+FIX find_byte returns i32 where find returns i64; also unify -> (a, b) vs -> a, b return-type style between them.
+
+FIX retire Big_Slice / sys_alloc_big now that slices are 8/8/8. When Arena_Basic is uncommented, it should hold a plain []byte like Arena_Debug.
+
+FIX Arena_Debug.offset duplicates base.len now that len is the cursor. One field can go.
+
+FIX load_glyphs first codepoint: 0 bakes control characters, want 32. Font data to persistent storage per plan.
+
+FIX mat4_inverse returns identity on singular input silently — the one quiet fallback in a codebase that prints diagnostics elsewhere.
+
+FIX PI and TAU are one digit short of full f64 (…589793, …79586). Mesh gen also inlines its own truncated copies — use the constants.
+
+FIX abs_int overflows on i64 min; @llvm.abs.i64 exists and matches the f32/f64 siblings.
+
+FIX instance_capacity in DrawState is stored but never checked before BufferSubData.
+
+FIX fps := 60.9 — comment it if it is the deliberate vsync-undershoot trick, correct it if it is a typo.
+
+FIX Windows ANSI paths: CreateFileA breaks on non-ASCII paths (Lithuanian user dirs). One-line app manifest setting activeCodePage to UTF-8 fixes every A-suffix call at once.
+
+CHECK whether partial-array indexing in codegen loads the stored header pointer or computes base + offset. Direct compute is faster and shrinks the surface that depends on fixup correctness. One IR dump of a leaf function answers it.
+
+CHECK main bootstrap ordering: scope arena provisioning vs the this_program assignment that creates it. Works today; write down why.
+
+DOCS all.mara: fix "it's" -> "its" (also in README build section). Add the slice-law section with asserts. Graduate each margin question to a rule or a dated test.
+
+DOCS README: add the perf block screenshot (1M lines / 7.5s, 273ms hot) and an OOM dump screenshot. Those two images carry the language's character better than prose.
+
+TOOLING golden-output file for the print-based tests in test.mara: run once when known-good, diff every build.
+
+TOOLING fix and regenerate the 1M-line benchmark, then grow it adversarially: one giant dispatch block, one 100K-line function, deep use chains. Name the cliffs before a real project finds them.
+
+TOOLING formatter opinion on tabs vs spaces (gfx_mesh_generation.mara is the spaces outlier) and on class vs struct.
