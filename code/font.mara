@@ -765,41 +765,45 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i32, char: u32) -> u16 {
 	elif format == 0
 		return cmap_format0_lookup(bytes, subtable_start, char)
 	else
-		print("cmap: unsupported subtable format %", i64(format))
+		print("cmap: unsupported subtable format %", format)
 		return 0
 	}
 
 	cmap_format0_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
 		if char > 255 { return 0 }
-		return u16(bytes[sub + 6 + i32(char)])
+		return u16(bytes[sub + 6 + char])
 	}
 
 	cmap_format4_lookup :: fun(bytes: ^[]byte, sub: i32, char: u32) -> u16 {
+		// i32 pin: every derived offset and s * 2 then ride at address width.
 		seg_x2 := i32(read_u16be(bytes[sub + 6]))
 		end_codes   := sub + 14
 		start_codes := end_codes + seg_x2 + 2     // +2 skips reservedPad
 		id_deltas   := start_codes + seg_x2
 		id_ranges   := id_deltas + seg_x2
-		seg_count := seg_x2 / 2
-		for s in 0..seg_count {
-			end_code := u32(read_u16be(bytes[end_codes + s * 2]))
+		for s in 0..seg_x2 / 2 {
+			end_code := read_u16be(bytes[end_codes + s * 2])
 			if char <= end_code {
-				start_code := u32(read_u16be(bytes[start_codes + s * 2]))
+				start_code := read_u16be(bytes[start_codes + s * 2])
 				if char < start_code { return 0 }
 				id_delta := read_u16be(bytes[id_deltas + s * 2])
-				id_range := i32(read_u16be(bytes[id_ranges + s * 2]))
+				id_range := read_u16be(bytes[id_ranges + s * 2])
 				if id_range == 0 {
-					// Direct: (char + idDelta) mod 65536. u16() truncates the wide
+					// Direct: (char + idDelta) mod 65536. u16() truncates the
 					// u32 sum to its low 16 bits, which is the modular reduction
 					// the spec wants (idDelta is a u16-encoded signed value).
-					return u16(char + u32(id_delta))
+					return u16(char + id_delta)
 				else
 					// Indirect: glyphIdArray address, relative to this
-					// idRangeOffset entry's own location.
-					addr := id_ranges + s * 2 + id_range + 2 * (i32(char) - i32(start_code))
+					// idRangeOffset entry's own location. char >= start_code is
+					// guarded above, so the u32 subtraction can't trap; i32()
+					// keeps addr at the byte-read width.
+					addr := id_ranges + s * 2 + id_range + 2 * i32(char - start_code)
 					g := read_u16be(bytes[addr])
 					if g == 0 { return 0 }
-					return u16(u32(g) + u32(id_delta))
+					// u32(g) lifts the sum out of u16 so a legitimate modular
+					// wrap doesn't overflow-trap before the u16() reduction.
+					return u16(u32(g) + id_delta)
 				}
 			}
 		}
