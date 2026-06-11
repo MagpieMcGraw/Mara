@@ -92,7 +92,6 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	edges : [..4096]Raster_Edge
 	contour_start : [..512]i64
 
-	// similar to glyph point, but we won't merge them
 	Node :: struct {
 		x, y: f32
 		on_curve : bool
@@ -206,8 +205,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	// Sentinel: cap the last contour's edge range and count it too, so
 	// contour_start holds (contours + 1) fenceposts — the coloring loop
 	// reads contour ci as the span [contour_start[ci], contour_start[ci+1]).
-	contour_start[contour_start.len] = edges.len
-	contour_start.len += 1
+	&contour_start + edges.len
 
 	is_corner : [..edges.cap]bool
 	is_corner.len = is_corner.cap
