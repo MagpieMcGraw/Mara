@@ -1217,23 +1217,15 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
             scope.is_exposed = true
             return scope
         }
-        // `#packed struct ...` — decorator that drops inter-field alignment
-        // padding so the struct's layout maps 1:1 onto packed binary formats
-        // (e.g. on-disk file headers read via `#big_endian`). Same on-line /
-        // own-line placement as `#expose`.
+        // `#packed` lives on the RHS of the declaration (`Name :: #packed
+        // struct { ... }`). Catch the old prefix placement with a pointed
+        // error instead of a generic expression-parse failure.
         if peek_kind(p, 1) == .Identifier && peek_token(p, 1).text == "packed" {
-            hash_tok := current(p)
+            parse_error(p, current(p), PARSE_PACKED_NEEDS_STRUCT_DECL)
             advance(p) // consume '#'
             advance(p) // consume 'packed'
             skip_newlines(p)
-            inner := parse_stmt(p)
-            scope, ok := inner.(^Stmt_Scope)
-            if !ok || scope.kind != .Struct {
-                parse_error(p, hash_tok, PARSE_PACKED_NEEDS_STRUCT_DECL)
-                return inner
-            }
-            scope.is_packed = true
-            return scope
+            return parse_stmt(p)
         }
         // Fall through to the expression-statement path below.
     case .Match:    return parse_match(p)
@@ -2906,6 +2898,23 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             return parse_scope_def(p, name_tok.text, start, .Fun), true
         case .Struct:
             return parse_scope_def(p, name_tok.text, start, .Struct), true
+        case .Hash:
+            // `Name :: #packed struct { ... }` — decorator on the struct type
+            // itself: drop inter-field alignment padding so the layout maps
+            // 1:1 onto packed binary formats (e.g. on-disk file headers read
+            // via `#big_endian`).
+            if peek_kind(p, 1) == .Identifier && peek_token(p, 1).text == "packed" {
+                hash_tok := current(p)
+                advance(p) // consume '#'
+                advance(p) // consume 'packed'
+                if current_kind(p) != .Struct {
+                    parse_error(p, hash_tok, PARSE_PACKED_NEEDS_STRUCT_DECL)
+                }
+                def := parse_scope_def(p, name_tok.text, start, .Struct)
+                if scope, ok := def.(^Stmt_Scope); ok { scope.is_packed = true }
+                return def, true
+            }
+            // Other `#x` RHS forms fall through to the expression path below.
         case .Union:    return parse_union_def_with_name(p, name_tok.text, start), true
         case .Error:    return parse_error_def_with_name(p, name_tok.text, start), true
         case .Dispatch: return parse_dispatch_def_with_name(p, name_tok.text, start), true

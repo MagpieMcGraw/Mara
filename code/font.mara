@@ -554,7 +554,7 @@ TTF :: struct (bytes: ^[]byte) {
 		len: u32
 	}
 
-	#packed Head :: struct {
+	Head :: #packed struct {
 		version              : Fixed          // 0x00010000 = version 1.0
 		font_revision        : Fixed          // set by font manufacturer
 		check_sum_adjustment : u32            // sum the font as u32, store 0xB1B0AFBA - sum
