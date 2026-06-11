@@ -1,0 +1,33 @@
+module structlitarg
+
+Pair :: struct {
+	a : i32 = 0
+	b : i32 = 0
+}
+
+sum_pair :: fun(p: Pair) -> i32 {
+	return p.a + p.b
+}
+
+overload + push
+push :: dispatch{ pair_push }
+pair_push :: fun(dst: ^[]Pair, item: Pair) {
+	dst[dst.len] = item
+	dst.len += 1
+}
+
+main :: fun() {
+	// struct literal directly as a call argument (positional + named)
+	assert(sum_pair(Pair{3, 4}) == 7)
+	assert(sum_pair(Pair{b = 10}) == 10)
+
+	// struct literal as overloaded-operator operand (the slice add-item shape)
+	pairs : []Pair(4)
+	&pairs + Pair{1, 2}
+	&pairs + Pair{30, 40}
+	assert(pairs.len == 2)
+	assert(pairs[0].b == 2)
+	assert(pairs[1].a == 30)
+
+	print("structlitarg ok")
+}

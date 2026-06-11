@@ -658,6 +658,7 @@ CODE_INDEX_TARGET_MULTI_RETURN_ASSIGN :: "index target in multi-return assign no
 CODE_UNARY_OP_VALID_MULTI_RETURN :: "unary op '%v' is not a valid multi-return target"
 CODE_UNSUPPORTED_MULTI_RETURN_TARGET_EXPRESSION :: "unsupported multi-return target expression"
 CODE_SPREAD_SET_LIT_FIELDS_CALL :: "is_spread set but lit.fields[0] is not a call"
+CODE_STRUCT_LITERAL_UNTYPED_EXPR :: "struct literal in expression position has no resolved struct type — codegen cannot materialize it (would otherwise silently pass a null pointer)"
 CODE_SPREAD_CALL_TUPLE_RETURN_INFO :: "spread call has no tuple return info"
 CODE_ADDRESS_CHAIN_ENDED_SLICE_STEPS :: "address chain ended at .Slice with no steps — cannot determine elem type"
 CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST :: "address chain ended at .Slice but last step is not a field — cannot determine elem type"

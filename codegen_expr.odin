@@ -318,8 +318,18 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if (len(e.fields) == 0 || e.zero_init) && (strings.has_prefix(target_type, "%class.") || strings.has_prefix(target_type, "[")) {
             return "zeroinitializer"
         }
-        // Standalone struct literal (not in typed assignment) — can't determine type
-        return "0"
+        // Named struct literal in expression position (e.g. a struct argument
+        // `f(Edge{...})` or an overloaded-operator operand): materialize into
+        // a temp alloca and yield the pointer — struct-shaped expressions are
+        // ptr-valued (see expr_ir_type). gen_store_struct_into gives the full
+        // construct semantics: zero-init, init-fn defaults, then field stores.
+        if sd := as_struct_body(e.type_); sd != nil {
+            tmp := fresh_tmp(g)
+            emit_alloca(g, tmp, struct_llvm_name(struct_key(sd)))
+            gen_store_struct_into(g, tmp, sd, e)
+            return tmp
+        }
+        codegen_fatal(g, e.span, CODE_STRUCT_LITERAL_UNTYPED_EXPR)
     case ^Expr_Field_Access:
         return gen_field_access(g, e)
     case ^Expr_Size_Of:
