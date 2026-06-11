@@ -56,11 +56,19 @@ main :: fun() {
 	// THE known boundary hazard: `&` is both address-of and binary AND, so an
 	// append may NOT follow another statement on the same line —
 	//     x := 5 &nums + 7
-	// parses as `x := 5 & nums + 7` and fails loudly with a type error
-	// (int & slice has no overload). First-statement-on-line is fine:
+	// would parse as `x := 5 & nums + 7`. The parser rejects the ambiguous
+	// spacing (space before `&`, glued after) with a dedicated parse error.
+	// First-statement-on-line is fine:
 	nums : [..8]i64
 	&nums + 7
 	assert(nums.len == 1) assert(nums[0] == 7)
+
+	// Unambiguous spacings of binary AND all still parse: symmetric, glued,
+	// and glued-left (a trailing-glued `&` can't be a statement start).
+	g := 12 & 10
+	h := 12&10
+	k := 12& 10
+	assert(g == 8) assert(h == 8) assert(k == 8)
 
 	print("multistmt ok")
 }

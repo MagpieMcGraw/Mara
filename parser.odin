@@ -3499,6 +3499,26 @@ parse_expr :: proc(p: ^Parser, min_prec: int = 0) -> Expr {
             break
         }
 
+        // `&` is both binary AND and the start of an address-of/append
+        // statement, so on a multi-statement line `x := 5 &nums + 7` parses
+        // as `5 & nums + 7` — almost never what was meant. Disambiguate by
+        // spacing (the Swift rule): space before but glued after (`a &b`)
+        // reads as a prefix `&`, so reject it here rather than letting it
+        // surface as a confusing type error (or, on integer operands,
+        // silently compute an AND).
+        if current_kind(p) == .Ampersand && p.pos > 0 {
+            amp := current(p)
+            prev := p.tokens[p.pos - 1]
+            next := peek_token(p, 1)
+            if amp.line == prev.line && next.line == amp.line {
+                spaced_before := amp.col > prev.col + len(prev.text)
+                glued_after := next.col == amp.col + 1
+                if spaced_before && glued_after {
+                    parse_error(p, amp, PARSE_AMBIGUOUS_AMPERSAND)
+                }
+            }
+        }
+
         op := advance(p) // consume the operator
         right := parse_expr(p, prec + 1) // +1 for left-associativity
 
