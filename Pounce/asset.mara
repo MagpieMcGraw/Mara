@@ -21,4 +21,9 @@ Font :: struct {
     offset_x, offset_y: i32,  // Position within atlas layer
     metrics: Line_Metrics     // from mara.font, same type load_glyphs returns
     glyphs: [256]Glyph
+
+    test : Test
+    Test :: struct {
+    	x, y, z: f32
+    }
 }
