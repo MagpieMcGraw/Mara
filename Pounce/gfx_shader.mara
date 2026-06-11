@@ -36,8 +36,13 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 
 		status : i32
 		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
+
 		if status == 0 {
 			gl.DeleteShader(shader)
+
+			log: [512]utf8 log_len := 0
+			gl.GetShaderInfoLog(shader, i32(log.cap), &log_len, &log[0])
+			print(log[:log_len])
 			return 0, Failed_Compilation
 		}
 		return shader
@@ -57,15 +62,24 @@ make_program :: fun(filepath: cstring) -> u32, err {
 
 	status: i32
 	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
+	
 	if status == 0 {
 		gl.DeleteProgram(program)
 		gl.DeleteShader(vshader)
 		gl.DeleteShader(fshader)
+
+		// add a 448 slice type alongside the 888
+		// just for this line?
+		log: [1024]utf8 log_len := 0
+		gl.GetProgramInfoLog(program, i32(log.cap), &log_len, &log[0])
+		print(log[:log_len])
 		return 0, Failed_Link
 	}
 
 	gl.DetachShader(program, vshader)
 	gl.DetachShader(program, fshader)
+	gl.DeleteShader(vshader)
+	gl.DeleteShader(fshader)
 
 	return program
 }
