@@ -1,0 +1,87 @@
+module alloff
+
+use mara.memory
+use mara.math
+use mara.font
+
+// A TrueType contour may contain NO on-curve points: a ring of pure quadratic
+// controls (circles/dots ship like this). The implied on-curve anchors are
+// the midpoints between consecutive controls. Four controls on the corners
+// of a square must therefore rasterize as a symmetric rounded diamond whose
+// anchors sit at the edge midpoints -- NOT as a shape with a sharp corner
+// where control 0 was wrongly anointed as the start anchor.
+main :: fun() -> i64 {
+	this_program = Program(Arena_Debug(16 * MB))
+
+	outline : Outline
+	outline.header.num_contours = 1
+	outline.header.x_min = -100
+	outline.header.y_min = -100
+	outline.header.x_max = 100
+	outline.header.y_max = 100
+	outline.contour_end_pts.len = 1
+	outline.contour_end_pts[0] = 3
+	outline.points.len = 4
+	outline.points[0] = Glyph_Point{-100, -100, false}
+	outline.points[1] = Glyph_Point{100, -100, false}
+	outline.points[2] = Glyph_Point{100, 100, false}
+	outline.points[3] = Glyph_Point{-100, 100, false}
+
+	storage : [3 * MB]byte
+	atlas := Atlas(storage[:], 256)
+
+	glyph : Glyph
+	rasterize_msdf(&outline, &glyph, &atlas)
+
+	print("cell", glyph.w, "x", glyph.h)
+	ab : []byte = storage[:]
+	dump_atlas_cell(&ab, 1024, glyph.x, glyph.y, glyph.w, glyph.h)
+
+	// median-of-RGB > 0 means inside
+	inside :: fun(data: ^[]byte, size: i32, px: i32, py: i32) -> bool {
+		idx := (py * size + px) * 3
+		r := f32(data[idx + 0])
+		g := f32(data[idx + 1])
+		b := f32(data[idx + 2])
+		med := max(min(r, g), min(max(r, g), b))
+		return med > 127.5
+	}
+
+	cx := glyph.w / 2
+	cy := glyph.h / 2
+	// center is inside, all four cell corners are outside
+	assert(inside(&ab, 1024, cx, cy))
+	assert(inside(&ab, 1024, 1, 1) == false)
+	assert(inside(&ab, 1024, glyph.w - 2, 1) == false)
+	assert(inside(&ab, 1024, 1, glyph.h - 2) == false)
+	assert(inside(&ab, 1024, glyph.w - 2, glyph.h - 2) == false)
+
+	// The rounded diamond is 4-fold symmetric. Scan the center row and
+	// center column for first-inside offsets from each end; all four
+	// must agree. The broken fallback (control 0 as anchor) skews the
+	// shape toward one corner and these go unequal.
+	first_in_left : i32 = -1
+	first_in_right : i32 = -1
+	for dx in 0..cx {
+		if first_in_left < 0 and inside(&ab, 1024, dx, cy) do first_in_left = dx
+		if first_in_right < 0 and inside(&ab, 1024, glyph.w - 1 - dx, cy) do first_in_right = dx
+	}
+	first_in_top : i32 = -1
+	first_in_bottom : i32 = -1
+	for dy in 0..cy {
+		if first_in_top < 0 and inside(&ab, 1024, cx, dy) do first_in_top = dy
+		if first_in_bottom < 0 and inside(&ab, 1024, cx, glyph.h - 1 - dy) do first_in_bottom = dy
+	}
+	print("first-inside offsets L R T B:",
+		first_in_left, first_in_right, first_in_top, first_in_bottom)
+	// 1px slack: the cell is (extent*scale + 2*pad + 1) wide, so the shape
+	// sits half a pixel off the cell center. The broken fallback (control 0
+	// anointed as anchor) skewed top-vs-bottom by 2.
+	d_lr := first_in_left - first_in_right
+	d_tb := first_in_top - first_in_bottom
+	assert(d_lr * d_lr <= 1)
+	assert(d_tb * d_tb <= 1)
+
+	print("alloff ok")
+	return 0
+}

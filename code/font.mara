@@ -131,20 +131,37 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 					break
 				}
 			}
-			if first_on_curve < 0 do first_on_curve = 0
 
 			// Build the node ring starting on-curve, inserting the implied
 			// on-curve midpoints between consecutive off-curve control points.
 			// nodes is reused across contours — empty it for this one.
 			nodes.len = 0
-			out_x := f32(outline.points[point_start + first_on_curve].x)
-			out_y := f32(outline.points[point_start + first_on_curve].y)
-			first_x := (out_x - x_origin) * scale
-			first_y := (y_origin - out_y) * scale
-			&nodes + Node{first_x, first_y, true}
 			have_off := false
 			off_x : f32 = 0.0
 			off_y : f32 = 0.0
+			if first_on_curve < 0 {
+				// No on-curve point at all — a ring of pure controls (how
+				// circles and dots often ship). Every anchor is implied; the
+				// start anchor is the midpoint between the last and first
+				// controls, and control 0 goes pending like any other.
+				first_on_curve = 0
+				point_a := outline.points[point_start]
+				point_b := outline.points[point_start + n_points - 1]
+				mid_x := (f32(point_a.x) + f32(point_b.x)) * 0.5
+				mid_y := (f32(point_a.y) + f32(point_b.y)) * 0.5
+				first_x := (mid_x - x_origin) * scale
+				first_y := (y_origin - mid_y) * scale
+				&nodes + Node{first_x, first_y, true}
+				off_x = (f32(point_a.x) - x_origin) * scale
+				off_y = (y_origin - f32(point_a.y)) * scale
+				have_off = true
+			else
+				out_x := f32(outline.points[point_start + first_on_curve].x)
+				out_y := f32(outline.points[point_start + first_on_curve].y)
+				first_x := (out_x - x_origin) * scale
+				first_y := (y_origin - out_y) * scale
+				&nodes + Node{first_x, first_y, true}
+			}
 			for j in 1..n_points {
 				ring_idx := first_on_curve + j
 				if ring_idx >= n_points do ring_idx -= n_points
