@@ -10,6 +10,7 @@ slice_add :: fun(dst: ^[]$T, src: []$T) {
 }
 
 slice_add_item :: fun(dst: ^[]$T, src: $T) {
+	assert(dst.len <= dst.cap)
 	dst[dst.len] = src
 	dst.len += 1
 }
