@@ -3,6 +3,10 @@ module asset
 use mara.string
 use mara.font
 
+DEFAULT_MESH :: Mesh{"=quad", 0}
+DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 0}  // 1x1 white pixel at (0,0)
+ATLAS_TEXTURE :: Texture{"ATLAS", {1, 1, 0, 0}, 0}      // entire atlas layer 0
+
 Texture :: struct {
     name:  str,
     uv:    [4]f32,  // scale_x, scale_y, offset_x, offset_y
@@ -21,9 +25,4 @@ Font :: struct {
     offset_x, offset_y: i32,  // Position within atlas layer
     metrics: Line_Metrics     // from mara.font, same type load_glyphs returns
     glyphs: [256]Glyph
-
-    test : Test
-    Test :: struct {
-    	x, y, z: f32
-    }
 }
