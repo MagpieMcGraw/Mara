@@ -340,6 +340,147 @@ dump_atlas_cell :: fun(atlas: ^[]byte,
 	}
 }
 
+// ============================================================================
+// Glyph parsing
+// ============================================================================
+// A parsed glyph lives outside the file-format TTF struct — it's the usable
+// form for rendering, and a self-contained VALUE: the arrays are inline, so
+// an Outline aliases nothing and outlives everything. parse_glyph slices one
+// glyph's record out of the font's glyf view and decodes it — glyphs are
+// parsed one at a time, only when asked for.
+
+MAX_GLYPH_CONTOURS :: 256
+MAX_GLYPH_POINTS   :: 4096
+
+Glyph_Point :: struct {
+	x        : i16
+	y        : i16
+	on_curve : bool
+}
+
+Outline :: struct {
+	// Byte-read straight off the record. num_contours < 0 is the compound
+	// marker (the arrays stay empty until composite resolution lands).
+	header : TTF.Glyph_Header
+
+	// end_pts[i] is the LAST point index of contour i; points is the
+	// flattened point list across all contours.
+	end_pts : [..MAX_GLYPH_CONTOURS]u16
+	points  : [..MAX_GLYPH_POINTS]Glyph_Point
+}
+
+// Decode glyph `glyph_index` out of the font's glyf table. Takes the TTF
+// rather than raw glyph bytes so the loca/glyf lookup lives here — and so
+// composite resolution can fetch component glyphs by index when it lands.
+parse_glyph :: fun(t: ^TTF, glyph_index: u16) -> Outline {
+	outline : Outline
+	goff := t.loca.offsets[glyph_index]
+	glen := t.loca.offsets[glyph_index + 1] - goff
+	if glen == 0 { return outline }   // empty glyph (e.g. space): no outline
+
+	glyph_bytes := t.glyf.data[goff : goff + glen]
+	outline.header = #big_endian glyph_bytes[0]
+	if outline.header.num_contours > 0 {
+		parse_simple_glyph_body(&outline, glyph_bytes)
+	}
+	// num_contours < 0: compound — skipped until composite resolution lands;
+	// the header keeps the marker.
+	return outline
+}
+
+// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
+GLYPH_FLAG_ON_CURVE :: u8(0x01)
+GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
+GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
+GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
+GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
+GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
+
+// Decode one simple glyph's body (what TTF.Glyph_On_Disk's Simple variant
+// documents) into the outline's arrays. Reads are bounds-checked against the
+// glyph's OWN slice — a desynced decode traps at the bad read instead of
+// wandering into the next glyph's bytes.
+parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
+	cursor := 10   // past the header
+	n_contours := outline.header.num_contours
+	assert(n_contours <= MAX_GLYPH_CONTOURS)
+
+	outline.end_pts.len = n_contours
+	for i in 0..n_contours {
+		outline.end_pts[i] = read_u16be(glyph_bytes[cursor])
+		cursor += 2
+	}
+	n_points := outline.end_pts[n_contours - 1] + 1
+	assert(n_points <= MAX_GLYPH_POINTS)
+	outline.points.len = n_points
+
+	// TrueType hinting bytecode sits inline between the endpoints and the
+	// flags. We don't interpret it; skip past.
+	instr_len := i32(read_u16be(glyph_bytes[cursor]))
+	cursor += 2 + instr_len
+
+	// Per-point flag bytes, with REPEAT-byte run-length decoding: when bit 3
+	// is set, the NEXT byte counts additional points sharing the flag.
+	// Decoded flat so the coord loops index by point cheaply.
+	flags : [..MAX_GLYPH_POINTS]u8
+	flags.len = n_points
+	p : i32 = 0
+	for p < n_points {
+		f := u8(glyph_bytes[cursor])
+		cursor += 1
+		flags[p] = f
+		p += 1
+		if (f & GLYPH_FLAG_REPEAT) != 0 {
+			repeat := i32(glyph_bytes[cursor])
+			cursor += 1
+			for r in 0..repeat {
+				flags[p] = f
+				p += 1
+			}
+		}
+	}
+
+	// X coordinates: each point's x is a signed delta from the previous
+	// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte) and
+	// X_SAME (sign-bit-for-short, or same-as-prev-for-long).
+	x : i32 = 0
+	for i in 0..n_points {
+		f := flags[i]
+		if (f & GLYPH_FLAG_X_SHORT) != 0 {
+			dx : i32 = glyph_bytes[cursor]
+			cursor += 1
+			if (f & GLYPH_FLAG_X_SAME) == 0 do dx = -dx
+			x += dx
+		elif (f & GLYPH_FLAG_X_SAME) == 0
+			x += read_i16be(glyph_bytes[cursor])
+			cursor += 2
+		}
+		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
+		outline.points[i].x = i16(x)
+		outline.points[i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
+	}
+
+	// Y coordinates: same shape with the Y bits.
+	y : i32 = 0
+	for i in 0..n_points {
+		f := flags[i]
+		if (f & GLYPH_FLAG_Y_SHORT) != 0 {
+			dy := i32(glyph_bytes[cursor])
+			cursor += 1
+			if (f & GLYPH_FLAG_Y_SAME) == 0 do dy = -dy
+			y += dy
+		elif (f & GLYPH_FLAG_Y_SAME) == 0
+			y += read_i16be(glyph_bytes[cursor])
+			cursor += 2
+		}
+		outline.points[i].y = i16(y)
+	}
+	// Every read above was checked against the slice; this catches the
+	// quieter failure where the decode finishes but consumed past the
+	// glyph's end without a read landing there.
+	assert(cursor <= glyph_bytes.len)
+}
+
 // Spec type aliases. Transparent aliases over the underlying integer width —
 // arithmetic on them behaves like the underlying int. The fixed-point ones
 // need explicit conversion to f32 to get their real-number value.
@@ -639,137 +780,3 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
 	}
 }
 
-// ============================================================================
-// Glyph parsing
-// ============================================================================
-// A parsed glyph lives outside the file-format TTF struct — it's the usable
-// form for rendering, and a self-contained VALUE: the arrays are inline, so
-// an Outline aliases nothing and outlives everything. parse_glyph slices one
-// glyph's record out of the font's glyf view and decodes it — glyphs are
-// parsed one at a time, only when asked for.
-
-MAX_GLYPH_CONTOURS :: 256
-MAX_GLYPH_POINTS   :: 4096
-
-Glyph_Point :: struct {
-	x        : i16
-	y        : i16
-	on_curve : bool
-}
-
-Outline :: struct {
-	// Byte-read straight off the record. num_contours < 0 is the compound
-	// marker (the arrays stay empty until composite resolution lands).
-	header : TTF.Glyph_Header
-
-	// end_pts[i] is the LAST point index of contour i; points is the
-	// flattened point list across all contours.
-	end_pts : [..MAX_GLYPH_CONTOURS]u16
-	points  : [..MAX_GLYPH_POINTS]Glyph_Point
-}
-
-// Decode glyph `glyph_index` out of the font's glyf table. Takes the TTF
-// rather than raw glyph bytes so the loca/glyf lookup lives here — and so
-// composite resolution can fetch component glyphs by index when it lands.
-parse_glyph :: fun(t: ^TTF, glyph_index: u16) -> Outline {
-	outline : Outline
-	goff := t.loca.offsets[glyph_index]
-	glen := t.loca.offsets[glyph_index + 1] - goff
-	if glen == 0 { return outline }   // empty glyph (e.g. space): no outline
-
-	glyph_bytes := t.glyf.data[goff : goff + glen]
-	outline.header = #big_endian glyph_bytes[0]
-	if outline.header.num_contours > 0 {
-		parse_simple_glyph_body(&outline, glyph_bytes)
-	}
-	// num_contours < 0: compound — skipped until composite resolution lands;
-	// the header keeps the marker.
-	return outline
-}
-
-// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
-GLYPH_FLAG_ON_CURVE :: u8(0x01)
-GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
-GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
-GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
-GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
-GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
-
-// Decode one simple glyph's body (what TTF.Glyph_On_Disk's Simple variant
-// documents) into the outline's arrays. Reads are bounds-checked against the
-// glyph's OWN slice — a desynced decode traps at the bad read instead of
-// wandering into the next glyph's bytes.
-parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
-	cursor : i64 = 10   // past the header
-	n_contours := i32(outline.header.num_contours)
-	assert(n_contours <= MAX_GLYPH_CONTOURS)
-
-	outline.end_pts.len = n_contours
-	for i in 0..n_contours {
-		outline.end_pts[i] = read_u16be(glyph_bytes[cursor])
-		cursor += 2
-	}
-	n_points := i32(outline.end_pts[n_contours - 1]) + 1
-	assert(n_points <= MAX_GLYPH_POINTS)
-	outline.points.len = n_points
-
-	// TrueType hinting bytecode sits inline between the endpoints and the
-	// flags. We don't interpret it; skip past.
-	instr_len := i32(read_u16be(glyph_bytes[cursor]))
-	cursor += 2 + instr_len
-
-	// Per-point flag bytes, with REPEAT-byte run-length decoding: when bit 3
-	// is set, the NEXT byte counts additional points sharing the flag.
-	// Decoded flat so the coord loops index by point cheaply.
-	flags : [..MAX_GLYPH_POINTS]u8
-	flags.len = n_points
-	p : i32 = 0
-	for p < n_points {
-		f := u8(glyph_bytes[cursor]); cursor += 1
-		flags[p] = f
-		p += 1
-		if (f & GLYPH_FLAG_REPEAT) != 0 {
-			repeat := i32(glyph_bytes[cursor]); cursor += 1
-			for r in 0..repeat {
-				flags[p] = f
-				p += 1
-			}
-		}
-	}
-
-	// X coordinates: each point's x is a signed delta from the previous
-	// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte) and
-	// X_SAME (sign-bit-for-short, or same-as-prev-for-long).
-	x : i32 = 0
-	for i in 0..n_points {
-		f := flags[i]
-		if (f & GLYPH_FLAG_X_SHORT) != 0 {
-			dx := i32(glyph_bytes[cursor]); cursor += 1
-			if (f & GLYPH_FLAG_X_SAME) == 0 { dx = -dx }
-			x += dx
-		elif (f & GLYPH_FLAG_X_SAME) == 0
-			x += read_i16be(glyph_bytes[cursor]); cursor += 2
-		}
-		// X_SAME && !X_SHORT: no bytes — delta is 0, x unchanged.
-		outline.points[i].x = i16(x)
-		outline.points[i].on_curve = (f & GLYPH_FLAG_ON_CURVE) != 0
-	}
-
-	// Y coordinates: same shape with the Y bits.
-	y : i32 = 0
-	for i in 0..n_points {
-		f := flags[i]
-		if (f & GLYPH_FLAG_Y_SHORT) != 0 {
-			dy := i32(glyph_bytes[cursor]); cursor += 1
-			if (f & GLYPH_FLAG_Y_SAME) == 0 { dy = -dy }
-			y += dy
-		elif (f & GLYPH_FLAG_Y_SAME) == 0
-			y += read_i16be(glyph_bytes[cursor]); cursor += 2
-		}
-		outline.points[i].y = i16(y)
-	}
-	// Every read above was checked against the slice; this catches the
-	// quieter failure where the decode finishes but consumed past the
-	// glyph's end without a read landing there.
-	assert(cursor <= glyph_bytes.len)
-}
