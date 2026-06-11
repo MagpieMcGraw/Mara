@@ -2570,6 +2570,19 @@ parse_match :: proc(p: ^Parser) -> Stmt {
     return stmt
 }
 
+// Loop body: single-statement `do stmt` form or a `{ ... }` block.
+// Shared by all four for-loop forms so `do` behaves uniformly.
+parse_loop_body :: proc(p: ^Parser) -> [dynamic]Stmt {
+    skip_newlines(p)
+    if current_kind(p) == .Do {
+        advance(p) // consume 'do'
+        body: [dynamic]Stmt
+        append(&body, parse_stmt(p))
+        return body
+    }
+    return parse_block(p)
+}
+
 parse_for :: proc(p: ^Parser) -> Stmt {
     start := token_span(current(p))
     advance(p) // consume 'for'
@@ -2593,9 +2606,12 @@ parse_for :: proc(p: ^Parser) -> Stmt {
             }
         }
 
-        // Check for optional type annotation: `i : i32 in ...`
+        // Check for optional type annotation: `i : i32 in ...`.
+        // `:` followed by `=` is a C-style init (`for k := 0; ...`), not an
+        // annotation — parsing a type there would record a hard error before
+        // the C-style backtrack below gets its turn.
         iter_type_expr: Type_Expr = nil
-        if current_kind(p) == .Colon {
+        if current_kind(p) == .Colon && peek_kind(p) != .Equals {
             advance(p) // consume ':'
             iter_type_expr = parse_type_expr(p)
         }
@@ -2619,8 +2635,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
                 p.no_struct_lit = true
                 high := parse_expr(p)
                 p.no_struct_lit = false
-                skip_newlines(p)
-                body := parse_block(p)
+                body := parse_loop_body(p)
 
                 stmt := new(Stmt_For)
                 stmt.is_range = true
@@ -2633,8 +2648,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
                 return stmt
             } else {
                 // Collection-for: `for elem in coll { }` or `for elem, idx in coll { }`
-                skip_newlines(p)
-                body := parse_block(p)
+                body := parse_loop_body(p)
 
                 elem_var := first_var
                 index_var := has_second ? second_var : ""
@@ -2668,8 +2682,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
         p.no_struct_lit = false
         expect(p, .Semicolon)
         post_stmt, _ := try_parse_assign(p)
-        skip_newlines(p)
-        body := parse_block(p)
+        body := parse_loop_body(p)
 
         stmt := new(Stmt_For)
         stmt.init = init_stmt
@@ -2685,16 +2698,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
     p.no_struct_lit = true
     condition := parse_expr(p)
     p.no_struct_lit = false
-    skip_newlines(p)
-
-    // Single-statement form: for cond do stmt
-    body: [dynamic]Stmt
-    if current_kind(p) == .Do {
-        advance(p) // consume 'do'
-        append(&body, parse_stmt(p))
-    } else {
-        body = parse_block(p)
-    }
+    body := parse_loop_body(p)
 
     stmt := new(Stmt_For)
     stmt.condition = condition
