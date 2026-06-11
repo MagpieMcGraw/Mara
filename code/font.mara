@@ -20,7 +20,7 @@ Line_Metrics :: struct {
 	ascent, descent, line_gap : f32
 }
 
-load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr)
+load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstring)
 -> [3 * MB]byte, Line_Metrics
 {
 	ttf_file : [..2 * MB]byte

@@ -30,5 +30,5 @@ Arena :: struct {
 
 Program :: struct (ar_shape: ~Arena = void) {
 	scope_allocator: ar_shape
-	args: [..64][, 0]utf8
+	args: [..64][]utf8
 }

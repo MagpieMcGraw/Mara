@@ -77,8 +77,7 @@ Slice_Fields :: struct { len, cap, ptr: int }
 SLICE :: Slice_Fields{len = 0, cap = 1, ptr = 2}
 PARTIAL_ELEMENTS_FIELD :: 3
 
-// Build the LLVM IR type for a `[..N]T` partial array. `cap` includes the
-// sentinel slot if applicable; caller must pre-add the +1.
+// Build the LLVM IR type for a `[..N]T` partial array.
 partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
     return strings.concatenate({
         "{ ", slice_layout.len_ir, ", ", slice_layout.cap_ir, ", ptr, [",
@@ -92,8 +91,8 @@ partial_array_ir_type :: proc(elem_ir: string, cap: int) -> string {
 // in gen_slice_field_store — it survived because there's no parallel
 // partial-array writer to disagree), and the address chain collapses both
 // into final_kind=.Slice, losing the distinction. The end-state handler in
-// gen_field_access has to re-discriminate via type cast to recover sentinel
-// / elem info. Fine while no behaviour needs to branch on slice-vs-partial-
+// gen_field_access has to re-discriminate via type cast to recover
+// elem info. Fine while no behaviour needs to branch on slice-vs-partial-
 // array, but if per-shape features show up later, tag the chain (e.g.
 // .Slice_Header with a source enum) or split the kinds. Revisit when that
 // pressure appears.
@@ -109,9 +108,7 @@ Array_Var :: struct {
     capacity:     int,    // compile-time capacity N (0 for VLAs)
     capacity_val: string, // LLVM IR value for runtime capacity (VLA only, "" for fixed)
     elem_type:    string, // LLVM element type: "i64", "double", "ptr", etc.
-    is_utf8:      bool,   // true for utf8 arrays — last byte reserved for null terminator
-    has_sentinel: bool,   // true for [N, 0]T sentinel-terminated arrays
-    sentinel:     int,    // sentinel value (e.g. 0 for null-terminated)
+    is_utf8:      bool,   // true for utf8 arrays — drives string-vs-array print formatting
 }
 
 // Info about a slice variable in codegen
@@ -121,8 +118,6 @@ Slice_Var :: struct {
     alloca:       string, // alloca for the slice header struct
     elem_type:    string, // LLVM element type: "i64", "double", etc.
     is_utf8:      bool,   // true for []utf8 slices — drives string-vs-array print formatting
-    has_sentinel: bool,   // true for [, S]T sentinel-terminated slices — last element reserved
-    sentinel:     int,    // sentinel value (e.g. 0 for null-terminated utf8). Meaningful only when has_sentinel.
     // Sized slice of slice-bearing struct: the appended elements' slice
     // fields point into this pool buffer instead of fresh per-call allocas.
     // Empty when the slice has no associated pool.
@@ -225,10 +220,10 @@ Address_Chain :: struct {
     struct_name: string,             // if final is struct
     array_cap:   int,                // if final is array — used during walks for index steps
     array_elem:  string,             // if final is array — used during walks for index steps
-    // Source-of-truth for array-destination flag info (is_utf8 / has_sentinel /
-    // sentinel). The chain doesn't snapshot these on itself — consumers call
-    // chain_array_flags() which reads through to either the originating field
-    // (via field_array_info) or to the root Var's captured flags. Adding a new
+    // Source-of-truth for array-destination flag info (is_utf8). The chain
+    // doesn't snapshot these on itself — consumers call chain_array_flags()
+    // which reads through to either the originating field (via
+    // field_array_info) or to the root Var's captured flags. Adding a new
     // flag means one helper change, not one assignment per chain-build site —
     // that was the drift that caused tag prints to silently emit nothing.
     array_source: Chain_Array_Source,
@@ -242,23 +237,21 @@ Chain_Array_Source :: union {
 }
 
 Chain_Array_Root :: struct {
-    is_utf8:      bool,
-    has_sentinel: bool,
-    sentinel:     int,
+    is_utf8: bool,
 }
 
 // Resolve an array destination's flag fields from the chain's array_source.
 // Returns false if the chain doesn't have an array destination at all.
-chain_array_flags :: proc(chain: ^Address_Chain) -> (is_utf8: bool, has_sentinel: bool, sentinel: int, ok: bool) {
+chain_array_flags :: proc(chain: ^Address_Chain) -> (is_utf8: bool, ok: bool) {
     switch s in chain.array_source {
     case ^Struct_Type_Field:
-        if _, _, autf8, asent, asentv, info_ok := field_array_info(s); info_ok {
-            return autf8, asent, asentv, true
+        if _, _, autf8, info_ok := field_array_info(s); info_ok {
+            return autf8, true
         }
     case Chain_Array_Root:
-        return s.is_utf8, s.has_sentinel, s.sentinel, true
+        return s.is_utf8, true
     }
-    return false, false, 0, false
+    return false, false
 }
 
 // One local variable in a struct-returning function whose backing storage
@@ -272,8 +265,6 @@ Escape_Local :: struct {
     elem_type:    string,    // LLVM element type
     elem_size:    int,       // bytes per element
     is_utf8:      bool,
-    has_sentinel: bool,
-    sentinel:     int,
 }
 
 // Info about a user-defined function's signature for struct-aware calling
@@ -694,9 +685,7 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             chain.array_cap = av.capacity
             chain.array_elem = av.elem_type
             chain.array_source = Chain_Array_Root{
-                is_utf8      = av.is_utf8,
-                has_sentinel = av.has_sentinel,
-                sentinel     = av.sentinel,
+                is_utf8 = av.is_utf8,
             }
             return true
         }
@@ -766,7 +755,7 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             })
 
             // Determine what this field resolves to
-            if acap, aelem, _, _, _, ok := field_array_info(f); ok {
+            if acap, aelem, _, ok := field_array_info(f); ok {
                 // Array field — flag info comes from `f` via chain_array_flags
                 chain.final_type = fmt.tprintf("[%d x %s]", acap, aelem)
                 chain.final_kind = .Array
@@ -845,7 +834,7 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             // can itself be an array/struct/slice, and subsequent steps in
             // the chain need to keep drilling into it.
             inner_f := &up.inner_st.fields[up.inner_index]
-            if acap, aelem, _, _, _, ok := field_array_info(inner_f); ok {
+            if acap, aelem, _, ok := field_array_info(inner_f); ok {
                 chain.final_type = fmt.tprintf("[%d x %s]", acap, aelem)
                 chain.final_kind = .Array
                 chain.array_cap = acap
@@ -1188,8 +1177,6 @@ analyze_escape_locals :: proc(g: ^Codegen, cf: ^Checked_Scope, info: ^Fun_Info) 
             elem_type    = elem_ir,
             elem_size    = elem_sz,
             is_utf8      = utf8,
-            has_sentinel = fa.has_sentinel,
-            sentinel     = fa.sentinel,
         })
     }
 }
@@ -1245,9 +1232,7 @@ struct_has_slice_fields :: proc(t: Type) -> bool {
 escape_total_bytes :: proc(info: ^Fun_Info) -> int {
     total := 0
     for &el in info.escape_locals {
-        alloc_cap := el.cap
-        if el.has_sentinel { alloc_cap += 1 }
-        total += alloc_cap * el.elem_size
+        total += el.cap * el.elem_size
     }
     return total
 }
@@ -2254,21 +2239,12 @@ clear_temp_results :: proc(g: ^Codegen) {
 
 // Get the LLVM array type string for an Array_Var
 array_var_type :: proc(av: ^Array_Var) -> string {
-    alloc_cap := av.capacity
-    if av.has_sentinel { alloc_cap += 1 }
-    return fmt.tprintf("[%d x %s]", alloc_cap, av.elem_type)
+    return fmt.tprintf("[%d x %s]", av.capacity, av.elem_type)
 }
 
-// Usable capacity: hide the sentinel slot from user-facing bounds.
-// Switched from is_utf8 to has_sentinel — the bit that actually says "one
-// slot is reserved". They coincide for every utf8 array today (the type
-// checker forces utf8 storage to declare a sentinel), but a hypothetical
-// `[10, -1]i64` would have has_sentinel=true and is_utf8=false; the right
-// rule is to hide the slot whenever it exists.
+// User-facing capacity. (Sentinel arrays used to reserve one hidden slot
+// here; with sentinel types removed, capacity is just capacity.)
 usable_cap :: proc(av: ^Array_Var) -> int {
-    if av.has_sentinel {
-        return av.capacity - 1
-    }
     return av.capacity
 }
 
@@ -2357,11 +2333,11 @@ field_array_elem :: proc(f: ^Struct_Type_Field) -> string {
 // each Array_Var construction site, including the brittle inference
 // `is_utf8 = (aelem == "i8")` that would have falsely tagged a [N]byte
 // field as utf8.
-field_array_info :: proc(f: ^Struct_Type_Field) -> (cap: int, elem_ir: string, is_utf8: bool, has_sentinel: bool, sentinel: int, ok: bool) {
+field_array_info :: proc(f: ^Struct_Type_Field) -> (cap: int, elem_ir: string, is_utf8: bool, ok: bool) {
     fa, fa_ok := distinct_base(f.type_).(^Type_Fixed_Array)
     if !fa_ok { return }
     _, is_utf8 = fa.elem.(Type_Utf8)
-    return fa.size, llvm_type_from_checker(fa.elem), is_utf8, fa.has_sentinel, fa.sentinel, true
+    return fa.size, llvm_type_from_checker(fa.elem), is_utf8, true
 }
 
 // Get the LLVM type name for a union, e.g. "%union.Shape"
@@ -2480,19 +2456,11 @@ llvm_type_from_checker :: proc(t: Type) -> string {
         return "ptr" // callable fun (function pointer)
     case ^Type_Fixed_Array:
         elem_t := llvm_type_from_checker(v.elem)
-        alloc_size := v.size
-        if v.has_sentinel {
-            alloc_size += 1
-        }
-        return fmt.tprintf("[%d x %s]", alloc_size, elem_t)
+        return fmt.tprintf("[%d x %s]", v.size, elem_t)
     case ^Type_Slice:       return SLICE_IR_TYPE
     case ^Type_Partial_Array:
         elem_t := llvm_type_from_checker(v.elem)
-        alloc_size := v.size
-        if v.has_sentinel {
-            alloc_size += 1
-        }
-        return partial_array_ir_type(elem_t, alloc_size)
+        return partial_array_ir_type(elem_t, v.size)
     case ^Type_Enum:
         if v.tag_type != "" { return tag_type_to_ir(v.tag_type) }
         return "i64"
@@ -2732,8 +2700,8 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) -> string {
 emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: string, span: Span = {}, w_override: string = "") {
     // Compile-time elision: if both idx and len_val are integer literals
     // and 0 <= idx < len_val, the check would always pass — skip emission
-    // entirely. Covers `arr[3]` against a fixed-size array, sentinel index
-    // accesses, and other constant-fold paths.
+    // entirely. Covers `arr[3]` against a fixed-size array and other
+    // constant-fold paths.
     if can_elide_bounds_check(idx, len_val) {
         return
     }
@@ -3267,18 +3235,14 @@ compute_struct_backing :: proc(g: ^Codegen, sd: ^Scope_Body) -> int {
     total := 0
     for &f in sd.fields {
         if cap_n, sl, ok := sized_slice_info(g, f.type_); ok {
-            alloc_cap := cap_n
-            if sl.has_sentinel { alloc_cap += 1 }
             elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
-            total += alloc_cap * elem_bytes
+            total += cap_n * elem_bytes
             continue
         }
         if fa, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok {
             if cap_n, sl, ok := sized_slice_info(g, fa.elem); ok {
-                alloc_cap := cap_n
-                if sl.has_sentinel { alloc_cap += 1 }
                 elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
-                total += fa.size * alloc_cap * elem_bytes
+                total += fa.size * cap_n * elem_bytes
             }
         }
     }

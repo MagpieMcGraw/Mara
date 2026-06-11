@@ -143,9 +143,6 @@ type_expr_str :: proc(te: Type_Expr) -> string {
     case ^Type_Pointer:
         return fmt.tprintf("^%s", type_expr_str(v.elem))
     case ^Type_Slice_Expr:
-        if v.has_sentinel {
-            return fmt.tprintf("[, %d]%s", v.sentinel, type_expr_str(v.elem))
-        }
         return fmt.tprintf("[]%s", type_expr_str(v.elem))
     case ^Type_Partial_Array_Expr:
         size_str: string
@@ -153,9 +150,6 @@ type_expr_str :: proc(te: Type_Expr) -> string {
             size_str = v.size_name
         } else {
             size_str = fmt.tprintf("%d", v.size)
-        }
-        if v.has_sentinel {
-            return fmt.tprintf("[..%s, %d]%s", size_str, v.sentinel, type_expr_str(v.elem))
         }
         return fmt.tprintf("[..%s]%s", size_str, type_expr_str(v.elem))
     case ^Type_Generic_Instance:
@@ -350,6 +344,7 @@ PARSE_BARE_INTRINSIC_REMOVED      :: "bare `intrinsic` body is no longer support
 PARSE_MALFORMED_USE_INCLUDE       :: "malformed use/include statement"
 PARSE_EXPOSE_NEEDS_FUN_DECL       :: "`#expose` must precede a `name :: fun(...)` declaration"
 PARSE_PACKED_NEEDS_STRUCT_DECL    :: "`#packed` goes after '::', as in `Name :: #packed struct`"
+PARSE_SENTINEL_REMOVED            :: "sentinel arrays were removed — use the plain array/slice type; cstring conversion writes the terminator at the FFI boundary"
 PARSE_BIG_ENDIAN_NEEDS_BYTE_READ  :: "`#big_endian` must precede a byte-buffer read — `buf[off]` or `buf[lo:hi]`"
 PARSE_USING_NOT_ALLOWED_ON_INCLUDE :: "`using` is not allowed before `use`/`include` — use bare `use %s` (private) or `include %s` (re-export), or `name :: use path` for qualified access"
 PARSE_INCLUDE_NEEDS_COLON_COLON   :: "`:=` is not allowed for `use`/`include` — modules are comptime, use `name :: use path` (private) or `name :: include path` (re-export)"

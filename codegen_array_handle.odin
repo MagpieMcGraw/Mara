@@ -9,7 +9,7 @@ import "core:fmt"
 // Most operations on these shapes are identical once you have the right
 // pointers in hand; the codegen used to branch by source-noun at every site
 // and re-derive the same facts in each branch, which is where the
-// sentinel / print / cap bugs came from.
+// print / cap bugs came from.
 //
 // Two pointers live on the handle:
 //   header_ptr   — non-empty for slices and partial arrays; points at a
@@ -20,9 +20,8 @@ import "core:fmt"
 //                  arrays.
 // Exactly one of the two is set on a valid handle.
 //
-// For fixed arrays, `static_cap` is the user-visible capacity (matching
-// `Array_Var.capacity`); the storage includes one extra slot when
-// has_sentinel is true. For slices and partial arrays, cap is held in the
+// For fixed arrays, `static_cap` is the capacity (matching
+// `Array_Var.capacity`). For slices and partial arrays, cap is held in the
 // header and read at runtime — static_cap stays 0.
 Array_Handle :: struct {
     header_ptr:     string,
@@ -30,8 +29,6 @@ Array_Handle :: struct {
     elem_type:      string,
     static_cap:     int,
     static_cap_str: string, // SSA value of cap for VLA fixed arrays; "" otherwise
-    has_sentinel:   bool,
-    sentinel_value: int,
     is_utf8:        bool,
 }
 
@@ -68,19 +65,17 @@ resolve_array_handle :: proc(g: ^Codegen, expr: Expr) -> (Array_Handle, bool) {
     }
     if lit, ok := expr.(^Expr_String); ok {
         // Mint a fixed-array handle pointing at the literal's data. The
-        // global is emitted with a trailing \0 (sentinel), and `static_cap`
-        // is the byte length of the string body — verbs that bound by len
-        // will see exactly the literal's content.
+        // global is emitted with a trailing \0 (for free literal→cstring
+        // conversion), and `static_cap` is the byte length of the string
+        // body — verbs that bound by len see exactly the literal's content.
         name, _ := get_string_literal(g, lit.value)
         data_ptr := fresh_tmp(g)
         emit_string_gep(g, data_ptr, len(lit.value)+1, name)
         return Array_Handle{
-            fixed_alloca   = data_ptr,
-            elem_type      = "i8",
-            static_cap     = len(lit.value),
-            has_sentinel   = true,
-            sentinel_value = 0,
-            is_utf8        = true,
+            fixed_alloca = data_ptr,
+            elem_type    = "i8",
+            static_cap   = len(lit.value),
+            is_utf8      = true,
         }, true
     }
     return {}, false
@@ -92,19 +87,15 @@ array_handle_from_array_var :: proc(av: ^Array_Var) -> Array_Handle {
         elem_type      = av.elem_type,
         static_cap     = av.capacity,
         static_cap_str = av.capacity_val,
-        has_sentinel   = av.has_sentinel,
-        sentinel_value = av.sentinel,
         is_utf8        = av.is_utf8,
     }
 }
 
 array_handle_from_slice_var :: proc(sv: ^Slice_Var) -> Array_Handle {
     return Array_Handle{
-        header_ptr     = sv.alloca,
-        elem_type      = sv.elem_type,
-        has_sentinel   = sv.has_sentinel,
-        sentinel_value = sv.sentinel,
-        is_utf8        = sv.is_utf8,
+        header_ptr = sv.alloca,
+        elem_type  = sv.elem_type,
+        is_utf8    = sv.is_utf8,
     }
 }
 
@@ -122,23 +113,12 @@ emit_array_len :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     return out
 }
 
-// Load (or compute) the *physical* (raw) capacity at the slice header's
-// natural width (slice_layout.cap_ir, i32 today). For sentinel arrays
-// this includes the reserved sentinel slot; use emit_array_cap_user to
-// hide it.
+// Load (or compute) the capacity at the slice header's natural width
+// (slice_layout.cap_ir).
 emit_array_raw_cap :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     if handle_is_fixed(h) {
-        if h.static_cap_str != "" {
-            if h.has_sentinel {
-                out := fresh_tmp(g)
-                emit(g, "  %s = add %s %s, 1", out, slice_layout.cap_ir, h.static_cap_str)
-                return out
-            }
-            return h.static_cap_str
-        }
-        raw := h.static_cap
-        if h.has_sentinel { raw += 1 }
-        return fmt.tprintf("%d", raw)
+        if h.static_cap_str != "" { return h.static_cap_str }
+        return fmt.tprintf("%d", h.static_cap)
     }
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, h.header_ptr, SLICE.cap)
@@ -147,20 +127,11 @@ emit_array_raw_cap :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
     return out
 }
 
-// User-facing capacity: raw cap with the sentinel slot hidden when
-// applicable. Returns at slice header's cap width.
+// User-facing capacity. Identical to emit_array_raw_cap since sentinel
+// types (and their hidden reserved slot) were removed; kept as a separate
+// name because call sites express intent ("bound user writes") with it.
 emit_array_cap_user :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
-    if handle_is_fixed(h) {
-        if h.static_cap_str != "" { return h.static_cap_str }
-        n := h.static_cap
-        if h.has_sentinel { n -= 1 }
-        return fmt.tprintf("%d", n)
-    }
-    raw := emit_array_raw_cap(g, h)
-    if !h.has_sentinel { return raw }
-    out := fresh_tmp(g)
-    emit(g, "  %s = sub %s %s, 1", out, slice_layout.cap_ir, raw)
-    return out
+    return emit_array_raw_cap(g, h)
 }
 
 // Return a ptr-typed SSA value pointing at the array's first element.
@@ -176,8 +147,8 @@ emit_array_data :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
 }
 
 // Emit `printf("%.*s", len, data)` for a utf8 array. Bounded printing —
-// works for sentinel and non-sentinel storage, fixed and dynamic. Callers
-// should have already established that the handle is utf8.
+// works for fixed and dynamic storage. Callers should have already
+// established that the handle is utf8.
 emit_array_print :: proc(g: ^Codegen, h: ^Array_Handle) {
     fmt_name, fmt_len := get_string_literal(g, "%.*s")
     fmt_ptr := fresh_tmp(g)

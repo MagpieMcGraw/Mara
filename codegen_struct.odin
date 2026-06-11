@@ -147,8 +147,8 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
 
 // Store a value into a freshly-constructed struct/variant field at `gep` (a
 // pointer to the field slot). A partial-array / string field — including
-// distinct-over-partial-array like `cstr` — needs its header stamped and the
-// value copied element-wise (string → bytes + len + sentinel; partial-array
+// distinct-over-partial-array like `str` — needs its header stamped and the
+// value copied element-wise (string → bytes + len; partial-array
 // source → partial_array_copy). A plain typed store of a string literal would
 // store a `ptr` where the `{len,cap,ptr,[N x T]}` aggregate is expected
 // (invalid IR) and never set len. Returns true if it handled the field; false
@@ -159,7 +159,6 @@ gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, ge
     if !pa_ok { return false }
     elem_t := llvm_type_from_checker(pa.elem)
     alloc_cap := pa.size
-    if pa.has_sentinel { alloc_cap += 1 }
     elem_bytes := elem_byte_size(elem_t, g.checked)
     stamp_partial_array_header(g, gep, pa)
     gen_partial_array_init_value(g, gep, value, elem_t, elem_bytes, alloc_cap, pa, span, field.name)
@@ -578,19 +577,17 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             set_field_result(g, Struct_Var{alloca = addr, struct_name = chain.struct_name})
             return addr
         case .Array:
-            autf8, asent, asentv, _ := chain_array_flags(&chain)
+            autf8, _ := chain_array_flags(&chain)
             av := Array_Var{
-                alloca       = addr,
-                capacity     = chain.array_cap,
-                elem_type    = chain.array_elem,
-                is_utf8      = autf8,
-                has_sentinel = asent,
-                sentinel     = asentv,
+                alloca    = addr,
+                capacity  = chain.array_cap,
+                elem_type = chain.array_elem,
+                is_utf8   = autf8,
             }
             set_field_result(g, av)
             return addr
         case .Slice:
-            // Determine elem type / sentinel from the last step's field def.
+            // Determine elem type from the last step's field def.
             // .Slice covers both Type_Slice and Type_Partial_Array fields — they
             // share the first slice_header_bytes of layout, so a Slice_Var pointing
             // at the field's storage handles .len/.cap/.ptr reads for either.
@@ -602,23 +599,17 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                 codegen_fatal(g, e.span, CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST)
             }
             elem_t := ""
-            sentinel := false
-            sentinel_val := 0
             utf8 := false
             if sl, sl_ok := distinct_base(sf.field_def.type_).(^Type_Slice); sl_ok {
                 elem_t = llvm_type_from_checker(sl.elem)
-                sentinel = sl.has_sentinel
-                sentinel_val = sl.sentinel
                 _, utf8 = sl.elem.(Type_Utf8)
             } else if pa, pa_ok := distinct_base(sf.field_def.type_).(^Type_Partial_Array); pa_ok {
                 elem_t = llvm_type_from_checker(pa.elem)
-                sentinel = pa.has_sentinel
-                sentinel_val = pa.sentinel
                 _, utf8 = pa.elem.(Type_Utf8)
             } else {
                 codegen_fatal(g, e.span, CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST_2)
             }
-            set_field_result(g, Slice_Var{alloca = addr, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel, sentinel = sentinel_val})
+            set_field_result(g, Slice_Var{alloca = addr, elem_type = elem_t, is_utf8 = utf8})
             return addr
         }
     }
@@ -690,30 +681,24 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                         gep := fresh_tmp(g)
                         emit_field_gep_into(g, gep, inner_llvm, fr.alloca, idx)
                         // Array field in chained access
-                        if acap, aelem, autf8, asent, asentv, ok := field_array_info(f); ok {
+                        if acap, aelem, autf8, ok := field_array_info(f); ok {
                             set_field_result(g, Array_Var{
-                                alloca       = gep,
-                                capacity     = acap,
-                                elem_type    = aelem,
-                                is_utf8      = autf8,
-                                has_sentinel = asent,
-                                sentinel     = asentv,
+                                alloca    = gep,
+                                capacity  = acap,
+                                elem_type = aelem,
+                                is_utf8   = autf8,
                             })
                             return gep
                         }
                         // Slice field in chained access
                         if ft == SLICE_IR_TYPE {
                             elem_t := "i8"
-                            sentinel := false
-                            sentinel_val := 0
                             utf8 := false
                             if sl, sl_ok := f.type_.(^Type_Slice); sl_ok {
                                 elem_t = llvm_type_from_checker(sl.elem)
-                                sentinel = sl.has_sentinel
-                                sentinel_val = sl.sentinel
                                 _, utf8 = sl.elem.(Type_Utf8)
                             }
-                            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel, sentinel = sentinel_val})
+                            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8})
                             return gep
                         }
                         // Sub-struct field in chained access
@@ -769,30 +754,24 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     gep := fresh_tmp(g)
                     emit_field_gep_into(g, gep, inner_llvm, ptr, fidx)
                     // Fixed-array field
-                    if acap, aelem, autf8, asent, asentv, ok := field_array_info(f); ok {
+                    if acap, aelem, autf8, ok := field_array_info(f); ok {
                         set_field_result(g, Array_Var{
-                            alloca       = gep,
-                            capacity     = acap,
-                            elem_type    = aelem,
-                            is_utf8      = autf8,
-                            has_sentinel = asent,
-                            sentinel     = asentv,
+                            alloca    = gep,
+                            capacity  = acap,
+                            elem_type = aelem,
+                            is_utf8   = autf8,
                         })
                         return gep
                     }
                     // Slice field
                     if ft == SLICE_IR_TYPE {
                         elem_t := "i8"
-                        sentinel := false
-                        sentinel_val := 0
                         utf8 := false
                         if sl, sl_ok := f.type_.(^Type_Slice); sl_ok {
                             elem_t = llvm_type_from_checker(sl.elem)
-                            sentinel = sl.has_sentinel
-                            sentinel_val = sl.sentinel
                             _, utf8 = sl.elem.(Type_Utf8)
                         }
-                        set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel, sentinel = sentinel_val})
+                        set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8})
                         return gep
                     }
                     // Sub-struct field
@@ -849,8 +828,8 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
     }
 
     // Slice / partial-array field access: sl.ptr, sl.len, sl.cap.
-    // Routes through the array handle so the sentinel-hidden cap convention
-    // matches the cap() builtin and emit_print_arg.
+    // Routes through the array handle so the cap convention matches the
+    // cap() builtin and emit_print_arg.
     if _, sv_ok := get_slice(g, ident.name); sv_ok {
         if e.field == "ptr" || e.field == "len" || e.field == "cap" {
             h, _ := resolve_array_handle(g, ident)
@@ -881,14 +860,12 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
             return gep
         }
         // Array field — register as Array_Var and return data pointer
-        if acap, aelem, autf8, asent, asentv, ok := field_array_info(f); ok {
+        if acap, aelem, autf8, ok := field_array_info(f); ok {
             set_field_result(g, Array_Var{
-                alloca       = gep,
-                capacity     = acap,
-                elem_type    = aelem,
-                is_utf8      = autf8,
-                has_sentinel = asent,
-                sentinel     = asentv,
+                alloca    = gep,
+                capacity  = acap,
+                elem_type = aelem,
+                is_utf8   = autf8,
             })
             return gep
         }
@@ -897,21 +874,15 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         // handles subsequent .len/.cap/.ptr reads for either shape.
         if ft == SLICE_IR_TYPE || strings.has_prefix(ft, PARTIAL_ARRAY_HEADER_PREFIX) {
             elem_t := "i8"
-            sentinel := false
-            sentinel_val := 0
             utf8 := false
             if sl, sl_ok := distinct_base(f.type_).(^Type_Slice); sl_ok {
                 elem_t = llvm_type_from_checker(sl.elem)
-                sentinel = sl.has_sentinel
-                sentinel_val = sl.sentinel
                 _, utf8 = sl.elem.(Type_Utf8)
             } else if pa, pa_ok := distinct_base(f.type_).(^Type_Partial_Array); pa_ok {
                 elem_t = llvm_type_from_checker(pa.elem)
-                sentinel = pa.has_sentinel
-                sentinel_val = pa.sentinel
                 _, utf8 = pa.elem.(Type_Utf8)
             }
-            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8, has_sentinel = sentinel, sentinel = sentinel_val})
+            set_field_result(g, Slice_Var{alloca = gep, elem_type = elem_t, is_utf8 = utf8})
             return gep
         }
         // If the field is a sub-struct (not using), register for chained access
@@ -996,9 +967,8 @@ gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, arr
 //   - swizzle field access (a.xy → temp)  → per-element copy from swizzle result
 //   - array-returning function call       → NRVO via gen_call_into_array
 //   - fallback expression                 → gen_expr + memcpy from claim_call_result
-gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, has_sentinel: bool = false) {
+gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false) {
     alloc_cap := capacity
-    if has_sentinel { alloc_cap += 1 }
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
     ebs := elem_byte_size(elem_type, g.checked)
     total_bytes := alloc_cap * ebs
@@ -1394,7 +1364,6 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
     for &f, fi in st.fields {
         if cap_n, sl, ok := sized_slice_info(g, f.type_); ok {
             alloc_cap := cap_n
-            if sl.has_sentinel { alloc_cap += 1 }
             elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
             field_size := alloc_cap * elem_bytes
 
@@ -1414,7 +1383,6 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
         if fa, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok {
             if cap_n, sl, ok := sized_slice_info(g, fa.elem); ok {
                 alloc_cap := cap_n
-                if sl.has_sentinel { alloc_cap += 1 }
                 elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
                 slot_bytes := alloc_cap * elem_bytes
 
@@ -1444,12 +1412,11 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
             // Partial-array field: header lives at the field's start, inline
             // storage at field 3 of the partial-array shape. The shared
             // memset zeroed both already; here we anchor ptr → &elements and
-            // write the physical cap (N+1 when sentinel). Mirrors the local
-            // partial-array decl in codegen_stmt.odin's Type_Partial_Array
-            // branch. Without this, `Holder{0}` left h.name.cap = 0 and the
-            // first append hit a 0-cap bounds failure.
+            // write the cap. Mirrors the local partial-array decl in
+            // codegen_stmt.odin's Type_Partial_Array branch. Without this,
+            // `Holder{0}` left h.name.cap = 0 and the first append hit a
+            // 0-cap bounds failure.
             alloc_cap := pa.size
-            if pa.has_sentinel { alloc_cap += 1 }
             elem_t := llvm_type_from_checker(pa.elem)
             ir_type := partial_array_ir_type(elem_t, alloc_cap)
             hdr_ptr := fresh_tmp(g)

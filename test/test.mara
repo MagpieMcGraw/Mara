@@ -5,6 +5,7 @@ module test
 // Failing/negative tests (compile errors, intentional traps) live in
 // test_fail.mara. Build from this folder: ../Mara.exe build test
 
+use mara.core
 use mara.memory
 use mara.math
 use mara.maybe
@@ -70,7 +71,7 @@ test_hex_literals :: fun() {
 // range membership
 // ============================================================================
 
-check :: fun(label: [, 0]utf8, x: i64, lo: i64, hi: i64) {
+check :: fun(label: []utf8, x: i64, lo: i64, hi: i64) {
 	if x in lo..hi {
 		print(label, "in")
 	else
@@ -78,7 +79,7 @@ check :: fun(label: [, 0]utf8, x: i64, lo: i64, hi: i64) {
 	}
 }
 
-check_not :: fun(label: [, 0]utf8, x: i64, lo: i64, hi: i64) {
+check_not :: fun(label: []utf8, x: i64, lo: i64, hi: i64) {
 	if x not in lo..hi {
 		print(label, "out")
 	else
@@ -240,10 +241,10 @@ test_arr_len :: fun() {
 }
 
 test_len_cap :: fun() {
-	fa : [16, 0]utf8 = "hi"
+	fa : [16]utf8 = "hi"
 	print(len(fa))   // 16
-	print(cap(fa))   // 15
-	ss : [:32, 0]utf8
+	print(cap(fa))   // 16
+	ss : [:32]utf8
 	print(len(ss))   // 0
 	print(cap(ss))   // 32
 }
@@ -275,10 +276,10 @@ test_partial_array :: fun() {
 	sl : []i64 = storage[0:3]
 	print(sl.len)
 	print(sl[2])
-	name : [..16, 0]utf8
+	name : [..16]utf8
 	print(name.cap)
 	print(name.len)
-	greet : [..32, 0]utf8 = "hello"
+	greet : [..32]utf8 = "hello"
 	print(greet.cap)
 	print(greet.len)
 	src : [..4]i64
@@ -1532,7 +1533,7 @@ test_sentinel_append :: fun() {
 	&many + "cd"
 	&many + "ef"
 	print(many)
-	sized : [:64, 0]utf8
+	sized : [:64]utf8
 	&sized + "from sized"
 	print(sized)
 	grt : str = "hello"

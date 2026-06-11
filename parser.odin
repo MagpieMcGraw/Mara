@@ -56,8 +56,6 @@ Type_Array :: struct {
     size_expr:    Expr,      // runtime expression for VLA size (nil for fixed arrays)
     index_type:   Type_Expr, // index type for [N IT]T form (nil = plain integer index)
     elem:         Type_Expr, // element type
-    has_sentinel: bool,      // true for [N, 0]T sentinel-terminated arrays
-    sentinel:     int,       // sentinel value (e.g. 0 for null-terminated)
     span:         Span,
 }
 
@@ -68,8 +66,6 @@ Type_Pointer :: struct {
 
 Type_Slice_Expr :: struct {
     elem:         Type_Expr, // element type
-    has_sentinel: bool,      // true for [:, 0]T sentinel-terminated slices
-    sentinel:     int,       // sentinel value (e.g. 0 for null-terminated)
     cap_expr:     Expr,      // [:N]T — cap stored in the slice header; nil for plain []T
     span:         Span,
 }
@@ -83,8 +79,6 @@ Type_Partial_Array_Expr :: struct {
     size_name:    string,    // identifier name when size is a constant reference
     size_expr:    Expr,      // runtime expression for VLA-sized partial arrays
     elem:         Type_Expr, // element type
-    has_sentinel: bool,      // true for [..N, 0]T sentinel-terminated partial arrays
-    sentinel:     int,
     span:         Span,
 }
 
@@ -847,6 +841,18 @@ current :: proc(p: ^Parser) -> Token {
 }
 
 // Peek ahead by offset tokens (0 = current, 1 = next, ...)
+// Sentinel-terminated array/slice types (`[N, 0]T`, `[..N, 0]T`, `[:N, 0]T`,
+// `[, 0]T`) were removed — plain arrays/slices plus terminator-writing
+// cstring conversion at the FFI boundary replaced them. Catch the old
+// syntax with a pointed error and recover by parsing the plain form.
+consume_removed_sentinel :: proc(p: ^Parser) {
+    if current_kind(p) != .Comma { return }
+    parse_error(p, current(p), PARSE_SENTINEL_REMOVED)
+    advance(p) // consume ','
+    skip_newlines(p)
+    _ = expect(p, .Number)
+}
+
 peek_token :: proc(p: ^Parser, offset: int = 1) -> Token {
     i := p.pos + offset
     if i < len(p.tokens) {
@@ -3347,55 +3353,32 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         // Slice type: []T — empty brackets. Since partial arrays share the
         // first 24 bytes of slice layout, []T flows through to either form
         // at the IR level.
-        // Sentinel slice: [, 0]T — comma immediately after '['.
         if current_kind(p) == .Right_Bracket || current_kind(p) == .Comma {
-            has_sentinel := false
-            sentinel_val := 0
-            if current_kind(p) == .Comma {
-                advance(p) // consume ','
-                skip_newlines(p)
-                sentinel_tok := expect(p, .Number)
-                sentinel_val = parse_int_token(sentinel_tok.text)
-                has_sentinel = true
-            }
+            consume_removed_sentinel(p)
             expect(p, .Right_Bracket)
             elem := parse_type_expr(p)
             ts := new(Type_Slice_Expr)
             ts.elem = elem
-            ts.has_sentinel = has_sentinel
-            ts.sentinel = sentinel_val
             ts.span = start
             return ts
         }
-        // Sized slice header: [:N]T or [:N, 0]T — slice with cap = N at
-        // construction (and optional sentinel). No backing storage is
-        // allocated; the header lives in writable memory and its ptr/len are
-        // populated by assignment (e.g. from a `take`). Replaces the older
-        // `[]T(N)` / `[, 0]T(N)` suffix syntaxes.
+        // Sized slice header: [:N]T — slice with cap = N at construction.
+        // No backing storage is allocated; the header lives in writable
+        // memory and its ptr/len are populated by assignment (e.g. from a
+        // `take`). Replaces the older `[]T(N)` suffix syntax.
         if current_kind(p) == .Colon {
             advance(p) // consume ':'
             cap_expr := parse_expr(p, 0)
-            has_sentinel := false
-            sentinel_val := 0
-            if current_kind(p) == .Comma {
-                advance(p) // consume ','
-                skip_newlines(p)
-                sentinel_tok := expect(p, .Number)
-                sentinel_val = parse_int_token(sentinel_tok.text)
-                has_sentinel = true
-            }
+            consume_removed_sentinel(p)
             expect(p, .Right_Bracket)
             elem := parse_type_expr(p)
             ts := new(Type_Slice_Expr)
             ts.elem = elem
             ts.cap_expr = cap_expr
-            ts.has_sentinel = has_sentinel
-            ts.sentinel = sentinel_val
             ts.span = start
             return ts
         }
         // Partial array: [..N]T — value type, inline storage, cursor.
-        // Sentinel partial array: [..N, 0]T
         if current_kind(p) == .Dot_Dot {
             advance(p) // consume '..'
             pa_size_val := 0
@@ -3415,15 +3398,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
                     pa_size_expr = nil
                 }
             }
-            pa_has_sentinel := false
-            pa_sentinel_val := 0
-            if current_kind(p) == .Comma {
-                advance(p)
-                skip_newlines(p)
-                sentinel_tok := expect(p, .Number)
-                pa_sentinel_val = parse_int_token(sentinel_tok.text)
-                pa_has_sentinel = true
-            }
+            consume_removed_sentinel(p)
             expect(p, .Right_Bracket)
             elem := parse_type_expr(p)
             pa := new(Type_Partial_Array_Expr)
@@ -3431,8 +3406,6 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
             pa.size_name = pa_size_name
             pa.size_expr = pa_size_expr
             pa.elem = elem
-            pa.has_sentinel = pa_has_sentinel
-            pa.sentinel = pa_sentinel_val
             pa.span = start
             return pa
         }
@@ -3440,8 +3413,9 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         size_val := 0
         size_name: string
         size_expr: Expr
-        // Lookahead-friendly fast paths: terminator can be `]`, `,` (sentinel),
-        // or an Identifier (typed index).
+        // Lookahead-friendly fast paths: terminator can be `]`, `,` (removed
+        // sentinel syntax — caught with a pointed error), or an Identifier
+        // (typed index).
         size_terminates :: proc(p: ^Parser) -> bool {
             k := peek_kind(p)
             return k == .Right_Bracket || k == .Comma || k == .Identifier
@@ -3465,23 +3439,13 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
                 size_expr = nil
             }
         }
-        // Optional typed index: [N IT]T or [N IT, 0]T — identifier follows the
-        // size with whitespace, no punctuation. Distinguished from sentinels
-        // (numbers after a comma) by both kind and absence of leading comma.
+        // Optional typed index: [N IT]T — identifier follows the size with
+        // whitespace, no punctuation.
         index_type: Type_Expr
         if current_kind(p) == .Identifier {
             index_type = parse_type_expr(p)
         }
-        // Check for sentinel: [N, 0]T or [N IT, 0]T
-        has_sentinel := false
-        sentinel_val := 0
-        if current_kind(p) == .Comma {
-            advance(p) // consume ','
-            skip_newlines(p)
-            sentinel_tok := expect(p, .Number)
-            sentinel_val = parse_int_token(sentinel_tok.text)
-            has_sentinel = true
-        }
+        consume_removed_sentinel(p)
         expect(p, .Right_Bracket)
         elem := parse_type_expr(p)
         ta := new(Type_Array)
@@ -3490,8 +3454,6 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         ta.size_expr = size_expr
         ta.index_type = index_type
         ta.elem = elem
-        ta.has_sentinel = has_sentinel
-        ta.sentinel = sentinel_val
         ta.span = start
         return ta
     }

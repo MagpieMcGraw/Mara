@@ -91,14 +91,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         // NRVO alias: call directly into pre-registered buffer
                         gen_call_into_array(g, call, &existing, &info)
                     } else {
-                        gen_array_assign(g, s.name, fa.size, elem_t, nil, utf8, loc, fa.has_sentinel, fa.sentinel)
+                        gen_array_assign(g, s.name, fa.size, elem_t, nil, utf8, loc)
                         existing, _ := get_array(g, s.name)
                         gen_call_into_array(g, call, &existing, &info)
                     }
                     return
                 }
             }
-            gen_array_assign(g, s.name, fa.size, elem_t, s.value, utf8, loc, fa.has_sentinel, fa.sentinel)
+            gen_array_assign(g, s.name, fa.size, elem_t, s.value, utf8, loc)
             return
         }
 
@@ -184,11 +184,9 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     emit_typed_store_cap(g, count_runtime, cap_gep)
                     _, sl_utf8 := sl.elem.(Type_Utf8)
                     g.all_vars[s.name] = Slice_Var{
-                        alloca       = alloca_name,
-                        elem_type    = elem_t,
-                        is_utf8      = sl_utf8,
-                        has_sentinel = sl.has_sentinel,
-                        sentinel     = sl.sentinel,
+                        alloca    = alloca_name,
+                        elem_type = elem_t,
+                        is_utf8   = sl_utf8,
                     }
                     return
                 }
@@ -235,7 +233,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             // field (constructor body) or a genuine `a = b` reassign. Two source
             // shapes need the partial-array semantics rather than the slice
             // header-only memcpy in gen_slice_assign_inferred below:
-            //   - a string literal: memcpy bytes + set len + sentinel. Without
+            //   - a string literal: memcpy bytes + set len. Without
             //     this the field/var kept len = 0 (a struct string-field default
             //     read back empty / garbage).
             //   - another partial array (ident / field access): deep copy that
@@ -254,10 +252,8 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             if init_value {
                 if existing, ex_ok := get_slice(g, s.name); ex_ok {
                     elem_t := llvm_type_from_checker(pa.elem)
-                    alloc_cap := pa.size
-                    if pa.has_sentinel { alloc_cap += 1 }
                     elem_bytes := elem_byte_size(elem_t, g.checked)
-                    gen_partial_array_init_value(g, existing.alloca, s.value, elem_t, elem_bytes, alloc_cap, pa, s.span, s.name)
+                    gen_partial_array_init_value(g, existing.alloca, s.value, elem_t, elem_bytes, pa.size, pa, s.span, s.name)
                     return
                 }
             }
@@ -273,16 +269,11 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if sl, sl_ok := var_type.(^Type_Slice); sl_ok {
             elem_t := llvm_type_from_checker(sl.elem)
             _, sl_utf8 := sl.elem.(Type_Utf8)
-            sl_sentinel := sl.has_sentinel
-            sl_sentinel_val := sl.sentinel
             // Sized slice declaration `name : [:N]T` without a byte-buffer
             // source — allocate backing storage + slice header, init to
             // (ptr, 0, N). The repoint case (byte-buffer source) is handled
             // earlier in gen_stmt. Stack-vs-arena policy mirrors fixed-array
-            // decls. Sentinel slices (`[:N, 0]T`) reserve one extra element
-            // for the terminator and store the physical cap; the `cap()`
-            // builtin subtracts 1 for utf8 slices so the user sees N usable
-            // elements.
+            // decls.
             if s.slice_cap_expr != nil {
                 cap_val, cap_ok := codegen_const_eval_int(g, s.slice_cap_expr)
                 if !cap_ok {
@@ -291,13 +282,11 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     // %count`), and the slice header's .cap is stored from the
                     // SSA. Skips the optional pool-allocation and string-literal
                     // init paths below — both assume a comptime-known size.
-                    gen_slice_decl_runtime_cap(
-                        g, s, sl, elem_t, sl_utf8, sl_sentinel, sl_sentinel_val)
+                    gen_slice_decl_runtime_cap(g, s, sl, elem_t, sl_utf8)
                     return
                 }
                 cap_n := int(cap_val)
                 alloc_cap := cap_n
-                if sl.has_sentinel { alloc_cap += 1 }
                 elem_bytes := elem_byte_size(elem_t, g.checked)
                 total_bytes := alloc_cap * elem_bytes
                 loc := format_location(s.span.file, s.span.line, s.span.col)
@@ -315,14 +304,6 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     } else {
                         emit(g, "  %s = alloca [%d x %s]", data_name, alloc_cap, elem_t)
                     }
-                }
-                // Sentinel slices need byte `cap` of the backing storage to hold
-                // the terminator on day zero — before any append happens. Zeroing
-                // the whole region is the cheapest way to guarantee that and
-                // also gives the slice a defined initial state for C consumers
-                // that walk the pointer until they hit a 0.
-                if sl.has_sentinel {
-                    emit_memset_zero(g, data_name, total_bytes)
                 }
                 alloca_name := fmt.tprintf("%%%s", s.name)
                 emit_slice_alloca(g, alloca_name)
@@ -366,12 +347,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     }
                 }
                 g.all_vars[s.name] = Slice_Var{
-                    alloca       = alloca_name,
-                    elem_type    = elem_t,
-                    is_utf8      = sl_utf8,
-                    has_sentinel = sl_sentinel,
-                    sentinel     = sl_sentinel_val,
-                    pool_alloca  = pool_alloca,
+                    alloca      = alloca_name,
+                    elem_type   = elem_t,
+                    is_utf8     = sl_utf8,
+                    pool_alloca = pool_alloca,
                 }
                 // Initialize from a string literal: `s : String = "hello"` (or
                 // `s : []byte(64) = "hello"`). The cap path above already
@@ -387,14 +366,6 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         emit_memcpy(g, data_name, src_ptr, len(str_bytes))
                     }
                     emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
-                    // Sentinel slices use a trailing \0; for printf-style consumers
-                    // that walk the data pointer until a null, write it after the
-                    // copied bytes so reading stops at the literal's end.
-                    if sl.has_sentinel {
-                        term_ptr := fresh_tmp(g)
-                        emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", term_ptr, data_name, len(str_bytes))
-                        emit_store(g, "i8", "0", term_ptr)
-                    }
                 }
                 return
             }
@@ -411,10 +382,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 cap_gep := fresh_tmp(g)
                 emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
                 emit_typed_store_cap(g, "0", cap_gep)
-                g.all_vars[s.name] = Slice_Var{alloca = alloca_name, elem_type = elem_t, is_utf8 = sl_utf8, has_sentinel = sl_sentinel, sentinel = sl_sentinel_val}
+                g.all_vars[s.name] = Slice_Var{alloca = alloca_name, elem_type = elem_t, is_utf8 = sl_utf8}
                 return
             }
-            gen_slice_from_expr(g, s.name, s.value, elem_t, sl_utf8, sl_sentinel, sl_sentinel_val)
+            gen_slice_from_expr(g, s.name, s.value, elem_t, sl_utf8)
             return
         }
 
@@ -425,9 +396,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
             elem_t := llvm_type_from_checker(pa.elem)
             _, pa_utf8 := pa.elem.(Type_Utf8)
-            cap_n := pa.size
-            alloc_cap := cap_n
-            if pa.has_sentinel { alloc_cap += 1 }
+            alloc_cap := pa.size
             ir_type := partial_array_ir_type(elem_t, alloc_cap)
             alloca_name := fmt.tprintf("%%%s", s.name)
             elem_bytes := elem_byte_size(elem_t, g.checked)
@@ -449,12 +418,6 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             // Initialise header: ptr → elements, len → 0, cap → N.
             elements_ptr := fresh_tmp(g)
             emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-            // Sentinel partial arrays need byte `cap` of the inline storage to
-            // hold the terminator before any append happens. Zero the storage
-            // (not the header) so C consumers walking the pointer stop cleanly.
-            if pa.has_sentinel {
-                emit_memset_zero(g, elements_ptr, total_bytes)
-            }
             ptr_gep := fresh_tmp(g)
             emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
             emit_store(g, "ptr", elements_ptr, ptr_gep)
@@ -465,11 +428,9 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
             emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
             g.all_vars[s.name] = Slice_Var{
-                alloca       = alloca_name,
-                elem_type    = elem_t,
-                is_utf8      = pa_utf8,
-                has_sentinel = pa.has_sentinel,
-                sentinel     = pa.sentinel,
+                alloca    = alloca_name,
+                elem_type = elem_t,
+                is_utf8   = pa_utf8,
             }
             // Optional initial value: string literal into a byte/utf8 partial
             // array, or another partial array of the same shape. Shared with the
@@ -641,7 +602,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             if fa, fa_ok := var_type.(^Type_Fixed_Array); fa_ok {
                 if _, utf8_ok := fa.elem.(Type_Utf8); utf8_ok {
                     loc := format_location(s.span.file, s.span.line, s.span.col)
-                    gen_array_assign(g, s.name, fa.size, "i8", s.value, true, loc, fa.has_sentinel, fa.sentinel)
+                    gen_array_assign(g, s.name, fa.size, "i8", s.value, true, loc)
                     return
                 }
             }
@@ -892,12 +853,10 @@ gen_take_decl :: proc(g: ^Codegen, name: string, e: ^Expr_Take) {
         is_utf8 := false
         if _, u_ok := fa.elem.(Type_Utf8); u_ok { is_utf8 = true }
         g.all_vars[name] = Array_Var{
-            alloca       = ptr,
-            capacity     = fa.size,
-            elem_type    = elem_ir,
-            is_utf8      = is_utf8,
-            has_sentinel = fa.has_sentinel,
-            sentinel     = fa.sentinel,
+            alloca    = ptr,
+            capacity  = fa.size,
+            elem_type = elem_ir,
+            is_utf8   = is_utf8,
         }
         return
     }
@@ -909,11 +868,9 @@ gen_take_decl :: proc(g: ^Codegen, name: string, e: ^Expr_Take) {
         is_utf8 := false
         if _, u_ok := sl.elem.(Type_Utf8); u_ok { is_utf8 = true }
         g.all_vars[name] = Slice_Var{
-            alloca       = ptr,
-            elem_type    = elem_ir,
-            is_utf8      = is_utf8,
-            has_sentinel = sl.has_sentinel,
-            sentinel     = sl.sentinel,
+            alloca    = ptr,
+            elem_type = elem_ir,
+            is_utf8   = is_utf8,
         }
         return
     }
@@ -1084,12 +1041,10 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                 // big-array policy) and nothing else reads it. An alloca +
                 // memcpy here doubled a multi-MB return on the stack.
                 g.all_vars[name] = Array_Var{
-                    alloca       = src_ptr,
-                    capacity     = fa.size,
-                    elem_type    = arr_elem_t,
-                    is_utf8      = arr_utf8,
-                    has_sentinel = fa.has_sentinel,
-                    sentinel     = fa.sentinel,
+                    alloca    = src_ptr,
+                    capacity  = fa.size,
+                    elem_type = arr_elem_t,
+                    is_utf8   = arr_utf8,
                 }
                 continue
             }

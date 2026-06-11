@@ -14,7 +14,7 @@ main :: fun() {
 	gradient := " .,-~:;=!*#$@"
 
 	for py in 0..HEIGHT {
-		row : [WIDTH, 0]utf8
+		row : [WIDTH]utf8
 		for px in 0..WIDTH {
 			// Pixel -> complex plane. Real spans [-2.5, 1.0], imaginary
 			// spans [-1.0, 1.0]. Terminal rows are roughly 2x taller

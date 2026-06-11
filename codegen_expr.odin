@@ -1113,7 +1113,7 @@ gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
         }
     }
     arg_checker_type := expr_type(arg)
-    // String literal: typed as a sentinel partial array since the
+    // String literal: typed as a partial array since the
     // literal-type change, but it still lives as raw bytes in rodata.
     // Synthesize a slice header pointing at the global, len = cap = N
     // (the literal's byte count), and pass `&header`. Receivers (which
@@ -1391,7 +1391,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         }
     }
 
-    // Built-in: cap(arr) — user-facing capacity (sentinel slot hidden).
+    // Built-in: cap(arr) — user-facing capacity.
     // Array class cap() likewise gets desugared upstream.
     if e.name == "cap" && len(e.args) == 1 {
         if h, ok := resolve_array_handle(g, e.args[0]); ok {
@@ -1764,14 +1764,15 @@ gen_try :: proc(g: ^Codegen, e: ^Expr_Try, target_type: string) -> string {
 
 // When a call's param expects a raw `^utf8` (e.g. `cstring`, which is
 // `distinct ^utf8` and lowers to ^utf8 after distinct_base in type-checker
-// param storage) and the arg carries utf8-sentinel slice-header shape (cstr
-// / utf8-sentinel slice), extract the header's data pointer and return it.
-// The type checker permits this flow (see is_cstring's case in types_equal);
-// `^utf8` is the FFI boundary shape — callees treat the value as a raw
-// character pointer. Without extraction the slice header pointer would
-// arrive instead, and string reads would walk the header's len/cap bytes
-// instead of the path. String literals already lower to raw ptrs via
-// emit_string_gep, so they short-circuit here.
+// param storage) and the arg is a utf8 partial array, convert in place:
+// write a 0 terminator at buf[len] (the byte after the live content) and
+// hand back the header's data pointer. The terminator needs a spare slot,
+// so `len < cap` is checked at runtime — a brim-full buffer can't be
+// terminated and fails loudly. The type checker permits this flow (see
+// is_cstring's case in types_equal); `^utf8` is the FFI boundary shape —
+// callees treat the value as a raw character pointer. String literals
+// already lower to raw rodata pointers (their globals carry a trailing \0)
+// via emit_string_gep, so they short-circuit here.
 emit_cstring_data_ptr :: proc(g: ^Codegen, arg_expr: Expr, param_type: Type) -> (string, bool) {
     target_utf8 := false
     if pt, ok := param_type.(^Type_Ptr); ok {
@@ -1780,36 +1781,56 @@ emit_cstring_data_ptr :: proc(g: ^Codegen, arg_expr: Expr, param_type: Type) -> 
     if is_cstring(param_type) { target_utf8 = true }
     if !target_utf8 { return "", false }
 
-    // We can only extract from a true slice-header in memory. Limit to idents
-    // bound as a slice or partial-array variable — string literals and
+    // We can only terminate a true slice-header in memory. Limit to idents
+    // bound as a slice/partial-array variable — string literals and
     // constant idents both lower to raw rodata pointers via emit_string_gep,
     // and GEPing those as if they were slice headers would read garbage.
     ident, is_ident := arg_expr.(^Expr_Ident)
     if !is_ident { return "", false }
-    is_var := false
-    if _, ok := get_slice(g, ident.name); ok { is_var = true }
-    if !is_var {
-        if _, ok := get_array(g, ident.name); ok { is_var = true }
-    }
-    if !is_var { return "", false }
+    if _, ok := get_slice(g, ident.name); !ok { return "", false }
 
     arg_t := expr_type(arg_expr)
     if arg_t == nil { return "", false }
     arg_t = unwrap_alias(arg_t)
 
-    has_header := false
-    if pa, ok := arg_t.(^Type_Partial_Array); ok {
-        if _, utf8 := pa.elem.(Type_Utf8); utf8 && pa.has_sentinel { has_header = true }
-    } else if sl, ok := arg_t.(^Type_Slice); ok {
-        if _, utf8 := sl.elem.(Type_Utf8); utf8 && sl.has_sentinel { has_header = true }
-    }
-    if !has_header { return "", false }
+    pa, pa_ok := arg_t.(^Type_Partial_Array)
+    if !pa_ok { return "", false }
+    if _, utf8 := pa.elem.(Type_Utf8); !utf8 { return "", false }
 
     slice_header := gen_expr(g, arg_expr)
+    w := slice_layout.len_ir
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, slice_header, SLICE.len)
+    len_val := fresh_tmp(g)
+    emit_typed_load_len(g, len_val, len_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, slice_header, SLICE.cap)
+    cap_val := fresh_tmp(g)
+    emit_typed_load_cap(g, cap_val, cap_gep)
+
+    // Runtime contract: len < cap, so slot [len] exists for the terminator.
+    ok_lbl   := fresh_label(g, "cstring.ok")
+    fail_lbl := fresh_label(g, "cstring.fail")
+    cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %s", cmp, w, len_val, cap_val)
+    emit_cond_br(g, cmp, ok_lbl, fail_lbl)
+    emit_label(g, fail_lbl)
+    err_msg := fmt.tprintf("runtime error: cstring conversion needs len < cap to place the terminator: len %%lld == cap %%lld for '%s'\n", ident.name)
+    err_name, err_len := get_string_literal(g, err_msg)
+    err_ptr := fresh_tmp(g)
+    emit_string_gep(g, err_ptr, err_len, err_name)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", err_ptr, w, len_val, w, cap_val)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, ok_lbl)
+
     data_field := fresh_tmp(g)
     emit_slice_gep(g, data_field, slice_header, SLICE.ptr)
     data_ptr := fresh_tmp(g)
     emit_load_into(g, data_ptr, "ptr", data_field)
+    term_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", term_ptr, data_ptr, w, len_val)
+    emit_store(g, "i8", "0", term_ptr)
     return data_ptr, true
 }
 
@@ -1867,9 +1888,7 @@ emit_escape_storage_args :: proc(g: ^Codegen, arg_strs: ^[dynamic]string, info: 
     loc := format_location(span.file, span.line, span.col)
     pool := g.escape_pool_alloca
     for &el in info.escape_locals {
-        alloc_cap := el.cap
-        if el.has_sentinel { alloc_cap += 1 }
-        total_bytes := alloc_cap * el.elem_size
+        total_bytes := el.cap * el.elem_size
         ptr: string
         if pool != "" {
             // Carve `total_bytes` from pool: data + len → ptr; len += total.
@@ -1891,7 +1910,7 @@ emit_escape_storage_args :: proc(g: ^Codegen, arg_strs: ^[dynamic]string, info: 
             ptr = emit_arena_bump(g, total_bytes, name, loc)
         } else {
             ptr = fresh_tmp(g)
-            emit(g, "  %s = alloca [%d x %s]", ptr, alloc_cap, el.elem_type)
+            emit(g, "  %s = alloca [%d x %s]", ptr, el.cap, el.elem_type)
         }
         append(arg_strs, fmt.tprintf("ptr %s", ptr))
     }

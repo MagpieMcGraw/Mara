@@ -14,7 +14,7 @@ Config :: struct {
 
 Msg :: union(tag i32) {
 	Text = 1 {
-		body: [..16, 0]utf8 = "hi"   // string field default (typed; variants need a type)
+		body: [..16]utf8 = "hi"   // string field default (typed; variants need a type)
 	}
 	Blank = 2 {
 		pad: i32

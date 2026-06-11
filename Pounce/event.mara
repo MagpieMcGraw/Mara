@@ -1,5 +1,6 @@
 module event
 
+use mara.core
 use mara.os
 use mara.sdl
 use mara.string

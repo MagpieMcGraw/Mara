@@ -53,7 +53,7 @@ DrawState :: struct {
 
 // Create a draw state
 draw_state_create :: fun(
-	shader_file: cstr,
+	shader_file: cstring,
 	vao_state: ^VAO_State,
 	max_instances: i64,
 	max_commands: isize,) -> DrawState

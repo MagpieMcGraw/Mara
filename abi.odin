@@ -210,9 +210,7 @@ walk_leaf_fields :: proc(t: Type, start, length: int, base_offset: int, cls: ^AB
     case ^Type_Fixed_Array:
         elem_size := checker_type_byte_size(v.elem)
         if elem_size == 0 { return }
-        total := v.size
-        if v.has_sentinel { total += 1 }
-        for i in 0..<total {
+        for i in 0..<v.size {
             elem_off := base_offset + i * elem_size
             if elem_off >= eb_end { break }
             if elem_off + elem_size <= start { continue }
@@ -324,9 +322,7 @@ count_floats_doubles :: proc(t: Type, start, length: int, base_offset: int) -> (
     case ^Type_Fixed_Array:
         elem_size := checker_type_byte_size(v.elem)
         if elem_size == 0 { return }
-        total := v.size
-        if v.has_sentinel { total += 1 }
-        for i in 0..<total {
+        for i in 0..<v.size {
             elem_off := base_offset + i * elem_size
             if elem_off >= eb_end { break }
             if elem_off + elem_size <= start { continue }

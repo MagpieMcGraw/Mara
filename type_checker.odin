@@ -69,15 +69,11 @@ Type_Ptr :: struct {
 Type_Fixed_Array :: struct {
     size:         int,
     elem:         Type,
-    has_sentinel: bool,       // true for [N, 0]T sentinel-terminated arrays
-    sentinel:     int,        // sentinel value (e.g. 0 for null-terminated)
     index_type:   Type,       // index type for [N IT]T (nil = plain integer index)
 }
 
 Type_Slice :: struct {
     elem:         Type,
-    has_sentinel: bool,   // true for [:, 0]T sentinel-terminated slices
-    sentinel:     int,    // sentinel value (e.g. 0 for null-terminated)
 }
 
 // [..N]T — partial array. IR layout: {ptr, len, cap, elements: [N x T]}, with
@@ -87,8 +83,6 @@ Type_Slice :: struct {
 Type_Partial_Array :: struct {
     size:         int,
     elem:         Type,
-    has_sentinel: bool,
-    sentinel:     int,
 }
 
 Struct_Type_Field :: struct {
@@ -2141,8 +2135,6 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
     case ^Type_Array:
         elem := resolve_type_expr(t.elem, c, span, const_values = const_values, env = env)
         fa := new(Type_Fixed_Array)
-        fa.has_sentinel = t.has_sentinel
-        fa.sentinel = t.sentinel
         if t.index_type != nil {
             fa.index_type = resolve_type_expr(t.index_type, c, span, env = env)
         }
@@ -2216,15 +2208,11 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
         elem := resolve_type_expr(t.elem, c, span, env = env)
         sl := new(Type_Slice)
         sl.elem = elem
-        sl.has_sentinel = t.has_sentinel
-        sl.sentinel = t.sentinel
         return sl
     case ^Type_Partial_Array_Expr:
         elem := resolve_type_expr(t.elem, c, span, env = env)
         pa := new(Type_Partial_Array)
         pa.elem = elem
-        pa.has_sentinel = t.has_sentinel
-        pa.sentinel = t.sentinel
         if t.size_expr != nil {
             if c != nil {
                 if bad, has_bad := first_invisible_const_ref(c, env, t.size_expr); has_bad {
@@ -2540,8 +2528,6 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
     case ^Type_Array:
         elem := resolve_type_expr_with_subst(t.elem, c, span, subst)
         fa := new(Type_Fixed_Array)
-        fa.has_sentinel = t.has_sentinel
-        fa.sentinel = t.sentinel
         if t.index_type != nil {
             fa.index_type = resolve_type_expr_with_subst(t.index_type, c, span, subst)
         }
@@ -2582,15 +2568,11 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
         elem := resolve_type_expr_with_subst(t.elem, c, span, subst)
         sl := new(Type_Slice)
         sl.elem = elem
-        sl.has_sentinel = t.has_sentinel
-        sl.sentinel = t.sentinel
         return sl
     case ^Type_Partial_Array_Expr:
         elem := resolve_type_expr_with_subst(t.elem, c, span, subst)
         pa := new(Type_Partial_Array)
         pa.elem = elem
-        pa.has_sentinel = t.has_sentinel
-        pa.sentinel = t.sentinel
         if t.size_name != "" {
             if val, found := subst[t.size_name]; found {
                 if cv, ok := val.(Type_Const_Int); ok {
@@ -2808,7 +2790,10 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
 
 // Infer generic type parameters by walking a type expression and actual type in parallel.
 // Fills in the substitution map with discovered bindings.
-infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual: Type, c: ^Checker) {
+infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_raw: Type, c: ^Checker) {
+    // Transparent aliases (str = [..128]utf8) match through their underlying
+    // shape; true distinct types stay nominal (unwrap_alias leaves them).
+    actual := unwrap_alias(actual_raw)
     switch t in type_expr {
     case Type_Name:
         // Check if this is a generic type param name (single uppercase letter or known param)
@@ -2834,6 +2819,12 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual:
         } else if fa, ok := actual.(^Type_Fixed_Array); ok {
             // Fixed arrays are compatible with slices for inference
             infer_type_params(subst, t.elem, fa.elem, c)
+        } else if pa, ok := actual.(^Type_Partial_Array); ok {
+            // Partial arrays coerce to slice views (`[]$T` ← [..N]T), so
+            // they drive slice-shaped inference too. This is what lets the
+            // generic slice_add serve `&s + "lit"` — string literals are
+            // partial arrays of utf8.
+            infer_type_params(subst, t.elem, pa.elem, c)
         }
     case ^Type_Partial_Array_Expr:
         if pa, ok := actual.(^Type_Partial_Array); ok {
@@ -3238,16 +3229,16 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
 // `mara.string.cstring :: distinct ^utf8`. Name-matched here rather
 // than recognized structurally; a structural rule ("any nominal
 // distinct ^utf8") would also accept unrelated user types that happen
-// to wrap ^utf8 and silently grant them utf8 sentinel coercion, which
+// to wrap ^utf8 and silently grant them utf8 buffer coercion, which
 // is exactly the kind of accidental coupling we don't want.
 CSTRING_FLAT_NAME :: "mara_string_cstring"
 
 // Recognize the cstring type — either the legacy built-in (Type_CString,
 // no longer produced from source after the keyword removal but retained
 // for transitional safety) or the stdlib's named distinct decl. The
-// conversion rule (utf8 sentinel storage → cstring via data-pointer
-// extraction) lives in the matching `case` arms below; pointed at from
-// a comment near the stdlib decl.
+// conversion rule (utf8 partial array → cstring via terminator-write +
+// data-pointer extraction) lives in the matching `case` arms below;
+// pointed at from a comment near the stdlib decl.
 is_cstring :: proc(t: Type) -> bool {
     if _, ok := t.(Type_CString); ok { return true }
     if dt, ok := t.(^Type_Distinct); ok && !dt.is_alias {
@@ -3336,14 +3327,13 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // in some legacy site); the equivalent rule for the stdlib
         // distinct `cstring` lives at the top of types_equal below.
         if is_cstring(b) { return true }
-        if fa, ok := b.(^Type_Fixed_Array); ok {
-            if _, utf8_ok := fa.elem.(Type_Utf8); utf8_ok && fa.has_sentinel { return true }
-        }
+        // utf8 partial arrays convert: codegen writes the terminator at
+        // [len] (string literals are partial arrays backed by \0-terminated
+        // rodata, so they pass for free). Slices don't own the byte past
+        // their view and fixed arrays have no spare slot — both stay
+        // explicit (copy into a partial array first).
         if pa, ok := b.(^Type_Partial_Array); ok {
-            if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok && pa.has_sentinel { return true }
-        }
-        if sl, ok := b.(^Type_Slice); ok {
-            if _, utf8_ok := sl.elem.(Type_Utf8); utf8_ok && sl.has_sentinel { return true }
+            if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok { return true }
         }
         return false
     case Type_Utf8:
@@ -3393,13 +3383,10 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // dropped the copy on the return path and zeroed the result.)
         // Implicit coercion: [N]T is compatible with [..M]T (partial array
         // view). Lets fixed-array decls take partial-array sources — most
-        // importantly `fa : [N, 0]utf8 = "lit"` after the literal-type
-        // change made literals partial. Sentinel direction matches the
-        // partial-to-partial rule.
+        // importantly `fa : [N]utf8 = "lit"` after the literal-type
+        // change made literals partial.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            if !buffer_elem_compatible(va.elem, pa.elem) { return false }
-            if va.has_sentinel && !pa.has_sentinel { return false }
-            return true
+            return buffer_elem_compatible(va.elem, pa.elem)
         }
         vb, ok := b.(^Type_Fixed_Array)
         if !ok { return false }
@@ -3416,13 +3403,8 @@ types_equal :: proc(a: Type, b: Type) -> bool {
             return buffer_elem_compatible(va.elem, fa.elem)
         }
         // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view).
-        // Sentinel direction matches partial-to-partial: source can drop a
-        // sentinel guarantee, but can't synthesize one — reject when dest
-        // expects a sentinel the source doesn't have.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
-            if !buffer_elem_compatible(va.elem, pa.elem) { return false }
-            if va.has_sentinel && !pa.has_sentinel { return false }
-            return true
+            return buffer_elem_compatible(va.elem, pa.elem)
         }
         vb, ok := b.(^Type_Slice)
         if !ok { return false }
@@ -3433,36 +3415,18 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // match a slice header, so `^[..N]T` flows safely into `^[:]T` param
         // slots — cursor mutations propagate back through the aliased memory.
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
-            if !buffer_elem_compatible(va.elem, sl.elem) { return false }
-            if va.has_sentinel && !sl.has_sentinel { return false }
-            return true
+            return buffer_elem_compatible(va.elem, sl.elem)
         }
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
-            if !buffer_elem_compatible(va.elem, fa.elem) { return false }
-            // Sentinel direction matches the mirror rule (fixed ← partial)
-            // above: if the dest demands a terminator the source can't
-            // promise, reject. Without this, `cstr` (`[..N, 0]utf8`) would
-            // silently accept any `[N]utf8` and downstream C consumers
-            // walking until `\0` could run off the end.
-            if va.has_sentinel && !fa.has_sentinel { return false }
-            return true
+            return buffer_elem_compatible(va.elem, fa.elem)
         }
         if pa, ok := b.(^Type_Partial_Array); ok {
             // Partial-to-partial interop is by header shape: same elem
-            // type and a permissible sentinel direction. In a types_equal
-            // call from assignment / parameter passing, `va` is the
-            // destination's expected type and `pa` is the source's
-            // actual type. Allow source-sentinel-drop (source has the
-            // terminator, dest doesn't care) — safe, the dest just
-            // ignores the trailing-slot guarantee. Reject the reverse:
-            // dest expects a sentinel the source can't synthesize.
-            // Size doesn't gate compatibility because params are passed
-            // by header pointer (cap is read at runtime); assignment
-            // paths in codegen are responsible for fitting source bytes
-            // into dest storage.
-            if !buffer_elem_compatible(va.elem, pa.elem) { return false }
-            if va.has_sentinel && !pa.has_sentinel { return false }
-            return true
+            // type. Size doesn't gate compatibility because params are
+            // passed by header pointer (cap is read at runtime);
+            // assignment paths in codegen are responsible for fitting
+            // source bytes into dest storage.
+            return buffer_elem_compatible(va.elem, pa.elem)
         }
         return false
     case ^Type_Enum:
@@ -3484,19 +3448,13 @@ types_equal :: proc(a: Type, b: Type) -> bool {
             return va.name == vb.name
         }
         // Stdlib `cstring :: distinct ^utf8` is the FFI boundary type; it
-        // accepts utf8 storage with a sentinel via data-pointer extraction
-        // in codegen. Same rule as the legacy Type_CString case above.
-        // Comment near the decl in code/string.mara points here.
+        // accepts utf8 partial arrays via terminator-write + data-pointer
+        // extraction in codegen. Same rule as the legacy Type_CString case
+        // above. Comment near the decl in code/string.mara points here.
         if is_cstring(va) {
             if _, ok := b.(Type_CString); ok { return true }
-            if fa, ok := b.(^Type_Fixed_Array); ok {
-                if _, utf8_ok := fa.elem.(Type_Utf8); utf8_ok && fa.has_sentinel { return true }
-            }
             if pa, ok := b.(^Type_Partial_Array); ok {
-                if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok && pa.has_sentinel { return true }
-            }
-            if sl, ok := b.(^Type_Slice); ok {
-                if _, utf8_ok := sl.elem.(Type_Utf8); utf8_ok && sl.has_sentinel { return true }
+                if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok { return true }
             }
         }
         return false
@@ -3635,19 +3593,10 @@ type_name :: proc(t: Type) -> string {
         }
         return strings.to_string(b)
     case ^Type_Fixed_Array:
-        if v.has_sentinel {
-            return fmt.tprintf("[%d, %d]%s", v.size, v.sentinel, type_name(v.elem))
-        }
         return fmt.tprintf("[%d]%s", v.size, type_name(v.elem))
     case ^Type_Slice:
-        if v.has_sentinel {
-            return fmt.tprintf("[, %d]%s", v.sentinel, type_name(v.elem))
-        }
         return fmt.tprintf("[]%s", type_name(v.elem))
     case ^Type_Partial_Array:
-        if v.has_sentinel {
-            return fmt.tprintf("[..%d, %d]%s", v.size, v.sentinel, type_name(v.elem))
-        }
         return fmt.tprintf("[..%d]%s", v.size, type_name(v.elem))
     case ^Type_Enum:        return v.name
     case ^Type_Union:       return v.name
@@ -4354,16 +4303,11 @@ checker_type_byte_size :: proc(t: Type) -> int {
     case ^Type_Slice:      return slice_header_bytes
     case ^Type_Partial_Array:
         // { len, cap, ptr, [N x T] } — slice_header_bytes for the header,
-        // followed by N * sizeof(elem) backing storage (plus sentinel slot
-        // if applicable).
-        total := v.size
-        if v.has_sentinel { total += 1 }
-        return slice_header_bytes + total * checker_type_byte_size(v.elem)
+        // followed by N * sizeof(elem) backing storage.
+        return slice_header_bytes + v.size * checker_type_byte_size(v.elem)
     case ^Type_Scope:      return checker_struct_byte_size(v)
     case ^Type_Fixed_Array:
-        total := v.size
-        if v.has_sentinel { total += 1 }
-        return total * checker_type_byte_size(v.elem)
+        return v.size * checker_type_byte_size(v.elem)
     case ^Type_Enum:
         switch v.tag_type {
         case "u8", "i8":   return 1
@@ -5511,18 +5455,16 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         if n.is_float { return Type_F64{} }
         return Type_Numeric{kind = .Signed, bits = 64}
     }
-    // A bare string-literal default takes the `cstr` shape (`[..128, 0]utf8`):
-    // a stable field layout independent of the literal's length, unlike
-    // check_expr's literal-sized `[..len, 0]utf8`. (Annotated string fields like
-    // `name : [..16, 0]utf8 = "..."` take the type_expr branch instead.) A
+    // A bare string-literal default takes the `[..128]utf8` shape: a stable
+    // field layout independent of the literal's length, unlike check_expr's
+    // literal-sized `[..len]utf8`. (Annotated string fields like
+    // `name : [..16]utf8 = "..."` take the type_expr branch instead.) A
     // string default longer than 128 bytes is a fixed-size overflow to be
     // handled later. Without this the field fell through to Type_Any → i64.
     if _, ok := value.(^Expr_String); ok {
         pa := new(Type_Partial_Array)
         pa.size = 128
         pa.elem = Type_Utf8{}
-        pa.has_sentinel = true
-        pa.sentinel = 0
         return pa
     }
     // Char literal default — an 8-bit character. Without this it fell through
@@ -10482,16 +10424,15 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         }
     }
 
-    // Build Context struct: { arena? , args: [..64][, 0]utf8 }
+    // Build Context struct: { arena? , args: [..64][]utf8 }
     {
         ARGS_CAP :: 64
-        // Element type: [, 0]utf8 sentinel-terminated slice
+        // Element type: []utf8 slice — argv strings are strlen-scanned into
+        // plain {len, cap, ptr} headers by the @main prologue.
         arg_slice := new(Type_Slice)
         arg_slice.elem = Type_Byte{}
-        arg_slice.has_sentinel = true
-        arg_slice.sentinel = 0
 
-        // Args is a partial array: [..64][, 0]utf8 — header {len,cap,ptr}
+        // Args is a partial array: [..64][]utf8 — header {len,cap,ptr}
         // followed by inline [64 x slice] storage.
         args_type := new(Type_Partial_Array)
         args_type.size = ARGS_CAP
@@ -10843,21 +10784,17 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         return Type_Infer_Int{}
     case ^Expr_String:
-        // String literals are sentinel-terminated partial arrays of utf8 —
-        // shape `[..N, 0]utf8`. The bytes live in rodata (one global per
-        // unique literal, deduped at codegen), and the partial-array
-        // header is synthesized on the stack at the use site, pointing at
-        // the global. Choosing partial-array over fixed-array makes the
-        // literal's type match the `cstr` shape directly (and via the
-        // header-compatible drop, the `str` shape too), so `&s + "x"`
-        // and `c_func("y")` and `s : str = "z"` all flow through one
-        // type-checking rule.
+        // String literals are partial arrays of utf8 — shape `[..N]utf8`.
+        // The bytes live in rodata (one global per unique literal, deduped
+        // at codegen, with a trailing \0 so literal→cstring is free), and
+        // the partial-array header is synthesized on the stack at the use
+        // site, pointing at the global. Choosing partial-array over
+        // fixed-array makes `&s + "x"`, `c_func("y")` and `s : str = "z"`
+        // all flow through one type-checking rule.
         byte_len := len(e.value)
         pa := new(Type_Partial_Array)
         pa.size = byte_len
         pa.elem = Type_Utf8{}
-        pa.has_sentinel = true
-        pa.sentinel = 0
         return pa
     case ^Expr_Char:
         return Type_Utf8{}
@@ -13113,10 +13050,9 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
     // Array indexing returns element type
     if fa, ok := target_type.(^Type_Fixed_Array); ok {
         // Compile-time bounds check when we have both pieces — the
-        // array's visible size is fa.size (sentinel slot, if any, is
-        // not addressable), and a literal/const index folds via
-        // evaluate_comptime_int. Lets `s := "hello"; s[5]` be a
-        // compile error instead of a runtime trap.
+        // array's visible size is fa.size, and a literal/const index
+        // folds via evaluate_comptime_int. Lets `s := "hello"; s[5]`
+        // be a compile error instead of a runtime trap.
         if idx_val, idx_ok := evaluate_comptime_int(c, e.index); idx_ok {
             if idx_val < 0 || idx_val >= i64(fa.size) {
                 check_error(c, e.span, TYPE_INDEX_OUT_OF_BOUNDS_CONST,

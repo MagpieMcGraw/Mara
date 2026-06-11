@@ -131,9 +131,7 @@ find_nrvo_candidates :: proc(body: []Stmt, n_positions: int) -> [dynamic]string 
 // the type. `len` is left as the zero-fill set it (0).
 stamp_partial_array_header :: proc(g: ^Codegen, addr: string, v: ^Type_Partial_Array) {
     elem_t := llvm_type_from_checker(v.elem)
-    alloc_cap := v.size
-    if v.has_sentinel { alloc_cap += 1 }
-    ir_type := partial_array_ir_type(elem_t, alloc_cap)
+    ir_type := partial_array_ir_type(elem_t, v.size)
     elements_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
     ptr_gep := fresh_tmp(g)
@@ -141,7 +139,7 @@ stamp_partial_array_header :: proc(g: ^Codegen, addr: string, v: ^Type_Partial_A
     emit_store(g, "ptr", elements_ptr, ptr_gep)
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, addr, SLICE.cap)
-    emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
+    emit_typed_store_cap(g, fmt.tprintf("%d", v.size), cap_gep)
 }
 
 // Walk a zero-filled struct instance at `base_ptr` and stamp valid headers for
@@ -181,12 +179,10 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
         utf8 := false
         if _, u_ok := v.elem.(Type_Utf8); u_ok { utf8 = true }
         g.all_vars[name] = Array_Var{
-            alloca       = addr,
-            capacity     = v.size,
-            elem_type    = elem_t,
-            is_utf8      = utf8,
-            has_sentinel = v.has_sentinel,
-            sentinel     = v.sentinel,
+            alloca    = addr,
+            capacity  = v.size,
+            elem_type = elem_t,
+            is_utf8   = utf8,
         }
         return
     case ^Type_Slice:
@@ -194,11 +190,9 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
         utf8 := false
         if _, u_ok := v.elem.(Type_Utf8); u_ok { utf8 = true }
         g.all_vars[name] = Slice_Var{
-            alloca       = addr,
-            elem_type    = elem_t,
-            is_utf8      = utf8,
-            has_sentinel = v.has_sentinel,
-            sentinel     = v.sentinel,
+            alloca    = addr,
+            elem_type = elem_t,
+            is_utf8   = utf8,
         }
         return
     case ^Type_Partial_Array:
@@ -206,11 +200,9 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
         utf8 := false
         if _, u_ok := v.elem.(Type_Utf8); u_ok { utf8 = true }
         g.all_vars[name] = Slice_Var{
-            alloca       = addr,
-            elem_type    = elem_t,
-            is_utf8      = utf8,
-            has_sentinel = v.has_sentinel,
-            sentinel     = v.sentinel,
+            alloca    = addr,
+            elem_type = elem_t,
+            is_utf8   = utf8,
         }
         // The caller's memset zeroed the field; stamp a valid header over it
         // (ptr → &elements, cap = N). Same fixup for non-constructor struct
@@ -253,8 +245,6 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     ret_types: []Type = nil
     ret_slice_elem := ""
     ret_slice_utf8 := false
-    ret_slice_sentinel := false
-    ret_slice_sentinel_val := 0
     if len(cf.return_types) > 1 {
         ret_type = "void"
         ret_types = cf.return_types[:]
@@ -273,8 +263,6 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             ret_type = "void"
             ret_slice_elem = llvm_type_from_checker(sl.elem)
             _, ret_slice_utf8 = sl.elem.(Type_Utf8)
-            ret_slice_sentinel = sl.has_sentinel
-            ret_slice_sentinel_val = sl.sentinel
         } else if single == nil || is_untyped(single) {
             ret_type = "void"
         } else {
@@ -395,12 +383,10 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         if info, info_ok := lookup_fun_info(g, cf.name); info_ok && len(info.escape_locals) > 0 {
             for el in info.escape_locals {
                 g.all_vars[el.name] = Array_Var{
-                    alloca       = fmt.tprintf("%%%s.storage", el.name),
-                    capacity     = el.cap,
-                    elem_type    = el.elem_type,
-                    is_utf8      = el.is_utf8,
-                    has_sentinel = el.has_sentinel,
-                    sentinel     = el.sentinel,
+                    alloca    = fmt.tprintf("%%%s.storage", el.name),
+                    capacity  = el.cap,
+                    elem_type = el.elem_type,
+                    is_utf8   = el.is_utf8,
                 }
             }
         }
@@ -454,11 +440,9 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // Register sret pointer for slice-returning functions
     if ret_slice_elem != "" {
         g.all_vars["__sret"] = Slice_Var{
-            alloca       = "%sret",
-            elem_type    = ret_slice_elem,
-            is_utf8      = ret_slice_utf8,
-            has_sentinel = ret_slice_sentinel,
-            sentinel     = ret_slice_sentinel_val,
+            alloca    = "%sret",
+            elem_type = ret_slice_elem,
+            is_utf8   = ret_slice_utf8,
         }
         // NRVO: if every `return X` returns the same named local, alias it
         // to %sret. Body writes the slice header directly into the caller's
@@ -468,11 +452,9 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         g.nrvo_var = find_nrvo_candidate(cf.body[:])
         if g.nrvo_var != "" {
             g.all_vars[g.nrvo_var] = Slice_Var{
-                alloca       = "%sret",
-                elem_type    = ret_slice_elem,
-                is_utf8      = ret_slice_utf8,
-                has_sentinel = ret_slice_sentinel,
-                sentinel     = ret_slice_sentinel_val,
+                alloca    = "%sret",
+                elem_type = ret_slice_elem,
+                is_utf8   = ret_slice_utf8,
             }
         }
     }
@@ -588,11 +570,9 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             elem_t := llvm_type_from_checker(sl.elem)
             _, sl_utf8 := sl.elem.(Type_Utf8)
             g.all_vars[p.name] = Slice_Var{
-                alloca       = fmt.tprintf("%%%s.arg", p.name),
-                elem_type    = elem_t,
-                is_utf8      = sl_utf8,
-                has_sentinel = sl.has_sentinel,
-                sentinel     = sl.sentinel,
+                alloca    = fmt.tprintf("%%%s.arg", p.name),
+                elem_type = elem_t,
+                is_utf8   = sl_utf8,
             }
         } else if pa, pa_ok := partial_through_distinct_and_ptr(p.type_); pa_ok {
             // Partial-array param via pointer: same fat-pointer-ref ABI as
@@ -601,11 +581,9 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             elem_t := llvm_type_from_checker(pa.elem)
             _, pa_utf8 := pa.elem.(Type_Utf8)
             g.all_vars[p.name] = Slice_Var{
-                alloca       = fmt.tprintf("%%%s.arg", p.name),
-                elem_type    = elem_t,
-                is_utf8      = pa_utf8,
-                has_sentinel = pa.has_sentinel,
-                sentinel     = pa.sentinel,
+                alloca    = fmt.tprintf("%%%s.arg", p.name),
+                elem_type = elem_t,
+                is_utf8   = pa_utf8,
             }
         } else if _, pt_ok := p.type_.(^Type_Ptr); pt_ok {
             // Pointer params: bind directly to the .arg SSA value. Mara

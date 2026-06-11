@@ -1,8 +1,9 @@
 module mara.string
 
 str :: type [..128]utf8
-cstr :: type [..128, 0]utf8
-cstring :: distinct ^utf8 // converts from cstr
+cstring :: distinct ^utf8 // FFI boundary type — converts from any utf8 partial
+                          // array (terminator written at [len], needs len < cap)
+                          // and from string literals (rodata carries the \0)
 
 // overload + add
 // add :: dispatch {

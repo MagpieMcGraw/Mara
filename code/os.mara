@@ -17,12 +17,14 @@ File_Error :: error {
 }
 
 // DANGER BELOW
-read_cstring :: fun(cap: i64, src: ^byte) -> [, 0]utf8 {
-	cstring : [, 0]utf8 = slice_from_ptr(src, cap)
-	for utf8_byte, i in cstring {
-		if utf8_byte == 0 do return cstring[:i]
+// Scan a C-owned NUL-terminated buffer into an honest slice: len is the
+// distance to the first 0 (or cap if none found within the window).
+read_cstring :: fun(cap: i64, src: ^byte) -> []utf8 {
+	view : []utf8 = slice_from_ptr(src, cap)
+	for utf8_byte, i in view {
+		if utf8_byte == 0 do return view[:i]
 	}
-	return cstring
+	return view
 }
 
 // NEVER CALL THIS FUNCTION
