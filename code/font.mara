@@ -60,14 +60,13 @@ Raster_Edge :: struct {
 	color : i32   // channel mask: 1=R, 2=G, 4=B; 7=all (smooth)
 }
 
-RASTER_QUAD_STEPS :: 6
-MAX_RASTER_EDGES  :: 4096
 MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
 rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 {
 	// No contours = empty glyph (space) or an unparsed compound — the two
 	// are distinguishable via outline.header.num_contours (< 0 = compound)
 	// when composite resolution wants to route them differently.
+	RASTER_QUAD_STEPS :: 6
 	if outline.end_pts.len == 0 { glyph.w = 0 glyph.h = 0 return }
 
 	scale := atlas.px_scale
@@ -90,7 +89,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	glyph.bearing_x = xmin * scale - pad
 	glyph.bearing_y = ymax * scale + pad
 
-	edges : [..MAX_RASTER_EDGES]Raster_Edge
+	edges : [..4096]Raster_Edge
 	contour_start : [..512]i64
 
 	// similar to glyph point, but we won't merge them
@@ -159,8 +158,10 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			node_i : i32 = 1
 			for node_i < nodes.len {
 				if nodes[node_i].on_curve {
-					if edges.len < MAX_RASTER_EDGES { edges[edges.len] = Raster_Edge{pen_x, pen_y, nodes[node_i].x, nodes[node_i].y, 0} edges.len += 1 }
-					pen_x = nodes[node_i].x pen_y = nodes[node_i].y
+					&edges + Raster_Edge{
+						pen_x, pen_y, nodes[node_i].x, nodes[node_i].y, 0}
+					pen_x = nodes[node_i].x
+					pen_y = nodes[node_i].y
 					node_i += 1
 				else
 					ctrl_x := nodes[node_i].x
@@ -168,7 +169,13 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 					end_x : f32 = 0.0
 					end_y : f32 = 0.0
 					next_i := node_i + 1
-					if next_i >= nodes.len { end_x = nodes[0].x end_y = nodes[0].y else end_x = nodes[next_i].x end_y = nodes[next_i].y }
+					if next_i >= nodes.len {
+						end_x = nodes[0].x
+						end_y = nodes[0].y
+					else
+						end_x = nodes[next_i].x
+						end_y = nodes[next_i].y
+					}
 					prev_x := pen_x
 					prev_y := pen_y
 					for step in 0..RASTER_QUAD_STEPS {
@@ -176,22 +183,18 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 						inv_t := 1.0 - t
 						curve_x := inv_t*inv_t*pen_x + 2.0*inv_t*t*ctrl_x + t*t*end_x
 						curve_y := inv_t*inv_t*pen_y + 2.0*inv_t*t*ctrl_y + t*t*end_y
-						if edges.len < MAX_RASTER_EDGES {
-							&edges + Raster_Edge{prev_x, prev_y, curve_x, curve_y, 0}
-						}
-						prev_x = curve_x prev_y = curve_y
+						&edges + Raster_Edge{prev_x, prev_y, curve_x, curve_y, 0}
+						prev_x = curve_x
+						prev_y = curve_y
 					}
-					pen_x = end_x pen_y = end_y
+					pen_x = end_x
+					pen_y = end_y
 					node_i += 2
 				}
 			}
-			if edges.len < MAX_RASTER_EDGES {
-				edges[edges.len] = Raster_Edge{pen_x, pen_y, nodes[0].x, nodes[0].y, 0}
-				edges.len += 1
-			}
+			&edges + Raster_Edge{pen_x, pen_y, nodes[0].x, nodes[0].y, 0}
 			if edges.len > first_edge {
-				contour_start[contour_start.len] = first_edge
-				contour_start.len += 1
+				&contour_start + first_edge
 			}
 		}
 		point_start = point_end + 1
@@ -202,8 +205,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	contour_start[contour_start.len] = edges.len
 	contour_start.len += 1
 
-	is_corner : [..MAX_RASTER_EDGES]bool
-	is_corner.len = MAX_RASTER_EDGES
+	is_corner : [..edges.cap]bool
+	is_corner.len = is_corner.cap
 	for ci in 0..(contour_start.len - 1) {
 		edge_lo := contour_start[ci]
 		edge_hi := contour_start[ci + 1]

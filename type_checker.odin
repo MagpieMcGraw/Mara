@@ -1105,26 +1105,47 @@ resolve_fn_type_name :: proc(c: ^Checker, dotted: string, env: ^Type_Env) -> str
 // by sites like `slice_from_ptr` that need to refuse runtime-derived values
 // — accepting an attacker-controlled length there is a classic OOB-read/write
 // foot-gun. Handles literals, unary minus, named `::` constants (recursively),
-// and basic arithmetic + bit-shift operators on comptime operands. Anything
-// else returns ok=false; callers should emit a "comptime-known integer
-// expected" error so the user gets a clear diagnostic.
-evaluate_comptime_int :: proc(c: ^Checker, e: Expr) -> (value: i64, ok: bool) {
+// basic arithmetic + bit-shift operators on comptime operands, and — when the
+// caller passes its env — `.cap`/`.len` of a variable whose type carries a
+// static size (fixed array, partial array), so one array's bound can derive
+// from another's (`is_corner : [..edges.cap]bool`). Anything else returns
+// ok=false; callers should emit a "comptime-known integer expected" error so
+// the user gets a clear diagnostic.
+evaluate_comptime_int :: proc(c: ^Checker, e: Expr, env: ^Type_Env = nil) -> (value: i64, ok: bool) {
     #partial switch v in e {
     case ^Expr_Number:
         return i64(v.value), true
     case ^Expr_Unary:
         if v.op == .Minus {
-            inner, inner_ok := evaluate_comptime_int(c, v.operand)
+            inner, inner_ok := evaluate_comptime_int(c, v.operand, env)
             if inner_ok { return -inner, true }
         }
     case ^Expr_Ident:
         if const_expr, found := c.table.constants[v.name]; found {
-            return evaluate_comptime_int(c, const_expr)
+            return evaluate_comptime_int(c, const_expr, env)
+        }
+    case ^Expr_Field_Access:
+        // `arr.cap` (or `arr.len` of a FIXED array, where len == cap == N) is
+        // part of arr's TYPE, not its runtime state. A partial array's .len is
+        // runtime — only its capacity folds.
+        if env != nil && (v.field == "cap" || v.field == "len") {
+            if base, base_ok := v.expr.(^Expr_Ident); base_ok {
+                if bt, found := type_env_get(env, base.name); found {
+                    t := bt
+                    if dt, dt_ok := t.(^Type_Distinct); dt_ok { t = dt.base_type }
+                    if pa, pa_ok := t.(^Type_Partial_Array); pa_ok && v.field == "cap" && pa.size > 0 {
+                        return i64(pa.size), true
+                    }
+                    if fa, fa_ok := t.(^Type_Fixed_Array); fa_ok && fa.size > 0 {
+                        return i64(fa.size), true
+                    }
+                }
+            }
         }
     case ^Expr_Binary:
-        l, l_ok := evaluate_comptime_int(c, v.left)
+        l, l_ok := evaluate_comptime_int(c, v.left, env)
         if !l_ok { return 0, false }
-        r, r_ok := evaluate_comptime_int(c, v.right)
+        r, r_ok := evaluate_comptime_int(c, v.right, env)
         if !r_ok { return 0, false }
         #partial switch v.op {
         case .Plus:        return l + r, true
@@ -2092,12 +2113,18 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     check_error(c, span, TYPE_UNDEFINED_IDENTIFIER, bad)
                     return Type_Error{}
                 }
-                if val, comptime_ok := evaluate_comptime_int(c, t.size_expr); comptime_ok {
+                if val, comptime_ok := evaluate_comptime_int(c, t.size_expr, env); comptime_ok {
                     fa.size = int(val)
                     fa.elem = elem
                     return fa
                 }
-                check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+                // Register-pass scan of a scope body: locals the size refers
+                // to (`other.cap`) may not be in env yet — stay silent; the
+                // body-check pass re-resolves with all locals visible and
+                // emits the real error at the decl's own span.
+                if !c.in_register_pass {
+                    check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+                }
             }
             return Type_Error{}
         }
@@ -2162,12 +2189,16 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
                     check_error(c, span, TYPE_UNDEFINED_IDENTIFIER, bad)
                     return Type_Error{}
                 }
-                if val, comptime_ok := evaluate_comptime_int(c, t.size_expr); comptime_ok {
+                if val, comptime_ok := evaluate_comptime_int(c, t.size_expr, env); comptime_ok {
                     pa.size = int(val)
                     return pa
                 }
                 // Runtime partial-array size: must be a compile-time constant.
-                check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+                // Silent during the register-pass scan (locals not in env yet);
+                // the body-check pass re-resolves with all locals visible.
+                if !c.in_register_pass {
+                    check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+                }
             }
             return Type_Error{}
         }
@@ -7901,6 +7932,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             append(&ft.return_types, rt)
         }
     }
+    // The register-pass scan ends here — the body check below must run with
+    // errors ON, or the "body pass re-resolves and emits the real error"
+    // contract the scan's silence depends on never happens. (The defer above
+    // still guards early exits inside the scan.)
+    c.in_register_pass = prev_in_register
 
     // Recurse into nested struct definitions so their field lists are populated
     // too — a sibling field default or a forward-referencing outer function that

@@ -1,0 +1,21 @@
+module capsize
+
+main :: fun() {
+	// partial array sized by another array's static capacity
+	edges : [..64]i32
+	flags : [..edges.cap]bool
+	assert(flags.cap == 64)
+
+	// fixed array: len == cap == N, both fold
+	grid : [16]f32
+	seen : [..grid.len]bool
+	mask : [..grid.cap]bool
+	assert(seen.cap == 16)
+	assert(mask.cap == 16)
+
+	// cap expression participating in arithmetic
+	dbl : [..edges.cap * 2]bool
+	assert(dbl.cap == 128)
+
+	print("capsize ok")
+}

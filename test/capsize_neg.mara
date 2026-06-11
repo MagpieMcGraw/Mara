@@ -1,0 +1,10 @@
+module capsize_neg
+
+// MUST FAIL: a partial array's .len is runtime state, not part of the type.
+// Guards the register-pass error suppression — the body pass must still
+// report this, not swallow it.
+main :: fun() {
+	edges : [..64]i32
+	bad : [..edges.len]bool
+	bad[0] = true
+}

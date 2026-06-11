@@ -5,12 +5,12 @@ add :: dispatch{ slice_add, slice_add_item }
 
 slice_add :: fun(dst: ^[]$T, src: []$T) {
 	assert(dst.len + src.len <= dst.cap)
-	dst[dst.len:] = src // would this even work?
+	dst[dst.len:] = src
 	dst.len += src.len
 }
 
 slice_add_item :: fun(dst: ^[]$T, src: $T) {
-	dst[dst.len] = src // would this even work?
+	dst[dst.len] = src
 	dst.len += 1
 }
 
