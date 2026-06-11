@@ -1485,6 +1485,9 @@ Checker :: struct {
     // in this pass return Type_Error{} silently; the body-check pass re-runs
     // resolution with all locals in scope and emits real errors then.
     in_register_pass: bool,
+    // True while resolving a `foreign` declaration's signature — the only
+    // context where `cstring` may be named as a type (see resolve_type_expr).
+    in_foreign_sig: bool,
     // Namespace-form match arm context: when set, identifier resolution falls
     // back to looking up the name as a field of namespace_subject's struct
     // type (after env/local lookup misses). Lets arm bodies/predicates write
@@ -1952,7 +1955,22 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
 // Resolve a parser Type_Expr to a checker Type
 // ---------------------------------------------------------------------------
 
+// `cstring` is the C boundary type: only `foreign` signatures may declare it
+// (c.in_foreign_sig is set around their resolution). Regular Mara code takes
+// `[]utf8` and lets the call-site conversion write the terminator — without
+// this gate the type leaks up every call chain that eventually touches C.
+// Checked here, at the single entry point every source type annotation
+// passes through; recursion re-enters via the public name so nested
+// positions (`^cstring`, fields, fn types) are covered too.
 resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Env = nil) -> Type {
+    t := resolve_type_expr_impl(te, c, span, const_values, env)
+    if c != nil && !c.in_foreign_sig && is_cstring(t) {
+        check_error(c, span, TYPE_CSTRING_FOREIGN_ONLY)
+    }
+    return t
+}
+
+resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Env = nil) -> Type {
     // `~T` outside a generic-parameter declaration: the tilde modifier is
     // only meaningful as a shape constraint on a generic param's type
     // (`Foo :: struct (s: ~T)`). At any other use site it's a syntax
@@ -5825,6 +5843,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
             // bare name, and use a nested mangled name so the codegen-side
             // foreign_funs key (extract_module_into_checked) lines up with
             // what call_resolved_name produces at call sites.
+            c.in_foreign_sig = true
             for decl in s.decls {
                 fun_type := new(Type_Scope)
                 fun_type.kind = .Fun
@@ -5852,6 +5871,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 type_env_set(&scope_env, bare_name, fun_type)
                 type_env_set(root_env, mangled, fun_type)
             }
+            c.in_foreign_sig = false
         }
     }
 }
@@ -6689,6 +6709,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // to the current module's flavor when multiple modules export the
             // same name (otherwise the global symbol_home picks first-loader,
             // which is wrong for SDL2-vs-SDL3 setups).
+            c.in_foreign_sig = true
             for decl in s.decls {
                 fun_type := new(Type_Scope)
                 fun_type.kind = .Fun
@@ -6712,6 +6733,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     owner.functions[decl.name] = fun_type
                 }
             }
+            c.in_foreign_sig = false
         case ^Stmt_If:
             // Comptime `#if`: recurse into the live arm so its declarations
             // register at the surrounding scope, exactly as if the `#if`
@@ -7426,6 +7448,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         binding_type = solidify_type(val_type)
                         if is_untyped(binding_type) {
                             check_warning(c, s.span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, s.name)
+                        }
+                        // Storing a cstring (e.g. `e := GetError()`) is banned
+                        // — the pointer's terminator is only fresh at the
+                        // moment of the call. Convert at the boundary instead
+                        // (scan to []utf8, or pass straight to another C call).
+                        if is_cstring(binding_type) {
+                            check_error(c, s.span, TYPE_CSTRING_FOREIGN_ONLY)
                         }
                     }
                     s.var_type = distinct_base(binding_type)

@@ -1,0 +1,27 @@
+module pathtest
+
+use mara.core
+use mara.os
+
+main :: fun() {
+	// Slice path, runtime-built — converted inside file_open_read's
+	// stack buffer at the actual CreateFileA boundary.
+	path : [..64]utf8
+	&path + "pathtest"
+	&path + ".mara"
+	data : [..4096]byte
+	err := read_entire_file(path[:], &data)
+	assert(not bool(err))
+	assert(data.len > 0)
+	print("slice path ok, bytes:")
+	print(data.len)
+
+	// Literal path — coerces to []utf8 for free.
+	err2 := read_entire_file("pathtest.mara", &data)
+	assert(not bool(err2))
+	print("literal path ok")
+
+	mt := file_mtime("pathtest.mara")
+	assert(mt != 0)
+	print("mtime ok")
+}

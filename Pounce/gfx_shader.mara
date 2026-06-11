@@ -12,7 +12,7 @@ Shader_Error :: error {
     Failed_Link
 }
 
-load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
+load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 	data: [..32 * KB]byte
 	os.read_entire_file(filepath, &data)?
 
@@ -52,7 +52,7 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 	return vshader, fshader
 }
 
-make_program :: fun(filepath: cstring) -> u32, err {
+make_program :: fun(filepath: []utf8) -> u32, err {
 	vshader, fshader, e := load_and_compile(filepath)
 	defer gl.DeleteShader(vshader)
 	defer gl.DeleteShader(fshader)

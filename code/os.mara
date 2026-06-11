@@ -1,5 +1,6 @@
 module mara.os
 
+use mara.core
 use mara.string
 
 // File-system error set. Each fallible file operation returns one of these
@@ -182,15 +183,22 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 
 	// Open a file for reading. Returns (id, .Ok) on success; on failure
 	// the File_Id is NO_FILE — safe to feed to `defer file_close`.
-	file_open_read :: fun(path: cstring) -> File_Id, err {
-		id := CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, void, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+	// Paths arrive as honest []utf8 — the cstring conversion happens here,
+	// at the actual FFI boundary, via a stack copy with the terminator
+	// written at [len]. 512 covers MAX_PATH (260) with room to spare.
+	file_open_read :: fun(path: []utf8) -> File_Id, err {
+		cpath : [..512]utf8
+		&cpath + path
+		id := CreateFileA(cpath, GENERIC_READ, FILE_SHARE_READ, void, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
 		return id
 	}
 
 	// Open a file for writing, creating it if missing and truncating if present.
-	file_open_write :: fun(path: cstring) -> File_Id, err {
-		id := CreateFileA(path, GENERIC_WRITE, 0, void, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
+	file_open_write :: fun(path: []utf8) -> File_Id, err {
+		cpath : [..512]utf8
+		&cpath + path
+		id := CreateFileA(cpath, GENERIC_WRITE, 0, void, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NO_FILE)
 		if id == INVALID_HANDLE_VALUE do return NO_FILE, Open_Failed
 		return id
 	}
@@ -214,7 +222,7 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 		data.len = i32(read)
 	}
 
-	read_entire_file :: fun(path: cstring, data: ^[]byte) -> err {
+	read_entire_file :: fun(path: []utf8, data: ^[]byte) -> err {
 		id := file_open_read(path)?
 		defer file_close(id)
 		size := file_size(id)?
@@ -231,16 +239,22 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 		return i64(written)
 	}
 
-	file_delete :: fun(path: cstring) -> err {
-		if not bool(DeleteFileA(path)) do return Delete_Failed
+	file_delete :: fun(path: []utf8) -> err {
+		cpath : [..512]utf8
+		&cpath + path
+		if not bool(DeleteFileA(cpath)) do return Delete_Failed
 	}
 
 	// Copy `src` to `dst`. Overwrites `dst` if it exists. Used by hot-reload
 	// loops to copy a freshly-built DLL into a uniquely-named file the host
 	// can LoadLibraryA — the original on disk stays unlocked so the build can
 	// overwrite it for the next reload.
-	copy_file :: fun(src: cstring, dst: cstring) -> err {
-		if not bool(CopyFileA(src, dst, 0)) do return Copy_Failed
+	copy_file :: fun(src: []utf8, dst: []utf8) -> err {
+		csrc : [..512]utf8
+		&csrc + src
+		cdst : [..512]utf8
+		&cdst + dst
+		if not bool(CopyFileA(csrc, cdst, 0)) do return Copy_Failed
 	}
 
 	// Last-write time of a file, as Windows' 100-nanosecond FILETIME packed
@@ -248,9 +262,11 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	// if the query fails — caller comparing against a previous value will
 	// see a "change" and react safely. Used to poll for DLL rebuild events
 	// without a directory watcher.
-	file_mtime :: fun(path: cstring) -> i64 {
+	file_mtime :: fun(path: []utf8) -> i64 {
+		cpath : [..512]utf8
+		&cpath + path
 		data : WIN32_FILE_ATTRIBUTE_DATA
-		if not bool(GetFileAttributesExA(path, 0, &data)) do return 0
+		if not bool(GetFileAttributesExA(cpath, 0, &data)) do return 0
 		lo : i64 = i64(data.last_write_low)
 		hi : i64 = i64(data.last_write_high) << 32
 		return lo | hi
@@ -278,15 +294,19 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 
 	// Load a DLL by name. Returns void on failure. Win32's search order applies —
 	// pass a full path to bypass it. Caller must release with free_library.
-	load_library :: fun(name: cstring) -> ^byte {
-	return LoadLibraryA(name)
+	load_library :: fun(name: []utf8) -> ^byte {
+		cname : [..512]utf8
+		&cname + name
+		return LoadLibraryA(cname)
 	}
 
 	// Look up a symbol in a loaded module. Returns void if the symbol does not
 	// exist. Cast the returned ^byte to the appropriate function pointer type
 	// at the call site.
-	find_symbol :: fun(mod: ^byte, name: cstring) -> ^byte {
-	return GetProcAddress(mod, name)
+	find_symbol :: fun(mod: ^byte, name: []utf8) -> ^byte {
+		cname : [..512]utf8
+		&cname + name
+		return GetProcAddress(mod, cname)
 	}
 
 	free_library :: fun(mod: ^byte) {
@@ -397,15 +417,19 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 
 	// Open a file for reading. Returns (id, true) on success; the (id, false)
 	// branch carries an unspecified File_Id — don't use it.
-	file_open_read :: fun(path: cstring) -> (File_Id, bool) {
-		id := open(path, O_RDONLY, 0)
+	file_open_read :: fun(path: []utf8) -> (File_Id, bool) {
+		cpath : [..512]utf8
+		&cpath + path
+		id := open(cpath, O_RDONLY, 0)
 		if id == BAD_FILE do return NO_FILE, false
 		return id, true
 	}
 
 	// Open a file for writing, creating it if missing and truncating if present.
-	file_open_write :: fun(path: cstring) -> (File_Id, bool) {
-		id := open(path, O_WRONLY | O_CREAT | O_TRUNC, DEFAULT_MODE)
+	file_open_write :: fun(path: []utf8) -> (File_Id, bool) {
+		cpath : [..512]utf8
+		&cpath + path
+		id := open(cpath, O_WRONLY | O_CREAT | O_TRUNC, DEFAULT_MODE)
 		if id == BAD_FILE do return NO_FILE, false
 		return id, true
 	}
@@ -451,14 +475,16 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 		return n, true
 	}
 
-	file_delete :: fun(path: cstring) -> bool {
-		return unlink(path) == 0
+	file_delete :: fun(path: []utf8) -> bool {
+		cpath : [..512]utf8
+		&cpath + path
+		return unlink(cpath) == 0
 	}
 
 	// Copy `src` to `dst` via streaming read+write. Less efficient than
 	// sendfile(2) but uses APIs already bound; suitable for occasional
 	// hot-reload-style copies. Returns false on any I/O error.
-	copy_file :: fun(src: cstring, dst: cstring) -> bool {
+	copy_file :: fun(src: []utf8, dst: []utf8) -> bool {
 		src_id, src_ok := file_open_read(src)
 		if not src_ok do return false
 		dst_id, dst_ok := file_open_write(dst)
@@ -485,7 +511,7 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	// Last-write time as i64 (Linux's st_mtime is already a 64-bit signed
 	// seconds-since-epoch). Returns 0 on failure so callers comparing
 	// against a previous value see a "change" and react safely.
-	file_mtime :: fun(path: cstring) -> i64 {
+	file_mtime :: fun(path: []utf8) -> i64 {
 		id, ok := file_open_read(path)
 		if not ok do return 0
 		st : Stat
@@ -580,12 +606,16 @@ sys_alloc_big :: fun(cap: i64) -> Big_Slice {
 	RTLD_LAZY :: 0x1
 	RTLD_NOW  :: 0x2
 
-	load_library :: fun(name: cstring) -> ^byte {
-		return dlopen(name, RTLD_NOW)
+	load_library :: fun(name: []utf8) -> ^byte {
+		cname : [..512]utf8
+		&cname + name
+		return dlopen(cname, RTLD_NOW)
 	}
 
-	find_symbol :: fun(mod: ^byte, name: cstring) -> ^byte {
-		return dlsym(mod, name)
+	find_symbol :: fun(mod: ^byte, name: []utf8) -> ^byte {
+		cname : [..512]utf8
+		&cname + name
+		return dlsym(mod, cname)
 	}
 
 	free_library :: fun(mod: ^byte) {

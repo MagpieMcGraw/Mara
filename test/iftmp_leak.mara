@@ -14,7 +14,7 @@ consume :: fun(work: f64, fps: f64) {
 }
 
 // Like load_glyphs: big array return, called with the result DISCARDED.
-producer :: fun(slot: ^[]i32, first: u32, name: cstring) -> [1000]byte {
+producer :: fun(slot: ^[]i32, first: u32, name: []utf8) -> [1000]byte {
 	out : [1000]byte
 	out[0] = u8(first)
 	return out
