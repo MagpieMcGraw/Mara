@@ -536,6 +536,8 @@ TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE :: "variable '%s' is used before being 
 TYPE_FIELD_ACCESS_THROUGH_RECEIVER :: "'%s' is a field of '%s'; access it through the receiver (e.g. 'a.%s')"
 TYPE_TYPE_VALUE_DID_MEAN :: "'%s' is a type, not a value. Did you mean ': %s'?"
 TYPE_UNDEFINED_IDENTIFIER :: "undefined identifier '%s'"
+TYPE_STRUCT_LITERAL_NAME_NOT_STRUCT :: "'%s{{...}}': '%s' does not name a struct type"
+TYPE_STRUCT_COPY_FORM :: "'%s' is a struct variable — copy-with-overrides ('new := %s{{...}}') is not supported. Copy first ('new := %s'), then override in place ('new{{...}}')"
 TYPE_CANNOT_NEGATE :: "cannot negate %s"
 TYPE_CANNOT_NEGATE_UNSIGNED :: "cannot negate unsigned %s — no representable result; widen to signed first (e.g. -i64(x))"
 TYPE_CANNOT_APPLY :: "cannot apply 'not' to %s"

@@ -11072,6 +11072,29 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 }
             }
         }
+        // Dotted type path: `Parent.Inner{...}` / `mod.Type{...}` /
+        // `Union.Variant{...}` — resolve through the same machinery as type
+        // position, which owns all the dotted cases (module aliases, nested
+        // types, variant structs). A dotted name can never be a variable or
+        // a local, so a resolution miss is a hard error here rather than the
+        // suppressed fallthrough bare names get.
+        if strings.index_byte(e.name, '.') >= 0 {
+            resolved := resolve_type_expr(Type_Name{name = e.name, span = e.span}, c, e.span, env = env)
+            if sd := as_scope_body(resolved); sd != nil && len(sd.fields) > 0 {
+                check_struct_literal_fields(c, e, sd, e.span, env)
+                e.type_ = resolved
+                return resolved
+            }
+            if dt, dt_ok := resolved.(^Type_Distinct); dt_ok {
+                if fa, fa_ok := dt.base_type.(^Type_Fixed_Array); fa_ok {
+                    check_array_struct_literal(c, e, fa, env)
+                    e.type_ = dt
+                    return dt
+                }
+            }
+            check_error(c, e.span, TYPE_STRUCT_LITERAL_NAME_NOT_STRUCT, e.name, e.name)
+            return Type_Error{}
+        }
         // Named struct literal: run the full field-matching check (positional vs
         // named, multi-return spread, types). Without this, `x := Foo{call()}`
         // with no annotation would skip the structural check and is_spread
@@ -11104,6 +11127,12 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                         e.type_ = ts
                         return ts
                     }
+                    // e.name is a struct VARIABLE in value position — the
+                    // copy-with-overrides form (`new := var{...}`), which is
+                    // not implemented. Hard error; the old fallthrough yielded
+                    // an untyped value with checking bypassed.
+                    check_error(c, e.span, TYPE_STRUCT_COPY_FORM, e.name, e.name, e.name)
+                    return Type_Error{}
                 }
             }
         }
@@ -11115,6 +11144,14 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         if hint := c.expected_hint; hint != nil {
             if fa, fa_ok := distinct_base(hint).(^Type_Fixed_Array); fa_ok {
                 check_array_struct_literal(c, e, fa, env)
+                e.type_ = hint
+                return hint
+            }
+            // Struct-typed context (call argument, mainly — assignments,
+            // decls and returns have their own special-cased paths): give a
+            // bare literal the same field-matching treatment those get.
+            if sd := as_scope_body(distinct_base(hint)); sd != nil && len(sd.fields) > 0 {
+                check_struct_literal_fields(c, e, sd, e.span, env)
                 e.type_ = hint
                 return hint
             }

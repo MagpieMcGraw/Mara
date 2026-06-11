@@ -94,6 +94,16 @@ fail_assert :: fun() {
 // 	fail_returns_int()
 // }
 
+// Struct copy-with-overrides (`new := var{...}`). Expected: 'm' is a struct
+// variable — copy-with-overrides is not supported. Copy first, then override
+// in place. (Used to slip through as an untyped var with checking bypassed.)
+// Fail_Copy_M :: struct { x, y : f32 }
+// fail_struct_copy_form :: fun() {
+// 	m : Fail_Copy_M = {1, 2}
+// 	m2 := m{y = 99}
+// 	print(m2.y)
+// }
+
 main :: fun() -> i64 {
 	this_program = Program(Arena_Debug(1 * MB))
 
@@ -106,6 +116,7 @@ main :: fun() -> i64 {
 	// fail_width_check()
 	// fail_discarded_return()
 	// fail_negate_unsigned()
+	// fail_struct_copy_form()
 
 	print("test_fail: inert (all negatives disabled)")
 	return 0

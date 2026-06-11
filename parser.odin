@@ -3777,6 +3777,23 @@ parse_struct_literal :: proc(p: ^Parser) -> Expr {
     return s
 }
 
+// Join a pure ident-dot chain (`Holder.Inner.Deep`) into a dotted name for a
+// qualified struct literal. Fails when the chain contains anything but plain
+// identifiers (calls, indexing, deref, `.Variant` shorthand) — a type path
+// can't contain those.
+dotted_ident_path :: proc(e: Expr) -> (string, bool) {
+    #partial switch t in e {
+    case ^Expr_Ident:
+        if t.is_dot { return "", false }
+        return t.name, true
+    case ^Expr_Field_Access:
+        prefix, ok := dotted_ident_path(t.expr)
+        if !ok { return "", false }
+        return strings.concatenate({prefix, ".", t.field}), true
+    }
+    return "", false
+}
+
 // Postfix operators: indexing (a[0]), field/method access (a.b, a.f()), dereference (p^).
 // allow_dot controls whether . is consumed — false for & operands so that
 // &events.process() parses as (&events).process() while &arr[0] stays &(arr[0]).
@@ -3892,6 +3909,18 @@ parse_postfix :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
                 fa.field = field_tok.text
                 fa.span = dot_span
                 result = fa
+                // Dotted named literal: `Parent.Inner{...}` — same production
+                // as the bare `Name{...}` primary, the name is just qualified.
+                // Only when the whole chain is a pure ident path; control-flow
+                // scrutinees are protected by no_struct_lit like everywhere.
+                if is_struct_literal(p) {
+                    if path, path_ok := dotted_ident_path(result); path_ok {
+                        if sl, ok := parse_struct_literal(p).(^Expr_Struct_Literal); ok {
+                            sl.name = path
+                            result = sl
+                        }
+                    }
+                }
             }
         }
     }

@@ -1,10 +1,8 @@
 module bracetest
 
-// Pins down which positions accept a `{...}` struct literal. The forms NOT
-// here are the known gaps (all error out, none silently miscompile):
-//   Holder.Inner{1, 2}   -- dotted type path: parse error (add `()`)
-//   eat({1, 2, 3})       -- call-argument position: codegen error, type not propagated
-//   m2 := m{y = 9}       -- copy-of-var with overrides: untyped, checking bypassed
+// Pins down which positions accept a `{...}` struct literal. The one
+// remaining gap is the copy form `new := var{...}`, which is a hard error
+// (test_fail has the negative) -- copy first, then override in place.
 
 Metrics :: struct {
 	x, y, z : f32
@@ -13,6 +11,10 @@ Metrics :: struct {
 make :: fun() -> Metrics {
 	// bare literal in return position, typed by the declared return
 	return {4, 5, 6}
+}
+
+eat :: fun(m: Metrics) -> f32 {
+	return m.y
 }
 
 Holder :: struct {
@@ -64,6 +66,22 @@ main :: fun() -> i64 {
 	// 9. bare literal in return position
 	m4 := make()
 	assert(m4.z == 6)
+
+	// 10. dotted type path WITHOUT parens (named literal, qualified name)
+	h.inner = Holder.Inner{3, 4}
+	assert(h.inner.a == 3)
+	i2 := Holder.Inner{5, 6}
+	assert(i2.b == 6)
+
+	// 11. bare literal in call-argument position (param type propagates)
+	got := eat({1, 2, 3})
+	assert(got == 2)
+	got2 := eat({x = 7, y = 8, z = 9})
+	assert(got2 == 8)
+
+	// 12. named literal in call-argument position
+	got3 := eat(Metrics{0, 5, 0})
+	assert(got3 == 5)
 
 	print("bracetest ok")
 	return 0
