@@ -1509,13 +1509,24 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             emit(g, "  call void %s(%s)", ir_name, args_joined)
             return tmp_slice
         } else if info.ret_types != nil {
-            // Multi-return: alloca temp pointers for each element, pass as sret, call void
+            // Multi-return: temp pointer per element, pass as sret, call void.
+            // Big slots (e.g. a multi-MB array riding in a tuple) follow the
+            // same arena policy as the single-array-return path above — a
+            // plain alloca per slot overflows the stack.
             clear(&g.tuple_result_ptrs)
             clear(&g.tuple_result_types)
             for elem, i in info.ret_types {
                 et := llvm_type_from_checker(elem)
-                tmp_ptr := fresh_tmp(g)
-                emit_alloca(g, tmp_ptr, et)
+                tmp_ptr: string
+                total_bytes := checker_type_byte_size(elem)
+                if g.context_enabled && total_bytes >= 1024 {
+                    ret_name := fmt.tprintf("<ret %s.%d>", call_resolved_name(e), i)
+                    ret_loc := format_location(e.span.file, e.span.line, e.span.col)
+                    tmp_ptr = emit_arena_bump(g, total_bytes, ret_name, ret_loc)
+                } else {
+                    tmp_ptr = fresh_tmp(g)
+                    emit_alloca(g, tmp_ptr, et)
+                }
                 append(&arg_strs, fmt.tprintf("ptr %s", tmp_ptr))
                 append(&g.tuple_result_ptrs, tmp_ptr)
                 append(&g.tuple_result_types, et)

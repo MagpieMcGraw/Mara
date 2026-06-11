@@ -1057,12 +1057,19 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                 arr_elem_t := llvm_type_from_checker(fa.elem)
                 arr_utf8 := false
                 if _, u_ok := fa.elem.(Type_Utf8); u_ok { arr_utf8 = true }
-                alloca_name := fmt.tprintf("%%%s", name)
-                emit_alloca(g, alloca_name, elem_type)
-                total_bytes := fa.size * elem_byte_size(arr_elem_t, g.checked)
-                emit_memcpy(g, alloca_name, src_ptr, total_bytes)
+                if existing, exists := get_array(g, name); exists {
+                    // Pre-bound storage (ctor field, named return slot):
+                    // copy into it so the store reaches the caller's buffer.
+                    total_bytes := fa.size * elem_byte_size(arr_elem_t, g.checked)
+                    emit_memcpy(g, existing.alloca, src_ptr, total_bytes)
+                    continue
+                }
+                // Fresh binding: claim the call's slot buffer directly — it
+                // was allocated for this statement (stack or arena per the
+                // big-array policy) and nothing else reads it. An alloca +
+                // memcpy here doubled a multi-MB return on the stack.
                 g.all_vars[name] = Array_Var{
-                    alloca       = alloca_name,
+                    alloca       = src_ptr,
                     capacity     = fa.size,
                     elem_type    = arr_elem_t,
                     is_utf8      = arr_utf8,
