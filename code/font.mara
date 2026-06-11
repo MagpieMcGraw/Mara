@@ -90,7 +90,12 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	glyph.bearing_y = ymax * scale + pad
 
 	edges : [..4096]Raster_Edge
+
+	// contour_start holds (contours + 1) fenceposts — the coloring loop reads
+	// contour ci as the span [contour_start[ci], contour_start[ci+1]). Seed the
+	// first (edges always start at 0); each contour appends its end fencepost.
 	contour_start : [..512]i64
+	&contour_start + 0
 
 	Node :: struct {
 		x, y: f32
@@ -103,7 +108,6 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 		point_end := outline.end_pts[ci]
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
-			first_edge := edges.len
 			// first on-curve point in the contour (relative index)
 			first_on_curve := -1
 			for k in 0..n_points {
@@ -196,16 +200,10 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 				}
 			}
 			&edges + Raster_Edge{pen_x, pen_y, nodes[0].x, nodes[0].y, 0}
-			if edges.len > first_edge {
-				&contour_start + first_edge
-			}
+			&contour_start + edges.len
 		}
 		point_start = point_end + 1
 	}
-	// Sentinel: cap the last contour's edge range and count it too, so
-	// contour_start holds (contours + 1) fenceposts — the coloring loop
-	// reads contour ci as the span [contour_start[ci], contour_start[ci+1]).
-	&contour_start + edges.len
 
 	is_corner : [..edges.cap]bool
 	is_corner.len = is_corner.cap
