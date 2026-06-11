@@ -30,7 +30,7 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 
 	compile :: fun(text: ^[]utf8, shader_type: u32) -> u32, err {
 		shader := gl.CreateShader(shader_type)
-		slen : i32 = i32(text.len)   // GL ShaderSource wants GLint* (i32), slice .len is i64
+		slen : i32 = i32(text.len)
 		gl.ShaderSource(shader, 1, &text.ptr, &slen)
 		gl.CompileShader(shader)
 
