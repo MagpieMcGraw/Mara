@@ -1,0 +1,66 @@
+module multistmt
+
+use mara.core
+
+// Multiple statements per line — how statement boundaries interact with the
+// rest of the language. Each section asserts values so a mis-parse that
+// merges or splits statements shows up as a wrong number, not just a build
+// error.
+
+Pair :: struct {
+	a : i32 = 0
+	b : i32 = 0
+}
+
+// fn body packed onto one line: two field assigns + bare return
+set_both :: fun(p: ^Pair) { p.a = 10 p.b = 20 return }
+
+// single-line if/else chain with valued returns in both branches
+pick :: fun(c: bool) -> i32 {
+	if c { return 1 else return 2 }
+}
+
+main :: fun() {
+	// decls chained left to right, later ones reading earlier ones
+	a := 1 b := a + 1 c := a + b
+	assert(a == 1) assert(b == 2) assert(c == 3)
+
+	// plain, compound, and another compound assign on one line
+	a = 10 b += 5 c *= 2
+	assert(a == 10) assert(b == 7) assert(c == 6)
+
+	// statement boundary right after a struct literal's closing brace
+	q := Pair{1, 2} r := q.a + q.b
+	assert(r == 3)
+
+	// field assigns + return packed into a one-line fn body
+	p : Pair
+	set_both(&p)
+	assert(p.a == 10) assert(p.b == 20)
+
+	// several then-statements between one brace pair, all on one line
+	flag := true
+	x := 0 y := 0
+	if flag { x = 1 y = 2 }
+	assert(x == 1) assert(y == 2)
+	assert(pick(true) == 1) assert(pick(false) == 2)
+
+	// loop body with two statements on the header's line
+	s := 0 t := 0
+	for i in 0..4 { s += i t += 1 }
+	assert(s == 6) assert(t == 4)
+
+	// call statements back to back
+	print("multi") print("statement")
+
+	// THE known boundary hazard: `&` is both address-of and binary AND, so an
+	// append may NOT follow another statement on the same line —
+	//     x := 5 &nums + 7
+	// parses as `x := 5 & nums + 7` and fails loudly with a type error
+	// (int & slice has no overload). First-statement-on-line is fine:
+	nums : [..8]i64
+	&nums + 7
+	assert(nums.len == 1) assert(nums[0] == 7)
+
+	print("multistmt ok")
+}
