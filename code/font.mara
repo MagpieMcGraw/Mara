@@ -52,22 +52,22 @@ Atlas :: struct (bytes: []byte, u_per_em: u16) {
 	data := bytes
 }
 
-Raster_Edge :: struct {
-	x0 : f32
-	y0 : f32
-	x1 : f32
-	y1 : f32
-	color : i32   // channel mask: 1=R, 2=G, 4=B; 7=all (smooth)
-}
-
 MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
 rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 {
 	// No contours = empty glyph (space) or an unparsed compound — the two
 	// are distinguishable via outline.header.num_contours (< 0 = compound)
 	// when composite resolution wants to route them differently.
+	Raster_Edge :: struct {
+		x0 : f32
+		y0 : f32
+		x1 : f32
+		y1 : f32
+		color : i32   // channel mask: 1=R, 2=G, 4=B; 7=all (smooth)
+	}
 	RASTER_QUAD_STEPS :: 6
-	if outline.end_pts.len == 0 { glyph.w = 0 glyph.h = 0 return }
+	
+	if outline.contour_end_pts.len == 0 { glyph.w = 0 glyph.h = 0 return }
 
 	scale := atlas.px_scale
 	pad   := atlas.pad
@@ -104,8 +104,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	nodes : [..1024]Node
 
 	point_start := 0
-	for ci in 0..outline.end_pts.len {
-		point_end := outline.end_pts[ci]
+	for ci in 0..outline.contour_end_pts.len {
+		point_end := outline.contour_end_pts[ci]
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
 			// first on-curve point in the contour (relative index)
@@ -369,9 +369,9 @@ Outline :: struct {
 	// marker (the arrays stay empty until composite resolution lands).
 	header : TTF.Glyph_Header
 
-	// end_pts[i] is the LAST point index of contour i; points is the
+	// contour_end_pts[i] is the LAST point index of contour i; points is the
 	// flattened point list across all contours.
-	end_pts : [..MAX_GLYPH_CONTOURS]u16
+	contour_end_pts : [..MAX_GLYPH_CONTOURS]u16
 	points  : [..MAX_GLYPH_POINTS]Glyph_Point
 }
 
@@ -411,12 +411,12 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
 	n_contours := outline.header.num_contours
 	assert(n_contours <= MAX_GLYPH_CONTOURS)
 
-	outline.end_pts.len = n_contours
+	outline.contour_end_pts.len = n_contours
 	for i in 0..n_contours {
-		outline.end_pts[i] = read_u16be(glyph_bytes[cursor])
+		outline.contour_end_pts[i] = read_u16be(glyph_bytes[cursor])
 		cursor += 2
 	}
-	n_points := outline.end_pts[n_contours - 1] + 1
+	n_points := outline.contour_end_pts[n_contours - 1] + 1
 	assert(n_points <= MAX_GLYPH_POINTS)
 	outline.points.len = n_points
 
@@ -602,12 +602,12 @@ TTF :: struct (bytes: ^[]byte) {
 		header : Glyph_Header
 
 		Simple :: struct {
-			end_pts_of_contours : []u16   // num_contours entries; last + 1 = point count
-			instruction_length  : u16     // hinting bytecode length
-			instructions        : []u8    // skipped — we don't hint
-			flags               : []u8    // GLYPH_FLAG_* bits, REPEAT-run-length compressed
-			x_deltas            : []byte  // per point: 1 byte if X_SHORT, else 2 (none if X_SAME)
-			y_deltas            : []byte  // same shape with the Y bits
+			contour_end_pts    : []u16   // spec: endPtsOfContours; num_contours entries; last + 1 = point count
+			instruction_length : u16     // hinting bytecode length
+			instructions       : []u8    // skipped — we don't hint
+			flags              : []u8    // GLYPH_FLAG_* bits, REPEAT-run-length compressed
+			x_deltas           : []byte  // per point: 1 byte if X_SHORT, else 2 (none if X_SAME)
+			y_deltas           : []byte  // same shape with the Y bits
 		}
 
 		Compound :: struct {
