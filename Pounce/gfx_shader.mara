@@ -30,19 +30,19 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 
 	compile :: fun(text: ^[]utf8, shader_type: u32) -> u32, err {
 		shader := gl.CreateShader(shader_type)
-		slen : i32 = i32(text.len)
+		slen := i32(text.len)
 		gl.ShaderSource(shader, 1, &text.ptr, &slen)
 		gl.CompileShader(shader)
 
 		status : i32
 		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
 
+		log: [512]utf8 log_len := 0
+		gl.GetShaderInfoLog(shader, i32(log.cap), &log_len, &log[0])
+		if bool(log_len) do print(log[:log_len])
+
 		if status == 0 {
 			gl.DeleteShader(shader)
-
-			log: [512]utf8 log_len := 0
-			gl.GetShaderInfoLog(shader, i32(log.cap), &log_len, &log[0])
-			print(log[:log_len])
 			return 0, Failed_Compilation
 		}
 		return shader
@@ -53,33 +53,31 @@ load_and_compile :: fun(filepath: cstring) -> u32, u32, err {
 }
 
 make_program :: fun(filepath: cstring) -> u32, err {
-	vshader, fshader := load_and_compile(filepath)?
+	vshader, fshader, e := load_and_compile(filepath)
+	defer gl.DeleteShader(vshader)
+	defer gl.DeleteShader(fshader)
+	if bool(e) do return 0, e
 
 	program := gl.CreateProgram()
 	gl.AttachShader(program, vshader)
 	gl.AttachShader(program, fshader)
+
 	gl.LinkProgram(program)
 
 	status: i32
 	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
 	
+	// we could add an additional 448 slice type
+	log: [1024]utf8 log_len := 0
+	gl.GetProgramInfoLog(program, i32(log.cap), &log_len, &log[0])
+	if bool(log_len) do print(log[:log_len])
+
 	if status == 0 {
 		gl.DeleteProgram(program)
-		gl.DeleteShader(vshader)
-		gl.DeleteShader(fshader)
-
-		// add a 448 slice type alongside the 888
-		// just for this line?
-		log: [1024]utf8 log_len := 0
-		gl.GetProgramInfoLog(program, i32(log.cap), &log_len, &log[0])
-		print(log[:log_len])
 		return 0, Failed_Link
 	}
-
 	gl.DetachShader(program, vshader)
 	gl.DetachShader(program, fshader)
-	gl.DeleteShader(vshader)
-	gl.DeleteShader(fshader)
 
 	return program
 }
