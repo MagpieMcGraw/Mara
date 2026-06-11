@@ -219,19 +219,19 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 				}
 			}
 			if corner_total <= 1 {
-				for ei in 0..n_edges { edges[edge_lo + ei].color = 7 }
+				for ei in 0..n_edges do edges[edge_lo + ei].color = 7
 			else
 				first_corner := -1
 				for ei in 0..n_edges {
 					if is_corner[ei] {
-						if first_corner < 0 { first_corner = ei }
+						if first_corner < 0 do first_corner = ei
 					}
 				}
 				color := 3
 				for step in 0..n_edges {
 					ei := first_corner + step
-					if ei >= n_edges { ei = ei - n_edges }
-					if is_corner[ei] { color = next_edge_color(color) }
+					if ei >= n_edges do ei = ei - n_edges
+					if is_corner[ei] do color = next_edge_color(color)
 					edges[edge_lo + ei].color = color
 				}
 			}
@@ -443,7 +443,7 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
 	// X coordinates: each point's x is a signed delta from the previous
 	// point. Encoding per point depends on X_SHORT (1-byte vs 2-byte) and
 	// X_SAME (sign-bit-for-short, or same-as-prev-for-long).
-	x : i32 = 0
+	x := 0
 	for i in 0..n_points {
 		f := flags[i]
 		if (f & GLYPH_FLAG_X_SHORT) != 0 {
@@ -462,7 +462,7 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
 	}
 
 	// Y coordinates: same shape with the Y bits.
-	y : i32 = 0
+	y := 0
 	for i in 0..n_points {
 		f := flags[i]
 		if (f & GLYPH_FLAG_Y_SHORT) != 0 {
