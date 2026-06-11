@@ -176,7 +176,9 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 						inv_t := 1.0 - t
 						curve_x := inv_t*inv_t*pen_x + 2.0*inv_t*t*ctrl_x + t*t*end_x
 						curve_y := inv_t*inv_t*pen_y + 2.0*inv_t*t*ctrl_y + t*t*end_y
-						if edges.len < MAX_RASTER_EDGES { edges[edges.len] = Raster_Edge{prev_x, prev_y, curve_x, curve_y, 0} edges.len += 1 }
+						if edges.len < MAX_RASTER_EDGES {
+							&edges + Raster_Edge{prev_x, prev_y, curve_x, curve_y, 0}
+						}
 						prev_x = curve_x prev_y = curve_y
 					}
 					pen_x = end_x pen_y = end_y
@@ -210,7 +212,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			corner_total := 0
 			for ei in 0..n_edges {
 				prev_ei := ei - 1
-				if prev_ei < 0 { prev_ei = n_edges - 1 }
+				if prev_ei < 0 do prev_ei = n_edges - 1
 				if edge_is_corner(edges[edge_lo + prev_ei], edges[edge_lo + ei]) {
 					is_corner[ei] = true
 					corner_total += 1
