@@ -1,0 +1,45 @@
+module constlit
+
+use mara.string
+
+// Struct-typed compile-time constants (`::` with a struct literal), declared
+// ABOVE the struct definitions to exercise order independence.
+
+DEFAULT_MESH :: Mesh{"=quad", 0}
+DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 7}
+
+Texture :: struct {
+	name:  str,
+	uv:    [4]f32,
+	layer: u32,
+}
+
+Mesh :: struct {
+	name:  str,
+	index: i32,
+}
+
+// and one BELOW its struct, for contrast
+ATLAS_TEXTURE :: Texture{"ATLAS", {1, 1, 0, 0}, 0}
+
+eat :: fun(t: Texture) -> u32 {
+	return t.layer
+}
+
+main :: fun() -> i64 {
+	// use in a decl
+	m := DEFAULT_MESH
+	assert(m.index == 0)
+
+	// use in a field-ish position and an argument
+	t : Texture = DEFAULT_TEXTURE
+	assert(t.layer == 7)
+	assert(t.uv[0] == 0)
+
+	layer := eat(ATLAS_TEXTURE)
+	assert(layer == 0)
+	assert(eat(DEFAULT_TEXTURE) == 7)
+
+	print("constlit ok")
+	return 0
+}

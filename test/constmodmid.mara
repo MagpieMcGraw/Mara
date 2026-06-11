@@ -1,0 +1,11 @@
+module constmodmid
+
+use constmoddef
+
+// mirrors Pounce/object.mara: a struct embedding the imported types,
+// in a module that also sees the struct-literal constants
+CM_Visual :: struct {
+	texture: CM_Texture
+	mesh: CM_Mesh
+	color: [3]f32
+}

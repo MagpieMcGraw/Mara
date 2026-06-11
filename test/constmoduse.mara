@@ -1,0 +1,17 @@
+module constmoduse
+
+use constmoddef
+use constmodmid
+
+main :: fun() -> i64 {
+	m := DEF_MESH
+	assert(m.index == 0)
+
+	v : CM_Visual
+	v.mesh = DEF_MESH
+	v.texture = DEF_TEXTURE
+	assert(v.texture.uv[2] == 0)
+
+	print("constmoduse ok")
+	return 0
+}
