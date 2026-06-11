@@ -13,8 +13,15 @@ Glyph :: struct {
 	bearing_x, bearing_y, advance :f32
 }
 
+// Font-wide vertical layout metrics, in atlas pixels (the same space as the
+// Glyph fields, so one uniform render scale applies to everything). descent
+// is negative, per the spec; baseline-to-baseline = ascent - descent + line_gap.
+Line_Metrics :: struct {
+	ascent, descent, line_gap : f32
+}
+
 load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr)
--> [3 * MB]byte, f32, f32, f32
+-> [3 * MB]byte, Line_Metrics
 {
 	ttf_file : [..2 * MB]byte
 	read_err := read_entire_file(font, &ttf_file)
@@ -24,9 +31,10 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr)
 	storage : [3 * MB]byte
 	atlas := Atlas(storage[:], ttf.head.units_per_em)
 
-	ascent   := f32(ttf.hhea.ascent)   * atlas.px_scale
-	descent  := f32(ttf.hhea.descent)  * atlas.px_scale
-	line_gap := f32(ttf.hhea.line_gap) * atlas.px_scale
+	metrics : Line_Metrics
+	metrics.ascent   = f32(ttf.hhea.ascent)   * atlas.px_scale
+	metrics.descent  = f32(ttf.hhea.descent)  * atlas.px_scale
+	metrics.line_gap = f32(ttf.hhea.line_gap) * atlas.px_scale
 
 	for i in 0..i32(glyphs.len) {
 		codepoint := first + u32(i)
@@ -45,7 +53,7 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr)
 		rasterize_msdf(&outline, &glyphs[i], &atlas)
 	}
 
-	return storage, ascent, descent, line_gap
+	return storage, metrics
 }
 
 Atlas :: struct (bytes: []byte, u_per_em: u16) {

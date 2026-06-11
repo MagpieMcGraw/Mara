@@ -2725,6 +2725,35 @@ make_lhs_assign :: proc(lhs: Expr, value: Expr, start: Span, is_compound: bool =
     return {}, false
 }
 
+// Parse the lvalue chain of a destructure item whose leading identifier is
+// already consumed: `font.metrics`, `cells[i]`, `ptr^.field`, combinations.
+// The slice form `a[lo:hi]` is not a bind target — fails out so the caller
+// can restore and reject the statement.
+parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
+    lhs: Expr = new_clone(Expr_Ident{name = first_tok.text, span = token_span(first_tok)})
+    for {
+        #partial switch current_kind(p) {
+        case .Dot:
+            advance(p) // consume '.'
+            field_tok := expect_field_name(p)
+            lhs = new_clone(Expr_Field_Access{expr = lhs, field = field_tok.text, span = token_span(first_tok)})
+        case .Left_Bracket:
+            advance(p) // consume '['
+            idx := parse_expr(p)
+            if current_kind(p) != .Right_Bracket {
+                return {}, false
+            }
+            advance(p) // consume ']'
+            lhs = new_clone(Expr_Index{expr = lhs, index = idx, span = token_span(first_tok)})
+        case .Caret:
+            advance(p) // consume '^'
+            lhs = new_clone(Expr_Unary{op = .Caret, operand = lhs, span = token_span(first_tok)})
+        case:
+            return lhs, true
+        }
+    }
+}
+
 // index/field assignments, or bare function calls.
 // Returns the statement and true if successful, or nil and false
 // if the identifier doesn't start a recognized statement.
@@ -2735,10 +2764,15 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
     name_tok := advance(p) // consume identifier
 
     // Multi-assignment: x, y := call()  or  x, y := a, b  or  x, y : type = a, b
+    // Items may also be lvalue chains: `atlas, font.metrics := load()` declares
+    // the bare names and stores into the expression targets.
     if current_kind(p) == .Comma {
-        // Speculatively parse: name, name, ... followed by := or : type = or =
+        // Speculatively parse: item, item, ... followed by := or : type = or =
         names: [dynamic]string
+        targets: [dynamic]Expr
+        has_target := false
         append(&names, name_tok.text)
+        append(&targets, Expr{})
         is_multi := true
         for current_kind(p) == .Comma {
             advance(p) // consume ','
@@ -2746,7 +2780,74 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 is_multi = false
                 break
             }
-            append(&names, advance(p).text)
+            item_tok := advance(p)
+            if current_kind(p) == .Dot || current_kind(p) == .Left_Bracket || current_kind(p) == .Caret {
+                chain, chain_ok := parse_bind_target_chain(p, item_tok)
+                if !chain_ok {
+                    is_multi = false
+                    break
+                }
+                append(&names, "")
+                append(&targets, chain)
+                has_target = true
+            } else {
+                append(&names, item_tok.text)
+                append(&targets, Expr{})
+            }
+        }
+        if is_multi && has_target {
+            // Mixed bind: bare names declare, expression targets store. Only
+            // the infer-decl (`:=`) and reassign (`=`) forms exist here — a
+            // typed decl can't target a field, the field already has a type.
+            if current_kind(p) == .Colon {
+                advance(p) // consume ':'
+                if current_kind(p) == .Equals {
+                    advance(p) // consume '='
+                    mt_vals: [dynamic]Expr
+                    append(&mt_vals, parse_expr(p))
+                    return new_clone(Stmt_Multi_Return_Assign{
+                        names   = names,
+                        targets = targets,
+                        values  = mt_vals,
+                        span    = start,
+                    }), true
+                }
+                p.pos = saved_pos
+                return {}, false
+            }
+            if current_kind(p) == .Equals {
+                advance(p) // consume '='
+                first := parse_expr(p)
+                if current_kind(p) != .Comma {
+                    // Single RHS (multi-return call or broadcast)
+                    mt_vals: [dynamic]Expr
+                    append(&mt_vals, first)
+                    return new_clone(Stmt_Multi_Return_Assign{
+                        names   = names,
+                        targets = targets,
+                        values  = mt_vals,
+                        span    = start,
+                    }), true
+                }
+                // Parallel RHS: one assignment per item
+                vals: [dynamic]Expr
+                append(&vals, first)
+                for current_kind(p) == .Comma {
+                    advance(p) // consume ','
+                    append(&vals, parse_expr(p))
+                }
+                assigns: [dynamic]^Stmt_Assign
+                for i := 0; i < len(names) && i < len(vals); i += 1 {
+                    if names[i] != "" {
+                        append(&assigns, new_clone(Stmt_Assign{name = names[i], value = vals[i], span = start}))
+                    } else if assign_stmt, lhs_ok := make_lhs_assign(targets[i], vals[i], start); lhs_ok {
+                        append(&assigns, assign_stmt.(^Stmt_Assign))
+                    }
+                }
+                return new_clone(Stmt_Multi_Assign{assigns = assigns, span = start}), true
+            }
+            p.pos = saved_pos
+            return {}, false
         }
         if is_multi && current_kind(p) == .Colon {
             advance(p) // consume ':'
@@ -2945,12 +3046,22 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         }
 
         // Multi-target assignment with expression LHS: frame.x, frame.y = get_pair()
+        // Mixed bind also lands here when the expression target comes first:
+        // `frame.x, atlas := get_pair()` — `:=` declares the bare names.
         if current_kind(p) == .Comma {
             lhs_exprs: [dynamic]Expr
             append(&lhs_exprs, lhs)
             for current_kind(p) == .Comma {
                 advance(p) // consume ','
                 append(&lhs_exprs, parse_expr(p))
+            }
+            if current_kind(p) == .Colon {
+                advance(p) // consume ':'
+                if current_kind(p) != .Equals {
+                    p.pos = saved_pos
+                    return {}, false
+                }
+                // fall through to the '=' handling below
             }
             if current_kind(p) == .Equals {
                 advance(p) // consume '='

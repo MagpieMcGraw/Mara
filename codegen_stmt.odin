@@ -1026,8 +1026,16 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
         // as Struct_Var so subsequent field access (info.size) works.
         if ret_types != nil && i < len(ret_types) {
             if sd := as_struct_body(distinct_base(ret_types[i])); sd != nil {
+                struct_llvm := struct_llvm_name(sd.name)
                 if name == "" {
-                    codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
+                    // Expression target (`x, obj.field := f()`): copy the
+                    // slot into the target's storage in place.
+                    addr, addr_ok := gen_multi_return_target_addr(g, s, i)
+                    if !addr_ok {
+                        codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
+                    }
+                    emit_struct_copy(g, sd, struct_llvm, src_ptr, addr)
+                    continue
                 }
                 alloca_name: string
                 if existing, ok := get_struct(g, name); ok {
@@ -1040,7 +1048,6 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                         struct_name = sd.name,
                     }
                 }
-                struct_llvm := struct_llvm_name(sd.name)
                 emit_struct_copy(g, sd, struct_llvm, src_ptr, alloca_name)
                 continue
             }
@@ -1051,12 +1058,20 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
             // store-as-value default treats the whole `[N x T]` as a
             // scalar and breaks any call site that wants a slice of it.
             if fa, fa_ok := distinct_base(ret_types[i]).(^Type_Fixed_Array); fa_ok {
-                if name == "" {
-                    codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
-                }
                 arr_elem_t := llvm_type_from_checker(fa.elem)
                 arr_utf8 := false
                 if _, u_ok := fa.elem.(Type_Utf8); u_ok { arr_utf8 = true }
+                if name == "" {
+                    // Expression target: copy the slot's bytes into the
+                    // target's storage in place.
+                    addr, addr_ok := gen_multi_return_target_addr(g, s, i)
+                    if !addr_ok {
+                        codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
+                    }
+                    total_bytes := fa.size * elem_byte_size(arr_elem_t, g.checked)
+                    emit_memcpy(g, addr, src_ptr, total_bytes)
+                    continue
+                }
                 if existing, exists := get_array(g, name); exists {
                     // Pre-bound storage (ctor field, named return slot):
                     // copy into it so the store reaches the caller's buffer.
@@ -1148,6 +1163,29 @@ gen_broadcast_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
         }
         gen_stmt(g, synth)
     }
+}
+
+// Address of an expression target (field access / deref) so an aggregate
+// multi-return slot (struct, fixed array) can be copied into it in place.
+// Index targets aren't supported — same restriction as the scalar path.
+gen_multi_return_target_addr :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign, i: int) -> (string, bool) {
+    if i >= len(s.targets) || s.targets[i] == nil { return "", false }
+    #partial switch t in s.targets[i] {
+    case ^Expr_Field_Access:
+        st, base_ptr, found := resolve_lhs_struct(g, t.expr)
+        if !found { return "", false }
+        st_llvm := struct_llvm_name(struct_key(st))
+        idx := struct_field_index(st, t.field)
+        if idx < 0 { return "", false }
+        gep := fresh_tmp(g)
+        emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
+        return gep, true
+    case ^Expr_Unary:
+        if t.op == .Caret {
+            return gen_expr(g, t.operand), true
+        }
+    }
+    return "", false
 }
 
 gen_multi_return_store_target :: proc(g: ^Codegen, target: Expr, elem_type: string, val: string) {

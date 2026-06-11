@@ -13,17 +13,12 @@ Mesh :: struct {
     name:  str,
     index: i32,
 }
-// ascent / descent / line_gap
 
 Font :: struct {
     w, h : i32,
     name: str,
     layer: u32,
     offset_x, offset_y: i32,  // Position within atlas layer
-    metrics: Metrics
+    metrics: Line_Metrics     // from mara.font, same type load_glyphs returns
     glyphs: [256]Glyph
-
-    Metrics :: struct {
-    	ascent, descent, line_gap : f32
-    }
 }

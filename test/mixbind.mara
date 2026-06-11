@@ -1,0 +1,97 @@
+module mixbind
+
+// Mixed := destructure: bare names declare, lvalue-expression targets store.
+// `atlas, font.metrics := load()` -- the motivating shape from Pounce.
+
+Metrics :: struct {
+	ascent, descent, line_gap : f32
+}
+
+Holder :: struct {
+	count : i32
+	fval : f32
+	m : Metrics
+	cells : [4]i32
+}
+
+E :: error { Bad }
+
+scalar_pair :: fun() -> i32, f32 {
+	return 7, 2.5
+}
+
+struct_and_scalar :: fun() -> Metrics, i32 {
+	m : Metrics
+	m.ascent = 31.0
+	m.descent = -7.5
+	m.line_gap = 0.25
+	return m, 42
+}
+
+array_and_struct :: fun() -> [4]i32, Metrics {
+	a : [4]i32 = [10, 20, 30, 40]
+	m : Metrics
+	m.ascent = 1.5
+	m.descent = -0.5
+	m.line_gap = 0.0
+	return a, m
+}
+
+fallible_pair :: fun(fail: bool) -> i32, f32, err {
+	if fail { return 0, 0.0, Bad }
+	return 11, 3.5
+}
+
+try_site :: fun(h: ^Holder) -> i32, err {
+	a, h.fval := fallible_pair(false)?
+	assert(a == 11)
+	return a
+}
+
+main :: fun() -> i64 {
+	h : Holder
+
+	// bare name first, scalar slot into field
+	a, h.fval := scalar_pair()
+	assert(a == 7)
+	assert(h.fval == 2.5)
+
+	// expression target first, fresh name second
+	h.count, b := scalar_pair()
+	assert(h.count == 7)
+	assert(b == 2.5)
+
+	// struct slot into a field target
+	h.m, d := struct_and_scalar()
+	assert(h.m.ascent == 31.0)
+	assert(h.m.line_gap == 0.25)
+	assert(d == 42)
+
+	// fixed-array slot into a field target, struct into a fresh name
+	h.cells, m2 := array_and_struct()
+	assert(h.cells[0] == 10)
+	assert(h.cells[3] == 40)
+	assert(m2.descent == -0.5)
+
+	// deref target
+	n : i32
+	np := &n
+	np^, e := scalar_pair()
+	assert(n == 7)
+	assert(e == 2.5)
+
+	// plain `=` mixed form with a pre-declared name (bare name first --
+	// this order did not parse before the mixed-bind feature either)
+	f : i32
+	f, h.fval = scalar_pair()
+	assert(f == 7)
+
+	// ? propagation through the mixed form
+	got, e2 := try_site(&h)
+	assert(got == 11)
+	assert(bool(e2) == false)
+	assert(h.fval == 3.5)
+
+	print("mixbind ok")
+	return 0
+}

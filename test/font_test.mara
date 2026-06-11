@@ -11,9 +11,10 @@ main :: fun() -> i64 {
 
 	glyphs : [..96]Glyph
 	glyphs.len = 96
-	atlas, ascent, descent, line_gap := load_glyphs(
+	atlas, metrics := load_glyphs(
 		&glyphs, 32, "../Pounce/data/fonts/Inter_18pt-Regular.ttf")
-	print("line metrics: ascent", ascent, "descent", descent, "line_gap", line_gap)
+	print("line metrics: ascent", metrics.ascent,
+		"descent", metrics.descent, "line_gap", metrics.line_gap)
 
 	a := glyphs[65 - 32]   // 'A'
 	print("glyph 'A': cell", a.w, "x", a.h, "bearing", a.bearing_x, a.bearing_y, "advance", a.advance)
