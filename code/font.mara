@@ -206,7 +206,6 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	}
 
 	is_corner : [..edges.cap]bool
-	is_corner.len = is_corner.cap
 	for ci in 0..(contour_start.len - 1) {
 		edge_lo := contour_start[ci]
 		edge_hi := contour_start[ci + 1]
@@ -216,7 +215,9 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			for ei in 0..n_edges {
 				prev_ei := ei - 1
 				if prev_ei < 0 do prev_ei = n_edges - 1
-				if edge_is_corner(edges[edge_lo + prev_ei], edges[edge_lo + ei]) {
+				prev_edge := edges[edge_lo + prev_ei]
+				this_edge := edges[edge_lo + ei]
+				if edge_is_corner(prev_edge,this_edge) {
 					is_corner[ei] = true
 					corner_total += 1
 				else
