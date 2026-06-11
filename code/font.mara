@@ -67,7 +67,8 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 	}
 	RASTER_QUAD_STEPS :: 6
 	
-	if outline.contour_end_pts.len == 0 { glyph.w = 0 glyph.h = 0 return }
+	if outline.contour_end_pts.len == 0 {
+		glyph.w = 0 glyph.h = 0 return }
 
 	scale := atlas.px_scale
 	pad   := atlas.pad
@@ -358,12 +359,6 @@ dump_atlas_cell :: fun(atlas: ^[]byte,
 MAX_GLYPH_CONTOURS :: 256
 MAX_GLYPH_POINTS   :: 4096
 
-Glyph_Point :: struct {
-	x        : i16
-	y        : i16
-	on_curve : bool
-}
-
 Outline :: struct {
 	// Byte-read straight off the record. num_contours < 0 is the compound
 	// marker (the arrays stay empty until composite resolution lands).
@@ -373,6 +368,12 @@ Outline :: struct {
 	// flattened point list across all contours.
 	contour_end_pts : [..MAX_GLYPH_CONTOURS]u16
 	points  : [..MAX_GLYPH_POINTS]Glyph_Point
+}
+
+Glyph_Point :: struct {
+	x        : i16
+	y        : i16
+	on_curve : bool
 }
 
 // Decode glyph `glyph_index` out of the font's glyf table. Takes the TTF
@@ -394,19 +395,19 @@ parse_glyph :: fun(t: ^TTF, glyph_index: u16) -> Outline {
 	return outline
 }
 
-// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
-GLYPH_FLAG_ON_CURVE :: u8(0x01)
-GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
-GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
-GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
-GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
-GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
-
 // Decode one simple glyph's body (what TTF.Glyph_On_Disk's Simple variant
 // documents) into the outline's arrays. Reads are bounds-checked against the
 // glyph's OWN slice — a desynced decode traps at the bad read instead of
 // wandering into the next glyph's bytes.
 parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
+	// Simple-glyph flag bits. Bits 6-7 are reserved (must be 0 per spec).
+	GLYPH_FLAG_ON_CURVE :: u8(0x01)
+	GLYPH_FLAG_X_SHORT  :: u8(0x02)   // x delta is 1 byte unsigned
+	GLYPH_FLAG_Y_SHORT  :: u8(0x04)   // y delta is 1 byte unsigned
+	GLYPH_FLAG_REPEAT   :: u8(0x08)   // next byte = repeat count for this flag
+	GLYPH_FLAG_X_SAME   :: u8(0x10)   // if X_SHORT: dx is positive; else: same as prev
+	GLYPH_FLAG_Y_SAME   :: u8(0x20)   // analogous for y
+
 	cursor := 10   // past the header
 	n_contours := outline.header.num_contours
 	assert(n_contours <= MAX_GLYPH_CONTOURS)
