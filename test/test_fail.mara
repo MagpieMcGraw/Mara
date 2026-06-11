@@ -75,6 +75,17 @@ fail_assert :: fun() {
 // 	arr[fail_reads_u8()] = true
 // }
 
+// Unary minus on unsigned: no representable result (binary `0 - x` traps the
+// same underflow at runtime, the unary form is rejected at compile time).
+// Expected: cannot negate unsigned u32 — no representable result; widen to
+// signed first (e.g. -i64(x)).
+// fail_returns_u32 :: fun() -> u32 { return 3 }
+// fail_negate_unsigned :: fun() {
+// 	u := fail_returns_u32()
+// 	v := -u
+// 	print(v)
+// }
+
 // Discarded non-void return (must-use). Expected: return value of
 // 'fail_returns_int' is discarded — capture it (`x := ...`) or discard it
 // explicitly (`_ = ...`). The `_ = fail_returns_int()` form compiles clean.
@@ -94,6 +105,7 @@ main :: fun() -> i64 {
 	// fail_var_gone()
 	// fail_width_check()
 	// fail_discarded_return()
+	// fail_negate_unsigned()
 
 	print("test_fail: inert (all negatives disabled)")
 	return 0

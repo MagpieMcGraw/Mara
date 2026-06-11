@@ -536,6 +536,7 @@ TYPE_FIELD_ACCESS_THROUGH_RECEIVER :: "'%s' is a field of '%s'; access it throug
 TYPE_TYPE_VALUE_DID_MEAN :: "'%s' is a type, not a value. Did you mean ': %s'?"
 TYPE_UNDEFINED_IDENTIFIER :: "undefined identifier '%s'"
 TYPE_CANNOT_NEGATE :: "cannot negate %s"
+TYPE_CANNOT_NEGATE_UNSIGNED :: "cannot negate unsigned %s — no representable result; widen to signed first (e.g. -i64(x))"
 TYPE_CANNOT_APPLY :: "cannot apply 'not' to %s"
 TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE :: "cannot apply '~' to %s, requires integer type"
 TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER :: "cannot take address of immutable parameter '%s' (declare it with ^ to allow mutation)"

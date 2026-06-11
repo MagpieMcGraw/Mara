@@ -447,7 +447,8 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) {
 	for i in 0..n_points {
 		f := flags[i]
 		if (f & GLYPH_FLAG_X_SHORT) != 0 {
-			dx : i32 = glyph_bytes[cursor]
+			// we have to read 1 byte here
+			dx := i32(glyph_bytes[cursor])
 			cursor += 1
 			if (f & GLYPH_FLAG_X_SAME) == 0 do dx = -dx
 			x += dx

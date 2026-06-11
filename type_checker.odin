@@ -10928,6 +10928,12 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                     }
                 }
                 check_error(c, e.span, TYPE_CANNOT_NEGATE, type_name(operand_type))
+            } else if _, kind, k_ok := numeric_info(operand_type); k_ok && kind == .Unsigned {
+                // Negating an unsigned value has no representable result
+                // (except 0). Binary `0 - x` already traps the underflow at
+                // runtime; the unary form is knowable here, so reject it at
+                // compile time instead of silently wrapping two's-complement.
+                check_error(c, e.span, TYPE_CANNOT_NEGATE_UNSIGNED, type_name(operand_type))
             }
             return operand_type
         case .Not:

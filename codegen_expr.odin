@@ -209,14 +209,22 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 return gen_call(g, call)
             }
             operand := gen_expr(g, e.operand, target_type)
-            tmp := fresh_tmp(g)
             op_type := target_type != "" ? target_type : expr_ir_type(g, e.operand)
             if op_type == "double" || op_type == "float" {
+                tmp := fresh_tmp(g)
                 emit(g, "  %s = fneg %s %s", tmp, op_type, operand)
-            } else {
-                emit(g, "  %s = sub %s 0, %s", tmp, op_type, operand)
+                return tmp
             }
-            return tmp
+            // Integer negation is `0 - x` and joins the overflow-checked
+            // arithmetic family: -MIN_INT traps like binary `-` instead of
+            // silently wrapping. Unsigned only reaches here through an infer
+            // cell that settled unsigned after the unary check ran — usub
+            // traps for any x != 0, matching the binary underflow rule.
+            op := "ssub"
+            if _, kind, k_ok := numeric_info(expr_type(e.operand)); k_ok && kind == .Unsigned {
+                op = "usub"
+            }
+            return emit_checked_arith(g, op, op_type, "0", operand, e.span)
         case .Not:
             operand := gen_expr(g, e.operand)
             tmp := fresh_tmp(g)

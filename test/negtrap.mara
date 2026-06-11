@@ -1,0 +1,20 @@
+module negtrap
+
+// Unary minus joins the overflow-checked arithmetic family.
+// -x lowers to llvm.ssub.with.overflow(0, x): negating i64 min has no
+// representable result and must trap "integer overflow" (it used to be a
+// plain `sub` that silently wrapped back to i64 min). Unsigned negation
+// is a compile-time error now — see test_fail.mara fail_negate_unsigned.
+
+main :: fun() -> i64 {
+	a : i32 = 100
+	print(-a)                          // -100: ordinary signed negation still works
+	f : f64 = 2.5
+	print(-f)                          // -2.5: float negation is fneg, no check
+	x : i64 = -9223372036854775807
+	x = x - 1                          // i64 min, reached without overflow
+	print("negating i64 min...")
+	y := -x                            // ssub.with.overflow(0, min) -> trap here
+	print("should NOT reach here", y)
+	return y
+}
