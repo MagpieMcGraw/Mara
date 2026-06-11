@@ -686,12 +686,14 @@ compile_task_proc :: proc(t: thread.Task) {
     data.exit_code = libc.system(cmd_cstr)
 }
 
-// Crash-journal runtime (code/mara_crash.c) — every native build links it so
-// asserts and crash() can tee their message into crash.txt. Compiled once to
-// a sibling .o and reused; recompiled when the .c is newer (compiler update).
+// Crash-journal runtime (runtime/mara_crash.c) — every native build links it
+// so asserts and crash() can tee their message into crash.txt. Compiled once
+// to a sibling .o and reused; recompiled when the .c is newer (compiler
+// update). runtime/ holds compiler-internal C support (compiler-rt), as
+// opposed to code/ which is the user-facing stdlib.
 ensure_crash_runtime :: proc(clang_path, compiler_dir: string) -> (string, bool) {
-    c_path, _ := filepath.join({compiler_dir, "code", "mara_crash.c"})
-    o_path, _ := filepath.join({compiler_dir, "code", "mara_crash.o"})
+    c_path, _ := filepath.join({compiler_dir, "runtime", "mara_crash.c"})
+    o_path, _ := filepath.join({compiler_dir, "runtime", "mara_crash.o"})
     c_time, c_err := os_old.last_write_time_by_name(c_path)
     if c_err != nil {
         fmt.printf("missing crash runtime source '%s'\n", c_path)

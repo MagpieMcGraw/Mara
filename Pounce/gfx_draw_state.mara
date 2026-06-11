@@ -60,7 +60,6 @@ draw_state_create :: fun(
 {
 	shader_id, shader_err := make_program(shader_file)
 	if bool(shader_err) do print(shader_err)
-	print("Shader status:", shader_err)
 
 	// Create persistent command buffer for MDI
 	command_buffer: u32

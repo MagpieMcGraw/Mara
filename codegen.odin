@@ -434,7 +434,7 @@ Codegen :: struct {
     no_assert: bool, // -no assert — compile asserts out entirely
     // Inside an assert/crash fail block (native builds): print-shaped
     // emissions route through __mara_tee_printf, which mirrors the message
-    // into crash.txt (code/mara_crash.c). Off everywhere else.
+    // into crash.txt (runtime/mara_crash.c). Off everywhere else.
     tee: bool,
     // Fallible constructor: the current function is a `struct(params) -> err`
     // whose multi-return sret slot 0 is the implicit Self (built in place via
@@ -3993,7 +3993,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     strings.write_string(&b, "declare i32 @printf(ptr, ...)\n")
     strings.write_string(&b, "declare void @exit(i32)\n")
     if !g.web {
-        // Crash-journal runtime, defined in code/mara_crash.c and linked
+        // Crash-journal runtime, defined in runtime/mara_crash.c and linked
         // into every native build (see ensure_crash_runtime in main.odin).
         strings.write_string(&b, "declare void @__mara_crash_begin()\n")
         strings.write_string(&b, "declare i32 @__mara_tee_printf(ptr, ...)\n")
