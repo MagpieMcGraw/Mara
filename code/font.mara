@@ -13,7 +13,9 @@ Glyph :: struct {
 	bearing_x, bearing_y, advance :f32
 }
 
-load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
+load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr)
+-> [3 * MB]byte, f32, f32, f32
+{
 	ttf_file : [..2 * MB]byte
 	read_err := read_entire_file(font, &ttf_file)
 	if bool(read_err) do print(read_err)
@@ -21,6 +23,10 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 
 	storage : [3 * MB]byte
 	atlas := Atlas(storage[:], ttf.head.units_per_em)
+
+	ascent   := f32(ttf.hhea.ascent)   * atlas.px_scale
+	descent  := f32(ttf.hhea.descent)  * atlas.px_scale
+	line_gap := f32(ttf.hhea.line_gap) * atlas.px_scale
 
 	for i in 0..i32(glyphs.len) {
 		codepoint := first + u32(i)
@@ -39,7 +45,7 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: cstr) -> [3 * MB]byte {
 		rasterize_msdf(&outline, &glyphs[i], &atlas)
 	}
 
-	return storage
+	return storage, ascent, descent, line_gap
 }
 
 Atlas :: struct (bytes: []byte, u_per_em: u16) {

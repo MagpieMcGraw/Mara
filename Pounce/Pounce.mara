@@ -104,7 +104,9 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 		&game.vao, 8192, 32)
 
 	test_font : Font
-	atlas := &test_font.glyphs.load_glyphs(0, "data/fonts/Inter_18pt-Regular.ttf")
+	atlas, asc, des, gap := &test_font.glyphs.load_glyphs(
+		0, "data/fonts/Inter_18pt-Regular.ttf")
+	test_font.metrics = {asc, des, gap}
 
 	game.running = true
 	game.initialized = true
