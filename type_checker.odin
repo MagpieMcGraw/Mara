@@ -5919,6 +5919,13 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
 // module's owner_module.name == the module_name used to register its constants.
 module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bool {
     if env == nil { return true }  // no env context to gate against — don't reject
+    // The package being checked always sees its own constants. Module envs
+    // carry owner_module and pass the walk below anyway, but main-package
+    // envs never get one (only check_module sets it), so without this the
+    // main package's own top-level constants are invisible in size position.
+    if owner, mapped := c.table.constant_owners[bare]; mapped && owner != "" && owner == c.current_package {
+        return true
+    }
     cur := env
     for cur != nil {
         if cur.owner_module != nil {
