@@ -7135,6 +7135,11 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             }
             c.expected_hint = ann_type
             val_type := check_expr(c, s.value, env)
+            // `x : []utf8 = "lit"` — writable view over rodata; sized slices
+            // (`[:N]utf8`, cap_expr set) copy into owned backing and pass.
+            if s.slice_cap_expr == nil {
+                check_no_literal_slice_binding(c, ann_type, s.value, s.span)
+            }
             // `#big_endian buf[off]` / `#big_endian buf[lo:hi]` — the flag has
             // no meaning unless the source is a byte buffer. Codegen would
             // silently drop the flag in that case; flag it loudly here.
@@ -7494,6 +7499,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         // Also clear any field-level uninit entries (whole struct reassignment)
                         clear_struct_invalid_fields(env, s.name)
                     }
+                    // Reassigning a slice var with a literal would repoint its
+                    // header at rodata (and silently drop any sized backing).
+                    check_no_literal_slice_binding(c, existing_type, s.value, s.span)
                     // Reassignment: check value type matches existing variable type.
                     // A byte-buffer reinterpret read (off16 = mem[off] or mem[lo:hi])
                     // is recognized here too — same as the decl-init and field-assign
@@ -8731,6 +8739,20 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
     }
 }
 
+// A string literal may not initialize or be assigned to a plain `[]utf8`
+// location: a literal is `[..N]utf8` STORAGE (read-only rodata bytes), not a
+// view — a slice binding would be a writable header over those bytes, and
+// element writes through it compile and then page-fault at runtime.
+// Parameter position stays legal (by-value params are immutable, so the free
+// view is safe). Sized-slice decls (`[:N]utf8 = "lit"`) copy into owned
+// backing and are exempt — callers gate on slice_cap_expr.
+check_no_literal_slice_binding :: proc(c: ^Checker, target: Type, value: Expr, span: Span) {
+    if value == nil { return }
+    if _, is_lit := value.(^Expr_String); !is_lit { return }
+    if _, is_slice := distinct_base(target).(^Type_Slice); !is_slice { return }
+    check_error(c, span, TYPE_SLICE_CANNOT_BIND_STRING_LITERAL)
+}
+
 check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixed_Array, val_type: Type, value: Expr = nil) {
     if fv, ok2 := val_type.(^Type_Fixed_Array); ok2 {
         if types_incompatible(fa.elem, fv.elem) {
@@ -9065,6 +9087,8 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                     TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER,
                     fa_expr.field, pname)
             }
+            // `obj.view = "lit"` — a slice-typed field would alias rodata.
+            check_no_literal_slice_binding(c, ft, s.value, s.span)
             // Mark field as initialized (clears invalid_refs for ptr/slice struct fields)
             if ident, ident_ok := fa_expr.expr.(^Expr_Ident); ident_ok {
                 field_key := strings.concatenate({ident.name, ".", fa_expr.field})
