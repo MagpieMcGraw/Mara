@@ -1,7 +1,5 @@
 module mara.sdl
 
-use mara.core
-
 // SDL3 bindings for Mara
 
 Init_Flags :: union(tag u32) {

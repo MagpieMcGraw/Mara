@@ -1,7 +1,5 @@
 module mara.open_gl
 
-use mara.core
-
 // ---------------------------------------------------------------------------
 // OpenGL constants — split into typed enums per semantic group
 // ---------------------------------------------------------------------------

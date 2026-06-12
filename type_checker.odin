@@ -2001,6 +2001,12 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
         case "byte":   return Type_Byte{}
         case "void":   return Type_Void{}
         case "err":    return Type_Err{}
+        case "cstring":
+            // Built-in C boundary type — no stdlib decl, no import needed.
+            // The foreign-only placement rule lives in the resolve_type_expr
+            // wrapper (is_cstring check); the `cstring(s)` constructor is a
+            // builtin call handled in check_call.
+            return Type_CString{}
         case "i8":     return Type_Numeric{kind = .Signed,   bits = 8}
         case "i16":    return Type_Numeric{kind = .Signed,   bits = 16}
         case "i32":    return Type_Numeric{kind = .Signed,   bits = 32}
@@ -3243,26 +3249,12 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
 // Type comparison
 // ---------------------------------------------------------------------------
 
-// Flat name of the one and only cstring type — the stdlib's
-// `mara.core.cstring :: distinct ^utf8`. Name-matched here rather
-// than recognized structurally; a structural rule ("any nominal
-// distinct ^utf8") would also accept unrelated user types that happen
-// to wrap ^utf8 and silently grant them utf8 buffer coercion, which
-// is exactly the kind of accidental coupling we don't want.
-CSTRING_FLAT_NAME :: "mara_core_cstring"
-
-// Recognize the cstring type — either the legacy built-in (Type_CString,
-// no longer produced from source after the keyword removal but retained
-// for transitional safety) or the stdlib's named distinct decl. The
-// conversion rule (utf8 partial array → cstring via terminator-write +
-// data-pointer extraction) lives in the matching `case` arms below;
-// pointed at from a comment near the stdlib decl.
+// Recognize the built-in cstring type. (Historically this also matched a
+// stdlib `distinct ^utf8` decl by flat name — that decl is gone; the type
+// is fully built-in again and Type_CString is its only spelling.)
 is_cstring :: proc(t: Type) -> bool {
-    if _, ok := t.(Type_CString); ok { return true }
-    if dt, ok := t.(^Type_Distinct); ok && !dt.is_alias {
-        return dt.name == CSTRING_FLAT_NAME
-    }
-    return false
+    _, ok := t.(Type_CString)
+    return ok
 }
 
 // True for the open `err` type and for any concrete `error { ... }` decl.
@@ -3341,15 +3333,13 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         _, ok := b.(Type_Bool)
         return ok
     case Type_CString:
-        // Legacy built-in path (kept while Type_CString might still appear
-        // in some legacy site); the equivalent rule for the stdlib
-        // distinct `cstring` lives at the top of types_equal below.
         if is_cstring(b) { return true }
-        // utf8 partial arrays convert: codegen writes the terminator at
-        // [len] (string literals are partial arrays backed by \0-terminated
-        // rodata, so they pass for free). Slices don't own the byte past
-        // their view and fixed arrays have no spare slot — both stay
-        // explicit (copy into a partial array first).
+        // utf8 partial arrays are TYPE-compatible so string LITERALS (typed
+        // [..tier]utf8) pass free — their rodata globals carry the \0. The
+        // call-site argument check restricts the implicit path to literal
+        // EXPRESSIONS; every runtime string goes through the explicit
+        // `cstring(s)` constructor (copy + terminator), so codegen never
+        // converts a runtime value implicitly.
         if pa, ok := b.(^Type_Partial_Array); ok {
             if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok { return true }
         }
@@ -3464,16 +3454,6 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // types reach this case. Match strictly by name.
         if vb, ok := b.(^Type_Distinct); ok {
             return va.name == vb.name
-        }
-        // Stdlib `cstring :: distinct ^utf8` is the FFI boundary type; it
-        // accepts utf8 partial arrays via terminator-write + data-pointer
-        // extraction in codegen. Same rule as the legacy Type_CString case
-        // above. Comment near the decl in code/core.mara points here.
-        if is_cstring(va) {
-            if _, ok := b.(Type_CString); ok { return true }
-            if pa, ok := b.(^Type_Partial_Array); ok {
-                if _, utf8_ok := pa.elem.(Type_Utf8); utf8_ok { return true }
-            }
         }
         return false
     case Type_Const_Int:
@@ -11958,6 +11938,34 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         byte_slice := new(Type_Slice)
         byte_slice.elem = Type_Byte{}
         return byte_slice, true
+    case "cstring":
+        // Built-in constructor: cstring(s) — copies a Mara string into a
+        // fresh NUL-terminated buffer (scope arena when live, stack
+        // otherwise) and yields the C pointer. Literal args skip the copy:
+        // their deduped rodata global already ends in \0. The result can
+        // only feed argument positions — binding it is caught by the
+        // cstring storage ban.
+        if len(args) != 1 {
+            check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, e.name, len(args))
+            return Type_CString{}, true
+        }
+        src_type := check_expr(c, args[0], env)
+        elem: Type
+        #partial switch at in distinct_base(src_type) {
+        case ^Type_Partial_Array: elem = at.elem
+        case ^Type_Slice:         elem = at.elem
+        case ^Type_Fixed_Array:   elem = at.elem
+        }
+        elem_ok := false
+        if elem != nil {
+            #partial switch _ in elem {
+            case Type_Utf8, Type_Byte: elem_ok = true
+            }
+        }
+        if !elem_ok && !is_any(src_type) {
+            check_error(c, e.span, TYPE_CSTRING_CTOR_ARGUMENT, type_name(src_type))
+        }
+        return Type_CString{}, true
     }
 
     // Type casts: i32(x), f64(x), etc.
@@ -12422,6 +12430,23 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
                 if is_byte_buffer_index_read(arg) { is_byte_reinterpret = true }
                 if _, sl_ok := arg.(^Expr_Slice); sl_ok && is_byte_buffer(arg_type) {
                     is_byte_reinterpret = true
+                }
+            }
+            // `cstring` params take literals free (rodata carries the \0)
+            // and explicit `cstring(s)` constructions — but NOT runtime
+            // strings implicitly: the copy and terminator write should be
+            // visible at the call site. Const idents inlining a literal
+            // pass like the literal they are.
+            if is_cstring(fun_type.params[i].type_) && !is_cstring(arg_type) {
+                arg_is_literal := false
+                if _, lit_ok := arg.(^Expr_String); lit_ok { arg_is_literal = true }
+                if id, id_ok := arg.(^Expr_Ident); id_ok {
+                    if cexpr, found := c.table.constants[id.name]; found {
+                        if _, s_ok := cexpr.(^Expr_String); s_ok { arg_is_literal = true }
+                    }
+                }
+                if !arg_is_literal {
+                    check_error(c, span, TYPE_CSTRING_ARG_EXPLICIT)
                 }
             }
             if !is_byte_reinterpret && !coerce_deferred(c, arg_type, fun_type.params[i].type_, span) && types_incompatible(fun_type.params[i].type_, arg_type) && !value_preserving_widen(arg_type, fun_type.params[i].type_) {

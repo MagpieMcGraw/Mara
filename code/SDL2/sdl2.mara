@@ -1,7 +1,5 @@
 module mara.sdl2
 
-use mara.core
-
 // SDL2 bindings for Mara — surface mirrors code/SDL/sdl.mara (SDL3) where
 // possible, with SDL2-specific API adjustments inline. Major differences:
 //

@@ -1304,11 +1304,6 @@ gen_mara_call_arg :: proc(g: ^Codegen, arg: Expr, i: int, info: ^Fun_Info, cs_re
     if pt == SLICE_IR_TYPE {
         return gen_slice_param_arg(g, arg)
     }
-    if has_cs && i < len(cs_resolved.params) {
-        if extracted, ok := emit_cstring_data_ptr(g, arg, cs_resolved.params[i].type_); ok {
-            return fmt.tprintf("ptr %s", extracted)
-        }
-    }
     // Byte-buffer source → fixed-array param: reinterpret-read sizeof(pt) bytes
     // from `buf[offset:]` / `buf[offset]` into a freshly-allocated `[N x T]` and
     // load it. Mirrors the same pattern that fires at declaration sites
@@ -1397,6 +1392,55 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         if h, ok := resolve_array_handle(g, e.args[0]); ok {
             return emit_array_cap_user(g, &h)
         }
+    }
+
+    // Built-in: cstring(s) — construct a NUL-terminated C string. Literal
+    // arg: free pointer to the deduped rodata global (its trailing \0 is
+    // already in place). Runtime arg: copy len bytes into a fresh len+1
+    // buffer — scope arena when live, point-of-use stack alloca otherwise —
+    // and write the 0. The result only ever feeds call arguments (the
+    // cstring storage ban rejects bindings), so the buffer's lifetime
+    // safely brackets the call it sits inside.
+    if e.name == "cstring" && len(e.args) == 1 {
+        if lit, lit_ok := e.args[0].(^Expr_String); lit_ok {
+            global, _ := get_string_literal(g, lit.value)
+            out := fresh_tmp(g)
+            emit_string_gep(g, out, len(lit.value)+1, global)
+            return out
+        }
+        w := slice_layout.len_ir
+        len_val, src_ptr: string
+        if h, h_ok := resolve_array_handle(g, e.args[0]); h_ok {
+            len_val = emit_array_len(g, &h)
+            src_ptr = emit_array_data(g, &h)
+        } else {
+            // General expression (sub-slice, call result): gen_expr yields a
+            // pointer to a {len, cap, ptr} header.
+            hdr := gen_expr(g, e.args[0])
+            len_gep := fresh_tmp(g)
+            emit_slice_gep(g, len_gep, hdr, SLICE.len)
+            len_val = fresh_tmp(g)
+            emit_typed_load_len(g, len_val, len_gep)
+            data_gep := fresh_tmp(g)
+            emit_slice_gep(g, data_gep, hdr, SLICE.ptr)
+            src_ptr = fresh_tmp(g)
+            emit_load_into(g, src_ptr, "ptr", data_gep)
+        }
+        size := fresh_tmp(g)
+        emit(g, "  %s = add %s %s, 1", size, w, len_val)
+        dst: string
+        if g.context_enabled {
+            loc := format_location(e.span.file, e.span.line, e.span.col)
+            dst = emit_arena_bump_runtime(g, size, "<cstring>", loc)
+        } else {
+            dst = fresh_tmp(g)
+            emit_alloca_runtime(g, dst, "i8", w, size, 1)
+        }
+        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", dst, src_ptr, len_val)
+        term := fresh_tmp(g)
+        emit(g, "  %s = getelementptr i8, ptr %s, %s %s", term, dst, w, len_val)
+        emit_store(g, "i8", "0", term)
+        return dst
     }
 
     // Built-in: slice_from_ptr(ptr, cap) -> []byte — wraps a raw pointer + capacity into a byte slice.
@@ -1633,11 +1677,7 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
             if is_aggregate(pt) {
                 emit_c_aggregate_direct_arg(g, arg_expr, pp.parts[:], &arg_strs)
             } else {
-                if extracted, ok := emit_cstring_data_ptr(g, arg_expr, pt); ok {
-                    append(&arg_strs, fmt.tprintf("ptr %s", extracted))
-                } else {
-                    emit_c_scalar_arg(g, arg_expr, pp.parts[0], &arg_strs)
-                }
+                emit_c_scalar_arg(g, arg_expr, pp.parts[0], &arg_strs)
             }
         case Lowering_Indirect:
             arg_addr := gen_expr(g, arg_expr)
@@ -1762,77 +1802,11 @@ gen_try :: proc(g: ^Codegen, e: ^Expr_Try, target_type: string) -> string {
     return success_val
 }
 
-// When a call's param expects a raw `^utf8` (e.g. `cstring`, which is
-// `distinct ^utf8` and lowers to ^utf8 after distinct_base in type-checker
-// param storage) and the arg is a utf8 partial array, convert in place:
-// write a 0 terminator at buf[len] (the byte after the live content) and
-// hand back the header's data pointer. The terminator needs a spare slot,
-// so `len < cap` is checked at runtime — a brim-full buffer can't be
-// terminated and fails loudly. The type checker permits this flow (see
-// is_cstring's case in types_equal); `^utf8` is the FFI boundary shape —
-// callees treat the value as a raw character pointer. String literals
-// already lower to raw rodata pointers (their globals carry a trailing \0)
-// via emit_string_gep, so they short-circuit here.
-emit_cstring_data_ptr :: proc(g: ^Codegen, arg_expr: Expr, param_type: Type) -> (string, bool) {
-    target_utf8 := false
-    if pt, ok := param_type.(^Type_Ptr); ok {
-        if _, is_utf8 := pt.elem.(Type_Utf8); is_utf8 { target_utf8 = true }
-    }
-    if is_cstring(param_type) { target_utf8 = true }
-    if !target_utf8 { return "", false }
-
-    // We can only terminate a true slice-header in memory. Limit to idents
-    // bound as a slice/partial-array variable — string literals and
-    // constant idents both lower to raw rodata pointers via emit_string_gep,
-    // and GEPing those as if they were slice headers would read garbage.
-    ident, is_ident := arg_expr.(^Expr_Ident)
-    if !is_ident { return "", false }
-    if _, ok := get_slice(g, ident.name); !ok { return "", false }
-
-    arg_t := expr_type(arg_expr)
-    if arg_t == nil { return "", false }
-    arg_t = unwrap_alias(arg_t)
-
-    pa, pa_ok := arg_t.(^Type_Partial_Array)
-    if !pa_ok { return "", false }
-    if _, utf8 := pa.elem.(Type_Utf8); !utf8 { return "", false }
-
-    slice_header := gen_expr(g, arg_expr)
-    w := slice_layout.len_ir
-    len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, slice_header, SLICE.len)
-    len_val := fresh_tmp(g)
-    emit_typed_load_len(g, len_val, len_gep)
-    cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, slice_header, SLICE.cap)
-    cap_val := fresh_tmp(g)
-    emit_typed_load_cap(g, cap_val, cap_gep)
-
-    // Runtime contract: len < cap, so slot [len] exists for the terminator.
-    ok_lbl   := fresh_label(g, "cstring.ok")
-    fail_lbl := fresh_label(g, "cstring.fail")
-    cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp slt %s %s, %s", cmp, w, len_val, cap_val)
-    emit_cond_br(g, cmp, ok_lbl, fail_lbl)
-    emit_label(g, fail_lbl)
-    err_msg := fmt.tprintf("runtime error: cstring conversion needs len < cap to place the terminator: len %%lld == cap %%lld for '%s'\n", ident.name)
-    err_name, err_len := get_string_literal(g, err_msg)
-    err_ptr := fresh_tmp(g)
-    emit_string_gep(g, err_ptr, err_len, err_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", err_ptr, w, len_val, w, cap_val)
-    emit(g, "  call void @exit(i32 1)")
-    emit(g, "  unreachable")
-    emit_label(g, ok_lbl)
-
-    data_field := fresh_tmp(g)
-    emit_slice_gep(g, data_field, slice_header, SLICE.ptr)
-    data_ptr := fresh_tmp(g)
-    emit_load_into(g, data_ptr, "ptr", data_field)
-    term_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", term_ptr, data_ptr, w, len_val)
-    emit_store(g, "i8", "0", term_ptr)
-    return data_ptr, true
-}
+// (Terminate-in-place cstring conversion used to live here. It's gone: the
+// explicit `cstring(s)` builtin copies into a fresh buffer instead, and the
+// checker rejects implicit runtime-string → cstring arguments, so codegen
+// never converts implicitly. Literals reach cstring params as raw rodata
+// pointers via gen_expr's Expr_String handling.)
 
 // Emit a scalar-typed C call argument. Preserves the legacy primitive paths:
 // utf8 array → cstring ptr, type conversion, ptr null sentinel.
