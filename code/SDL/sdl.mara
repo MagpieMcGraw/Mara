@@ -1,6 +1,6 @@
 module mara.sdl
 
-use mara.string
+use mara.core
 
 // SDL3 bindings for Mara
 

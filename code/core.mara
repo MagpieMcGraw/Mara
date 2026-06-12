@@ -5,8 +5,13 @@ str64 :: type [..64]utf8
 str256 :: type [..256]utf8
 str1024 :: type [..1024]utf8
 
-// utf8 arrays auto convert to this, and write a 0 byte.
-// cstring :: distinct ^utf8
+// FFI boundary type — legal only in foreign signatures. utf8 partial arrays
+// auto-convert (a 0 byte is written at [len]; needs len < cap) and string
+// literals convert free (their rodata carries the \0). NB the checker
+// recognizes this type by FLAT NAME (CSTRING_FLAT_NAME in type_checker.odin,
+// "mara_core_cstring") — moving the decl to another module breaks the
+// conversion rules until that constant is updated to match.
+cstring :: distinct ^utf8
 
 overload + add
 add :: dispatch{ slice_add, slice_add_item }

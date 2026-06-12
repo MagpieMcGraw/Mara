@@ -1,8 +1,6 @@
 module mara.string
 
-cstring :: distinct ^utf8 // FFI boundary type — converts from any utf8 partial
-                          // array (terminator written at [len], needs len < cap)
-                          // and from string literals (rodata carries the \0)
+// (cstring lives in mara.core — it's the FFI boundary type, not a string op.)
 
 // Find the first occurrence of `needle` in `haystack`. Returns (offset, true)
 // on match, (-1, false) when not present. Naive O(n*m) search — fine for

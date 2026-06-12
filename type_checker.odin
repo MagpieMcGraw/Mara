@@ -3244,12 +3244,12 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
 // ---------------------------------------------------------------------------
 
 // Flat name of the one and only cstring type — the stdlib's
-// `mara.string.cstring :: distinct ^utf8`. Name-matched here rather
+// `mara.core.cstring :: distinct ^utf8`. Name-matched here rather
 // than recognized structurally; a structural rule ("any nominal
 // distinct ^utf8") would also accept unrelated user types that happen
 // to wrap ^utf8 and silently grant them utf8 buffer coercion, which
 // is exactly the kind of accidental coupling we don't want.
-CSTRING_FLAT_NAME :: "mara_string_cstring"
+CSTRING_FLAT_NAME :: "mara_core_cstring"
 
 // Recognize the cstring type — either the legacy built-in (Type_CString,
 // no longer produced from source after the keyword removal but retained
@@ -3468,7 +3468,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Stdlib `cstring :: distinct ^utf8` is the FFI boundary type; it
         // accepts utf8 partial arrays via terminator-write + data-pointer
         // extraction in codegen. Same rule as the legacy Type_CString case
-        // above. Comment near the decl in code/string.mara points here.
+        // above. Comment near the decl in code/core.mara points here.
         if is_cstring(va) {
             if _, ok := b.(Type_CString); ok { return true }
             if pa, ok := b.(^Type_Partial_Array); ok {
