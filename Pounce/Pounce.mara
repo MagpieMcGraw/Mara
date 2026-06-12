@@ -112,7 +112,7 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 }
 
 game_events :: fun(game: ^Megastruct) {
-	quit_msg : str
+	quit_msg := ""
 	&quit_msg + "Escaping..."
 
 	process(&game.events)

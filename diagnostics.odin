@@ -346,6 +346,7 @@ PARSE_EXPOSE_NEEDS_FUN_DECL       :: "`#expose` must precede a `name :: fun(...)
 PARSE_PACKED_NEEDS_STRUCT_DECL    :: "`#packed` goes after '::', as in `Name :: #packed struct`"
 PARSE_SENTINEL_REMOVED            :: "sentinel arrays were removed — use the plain array/slice type; cstring conversion writes the terminator at the FFI boundary"
 TYPE_CSTRING_FOREIGN_ONLY         :: "`cstring` is the C boundary type — only `foreign` signatures may declare it. Take `[]utf8` and pass it to the C call; the conversion happens there"
+TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL :: "cannot take the address of a string literal — its bytes are read-only. Bind it first (`s := \"...\"`) for a mutable copy"
 PARSE_BIG_ENDIAN_NEEDS_BYTE_READ  :: "`#big_endian` must precede a byte-buffer read — `buf[off]` or `buf[lo:hi]`"
 PARSE_USING_NOT_ALLOWED_ON_INCLUDE :: "`using` is not allowed before `use`/`include` — use bare `use %s` (private) or `include %s` (re-export), or `name :: use path` for qualified access"
 PARSE_INCLUDE_NEEDS_COLON_COLON   :: "`:=` is not allowed for `use`/`include` — modules are comptime, use `name :: use path` (private) or `name :: include path` (re-export)"

@@ -47,6 +47,6 @@ Visual :: struct {
 	mesh: Mesh
 	texture_index: u32
 	color: [3]f32
-	font: str       // for glyph resolution
+	font: [..64]utf8   // for glyph resolution
 	resolve: bool      // enable automatic asset resolution
 }

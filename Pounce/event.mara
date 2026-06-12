@@ -18,7 +18,7 @@ Mouse :: struct {
 
 Dropfile :: struct {
     was_dropped: bool
-    name: str
+    name: [..256]utf8   // dropped-file path — read_cstring caps at 128 today
 }
 
 Event_State :: struct {

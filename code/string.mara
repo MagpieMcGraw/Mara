@@ -1,20 +1,8 @@
 module mara.string
 
-str :: type [..128]utf8
 cstring :: distinct ^utf8 // FFI boundary type — converts from any utf8 partial
                           // array (terminator written at [len], needs len < cap)
                           // and from string literals (rodata carries the \0)
-
-// overload + add
-// add :: dispatch {
-// 	add_str
-// }
-
-// // Append all elements from a slice in place.
-// add_str :: fun(dst: ^str, src: str) {
-// 	dst[dst.len:] = src
-// 	dst.len += src.len
-// }
 
 // Find the first occurrence of `needle` in `haystack`. Returns (offset, true)
 // on match, (-1, false) when not present. Naive O(n*m) search — fine for

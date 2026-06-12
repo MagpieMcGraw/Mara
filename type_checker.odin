@@ -3663,6 +3663,18 @@ is_byte_sized_memory_type :: proc(t: Type) -> bool {
 // excludes Type_Byte), so this doesn't enable `byte + byte` — it only enables
 // reinterpreting a buffer's element view, which is the natural shape for
 // raw-memory work like file parsing.
+// Quantized capacity tier for an inferred string-literal type: the smallest
+// of 64/256/1024 STRICTLY larger than the byte length, so a `:=` copy always
+// has headroom for appends and the cstring terminator. Three types cover
+// every literal; giants (≥1024) fall back to exact size — rare, and usually
+// passed straight to a call rather than bound.
+string_literal_cap :: proc(byte_len: int) -> int {
+    if byte_len < 64 { return 64 }
+    if byte_len < 256 { return 256 }
+    if byte_len < 1024 { return 1024 }
+    return byte_len
+}
+
 buffer_elem_compatible :: proc(a, b: Type) -> bool {
     if types_equal(a, b) { return true }
     return is_byte_sized_memory_type(a) && is_byte_sized_memory_type(b)
@@ -5473,15 +5485,14 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         if n.is_float { return Type_F64{} }
         return Type_Numeric{kind = .Signed, bits = 64}
     }
-    // A bare string-literal default takes the `[..128]utf8` shape: a stable
-    // field layout independent of the literal's length, unlike check_expr's
-    // literal-sized `[..len]utf8`. (Annotated string fields like
-    // `name : [..16]utf8 = "..."` take the type_expr branch instead.) A
-    // string default longer than 128 bytes is a fixed-size overflow to be
-    // handled later. Without this the field fell through to Type_Any → i64.
-    if _, ok := value.(^Expr_String); ok {
+    // A bare string-literal default takes the same quantized tier as any
+    // inferred literal binding (string_literal_cap — [..64]/[..256]/
+    // [..1024]utf8). (Annotated string fields like `name : [..16]utf8 = ...`
+    // take the type_expr branch instead.) Without this the field fell
+    // through to Type_Any → i64.
+    if s, ok := value.(^Expr_String); ok {
         pa := new(Type_Partial_Array)
-        pa.size = 128
+        pa.size = string_literal_cap(len(s.value))
         pa.elem = Type_Utf8{}
         return pa
     }
@@ -10820,16 +10831,19 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         return Type_Infer_Int{}
     case ^Expr_String:
-        // String literals are partial arrays of utf8 — shape `[..N]utf8`.
-        // The bytes live in rodata (one global per unique literal, deduped
-        // at codegen, with a trailing \0 so literal→cstring is free), and
-        // the partial-array header is synthesized on the stack at the use
-        // site, pointing at the global. Choosing partial-array over
-        // fixed-array makes `&s + "x"`, `c_func("y")` and `s : str = "z"`
-        // all flow through one type-checking rule.
-        byte_len := len(e.value)
+        // String literals are partial arrays of utf8 at a QUANTIZED capacity
+        // tier — [..64] / [..256] / [..1024]utf8, smallest tier strictly
+        // larger than the byte length (see string_literal_cap). Three types
+        // serve every literal instead of one per length, and a `:=` copy is
+        // born with headroom, so appends and cstring conversion both work
+        // on it. The bytes live in rodata (one global per unique literal,
+        // deduped at codegen, with a trailing \0 so literal→cstring is
+        // free); use sites synthesize an HONEST header — len = cap = byte
+        // length — pointing at the global, so the quantized cap only
+        // materializes when the literal is copied into storage the user
+        // owns (decl init, field default).
         pa := new(Type_Partial_Array)
-        pa.size = byte_len
+        pa.size = string_literal_cap(len(e.value))
         pa.elem = Type_Utf8{}
         return pa
     case ^Expr_Char:
@@ -11036,6 +11050,12 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 check_error(c, e.span,
                     TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER,
                     pname)
+            }
+            // A string literal's bytes live in read-only rodata. `&` is the
+            // mutation gate, so an addressed literal (append destination,
+            // `^[]utf8` argument) would aim writes at a read-only page.
+            if _, is_lit := e.operand.(^Expr_String); is_lit {
+                check_error(c, e.span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL)
             }
             pt := new(Type_Ptr)
             pt.elem = operand_type

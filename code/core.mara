@@ -1,5 +1,13 @@
 module mara.core
 
+// string literal types
+str64 :: type [..64]utf8
+str256 :: type [..256]utf8
+str1024 :: type [..1024]utf8
+
+// utf8 arrays auto convert to this, and write a 0 byte.
+// cstring :: distinct ^utf8
+
 overload + add
 add :: dispatch{ slice_add, slice_add_item }
 

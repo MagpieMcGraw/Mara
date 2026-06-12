@@ -8,7 +8,7 @@ MAX_PERF_PHASES :: 16
 
 // we assume there's no gaps between phases 
 Performance_Timer :: struct {
-    names: [MAX_PERF_PHASES]str
+    names: [MAX_PERF_PHASES][..64]utf8
     times: [MAX_PERF_PHASES]f64
     count: i32
     phase_start: u64

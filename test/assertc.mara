@@ -8,7 +8,7 @@ use mara.string
 //   Expected greet[1] == 'h', but greet[1] was 'e'
 
 main :: fun() {
-	greet : str = "hello"
+	greet := "hello"
 	assert(greet[0] == 'h')   // passes
 	assert(greet[1] == 'h')   // fails — 'e', not 101
 }

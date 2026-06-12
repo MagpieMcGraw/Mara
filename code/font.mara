@@ -13,9 +13,6 @@ Glyph :: struct {
 	bearing_x, bearing_y, advance :f32
 }
 
-// Font-wide vertical layout metrics, in atlas pixels (the same space as the
-// Glyph fields, so one uniform render scale applies to everything). descent
-// is negative, per the spec; baseline-to-baseline = ascent - descent + line_gap.
 Line_Metrics :: struct {
 	ascent, descent, line_gap : f32
 }
@@ -357,7 +354,7 @@ dump_atlas_cell :: fun(atlas: ^[]byte,
 	atlas_w: i32, ax: i32, ay: i32, cw: i32, ch: i32)
 {
 	for py in 0..ch {
-		row : str
+		row := ""
 		for pxi in 0..cw {
 			idx := ((ay + py) * atlas_w + (ax + pxi)) * 3
 			dr := (f32(atlas[idx + 0]) / 255.0 - 0.5) * MSDF_PX_RANGE

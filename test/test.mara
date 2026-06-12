@@ -308,9 +308,9 @@ test_partial_array :: fun() {
 	rdst[1] = 777           // write through the copy
 	assert(rsrc[1] == 22)   // independent => 22 ; alias bug => 777
 
-	// Same path for a distinct-over-partial-array (str :: type [..128]utf8).
-	a : str = "B"
-	b : str = "A"
+	// Same path for inferred string-literal bindings (quantized [..64]utf8).
+	a := "B"
+	b := "A"
 	b = a
 	a[0] = 'Z'
 	assert(b[0] == 'B')     // deep copy => 'B' ; alias bug => 'Z'
@@ -1148,12 +1148,12 @@ test_runtime_pa :: fun() {
 }
 
 Holder_Sized :: struct {
-	name:  str
+	name:  [..64]utf8
 	count: i64
 }
 
 test_sized_slice_field :: fun() {
-	s : str
+	s := ""
 	&s + "world"
 	print(s)
 	print(s.len)
@@ -1522,13 +1522,13 @@ test_const_string_index :: fun() {
 	}
 }
 
-test_sentinel_append :: fun() {
-	empty : str
+test_string_append :: fun() {
+	empty := ""
 	print(empty)
-	one : str
+	one := ""
 	&one + "Escaping..."
 	print(one)
-	many : str
+	many := ""
 	&many + "ab"
 	&many + "cd"
 	&many + "ef"
@@ -1536,7 +1536,7 @@ test_sentinel_append :: fun() {
 	sized : [:64]utf8
 	&sized + "from sized"
 	print(sized)
-	grt : str = "hello"
+	grt := "hello"
 	print(grt)
 	&grt + " world"
 	print(grt)
@@ -1733,7 +1733,7 @@ main :: fun() -> i64 {
 	test_dedent()
 	test_multiline_str()
 	test_const_string_index()
-	test_sentinel_append()
+	test_string_append()
 	test_underscore_default()
 	// <<< CALLS END >>>
 	print("=== all tests passed ===")
