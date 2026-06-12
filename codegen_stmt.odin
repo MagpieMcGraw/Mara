@@ -315,6 +315,12 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         emit(g, "  %s = alloca [%d x %s]", data_name, alloc_cap, elem_t)
                     }
                 }
+                // Zero-init policy: backing storage starts zeroed — covers
+                // both fresh stack allocas and arena regions (dirty after a
+                // reset). `= void` (skip marker) is the per-decl opt-out.
+                if _, zinit_skip := s.value.(^Expr_Skip_Constructor); !zinit_skip {
+                    emit_memset_zero(g, data_name, total_bytes)
+                }
                 alloca_name := fmt.tprintf("%%%s", s.name)
                 emit_slice_alloca(g, alloca_name)
                 ptr_gep := fresh_tmp(g)
@@ -432,6 +438,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             // Initialise header: ptr → elements, len → 0, cap → N.
             elements_ptr := fresh_tmp(g)
             emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+            // Zero-init policy: element backing starts zeroed — covers both
+            // stack allocas and arena regions (dirty after a reset), and
+            // makes the cstring terminator check deterministic for strings
+            // assembled by element writes or byte fills. `= void` opts out.
+            if _, zinit_skip := s.value.(^Expr_Skip_Constructor); !zinit_skip {
+                emit_memset_zero(g, elements_ptr, total_bytes)
+            }
             ptr_gep := fresh_tmp(g)
             emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
             emit_store(g, "ptr", elements_ptr, ptr_gep)

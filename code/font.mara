@@ -20,7 +20,7 @@ Line_Metrics :: struct {
 load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: []utf8)
 -> [3 * MB]byte, Line_Metrics
 {
-	ttf_file : [..2 * MB]byte
+	ttf_file : [..2 * MB]byte = void   // filled by the read — skip the 2MB zero-init
 	read_err := read_entire_file(font, &ttf_file)
 	if bool(read_err) do print(read_err)
 	ttf := TTF(&ttf_file)

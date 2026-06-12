@@ -152,9 +152,14 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, ca
 
 gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, loc: string = "<unknown>") {
     // `= void` (skip marker) on a fixed array — same as no initializer:
-    // allocate and zero, construct nothing.
+    // allocate, register, and stop — under the zero-init policy, `= void`
+    // is the opt-out, so the skip marker leaves the bytes untouched.
     value := value
-    if _, is_skip := value.(^Expr_Skip_Constructor); is_skip { value = nil }
+    skip_zero := false
+    if _, is_skip := value.(^Expr_Skip_Constructor); is_skip {
+        value = nil
+        skip_zero = true
+    }
     alloc_cap := capacity
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
 
@@ -182,10 +187,12 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
 
     av, _ := get_array(g, name)
 
-    // No initializer — just zero the array
+    // No initializer — just zero the array (unless `= void` opted out)
     if value == nil {
-        total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-        emit_memset_zero(g, av.alloca, total_bytes)
+        if !skip_zero {
+            total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
+            emit_memset_zero(g, av.alloca, total_bytes)
+        }
         return
     }
 
@@ -1228,6 +1235,17 @@ gen_slice_decl_runtime_cap :: proc(g: ^Codegen, s: ^Stmt_Assign, sl: ^Type_Slice
     } else {
         emit_alloca_runtime(g, data_name, elem_t, w, cap_user, 0)
     }
+    // Zero-init policy: runtime-sized backing zeroes too (`= void` opts
+    // out). Size is an SSA value, so emit the memset intrinsic directly.
+    if _, zinit_skip := s.value.(^Expr_Skip_Constructor); !zinit_skip {
+        elem_bytes := elem_byte_size(elem_t, g.checked)
+        size_ssa := cap_user
+        if elem_bytes != 1 {
+            size_ssa = fresh_tmp(g)
+            emit(g, "  %s = mul %s %s, %d", size_ssa, w, cap_user, elem_bytes)
+        }
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %s, i1 false)", data_name, size_ssa)
+    }
     // Build the slice header.
     alloca_name := fmt.tprintf("%%%s", s.name)
     emit_slice_alloca(g, alloca_name)
@@ -2108,6 +2126,12 @@ gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Typ
     } else {
         emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type}))
     }
+    // Zero-init policy: the byte-fill that follows is dest-bounded and may
+    // leave a tail — zeroed elements make that tail (and any later
+    // cstring terminator check) deterministic.
+    elements_ptr := fresh_tmp(g)
+    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+    emit_memset_zero(g, elements_ptr, pa.size * elem_byte_size(elem_t, g.checked))
     g.all_vars[name] = Slice_Var{
         alloca    = alloca_name,
         elem_type = elem_t,
