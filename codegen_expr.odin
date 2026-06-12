@@ -1426,16 +1426,29 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             src_ptr = fresh_tmp(g)
             emit_load_into(g, src_ptr, "ptr", data_gep)
         }
+        // Arena only — a runtime-sized stack alloca would be a VLA
+        // (unbounded, input-driven stack growth; rejected). With no scope
+        // arena in the program, reaching this conversion at runtime fails
+        // loudly with the remedy. Compile-time rejection isn't possible
+        // without call-graph reachability — a mere `use mara.os` would
+        // break arena-less builds over wrappers they never call.
+        if !g.context_enabled {
+            loc := format_location(e.span.file, e.span.line, e.span.col)
+            err_msg := fmt.tprintf("runtime error: cstring() of a runtime string at %s needs a scope arena — set this_program = Program(...) in main, or pass a literal\n", loc)
+            err_name, err_len := get_string_literal(g, err_msg)
+            err_ptr := fresh_tmp(g)
+            emit_string_gep(g, err_ptr, err_len, err_name)
+            emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", err_ptr)
+            emit(g, "  call void @exit(i32 1)")
+            emit(g, "  unreachable")
+            dead := fresh_label(g, "cstring.dead")
+            emit_label(g, dead)
+            return "null"
+        }
         size := fresh_tmp(g)
         emit(g, "  %s = add %s %s, 1", size, w, len_val)
-        dst: string
-        if g.context_enabled {
-            loc := format_location(e.span.file, e.span.line, e.span.col)
-            dst = emit_arena_bump_runtime(g, size, "<cstring>", loc)
-        } else {
-            dst = fresh_tmp(g)
-            emit_alloca_runtime(g, dst, "i8", w, size, 1)
-        }
+        loc := format_location(e.span.file, e.span.line, e.span.col)
+        dst := emit_arena_bump_runtime(g, size, "<cstring>", loc)
         emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", dst, src_ptr, len_val)
         term := fresh_tmp(g)
         emit(g, "  %s = getelementptr i8, ptr %s, %s %s", term, dst, w, len_val)

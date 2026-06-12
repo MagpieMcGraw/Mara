@@ -11965,6 +11965,13 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         if !elem_ok && !is_any(src_type) {
             check_error(c, e.span, TYPE_CSTRING_CTOR_ARGUMENT, type_name(src_type))
         }
+        // A runtime string's NUL-terminated copy bump-allocates from the
+        // scope arena — no arena, no allocation (a runtime-sized stack
+        // alloca would be a VLA: unbounded, input-driven growth; rejected).
+        // The requirement is enforced at RUNTIME by codegen (loud crash at
+        // the conversion site) rather than here: a compile-time rule would
+        // need call-graph reachability, and without it merely importing a
+        // module that contains a conversion would break arena-less builds.
         return Type_CString{}, true
     }
 

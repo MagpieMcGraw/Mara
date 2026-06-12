@@ -2,10 +2,15 @@ module pathtest
 
 use mara.core
 use mara.os
+use mara.memory
 
 main :: fun() {
-	// Slice path, runtime-built — converted inside file_open_read's
-	// stack buffer at the actual CreateFileA boundary.
+	// Runtime paths allocate their cstring copy from the scope arena —
+	// arena-less programs may only pass literals to FFI.
+	this_program = Program(Arena_Debug(1 * MB))
+
+	// Slice path, runtime-built — converted by cstring(path) inside
+	// file_open_read, at the actual CreateFileA boundary.
 	path : [..64]utf8
 	&path + "pathtest"
 	&path + ".mara"
