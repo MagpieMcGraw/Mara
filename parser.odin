@@ -4402,6 +4402,11 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             // setup for slices/partial arrays). Parsed as Expr_Skip_Constructor,
             // which the rest of the pipeline already understands.
             if name_tok.text == "skip_constructor" {
+                // `#skip_constructor` folded into `void` — one absence
+                // concept for null pointers, uninitialized storage, and
+                // absent generic args. The node survives internally as the
+                // checker's desugar target for `= void`.
+                parse_error(p, hash_tok, PARSE_SKIP_CONSTRUCTOR_REMOVED)
                 result = new_clone(Expr_Skip_Constructor{span = token_span(hash_tok)})
             } else if name_tok.text == "self" {
                 result = new_clone(Expr_Self{span = token_span(hash_tok)})

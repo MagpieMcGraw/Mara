@@ -96,6 +96,9 @@ partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_i
 // (constructor body) so both initialise len/elements identically — a field
 // default used to skip this entirely and leave the field's len uninitialised.
 gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, elem_t: string, elem_bytes, alloc_cap: int, pa: ^Type_Partial_Array, span: Span, name: string) {
+    // `= void` (skip marker): the header is already stamped by the decl
+    // path — leaving the elements untouched is exactly the request.
+    if _, is_skip := value.(^Expr_Skip_Constructor); is_skip { return }
     if str_lit, str_ok := value.(^Expr_String); str_ok && elem_bytes == 1 {
         ir_type := partial_array_ir_type(elem_t, alloc_cap)
         elements_ptr := fresh_tmp(g)
@@ -148,6 +151,10 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, ca
 // ---------------------------------------------------------------------------
 
 gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, loc: string = "<unknown>") {
+    // `= void` (skip marker) on a fixed array — same as no initializer:
+    // allocate and zero, construct nothing.
+    value := value
+    if _, is_skip := value.(^Expr_Skip_Constructor); is_skip { value = nil }
     alloc_cap := capacity
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
 

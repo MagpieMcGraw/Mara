@@ -1232,7 +1232,7 @@ test_field_byte_read :: fun() {
 	buf[8:16]  = i64(7)
 	buf[16:24] = i64(123)
 	buf[24:32] = i64(456)
-	h : Holder_Window = #skip_constructor
+	h : Holder_Window = void
 	h.count = buf[0]
 	h.flag  = buf[8:16]
 	h.pair  = buf[16:32]

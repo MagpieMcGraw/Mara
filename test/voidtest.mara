@@ -1,0 +1,38 @@
+module voidtest
+
+use mara.core
+
+Holder :: struct {
+	buf : [..32]utf8 = void   // per-field uninitialized marker
+	n := 5
+}
+
+main :: fun() {
+	// Annotated decls: void = uninitialized, every shape.
+	a : [..64]utf8 = void
+	&a + "filled later"
+	print(a)
+
+	b : [8]i64 = void
+	b[0] = 7
+	print(b[0])
+
+	c : i64 = void
+	c = 42
+	print(c)
+
+	// Struct with a void-marked field constructs; the field works once
+	// written through.
+	h := Holder()
+	print(h.n)
+	&h.buf + "via field"
+	print(h.buf)
+
+	// Re-init after de-init: write clears the uninit tracking.
+	d := 9
+	d = void
+	d = 10
+	print(d)
+
+	print("voidtest ok")
+}

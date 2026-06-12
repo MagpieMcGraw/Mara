@@ -7113,6 +7113,19 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         TYPE_SLICE_CAPACITY_INTEGER, type_name(cap_type))
                 }
             }
+            // `x : T = void` (non-pointer T) — void is the universal
+            // uninitialized marker: desugar to the skip-constructor node the
+            // rest of the pipeline already understands (no construction, no
+            // stores). Pointer targets keep void's null-init meaning.
+            // (Read-before-write tracking for aggregates waits for the
+            // zero-init stage — today's invalid_refs machinery flags
+            // element WRITES as uses, which would forbid filling the
+            // storage `= void` exists to leave fillable.)
+            if is_void_literal(s.value) {
+                if _, t_is_ptr := distinct_base(ann_type).(^Type_Ptr); !t_is_ptr {
+                    s.value = new_clone(Expr_Skip_Constructor{span = s.span})
+                }
+            }
             c.expected_hint = ann_type
             val_type := check_expr(c, s.value, env)
             // `x : []utf8 = "lit"` — writable view over rodata; sized slices
@@ -7415,10 +7428,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                 }
                 if !already_declared {
-                    // `x := #skip_constructor` has no type to infer from. Require
-                    // an explicit annotation: `x : T = #skip_constructor`.
-                    if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip {
-                        check_error(c, s.span, TYPE_TYPE_SKIP_CONSTRUCTOR_REQUIRES_EXPLICIT, s.name, s.name)
+                    // `x := void` has no type to infer from. Require an
+                    // explicit annotation: `x : T = void` declares x
+                    // uninitialized. (Same rule the old #skip_constructor had.)
+                    _, is_skip := s.value.(^Expr_Skip_Constructor)
+                    if is_skip || is_void_literal(s.value) {
+                        check_error(c, s.span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, s.name, s.name)
                         type_env_set(env, s.name, Type_Error{})
                         continue
                     }
@@ -7465,20 +7480,34 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         }
                     }
                 } else {
-                    // Reassignment: pointers assigned `void` re-enter the
-                    // uninit pool; anything else clears them.
-                    is_ptr := false
-                    if _, ok := distinct_base(existing_type).(^Type_Ptr); ok { is_ptr = true }
-                    if is_ptr && is_void_literal(s.value) {
-                        env.invalid_refs[s.name] = true
-                        // Don't clear field-uninit either — but this branch
-                        // only applies to scalar ptrs anyway.
-                    } else {
-                        // Reassignment: mark as initialized (clears invalid_refs for ptr/slice)
-                        mark_initialized(env, s.name)
-                        // Also clear any field-level uninit entries (whole struct reassignment)
-                        clear_struct_invalid_fields(env, s.name)
+                    // Reassignment with `void` DE-INITIALIZES. Scalars and
+                    // pointers re-enter the read-before-write pool (the
+                    // existing tracking handles whole-name reads/writes);
+                    // aggregates skip the marking for now — element writes
+                    // would be flagged as uses by today's machinery. For
+                    // non-pointers codegen emits nothing (skip desugar);
+                    // pointer `p = void` keeps its null store.
+                    if is_void_literal(s.value) {
+                        base_t := distinct_base(existing_type)
+                        is_aggregate_t := false
+                        #partial switch _ in base_t {
+                        case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array: is_aggregate_t = true
+                        }
+                        if sd := as_scope_body(base_t); sd != nil { is_aggregate_t = true }
+                        if !is_aggregate_t {
+                            env.invalid_refs[s.name] = true
+                        }
+                        if _, ok := base_t.(^Type_Ptr); !ok {
+                            s.value = new_clone(Expr_Skip_Constructor{span = s.span})
+                        }
+                        s.var_type = distinct_base(existing_type)
+                        s.env_type = existing_type
+                        continue
                     }
+                    // Reassignment: mark as initialized (clears invalid_refs for ptr/slice)
+                    mark_initialized(env, s.name)
+                    // Also clear any field-level uninit entries (whole struct reassignment)
+                    clear_struct_invalid_fields(env, s.name)
                     // Reassigning a slice var with a literal would repoint its
                     // header at rodata (and silently drop any sized backing).
                     check_no_literal_slice_binding(c, existing_type, s.value, s.span)
@@ -7898,11 +7927,21 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     prev_in_register := c.in_register_pass
     c.in_register_pass = true
     defer c.in_register_pass = prev_in_register
-    for field in data_fields {
+    for &field in data_fields {
         if _, already := ft.field_map[field.name]; already { continue }
         field_type: Type
         if field.type_expr != nil {
             field_type = resolve_type_expr(field.type_expr, c, s.span, env=&child)
+            // `f : T = void` (non-pointer T) — per-field uninitialized
+            // marker: desugar to the skip node the constructor codegen
+            // already recognizes (field left unconstructed; the struct
+            // memset still zeroes it today). Pointer fields keep void's
+            // null meaning.
+            if field.default_value != nil && is_void_literal(field.default_value) {
+                if _, t_is_ptr := distinct_base(field_type).(^Type_Ptr); !t_is_ptr {
+                    field.default_value = new_clone(Expr_Skip_Constructor{span = s.span})
+                }
+            }
             if field.default_value == nil {
                 check_uninitialized_class_decl(c, s.span, field.name, field_type)
             } else if is_numeric(field_type) {
@@ -7912,8 +7951,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
                 pin_field_refs(c, field.default_value, field_type, ft, s.span)
             }
         } else if field.default_value != nil {
-            if _, is_uninit := field.default_value.(^Expr_Skip_Constructor); is_uninit {
-                check_error(c, s.span, TYPE_FIELD_TYPE_SKIP_CONSTRUCTOR_REQUIRES, field.name, field.name)
+            _, is_uninit := field.default_value.(^Expr_Skip_Constructor)
+            if is_uninit || is_void_literal(field.default_value) {
+                // No type to infer an uninitialized field from — annotate:
+                // `f : T = void`.
+                check_error(c, s.span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, field.name, field.name)
                 field_type = Type_Error{}
             } else {
                 field_type = infer_field_type_from_default(c, field.default_value, &child, ft)

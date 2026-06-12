@@ -51,6 +51,16 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // assignment itself.
         if s.name == "this_program" && !s.is_decl { return }
 
+        // Reassignment with the uninitialized marker (`x = void` on a
+        // non-pointer, desugared to skip by the checker): de-init is
+        // checker-side read-tracking only — nothing to emit. Pointer
+        // `p = void` keeps its void IDENT value and stores null through
+        // the normal scalar path. Decls fall through: their per-shape
+        // paths allocate storage and recognize the skip themselves.
+        if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip && !s.is_decl {
+            return
+        }
+
         // take(T, storage) decl — let-style binding into storage's bytes. The
         // variable's alloca IS the typed pointer returned by take; no fresh
         // alloca, no copy. Routes by resolved_type to the right Var_Entry shape.
@@ -627,8 +637,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Mostly fires for class-body field decls (`x: f32`) which desugar to
         // Stmt_Assigns with nil .value; storing again from gen_expr's "0"
         // fallthrough would clobber float/double slots with `store float 0`,
-        // which LLVM rejects.
-        if s.value == nil {
+        // which LLVM rejects. A scalar `x : T = void` (skip marker) takes
+        // the same path — allocate, zero, store nothing else.
+        _, scalar_skip := s.value.(^Expr_Skip_Constructor)
+        if s.value == nil || scalar_skip {
             // Already prebound (struct-constructor field path): the name
             // resolves to a sret-field GEP, so a fresh local alloca would
             // be dead. Leave the prebind alone — the field stays at its
