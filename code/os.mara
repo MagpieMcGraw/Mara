@@ -40,25 +40,6 @@ sys_alloc :: fun(cap: i64) -> []byte {
 	}
 }
 
-Big_Slice :: struct {
-	len, cap : i64
-	ptr : ^byte
-}
-
-sys_alloc_big :: fun(cap: i64) -> Big_Slice {
-	#if #native {
-		raw := vm_reserve(cap)
-		_ = vm_commit(raw, cap)
-		block := Big_Slice{0, cap, raw}
-
-		return block
-	}
-	#if #web {
-		block := Big_Slice{0, cap, malloc(usize(cap)), cap}
-		return block
-	}
-}
-
 // File_Id is the public token for an open file. Treat it as opaque — flow it
 // from file_open_* through file_read / file_write / file_close without
 // inspecting the bits. The kernel checks validity on every syscall, so the

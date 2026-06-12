@@ -105,7 +105,13 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
             global, _ := get_string_literal(g, str_bytes)
             src_ptr := fresh_tmp(g)
             emit_string_gep(g, src_ptr, len(str_bytes)+1, global)
-            emit_memcpy(g, elements_ptr, src_ptr, len(str_bytes))
+            // Copy the rodata global's trailing \0 along with the content
+            // when there's headroom — the copy is then born terminated and
+            // passes cstring()'s [len] check. Exact-fit caps copy content
+            // only (the [cap-1] rule covers them if the last byte is 0).
+            copy_n := len(str_bytes)
+            if alloc_cap > copy_n { copy_n += 1 }
+            emit_memcpy(g, elements_ptr, src_ptr, copy_n)
         }
         len_gep := fresh_tmp(g)
         emit_slice_gep(g, len_gep, pa_ptr, SLICE.len)

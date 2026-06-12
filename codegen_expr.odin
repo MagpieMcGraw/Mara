@@ -1115,16 +1115,19 @@ gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
     arg_checker_type := expr_type(arg)
     // String literal: typed as a partial array since the
     // literal-type change, but it still lives as raw bytes in rodata.
-    // Synthesize a slice header pointing at the global, len = cap = N
-    // (the literal's byte count), and pass `&header`. Receivers (which
-    // expect `{len, cap, ptr}`-shaped headers) then see a normal partial
-    // array view of the literal.
+    // Synthesize a slice header pointing at the global — len = N, cap =
+    // N+1 — and pass `&header`. The cap includes the rodata global's
+    // trailing \0 slot (those bytes exist), so a literal flowing through
+    // `[]utf8` params into cstring() passes the terminator check at [len].
+    // Receivers can't write through it: by-value params are immutable and
+    // the literal storage bans cover the rest.
     if lit, lit_ok := arg.(^Expr_String); lit_ok {
         global, _ := get_string_literal(g, lit.value)
         data_ptr := fresh_tmp(g)
         emit_string_gep(g, data_ptr, len(lit.value)+1, global)
         size_str := fmt.tprintf("%d", len(lit.value))
-        return emit_build_temp_slice(g, data_ptr, size_str, size_str)
+        cap_str := fmt.tprintf("%d", len(lit.value)+1)
+        return emit_build_temp_slice(g, data_ptr, size_str, cap_str)
     }
     if fa, fa_ok := distinct_base(arg_checker_type).(^Type_Fixed_Array); fa_ok {
         // Array literal: materialize on stack, then build slice
@@ -1394,13 +1397,16 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         }
     }
 
-    // Built-in: cstring(s) — construct a NUL-terminated C string. Literal
-    // arg: free pointer to the deduped rodata global (its trailing \0 is
-    // already in place). Runtime arg: copy len bytes into a fresh len+1
-    // buffer — scope arena when live, point-of-use stack alloca otherwise —
-    // and write the 0. The result only ever feeds call arguments (the
-    // cstring storage ban rejects bindings), so the buffer's lifetime
-    // safely brackets the call it sits inside.
+    // Built-in: cstring(s) — checked, zero-copy conversion. The contract is
+    // VALIDITY, not content: a 0 must exist inside the slice's storage so C
+    // can never run past it (what C reads up to the 0 is the user's data,
+    // the user's business). Positional check: len < cap → the byte at [len]
+    // must be 0 (exact-content case — literal views, append-built strings);
+    // len == cap → the LAST byte [cap-1] must be 0 (full view of a
+    // zero-padded buffer; C stops at the first interior 0). Both reads stay
+    // inside the slice's capacity. No terminator → loud crash with the
+    // location. No copies, no allocation, no arena.
+    // Literal arg: free pointer to the deduped rodata global (trailing \0).
     if e.name == "cstring" && len(e.args) == 1 {
         if lit, lit_ok := e.args[0].(^Expr_String); lit_ok {
             global, _ := get_string_literal(g, lit.value)
@@ -1409,9 +1415,10 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             return out
         }
         w := slice_layout.len_ir
-        len_val, src_ptr: string
+        len_val, cap_val, src_ptr: string
         if h, h_ok := resolve_array_handle(g, e.args[0]); h_ok {
             len_val = emit_array_len(g, &h)
+            cap_val = emit_array_raw_cap(g, &h)
             src_ptr = emit_array_data(g, &h)
         } else {
             // General expression (sub-slice, call result): gen_expr yields a
@@ -1421,39 +1428,59 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             emit_slice_gep(g, len_gep, hdr, SLICE.len)
             len_val = fresh_tmp(g)
             emit_typed_load_len(g, len_val, len_gep)
+            cap_gep := fresh_tmp(g)
+            emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
+            cap_val = fresh_tmp(g)
+            emit_typed_load_cap(g, cap_val, cap_gep)
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, hdr, SLICE.ptr)
             src_ptr = fresh_tmp(g)
             emit_load_into(g, src_ptr, "ptr", data_gep)
         }
-        // Arena only — a runtime-sized stack alloca would be a VLA
-        // (unbounded, input-driven stack growth; rejected). With no scope
-        // arena in the program, reaching this conversion at runtime fails
-        // loudly with the remedy. Compile-time rejection isn't possible
-        // without call-graph reachability — a mere `use mara.os` would
-        // break arena-less builds over wrappers they never call.
-        if !g.context_enabled {
-            loc := format_location(e.span.file, e.span.line, e.span.col)
-            err_msg := fmt.tprintf("runtime error: cstring() of a runtime string at %s needs a scope arena — set this_program = Program(...) in main, or pass a literal\n", loc)
-            err_name, err_len := get_string_literal(g, err_msg)
-            err_ptr := fresh_tmp(g)
-            emit_string_gep(g, err_ptr, err_len, err_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", err_ptr)
-            emit(g, "  call void @exit(i32 1)")
-            emit(g, "  unreachable")
-            dead := fresh_label(g, "cstring.dead")
-            emit_label(g, dead)
-            return "null"
-        }
-        size := fresh_tmp(g)
-        emit(g, "  %s = add %s %s, 1", size, w, len_val)
+        at_len_lbl  := fresh_label(g, "cstring.at_len")
+        at_end_lbl  := fresh_label(g, "cstring.at_end")
+        end_ok_lbl  := fresh_label(g, "cstring.end_ok")
+        pass_lbl    := fresh_label(g, "cstring.pass")
+        crash_lbl   := fresh_label(g, "cstring.fail")
+        has_room := fresh_tmp(g)
+        emit(g, "  %s = icmp slt %s %s, %s", has_room, w, len_val, cap_val)
+        emit_cond_br(g, has_room, at_len_lbl, at_end_lbl)
+        // len < cap: terminator sits right after the content.
+        emit_label(g, at_len_lbl)
+        p1 := fresh_tmp(g)
+        emit(g, "  %s = getelementptr i8, ptr %s, %s %s", p1, src_ptr, w, len_val)
+        b1 := fresh_tmp(g)
+        emit_load_into(g, b1, "i8", p1)
+        ok1 := fresh_tmp(g)
+        emit(g, "  %s = icmp eq i8 %s, 0", ok1, b1)
+        emit_cond_br(g, ok1, pass_lbl, crash_lbl)
+        // len == cap: full view — the last byte must be 0 (and cap > 0 so
+        // the [cap-1] read stays inside the storage).
+        emit_label(g, at_end_lbl)
+        cap_pos := fresh_tmp(g)
+        emit(g, "  %s = icmp sgt %s %s, 0", cap_pos, w, cap_val)
+        emit_cond_br(g, cap_pos, end_ok_lbl, crash_lbl)
+        emit_label(g, end_ok_lbl)
+        last := fresh_tmp(g)
+        emit(g, "  %s = sub %s %s, 1", last, w, cap_val)
+        p2 := fresh_tmp(g)
+        emit(g, "  %s = getelementptr i8, ptr %s, %s %s", p2, src_ptr, w, last)
+        b2 := fresh_tmp(g)
+        emit_load_into(g, b2, "i8", p2)
+        ok2 := fresh_tmp(g)
+        emit(g, "  %s = icmp eq i8 %s, 0", ok2, b2)
+        emit_cond_br(g, ok2, pass_lbl, crash_lbl)
+        emit_label(g, crash_lbl)
         loc := format_location(e.span.file, e.span.line, e.span.col)
-        dst := emit_arena_bump_runtime(g, size, "<cstring>", loc)
-        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", dst, src_ptr, len_val)
-        term := fresh_tmp(g)
-        emit(g, "  %s = getelementptr i8, ptr %s, %s %s", term, dst, w, len_val)
-        emit_store(g, "i8", "0", term)
-        return dst
+        err_msg := fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — append into headroom or zero-pad the buffer\n", loc)
+        err_name, err_len := get_string_literal(g, err_msg)
+        err_ptr := fresh_tmp(g)
+        emit_string_gep(g, err_ptr, err_len, err_name)
+        emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", err_ptr)
+        emit(g, "  call void @exit(i32 1)")
+        emit(g, "  unreachable")
+        emit_label(g, pass_lbl)
+        return src_ptr
     }
 
     // Built-in: slice_from_ptr(ptr, cap) -> []byte — wraps a raw pointer + capacity into a byte slice.

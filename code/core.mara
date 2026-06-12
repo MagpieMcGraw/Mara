@@ -5,13 +5,25 @@ str64 :: type [..64]utf8
 str256 :: type [..256]utf8
 str1024 :: type [..1024]utf8
 
-// (cstring is a compiler built-in: the C boundary pointer type, legal only
-// in foreign signatures, plus the `cstring(s)` constructor that copies a
-// string into a fresh NUL-terminated buffer. Literals pass to cstring
-// params free — their rodata already ends in \0.)
-
 overload + add
-add :: dispatch{ slice_add, slice_add_item }
+add :: dispatch{ utf8_add, utf8_add_item, slice_add, slice_add_item }
+
+// utf8 appends keep a 0 in the dead capacity right after the content (when
+// headroom exists), so an append-built string is always valid for cstring()'s
+// terminator check. Concrete overloads win dispatch over the generic forms.
+utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
+	assert(dst.len + src.len <= dst.cap)
+	dst[dst.len:] = src
+	dst.len += src.len
+	if dst.len < dst.cap do dst[dst.len] = 0
+}
+
+utf8_add_item :: fun(dst: ^[]utf8, src: utf8) {
+	assert(dst.len < dst.cap)
+	dst[dst.len] = src
+	dst.len += 1
+	if dst.len < dst.cap do dst[dst.len] = 0
+}
 
 slice_add :: fun(dst: ^[]$T, src: []$T) {
 	assert(dst.len + src.len <= dst.cap)

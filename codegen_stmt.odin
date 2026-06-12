@@ -363,7 +363,11 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                         global, _ := get_string_literal(g, str_bytes)
                         src_ptr := fresh_tmp(g)
                         emit_string_gep(g, src_ptr, len(str_bytes)+1, global)
-                        emit_memcpy(g, data_name, src_ptr, len(str_bytes))
+                        // Bring the rodata \0 along when there's headroom —
+                        // mirrors gen_partial_array_init_value.
+                        copy_n := len(str_bytes)
+                        if cap_n > copy_n { copy_n += 1 }
+                        emit_memcpy(g, data_name, src_ptr, copy_n)
                     }
                     emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
                 }
