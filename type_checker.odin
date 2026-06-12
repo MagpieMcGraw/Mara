@@ -6781,12 +6781,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                     if sub_name == inc.path { main_mod = m }
                 }
-                // Synthetic-parent fallback (same as the Stmt_Assign path).
-                if main_mod == nil {
-                    if synth, ok := c.checked_modules[inc.path]; ok {
-                        main_mod = synth
-                    }
-                }
                 if main_mod != nil {
                     type_env_set(env, s.name, main_mod)
                     s.var_type = main_mod
@@ -6951,15 +6945,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         flatten_module_exports(c, pub, sd, sub_name)
                     }
                     if sub_name == inc.path { main_mod = m }
-                }
-                // If no file declared exactly `inc.path` but submodules under
-                // it were loaded, the synthetic parent scope was created as a
-                // side effect (register_in_parent_scopes). Pick it up so
-                // `m := use mara` binds m to the synth scope.
-                if main_mod == nil {
-                    if synth, ok := c.checked_modules[inc.path]; ok {
-                        main_mod = synth
-                    }
                 }
                 if main_mod != nil {
                     type_env_set(env, s.name, main_mod)
@@ -9681,52 +9666,6 @@ find_matching_modules :: proc(c: ^Checker, path: string) -> [dynamic]string {
     return result
 }
 
-// Get the Type_Scope for `name`, creating an empty synthetic scope if no
-// module file declared exactly that name. Synthetic scopes exist purely to
-// give dotted-module namespaces a real Type_Scope value — so a user can
-// write `m := mara` even though there's no `module mara` file, and so
-// qualified access like `mara.math.sin` flows through normal scope-member
-// lookup instead of a parallel namespace-label mechanism.
-get_or_synth_module_scope :: proc(c: ^Checker, name: string) -> ^Type_Scope {
-    if existing, ok := c.checked_modules[name]; ok { return existing }
-    synth := new(Type_Scope)
-    synth.name = name
-    synth.home_package = name  // module is its own home
-    synth.kind = .Struct
-    // Empty body — no fields, no top-level decls. Submodules will be
-    // registered as members by register_in_parent_scopes.
-    c.checked_modules[name] = synth
-    c.table.funs[name] = synth
-    if c.mara_env != nil {
-        type_env_set(c.mara_env, name, synth)
-    }
-    // Recurse: synth's own parents also need it registered as a member.
-    register_in_parent_scopes(c, name, synth)
-    return synth
-}
-
-// For a dotted module name like "mara.gpu.opengl", register the loaded
-// module as a member of every proper-prefix scope: `gpu` in mara, `opengl`
-// in mara.gpu. Intermediate scopes are synthesized on demand. Called once
-// per module load (at the end of check_module).
-register_in_parent_scopes :: proc(c: ^Checker, module_name: string, mod: ^Type_Scope) {
-    for i in 0..<len(module_name) {
-        if module_name[i] != '.' { continue }
-        prefix := module_name[:i]
-        // Segment between this dot and the next dot (or end of name)
-        seg_start := i + 1
-        seg_end := len(module_name)
-        for j in seg_start..<len(module_name) {
-            if module_name[j] == '.' { seg_end = j; break }
-        }
-        seg := module_name[seg_start:seg_end]
-        child_full := module_name[:seg_end]
-        parent := get_or_synth_module_scope(c, prefix)
-        child: ^Type_Scope = mod if child_full == module_name else get_or_synth_module_scope(c, child_full)
-        if parent.types == nil { parent.types = make(map[string]Type) }
-        parent.types[seg] = child
-    }
-}
 
 // (lazy_load_module_program removed — all modules are pre-parsed and looked up
 // from c.programs directly in check_module.)
@@ -9919,13 +9858,6 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     } else if c.mara_env != nil {
         type_env_set(c.mara_env, module_name, mod_struct)
     }
-
-    // Walk up the dotted name and register this module as a member of every
-    // proper-prefix scope. For "mara.gpu.opengl" this registers `gpu` in
-    // mara (synthesizing mara as an empty scope if no file declared it) and
-    // `opengl` in mara.gpu. Lets `mara.gpu.opengl.X` flow through normal
-    // scope-member access without a parallel namespace-label mechanism.
-    register_in_parent_scopes(c, module_name, mod_struct)
 
     return mod_struct
 }
