@@ -13,7 +13,8 @@ Shader_Error :: error {
 }
 
 load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
-	data: [..32 * KB]byte = void   // filled by the read — skip the zero-init
+	// filled by the read — skip the zero-init
+	data: [..32 * KB]byte = void
 	os.read_entire_file(filepath, &data)?
 
 	text : []utf8 = data[:]

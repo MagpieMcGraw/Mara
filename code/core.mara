@@ -8,9 +8,7 @@ str1024 :: type [..1024]utf8
 overload + add
 add :: dispatch{ utf8_add, utf8_add_item, slice_add, slice_add_item }
 
-// utf8 appends keep a 0 in the dead capacity right after the content (when
-// headroom exists), so an append-built string is always valid for cstring()'s
-// terminator check. Concrete overloads win dispatch over the generic forms.
+// we write 0 to enable valid cstring conversion
 utf8_add :: fun(dst: ^[]utf8, src: []utf8) {
 	assert(dst.len + src.len <= dst.cap)
 	dst[dst.len:] = src
