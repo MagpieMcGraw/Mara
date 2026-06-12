@@ -1,0 +1,42 @@
+module quanttest
+
+use mara.core
+use mara.os
+
+main :: fun() {
+	// Inferred literal binding gets the quantized tier: cap 64, len 5.
+	s := "hello"
+	assert(s.cap == 64)
+	assert(s.len == 5)
+
+	// Headroom means appends work on a literal copy...
+	&s + " world"
+	assert(s.len == 11)
+	print(s)
+
+	// ...and the assign-then-convert footgun is dead: a literal copy
+	// always has room for the cstring terminator.
+	path := "quanttest.mara"
+	data : [..4096]byte
+	err := read_entire_file(path, &data)
+	assert(not bool(err))
+	assert(data.len > 0)
+	print("footgun dead, bytes:")
+	print(data.len)
+
+	// Tier boundaries: 63 bytes -> 64; 64 bytes -> 256.
+	tier_lo := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	assert(tier_lo.cap == 64)
+	tier_hi := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	assert(tier_hi.cap == 256)
+
+	// Use-site headers stay honest: a literal passed as a value reports
+	// its byte length, not the tier.
+	assert(tier_blind("hi") == 2)
+
+	print("quanttest ok")
+}
+
+tier_blind :: fun(v: []utf8) -> i64 {
+	return v.len
+}

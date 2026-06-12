@@ -21,6 +21,7 @@ read_u64be :: fun(data: [8]byte) -> u64 {
     return hi | lo
 }
 
+// these look nicer than doing the cast at the call site
 read_i16be :: fun(data: [2]byte) -> i16 {
     return i16(read_u16be(data))
 }

@@ -7293,7 +7293,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             }
                         }
                     } else {
-                        check_array_assign(c, s.span, s.name, fa, val_type)
+                        check_array_assign(c, s.span, s.name, fa, val_type, s.value)
                     }
                     // Big-array check: require scope allocator for large stack arrays
                     total_bytes := fa.size * checker_type_byte_size(fa.elem)
@@ -8504,7 +8504,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
             return
         }
         if fa, ok := check_ann.(^Type_Fixed_Array); ok {
-            check_array_assign(c, s.span, s.name, fa, val_type)
+            check_array_assign(c, s.span, s.name, fa, val_type, s.value)
             s.var_type = distinct_base(ann_type)
             s.env_type = ann_type
             type_env_set(pub, s.name, ann_type)
@@ -8731,7 +8731,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
     }
 }
 
-check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixed_Array, val_type: Type) {
+check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixed_Array, val_type: Type, value: Expr = nil) {
     if fv, ok2 := val_type.(^Type_Fixed_Array); ok2 {
         if types_incompatible(fa.elem, fv.elem) {
             check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
@@ -8743,14 +8743,21 @@ check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixe
         }
     } else if pv, pv_ok := val_type.(^Type_Partial_Array); pv_ok {
         // Source is a partial array (e.g. a string literal post the
-        // literal-type change). Same element check; size check ensures
-        // the source content fits in the fixed-array storage.
+        // literal-type change). Same element check; the size check ensures
+        // the source CONTENT fits in the fixed-array storage. A string
+        // literal's TYPE carries the quantized tier cap (string_literal_cap)
+        // while its content is the byte length — compare the content, so
+        // `fa : [16]utf8 = "hi"` doesn't trip over the literal's [..64] tier.
+        src_size := pv.size
+        if lit, lit_ok := value.(^Expr_String); lit_ok {
+            src_size = len(lit.value)
+        }
         if types_incompatible(fa.elem, pv.elem) {
             check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
                 type_name(val_type), name, type_name(fa))
-        } else if pv.size > 0 && pv.size > fa.size {
+        } else if src_size > 0 && src_size > fa.size {
             check_error(c, span, TYPE_ARRAY_ELEMENTS_CAPACITY,
-                pv.size, name, fa.size)
+                src_size, name, fa.size)
         }
     } else if !is_any(val_type) {
         check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE,
