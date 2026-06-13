@@ -12412,11 +12412,34 @@ fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env
     }
 }
 
+// Render a callable's parameter list for diagnostics: "name: Type, name2: Type2"
+// (type alone for an unnamed param; "" for a zero-param callable). Lets a
+// wrong-arg-count error show what the call actually expects.
+fn_params_desc :: proc(ft: ^Type_Scope) -> string {
+    b := strings.builder_make()
+    for p, i in ft.params {
+        if i > 0 { strings.write_string(&b, ", ") }
+        if p.name != "" {
+            strings.write_string(&b, p.name)
+            strings.write_string(&b, ": ")
+        }
+        strings.write_string(&b, type_name(p.type_))
+    }
+    return strings.to_string(b)
+}
+
 // Shared helper: check that args match a function's parameter types.
 check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, display_name: string, span: Span, env: ^Type_Env) {
     required := count_required_params(fun_type)
     if len(args) < required || len(args) > len(fun_type.params) {
-        check_error(c, span, TYPE_EXPECTS_ARGS, display_name, len(fun_type.params), len(args))
+        // Show the module-qualified name + the expected parameter list, so the
+        // error says which `init` (etc.) this is and what it actually wants.
+        qualified := display_name
+        if fun_type.home_package != "" {
+            qualified = fmt.tprintf("%s.%s", fun_type.home_package, display_name)
+        }
+        check_error(c, span, TYPE_EXPECTS_ARGS,
+            qualified, len(fun_type.params), fn_params_desc(fun_type), len(args))
     } else {
         for arg, i in args {
             // Hand the parameter type down so bare variant idents like

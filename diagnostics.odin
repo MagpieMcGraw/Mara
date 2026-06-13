@@ -594,7 +594,7 @@ TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT_2 :: "mismatched types for '%s': %s and 
 TYPE_BITWISE_OPERATORS_REQUIRE_INTEGER_OPERANDS :: "bitwise operators require integer operands, got %s"
 TYPE_MISMATCHED_TYPES_ARITHMETIC_USE_EXPLICIT :: "mismatched types in arithmetic: %s and %s (use an explicit cast)"
 TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER :: "argument %d of '%s': '_' requires a default value, but parameter '%s' has none"
-TYPE_EXPECTS_ARGS :: "'%s' expects %d args, got %d"
+TYPE_EXPECTS_ARGS :: "'%s' expects %d argument(s) (%s), got %d"
 TYPE_ARGUMENT_EXPECTED :: "argument %d%s of '%s': parameter '%s' expects %s, got %s"
 TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE :: "method '%s' requires a pointer receiver — take an address with `&` (or use a `^%s` local) before calling"
 TYPE_MODULE_FUNCTION :: "module '%s' has no function '%s'"
