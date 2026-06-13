@@ -120,18 +120,9 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
         emit_slice_gep(g, len_gep, pa_ptr, SLICE.len)
         emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
     } else if _, src_pa_ok := distinct_base(expr_type(value)).(^Type_Partial_Array); src_pa_ok {
+        // ident / field access: a pointer to the source PA. A PA-returning call
+        // (sret ABI) also yields a pointer — to the temp the callee built into.
         src_ptr := gen_expr(g, value)
-        // A partial-array-returning call yields the aggregate BY VALUE, not a
-        // pointer (the return ABI is by-value — see gen_return). Spill it to a
-        // temp so partial_array_copy has storage to memcpy from; the copy then
-        // re-anchors dst.ptr, overwriting the call result's dangling ptr field.
-        if _, is_call := value.(^Expr_Call); is_call {
-            ir := partial_array_ir_type(elem_t, alloc_cap)
-            tmp := fresh_tmp(g)
-            emit_alloca(g, tmp, ir)
-            emit_store(g, ir, src_ptr, tmp)
-            src_ptr = tmp
-        }
         partial_array_copy(g, pa_ptr, src_ptr, elem_t, alloc_cap)
     } else {
         codegen_fatal(g, span,

@@ -1,11 +1,12 @@
 module bug1
 
-// Bug 1: returning a locally-built partial array (str64) by value miscompiles —
-// codegen emits `ret {i64,i64,ptr,[64 x i8]} %out` where %out is the alloca
-// pointer, not the loaded aggregate, and clang rejects it.
+// Bug 1: returning a partial array (str64) by value. Now lowered via sret with
+// NRVO — the callee builds straight into the caller's slot — instead of the old
+// by-value `ret {agg} %allocaPtr` that clang rejected.
 
 use mara.core
 
+// NRVO: `out` is the single returned local -> built directly in %sret.
 build :: fun() -> str64 {
     out : str64
     &out + 'h'
@@ -13,7 +14,28 @@ build :: fun() -> str64 {
     return out
 }
 
+// Non-NRVO: returns a parameter, so the return copies it into %sret.
+passthrough :: fun(p: str64) -> str64 {
+    return p
+}
+
+// Chained NRVO: `inner` is built by a call and then returned, so build()'s sret
+// is forwarded straight to wrap()'s sret (0 copies through the chain).
+wrap :: fun() -> str64 {
+    inner := build()
+    return inner
+}
+
 main :: fun() {
     s := build()
-    print(s)   // expect: hi
+    print(s)              // hi
+
+    w := wrap()
+    print(w)              // hi
+
+    base : str64
+    &base + 'y'
+    &base + 'o'
+    p := passthrough(base)
+    print(p)              // yo
 }

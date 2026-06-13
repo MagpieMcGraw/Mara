@@ -275,6 +275,8 @@ Fun_Info :: struct {
     ret_array_elem:    string,           // LLVM element type (e.g. "i64", "double")
     ret_types:         []Type,           // multi-return list (len > 1 → multi-return via sret)
     ret_slice_elem:    string,           // non-"" if returning a slice (sret convention)
+    ret_partial_elem:  string,           // non-"" if returning a partial array (sret convention)
+    ret_partial_cap:   int,              // partial-array capacity (sret convention)
     param_types:       [dynamic]string,   // per-param IR types ("i64", "ptr", etc.)
     param_structs:     [dynamic]string,   // "" or struct name per param
     // Sibling-storage escape analysis: locals referenced through slice fields
@@ -394,6 +396,12 @@ Codegen :: struct {
     ctx_alloca:       string,                     // LLVM tmp for Context alloca in @main
     // NRVO: name of variable aliased to sret (skipped in scope_has_big_values)
     nrvo_var:         string,
+    // Single partial-array return via sret: cap (>0 marks it) and elem IR type.
+    // The callee builds into %sret — NRVO when the returned local is the
+    // candidate, a copy-into-%sret otherwise. The partial-array decl path and
+    // gen_return key off these.
+    ret_partial_cap:  int,
+    ret_partial_elem: string,
     // Multi-return: list of return types for current function (empty if not multi-return)
     ret_types:        []Type,
     // Tuple call result: temp alloca pointers from the most recent tuple-returning call
@@ -1080,6 +1088,10 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
         } else if sl, sl_ok := single.(^Type_Slice); sl_ok {
             info.ret_type = "void"
             info.ret_slice_elem = llvm_type_from_checker(sl.elem)
+        } else if pa, pa_ok := distinct_base(single).(^Type_Partial_Array); pa_ok {
+            info.ret_type = "void"
+            info.ret_partial_elem = llvm_type_from_checker(pa.elem)
+            info.ret_partial_cap = pa.size
         } else if single == nil || is_untyped(single) {
             info.ret_type = "void"
         } else {

@@ -422,7 +422,16 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             elem_bytes := elem_byte_size(elem_t, g.checked)
             total_bytes := alloc_cap * elem_bytes
             loc := format_location(s.span.file, s.span.line, s.span.col)
-            if g.context_enabled && total_bytes >= 1024 {
+            // NRVO: when this local is the value a partial-array-returning
+            // function hands back, build it directly in the caller's %sret slot
+            // — no fresh alloca. The header stamp below points ptr at %sret's
+            // own inline storage (which lives in the caller's frame), so the
+            // `return` is a no-op (gen_return skips the self-copy when src is
+            // already %sret).
+            is_nrvo := g.ret_partial_cap > 0 && s.name == g.nrvo_var
+            if is_nrvo {
+                alloca_name = "%sret"
+            } else if g.context_enabled && total_bytes >= 1024 {
                 // Big partial array: arena-bump the whole structure including
                 // header. The arena returns a pointer to a fresh region whose
                 // layout matches our IR type — initialize ptr/len/cap into it.
@@ -463,6 +472,16 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             // array, or another partial array of the same shape. Shared with the
             // struct-field-default path above.
             if s.value != nil {
+                // A partial-array-returning call builds directly into our slot
+                // (true end-to-end NRVO — no temp, no copy). When this slot IS
+                // %sret, the inner call's result lands straight in the outer
+                // caller's return slot. Mirrors gen_slice_from_expr.
+                if call, call_ok := s.value.(^Expr_Call); call_ok {
+                    if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_partial_cap > 0 {
+                        gen_call_into_struct(g, call, alloca_name, &info)
+                        return
+                    }
+                }
                 gen_partial_array_init_value(g, alloca_name, s.value, elem_t, elem_bytes, alloc_cap, pa, s.span, s.name)
             }
             return
@@ -1485,6 +1504,20 @@ gen_return_slice :: proc(g: ^Codegen, s: Stmt_Return, sret_slv: Slice_Var) {
     emit_ret_void(g)
 }
 
+// Partial-array return: build into %sret. An NRVO'd return (the local's storage
+// already IS %sret) is a no-op — `ret void`. Any other source (a param, a
+// branchy local, a call result) is copied in via partial_array_copy, which
+// re-anchors %sret.ptr to %sret's own inline storage.
+gen_return_partial_array :: proc(g: ^Codegen, s: Stmt_Return) {
+    if len(s.values) > 0 {
+        src := gen_expr(g, s.values[0])
+        if src != "%sret" {
+            partial_array_copy(g, "%sret", src, g.ret_partial_elem, g.ret_partial_cap)
+        }
+    }
+    emit_ret_void(g)
+}
+
 // Scalar return: emit `ret <type> <value>` at the declared return type.
 // Type checker enforces value type matches; the only special case is the
 // `return 0` for ptr returns where infer-int 0 becomes the ptr null literal.
@@ -1518,21 +1551,13 @@ gen_return :: proc(g: ^Codegen, s: Stmt_Return) {
         gen_return_slice(g, s, sret_slv)
         return
     }
-    // Single partial-array return (e.g. `-> str64`). The function's IR return
-    // type is the `{len, cap, ptr, [N x T]}` aggregate, returned BY VALUE.
-    // gen_return_scalar would emit `ret <agg> %allocaPtr` — returning the
-    // storage pointer, not the value — which clang rejects. Load the aggregate
-    // first; the caller re-anchors the ptr field after copying it (the inline
-    // bytes travel inside the aggregate, so the dangling ptr is harmless).
-    if len(s.values) == 1 {
-        if _, pa_ok := distinct_base(expr_type(s.values[0])).(^Type_Partial_Array); pa_ok {
-            src := gen_expr(g, s.values[0])
-            loaded := fresh_tmp(g)
-            emit(g, "  %s = load %s, ptr %s", loaded, g.current_ret_type, src)
-            emit_return_resets(g)
-            emit(g, "  ret %s %s", g.current_ret_type, loaded)
-            return
-        }
+    // Single partial-array return (e.g. `-> str64`): the callee builds into the
+    // caller-provided %sret slot. NRVO when the returned local was aliased to
+    // %sret by the decl path — then this is just `ret void`; otherwise the value
+    // is copied into %sret (re-anchoring its ptr to %sret's own inline storage).
+    if g.ret_partial_cap > 0 {
+        gen_return_partial_array(g, s)
+        return
     }
     if len(s.values) > 0 {
         gen_return_scalar(g, s)

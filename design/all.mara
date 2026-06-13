@@ -79,8 +79,10 @@ main :: fun() {
 //   one to disk and read it back — the saved ptr dangles. For POD / on-disk
 //   records use a plain fixed array [N]T (pure inline, no header) + a separate
 //   length field, then rebuild the str64 on read.
-// * Returning a str64 / partial array BY VALUE works: build it with `&out + x`
-//   appends and `return out`.
+// * Returning a str64 / partial array works: build it with `&out + x` appends
+//   and `return out`. Under the hood it's an sret return with NRVO — the callee
+//   builds straight into the caller's slot (so the inline `ptr` is correct from
+//   the start, no copy), exactly like struct and slice returns.
 
 // --- slice_from_ptr is deliberately restricted ---
 // * It always yields []byte, and OUTSIDE the os module its size argument must

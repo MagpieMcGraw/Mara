@@ -1592,6 +1592,26 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             args_joined := strings.join(arg_strs[:], ", ")
             emit(g, "  call void %s(%s)", ir_name, args_joined)
             return tmp_slice
+        } else if info.ret_partial_cap > 0 {
+            // Partial-array return: alloca the full {len,cap,ptr,[N]} temp, pass
+            // as sret, call void. The callee builds into it (stamps the header,
+            // or copies a value in), so the caller just provides raw storage.
+            // Big ones arena-bump like the array path.
+            ir := partial_array_ir_type(info.ret_partial_elem, info.ret_partial_cap)
+            total_bytes := info.ret_partial_cap * elem_byte_size(info.ret_partial_elem) + slice_header_bytes
+            tmp: string
+            if g.context_enabled && total_bytes >= 1024 {
+                ret_name := fmt.tprintf("<ret %s>", call_resolved_name(e))
+                ret_loc := format_location(e.span.file, e.span.line, e.span.col)
+                tmp = emit_arena_bump(g, total_bytes, ret_name, ret_loc)
+            } else {
+                tmp = fresh_tmp(g)
+                emit_alloca(g, tmp, ir)
+            }
+            append(&arg_strs, fmt.tprintf("ptr %s", tmp))
+            args_joined := strings.join(arg_strs[:], ", ")
+            emit(g, "  call void %s(%s)", ir_name, args_joined)
+            return tmp
         } else if info.ret_types != nil {
             // Multi-return: temp pointer per element, pass as sret, call void.
             // Big slots (e.g. a multi-MB array riding in a tuple) follow the

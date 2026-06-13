@@ -245,6 +245,8 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     ret_types: []Type = nil
     ret_slice_elem := ""
     ret_slice_utf8 := false
+    ret_partial_elem := ""
+    ret_partial_cap := 0
     if len(cf.return_types) > 1 {
         ret_type = "void"
         ret_types = cf.return_types[:]
@@ -263,6 +265,13 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             ret_type = "void"
             ret_slice_elem = llvm_type_from_checker(sl.elem)
             _, ret_slice_utf8 = sl.elem.(Type_Utf8)
+        } else if pa, pa_ok := distinct_base(single).(^Type_Partial_Array); pa_ok {
+            // Partial array (e.g. str64): build into the caller's slot via sret,
+            // like a slice but with the full {len,cap,ptr,[N]} storage. NRVO'd
+            // when the returned local is the candidate (see the decl path).
+            ret_type = "void"
+            ret_partial_elem = llvm_type_from_checker(pa.elem)
+            ret_partial_cap = pa.size
         } else if single == nil || is_untyped(single) {
             ret_type = "void"
         } else {
@@ -299,6 +308,8 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     } else if ret_array_cap > 0 {
         append(&param_strs, "ptr %sret")
     } else if ret_slice_elem != "" {
+        append(&param_strs, "ptr %sret")
+    } else if ret_partial_cap > 0 {
         append(&param_strs, "ptr %sret")
     } else if ret_types != nil {
         for i in 0..<len(ret_types) {
@@ -358,6 +369,10 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     clear_temp_results(g)
     old_ret_type := g.current_ret_type
     g.current_ret_type = ret_type
+    // Recomputed per function (0 / "" for non-partial-array returns), so no
+    // save/restore needed — each function overwrites.
+    g.ret_partial_cap = ret_partial_cap
+    g.ret_partial_elem = ret_partial_elem
 
     // Register sret pointer for struct-returning functions
     g.nrvo_var = ""
@@ -457,6 +472,15 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 is_utf8   = ret_slice_utf8,
             }
         }
+    }
+
+    // Partial-array return: find the NRVO local. Unlike the slice case we don't
+    // pre-register __sret or alias the local here — the partial-array decl path
+    // aliases the NRVO local's storage to %sret directly (so its header stamps
+    // into the caller's slot), and gen_return keys off g.ret_partial_cap. A
+    // non-NRVO return (param / branchy / a call) copies into %sret instead.
+    if ret_partial_cap > 0 {
+        g.nrvo_var = find_nrvo_candidate(cf.body[:])
     }
 
     // Register sret pointers for multi-return functions
