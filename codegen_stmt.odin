@@ -1583,6 +1583,13 @@ gen_return :: proc(g: ^Codegen, s: Stmt_Return) {
     // convention), so an unadorned `return` inside main must emit `ret i64 0`
     // rather than `ret void`. For ordinary void-returning Mara fns the type
     // string is empty and we fall back to `ret void`.
+    //
+    // Like the value-return path (gen_return_scalar) and break/continue
+    // (emit_loop_exit), a terminator must emit its own scope cleanup —
+    // deferred blocks + arena resets — before the terminator. gen_body_block
+    // drops the scope entry WITHOUT re-emitting once it sees the terminator, so
+    // skipping this here silently dropped defers on a bare `return`.
+    emit_return_resets(g)
     switch g.current_ret_type {
     case "":
         emit(g, "  ret void")

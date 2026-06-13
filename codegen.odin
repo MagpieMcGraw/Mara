@@ -3710,6 +3710,15 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     if main_cf, main_ok := checked.functions["main"]; main_ok {
         prev_ret_type := g.current_ret_type
         g.current_ret_type = "i64"
+        // Wrap the body in a Main_Body scope so `defer` works in main exactly as
+        // in any other function — previously main had no scope entry at all, so a
+        // top-level `defer` hit "defer outside of any scope". has_mark is forced
+        // false (not via push_scope): main is where the arena is created
+        // (`this_program = Program(...)`), so its own body can't be the target of
+        // an arena mark/reset — push_scope would emit_arena_mark before the arena
+        // exists. This scope is for defer tracking only; nested scopes inside
+        // main still mark/reset normally.
+        append(&g.scope_stack, Scope_Entry{has_mark = false, scope_kind = .Main_Body})
         has_ret := false
         for s in main_cf.body {
             gen_stmt(&g, s)
@@ -3718,7 +3727,11 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
             }
         }
         if !has_ret {
+            pop_scope(&g)   // emit main's deferred blocks before the default ret (no reset)
             emit(&g, "  ret i64 0")
+        } else {
+            // an explicit top-level return already emitted main's defers
+            if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
         }
         g.current_ret_type = prev_ret_type
     }

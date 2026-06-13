@@ -1,0 +1,22 @@
+module defertest
+
+use mara.core
+
+// A bare `return` after a registered defer must still run the defer (it's a
+// terminator, so it owns its scope cleanup — same as a value return).
+g :: fun(early: bool) {
+    defer print("g-defer")
+    if early {
+        return          // bare return; g-defer must still run
+    }
+    print("g-work")
+}
+
+main :: fun() {
+    g(true)             // -> g-defer
+    g(false)            // -> g-work / g-defer
+    print("---")
+    defer print("main-defer")
+    if false { return }
+    return              // explicit bare top-level return; main-defer must run
+}
