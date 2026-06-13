@@ -1,0 +1,27 @@
+module dottest
+
+use mara.core
+
+Game :: struct {
+    items: [..4]i32
+}
+
+main :: fun() {
+    buf : [..8]i32
+    buf[.len] = 10
+    buf.len += 1
+    buf[.len] = 20
+    buf.len += 1
+    buf[.len] = 30
+    buf.len += 1
+    print(buf.len, buf[0], buf[1], buf[2])   // 3 10 20 30
+    print(buf[.len - 1])                     // 30
+    free := buf[.len:.cap]
+    print(free.len)                          // 5
+    live := buf[0:.len]
+    print(live.len)                          // 3
+    g : Game
+    g.items[.len] = 7
+    g.items.len += 1
+    print(g.items[.len - 1])                 // 7
+}

@@ -8839,6 +8839,7 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 
 check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     ix := s.target.(^Expr_Index)
+    ix.index = rewrite_subscript_dots(ix.expr, ix.index)
     // `::` constants can be read by index — the codegen routes that through
     // the literal's .rodata global. But writing through one would attempt
     // to mutate read-only memory at runtime, so reject at the type-check
@@ -8941,6 +8942,8 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 
 check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     sl := s.target.(^Expr_Slice)
+    sl.low  = rewrite_subscript_dots(sl.expr, sl.low)
+    sl.high = rewrite_subscript_dots(sl.expr, sl.high)
     target_type := check_expr(c, sl.expr, env)
     s.target_type = target_type
     low_type    := check_expr(c, sl.low,  env)
@@ -13158,7 +13161,58 @@ check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Env) -> Type
     return result
 }
 
+// --- subscript `.len` / `.cap` shorthand ------------------------------------
+// Inside a subscript — an `arr[...]` index or `arr[lo:hi]` bound — a bare `.len`
+// or `.cap` is shorthand for the base array's own `.len` / `.cap`. The parser
+// emits these as dot-idents (the `.Variant` shorthand), so before the index is
+// resolved (and fails as an unknown variant) we rewrite each `.len`/`.cap`
+// dot-ref into a field access on the base: `a.fonts[.len]` -> `a.fonts[a.fonts.len]`.
+// Recurses through arithmetic so `[.len - 1]` and `[.len:.cap]` work. Only
+// pure-lvalue bases (ident or field-access chains) are rewritten, so the base
+// cloned into the index can't double-evaluate a side effect. Idempotent — once
+// rewritten there are no dot-refs left for a second pass to touch.
+
+subscript_base_is_pure :: proc(e: Expr) -> bool {
+    #partial switch n in e {
+    case ^Expr_Ident:        return !n.is_dot
+    case ^Expr_Field_Access: return subscript_base_is_pure(n.expr)
+    }
+    return false
+}
+
+clone_pure_lvalue :: proc(e: Expr) -> Expr {
+    #partial switch n in e {
+    case ^Expr_Ident:
+        return new_clone(n^)
+    case ^Expr_Field_Access:
+        return new_clone(Expr_Field_Access{expr = clone_pure_lvalue(n.expr), field = n.field, span = n.span})
+    }
+    return e
+}
+
+subscript_dot_rewrite :: proc(base: Expr, sub: Expr) -> Expr {
+    #partial switch n in sub {
+    case ^Expr_Ident:
+        if n.is_dot && (n.name == "len" || n.name == "cap") {
+            return new_clone(Expr_Field_Access{expr = clone_pure_lvalue(base), field = n.name, span = n.span})
+        }
+    case ^Expr_Binary:
+        n.left  = subscript_dot_rewrite(base, n.left)
+        n.right = subscript_dot_rewrite(base, n.right)
+    case ^Expr_Unary:
+        n.operand = subscript_dot_rewrite(base, n.operand)
+    }
+    return sub
+}
+
+rewrite_subscript_dots :: proc(base: Expr, sub: Expr) -> Expr {
+    if sub == nil { return nil }
+    if !subscript_base_is_pure(base) { return sub }
+    return subscript_dot_rewrite(base, sub)
+}
+
 check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
+    e.index = rewrite_subscript_dots(e.expr, e.index)
     target_type := distinct_base(check_expr(c, e.expr, env))
     // Auto-deref: `^[]T` and `^[N]T` index like their pointee. Mirrors the
     // field-access auto-deref so `s[i]` for `s: ^[]T` (the mutable slice
@@ -13219,6 +13273,8 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
 }
 
 check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Env) -> Type {
+    e.low  = rewrite_subscript_dots(e.expr, e.low)
+    e.high = rewrite_subscript_dots(e.expr, e.high)
     target_type := check_expr(c, e.expr, env)
     // Auto-deref: `s[lo:hi]` for `s: ^[]T` or `s: ^[N]T` slices the pointee.
     if pt, ok := target_type.(^Type_Ptr); ok {
