@@ -120,15 +120,47 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
         emit_slice_gep(g, len_gep, pa_ptr, SLICE.len)
         emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
     } else if _, src_pa_ok := distinct_base(expr_type(value)).(^Type_Partial_Array); src_pa_ok {
-        // ident / field access: a pointer to the source PA. A PA-returning call
-        // (sret ABI) also yields a pointer — to the temp the callee built into.
-        src_ptr := gen_expr(g, value)
+        // partial_array_copy needs the source's ADDRESS. An ident PA resolves to
+        // its alloca via gen_expr, and a PA-returning call yields a pointer to
+        // the temp the callee built into — but an array-element source must be
+        // addressed explicitly: gen_expr would LOAD the {len,cap,ptr,[N]} value
+        // rather than point at it (`memcpy` then runs from a value, not a ptr).
+        src_ptr: string
+        if idx, idx_ok := value.(^Expr_Index); idx_ok {
+            src_ptr = gen_index_address(g, idx)
+        } else {
+            src_ptr = gen_expr(g, value)
+        }
         partial_array_copy(g, pa_ptr, src_ptr, elem_t, alloc_cap)
     } else {
         codegen_fatal(g, span,
             CODE_PARTIAL_ARRAY_INITIALIZER_STRING_LITERAL,
             name, type_name(expr_type(value)))
     }
+}
+
+// Store one array-literal element into slot `gep`. Scalars store directly; a
+// partial-array element type (str64, etc.) is built IN PLACE — header stamped,
+// inline zeroed, value copied — because a typed store would dump a pointer or a
+// bare {len,cap,ptr,[N]} where a properly-anchored partial array must live (a
+// string literal would land as its rodata pointer, not its bytes).
+store_array_literal_elem :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span) {
+    pa, is_pa := distinct_base(elem_type).(^Type_Partial_Array)
+    if !is_pa {
+        val := gen_expr(g, elem, elem_ir)
+        emit_store(g, elem_ir, val, gep)
+        return
+    }
+    et := llvm_type_from_checker(pa.elem)
+    eb := elem_byte_size(et, g.checked)
+    gen_partial_array_init_in_place(g, gep, pa)   // ptr -> inline, len 0, cap N
+    // Zero the inline so bytes past a shorter value (the str64 tail) stay
+    // deterministic, matching the partial-array decl path.
+    ir_type := partial_array_ir_type(et, pa.size)
+    elements_ptr := fresh_tmp(g)
+    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", gep, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+    emit_memset_zero(g, elements_ptr, pa.size * eb)
+    gen_partial_array_init_value(g, gep, elem, et, eb, pa.size, pa, span, "array element")
 }
 
 // Alloca a slice header (SLICE_IR_TYPE) and store data_ptr / len / cap into

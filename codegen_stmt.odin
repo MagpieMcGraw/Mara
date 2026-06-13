@@ -1254,6 +1254,21 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
                     continue
                 }
             }
+            // Array literal -> build directly into the sret slot (RVO), element
+            // by element. Partial-array elements (e.g. a [3]str64 of string
+            // literals) are constructed in place; a constant aggregate of their
+            // values would be invalid IR (SSA values in a constant) and the
+            // wrong representation (a rodata pointer where a str64 belongs).
+            if arr_lit, lit_ok := val.(^Expr_Array); lit_ok {
+                elem_ir := llvm_type_from_checker(fa.elem)
+                arr_ty := fmt.tprintf("[%d x %s]", fa.size, elem_ir)
+                for elem, idx in arr_lit.elements {
+                    gep := fresh_tmp(g)
+                    emit_array_gep_const(g, gep, arr_ty, sret_ptr, idx)
+                    store_array_literal_elem(g, gep, elem_ir, fa.elem, elem, s.span)
+                }
+                continue
+            }
         }
         // Struct returns: field-wise copy from src alloca to sret (can't use
         // `store %struct %ptr` — the value operand must be a struct, not a ptr).

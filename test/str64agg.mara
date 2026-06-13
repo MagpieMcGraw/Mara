@@ -1,0 +1,32 @@
+module str64agg
+
+// str64 (a partial array) inside aggregates:
+//   1. a [3]str64 multi-return slot built from string literals — each element
+//      must be constructed in place (header + bytes), not stored as a rodata ptr.
+//   2. a struct field of type str64 initialized from a str64 array element —
+//      must copy from the element's address, not load-then-memcpy-the-value.
+
+use mara.core
+
+Named :: struct {
+    name: str64
+    id:   i64
+}
+
+// Mirrors primitives_init: -> [3]i64, [3]str64, returned as array literals.
+labels :: fun() -> [3]i64, [3]str64 {
+    return [10, 20, 30], ["quad", "cube", "sphere"]
+}
+
+main :: fun() {
+    ids, names := labels()
+    print(ids[0], ids[1], ids[2])         // 10 20 30   (error 1: the i64 slot)
+
+    // Confirm each [3]str64 element by copying it into a struct field and
+    // printing that — exercises both error 1 (the array was built right) and
+    // error 2 (str64 field initialized from a str64 array element).
+    a := Named{names[0], 0}
+    b := Named{names[1], 1}
+    c := Named{names[2], 2}
+    print(a.name, b.name, c.name)         // quad cube sphere
+}

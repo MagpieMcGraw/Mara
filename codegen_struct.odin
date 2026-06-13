@@ -291,6 +291,17 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             gen_array_field_store(g, data_gep, acap, field_array_elem(f), field.value)
             continue
         }
+        // Partial-array field (str64, etc.). Its IR also starts with "{ ", but
+        // the aggregate path below would gen_expr the source (loading an
+        // array-element value rather than addressing it) and plain-memcpy it —
+        // leaving the field's ptr aliasing the source. Route through the
+        // partial-array store, which stamps the header and copies + re-anchors.
+        if _, is_pa := distinct_base(f.type_).(^Type_Partial_Array); is_pa {
+            gep := fresh_tmp(g)
+            emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
+            gen_partial_array_field_store(g, f, gep, field.value, lit.span)
+            continue
+        }
         // Aggregate field (e.g. []byte = { ptr, i64, i64 }): memcpy from source.
         // For slice fields, route through gen_slice_value_ptr so fixed-array /
         // array-literal / array-class sources get coerced to a slice header
