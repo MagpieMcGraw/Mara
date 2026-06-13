@@ -1,0 +1,46 @@
+module seektest
+
+// Exercises os.file_seek: write 0..15 to a file, then seek (SET / CUR / END)
+// and read to confirm the file pointer lands where expected.
+
+use mara.core
+use mara.os
+
+main :: fun() {
+    data : [..16]byte
+    for i in 0..16 {
+        &data + u8(i)
+    }
+    wid, we := file_open_write("seektest.bin")
+    if bool(we) { print("open-write failed"); return }
+    s := data[:]
+    _, wwe := file_write(wid, &s)
+    file_close(wid)
+    if bool(wwe) { print("write failed"); return }
+
+    rid, re := file_open_read("seektest.bin")
+    if bool(re) { print("open-read failed"); return }
+
+    // absolute: jump to byte 8, read 4 -> 8 9 10 11
+    p1, se1 := file_seek(rid, 8, SEEK_SET)
+    if bool(se1) { print("seek SET failed"); return }
+    a : [..4]byte
+    if bool(file_read(rid, &a)) { print("read failed"); return }
+    print("SET 8  -> pos", p1, "bytes", a[0], a[1], a[2], a[3])    // 8 : 8 9 10 11
+
+    // relative: now at 12, back 2 -> 10, read 2 -> 10 11
+    p2, se2 := file_seek(rid, -2, SEEK_CUR)
+    if bool(se2) { print("seek CUR failed"); return }
+    b : [..2]byte
+    if bool(file_read(rid, &b)) { print("read b failed"); return }
+    print("CUR -2 -> pos", p2, "bytes", b[0], b[1])                // 10 : 10 11
+
+    // from end: -4 -> 12, read 1 -> 12
+    p3, se3 := file_seek(rid, -4, SEEK_END)
+    if bool(se3) { print("seek END failed"); return }
+    c : [..1]byte
+    if bool(file_read(rid, &c)) { print("read c failed"); return }
+    print("END -4 -> pos", p3, "bytes", c[0])                      // 12 : 12
+
+    file_close(rid)
+}

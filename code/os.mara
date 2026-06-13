@@ -15,7 +15,14 @@ File_Error :: error {
     Delete_Failed
     Copy_Failed
     Too_Large
+    Seek_Failed
 }
+
+// Whence values for file_seek — identical numeric values on Win32
+// (FILE_BEGIN/CURRENT/END) and POSIX (SEEK_SET/CUR/END), so one set serves both.
+SEEK_SET :: 0   // relative to the start of the file
+SEEK_CUR :: 1   // relative to the current position
+SEEK_END :: 2   // relative to the end of the file
 
 // DANGER BELOW
 // Scan a C-owned NUL-terminated buffer into an honest slice: len is the
@@ -215,6 +222,15 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		return i64(written)
 	}
 
+	// Move the file pointer to `offset` relative to `whence` (SEEK_SET / SEEK_CUR
+	// / SEEK_END) and return the resulting absolute position. Win32
+	// SetFilePointerEx — the seek the cache's per-frame streaming will want.
+	file_seek :: fun(id: File_Id, offset: i64, whence: u32) -> i64, err {
+		new_pos: i64 = 0
+		if not bool(SetFilePointerEx(id, offset, &new_pos, whence)) do return 0, Seek_Failed
+		return new_pos
+	}
+
 	file_delete :: fun(path: []utf8) -> err {
 		if not bool(DeleteFileA(cstring(path))) do return Delete_Failed
 	}
@@ -313,6 +329,10 @@ sys_alloc :: fun(cap: i64) -> []byte {
 
 		fun CloseHandle(h: File_Id) -> i32
 		fun GetFileSizeEx(h: File_Id, size_out: ^i64) -> i32
+		// distance is a LARGE_INTEGER passed by value; new_ptr_out is a
+		// PLARGE_INTEGER that receives the resulting position; method is
+		// FILE_BEGIN/CURRENT/END (== SEEK_SET/CUR/END).
+		fun SetFilePointerEx(h: File_Id, distance: i64, new_ptr_out: ^i64, move_method: u32) -> i32
 		fun DeleteFileA(name: cstring) -> i32
 		fun CopyFileA(src: cstring, dst: cstring, fail_if_exists: i32) -> i32
 
@@ -433,6 +453,14 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		n := write(id, &data[0], usize(data.len))
 		if n < 0 do return 0, false
 		return n, true
+	}
+
+	// Move the file pointer to `offset` relative to `whence` (SEEK_SET / SEEK_CUR
+	// / SEEK_END) and return the resulting absolute position. POSIX lseek.
+	file_seek :: fun(id: File_Id, offset: i64, whence: i32) -> (i64, bool) {
+		pos := lseek(id, offset, whence)
+		if pos < 0 do return 0, false
+		return pos, true
 	}
 
 	file_delete :: fun(path: []utf8) -> bool {
@@ -592,6 +620,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		fun write(fd: File_Id, buf: ^byte, n: usize) -> i64
 		fun unlink(path: cstring) -> i32
 		fun fstat(fd: File_Id, out: ^Stat) -> i32
+		fun lseek(fd: File_Id, offset: i64, whence: i32) -> i64
 
 		// Virtual memory
 		fun mmap(addr: ^byte, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> ^byte
