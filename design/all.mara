@@ -43,3 +43,59 @@ main :: fun() {
 	advanced_basics.smallest_float = -1.5
 	print(advanced_basics.smallest_float)
 }
+
+// ===========================================================================
+// Things I (Claude) had to learn about Mara while writing a binary asset cache
+// and fixing two codegen bugs. All verified by compiling + running, 2026-06-13.
+// ===========================================================================
+
+// --- File I/O (mara.os) ---
+// * There is NO seek. The API is whole-file or sequential only:
+//     read_entire_file(path, ^[]byte)            -- slurp the whole file
+//     file_open_write / file_write(id, ^[]byte) / file_close  -- append in order
+//   So a binary format is: write header + table + payloads in file order; on
+//   read, slurp the whole file into one buffer and slice payloads back out.
+// * Errors are a value, never a print. File_Error :: error {...}; fallible fns
+//   carry a trailing `err`. Propagate with `?`, test with `bool(err)`, or match
+//   the variant. `-> err` is a universal error slot (any error kind flows in).
+
+// --- The binary (de)serialization idiom ---
+// * A []byte buffer is typed memory. `buf[off] = structOrScalar` writes
+//   size_of(value) bytes at off in NATIVE order; `v : T = buf[off]` reads them
+//   back. Runtime offsets are fine. This is what memory.mara's arena uses to
+//   stash typed headers. Round-trips as long as both ends agree on T.
+// * `#big_endian buf[off]` is the byte-SWAPPED variant — only for foreign
+//   formats (e.g. TTF). For a buffer you author yourself, omit it.
+// * Whole-slice `dst = src` deep-copies contents (not a header alias).
+//   `dst[lo:hi] = someSlice/array` copies the RHS's CONTENTS into the span,
+//   but `dst[lo:hi] = scalarOrStruct` is a reinterpret WRITE (the value's own
+//   bytes land in the span). Discriminator: is the RHS array-shaped?
+
+// --- Partial arrays / str64 carry a pointer (don't blit them to disk) ---
+// * [..N]T (and str64 = [..64]utf8) lower to { len:i64, cap:i64, ptr, [N x T] }
+//   — a slice header whose `ptr` points at the inline storage right after it.
+//   Consequences: (1) copying one must RE-ANCHOR ptr to the copy's own inline
+//   block (the compiler's partial_array_copy does this); (2) you CANNOT write
+//   one to disk and read it back — the saved ptr dangles. For POD / on-disk
+//   records use a plain fixed array [N]T (pure inline, no header) + a separate
+//   length field, then rebuild the str64 on read.
+// * Returning a str64 / partial array BY VALUE works: build it with `&out + x`
+//   appends and `return out`.
+
+// --- slice_from_ptr is deliberately restricted ---
+// * It always yields []byte, and OUTSIDE the os module its size argument must
+//   be compile-time-known (a gate against runtime-length OOB at C boundaries).
+//   So you can't cheaply make a zero-copy []Vertex view over a runtime-sized
+//   byte range in normal code. Plain sub-slicing `buf[a:b]` IS zero-copy []byte;
+//   typed views of runtime length need an element copy loop.
+
+// --- Surface syntax that bit me ---
+// * if-chains are ONE brace pair: `if c { ... elif c2 ... else ... }` — the
+//   elif / else are separators INSIDE the braces, not `} else {`.
+// * Boolean operators are words: `and` `or` `not` (not && || !).
+// * `&dst + item` appends an element to a partial array; `&dst + srcSlice`
+//   appends a run. Routes through core's `+` dispatch — needs `use mara.core`.
+// * Generics exist: `fun(p: ^[]$T)`, `union($T: type)`. size_of(T) is a
+//   compile-time constant (usable as an array length or offset stride).
+// * `for i in 0..n` is exclusive (0 .. n-1). `for v, i in slice` binds value
+//   then index.

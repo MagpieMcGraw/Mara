@@ -3924,6 +3924,17 @@ is_byte_buffer :: proc(t: Type) -> bool {
     return is_byte_slice(t) || is_byte_fixed_array(t) || is_byte_partial_array(t)
 }
 
+// True when t is array-shaped: a fixed array, slice, or partial array. On the
+// byte-target assignment path this tells a content copy (`buf[lo:hi] = src` —
+// copy the bytes src points AT) from a reinterpret span write
+// (`buf[lo:hi] = structVal` — blit the value's own bytes).
+is_array_shaped :: proc(t: Type) -> bool {
+    #partial switch _ in distinct_base(t) {
+    case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array: return true
+    }
+    return false
+}
+
 // True when an expression is an index into a byte slice (e.g. mem[0]).
 is_byte_slice_index_read :: proc(e: Expr) -> bool {
     idx, ok := e.(^Expr_Index)
@@ -8958,54 +8969,60 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             pname)
     }
 
-    // Byte slice reinterpret write: mem[off:off+N] = value
+    // Byte slice reinterpret write: mem[off:off+N] = value.
+    // Reinterpret only applies to scalar/struct writes — a fixed-array or slice
+    // RHS is an element copy (the bytes the slice points AT, not its header) and
+    // falls through to the array-copy path (gen_slice_range_assign).
     if is_byte_slice(target_type) {
-        solid_val_type := solidify_type(val_type)
-        s.assign_value_type = solid_val_type
-        // Compile-time size check when bounds are constant
-        if low_num, low_ok := const_eval_int(sl.low); low_ok {
-            if high_num, high_ok := const_eval_int(sl.high); high_ok {
-                span_size := high_num - low_num
-                val_size := checker_type_byte_size(solid_val_type)
-                if span_size != val_size {
-                    check_error(c, s.span,
-                        TYPE_BYTE_SLICE_WRITE_BYTES_SLICE,
-                        type_name(solid_val_type), val_size, span_size)
+        if !is_array_shaped(val_type) {
+            solid_val_type := solidify_type(val_type)
+            s.assign_value_type = solid_val_type
+            // Compile-time size check when bounds are constant
+            if low_num, low_ok := const_eval_int(sl.low); low_ok {
+                if high_num, high_ok := const_eval_int(sl.high); high_ok {
+                    span_size := high_num - low_num
+                    val_size := checker_type_byte_size(solid_val_type)
+                    if span_size != val_size {
+                        check_error(c, s.span,
+                            TYPE_BYTE_SLICE_WRITE_BYTES_SLICE,
+                            type_name(solid_val_type), val_size, span_size)
+                    }
                 }
             }
+            return
         }
-        return
     }
 
     // Byte partial-array reinterpret write: same semantics as []byte. Partial
     // arrays carry a slice header at the front of their inline storage and
     // codegen treats them as Slice_Vars, so the byte-target write helper
-    // resolves the data pointer the same way.
+    // resolves the data pointer the same way. Same fixed-array/slice RHS guard
+    // as above — those are content copies, not reinterprets.
     if is_byte_partial_array(target_type) {
-        solid_val_type := solidify_type(val_type)
-        s.assign_value_type = solid_val_type
-        if low_num, low_ok := const_eval_int(sl.low); low_ok {
-            if high_num, high_ok := const_eval_int(sl.high); high_ok {
-                span_size := high_num - low_num
-                val_size := checker_type_byte_size(solid_val_type)
-                if span_size != val_size {
-                    check_error(c, s.span,
-                        TYPE_BYTE_SLICE_WRITE_BYTES_SLICE,
-                        type_name(solid_val_type), val_size, span_size)
+        if !is_array_shaped(val_type) {
+            solid_val_type := solidify_type(val_type)
+            s.assign_value_type = solid_val_type
+            if low_num, low_ok := const_eval_int(sl.low); low_ok {
+                if high_num, high_ok := const_eval_int(sl.high); high_ok {
+                    span_size := high_num - low_num
+                    val_size := checker_type_byte_size(solid_val_type)
+                    if span_size != val_size {
+                        check_error(c, s.span,
+                            TYPE_BYTE_SLICE_WRITE_BYTES_SLICE,
+                            type_name(solid_val_type), val_size, span_size)
+                    }
                 }
             }
+            return
         }
-        return
     }
 
     // Byte fixed-array reinterpret write: buf[off:off+N] = value
     // (array-class byte buffers reach here post-desugar as [N]byte)
-    // Reinterpret only applies to scalar/struct writes — fixed-array or slice
-    // RHS values fall through to the regular array-copy path below.
+    // Reinterpret only applies to scalar/struct writes — fixed-array, slice, or
+    // partial-array RHS values fall through to the regular array-copy path below.
     if is_byte_fixed_array(target_type) {
-        _, rhs_is_fa := val_type.(^Type_Fixed_Array)
-        _, rhs_is_sl := val_type.(^Type_Slice)
-        if !rhs_is_fa && !rhs_is_sl {
+        if !is_array_shaped(val_type) {
             solid_val_type := solidify_type(val_type)
             s.assign_value_type = solid_val_type
             if low_num, low_ok := const_eval_int(sl.low); low_ok {
@@ -9034,6 +9051,11 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             if types_incompatible(fa.elem, rhs_sl.elem) {
                 check_error(c, s.span, TYPE_CANNOT_SLICE_ASSIGN_INTO_2,
                     type_name(rhs_sl.elem), fa.size, type_name(fa.elem))
+            }
+        } else if rhs_pa, rhs_pa_ok := val_type.(^Type_Partial_Array); rhs_pa_ok {
+            if types_incompatible(fa.elem, rhs_pa.elem) {
+                check_error(c, s.span, TYPE_CANNOT_SLICE_ASSIGN_INTO_2,
+                    type_name(rhs_pa.elem), fa.size, type_name(fa.elem))
             }
         } else if !is_any(val_type) {
             check_error(c, s.span, TYPE_SLICE_ASSIGNMENT_REQUIRES_ARRAY_SLICE, type_name(val_type))

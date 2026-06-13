@@ -1,0 +1,229 @@
+module asset
+
+// Asset cache — minimal, seek-free rewrite of the old cache_v3.odin.
+//
+// Job: pre-decode every asset once (PNG -> raw pixels, GLB -> raw verts/inds),
+// pack them into a flat .bin per asset type, and on the next startup read that
+// .bin instead of re-decoding the source folders.
+//
+// Differences from cache_v3 (deliberate, see the analysis):
+//   * ONE Cache_Entry type with a generic `meta` slot, instead of five
+//     near-identical entry structs + five copies of every operation. Each
+//     asset type is just "call these functions with a different path."
+//   * No seek (mara.os doesn't expose one). Writing is incremental: header +
+//     TOC first, then payload bytes appended in order. Reading slurps the whole
+//     file into one buffer and views payloads as slices into it.
+//   * No append-to-existing / no fixed TOC headroom / no max_count ceiling.
+//     Build writes the whole cache at once (that's the flow: load all, write
+//     all).
+//   * Validation is magic + version only, same level as cache_v3.
+
+use mara.core   // str64, utf8, the `+` append overload
+use mara.os     // file_open_write / file_write / file_close
+use gfx         // Vertex, Mesh_Data
+
+CACHE_MAGIC   :: u32(0x68636143)  // "Cach" little-endian
+CACHE_VERSION :: u32(1)
+
+Cache_Error :: error {
+    Bad_Header   // magic or version mismatch -> caller should rebuild from source
+}
+
+// File layout:  [Cache_Header] [Cache_Entry * count] [payload bytes, concatenated]
+Cache_Header :: struct {
+    magic:   u32
+    version: u32
+    count:   u32
+    _pad:    u32
+}
+
+// One entry per asset. `meta` is the asset-specific slot:
+//   textures: meta[0]=width  meta[1]=height
+//   meshes:   meta[0]=vertex_count  meta[1]=index_count
+// data_offset is absolute from the start of the file, so reading a payload
+// needs nothing but the entry itself.
+Cache_Entry :: struct {
+    name:        [64]utf8
+    name_len:    u32
+    meta:        [4]u32
+    data_offset: u64
+    data_size:   u64
+}
+
+HEADER_SIZE :: size_of(Cache_Header)
+ENTRY_SIZE  :: size_of(Cache_Entry)
+
+// Build-time inputs. The runtime object.Texture/object.Mesh don't carry pixel
+// or vertex bytes (those live on the GPU), so saving needs its own carriers.
+Tex_Blob :: struct {
+    name:   str64
+    w, h:   i32
+    pixels: []byte
+}
+
+Mesh_Blob :: struct {
+    name: str64
+    mesh: Mesh_Data
+}
+
+// Size the header+TOC scratch buffer the savers need.
+cache_toc_bytes :: fun(count: i64) -> i64 {
+    return HEADER_SIZE + count * ENTRY_SIZE
+}
+
+// ---------------------------------------------------------------------------
+// Name <-> entry helpers
+// ---------------------------------------------------------------------------
+
+entry_set_name :: fun(e: ^Cache_Entry, name: str64) {
+    n := i64(name.len)
+    if n > 64 do n = 64
+    for i in 0..n {
+        e.name[i] = name[i]
+    }
+    e.name_len = u32(n)
+}
+
+// Reconstruct the entry's name as a str64.
+entry_name :: fun(e: ^Cache_Entry) -> str64 {
+    out : str64
+    for i in 0..i64(e.name_len) {
+        &out + e.name[i]
+    }
+    return out
+}
+
+// Writes the header into `toc` and returns the absolute offset where payloads
+// begin (also the number of header+TOC bytes to write).
+cache_put_header :: fun(toc: ^[]byte, count: i64) -> i64 {
+    h : Cache_Header = {
+        magic   = CACHE_MAGIC,
+        version = CACHE_VERSION,
+        count   = u32(count),
+        _pad    = 0,
+    }
+    toc[0] = h
+    return HEADER_SIZE + count * ENTRY_SIZE
+}
+
+// ---------------------------------------------------------------------------
+// Write — header+TOC built in `toc` (typed blits), payloads appended after.
+// ---------------------------------------------------------------------------
+
+// `toc` must hold cache_toc_bytes(blobs.len). Texture pixels are written
+// straight from the blobs — no staging copy.
+cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err {
+    count := i64(blobs.len)
+    off := cache_put_header(toc, count)   // absolute payload start
+
+    for i in 0..count {
+        b := blobs[i]
+        e : Cache_Entry
+        entry_set_name(&e, b.name)
+        e.meta[0] = u32(b.w)
+        e.meta[1] = u32(b.h)
+        e.data_offset = u64(off)
+        e.data_size = u64(b.pixels.len)
+        toc[HEADER_SIZE + i * ENTRY_SIZE] = e
+        off += i64(b.pixels.len)
+    }
+
+    id := file_open_write(path)?
+    defer file_close(id)
+
+    head := toc[0 : cache_toc_bytes(count)]
+    _ = file_write(id, &head)?
+    for i in 0..count {
+        px := blobs[i].pixels
+        _ = file_write(id, &px)?
+    }
+}
+
+// `toc` holds header+TOC; `data` stages the concatenated vertex/index bytes
+// (no []T -> []byte view exists outside mara.os, so each value is blitted in).
+// `data` must hold the summed payload bytes.
+cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^[]byte) -> err {
+    count := i64(blobs.len)
+    base := cache_put_header(toc, count)   // absolute payload start
+    dcur : i64 = 0                         // cursor within `data`
+
+    for i in 0..count {
+        b := blobs[i]
+        vcount := i64(b.mesh.vertices.len)
+        icount := i64(b.mesh.indices.len)
+        vbytes := vcount * size_of(Vertex)
+        ibytes := icount * size_of(u32)
+
+        e : Cache_Entry
+        entry_set_name(&e, b.name)
+        e.meta[0] = u32(vcount)
+        e.meta[1] = u32(icount)
+        e.data_offset = u64(base + dcur)
+        e.data_size = u64(vbytes + ibytes)
+        toc[HEADER_SIZE + i * ENTRY_SIZE] = e
+
+        for v in 0..vcount {
+            data[dcur + v * size_of(Vertex)] = b.mesh.vertices[v]
+        }
+        ioff := dcur + vbytes
+        for k in 0..icount {
+            data[ioff + k * size_of(u32)] = b.mesh.indices[k]
+        }
+        dcur += vbytes + ibytes
+    }
+
+    id := file_open_write(path)?
+    defer file_close(id)
+
+    head := toc[0 : cache_toc_bytes(count)]
+    _ = file_write(id, &head)?
+    payload := data[0 : dcur]
+    _ = file_write(id, &payload)?
+}
+
+// ---------------------------------------------------------------------------
+// Read — caller read_entire_file's the .bin into `image`, then:
+//   count := cache_open(image)?
+//   loop: e := cache_entry(image, i); use cache_payload (textures) /
+//         cache_read_mesh (meshes)
+// ---------------------------------------------------------------------------
+
+// Validates the header and returns the entry count. Bad_Header => no usable
+// cache, caller rebuilds from the source folders.
+cache_open :: fun(image: []byte) -> i64, err {
+    if i64(image.len) < HEADER_SIZE do return 0, Bad_Header
+    h : Cache_Header = image[0]
+    if h.magic != CACHE_MAGIC or h.version != CACHE_VERSION do return 0, Bad_Header
+    return i64(h.count)
+}
+
+cache_entry :: fun(image: []byte, i: i64) -> Cache_Entry {
+    e : Cache_Entry = image[HEADER_SIZE + i * ENTRY_SIZE]
+    return e
+}
+
+// Zero-copy view of an entry's payload bytes (used directly for texture pixels).
+cache_payload :: fun(image: []byte, e: Cache_Entry) -> []byte {
+    lo := i64(e.data_offset)
+    return image[lo : lo + i64(e.data_size)]
+}
+
+// Reconstructs a mesh into caller-provided backing (verts/inds outlive `image`
+// this way, and vao_add_mesh wants real []Vertex / []u32). Returns the slices.
+cache_read_mesh :: fun(image: []byte, e: Cache_Entry, verts: ^[]Vertex, inds: ^[]u32) -> Mesh_Data {
+    vcount := i64(e.meta[0])
+    icount := i64(e.meta[1])
+    base := i64(e.data_offset)
+
+    for v in 0..vcount {
+        vert : Vertex = image[base + v * size_of(Vertex)]
+        verts[v] = vert
+    }
+    ioff := base + vcount * size_of(Vertex)
+    for k in 0..icount {
+        ix : u32 = image[ioff + k * size_of(u32)]
+        inds[k] = ix
+    }
+
+    return Mesh_Data{ verts[0:vcount], inds[0:icount] }
+}

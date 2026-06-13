@@ -1,0 +1,19 @@
+module bug1
+
+// Bug 1: returning a locally-built partial array (str64) by value miscompiles —
+// codegen emits `ret {i64,i64,ptr,[64 x i8]} %out` where %out is the alloca
+// pointer, not the loaded aggregate, and clang rejects it.
+
+use mara.core
+
+build :: fun() -> str64 {
+    out : str64
+    &out + 'h'
+    &out + 'i'
+    return out
+}
+
+main :: fun() {
+    s := build()
+    print(s)   // expect: hi
+}

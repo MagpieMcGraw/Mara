@@ -121,6 +121,17 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
         emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
     } else if _, src_pa_ok := distinct_base(expr_type(value)).(^Type_Partial_Array); src_pa_ok {
         src_ptr := gen_expr(g, value)
+        // A partial-array-returning call yields the aggregate BY VALUE, not a
+        // pointer (the return ABI is by-value — see gen_return). Spill it to a
+        // temp so partial_array_copy has storage to memcpy from; the copy then
+        // re-anchors dst.ptr, overwriting the call result's dangling ptr field.
+        if _, is_call := value.(^Expr_Call); is_call {
+            ir := partial_array_ir_type(elem_t, alloc_cap)
+            tmp := fresh_tmp(g)
+            emit_alloca(g, tmp, ir)
+            emit_store(g, ir, src_ptr, tmp)
+            src_ptr = tmp
+        }
         partial_array_copy(g, pa_ptr, src_ptr, elem_t, alloc_cap)
     } else {
         codegen_fatal(g, span,
@@ -483,69 +494,50 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     // bound) so the bounds check and arithmetic below stay homogeneous.
     low := gen_int_at_slice_width(g, sl.low)
 
-    // Resolve the RHS into an Array_Var (or slice).
+    // Resolve the RHS into an Array_Handle — the same unified resolver the
+    // destination uses. Covers bare idents (array / slice / partial array),
+    // field access (obj.field), and array literals, so `buf[lo:hi] = src`
+    // copies src's CONTENTS regardless of how src is spelled. (A scalar/struct
+    // RHS never reaches here — the checker routes those to the reinterpret
+    // byte-write path via assign_value_type.)
     // Must happen before high computation to support open-ended slices [low:].
-    rhs_av: Array_Var
-    rhs_resolved := false
-    rhs_is_slice := false      // true when RHS is a []T slice (flat pointer, not fixed array)
-    rhs_slice_len: string      // runtime length for slice RHS
-    #partial switch rv in s.value {
-    case ^Expr_Ident:
-        if rav, rav_ok := get_array(g, rv.name); rav_ok {
-            rhs_av = rav
-            rhs_resolved = true
-        } else if slv, slv_ok := get_slice(g, rv.name); slv_ok {
-            // RHS is a []T slice — extract data pointer and length
-            data_gep := fresh_tmp(g)
-            emit_slice_gep(g, data_gep, slv.alloca, SLICE.ptr)
-            data_ptr := fresh_tmp(g)
-            emit_load_into(g, data_ptr, "ptr", data_gep)
-            rhs_av = Array_Var{
-                alloca    = data_ptr,
-                capacity  = 0,
-                elem_type = slv.elem_type,
-            }
-            rhs_is_slice = true
-            rhs_resolved = true
-            // Load slice's valid-data length for open-ended high computation
-            len_gep := fresh_tmp(g)
-            emit_slice_gep(g, len_gep, slv.alloca, SLICE.len)
-            rhs_slice_len = fresh_tmp(g)
-            emit_typed_load_len(g, rhs_slice_len, len_gep)
-        }
-        if !rhs_resolved {
-            codegen_fatal(g, s.span, CODE_ARRAY_SLICE, rv.name)
-        }
-    case ^Expr_Array:
-        // Give each literal a unique temp name so multiple slice assigns don't collide
+    rhs_h: Array_Handle
+    rhs_h_ok := false
+    if arr_lit, is_lit := s.value.(^Expr_Array); is_lit {
+        // Materialize the literal into a temp fixed array, then view it.
         g.tmp_counter += 1
         rhs_tmp_name := fmt.tprintf("__slice_rhs%d", g.tmp_counter)
-        rhs_cap := len(rv.elements)
+        rhs_cap := len(arr_lit.elements)
         gen_array_assign(g, rhs_tmp_name, rhs_cap, dst_elem_type, s.value, dst_is_utf8)
-        rhs_av, _ = get_array(g, rhs_tmp_name)
-        rhs_resolved = true
+        if rav, ok := get_array(g, rhs_tmp_name); ok {
+            rhs_h = array_handle_from_array_var(&rav)
+            rhs_h_ok = true
+        }
+    } else {
+        rhs_h, rhs_h_ok = resolve_array_handle(g, s.value)
     }
-    if !rhs_resolved {
+    if !rhs_h_ok {
         codegen_fatal(g, s.span, CODE_SLICE_RHS_NAMED_ARRAY_SLICE)
     }
+
+    // Data pointer to the RHS's first element (loaded once). For fixed arrays
+    // this is the alloca; for slices / partial arrays it is header.ptr.
+    rhs_data := emit_array_data(g, &rhs_h)
 
     // All slice arithmetic in this function operates at the header's
     // natural width — low, high, rhs_slice_len, the loop counter, and
     // the bounds checks are all w-typed. No widening/truncating dance.
     w := slice_layout.len_ir
 
-    // Compute high — explicit or derived from RHS length for open-ended [low:]
+    // Compute high — explicit, or derived from the RHS length for open-ended
+    // [low:] (works for fixed arrays — len == cap — and slices / partial arrays).
     high: string
     if sl.high != nil {
         high = gen_int_at_slice_width(g, sl.high)
-    } else if rhs_is_slice {
-        // Open-ended slice with slice RHS: high = low + slice.len
-        high = fresh_tmp(g)
-        emit(g, "  %s = add %s %s, %s", high, w, low, rhs_slice_len)
     } else {
-        // Open-ended slice with fixed array RHS: high = low + capacity
+        rhs_len := emit_array_len(g, &rhs_h)
         high = fresh_tmp(g)
-        emit(g, "  %s = add %s %s, %d", high, w, low, rhs_av.capacity)
+        emit(g, "  %s = add %s %s, %s", high, w, low, rhs_len)
     }
 
     // Bounds check against capacity (not current len) — we're writing, not reading.
@@ -594,15 +586,11 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
 
     emit_label(g, body_lbl)
 
-    // Load src[i] — use flat GEP for slices, array GEP for fixed arrays.
-    // GEP index is at the slice header's width (i_cur is `w`).
+    // Load src[i] via a flat element GEP from the RHS data pointer. Works for
+    // fixed arrays (data ptr is the alloca's first element) and slices /
+    // partial arrays (data ptr loaded from the header) alike.
     src_gep := fresh_tmp(g)
-    if rhs_is_slice {
-        emit_elem_gep(g, src_gep, rhs_av.elem_type, rhs_av.alloca, i_cur, w)
-    } else {
-        rhs_arr_type := array_var_type(&rhs_av)
-        emit_array_gep_var(g, src_gep, rhs_arr_type, rhs_av.alloca, i_cur, w)
-    }
+    emit_elem_gep(g, src_gep, rhs_h.elem_type, rhs_data, i_cur, w)
     src_val := fresh_tmp(g)
     emit_load_into(g, src_val, dst_elem_type, src_gep)
 

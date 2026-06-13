@@ -1518,6 +1518,22 @@ gen_return :: proc(g: ^Codegen, s: Stmt_Return) {
         gen_return_slice(g, s, sret_slv)
         return
     }
+    // Single partial-array return (e.g. `-> str64`). The function's IR return
+    // type is the `{len, cap, ptr, [N x T]}` aggregate, returned BY VALUE.
+    // gen_return_scalar would emit `ret <agg> %allocaPtr` — returning the
+    // storage pointer, not the value — which clang rejects. Load the aggregate
+    // first; the caller re-anchors the ptr field after copying it (the inline
+    // bytes travel inside the aggregate, so the dangling ptr is harmless).
+    if len(s.values) == 1 {
+        if _, pa_ok := distinct_base(expr_type(s.values[0])).(^Type_Partial_Array); pa_ok {
+            src := gen_expr(g, s.values[0])
+            loaded := fresh_tmp(g)
+            emit(g, "  %s = load %s, ptr %s", loaded, g.current_ret_type, src)
+            emit_return_resets(g)
+            emit(g, "  ret %s %s", g.current_ret_type, loaded)
+            return
+        }
+    }
     if len(s.values) > 0 {
         gen_return_scalar(g, s)
         return

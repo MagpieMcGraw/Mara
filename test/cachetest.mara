@@ -1,0 +1,212 @@
+module cachetest
+
+// Self-contained validation of the cache.mara idioms:
+//   * native struct blit into a []byte buffer through a ^[]byte param
+//   * [64]utf8 name + str64 round-trip (out-param)
+//   * typed element loop (mesh verts/inds) staged + read back
+//   * incremental file_open_write/file_write + read_entire_file
+//   * `?` propagation, bool(err), magic/version validation
+
+use mara.core
+use mara.os
+
+MAGIC   :: u32(0x68636143)  // "Cach"
+VERSION :: u32(1)
+
+CErr :: error {
+    Bad_Header
+}
+
+Header :: struct {
+    magic:   u32
+    version: u32
+    count:   u32
+    _pad:    u32
+}
+
+Entry :: struct {
+    name:        [64]utf8
+    name_len:    u32
+    meta:        [4]u32
+    data_offset: u64
+    data_size:   u64
+}
+
+// Mirrors gfx.Vertex (32 bytes) so the typed-loop path is exercised honestly.
+Vtx :: struct {
+    position: [3]f32
+    normal:   [3]f32
+    uv:       [2]f32
+}
+
+HSZ :: size_of(Header)
+ESZ :: size_of(Entry)
+
+set_name :: fun(e: ^Entry, name: str64) {
+    n := i64(name.len)
+    if n > 64 do n = 64
+    for i in 0..n {
+        e.name[i] = name[i]
+    }
+    e.name_len = u32(n)
+}
+
+get_name :: fun(e: ^Entry, out: ^str64) {
+    out.len = 0
+    for i in 0..i64(e.name_len) {
+        out + e.name[i]
+    }
+}
+
+put_header :: fun(toc: ^[]byte, count: i64) -> i64 {
+    h : Header = {
+        magic   = MAGIC,
+        version = VERSION,
+        count   = u32(count),
+        _pad    = 0,
+    }
+    toc[0] = h
+    return HSZ + count * ESZ
+}
+
+open_cache :: fun(image: []byte) -> i64, err {
+    if i64(image.len) < HSZ do return 0, Bad_Header
+    h : Header = image[0]
+    if h.magic != MAGIC or h.version != VERSION do return 0, Bad_Header
+    return i64(h.count)
+}
+
+read_entry :: fun(image: []byte, i: i64) -> Entry {
+    e : Entry = image[HSZ + i * ESZ]
+    return e
+}
+
+main :: fun() {
+    print("=== cachetest ===")
+
+    // Two entries: a byte payload (texture-style) and a mesh payload.
+    toc : [..512]byte
+    data : [..512]byte
+
+    base := put_header(&toc, 2)
+    dcur : i64 = 0
+
+    // entry 0: a byte payload, staged into `data`
+    px : [..16]u8
+    for i in 0..16 {
+        &px + u8(i * 3)
+    }
+    e0 : Entry
+    set_name(&e0, "kenney/bridge")
+    e0.meta[0] = 4
+    e0.meta[1] = 4
+    e0.data_offset = u64(base + dcur)
+    e0.data_size = u64(px.len)
+    toc[HSZ + 0 * ESZ] = e0
+    for j in 0..i64(px.len) {
+        data[dcur + j] = px[j]
+    }
+    dcur += i64(px.len)
+
+    // entry 1: a mesh payload (typed element blits)
+    verts : [..3]Vtx
+    for i in 0..3 {
+        v : Vtx
+        v.position = [f32(i), f32(i) + 0.5, f32(i) + 0.25]
+        v.normal   = [0.0, 1.0, 0.0]
+        v.uv       = [f32(i) * 0.1, f32(i) * 0.2]
+        &verts + v
+    }
+    inds : [..3]u32
+    &inds + u32(0)
+    &inds + u32(1)
+    &inds + u32(2)
+
+    vcount := i64(verts.len)
+    icount := i64(inds.len)
+    vbytes := vcount * size_of(Vtx)
+    ibytes := icount * size_of(u32)
+
+    e1 : Entry
+    set_name(&e1, "tri")
+    e1.meta[0] = u32(vcount)
+    e1.meta[1] = u32(icount)
+    e1.data_offset = u64(base + dcur)
+    e1.data_size = u64(vbytes + ibytes)
+    toc[HSZ + 1 * ESZ] = e1
+    for v in 0..vcount {
+        data[dcur + v * size_of(Vtx)] = verts[v]
+    }
+    ioff := dcur + vbytes
+    for k in 0..icount {
+        data[ioff + k * size_of(u32)] = inds[k]
+    }
+    dcur += vbytes + ibytes
+
+    print("toc=% data=% header=% entry=%", base, dcur, HSZ, ESZ)
+
+    // --- write: header+TOC, then payload ---
+    werr := write_cache("cachetest.bin", &toc, base, &data, dcur)
+    if bool(werr) {
+        print("WRITE FAILED:", werr)
+        return
+    }
+
+    // --- read it back ---
+    readbuf : [..2048]byte
+    rerr := read_entire_file("cachetest.bin", &readbuf)
+    if bool(rerr) {
+        print("READ FAILED:", rerr)
+        return
+    }
+
+    count, oerr := open_cache(readbuf[:])
+    if bool(oerr) {
+        print("OPEN FAILED:", oerr)
+        return
+    }
+    print("opened, count=%", count)
+
+    // verify entry 0 (texture bytes)
+    r0 := read_entry(readbuf[:], 0)
+    name0 : str64
+    get_name(&r0, &name0)
+    lo := i64(r0.data_offset)
+    payload0 := readbuf[lo : lo + i64(r0.data_size)]
+    print("tex name=% w=% h=% size=% first3=% % %",
+        name0, r0.meta[0], r0.meta[1], r0.data_size,
+        payload0[0], payload0[1], payload0[2])
+    // expected: name kenney/bridge, w 4 h 4, size 16, first3 0 3 6
+
+    // verify entry 1 (mesh, typed read back)
+    r1 := read_entry(readbuf[:], 1)
+    name1 : str64
+    get_name(&r1, &name1)
+    rvcount := i64(r1.meta[0])
+    ricount := i64(r1.meta[1])
+    mbase := i64(r1.data_offset)
+    v_last : Vtx = readbuf[mbase + (rvcount - 1) * size_of(Vtx)]
+    last_ioff := mbase + rvcount * size_of(Vtx)
+    i_last : u32 = readbuf[last_ioff + (ricount - 1) * size_of(u32)]
+    print("mesh name=% vcount=% icount=% last_vpos=% % % last_idx=%",
+        name1, rvcount, ricount,
+        v_last.position[0], v_last.position[1], v_last.position[2], i_last)
+    // expected: name tri, vcount 3, icount 3, last_vpos 2 2.5 2.25, last_idx 2
+
+    // --- magic validation: corrupt header, expect Bad_Header ---
+    bad : [..64]byte
+    bad.len = 16
+    badcount, berr := open_cache(bad[:])
+    print("corrupt -> count=% err=% (expect 0 / Bad_Header)", badcount, berr)
+
+    print("=== done ===")
+}
+
+write_cache :: fun(path: []utf8, toc: ^[]byte, tocsize: i64, data: ^[]byte, datasize: i64) -> err {
+    id := file_open_write(path)?
+    defer file_close(id)
+    head := toc[0 : tocsize]
+    _ = file_write(id, &head)?
+    payload := data[0 : datasize]
+    _ = file_write(id, &payload)?
+}

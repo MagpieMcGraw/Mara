@@ -1,0 +1,58 @@
+module bug2
+
+// Bug 2: `buf[lo:hi] = sliceValue` must copy the slice's CONTENTS into the
+// span, not blit the slice header. Exercises byte partial-array and byte
+// fixed-array destinations with a slice RHS, plus a struct RHS (the reinterpret
+// span write, which must still work).
+
+use mara.core
+
+Pair :: struct {
+    a: u32
+    b: u32
+}
+
+Holder :: struct {
+    data: []byte
+}
+
+main :: fun() {
+    src : [..8]byte
+    for i in 0..8 {
+        &src + u8(i + 1)   // 1,2,3,4,5,6,7,8
+    }
+
+    // partial-array dst, bare partial-array RHS — should copy contents
+    pa : [..64]byte
+    pa.len = 64
+    pa[0:8] = src
+    print("pa  :", pa[0], pa[1], pa[7])     // expect 1 2 8
+    pa[8:16] = src
+    print("pa2 :", pa[8], pa[15])           // expect 1 8
+
+    // fixed-array dst, bare RHS — regression guard
+    fa : [16]byte
+    fa[0:8] = src
+    print("fa  :", fa[0], fa[7])            // expect 1 8
+
+    // field-access slice RHS — the cache's natural `obj.pixels` form
+    back : [8]byte
+    for i in 0..8 {
+        back[i] = u8(i + 10)   // 10..17
+    }
+    hold := Holder{ back[:] }
+    fld : [..32]byte
+    fld.len = 32
+    fld[0:8] = hold.data
+    print("fld :", fld[0], fld[7])          // expect 10 17
+    fld[8:] = hold.data                      // open-ended high, derive len from RHS
+    print("fld2:", fld[8], fld[15])         // expect 10 17
+
+    // struct RHS into a byte span — reinterpret write must still work
+    p := Pair{ a = 0x11223344, b = 0x55667788 }
+    buf : [..16]byte
+    buf.len = 16
+    buf[0:8] = p
+    got : Pair = buf[0:8]
+    print("re  :", got.a, got.b)            // expect same two u32s back
+}
