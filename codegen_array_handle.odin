@@ -78,6 +78,22 @@ resolve_array_handle :: proc(g: ^Codegen, expr: Expr) -> (Array_Handle, bool) {
             is_utf8      = true,
         }, true
     }
+    if idx, ok := expr.(^Expr_Index); ok {
+        // An array element that is itself a slice or partial array (e.g.
+        // `names[i] : str64`) is array-shaped: anchor a handle at the element's
+        // address so its {len,cap,ptr} header is read in place. Scalar elements
+        // fall through (not array-shaped). gen_index_address emits a GEP, so —
+        // like the field-access case above — resolve this expression only once.
+        elem := distinct_base(expr_type(idx))
+        #partial switch t in elem {
+        case ^Type_Slice:
+            _, utf8 := t.elem.(Type_Utf8)
+            return Array_Handle{header_ptr = gen_index_address(g, idx), elem_type = llvm_type_from_checker(t.elem), is_utf8 = utf8}, true
+        case ^Type_Partial_Array:
+            _, utf8 := t.elem.(Type_Utf8)
+            return Array_Handle{header_ptr = gen_index_address(g, idx), elem_type = llvm_type_from_checker(t.elem), is_utf8 = utf8}, true
+        }
+    }
     return {}, false
 }
 

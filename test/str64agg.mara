@@ -22,11 +22,11 @@ main :: fun() {
     ids, names := labels()
     print(ids[0], ids[1], ids[2])         // 10 20 30   (error 1: the i64 slot)
 
-    // Confirm each [3]str64 element by copying it into a struct field and
-    // printing that — exercises both error 1 (the array was built right) and
-    // error 2 (str64 field initialized from a str64 array element).
-    a := Named{names[0], 0}
-    b := Named{names[1], 1}
-    c := Named{names[2], 2}
-    print(a.name, b.name, c.name)         // quad cube sphere
+    // Print str64 array elements directly (error 3: print of a bare str64
+    // array element used to silently drop the value).
+    print(names[0], names[1], names[2])   // quad cube sphere
+
+    // str64 field initialized from a str64 array element (error 2).
+    n := Named{names[1], 42}
+    print(n.name, n.id)                   // cube 42
 }
