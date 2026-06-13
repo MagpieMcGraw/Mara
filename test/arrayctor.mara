@@ -1,0 +1,26 @@
+module arrayctor
+
+use mara.core
+
+Inner  :: struct { x : i32 = 7,  name : str64 }
+Holder :: struct { items : [..3]Inner,  fixed : [2]Inner }
+Nest   :: struct { h : Holder }
+
+main :: fun() {
+    arr : [..3]Inner
+    print("local PA      (7 7):", arr[0].x, arr[2].x)
+
+    farr : [3]Inner
+    print("local fixed   (7 7):", farr[0].x, farr[1].x)
+
+    h := Holder{}
+    print("field PA      (7 7):", h.items[0].x, h.items[2].x)
+    print("field fixed   (7 7):", h.fixed[0].x, h.fixed[1].x)
+
+    n := Nest{}
+    print("deep nest     (7 7):", n.h.items[0].x, n.h.fixed[1].x)
+
+    names : [3]str64
+    &names[0] + "hi"
+    print("str64 elem    (hi):", names[0])
+}

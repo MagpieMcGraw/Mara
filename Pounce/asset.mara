@@ -172,6 +172,8 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
     this_font.layer = u32(a.fonts.len)
     this_font.name = fname
     a.fonts.len += 1
+
+    print(a.fonts[.len - 1].name)
 }
 
 // // Get texture by substring match - returns ok=false if not found

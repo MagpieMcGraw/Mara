@@ -157,6 +157,13 @@ fixup_partial_array_fields :: proc(g: ^Codegen, base_ptr: string, sd: ^Scope_Bod
             addr := fresh_tmp(g)
             emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", addr, st_llvm, base_ptr, i)
             stamp_partial_array_header(g, addr, v)
+            gen_construct_partial_array_elements(g, addr, v)
+        case ^Type_Fixed_Array:
+            if type_needs_construction(g, v.elem) {
+                addr := fresh_tmp(g)
+                emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d", addr, st_llvm, base_ptr, i)
+                gen_construct_elements(g, addr, v.elem, v.size)
+            }
         case ^Type_Scope:
             if v.kind == .Struct {
                 addr := fresh_tmp(g)
@@ -184,6 +191,9 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
             elem_type = elem_t,
             is_utf8   = utf8,
         }
+        // (Element construction for a fixed-array field happens in the body's
+        // field-decl statement via gen_array_assign — doing it here too would
+        // be clobbered by that statement's zero-fill.)
         return
     case ^Type_Slice:
         elem_t := llvm_type_from_checker(v.elem)
@@ -208,6 +218,8 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
         // (ptr → &elements, cap = N). Same fixup for non-constructor struct
         // returns lives in fixup_partial_array_fields.
         stamp_partial_array_header(g, addr, v)
+        // Construct the inline elements (e.g. each Font in a [..N]Font field).
+        gen_construct_partial_array_elements(g, addr, v)
         return
     case ^Type_Union:
         g.all_vars[name] = Union_Var{

@@ -204,7 +204,7 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, ca
 // Array codegen
 // ---------------------------------------------------------------------------
 
-gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, loc: string = "<unknown>") {
+gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, loc: string = "<unknown>", elem_mara: Type = nil) {
     // `= void` (skip marker) on a fixed array — same as no initializer:
     // allocate, register, and stop — under the zero-init policy, `= void`
     // is the opt-out, so the skip marker leaves the bytes untouched.
@@ -246,6 +246,14 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
         if !skip_zero {
             total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
             emit_memset_zero(g, av.alloca, total_bytes)
+            // Construct each element after the zero-fill so a `[N]Struct` /
+            // `[N]str64` decl (local or struct field) comes up with field
+            // defaults applied and nested partial-array headers stamped, not
+            // just zeroed. No-op when the caller passed no Mara element type or
+            // the element is trivially zero-formed.
+            if elem_mara != nil {
+                gen_construct_elements(g, av.alloca, elem_mara, alloc_cap)
+            }
         }
         return
     }
@@ -2132,6 +2140,130 @@ gen_partial_array_init_in_place :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type
     cap_gep := fresh_tmp(g)
     emit_slice_gep(g, cap_gep, slot_ptr, SLICE.cap)
     emit_typed_store_cap(g, fmt.tprintf("%d", cap_n), cap_gep)
+}
+
+// ---- No-arg construction of array element backings ------------------------
+//
+// Array slots are zero-filled, not constructed — so the elements of a
+// `[..N]Font` / `[N]str64` come up with field defaults un-applied and nested
+// partial-array headers null (cap = 0). These helpers run each element type's
+// no-arg constructor at array-declaration / struct-construction time, so any
+// slot you later index or append into is already a valid value. (User decision
+// 2026-06-13: "no-arg constructors should run for arrays — might as well do it
+// when the array is declared.")
+
+// True when a value of `t` needs more than the zero-fill to be fully formed: a
+// struct with an auto-init function (field defaults or partial-array fields), a
+// partial array (needs a stamped header), or a fixed array whose element does.
+// Plain scalars and trivial all-zero structs return false — no per-element work.
+type_needs_construction :: proc(g: ^Codegen, t: Type) -> bool {
+    bt := distinct_base(t)
+    #partial switch v in bt {
+    case ^Type_Scope:
+        if v.kind == .Struct {
+            _, has_init := g.checked.functions[v.name]
+            return has_init
+        }
+    case ^Type_Partial_Array:
+        return true
+    case ^Type_Fixed_Array:
+        return type_needs_construction(g, v.elem)
+    }
+    return false
+}
+
+// Emit a call to struct `st_name`'s auto-init on the slot at `addr`, supplying
+// param defaults for a paramized constructor (mirrors the bare-decl path in
+// gen_struct_assign) or just the sret pointer for a pure-data struct. No-op if
+// the struct has no init function (trivial — the zero-fill already finished it).
+emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: string) {
+    init_fn, has_init := g.checked.functions[st_name]
+    if !has_init { return }
+    if init_fn.type_ != nil && len(init_fn.type_.params) > 0 {
+        arg_strs: [dynamic]string
+        for &param in init_fn.type_.params {
+            pt := llvm_type_from_checker(param.type_)
+            if param.default_value != nil {
+                val := gen_expr(g, param.default_value, pt)
+                append(&arg_strs, fmt.tprintf("%s %s", pt, val))
+            } else {
+                append(&arg_strs, fmt.tprintf("%s zeroinitializer", pt))
+            }
+        }
+        append(&arg_strs, fmt.tprintf("ptr %s", addr))
+        emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st_name), "(", strings.join(arg_strs[:], ", "), ")"}))
+    } else {
+        emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st_name), "(ptr ", addr, ")"}))
+    }
+}
+
+// Construct the value of type `t` at the already-zeroed slot `ptr`: call its
+// auto-init (struct), stamp its header + construct its inline elements (partial
+// array), or construct each element (fixed array). Mutually recursive with
+// gen_construct_elements.
+gen_construct_value_at :: proc(g: ^Codegen, ptr: string, t: Type) {
+    bt := distinct_base(t)
+    #partial switch v in bt {
+    case ^Type_Scope:
+        if v.kind == .Struct {
+            emit_struct_init_call(g, v.name, ptr)
+        }
+    case ^Type_Partial_Array:
+        stamp_partial_array_header(g, ptr, v)
+        gen_construct_partial_array_elements(g, ptr, v)
+    case ^Type_Fixed_Array:
+        gen_construct_elements(g, ptr, v.elem, v.size)
+    }
+}
+
+// Construct each inline element of a (already header-stamped) partial array at
+// `pa_addr`. Skipped entirely when the element type is trivially zero-formed.
+gen_construct_partial_array_elements :: proc(g: ^Codegen, pa_addr: string, pa: ^Type_Partial_Array) {
+    if !type_needs_construction(g, pa.elem) { return }
+    elem_ir := llvm_type_from_checker(pa.elem)
+    pa_ir := partial_array_ir_type(elem_ir, pa.size)
+    inline_ptr := fresh_tmp(g)
+    emit_raw(g, strings.concatenate({"  ", inline_ptr, " = getelementptr inbounds ", pa_ir, ", ptr ", pa_addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+    gen_construct_elements(g, inline_ptr, pa.elem, pa.size)
+}
+
+// Run no-arg construction over `count` elements starting at `elements_ptr` (a
+// pointer to element 0), but only when the element type needs it. Emits a
+// runtime counted loop so `[..256]Font` is a handful of instructions, not 256
+// unrolled constructors.
+gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int) {
+    if count <= 0 { return }
+    if !type_needs_construction(g, elem) { return }
+    elem_ir := llvm_type_from_checker(elem)
+    w := slice_layout.len_ir
+    cond_label := fresh_label(g, "ctor.cond")
+    body_label := fresh_label(g, "ctor.body")
+    end_label  := fresh_label(g, "ctor.end")
+
+    idx_ptr := fresh_tmp(g)
+    emit_alloca(g, idx_ptr, w)
+    emit_store(g, w, "0", idx_ptr)
+    emit_br(g, cond_label)
+
+    emit_label(g, cond_label)
+    idx := fresh_tmp(g)
+    emit_load_into(g, idx, w, idx_ptr)
+    cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %d", cmp, w, idx, count)
+    emit_cond_br(g, cmp, body_label, end_label)
+
+    emit_label(g, body_label)
+    idx2 := fresh_tmp(g)
+    emit_load_into(g, idx2, w, idx_ptr)
+    elem_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_ptr, elem_ir, elements_ptr, w, idx2)
+    gen_construct_value_at(g, elem_ptr, elem)
+    next := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, 1", next, w, idx2)
+    emit_store(g, w, next, idx_ptr)
+    emit_br(g, cond_label)
+
+    emit_label(g, end_label)
 }
 
 // Allocate a fresh partial-array's backing storage and register it as a

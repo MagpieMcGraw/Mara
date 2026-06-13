@@ -108,7 +108,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     return
                 }
             }
-            gen_array_assign(g, s.name, fa.size, elem_t, s.value, utf8, loc)
+            gen_array_assign(g, s.name, fa.size, elem_t, s.value, utf8, loc, fa.elem)
             return
         }
 
@@ -467,6 +467,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 alloca    = alloca_name,
                 elem_type = elem_t,
                 is_utf8   = pa_utf8,
+            }
+            // Bare decl: construct each backing element so `[..N]Struct` /
+            // `[..N]str64` comes up with field defaults applied and nested
+            // headers stamped, not just zeroed. An initial value (handled
+            // below) fills the backing itself; `= void` makes s.value non-nil
+            // (Skip_Constructor), so this nil check also honours the opt-out.
+            if s.value == nil {
+                gen_construct_elements(g, elements_ptr, pa.elem, alloc_cap)
             }
             // Optional initial value: string literal into a byte/utf8 partial
             // array, or another partial array of the same shape. Shared with the
