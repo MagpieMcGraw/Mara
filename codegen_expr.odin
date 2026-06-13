@@ -147,6 +147,12 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 if slv, slv_ok := get_slice(g, ident.name); slv_ok {
                     return slv.alloca
                 }
+                // For fixed-array vars, the alloca (`[N x T]*`) IS the array's
+                // address — the same pointer the value path hands out. Lets
+                // `&arr` feed a `^T` / foreign pointer param (e.g. gl.* calls).
+                if av, av_ok := get_array(g, ident.name); av_ok {
+                    return av.alloca
+                }
                 if alloca_name, v_ok := get_scalar(g, ident.name); v_ok {
                     return alloca_name
                 }
