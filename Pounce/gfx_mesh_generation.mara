@@ -1,5 +1,6 @@
 module gfx
 
+use mara.core
 use mara.math
 
 // Sphere with given subdivisions, radius 0.5 centered at origin
@@ -136,7 +137,7 @@ primitive_quad :: fun() -> verts: [4]Vertex, inds: [6]u32 {
     return verts, inds
 }
 
-primitives_init :: fun(vao: ^VAO_State) {
+primitives_init :: fun(vao: ^VAO_State) -> [3]i64, [3]str64 {
     storage: [..1<<24]byte
     quad := Mesh_Data{primitive_quad()}
     cube := Mesh_Data{primitive_cube()}
@@ -144,4 +145,5 @@ primitives_init :: fun(vao: ^VAO_State) {
     _ = vao_add_mesh(vao, &quad)
     _ = vao_add_mesh(vao, &cube)
     _ = vao_add_mesh(vao, &sphere)
+    return [0, 1, 2], ["quad", "cube", "sphere"]
 }

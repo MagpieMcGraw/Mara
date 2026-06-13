@@ -1636,7 +1636,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         // BEFORE the generic byte-buffer field read below — that path
         // treats the slot as opaque and ends up copying the file bytes over
         // the partial-array header (clobbering the carefully-anchored .ptr).
-        if pa, pa_ok := f.type_.(^Type_Partial_Array); pa_ok {
+        if pa, pa_ok := distinct_base(f.type_).(^Type_Partial_Array); pa_ok {
             if sl_expr, sl_ok := s.value.(^Expr_Slice); sl_ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
                 field_ptr := fresh_tmp(g)
                 emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
@@ -1657,6 +1657,16 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
                 field_ptr := fresh_tmp(g)
                 emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
                 gen_partial_array_init_in_place(g, field_ptr, pa)
+                return
+            }
+            // Ordinary value into a partial-array field — a string literal, a
+            // bare slice, or another partial array. (The byte-buffer reinterpret
+            // cases above already returned.) Stamp the header and copy the
+            // contents, so `f.name = "x"` and `f.name = some_slice` both work —
+            // including into a fresh array slot whose header isn't stamped yet.
+            pa_field_ptr := fresh_tmp(g)
+            emit_field_gep_into(g, pa_field_ptr, st_llvm, base_ptr, idx)
+            if gen_partial_array_field_store(g, f, pa_field_ptr, s.value, s.span) {
                 return
             }
         }

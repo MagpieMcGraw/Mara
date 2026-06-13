@@ -71,6 +71,8 @@ Megastruct :: struct {
 	draw_state_highlight: DrawState
 	draw_state_text: DrawState
 
+	assets : Assets
+
 	// Rendering
 	quad:   Quad_Renderer
 	player: Player
@@ -98,14 +100,12 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 
 	// testing the gfx
 	game.vao = VAO_State()
-	gfx.primitives_init(&game.vao)
+	//gfx.primitives_init(&game.vao)
 	game.draw_state_object = draw_state_create(
 		"data/shaders/instanced.glsl",
 		&game.vao, 8192, 32)
 
-	test_font : Font
-	atlas, test_font.metrics := &test_font.glyphs.load_glyphs(
-		0, "data/fonts/Inter_18pt-Regular.ttf")
+	&game.assets.init(&game.vao, "data/fonts/Inter_18pt-Regular.ttf")
 
 	game.running = true
 	game.initialized = true

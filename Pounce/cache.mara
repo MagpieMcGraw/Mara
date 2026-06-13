@@ -1,4 +1,4 @@
-module asset
+module cache
 
 // Asset cache — minimal, seek-free rewrite of the old cache_v3.odin.
 //

@@ -16,11 +16,14 @@ import "core:strconv"
 // edits.
 
 LLVM_Type_Rule :: enum {
-    Match_Float_Suffix,      // suffix = f32/f64; all params and return must match that float
-    Match_Signed_Int_Suffix, // suffix = iN (8/16/32/64); all params and return must match that signed int
-    Match_Any_Int_Suffix,    // suffix = iN; params/return are any integer (signed or unsigned) of width N.
-                             // For sign-agnostic LLVM ops like bswap — LLVM iN carries no signedness,
-                             // so accepting either Mara sign matches the actual semantics of the op.
+    Match_Float_Suffix,        // suffix = f32/f64; all params and return must match that float
+    Match_Signed_Int_Suffix,   // suffix = iN (8/16/32/64); all params and return must match that signed int
+    Match_Unsigned_Int_Suffix, // suffix = iN; all params and return must be the unsigned int of that width.
+                               // umin/umax operate on the value as unsigned — a signed Mara arg would
+                               // surprise the user (-1 read as UINT_MAX), so we require uN explicitly.
+    Match_Any_Int_Suffix,      // suffix = iN; params/return are any integer (signed or unsigned) of width N.
+                               // For sign-agnostic LLVM ops like bswap — LLVM iN carries no signedness,
+                               // so accepting either Mara sign matches the actual semantics of the op.
 }
 
 LLVM_Intrinsic_Spec :: struct {
@@ -39,6 +42,8 @@ llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"maxnum", 2, .Match_Float_Suffix},
     {"smin",   2, .Match_Signed_Int_Suffix},
     {"smax",   2, .Match_Signed_Int_Suffix},
+    {"umin",   2, .Match_Unsigned_Int_Suffix},
+    {"umax",   2, .Match_Unsigned_Int_Suffix},
     {"bswap",  1, .Match_Any_Int_Suffix},
 }
 
@@ -111,6 +116,17 @@ int_type_matches_width :: proc(t: Type, bits: int) -> bool {
     return false
 }
 
+// True when t is an UNSIGNED Mara integer of the given bit width. Used by
+// Match_Unsigned_Int_Suffix for umin/umax, where the op interprets the bits
+// as unsigned and a signed Mara arg would silently mean something else.
+unsigned_int_type_matches_width :: proc(t: Type, bits: int) -> bool {
+    base := distinct_base(t)
+    if n, ok := base.(Type_Numeric); ok {
+        return n.kind == .Unsigned && n.bits == bits
+    }
+    return false
+}
+
 // Validate that a function declared as `{ @llvm.<op>.<suffix> }` matches the
 // LLVM intrinsic's expected shape: known op, correct arity, and all
 // param/return types match the suffix per the op's type rule.
@@ -152,6 +168,30 @@ check_llvm_intrinsic_signature :: proc(c: ^Checker, ft: ^Type_Scope, name: strin
             check_error(c, span, "intrinsic `@%s` requires a signed integer type suffix (i8/i16/i32/i64), got `%s`", name, suffix)
             return false
         }
+    case .Match_Unsigned_Int_Suffix:
+        // Suffix syntax is the same iN format LLVM uses for signed ints — the
+        // intrinsic just interprets those bits as unsigned. Param/return types
+        // must be the matching uN; signed Mara ints are rejected here so a
+        // surprising sign-flip can't slip through.
+        if !suffix_is_signed_int(suffix) {
+            check_error(c, span, "intrinsic `@%s` requires an integer type suffix (iN), got `%s`", name, suffix)
+            return false
+        }
+        bits := int_width_from_suffix(suffix)
+        for p, i in ft.params {
+            if !unsigned_int_type_matches_width(p.type_, bits) {
+                check_error(c, span, "intrinsic `@%s` expects param %d to be a u%d, got `%s`",
+                    name, i, bits, type_name(p.type_))
+                return false
+            }
+        }
+        primary := fn_primary_return(ft)
+        if len(ft.return_types) != 1 || !unsigned_int_type_matches_width(primary, bits) {
+            check_error(c, span, "intrinsic `@%s` expects return type to be u%d, got `%s`",
+                name, bits, type_name(primary))
+            return false
+        }
+        return true
     case .Match_Any_Int_Suffix:
         // Same suffix syntax as the signed case (LLVM iN), but the param/return
         // types are validated by WIDTH only — sign-agnostic ops like bswap

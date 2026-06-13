@@ -7,6 +7,7 @@ use mara.math
 use mara.endian
 use mara.os
 use mara.memory
+use mara.skyline
 
 Glyph :: struct {
 	x, y, w, h: i32
@@ -17,18 +18,29 @@ Line_Metrics :: struct {
 	ascent, descent, line_gap : f32
 }
 
-load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: []utf8)
--> [3 * MB]byte, Line_Metrics
+Atlas :: struct (bytes: []byte, u_per_em: u16) {
+	size := 1024
+	pixels := 32 // used to scale em to pixels
+	pad : f32 = 4
+	px_scale := f32(pixels) / f32(u_per_em)
+	data := bytes
+}
+
+load_glyphs_and_metrics :: fun(
+ 	font: []utf8,
+	glyphs: ^[]Glyph,
+	metrics: ^Line_Metrics,
+ 	first: u32 = 0) -> [3 * MB]byte
 {
-	ttf_file : [..2 * MB]byte = void   // filled by the read — skip the 2MB zero-init
+	ttf_file : [..2 * MB]byte = void
 	read_err := read_entire_file(font, &ttf_file)
 	if bool(read_err) do print(read_err)
 	ttf := TTF(&ttf_file)
 
 	storage : [3 * MB]byte
 	atlas := Atlas(storage[:], ttf.head.units_per_em)
+	sky := Skyline(atlas.size, atlas.size)
 
-	metrics : Line_Metrics
 	metrics.ascent   = f32(ttf.hhea.ascent)   * atlas.px_scale
 	metrics.descent  = f32(ttf.hhea.descent)  * atlas.px_scale
 	metrics.line_gap = f32(ttf.hhea.line_gap) * atlas.px_scale
@@ -38,30 +50,39 @@ load_glyphs :: fun(glyphs: ^[]Glyph, first: u32, font: []utf8)
 		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, codepoint)
 		outline := parse_glyph(&ttf, glyph_index)
 
-		glyphs[i].x = (i % atlas.per_row) * atlas.cell
-		glyphs[i].y = (i / atlas.per_row) * atlas.cell
+		// Pack the glyph's pixel bbox into the atlas before rasterizing —
+		// rasterize_msdf writes pixels at glyph.x/y, so those must already
+		// point at the packer's chosen spot. Bbox math mirrors what
+		// rasterize_msdf derives from the same header; an empty glyph
+		// (no contours) packs at (0,0) with w=h=0 and touches nothing.
+		glyph_w : i32 = 0
+		glyph_h : i32 = 0
+		if outline.contour_end_pts.len > 0 {
+			xmin := f32(outline.header.x_min)
+			xmax := f32(outline.header.x_max)
+			ymin := f32(outline.header.y_min)
+			ymax := f32(outline.header.y_max)
+			glyph_w = i32((xmax - xmin) * atlas.px_scale + 2.0 * atlas.pad) + 1
+			glyph_h = i32((ymax - ymin) * atlas.px_scale + 2.0 * atlas.pad) + 1
+		}
+		px, py, ok := pack_rect(&sky, glyph_w, glyph_h)
+		assert(ok)
+		glyphs[i].x = i32(px)
+		glyphs[i].y = i32(py)
+
 		// hmtx holds full {advance, lsb} records only for the first
 		// num_of_long_hor_metrics glyphs; everything past that shares the
 		// last record's advance (the array degrades to 2-byte lsb entries).
-		metric := min(i64(glyph_index), i64(ttf.hhea.num_of_long_hor_metrics) - 1)
-		adv_units := f32(read_u16be(ttf_file[ttf.hmtx_loc + metric * 4]))
-		glyphs[i].advance = adv_units * atlas.px_scale
+		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
+		advance := f32(ttf.hmtx.long_metrics[m].advance_width)
+		glyphs[i].advance = advance * atlas.px_scale
 
 		rasterize_msdf(&outline, &glyphs[i], &atlas)
 	}
 
-	return storage, metrics
+	return storage
 }
 
-Atlas :: struct (bytes: []byte, u_per_em: u16) {
-	size := 1024
-	cell := 48
-	pixels := 32 // used to scale em to pixels
-	pad : f32 = 4
-	per_row : i32 = size / cell
-	px_scale := f32(pixels) / f32(u_per_em)
-	data := bytes
-}
 
 MSDF_PX_RANGE     :: 4.0   // signed-distance range (px) mapped onto 0..1 / 0..255
 rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
@@ -94,10 +115,6 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 
 	glyph.w = i32((xmax - xmin) * scale + 2.0 * pad) + 1
 	glyph.h = i32((ymax - ymin) * scale + 2.0 * pad) + 1
-	// The fill loop below writes w*h pixels at the cell origin — a glyph
-	// bigger than its cell would bleed into the neighbor's pixels.
-	assert(glyph.w <= atlas.cell)
-	assert(glyph.h <= atlas.cell)
 	glyph.bearing_x = xmin * scale - pad
 	glyph.bearing_y = ymax * scale + pad
 
@@ -669,72 +686,17 @@ TTF :: struct (bytes: ^[]byte) {
 	}
 
 	Hmtx :: struct {
-		// hhea.num_of_long_hor_metrics
-		long_metrics  : []Long_Hor_Metric
-		// num_glyphs - num_of_long_hor_metrics 
-		side_bearings : []F_Word
+		// First hhea.num_of_long_hor_metrics records are full {advance, lsb};
+		// past that, glyphs share this last entry's advance and the file's
+		// trailing 2-byte lsb-only stream (which we don't read) follows. Cap
+		// is the u16 ceiling on num_of_long_hor_metrics — same upper bound
+		// loca.offsets uses, since both are sized by a u16 in the header.
+		long_metrics : [..1 << 16]Long_Hor_Metric
 	}
 
 	Long_Hor_Metric :: struct {
 		advance_width     : U_F_Word
 		left_side_bearing : F_Word
-	}
-
-	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i64 {
-		for table in tables {
-			if starts_with(table.tag[:], target) {
-				return table.offset
-			}
-		}
-		print("Table '%' not found.", target)
-		return 0
-	}
-
-	get_len :: fun(tables: [..32]Table, target: []utf8) -> i64 {
-		for table in tables {
-			if starts_with(table.tag[:], target) {
-				return table.len
-			}
-		}
-		print("Table '%' not found.", target)
-		return 0
-	}
-
-	loca_correct_format :: fun(head: Head, maxp: Maxp,
-		bytes: []byte) -> loca: Loca 
-	{
-		// Widen BEFORE the +1: at u16 a 65535-glyph font would overflow-trap.
-		loca.offsets.len = i64(maxp.num_glyphs) + 1
-		if head.index_to_loc_format == 0 {
-			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
-			off16.len = loca.offsets.len
-			for item, i in off16 {
-				loca.offsets[i] = u32(item) * 2
-			}
-		else
-			loca.offsets = #big_endian bytes[0]
-		}
-		return loca
-	}
-
-	// Choose which cmap subtable to map characters through, returning its
-	// absolute file offset (0 if none). Prefer Microsoft Unicode BMP (3,1) —
-	// the format-4 table nearly every font ships — then any Unicode-platform
-	// (0,*) table, then whatever's first as a fallback.
-	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i64) -> i64 {
-		best : i32 = -1
-		best_score : i32 = -1
-		for e, i in cmap.encodings {
-			score : i32 = 1
-			if e.platform_id == 0 { score = 2 }
-			if e.platform_id == 3 and e.platform_specific_id == 1 { score = 3 }
-			if score > best_score {
-				best_score = score
-				best = i
-			}
-		}
-		if best < 0 { return 0 }
-		return cmap_loc + cmap.encodings[best].offset
 	}
 
 	// ─── parse: read the table directory, then the tables we use, into fields ───
@@ -756,15 +718,72 @@ TTF :: struct (bytes: ^[]byte) {
 	cmap : Cmap = #big_endian bytes[cmap_loc]
 	loca : Loca = loca_correct_format(head, maxp, bytes[loca_loc:])
 	hhea : Hhea = #big_endian bytes[hhea_loc]
+	hmtx : Hmtx = hmtx_read_into_array(hhea, bytes[hmtx_loc:])
 	glyf := Glyf{data = bytes[glyf_table_loc : glyf_table_end]}
-	//print("contours, points", maxp.max_contours, maxp.max_points)
-	//print("glyphs", maxp.num_glyphs)
 
 	// cmap encoding records sit right after the 4-byte header; fill them, then
 	// pick a Unicode subtable to map character codes through.
 	cmap.encodings = #big_endian bytes[cmap_loc + 4]
 	cmap.encodings.len = cmap.num_subtables
 	cmap_sub := pick_cmap_subtable(cmap, cmap_loc)
+
+	// Helper funcions below
+	get_offset :: fun(tables: [..32]Table, target: []utf8) -> i64 {
+		for table in tables {
+			if starts_with(table.tag[:], target) {
+				return table.offset
+			}
+		}
+		print("Table '%' not found.", target)
+		return 0
+	}
+	get_len :: fun(tables: [..32]Table, target: []utf8) -> i64 {
+		for table in tables {
+			if starts_with(table.tag[:], target) {
+				return table.len
+			}
+		}
+		print("Table '%' not found.", target)
+		return 0
+	}
+	loca_correct_format :: fun(head: Head, maxp: Maxp,
+		bytes: []byte) -> loca: Loca 
+	{
+		// Widen BEFORE the +1: at u16 a 65535-glyph font would overflow-trap.
+		loca.offsets.len = i64(maxp.num_glyphs) + 1
+		if head.index_to_loc_format == 0 {
+			off16 : [..1 + (1<<16)]u16 = #big_endian bytes[0]
+			off16.len = loca.offsets.len
+			for item, i in off16 {
+				loca.offsets[i] = u32(item) * 2
+			}
+		else
+			loca.offsets = #big_endian bytes[0]
+		}
+		return loca
+	}
+	hmtx_read_into_array :: fun(hhea: Hhea, bytes: []byte) -> Hmtx {
+		hmtx : Hmtx
+		hmtx.long_metrics = #big_endian bytes[0]
+		hmtx.long_metrics.len = i64(hhea.num_of_long_hor_metrics)
+		return hmtx
+	}
+	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i64) -> i64 {
+		best : i32 = -1
+		best_score : i32 = -1
+		for e, i in cmap.encodings {
+			score : i32 = 1
+			if e.platform_id == 0 { score = 2 }
+			if e.platform_id == 3 and e.platform_specific_id == 1 { score = 3 }
+			if score > best_score {
+				best_score = score
+				best = i
+			}
+		}
+		if best < 0 { return 0 }
+		return cmap_loc + cmap.encodings[best].offset
+	}
+
 } // TTF END
 
 cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {

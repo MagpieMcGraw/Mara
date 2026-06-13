@@ -1,0 +1,13 @@
+module minu16
+
+use mara.math
+
+main :: fun() -> i64 {
+	a : u16 = 7
+	b : u16 = 3
+	print("min", min(a, b))   // expect 3
+	print("min", min(b, a))   // expect 3
+	print("max", max(a, b))   // expect 7
+	print("max", max(b, a))   // expect 7
+	return 0
+}

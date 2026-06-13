@@ -94,6 +94,7 @@ GL_Tex_Format :: union(tag u32) {
     RGBA  = 6408
     RGBA8 = 32856
     RGB8  = 32849
+    R8    = 33321
 }
 
 GL_Shader_Type :: union(tag u32) {

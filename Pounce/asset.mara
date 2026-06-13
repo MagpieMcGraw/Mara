@@ -3,27 +3,20 @@ module asset
 use mara.core
 
 use mara.os
+use mara.skyline
 use mara.font
+gl :: use mara.open_gl
 
+use object
 use gfx
+use cache
 
 DEFAULT_MESH :: Mesh{"=quad", 0}
 DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 0}  // 1x1 white pixel at (0,0)
 ATLAS_TEXTURE :: Texture{"ATLAS", {1, 1, 0, 0}, 0}      // entire atlas layer 0
 
-Texture :: struct {
-	name:  str64
-	uv:    [4]f32,  // scale_x, scale_y, offset_x, offset_y
-	layer: u32,     // texture array layer
-}
-
-Mesh :: struct {
-	name:  str64
-	index: i32,
-}
-
 Font :: struct {
-	w, h : i32,
+	size : i32 = 1024
 	name: str64
 	layer: u32,
 	offset_x, offset_y: i32,  // Position within atlas layer
@@ -46,10 +39,17 @@ Disk :: struct {
 	fonts:		[..MAX_FONTS]str64
 }
 
-// Asset system
+MAX_TEXTURES :: 1024
+MAX_MESHES :: 512
+MAX_FONTS :: 64
+MAX_AUDIO :: 256
+ATLAS_LAYERS :: 16
+FONT_RANGE :: 256
+FONT_SCALE :: 125
+
 Assets :: struct {
-	// Cache TOC (loaded at init, fast)
-	// cache: Cache_V3,
+	// LATER
+	// cache: Cache,
 
 	// GPU texture array for images
 	texture_id:   u32,
@@ -62,7 +62,6 @@ Assets :: struct {
 	textures:	[..MAX_TEXTURES]Texture
 	meshes:		[..MAX_MESHES]Mesh
 	fonts:		[..MAX_FONTS]Font
-
 
 	state: Stream_State,
 
@@ -80,117 +79,100 @@ Assets :: struct {
 	needs_resolve: bool,  // Set true to trigger a resolve pass
 }
 
-MAX_TEXTURES :: 1024
-MAX_MESHES :: 512
-MAX_FONTS :: 64
-MAX_AUDIO :: 256
-ATLAS_LAYERS :: 16
-FONT_RANGE :: 256
-FONT_SCALE :: 125
 
-// Texture streaming state
 Tex_Stream :: struct {
-	packer:        Texture_Packer,
-	cache_index:   i64,
-	current_layer: u32,
-	file_handle:   os.File_Id,
-	file_open:     bool,
+	packer:        Texture_Packer
+	cache_index:   i64
+	current_layer: u32
+	file_handle:   os.File_Id
+	file_open:     bool
 }
 
-// Mesh streaming state
 Mesh_Stream :: struct {
-	cache_index:  i64,
-	file_handle:  os.File_Id,
-	file_open:    bool,
+	cache_index:  i64
+	file_handle:  os.File_Id
+	file_open:    bool
 }
 
-// Font streaming state
 Font_Stream :: struct {
-	font_files:   [dynamic]string,  // paths to TTF/OTF files
-	current:      int,              // current font being loaded
-	initialized:  bool,
+	font_files:   [MAX_FONTS]str64
+	current:      i64
+	initialized:  bool
 }
 
 // // Initialize asset system - FAST, only loads cache TOC
-// assets_init :: proc(a: ^Assets, vao: ^VAO_State, allocator: mem.Allocator) {
-//     a.allocator = allocator
-//     a.vao = vao
+init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
+    a.vao = vao
 
-//     // Generate primitives first (quad, cube, sphere, cylinder, pyramid)
-//     // These get indices 0-4, models start at 5+
-//     prim_names, prim_indices := primitives_init(vao, allocator)
-//     for i in 0..<len(prim_names) {
-//         a.meshes[a.mesh_count] = Mesh{
-//             name  = prim_names[i],
-//             index = prim_indices[i],
-//         }
-//         a.mesh_count += 1
-//     }
+    print("Look at that asset!")
 
-//     // Load cache TOC (fast - just reads headers and indices)
-//     cache_v3_load_toc(&a.cache, allocator)
+    // default meshes
+    prim_indices, prim_names := gfx.primitives_init(vao)
+    for i in 0..prim_names.cap {
+        &a.meshes + Mesh{prim_names[i], prim_indices[i]}
+    }
 
-//     // GPU texture array setup
-//     a.texture_size = 2048
+    // GPU texture array setup
+    a.texture_size = 2048
 
-//     gl.GenTextures(1, &a.texture_id)
-//     gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.texture_id)
-//     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-//     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-//     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-//     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.GenTextures(1, &a.texture_id)
+    gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.texture_id)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
-//     // Allocate texture array on GPU
-//     gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
-//         a.texture_size, a.texture_size, ATLAS_LAYERS,
-//         0, gl.RGBA, gl.UNSIGNED_BYTE, nil)
+    // Allocate texture array on GPU
+    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
+        a.texture_size, a.texture_size, ATLAS_LAYERS,
+        0, gl.RGBA, gl.UNSIGNED_BYTE, void)
 
-//     // White pixel at (0,0) layer 0 for default
-//     white := [4]u8{255, 255, 255, 255}
-//     gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1,
-//         gl.RGBA, gl.UNSIGNED_BYTE, &white)
-//     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
+    // White pixel at (0,0) layer 0 for default
+    white := [4]u8{255, 255, 255, 255}
+    gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1,
+        gl.RGBA, gl.UNSIGNED_BYTE, &white)
+    gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 
-//     // Register default texture so it can be queried by name
-//     a.textures[0] = DEFAULT_TEXTURE
-//     a.texture_count = 1
+    // Register default texture so it can be queried by name
+    &a.textures + DEFAULT_TEXTURE
 
-//     // GPU font texture array setup (single-channel for SDF/bitmap fonts)
-//     // 1024x1024 per font, one layer per font
-//     a.font_texture_size = 1024
+    // GPU font texture array setup, one layer per font
+    a.font_texture_size = 1024
 
-//     gl.GenTextures(1, &a.font_texture_id)
-//     gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.font_texture_id)
-//     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-//     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-//     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
-//     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.GenTextures(1, &a.font_texture_id)
+    gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.font_texture_id)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
+    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
 
-//     // Allocate font texture array on GPU (single channel RED)
-//     gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.R8,
-//         a.font_texture_size, a.font_texture_size, MAX_FONTS,
-//         0, gl.RED, gl.UNSIGNED_BYTE, nil)
-//     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
+    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
+        a.font_texture_size, a.font_texture_size, MAX_FONTS,
+        0, gl.RGBA, gl.UNSIGNED_BYTE, void)
+    gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 
-//     // Load default font (first font found in data/fonts, small size for speed)
-//     //load_default_font(a, allocator)
+    load_font_test(a, fname)
+}
 
-//     // Init texture streaming
-//     tex_stream_init(&a.tex_stream, a.texture_size, allocator)
+load_font_test :: fun(a: ^Assets, fname: []utf8) {
+	this_font := &a.fonts[.len]
 
-//     // Init mesh streaming
-//     mesh_stream_init(&a.mesh_stream)
+	print("font size:", a.fonts[.len].size)
+	pixels := load_glyphs_and_metrics(fname,
+		&this_font.glyphs, &this_font.metrics)
 
-//     // Init font streaming
-//     font_stream_init(&a.font_stream, allocator)
+    gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.font_texture_id)
+    gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0,
+        0, 0, i32(a.fonts.len),
+        this_font.size, this_font.size, 1,
+        gl.RGB, gl.UNSIGNED_BYTE, &pixels)
+    gl.GenerateMipmap(gl.TEXTURE_2D_ARRAY)
+    gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 
-//     // Start streaming if there's anything to stream
-//     if a.cache.textures_valid || a.cache.models_valid || len(a.font_stream.font_files) > 0 {
-//         a.state = .Streaming
-//     } else {
-//         a.state = .Done
-//     }
-// }
+    this_font.layer = u32(a.fonts.len)
+    this_font.name = fname
+    a.fonts.len += 1
+}
 
 // // Get texture by substring match - returns ok=false if not found
 // get_texture :: proc(a: ^Assets, query: string) -> (texture: Texture, ok: bool) {
@@ -396,3 +378,14 @@ Font_Stream :: struct {
 //     }
 //     return false
 // }
+
+// === Texture streaming internals ===
+
+// Texture packer - packs textures into atlas, no GL calls
+// Used by main thread (1 texture per frame) or async (pack until full)
+Texture_Packer :: struct {
+    pack_ctx: [64]byte, 	// placeholder
+    pack_nodes: [64]byte,	// placeholder
+    size: i32,
+    is_full: bool,
+}

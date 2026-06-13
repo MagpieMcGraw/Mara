@@ -1,9 +1,8 @@
 module object
 
+use mara.core
 use mara.math
 use mara.string
-
-use asset
 
 Object :: struct {
 	dir := QUAT_IDENTITY
@@ -49,4 +48,15 @@ Visual :: struct {
 	color: [3]f32
 	font: [..64]utf8   // for glyph resolution
 	resolve: bool      // enable automatic asset resolution
+}
+
+Texture :: struct {
+	name:  str64
+	uv:    [4]f32,  // scale_x, scale_y, offset_x, offset_y
+	layer: u32,     // texture array layer
+}
+
+Mesh :: struct {
+	name:  str64
+	index: i64,
 }

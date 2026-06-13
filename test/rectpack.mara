@@ -1,0 +1,30 @@
+module rectpack
+
+use mara.memory
+use mara.skyline
+
+main :: fun() {
+	this_program = Program(Arena_Debug(1 * MB))
+
+	p := Skyline(256, 256)
+
+	// Pack a handful of rects; expect tight bottom-left placement.
+	x0, y0, ok0 := pack_rect(&p, 64, 32)
+	print("a", x0, y0, ok0)
+
+	x1, y1, ok1 := pack_rect(&p, 48, 48)
+	print("b", x1, y1, ok1)
+
+	x2, y2, ok2 := pack_rect(&p, 128, 16)
+	print("c", x2, y2, ok2)
+
+	x3, y3, ok3 := pack_rect(&p, 200, 200)
+	print("d", x3, y3, ok3)
+
+	// Should fail — atlas is too short for this.
+	x4, y4, ok4 := pack_rect(&p, 32, 250)
+	print("e (expect ok=false)", x4, y4, ok4)
+
+	print("peak", peak_height(&p))
+	print("packed_area", packed_area(&p))
+}

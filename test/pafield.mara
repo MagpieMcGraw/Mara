@@ -1,0 +1,27 @@
+module pafield
+
+use mara.core
+
+Holder :: struct {
+    name: str64
+    id:   i64
+}
+
+main :: fun() {
+    src : [..8]utf8
+    &src + 'w'
+    &src + 'o'
+    &src + 'r'
+    &src + 'l'
+    &src + 'd'
+    h : Holder
+    h.name = "hello"
+    print(h.name)
+    h.name = src[:]
+    print(h.name)
+    arr : [..4]Holder
+    arr[.len].name = src[:]
+    arr[.len].id = 42
+    arr.len += 1
+    print(arr[0].name, arr[0].id)
+}

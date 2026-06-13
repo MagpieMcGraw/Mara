@@ -131,7 +131,7 @@ VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
 
 // Add geometry to the VAO, returns the mesh index
 // Returns 0 on error (not enough space)
-vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i32 {
+vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i64 {
     vertex_count := len(geom.vertices)
     index_count := len(geom.indices)
 

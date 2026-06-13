@@ -121,3 +121,9 @@ TOOLING golden-output file for the print-based tests in test.mara: run once when
 TOOLING fix and regenerate the 1M-line benchmark, then grow it adversarially: one giant dispatch block, one 100K-line function, deep use chains. Name the cliffs before a real project finds them.
 
 TOOLING formatter opinion on tabs vs spaces (gfx_mesh_generation.mara is the spaces outlier) and on class vs struct.
+
+BUG scope-allocator type check (type_checker.odin l. 7036/7283) only matches `^Type_Fixed_Array` decls — slips partial arrays (`buf : [..N]byte = void`), struct-typed decls whose body contains big PAs (`p := Skyline(256, 256)`, ~12KB struct), and multi-return aggregate slots through to the codegen `CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR` fallback. Right shape: one rule keyed on "this allocation routes through arena at codegen," covering FA + PA + struct + return-slot in a single check.
+
+DECIDED skip the scope-allocator error entirely when the module has no `main` — such programs can't run as an exe so the runtime-arena question is moot (DLL/lib paths get their arena via the handed-in `Context`, not `this_program`). Open: emit a soft warning ("no allocator declared; this won't run as an exe") or stay silent? Undecided.
+
+FIX `CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR` codegen error emits no `[file:line]` prefix — surfaced while writing test/rectpack.mara without `this_program = Program(Arena_Debug(...))`. Even once the type-checker check above covers every path, this defensive fallback should still carry the offending decl's span so an unexpected codegen hit doesn't strand the user without a source location.

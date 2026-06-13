@@ -331,41 +331,19 @@ font_stream_init :: proc(s: ^Font_Stream, allocator: mem.Allocator) {
     s.current = 0
     s.initialized = true
 
-    // Scan fonts folder for TTF/OTF files
-    scan_font_folder("data/fonts", &s.font_files, allocator)
-}
-
-scan_font_folder :: proc(dir: string, files: ^[dynamic]string, allocator: mem.Allocator) {
-    handle, err := os.open(dir)
-    if err != 0 do return
-    defer os.close(handle)
-
-    infos, read_err := os.read_dir(handle, -1)
-    if read_err != 0 do return
-    defer os.file_info_slice_delete(infos)
-
-    for info in infos {
-        if info.is_dir do continue
-
-        name := info.name
-        name_len := len(name)
-        if name_len < 4 do continue
-
-        // Check extension
-        ext_start := strings.last_index(name, ".")
-        if ext_start < 0 do continue
-
-        ext := strings.to_lower(name[ext_start:], context.temp_allocator)
-        if ext == ".ttf" || ext == ".otf" {
-            full_path := strings.concatenate({dir, "/", name}, allocator)
-            append(files, full_path)
-        }
-    }
+    // Scan fonts folder for MSDF font JSON files
+    scan_msdf_font_folder("data/fonts", &s.font_files, allocator)
 }
 
 // Load one font per frame, one layer per font
 // Returns true when all fonts are loaded
+// Now uses MSDF fonts instead of TTF/OTF
 font_stream_tick :: proc(a: ^Assets) -> bool {
+    return msdf_font_stream_tick(a)
+}
+
+// Legacy font streaming - kept for reference but not used
+font_stream_tick_legacy :: proc(a: ^Assets) -> bool {
     s := &a.font_stream
 
     if !s.initialized do return true

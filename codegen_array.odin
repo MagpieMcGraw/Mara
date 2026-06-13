@@ -132,6 +132,26 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
             src_ptr = gen_expr(g, value)
         }
         partial_array_copy(g, pa_ptr, src_ptr, elem_t, alloc_cap)
+    } else if _, src_sl_ok := distinct_base(expr_type(value)).(^Type_Slice); src_sl_ok {
+        // Copy a runtime slice's elements into the inline storage, bounded by
+        // cap. The header is already stamped (ptr -> inline, cap = N); fill the
+        // elements and set len = min(src.len, cap). [n..cap) keeps whatever the
+        // slot held (zero for a fresh slot), so a utf8 copy stays NUL-terminated.
+        w := slice_layout.len_ir
+        src_hdr := gen_expr(g, value)
+        dptr := fresh_tmp(g); emit_slice_gep(g, dptr, src_hdr, SLICE.ptr)
+        src_data := fresh_tmp(g); emit_load_into(g, src_data, "ptr", dptr)
+        slen := fresh_tmp(g); emit_slice_gep(g, slen, src_hdr, SLICE.len)
+        src_len := fresh_tmp(g); emit_typed_load_len(g, src_len, slen)
+        cmp := fresh_tmp(g); emit(g, "  %s = icmp slt %s %s, %d", cmp, w, src_len, alloc_cap)
+        n := fresh_tmp(g); emit(g, "  %s = select i1 %s, %s %s, %s %d", n, cmp, w, src_len, w, alloc_cap)
+        ir_type := partial_array_ir_type(elem_t, alloc_cap)
+        dst_elems := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", dst_elems, " = getelementptr inbounds ", ir_type, ", ptr ", pa_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+        nbytes := fresh_tmp(g); emit(g, "  %s = mul %s %s, %d", nbytes, w, n, elem_bytes)
+        emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", dst_elems, src_data, nbytes)
+        plen := fresh_tmp(g); emit_slice_gep(g, plen, pa_ptr, SLICE.len)
+        emit_typed_store_len(g, n, plen)
     } else {
         codegen_fatal(g, span,
             CODE_PARTIAL_ARRAY_INITIALIZER_STRING_LITERAL,

@@ -1,0 +1,198 @@
+module mara.skyline
+
+use mara.core
+
+// ============================================================================
+// Skyline rect packer
+// ============================================================================
+// Packs axis-aligned rectangles into a single fixed-size bin using the
+// skyline algorithm. The bin state is just the upper contour of what's been
+// packed so far — a piecewise-constant function across x, stored as a
+// sequence of (x, y, width) segments. To insert a w*h rect: scan the contour
+// for the lowest valid landing position whose y+h still fits, place the
+// rect there, and update the contour with one new top segment plus any
+// partial remainder on the right edge. Equal-height neighbors are coalesced
+// after every insert, so the contour stays as short as the packing allows.
+//
+// Best-fit-bottom-left: among valid spots, pick the lowest y; tie-break on
+// leftmost x. This matches stb_rect_pack's default and gives near-optimal
+// density for typical font/texture sets when rects are sorted largest-first
+// before insertion. The same code handles streaming (rects arriving in
+// arbitrary order) — the contour update doesn't care how the rect was
+// chosen.
+//
+// What lives here is the bin state alone; packed rects live in the caller's
+// asset records (Texture, Glyph, etc.). A failed pack returns ok=false; the
+// caller decides whether to spill to another atlas layer, grow the bin, or
+// give up.
+
+Skyline_Node :: struct {
+	x     : i64
+	y     : i64
+	width : i64
+}
+
+Skyline :: struct (atlas_w: i64, atlas_h: i64) {
+	nodes  : [..512]Skyline_Node
+	width  := atlas_w
+	height := atlas_h
+
+	// Seed the skyline with one flat floor segment at y=0 spanning the
+	// full width. Every subsequent insert builds the contour on top of it.
+	&nodes + Skyline_Node{0, 0, atlas_w}
+}
+
+// Try to place a rect of size (w, h). On success returns the top-left corner
+// in atlas coords; on failure (no spot fits) returns 0, 0, false.
+pack_rect :: fun(sky: ^Skyline, w: i64, h: i64) -> i64, i64, bool {
+	// Zero-size rects (empty glyphs: spaces, unresolved compounds) occupy
+	// nothing — succeed at the origin without touching the contour. Without
+	// this guard each one would deposit a zero-width junk node.
+	if w == 0 or h == 0 do return 0, 0, true
+
+	best_x   := 0
+	best_y   := 0
+	best_idx := -1
+
+	for idx in 0..sky.nodes.len {
+		candidate_y, fits := skyline_fit_test(sky, idx, w)
+		if not fits do continue
+		if candidate_y + h > sky.height do continue
+
+		cand_x := sky.nodes[idx].x
+		better := best_idx < 0 or candidate_y < best_y
+		better = better or (candidate_y == best_y and cand_x < best_x)
+		if better {
+			best_x = cand_x
+			best_y = candidate_y
+			best_idx = idx
+		}
+	}
+
+	if best_idx < 0 do return 0, 0, false
+
+	skyline_insert(sky, best_idx, best_x, best_y + h, w)
+	return best_x, best_y, true
+}
+
+// Probe a candidate landing spot starting at node `idx`. A w-wide rect placed
+// there hangs off the right edge if nodes[idx].x + w exceeds atlas width;
+// its bottom y is the max y across every node the rect would span.
+skyline_fit_test :: fun(sky: ^Skyline, idx: i64, w: i64) -> i64, bool {
+	x := sky.nodes[idx].x
+	if x + w > sky.width do return 0, false
+
+	y_max      := 0
+	width_left := w
+	i          := idx
+	for width_left > 0 {
+		if i >= sky.nodes.len do return 0, false
+		if sky.nodes[i].y > y_max do y_max = sky.nodes[i].y
+		width_left -= sky.nodes[i].width
+		i += 1
+	}
+	return y_max, true
+}
+
+// Commit a placed rect: replace the spanned nodes with one new top segment
+// at (x, new_y, w), plus a remainder segment on the right when the last
+// spanned node sticks out past the rect's right edge. Middle of the span
+// (any nodes fully covered) is removed; the tail shifts left to close the
+// gap. In the one case where a single node gets split into two, the tail
+// shifts right by one slot to make room. Equal-height neighbors created by
+// the replacement are then coalesced, so the contour never carries seams.
+skyline_insert :: fun(sky: ^Skyline, start_idx: i64, x: i64, new_y: i64, w: i64) {
+	// Walk forward until the rect's width is covered. last_touched is the
+	// rightmost spanned node; remainder is whatever width of that node
+	// sticks out past the rect's right edge. The fit test guaranteed the
+	// rect fits inside the contour, so the walk must end before the last
+	// node — a desynced contour trips the assert instead of reading junk.
+	last_touched  := start_idx
+	width_covered := sky.nodes[start_idx].width
+	for width_covered < w {
+		last_touched += 1
+		assert(last_touched < sky.nodes.len)
+		width_covered += sky.nodes[last_touched].width
+	}
+	remainder := width_covered - w
+	last_y    := sky.nodes[last_touched].y
+
+	// Replacement is either [new_top] or [new_top, remainder_node].
+	replacement_size := 1
+	if remainder > 0 do replacement_size = 2
+	removed_size := last_touched - start_idx + 1
+	delta := replacement_size - removed_size   // -N, 0, or +1
+
+	if delta < 0 {
+		// Multiple middle nodes consumed — close the gap by shifting left.
+		shift := -delta
+		for j in (start_idx + replacement_size)..(sky.nodes.len - shift) {
+			sky.nodes[j] = sky.nodes[j + shift]
+		}
+	elif delta > 0
+		// Single node split into two — make room by shifting right by one.
+		// Walk right-to-left so we don't overwrite slots before reading them.
+		j := sky.nodes.len - 1
+		for j >= start_idx + 1 {
+			sky.nodes[j + 1] = sky.nodes[j]
+			j -= 1
+		}
+	}
+
+	sky.nodes.len += delta
+	sky.nodes[start_idx] = Skyline_Node{x, new_y, w}
+	if remainder > 0 do sky.nodes[start_idx + 1] = Skyline_Node{x + w, last_y, remainder}
+
+	// Coalesce equal-height neighbors. Only the window around the insert can
+	// have gained equal-y adjacency: the new top against its left neighbor,
+	// the new top against the remainder's right side, the remainder against
+	// the tail. On a merge, stay at i — the widened node may merge again.
+	i := start_idx
+	if i > 0 do i -= 1
+	for i + 1 < sky.nodes.len {
+		if i > start_idx + 1 do break
+		if sky.nodes[i].y == sky.nodes[i + 1].y {
+			sky.nodes[i].width += sky.nodes[i + 1].width
+			for j in (i + 1)..(sky.nodes.len - 1) {
+				sky.nodes[j] = sky.nodes[j + 1]
+			}
+			sky.nodes.len -= 1
+		else
+			i += 1
+		}
+	}
+}
+
+// Peak packed y across the whole skyline. Can never exceed atlas height —
+// every insert was height-checked — so this is a packing metric, not a
+// fullness test: it's the height the atlas texture could be trimmed to,
+// and the numerator's ceiling for occupancy dashboards.
+peak_height :: fun(sky: ^Skyline) -> i64 {
+	peak := 0
+	for n in sky.nodes {
+		if n.y > peak do peak = n.y
+	}
+	return peak
+}
+
+// Lowest skyline y — the real fullness predicate: if floor_height + h
+// exceeds atlas height, no rect of height h fits anywhere, and it's time
+// to spill to the next layer.
+floor_height :: fun(sky: ^Skyline) -> i64 {
+	floor := sky.height
+	for n in sky.nodes {
+		if n.y < floor do floor = n.y
+	}
+	return floor
+}
+
+// Area packed (area under the skyline). Divide by atlas_w * atlas_h for an
+// occupancy ratio. Not a tight bound — gaps below the skyline don't count —
+// but it's the right "% used" number for atlas dashboards.
+packed_area :: fun(sky: ^Skyline) -> i64 {
+	total := 0
+	for n in sky.nodes {
+		total += n.width * n.y
+	}
+	return total
+}

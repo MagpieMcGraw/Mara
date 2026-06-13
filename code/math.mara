@@ -37,12 +37,14 @@ sub :: dispatch {
 
 min :: dispatch {
 	min_int
+	min_u16
 	min_f32
 	min_f64
 }
 
 max :: dispatch {
 	max_int
+	max_u16
 	max_f32
 	max_f64
 }
@@ -54,9 +56,11 @@ abs :: dispatch {
 }
 
 min_int :: fun(a: i64, b: i64) -> i64 { @llvm.smin.i64 }
+min_u16 :: fun(a: u16, b: u16) -> u16 { @llvm.umin.i16 }
 min_f32 :: fun(a: f32, b: f32) -> f32 { @llvm.minnum.f32 }
 min_f64 :: fun(a: f64, b: f64) -> f64 { @llvm.minnum.f64 }
 max_int :: fun(a: i64, b: i64) -> i64 { @llvm.smax.i64 }
+max_u16 :: fun(a: u16, b: u16) -> u16 { @llvm.umax.i16 }
 max_f32 :: fun(a: f32, b: f32) -> f32 { @llvm.maxnum.f32 }
 max_f64 :: fun(a: f64, b: f64) -> f64 { @llvm.maxnum.f64 }
 

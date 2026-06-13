@@ -13,7 +13,7 @@ MAX_BATCHES              :: 16
 MAX_INSTANCES_PER_BATCH  :: 512
 
 Mesh_Batch :: struct {
-    mesh_id:        i32
+    mesh_id:        i64
     instances:      [MAX_INSTANCES_PER_BATCH]Instance
     instance_count: u32
 }
@@ -86,7 +86,7 @@ draw_state_bind :: fun(state: ^DrawState) {
 	gl.BindTexture(gl.TEXTURE_2D_ARRAY, state.texture)
 }
 
-get_or_create_batch :: fun(state: ^DrawState, mesh_id: i32) -> ^Mesh_Batch {
+get_or_create_batch :: fun(state: ^DrawState, mesh_id: i64) -> ^Mesh_Batch {
     for i in 0..state.batch_count {
         if state.batches[i].mesh_id == mesh_id {
             return &state.batches[i]
