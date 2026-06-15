@@ -37,9 +37,11 @@ worth a deliberate cleanup, not one-off bugs.
    guard (`check_storage_sizes`) is the primary gate (clean early error); for a
    path the guard doesn't reach (e.g. a comptime `#if` arm, which bypasses
    check_scope) `emit_arena_bump` fatals — the loud backstop — instead of
-   silently stack-allocating. Verified both. (Extending the guard to `#if` arms
-   so they too get the clean early error, rather than the codegen fatal, is a
-   small follow-up — the guard's coverage, not the routing.)
+   silently stack-allocating. The `#if`-arm coverage hole is now closed too:
+   `check_bodies` runs `check_storage_sizes` on a live comptime-`#if` arm's body
+   (it reuses the parent scope, so it misses check_scope's Pass 4), so a big
+   value there gets the clean early error like everywhere else. Dead arms are
+   dropped before any of this, as expected.
 
 ## PA decl codegen shape
 

@@ -8530,8 +8530,16 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
                 // statements were written inline.
                 if live {
                     check_bodies(c, s.body, env)
+                    // The live arm reuses this scope (no child check_scope), so
+                    // its top-level decls miss check_scope's Pass 4 — run the
+                    // storage-size guard here so a big value in a live `#if` arm
+                    // gets the clean "too large" error like everything else,
+                    // not just the codegen-fatal backstop. (Nested if/for inside
+                    // the arm go through check_scope and are already covered.)
+                    check_storage_sizes(c, s.body, env)
                 } else if len(s.else_body) > 0 {
                     check_bodies(c, s.else_body, env)
+                    check_storage_sizes(c, s.else_body, env)
                 }
                 break
             }

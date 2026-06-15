@@ -1,0 +1,15 @@
+module ifarm_neg
+//@ expect-fail: too large for the stack
+// A big value in a LIVE comptime-#if arm gets the same clean storage-routing
+// error as a top-level decl. The live arm reuses the parent scope (no child
+// check_scope), so check_bodies runs the guard on it directly — otherwise this
+// would only trip the codegen-fatal backstop. (`#native` is live here since the
+// suite builds native; dead arms are dropped before the guard runs.)
+main :: fun() {
+	#if #native {
+		buf : [..4096]byte = void
+		buf.len = 1
+		buf[0] = u8(1)
+		print("%", buf[0])
+	}
+}
