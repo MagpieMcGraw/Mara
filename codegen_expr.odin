@@ -1264,14 +1264,6 @@ emit_intrinsic_call :: proc(g: ^Codegen, lookup_name: string, e: ^Expr_Call) -> 
         append(&arg_strs, fmt.tprintf("%s %s", pt, val))
     }
     args_joined := strings.join(arg_strs[:], ", ")
-    // Trailing constant flag for intrinsics that take one beyond their Mara
-    // params — llvm.abs's `i1 is_int_min_poison`, emitted false so abs(INT_MIN)
-    // is the defined INT_MIN, not poison (and never the old overflow trap).
-    if op, _, ok := parse_llvm_intrinsic_name(oi.llvm_name); ok {
-        if spec, sok := find_llvm_intrinsic_spec(op); sok && spec.trailing_min_poison {
-            args_joined = len(arg_strs) > 0 ? strings.concatenate({args_joined, ", i1 false"}) : "i1 false"
-        }
-    }
     tmp := fresh_tmp(g)
     emit(g, "  %s = call %s @%s(%s)", tmp, info.ret_type, oi.llvm_name, args_joined)
     return tmp, true

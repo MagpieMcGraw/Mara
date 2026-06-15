@@ -64,10 +64,17 @@ max_u16 :: fun(a: u16, b: u16) -> u16 { @llvm.umax.i16 }
 max_f32 :: fun(a: f32, b: f32) -> f32 { @llvm.maxnum.f32 }
 max_f64 :: fun(a: f64, b: f64) -> f64 { @llvm.maxnum.f64 }
 
-// abs(i64_min) is the defined i64_min (|i64_min| is unrepresentable) — the
-// intrinsic's is_int_min_poison flag is false, so it returns the input rather
-// than trapping the way the old `-x` did. Matches the fabs siblings below.
-abs_int :: fun(x: i64) -> i64 { @llvm.abs.i64 }
+// abs(i64_min) TRAPS, on purpose. |i64_min| = 2^63 isn't representable as i64,
+// so `-x` overflow-traps like all Mara arithmetic (every build mode) — a loud
+// crash on the one impossible input beats a silent wrong value. Do NOT "fix"
+// this with @llvm.abs.i64: its is_int_min_poison=false silently returns the
+// negative i64_min, which contradicts Mara's trap-on-overflow model and the
+// "hard errors over silent fallbacks" rule. (If a total abs is ever wanted, the
+// answer is an unsigned return, abs(i64) -> u64, not a silent wrap.)
+abs_int :: fun(x: i64) -> i64 {
+	if x < 0 { return -x }
+	return x
+}
 abs_f32 :: fun(x: f32) -> f32 { @llvm.fabs.f32 }
 abs_f64 :: fun(x: f64) -> f64 { @llvm.fabs.f64 }
 

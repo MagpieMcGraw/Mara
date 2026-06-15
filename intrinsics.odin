@@ -30,30 +30,22 @@ LLVM_Intrinsic_Spec :: struct {
     op:    string,
     arity: int,
     rule:  LLVM_Type_Rule,
-    // A few LLVM intrinsics take a trailing constant i1 flag that is NOT a Mara
-    // parameter. `llvm.abs.iN(iN, i1 is_int_min_poison)` is the one we use:
-    // codegen appends `i1 false` so abs(INT_MIN) is the defined INT_MIN (no UB,
-    // no overflow trap) rather than poison. `arity`/`rule` describe only the
-    // value args; this flag tells codegen to emit the trailer. Most entries set
-    // it false explicitly (Odin's positional literals require every field).
-    trailing_min_poison: bool,
 }
 
 llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
-    {"sqrt",   1, .Match_Float_Suffix,        false},
-    {"sin",    1, .Match_Float_Suffix,        false},
-    {"cos",    1, .Match_Float_Suffix,        false},
-    {"acos",   1, .Match_Float_Suffix,        false},
-    {"fabs",   1, .Match_Float_Suffix,        false},
-    {"pow",    2, .Match_Float_Suffix,        false},
-    {"minnum", 2, .Match_Float_Suffix,        false},
-    {"maxnum", 2, .Match_Float_Suffix,        false},
-    {"smin",   2, .Match_Signed_Int_Suffix,   false},
-    {"smax",   2, .Match_Signed_Int_Suffix,   false},
-    {"abs",    1, .Match_Signed_Int_Suffix,   true},   // trailing i1 is_int_min_poison = false
-    {"umin",   2, .Match_Unsigned_Int_Suffix, false},
-    {"umax",   2, .Match_Unsigned_Int_Suffix, false},
-    {"bswap",  1, .Match_Any_Int_Suffix,      false},
+    {"sqrt",   1, .Match_Float_Suffix},
+    {"sin",    1, .Match_Float_Suffix},
+    {"cos",    1, .Match_Float_Suffix},
+    {"acos",   1, .Match_Float_Suffix},
+    {"fabs",   1, .Match_Float_Suffix},
+    {"pow",    2, .Match_Float_Suffix},
+    {"minnum", 2, .Match_Float_Suffix},
+    {"maxnum", 2, .Match_Float_Suffix},
+    {"smin",   2, .Match_Signed_Int_Suffix},
+    {"smax",   2, .Match_Signed_Int_Suffix},
+    {"umin",   2, .Match_Unsigned_Int_Suffix},
+    {"umax",   2, .Match_Unsigned_Int_Suffix},
+    {"bswap",  1, .Match_Any_Int_Suffix},
 }
 
 find_llvm_intrinsic_spec :: proc(op: string) -> (LLVM_Intrinsic_Spec, bool) {
