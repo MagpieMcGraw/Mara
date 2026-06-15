@@ -26,62 +26,69 @@ oom_string :: "
 	Failed allocation: %, % bytes in %
 	"
 
-// Arena_Basic :: class(cap: i64) {
-// 	base: Big_Slice = sys_alloc_big(cap)
-// 	capacity: i64 = cap
-// 	offset: i64 = 0
-// 	current_mark: i64 = -1
+Arena_Basic :: class(cap: i64) {
+	base: []byte = sys_alloc(cap)
+	capacity: i64 = cap
+	current_mark: i64 = -1
 
-// 	mark :: fun(a: ^Self) {
-// 		prev := a.current_mark
-// 		// Align to 16 — the backlink store is an unaligned i64 write otherwise,
-// 		// and subsequent allocs need a 16-aligned base for typed views.
-// 		off := (a.offset + 15) & -16
+	// sys_alloc hands back len == cap; reset len to 0 so base.len IS the bump
+	// cursor (cap stays the reservation). No per-alloc header — pure bump.
+	base.len = 0
 
-// 		a.base[off] = prev
-// 		a.current_mark = off
-// 		a.offset = off
-// 	}
+	mark :: fun(a: ^Self) {
+		prev := a.current_mark
+		// Align to 16 — the backlink store is an unaligned i64 write otherwise,
+		// and subsequent allocs need a 16-aligned base for typed views.
+		off := (a.base.len + 15) & -16
 
-// 	alloc :: fun(
-// 		a: ^Self,
-// 		size: i64,
-// 		name: ^byte = #caller_name,
-// 		span: ^byte = #caller_span) -> []byte
-// 	{
-// 		off := (a.offset + 15) & -16
-// 		end := off + size
+		a.base[off] = prev
+		a.current_mark = off
+		// Advance past the 16-aligned backlink slot so the next alloc can't
+		// clobber it before reset reads it back. (The old offset-field version
+		// set the cursor back to `off` here — a latent corruption bug.)
+		a.base.len = off + 16
+	}
 
-// 		if end > a.capacity {
-// 			dump(a, size, name, span)
-// 			crash()
-// 		}
+	alloc :: fun(
+		a: ^Self,
+		size: i64,
+		name: ^byte = #caller_name,
+		span: ^byte = #caller_span) -> []byte
+	{
+		off := (a.base.len + 15) & -16
+		end := off + size
 
-// 		result := a.base[off : end]
-// 		a.offset = end
-// 		return result
-// 	}
+		if end > a.capacity {
+			dump(a, size, name, span)
+			crash()
+		}
 
-// 	reset :: fun(a: ^Self) {
-// 		cm := a.current_mark
+		result := a.base[off : end]
+		a.base.len = end
+		return result
+	}
 
-// 		prev : i64 = a.base[cm]
+	reset :: fun(a: ^Self) {
+		cm := a.current_mark
+		assert(cm != -1)   // reset without a prior mark would read base[-1]
 
-// 		a.offset = cm
-// 		a.current_mark = prev
-// 	}
+		prev : i64 = a.base[cm]
 
-// 	dump :: fun(
-// 		a: ^Self,
-// 		failed_size: i64,
-// 		failed_name: ^byte,
-// 		failed_span: ^byte)
-// 	{
-// 		print(oom_string,
-// 			a.capacity, a.offset, a.capacity - a.offset,
-// 			failed_name, failed_size, failed_span)
-// 	}
-// }
+		a.base.len = cm
+		a.current_mark = prev
+	}
+
+	dump :: fun(
+		a: ^Self,
+		failed_size: i64,
+		failed_name: ^byte,
+		failed_span: ^byte)
+	{
+		print(oom_string,
+			a.capacity, a.base.len, a.capacity - a.base.len,
+			failed_name, failed_size, failed_span)
+	}
+}
 
 Arena_Debug :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
