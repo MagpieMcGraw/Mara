@@ -496,18 +496,36 @@ PROV_GLOBAL  :: Provenance{depth = 0}                                    // outl
 prov_local :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env.scope_depth} }
 prov_param :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env.scope_depth - 1} }
 
+// Per-name analysis facts, unified from the old parallel env maps (provenance,
+// param/let flags, local_slice_backed, read). A name's Binding lives in the env
+// that declares it; the lookup helpers walk the parent chain. Zero values are
+// the "no opinion" defaults, matching the old not-in-map fallbacks (PROV_GLOBAL,
+// not-a-param, not-read, ...).
+Binding :: struct {
+    provenance:         Provenance, // where this name's pointer/slice data lives
+    is_param:           bool,       // function parameter (read-only contract)
+    is_let:             bool,       // take-bound view (storage aliased at source)
+    local_slice_backed: bool,       // holds a struct whose slice fields point into our frame
+    read:               bool,       // referenced somewhere (must-use-err / unused-local)
+}
+
+get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
+    if b, ok := env.bindings[name]; ok { return b }
+    b := new(Binding)
+    env.bindings[name] = b
+    return b
+}
+
 Type_Env :: struct {
     types:        map[string]Type,
     parent:       ^Type_Env,
     return_types: [dynamic]Type, // expected return types for current function (empty = void)
-    param_names: map[string]bool, // function parameter names (for escape analysis)
-    let_names:   map[string]bool, // take-bound view names (storage aliased at source bytes); kept for legacy field name
-    provenance:  map[string]Provenance, // where pointer/slice data lives
     scope_depth: int,        // stack depth for escape analysis; module = 0, function body = 1+
-    // Locals whose struct value has slice fields pointing into our frame's
-    // sibling/pool buffers (set when bound from a call with escape locals).
-    // Returning such a local would dangle once the frame pops.
-    local_slice_backed: map[string]bool,
+    // Per-name analysis facts (param/let/provenance/local_slice_backed/read) for
+    // names declared in THIS scope — one record each (see Binding). aliases and
+    // invalid_refs/newly_inited stay separate below: they use present-but-empty
+    // ("cleared") or cross-env `name.field` keys a per-name record can't carry.
+    bindings: map[string]^Binding,
     invalid_refs: map[string]bool, // ptr/slice vars without a usable value at this point
                                   // (declared without initializer, OR pointer-typed and
                                   // currently assigned the `void` null literal — both
@@ -515,9 +533,6 @@ Type_Env :: struct {
                                   // Read = error. Deref counts as read via the Expr_Ident
                                   // path that fires is_invalid_ref.
     newly_inited: map[string]bool, // ancestor uninit vars initialized in THIS scope (for definite assignment)
-    reads:        map[string]bool, // names READ in this/inner scopes (set at the Expr_Ident read site, in the
-                                   // declaring env). Drives unused-local detection at scope close — see
-                                   // check_unused_locals. General machinery; only err is actioned today.
     aliases:      map[string]string, // simple intra-procedural points-to: `it = &root` records
                                      // aliases[it] = "root". Empty-string value means the alias
                                      // was explicitly cleared in this scope (shadows parent).
@@ -4382,7 +4397,7 @@ is_global_var :: proc(c: ^Checker, name: string) -> bool {
 is_param :: proc(env: ^Type_Env, name: string) -> bool {
     cur := env
     for cur != nil {
-        if name in cur.param_names { return true }
+        if b, ok := cur.bindings[name]; ok { return b.is_param }
         cur = cur.parent
     }
     return false
@@ -4393,7 +4408,7 @@ is_param :: proc(env: ^Type_Env, name: string) -> bool {
 is_let_name :: proc(env: ^Type_Env, name: string) -> bool {
     cur := env
     for cur != nil {
-        if name in cur.let_names { return true }
+        if b, ok := cur.bindings[name]; ok { return b.is_let }
         cur = cur.parent
     }
     return false
@@ -4458,7 +4473,7 @@ write_root_immutable_param :: proc(e: Expr, env: ^Type_Env) -> (name: string, ok
 get_provenance :: proc(env: ^Type_Env, name: string) -> Provenance {
     cur := env
     for cur != nil {
-        if p, ok := cur.provenance[name]; ok { return p }
+        if b, ok := cur.bindings[name]; ok { return b.provenance }
         cur = cur.parent
     }
     return PROV_GLOBAL
@@ -4470,14 +4485,14 @@ get_provenance :: proc(env: ^Type_Env, name: string) -> Provenance {
 get_local_slice_backed :: proc(env: ^Type_Env, name: string) -> bool {
     cur := env
     for cur != nil {
-        if v, ok := cur.local_slice_backed[name]; ok { return v }
+        if b, ok := cur.bindings[name]; ok { return b.local_slice_backed }
         cur = cur.parent
     }
     return false
 }
 
 set_local_slice_backed :: proc(env: ^Type_Env, name: string) {
-    env.local_slice_backed[name] = true
+    get_or_make_binding(env, name).local_slice_backed = true
 }
 
 // Mark `name` if `value` would leave it holding slice fields pointing at
@@ -4514,7 +4529,7 @@ mark_local_slice_backed_if_needed :: proc(c: ^Checker, env: ^Type_Env, name: str
 
 // Set provenance for a variable in the current env scope.
 set_provenance :: proc(env: ^Type_Env, name: string, p: Provenance) {
-    env.provenance[name] = p
+    get_or_make_binding(env, name).provenance = p
 }
 
 // For a function returning a ref-typed value, find the parameter index
@@ -5696,7 +5711,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
 // the `else` branch is where an opt-in `unused-locals` warning will hook in.
 flag_unused_local :: proc(c: ^Checker, env: ^Type_Env, name: string, span: Span) {
     if name == "_" || name == "" { return }
-    if name in env.reads { return }
+    if b, ok := env.bindings[name]; ok && b.read { return }
     t, ok := env.types[name]
     if !ok { return }
     if is_err_type(t) {
@@ -7125,7 +7140,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 s.var_type = distinct_base(final_type)
                 s.env_type = final_type
                 type_env_set(env, s.name, final_type)
-                env.let_names[s.name] = true
+                get_or_make_binding(env, s.name).is_let = true
                 set_provenance(env, s.name, expr_provenance(c, take_expr.storage, env))
                 continue
             }
@@ -8138,7 +8153,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     for tp, i in s.typed_params {
         if i < len(ft.params) {
             type_env_set(&child, tp.name, ft.params[i].type_)
-            child.param_names[tp.name] = true
+            get_or_make_binding(&child, tp.name).is_param = true
         }
     }
 
@@ -11037,7 +11052,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // Check env (common case: local vars, params, functions)
         t, loc_env, ok := type_env_locate(env, e.name)
         if ok {
-            loc_env.reads[e.name] = true // unused-local tracking (consumes an err binding)
+            get_or_make_binding(loc_env, e.name).read = true // consumes an err binding
             // Field-leak guard: if the name was found in an ancestor env that belongs
             // to a class body, AND the name is a field of that class, the caller is
             // a nested scope (method body) trying to access a field as a bare name.
