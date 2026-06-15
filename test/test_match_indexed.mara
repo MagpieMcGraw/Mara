@@ -46,3 +46,8 @@ test_match_indexed :: fun() {
 	colors[Yellow]  do print(84)
 	}
 }
+
+main :: fun() -> i64 {
+	test_match_indexed()   // prints: 99 12 13  then  81 82 84
+	return 0
+}

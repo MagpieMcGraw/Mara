@@ -512,11 +512,6 @@ test_union_pad :: fun() {
 	}
 }
 
-// NOTE: test_match_indexed (enum-indexed array `[4 Color]bool` + indexed match
-// predicates like `colors[Green]`) omitted — does not currently compile:
-// indexing with a Color enum value is rejected ("array/slice index must be i32",
-// 11 errors). Compiler gap in enum-indexed array access. Found 2026-05-30.
-
 Payload :: struct {
 	count: i64
 }
