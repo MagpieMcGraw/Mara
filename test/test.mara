@@ -1099,7 +1099,7 @@ test_pa_literal :: fun() {
 	storage : [..256]byte
 	storage.len = 64
 	for i in 0..32 {
-		storage[i*2] = 0
+		storage[i*2] = u8(0)
 		storage[i*2 + 1] = u8(i + 1)
 	}
 	c.items = #big_endian storage[0]

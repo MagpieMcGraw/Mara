@@ -62,12 +62,13 @@ worth a deliberate cleanup, not one-off bugs.
    destructure (`gen_multi_return_assign`) bound the slot as a `Scalar_Var` so
    indexing failed. Added PA cases mirroring the slice/fixed-array handling.
 
-7. **`buf[i] = <int literal>` into a `[..N]byte` writes 8 bytes, not 1.**
-   [BUG, pre-existing, NOT yet fixed] Indexed assignment of an untyped integer
-   literal into a byte partial array goes through the sized byte-buffer-write
-   path at the *literal's* default width (i64), so it stores 8 bytes — silently
-   corrupting adjacent memory, or trapping ("byte buffer write out of bounds")
-   when the slot is near the end. `buf[i] = u8(v)` works (narrows to 1 byte).
-   The RHS isn't coerced to the element type before the store. Same class likely
-   affects other narrow-element PAs (i16/u16). Serious (silent corruption);
-   deserves its own fix. Found via the multi-return fixture.
+7. **`buf[i] = <int literal>` into a byte buffer wrote 8 bytes, not 1.**
+   [FIXED — as a type error] A byte buffer's indexed write is a *reinterpret*
+   write of `sizeof(value)` bytes (`buf[off] = some_u32` writes 4), so it's the
+   value's width that decides the byte count. An untyped literal has no concrete
+   width; the old path defaulted it to i64 and silently wrote 8 bytes (corrupting
+   adjacent memory, or trapping near the buffer's end). Rather than *guess* a
+   width, `check_index_assign` now rejects an untyped-number RHS into a byte
+   buffer (`TYPE_BYTE_BUFFER_WRITE_UNTYPED`) and tells the user to cast — `u8(v)`
+   for 1 byte, `u32(v)` for 4. Concrete-typed values carry their own width and
+   are unaffected.

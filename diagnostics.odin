@@ -582,6 +582,7 @@ TYPE_SLICE_PTR_FIRST_ARGUMENT_POINTER :: "slice_from_ptr() first argument must b
 TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC :: "slice_from_ptr() second argument must be numeric, got %s"
 TYPE_SLICE_PTR_SECOND_ARGUMENT_WIDTH :: "slice_from_ptr() second argument must be %s to match slice header width, got %s — add an explicit cast"
 TYPE_INDEX_WIDTH :: "array/slice index must be %s to match slice header width, got %s — add an explicit cast"
+TYPE_BYTE_BUFFER_WRITE_UNTYPED :: "writing an untyped number into a byte buffer has no defined width — `buf[i] = N` won't guess one. Cast to pin the byte count: u8(N) writes 1, u16(N) 2, u32(N) 4, u64(N) 8"
 TYPE_SLICE_PTR_OUTSIDE_OS_MODULE :: "slice_from_ptr() outside the os module requires a comptime-known size "
 TYPE_EXPECTS_ARGUMENT_3 :: "%s() expects 1 argument, got %d"
 TYPE_LEFT_OPERAND_BOOL :: "left operand of '%s' must be bool, got %s"

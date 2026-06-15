@@ -9103,6 +9103,24 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             pname)
     }
 
+    // A byte buffer's indexed write is a reinterpret write of sizeof(value)
+    // bytes (`buf[off] = some_u32` writes 4). An untyped number literal has no
+    // concrete width — rather than assume one (which silently wrote 8 bytes for
+    // `buf[i] = 6`, or trapped at the buffer's end), require an explicit cast to
+    // pin the width. Concrete-typed values carry their own width and are fine.
+    if is_infer(val_type) {
+        byte_target := is_byte_slice(target_type) || is_byte_partial_array(target_type)
+        if !byte_target {
+            if fa, ok := target_type.(^Type_Fixed_Array); ok {
+                if _, is_byte := fa.elem.(Type_Byte); is_byte { byte_target = true }
+            }
+        }
+        if byte_target {
+            check_error(c, s.span, TYPE_BYTE_BUFFER_WRITE_UNTYPED)
+            return
+        }
+    }
+
     // Byte slice reinterpret write: mem[offset] = value
     if is_byte_slice(target_type) {
         solid_val_type := solidify_type(val_type)

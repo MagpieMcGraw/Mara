@@ -7,6 +7,6 @@ main :: fun() {
 	this_program = Program(Arena_Basic(16 * MB))
 	buf : [..4096]byte = void
 	buf.len = 1
-	buf[0] = 7
+	buf[0] = u8(7)        // byte-buffer writes need an explicit width
 	print("%", buf[0])
 }

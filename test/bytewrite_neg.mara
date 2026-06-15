@@ -1,0 +1,11 @@
+module bytewrite_neg
+//@ expect-fail: untyped number into a byte buffer
+// A byte buffer's indexed write is a reinterpret write of sizeof(value) bytes,
+// so a bare literal (no concrete width) is rejected rather than assumed to be
+// i64. Cast to pin the width: u8(v) for 1 byte, u32(v) for 4, etc.
+main :: fun() {
+	buf : [..8]byte
+	buf.len = 8
+	buf[1] = 6
+	print("%", buf[1])
+}
