@@ -48,7 +48,7 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 
 [DEEP] BUG calling a fn-typed parameter fails in codegen — omitted test, dated 2026-05-30. No decision — codegen investigation.
 
-[DECIDE] ADD must-use err: warn when an err value is neither returned, branched on, nor discarded with _ =. Makes the return-the-error discipline mechanical while keeping ignoring legal.
+ADD opt-in unused-locals warning: the read-tracking machinery is built (Type_Env.reads + check_unused_locals/flag_unused_local; must-use-err already rides it). Non-err unused locals are tracked but not reported — flip the else branch in flag_unused_local behind a flag.
 
 [DECIDE] ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
 

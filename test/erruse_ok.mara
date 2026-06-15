@@ -1,0 +1,48 @@
+module erruse_ok
+
+use mara.core
+
+Oops :: error { Bad }
+
+might_fail :: fun(x: i64) -> i64, err {
+	if x < 0 { return 0, Bad }
+	return x
+}
+
+// Checked + propagated: reads e in bool(e) and `return 0, e`.
+checked :: fun() -> i64, err {
+	v, e := might_fail(5)
+	if bool(e) do return 0, e
+	return v
+}
+
+// Discarded with `_`: no err binding to leave unused.
+discarded :: fun() -> i64 {
+	v, _ := might_fail(5)
+	return v
+}
+
+// Propagated with `?`: no binding at all.
+propagated :: fun() -> i64, err {
+	v := might_fail(5)?
+	return v
+}
+
+// Read inside a NESTED block: the read must clear the binding in its declaring
+// (function) env via the chain, not just the block env.
+nested_read :: fun() -> i64 {
+	v, e := might_fail(5)
+	if v >= 0 {
+		if bool(e) do return 0
+	}
+	return v
+}
+
+main :: fun() {
+	a, e := checked()
+	if bool(e) do print("e1")
+	print(a, discarded())
+	b, e2 := propagated()
+	if bool(e2) do print("e2")
+	print(b, nested_read())
+}

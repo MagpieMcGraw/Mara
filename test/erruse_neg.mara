@@ -1,0 +1,16 @@
+module erruse_neg
+
+use mara.core
+
+Oops :: error { Bad }
+
+might_fail :: fun(x: i64) -> i64, err {
+	if x < 0 { return 0, Bad }
+	return x
+}
+
+// MUST FAIL: e is bound but never read (not checked, propagated, or `_`'d).
+main :: fun() {
+	v, e := might_fail(5)
+	print(v)
+}

@@ -515,6 +515,9 @@ Type_Env :: struct {
                                   // Read = error. Deref counts as read via the Expr_Ident
                                   // path that fires is_invalid_ref.
     newly_inited: map[string]bool, // ancestor uninit vars initialized in THIS scope (for definite assignment)
+    reads:        map[string]bool, // names READ in this/inner scopes (set at the Expr_Ident read site, in the
+                                   // declaring env). Drives unused-local detection at scope close — see
+                                   // check_unused_locals. General machinery; only err is actioned today.
     aliases:      map[string]string, // simple intra-procedural points-to: `it = &root` records
                                      // aliases[it] = "root". Empty-string value means the alias
                                      // was explicitly cleared in this scope (shadows parent).
@@ -5685,6 +5688,38 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     return Type_Any{}
 }
 
+// Flag one local binding if it was never read. Part of the general unused-local
+// pass: every local's read state is tracked in env.reads (set at the Expr_Ident
+// read site). Today only an `err` binding is actioned — never reading it is an
+// error (the must-use-err rule: check it, propagate with `?`, or discard with
+// `_`). Non-err unused locals are tracked identically but not yet reported —
+// the `else` branch is where an opt-in `unused-locals` warning will hook in.
+flag_unused_local :: proc(c: ^Checker, env: ^Type_Env, name: string, span: Span) {
+    if name == "_" || name == "" { return }
+    if name in env.reads { return }
+    t, ok := env.types[name]
+    if !ok { return }
+    if is_err_type(t) {
+        check_error(c, span, TYPE_UNUSED_ERR, name)
+    }
+    // else: unused non-err local — reserved for a future `unused-locals` warning.
+}
+
+// Scope-close pass: report unused err bindings declared in THIS scope. Walks only
+// this scope's own decls — nested blocks run their own check_scope, and a read
+// anywhere clears the name in its declaring env via the chain (type_env_locate).
+// Params and named return bindings aren't Stmt_Decls here, so they're exempt.
+check_unused_locals :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
+    for stmt in stmts {
+        #partial switch s in stmt {
+        case ^Stmt_Decl:
+            for n in s.names { flag_unused_local(c, env, n, s.span) }
+        case ^Stmt_Assign:
+            if s.is_decl { flag_unused_local(c, env, s.name, s.span) }
+        }
+    }
+}
+
 check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
     // Pass 1a: pre-register every `name :: ...` definition in this scope —
     // nested funs, unions, distincts — and resolve fun signatures so any
@@ -5717,6 +5752,9 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
 
     // Pass 2: check everything, descending into child scopes
     check_bodies(c, stmts, env)
+
+    // Pass 3: report unused err bindings (reads were recorded during Pass 2).
+    check_unused_locals(c, stmts, env)
 }
 
 // ---------------------------------------------------------------------------
@@ -10999,6 +11037,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // Check env (common case: local vars, params, functions)
         t, loc_env, ok := type_env_locate(env, e.name)
         if ok {
+            loc_env.reads[e.name] = true // unused-local tracking (consumes an err binding)
             // Field-leak guard: if the name was found in an ancestor env that belongs
             // to a class body, AND the name is a field of that class, the caller is
             // a nested scope (method body) trying to access a field as a bare name.

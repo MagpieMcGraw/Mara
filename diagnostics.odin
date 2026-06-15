@@ -468,6 +468,7 @@ TYPE_CANNOT_RETURN_STRUCT_WHOSE_SLICE :: "cannot return struct whose slice field
 TYPE_CONDITION_BOOL_2 :: "if condition must be bool, got %s"
 TYPE_INVALID_ASSIGNMENT_TARGET :: "invalid assignment target"
 TYPE_DISCARDED_RETURN :: "return value of '%s' is discarded — capture it (`x := ...`) or discard it explicitly (`_ = ...`)"
+TYPE_UNUSED_ERR :: "error value '%s' is unused — check it, propagate with `?`, or discard with `_`"
 TYPE_DISPATCH_GROUP_FUNCTION :: "dispatch group '%s': '%s' is not a function"
 TYPE_DISPATCH_GROUP_FUNCTION_DEFINED :: "dispatch group '%s': function '%s' not defined"
 TYPE_OVERLOAD_DISPATCH_GROUP :: "overload: '%s' is not a dispatch group"
