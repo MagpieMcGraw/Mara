@@ -2802,17 +2802,6 @@ struct_byte_size_fun :: proc(st: ^Type_Scope, checked: ^Checked_Program = nil) -
 
 struct_byte_size :: proc { struct_byte_size_fun, struct_byte_size_sd }
 
-// Get byte size of an IR integer type string ("i8" -> 1, "i16" -> 2, "i32" -> 4, "i64" -> 8)
-ir_type_byte_size :: proc(ir: string) -> int {
-    switch ir {
-    case "i8":  return 1
-    case "i16": return 2
-    case "i32": return 4
-    case "i64": return 8
-    case:       return 8
-    }
-}
-
 // Check if a statement list contains any "big value" declarations.
 // A big value is a fixed-size array whose total byte size >= 1024.
 // Skips the NRVO variable since it's aliased to the caller's sret buffer (no allocation).
@@ -3067,7 +3056,7 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     }
 
     tag_ir := union_tag_ir_type(ut)
-    tag_bytes := ir_type_byte_size(tag_ir)
+    tag_bytes := elem_byte_size(tag_ir)
     pad_bytes := union_tag_pad_bytes(ut)
     tag_area_bytes := tag_bytes + pad_bytes
 

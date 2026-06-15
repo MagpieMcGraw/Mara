@@ -570,7 +570,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         if !ut_ok { return "0" }
         union_ptr, ptr_ok := union_subject_ptr(g, e.expr, ut)
         if !ptr_ok { return "0" }
-        tag_bytes := ir_type_byte_size(union_tag_ir_type(ut))
+        tag_bytes := elem_byte_size(union_tag_ir_type(ut))
         pad_ir := llvm_type_from_checker(ut.tag_pad)
         pad_ptr := fresh_tmp(g)
         emit(g, "  %s = getelementptr i8, ptr %s, i32 %d", pad_ptr, union_ptr, tag_bytes)

@@ -6,12 +6,36 @@ worth a deliberate cleanup, not one-off bugs.
 
 ## Storage routing (stack vs arena)
 
-1. **Two parallel size systems.** The type checker has `checker_type_byte_size`
-   (operates on `Type`); codegen has `struct_byte_size` / `elem_byte_size` /
-   `ir_type_byte_size` (operate on IR type *strings*). They can drift, and the
-   IR-string sizers re-parse `[N x T]` / `{...}` text. Codegen usually has the
-   `Type` in hand (`assign.var_type`) and could just call the checker's sizer —
-   which is now the single "Op 1" for routing.
+1. **Two parallel size systems.** [DEDUP'D; full merge is NOT safe — see below]
+   The type checker has `checker_type_byte_size` (operates on `Type`); codegen
+   has `struct_byte_size` / `elem_byte_size` (operate on IR type *strings*,
+   re-parsing `[N x T]` / `{...}`). Removed the third — `ir_type_byte_size` was a
+   strict subset of `elem_byte_size` (both `iN -> N/8`), folded its two union-tag
+   callers into `elem_byte_size`.
+
+   The naive idea ("codegen has the `Type` in hand, just call the checker's
+   sizer") turns out to be **wrong** — the two genuinely can't be merged:
+   - **Different phase / info.** The codegen struct size includes
+     `sd.backing_bytes` (the hidden trailing buffer for sized-slice fields),
+     computed at *codegen* time via `compute_struct_backing(g, …)` →
+     `sized_slice_info(g, …)`. At *check* time it's 0. So the checker's sizer
+     can't see it, and codegen can't delegate to the checker's (it'd lose the
+     backing → wrong layout).
+   - **Different exactness.** `checker_type_alignment` returns 8 for any enum;
+     LLVM (and `elem_alignment`) align an enum field to its tag width (i32 → 4).
+     The codegen sizer must match LLVM exactly (memcpy / sret / GEP); the
+     checker's is a coarse-but-conservative approximation that's fine for the
+     routing threshold and ABI size. Make codegen delegate to it and
+     enum-fielded structs lay out wrong.
+
+   Consequences of the residual drift (both bounded): (a) a struct that's big
+   *only* via sized-slice backing slips the routing guard (checker sees 0
+   backing) and hits the codegen-fatal backstop instead of the clean error —
+   same shape as the old `#if`-arm gap; (b) the checker over-sizes enum-fielded
+   structs, which is safe for routing but is also what ABI sizing reads — a
+   separate latent question. A real merge needs the backing computation moved
+   check-side (decouple `sized_slice_info` from `g`) and enum alignment
+   reconciled — a layout/ABI-affecting refactor, deliberately not forced here.
 
 2. **Threshold drift between stages.** [FIXED] The type-check guard routes on
    `routes_to_arena` = whole-struct bytes ≥ 1024 (header + backing). The
