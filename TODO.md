@@ -54,8 +54,6 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 
 [DECIDE] FIX Arena_Debug.offset duplicates base.len now that len is the cursor. One field can go. (In the current code `offset` IS the cursor and `base.len` is the capacity from sys_alloc — they don't actually duplicate; needs your intended arena representation first.)
 
-[DECIDE] FIX mat4_inverse returns identity on singular input silently — the one quiet fallback in a codebase that prints diagnostics elsewhere. (Crash/assert vs return an err vs keep — your call.)
-
 [DEEP] FIX abs_int overflows on i64 min; @llvm.abs.i64 exists and matches the f32/f64 siblings. No decision — but @llvm.abs.i64 takes an i1 is_int_min_poison arg the current @llvm.x mapping doesn't supply, so it needs intrinsic plumbing.
 
 [DECIDE] FIX instance_capacity in DrawState is stored but never checked before BufferSubData. (Render-redesign area.)

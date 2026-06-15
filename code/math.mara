@@ -334,7 +334,7 @@ mat4_inverse :: fun(m: Mat4) -> Mat4 {
 	b11 := m[2][2] * m[3][3] - m[2][3] * m[3][2]
 
 	det := b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06
-	if abs(det) < 0.000001 { return mat4_identity() }
+	assert(abs(det) >= 0.000001)   // singular matrix has no inverse
 
 	inv_det := 1.0 / det
 	r : Mat4
