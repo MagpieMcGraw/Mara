@@ -329,17 +329,6 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         }
     }
 
-    // Sibling-storage escape: hidden ptr params after sret, one per escape
-    // local. The caller allocates each buffer (stack or arena) and passes
-    // its address; inside the function the local is aliased to that ptr.
-    if ret_struct_name != "" {
-        if einfo, einfo_ok := lookup_fun_info(g, cf.name); einfo_ok {
-            for el in einfo.escape_locals {
-                append(&param_strs, fmt.tprintf("ptr %%%s.storage", el.name))
-            }
-        }
-    }
-
     params_joined := strings.join(param_strs[:], ", ")
     ir_name := mara_fn_name(g, cf.name)
     // `#expose` → dllexport linkage so the symbol is visible in the DLL/SO's
@@ -367,13 +356,11 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     old_scope_stack := g.scope_stack
     old_nrvo_var := g.nrvo_var
     old_emitted_allocas := g.emitted_allocas
-    old_fun_body := g.current_fun_body
     old_ctor_self := g.ctor_has_self_sret
     g.all_vars = {}
     g.tmp_counter = 0
     g.scope_stack = {}
     g.emitted_allocas = {}
-    g.current_fun_body = cf.body[:]
     // Pending producer/consumer temp results are per-expression state that must
     // never cross a function boundary. The discard-point clear in gen_stmt
     // (Stmt_Call) already enforces this, but reset here too so no future
@@ -401,20 +388,6 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
             g.all_vars[g.nrvo_var] = Struct_Var{
                 alloca      = "%sret",
                 struct_name = ret_struct_name,
-            }
-        }
-        // Sibling-storage escape: each escape local is aliased to its hidden
-        // %<name>.storage param. The body's `verts : [4]T` declaration finds
-        // an existing array entry and skips its stack alloca; reads/writes
-        // go straight through the caller-provided buffer.
-        if info, info_ok := lookup_fun_info(g, cf.name); info_ok && len(info.escape_locals) > 0 {
-            for el in info.escape_locals {
-                g.all_vars[el.name] = Array_Var{
-                    alloca    = fmt.tprintf("%%%s.storage", el.name),
-                    capacity  = el.cap,
-                    elem_type = el.elem_type,
-                    is_utf8   = el.is_utf8,
-                }
             }
         }
         // Struct constructor: pre-bind each field to a GEP into %sret. The body's
@@ -713,6 +686,5 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     g.nrvo_var = old_nrvo_var
     g.ret_types = old_ret_types
     g.emitted_allocas = old_emitted_allocas
-    g.current_fun_body = old_fun_body
     g.ctor_has_self_sret = old_ctor_self
 }

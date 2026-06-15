@@ -118,10 +118,6 @@ Slice_Var :: struct {
     alloca:       string, // alloca for the slice header struct
     elem_type:    string, // LLVM element type: "i64", "double", etc.
     is_utf8:      bool,   // true for []utf8 slices — drives string-vs-array print formatting
-    // Sized slice of slice-bearing struct: the appended elements' slice
-    // fields point into this pool buffer instead of fresh per-call allocas.
-    // Empty when the slice has no associated pool.
-    pool_alloca:  string, // alloca for the pool's { ptr, i64, i64 } slice header
 }
 
 // Info about a struct variable in codegen
@@ -254,19 +250,6 @@ chain_array_flags :: proc(chain: ^Address_Chain) -> (is_utf8: bool, ok: bool) {
     return false, false
 }
 
-// One local variable in a struct-returning function whose backing storage
-// escapes via a slice field of the returned struct. The caller supplies
-// the buffer as a hidden trailing argument (after %sret), and the callee
-// aliases the local to that pointer directly — no separate alloca, no
-// GEP. Order in Fun_Info.escape_locals = order in the hidden-arg list.
-Escape_Local :: struct {
-    name:         string,
-    cap:          int,       // logical array capacity
-    elem_type:    string,    // LLVM element type
-    elem_size:    int,       // bytes per element
-    is_utf8:      bool,
-}
-
 // Info about a user-defined function's signature for struct-aware calling
 Fun_Info :: struct {
     ret_type:          string,            // LLVM type: "i64", "double", "i1", "ptr", "void"
@@ -279,12 +262,6 @@ Fun_Info :: struct {
     ret_partial_cap:   int,              // partial-array capacity (sret convention)
     param_types:       [dynamic]string,   // per-param IR types ("i64", "ptr", etc.)
     param_structs:     [dynamic]string,   // "" or struct name per param
-    // Sibling-storage escape analysis: locals referenced through slice fields
-    // of a returned struct. The caller allocates each as a fresh sibling
-    // (stack or scope arena per size threshold) and passes a pointer as a
-    // hidden trailing argument after %sret. The callee aliases the local
-    // to that argument directly.
-    escape_locals:    [dynamic]Escape_Local,
     // True for struct-returning fns whose body has find_nrvo_candidate hit:
     // the callee constructs directly into %sret, so any caller-side
     // sized-slice header re-init after the call would be a redundant
@@ -359,14 +336,6 @@ Codegen :: struct {
     label_counter: int,            // label numbering
     all_vars:    map[string]Var_Entry,    // unified variable registry (scalars, arrays, structs, unions, slices)
     current_ret_type: string,            // LLVM return type of the current function ("i64", "ptr", etc.)
-    // Current function's body — accessible during stmt codegen so pool-sizing
-    // analysis at a sized-slice decl can scan forward through its scope.
-    current_fun_body: []Stmt,
-    // Pool routing context: when a `&pool_slice + call_with_escape()` append
-    // is being emitted, escape-storage allocations route through pool_alloca
-    // (carving from its cursor) instead of fresh allocas. Empty when no
-    // pool routing is active.
-    escape_pool_alloca: string,
     // Type info from the type checker
     checked:     ^Checked_Program,       // resolved type info from type checker
     // String literal table: value -> global name
@@ -1120,204 +1089,13 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
         }
     }
 
-    // Escape analysis: functions returning a struct with slice fields, where
-    // the slices are filled by local fixed-arrays in a struct literal return.
-    // The local backing storage is reserved inside the caller's sret region
-    // so the returned slice pointers stay valid past the function's frame.
     if info.ret_struct != "" {
-        analyze_escape_locals(g, &cf, &info)
         info.uses_struct_nrvo = find_nrvo_candidate(cf.body[:]) != ""
     }
 
     // Cache and return
     g.fun_info_cache[fn_name] = info
     return info, true
-}
-
-// Walk the function body for one return like `return Foo{a, b}` where Foo has
-// slice fields and a/b are local fixed-array idents. Record each escaping
-// local's shape; the caller will allocate one sibling buffer per local and
-// pass it as a hidden trailing arg.
-analyze_escape_locals :: proc(g: ^Codegen, cf: ^Checked_Scope, info: ^Fun_Info) {
-    sd, sd_ok := lookup_struct(g, info.ret_struct)
-    if !sd_ok { return }
-    // Check there's at least one slice field to escape into.
-    has_slice_field := false
-    for &f in sd.fields {
-        if _, ok := f.type_.(^Type_Slice); ok { has_slice_field = true; break }
-    }
-    if !has_slice_field { return }
-
-    // Find the first `return StructLit{...}` statement in the (desugared) body.
-    lit := find_return_struct_literal(cf.body[:])
-    if lit == nil { return }
-
-    // Index local declarations by name so we can look up their fixed-array
-    // shapes when they appear as slice fillers.
-    local_decls := make(map[string]^Stmt_Assign)
-    defer delete(local_decls)
-    collect_local_decls(cf.body[:], &local_decls)
-
-    for field, pos in lit.fields {
-        field_idx: int
-        if lit.positional {
-            if pos >= len(sd.fields) { break }
-            field_idx = pos
-        } else {
-            field_idx = struct_field_index(sd, field.name)
-            if field_idx < 0 { continue }
-        }
-        // Only slice fields are candidates for escape.
-        sd_field := &sd.fields[field_idx]
-        if _, is_slice := sd_field.type_.(^Type_Slice); !is_slice { continue }
-        // Value must be a bare local-array reference.
-        ident, is_ident := field.value.(^Expr_Ident)
-        if !is_ident { continue }
-        decl, has_decl := local_decls[ident.name]
-        if !has_decl { continue }
-        fa, is_fa := decl.var_type.(^Type_Fixed_Array)
-        if !is_fa { continue }
-
-        elem_ir := llvm_type_from_checker(fa.elem)
-        elem_sz := elem_byte_size(elem_ir, g.checked)
-        utf8 := false
-        if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
-
-        append(&info.escape_locals, Escape_Local{
-            name         = ident.name,
-            cap          = fa.size,
-            elem_type    = elem_ir,
-            elem_size    = elem_sz,
-            is_utf8      = utf8,
-        })
-    }
-}
-
-// Find the first `return StructLit{...}` in a (possibly Stmt_Decl-wrapped)
-// statement list. Returns nil if none.
-find_return_struct_literal :: proc(stmts: []Stmt) -> ^Expr_Struct_Literal {
-    for s in stmts {
-        if decl, ok := s.(^Stmt_Decl); ok {
-            if got := find_return_struct_literal(decl.checked[:]); got != nil { return got }
-            continue
-        }
-        ret, is_ret := s.(Stmt_Return)
-        if !is_ret { continue }
-        if len(ret.values) == 0 { continue }
-        if lit, lit_ok := ret.values[0].(^Expr_Struct_Literal); lit_ok { return lit }
-    }
-    return nil
-}
-
-// Walk a statement list (descending into Stmt_Decl.checked) and record every
-// Stmt_Assign that introduces a typed local. Used to look up the type of an
-// ident referenced from a returned struct literal.
-collect_local_decls :: proc(stmts: []Stmt, out: ^map[string]^Stmt_Assign) {
-    for s in stmts {
-        if decl, ok := s.(^Stmt_Decl); ok {
-            collect_local_decls(decl.checked[:], out)
-            continue
-        }
-        if assign, ok := s.(^Stmt_Assign); ok {
-            if assign.name != "" && assign.var_type != nil {
-                out[assign.name] = assign
-            }
-        }
-    }
-}
-
-// True if `t` is a struct type whose fields include any slice. Used to gate
-// pool allocation on sized slice decls — `[]T(N)` only needs a pool when
-// elements carry slice fields whose backing must outlive a transient call.
-struct_has_slice_fields :: proc(t: Type) -> bool {
-    sd := as_struct_body(distinct_base(t))
-    if sd == nil { return false }
-    for &f in sd.fields {
-        if _, ok := f.type_.(^Type_Slice); ok { return true }
-    }
-    return false
-}
-
-// Compute the bytes needed by a callee's escape locals (sum across all locals,
-// element-bytes × cap). Used to size the pool of a sized slice of slice-bearing
-// structs whose appends carve from that pool.
-escape_total_bytes :: proc(info: ^Fun_Info) -> int {
-    total := 0
-    for &el in info.escape_locals {
-        total += el.cap * el.elem_size
-    }
-    return total
-}
-
-// Walk a statement list and sum escape bytes contributed by every
-// `&slice_name + call(...)` append (or `slice_name[i] = call(...)`).
-// Each call resolves to its Fun_Info; we sum escape_total_bytes per match.
-// Loops: counted once (TODO: multiply by bounded loop counts). Unbounded
-// loops over a pool-backed slice are bounded by the slice's cap so the
-// loop count is implicitly capped.
-sum_pool_appends :: proc(g: ^Codegen, stmts: []Stmt, slice_name: string) -> int {
-    total := 0
-    for s in stmts {
-        total += sum_pool_appends_stmt(g, s, slice_name)
-    }
-    return total
-}
-
-sum_pool_appends_stmt :: proc(g: ^Codegen, s: Stmt, slice_name: string) -> int {
-    if call_stmt, ok := s.(Stmt_Call); ok {
-        return sum_pool_appends_expr(g, call_stmt.expr, slice_name)
-    }
-    if assign, ok := s.(^Stmt_Assign); ok {
-        // `slice_name[i] = call_with_escape()` is also a pool-affecting write.
-        if assign.target != nil {
-            if ix, ix_ok := assign.target.(^Expr_Index); ix_ok {
-                if ident, id_ok := ix.expr.(^Expr_Ident); id_ok && ident.name == slice_name {
-                    if call, call_ok := assign.value.(^Expr_Call); call_ok {
-                        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok {
-                            return escape_total_bytes(&info)
-                        }
-                    }
-                }
-            }
-        }
-        return sum_pool_appends_expr(g, assign.value, slice_name)
-    }
-    if decl, ok := s.(^Stmt_Decl); ok {
-        return sum_pool_appends(g, decl.checked[:], slice_name)
-    }
-    if if_stmt, ok := s.(^Stmt_If); ok {
-        return sum_pool_appends(g, if_stmt.body[:], slice_name) +
-               sum_pool_appends(g, if_stmt.else_body[:], slice_name)
-    }
-    if for_stmt, ok := s.(^Stmt_For); ok {
-        // TODO: multiply by static loop bound when known.
-        return sum_pool_appends(g, for_stmt.body[:], slice_name)
-    }
-    if match_stmt, ok := s.(^Stmt_Match); ok {
-        max := 0
-        for &arm in match_stmt.arms {
-            n := sum_pool_appends(g, arm.body[:], slice_name)
-            if n > max { max = n }
-        }
-        return max
-    }
-    return 0
-}
-
-sum_pool_appends_expr :: proc(g: ^Codegen, e: Expr, slice_name: string) -> int {
-    if e == nil { return 0 }
-    bin, is_bin := e.(^Expr_Binary)
-    if !is_bin || bin.op != .Plus { return 0 }
-    // `&slice_name + call_with_escape` — match the address-of pattern.
-    un, is_un := bin.left.(^Expr_Unary)
-    if !is_un || un.op != .Ampersand { return 0 }
-    ident, is_ident := un.operand.(^Expr_Ident)
-    if !is_ident || ident.name != slice_name { return 0 }
-    call, is_call := bin.right.(^Expr_Call)
-    if !is_call { return 0 }
-    info, info_ok := lookup_fun_info(g, call_resolved_name(call))
-    if !info_ok { return 0 }
-    return escape_total_bytes(&info)
 }
 
 // Format a span as "[file:line:col]" or "[line:col]" prefix for error messages

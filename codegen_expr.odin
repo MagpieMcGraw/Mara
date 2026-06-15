@@ -719,23 +719,6 @@ emit_crash_journal_end :: proc(g: ^Codegen) {
 gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> string {
     // Overloaded operator: delegate to function call
     if rf, rf_ok := e.overload_fn.?; rf_ok {
-        // Pool routing for `&pool_slice + call_with_escape()`: detect the
-        // pattern, set the pool ctx so the call's escape args carve from it
-        // instead of fresh allocas. Without this, alloca-hoist would make
-        // every loop iteration share one sibling buffer.
-        prev_pool := g.escape_pool_alloca
-        defer g.escape_pool_alloca = prev_pool
-        if un, un_ok := e.left.(^Expr_Unary); un_ok && un.op == .Ampersand {
-            if ident, id_ok := un.operand.(^Expr_Ident); id_ok {
-                if sv, sv_ok := get_slice(g, ident.name); sv_ok && sv.pool_alloca != "" {
-                    if call_rhs, call_ok := e.right.(^Expr_Call); call_ok {
-                        if info, info_ok := lookup_fun_info(g, call_resolved_name(call_rhs)); info_ok && len(info.escape_locals) > 0 {
-                            g.escape_pool_alloca = sv.pool_alloca
-                        }
-                    }
-                }
-            }
-        }
         call := new(Expr_Call)
         call.name = rf.name
         append(&call.args, e.left)
@@ -1557,11 +1540,9 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
 
         if info.ret_struct != "" {
             // Struct return: alloca a temp, pass as sret, call void.
-            // Sibling storage args (if any) follow sret.
             tmp_struct := fresh_tmp(g)
             emit_alloca(g, tmp_struct, struct_llvm_name(info.ret_struct))
             append(&arg_strs, fmt.tprintf("ptr %s", tmp_struct))
-            emit_escape_storage_args(g, &arg_strs, &info, lookup_name, e.span)
             args_joined := strings.join(arg_strs[:], ", ")
             emit(g, "  call void %s(%s)", ir_name, args_joined)
             return tmp_struct
@@ -1913,49 +1894,6 @@ emit_c_aggregate_direct_arg :: proc(g: ^Codegen, arg_expr: Expr, parts: []string
     }
 }
 
-// Allocate sibling storage for each of a callee's escape locals and append
-// `ptr %x` entries to arg_strs. Stack-alloca for small buffers; bump from
-// the scope arena once we cross the 1024-byte threshold, mirroring the
-// rule that governs manual `name : []T(N)` declarations.
-//
-// When g.escape_pool_alloca is set, the storage is carved from that pool
-// instead — the pool's len field becomes the cursor, each carve advances
-// it, and the pool's element backing lives next to the receiving slice.
-// This breaks the alloca-hoist-aliasing trap that would otherwise make
-// loop-bodies share a single sibling buffer across iterations.
-emit_escape_storage_args :: proc(g: ^Codegen, arg_strs: ^[dynamic]string, info: ^Fun_Info, call_name: string, span: Span) {
-    if len(info.escape_locals) == 0 { return }
-    loc := format_location(span.file, span.line, span.col)
-    pool := g.escape_pool_alloca
-    for &el in info.escape_locals {
-        total_bytes := el.cap * el.elem_size
-        ptr: string
-        if pool != "" {
-            // Carve `total_bytes` from pool: data + len → ptr; len += total.
-            data_gep := fresh_tmp(g)
-            emit_slice_gep(g, data_gep, pool, SLICE.ptr)
-            base := fresh_tmp(g)
-            emit_load_into(g, base, "ptr", data_gep)
-            len_gep := fresh_tmp(g)
-            emit_slice_gep(g, len_gep, pool, SLICE.len)
-            cur := fresh_tmp(g)
-            emit_typed_load_len(g, cur, len_gep)
-            ptr = fresh_tmp(g)
-            emit(g, "  %s = getelementptr i8, ptr %s, %s %s", ptr, base, slice_layout.len_ir, cur)
-            next := fresh_tmp(g)
-            emit(g, "  %s = add %s %s, %d", next, slice_layout.len_ir, cur, total_bytes)
-            emit_typed_store_len(g, next, len_gep)
-        } else if g.context_enabled && total_bytes >= 1024 {
-            name := fmt.tprintf("<%s.%s>", call_name, el.name)
-            ptr = emit_arena_bump(g, total_bytes, name, loc)
-        } else {
-            ptr = fresh_tmp(g)
-            emit(g, "  %s = alloca [%d x %s]", ptr, el.cap, el.elem_type)
-        }
-        append(arg_strs, fmt.tprintf("ptr %s", ptr))
-    }
-}
-
 // Emit a struct-returning call, writing directly into a caller-supplied
 // destination pointer (NRVO) instead of allocating a temp sret slot. Same
 // shape as gen_call_into_array but the destination is just a raw pointer.
@@ -1981,7 +1919,6 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
     }
 
     append(&arg_strs, fmt.tprintf("ptr %s", dest_ptr))
-    emit_escape_storage_args(g, &arg_strs, info, cn, e.span)
     args_joined := strings.join(arg_strs[:], ", ")
     emit(g, "  call void %s(%s)", ir_name, args_joined)
 }

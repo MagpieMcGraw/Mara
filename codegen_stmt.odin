@@ -332,41 +332,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 cap_gep := fresh_tmp(g)
                 emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
                 emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
-                // Sized slice of a slice-bearing struct: allocate a sibling
-                // pool whose bytes are carved by each `&slice + call()` for
-                // the call's escape locals. Pool size = sum of escape bytes
-                // across all appends visible in this scope; stack-alloca for
-                // small pools, arena-bump for big ones (1024-byte threshold).
-                pool_alloca := ""
-                if struct_has_slice_fields(sl.elem) {
-                    pool_bytes := sum_pool_appends(g, g.current_fun_body, s.name)
-                    if pool_bytes > 0 {
-                        pool_data: string
-                        if g.context_enabled && pool_bytes >= 1024 {
-                            pool_name := fmt.tprintf("<%s.pool>", s.name)
-                            pool_data = emit_arena_bump(g, pool_bytes, pool_name, loc)
-                        } else {
-                            pool_data = fmt.tprintf("%%%s.pool.data", s.name)
-                            emit(g, "  %s = alloca [%d x i8]", pool_data, pool_bytes)
-                        }
-                        pool_alloca = fmt.tprintf("%%%s.pool", s.name)
-                        emit_slice_alloca(g, pool_alloca)
-                        p_ptr_gep := fresh_tmp(g)
-                        emit_slice_gep(g, p_ptr_gep, pool_alloca, SLICE.ptr)
-                        emit_store(g, "ptr", pool_data, p_ptr_gep)
-                        p_len_gep := fresh_tmp(g)
-                        emit_slice_gep(g, p_len_gep, pool_alloca, SLICE.len)
-                        emit_typed_store_len(g, "0", p_len_gep)
-                        p_cap_gep := fresh_tmp(g)
-                        emit_slice_gep(g, p_cap_gep, pool_alloca, SLICE.cap)
-                        emit_typed_store_cap(g, fmt.tprintf("%d", pool_bytes), p_cap_gep)
-                    }
-                }
                 g.all_vars[s.name] = Slice_Var{
                     alloca      = alloca_name,
                     elem_type   = elem_t,
                     is_utf8     = sl_utf8,
-                    pool_alloca = pool_alloca,
                 }
                 // Initialize from a string literal: `s : String = "hello"` (or
                 // `s : []byte(64) = "hello"`). The cap path above already
