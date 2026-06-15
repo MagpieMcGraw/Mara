@@ -618,6 +618,16 @@ TYPE_SLICE_HIGH_BOUND_NUMERIC :: "slice high bound must be numeric, got %s"
 
 
 // ============================================================
+// Warnings — non-fatal, via check_warning.
+// ============================================================
+
+// An identity cast: the operand already has the target type, so the cast is a
+// no-op in every context and can be dropped. (Value-preserving WIDENING casts
+// are NOT flagged — `i64(x) * y` promotes the multiply to avoid overflow,
+// `len = i64(x)` does not, and the cast site can't distinguish the two.)
+WARN_REDUNDANT_CAST :: "redundant cast to %s — %s already has that type, drop the `%s(...)`"
+
+// ============================================================
 // Codegen fatals — populated in next pass.
 // ============================================================
 

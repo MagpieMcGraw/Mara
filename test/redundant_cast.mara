@@ -1,0 +1,21 @@
+module redundant_cast
+
+// Sanity probe for the redundant-cast warning.
+INT_CONST :: 6      // untyped int constant
+
+main :: fun() {
+	a : i64 = 7
+	b := i64(a)        // redundant: a is already i64  -> WARN
+	c : i32 = 3
+	d := i64(c)        // widening, NOT flagged (load-bearing in general)
+	e := i32(a)        // narrowing, NOT flagged (changes value)
+	f : f32 = 1.5
+	g := f32(f)        // redundant: f is already f32  -> WARN
+	h := i32(c)        // redundant: c is already i32  -> WARN
+
+	// False-positive guards (must NOT warn):
+	lit := i32(5)         // literal ascription, not a fossil
+	flt := f32(INT_CONST) // untyped-int const -> f32 is a real int->float conv
+	k := flt / f32(INT_CONST + 1)
+	print("%  %  %  %  %  %  %  %", b, d, e, g, h, lit, flt, k)
+}

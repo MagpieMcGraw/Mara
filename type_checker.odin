@@ -5514,6 +5514,39 @@ cast_result_type :: proc(name: string) -> (Type, bool) {
     return nil, false
 }
 
+// Strict same-type test for the redundant-cast warning. NOT types_equal —
+// that's a COMPATIBILITY test (it reports Type_Infer_Int as equal to every
+// numeric, floats included), which would flag `f32(SOME_INT_CONST)` as an
+// identity when it's really an int→float conversion. This is true only when
+// `src` is ALREADY the exact concrete type the cast produces:
+//   - infer/untyped operands → false: the cast is the literal's type ascription
+//     (`CACHE_MAGIC :: u32(0x...)`, `f32(RASTER_QUAD_STEPS)` where the const is
+//     an untyped int), and a pinned `:=` binding has already resolved to a
+//     concrete type so it still qualifies.
+//   - distinct operands → false: `i32(some_distinct)` is a real unwrap.
+//   - the same-width byte/u8/utf8 trio stays distinct (nominally different).
+cast_target_same_as_operand :: proc(src_raw: Type, target: Type) -> bool {
+    src := resolve_infer(src_raw)
+    if is_infer(src) { return false }
+    if _, ok := src.(^Type_Distinct); ok { return false }
+    #partial switch t in target {
+    case Type_Numeric:
+        if s, ok := src.(Type_Numeric); ok { return s.kind == t.kind && s.bits == t.bits }
+        return false
+    case Type_F64:
+        if _, ok := src.(Type_F64); ok { return true }
+        if s, ok := src.(Type_Numeric); ok { return s.kind == .Float && s.bits == 64 }
+        return false
+    case Type_Utf8:
+        _, ok := src.(Type_Utf8)
+        return ok
+    case Type_Bool:
+        _, ok := src.(Type_Bool)
+        return ok
+    }
+    return false
+}
+
 // Infer a field's type from its default value without full check_expr
 // (which would fail because the enclosing fun's params/locals aren't in scope yet).
 // Handles: identifiers (constants/variables in env), number/string/bool literals,
@@ -12119,7 +12152,21 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, e.name, len(args))
             return Type_Error{}, true
         }
-        check_expr(c, args[0], env)
+        src_type := check_expr(c, args[0], env)
+        // Redundant-cast warning: an identity cast — the operand already has the
+        // target type — is a no-op in every context, so the fossil can be
+        // dropped. cast_target_same_as_operand is a STRICT same-type test (not
+        // types_equal, which treats untyped literals as every numeric): it skips
+        // literal/const ascriptions, distinct unwraps, and the byte/u8/utf8
+        // trio. Widening casts are left alone — their removability is
+        // context-dependent (see WARN_REDUNDANT_CAST).
+        if target_t, t_ok := cast_result_type(e.name); t_ok {
+            if cast_target_same_as_operand(src_type, target_t) {
+                operand := expr_diag_name(args[0])
+                if operand == "" { operand = "the operand" }
+                check_warning(c, e.span, WARN_REDUNDANT_CAST, e.name, operand, e.name)
+            }
+        }
         switch e.name {
         case "int":
             check_error(c, e.span, TYPE_TYPE_INT_RESERVED_USE_I64)
