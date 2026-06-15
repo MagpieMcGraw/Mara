@@ -61,6 +61,9 @@ Token_Kind :: enum {
     Star,
     Slash,
     Modulo,
+    Wrap_Plus,    // +%  — wrapping (two's-complement) add, no overflow trap
+    Wrap_Minus,   // -%  — wrapping sub / wrapping unary negate
+    Wrap_Star,    // *%  — wrapping mul
     Equals,
     Equal_Equal,
     Not_Equal,
@@ -437,6 +440,9 @@ next_token :: proc(l: ^Lexer) -> Token {
         case "+=": lexer_advance(l, 2); return make_token(l, .Plus_Equal,    two, tok_line, tok_col)
         case "-=": lexer_advance(l, 2); return make_token(l, .Minus_Equal,   two, tok_line, tok_col)
         case "*=": lexer_advance(l, 2); return make_token(l, .Mul_Equal,     two, tok_line, tok_col)
+        case "+%": lexer_advance(l, 2); return make_token(l, .Wrap_Plus,     two, tok_line, tok_col)
+        case "-%": lexer_advance(l, 2); return make_token(l, .Wrap_Minus,    two, tok_line, tok_col)
+        case "*%": lexer_advance(l, 2); return make_token(l, .Wrap_Star,     two, tok_line, tok_col)
         case "/=": lexer_advance(l, 2); return make_token(l, .Div_Equal,     two, tok_line, tok_col)
         case "%=": lexer_advance(l, 2); return make_token(l, .Mod_Equal,     two, tok_line, tok_col)
         case "&=": lexer_advance(l, 2); return make_token(l, .And_Equal,     two, tok_line, tok_col)

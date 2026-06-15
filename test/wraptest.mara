@@ -1,0 +1,32 @@
+module wraptest
+
+// Wrapping arithmetic: +% -% *% wrap two's-complement at the operand width
+// instead of trapping on overflow (which plain + - * do).
+main :: fun() {
+	a : u8 = 255
+	print("%", a +% 1)       // 256 -> 0
+
+	b : u8 = 0
+	print("%", b -% 1)       // -1 -> 255
+
+	c : u8 = 200
+	print("%", c *% 2)       // 400 -> 144
+
+	d : i8 = 127
+	print("%", d +% 1)       // 128 -> -128 (signed wrap)
+
+	// wrapping negate: defined for unsigned, and no trap at MIN
+	e : u8 = 1
+	print("%", -%e)          // two's-complement -> 255
+
+	f : i32 = -2147483648
+	print("%", -%f)          // -MIN wraps back to MIN
+
+	// u32 modular multiply — the cmap-style case
+	g : u32 = 65536
+	print("%", g *% g)       // 2^32 -> 0
+
+	// precedence matches the non-wrapping ops: *% binds tighter than +%
+	h : u8 = 10
+	print("%", h +% h *% h)  // 10 + (100) = 110
+}

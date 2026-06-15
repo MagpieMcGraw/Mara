@@ -594,6 +594,8 @@ TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT :: "mismatched types for '+': %s and %s 
 TYPE_MISMATCHED_TYPES_DID_FORGET_IMPORT_2 :: "mismatched types for '%s': %s and %s - did you forget to import the package that defines the overload?"
 TYPE_BITWISE_OPERATORS_REQUIRE_INTEGER_OPERANDS :: "bitwise operators require integer operands, got %s"
 TYPE_MISMATCHED_TYPES_ARITHMETIC_USE_EXPLICIT :: "mismatched types in arithmetic: %s and %s (use an explicit cast)"
+TYPE_WRAPPING_REQUIRES_INTEGER :: "wrapping operator `%s%%` requires integer operands, got %s and %s"
+TYPE_WRAPPING_REQUIRES_INTEGER_UNARY :: "wrapping negate `-%%` requires an integer operand, got %s"
 TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER :: "argument %d of '%s': '_' requires a default value, but parameter '%s' has none"
 TYPE_EXPECTS_ARGS :: "'%s' expects %d argument(s) (%s), got %d"
 TYPE_ARGUMENT_EXPECTED :: "argument %d%s of '%s': parameter '%s' expects %s, got %s"

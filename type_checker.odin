@@ -3712,6 +3712,22 @@ is_integer :: proc(t: Type) -> bool {
     return false
 }
 
+// True when `t` is an integer-family operand a wrapping op (`+%`/`-%`/`*%`)
+// accepts: any signed/unsigned int, byte/utf8, enum tag, an untyped int literal
+// (which adopts the other operand's width), or a distinct over one. Floats —
+// including untyped float literals — and non-numerics are rejected. Error/any
+// pass through so a wrapping op on already-errored operands doesn't double-report.
+is_wrap_operand :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(resolve_infer(t)) {
+    case Type_Infer_Int:       return true
+    case Type_Numeric:         return v.kind != .Float
+    case Type_Byte, Type_Utf8: return true
+    case ^Type_Enum:           return true
+    case Type_Error, Type_Any: return true
+    }
+    return false
+}
+
 // Slice header width — kept in sync with codegen's slice_layout.len_ir.
 // Currently i32; flip both sides together when widening to i64.
 slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 64}
@@ -11160,6 +11176,16 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         operand_type := check_expr(c, e.operand, env)
         #partial switch e.op {
         case .Minus:
+            if e.wrapping {
+                // `-%x`: wrapping negate. Integer-only, and unlike plain `-x` it
+                // ACCEPTS unsigned (two's-complement negate is well-defined) and
+                // won't trap on MIN. No overload dispatch.
+                if !is_wrap_operand(operand_type) {
+                    check_error(c, e.span, TYPE_WRAPPING_REQUIRES_INTEGER_UNARY, type_name(operand_type))
+                    return Type_Error{}
+                }
+                return operand_type
+            }
             if !is_numeric(operand_type) {
                 // Try `overload -` dispatch with a single-arg function (e.g.
                 // mara.math's `vec3_negate`). Falls through to the standard
@@ -12205,6 +12231,17 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
     left_type := check_expr(c, e.left, env)
     c.expected_hint = hint
     right_type := check_expr(c, e.right, env)
+
+    // Wrapping operators (`+%`/`-%`/`*%`) are integer-only — two's-complement
+    // wrap has no meaning for floats, and there's no overload concept. Otherwise
+    // they type exactly like `+`/`-`/`*` (op was already mapped), so fall through.
+    if e.wrapping {
+        if !is_wrap_operand(left_type) || !is_wrap_operand(right_type) {
+            check_error(c, e.span, TYPE_WRAPPING_REQUIRES_INTEGER,
+                op_str(e.op), type_name(left_type), type_name(right_type))
+            return Type_Error{}
+        }
+    }
 
     // Operator overload check: try before built-in arithmetic when at least one
     // operand is non-numeric (so int*int always uses the fast built-in path).

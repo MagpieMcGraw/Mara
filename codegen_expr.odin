@@ -221,6 +221,13 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 emit(g, "  %s = fneg %s %s", tmp, op_type, operand)
                 return tmp
             }
+            // `-%x`: wrapping negate — plain `0 - x`, two's-complement, no trap
+            // (so -%MIN == MIN and unsigned negate is well-defined).
+            if e.wrapping {
+                tmp := fresh_tmp(g)
+                emit(g, "  %s = sub %s 0, %s", tmp, op_type, operand)
+                return tmp
+            }
             // Integer negation is `0 - x` and joins the overflow-checked
             // arithmetic family: -MIN_INT traps like binary `-` instead of
             // silently wrapping. Unsigned only reaches here through an infer
@@ -782,11 +789,23 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
         // even though one operand was unsigned.
         #partial switch e.op {
         case .Plus:
-            tmp = emit_checked_arith(g, is_unsigned ? "uadd" : "sadd", ir_type, left, right, e.span)
+            if e.wrapping {
+                emit(g, "  %s = add %s %s, %s", tmp, ir_type, left, right)
+            } else {
+                tmp = emit_checked_arith(g, is_unsigned ? "uadd" : "sadd", ir_type, left, right, e.span)
+            }
         case .Minus:
-            tmp = emit_checked_arith(g, is_unsigned ? "usub" : "ssub", ir_type, left, right, e.span)
+            if e.wrapping {
+                emit(g, "  %s = sub %s %s, %s", tmp, ir_type, left, right)
+            } else {
+                tmp = emit_checked_arith(g, is_unsigned ? "usub" : "ssub", ir_type, left, right, e.span)
+            }
         case .Star:
-            tmp = emit_checked_arith(g, is_unsigned ? "umul" : "smul", ir_type, left, right, e.span)
+            if e.wrapping {
+                emit(g, "  %s = mul %s %s, %s", tmp, ir_type, left, right)
+            } else {
+                tmp = emit_checked_arith(g, is_unsigned ? "umul" : "smul", ir_type, left, right, e.span)
+            }
         case .Slash:
             emit_div_zero_check(g, right, ir_type, e.span)
             emit(g, "  %s = %s %s %s, %s", tmp, is_unsigned ? "udiv" : "sdiv", ir_type, left, right)

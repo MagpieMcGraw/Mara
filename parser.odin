@@ -210,6 +210,7 @@ Expr_Unary :: struct {
     // dispatch (e.g. `-v3` → `vec3_negate(v3)`). Codegen reads this to emit a
     // call instead of fneg / `sub 0, x`.
     overload_fn: Maybe(Resolved_Func),
+    wrapping:    bool,         // `-%x`: wrapping negate, codegen skips the overflow check
 }
 
 Expr_Bool :: struct {
@@ -235,6 +236,7 @@ Expr_Binary :: struct {
     span:        Span,
     type_:       Type,
     overload_fn: Maybe(Resolved_Func),
+    wrapping:    bool,         // `+%`/`-%`/`*%`: two's-complement wrap, codegen skips the overflow check
 }
 
 Expr_Call :: struct {
@@ -3512,8 +3514,8 @@ get_precedence :: proc(kind: Token_Kind) -> int {
     case .Tilde: return 5
     case .Ampersand: return 6
     case .Shift_Left, .Shift_Right: return 7
-    case .Plus, .Minus:  return 8
-    case .Star, .Slash, .Modulo:  return 9
+    case .Plus, .Minus, .Wrap_Plus, .Wrap_Minus:  return 8
+    case .Star, .Slash, .Modulo, .Wrap_Star:  return 9
     case: return -1
     }
 }
@@ -3605,7 +3607,15 @@ parse_expr :: proc(p: ^Parser, min_prec: int = 0) -> Expr {
         right := parse_expr(p, prec + 1) // +1 for left-associativity
 
         bin := new(Expr_Binary)
-        bin.op = op.kind
+        // Wrapping operators carry the same op kind as their checked counterpart
+        // plus a `wrapping` flag; all type-checking then reuses the `.Plus` etc.
+        // paths and only codegen diverges (plain op, no overflow trap).
+        #partial switch op.kind {
+        case .Wrap_Plus:  bin.op = .Plus;  bin.wrapping = true
+        case .Wrap_Minus: bin.op = .Minus; bin.wrapping = true
+        case .Wrap_Star:  bin.op = .Star;  bin.wrapping = true
+        case:             bin.op = op.kind
+        }
         bin.left = left
         bin.right = right
         bin.span = token_span(op)
@@ -4310,6 +4320,19 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             unary.span = token_span(tok)
             result = unary
         }
+
+    case .Wrap_Minus:
+        // Prefix `-%x`: wrapping negate. Not literal-folded — the wrap semantics
+        // (no trap on MIN, two's-complement on unsigned) are the whole point, so
+        // it stays an Expr_Unary the checker/codegen handle explicitly.
+        tok := advance(p)
+        operand := parse_primary(p)
+        unary := new(Expr_Unary)
+        unary.op = .Minus
+        unary.operand = operand
+        unary.span = token_span(tok)
+        unary.wrapping = true
+        result = unary
 
     case .Not:
         tok := advance(p)
