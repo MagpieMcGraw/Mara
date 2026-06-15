@@ -829,8 +829,8 @@ cmap_glyph_index :: fun(bytes: ^[]byte, subtable_start: i64, char: u32) -> u16 {
 					addr := id_ranges + s * 2 + id_range + 2 * (char - start_code)
 					g := read_u16be(bytes[addr])
 					if g == 0 { return 0 }
-					 // we do this because TTF modular arithmetic
-					return u16(u32(g) + id_delta)
+					 // (g + idDelta) mod 65536 — the wrapping add IS the modular reduction the spec wants
+					return g +% id_delta
 				}
 			}
 		}

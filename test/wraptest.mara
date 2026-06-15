@@ -29,4 +29,11 @@ main :: fun() {
 	// precedence matches the non-wrapping ops: *% binds tighter than +%
 	h : u8 = 10
 	print("%", h +% h *% h)  // 10 + (100) = 110
+
+	// cmap format-4 shape: (glyph + idDelta) mod 65536, idDelta a u16-encoded
+	// signed value. This is the exact arithmetic font.mara's lookup now uses
+	// (g +% id_delta) in place of u16(u32(g) + id_delta).
+	gi : u16 = 100
+	neg_delta : u16 = 65535       // -1, two's-complement in u16
+	print("%", gi +% neg_delta)   // 100 + (-1) = 99
 }
