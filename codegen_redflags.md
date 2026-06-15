@@ -55,7 +55,19 @@ worth a deliberate cleanup, not one-off bugs.
 
 ## Other
 
-6. **Multi-return aggregate slot emits malformed IR.** `return big_pa, x`
-   produces `%buf` typed `ptr` where a `{ i64, i64, ptr, [N x T] }` is expected
-   (clang rejects it). The multi-return slot machinery doesn't handle aggregate
-   (PA/struct) slots — a real codegen defect, separate from routing.
+6. **Multi-return aggregate slot emitted malformed IR.** [FIXED] `return big_pa, x`
+   produced `%buf` typed `ptr` where a `{ i64, i64, ptr, [N x T] }` was expected
+   (clang rejected it). Both sides were missing a partial-array case:
+   `gen_return_tuple` fell through to a scalar `store {..} <ptr>`, and the
+   destructure (`gen_multi_return_assign`) bound the slot as a `Scalar_Var` so
+   indexing failed. Added PA cases mirroring the slice/fixed-array handling.
+
+7. **`buf[i] = <int literal>` into a `[..N]byte` writes 8 bytes, not 1.**
+   [BUG, pre-existing, NOT yet fixed] Indexed assignment of an untyped integer
+   literal into a byte partial array goes through the sized byte-buffer-write
+   path at the *literal's* default width (i64), so it stores 8 bytes — silently
+   corrupting adjacent memory, or trapping ("byte buffer write out of bounds")
+   when the slot is near the end. `buf[i] = u8(v)` works (narrows to 1 byte).
+   The RHS isn't coerced to the element type before the store. Same class likely
+   affects other narrow-element PAs (i16/u16). Serious (silent corruption);
+   deserves its own fix. Found via the multi-return fixture.

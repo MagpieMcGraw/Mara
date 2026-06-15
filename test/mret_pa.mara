@@ -1,0 +1,18 @@
+module mret_pa
+// Multi-return with a partial-array slot. The return side deep-copies the PA
+// into its sret slot (re-anchoring ptr); the destructure claims the slot as a
+// Slice_Var so it indexes. This used to emit malformed IR — the PA slot fell
+// through to the scalar `store {..} <ptr>` path on both sides.
+split :: fun() -> ([..8]byte, i32) {
+	buf : [..8]byte = void
+	buf.len = 2
+	// u8() casts are deliberate: `buf[i] = <int literal>` into a byte PA is
+	// currently miscompiled as an 8-byte write (see codegen_redflags.md #7).
+	buf[0] = u8(5)
+	buf[1] = u8(6)
+	return buf, 7
+}
+main :: fun() {
+	b, n := split()
+	print("% % %", b[0], b[1], n)   // 5 6 7
+}

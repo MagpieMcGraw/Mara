@@ -1075,6 +1075,33 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                 }
                 continue
             }
+            // Partial-array element: claim the call's slot directly (it holds
+            // the full {ptr,len,cap,[N]} struct the return side re-anchored) and
+            // register it as a Slice_Var, so `b[i]` / `b.len` work. Mirrors the
+            // fixed-array case — the scalar fallback below would bind it as a
+            // Scalar_Var (the whole struct loaded as a value) and indexing fails.
+            if pa, pa_ok := distinct_base(ret_types[i]).(^Type_Partial_Array); pa_ok {
+                pa_elem_t := llvm_type_from_checker(pa.elem)
+                _, pa_utf8 := pa.elem.(Type_Utf8)
+                if name == "" {
+                    addr, addr_ok := gen_multi_return_target_addr(g, s, i)
+                    if !addr_ok {
+                        codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
+                    }
+                    partial_array_copy(g, addr, src_ptr, pa_elem_t, pa.size)
+                    continue
+                }
+                if existing, exists := get_slice(g, name); exists {
+                    partial_array_copy(g, existing.alloca, src_ptr, pa_elem_t, pa.size)
+                    continue
+                }
+                g.all_vars[name] = Slice_Var{
+                    alloca    = src_ptr,
+                    elem_type = pa_elem_t,
+                    is_utf8   = pa_utf8,
+                }
+                continue
+            }
         }
 
         val := fresh_tmp(g)
@@ -1287,6 +1314,18 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
             }
             if src == sret_ptr { continue }
             emit_memcpy(g, sret_ptr, src, slice_header_bytes)
+            continue
+        }
+        // Partial-array slot: deep-copy the whole {ptr,len,cap,[N]} struct into
+        // the sret slot, re-anchoring the copy's ptr to its own inline backing
+        // (partial_array_copy). The scalar fallback below would emit
+        // `store {..} <alloca-ptr>, ptr %sret.N` — invalid IR, since the source
+        // is a ptr to the struct, not the struct value. Mirrors the slice case
+        // and the single-PA return (gen_return_partial_array).
+        if pa, pa_ok := resolved_type.(^Type_Partial_Array); pa_ok {
+            src := gen_expr(g, val, elem_type)
+            if src == sret_ptr { continue }
+            partial_array_copy(g, sret_ptr, src, llvm_type_from_checker(pa.elem), pa.size)
             continue
         }
         v := gen_expr_coerced(g, val, elem_type)
