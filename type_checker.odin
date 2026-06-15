@@ -5183,15 +5183,14 @@ returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> b
     return false
 }
 
-// A direct `return StructLit{...}` whose ref field points at / materialises
-// storage in THIS frame dangles past the return: the struct's own bytes are
-// sret-copied, but a slice/ptr field keeps pointing at frame memory. is_local_ref
-// blanket-exempts struct literals (it trusted codegen to relocate a bare local
-// array backing) and returns_locally_backed_struct only covers the call/ident
-// passthrough forms — so the direct literal with a frame-local ref field
-// (`Foo{r[:]}`, `Foo{make_arr()}`) slipped through and dangled silently. This
-// flags any EXPLICITLY-ASSIGNED ref field whose value is rooted in our frame;
-// param/global-backed fields (Mesh_Data over a `storage` param) stay safe.
+// The rule: a returned slice/ptr (or a returned struct's slice/ptr FIELD) may
+// never point at this frame's local memory. You pass storage DOWN (a `^[]byte` /
+// `^[]T` param) and return a view of it UP; you never return a view of a local.
+// This flags any explicitly-assigned ref field of a returned struct literal
+// whose backing is in our frame. Caller-passed storage (a pointer param) and
+// globals are fine; locals, by-value array params, call temps, and `arr[:]` of a
+// local are not. (No relocation exception — that machinery is gone; the
+// pass-down pattern, e.g. Mesh_Data over a `storage` param, is the way.)
 returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Env) -> bool {
     for field, i in lit.fields {
         ft := struct_lit_field_type(c, lit, i)
@@ -5199,27 +5198,17 @@ returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, 
         v := field.value
         d: int
         if _, fa := expr_type(v).(^Type_Fixed_Array); fa {
-            // Field is a slice; the value is a fixed array being decayed. The
-            // backing is the array's STORAGE: a by-value return (call) is a
-            // fresh frame temp; a field access inherits its root; idents and
-            // array literals resolve through provenance (global/param/local).
+            // Field is a slice; the value is a fixed array being decayed, so the
+            // backing is the array's own STORAGE — which lives in THIS frame (a
+            // local decl, a `:=`-from-value local, a by-value param copy, a call
+            // temp, an array literal) unless it's a global. We decide that
+            // structurally: expr_provenance tracks where a slice's *data* points,
+            // but a fixed array's value provenance (e.g. make_arr()) reflects
+            // where its initializer came from, not where its bytes now live.
+            d = env.scope_depth
             #partial switch vv in v {
-            case ^Expr_Call:         d = env.scope_depth          // by-value return: a frame temp
+            case ^Expr_Ident:        if is_global_var(c, vv.name) { d = 0 }
             case ^Expr_Field_Access: d = expr_provenance(c, vv.expr, env).depth
-            case ^Expr_Ident:
-                // A bare local array — value==nil OR value-initialised
-                // (`x := make_arr()`) — decayed into a returned slice field is
-                // relocated by codegen's analyze_escape_locals to the caller's
-                // sret: born in caller storage, no copy (verified test/relotest +
-                // test/xreturn). analyze_escape_locals keys on a bare-ident
-                // fixed-array LOCAL with no value==nil gate, so exempt that here.
-                // A by-value array PARAM is a frame copy it does NOT relocate
-                // (collect_local_decls skips params), so slicing it into the
-                // return dangles — flag it. The explicit `arr[:]`, an inline
-                // call, and a field access aren't bare-ident locals either, so
-                // they're caught above; binding them to a local makes them work.
-                if is_param(env, vv.name) { d = env.scope_depth } else { d = -1 }
-            case:                    d = expr_provenance(c, v, env).depth
             }
         } else {
             // Slice/ptr value (e.g. `r[:]`, `&local`, a slice var): its data
