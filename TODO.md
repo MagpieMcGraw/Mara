@@ -38,10 +38,4 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 
 [DEEP] BUG calling a fn-typed parameter fails in codegen — omitted test, dated 2026-05-30. No decision — codegen investigation.
 
-[DEEP] FIX abs_int overflows on i64 min; @llvm.abs.i64 exists and matches the f32/f64 siblings. No decision — but @llvm.abs.i64 takes an i1 is_int_min_poison arg the current @llvm.x mapping doesn't supply, so it needs intrinsic plumbing.
-
-[DEEP] FIX Windows ANSI paths: CreateFileA breaks on non-ASCII paths (Lithuanian user dirs). One-line app manifest setting activeCodePage to UTF-8 fixes every A-suffix call at once. No decision — but needs a manifest file + link integration.
-
 [DEEP] TOOLING fix and regenerate the 1M-line benchmark, then grow it adversarially: one giant dispatch block, one 100K-line function, deep use chains. Name the cliffs before a real project finds them.
-
-[DEEP] BUG scope-allocator type check (type_checker.odin l. 7036/7283) only matches `^Type_Fixed_Array` decls — slips partial arrays (`buf : [..N]byte = void`), struct-typed decls whose body contains big PAs (`p := Skyline(256, 256)`, ~12KB struct), and multi-return aggregate slots through to the codegen `CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR` fallback. Right shape: one rule keyed on "this allocation routes through arena at codegen," covering FA + PA + struct + return-slot in a single check.
