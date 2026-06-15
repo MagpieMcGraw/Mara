@@ -48,7 +48,7 @@ load_glyphs_and_metrics :: fun(
 	// Fill the whole provided buffer. Callers pass a partial array (len 0,
 	// cap = glyph count); mark it full so downstream lookups see every slot.
 	glyphs.len = glyphs.cap
-	for i in 0..i32(glyphs.len) {
+	for i in 0..glyphs.len {
 		codepoint := first + u32(i)
 		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, codepoint)
 		outline := parse_glyph(&ttf, glyph_index)

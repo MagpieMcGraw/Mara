@@ -202,7 +202,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		if not bool(ReadFile(id, &data[0], u32(data.cap), &read, void)) {
 			return Read_Failed
 		}
-		data.len = i32(read)
+		data.len = read
 	}
 
 	read_entire_file :: fun(path: []utf8, data: ^[]byte) -> err {
