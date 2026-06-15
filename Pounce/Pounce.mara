@@ -109,6 +109,8 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 
 	game.running = true
 	game.initialized = true
+
+	x, y = 7
 }
 
 game_events :: fun(game: ^Megastruct) {

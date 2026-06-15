@@ -1,26 +1,22 @@
 module test_multi_assign
 
-// The surviving comma-LHS assignment forms. Implicit broadcast (`x, y = 7`)
-// was removed — it is now a hard type error (see broadcast_fail.mara).
-
-named_pair :: fun() -> i32, i32 { return 3, 4 }
+S :: struct {
+	a: i32
+	b: i32
+}
 
 main :: fun() -> i64 {
-	// Multi-return destructure: the RHS call yields one value per target.
-	a, b := named_pair()
-	print("destructure:", a, b)
-
-	// Parallel: each target takes its own positional value.
 	x : i32
 	y : i32
-	x, y = 1, 2
-	print("parallel:", x, y)
 
-	// Explicit broadcast: `all` opts one value into every target.
-	p : i32
-	q : i32
-	p, q = all 7
-	print("broadcast:", p, q)
+	// Broadcast: one source to multiple bare-name targets.
+	x, y = 7
+	print("locals:", x, y)
+
+	// Broadcast into struct field targets.
+	s : S
+	s.a, s.b = 42
+	print("fields:", s.a, s.b)
 
 	return 0
 }

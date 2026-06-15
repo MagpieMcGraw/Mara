@@ -32,6 +32,8 @@ When parsing, put defs and decls in two different arrays. Can loop over each wit
 
 Byte reads might need new syntax. Maybe an = to read without auto-len, and a += to read with auto len. Also figure out what ops should set the len.
 
+[DEEP] BUG broadcast x, y = 7 segfaults in non-main fn (disabled test, dated 2026-05-30). No decision — codegen investigation.
+
 [DEEP] BUG enum-indexed array access rejected ("index must be i32") — omitted test, dated 2026-05-30. No decision — codegen investigation.
 
 [DEEP] BUG calling a fn-typed parameter fails in codegen — omitted test, dated 2026-05-30. No decision — codegen investigation.

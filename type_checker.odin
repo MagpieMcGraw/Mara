@@ -7832,18 +7832,27 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             }
                         }
                     } else {
-                        // Multiple targets but a single, non-multi-return RHS.
-                        // Mara does not broadcast one value across targets — it is
-                        // almost always a mistaken arity (a single-return call
-                        // where a multi-return was meant, or `x, y = 7` slipping
-                        // past as two invented locals). Reject it; bind the names
-                        // to Type_Error so the rest of the scope doesn't cascade
-                        // "undefined" diagnostics.
-                        check_error(c, s.span, TYPE_MULTI_TARGET_SINGLE_VALUE,
-                            len(s.names), len(s.names))
-                        for name in s.names {
+                        // Broadcast: `a, b = single_value` — store the same value
+                        // into every target. Each target must accept val_type. New
+                        // names get val_type bound. Expression targets get type-
+                        // checked against val_type for compatibility. The
+                        // codegen path uses is_broadcast to choose the right
+                        // generation (one RHS eval, N stores).
+                        s.is_broadcast = true
+                        target_val_type := distinct_base(val_type)
+                        for name, i in s.names {
                             if name != "" {
-                                type_env_set(env, name, Type_Error{})
+                                type_env_set(env, name, val_type)
+                                append(&s.var_types, target_val_type)
+                            } else if i < len(s.targets) && s.targets[i] != nil {
+                                target_type := check_expr(c, s.targets[i], env)
+                                if !is_any(target_type) && types_incompatible(target_type, val_type) {
+                                    check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
+                                        type_name(val_type), type_name(target_type))
+                                }
+                                append(&s.var_types, distinct_base(target_type))
+                            } else {
+                                append(&s.var_types, target_val_type)
                             }
                         }
                     }
