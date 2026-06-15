@@ -1,0 +1,12 @@
+module bigstack_ok
+include mara.memory
+// The same big value compiles and runs once a scope arena is declared at the
+// top of main (the routes_to_arena guard is satisfied). Also exercises the
+// restored Arena_Basic (pure bump, no per-alloc header).
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+	buf : [..4096]byte = void
+	buf.len = 1
+	buf[0] = 7
+	print("%", buf[0])
+}

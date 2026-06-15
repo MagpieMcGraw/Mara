@@ -437,7 +437,7 @@ TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE :: "variable '%s' shadows a constant 
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE :: "cannot assign %s to variable '%s' of type %s"
 TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM :: "cannot assign %s to variable '%s' of type %s — from %s"
 TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE :: "declaration without initializer requires a type annotation"
-TYPE_ARRAY_TOO_LARGE_STACK_BYTES :: "array '%s' is too large for the stack (%d bytes). Set up a scope allocator in main:\n\n    include mara.memory\n    program = Program(Arena_Basic)"
+TYPE_VALUE_TOO_LARGE_STACK_BYTES :: "value '%s' is too large for the stack (%d bytes). Route big values through a scope arena — add `include mara.memory`, then at the top of main:\n\n    this_program = Program(Arena_Basic(64 * MB))"
 TYPE_SIZE_EXPRESSION_INTEGER :: "size expression must be an integer, got %s"
 TYPE_SLICE_CAPACITY_INTEGER :: "slice capacity must be an integer, got %s"
 TYPE_CANNOT_COPY_VALUE_CONTAINS_PARTIAL :: "cannot copy '%s' by value — it contains a partial-array field whose `ptr` would still alias the source's elements after the copy; construct in place or assign individual fields"

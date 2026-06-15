@@ -4401,6 +4401,30 @@ checker_type_byte_size :: proc(t: Type) -> int {
     return 8
 }
 
+// ---------------------------------------------------------------------------
+// Storage routing — two operations, one policy
+// ---------------------------------------------------------------------------
+// Every value's size is knowable at compile time (no runtime-sized types), so
+// the whole "stack vs arena" decision reduces to two operations:
+//
+//   1. Find the value's size       — checker_type_byte_size, above. It returns
+//      the TOTAL inline footprint: struct padding, fixed-array storage, and
+//      partial-array backing are all counted; a slice is just its header (its
+//      backing is a separate allocation, routed on its own).
+//   2. Route it to the right store — routes_to_arena, below.
+//
+// Both the type checker (check_storage_sizes — the early "declare an allocator"
+// error) and codegen (alloca vs arena_bump) gate on routes_to_arena, so the
+// threshold lives in exactly one place and the two stages can't drift.
+
+// Values at or above this many bytes route through the scope arena, never the
+// stack. The single source of truth for "big".
+ARENA_THRESHOLD :: 1024
+
+routes_to_arena :: proc(t: Type) -> bool {
+    return checker_type_byte_size(t) >= ARENA_THRESHOLD
+}
+
 // Check if a variable is defined at global (root) scope.
 // Returns true for top-level variables, false for locals and parameters.
 is_global_var :: proc(c: ^Checker, name: string) -> bool {
@@ -5784,6 +5808,39 @@ check_unused_locals :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
     }
 }
 
+// Storage routing, applied uniformly at every local declaration: a value big
+// enough to route through the arena (routes_to_arena) needs an allocator to
+// route to. With none declared there's nowhere safe to put it, so error at the
+// declaration — early and clear — for EVERY value kind (fixed array, partial
+// array, struct, …), instead of letting a partial array silently stack-overflow
+// or a struct trip a late codegen fatal. When an allocator IS declared this is a
+// no-op here; codegen does the actual arena routing on the same predicate.
+// Per-scope and top-level only, like check_unused_locals — nested if/for/match
+// bodies re-enter check_scope and get their own pass.
+check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
+    if c.table.has_scope_allocator || c.table.context_expected_at_runtime { return }
+    guard :: proc(c: ^Checker, env: ^Type_Env, name: string, t: Type, span: Span) {
+        // Take-bound views alias existing storage — they don't allocate, so a
+        // big viewed type isn't a stack cost.
+        if is_let_name(env, name) { return }
+        if routes_to_arena(t) {
+            check_error(c, span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, name, checker_type_byte_size(t))
+        }
+    }
+    for stmt in stmts {
+        #partial switch s in stmt {
+        case ^Stmt_Assign:
+            if s.is_decl { guard(c, env, s.name, s.var_type, s.span) }
+        case ^Stmt_Decl:
+            for inner in s.checked {
+                if a, ok := inner.(^Stmt_Assign); ok && a.is_decl {
+                    guard(c, env, a.name, a.var_type, a.span)
+                }
+            }
+        }
+    }
+}
+
 check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
     // Pass 1a: pre-register every `name :: ...` definition in this scope —
     // nested funs, unions, distincts — and resolve fun signatures so any
@@ -5819,6 +5876,9 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
 
     // Pass 3: report unused err bindings (reads were recorded during Pass 2).
     check_unused_locals(c, stmts, env)
+
+    // Pass 4: stack/arena routing — error on any big local with no allocator.
+    check_storage_sizes(c, stmts, env)
 }
 
 // ---------------------------------------------------------------------------
@@ -7205,16 +7265,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_any(ann_type) {
                     check_error(c, s.span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE)
                 }
-                // Big-array check for uninitialized arrays (unwrap distinct)
-                base_ann := distinct_base(ann_type)
-                if fa, ok := base_ann.(^Type_Fixed_Array); ok {
-                    total_bytes := fa.size * checker_type_byte_size(fa.elem)
-                    if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
-                        check_error(c, s.span,
-                            TYPE_ARRAY_TOO_LARGE_STACK_BYTES,
-                            s.name, total_bytes)
-                    }
-                }
+                // (Large-value stack/arena routing is handled uniformly for
+                // every value kind in check_storage_sizes — Pass 4 of check_scope.)
                 // Function type from named source: auto-initialize to the function itself.
                 // e.g. `remote_print : game.test_print` → value is game.test_print
                 if tf, is_func := ann_type.(^Type_Scope); is_func && len(tf.params) > 0 {
@@ -7454,13 +7506,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     } else {
                         check_array_assign(c, s.span, s.name, fa, val_type, s.value)
                     }
-                    // Big-array check: require scope allocator for large stack arrays
-                    total_bytes := fa.size * checker_type_byte_size(fa.elem)
-                    if total_bytes >= 1024 && !c.table.has_scope_allocator && !c.table.context_expected_at_runtime {
-                        check_error(c, s.span,
-                            TYPE_ARRAY_TOO_LARGE_STACK_BYTES,
-                            s.name, total_bytes)
-                    }
+                    // (Large-value stack/arena routing handled uniformly in
+                    // check_storage_sizes — Pass 4 of check_scope.)
                 } else if pa, ok := check_ann.(^Type_Partial_Array); ok && is_byte_buffer(val_type) {
                     // Partial-array byte-buffer reinterpret read:
                     //   arr : [..N]T = bytes[lo:hi]

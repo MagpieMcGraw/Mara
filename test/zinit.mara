@@ -2,8 +2,10 @@ module zinit
 
 use mara.core
 use mara.os
+include mara.memory
 
 main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
 	// Partial-array backing starts zeroed: trim up and read — all zeros.
 	z : [..8]i64
 	z.len = 8

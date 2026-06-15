@@ -2,8 +2,10 @@ module quanttest
 
 use mara.core
 use mara.os
+include mara.memory
 
 main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
 	// Inferred literal binding gets the quantized tier: cap 64, len 5.
 	s := "hello"
 	assert(s.cap == 64)

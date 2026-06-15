@@ -9,6 +9,7 @@ module cachetest
 
 use mara.core
 use mara.os
+include mara.memory
 
 MAGIC   :: u32(0x68636143)  // "Cach"
 VERSION :: u32(1)
@@ -82,6 +83,7 @@ read_entry :: fun(image: []byte, i: i64) -> Entry {
 }
 
 main :: fun() {
+    this_program = Program(Arena_Basic(16 * MB))
     print("=== cachetest ===")
 
     // Two entries: a byte payload (texture-style) and a mesh payload.

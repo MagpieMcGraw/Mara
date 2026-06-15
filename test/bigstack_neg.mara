@@ -1,0 +1,12 @@
+module bigstack_neg
+//@ expect-fail: too large for the stack
+// A big partial array with no scope allocator used to silently stack-allocate
+// its backing and overflow at runtime (the fixed-array-only guard missed it).
+// Storage routing (check_storage_sizes) now flags it at the declaration, the
+// same clean error a big fixed array gets.
+main :: fun() {
+	buf : [..4096]byte = void
+	buf.len = 1
+	buf[0] = 1
+	print("%", buf[0])
+}

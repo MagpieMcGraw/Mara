@@ -2,11 +2,13 @@ module pathtest
 
 use mara.core
 use mara.os
+include mara.memory
 
 main :: fun() {
-	// Runtime-built path, NO arena: cstring() is a zero-copy checked
-	// conversion — utf8 appends keep a 0 after the content, so the
-	// terminator check at [len] passes inside file_open_read.
+	this_program = Program(Arena_Basic(16 * MB))
+	// cstring() is a zero-copy checked conversion (no arena needed for it) —
+	// utf8 appends keep a 0 after the content, so the terminator check at
+	// [len] passes inside file_open_read. The arena backs the 4 KB read buffer.
 	path : [..64]utf8
 	&path + "pathtest"
 	&path + ".mara"
