@@ -2841,7 +2841,8 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
         if sl, ok := actual.(^Type_Slice); ok {
             infer_type_params(subst, t.elem, sl.elem, c)
         } else if fa, ok := actual.(^Type_Fixed_Array); ok {
-            // Fixed arrays are compatible with slices for inference
+            // Fixed arrays decay to slices by value (header materialised);
+            // drives slice-shaped inference. Pointer case stays closed.
             infer_type_params(subst, t.elem, fa.elem, c)
         } else if pa, ok := actual.(^Type_Partial_Array); ok {
             // Partial arrays coerce to slice views (`[]$T` ← [..N]T), so
@@ -3267,6 +3268,27 @@ is_err_type :: proc(t: Type) -> bool {
     return false
 }
 
+// Through a pointer there is no array→slice decay: the pointee must already
+// have the target's memory layout. A fixed array `[N]T` is N inline elements
+// with NO {ptr,len,cap} header, so `^[N]T` cannot stand in for `^[]T` or
+// `^[..M]T` — doing so let `&fixed + x` bind to core's `slice_add` (param
+// `^[]$T`) and then read a header off raw inline elements. Returns true for
+// that mismatch: exactly one side a fixed array, the other a header-shaped
+// buffer (slice / partial array). Fixed↔fixed and slice↔partial (both
+// consistent layouts) are NOT mismatches and keep flowing.
+ptr_pointee_layout_mismatch :: proc(a, b: Type) -> bool {
+    _, a_fixed := a.(^Type_Fixed_Array)
+    _, b_fixed := b.(^Type_Fixed_Array)
+    if a_fixed == b_fixed { return false }
+    other := a
+    if a_fixed { other = b }
+    #partial switch _ in other {
+    case ^Type_Slice, ^Type_Partial_Array:
+        return true
+    }
+    return false
+}
+
 types_equal :: proc(a: Type, b: Type) -> bool {
     // nil return type (void) — only matches itself
     if a == nil && b == nil { return true }
@@ -3363,6 +3385,9 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // ^byte accepts any pointer (all memory is bytes)
         if _, ba := va.elem.(Type_Byte); ba { return true }
         if _, bb := vb.elem.(Type_Byte); bb { return true }
+        // No array→slice decay through a pointer: ^[N]T must not satisfy
+        // ^[]T / ^[..M]T (a fixed array has no slice header to alias).
+        if ptr_pointee_layout_mismatch(va.elem, vb.elem) { return false }
         return types_equal(va.elem, vb.elem)
     case ^Type_Scope:
         vb, ok := b.(^Type_Scope)
@@ -3402,15 +3427,16 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Note: we don't compare size here — arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
-        // Implicit coercion: [:]T is compatible with [N]T (slice ← array).
-        // A fixed array is fully-populated by contract — `[N]T` means N
-        // elements, period. So a slice header {len = N, cap = N} reading
-        // off it is honest by the type's own promise. Callers who want
-        // variable-length tracking use partial arrays (`[..N]T`).
+        // By-value fixed-array -> slice decay: `[N]T` materialises a slice
+        // header {ptr=&arr[0], len=cap=N} — honest, since [N]T is exactly N
+        // elements (e.g. Mesh_Data{primitive_quad()}). The source is hoisted to
+        // a scope-lived local, and lifetime past that scope is policed by
+        // return-escape analysis. NOT allowed THROUGH A POINTER (^[N]T has no
+        // header to alias) — that gate is ptr_pointee_layout_mismatch above,
+        // which short-circuits before this case is ever reached for ^[]T.
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
             return buffer_elem_compatible(va.elem, fa.elem)
         }
-        // Implicit coercion: [:]T is compatible with [..N]T (slice ← partial array view).
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
             return buffer_elem_compatible(va.elem, pa.elem)
         }

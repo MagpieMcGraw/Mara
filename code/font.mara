@@ -45,6 +45,9 @@ load_glyphs_and_metrics :: fun(
 	metrics.descent  = f32(ttf.hhea.descent)  * atlas.px_scale
 	metrics.line_gap = f32(ttf.hhea.line_gap) * atlas.px_scale
 
+	// Fill the whole provided buffer. Callers pass a partial array (len 0,
+	// cap = glyph count); mark it full so downstream lookups see every slot.
+	glyphs.len = glyphs.cap
 	for i in 0..i32(glyphs.len) {
 		codepoint := first + u32(i)
 		glyph_index := cmap_glyph_index(&ttf_file, ttf.cmap_sub, codepoint)
@@ -195,11 +198,11 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 					midpoint_x := (off_x + point_x) * 0.5
 					midpoint_y := (off_y + point_y) * 0.5
 					&nodes + Node{midpoint_x, midpoint_y, true}
-					off_x = point_x off_y = point_y have_off = true
-				else
 					off_x = point_x
 					off_y = point_y
 					have_off = true
+				else
+					off_x = point_x	off_y = point_y	have_off = true
 				}
 			}
 			// a contour can end on a trailing off-curve control

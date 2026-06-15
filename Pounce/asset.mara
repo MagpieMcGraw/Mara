@@ -11,18 +11,14 @@ use object
 use gfx
 use cache
 
-DEFAULT_MESH :: Mesh{"=quad", 0}
-DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 0}  // 1x1 white pixel at (0,0)
-ATLAS_TEXTURE :: Texture{"ATLAS", {1, 1, 0, 0}, 0}      // entire atlas layer 0
-
 Font :: struct {
 	size : i32 = 1024
 	name: str64
 	layer: u32,
 	offset_x, offset_y: i32,  // Position within atlas layer
 	metrics: Line_Metrics     // from mara.font, same type load_glyphs returns
-	glyphs: [256]Glyph
-}
+	glyphs: [..256]Glyph      // partial array: carries a slice header, so &glyphs
+}                             // flows into the loader's ^[]Glyph param directly
 
 // Streaming state
 Stream_State :: union {
@@ -79,9 +75,8 @@ Assets :: struct {
 	needs_resolve: bool,  // Set true to trigger a resolve pass
 }
 
-
 Tex_Stream :: struct {
-	packer:        Texture_Packer
+	packer: = Skyline(1024, 1024)
 	cache_index:   i64
 	current_layer: u32
 	file_handle:   os.File_Id
@@ -103,8 +98,6 @@ Font_Stream :: struct {
 // // Initialize asset system - FAST, only loads cache TOC
 init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
     a.vao = vao
-
-    print("Look at that asset!")
 
     // default meshes
     prim_indices, prim_names := gfx.primitives_init(vao)
@@ -156,8 +149,6 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
 
 load_font_test :: fun(a: ^Assets, fname: []utf8) {
 	this_font := &a.fonts[.len]
-
-	print("font size:", a.fonts[.len].size)
 	pixels := load_glyphs_and_metrics(fname,
 		&this_font.glyphs, &this_font.metrics)
 
@@ -172,8 +163,6 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
     this_font.layer = u32(a.fonts.len)
     this_font.name = fname
     a.fonts.len += 1
-
-    print(a.fonts[.len - 1].name)
 }
 
 // // Get texture by substring match - returns ok=false if not found

@@ -1,0 +1,18 @@
+module fixed_decay_neg
+
+use mara.core
+
+// MUST FAIL: a fixed array has no {ptr,len,cap} header, so a POINTER to one
+// (^[N]T) can't stand in for ^[]T / ^[..M]T. By-value [N]T -> []T decay IS
+// allowed (it materialises a header — see test/hoisttest); only the pointer
+// case is closed, via ptr_pointee_layout_mismatch in types_equal's ^Type_Ptr
+// case. This is the shape that let `&fixed + x` bind to slice_add and read a
+// slice header off raw inline elements.
+
+takes_mut :: fun(s: ^[]i32) { }
+
+main :: fun() {
+	fixed : [8]i32
+	takes_mut(&fixed)    // ^[]i32 <- ^[8]i32   (closed: no header to alias)
+	&fixed + 5           // append routes through ^[]$T too (closed)
+}

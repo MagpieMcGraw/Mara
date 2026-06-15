@@ -45,7 +45,7 @@ camera_align_with_gravity :: fun(camera: ^Camera) {
 	camera.obj.dir = quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})
 }
 
-camera_move :: fun(events: ^Event_State, loop_time: f32, camera: ^Camera) {
+camera_move :: fun(events: ^Event_State, loop_time: f64, camera: ^Camera) {
 	direction: Vec3
 	speed: f32 = 500
 
@@ -78,7 +78,7 @@ camera_move :: fun(events: ^Event_State, loop_time: f32, camera: ^Camera) {
 		speed *= 5.0
 	}
 
-	move_this_frame := direction * speed * loop_time
+	move_this_frame := direction * speed * f32(loop_time)
 	camera.obj.accel += move_this_frame
 }
 
@@ -112,9 +112,7 @@ camera_turn_flying :: fun(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera
 
 // Walking camera - constrained to ground-based movement
 // Yaw always around world up, no roll, maintains upright orientation
-camera_turn_walking :: fun(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
-	if xrel == 0 and yrel == 0 do return
-
+camera_turn_walking :: fun(xrel, yrel, zrel: f32, loop_time: f32, camera: ^Camera) {
 	sensitivity: f32 = 0.01
 	x_rot := camera.obj.turn_speed * f32(xrel) * sensitivity
 	y_rot := camera.obj.turn_speed * f32(yrel) * sensitivity

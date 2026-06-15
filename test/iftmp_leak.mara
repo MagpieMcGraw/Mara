@@ -22,7 +22,8 @@ producer :: fun(slot: ^[]i32, first: u32, name: []utf8) -> [1000]byte {
 
 init_fn :: fun() {
 	h : Holder
-	_ = &h.slot.producer(0, "data/fonts/Inter.ttf")   // UFCS, big return explicitly discarded
+	view := h.slot[:]                                  // []i32 view; ^[16]i32 can't stand in for ^[]i32
+	_ = &view.producer(0, "data/fonts/Inter.ttf")     // UFCS, big return explicitly discarded
 }
 
 run_fn :: fun(focus: bool, fps: f64) -> bool {

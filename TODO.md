@@ -1,6 +1,10 @@
 1 item per line, 1 line space between items.
 
-How about a span as a slice index? Could be good for the font loader
+Give slices a .hdr field. Make it the only way to reassign the slice header.
+
+fixed arrays type check for slice append functions, but trigger an assert
+
+casting vec3 to bool causes a codegen error
 
 Dynamic arena: if we allocate past the cap, commit more virtual memory. If we free to below the cap, decommit up to the cap. Allow users to manually commit more, some may want to comntrol the timing of the commit. Also allow modifying the cap at runtime?
 

@@ -41,11 +41,15 @@ obj_track_other :: fun(obj: ^Object, other_obj: Object) {
 	obj.pos = other_obj.pos + z_off + y_off + x_off
 }
 
+DEFAULT_MESH :: Mesh{"=quad", 0}
+DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 0}  // 1x1 white pixel at (0,0)
+ATLAS_TEXTURE :: Texture{"ATLAS", {1, 1, 0, 0}, 0} 
+
 Visual :: struct {
-	texture: Texture
-	mesh: Mesh
+	texture := DEFAULT_TEXTURE
+	mesh := DEFAULT_MESH
 	texture_index: u32
-	color: [3]f32
+	color: [3]f32 = [1, 0, 0]
 	font: [..64]utf8   // for glyph resolution
 	resolve: bool      // enable automatic asset resolution
 }
@@ -59,4 +63,10 @@ Texture :: struct {
 Mesh :: struct {
 	name:  str64
 	index: i64,
+}
+
+Playa :: struct {
+	obj : Object
+	visual : Visual
+	obj.scale = Vec3{100, 100, 100}
 }

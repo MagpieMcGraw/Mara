@@ -76,6 +76,7 @@ Megastruct :: struct {
 	// Rendering
 	quad:   Quad_Renderer
 	player: Player
+	playa : Playa
 }
 
 game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
@@ -94,15 +95,14 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	_ = sdl.GL_MakeCurrent(game.window, game.gl_context)
 	gl_load(GL_GetProcAddress)
 
-	quad_init(&game.quad)
-	game.player.x = 455
-	game.player.y = 270
-
 	// testing the gfx
 	game.vao = VAO_State()
 	//gfx.primitives_init(&game.vao)
 	game.draw_state_object = draw_state_create(
 		"data/shaders/instanced.glsl",
+		&game.vao, 8192, 32)
+	game.draw_state_text = draw_state_create(
+		"data/shaders/instanced_text.glsl",
 		&game.vao, 8192, 32)
 
 	&game.assets.init(&game.vao, "data/fonts/Inter_18pt-Regular.ttf")
@@ -131,17 +131,37 @@ game_events :: fun(game: ^Megastruct) {
 			game.running = false
 	}
 }
-
-game_update :: fun(dt: f64) {
+game_update :: fun(game: ^Megastruct, dt: f64) {
+	camera_move(&game.events, game.timers.fixed.step, &game.camera)
+	camera_turn_walking(game.mouse.xrel, game.mouse.yrel, 0,
+		f32(game.timers.fixed.step), &game.camera)
+	camera_update(&game.camera, f32(game.timers.fixed.step))
 	// so far we do nothing
 }
-
 game_draw :: fun(game: ^Megastruct) {
+	// --- Everything OpenGL needs to draw the playa this frame ---
+	// Static GPU state (checked by draw_state_assert_ready):
+	//   shader         linked program        (0 = link failed)
+	//   command_buffer MDI indirect buffer
+	//   texture        sampler2DArray source (font atlas for the text shader)
+	//   vao + 3 VBOs   vao / vertex_vbo / ebo / instance_vbo
+	//   mesh_count>0   at least one mesh uploaded to the shared VAO
+	//   index_offset>0 geometry actually uploaded (indices exist to draw)
+	// Per-frame data (checked inside draw_state_render):
+	//   instance_count matches instances.len for each batch
+	//   each mesh_id resolves to a VAO_Mesh with index_count > 0
+	//   command_count > 0 once batches are flattened to DrawCommands
+	draw_state_assert_ready(&game.draw_state_text)
+
 	ClearColor(0.85, 0.80, 0.70, 1.0)
 	Clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
-	p := &game.player
-	draw_quad(&game.quad, 960.0, 540.0,
-		f32(p.x), f32(p.y), f32(p.size), f32(p.size), p.color)
+
+	append_one(&game.draw_state_text,
+		game.playa.obj, game.playa.visual, game.camera)
+	draw_state_bind(&game.draw_state_text)
+	draw_state_render(&game.draw_state_text)
+	draw_state_reset(&game.draw_state_text)
+
 	_ = GL_SwapWindow(game.window)
 }
 
@@ -155,7 +175,7 @@ game_run :: fun(memory: ^[]byte) -> bool {
 	game_events(&game)
 
 	tally_up(&timer.frame, &timer.fixed)
-	for one_step(&timer.fixed) do game_update(timer.fixed.step)
+	for one_step(&timer.fixed) do game_update(&game, timer.fixed.step)
 
 	game_draw(&game)
 

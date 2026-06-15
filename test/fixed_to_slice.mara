@@ -1,0 +1,19 @@
+module fixed_to_slice
+
+use mara.core
+
+// The supported ways to get a fixed array into slice-shaped params now that
+// the implicit [N]T -> []T decay is closed. Both rely on an explicit arr[:].
+
+reads  :: fun(s: []i32) -> i32 { return s[0] }   // read-only param: []T
+writes :: fun(s: ^[]i32) { s[0] = 42 }           // mutable param: ^[]T
+
+main :: fun() {
+	a : [4]i32
+	a[0] = 7
+	print("read:", reads(a[:]))   // pass the slice directly (no &) -> 7
+
+	v := a[:]                     // mutable needs a named view: &(a[:]) is
+	writes(&v)                    // rejected (no address for a temp slice)
+	print("write:", a[0])         // 42 — write propagated through the view
+}

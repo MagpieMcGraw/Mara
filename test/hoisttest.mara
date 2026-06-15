@@ -1,0 +1,27 @@
+module hoisttest
+
+use mara.core
+
+// Does the by-value fixed-array -> slice decay hoist the source to stable
+// storage, or slice over a doomed temporary? Build two slice-holding structs
+// from two fixed-array-returning calls: if each temp gets its own scope-lived
+// local, both read back intact; if they share a statement-temp slot, the
+// first corrupts. Also exercise "laundering" — mutate through ^Holder.
+
+Holder :: struct { data: []i32 }
+
+make_arr :: fun(base: i32) -> [4]i32 {
+	r : [4]i32
+	r[0] = base  r[1] = base + 1  r[2] = base + 2  r[3] = base + 3
+	return r
+}
+
+mutate :: fun(h: ^Holder) { h.data[0] = 999 }
+
+main :: fun() {
+	a := Holder{make_arr(10)}
+	b := Holder{make_arr(20)}
+	mutate(&a)
+	print("a:", a.data[0], a.data[1], a.data[2], a.data[3])   // 999 11 12 13
+	print("b:", b.data[0], b.data[1], b.data[2], b.data[3])   // 20 21 22 23
+}
