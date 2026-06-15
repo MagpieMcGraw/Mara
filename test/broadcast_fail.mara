@@ -1,0 +1,12 @@
+module broadcast_fail
+
+//@ expect-fail: does not broadcast
+
+// `x, y = <single value>` used to silently "broadcast" the value into every
+// target (and, for the reassign form, invent the names as fresh locals). That
+// is almost always a mistaken arity, so it is now a hard error. The explicit
+// `x, y = all <expr>` form survives for when broadcasting is actually intended.
+main :: fun() {
+	x, y = 7
+	print(x, y)
+}

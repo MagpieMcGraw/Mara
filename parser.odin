@@ -601,9 +601,6 @@ Stmt_Multi_Return_Assign :: struct {
     type_expr: Type_Expr,
     span:      Span,
     var_types: [dynamic]Type,   // per-name resolved types, filled by type checker
-    is_broadcast: bool,         // true when RHS is a single non-multi-return value broadcast
-                                // to every target. Set by the type checker; codegen
-                                // evaluates the RHS once and stores it into each target.
 }
 
 Stmt_Call :: struct {
@@ -2819,7 +2816,9 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 advance(p) // consume '='
                 first := parse_expr(p)
                 if current_kind(p) != .Comma {
-                    // Single RHS (multi-return call or broadcast)
+                    // Single RHS: a multi-return call to destructure. A single
+                    // scalar (`x, y = 7`) is rejected by the checker — no
+                    // implicit broadcast; use `x, y = all 7` if you mean it.
                     mt_vals: [dynamic]Expr
                     append(&mt_vals, first)
                     return new_clone(Stmt_Multi_Return_Assign{

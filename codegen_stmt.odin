@@ -913,13 +913,6 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
     if len(s.values) == 0 {
         codegen_fatal(g, s.span, CODE_MULTI_ASSIGN_RHS_VALUES)
     }
-    // Broadcast: `a, b = single_value` — the type checker has already flagged
-    // this case. Evaluate the RHS once, store into each target. Bypasses the
-    // call-machinery below.
-    if s.is_broadcast {
-        gen_broadcast_assign(g, s)
-        return
-    }
     call: ^Expr_Call
     is_try := false
     if direct, direct_ok := s.values[0].(^Expr_Call); direct_ok {
@@ -1132,36 +1125,6 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
     clear(&g.tuple_result_types)
 }
 
-// Store a multi-return element into an expression target (field access, index, deref).
-// Broadcast assign: `a, b = single_value` — synthesize one Stmt_Assign per
-// target sharing the RHS expression, then dispatch through gen_stmt. This
-// reuses the full assignment-dispatch logic (slice `.len`/`.cap` writes,
-// chained field access, deref targets, etc.) instead of recreating it.
-// The RHS is re-evaluated per target — fine for the common case of bare
-// idents and field reads, which the optimizer collapses anyway. If you
-// need exactly-one-evaluation semantics for an effectful RHS, bind it to
-// a local first: `tmp := f(); a, b = tmp`.
-gen_broadcast_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
-    target_t: Type
-    if len(s.var_types) > 0 { target_t = s.var_types[0] }
-    for name, i in s.names {
-        synth := new(Stmt_Assign)
-        synth.span = s.span
-        synth.value = s.values[0]
-        synth.target_type = target_t
-        synth.var_type = target_t
-        synth.env_type = target_t
-        if name != "" {
-            synth.name = name
-        } else if i < len(s.targets) && s.targets[i] != nil {
-            synth.target = s.targets[i]
-        } else {
-            codegen_fatal(g, s.span, CODE_UNSUPPORTED_MULTI_RETURN_TARGET_EXPRESSION)
-        }
-        gen_stmt(g, synth)
-    }
-}
-
 // Address of an expression target (field access / deref) so an aggregate
 // multi-return slot (struct, fixed array) can be copied into it in place.
 // Index targets aren't supported — same restriction as the scalar path.
@@ -1185,6 +1148,7 @@ gen_multi_return_target_addr :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign, 
     return "", false
 }
 
+// Store a multi-return element into an expression target (field access, index, deref).
 gen_multi_return_store_target :: proc(g: ^Codegen, target: Expr, elem_type: string, val: string) {
     #partial switch t in target {
     case ^Expr_Field_Access:
