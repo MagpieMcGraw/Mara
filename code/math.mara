@@ -64,10 +64,10 @@ max_u16 :: fun(a: u16, b: u16) -> u16 { @llvm.umax.i16 }
 max_f32 :: fun(a: f32, b: f32) -> f32 { @llvm.maxnum.f32 }
 max_f64 :: fun(a: f64, b: f64) -> f64 { @llvm.maxnum.f64 }
 
-abs_int :: fun(x: i64) -> i64 {
-	if x < 0 { return -x }
-	return x
-}
+// abs(i64_min) is the defined i64_min (|i64_min| is unrepresentable) — the
+// intrinsic's is_int_min_poison flag is false, so it returns the input rather
+// than trapping the way the old `-x` did. Matches the fabs siblings below.
+abs_int :: fun(x: i64) -> i64 { @llvm.abs.i64 }
 abs_f32 :: fun(x: f32) -> f32 { @llvm.fabs.f32 }
 abs_f64 :: fun(x: f64) -> f64 { @llvm.fabs.f64 }
 

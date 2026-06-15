@@ -1,0 +1,14 @@
+module absint
+use mara.math
+// abs_int now lowers to @llvm.abs.i64 (is_int_min_poison = false), matching its
+// fabs siblings. abs(i64_min) returns the defined i64_min — |i64_min| isn't
+// representable — instead of trapping the way the old `-x` did. (TODO #41)
+main :: fun() {
+	a : i64 = -5
+	assert(abs(a) == 5)
+	b : i64 = 7
+	assert(abs(b) == 7)
+	imin : i64 = i64(1) << 63        // -9223372036854775808
+	assert(abs(imin) == imin)        // no overflow trap; defined i64_min
+	print("absint ok")
+}
