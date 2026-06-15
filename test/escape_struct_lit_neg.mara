@@ -1,0 +1,38 @@
+module escape_struct_lit_neg
+
+// MUST FAIL: returning a struct literal whose slice field views THIS frame's
+// storage. The struct's bytes are sret-copied, but the slice keeps pointing at
+// the dead frame. Caught by returned_struct_literal_dangles.
+//   via_slice_of_local - explicit slice of a local array
+//   via_call_decay     - a by-value fixed-array call result, decayed
+//   via_param_array    - a by-value array param (a frame-local copy), decayed
+// The SAFE bare-local-array form (return Holder{verts}) is relocated by codegen
+// — see test/relotest; param-backed slice fields — see test/escape_struct_ok.
+
+Holder :: struct { sl: []i32 }
+
+make_arr :: fun() -> [4]i32 {
+	r : [4]i32
+	r[0] = 7
+	return r
+}
+
+via_slice_of_local :: fun() -> Holder {
+	r : [4]i32
+	return Holder{r[:]}
+}
+
+via_call_decay :: fun() -> Holder {
+	return Holder{make_arr()}
+}
+
+via_param_array :: fun(arr: [4]i32) -> Holder {
+	return Holder{arr}
+}
+
+main :: fun() {
+	a := via_slice_of_local()
+	b := via_call_decay()
+	c := via_param_array(make_arr())
+	print(a.sl[0], b.sl[0], c.sl[0])
+}

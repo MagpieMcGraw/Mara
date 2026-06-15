@@ -5183,6 +5183,51 @@ returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> b
     return false
 }
 
+// A direct `return StructLit{...}` whose ref field points at / materialises
+// storage in THIS frame dangles past the return: the struct's own bytes are
+// sret-copied, but a slice/ptr field keeps pointing at frame memory. is_local_ref
+// blanket-exempts struct literals (it trusted codegen to relocate a bare local
+// array backing) and returns_locally_backed_struct only covers the call/ident
+// passthrough forms — so the direct literal with a frame-local ref field
+// (`Foo{r[:]}`, `Foo{make_arr()}`) slipped through and dangled silently. This
+// flags any EXPLICITLY-ASSIGNED ref field whose value is rooted in our frame;
+// param/global-backed fields (Mesh_Data over a `storage` param) stay safe.
+returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Env) -> bool {
+    for field, i in lit.fields {
+        ft := struct_lit_field_type(c, lit, i)
+        if ft == nil || !is_ref_type(ft) { continue }
+        v := field.value
+        d: int
+        if _, fa := expr_type(v).(^Type_Fixed_Array); fa {
+            // Field is a slice; the value is a fixed array being decayed. The
+            // backing is the array's STORAGE: a by-value return (call) is a
+            // fresh frame temp; a field access inherits its root; idents and
+            // array literals resolve through provenance (global/param/local).
+            #partial switch vv in v {
+            case ^Expr_Call:         d = env.scope_depth          // by-value return: a frame temp
+            case ^Expr_Field_Access: d = expr_provenance(c, vv.expr, env).depth
+            case ^Expr_Ident:
+                // A BARE local array decayed into a returned slice field is
+                // relocated by codegen to the caller's sret (verified:
+                // test/relotest) — safe. A by-value array PARAM is a frame-local
+                // copy, so slicing it into the return dangles. (Remaining gap: a
+                // value-initialised local array bare-ident isn't relocated either
+                // but is exempted here; closing it needs the decl's value==nil
+                // flag, absent from env. The explicit `arr[:]`, call, and field
+                // forms above already catch the common cases.)
+                if is_param(env, vv.name) { d = env.scope_depth } else { d = -1 }
+            case:                    d = expr_provenance(c, v, env).depth
+            }
+        } else {
+            // Slice/ptr value (e.g. `r[:]`, `&local`, a slice var): its data
+            // pointer's provenance already tells us where the backing lives.
+            d = expr_provenance(c, v, env).depth
+        }
+        if d >= env.scope_depth { return true }
+    }
+    return false
+}
+
 // Solidify inferred types to their defaults (for := variable declarations)
 solidify_type :: proc(t: Type) -> Type {
     rt := resolve_infer(t)
@@ -8275,6 +8320,15 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
             // passthrough where this function doesn't itself participate in
             // the escape relocation.
             if returns_locally_backed_struct(c, val, env) {
+                check_error(c, s.span,
+                    TYPE_CANNOT_RETURN_STRUCT_WHOSE_SLICE)
+            }
+            // Direct `return Foo{r[:]}` / `return Foo{make_arr()}`: a ref field
+            // viewing this frame's storage. is_local_ref exempts struct literals
+            // and the check above only covers call/ident passthrough, so this is
+            // the gap that let such returns dangle silently.
+            if lit, lit_ok := val.(^Expr_Struct_Literal);
+               lit_ok && returned_struct_literal_dangles(c, lit, env) {
                 check_error(c, s.span,
                     TYPE_CANNOT_RETURN_STRUCT_WHOSE_SLICE)
             }

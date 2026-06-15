@@ -1,0 +1,21 @@
+module escape_struct_ok
+
+use mara.core
+
+// Positive: a struct literal returned with a slice field backed by a PARAM
+// (storage) is safe — the data lives in the caller's frame, not ours. Must NOT
+// be flagged by returned_struct_literal_dangles (mirrors Mesh_Data over a
+// `storage` param in the primitives / cache code).
+
+Holder :: struct { sl: []i64 }
+
+safe :: fun(storage: ^[]byte) -> Holder {
+	return Holder{slice([:3]i64, storage)}
+}
+
+main :: fun() {
+	buf : [..64]byte
+	h := safe(&buf)
+	h.sl[0] = 5
+	print("ok:", h.sl[0])
+}
