@@ -390,30 +390,18 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             alloca_name := fmt.tprintf("%%%s", s.name)
             elem_bytes := elem_byte_size(elem_t, g.checked)
             total_bytes := alloc_cap * elem_bytes
-            loc := format_location(s.span.file, s.span.line, s.span.col)
             // NRVO: when this local is the value a partial-array-returning
             // function hands back, build it directly in the caller's %sret slot
             // — no fresh alloca. The header stamp below points ptr at %sret's
             // own inline storage (which lives in the caller's frame), so the
             // `return` is a no-op (gen_return skips the self-copy when src is
-            // already %sret).
+            // already %sret). Otherwise route storage through the shared
+            // primitive (stack for small, arena for big — one decision site).
             is_nrvo := g.ret_partial_cap > 0 && s.name == g.nrvo_var
             if is_nrvo {
                 alloca_name = "%sret"
-            } else if g.context_enabled && routes_to_arena(pa) {
-                // Big partial array: arena-bump the whole structure including
-                // header. The arena returns a pointer to a fresh region whose
-                // layout matches our IR type — initialize ptr/len/cap into it.
-                // routes_to_arena (whole-struct bytes) is the SAME predicate the
-                // type-check guard uses, so the two stages agree on "big".
-                data_name := emit_arena_bump(g, total_bytes + slice_header_bytes, s.name, loc)
-                emit(g, "  %s = bitcast ptr %s to ptr", alloca_name, data_name)
             } else {
-                if elem_t == "i8" {
-                    emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type, ", align 16"}))
-                } else {
-                    emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type}))
-                }
+                emit_partial_array_storage(g, alloca_name, pa, s.name, s.span)
             }
             // Initialise header: ptr → elements, len → 0, cap → N.
             elements_ptr := fresh_tmp(g)

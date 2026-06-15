@@ -2266,6 +2266,36 @@ gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, co
     emit_label(g, end_label)
 }
 
+// emit_partial_array_storage binds the SSA name `dst` to a partial array's
+// { ptr, len, cap, [N x elem] } storage. This is the ONE place the stack-vs-
+// arena decision is made for PA storage, so it can't drift between the decl
+// path and the byte-read path (it did: the byte-read path used to always
+// alloca).
+//
+// Big PAs (routes_to_arena: whole-struct bytes >= ARENA_THRESHOLD) bump the
+// struct from the scope arena. There's deliberately no `context_enabled` gate:
+// the type checker (check_storage_sizes) already rejects a big value with no
+// allocator, so a big PA reaching codegen has one — and if some path slips past
+// the guard (e.g. a comptime `#if` arm), emit_arena_bump fatals, the loud
+// backstop, instead of silently putting a big buffer on the stack. Small PAs
+// get a stack alloca; i8 backings are over-aligned to 16 to match the
+// take()/byte-fill alignment policy.
+emit_partial_array_storage :: proc(g: ^Codegen, dst: string, pa: ^Type_Partial_Array, name: string, span: Span) {
+    elem_t := llvm_type_from_checker(pa.elem)
+    if routes_to_arena(pa) {
+        loc := format_location(span.file, span.line, span.col)
+        data := emit_arena_bump(g, checker_type_byte_size(pa), name, loc)
+        emit(g, "  %s = bitcast ptr %s to ptr", dst, data)
+        return
+    }
+    ir_type := partial_array_ir_type(elem_t, pa.size)
+    if elem_t == "i8" {
+        emit_raw(g, strings.concatenate({"  ", dst, " = alloca ", ir_type, ", align 16"}))
+    } else {
+        emit_raw(g, strings.concatenate({"  ", dst, " = alloca ", ir_type}))
+    }
+}
+
 // Allocate a fresh partial-array's backing storage and register it as a
 // Slice_Var. Returns the alloca's name so the caller can populate the
 // elements area (e.g. via gen_partial_array_byte_fill_at_*). Used by the
@@ -2284,21 +2314,7 @@ gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Typ
     ir_type := partial_array_ir_type(elem_t, pa.size)
     alloca_name := fmt.tprintf("%%%s", name)
 
-    if g.context_enabled && routes_to_arena(pa) {
-        // Big backing (e.g. font loca staging, ~131 KB): arena-bump the whole
-        // {ptr,len,cap,[N]} struct, same as the plain-decl path. Every field-3
-        // GEP below works off this pointer exactly as off an alloca — only the
-        // storage location changes. routes_to_arena is the SAME predicate the
-        // type-check guard uses, so the two stages agree on "big".
-        total := pa.size * elem_byte_size(elem_t, g.checked) + slice_header_bytes
-        loc := format_location(span.file, span.line, span.col)
-        data_name := emit_arena_bump(g, total, name, loc)
-        emit(g, "  %s = bitcast ptr %s to ptr", alloca_name, data_name)
-    } else if elem_t == "i8" {
-        emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type, ", align 16"}))
-    } else {
-        emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type}))
-    }
+    emit_partial_array_storage(g, alloca_name, pa, name, span)
     // Zero-init policy: the byte-fill that follows is dest-bounded and may
     // leave a tail — zeroed elements make that tail (and any later
     // cstring terminator check) deterministic.

@@ -26,32 +26,33 @@ worth a deliberate cleanup, not one-off bugs.
    (`codegen_stmt.odin` ~385) and the byte-read path
    (`gen_partial_array_alloc_and_register`, `codegen_array.odin` ~2273). The
    latter *always* `alloca`'d regardless of size, so `arr : [..N]T = bytes[off]`
-   (e.g. font loca staging, ~131 KB) put the whole backing on the stack. Both
-   now route on `routes_to_arena`, BUT they're still two separate copies of the
-   "alloca-or-arena + header init" logic. A single
-   `emit_partial_array_storage(name, pa, span) -> ptr` would dedupe them.
+   (e.g. font loca staging, ~131 KB) put the whole backing on the stack. [FIXED]
+   Both PA storage paths now call the one `emit_partial_array_storage` primitive
+   (see #5) — single decision site, no drift.
 
-4. **`context_enabled && size >= threshold` is the wrong gate.** [REMAINING]
-   Codegen still only routes to the arena when an allocator is declared; with
-   none, a big value falls through to `alloca`. The type-check guard
-   (`check_storage_sizes`) now catches that at compile time for the common
-   cases, so it's no longer the silent-overflow bug it was — but a big value in
-   a path the guard doesn't reach (e.g. a comptime `#if` arm, which bypasses
-   check_scope) would still silently stack-alloc. Cleaner end state: drop
-   `context_enabled` and route on size alone — `emit_arena_bump` already fatals
-   when no allocator is wired, the correct loud backstop. Deferred (adds new
-   fatal paths; wanted to keep this change low-risk).
+4. **`context_enabled && size >= threshold` was the wrong gate.** [FIXED]
+   Codegen used to route to the arena only when an allocator was declared; with
+   none, a big value fell through to `alloca`. `emit_partial_array_storage` now
+   routes on `routes_to_arena` alone — no `context_enabled`. The type-check
+   guard (`check_storage_sizes`) is the primary gate (clean early error); for a
+   path the guard doesn't reach (e.g. a comptime `#if` arm, which bypasses
+   check_scope) `emit_arena_bump` fatals — the loud backstop — instead of
+   silently stack-allocating. Verified both. (Extending the guard to `#if` arms
+   so they too get the clean early error, rather than the codegen fatal, is a
+   small follow-up — the guard's coverage, not the routing.)
 
 ## PA decl codegen shape
 
-5. **The partial-array decl dispatch is a branchy maze.**
-   `codegen_stmt.odin` ~135–430 forks across byte-read / slice-expr /
+5. **The partial-array decl dispatch is a branchy maze.** [PARTLY FIXED]
+   `codegen_stmt.odin` ~135–430 still forks across byte-read / slice-expr /
    init-value(string|ident|field) / reassign-existing / plain-decl, each gated
-   on `get_slice` existence and subtle source-expression shape checks. It's hard
-   to be sure which branch a given decl takes, and storage allocation + header
-   init are duplicated across several of them. A single
-   `emit_partial_array_storage(name, pa) -> ptr` (alloca-or-arena, header init)
-   would centralize it.
+   on `get_slice` existence and subtle source-expression shape checks — that
+   dispatch structure is unchanged (a larger refactor). But the duplicated,
+   drift-prone part — the alloca-vs-arena storage decision — is now a single
+   `emit_partial_array_storage(dst, pa, name, span)` primitive that the
+   plain-decl path and the byte-read path both call. Header init still lives
+   per-path (the two genuinely differ: plain-decl stamps ptr/len/cap then
+   element-constructs; byte-read memsets then byte-fills + sets len).
 
 ## Other
 
