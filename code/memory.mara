@@ -6,6 +6,8 @@ KB :: 1 << 10
 MB :: 1 << 20
 GB :: 1 << 30
 
+// Dynamic arena idea rejected
+
 // ---------------------------------------------------------------------------
 // Arena_Basic — pure bump allocation with mark/reset, no per-alloc overhead.
 //

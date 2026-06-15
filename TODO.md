@@ -4,8 +4,6 @@ Give slices a .hdr field. Make it the only way to reassign the slice header.
 
 casting vec3 to bool causes a codegen error
 
-Dynamic arena: if we allocate past the cap, commit more virtual memory. If we free to below the cap, decommit up to the cap. Allow users to manually commit more, some may want to comntrol the timing of the commit. Also allow modifying the cap at runtime?
-
 Modules are not structs. See register_and_check_declarations vs register scope defs for examples.
 
 When lexing, save file sizes, pass them on to the parser, to know roughly how much memory to allocate.
@@ -49,8 +47,6 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 [DECIDE] ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
 
 [DEEP] FIX abs_int overflows on i64 min; @llvm.abs.i64 exists and matches the f32/f64 siblings. No decision — but @llvm.abs.i64 takes an i1 is_int_min_poison arg the current @llvm.x mapping doesn't supply, so it needs intrinsic plumbing.
-
-[DECIDE] FIX instance_capacity in DrawState is stored but never checked before BufferSubData. (Render-redesign area.)
 
 [DEEP] FIX Windows ANSI paths: CreateFileA breaks on non-ASCII paths (Lithuanian user dirs). One-line app manifest setting activeCodePage to UTF-8 fixes every A-suffix call at once. No decision — but needs a manifest file + link integration.
 
