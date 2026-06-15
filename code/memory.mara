@@ -84,19 +84,24 @@ oom_string :: "
 Arena_Debug :: class(cap: i64) {
 	base: []byte = sys_alloc(cap)
 	capacity: i64 = cap
-	offset: i64 = 0
 	current_mark: i64 = -1
 	last_alloc: i64 = -1
 
+	// sys_alloc hands back len == cap; reset len to 0 so base.len IS the bump
+	// cursor (cap stays the reservation). Every base[off] access is a sized
+	// byte read/write, which bounds-checks against capacity, so carving ahead
+	// of len is fine — no separate offset field needed.
+	base.len = 0
+
 	mark :: fun(a: ^Self) {
 		prev := a.current_mark
-		off := (a.offset + 15) & -16
+		off := (a.base.len + 15) & -16
 
 		a.base[off] = prev
 		a.base[off + size_of(prev)] = a.last_alloc
 
 		a.current_mark = off
-		a.offset = off + 16
+		a.base.len = off + 16
 	}
 
 	AllocHeader :: class{
@@ -113,7 +118,7 @@ Arena_Debug :: class(cap: i64) {
 		name: ^byte = #caller_name,
 		span: ^byte = #caller_span) -> []byte
 	{
-		off := (a.offset + 15) & -16
+		off := (a.base.len + 15) & -16
 		cap := a.capacity
 		end := off + HEADER_SIZE + size
 
@@ -132,7 +137,7 @@ Arena_Debug :: class(cap: i64) {
 		data_off := off + HEADER_SIZE
 		result := a.base[data_off : data_off+size]
 		a.last_alloc = off
-		a.offset = end
+		a.base.len = end
 		return result
 	}
 
@@ -143,7 +148,7 @@ Arena_Debug :: class(cap: i64) {
 		prev : i64 = a.base[cm]
 		saved_last : i64 = a.base[cm + size_of(prev)]
 
-		a.offset = cm
+		a.base.len = cm
 		a.last_alloc = saved_last
 		a.current_mark = prev
 	}
@@ -155,7 +160,7 @@ Arena_Debug :: class(cap: i64) {
 		failed_span: ^byte)
 	{
 		print(oom_string,
-			a.capacity, a.offset, a.capacity - a.offset,
+			a.capacity, a.base.len, a.capacity - a.base.len,
 			failed_name, failed_size, failed_span)
 
 		print("--- All allocations (most recent first) ---")

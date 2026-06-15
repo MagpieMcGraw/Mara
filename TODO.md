@@ -38,8 +38,6 @@ When parsing, put defs and decls in two different arrays. Can loop over each wit
 
 Byte reads might need new syntax. Maybe an = to read without auto-len, and a += to read with auto len. Also figure out what ops should set the len.
 
-[DECIDE] BUG draw_state_append writes batch.instances[i] using the object index and never increments instance_count. Should be instances[batch.instance_count] then increment, in both the main and highlight paths. As written, render sees count 0 and draws nothing. (Render-redesign area; conflicts with the discussed "drop instance_count, use instances.len" option — pick which.)
-
 [DECIDE] BUG quat_slerp Taylor asin is off by 2x near d=0.99. Either drop the nlerp cutoff from 0.9995 to ~0.9, or use a real acos (libm acosf, or llvm.acos intrinsic in LLVM 19+). Also replace sin(f32(theta)) with sqrt(1 - d X d), exact and free. (Pick the approach.)
 
 [DEEP] BUG broadcast x, y = 7 segfaults in non-main fn (disabled test, dated 2026-05-30). No decision — codegen investigation.
@@ -48,19 +46,13 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 
 [DEEP] BUG calling a fn-typed parameter fails in codegen — omitted test, dated 2026-05-30. No decision — codegen investigation.
 
-ADD opt-in unused-locals warning: the read-tracking machinery is built (Type_Env.reads + check_unused_locals/flag_unused_local; must-use-err already rides it). Non-err unused locals are tracked but not reported — flip the else branch in flag_unused_local behind a flag.
-
 [DECIDE] ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
-
-[DECIDE] FIX Arena_Debug.offset duplicates base.len now that len is the cursor. One field can go. (In the current code `offset` IS the cursor and `base.len` is the capacity from sys_alloc — they don't actually duplicate; needs your intended arena representation first.)
 
 [DEEP] FIX abs_int overflows on i64 min; @llvm.abs.i64 exists and matches the f32/f64 siblings. No decision — but @llvm.abs.i64 takes an i1 is_int_min_poison arg the current @llvm.x mapping doesn't supply, so it needs intrinsic plumbing.
 
 [DECIDE] FIX instance_capacity in DrawState is stored but never checked before BufferSubData. (Render-redesign area.)
 
 [DEEP] FIX Windows ANSI paths: CreateFileA breaks on non-ASCII paths (Lithuanian user dirs). One-line app manifest setting activeCodePage to UTF-8 fixes every A-suffix call at once. No decision — but needs a manifest file + link integration.
-
-[DECIDE] TOOLING golden-output file for the print-based tests in test.mara: run once when known-good, diff every build.
 
 [DEEP] TOOLING fix and regenerate the 1M-line benchmark, then grow it adversarially: one giant dispatch block, one 100K-line function, deep use chains. Name the cliffs before a real project finds them.
 

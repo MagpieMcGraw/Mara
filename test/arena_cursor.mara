@@ -1,0 +1,24 @@
+module arena_cursor
+
+use mara.core
+use mara.memory
+
+// The debug arena uses base.len as its bump cursor (no separate offset field).
+// Verify alloc advances it, mark/reset rewinds it, and the freed space is
+// reusable afterward.
+
+main :: fun() {
+	arena : Arena_Debug = Arena_Debug(1 * KB)
+	a : ^Arena_Debug = &arena
+
+	a.mark()
+	x : []byte = a.alloc(32)
+	used := a.base.len          // cursor advanced past the allocation
+
+	a.reset()
+	rewound := a.base.len       // cursor back to the mark
+
+	y : []byte = a.alloc(64)    // reuse the freed region
+
+	print(x.len, y.len, rewound < used)   // 32 64 true
+}
