@@ -5207,14 +5207,17 @@ returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, 
             case ^Expr_Call:         d = env.scope_depth          // by-value return: a frame temp
             case ^Expr_Field_Access: d = expr_provenance(c, vv.expr, env).depth
             case ^Expr_Ident:
-                // A BARE local array decayed into a returned slice field is
-                // relocated by codegen to the caller's sret (verified:
-                // test/relotest) — safe. A by-value array PARAM is a frame-local
-                // copy, so slicing it into the return dangles. (Remaining gap: a
-                // value-initialised local array bare-ident isn't relocated either
-                // but is exempted here; closing it needs the decl's value==nil
-                // flag, absent from env. The explicit `arr[:]`, call, and field
-                // forms above already catch the common cases.)
+                // A bare local array — value==nil OR value-initialised
+                // (`x := make_arr()`) — decayed into a returned slice field is
+                // relocated by codegen's analyze_escape_locals to the caller's
+                // sret: born in caller storage, no copy (verified test/relotest +
+                // test/xreturn). analyze_escape_locals keys on a bare-ident
+                // fixed-array LOCAL with no value==nil gate, so exempt that here.
+                // A by-value array PARAM is a frame copy it does NOT relocate
+                // (collect_local_decls skips params), so slicing it into the
+                // return dangles — flag it. The explicit `arr[:]`, an inline
+                // call, and a field access aren't bare-ident locals either, so
+                // they're caught above; binding them to a local makes them work.
                 if is_param(env, vv.name) { d = env.scope_depth } else { d = -1 }
             case:                    d = expr_provenance(c, v, env).depth
             }
