@@ -7861,32 +7861,30 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             }
                         }
                     } else {
-                        // Broadcast: `a, b = single_value` — store the same value
-                        // into every target. Each target must accept val_type. New
-                        // names get val_type bound. Expression targets get type-
-                        // checked against val_type for compatibility. The
-                        // codegen path uses is_broadcast to choose the right
-                        // generation (one RHS eval, N stores).
-                        s.is_broadcast = true
-                        target_val_type := distinct_base(val_type)
+                        // Broadcast: `a, b = v` (or `a, b := v`). Desugar into one
+                        // assignment per target that shares the RHS, then register +
+                        // check + (later) codegen those Stmt_Assigns directly — codegen
+                        // never sees a broadcast. Routing through the normal single-
+                        // assign path is what gives each target its declare-vs-reassign
+                        // rule (the undeclared-on-`=` guard, `:=` declares) and its type
+                        // check for free, and it fixes the old non-main-fn segfault:
+                        // gen_broadcast_assign built Stmt_Assigns at codegen time with
+                        // hand-set fields; real type-checked assigns lower correctly.
+                        // The RHS is re-evaluated per target — bind an effectful RHS to
+                        // a local first if exactly-once evaluation matters.
                         for name, i in s.names {
+                            a := new(Stmt_Assign)
+                            a.span = s.span
+                            a.is_decl = s.is_decl
+                            a.value = i == 0 ? s.values[0] : clone_expr(s.values[0])
                             if name != "" {
-                                if is_undeclared_reassign(c, env, name, s.is_decl) {
-                                    check_error(c, s.span, TYPE_ASSIGN_UNDECLARED_VARIABLE, name)
-                                }
-                                type_env_set(env, name, val_type)
-                                append(&s.var_types, target_val_type)
+                                a.name = name
                             } else if i < len(s.targets) && s.targets[i] != nil {
-                                target_type := check_expr(c, s.targets[i], env)
-                                if !is_any(target_type) && types_incompatible(target_type, val_type) {
-                                    check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
-                                        type_name(val_type), type_name(target_type))
-                                }
-                                append(&s.var_types, distinct_base(target_type))
-                            } else {
-                                append(&s.var_types, target_val_type)
+                                a.target = s.targets[i]
                             }
+                            append(&s.checked, Stmt(a))
                         }
+                        register_and_check_declarations(c, s.checked, env, owner, public_env)
                     }
                 }
             }
@@ -8649,7 +8647,11 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
         case ^Stmt_Multi_Assign:
             // Already checked in register_and_check_declarations (iterates assigns)
         case ^Stmt_Multi_Return_Assign:
-            // Already checked in register_and_check_declarations
+            // Destructure was fully checked during registration (s.checked empty).
+            // Broadcast desugared into s.checked there; run the body pass on those
+            // so field/index targets get their per-target check and bare-name env
+            // updates apply (same handoff as Stmt_Decl). Empty list → no-op.
+            check_bodies(c, s.checked, env)
 
         case Stmt_Return:
             check_return_body(c, s, env)

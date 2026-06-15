@@ -600,13 +600,13 @@ Stmt_Multi_Return_Assign :: struct {
     values:    [dynamic]Expr,
     type_expr: Type_Expr,
     span:      Span,
-    var_types: [dynamic]Type,   // per-name resolved types, filled by type checker
+    var_types: [dynamic]Type,   // per-name resolved types, filled by type checker (destructure only)
     is_decl:   bool,            // true for the `:=` forms (`x, y := ...`): bare names
                                 // are DECLARED. False for `=` reassignment, where each
                                 // bare name must already be a binding (else a hard error).
-    is_broadcast: bool,         // true when RHS is a single non-multi-return value broadcast
-                                // to every target. Set by the type checker; codegen
-                                // evaluates the RHS once and stores it into each target.
+    checked:   [dynamic]Stmt,   // broadcast desugaring: one Stmt_Assign per target, filled by
+                                // the type checker. Non-empty ⟺ broadcast; codegen iterates it
+                                // instead of special-casing. Empty for destructure (call-once).
 }
 
 Stmt_Call :: struct {

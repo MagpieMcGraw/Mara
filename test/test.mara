@@ -1681,7 +1681,7 @@ main :: fun() -> i64 {
 	test_in_range()
 	test_struct_init()
 	test_struct_override()
-	// test_multi_assign()  // DISABLED: codegen bug — broadcast `x, y = 7` segfaults inside a non-main fn (works in main, and with separate assigns). Confirmed 2026-05-30.
+	test_multi_assign()
 	test_distinct_construct()
 	test_compound_eval()
 	test_arr_len()
