@@ -76,7 +76,7 @@ cache_toc_bytes :: fun(count: i64) -> i64 {
 // ---------------------------------------------------------------------------
 
 entry_set_name :: fun(e: ^Cache_Entry, name: str64) {
-    n := i64(name.len)
+    n := name.len
     if n > 64 do n = 64
     for i in 0..n {
         e.name[i] = name[i]
@@ -113,7 +113,7 @@ cache_put_header :: fun(toc: ^[]byte, count: i64) -> i64 {
 // `toc` must hold cache_toc_bytes(blobs.len). Texture pixels are written
 // straight from the blobs — no staging copy.
 cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err {
-    count := i64(blobs.len)
+    count := blobs.len
     off := cache_put_header(toc, count)   // absolute payload start
 
     for i in 0..count {
@@ -125,7 +125,7 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
         e.data_offset = u64(off)
         e.data_size = u64(b.pixels.len)
         toc[HEADER_SIZE + i * ENTRY_SIZE] = e
-        off += i64(b.pixels.len)
+        off += b.pixels.len
     }
 
     id := file_open_write(path)?
@@ -143,14 +143,14 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
 // (no []T -> []byte view exists outside mara.os, so each value is blitted in).
 // `data` must hold the summed payload bytes.
 cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^[]byte) -> err {
-    count := i64(blobs.len)
+    count := blobs.len
     base := cache_put_header(toc, count)   // absolute payload start
     dcur : i64 = 0                         // cursor within `data`
 
     for i in 0..count {
         b := blobs[i]
-        vcount := i64(b.mesh.vertices.len)
-        icount := i64(b.mesh.indices.len)
+        vcount := b.mesh.vertices.len
+        icount := b.mesh.indices.len
         vbytes := vcount * size_of(Vertex)
         ibytes := icount * size_of(u32)
 
@@ -191,7 +191,7 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
 // Validates the header and returns the entry count. Bad_Header => no usable
 // cache, caller rebuilds from the source folders.
 cache_open :: fun(image: []byte) -> i64, err {
-    if i64(image.len) < HEADER_SIZE do return 0, Bad_Header
+    if image.len < HEADER_SIZE do return 0, Bad_Header
     h : Cache_Header = image[0]
     if h.magic != CACHE_MAGIC or h.version != CACHE_VERSION do return 0, Bad_Header
     return i64(h.count)

@@ -38,7 +38,7 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 
 [DEEP] BUG calling a fn-typed parameter fails in codegen — omitted test, dated 2026-05-30. No decision — codegen investigation.
 
-[DECIDE] ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
+[FIX] Sweep the LOSSY 4/4/8-era fossils the redundant-cast warning does NOT catch — they're narrowing / same-width cross-sign, not redundant, so dropping them changes the value. os.mara file_read `data.len = i32(read)` (read is u32) truncates to i32 then SIGN-extends into the i64 .len — a latent bug for >2GB reads; want `data.len = read` (u32->i64 zero-extend). font.mara `i32(glyphs.len)` etc. narrow the i64 .len to drive i32 loops — harmless (small counts) but stale. (DONE 2026-06-15: the redundant-cast warning shipped — flags IDENTITY casts only; value-preserving widening is intentionally left alone since `i64(x)*y` is load-bearing. It found 18 identity fossils, all swept to zero.)
 
 [DEEP] FIX abs_int overflows on i64 min; @llvm.abs.i64 exists and matches the f32/f64 siblings. No decision — but @llvm.abs.i64 takes an i1 is_int_min_poison arg the current @llvm.x mapping doesn't supply, so it needs intrinsic plumbing.
 

@@ -136,11 +136,11 @@ vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i64 {
     index_count := len(geom.indices)
 
     // Check if we have space
-    if state.vertex_offset + i64(vertex_count) > state.max_vertices {
+    if state.vertex_offset + vertex_count > state.max_vertices {
         print("VAO: Not enough vertex space!")
         return 0
     }
-    if state.index_offset + i64(index_count) > state.max_indices {
+    if state.index_offset + index_count > state.max_indices {
         print("VAO: Not enough index space!")
         return 0
     }
@@ -166,8 +166,8 @@ vao_add_mesh :: fun(state: ^VAO_State, geom: ^Mesh_Data) -> i64 {
                      &geom.indices[0])
 
     // Update offsets
-    state.vertex_offset += i64(vertex_count)
-    state.index_offset += i64(index_count)
+    state.vertex_offset += vertex_count
+    state.index_offset += index_count
 
     // Add to mesh list and return index
     if state.mesh_count >= MAX_VAO_MESHES {

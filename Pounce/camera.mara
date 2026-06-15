@@ -114,8 +114,8 @@ camera_turn_flying :: fun(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera
 // Yaw always around world up, no roll, maintains upright orientation
 camera_turn_walking :: fun(xrel, yrel, zrel: f32, loop_time: f32, camera: ^Camera) {
 	sensitivity: f32 = 0.01
-	x_rot := camera.obj.turn_speed * f32(xrel) * sensitivity
-	y_rot := camera.obj.turn_speed * f32(yrel) * sensitivity
+	x_rot := camera.obj.turn_speed * xrel * sensitivity
+	y_rot := camera.obj.turn_speed * yrel * sensitivity
 
 	// World up axis for yaw (always stays upright)
 	world_up := Vec3{0, 0, 1}
@@ -192,8 +192,8 @@ world_to_screen :: fun(world_pos: Vec3, camera: ^Camera) -> (x, y: f32, ok: bool
 
 mouse_ray :: fun(mouse_x, mouse_y: i32, camera: ^Camera) -> Vec3 {
 	// mouse x and y needs to be in the range of 1 to -1
-	x := (2 * f32(mouse_x)) / f32(camera.w_width) - 1
-	y := 1 - (2 * f32(mouse_y)) / f32(camera.w_height)
+	x := (2 * f32(mouse_x)) / camera.w_width - 1
+	y := 1 - (2 * f32(mouse_y)) / camera.w_height
 
 	// create mouse ray, apply inverse projection
 	mouse := Vec4{x, y, 0, 0}

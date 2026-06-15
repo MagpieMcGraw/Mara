@@ -288,7 +288,7 @@ draw_state_render :: fun(state: ^DrawState) {
 		gl.TRIANGLES,
 		gl.UNSIGNED_INT,
 		void,                         // offset (0 = start of buffer)
-		i32(state.command_count),    // draw count
+		state.command_count,    // draw count
 		0,                           // stride (0 = tightly packed)
 	)
 

@@ -40,7 +40,7 @@ process :: fun(events: ^Event_State) {
     events.mouse.wheel = 0
 
     e: Event
-    for bool(PollEvent(&e)) {
+    for PollEvent(&e) {
         match e {
         Quit
             events.quit = true

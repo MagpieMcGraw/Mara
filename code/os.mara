@@ -209,7 +209,7 @@ sys_alloc :: fun(cap: i64) -> []byte {
 		id := file_open_read(path)?
 		defer file_close(id)
 		size := file_size(id)?
-		if size > i64(data.cap) do return Too_Large
+		if size > data.cap do return Too_Large
 		file_read(id, data)?
 	}
 
