@@ -601,6 +601,9 @@ Stmt_Multi_Return_Assign :: struct {
     type_expr: Type_Expr,
     span:      Span,
     var_types: [dynamic]Type,   // per-name resolved types, filled by type checker
+    is_decl:   bool,            // true for the `:=` forms (`x, y := ...`): bare names
+                                // are DECLARED. False for `=` reassignment, where each
+                                // bare name must already be a binding (else a hard error).
     is_broadcast: bool,         // true when RHS is a single non-multi-return value broadcast
                                 // to every target. Set by the type checker; codegen
                                 // evaluates the RHS once and stores it into each target.
@@ -2810,6 +2813,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                         targets = targets,
                         values  = mt_vals,
                         span    = start,
+                        is_decl = true,   // `:=` — bare names are declared
                     }), true
                 }
                 p.pos = saved_pos
@@ -3072,12 +3076,14 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 advance(p) // consume ','
                 append(&lhs_exprs, parse_expr(p))
             }
+            saw_colon := false
             if current_kind(p) == .Colon {
                 advance(p) // consume ':'
                 if current_kind(p) != .Equals {
                     p.pos = saved_pos
                     return {}, false
                 }
+                saw_colon = true
                 // fall through to the '=' handling below
             }
             if current_kind(p) == .Equals {
@@ -3102,6 +3108,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                     targets = mt_targets,
                     values  = mt_vals,
                     span    = start,
+                    is_decl = saw_colon,   // `:=` declares the bare names; `=` reassigns
                 }), true
             }
             // Comma but no '=' — not a valid statement

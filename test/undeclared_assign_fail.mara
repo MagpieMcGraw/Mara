@@ -1,0 +1,13 @@
+module undeclared_assign_fail
+
+//@ expect-fail: not declared
+
+// Reassignment with `=` requires the variable to already exist. `x, y = 7`
+// used to silently invent x and y as locals (and broadcast 7 into both) —
+// that was a type-checker bug, not a feature. Now it is a hard error; use
+// `:=` to declare. (Single `x = 7` on an undeclared name is the same bug
+// without the comma; multi-return `x, y = f()` likewise.)
+main :: fun() {
+	x, y = 7
+	print(x, y)
+}

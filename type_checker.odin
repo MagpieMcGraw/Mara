@@ -6549,6 +6549,19 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
 // allocate fresh — same as before.
 // ---------------------------------------------------------------------------
 
+// True when `name` is the LHS of a `=` reassignment with no existing binding —
+// a genuine "assign to undeclared variable" error. Exempts declarations (`:=`,
+// is_decl), the blank discard `_`, the empty name used for expression targets,
+// and `::` constants (left to the shadowing check). The single-assign path and
+// both multi-assign branches (destructure, broadcast) share this one rule so
+// the exemptions can't drift apart.
+is_undeclared_reassign :: proc(c: ^Checker, env: ^Type_Env, name: string, is_decl: bool) -> bool {
+    if is_decl || name == "" || name == "_" { return false }
+    if name in c.table.constants { return false }
+    _, found := type_env_get(env, name)
+    return !found
+}
+
 register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
     // pub: where defined names (fun/struct/type/foreign/constants) get registered.
     // - In single-env mode (callers from inside fun bodies, struct bodies): public_env is nil
@@ -7125,6 +7138,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     mra := new(Stmt_Multi_Return_Assign)
                     mra.span = s.span
                     mra.type_expr = s.type_expr
+                    mra.is_decl = true   // derived from a Stmt_Decl — bare names are declared
                     for n in s.names { append(&mra.names, n) }
                     for v in s.init_values { append(&mra.values, v) }
                     append(&s.checked, Stmt(mra))
@@ -7190,6 +7204,18 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         type_env_set(c.mara_env, inc.path, main_mod)
                     }
                 }
+                continue
+            }
+
+            // A bare-name assignment with `=` (is_decl == false) is a
+            // REASSIGNMENT: the name must already be a binding. Without this
+            // guard the registration path below would `type_env_set` a brand-new
+            // binding for it, so `x = 7` on an undeclared `x` silently declared
+            // it (and broadcast `x, y = 7` minted two locals — the bug that
+            // motivated this). Bind it to Type_Error to recover.
+            if is_undeclared_reassign(c, env, s.name, s.is_decl) {
+                check_error(c, s.span, TYPE_ASSIGN_UNDECLARED_VARIABLE, s.name)
+                type_env_set(env, s.name, Type_Error{})
                 continue
             }
 
@@ -7812,6 +7838,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             for name, i in s.names {
                                 resolved_type := solidify_type(returns[i])
                                 if name != "" {
+                                    if is_undeclared_reassign(c, env, name, s.is_decl) {
+                                        check_error(c, s.span, TYPE_ASSIGN_UNDECLARED_VARIABLE, name)
+                                    }
                                     type_env_set(env, name, resolved_type)
                                 } else if i < len(s.targets) && s.targets[i] != nil {
                                     target_type := check_expr(c, s.targets[i], env)
@@ -7842,6 +7871,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         target_val_type := distinct_base(val_type)
                         for name, i in s.names {
                             if name != "" {
+                                if is_undeclared_reassign(c, env, name, s.is_decl) {
+                                    check_error(c, s.span, TYPE_ASSIGN_UNDECLARED_VARIABLE, name)
+                                }
                                 type_env_set(env, name, val_type)
                                 append(&s.var_types, target_val_type)
                             } else if i < len(s.targets) && s.targets[i] != nil {

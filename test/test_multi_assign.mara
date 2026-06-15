@@ -18,5 +18,11 @@ main :: fun() -> i64 {
 	s.a, s.b = 42
 	print("fields:", s.a, s.b)
 
+	// Declaration broadcast: `:=` declares each bare name to the same value.
+	// (The reassign form `x, y = 7` above requires x and y to already exist —
+	// reassigning undeclared names is a hard error; see undeclared_assign_fail.)
+	p, q := 5
+	print("decl:", p, q)
+
 	return 0
 }
