@@ -44,3 +44,8 @@ test_fn_type :: fun() {
     print(step(41))                               // expect 42
     print(tfn_run_three(step, 200))               // expect 203
 }
+
+main :: fun() -> i64 {
+    test_fn_type()   // prints: 3 11 103 42 203
+    return 0
+}

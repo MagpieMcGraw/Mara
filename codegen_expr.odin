@@ -1657,10 +1657,23 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         }
     }
 
-    // Indirect call: callee is a function pointer variable
+    // Indirect call: callee is a function pointer held in a variable — either
+    // an alloca-backed scalar (load the ptr) or an SSA-direct binding (use it
+    // as-is). A fn-typed parameter (`cb: fn foo`) takes the SSA path: params
+    // bind straight to their `ptr` arg value, so there's no alloca to load.
+    fn_ptr := ""
+    callee_is_fnptr := false
     if alloca, alloca_ok := get_scalar(g, lookup_name); alloca_ok {
-        fn_ptr := fresh_tmp(g)
+        callee_is_fnptr = true
+        fn_ptr = fresh_tmp(g)
         emit_load_into(g, fn_ptr, "ptr", alloca)
+    } else if entry, entry_ok := g.all_vars[lookup_name]; entry_ok {
+        if sv, sv_ok := entry.(SSA_Var); sv_ok && sv.ir_type == "ptr" {
+            callee_is_fnptr = true
+            fn_ptr = sv.ssa
+        }
+    }
+    if callee_is_fnptr {
         // Build typed arg list from each arg's checker type
         arg_strs: [dynamic]string
         for arg in e.args {
