@@ -843,6 +843,21 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     if shared {
         strings.write_string(&b, " -shared")
     }
+    // Windows EXE: embed an app manifest declaring the process ANSI code page
+    // as UTF-8 (Win10 1903+), so the *A file APIs (CreateFileA, ...) read our
+    // UTF-8 `cstring(path)` bytes correctly instead of the legacy locale code
+    // page — fixes non-ASCII paths (e.g. Lithuanian user dirs). lld-link embeds
+    // it as an RT_MANIFEST resource; no mt.exe/llvm-rc needed. EXE-only: the
+    // code page is a process setting from the host EXE's manifest, so a Mara
+    // DLL inherits whatever its host declares.
+    when ODIN_OS == .Windows {
+        if !shared {
+            manifest_path, _ := filepath.join({compiler_dir, "tools", "win_utf8.manifest"})
+            strings.write_string(&b, ` -Xlinker /manifest:embed -Xlinker "/manifestinput:`)
+            strings.write_string(&b, manifest_path)
+            strings.write_byte(&b, '"')
+        }
+    }
     for path in lf.native_search {
         strings.write_string(&b, ` "-L`); strings.write_string(&b, path); strings.write_byte(&b, '"')
     }

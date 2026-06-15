@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Embedded into every native Windows EXE (lld-link /manifest:embed). Sets the
+     process ANSI code page to UTF-8 (Windows 10 1903+) so the *A file APIs —
+     CreateFileA, DeleteFileA, GetFileAttributesExA — interpret Mara's UTF-8
+     `cstring(path)` bytes correctly instead of the legacy locale code page.
+     Fixes non-ASCII paths (e.g. Lithuanian user directories). Older Windows
+     ignores activeCodePage and falls back to ANSI (today's behavior). -->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity type="win32" name="Mara.App" version="1.0.0.0"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>
