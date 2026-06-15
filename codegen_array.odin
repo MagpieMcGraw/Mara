@@ -2270,7 +2270,7 @@ gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, co
 // Slice_Var. Returns the alloca's name so the caller can populate the
 // elements area (e.g. via gen_partial_array_byte_fill_at_*). Used by the
 // two standalone-decl entry points (Expr_Slice and Expr_Index sources).
-gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array) -> string {
+gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array, span: Span = {}) -> string {
     // Reassignment into an existing partial array — `off16 = mem[off]` after a
     // prior `off16 : [..N]u16` decl — reuses the existing alloca. Emitting a
     // second `alloca %name` would be invalid LLVM SSA ("multiple definition of
@@ -2284,7 +2284,17 @@ gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Typ
     ir_type := partial_array_ir_type(elem_t, pa.size)
     alloca_name := fmt.tprintf("%%%s", name)
 
-    if elem_t == "i8" {
+    if g.context_enabled && routes_to_arena(pa) {
+        // Big backing (e.g. font loca staging, ~131 KB): arena-bump the whole
+        // {ptr,len,cap,[N]} struct, same as the plain-decl path. Every field-3
+        // GEP below works off this pointer exactly as off an alloca — only the
+        // storage location changes. routes_to_arena is the SAME predicate the
+        // type-check guard uses, so the two stages agree on "big".
+        total := pa.size * elem_byte_size(elem_t, g.checked) + slice_header_bytes
+        loc := format_location(span.file, span.line, span.col)
+        data_name := emit_arena_bump(g, total, name, loc)
+        emit(g, "  %s = bitcast ptr %s to ptr", alloca_name, data_name)
+    } else if elem_t == "i8" {
         emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type, ", align 16"}))
     } else {
         emit_raw(g, strings.concatenate({"  ", alloca_name, " = alloca ", ir_type}))
@@ -2304,12 +2314,12 @@ gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Typ
 }
 
 gen_partial_array_byte_read :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array, sl_expr: ^Expr_Slice, span: Span) {
-    alloca_name := gen_partial_array_alloc_and_register(g, name, pa)
+    alloca_name := gen_partial_array_alloc_and_register(g, name, pa, span)
     gen_partial_array_byte_fill_at(g, alloca_name, pa, sl_expr, span)
 }
 
 gen_partial_array_byte_read_index :: proc(g: ^Codegen, name: string, pa: ^Type_Partial_Array, idx_expr: ^Expr_Index, span: Span) {
-    alloca_name := gen_partial_array_alloc_and_register(g, name, pa)
+    alloca_name := gen_partial_array_alloc_and_register(g, name, pa, span)
     gen_partial_array_byte_fill_at_from_index(g, alloca_name, pa, idx_expr, span)
 }
 

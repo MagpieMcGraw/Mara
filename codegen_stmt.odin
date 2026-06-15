@@ -400,10 +400,12 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             is_nrvo := g.ret_partial_cap > 0 && s.name == g.nrvo_var
             if is_nrvo {
                 alloca_name = "%sret"
-            } else if g.context_enabled && total_bytes >= 1024 {
+            } else if g.context_enabled && routes_to_arena(pa) {
                 // Big partial array: arena-bump the whole structure including
                 // header. The arena returns a pointer to a fresh region whose
                 // layout matches our IR type — initialize ptr/len/cap into it.
+                // routes_to_arena (whole-struct bytes) is the SAME predicate the
+                // type-check guard uses, so the two stages agree on "big".
                 data_name := emit_arena_bump(g, total_bytes + slice_header_bytes, s.name, loc)
                 emit(g, "  %s = bitcast ptr %s to ptr", alloca_name, data_name)
             } else {
