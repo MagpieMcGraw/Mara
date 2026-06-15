@@ -36,8 +36,6 @@ When parsing, put defs and decls in two different arrays. Can loop over each wit
 
 Byte reads might need new syntax. Maybe an = to read without auto-len, and a += to read with auto len. Also figure out what ops should set the len.
 
-[DECIDE] BUG quat_slerp Taylor asin is off by 2x near d=0.99. Either drop the nlerp cutoff from 0.9995 to ~0.9, or use a real acos (libm acosf, or llvm.acos intrinsic in LLVM 19+). Also replace sin(f32(theta)) with sqrt(1 - d X d), exact and free. (Pick the approach.)
-
 [DEEP] BUG broadcast x, y = 7 segfaults in non-main fn (disabled test, dated 2026-05-30). No decision — codegen investigation.
 
 [DEEP] BUG enum-indexed array access rejected ("index must be i32") — omitted test, dated 2026-05-30. No decision — codegen investigation.

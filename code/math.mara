@@ -96,6 +96,13 @@ cos :: dispatch {
 cos_f32 :: fun(x: f32) -> f32 { @llvm.cos.f32 }
 cos_f64 :: fun(x: f64) -> f64 { @llvm.cos.f64 }
 
+acos :: dispatch {
+	acos_f32
+	acos_f64
+}
+acos_f32 :: fun(x: f32) -> f32 { @llvm.acos.f32 }
+acos_f64 :: fun(x: f64) -> f64 { @llvm.acos.f64 }
+
 pow :: dispatch {
 	pow_f32
 	pow_f64
@@ -476,27 +483,14 @@ quat_slerp :: fun(a: Quat, b: Quat, t: f32) -> Quat {
 		q.w = a.w + t * (b2.w - a.w)
 		return quat_normalize(q)
 	}
-	// acos via series isn't great, but usable
-	theta := 0.0
-	if d < 1.0 {
-		// acos(d) ≈ PI/2 - asin(d), asin via Taylor
-		x := f64(d)
-		x3 := x * x * x
-		x5 := x3 * x * x
-		x7 := x5 * x * x
-		asin_d := x + x3 / 6.0 + x5 * 3.0 / 40.0 + x7 * 15.0 / 336.0
-		theta = 1.57079633 - asin_d
-	}
-	if theta < 0.0001 {
-		q.x = a.x + t * (b2.x - a.x)
-		q.y = a.y + t * (b2.y - a.y)
-		q.z = a.z + t * (b2.z - a.z)
-		q.w = a.w + t * (b2.w - a.w)
-		return quat_normalize(q)
-	}
-	sin_theta := sin(f32(theta))
-	s1 := sin(f32((1.0 - f64(t)) * theta)) / sin_theta
-	s2 := sin(f32(f64(t) * theta)) / sin_theta
+	// d is in [0, 0.9995] here (the parallel case returned above), so acos is
+	// well-defined and theta is at least ~0.0316 rad — no divide-by-zero below.
+	theta := acos(d)
+	// sin(theta) == sqrt(1 - d*d): d == cos(theta) and theta is in [0, PI/2],
+	// where sin is non-negative. Exact, and cheaper than another sin() call.
+	sin_theta := sqrt(1.0 - d * d)
+	s1 := sin((1.0 - t) * theta) / sin_theta
+	s2 := sin(t * theta) / sin_theta
 	q.x = s1 * a.x + s2 * b2.x
 	q.y = s1 * a.y + s2 * b2.y
 	q.z = s1 * a.z + s2 * b2.z

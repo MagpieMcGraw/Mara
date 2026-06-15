@@ -36,6 +36,7 @@ llvm_intrinsic_specs := []LLVM_Intrinsic_Spec{
     {"sqrt",   1, .Match_Float_Suffix},
     {"sin",    1, .Match_Float_Suffix},
     {"cos",    1, .Match_Float_Suffix},
+    {"acos",   1, .Match_Float_Suffix},
     {"fabs",   1, .Match_Float_Suffix},
     {"pow",    2, .Match_Float_Suffix},
     {"minnum", 2, .Match_Float_Suffix},

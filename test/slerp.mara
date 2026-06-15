@@ -1,0 +1,30 @@
+module slerp
+
+use mara.math
+
+// quat_slerp correctness — exercises the real acos intrinsic (TODO fix).
+//
+// Slerp from 0deg to 90deg about Z. At parameter t the result is a rotation by
+// t*90deg, i.e. the quaternion (0, 0, sin(t*45deg), cos(t*45deg)). Equal steps
+// in t must produce equal steps in angle — constant angular velocity is THE
+// defining property of slerp, and it's exactly what the old Taylor-series asin
+// got wrong (off by ~2x near d=0.99). Here d = a.b = cos(45deg) = 0.7071, well
+// under the 0.9995 nlerp cutoff, so every call below goes through acos.
+main :: fun() {
+	z := Vec3{0.0, 0.0, 1.0}
+	a := quat_angle_axis(0.0, z)               // identity: (0,0,0,1)
+	b := quat_angle_axis(to_radians(90.0), z)  // 90deg about Z: (0,0,.7071,.7071)
+
+	r0 := quat_slerp(a, b, 0.0)
+	r1 := quat_slerp(a, b, 0.25)
+	r2 := quat_slerp(a, b, 0.5)
+	r3 := quat_slerp(a, b, 0.75)
+	r4 := quat_slerp(a, b, 1.0)
+
+	// want z = sin(t*45deg), w = cos(t*45deg)
+	print("t=0.00 z=% w=%  want 0        / 1",        r0.z, r0.w)
+	print("t=0.25 z=% w=%  want 0.19509  / 0.980785", r1.z, r1.w)
+	print("t=0.50 z=% w=%  want 0.382683 / 0.92388",  r2.z, r2.w)
+	print("t=0.75 z=% w=%  want 0.55557  / 0.83147",  r3.z, r3.w)
+	print("t=1.00 z=% w=%  want 0.707107 / 0.707107", r4.z, r4.w)
+}
