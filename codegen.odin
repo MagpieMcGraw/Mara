@@ -2895,7 +2895,8 @@ emit_arena_bump_val :: proc(g: ^Codegen, size_val: string, name: string = "<allo
             codegen_fatal(g, {},
                 CODE_DLL_EXPOSE_FN_USES_ARENA)
         }
-        codegen_fatal(g, {}, CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR)
+        codegen_fatal(g, {}, "%s (at %s)",
+            CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR, loc)
     }
     arena_ptr := get_context_arena_ptr(g)
     // Alloca for the sret slice result { ptr, i64, i64 }

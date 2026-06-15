@@ -138,6 +138,7 @@ Arena_Debug :: class(cap: i64) {
 
 	reset :: fun(a: ^Self) {
 		cm := a.current_mark
+		assert(cm != -1)   // reset without a prior mark would read base[-1]
 
 		prev : i64 = a.base[cm]
 		saved_last : i64 = a.base[cm + size_of(prev)]

@@ -26,7 +26,7 @@ find :: fun(haystack: []utf8, needle: []utf8, start: i64 = 0) -> i64, bool {
 
 // Single-byte variant of find — cheap, no inner loop. Useful for locating
 // quotes, newlines, separators in shader source / paths / error parsing.
-find_byte :: fun(s: []utf8, b: utf8) -> (i32, bool) {
+find_byte :: fun(s: []utf8, b: utf8) -> i64, bool {
 	for c, i in s {
 		if c == b do return i, true
 	}

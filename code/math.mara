@@ -5,8 +5,8 @@ Vec4 :: distinct [4]f32
 Quat :: distinct [4]f32
 Mat4 :: distinct [4][4]f32
 
-PI  :: 3.14159265358979
-TAU :: 6.28318530717959
+PI  :: 3.141592653589793
+TAU :: 6.283185307179586
 QUAT_IDENTITY :: Quat{w = 1.0}
 
 overload * mul

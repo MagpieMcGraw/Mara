@@ -19,12 +19,12 @@ primitive_sphere :: fun(
 
     vi: i32 = 0
     for r in 0..rings + 1 {
-        phi := 3.14159265 * f32(r) / f32(rings)
+        phi := PI * f32(r) / f32(rings)
         y := 0.5 * cos(phi)
         ring_radius := 0.5 * sin(phi)
 
         for s in 0..sectors + 1 {
-            theta := 6.28318531 * f32(s) / f32(sectors)
+            theta := TAU * f32(s) / f32(sectors)
             x := ring_radius * sin(theta)
             z := ring_radius * cos(theta)
 

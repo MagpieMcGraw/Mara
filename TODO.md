@@ -2,8 +2,6 @@
 
 Give slices a .hdr field. Make it the only way to reassign the slice header.
 
-fixed arrays type check for slice append functions, but trigger an assert
-
 casting vec3 to bool causes a codegen error
 
 Dynamic arena: if we allocate past the cap, commit more virtual memory. If we free to below the cap, decommit up to the cap. Allow users to manually commit more, some may want to comntrol the timing of the commit. Also allow modifying the cap at runtime?
@@ -40,94 +38,32 @@ When parsing, put defs and decls in two different arrays. Can loop over each wit
 
 Byte reads might need new syntax. Maybe an = to read without auto-len, and a += to read with auto len. Also figure out what ops should set the len.
 
-Maybe constructors need return values? Could be good for error handling.
+[DECIDE] BUG draw_state_append writes batch.instances[i] using the object index and never increments instance_count. Should be instances[batch.instance_count] then increment, in both the main and highlight paths. As written, render sees count 0 and draws nothing. (Render-redesign area; conflicts with the discussed "drop instance_count, use instances.len" option — pick which.)
 
-Findings from the Fable 5 code review, 10 Jun 2026. Same format: 1 item per line, 1 line space between items. Roughly ordered: bugs, then language decisions, then stdlib fixes, then docs/tooling.
+[DECIDE] BUG quat_slerp Taylor asin is off by 2x near d=0.99. Either drop the nlerp cutoff from 0.9995 to ~0.9, or use a real acos (libm acosf, or llvm.acos intrinsic in LLVM 19+). Also replace sin(f32(theta)) with sqrt(1 - d X d), exact and free. (Pick the approach.)
 
-BUG draw_state_append writes batch.instances[i] using the object index and never increments instance_count. Should be instances[batch.instance_count] then increment, in both the main and highlight paths. As written, render sees count 0 and draws nothing.
+[DEEP] BUG broadcast x, y = 7 segfaults in non-main fn (disabled test, dated 2026-05-30). No decision — codegen investigation.
 
-BUG quat_slerp Taylor asin is off by 2x near d=0.99. Either drop the nlerp cutoff from 0.9995 to ~0.9, or use a real acos (libm acosf, or llvm.acos intrinsic in LLVM 19+). Also replace sin(f32(theta)) with sqrt(1 - d X d), exact and free.
+[DEEP] BUG enum-indexed array access rejected ("index must be i32") — omitted test, dated 2026-05-30. No decision — codegen investigation.
 
-BUG Arena_Debug.reset with current_mark == -1 reads base[-1]. Debug arena should crash loudly on reset-without-mark instead.
+[DEEP] BUG calling a fn-typed parameter fails in codegen — omitted test, dated 2026-05-30. No decision — codegen investigation.
 
-BUG hmtx advance read in load_glyphs (hmtx_loc + glyph_index * 4) is only valid while glyph_index < hhea.num_of_long_hor_metrics. Past that, glyphs share the last advance and the array degrades to 2-byte entries. Clamp using the Hhea already parsed. (DONE 10 Jun 2026, commit 25cdbeb — metric index clamped via min; cell-fit asserts added in rasterize_msdf in the same pass.)
+[DECIDE] ADD must-use err: warn when an err value is neither returned, branched on, nor discarded with _ =. Makes the return-the-error discipline mechanical while keeping ignoring legal.
 
-BUG broadcast x, y = 7 segfaults in non-main fn (disabled test, dated 2026-05-30).
+[DECIDE] ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
 
-BUG enum-indexed array access rejected ("index must be i32") — omitted test, dated 2026-05-30.
+[DECIDE] FIX Arena_Debug.offset duplicates base.len now that len is the cursor. One field can go. (In the current code `offset` IS the cursor and `base.len` is the capacity from sys_alloc — they don't actually duplicate; needs your intended arena representation first.)
 
-BUG calling a fn-typed parameter fails in codegen — omitted test, dated 2026-05-30.
+[DECIDE] FIX mat4_inverse returns identity on singular input silently — the one quiet fallback in a codebase that prints diagnostics elsewhere. (Crash/assert vs return an err vs keep — your call.)
 
-LEAK load_and_compile: if the fragment shader fails to compile, the vertex shader is never deleted. Harmless today (fatal path), becomes real the day live shader reload exists. errdefer or restructure to one cleanup site.
+[DEEP] FIX abs_int overflows on i64 min; @llvm.abs.i64 exists and matches the f32/f64 siblings. No decision — but @llvm.abs.i64 takes an i1 is_int_min_poison arg the current @llvm.x mapping doesn't supply, so it needs intrinsic plumbing.
 
-DECIDE the slice law, then assert it in all.mara: explicit high bound claims the window as data (len = cap = hi - lo, even over unfilled storage); open high bound inherits fullness (len = parent.len - lo, cap = parent.cap - lo). Convert test_slice_view prints to asserts; expected len 0 cap 32 under this rule.
+[DECIDE] FIX instance_capacity in DrawState is stored but never checked before BufferSubData. (Render-redesign area.)
 
-DECIDE #self construction order. Zero-init then decl-order initializers means c := helper(#self) in test_early_self sees a = b = 0, so c == 0.0, not 3.0. Assert whichever is intended and write the rule in all.mara.
+[DEEP] FIX Windows ANSI paths: CreateFileA breaks on non-ASCII paths (Lithuanian user dirs). One-line app manifest setting activeCodePage to UTF-8 fixes every A-suffix call at once. No decision — but needs a manifest file + link integration.
 
-DECIDE mixed signed/unsigned arithmetic under auto-widening. Suggest: widen both to the smallest lossless common type, compile error if none exists (u64 vs i64). Also decide int-to-float: i32 to f32 and i64 to f64 are lossy and should require casts if the rule is honest.
+[DECIDE] TOOLING golden-output file for the print-based tests in test.mara: run once when known-good, diff every build.
 
-DECIDE union containing partial arrays: copy fixup needs the tag, so either consult it in copy codegen or forbid element-owning members in unions. Same question for the disk-load relocate walk.
+[DEEP] TOOLING fix and regenerate the 1M-line benchmark, then grow it adversarially: one giant dispatch block, one 100K-line function, deep use chains. Name the cliffs before a real project finds them.
 
-DECIDE one return-type grammar. fun(a, b: i64) i64 and fun(a, b: i64) -> i64 both parse today (test_io_arrow exists to prove it). Pick one.
-
-DECIDE class vs struct canonical spelling. memory.mara says class, everything else says struct; a reader parses the difference as semantic. Keep the alias as the joke, lint for one spelling.
-
-DECIDED 10 Jun 2026 — asserts stay ON in release (TigerStyle); explicit `-no assert` flag compiles them out (`-no <feature>` parses as two argv tokens, unknown feature = hard error). (Output upgrade DONE same day: "Assert failed at <loc> / Expected game.running == false, but game.running was true" — comparison asserts name each non-literal operand with its value; bools print true/false, utf8 prints the glyph, enums print the variant name via gen_print_enum, escaped literals keep their source spelling, condition text keeps source spacing.)
-
-ADD must-use err: warn when an err value is neither returned, branched on, nor discarded with _ =. Makes the return-the-error discipline mechanical while keeping ignoring legal.
-
-ADD err second field in debug builds: raise-site span (and on Windows, GetLastError at the os boundary). Same machinery as the arena debug headers. Print then says what failed, where, and why.
-
-ADD seed asserts from the review: arena mark/reset well-nesting (when Arena_Basic is uncommented), partial-array fixup invariant (arr.ptr == own elements) where received by ref. (DONE 10 Jun 2026: slice_add capacity, parse_glyph point-count cap + end-of-parse cursor <= bytes.len.)
-
-ADD unions nested in struct scope: `Body :: union {...}` inside a struct hits "unknown type" at the sibling field — register_scope_defs has no Stmt_Union_Def case (the module-level recipe at register_type_names ~5916 is the template: Type_Union + tag enum + variant placeholder structs, parent-prefix mangled, st.types[bare]). Also needs the Phase-2 + codegen skip for a body-level Stmt_Union_Def. Found wanting `Glyph_On_Disk.body : union { Simple, Compound }` in font.mara — currently nested structs with a comment standing in.
-
-BUG module-level constants are declaration-order-sensitive in array sizes: a file-level `CAP :: 1 << 16` declared BELOW its use as `[..CAP]T` fails ("must be a compile-time constant"). Scope-level consts were fixed 10 Jun 2026 (commit 68c6331 — consts pre-register before field resolution, position-free); the module-level pass still registers in source order. Types got the same treatment for nesting (e2edb80); constants are the last order-sensitive thing in the language.
-
-BUG u64 literals above i64 max don't parse: 18446744073709551615 wraps to -1 internally, then the range check reports "constant -1 overflows u64". Literal pipeline needs an unsigned path (found writing assertu.mara). (DONE 10 Jun 2026: decimal literals accumulate in i128 like hex, exact to u64 max; past that is a parse error with the literal text. Also fixed -9223372036854775808 (i64 min), which wrapped positive through the old i64 path. test/u64dec + test/failures/test_literal_overflow_dec_fail.)
-
-ADD redundant-cast warning: flag casts where implicit widening would succeed identically. Then sweep the i32()/i64() fossils from the 4/4/8 era (data.len = i32(read) in file_read, the i32 len wrappers in font.mara).
-
-FIX retire string.mara add_str in favor of core's generic slice_add (the fix already exists; resolve the duplicate + dispatch). If keeping a string-specific one, src should be []utf8 not str.
-
-FIX find_byte returns i32 where find returns i64; also unify -> (a, b) vs -> a, b return-type style between them.
-
-FIX retire Big_Slice / sys_alloc_big now that slices are 8/8/8. When Arena_Basic is uncommented, it should hold a plain []byte like Arena_Debug.
-
-FIX Arena_Debug.offset duplicates base.len now that len is the cursor. One field can go.
-
-FIX font data to persistent storage per plan. (The other half — first codepoint 0 -> 32 — DONE 10 Jun 2026, commit 25cdbeb.)
-
-FIX mat4_inverse returns identity on singular input silently — the one quiet fallback in a codebase that prints diagnostics elsewhere.
-
-FIX PI and TAU are one digit short of full f64 (…589793, …79586). Mesh gen also inlines its own truncated copies — use the constants.
-
-FIX abs_int overflows on i64 min; @llvm.abs.i64 exists and matches the f32/f64 siblings.
-
-FIX instance_capacity in DrawState is stored but never checked before BufferSubData.
-
-FIX fps := 60.9 — comment it if it is the deliberate vsync-undershoot trick, correct it if it is a typo.
-
-FIX Windows ANSI paths: CreateFileA breaks on non-ASCII paths (Lithuanian user dirs). One-line app manifest setting activeCodePage to UTF-8 fixes every A-suffix call at once.
-
-ADD self-hosted crash handler: rewrite code/mara_crash.c as runtime.mara, compiled+cached to a .o by the compiler's own pipeline (same ensure_crash_runtime trick — we wrap clang, so a .mara source works as well as a .c). Settled shape from the 10 Jun discussion: runtime module is dependency-free (own foreign fopen/fwrite/time declares, no `use` — avoids duplicate defines vs user TUs); interface is one buffer handoff crash_report(msg, len) with codegen snprintf-ing segments into a stack buffer (no C varargs, no held FILE*, no mutable global); compiler builds it with -no assert (handler can't recurse into itself; bounds traps already printf+exit directly, safe); cache invalidates on runtime.mara mtime OR compiler binary mtime (generated IR tracks compiler version). First tenant of the runtime module; self-hosting starts here.
-
-CHECK whether partial-array indexing in codegen loads the stored header pointer or computes base + offset. Direct compute is faster and shrinks the surface that depends on fixup correctness. One IR dump of a leaf function answers it.
-
-CHECK main bootstrap ordering: scope arena provisioning vs the this_program assignment that creates it. Works today; write down why.
-
-DOCS all.mara: fix "it's" -> "its" (also in README build section). Add the slice-law section with asserts. Graduate each margin question to a rule or a dated test.
-
-DOCS README: add the perf block screenshot (1M lines / 7.5s, 273ms hot) and an OOM dump screenshot. Those two images carry the language's character better than prose.
-
-TOOLING golden-output file for the print-based tests in test.mara: run once when known-good, diff every build.
-
-TOOLING fix and regenerate the 1M-line benchmark, then grow it adversarially: one giant dispatch block, one 100K-line function, deep use chains. Name the cliffs before a real project finds them.
-
-TOOLING formatter opinion on tabs vs spaces (gfx_mesh_generation.mara is the spaces outlier) and on class vs struct.
-
-BUG scope-allocator type check (type_checker.odin l. 7036/7283) only matches `^Type_Fixed_Array` decls — slips partial arrays (`buf : [..N]byte = void`), struct-typed decls whose body contains big PAs (`p := Skyline(256, 256)`, ~12KB struct), and multi-return aggregate slots through to the codegen `CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR` fallback. Right shape: one rule keyed on "this allocation routes through arena at codegen," covering FA + PA + struct + return-slot in a single check.
-
-DECIDED skip the scope-allocator error entirely when the module has no `main` — such programs can't run as an exe so the runtime-arena question is moot (DLL/lib paths get their arena via the handed-in `Context`, not `this_program`). Open: emit a soft warning ("no allocator declared; this won't run as an exe") or stay silent? Undecided.
-
-FIX `CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR` codegen error emits no `[file:line]` prefix — surfaced while writing test/rectpack.mara without `this_program = Program(Arena_Debug(...))`. Even once the type-checker check above covers every path, this defensive fallback should still carry the offending decl's span so an unexpected codegen hit doesn't strand the user without a source location.
+[DEEP] BUG scope-allocator type check (type_checker.odin l. 7036/7283) only matches `^Type_Fixed_Array` decls — slips partial arrays (`buf : [..N]byte = void`), struct-typed decls whose body contains big PAs (`p := Skyline(256, 256)`, ~12KB struct), and multi-return aggregate slots through to the codegen `CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR` fallback. Right shape: one rule keyed on "this allocation routes through arena at codegen," covering FA + PA + struct + return-slot in a single check.
