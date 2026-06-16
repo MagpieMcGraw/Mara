@@ -223,6 +223,14 @@ dedent_multiline_string :: proc(buf: [dynamic]u8, strip: int) -> [dynamic]u8 {
         }
     }
     delete(buf)
+    // Mirror of the leading-newline drop above: a newline right before the
+    // closing `"` — the quote on its own line, which is the idiomatic way to
+    // set the dedent column — is structural, not content, so drop it. For an
+    // intentional trailing newline, leave a blank line before the closing quote
+    // (one structural newline is dropped, the other survives) or use `\n`.
+    if len(out) > 0 && out[len(out) - 1] == '\n' {
+        pop(&out)
+    }
     return out
 }
 
@@ -346,6 +354,17 @@ next_token :: proc(l: ^Lexer) -> Token {
                         append(&buf, esc)
                     }
                     lexer_advance(l)
+                }
+            } else if l.source[l.pos] == '\r' {
+                // Normalize a raw source line-ending inside the literal: CRLF
+                // and a lone CR both collapse to a single '\n', so a multi-line
+                // string written in a CRLF-saved file carries no stray carriage
+                // returns. (An explicit `\r` escape is handled above and kept.)
+                append(&buf, '\n')
+                saw_newline = true
+                lexer_advance(l)
+                if l.pos < len(l.source) && l.source[l.pos] == '\n' {
+                    lexer_advance(l) // swallow the LF of a CRLF pair
                 }
             } else {
                 if l.source[l.pos] == '\n' { saw_newline = true }
