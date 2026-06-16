@@ -4,23 +4,22 @@ module all
 use mara.core
 sdl :: use mara.sdl
 
-// Program starts running in the main function
 main :: fun() {
 
-	// print statement uses c printf under the hood
-	print("Hello there!")
+	print("Hello there!\n")
 
-	// table of contents
-	basic_variables_and_types()
+	types_and_values()
+	operators()
 	control_flow()
 }
 
-basic_variables_and_types :: fun() {
+types_and_values :: fun() {
+	print("Types and Values")
 	
 	// name : type = value
 	its_true: bool = true
 	// we can guess the type if you skip it
-	thats_false := false
+	its_false := false
 
 	smallest_int: i8
 	biggest_int: i128
@@ -30,29 +29,74 @@ basic_variables_and_types :: fun() {
 
 	smallest_float: f16
 	biggest_float: f64
+	print("As you see, this one is", biggest_float)
 
 	untyped_memory: byte
 	string_byte: utf8
 
-	array_of_numbers: [64]i32 // value, holds its own data
-	slice: []i32 // reference, points to someone else's data
+	array: [64]byte // value, holds its own data
+	slice: []byte // reference, points to someone else's data
+	slice_array: [..64]utf8 // the main container type in Mara
 
-	partial_array: [..64]i32 // an array that's also a slice
+	pointer : ^f64 = &biggest_float
+	biggest_float = 99
+	value := pointer^
+	print("This should read out", value)
+
+	print()
+
+	// slices and pointers don't get intialized
+	// you can't read from them until you assign them
+	// you can't assign numbers to pointers
+	// you can't do math on pointers
+}
+
+operators :: fun() {
+	print("Operators")
+
+	a := 8	b := 2
+	c := a + b
+	d := a - b
+	e := a * b
+	f := a / b
+	print("8 2 10 6 16 4")
+	print(a, b, c, d, e, f)
+
+	if c == 10 do print("c is 10")
+	if d != e do print("d is not e")
+
+	its_true := a > b
+	its_false := a < b
+
+	if true and its_true do print("logic!")
+	if its_false or its_true do print("big brain logic!")
+	if b <= a and b + 6 >= a do print("galaxy brain logic!")
+	if not its_false do print("double negative...")
+
+	print()
 }
 
 control_flow :: fun() {
+	print("Control Flow")
 	water_temperature := 101
 
-	// Braces go around the entire block
+	// braces go around the entire block
 	if water_temperature > 100 {
 		print("It's steam!")
+	// elif means else if
 	elif water_temperature == 100
 		print("It's bubbly!")
 
-	// high value excluded, so this checks from 0 to 99
+	// this checks from 0 to 99
 	elif water_temperature in 0..100
 		print("It's probably hot")
 	else
 		print("It's cold!")
 	}
+
+	water_temperature = -1
+	if bool(water_temperature) do print("
+		Only true/false allowed as conditions
+	 	Only 0 converts to false")
+
 }
