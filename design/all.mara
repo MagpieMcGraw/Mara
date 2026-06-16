@@ -1,11 +1,28 @@
 
 module all
 
-The_Basics :: struct {
-	something_true: bool = true // default values supported
-	something_false := false // there's even type inference
+use mara.core
+sdl :: use mara.sdl
 
-	smallest_int : i8
+// Program starts running in the main function
+main :: fun() {
+
+	// print statement uses c printf under the hood
+	print("Hello there!")
+
+	// table of contents
+	basic_variables_and_types()
+	control_flow()
+}
+
+basic_variables_and_types :: fun() {
+	
+	// name : type = value
+	its_true: bool = true
+	// we can guess the type if you skip it
+	thats_false := false
+
+	smallest_int: i8
 	biggest_int: i128
 
 	smallest_uint: u8
@@ -15,89 +32,27 @@ The_Basics :: struct {
 	biggest_float: f64
 
 	untyped_memory: byte
-	string_byte: utf8 // could be a distict type?
+	string_byte: utf8
 
-	array_of_numbers : [64]i32 // value, holds its own data
-	slice : []i32 // reference, points to someone else's data
+	array_of_numbers: [64]i32 // value, holds its own data
+	slice: []i32 // reference, points to someone else's data
 
-	partial_array: [..64]i32
-	// has a slice header, but is a value type, like array
-	// codegen does special copying to keep the header valid
-	// slice header is len cap ptr, 8 bytes each.
-
-	array_with_sentinel: [64, 0]i32
-	// same as array, but has a 0 after all the elements
+	partial_array: [..64]i32 // an array that's also a slice
 }
 
-main :: fun() {
-	basics_declare : The_Basics
-	basics_declare_assign : The_Basics = The_Basics()
-	basics_with_type_inference := The_Basics()
-	// structs get 0 init, and then run their constructor
-	// that's what sets the default values
+control_flow :: fun() {
+	water_temperature := 101
 
-	basics_uninitialized : The_Basics = #skip_constructor
+	// Braces go around the entire block
+	if water_temperature > 100 {
+		print("It's steam!")
+	elif water_temperature == 100
+		print("It's bubbly!")
 
-	advanced_basics := The_Basics() {smallest_int = -128}
-
-	advanced_basics.smallest_float = -1.5
-	print(advanced_basics.smallest_float)
+	// high value excluded, so this checks from 0 to 99
+	elif water_temperature in 0..100
+		print("It's probably hot")
+	else
+		print("It's cold!")
+	}
 }
-
-// ===========================================================================
-// Things I (Claude) had to learn about Mara while writing a binary asset cache
-// and fixing two codegen bugs. All verified by compiling + running, 2026-06-13.
-// ===========================================================================
-
-// --- File I/O (mara.os) ---
-// * There is NO seek. The API is whole-file or sequential only:
-//     read_entire_file(path, ^[]byte)            -- slurp the whole file
-//     file_open_write / file_write(id, ^[]byte) / file_close  -- append in order
-//   So a binary format is: write header + table + payloads in file order; on
-//   read, slurp the whole file into one buffer and slice payloads back out.
-// * Errors are a value, never a print. File_Error :: error {...}; fallible fns
-//   carry a trailing `err`. Propagate with `?`, test with `bool(err)`, or match
-//   the variant. `-> err` is a universal error slot (any error kind flows in).
-
-// --- The binary (de)serialization idiom ---
-// * A []byte buffer is typed memory. `buf[off] = structOrScalar` writes
-//   size_of(value) bytes at off in NATIVE order; `v : T = buf[off]` reads them
-//   back. Runtime offsets are fine. This is what memory.mara's arena uses to
-//   stash typed headers. Round-trips as long as both ends agree on T.
-// * `#big_endian buf[off]` is the byte-SWAPPED variant — only for foreign
-//   formats (e.g. TTF). For a buffer you author yourself, omit it.
-// * Whole-slice `dst = src` deep-copies contents (not a header alias).
-//   `dst[lo:hi] = someSlice/array` copies the RHS's CONTENTS into the span,
-//   but `dst[lo:hi] = scalarOrStruct` is a reinterpret WRITE (the value's own
-//   bytes land in the span). Discriminator: is the RHS array-shaped?
-
-// --- Partial arrays / str64 carry a pointer (don't blit them to disk) ---
-// * [..N]T (and str64 = [..64]utf8) lower to { len:i64, cap:i64, ptr, [N x T] }
-//   — a slice header whose `ptr` points at the inline storage right after it.
-//   Consequences: (1) copying one must RE-ANCHOR ptr to the copy's own inline
-//   block (the compiler's partial_array_copy does this); (2) you CANNOT write
-//   one to disk and read it back — the saved ptr dangles. For POD / on-disk
-//   records use a plain fixed array [N]T (pure inline, no header) + a separate
-//   length field, then rebuild the str64 on read.
-// * Returning a str64 / partial array works: build it with `&out + x` appends
-//   and `return out`. Under the hood it's an sret return with NRVO — the callee
-//   builds straight into the caller's slot (so the inline `ptr` is correct from
-//   the start, no copy), exactly like struct and slice returns.
-
-// --- slice_from_ptr is deliberately restricted ---
-// * It always yields []byte, and OUTSIDE the os module its size argument must
-//   be compile-time-known (a gate against runtime-length OOB at C boundaries).
-//   So you can't cheaply make a zero-copy []Vertex view over a runtime-sized
-//   byte range in normal code. Plain sub-slicing `buf[a:b]` IS zero-copy []byte;
-//   typed views of runtime length need an element copy loop.
-
-// --- Surface syntax that bit me ---
-// * if-chains are ONE brace pair: `if c { ... elif c2 ... else ... }` — the
-//   elif / else are separators INSIDE the braces, not `} else {`.
-// * Boolean operators are words: `and` `or` `not` (not && || !).
-// * `&dst + item` appends an element to a partial array; `&dst + srcSlice`
-//   appends a run. Routes through core's `+` dispatch — needs `use mara.core`.
-// * Generics exist: `fun(p: ^[]$T)`, `union($T: type)`. size_of(T) is a
-//   compile-time constant (usable as an array length or offset stride).
-// * `for i in 0..n` is exclusive (0 .. n-1). `for v, i in slice` binds value
-//   then index.
