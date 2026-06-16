@@ -386,12 +386,6 @@ gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
 
     // Case 1: direct ident — struct var or pointer-to-struct (auto-deref)
     if ident, ok := e.expr.(^Expr_Ident); ok {
-        // Desugared ident (namespace-match shorthand): swap in the desugared
-        // expression and re-enter so the relevant case below picks it up.
-        if ident.desugared != nil {
-            new_e := new_clone(Expr_Field_Access{expr = ident.desugared, field = e.field, span = e.span, type_ = e.type_})
-            return gen_field_address(g, new_e)
-        }
         st, base_ptr, found := resolve_struct_for_field(g, ident.name, ident.type_, ident.span)
         if !found {
             codegen_fatal(g, e.span, CODE_STRUCT_POINTER_STRUCT, ident.name)

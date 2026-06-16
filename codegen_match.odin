@@ -8,16 +8,9 @@ import "core:strings"
 // ---------------------------------------------------------------------------
 
 gen_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
-    // Subject-less form: `match { cond1...; cond2... }` lowers as a chain
-    // of independent bool tests, same shape as the struct-namespace form
-    // (multi-fire: every true arm runs its body, fall through to next).
-    if s.subject == nil {
-        gen_namespace_match(g, s)
-        return
-    }
-    // Use the type checker's resolved type to decide the codegen path.
-    // Pure-enum unions are registered as Type_Enum, so only payload-bearing
-    // unions land here — everything else (scalars, enums) goes to value match.
+    // match is union-only (the type checker enforces it). Pure-enum unions are
+    // registered as Type_Enum and lower through value match; payload-bearing
+    // unions go through union match.
     if ut, is_union := expr_type(s.subject).(^Type_Union); is_union {
         if union_ptr, ok := union_subject_ptr(g, s.subject, ut); ok {
             gen_union_match(g, s, ut, union_ptr)
@@ -25,53 +18,7 @@ gen_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
         }
         codegen_fatal(g, s.span, CODE_CANNOT_MATCH_KIND_UNION_EXPRESSION)
     }
-    // Namespace-form match: subject is a struct. Arms are bool predicates
-    // already type-checked; lower as a chain of independent test+branches.
-    if scope, is_struct := expr_type(s.subject).(^Type_Scope); is_struct && scope.kind == .Struct {
-        gen_namespace_match(g, s)
-        return
-    }
     gen_value_match(g, s)
-}
-
-// Namespace-form match: each arm is an independent bool predicate. Per arm:
-// gen_expr returns i1, conditional br to body or next-arm label, body falls
-// through to next regardless. Multi-fire — any number of arms can fire per
-// execution.
-gen_namespace_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
-    end_label := fresh_label(g, "match.end")
-
-    real_arms: [dynamic]^Match_Arm
-    for &arm in s.arms {
-        if arm.is_predicate_arm { append(&real_arms, &arm) }
-    }
-
-    if len(real_arms) == 0 {
-        emit_br(g, end_label)
-        emit_label(g, end_label)
-        return
-    }
-
-    snap := save_var_scope(g)
-
-    for arm, i in real_arms {
-        bool_val := gen_expr(g, arm.value, "i1")
-
-        body_label := fresh_label(g, fmt.tprintf("match.body.%d", i))
-        next_label := i < len(real_arms) - 1 ? fresh_label(g, fmt.tprintf("match.next.%d", i)) : end_label
-        emit_cond_br(g, bool_val, body_label, next_label)
-
-        emit_label(g, body_label)
-        gen_body_block(g, arm.body[:], .Match_Arm, next_label)
-
-        restore_var_scope(g, &snap)
-
-        if i < len(real_arms) - 1 {
-            emit_label(g, next_label)
-        }
-    }
-
-    emit_label(g, end_label)
 }
 
 // Resolve the subject of a match-on-union to a pointer at the union's

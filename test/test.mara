@@ -512,45 +512,6 @@ test_union_pad :: fun() {
 	}
 }
 
-Payload :: struct {
-	count: i64
-}
-
-Events_Namespace :: struct {
-	quit:        bool
-	double_save: bool
-	debug_print: bool
-	payload:     Payload
-}
-
-test_match_namespace :: fun() {
-	e: Events_Namespace
-	e.quit          = true
-	e.debug_print   = true
-	e.payload.count = 42
-	match e {
-	quit        do print(1)
-	double_save do print(2)
-	debug_print do print(3, payload.count)
-	}
-	all_on: Events_Namespace
-	all_on.quit          = true
-	all_on.double_save   = true
-	all_on.debug_print   = true
-	all_on.payload.count = 100
-	match all_on {
-	quit        do print(11)
-	double_save do print(12)
-	debug_print do print(13, payload.count)
-	}
-	none: Events_Namespace
-	match none {
-	quit        do print(91)
-	double_save do print(92)
-	debug_print do print(93)
-	}
-}
-
 Kind_File_Error :: error {
 	Not_Found
 	Too_Large
@@ -1691,7 +1652,6 @@ main :: fun() -> i64 {
 	test_match_union()
 	test_enum_print()
 	test_union_pad()
-	test_match_namespace()
 	test_error_kind()
 	test_maybe()
 	test_err_multi()

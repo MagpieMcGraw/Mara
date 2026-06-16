@@ -116,19 +116,18 @@ game_events :: fun(game: ^Megastruct) {
 	&quit_msg + "Escaping..."
 
 	process(&game.events)
-	match game.events {
-		quit 					do game.running = false
-		dropfile.was_dropped
-			print("dropepd file: ", dropfile.name)
-		keyboard.pressed[W] 	do game.player.y -= 50
-		keyboard.pressed[A] 	do game.player.x -= 50
-		keyboard.pressed[S]		do game.player.y += 50
-		keyboard.pressed[D] 	do game.player.x += 50
-		keyboard.pressed[P]		do print("Printing!")
-		keyboard.pressed[T]		do print("Testing!")
-		keyboard.pressed[Escape]
-			print(quit_msg)
-			game.running = false
+	ev := &game.events	kb := &ev.keyboard	file := &ev.dropfile
+	if ev.quit 				do game.running = false
+	if file.was_dropped		do print("dropepd file: ", file.name)
+	if kb.pressed[W] 		do game.player.y -= 50
+	if kb.pressed[A] 		do game.player.x -= 50
+	if kb.pressed[S]		do game.player.y += 50
+	if kb.pressed[D] 		do game.player.x += 50
+	if kb.pressed[P]		do print("Printing!")
+	if kb.pressed[T]		do print("Testing!")
+	if kb.pressed[Escape] 	{
+		print(quit_msg)
+		game.running = false
 	}
 }
 game_update :: fun(game: ^Megastruct, dt: f64) {

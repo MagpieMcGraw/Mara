@@ -1506,13 +1506,6 @@ Checker :: struct {
     // True while resolving a `foreign` declaration's signature — the only
     // context where `cstring` may be named as a type (see resolve_type_expr).
     in_foreign_sig: bool,
-    // Namespace-form match arm context: when set, identifier resolution falls
-    // back to looking up the name as a field of namespace_subject's struct
-    // type (after env/local lookup misses). Lets arm bodies/predicates write
-    // bare `quit` instead of `game.events.quit`. Saved/restored when entering
-    // and leaving a namespace match's arms.
-    namespace_subject:      Expr,
-    namespace_subject_type: ^Type_Scope,
     // Dispatch and operator overloading (per-package, saved/restored on module boundaries)
     dispatch_groups:    map[string][dynamic]string,
     operator_overloads: map[Token_Kind][dynamic]string,
@@ -9544,19 +9537,23 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 }
 
 check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
-    // Subject-less form: `match { cond1 ...; cond2 ... }` — each arm is a
-    // standalone bool predicate, multi-fire semantics (every true arm runs
-    // its body). Routed through check_namespace_match for the predicate
-    // validation since the arm shape and semantics are identical to the
-    // struct-namespace form.
+    // match dispatches on a union value, so it always needs a subject. The
+    // parser already reports a missing one; bail here so we don't deref nil.
     if s.subject == nil {
-        check_namespace_match(c, s, env, nil)
         return
     }
     subj_type := check_expr(c, s.subject, env)
     ut, is_union_match := subj_type.(^Type_Union)
     et, is_enum_match := subj_type.(^Type_Enum)
     _, is_err_match := subj_type.(Type_Err)
+
+    // Union-only: match is for variant dispatch — payload unions, payload-less
+    // unions (a.k.a. enums), and open `err`. Structs, scalars, bools, etc. are
+    // not matchable; use if/elif for value or predicate branching.
+    if !is_union_match && !is_enum_match && !is_err_match {
+        check_error(c, s.span, TYPE_MATCH_REQUIRES_UNION, type_name(subj_type))
+        return
+    }
 
     // Open `err` matches can never be exhaustive — the universe of error
     // variants is open across the whole program. Force an explicit `else`
@@ -9570,16 +9567,6 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
         if !has_else {
             check_error(c, s.span, TYPE_MATCH_ERR_REQUIRES_ELSE)
         }
-    }
-
-    // Namespace-form match: subject is a struct. Each arm is a bool predicate
-    // — either an explicit expression (`expr do stmt`) or a bare field name
-    // (`quit do stmt`, which the parser produces as an is_union_arm with
-    // variant_name="quit"). All predicate arms fire independently — multi-fire
-    // semantics, like each-index over a struct's bool fields.
-    if scope, is_struct := subj_type.(^Type_Scope); is_struct && scope.kind == .Struct {
-        check_namespace_match(c, s, env, scope)
-        return
     }
 
     // Validate wildcard 'else' arms. Empty body is fine — it's the explicit
@@ -9766,86 +9753,6 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
         }
     }
 }
-
-// Namespace-form match: subject is a struct, arms are bool predicates that
-// resolve against the subject's fields. All arms fire independently when
-// their predicate is true (multi-fire — same cardinality as each-index).
-//
-// Two arm shapes valid here:
-//   <field> do <stmt>     — bare identifier, parser tagged it as is_union_arm
-//                           with variant_name=<field>; we look up <field> on
-//                           the subject struct and use it as the predicate.
-//   <expr>  do <stmt>     — explicit predicate expression; parser set
-//                           is_predicate_arm with arm.value=<expr>. The
-//                           predicate must type as bool.
-//
-// `else` is not allowed in namespace match — there's no "no match" branch
-// when arms are independent. If you want a default action, write it after
-// the match block.
-//
-// Inside the arms (both predicates and bodies), the subject acts like an
-// implicit `using` binding: a bare identifier that doesn't resolve in the
-// local env is looked up as a field of the subject's struct. So
-// `match game.events { dropfile.was_dropped do print(dropfile.name) }` works
-// without re-typing `game.events.` in either the predicate or the body.
-// Locals declared in the arm body shadow subject fields normally.
-check_namespace_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env, scope: ^Type_Scope) {
-    for arm in s.arms {
-        if arm.is_else {
-            check_error(c, s.span, TYPE_ALLOWED_MATCH_STRUCT_ARMS_FIRE)
-        }
-    }
-
-    // Set up the namespace context so identifier resolution falls back to
-    // subject-field lookup. Saved/restored to handle nested namespace matches.
-    // Subject-less form (scope == nil) doesn't have a namespace fallback —
-    // every predicate resolves through the normal env, which is what you
-    // want: it's a flat if-chain replacement, not a field shortcut.
-    saved_subject      := c.namespace_subject
-    saved_subject_type := c.namespace_subject_type
-    c.namespace_subject      = s.subject
-    c.namespace_subject_type = scope
-    defer {
-        c.namespace_subject      = saved_subject
-        c.namespace_subject_type = saved_subject_type
-    }
-
-    for &arm in s.arms {
-        if arm.is_else { continue }
-
-        // Resolve the predicate. Bare-identifier arms (parsed as is_union_arm
-        // with variant_name set) are normalized to a uniform predicate-arm
-        // shape with arm.value carrying the predicate Expr. The Expr_Ident
-        // fallback then handles the namespace lookup at type-check time.
-        predicate: Expr
-        if arm.is_predicate_arm {
-            predicate = arm.value
-        } else if arm.is_union_arm && arm.variant_name != "" {
-            ident := new_clone(Expr_Ident{name = arm.variant_name, span = s.span})
-            predicate            = ident
-            arm.value            = ident
-            arm.is_predicate_arm = true
-            arm.is_union_arm     = false
-            arm.variant_name     = ""
-        } else if arm.value != nil {
-            predicate            = arm.value
-            arm.is_predicate_arm = true
-        } else {
-            ctx_name := scope.name if scope != nil else "match"
-            check_error(c, s.span, TYPE_MATCH_STRUCT_EXPECTS_PREDICATE_ARMS, ctx_name)
-            continue
-        }
-
-        pred_type := check_expr(c, predicate, env)
-        if _, is_bool := pred_type.(Type_Bool); !is_bool {
-            check_error(c, s.span, TYPE_PREDICATE_ARM_BOOL_MARA_DOESN, type_name(pred_type))
-        }
-
-        child := type_env_child(env)
-        check_scope(c, arm.body, &child)
-    }
-}
-
 
 // ---------------------------------------------------------------------------
 // Check program — entry point
@@ -11248,24 +11155,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 e.resolved = Resolved_Func{name = flat}
             }
             return t
-        }
-        // Namespace-match fallback: bare identifier inside a `match struct { … }`
-        // arm resolves as a field of the subject when the local env doesn't
-        // know it. Lets `dropfile do print(dropfile.name)` work without
-        // re-typing `game.events.` everywhere.
-        if c.namespace_subject != nil && c.namespace_subject_type != nil {
-            for f in c.namespace_subject_type.sd.fields {
-                if f.name == e.name {
-                    fa := new_clone(Expr_Field_Access{
-                        expr  = c.namespace_subject,
-                        field = e.name,
-                        span  = e.span,
-                    })
-                    e.desugared = fa
-                    e.type_     = f.type_
-                    return f.type_
-                }
-            }
         }
         // Not in env — check for better error messages
         ident_flat := resolve_type_name(c, e.name, "", env)

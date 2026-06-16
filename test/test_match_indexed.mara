@@ -1,9 +1,8 @@
 module test_match_indexed
 
-// Flat namespace match with indexed predicates: each arm is a regular
-// bool expression, including `arr[Variant]` lookups against a bool array
-// indexed by an enum. No special sub-block syntax — the indexing is part
-// of the predicate expression itself.
+// Enum-indexed bool arrays: `[4 Color]bool` indexed by a union value, read as
+// `colors[Green]`. (This used to be exercised through a namespace match; that
+// form was removed, so the same coverage now runs via plain `if`.)
 
 Color :: union(tag u8) {
 	Red    = 0
@@ -18,33 +17,27 @@ Events :: struct {
 }
 
 test_match_indexed :: fun() {
-	// Indexed predicates inside a namespace match. Bare `colors[X]` resolves
-	// as `e.colors[X]` via the namespace shorthand. Each arm is independent.
 	e: Events
 	e.quit          = true
 	e.colors[Green] = true
 	e.colors[Blue]  = true
-	// Should print 99, 12, 13 — quit fires, then Green and Blue from colors.
-	match e {
-	quit            do print(99)
-	colors[Red]     do print(11)
-	colors[Green]   do print(12)
-	colors[Blue]    do print(13)
-	colors[Yellow]  do print(14)
-	}
+	// Prints 99, 12, 13 — quit, then Green and Blue from colors.
+	if e.quit           do print(99)
+	if e.colors[Red]    do print(11)
+	if e.colors[Green]  do print(12)
+	if e.colors[Blue]   do print(13)
+	if e.colors[Yellow] do print(14)
 
-	// Multi-statement arm body — the field-path arm-start detector finds the
-	// next `colors[Yellow]` arm even after a multi-line indented body.
+	// Multi-statement body still works through a plain if.
 	more: Events
 	more.colors[Red]    = true
 	more.colors[Yellow] = true
-	match more {
-	colors[Red]
+	if more.colors[Red] {
 		print(81)
 		print(82)
-	colors[Green]   do print(83)
-	colors[Yellow]  do print(84)
 	}
+	if more.colors[Green]  do print(83)
+	if more.colors[Yellow] do print(84)
 }
 
 main :: fun() -> i64 {

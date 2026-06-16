@@ -635,12 +635,6 @@ build_address_chain :: proc(g: ^Codegen, expr: Expr) -> (Address_Chain, bool) {
 // Recursive walk to build chain steps. Sets chain.base_* for the root,
 // appends steps for each access level.
 build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool {
-    // If the type checker rewrote this ident (e.g. namespace-match subject
-    // shorthand → field access), follow the desugared expression as if it
-    // were the original.
-    if ident, ok := expr.(^Expr_Ident); ok && ident.desugared != nil {
-        return build_chain_walk(g, ident.desugared, chain)
-    }
     #partial switch e in expr {
     case ^Expr_Ident:
         // Base case: root of the chain

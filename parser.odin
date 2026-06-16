@@ -190,10 +190,6 @@ Expr_Ident :: struct {
     type_:    Type,
     resolved: Resolved_Name,  // filled by type checker (enum variants, constants)
     is_dot:   bool,           // .Variant shorthand: resolve via expected type or visible-variant search
-    desugared: Expr,          // type checker may rewrite to another expression (e.g. namespace-match
-                              // subject-field access: bare `quit` inside `match game.events { … }`
-                              // resolves as `game.events.quit` via this field). Codegen routes through
-                              // it transparently. nil = the ident's own name is what gets emitted.
 }
 
 Expr_Unary :: struct {
@@ -738,10 +734,6 @@ Match_Arm :: struct {
     dot_shorthand:   string,     // for .Variant shorthand in value match (e.g. ".Red")
     is_else:         bool,       // true for wildcard else arm
     body:            [dynamic]Stmt,
-    // Namespace-form match (subject is a struct): each arm tests a bool
-    // predicate against the subject. The expression goes in `value`. The
-    // type checker sets is_predicate_arm true after normalizing.
-    is_predicate_arm: bool,
     // Populated by type checker — codegen reads these directly
     resolved_tag:    int,        // tag value for enum/union variant arms
     resolved_struct: string,     // variant struct name for union binding arms
@@ -2455,20 +2447,16 @@ parse_match :: proc(p: ^Parser) -> Stmt {
     start := token_span(current(p))
     advance(p) // consume 'match'
 
-    // Strict-default: every match on an enum/union must cover all variants
-    // (or use `else` as an explicit opt-out). The previous `match all` opt-in
-    // form is gone — exhaustiveness is the default, not a mode.
-    //
-    // Subject-less form: `match { <bool-arm>... }` — read past newlines
-    // to detect `{` directly. Used as a multi-fire predicate chain, same
-    // semantics as the struct-namespace form: each arm is an independent
-    // bool, all true arms fire in order.
+    // Strict-default: every match covers all variants of its union subject
+    // (or uses `else` as an explicit opt-out). match dispatches on a union
+    // value, so it always needs a subject — subject-less `match { }` and the
+    // other non-union forms were removed; use if/elif for value or predicate
+    // branching.
     subject: Expr
-    saved_pos := p.pos
     for current_kind(p) == .Newline { advance(p) }
-    if current_kind(p) != .Left_Brace {
-        // Rewind any newlines we consumed and parse the subject normally.
-        p.pos = saved_pos
+    if current_kind(p) == .Left_Brace {
+        parse_error(p, current(p), PARSE_MATCH_NEEDS_SUBJECT)
+    } else {
         p.no_struct_lit = true
         subject = parse_expr(p)
         p.no_struct_lit = false
@@ -2547,9 +2535,9 @@ parse_match :: proc(p: ^Parser) -> Stmt {
                 body = body,
             })
         } else {
-            // Value or expression-predicate arm. The expression is followed by:
-            //   `do <stmt>`     — single-statement predicate arm (namespace-form match)
-            //   <indented body> — multi-statement value match (existing)
+            // Variant pattern in value position (e.g. a literal that resolves
+            // to a union/enum variant). Boundary detectable via number/string/
+            // char. Non-union subjects are rejected by the type checker.
             value := parse_expr(p)
 
             body: [dynamic]Stmt
@@ -2557,11 +2545,10 @@ parse_match :: proc(p: ^Parser) -> Stmt {
                 advance(p) // consume 'do'
                 append(&body, parse_stmt(p))
                 skip_newlines(p)
-                append(&arms, Match_Arm{value = value, is_predicate_arm = true, body = body})
             } else {
                 body = parse_match_arm_body(p)
-                append(&arms, Match_Arm{value = value, body = body})
             }
+            append(&arms, Match_Arm{value = value, body = body})
         }
     }
     expect(p, .Right_Brace)

@@ -68,11 +68,6 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if e.name == "void" {
             return "null"
         }
-        // Type checker may have rewritten this ident into a richer expression
-        // (namespace-match subject-field access, etc.). Route through if so.
-        if e.desugared != nil {
-            return gen_expr(g, e.desugared, target_type)
-        }
         // Check resolved annotation on the node (populated by type checker)
         if ev, ev_ok := e.resolved.(Resolved_Enum_Variant); ev_ok {
             return fmt.tprintf("%d", ev.value)
