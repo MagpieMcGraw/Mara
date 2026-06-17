@@ -113,6 +113,16 @@ fail_assert :: fun() {
 // 	print("both: ", fail_mr2())
 // }
 
+// A nested fn referencing an enclosing function's runtime local. Locals are
+// function-private — no closures, so a lifted nested fn has no frame to reach
+// into. Only ::defs cross the boundary; a local simply isn't in scope.
+// Expected: undefined identifier 'secret'.
+// fail_capture_local :: fun() -> i64 {
+// 	secret := 42
+// 	grab :: fun() -> i64 { return secret }
+// 	return grab()
+// }
+
 main :: fun() -> i64 {
 	this_program = Program(Arena_Debug(1 * MB))
 
@@ -127,6 +137,7 @@ main :: fun() -> i64 {
 	// fail_negate_unsigned()
 	// fail_struct_copy_form()
 	// fail_multi_return_as_arg()
+	// fail_capture_local()
 
 	print("test_fail: inert (all negatives disabled)")
 	return 0

@@ -1,0 +1,70 @@
+module scope
+
+// Exercises nested-scope name resolution: the up-walk crosses ::defs only
+// (funcs, consts, types), locals stay function-private, and downward access
+// into another scope goes through field syntax.
+
+// Sibling nested funcs see each other — including forward references.
+nested_demo :: fun() -> i64 {
+	caller :: fun() -> i64 { return helper(10) }   // helper declared below
+	helper :: fun(x: i64) -> i64 { return x + 1 }
+	return caller()                                 // 11
+}
+
+// Mutual recursion between two sibling nested funcs.
+mutual_demo :: fun() -> bool {
+	is_even :: fun(n: i64) -> bool {
+		if n == 0 do return true
+		return is_odd(n - 1)
+	}
+	is_odd :: fun(n: i64) -> bool {
+		if n == 0 do return false
+		return is_even(n - 1)
+	}
+	return is_even(10)                              // true
+}
+
+// A nested fn sees an enclosing scope's :: const (it's compile-time, not a local).
+const_demo :: fun() -> i64 {
+	SCALE :: 10
+	inner :: fun() -> i64 { return SCALE * 2 }
+	return inner()                                  // 20
+}
+
+// Downward access: reach a sibling fn's nested def by qualifying with its name.
+alpha :: fun() -> i64 {
+	bump :: fun(x: i64) -> i64 { return x + 1 }
+	return bump(0)
+}
+down_demo :: fun() -> i64 {
+	return alpha.bump(7)                            // 8
+}
+
+// A nested fn is a separate frame: reusing an enclosing fn's local NAME can't
+// collide (locals never cross the function boundary, so no shadow check).
+frame_demo :: fun() -> i64 {
+	x := 1
+	reuse :: fun() -> i64 {
+		x := 2                                      // independent of the outer x
+		return x
+	}
+	return reuse() + x                              // 3
+}
+
+// if/for blocks share the function's frame: they read its locals up to the
+// function boundary (the env walk crosses decls too, not just defs, within a fn).
+block_demo :: fun() -> i64 {
+	total := 0
+	if true { total = total + 5 }
+	return total                                    // 5
+}
+
+main :: fun() -> i64 {
+	print("nested:", nested_demo())                 // 11
+	print("mutual:", mutual_demo())                 // true
+	print("const: ", const_demo())                  // 20
+	print("down:  ", down_demo())                   // 8
+	print("frame: ", frame_demo())                  // 3
+	print("block: ", block_demo())                  // 5
+	return 0
+}

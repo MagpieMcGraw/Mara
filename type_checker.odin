@@ -540,6 +540,10 @@ Type_Env :: struct {
     fn_name: string,             // enclosing function name (for #caller_name)
     class_scope: ^Type_Scope,    // when non-nil, this env is the body of that class/struct — field names
                                  // in this env should not leak to nested method bodies as bare identifiers.
+    fun_scope: ^Type_Scope,      // when non-nil, this env is a function's DEFS layer (its ns_env), pointing
+                                 // at that function. A nested fun walks up to the nearest fun_scope to parent
+                                 // its own defs layer there, so the up-walk crosses defs layers only — an
+                                 // enclosing function's locals (on its body env) stay private.
     is_module_scope: bool,       // true on the env of a module/package — name lookup terminates here.
                                  // File envs (which hold a file's private include names) sit BELOW the
                                  // module env and walk through it; consumers cross module boundaries
@@ -8060,21 +8064,36 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     } else if is_method {
         parent_env = env.parent
     } else if ft.kind == .Fun {
-        // Nested funs (e.g., `loop_iter :: fun(...)` inside another function
-        // body) get lifted to module scope at codegen — see
-        // extract_scope_fun_defs. The env chain should reflect that: walk
-        // past enclosing function bodies to the file env, so the inner fun
-        // sees module-level decls + per-file includes but not the outer
-        // function's locals. Without this, the shadow check at
-        // register_and_check_declarations finds outer locals and rejects
-        // legitimate same-name decls in the inner fun.
+        // Funs get the same two-layer shape as structs: a defs layer (ns_env)
+        // holding Self + this fun's nested ::defs, and a body layer (child,
+        // built below) holding params + locals. The defs layer parents to the
+        // ENCLOSING fun's defs layer — found by walking up to the nearest
+        // fun_scope marker — so name resolution crosses defs layers only and an
+        // enclosing fun's locals stay private (no closures to capture them).
+        // No enclosing fun ⇒ top-level: parent to env (the file/module scope).
+        // Module needs no special case; it's just the topmost defs layer.
+        defs_parent := env
         walk := env
-        for walk != nil && walk.parent != nil && !walk.parent.is_module_scope {
-            walk = walk.parent
+        for walk != nil && walk.fun_scope == nil { walk = walk.parent }
+        if walk != nil { defs_parent = walk }
+        // Funs aren't registered at module-registration time (structs are), so
+        // collect this fun's nested ::defs now, before exposing them. The
+        // ft.types guard keeps a re-entry from re-mangling the nested names.
+        if ft.types == nil && len(s.body) > 0 {
+            register_scope_defs(c, ft, &ft.sd, s.body, defs_parent)
         }
-        if walk != nil {
-            parent_env = walk
+        ns_env = type_env_child(defs_parent)
+        ns_env.fun_scope = ft
+        type_env_set(&ns_env, "Self", ft)
+        if ft.types != nil {
+            for bare, t in ft.types { type_env_set(&ns_env, bare, t) }
         }
+        if ft.functions != nil {
+            for bare, fn in ft.functions {
+                if fn != nil { type_env_set(&ns_env, bare, fn) }
+            }
+        }
+        parent_env = &ns_env
     }
 
     child := type_env_child(parent_env)
@@ -8083,25 +8102,14 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.kind == .Fun {
         child.scope_depth = parent_env.scope_depth + 1
     }
-    // Top-level functions get Self / their own ft.types / ft.functions on the body
-    // env directly. Methods reach the class's Self via parent walk-up. For classes,
-    // these all live on ns_env above.
-    if ft.kind == .Fun && !is_method {
-        type_env_set(&child, "Self", ft)
-    }
-    // A struct's nested defs are registered into ft.types during module
-    // registration (register_scope_defs); a function's are NOT. Without that,
-    // a body-local type used in the function's own local declarations — e.g.
-    // `nodes : [..N]Node` where `Node :: struct {…}` is defined in the same
-    // body — can't be resolved by the field loop below (it runs before the
-    // body pass that would otherwise hoist these). Register them here, ahead
-    // of that loop, mirroring the struct path. The ft.types guard keeps a
-    // re-entry from re-mangling the nested names. (TTF is the precedent that
-    // register_scope_defs + the later body pass coexist safely.)
-    if ft.kind == .Fun && ft.types == nil && len(s.body) > 0 {
-        register_scope_defs(c, ft, &ft.sd, s.body, parent_env)
-    }
-    if ft.kind == .Fun {
+    // Methods don't build their own defs layer (they hang off the class ns_env),
+    // so their nested ::defs are registered and exposed on the body env here.
+    // Non-method funs already did this on their ns_env above; a struct's nested
+    // defs land at module registration. ft.types guards re-mangling on re-entry.
+    if is_method {
+        if ft.types == nil && len(s.body) > 0 {
+            register_scope_defs(c, ft, &ft.sd, s.body, parent_env)
+        }
         if ft.types != nil {
             for bare, t in ft.types { type_env_set(&child, bare, t) }
         }
@@ -8141,7 +8149,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             c.table.constants[bare] = def.value
             type_env_set(&child, def.name, val_type)
             type_env_set(&child, bare, val_type)
-            if ft.kind == .Struct {
+            // Mirror onto the defs layer (ns_env) whenever there is one — structs
+            // and non-method funs — so sibling methods / nested funs reach the
+            // const by bare name. is_method has no own ns_env, so child only.
+            if parent_env == &ns_env {
                 type_env_set(&ns_env, def.name, val_type)
                 type_env_set(&ns_env, bare, val_type)
             }

@@ -154,10 +154,15 @@ functions :: fun() {
 	}
 
 	multi_return :: fun() -> i64, i64 {
-		one := 1
+		one := local_add(6, -5)
 		three := one + 2
 		return three, 4 + 5
 	}
 	a, b := multi_return()
 	print("Uhh... 3 and 9:", a, "and", b)
+
+	default_values :: fun(five := 5) -> seven : u32 {
+		result := 2 + five
+		return result
+	}
 }
