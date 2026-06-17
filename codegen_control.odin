@@ -190,6 +190,15 @@ gen_for_range :: proc(g: ^Codegen, s: ^Stmt_For) {
     high_val := coerce_int_to_ir(g, gen_expr(g, s.range_high, ir_type),
         expr_ir_type(g, s.range_high), ir_type)
 
+    // Runtime guard: a descending range (low > high) would silently iterate
+    // zero times. The constant case is a compile error; this catches bounds
+    // only known at runtime.
+    range_unsigned := false
+    if num, num_ok := s.var_type.(Type_Numeric); num_ok && num.kind == .Unsigned {
+        range_unsigned = true
+    }
+    emit_range_guard(g, low_val, high_val, ir_type, range_unsigned, s.span)
+
     // Alloca + init loop variable. Skip the pre-store-0 step that previously
     // shadowed the low_val store — LLVM still emits both as separate
     // instructions, and the first one is always dead.

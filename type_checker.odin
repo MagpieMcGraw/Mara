@@ -8388,6 +8388,16 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
             check_error(c, s.span, TYPE_RANGE_UPPER_BOUND_NUMERIC, type_name(high_type))
         }
 
+        // Ban descending ranges where both bounds are compile-time-known: `..`
+        // only counts up, so `4..-3` would silently iterate zero times. Catch
+        // it loudly at build time (matches Odin's "Invalid interval range").
+        // Bounds that aren't comptime-known are left as an empty loop.
+        lo_const, lo_ok := evaluate_comptime_int(c, s.range_low, &child)
+        hi_const, hi_ok := evaluate_comptime_int(c, s.range_high, &child)
+        if lo_ok && hi_ok && lo_const > hi_const {
+            check_error(c, s.span, TYPE_DESCENDING_RANGE, lo_const, hi_const, lo_const, hi_const)
+        }
+
         type_env_set(&child, s.loop_var, iter_type)
         s.var_type = distinct_base(iter_type)
 

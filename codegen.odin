@@ -2567,6 +2567,40 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
     emit_label(g, ok_label)
 }
 
+// Runtime guard against a descending range (low > high), which would otherwise
+// silently iterate zero times. Constant bounds are rejected at compile time
+// (TYPE_DESCENDING_RANGE); this covers variable bounds. Elided when both bounds
+// are integer literals — a constant descending range never reaches codegen, and
+// a constant ascending one can never trip. Mirrors the crash path: journal +
+// located message + exit.
+emit_range_guard :: proc(g: ^Codegen, low_val: string, high_val: string, ir_type: string, is_unsigned: bool, span: Span = {}) {
+    _, lo_lit := strconv.parse_i64(low_val)
+    _, hi_lit := strconv.parse_i64(high_val)
+    if lo_lit && hi_lit {
+        return
+    }
+
+    ok_label  := fresh_label(g, "range.ok")
+    bad_label := fresh_label(g, "range.bad")
+    cmp := fresh_tmp(g)
+    gt := is_unsigned ? "ugt" : "sgt"
+    emit(g, "  %s = icmp %s %s %s, %s", cmp, gt, ir_type, low_val, high_val)
+    emit_cond_br(g, cmp, bad_label, ok_label)
+
+    emit_label(g, bad_label)
+    emit_crash_journal_begin(g)
+    loc := format_location(span.file, span.line, span.col)
+    esc_loc, _ := strings.replace_all(loc, "%", "%%")
+    msg, _ := get_string_literal(g, strings.concatenate(
+        {"Descending range at ", esc_loc, " -- `..` only counts up (low > high); use a C-style for to count down.\n"}))
+    emit(g, "  call i32 (ptr, ...) %s(ptr %s)", printf_sym(g), msg)
+    emit_crash_journal_end(g)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+
+    emit_label(g, ok_label)
+}
+
 // Emit an overflow-checked integer arithmetic operation using LLVM intrinsics.
 // `op` is one of "sadd"/"ssub"/"smul"/"uadd"/"usub"/"umul". Returns the result
 // temporary. On overflow: dispatches to the hoisted helper.
