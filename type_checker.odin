@@ -7358,7 +7358,19 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.value = new_clone(Expr_Skip_Constructor{span = s.span})
                 }
             }
-            c.expected_hint = ann_type
+            // A bare reassignment (`q = expr`) carries no annotation, so
+            // ann_type is untyped — but the target already has a type. Use it
+            // as the hint so an all-infer RHS (e.g. `128 >> 1`) adopts the
+            // target's signedness/width, matching the annotated-declaration
+            // path. Without it the literal stays infer and codegen defaults to
+            // signed — wrong shift (ashr vs lshr) and wrong overflow semantics.
+            assign_hint := ann_type
+            if !s.is_decl {
+                if existing, ok := type_env_get(env, s.name); ok && !is_untyped(existing) {
+                    assign_hint = existing
+                }
+            }
+            c.expected_hint = assign_hint
             val_type := check_expr(c, s.value, env)
             // `x : []utf8 = "lit"` — writable view over rodata; sized slices
             // (`[:N]utf8`, cap_expr set) copy into owned backing and pass.
