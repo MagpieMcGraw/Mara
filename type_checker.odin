@@ -1217,6 +1217,66 @@ evaluate_comptime_bool :: proc(c: ^Checker, e: Expr) -> (value: bool, ok: bool) 
     return false, false
 }
 
+// fold_comptime_ifs resolves every comptime `#if` in `stmts` in place, BEFORE the
+// checker runs. The live arm's statements replace the `#if` (so they keep source
+// order); the dead arm is dropped entirely — it is never checked, so its
+// platform-specific names that don't exist on this target never need to resolve.
+// Recurses through every nested body so no comptime `#if` survives to the checker
+// (the def/runtime split downstream then never has to treat `#if` as a hybrid).
+// Returns true if THIS list's shape changed (a top-level `#if` was folded here),
+// so a Stmt_Scope can rebuild its defs index from the new body.
+fold_comptime_ifs :: proc(c: ^Checker, stmts: ^[dynamic]Stmt) -> (folded_here: bool) {
+    any_if := false
+    for s in stmts^ {
+        if cif, ok := s.(^Stmt_If); ok && cif.is_comptime { any_if = true; break }
+    }
+    if !any_if {
+        for s in stmts^ { fold_comptime_ifs_children(c, s) }
+        return false
+    }
+    out: [dynamic]Stmt
+    for s in stmts^ {
+        if cif, ok := s.(^Stmt_If); ok && cif.is_comptime {
+            live, eval_ok := evaluate_comptime_bool(c, cif.condition)
+            if !eval_ok {
+                append(&out, s)   // unevaluable — leave it for the checker to report
+                continue
+            }
+            arm := &cif.body if live else &cif.else_body
+            fold_comptime_ifs(c, arm)               // fold nested #if in the live arm
+            for inner in arm^ { append(&out, inner) }
+            continue
+        }
+        fold_comptime_ifs_children(c, s)
+        append(&out, s)
+    }
+    stmts^ = out
+    return true
+}
+
+// fold_comptime_ifs_children recurses into a statement's nested bodies. For a
+// Stmt_Scope whose body changed, it rebuilds the defs index from the folded body.
+fold_comptime_ifs_children :: proc(c: ^Checker, s: Stmt) {
+    #partial switch v in s {
+    case ^Stmt_Scope:
+        if fold_comptime_ifs(c, &v.body) {
+            clear(&v.defs)
+            for st in v.body { if is_scope_def(st) { append(&v.defs, st) } }
+        }
+    case ^Stmt_If:
+        fold_comptime_ifs(c, &v.body)
+        fold_comptime_ifs(c, &v.else_body)
+    case ^Stmt_For:
+        fold_comptime_ifs(c, &v.body)
+    case ^Stmt_Match:
+        for i in 0 ..< len(v.arms) {
+            fold_comptime_ifs(c, &v.arms[i].body)
+        }
+    case ^Stmt_Defer:
+        fold_comptime_ifs(c, &v.body)
+    }
+}
+
 // Like resolve_fn_home but reports ambiguity when 2+ visible includes provide
 // the same function name. Mirrors resolve_with_ambiguity for type names —
 // own definitions in any enclosing scope still win unambiguously; ambiguity
@@ -10609,6 +10669,13 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // so DLLs can declare it in any top-level fn.
     c.target_shared = shared
     c.target_os     = target_os
+
+    // Resolve comptime `#if` up front: fold the live arm inline, drop the dead
+    // one. After this no `#if` reaches the checker — the dead arm's platform
+    // names never resolve here, and the def/runtime split never sees a hybrid.
+    for _, prog in c.programs {
+        fold_comptime_ifs(&c, prog)
+    }
 
     main_prog, prog_ok := programs[main_package]
     if !prog_ok {
