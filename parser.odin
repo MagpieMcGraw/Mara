@@ -974,21 +974,17 @@ is_scope_def :: proc(s: Stmt) -> bool {
     return false
 }
 
-// parse_block parses `{ stmt* }`. When `defs` is non-nil (scope bodies pass it),
-// each compile-time `::` decl is ALSO appended to defs as it's parsed — one pass,
-// no re-classification later. if/for/match bodies pass nil and stay flat.
-parse_block :: proc(p: ^Parser, defs: ^[dynamic]Stmt = nil) -> [dynamic]Stmt {
+// parse_block parses `{ stmt* }` into a flat list. The defs/body partition is
+// done later, authoritatively, by fold_comptime_ifs in the checker (it has to
+// run after `#if` folding anyway), so the parser doesn't classify here.
+parse_block :: proc(p: ^Parser) -> [dynamic]Stmt {
     expect(p, .Left_Brace)
     skip_newlines(p)
 
     stmts: [dynamic]Stmt
     for current_kind(p) != .Right_Brace && current_kind(p) != .EOF {
         errs_before := p.errors
-        s := parse_stmt(p)
-        append(&stmts, s)
-        if defs != nil && is_scope_def(s) {
-            append(defs, s)
-        }
+        append(&stmts, parse_stmt(p))
         if p.errors > errs_before {
             recover_to_stmt_boundary(p)
         }
@@ -1019,7 +1015,7 @@ is_intrinsic_part_kind :: proc(kind: Token_Kind) -> bool {
 // compiler-generated intrinsic body (returned as an empty stmts list with
 // is_intrinsic=true and the dotted LLVM name in intrinsic_name).
 // Any other body is parsed as a normal block.
-parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: bool, intrinsic_name: string, defs: [dynamic]Stmt) {
+parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: bool, intrinsic_name: string) {
     if current_kind(p) == .Left_Brace {
         save := p.pos
         advance(p) // consume '{'
@@ -1035,7 +1031,7 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
                 parse_error(p, at_tok, PARSE_EXPECTED_INTRINSIC_AFTER_AT, tok.text)
                 skip_newlines(p)
                 expect(p, .Right_Brace)
-                return nil, true, "", nil
+                return nil, true, ""
             }
             first := advance(p)
             strings.write_string(&sb, first.text)
@@ -1046,7 +1042,7 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
                     parse_error(p, tok, PARSE_EXPECTED_INTRINSIC_AFTER_DOT, tok.text)
                     skip_newlines(p)
                     expect(p, .Right_Brace)
-                    return nil, true, "", nil
+                    return nil, true, ""
                 }
                 part := advance(p)
                 strings.write_byte(&sb, '.')
@@ -1054,7 +1050,7 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
             }
             skip_newlines(p)
             expect(p, .Right_Brace)
-            return nil, true, strings.clone(strings.to_string(sb)), nil
+            return nil, true, strings.clone(strings.to_string(sb))
         }
         if current_kind(p) == .Intrinsic {
             tok := current(p)
@@ -1062,13 +1058,13 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
             advance(p) // consume 'intrinsic' to attempt recovery
             skip_newlines(p)
             expect(p, .Right_Brace)
-            return nil, true, "", nil
+            return nil, true, ""
         }
         // Not an intrinsic body — rewind and delegate to parse_block
         p.pos = save
     }
-    stmts = parse_block(p, &defs)
-    return stmts, false, "", defs
+    stmts = parse_block(p)
+    return stmts, false, ""
 }
 
 // ---------------------------------------------------------------------------
@@ -1686,12 +1682,11 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
 
     // Case 1: fun { ... } — data-type fun, no params
     if current_kind(p) == .Left_Brace {
-        body, is_intrinsic, intrinsic_name, defs := parse_scope_body(p)
+        body, is_intrinsic, intrinsic_name := parse_scope_body(p)
         stmt := new(Stmt_Scope)
         stmt.name = name
         stmt.kind = kind
         stmt.body = body
-        stmt.defs = defs
         stmt.is_intrinsic = is_intrinsic
         stmt.intrinsic_name = intrinsic_name
         stmt.span = start
@@ -1753,7 +1748,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
                 if !already_exists { append(&generic_params, dp) }
             }
             skip_newlines(p)
-            body, is_intrinsic, intrinsic_name, defs := parse_scope_body(p)
+            body, is_intrinsic, intrinsic_name := parse_scope_body(p)
             stmt := new(Stmt_Scope)
             stmt.name = name
             stmt.kind = kind
@@ -1762,7 +1757,6 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
             stmt.return_bindings = p.return_bindings
             p.return_bindings = {}
             stmt.body = body
-            stmt.defs = defs
             stmt.is_intrinsic = is_intrinsic
             stmt.intrinsic_name = intrinsic_name
             stmt.has_parens = true
@@ -1773,13 +1767,12 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         if len(generic_params) > 0 {
             // fun($T: type) { fields } — data-type fun with generic params only
             skip_newlines(p)
-            body, is_intrinsic, intrinsic_name, defs := parse_scope_body(p)
+            body, is_intrinsic, intrinsic_name := parse_scope_body(p)
             stmt := new(Stmt_Scope)
             stmt.name = name
             stmt.kind = kind
             stmt.generic_params = generic_params
             stmt.body = body
-            stmt.defs = defs
             stmt.is_intrinsic = is_intrinsic
             stmt.intrinsic_name = intrinsic_name
             stmt.has_parens = true
@@ -1791,7 +1784,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         return_types: [dynamic]Type_Expr
         parse_optional_return_types(p, &return_types)
         skip_newlines(p)
-        body, is_intrinsic, intrinsic_name, defs := parse_scope_body(p)
+        body, is_intrinsic, intrinsic_name := parse_scope_body(p)
         stmt := new(Stmt_Scope)
         stmt.name = name
         stmt.kind = kind
@@ -1799,7 +1792,6 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         stmt.return_bindings = p.return_bindings
         p.return_bindings = {}
         stmt.body = body
-        stmt.defs = defs
         stmt.is_intrinsic = is_intrinsic
         stmt.intrinsic_name = intrinsic_name
         stmt.has_parens = true
@@ -1818,7 +1810,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
     parse_optional_return_types(p, &return_types)
 
     skip_newlines(p)
-    body, is_intrinsic, intrinsic_name, defs := parse_scope_body(p)
+    body, is_intrinsic, intrinsic_name := parse_scope_body(p)
 
     // For struct/class kind: promote typed_params to generic_params when they're
     // either introduced as type variables (`name: $T`) or referenced in a type
@@ -1918,7 +1910,6 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
     stmt.return_bindings = p.return_bindings
     p.return_bindings = {}
     stmt.body = body
-    stmt.defs = defs
     stmt.is_intrinsic = is_intrinsic
     stmt.intrinsic_name = intrinsic_name
     stmt.has_parens = true
