@@ -72,22 +72,8 @@ gen_loop_body :: proc(g: ^Codegen, stmts: []Stmt, break_label: string, continue_
 // ---------------------------------------------------------------------------
 
 gen_if :: proc(g: ^Codegen, s: ^Stmt_If) {
-    // `#if` was already collapsed to a single branch by the type checker —
-    // the dead arm is in the AST but unchecked, so we must skip it entirely.
-    // Emit the live arm inline as a normal block (no branch instructions
-    // needed since there's no runtime decision to make).
-    if s.is_comptime {
-        live_body := s.body[:]
-        if eb, eb_ok := s.condition.(^Expr_Bool); eb_ok && !eb.value {
-            live_body = s.else_body[:]
-        } else if intr, intr_ok := s.condition.(^Expr_Compiler_Intrinsic); intr_ok && !intr.bool_value {
-            live_body = s.else_body[:]
-        }
-        for stmt in live_body {
-            gen_stmt(g, stmt)
-        }
-        return
-    }
+    // Comptime `#if` was folded away before codegen, so every Stmt_If here is a
+    // runtime conditional.
     cond := gen_expr(g, s.condition)
 
     then_label := fresh_label(g, "if.then")

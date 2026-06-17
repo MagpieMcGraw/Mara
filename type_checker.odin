@@ -941,22 +941,10 @@ branch_diverges :: proc(body: [dynamic]Stmt) -> bool {
 // Check if a statement body guarantees a return on all code paths.
 // Used to detect missing returns in non-void functions.
 always_returns :: proc(body: [dynamic]Stmt) -> bool {
-    // Walk backward, treating comptime-`#if` whose live arm is empty (i.e.,
-    // the dead branch in this build) as a no-op so an earlier `#if` with a
-    // return still satisfies the analysis. Reads bool_value, which Pass 2 has
-    // already populated by the time this runs.
+    // Walk backward to the last executable statement. Comptime `#if` was folded
+    // into this body before the checker ran, so any live arm's return is inline.
     for i := len(body) - 1; i >= 0; i -= 1 {
         last := body[i]
-        if sif, ok := last.(^Stmt_If); ok && sif.is_comptime {
-            cond_true := false
-            #partial switch v in sif.condition {
-            case ^Expr_Bool:               cond_true = v.value
-            case ^Expr_Compiler_Intrinsic: cond_true = v.bool_value
-            }
-            live := sif.body if cond_true else sif.else_body
-            if len(live) == 0 { continue }
-            return always_returns(live)
-        }
         // Definitions aren't executable — a body whose tail is nested fn /
         // type / const definitions ends at the statement before them, so
         // keep walking ("helpers at the bottom" layout). Stmt_Scope is a
@@ -6638,17 +6626,6 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 }
                 c.pre_registered_stmts[rawptr(s)] = true
             }
-        case ^Stmt_If:
-            // Comptime #if: recurse into the live arm so its declarations
-            // pre-register at the surrounding scope. Same shape as Pass 1b.
-            if !s.is_comptime { continue }
-            live, ok := evaluate_comptime_bool(c, s.condition)
-            if !ok { continue }  // Pass 1b will report the error.
-            if live {
-                register_type_names(c, s.body, env, owner, public_env, eager_signatures)
-            } else if len(s.else_body) > 0 {
-                register_type_names(c, s.else_body, env, owner, public_env, eager_signatures)
-            }
         }
     }
 }
@@ -7061,27 +7038,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
             }
             c.in_foreign_sig = false
-        case ^Stmt_If:
-            // Comptime `#if`: recurse into the live arm so its declarations
-            // register at the surrounding scope, exactly as if the `#if`
-            // weren't there. Without this, decls inside (e.g.,
-            // `#if #native { foreign ... }` at module scope, or
-            // `#if #web { loop_iter :: fun(...) }` inside a function body)
-            // never reach the env, and later references fail with
-            // "undefined". The Pass 2 handler in check_bodies handles only
-            // the live arm's body checks (not registrations) to avoid double
-            // registration here.
-            if !s.is_comptime { continue }
-            live, ok := evaluate_comptime_bool(c, s.condition)
-            if !ok {
-                check_error(c, s.span, TYPE_CONDITION_COMPTIME_KNOWN_BOOLEAN)
-                continue
-            }
-            if live {
-                register_and_check_declarations(c, s.body, env, owner, public_env)
-            } else if len(s.else_body) > 0 {
-                register_and_check_declarations(c, s.else_body, env, owner, public_env)
-            }
         case ^Stmt_Define:
             // Include expressions: scope-based resolution.
             // Mirrors the Stmt_Assign + Expr_Include path so `name :: include path`
@@ -8662,43 +8618,8 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             check_scope_body(c, s, env)
 
         case ^Stmt_If:
-            // `#if` (comptime): evaluate the condition now and only check the
-            // live arm. The dead arm is left in the AST but never visited by
-            // the body checker — lets it reference target-specific symbols
-            // (e.g. emscripten_set_main_loop in a #if #web arm) that wouldn't
-            // resolve on the other build.
-            if s.is_comptime {
-                // Type-check the condition first so any compiler intrinsic
-                // (#web, #native) gets its bool_value populated — codegen
-                // reads that field, not the result we evaluate here.
-                check_expr(c, s.condition, env)
-                live, ok := evaluate_comptime_bool(c, s.condition)
-                if !ok {
-                    check_error(c, s.span, TYPE_CONDITION_COMPTIME_KNOWN_BOOLEAN)
-                    break
-                }
-                // Pass 1 (register_and_check_declarations) already recursed
-                // into the live arm and registered its decls in `env`, so
-                // here we only need the body-check pass — calling check_scope
-                // would re-run Pass 1 and trip "already declared" / shadow
-                // diagnostics. Same env, not a child: comptime-`#if` is
-                // text-substitution; the live arm should behave as if its
-                // statements were written inline.
-                if live {
-                    check_bodies(c, s.body, env)
-                    // The live arm reuses this scope (no child check_scope), so
-                    // its top-level decls miss check_scope's Pass 4 — run the
-                    // storage-size guard here so a big value in a live `#if` arm
-                    // gets the clean "too large" error like everything else,
-                    // not just the codegen-fatal backstop. (Nested if/for inside
-                    // the arm go through check_scope and are already covered.)
-                    check_storage_sizes(c, s.body, env)
-                } else if len(s.else_body) > 0 {
-                    check_bodies(c, s.else_body, env)
-                    check_storage_sizes(c, s.else_body, env)
-                }
-                break
-            }
+            // Comptime `#if` was folded away before the checker ran, so every
+            // Stmt_If here is a runtime conditional.
             cond_type := check_expr(c, s.condition, env)
             if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
                 check_error(c, s.span, TYPE_CONDITION_BOOL_2, type_name(cond_type))
@@ -9914,19 +9835,6 @@ extract_scope_fun_defs :: proc(checked: ^Checked_Program, defs: [dynamic]Stmt, e
                 checked.functions[fn_key] = cf
                 append(&checked.function_order, fn_key)
             }
-        case ^Stmt_If:
-            // Comptime `#if`: recurse into the live arm so nested funs inside
-            // (e.g., `#if #web { loop_iter :: fun(...) }`) get extracted for
-            // codegen. Without this, the call site references a function that
-            // was never emitted to the IR.
-            if !s.is_comptime { continue }
-            cond_true := false
-            #partial switch v in s.condition {
-            case ^Expr_Bool:               cond_true = v.value
-            case ^Expr_Compiler_Intrinsic: cond_true = v.bool_value
-            }
-            live := s.body if cond_true else s.else_body
-            extract_scope_fun_defs(checked, live, env, main_package)
         }
     }
 }
@@ -10284,15 +10192,6 @@ extract_nested_foreigns_into_checked :: proc(c: ^Checker, body: [dynamic]Stmt, m
                 inner_flat := make_flat_name(struct_flat_name, s.name)
                 extract_nested_foreigns_into_checked(c, s.body, mod_env, inner_flat)
             }
-        case ^Stmt_If:
-            if !s.is_comptime { continue }
-            live, ok := evaluate_comptime_bool(c, s.condition)
-            if !ok { continue }
-            if live {
-                extract_nested_foreigns_into_checked(c, s.body, mod_env, struct_flat_name)
-            } else if len(s.else_body) > 0 {
-                extract_nested_foreigns_into_checked(c, s.else_body, mod_env, struct_flat_name)
-            }
         }
     }
 }
@@ -10352,19 +10251,6 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
                 checked.functions[ff_key] = make_foreign_checked_scope(c, decl, ft, s.library, s.prefix)
                 // Owner attachment is handled by register_and_check_declarations.
             }
-        case ^Stmt_If:
-            // Top-level comptime `#if`: extract decls from the live arm so
-            // functions / constants from `#if #native { ... }`
-            // make it into the codegen output. Mirrors the Pass 1 recursion.
-            if !s.is_comptime { continue }
-            live, ok := evaluate_comptime_bool(c, s.condition)
-            if !ok { continue }
-            if live {
-                extract_module_into_checked(c, s.body, mod_env, module_name, mod_struct)
-            } else if len(s.else_body) > 0 {
-                extract_module_into_checked(c, s.else_body, mod_env, module_name, mod_struct)
-            }
-            continue
         // Stmt_Union_Def owner attachment is handled by register_and_check_declarations.
         }
 
@@ -10551,19 +10437,6 @@ extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts
                 }
                 checked.functions[ff_key] = make_foreign_checked_scope(c, decl, ft, s.library, s.prefix)
             }
-        case ^Stmt_If:
-            if !s.is_comptime { continue }
-            cond_true := false
-            #partial switch v in s.condition {
-            case ^Expr_Bool:               cond_true = v.value
-            case ^Expr_Compiler_Intrinsic: cond_true = v.bool_value
-            }
-            if cond_true {
-                extract_main_program_stmts(c, checked, s.body, env, main_package)
-            } else if len(s.else_body) > 0 {
-                extract_main_program_stmts(c, checked, s.else_body, env, main_package)
-            }
-            continue
         }
         if def, ok := stmt.(^Stmt_Define); ok {
             if _, is_include := def.value.(^Expr_Include); !is_include && def.value != nil {
@@ -10627,23 +10500,9 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                 }
             }
         case ^Stmt_If:
-            if !s.is_comptime {
-                check_error(c, s.span, TYPE_EXECUTABLE_STATEMENTS_INSIDE_FUN_MAIN)
-                continue
-            }
-            // Recurse into the live arm. Pass 1 already evaluated and the
-            // condition's bool_value is populated; we only need to walk one
-            // arm to mirror what register/codegen actually keep.
-            cond_true := false
-            #partial switch v in s.condition {
-            case ^Expr_Bool:               cond_true = v.value
-            case ^Expr_Compiler_Intrinsic: cond_true = v.bool_value
-            }
-            if cond_true {
-                validate_top_level_stmts(c, s.body, found_main)
-            } else if len(s.else_body) > 0 {
-                validate_top_level_stmts(c, s.else_body, found_main)
-            }
+            // A runtime `if` at top level is illegal — comptime `#if` was folded
+            // away before this ran, so any Stmt_If here is a runtime conditional.
+            check_error(c, s.span, TYPE_EXECUTABLE_STATEMENTS_INSIDE_FUN_MAIN)
         case ^Stmt_Assign, ^Stmt_Multi_Assign, ^Stmt_Multi_Return_Assign,
              ^Stmt_Decl, ^Stmt_Define, ^Stmt_Foreign, ^Stmt_Union_Def,
              Stmt_Module, ^Stmt_Dispatch_Def, Stmt_Overload, ^Stmt_Distinct_Def:
