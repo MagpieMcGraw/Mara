@@ -5984,7 +5984,7 @@ pre_register_nested_struct_types :: proc(c: ^Checker, parent: ^Type_Scope, body:
         }
         if parent.types == nil { parent.types = make(map[string]Type) }
         parent.types[bare] = nested
-        pre_register_nested_struct_types(c, nested, s.body)
+        pre_register_nested_struct_types(c, nested, s.defs)
     }
 }
 
@@ -6047,7 +6047,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // resolve_struct_field falls through to st.types for field-style
                 // lookup, so `Parent.Inner` still works without an entry here.
                 if len(s.body) > 0 {
-                    register_scope_defs(c, def_st, &def_st.sd, s.body, &scope_env)
+                    register_scope_defs(c, def_st, &def_st.sd, s.defs, &scope_env)
                 }
                 // Register mangled name in the root (persistent) env, bare name in scope env
                 type_env_set(root_env, mangled, def_st)
@@ -6076,7 +6076,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                     st.types[bare_name] = def_ft
                     // Nested `::` defs don't claim runtime storage in the parent.
                     if len(s.body) > 0 {
-                        register_scope_defs(c, def_ft, &def_ft.sd, s.body, &scope_env)
+                        register_scope_defs(c, def_ft, &def_ft.sd, s.defs, &scope_env)
                     }
                 } else {
                     def_ft.kind = .Fun
@@ -6495,7 +6495,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                     append(&owner.fields, Struct_Type_Field{name = s.name, type_ = struct_type})
                     owner.field_map[s.name] = len(owner.fields) - 1
                 }
-                pre_register_nested_struct_types(c, struct_type, s.body)
+                pre_register_nested_struct_types(c, struct_type, s.defs)
                 c.pre_registered_stmts[rawptr(s)] = true
             } else {
                 flat_name := make_flat_name(c.current_package, s.name)
@@ -6539,7 +6539,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                         owner.functions[s.name] = fun_type
                     }
                 }
-                if is_struct_type { pre_register_nested_struct_types(c, fun_type, s.body) }
+                if is_struct_type { pre_register_nested_struct_types(c, fun_type, s.defs) }
                 // Resolve params and return_types eagerly for non-struct funs
                 // so any statement in this scope (including a Stmt_Decl init
                 // expression sitting BEFORE this Stmt_Scope in source order)
@@ -6789,12 +6789,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 flat := make_flat_name(c.current_package, s.name)
                 if is_struct && len(s.typed_params) == 0 {
                     if struct_type, ok := c.table.structs[flat]; ok {
-                        register_scope_defs(c, struct_type, &struct_type.sd, s.body, env)
+                        register_scope_defs(c, struct_type, &struct_type.sd, s.defs, env)
                     }
                 } else {
                     if fun_type, ok := c.table.funs[flat]; ok {
                         if is_struct {
-                            register_scope_defs(c, fun_type, &fun_type.sd, s.body, env)
+                            register_scope_defs(c, fun_type, &fun_type.sd, s.defs, env)
                         }
                         // Idempotent: register_type_names resolves these
                         // eagerly for nested-scope funs (so forward refs from
@@ -6864,7 +6864,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     continue
                 }
                 c.table.structs[struct_type.name] = struct_type
-                register_scope_defs(c, struct_type, &struct_type.sd, s.body, env)
+                register_scope_defs(c, struct_type, &struct_type.sd, s.defs, env)
                 type_env_set(pub, s.name, struct_type)
                 c.table.fun_asts[s.name] = s
                 c.table.fun_homes[s.name] = c.current_package
@@ -6897,7 +6897,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_struct_type {
                     fun_type.kind = .Struct
                     c.table.funs[fun_type.name] = fun_type
-                    register_scope_defs(c, fun_type, &fun_type.sd, s.body, env)
+                    register_scope_defs(c, fun_type, &fun_type.sd, s.defs, env)
                 } else {
                     fun_type.kind = .Fun
                     // Also register in the global funs table so post-check
@@ -8101,7 +8101,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         // collect this fun's nested ::defs now, before exposing them. The
         // ft.types guard keeps a re-entry from re-mangling the nested names.
         if ft.types == nil && len(s.body) > 0 {
-            register_scope_defs(c, ft, &ft.sd, s.body, defs_parent)
+            register_scope_defs(c, ft, &ft.sd, s.defs, defs_parent)
         }
         ns_env = type_env_child(defs_parent)
         ns_env.fun_scope = ft
@@ -8129,7 +8129,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // defs land at module registration. ft.types guards re-mangling on re-entry.
     if is_method {
         if ft.types == nil && len(s.body) > 0 {
-            register_scope_defs(c, ft, &ft.sd, s.body, parent_env)
+            register_scope_defs(c, ft, &ft.sd, s.defs, parent_env)
         }
         if ft.types != nil {
             for bare, t in ft.types { type_env_set(&child, bare, t) }
