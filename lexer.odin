@@ -403,14 +403,27 @@ next_token :: proc(l: ^Lexer) -> Token {
             tok.is_float = false
             return tok
         }
-        for l.pos < len(l.source) && is_digit(l.source[l.pos]) {
+        // Binary form `0b...` / `0B...` consumes 0/1 digits plus `_` separators
+        // (e.g. `0b1010_0000`). Keeps the `0b` prefix so the parser routes to
+        // base-2.
+        if ch == '0' && (peek(l, 1) == 'b' || peek(l, 1) == 'B') {
+            lexer_advance(l) // '0'
+            lexer_advance(l) // 'b'
+            for l.pos < len(l.source) && (l.source[l.pos] == '0' || l.source[l.pos] == '1' || l.source[l.pos] == '_') {
+                lexer_advance(l)
+            }
+            tok := make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
+            tok.is_float = false
+            return tok
+        }
+        for l.pos < len(l.source) && (is_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
             lexer_advance(l)
         }
         has_dot := false
         if peek(l) == '.' && is_digit(peek(l, 1)) {
             has_dot = true
             lexer_advance(l)
-            for l.pos < len(l.source) && is_digit(l.source[l.pos]) {
+            for l.pos < len(l.source) && (is_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
                 lexer_advance(l)
             }
         }

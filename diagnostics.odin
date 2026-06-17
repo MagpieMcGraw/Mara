@@ -371,6 +371,7 @@ PARSE_RANGE_NEEDS_DOTS            :: "expected '..' after `%sin` in range-member
 PARSE_STRUCT_LIT_MIXED_FIELDS     :: "struct literal cannot mix positional and named fields"
 PARSE_HEX_OVERFLOWS_U64           :: "hex literal '%s' overflows u64 (max 0xFFFFFFFFFFFFFFFF) — Mara's integer-literal precision tops out at 64 bits"
 PARSE_DECIMAL_OVERFLOWS_U64       :: "integer literal '%s' overflows u64 (max 18446744073709551615) — Mara's integer-literal precision tops out at 64 bits"
+PARSE_BINARY_OVERFLOWS_U64        :: "binary literal '%s' overflows u64 (more than 64 bits) — Mara's integer-literal precision tops out at 64 bits"
 PARSE_INVALID_NUMBER              :: "invalid number '%s'"
 PARSE_EXPECTED_VARIANT_NAME       :: "expected variant name after '.'"
 PARSE_UNEXPECTED_LBRACE_IN_EXPR   :: "unexpected '{' in expression"

@@ -3970,6 +3970,7 @@ Number_Parse_Error :: enum {
     Invalid,        // malformed text (empty hex digits, garbage)
     Hex_Overflow,   // well-formed hex but > u64 max — beyond the simple wide-literal tier
     Dec_Overflow,   // well-formed decimal integer but > u64 max — same tier as Hex_Overflow
+    Bin_Overflow,   // well-formed binary but > u64 max (more than 64 significant bits)
 }
 
 // Parse a Number token's text into both an f64 and an i128 form. Hex literals
@@ -3978,15 +3979,23 @@ Number_Parse_Error :: enum {
 // fallback but should never be read when is_float is true). Integer values
 // up to u64 max (`0xFFFFFFFFFFFFFFFF` / `18446744073709551615`) round-trip
 // exactly; anything wider is flagged as Hex_Overflow/Dec_Overflow.
-parse_number_text :: proc(text: string) -> (f_val: f64, i_val: i128, err: Number_Parse_Error) {
-    if len(text) > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') {
-        // Strip prefix and any `_` separators before base-16 parse.
+parse_number_text :: proc(text_in: string) -> (f_val: f64, i_val: i128, err: Number_Parse_Error) {
+    // Strip digit-group separators (`1_000`, `0xFF_FF`, `0b1010_0000`) once, up
+    // front, so every base below parses clean digits.
+    text := text_in
+    has_sep := false
+    for i := 0; i < len(text_in); i += 1 {
+        if text_in[i] == '_' { has_sep = true; break }
+    }
+    if has_sep {
         b: strings.Builder
-        for i := 2; i < len(text); i += 1 {
-            if text[i] != '_' { strings.write_byte(&b, text[i]) }
+        for i := 0; i < len(text_in); i += 1 {
+            if text_in[i] != '_' { strings.write_byte(&b, text_in[i]) }
         }
-        digits := strings.to_string(b)
-
+        text = strings.to_string(b)
+    }
+    if len(text) > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') {
+        digits := text[2:]
         // More than 16 significant hex digits doesn't fit in u64. Strip leading
         // zeros first so `0x000…FFFF...F` isn't false-flagged.
         clean := digits
@@ -3994,8 +4003,21 @@ parse_number_text :: proc(text: string) -> (f_val: f64, i_val: i128, err: Number
         if len(clean) > 16 {
             return 0, 0, .Hex_Overflow
         }
-
         n, parse_ok := strconv.parse_u64_of_base(digits, 16)
+        if !parse_ok {
+            return 0, 0, .Invalid
+        }
+        return f64(n), i128(n), .None
+    }
+    if len(text) > 2 && text[0] == '0' && (text[1] == 'b' || text[1] == 'B') {
+        digits := text[2:]
+        // More than 64 significant binary digits doesn't fit in u64.
+        clean := digits
+        for len(clean) > 0 && clean[0] == '0' { clean = clean[1:] }
+        if len(clean) > 64 {
+            return 0, 0, .Bin_Overflow
+        }
+        n, parse_ok := strconv.parse_u64_of_base(digits, 2)
         if !parse_ok {
             return 0, 0, .Invalid
         }
@@ -4043,6 +4065,8 @@ report_number_parse_error :: proc(p: ^Parser, tok: Token, err: Number_Parse_Erro
         parse_error(p, tok, PARSE_HEX_OVERFLOWS_U64, tok.text)
     case .Dec_Overflow:
         parse_error(p, tok, PARSE_DECIMAL_OVERFLOWS_U64, tok.text)
+    case .Bin_Overflow:
+        parse_error(p, tok, PARSE_BINARY_OVERFLOWS_U64, tok.text)
     case .Invalid:
         parse_error(p, tok, PARSE_INVALID_NUMBER, tok.text)
     }
