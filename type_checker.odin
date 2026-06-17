@@ -1259,10 +1259,17 @@ fold_comptime_ifs :: proc(c: ^Checker, stmts: ^[dynamic]Stmt) -> (folded_here: b
 fold_comptime_ifs_children :: proc(c: ^Checker, s: Stmt) {
     #partial switch v in s {
     case ^Stmt_Scope:
-        if fold_comptime_ifs(c, &v.body) {
-            clear(&v.defs)
-            for st in v.body { if is_scope_def(st) { append(&v.defs, st) } }
+        fold_comptime_ifs(c, &v.body)   // recurses into nested scopes too
+        // Partition the (folded) body into compile-time defs and runtime body —
+        // disjoint, each kept in source order. Scope-walks read defs; codegen and
+        // the runtime passes read body.
+        new_defs: [dynamic]Stmt
+        new_body: [dynamic]Stmt
+        for st in v.body {
+            if is_scope_def(st) { append(&new_defs, st) } else { append(&new_body, st) }
         }
+        v.defs = new_defs
+        v.body = new_body
     case ^Stmt_If:
         fold_comptime_ifs(c, &v.body)
         fold_comptime_ifs(c, &v.else_body)
@@ -3041,11 +3048,13 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
         c.type_params[name] = t
     }
 
-    // Clone the body so each monomorphization gets independent type annotations
+    // Clone the body and defs so each monomorphization gets independent type
+    // annotations; defs and body are disjoint (split mode).
     cloned_body := clone_stmts(ast.body)
+    cloned_defs := clone_stmts(ast.defs)
 
     // Type-check the cloned function body
-    check_scope(c, cloned_body, &child)
+    check_scope(c, cloned_body, &child, scope_defs = cloned_defs)
 
     // Store cloned body for codegen extraction
     c.table.mono_fun_bodies[mangled] = cloned_body
@@ -3153,7 +3162,8 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
         }
     }
     cloned_body := clone_stmts(ast.body)
-    check_scope(c, cloned_body, &child)
+    cloned_defs := clone_stmts(ast.defs)
+    check_scope(c, cloned_body, &child, scope_defs = cloned_defs)
     c.table.mono_fun_bodies[mangled] = cloned_body
 
     return make_flat_name(home, mangled)
@@ -5956,43 +5966,42 @@ check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
     }
 }
 
-check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
-    // Pass 1a: pre-register every `name :: ...` definition in this scope —
-    // nested funs, unions, distincts — and resolve fun signatures so any
-    // statement in the body can call them via forward reference regardless
-    // of source order. Module scope already does this via check_module's
-    // explicit register_type_names call (no eager signatures there because
-    // includes haven't been processed yet — types like `cstr` aren't in
-    // env until Pass 1b runs them). Nested scopes opt into eager
-    // signatures because by the time we're inside a function body, all
-    // upstream includes are already resolved.
-    register_type_names(c, stmts, env, owner, public_env, eager_signatures = true)
+check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil, scope_defs: [dynamic]Stmt = nil) {
+    // SPLIT mode (a Stmt_Scope body): compile-time defs live in `scope_defs`,
+    // runtime statements in `stmts`. The registration/check passes run over the
+    // defs first (so forward references resolve), then over the body. MIXED mode
+    // (module level, control-flow bodies, generic-clone bodies): scope_defs is
+    // nil and the single `stmts` list carries both, exactly as before.
+    split := scope_defs != nil
+    def_list := scope_defs if split else stmts
+
+    // Pass 1a: pre-register every `name :: ...` definition and resolve fun
+    // signatures, so any later statement can call them via forward reference.
+    register_type_names(c, def_list, env, owner, public_env, eager_signatures = true)
 
     // Pass 1a.5: signature-only pass on nested struct definitions, so their
     // fields are populated before Stmt_Decl defaults that reference them get
-    // type-checked. Without this, `body := head.count` (where `head` is a
-    // sibling of type `Inner`, and `Inner` is defined later in the same
-    // scope) fails with "cannot access field" because Inner's field list
-    // is still empty when the default expression is checked.
-    for stmt in stmts {
+    // type-checked (e.g. `body := head.count` where Inner is defined later).
+    for stmt in def_list {
         if s, ok := stmt.(^Stmt_Scope); ok && s.kind == .Struct &&
             len(s.typed_params) == 0 && len(s.generic_params) == 0 {
             check_scope_body(c, s, env, signature_only = true)
         }
     }
 
-    // Pass 1b: register the rest (Stmt_Decl, Stmt_Assign, includes, etc.)
-    // and run the deferred-body work for any Stmt_Scope that was pre-
-    // registered above. The pre_registered_stmts map drives that handoff.
-    register_and_check_declarations(c, stmts, env, owner, public_env)
+    // Pass 1b: register declarations and run deferred-body work for pre-
+    // registered scopes. Pass 2: check everything, descending into child scopes.
+    // Each is `setup + one loop`; def-kind and runtime-kind cases are disjoint,
+    // so running over defs then body processes each statement exactly once.
+    register_and_check_declarations(c, def_list, env, owner, public_env)
+    if split { register_and_check_declarations(c, stmts, env, owner, public_env) }
 
-    // Pass 2: check everything, descending into child scopes
-    check_bodies(c, stmts, env)
+    check_bodies(c, def_list, env)
+    if split { check_bodies(c, stmts, env) }
 
-    // Pass 3: report unused err bindings (reads were recorded during Pass 2).
+    // Pass 3 (unused err bindings) and Pass 4 (stack/arena routing) are
+    // runtime-only — over the body statements.
     check_unused_locals(c, stmts, env)
-
-    // Pass 4: stack/arena routing — error on any big local with no allocator.
     check_storage_sizes(c, stmts, env)
 }
 
@@ -8347,7 +8356,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // reaches `x.nested.field` needs the nested type's fields, not just its name.
     // Mirrors the module-level signature hoist (check_module Pass 2a), one level
     // down. Idempotent: the field loop skips already-mapped fields.
-    for stmt in s.body {
+    for stmt in s.defs {
         if nested, ok := stmt.(^Stmt_Scope); ok && nested.kind == .Struct &&
             len(nested.typed_params) == 0 && len(nested.generic_params) == 0 {
             check_scope_body(c, nested, &child, signature_only = true)
@@ -8386,7 +8395,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         type_env_set(&child, rb.name, rb_type)
     }
 
-    check_scope(c, s.body, &child)
+    // Split mode: compile-time defs come from s.defs, runtime from s.body.
+    check_scope(c, s.body, &child, scope_defs = s.defs)
 
     // Freeze any deferred default-param cells now the body has pinned them to the
     // width they're used at (or, for funs, unpinned → the sole numeric return type).
@@ -9888,7 +9898,7 @@ extract_scope_fun_defs :: proc(checked: ^Checked_Program, defs: [dynamic]Stmt, e
         #partial switch s in def {
         case ^Stmt_Scope:
             // Always recurse into body for nested defs
-            extract_scope_fun_defs(checked, s.body, env, main_package)
+            extract_scope_fun_defs(checked, s.defs, env, main_package)
             // Extract callable funs as Checked_Scope
             cf, cf_ok := extract_checked_scope(s, env, checked.table)
             if cf_ok {
@@ -10298,7 +10308,7 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
         #partial switch s in stmt {
         case ^Stmt_Scope:
             // Always extract scoped function defs from body
-            extract_scope_fun_defs(checked, s.body, mod_env, module_name)
+            extract_scope_fun_defs(checked, s.defs, mod_env, module_name)
             // Foreign blocks inside a struct body are registered by
             // register_scope_defs against the struct's mangled name; mirror
             // that here for the codegen side so foreign_funs is keyed under
@@ -10510,7 +10520,7 @@ extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts
     for stmt in stmts {
         #partial switch s in stmt {
         case ^Stmt_Scope:
-            extract_scope_fun_defs(checked, s.body, env, main_package)
+            extract_scope_fun_defs(checked, s.defs, env, main_package)
             cf, cf_ok := extract_checked_scope(s, env, c.table)
             if cf_ok {
                 fn_key := s.name

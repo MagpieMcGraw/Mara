@@ -4775,11 +4775,10 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         return c
     case ^Stmt_Scope:
         c := new_clone(v^)
+        // defs and body are disjoint arrays of distinct nodes; clone each so the
+        // clone owns its own nodes (new_clone only shallow-copied the slices).
         c.body = clone_stmts(v.body)
-        // new_clone shallow-copied defs (pointing at the original's nodes);
-        // rebuild it from the freshly cloned body so it indexes the clone.
-        c.defs = nil
-        for s in c.body { if is_scope_def(s) { append(&c.defs, s) } }
+        c.defs = clone_stmts(v.defs)
         return c
     case Stmt_Return:
         return Stmt_Return{values = clone_exprs(v.values), span = v.span}
