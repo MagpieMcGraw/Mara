@@ -161,10 +161,10 @@ functions :: fun() {
 	a, b := multi_return()
 	print("Uhh... 3 and 9:", a, "and", b)
 
-	default_values :: fun(five := 5) -> seven : u32 {
+	default :: fun(five := 5) -> seven : u32 {
 		result := 2 + five
 		return result
 	}
 	// call with the default, then pass a value to override it
-	print("Seven and twelve:", default_values(), "and", default_values(10))
+	print("Seven and twelve:", default(), "and", default(10))
 }

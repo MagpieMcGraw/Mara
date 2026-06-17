@@ -1,0 +1,32 @@
+module cdefer
+
+// Constructor params defer their width exactly like function params and `:=`
+// locals: an untyped numeric default adopts the width it's used at in the body
+// (the field initializers). Regression for the old "ctor params land on i64"
+// rule, which rejected `per_row : i32 = size` as an i64→i32 narrowing.
+
+Grid :: struct(size := 16) {
+	per_row : i32 = size       // annotated field pins the param to i32
+	doubled : i32 = size * 2
+}
+
+// Param flows through arithmetic into a u32 field — pins unsigned.
+Bag :: struct(seed := 3) {
+	count : u32 = seed + 1
+}
+
+main :: fun() -> i64 {
+	g := Grid()
+	assert(g.per_row == 16)
+	assert(g.doubled == 32)
+
+	g2 := Grid(10)             // override the default
+	assert(g2.per_row == 10)
+	assert(g2.doubled == 20)
+
+	b := Bag()
+	assert(b.count == 4)
+
+	print("cdefer ok")
+	return 0
+}

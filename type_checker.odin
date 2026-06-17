@@ -5530,12 +5530,14 @@ infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
 //   - explicit `p: T`       → resolve the annotation
 //   - untyped with default  → infer from the default value
 //   - neither               → Type_Error (an un-annotated, un-defaulted param)
-// `defer_default` is set for FUNCTION params (not struct constructors): an
-// untyped numeric default seeds a deferred inference cell instead of solidifying
-// to i64 right now, so the param adopts the width it's used at in the body. The
-// signature is frozen back to concrete once the body is checked — see
-// solidify_param_defaults. Struct-constructor params keep the immediate i64.
-resolve_param_type :: proc(c: ^Checker, tp: Scope_Binding, env: ^Type_Env, span: Span, defer_default := false) -> Type {
+// An untyped numeric default seeds a deferred inference cell instead of
+// solidifying to i64 right now, so the param adopts the width it's used at in the
+// body — exactly like a `:=` local. This applies to struct CONSTRUCTORS too: a
+// parameterized struct has a body (its field initializers) that uses the param,
+// so `Grid :: struct(size := 16) { per_row : i32 = size }` settles size at i32
+// rather than rejecting an i64-into-i32 narrowing. solidify_param_defaults freezes
+// the cell back into the signature once the body is checked.
+resolve_param_type :: proc(c: ^Checker, tp: Scope_Binding, env: ^Type_Env, span: Span) -> Type {
     if tp.type_expr != nil {
         return resolve_type_expr(tp.type_expr, c, span, env = env)
     }
@@ -5544,30 +5546,30 @@ resolve_param_type :: proc(c: ^Checker, tp: Scope_Binding, env: ^Type_Env, span:
             check_error(c, span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
             return Type_Error{}
         }
-        if defer_default {
-            if n, n_ok := tp.default_value.(^Expr_Number); n_ok && !n.is_float {
-                cell := new(Infer_Cell)
-                cell.name = tp.name
-                cell.span = span
-                return Type_Infer_Int{cell = cell}
-            }
+        if n, n_ok := tp.default_value.(^Expr_Number); n_ok && !n.is_float {
+            cell := new(Infer_Cell)
+            cell.name = tp.name
+            cell.span = span
+            return Type_Infer_Int{cell = cell}
         }
         return infer_param_type_from_default(c, tp.default_value, env)
     }
     return Type_Error{}
 }
 
-// Freeze a function's deferred default-param cells once its body is checked.
+// Freeze a callable's deferred default-param cells once its body is checked.
 // Each untyped numeric default seeded an Infer_Cell (resolve_param_type); the
 // body has since pinned it to the width it's used at (arithmetic against a sized
-// operand, an argument, an assignment, a return). Resolve that to a concrete type
-// and write it back into the signature, so callers and codegen (extract_checked_scope)
-// never see an open cell. A param that flowed into no concrete context falls back
-// to the function's sole numeric return type (the int↔float guard lives in
-// coerce_deferred), then to i64 via solidify_type.
+// operand, an argument, an assignment, a return, a field initializer). Resolve
+// that to a concrete type and write it back into the signature, so callers and
+// codegen (extract_checked_scope) never see an open cell. A FUNCTION param that
+// flowed into no concrete context falls back to the function's sole numeric
+// return type (the int↔float guard lives in coerce_deferred), then to i64 via
+// solidify_type. Constructors return Self, not a scalar, so they skip that
+// fallback — an unused constructor param just lands on i64.
 solidify_param_defaults :: proc(c: ^Checker, ft: ^Type_Scope) {
     ret_fallback: Type
-    if len(ft.return_types) == 1 {
+    if ft.kind == .Fun && len(ft.return_types) == 1 {
         ret_fallback = resolve_infer(ft.return_types[0])
     }
     for i in 0 ..< len(ft.params) {
@@ -6083,7 +6085,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // Resolve params and return type (signatures needed for forward references)
                 if len(s.typed_params) > 0 {
                     for tp in s.typed_params {
-                        pt := resolve_param_type(c, tp, &scope_env, s.span, defer_default = !def_is_struct)
+                        pt := resolve_param_type(c, tp, &scope_env, s.span)
                         append(&def_ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                     }
                     build_param_map(def_ft)
@@ -6553,7 +6555,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 if !is_struct_type && eager_signatures {
                     if len(s.typed_params) > 0 {
                         for tp in s.typed_params {
-                            pt := resolve_param_type(c, tp, env, s.span, defer_default = true)
+                            pt := resolve_param_type(c, tp, env, s.span)
                             append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                         }
                         build_param_map(fun_type)
@@ -6801,7 +6803,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         // already populated.
                         if len(s.typed_params) > 0 && len(fun_type.params) == 0 {
                             for tp in s.typed_params {
-                                pt := resolve_param_type(c, tp, env, s.span, defer_default = !is_struct)
+                                pt := resolve_param_type(c, tp, env, s.span)
                                 append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                             }
                             build_param_map(fun_type)
@@ -6912,7 +6914,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // functions that were registered earlier in this scope.
                 if len(s.typed_params) > 0 {
                     for tp in s.typed_params {
-                        pt := resolve_param_type(c, tp, env, s.span, defer_default = !is_struct_type)
+                        pt := resolve_param_type(c, tp, env, s.span)
                         append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                     }
                     build_param_map(fun_type)
@@ -8327,9 +8329,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     check_scope(c, s.body, &child)
 
     // Freeze any deferred default-param cells now the body has pinned them to the
-    // width they're used at (or, unpinned, to the sole numeric return type). After
-    // this the signature is concrete, so callers and codegen never see an open cell.
-    if ft.kind == .Fun {
+    // width they're used at (or, for funs, unpinned → the sole numeric return type).
+    // After this the signature is concrete, so callers and codegen never see an open
+    // cell. Constructors (.Struct) defer their params too — a parameterized struct's
+    // field initializers are the body that pins them.
+    if ft.kind == .Fun || ft.kind == .Struct {
         solidify_param_defaults(c, ft)
     }
 
@@ -12494,7 +12498,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                 type_name(left_type), type_name(right_type))
             return Type_Error{}
         }
-        return coerce_infer_to_hint(promote_numeric(c, left_type, right_type, e.span), hint)
+        return coerce_infer_to_hint(c, promote_numeric(c, left_type, right_type, e.span), hint, e.span)
 
     case .Minus, .Star, .Slash, .Modulo:
         if !is_numeric(left_type) || !is_numeric(right_type) {
@@ -12503,7 +12507,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                 op_sym, type_name(left_type), type_name(right_type))
             return Type_Error{}
         }
-        return coerce_infer_to_hint(promote_numeric(c, left_type, right_type, e.span), hint)
+        return coerce_infer_to_hint(c, promote_numeric(c, left_type, right_type, e.span), hint, e.span)
 
     case .Ampersand, .Pipe, .Tilde, .Shift_Left, .Shift_Right:
         if !is_integer(left_type) && !is_any(left_type) {
@@ -12514,24 +12518,31 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
             check_error(c, e.span, TYPE_BITWISE_OPERATORS_REQUIRE_INTEGER_OPERANDS, type_name(right_type))
             return Type_Error{}
         }
-        return coerce_infer_to_hint(promote_numeric(c, left_type, right_type, e.span), hint)
+        return coerce_infer_to_hint(c, promote_numeric(c, left_type, right_type, e.span), hint, e.span)
     }
     return Type_Error{}
 }
 
-// When promote_numeric leaves the result as an infer type (both operands were
-// untyped literals), adopt the surrounding expected hint so e.type_ carries
-// concrete signedness/width to codegen. Without this, `c : u8 = 200 + 100`
-// would type-check as Type_Infer_Int and codegen would default to signed
-// arithmetic — silently giving the wrong overflow semantics.
-coerce_infer_to_hint :: proc(t, hint: Type) -> Type {
+// When promote_numeric leaves a binary result as an infer type, adopt the
+// surrounding expected hint so e.type_ carries concrete signedness/width to
+// codegen. Without this, `c : u8 = 200 + 100` would type-check as Type_Infer_Int
+// and codegen would default to signed arithmetic — wrong overflow semantics.
+// If the infer carries a binding cell (a `:=` local or a deferred default param),
+// PIN the cell to the hint as well — otherwise the binding stays open and later
+// solidifies to i64, disagreeing with the width the hint forced here (for a param
+// that surfaced as a signature-i64-vs-body-i32 mismatch → bad IR). The pin mirrors
+// coerce_deferred at a direct decl/arg/return; this is that site reached through
+// arithmetic.
+coerce_infer_to_hint :: proc(c: ^Checker, t, hint: Type, span: Span) -> Type {
     if _, ok := t.(Type_Infer_Int); ok {
         if n, n_ok := distinct_base(hint).(Type_Numeric); n_ok && n.kind != .Float {
+            if cell := infer_cell_of(t); cell != nil { unify_infer_concrete(c, cell, hint, span) }
             return hint
         }
     }
     if _, ok := t.(Type_Infer_Float); ok {
         if n, n_ok := distinct_base(hint).(Type_Numeric); n_ok && n.kind == .Float {
+            if cell := infer_cell_of(t); cell != nil { unify_infer_concrete(c, cell, hint, span) }
             return hint
         }
     }

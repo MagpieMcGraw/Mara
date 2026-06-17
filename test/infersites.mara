@@ -44,5 +44,12 @@ main :: fun() {
 	assert(param_from_return() == 10)  // default, inferred i16
 	assert(param_from_return(-3) == -3)
 
+	// An open binding flowing through ARITHMETIC into an annotated context pins
+	// to that width too — not only direct use. (coerce_infer_to_hint must record
+	// the adopted width on the cell, else the binding stays i64 and disagrees.)
+	w := 6
+	narrowed : i16 = w + 1
+	assert(narrowed == 7)
+
 	print("sites ok")
 }
