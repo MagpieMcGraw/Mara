@@ -161,7 +161,7 @@ functions :: fun() {
 	a, b := multi_return()
 	print("Uhh... 3 and 9:", a, "and", b)
 
-	default_values :: fun(five := 5) -> seven : i64 {
+	default_values :: fun(five := 5) -> seven : u32 {
 		result := 2 + five
 		return result
 	}

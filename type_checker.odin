@@ -5524,6 +5524,62 @@ infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
     return infer_field_type_from_default(c, value, env)
 }
 
+// Resolve a callable parameter's declared type — the single cascade shared by
+// every registration path (register_type_names, register_and_check_declarations,
+// register_scope_defs):
+//   - explicit `p: T`       → resolve the annotation
+//   - untyped with default  → infer from the default value
+//   - neither               → Type_Error (an un-annotated, un-defaulted param)
+// `defer_default` is set for FUNCTION params (not struct constructors): an
+// untyped numeric default seeds a deferred inference cell instead of solidifying
+// to i64 right now, so the param adopts the width it's used at in the body. The
+// signature is frozen back to concrete once the body is checked — see
+// solidify_param_defaults. Struct-constructor params keep the immediate i64.
+resolve_param_type :: proc(c: ^Checker, tp: Scope_Binding, env: ^Type_Env, span: Span, defer_default := false) -> Type {
+    if tp.type_expr != nil {
+        return resolve_type_expr(tp.type_expr, c, span, env = env)
+    }
+    if tp.default_value != nil {
+        if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
+            check_error(c, span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
+            return Type_Error{}
+        }
+        if defer_default {
+            if n, n_ok := tp.default_value.(^Expr_Number); n_ok && !n.is_float {
+                cell := new(Infer_Cell)
+                cell.name = tp.name
+                cell.span = span
+                return Type_Infer_Int{cell = cell}
+            }
+        }
+        return infer_param_type_from_default(c, tp.default_value, env)
+    }
+    return Type_Error{}
+}
+
+// Freeze a function's deferred default-param cells once its body is checked.
+// Each untyped numeric default seeded an Infer_Cell (resolve_param_type); the
+// body has since pinned it to the width it's used at (arithmetic against a sized
+// operand, an argument, an assignment, a return). Resolve that to a concrete type
+// and write it back into the signature, so callers and codegen (extract_checked_scope)
+// never see an open cell. A param that flowed into no concrete context falls back
+// to the function's sole numeric return type (the int↔float guard lives in
+// coerce_deferred), then to i64 via solidify_type.
+solidify_param_defaults :: proc(c: ^Checker, ft: ^Type_Scope) {
+    ret_fallback: Type
+    if len(ft.return_types) == 1 {
+        ret_fallback = resolve_infer(ft.return_types[0])
+    }
+    for i in 0 ..< len(ft.params) {
+        cell := infer_cell_of(ft.params[i].type_)
+        if cell == nil { continue }
+        if ret_fallback != nil && infer_root(cell).resolved == nil {
+            coerce_deferred(c, ft.params[i].type_, ret_fallback, cell.span)
+        }
+        ft.params[i].type_ = solidify_type(ft.params[i].type_)
+    }
+}
+
 // The result type of a primitive cast `name(x)` — f32(x) → f32, i32(x) → i32.
 // Returns (_, false) for non-cast names. Pure mapping, no checks/side effects;
 // shared by the cast checker and the field-default mini-evaluator so the latter
@@ -6027,27 +6083,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // Resolve params and return type (signatures needed for forward references)
                 if len(s.typed_params) > 0 {
                     for tp in s.typed_params {
-                        // Same param cascade as register_type_names /
-                        // register_and_check_declarations: an UNTYPED param with a
-                        // default (`five := 5`) infers its type from the default.
-                        // Without this, resolve_type_expr(nil) yields Type_Error and
-                        // the param never resolves — a nested fun's default param then
-                        // poisons its body (the local reading it becomes Type_Error,
-                        // which is_any-skips the return-type check and lets bad IR
-                        // reach codegen). See test/scope.mara default_demo.
-                        pt: Type
-                        if tp.type_expr != nil {
-                            pt = resolve_type_expr(tp.type_expr, c, s.span, env=&scope_env)
-                        } else if tp.default_value != nil {
-                            if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
-                                check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
-                                pt = Type_Error{}
-                            } else {
-                                pt = infer_param_type_from_default(c, tp.default_value, &scope_env)
-                            }
-                        } else {
-                            pt = Type_Error{}
-                        }
+                        pt := resolve_param_type(c, tp, &scope_env, s.span, defer_default = !def_is_struct)
                         append(&def_ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                     }
                     build_param_map(def_ft)
@@ -6517,19 +6553,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 if !is_struct_type && eager_signatures {
                     if len(s.typed_params) > 0 {
                         for tp in s.typed_params {
-                            pt: Type
-                            if tp.type_expr != nil {
-                                pt = resolve_type_expr(tp.type_expr, c, s.span, env = env)
-                            } else if tp.default_value != nil {
-                                if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
-                                    check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
-                                    pt = Type_Error{}
-                                } else {
-                                    pt = infer_param_type_from_default(c, tp.default_value, env)
-                                }
-                            } else {
-                                pt = Type_Error{}
-                            }
+                            pt := resolve_param_type(c, tp, env, s.span, defer_default = true)
                             append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                         }
                         build_param_map(fun_type)
@@ -6777,19 +6801,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         // already populated.
                         if len(s.typed_params) > 0 && len(fun_type.params) == 0 {
                             for tp in s.typed_params {
-                                pt: Type
-                                if tp.type_expr != nil {
-                                    pt = resolve_type_expr(tp.type_expr, c, s.span, env = env)
-                                } else if tp.default_value != nil {
-                                    if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
-                                        check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
-                                        pt = Type_Error{}
-                                    } else {
-                                        pt = infer_param_type_from_default(c, tp.default_value, env)
-                                    }
-                                } else {
-                                    pt = Type_Error{}
-                                }
+                                pt := resolve_param_type(c, tp, env, s.span, defer_default = !is_struct)
                                 append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                             }
                             build_param_map(fun_type)
@@ -6900,20 +6912,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // functions that were registered earlier in this scope.
                 if len(s.typed_params) > 0 {
                     for tp in s.typed_params {
-                        pt: Type
-                        if tp.type_expr != nil {
-                            pt = resolve_type_expr(tp.type_expr, c, s.span, env = env)
-                        } else if tp.default_value != nil {
-                            if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
-                                check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
-                                pt = Type_Error{}
-                            } else {
-                                // `name(s) := default` — infer the param's type from the default expression.
-                                pt = infer_param_type_from_default(c, tp.default_value, env)
-                            }
-                        } else {
-                            pt = Type_Error{}
-                        }
+                        pt := resolve_param_type(c, tp, env, s.span, defer_default = !is_struct_type)
                         append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                     }
                     build_param_map(fun_type)
@@ -8326,6 +8325,13 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     }
 
     check_scope(c, s.body, &child)
+
+    // Freeze any deferred default-param cells now the body has pinned them to the
+    // width they're used at (or, unpinned, to the sole numeric return type). After
+    // this the signature is concrete, so callers and codegen never see an open cell.
+    if ft.kind == .Fun {
+        solidify_param_defaults(c, ft)
+    }
 
     // Return check — void functions (return_types empty) don't need return statements.
     // Functions whose return slots are all err can also fall off the end —

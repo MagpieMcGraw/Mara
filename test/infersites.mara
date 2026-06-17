@@ -11,6 +11,19 @@ ret_open :: fun() -> i32 {
 	return n
 }
 
+// A function's untyped default param defers like a `:=` local: it adopts the
+// width it's used at in the body. `seed` flows through `doubled` into a u32
+// return, so the whole chain — param, local, return — settles at u32.
+param_from_use :: fun(seed := 4) -> u32 {
+	doubled := seed * 2
+	return doubled
+}
+
+// No width-bearing local in the way — the param is pinned by the return type.
+param_from_return :: fun(base := 10) -> i16 {
+	return base
+}
+
 main :: fun() {
 	assert(ret_open() == 7)        // return site
 
@@ -25,6 +38,11 @@ main :: fun() {
 	p := 3
 	bx.v = p                       // field-assign site
 	assert(bx.v == 3)
+
+	assert(param_from_use() == 8)      // default seed=4 → u32 8
+	assert(param_from_use(5) == 10)    // override → u32 10
+	assert(param_from_return() == 10)  // default, inferred i16
+	assert(param_from_return(-3) == -3)
 
 	print("sites ok")
 }
