@@ -13113,6 +13113,19 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Env) -> Type {
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
+    // A call that returns multiple values has nowhere to put the extras when
+    // used as a single argument — codegen would silently keep only the first.
+    // Reject it here (every call form funnels through check_call) so the user
+    // destructures first. Valid multi-return positions (`a, b := f()`, `f()?`,
+    // struct-literal fields) don't pass the call through `e.args`, so they're
+    // unaffected. call_return_list returns >0 only for ^Expr_Call, so the arg
+    // is safely an ^Expr_Call when the count exceeds one.
+    for arg in e.args {
+        if returns := call_return_list(c, arg, env); len(returns) > 1 {
+            check_error(c, arg.(^Expr_Call).span, TYPE_MULTI_RETURN_AS_ARG, len(returns))
+        }
+    }
+
     // Phase 1: Resolve which function we're calling.
     // Build effective args (UFCS prepends qualifier) and determine resolution.
     // Resolution is written to e.resolved_func at the end.

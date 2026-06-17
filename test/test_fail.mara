@@ -104,6 +104,15 @@ fail_assert :: fun() {
 // 	print(m2.y)
 // }
 
+// Multi-return call in a single-argument slot. The extra values have nowhere
+// to go, so codegen used to silently keep the first; now it's rejected.
+// Expected: a call returning 2 values can't be used as a single argument —
+// destructure it first. (`a, b := fail_mr2()` is the fix.)
+// fail_mr2 :: fun() -> i64, i64 { return 3, 9 }
+// fail_multi_return_as_arg :: fun() {
+// 	print("both: ", fail_mr2())
+// }
+
 main :: fun() -> i64 {
 	this_program = Program(Arena_Debug(1 * MB))
 
@@ -117,6 +126,7 @@ main :: fun() -> i64 {
 	// fail_discarded_return()
 	// fail_negate_unsigned()
 	// fail_struct_copy_form()
+	// fail_multi_return_as_arg()
 
 	print("test_fail: inert (all negatives disabled)")
 	return 0
