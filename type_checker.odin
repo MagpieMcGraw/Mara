@@ -6027,7 +6027,27 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // Resolve params and return type (signatures needed for forward references)
                 if len(s.typed_params) > 0 {
                     for tp in s.typed_params {
-                        pt := resolve_type_expr(tp.type_expr, c, s.span, env=&scope_env)
+                        // Same param cascade as register_type_names /
+                        // register_and_check_declarations: an UNTYPED param with a
+                        // default (`five := 5`) infers its type from the default.
+                        // Without this, resolve_type_expr(nil) yields Type_Error and
+                        // the param never resolves — a nested fun's default param then
+                        // poisons its body (the local reading it becomes Type_Error,
+                        // which is_any-skips the return-type check and lets bad IR
+                        // reach codegen). See test/scope.mara default_demo.
+                        pt: Type
+                        if tp.type_expr != nil {
+                            pt = resolve_type_expr(tp.type_expr, c, s.span, env=&scope_env)
+                        } else if tp.default_value != nil {
+                            if _, is_uninit := tp.default_value.(^Expr_Skip_Constructor); is_uninit {
+                                check_error(c, s.span, TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES, tp.name, tp.name)
+                                pt = Type_Error{}
+                            } else {
+                                pt = infer_param_type_from_default(c, tp.default_value, &scope_env)
+                            }
+                        } else {
+                            pt = Type_Error{}
+                        }
                         append(&def_ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                     }
                     build_param_map(def_ft)

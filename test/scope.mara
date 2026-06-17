@@ -51,6 +51,15 @@ frame_demo :: fun() -> i64 {
 	return reuse() + x                              // 3
 }
 
+// A nested fn with an untyped default param: the default pins the param's type
+// (i64 here), and the fn works called with or without the argument. Regression
+// for register_scope_defs leaving such a param unresolved (Type_Error), which
+// then poisoned the body and skipped the return-type check.
+default_demo :: fun() -> i64 {
+	add_to :: fun(base: i64, bump := 5) -> i64 { return base + bump }
+	return add_to(10) + add_to(10, 100)            // 15 + 110 = 125
+}
+
 // if/for blocks share the function's frame: they read its locals up to the
 // function boundary (the env walk crosses decls too, not just defs, within a fn).
 block_demo :: fun() -> i64 {
@@ -66,5 +75,6 @@ main :: fun() -> i64 {
 	print("down:  ", down_demo())                   // 8
 	print("frame: ", frame_demo())                  // 3
 	print("block: ", block_demo())                  // 5
+	print("deflt: ", default_demo())                 // 125
 	return 0
 }
