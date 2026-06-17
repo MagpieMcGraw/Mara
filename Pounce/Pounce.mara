@@ -131,11 +131,9 @@ game_events :: fun(game: ^Megastruct) {
 	}
 }
 game_update :: fun(game: ^Megastruct, dt: f64) {
-	camera_move(&game.events, game.timers.fixed.step, &game.camera)
-	camera_turn_walking(game.mouse.xrel, game.mouse.yrel, 0,
-		f32(game.timers.fixed.step), &game.camera)
+	camera_move(&game.camera, &game.events.keyboard, f32(game.timers.fixed.step))
+	camera_turn_walking(&game.camera, &game.events.mouse)
 	camera_update(&game.camera, f32(game.timers.fixed.step))
-	// so far we do nothing
 }
 game_draw :: fun(game: ^Megastruct) {
 	// --- Everything OpenGL needs to draw the playa this frame ---

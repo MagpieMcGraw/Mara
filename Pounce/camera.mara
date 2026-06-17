@@ -45,49 +45,49 @@ camera_align_with_gravity :: fun(camera: ^Camera) {
 	camera.obj.dir = quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})
 }
 
-camera_move :: fun(events: ^Event_State, loop_time: f64, camera: ^Camera) {
+camera_move :: fun(camera: ^Camera, keyboard: ^Keyboard, loop_time: f32) {
 	direction: Vec3
 	speed: f32 = 500
 
 	fwd, up, right := obj_get_directions(camera.obj.dir)
 
-	if events.keyboard.held[sdl.Scancode.W] {
+	if keyboard.held[sdl.Scancode.W] {
 		direction += fwd
 	}
-	if events.keyboard.held[sdl.Scancode.S] {
+	if keyboard.held[sdl.Scancode.S] {
 		direction -= fwd
 	}
-	if events.keyboard.held[sdl.Scancode.A] {
+	if keyboard.held[sdl.Scancode.A] {
 		direction -= right
 	}
-	if events.keyboard.held[sdl.Scancode.D] {
+	if keyboard.held[sdl.Scancode.D] {
 		direction += right
 	}
-	if events.keyboard.held[sdl.Scancode.Q] {
+	if keyboard.held[sdl.Scancode.Q] {
 		direction += up
 	}
-	if events.keyboard.held[sdl.Scancode.Z] {
+	if keyboard.held[sdl.Scancode.Z] {
 		direction -= up
 	}
 
-	if events.keyboard.held[sdl.Scancode.LShift] {
+	if keyboard.held[sdl.Scancode.LShift] {
 		speed *= 0.2
 	}
 
-	if events.keyboard.held[sdl.Scancode.LCtrl] {
+	if keyboard.held[sdl.Scancode.LCtrl] {
 		speed *= 5.0
 	}
 
-	move_this_frame := direction * speed * f32(loop_time)
+	move_this_frame := direction * speed * loop_time
 	camera.obj.accel += move_this_frame
 }
 
-camera_turn_flying :: fun(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera) {
+camera_turn_flying :: fun(camera: ^Camera, mouse: ^Mouse) {
 	sensitivity: f32 = 0.005
 	turn_speed: f32 = 0.5  // Faster turn speed for direct mode
-	x_rot := turn_speed * f32(xrel) * sensitivity
-	y_rot := turn_speed * f32(yrel) * sensitivity
-	z_rot := turn_speed * f32(zrel) * 5 * sensitivity
+	x_rot := turn_speed * mouse.xrel * sensitivity
+	y_rot := turn_speed * mouse.yrel * sensitivity
+	z_rot := turn_speed * mouse.wheel * 5 * sensitivity
 
 	// Get camera's local axes
 	camera_fwd, camera_up, camera_right := obj_get_directions(camera.obj.dir)
@@ -112,22 +112,22 @@ camera_turn_flying :: fun(xrel, yrel, zrel: i32, loop_time: f32, camera: ^Camera
 
 // Walking camera - constrained to ground-based movement
 // Yaw always around world up, no roll, maintains upright orientation
-camera_turn_walking :: fun(xrel, yrel, zrel: f32, loop_time: f32, camera: ^Camera) {
+camera_turn_walking :: fun(camera: ^Camera, mouse: ^Mouse) {
 	sensitivity: f32 = 0.01
-	x_rot := camera.obj.turn_speed * xrel * sensitivity
-	y_rot := camera.obj.turn_speed * yrel * sensitivity
+	x_rot := camera.obj.turn_speed * mouse.xrel * sensitivity
+	y_rot := camera.obj.turn_speed * mouse.yrel * sensitivity
 
 	// World up axis for yaw (always stays upright)
 	world_up := Vec3{0, 0, 1}
 
 	// Yaw around world up (horizontal turning, unaffected by pitch)
-	if xrel != 0 {
+	if mouse.xrel != 0 {
 		yaw_quat := quat_angle_axis(x_rot, world_up)
 		camera.obj.dir = yaw_quat * camera.obj.dir
 	}
 
 	// Pitch around camera's local right axis (look up/down)
-	if yrel != 0 {
+	if mouse.yrel != 0 {
 		_, _, camera_right := obj_get_directions(camera.obj.dir)
 		pitch_quat := quat_angle_axis(y_rot, camera_right)
 		camera.obj.dir = pitch_quat * camera.obj.dir
@@ -168,7 +168,7 @@ camera_update_size :: fun(camera: ^Camera, w_width, w_height: f32) {
 
 // Project world position to screen pixels (origin at center, +x right, +y up)
 // Returns screen x, y in pixels from center, and ok=false if behind camera
-world_to_screen :: fun(world_pos: Vec3, camera: ^Camera) -> (x, y: f32, ok: bool) {
+world_to_screen :: fun(camera: ^Camera, world_pos: Vec3) -> (x, y: f32, ok: bool) {
 	// Transform to clip space
 	pos4 := Vec4{world_pos.x, world_pos.y, world_pos.z, 1}
 	view_pos := camera.view * pos4
@@ -190,7 +190,7 @@ world_to_screen :: fun(world_pos: Vec3, camera: ^Camera) -> (x, y: f32, ok: bool
 	return x, y, true
 }
 
-mouse_ray :: fun(mouse_x, mouse_y: i32, camera: ^Camera) -> Vec3 {
+mouse_ray :: fun(camera: ^Camera, mouse_x, mouse_y: i32) -> Vec3 {
 	// mouse x and y needs to be in the range of 1 to -1
 	x := (2 * f32(mouse_x)) / camera.w_width - 1
 	y := 1 - (2 * f32(mouse_y)) / camera.w_height
