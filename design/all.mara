@@ -11,10 +11,14 @@ main :: fun() {
 	types_and_values()
 	operators()
 	control_flow()
+	functions()
 }
+
 
 types_and_values :: fun() {
 	print("Types and Values")
+
+	CONSTANT :: 7
 	
 	// name : type = value
 	its_true: bool = true
@@ -36,7 +40,7 @@ types_and_values :: fun() {
 
 	array: [64]byte // value, holds its own data
 	slice: []byte // reference, points to someone else's data
-	slice_array: [..64]utf8 // the main container type in Mara
+	slice_array: [..47]utf8 // the main container type in Mara
 
 	pointer : ^f64 = &biggest_float
 	biggest_float = 99
@@ -59,8 +63,9 @@ operators :: fun() {
 	d := a - b
 	e := a * b
 	f := a / b
-	print("8 2 10 6 16 4")
-	print(a, b, c, d, e, f)
+	g := a % b
+	print("8 2 10 6 16 4 0")
+	print(a, b, c, d, e, f, g)
 
 	if c == 10 do print("c is 10")
 	if d != e do print("d is not e")
@@ -73,14 +78,32 @@ operators :: fun() {
 	if b <= a and b + 6 >= a do print("galaxy brain logic!")
 	if not its_false do print("double negative...")
 
+	flags, things: u8
+	flags = 7 << 4 		// 01110000
+	things = 255 >> 2 	// 00111111
+	print("flags: %, things: %", flags, things)
+	// these test bit overlap
+	both_set := flags & things
+	either_set := flags | things
+	whats_xor := flags ~ things
+	print("either: %, both: %, xor: %",
+		either_set, both_set, whats_xor)
+
+	// +% -% *% wrap on overflow instead of trapping (plain + - * would crash)
+	hi, lo : u8 = 255, 0
+	wrap_add := hi +% 1   // 0    wraps past the top
+	wrap_sub := lo -% 1   // 255  wraps past the bottom
+	wrap_mul := hi *% 2   // 254  (510 mod 256)
+	print("add %, sub %, mul %", wrap_add, wrap_sub, wrap_mul)
+
 	print()
 }
 
 control_flow :: fun() {
-	print("Control Flow")
+	print("Control Flow: If")
 	water_temperature := 101
 
-	// braces go around the entire block
+	// braces go around the entire if-else block
 	if water_temperature > 100 {
 		print("It's steam!")
 	// elif means else if
@@ -91,7 +114,7 @@ control_flow :: fun() {
 	elif water_temperature in 0..100
 		print("It's probably hot")
 	else
-		print("It's cold!")
+		print("It's ice!")
 	}
 
 	water_temperature = -1
@@ -99,4 +122,42 @@ control_flow :: fun() {
 		Only true/false allowed as conditions
 	 	Only 0 converts to false")
 
+	print("\nControl Flow: For")
+
+	some_numbers : [5]u8 = [11, 22, 33, 44, 55]
+	for number, index in some_numbers {
+		if number == index + 10 do continue
+		print("The number:", number)
+		print("The index: ", index)
+	}
+
+	n := 11
+	for i in 5..n
+	do print("Range:", i)
+
+	always_true := true
+	for always_true {
+		print("Infinite loop")
+		break
+	}
+}
+
+functions :: fun() {
+	print("Functions")
+
+	local_add :: fun(count: u32, number: i32)
+	-> named_return : i64
+	{
+		result := count + number
+		named_return = result // already declared
+		return named_return // return statement required
+	}
+
+	multi_return :: fun() -> i64, i64 {
+		one := 1
+		three := one + 2
+		return three, 4 + 5
+	}
+	a, b := multi_return()
+	print("Uhh... 3 and 9:", a, "and", b)
 }
