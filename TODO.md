@@ -34,4 +34,4 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 
 Figure out syntax for writing to bytes. Should number literals be writable? How about arrays? What should the casting syntax be for that, especially for arrays?
 
-[DEEP] TOOLING fix and regenerate the 1M-line benchmark, then grow it adversarially: one giant dispatch block, one 100K-line function, deep use chains. Name the cliffs before a real project finds them.
+Validate top level statements investigation. Do we actually need it?

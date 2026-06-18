@@ -165,6 +165,5 @@ functions :: fun() {
 		result := 2 + five
 		return result
 	}
-	// call with the default, then pass a value to override it
 	print("Seven and twelve:", default(), "and", default(10))
 }

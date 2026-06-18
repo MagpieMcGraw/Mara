@@ -108,6 +108,34 @@ run_ask :: proc(checked: ^Checked_Program, q: Ask_Query) -> Ask_Result { ... }
 Renderers over `Ask_Result`: text tree (default), `--dot` (Graphviz; this is the
 graph the user wants to *see*), `--json` (tooling + LSP transport).
 
+**The engine itself is two layers, and only the first is whole-program.** `run_ask` reads
+as if it recomputes from `Checked_Program` per call; in practice it splits:
+
+- **Definitional summaries — built once, context-insensitive.** Call graph, struct/type
+  graph (struct → field types), the read- and write-footprint summaries (function ×
+  param-path → paths read / written, transitively), `fun_return_arg_set`. None mention a
+  concrete object — they are keyed on *formal* params and type names, cached on the
+  `SymbolTable` and frozen after the check, exactly as `fun_return_arg_set` already is.
+  This is "in general, who writes `DrawState.texture`" — the substrate behind
+  `<Type>.<field> writers`.
+- **The anchored walk — per query, context-sensitive, lazy.** A query seeds a concrete
+  point — a function, a value, or (§5) a *call site* — binds formals to the actual objects
+  there, and walks the summaries *projected onto that instance*. This is the only part that
+  runs per mouse-point, and it is cheap: a reachability traversal of built summaries, not a
+  recomputation.
+
+The relation is a function to its stack frame: the summary graph is the reusable shape, the
+anchored walk is that shape instantiated with concrete values, on demand, one invocation at
+a time.
+
+**This is also what makes context sensitivity affordable** — the axis that makes precise
+interprocedural analysis costly elsewhere. The expensive version computes a
+context-sensitive result for *every* call site eagerly (the all-contexts product).
+`mara ask` never pays it: summaries are context-*insensitive* and built once, and exactly
+*one* context — the call you asked about — is instantiated, lazily, on demand. You don't
+enumerate every possible stack frame ahead of time; you instantiate the one you're standing
+in. The point-at-the-call UX is not just ergonomics, it is the cost model.
+
 ---
 
 ## 4. Query surface
@@ -118,6 +146,9 @@ mara ask <fn>.<param> contributors   # backward slice toward sources (generalize
 mara ask <Type> deps                 # struct dependency graph
 mara ask <Type>.<field> writers      # every site that assigns this field, program-wide
 mara ask <var> in <fn> assignments    # every assignment to a specific local
+mara ask <var> in <fn> readers         # every read of a local/store, counting the loop back-edge (§11)
+mara ask <fn> scratch                   # loop-carried scratch buffers missing a per-iteration reset (§11)
+mara ask at <file>:<line> inputs        # 'inputs' anchored on the concrete call there — the actual object's fill chain (§5; LSP: point at the call)
 ```
 
 Flags: `--dot`, `--json`, `--depth N` (cap transitive walk), `--module <m>` (scope the
@@ -165,6 +196,29 @@ search). All read-only; all stop after type-checking (see §6).
 `contributors` is the same walk seeded from a single value instead of a whole param
 surface — i.e. `eval_expr_arg_set` with the result kept as a graph rather than collapsed
 to an index set.
+
+**Seeding from a concrete call (the anchored walk).** Steps 1–7 seed on a function
+*definition* — `draw_state_render`'s param surface, call-site-agnostic. The form you reach
+for while debugging seeds on a *call*: point at the `Expr_Call` in `game_draw`, bind its
+formal `state` to the actual argument's access path (`game.draw_state_text`, via the arg
+expr / `Type_Env.aliases`), and run the same walk with the read/write sets resolved to that
+object. Now the dangling check names the missing producer for *this* `draw_state_text`, not
+"some `DrawState`."
+
+Honest about the anchored walk:
+- It seeds object *identity*, but the producer search is still whole-program-from-the-object,
+  not a subtree under the call. The atlas that fills `.texture` was likely written by an
+  `asset_init(&game)` that ran *earlier in `game_draw`* — a sibling of the call you pointed
+  at — so the walk reaches sideways and upward, bounded only by where the object flows
+  (no-globals keeps that bounded).
+- A runtime-selected object (`batches[i]`) degrades identity to "element of `batches`" —
+  §8 tier 2: field/type kept, index lost. Sound, reported not guessed.
+
+What it *gains* over the definitional form: along a concrete traced path it can ask the
+§9/§11 ordering question — does a writer *dominate* this call — not just "does one exist."
+Existence is the definitional query's ceiling; the anchored frame gives "did it run before
+here." The CLI must name the site (`at <file>:<line>`); in the LSP it is cursor →
+`Expr_Call` → walk, which is where this query lives.
 
 ---
 
@@ -343,3 +397,184 @@ graph — a struct passed onward inherits the callee's footprint. Same precision
 §8 (the aliasing tiers; the byte-punning hole, where the footprint collapses to "the
 buffer"). Surfaces as `mara ask <fn> reads`, and as a lint: "param `s: ^Big` reads only
 `.sub` → narrow to `^Sub`."
+
+---
+
+## 11. Loop-carried scratch — the `nodes.len = 0` check
+
+Everything above is **flow-insensitive reachability**: §5's dangling check is set difference
+(`read ∖ written`) — it cares *whether* a write exists anywhere in the reachable tree, never
+*when*. That blind spot has a sharp failure mode, and this section is the sibling analysis that
+closes it. It is the one **flow-sensitive** query in the doc: it has to look at the single edge the
+others ignore — the loop **back-edge** (the jump from the bottom of a loop body back to the top).
+
+**The case that motivated it.** [font.mara:155](../code/font.mara:155), `nodes.len = 0`, was once
+deleted as dead code and silently broke multi-contour glyphs. It is load-bearing, and nothing in §5
+would have protected it: `nodes.len` is both read and written, so it is never "dangling."
+
+**The buffer's life, in plain terms.** `nodes : [..1024]Node` is created *once*, at
+[font.mara:136](../code/font.mara:136), before the contour loop at [139](../code/font.mara:139).
+Call each turn of that loop a *lap*. Every lap does three things in order: **empty** it
+(`nodes.len = 0`, line 155), **fill** it (the `&nodes + Node{…}` appends, 171–209), **drain** it (the
+pen walk reads `nodes[0]` and loops `0..nodes.len`, 212–251). One buffer, reused every lap.
+
+**Why deleting the reset looked safe — and is the whole trap.** On the first lap the buffer is empty
+for free: Mara zero-inits everything, so `len` starts at 0 with no help. The reset writes the value
+the buffer already holds — locally a no-op. The cost only lands from the *second lap on*, where the
+back-edge carries the previous contour's nodes back in: `nodes[0]` is then the wrong start point and
+the `0..nodes.len` walk reads stale entries. One-contour glyphs pass; multi-contour glyphs (`B`, `8`,
+`o`) break. This is the **reuse-dual of §9's `draw_state_assert_ready`**: both ask "is the storage in
+the state the consumer assumes?" — there, never produced; here, produced once but destroyed by the
+back-edge. Zero-init makes the first pass correct for free, which is exactly what hides the missing
+producer on every later pass.
+
+**The read of `.len` is hidden.** Grepping for `nodes.len` reads turns up nothing in the loop body —
+but every `&nodes + x` is a read-modify-write of `.len` (read len → store at `nodes[len]` → bump
+len). The append *is* the len read. The analysis must model the append (an `Expr_Binary`, `&S + x`)
+as touching `S.len`, or it sees a write with no reader and concludes backwards.
+
+**The real question: accumulator or resetting scratch?** A buffer reused in a loop is one of two
+things, and only the second needs a reset:
+- **Accumulator / tally** — collects across laps; its value *after* the loop is the point. `edges`
+  and `contour_start` in this same function are accumulators.
+- **Resetting scratch** — filled and consumed within one lap, then thrown away. `nodes` is scratch.
+
+Two signals separate them, and the flag requires **both**:
+
+1. **Read shape — whole-buffer drain from a fixed origin.** Scratch is read back over its *entire*
+   current contents from index 0 each lap: `nodes[0]` *and* the `0..nodes.len` walk. An accumulator
+   read per-lap is read through a **moving window**, not from 0 — the second loop at
+   [font.mara:258](../code/font.mara:258) reads each contour's edges as the span
+   `[contour_start[ci], contour_start[ci+1])` (the fencepost scheme spelled out in the comment at
+   [126](../code/font.mara:126)), a window that slides per contour. Fixed `0` says "the front is
+   *this lap's* start"; a sliding `lo..hi` says "a slice of a growing whole."
+2. **Lifetime — dead after the loop.** Scratch has no reader once the loop ends (`Binding.read`
+   shows no use past the loop body), so the per-lap drain is its *only* consumer: build-and-discard.
+   An accumulator is read after the loop, or one of its fixed slots is.
+
+**The rule.** Storage `S` whose declaration sits in a scope *outside* a `Stmt_For` `L` (compare the
+decl's `scope_depth` to `L`'s body), where inside `L.body`: `S` is appended to (`&S + …`, so the
+write-anchor is `len`), is drained whole `0..S.len` from a fixed origin, and is **not** read after
+`L` — *and* nothing fully kills `S` at the top of `L.body` (a `Stmt_Assign` of `S.len = 0`, or a full
+overwrite) → **flag**:
+
+> `nodes` is filled and fully drained each iteration but never reset; from the second iteration on it
+> reads on top of the previous iteration's contents. Add `nodes.len = 0` at the top of the loop, or
+> move the declaration inside the loop.
+
+The fix message is honest about the trade it names. Hoisting `nodes` out of the loop is a hand
+optimization — it avoids re-zeroing 1024 `Node`s every contour. The reset is the *correctness
+obligation that the optimization incurs*. Moving the declaration inside the loop also fixes it (fresh
+zero-init each lap) at exactly the cost the hoist was avoiding. The tool states both; the human picks.
+
+One framing makes the whole thing click: the reads are pinned to `0` and cannot drift. The writes
+anchor at `len`, which *should* be 0 at lap start. `nodes.len = 0` is what keeps the **write-anchor
+pinned to the read-anchor**. Delete it and the write-anchor floats up lap by lap while the read-anchor
+stays at 0 — they desync, and the drain reads from 0 straight into the previous lap's leftovers.
+
+**Two surfaces** (the §3 one-engine rule still holds — both read the same result):
+- **The lint.** Fires on the broken code as an ordinary diagnostic, no diff awareness needed: it
+  flags the *absence* of a reset given the scratch shape, so it catches the bug however it arose
+  (deleted, or never written). Queryable as `mara ask <fn> scratch`; in the LSP, a gutter warning on
+  the loop.
+- **"What reads this store?"** The dual of `<Type>.<field> writers`, made back-edge-aware. Select
+  `nodes.len = 0` and it names the reads of `nodes.len`/`nodes[…]` it governs this iteration — the
+  appends (171–209) and the drain (212, 215) — and notes that, because `&nodes +` accumulates rather
+  than overwrites, those reads inherit this store's effect on every later iteration through the
+  back-edge. That answers the exact question behind the deletion — "does this line do anything?" —
+  where reading top-to-bottom answers wrong: the store's whole job is to stop the *previous*
+  iteration's `len` from reaching those reads. A store with no such reads reports "dead — safe to
+  remove." Queryable as `mara ask <var> in <fn> readers`; in the LSP, a hover / inlay.
+
+**False positives.** A literal-`0` read *alone* is not enough — this is correct and must not be reset:
+
+```
+seen : [..256]i32
+for x in stream {
+    &seen + x              // append, len grows every lap
+    if x == seen[0] { … }  // literal-0 read every lap, no reset
+}
+```
+
+`seen[0]` is "the first value we ever saw" — a persistent slot, not a per-lap start. The two-signal
+rule spares it: `seen` is *poked* at one fixed slot, not **drained `0..len` as a unit**, and it
+outlives the loop. The same combination spares `edges`/`contour_start` (moving window *and* read
+after). The honest residue: a buffer that genuinely fills-and-fully-drains-from-0 each lap, is dead
+after the loop, yet is *meant* to reprocess prior laps' data plus the new — survives both filters and
+would false-positive. That is a "redo everything plus new, each lap" loop: rare, and arguably its own
+smell. Not zero false positives, but you have to go looking for one.
+
+**Limits.**
+- **Flow sensitivity is new.** The rest of the doc is reachability; this needs the back-edge and the
+  top-of-body kill. v1 is intra-procedural (decl, loop, appends, reads, reset all in one function —
+  the common case). A reset performed by a *helper* the loop calls is an interprocedural extension,
+  the same summary shape as §10's footprint.
+- **`.len` is the clean cursor.** Partial arrays make "the reset" syntactically obvious
+  (`S.len = 0`) and the append a recognizable len read-modify-write. A buffer that tracks its count
+  in a *separate* variable and index-writes (`buf[count] = …; count += 1`) needs that count variable
+  identified as the cursor first — harder, out of scope for v1.
+
+**Validation.** The [font.mara:139](../code/font.mara:139) contour loop is the golden fixture, and it
+is self-checking: with `nodes.len = 0` removed, `nodes` must flag; `edges` and `contour_start` —
+accumulators in the *same loop* — must stay silent. That same-loop contrast is the false-positive
+test baked into the fixture. Diff the rendered diagnostic against a checked-in golden, as elsewhere
+in `test/`.
+
+---
+
+## 12. Future: the materialized call graph as shared substrate
+
+**Status: not scheduled.** Captured here because it fell out of §3 — the "definitional
+summaries built once" layer presumes a call graph, and `mara ask` is the feature that first
+makes its absence felt. They are the same feature seen from two ends.
+
+**It already exists, as scattered re-derivations.** The checker has no materialized call
+graph, yet it walks one constantly: `fun_return_arg_set` follows callees through
+`lookup_callee_scope` and hand-rolls cycle detection (that `-1` return *is* an ad-hoc SCC
+check). Codegen re-derives the same edges from callee resolution + `function_order` for its
+emission order and parallel scheduling. The graph is real; it is just recomputed per
+consumer. Materializing it once sits upstream of all of them — the consolidation the codebase
+already favors (one `Binding`, not parallel maps; function-is-island).
+
+**The skeleton is not the prize — the summary framework is.** Every interprocedural summary
+in this doc — arg-sets, the read/write footprints (§5, §10), provenance — is the *same*
+bottom-up-over-SCCs pass with a different lattice. Build the skeleton once (nodes =
+`function_order`; edges = resolved calls + dispatch fan + operator-overload edges, all already
+on the nodes as `resolved_func` / `overload_fn` / `dispatch_groups`) and the summaries become a
+*framework* over it instead of N bespoke walks each with its own cycle guard.
+`fun_return_arg_set`'s `-1` hack becomes "the SCC this node is in," computed once and shared.
+
+**What it unlocks beyond `ask`** — each is a propagation over the same edges:
+
+- **Static stack bounds — the scope allocator made analyzable.** Frame sizes are known at
+  check time; graph + SCCs give worst-case stack depth per entry point, flag recursion (a
+  cycle = unbounded = must arena/heap, not stack), and could drive stack-vs-arena placement
+  statically. This is the *static* form of the overflow already hit and fixed by the
+  big-tuple-slot arena bump — and it fits the TigerStyle bar: bounded, provable resources.
+- **Interprocedural provenance.** Provenance is already here *intra*-procedurally
+  (`Binding.provenance`, `Type_Env.aliases`, the local-slice-backed escape check). The graph
+  lifts it *across* calls — "this returned slice's backing originated at buffer X two frames
+  up" — which is exactly `contributors`, and what makes "returning a local-backed slice is a
+  hard error" interprocedurally *exact* rather than conservative. The graph doesn't add
+  provenance; it makes the provenance already in the checker precise.
+- **Reachability / dead-function elimination** — what's reachable from `main`; the rest is a
+  warning or DCE.
+- **Purity / effect propagation** — does a function transitively touch foreign / I/O? If not,
+  it is a const-eval candidate. Comptime-evaluability *is* a call-graph property; this ties
+  straight into the existing `#if` / `constant_values` machinery.
+- **Fallibility propagation** — transitive "can this error," for the `?` / must-use-err
+  system; would flag a `-> err` function whose body can't actually fail.
+- **Parallel codegen scheduling** — the SCC DAG *is* the dependency structure parallel
+  per-module codegen already leans on implicitly.
+
+**One honest seam.** The graph is only as sharp as callee resolution: indirect / fn-typed-param
+calls are opaque edges (§6, §8), bounded by nominal fn types. Carry two edge flavors on the one
+graph — resolved/monomorphized (dataflow, DCE, stack bounds) and the dispatch-set (forward "who
+could call this overload," and the opaque cases). Both are already on the nodes; the graph just
+collects them.
+
+**Where it sits.** A post-`check_program` artifact on `Checked_Program`, materializing the
+edges that `function_order` + `lookup_callee_scope` already imply. Small addition, large
+leverage — it is what turns §3's "summaries built once" from a per-analysis cache into a shared
+framework, and the natural home for the stack-bound and provenance analyses that are out of
+scope for the first `ask` cut.
