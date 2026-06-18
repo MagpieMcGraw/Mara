@@ -1,0 +1,20 @@
+module patest
+
+Holder :: struct {
+	xs : [..4]i64
+}
+
+main :: fun() {
+	xs : [..4]i64
+	xs.len = 3
+	xs[0] = 10
+	xs[1] = 20
+	xs[2] = 30
+	print("pa top:", xs)
+
+	h : Holder
+	h.xs.len = 2
+	h.xs[0] = 7
+	h.xs[1] = 8
+	print("pa field:", h)
+}

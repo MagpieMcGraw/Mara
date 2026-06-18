@@ -2199,6 +2199,23 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr, call_span: Span) {
         } else if is_array_expr(g, arg_expr) {
             // Check if the expression is a non-utf8 array variable
             gen_print_array(g, arg_expr)
+        } else if is_pa_or_slice_nonutf8(expr_type(arg_expr)) {
+            // Non-utf8 slice / partial array variable — its storage is the
+            // {len,cap,ptr} header, so route the address through the same
+            // runtime-length printer that struct fields use.
+            addr := ""
+            if id, idok := arg_expr.(^Expr_Ident); idok {
+                if sv, sok := get_slice(g, id.name); sok {
+                    addr = sv.alloca
+                } else if av, aok := get_array(g, id.name); aok {
+                    addr = av.alloca
+                }
+            }
+            if addr != "" {
+                emit_print_at_addr(g, addr, expr_type(arg_expr))
+            } else {
+                codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
+            }
         } else if is_plain_struct_expr(g, arg_expr) {
             // Non-array-class struct — print fields
             if ident, id_ok := arg_expr.(^Expr_Ident); id_ok {
@@ -2527,14 +2544,20 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
         if _, u := distinct_base(t.elem).(Type_Utf8); u {
             h := Array_Handle{header_ptr = addr, elem_type = "i8", is_utf8 = true}
             emit_array_print(g, &h)
-            return
+        } else {
+            h := Array_Handle{header_ptr = addr, elem_type = llvm_type_from_checker(t.elem)}
+            gen_print_array_handle(g, &h, t.elem)
         }
+        return
     case ^Type_Partial_Array:
         if _, u := distinct_base(t.elem).(Type_Utf8); u {
             h := Array_Handle{header_ptr = addr, elem_type = "i8", is_utf8 = true}
             emit_array_print(g, &h)
-            return
+        } else {
+            h := Array_Handle{header_ptr = addr, elem_type = llvm_type_from_checker(t.elem)}
+            gen_print_array_handle(g, &h, t.elem)
         }
+        return
     }
 
     // Non-utf8 fixed array → recurse per element (flat or nested rows).
@@ -2836,6 +2859,73 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     close_ptr := fresh_tmp(g)
     emit_string_gep(g, close_ptr, close_len, close_name)
     emit_printf_void(g, close_ptr)
+}
+
+// True for a non-utf8 slice or partial array — the shapes that print as
+// [e0, e1, ...] bounded by runtime length (utf8 ones print as text instead).
+is_pa_or_slice_nonutf8 :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Slice:
+        _, u := distinct_base(v.elem).(Type_Utf8)
+        return !u
+    case ^Type_Partial_Array:
+        _, u := distinct_base(v.elem).(Type_Utf8)
+        return !u
+    }
+    return false
+}
+
+// Print a slice / partial array as [e0, e1, ...] bounded by its RUNTIME length.
+// Works off an Array_Handle (header carries len + data ptr); each element
+// recurses through emit_print_at_addr so element structs / nested arrays render
+// too. Fixed arrays use the compile-time gen_print_array_inline instead.
+gen_print_array_handle :: proc(g: ^Codegen, h: ^Array_Handle, elem_ty: Type) {
+    emit_printf_void(g, emit_fmt_ptr(g, "["))
+    data := emit_array_data(g, h)
+    n := emit_array_len(g, h)
+    w := slice_layout.len_ir
+    elem_ir := llvm_type_from_checker(elem_ty)
+
+    idx_ptr := fresh_tmp(g)
+    emit_alloca(g, idx_ptr, w)
+    emit_store(g, w, "0", idx_ptr)
+    cond_l := fresh_label(g, "pah.cond")
+    body_l := fresh_label(g, "pah.body")
+    end_l  := fresh_label(g, "pah.end")
+    emit_br(g, cond_l)
+
+    emit_label(g, cond_l)
+    i := fresh_tmp(g)
+    emit_load_into(g, i, w, idx_ptr)
+    cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %s", cmp, w, i, n)
+    emit_cond_br(g, cmp, body_l, end_l)
+
+    emit_label(g, body_l)
+    i2 := fresh_tmp(g)
+    emit_load_into(g, i2, w, idx_ptr)
+    sep_l   := fresh_label(g, "pah.sep")
+    nosep_l := fresh_label(g, "pah.nosep")
+    after_l := fresh_label(g, "pah.after")
+    is_first := fresh_tmp(g)
+    emit(g, "  %s = icmp eq %s %s, 0", is_first, w, i2)
+    emit_cond_br(g, is_first, nosep_l, sep_l)
+    emit_label(g, sep_l)
+    emit_printf_void(g, emit_fmt_ptr(g, ", "))
+    emit_br(g, after_l)
+    emit_label(g, nosep_l)
+    emit_br(g, after_l)
+    emit_label(g, after_l)
+    elem_gep := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_gep, elem_ir, data, w, i2)
+    emit_print_at_addr(g, elem_gep, elem_ty)
+    nxt := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, 1", nxt, w, i2)
+    emit_store(g, w, nxt, idx_ptr)
+    emit_br(g, cond_l)
+
+    emit_label(g, end_l)
+    emit_printf_void(g, emit_fmt_ptr(g, "]"))
 }
 
 // ---------------------------------------------------------------------------
