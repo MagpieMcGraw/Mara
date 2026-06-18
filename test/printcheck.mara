@@ -1,16 +1,18 @@
 module printcheck
 
 Inner :: struct {
-	x : i64 = 1
-	y : u8  = 200
+	x : i64     = 1
+	y : u8      = 200
+	s : [4]utf8 = "abcd"
 }
 
 Probe :: struct {
-	i      : i64  = -7
-	u      : u32  = 4000000000
-	c      : utf8 = 'A'
-	f      : f32  = 2.5
-	b      : bool = true
+	i      : i64       = -7
+	u      : u32       = 4000000000
+	c      : utf8      = 'A'
+	f      : f32       = 2.5
+	b      : bool      = true
+	label  : [..16]utf8 = "hello"
 	nested : Inner
 }
 

@@ -2510,7 +2510,35 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
         }
         return
     }
-    if fa, ok := distinct_base(ty).(^Type_Fixed_Array); ok {
+    bt := distinct_base(ty)
+
+    // A utf8 array (fixed / slice / partial) is a string — print it as bounded
+    // text (%.*s) like a bare print(string), not element-by-element. Fixed
+    // storage anchors the handle at the data; slice/PA anchor at the {len,cap,ptr}
+    // header sitting at this address (same shapes resolve_array_handle builds).
+    #partial switch t in bt {
+    case ^Type_Fixed_Array:
+        if _, u := distinct_base(t.elem).(Type_Utf8); u {
+            h := Array_Handle{fixed_alloca = addr, elem_type = "i8", static_cap = t.size, is_utf8 = true}
+            emit_array_print(g, &h)
+            return
+        }
+    case ^Type_Slice:
+        if _, u := distinct_base(t.elem).(Type_Utf8); u {
+            h := Array_Handle{header_ptr = addr, elem_type = "i8", is_utf8 = true}
+            emit_array_print(g, &h)
+            return
+        }
+    case ^Type_Partial_Array:
+        if _, u := distinct_base(t.elem).(Type_Utf8); u {
+            h := Array_Handle{header_ptr = addr, elem_type = "i8", is_utf8 = true}
+            emit_array_print(g, &h)
+            return
+        }
+    }
+
+    // Non-utf8 fixed array → recurse per element (flat or nested rows).
+    if fa, ok := bt.(^Type_Fixed_Array); ok {
         elem_ir := llvm_type_from_checker(fa.elem)
         if _, nested := distinct_base(fa.elem).(^Type_Fixed_Array); nested {
             gen_print_nested_array(g, addr, fa.size, elem_ir, fa.elem)
@@ -2519,6 +2547,8 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
         }
         return
     }
+
+    // Scalar — load at its IR width and route through the value printer.
     val := fresh_tmp(g)
     emit_load_into(g, val, llvm_type_from_checker(ty), addr)
     emit_print_value(g, val, ty)
