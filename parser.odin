@@ -3485,9 +3485,16 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
     if current_kind(p) == .Identifier {
         tok := advance(p)
         if current_kind(p) == .Dot && peek_kind(p) == .Identifier {
-            advance(p) // consume '.'
-            type_tok := advance(p)
-            return Type_Name{name = strings.concatenate({tok.text, ".", type_tok.text}), span = token_span(p,tok)}
+            // Qualified / nested type name of any depth: pkg.Type,
+            // Parent.Inner, Parent.Inner.Innermost, ... Accumulate every
+            // dotted segment so deeply-nested types resolve in one Type_Name.
+            name := tok.text
+            for current_kind(p) == .Dot && peek_kind(p) == .Identifier {
+                advance(p) // consume '.'
+                qual := advance(p)
+                name = strings.concatenate({name, ".", qual.text})
+            }
+            return Type_Name{name = name, span = token_span(p,tok)}
         }
         // Parameterized type: Array(int), Array(int, 256), Map(string, int), String(n)
         if current_kind(p) == .Left_Paren {

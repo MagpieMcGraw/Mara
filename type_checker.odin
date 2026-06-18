@@ -2137,13 +2137,37 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
                 parent_sd = &pss.sd
             } else if psf, psf_ok := c.table.funs[alias_flat]; psf_ok {
                 parent_sd = &psf.sd
+            } else if env != nil {
+                // Function-local / nested parent: resolve_type_name's flat key
+                // only covers module-level types, so the table lookups above
+                // miss a parent defined inside a fun body. Find it directly in
+                // the lexical env, where local nested types live.
+                if alias_t, alias_ok := type_env_get(env, alias); alias_ok {
+                    parent_sd = as_scope_body(alias_t)
+                }
             }
             if parent_sd != nil {
-                if inner_t, at_ok := parent_sd.types[type_name_str]; at_ok {
+                // type_name_str may itself be dotted for deeply-nested types
+                // (Parent.Inner.Innermost): index_byte above split off only the
+                // first segment as `alias`. Walk each intermediate segment
+                // through the nested `types` map, then resolve the final one.
+                cur_sd := parent_sd
+                rest := type_name_str
+                for {
+                    next_dot := strings.index_byte(rest, '.')
+                    if next_dot < 0 { break }
+                    seg_t, seg_ok := cur_sd.types[rest[:next_dot]]
+                    if !seg_ok { break }
+                    next_sd := as_scope_body(seg_t)
+                    if next_sd == nil { break }
+                    cur_sd = next_sd
+                    rest = rest[next_dot+1:]
+                }
+                if inner_t, at_ok := cur_sd.types[rest]; at_ok {
                     return inner_t
                 }
                 // Check for associated function: StructName.fn_name -> Type_Func
-                if fn, fn_ok := parent_sd.functions[type_name_str]; fn_ok && fn != nil {
+                if fn, fn_ok := cur_sd.functions[rest]; fn_ok && fn != nil {
                     return fn
                 }
             }
@@ -6102,10 +6126,12 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 c.table.structs[mangled] = def_st
                 if st.types == nil { st.types = make(map[string]Type) }
                 st.types[bare_name] = def_st
-                // Nested `::` defs are compile-time names, not runtime data.
-                // resolve_struct_field falls through to st.types for field-style
-                // lookup, so `Parent.Inner` still works without an entry here.
-                if len(s.body) > 0 {
+                // Recurse so this struct's OWN nested `::` defs (deeper types,
+                // consts, methods) register into def_st.types — needed for
+                // `Parent.Inner.Innermost` type-position resolution. Gate on
+                // s.defs, not s.body: a pure-namespace struct (only nested
+                // types) has an empty runtime body but non-empty defs.
+                if len(s.defs) > 0 {
                     register_scope_defs(c, def_st, &def_st.sd, s.defs, &scope_env)
                 }
                 // Register mangled name in the root (persistent) env, bare name in scope env
@@ -6133,8 +6159,10 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                     c.table.funs[mangled] = def_ft
                     if st.types == nil { st.types = make(map[string]Type) }
                     st.types[bare_name] = def_ft
-                    // Nested `::` defs don't claim runtime storage in the parent.
-                    if len(s.body) > 0 {
+                    // Recurse to register this struct's nested `::` defs. Gate on
+                    // s.defs (what we register), not s.body: a struct can hold
+                    // nested types without any runtime body of its own.
+                    if len(s.defs) > 0 {
                         register_scope_defs(c, def_ft, &def_ft.sd, s.defs, &scope_env)
                     }
                 } else {
@@ -8127,7 +8155,9 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         // Funs aren't registered at module-registration time (structs are), so
         // collect this fun's nested ::defs now, before exposing them. The
         // ft.types guard keeps a re-entry from re-mangling the nested names.
-        if ft.types == nil && len(s.body) > 0 {
+        // Gate on s.defs (what gets registered), not s.body — a fun that's a
+        // pure type namespace has nested defs but no runtime body.
+        if ft.types == nil && len(s.defs) > 0 {
             register_scope_defs(c, ft, &ft.sd, s.defs, defs_parent)
         }
         ns_env = type_env_child(defs_parent)
@@ -8155,7 +8185,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // Non-method funs already did this on their ns_env above; a struct's nested
     // defs land at module registration. ft.types guards re-mangling on re-entry.
     if is_method {
-        if ft.types == nil && len(s.body) > 0 {
+        if ft.types == nil && len(s.defs) > 0 {
             register_scope_defs(c, ft, &ft.sd, s.defs, parent_env)
         }
         if ft.types != nil {
@@ -8296,7 +8326,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // "unknown function" fatal at the call site. Funs legitimately have no fields,
     // so gate on kind. ft.fields is fully resolved above — parameterized structs
     // keep their fields in the body and were already extracted into ft.fields.
-    if ft.kind == .Struct && len(ft.fields) == 0 && !ft.no_fields_reported {
+    // Exception: a struct that carries nested `::` definitions (types, consts,
+    // methods) but no fields is a pure namespace — e.g. `Nested.Inner.Innermost`
+    // path components. It's never constructed as a value, so the codegen hazard
+    // above doesn't apply; allow it.
+    if ft.kind == .Struct && len(ft.fields) == 0 && len(s.defs) == 0 && !ft.no_fields_reported {
         ft.no_fields_reported = true
         check_error(c, s.span, TYPE_STRUCT_NO_FIELDS, s.name)
     }
@@ -8334,7 +8368,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // Pre-pass bails here — signature resolved, body deferred to main pass.
     if signature_only { return }
 
-    if len(s.body) == 0 { return }
+    // Nothing to descend into only when BOTH are empty. A pure-namespace struct
+    // (only nested `::` defs, no runtime body) still needs check_scope below so
+    // its nested types get a full body check — without it their field defaults
+    // never desugar and construction zero-inits them.
+    if len(s.body) == 0 && len(s.defs) == 0 { return }
 
     // Footgun check (struct only): warn when a field initializer hands
     // #self to anything that could read partially-constructed state
@@ -12728,6 +12766,58 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
 // keys functions by bare name through the includes pointer chain, not by
 // flat key), and an error flag if the qualifier named a module that
 // doesn't contain the requested function.
+// Flatten a pure name path to a dotted string: an Ident ("Outer") or a
+// Field_Access chain of names ("Outer.Inner.Deep"). Returns "" the moment a
+// segment isn't a plain name (a call/index in the chain) — those are value
+// expressions, not type paths.
+flatten_name_path :: proc(e: Expr) -> string {
+    #partial switch v in e {
+    case ^Expr_Ident:
+        return v.name
+    case ^Expr_Field_Access:
+        base := flatten_name_path(v.expr)
+        if base == "" { return "" }
+        return strings.concatenate({base, ".", v.field})
+    }
+    return ""
+}
+
+// Resolve a nested-type-path qualifier (`Outer.Inner`, parsed as a Field_Access
+// chain) to the named type's scope body by walking the nested `types` maps.
+// Pure name paths only; returns nil for value paths / unknown names so the
+// caller falls through to value-qualified resolution. Never emits diagnostics —
+// it's a speculative lookup.
+resolve_type_path_scope :: proc(c: ^Checker, qualifier: Expr, env: ^Type_Env) -> ^Scope_Body {
+    path := flatten_name_path(qualifier)
+    if path == "" { return nil }
+    segs := strings.split(path, ".")
+    defer delete(segs)
+    if len(segs) == 0 { return nil }
+    // Root segment: a type in the lexical env, else a module-level type.
+    cur_sd: ^Scope_Body
+    if root_t, ok := type_env_get(env, segs[0]); ok {
+        cur_sd = as_scope_body(root_t)
+    }
+    if cur_sd == nil {
+        flat := resolve_type_name(c, segs[0], "", env)
+        if ss, sok := c.table.structs[flat]; sok {
+            cur_sd = &ss.sd
+        } else if sf, fok := c.table.funs[flat]; fok {
+            cur_sd = &sf.sd
+        }
+    }
+    if cur_sd == nil { return nil }
+    // Walk the remaining segments through nested types.
+    for i in 1..<len(segs) {
+        t, found := cur_sd.types[segs[i]]
+        if !found { return nil }
+        next := as_scope_body(t)
+        if next == nil { return nil }
+        cur_sd = next
+    }
+    return cur_sd
+}
+
 resolve_qualified_call :: proc(
     c: ^Checker, e: ^Expr_Call, env: ^Type_Env, check_args: ^[dynamic]Expr,
 ) -> (resolution: Maybe(Resolved_Func), fn_type: ^Type_Scope, qual_dispatch_fns: [dynamic]string, error: bool) {
@@ -12828,6 +12918,35 @@ resolve_qualified_call :: proc(
             }
             if assoc_sd != nil {
                 if fn, found := assoc_sd.functions[e.name]; found && fn != nil {
+                    fn_type = fn
+                    resolution = Resolved_Func{name = fn.name}
+                    e.name = fn.name
+                    e.qualifier = nil
+                    for a in e.args { append(check_args, a) }
+                    resolved_assoc = true
+                }
+            }
+        }
+    }
+    // Nested-type-path qualifier: `Outer.Inner.Ctor(args)` parses with the
+    // qualifier as a Field_Access chain (Outer.Inner), which the bare-ident
+    // branch above can't see. Resolve the chain to its type scope and look up
+    // e.name as a nested type (construction) or associated function — the same
+    // resolution the ident branch does, one or more levels deeper. Runs before
+    // the value-qualified path below so a real type path isn't mis-checked as a
+    // field access; a value path resolves to nil here and falls through.
+    if !resolved_assoc {
+        if _, is_fa := e.qualifier.(^Expr_Field_Access); is_fa {
+            if qual_sd := resolve_type_path_scope(c, e.qualifier, env); qual_sd != nil {
+                if t, found := qual_sd.types[e.name]; found {
+                    flat := type_flat_name(t)
+                    resolution = Resolved_Func{name = flat}
+                    if ts, ts_ok := t.(^Type_Scope); ts_ok { fn_type = ts }
+                    e.name = flat
+                    e.qualifier = nil
+                    for a in e.args { append(check_args, a) }
+                    resolved_assoc = true
+                } else if fn, found := qual_sd.functions[e.name]; found && fn != nil {
                     fn_type = fn
                     resolution = Resolved_Func{name = fn.name}
                     e.name = fn.name

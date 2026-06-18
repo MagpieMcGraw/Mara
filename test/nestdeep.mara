@@ -1,0 +1,44 @@
+module nestdeep
+
+// Regression: deeply-nested type namespaces.
+//  - multi-level dotted type names (A.B.C) parse + resolve in type position,
+//    including when the parent chain is function-local (registered late).
+//  - a struct that is a pure namespace (only nested `::` defs, no fields) is
+//    allowed, and its nested types still get a full body check so their field
+//    defaults apply.
+//  - both the bare-declaration form (`x : A.B.C`) and the construction-call
+//    form (`x := A.B.C()`) reach the innermost type and apply its defaults.
+
+use mara.core
+
+main :: fun() {
+	data()
+}
+
+data :: fun() {
+	// one-level namespace
+	One :: struct{
+		Deep :: struct{
+			v := 7
+		}
+	}
+	a : One.Deep          // decl form
+	assert(a.v == 7)
+	a2 := One.Deep()      // construction-call form
+	assert(a2.v == 7)
+
+	// two-level namespace, deeper
+	Nested :: struct{
+		Inner :: struct{
+			Innermost :: struct{
+				the_variable := 64
+			}
+		}
+	}
+	nested : Nested.Inner.Innermost
+	assert(nested.the_variable == 64)
+	made := Nested.Inner.Innermost()
+	assert(made.the_variable == 64)
+
+	print("nested-type regression ok")
+}
