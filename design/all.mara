@@ -196,4 +196,18 @@ data :: fun() {
 	}
 	nested : Nested.Inner.Innermost
 	print("Let's see:", nested)
+
+	Mara_Style :: struct {
+		your_data : Inner
+
+		Inner :: struct {
+			made_real : Innermost
+			
+			Innermost :: struct {
+				number := 65
+			}
+		}
+	}
+	data_layout : Mara_Style
+	print("Just sixty five:", data_layout)
 }
