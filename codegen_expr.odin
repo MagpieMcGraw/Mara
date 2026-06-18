@@ -2475,12 +2475,11 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
             case ft == "i1":
                 gen_print_bool(g, val)
             case:
-                ext := fresh_tmp(g)
-                emit(g, "  %s = sext %s %s to i64", ext, ft, val)
+                arg := coerce_int_to_ir(g, val, ft, "i64")
                 fmt_name, fmt_len := get_string_literal(g, "%lld")
                 fmt_ptr := fresh_tmp(g)
                 emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_i64(g, fmt_ptr, ext)
+                emit_printf_i64(g, fmt_ptr, arg)
             }
         }
     }
@@ -2615,12 +2614,11 @@ gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_typ
         case elem_type == "i1":
             gen_print_bool(g, val)
         case:
-            ext := fresh_tmp(g)
-            emit(g, "  %s = sext %s %s to i64", ext, elem_type, val)
+            arg := coerce_int_to_ir(g, val, elem_type, "i64")
             fmt_name, fmt_len := get_string_literal(g, "%lld")
             fmt_ptr := fresh_tmp(g)
             emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_i64(g, fmt_ptr, ext)
+            emit_printf_i64(g, fmt_ptr, arg)
         }
     }
 

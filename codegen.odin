@@ -592,12 +592,13 @@ emit_printf_value :: proc(g: ^Codegen, val: string, ir_type: string) {
         emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
         emit_printf_ptr(g, fmt_ptr, val)
     case:
-        ext := fresh_tmp(g)
-        emit(g, "  %s = sext %s %s to i64", ext, ir_type, val)
+        // Widen to the i64 %lld slot. coerce_int_to_ir is a no-op when the value
+        // is already i64 (an explicit `sext i64 to i64` is invalid LLVM).
+        arg := coerce_int_to_ir(g, val, ir_type, "i64")
         fmt_name, fmt_len := get_string_literal(g, "%lld")
         fmt_ptr := fresh_tmp(g)
         emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        emit_printf_i64(g, fmt_ptr, ext)
+        emit_printf_i64(g, fmt_ptr, arg)
     }
 }
 
