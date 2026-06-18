@@ -12,6 +12,7 @@ main :: fun() {
 	operators()
 	control_flow()
 	functions()
+	data()
 }
 
 
@@ -145,12 +146,11 @@ control_flow :: fun() {
 functions :: fun() {
 	print("Functions")
 
-	local_add :: fun(count: u32, number: i32)
-	-> named_return : i64
+	local_add :: fun(count: u32, number: i32) -> named : i64
 	{
 		result := count + number
-		named_return = result // already declared
-		return named_return // return statement required
+		named = result // already declared
+		return named // return statement required
 	}
 
 	multi_return :: fun() -> i64, i64 {
@@ -161,9 +161,39 @@ functions :: fun() {
 	a, b := multi_return()
 	print("Uhh... 3 and 9:", a, "and", b)
 
-	default :: fun(five := 5) -> seven : u32 {
+	default :: fun(five := 5) -> u32 {
 		result := 2 + five
 		return result
 	}
 	print("Seven and twelve:", default(), "and", default(10))
+}
+
+data :: fun() {
+
+	Basic :: struct{
+		print("\nStructs")
+		minimum_fields : u8 = 1
+	}
+	materialized : Basic
+	print("Should have at least",
+		materialized.minimum_fields, "field")
+
+	With_Args :: struct(cap : i64 = 128) {
+		length : i32 = 0
+		capacity := cap
+		midpoint := cap / 2
+	}
+	first := With_Args()
+	second := With_Args(234)
+	print("A whole struct:", first)
+
+	Nested :: struct{
+		Inner :: struct{
+			Innermost :: struct{
+				the_variable := 64
+			}
+		}
+	}
+	nested : Nested.Inner.Innermost
+	print("Let's see:", nested)
 }
