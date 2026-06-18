@@ -1,0 +1,25 @@
+module disttest
+
+Point :: struct {
+	x : i64 = 1
+	y : i64 = 2
+}
+
+DPoint :: distinct Point
+
+make_dp :: fun() -> DPoint {
+	r : DPoint
+	return r
+}
+
+Holder :: struct {
+	p : DPoint
+}
+
+main :: fun() {
+	dp : DPoint
+	print("distinct var:  ", dp)
+	h : Holder
+	print("distinct field:", h)
+	print("distinct call: ", make_dp())
+}

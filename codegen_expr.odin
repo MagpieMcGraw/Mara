@@ -2228,7 +2228,7 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr, call_span: Span) {
             } else {
                 codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
             }
-        } else if as_struct_body(expr_type(arg_expr)) != nil {
+        } else if as_struct_body(distinct_base(expr_type(arg_expr))) != nil {
             // Any struct-typed argument — variable, field access (obj.field),
             // indexed element (arr[i]), or call result — printed via its address
             // through the shared recursive printer. (is_array_expr ran first, so
@@ -2511,7 +2511,7 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
 // recurse. This is what lets struct fields and array elements render like a bare
 // print at any nesting depth (struct-in-struct, array-of-structs, ...).
 emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
-    if sd := as_struct_body(ty); sd != nil {
+    if sd := as_struct_body(distinct_base(ty)); sd != nil {
         if print_st, ok := lookup_struct(g, sd.name); ok {
             sv := Struct_Var{alloca = addr, struct_name = sd.name}
             gen_print_struct(g, &sv, print_st)
