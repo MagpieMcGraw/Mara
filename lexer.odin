@@ -113,12 +113,10 @@ Token_Kind :: enum {
 }
 
 Token :: struct {
-    kind:     Token_Kind,
-    text:     string,
-    line:     int,
-    col:      int,
-    file:     string,
-    is_float: bool,
+    kind: Token_Kind,
+    text: string, // slice into the source buffer; only escaped string/char literals own a copy
+    line: int,
+    col:  int,
 }
 
 Lexer :: struct {
@@ -249,7 +247,7 @@ lexer_advance :: proc(l: ^Lexer, n: int = 1) {
 }
 
 make_token :: proc(l: ^Lexer, kind: Token_Kind, text: string, tok_line: int, tok_col: int) -> Token {
-    return Token{kind = kind, text = text, line = tok_line, col = tok_col, file = l.file}
+    return Token{kind = kind, text = text, line = tok_line, col = tok_col}
 }
 
 next_token :: proc(l: ^Lexer) -> Token {
@@ -399,9 +397,7 @@ next_token :: proc(l: ^Lexer) -> Token {
             for l.pos < len(l.source) && (is_hex_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
                 lexer_advance(l)
             }
-            tok := make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
-            tok.is_float = false
-            return tok
+            return make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
         }
         // Binary form `0b...` / `0B...` consumes 0/1 digits plus `_` separators
         // (e.g. `0b1010_0000`). Keeps the `0b` prefix so the parser routes to
@@ -412,24 +408,20 @@ next_token :: proc(l: ^Lexer) -> Token {
             for l.pos < len(l.source) && (l.source[l.pos] == '0' || l.source[l.pos] == '1' || l.source[l.pos] == '_') {
                 lexer_advance(l)
             }
-            tok := make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
-            tok.is_float = false
-            return tok
+            return make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
         }
         for l.pos < len(l.source) && (is_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
             lexer_advance(l)
         }
-        has_dot := false
+        // A '.' followed by a digit makes this a float literal. The '.' stays in
+        // the token text, which is how the parser distinguishes int from float.
         if peek(l) == '.' && is_digit(peek(l, 1)) {
-            has_dot = true
             lexer_advance(l)
             for l.pos < len(l.source) && (is_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
                 lexer_advance(l)
             }
         }
-        tok := make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
-        tok.is_float = has_dot
-        return tok
+        return make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
     }
 
     // Identifiers: start with a letter or underscore

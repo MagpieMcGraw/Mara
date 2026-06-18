@@ -271,7 +271,7 @@ parse_target_files :: proc(files: map[string][dynamic]^Source_File) -> (programs
         merged := new(Program)
         module_errors := 0
         for f in ordered {
-            p := parser_init(f.tokens)
+            p := parser_init(f.tokens, f.path)
             parsed := parse_program(p)
             for stmt in parsed^ { append(merged, stmt) }
             module_errors += p.errors

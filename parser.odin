@@ -771,6 +771,7 @@ Program :: [dynamic]Stmt
 
 Parser :: struct {
     tokens: []Token,
+    file:   string, // source file these tokens came from; supplies Span.file (was a per-token field)
     pos:    int,
     errors: int,
     // Accumulates $T generic param bindings found inside type expressions during function param parsing
@@ -783,17 +784,18 @@ Parser :: struct {
 }
 
 // Get a Span from a Token
-token_span :: proc(tok: Token) -> Span {
-    return Span{line = tok.line, col = tok.col, file = tok.file}
+token_span :: proc(p: ^Parser, tok: Token) -> Span {
+    return Span{line = tok.line, col = tok.col, file = p.file}
 }
 
 // Takes a pointer to the lexer's token array so we can chain without copying
 // or re-slicing across the FFI boundary. Returns a heap-allocated Parser so
 // the internal dynamic arrays (dollar_params, return_bindings) stay valid
 // after the call returns.
-parser_init :: proc(tokens: ^[dynamic]Token) -> ^Parser {
+parser_init :: proc(tokens: ^[dynamic]Token, file: string) -> ^Parser {
     p := new(Parser)
     p.tokens = tokens^[:]
+    p.file = file
     p.pos = 0
     return p
 }
@@ -837,7 +839,7 @@ current :: proc(p: ^Parser) -> Token {
     }
     // Past the end — return EOF
     last := p.tokens[len(p.tokens) - 1]
-    return Token{kind = .EOF, line = last.line, col = last.col, file = last.file}
+    return Token{kind = .EOF, line = last.line, col = last.col}
 }
 
 // Peek ahead by offset tokens (0 = current, 1 = next, ...)
@@ -859,7 +861,7 @@ peek_token :: proc(p: ^Parser, offset: int = 1) -> Token {
         return p.tokens[i]
     }
     last := p.tokens[len(p.tokens) - 1]
-    return Token{kind = .EOF, line = last.line, col = last.col, file = last.file}
+    return Token{kind = .EOF, line = last.line, col = last.col}
 }
 
 // Consume the current token and return it
@@ -883,8 +885,8 @@ parse_int_token :: proc(text: string) -> int {
 }
 
 // Format error location prefix from a Token.
-error_prefix :: proc(tok: Token) -> string {
-    return format_location(tok.file, tok.line, tok.col)
+error_prefix :: proc(p: ^Parser, tok: Token) -> string {
+    return format_location(p.file, tok.line, tok.col)
 }
 
 // Emit a parser error: `[file:line:col] Parse error: <msg>` + newline,
@@ -894,7 +896,7 @@ error_prefix :: proc(tok: Token) -> string {
 // at the dozens of parser error sites — wording changes happen in
 // diagnostics.odin, not here.
 parse_error :: proc(p: ^Parser, tok: Token, msg: string, args: ..any) {
-    emit_diagnostic(.Parse_Error, error_prefix(tok), msg, ..args)
+    emit_diagnostic(.Parse_Error, error_prefix(p, tok), msg, ..args)
     p.errors += 1
 }
 
@@ -1072,7 +1074,7 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
 // ---------------------------------------------------------------------------
 
 parse_module :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'module'
     // Module names can start with digits (e.g., "1M"), which the lexer
     // tokenizes as .Number + .Identifier. Concatenate them.
@@ -1190,7 +1192,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
         // Distinguishing bare from explicit `name := use ...` is done by which
         // parser branch was taken: this branch always means bare; .Identifier
         // rejects any Expr_Include reaching it.
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         inc_expr := parse_primary(p)  // parses the keyword + path as Expr_Include
         inc, ok := inc_expr.(^Expr_Include)
         if !ok {
@@ -1310,7 +1312,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
 
     // Expression statement: function calls (including &expr.method(), name(), name.func())
     if current_kind(p) == .Identifier || current_kind(p) == .Ampersand {
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         expr := parse_expr(p)
         return Stmt_Call{expr = expr, span = start}
     }
@@ -1328,7 +1330,7 @@ parse_stmt :: proc(p: ^Parser) -> Stmt {
         parse_error(p, tok, PARSE_UNEXPECTED_TOKEN_STMT, tok.kind, tok.text)
     }
     advance(p)
-    return Stmt_Call{span = token_span(tok)}
+    return Stmt_Call{span = token_span(p,tok)}
 }
 
 // ---------------------------------------------------------------------------
@@ -1582,7 +1584,7 @@ stmt_decl_to_bindings :: proc(decl: ^Stmt_Decl, out_bindings: ^[dynamic]Scope_Bi
 // tail to parse_decl_tail, and converts the result into the Scope_Binding
 // shape that param/return contexts expect.
 parse_typed_decl_group :: proc(p: ^Parser, out_bindings: ^[dynamic]Scope_Binding, out_types: ^[dynamic]Type_Expr, allow_defaults: bool, allow_var: bool) {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     names: [dynamic]string
     append(&names, expect(p, .Identifier).text)
     for current_kind(p) == .Comma {
@@ -1705,11 +1707,11 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         expect(p, .Colon)
         type_tok := expect(p, .Identifier) // "type", "uint", "int", etc.
         if type_tok.text == "type" {
-            append(&generic_params, Generic_Param{name = gname_tok.text, span = token_span(gname_tok)})
+            append(&generic_params, Generic_Param{name = gname_tok.text, span = token_span(p,gname_tok)})
         } else {
             gp := Generic_Param{
                 name = gname_tok.text,
-                span = token_span(gname_tok),
+                span = token_span(p,gname_tok),
                 is_const = true,
                 const_type = type_tok.text,
             }
@@ -1947,11 +1949,11 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
                 expect(p, .Colon)
                 type_tok := expect(p, .Identifier) // "type", "int", "uint", etc.
                 if type_tok.text == "type" {
-                    append(&generic_params, Generic_Param{name = gname_tok.text, span = token_span(gname_tok)})
+                    append(&generic_params, Generic_Param{name = gname_tok.text, span = token_span(p,gname_tok)})
                 } else {
                     gp := Generic_Param{
                         name = gname_tok.text,
-                        span = token_span(gname_tok),
+                        span = token_span(p,gname_tok),
                         is_const = true,
                         const_type = type_tok.text,
                     }
@@ -2113,7 +2115,7 @@ parse_dispatch_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> S
 }
 
 parse_overload :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'overload'
 
     op_tok := advance(p)
@@ -2134,7 +2136,7 @@ parse_overload :: proc(p: ^Parser) -> Stmt {
 
 
 parse_foreign :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'foreign'
 
     // Syntax: foreign static_lib "name" [prefix Foo_] { ... }
@@ -2173,7 +2175,7 @@ parse_foreign :: proc(p: ^Parser) -> Stmt {
         // helpers with parse_scope_def means multi-line param lists work
         // (newlines after `(` and between params are tolerated) and any future
         // signature improvements automatically apply here too.
-        fun_start := token_span(current(p))
+        fun_start := token_span(p,current(p))
         expect(p, .Fun)
         name_tok := expect(p, .Identifier)
         expect(p, .Left_Paren)
@@ -2205,7 +2207,7 @@ parse_foreign :: proc(p: ^Parser) -> Stmt {
 }
 
 parse_return :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'return'
     values: [dynamic]Expr
     // Bare `return` in a void function: no expression follows. Detect by
@@ -2224,13 +2226,13 @@ parse_return :: proc(p: ^Parser) -> Stmt {
 }
 
 parse_break :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p)
     return Stmt_Break{span = start}
 }
 
 parse_continue :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p)
     return Stmt_Continue{span = start}
 }
@@ -2239,7 +2241,7 @@ parse_continue :: proc(p: ^Parser) -> Stmt {
 // (LIFO across defers in the same scope). Single-statement form is same-line;
 // block form may span lines.
 parse_defer :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'defer'
     body: [dynamic]Stmt
 
@@ -2302,12 +2304,12 @@ parse_if_expr :: proc(p: ^Parser) -> Expr {
     e.condition = condition
     e.then_expr = then_expr
     e.else_expr = else_expr
-    e.span = token_span(tok)
+    e.span = token_span(p,tok)
     return e
 }
 
 parse_if :: proc(p: ^Parser, is_comptime := false) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'if'
     p.no_struct_lit = true
     condition := parse_expr(p)
@@ -2357,7 +2359,7 @@ parse_if :: proc(p: ^Parser, is_comptime := false) -> Stmt {
 
 // Helper for elif chains (3+ branches)
 parse_elif_chain :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'elif'
     p.no_struct_lit = true
     condition := parse_expr(p)
@@ -2463,7 +2465,7 @@ parse_match_arm_body :: proc(p: ^Parser) -> [dynamic]Stmt {
 }
 
 parse_match :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'match'
 
     // Strict-default: every match covers all variants of its union subject
@@ -2593,7 +2595,7 @@ parse_loop_body :: proc(p: ^Parser) -> [dynamic]Stmt {
 }
 
 parse_for :: proc(p: ^Parser) -> Stmt {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     advance(p) // consume 'for'
 
     // Try range-for: `for i in 0..<10 { }` or `for i : i32 in 0..10 { }`
@@ -2739,13 +2741,13 @@ make_lhs_assign :: proc(lhs: Expr, value: Expr, start: Span, is_compound: bool =
 // The slice form `a[lo:hi]` is not a bind target — fails out so the caller
 // can restore and reject the statement.
 parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
-    lhs: Expr = new_clone(Expr_Ident{name = first_tok.text, span = token_span(first_tok)})
+    lhs: Expr = new_clone(Expr_Ident{name = first_tok.text, span = token_span(p,first_tok)})
     for {
         #partial switch current_kind(p) {
         case .Dot:
             advance(p) // consume '.'
             field_tok := expect_field_name(p)
-            lhs = new_clone(Expr_Field_Access{expr = lhs, field = field_tok.text, span = token_span(first_tok)})
+            lhs = new_clone(Expr_Field_Access{expr = lhs, field = field_tok.text, span = token_span(p,first_tok)})
         case .Left_Bracket:
             advance(p) // consume '['
             idx := parse_expr(p)
@@ -2753,10 +2755,10 @@ parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
                 return {}, false
             }
             advance(p) // consume ']'
-            lhs = new_clone(Expr_Index{expr = lhs, index = idx, span = token_span(first_tok)})
+            lhs = new_clone(Expr_Index{expr = lhs, index = idx, span = token_span(p,first_tok)})
         case .Caret:
             advance(p) // consume '^'
-            lhs = new_clone(Expr_Unary{op = .Caret, operand = lhs, span = token_span(first_tok)})
+            lhs = new_clone(Expr_Unary{op = .Caret, operand = lhs, span = token_span(p,first_tok)})
         case:
             return lhs, true
         }
@@ -2767,7 +2769,7 @@ parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
 // Returns the statement and true if successful, or nil and false
 // if the identifier doesn't start a recognized statement.
 try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
-    start := token_span(current(p))
+    start := token_span(p,current(p))
     saved_pos := p.pos
 
     name_tok := advance(p) // consume identifier
@@ -3009,15 +3011,15 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         op_tok := advance(p)
         rhs := parse_expr(p)
         bin := new(Expr_Binary)
-        bin.left = new_clone(Expr_Ident{name = name_tok.text, span = token_span(name_tok)})
+        bin.left = new_clone(Expr_Ident{name = name_tok.text, span = token_span(p,name_tok)})
         bin.op = compound_op
         bin.right = rhs
-        bin.span = token_span(op_tok)
+        bin.span = token_span(p,op_tok)
         return new_clone(Stmt_Assign{name = name_tok.text, value = bin, span = start, is_compound = true}), true
 
     // name[...] or name.field or name^ — could be index/field/deref assignment
     case .Left_Bracket, .Dot, .Caret:
-        lhs: Expr = new_clone(Expr_Ident{name = name_tok.text, span = token_span(name_tok)})
+        lhs: Expr = new_clone(Expr_Ident{name = name_tok.text, span = token_span(p,name_tok)})
 
         for current_kind(p) == .Left_Bracket || current_kind(p) == .Dot || current_kind(p) == .Caret {
             if current_kind(p) == .Left_Bracket {
@@ -3141,7 +3143,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             bin.left = lhs
             bin.op = compound_op
             bin.right = rhs
-            bin.span = token_span(op_tok)
+            bin.span = token_span(p,op_tok)
             if stmt, ok := make_lhs_assign(lhs, bin, start, is_compound = true); ok {
                 return stmt, true
             }
@@ -3190,10 +3192,10 @@ parse_generic_arg :: proc(p: ^Parser) -> Type_Expr {
         // Check if it's a simple number (followed by , or )) or part of an expression
         if peek_kind(p) == .Right_Paren || peek_kind(p) == .Comma {
             val_tok := advance(p)
-            return Type_Const_Value{value = parse_int_token(val_tok.text), span = token_span(val_tok)}
+            return Type_Const_Value{value = parse_int_token(val_tok.text), span = token_span(p,val_tok)}
         }
         // Complex expression starting with a number (e.g., 256 * 4)
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         expr := parse_expr(p, 0)
         return Type_Const_Expr{expr = expr, span = start}
     }
@@ -3210,7 +3212,7 @@ parse_generic_arg :: proc(p: ^Parser) -> Type_Expr {
             // Ambiguous: could be generic type or function call like megabytes(50)
             // Save position and try as type expr first; if it works, use it
             // For now, parse as expression (function calls are more likely for const params)
-            start := token_span(current(p))
+            start := token_span(p,current(p))
             expr := parse_expr(p, 0)
             return Type_Const_Expr{expr = expr, span = start}
         }
@@ -3219,10 +3221,10 @@ parse_generic_arg :: proc(p: ^Parser) -> Type_Expr {
         if peek_kind(p) == .Right_Paren || peek_kind(p) == .Comma {
             // Parse as Type_Name — type checker will resolve based on param kind
             tok := advance(p)
-            return Type_Name{name = tok.text, span = token_span(tok)}
+            return Type_Name{name = tok.text, span = token_span(p,tok)}
         }
         // Identifier followed by operator etc. — parse as expression
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         expr := parse_expr(p, 0)
         return Type_Const_Expr{expr = expr, span = start}
     }
@@ -3234,7 +3236,7 @@ parse_generic_arg :: proc(p: ^Parser) -> Type_Expr {
 parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
     // Generic type parameter binding: $T (used inside function param types like ^Pair($T))
     if current_kind(p) == .Dollar {
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         advance(p) // consume '$'
         name_tok := expect(p, .Identifier)
         // Record this as a generic param binding (collected by parse_scope_def)
@@ -3250,7 +3252,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
     // the parser just stamps the flag onto the Type_Name so the resolver can
     // tell `~T` apart from plain `T` for diagnostics and rule enforcement.
     if current_kind(p) == .Tilde {
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         advance(p) // consume '~'
         name_tok := expect(p, .Identifier)
         return Type_Name{name = name_tok.text, span = start, tilde = true}
@@ -3262,7 +3264,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
     // which strips its own outer parens before this point.
     if current_kind(p) == .Left_Paren {
         paren_tok := current(p)
-        start := token_span(paren_tok)
+        start := token_span(p,paren_tok)
         advance(p) // consume '('
         inner := parse_type_expr(p)
         if current_kind(p) == .Comma {
@@ -3282,7 +3284,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
 
     // Pointer type: ^T
     if current_kind(p) == .Caret {
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         advance(p) // consume '^'
         elem := parse_type_expr(p) // recursive: ^int, ^^int, ^[N]int, etc.
         tp := new(Type_Pointer)
@@ -3297,7 +3299,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
     //                          after it. `fn(T)` is void-return; `fn(-> R)`
     //                          is no-param; `fn()` is void-void.
     if current_kind(p) == .Fn {
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         advance(p) // consume 'fn'
 
         if current_kind(p) == .Left_Paren {
@@ -3337,7 +3339,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
 
     // Function type: fun(T, U) -> R
     if current_kind(p) == .Fun && peek_kind(p) == .Left_Paren {
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         advance(p) // consume 'fun'
         advance(p) // consume '('
         params: [dynamic]Type_Expr
@@ -3363,7 +3365,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
 
     // Slice type: []T or Array type: [N]T or [IndexType:N]T
     if current_kind(p) == .Left_Bracket {
-        start := token_span(current(p))
+        start := token_span(p,current(p))
         advance(p) // consume '['
         // Slice type: []T — empty brackets. Since partial arrays share the
         // first 24 bytes of slice layout, []T flows through to either form
@@ -3476,7 +3478,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
     // Named type: int, f64, bool, string
     if is_type_keyword(current_kind(p)) {
         tok := advance(p)
-        return Type_Name{name = tok.text, span = token_span(tok)}
+        return Type_Name{name = tok.text, span = token_span(p,tok)}
     }
 
     // User-defined type name (e.g. Point, Color) or qualified (cam.Camera) or generic (Array(int))
@@ -3485,7 +3487,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         if current_kind(p) == .Dot && peek_kind(p) == .Identifier {
             advance(p) // consume '.'
             type_tok := advance(p)
-            return Type_Name{name = strings.concatenate({tok.text, ".", type_tok.text}), span = token_span(tok)}
+            return Type_Name{name = strings.concatenate({tok.text, ".", type_tok.text}), span = token_span(p,tok)}
         }
         // Parameterized type: Array(int), Array(int, 256), Map(string, int), String(n)
         if current_kind(p) == .Left_Paren {
@@ -3502,16 +3504,16 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
             gi := new(Type_Generic_Instance)
             gi.name = tok.text
             gi.type_args = type_args
-            gi.span = token_span(tok)
+            gi.span = token_span(p,tok)
             return gi
         }
-        return Type_Name{name = tok.text, span = token_span(tok)}
+        return Type_Name{name = tok.text, span = token_span(p,tok)}
     }
 
     tok := current(p)
     parse_error(p, tok, PARSE_EXPECTED_TYPE, tok.kind, tok.text)
     advance(p)
-    return Type_Name{name = "int", span = token_span(tok)}
+    return Type_Name{name = "int", span = token_span(p,tok)}
 }
 
 // ---------------------------------------------------------------------------
@@ -3545,7 +3547,7 @@ parse_expr :: proc(p: ^Parser, min_prec: int = 0) -> Expr {
         is_not_in := current_kind(p) == .Not && peek_kind(p, 1) == .In
         if is_in || is_not_in {
             if 3 < min_prec { break }
-            start := token_span(current(p))
+            start := token_span(p,current(p))
             advance(p) // consume `in` or `not`
             if is_not_in { advance(p) /* consume `in` */ }
             lo := parse_expr(p, 4) // anything tighter than comparison, but `..` isn't a Pratt op
@@ -3631,7 +3633,7 @@ parse_expr :: proc(p: ^Parser, min_prec: int = 0) -> Expr {
         }
         bin.left = left
         bin.right = right
-        bin.span = token_span(op)
+        bin.span = token_span(p,op)
         left = bin
     }
 
@@ -3767,7 +3769,7 @@ parse_struct_literal :: proc(p: ^Parser) -> Expr {
     s.positional = is_positional
     s.is_broadcast = is_broadcast
     s.broadcast_value = broadcast_value
-    s.span = token_span(tok)
+    s.span = token_span(p,tok)
     return s
 }
 
@@ -3798,7 +3800,7 @@ parse_postfix :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
             // Postfix `?` — err propagation. Wraps the LHS in an Expr_Try
             // which the type checker validates and codegen lowers to a
             // check-and-return-early sequence.
-            q_span := token_span(current(p))
+            q_span := token_span(p,current(p))
             advance(p) // consume '?'
             try_node := new(Expr_Try)
             try_node.inner = result
@@ -3806,7 +3808,7 @@ parse_postfix :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
             result = try_node
         } else if current_kind(p) == .Caret {
             // Postfix dereference: expr^
-            caret_span := token_span(current(p))
+            caret_span := token_span(p,current(p))
             advance(p) // consume '^'
             unary := new(Expr_Unary)
             unary.op = .Caret
@@ -3814,7 +3816,7 @@ parse_postfix :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
             unary.span = caret_span
             result = unary
         } else if current_kind(p) == .Left_Bracket {
-            bracket_span := token_span(current(p))
+            bracket_span := token_span(p,current(p))
             advance(p) // consume '['
             saved_nsl := p.no_struct_lit
             p.no_struct_lit = false
@@ -3862,7 +3864,7 @@ parse_postfix :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
             }
         } else {
             // Dot access: expr.field or expr.field(args) (qualified call)
-            dot_span := token_span(current(p))
+            dot_span := token_span(p,current(p))
             advance(p) // consume '.'
             field_tok := expect_field_name(p)
 
@@ -4093,14 +4095,14 @@ report_number_parse_error :: proc(p: ^Parser, tok: Token, err: Number_Parse_Erro
 
 parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
     result: Expr
-    start := token_span(current(p))
+    start := token_span(p,current(p))
 
     #partial switch current_kind(p) {
     case .Number:
         tok := advance(p)
         f_val, i_val, err := parse_number_text(tok.text)
         report_number_parse_error(p, tok, err)
-        result = new_clone(Expr_Number{value = f_val, int_value = i_val, is_float = tok.is_float, span = token_span(tok)})
+        result = new_clone(Expr_Number{value = f_val, int_value = i_val, is_float = strings.index_byte(tok.text, '.') >= 0, span = token_span(p,tok)})
 
     case .Identifier:
         tok := advance(p)
@@ -4111,7 +4113,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             expect(p, .Right_Paren)
             so := new(Expr_Size_Of)
             so.type_expr = type_arg
-            so.span = token_span(tok)
+            so.span = token_span(p,tok)
             result = so
         } else if tok.text == "assert" && current_kind(p) == .Left_Paren {
             // `assert(cond)` — capture the condition's source text now (later
@@ -4149,7 +4151,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
                     a.rhs_text = assert_token_text(p, op_idx + 1, cond_end)
                 }
             }
-            a.span = token_span(tok)
+            a.span = token_span(p,tok)
             result = a
         } else if (tok.text == "let" || tok.text == "slice") && current_kind(p) == .Left_Paren {
             // `let(T, storage)` — carve a value of type T from `storage`.
@@ -4178,7 +4180,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             is_one_arg := kind == "slice" && current_kind(p) != .Left_Bracket
             tk := new(Expr_Take)
             tk.keyword = kind
-            tk.span = token_span(tok)
+            tk.span = token_span(p,tok)
             if is_one_arg {
                 tk.type_expr = nil
                 tk.count_expr = nil
@@ -4206,7 +4208,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             lit := new(Expr_Struct_Literal)
             lit.is_broadcast = true
             lit.broadcast_value = val
-            lit.span = token_span(tok)
+            lit.span = token_span(p,tok)
             result = lit
         } else if current_kind(p) == .Left_Paren {
         // Check if this is a function call: name(args)
@@ -4230,7 +4232,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             call := new(Expr_Call)
             call.name = tok.text
             call.args = args
-            call.span = token_span(tok)
+            call.span = token_span(p,tok)
             // Optional `{...}` field override: Foo() { x: 1 }
             if is_struct_literal(p) {
                 if sl, ok := parse_struct_literal(p).(^Expr_Struct_Literal); ok {
@@ -4246,7 +4248,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             }
             result = lit
         } else {
-            result = new_clone(Expr_Ident{name = tok.text, span = token_span(tok)})
+            result = new_clone(Expr_Ident{name = tok.text, span = token_span(p,tok)})
         }
 
     case .Dot:
@@ -4257,28 +4259,28 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         dot_tok := advance(p) // consume '.'
         if current_kind(p) != .Identifier {
             parse_error(p, current(p), PARSE_EXPECTED_VARIANT_NAME)
-            result = new_clone(Expr_Number{value = 0, span = token_span(dot_tok)})
+            result = new_clone(Expr_Number{value = 0, span = token_span(p,dot_tok)})
         } else {
             name_tok := advance(p)
-            result = new_clone(Expr_Ident{name = name_tok.text, span = token_span(dot_tok), is_dot = true})
+            result = new_clone(Expr_Ident{name = name_tok.text, span = token_span(p,dot_tok), is_dot = true})
         }
 
     case .True:
         tok := advance(p)
-        result = new_clone(Expr_Bool{value = true, span = token_span(tok)})
+        result = new_clone(Expr_Bool{value = true, span = token_span(p,tok)})
 
     case .False:
         tok := advance(p)
-        result = new_clone(Expr_Bool{value = false, span = token_span(tok)})
+        result = new_clone(Expr_Bool{value = false, span = token_span(p,tok)})
 
     case .String:
         tok := advance(p)
-        result = new_clone(Expr_String{value = tok.text, span = token_span(tok)})
+        result = new_clone(Expr_String{value = tok.text, span = token_span(p,tok)})
 
     case .Char:
         tok := advance(p)
         char_val: u8 = len(tok.text) > 0 ? tok.text[0] : 0
-        result = new_clone(Expr_Char{value = char_val, span = token_span(tok)})
+        result = new_clone(Expr_Char{value = char_val, span = token_span(p,tok)})
 
     case .Left_Paren:
         advance(p) // consume '('
@@ -4298,7 +4300,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         // Disambiguate by looking past the matching ']' for an immediate
         // type-token-then-`{` pattern.
         if peek_typed_array_literal(p) {
-            start := token_span(current(p))
+            start := token_span(p,current(p))
             type_expr := parse_type_expr(p)
             sl_lit := parse_struct_literal(p)
             if sl, ok := sl_lit.(^Expr_Struct_Literal); ok {
@@ -4325,7 +4327,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             expect(p, .Right_Bracket)
             arr := new(Expr_Array)
             arr.elements = elements
-            arr.span = token_span(tok)
+            arr.span = token_span(p,tok)
             result = arr
         }
 
@@ -4348,13 +4350,13 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             num_tok := advance(p)
             f_val, i_val, err := parse_number_text(num_tok.text)
             report_number_parse_error(p, num_tok, err)
-            result = new_clone(Expr_Number{value = -f_val, int_value = -i_val, is_float = num_tok.is_float, span = token_span(tok)})
+            result = new_clone(Expr_Number{value = -f_val, int_value = -i_val, is_float = strings.index_byte(num_tok.text, '.') >= 0, span = token_span(p,tok)})
         } else {
             operand := parse_primary(p)
             unary := new(Expr_Unary)
             unary.op = .Minus
             unary.operand = operand
-            unary.span = token_span(tok)
+            unary.span = token_span(p,tok)
             result = unary
         }
 
@@ -4367,7 +4369,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         unary := new(Expr_Unary)
         unary.op = .Minus
         unary.operand = operand
-        unary.span = token_span(tok)
+        unary.span = token_span(p,tok)
         unary.wrapping = true
         result = unary
 
@@ -4377,7 +4379,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         unary := new(Expr_Unary)
         unary.op = .Not
         unary.operand = operand
-        unary.span = token_span(tok)
+        unary.span = token_span(p,tok)
         result = unary
 
     case .Tilde:
@@ -4386,7 +4388,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         unary := new(Expr_Unary)
         unary.op = .Tilde
         unary.operand = operand
-        unary.span = token_span(tok)
+        unary.span = token_span(p,tok)
         result = unary
 
     case .Ampersand:
@@ -4401,14 +4403,14 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             addr_of := new(Expr_Unary)
             addr_of.op = .Ampersand
             addr_of.operand = call.qualifier
-            addr_of.span = token_span(tok)
+            addr_of.span = token_span(p,tok)
             call.qualifier = addr_of
             result = call
         } else {
             unary := new(Expr_Unary)
             unary.op = .Ampersand
             unary.operand = operand
-            unary.span = token_span(tok)
+            unary.span = token_span(p,tok)
             result = unary
         }
 
@@ -4441,12 +4443,12 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             call := new(Expr_Call)
             call.name = tok.text
             call.args = args
-            call.span = token_span(tok)
+            call.span = token_span(p,tok)
             result = call
         } else {
             tn := new(Expr_Type_Name)
             tn.kind = tok.kind
-            tn.span = token_span(tok)
+            tn.span = token_span(p,tok)
             result = tn
         }
 
@@ -4454,7 +4456,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         hash_tok := advance(p) // consume '#'
         if current_kind(p) != .Identifier {
             parse_error(p, hash_tok, PARSE_EXPECTED_HASH_NAME)
-            result = new_clone(Expr_Number{value = 0, span = token_span(hash_tok)})
+            result = new_clone(Expr_Number{value = 0, span = token_span(p,hash_tok)})
         } else {
             name_tok := advance(p)
             // #skip_constructor is value-position only: marks a field as
@@ -4467,9 +4469,9 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
                 // absent generic args. The node survives internally as the
                 // checker's desugar target for `= void`.
                 parse_error(p, hash_tok, PARSE_SKIP_CONSTRUCTOR_REMOVED)
-                result = new_clone(Expr_Skip_Constructor{span = token_span(hash_tok)})
+                result = new_clone(Expr_Skip_Constructor{span = token_span(p,hash_tok)})
             } else if name_tok.text == "self" {
-                result = new_clone(Expr_Self{span = token_span(hash_tok)})
+                result = new_clone(Expr_Self{span = token_span(p,hash_tok)})
             } else if name_tok.text == "big_endian" {
                 // `#big_endian buf[off]` / `#big_endian buf[lo:hi]` — decorator
                 // on a byte-buffer reinterpret read. Parsed as a prefix on a
@@ -4507,13 +4509,13 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
                     intrinsic_kind = .Mac
                 case:
                     parse_error(p, hash_tok, PARSE_UNKNOWN_INTRINSIC, name_tok.text)
-                    result = new_clone(Expr_Number{value = 0, span = token_span(hash_tok)})
+                    result = new_clone(Expr_Number{value = 0, span = token_span(p,hash_tok)})
                     intrinsic_ok = false
                 }
                 if intrinsic_ok {
                     result = new_clone(Expr_Compiler_Intrinsic{
                         kind = intrinsic_kind,
-                        span = token_span(hash_tok),
+                        span = token_span(p,hash_tok),
                     })
                 }
             }
@@ -4550,7 +4552,7 @@ parse_primary :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             seg_tok := expect(p, .Identifier)
             path = strings.concatenate({path, ".", seg_tok.text})
         }
-        result = new_clone(Expr_Include{path = path, is_sealed = is_sealed, is_reexport = is_reexport, span = token_span(tok)})
+        result = new_clone(Expr_Include{path = path, is_sealed = is_sealed, is_reexport = is_reexport, span = token_span(p,tok)})
 
     case:
         tok := current(p)
