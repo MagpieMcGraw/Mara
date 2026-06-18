@@ -2200,16 +2200,23 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr, call_span: Span) {
             // Check if the expression is a non-utf8 array variable
             gen_print_array(g, arg_expr)
         } else if is_pa_or_slice_nonutf8(expr_type(arg_expr)) {
-            // Non-utf8 slice / partial array variable — its storage is the
-            // {len,cap,ptr} header, so route the address through the same
-            // runtime-length printer that struct fields use.
+            // Non-utf8 slice / partial array — its storage is the {len,cap,ptr}
+            // header, so resolve the value's address and route it through the
+            // same runtime-length printer struct fields use. Covers ident
+            // variables, field accesses (obj.field), and indexed elements (arr[i])
+            // alike — any lvalue whose address we can take.
             addr := ""
-            if id, idok := arg_expr.(^Expr_Ident); idok {
-                if sv, sok := get_slice(g, id.name); sok {
+            #partial switch e in arg_expr {
+            case ^Expr_Ident:
+                if sv, sok := get_slice(g, e.name); sok {
                     addr = sv.alloca
-                } else if av, aok := get_array(g, id.name); aok {
+                } else if av, aok := get_array(g, e.name); aok {
                     addr = av.alloca
                 }
+            case ^Expr_Field_Access:
+                addr = gen_field_address(g, e)
+            case ^Expr_Index:
+                addr = gen_index_address(g, e)
             }
             if addr != "" {
                 emit_print_at_addr(g, addr, expr_type(arg_expr))

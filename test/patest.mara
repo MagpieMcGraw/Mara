@@ -17,4 +17,5 @@ main :: fun() {
 	h.xs[0] = 7
 	h.xs[1] = 8
 	print("pa field:", h)
+	print("field direct:", h.xs)
 }
