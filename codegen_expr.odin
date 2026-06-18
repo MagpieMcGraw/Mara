@@ -2217,6 +2217,11 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr, call_span: Span) {
                 addr = gen_field_address(g, e)
             case ^Expr_Index:
                 addr = gen_index_address(g, e)
+            case ^Expr_Call:
+                // A call that returns a PA/slice builds its result into a temp
+                // buffer and hands back that pointer — exactly the header address
+                // we need, so a temporary prints without binding it first.
+                addr = gen_expr(g, arg_expr)
             }
             if addr != "" {
                 emit_print_at_addr(g, addr, expr_type(arg_expr))

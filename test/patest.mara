@@ -4,6 +4,14 @@ Holder :: struct {
 	xs : [..4]i64
 }
 
+make_pa :: fun() -> [..4]i64 {
+	r : [..4]i64
+	r.len = 2
+	r[0] = 99
+	r[1] = 98
+	return r
+}
+
 main :: fun() {
 	xs : [..4]i64
 	xs.len = 3
@@ -18,4 +26,5 @@ main :: fun() {
 	h.xs[1] = 8
 	print("pa field:", h)
 	print("field direct:", h.xs)
+	print("temp call:", make_pa())
 }
