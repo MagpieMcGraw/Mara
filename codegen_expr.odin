@@ -2228,27 +2228,26 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr, call_span: Span) {
             } else {
                 codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
             }
-        } else if is_plain_struct_expr(g, arg_expr) {
-            // Non-array-class struct — print fields
-            if ident, id_ok := arg_expr.(^Expr_Ident); id_ok {
-                if stv, stv_ok := get_struct(g, ident.name); stv_ok {
-                    if print_st, ps_ok := lookup_struct(g, stv.struct_name); ps_ok {
-                        gen_print_struct(g, &stv, print_st)
-                    }
-                }
+        } else if as_struct_body(expr_type(arg_expr)) != nil {
+            // Any struct-typed argument — variable, field access (obj.field),
+            // indexed element (arr[i]), or call result — printed via its address
+            // through the shared recursive printer. (is_array_expr ran first, so
+            // an array-class struct already took the array path.)
+            addr := ""
+            #partial switch e in arg_expr {
+            case ^Expr_Ident:
+                if stv, ok := get_struct(g, e.name); ok { addr = stv.alloca }
+            case ^Expr_Field_Access:
+                addr = gen_field_address(g, e)
+            case ^Expr_Index:
+                addr = gen_index_address(g, e)
+            case ^Expr_Call:
+                addr = gen_expr(g, arg_expr)
             }
-        } else if is_indexed_struct_expr(g, arg_expr) {
-            // Indexed struct element (`arr[i]` where arr's elements are
-            // structs). Without this, the fallback path treats the GEP'd
-            // pointer as i64 and emits a printf type mismatch. Compute the
-            // element address and route through gen_print_struct with a
-            // synthetic Struct_Var anchored at that address.
-            idx_expr := arg_expr.(^Expr_Index)
-            sd := as_struct_body(expr_type(arg_expr))
-            if print_st, ps_ok := lookup_struct(g, sd.name); ps_ok {
-                elem_ptr := gen_index_address(g, idx_expr)
-                stv := Struct_Var{alloca = elem_ptr, struct_name = sd.name}
-                gen_print_struct(g, &stv, print_st)
+            if addr != "" {
+                emit_print_at_addr(g, addr, expr_type(arg_expr))
+            } else {
+                codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
             }
         } else if is_char_expr(g, arg_expr) {
             val := gen_expr(g, arg_expr)
@@ -2423,26 +2422,6 @@ is_array_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     // is `[N]T`.
     t := distinct_base(expr_type(expr))
     if _, ok := t.(^Type_Fixed_Array); ok { return true }
-    return false
-}
-
-// True when the expression is an Expr_Index whose element type is a struct.
-// Used by the print dispatcher to route `arr[i]` (struct elements) through
-// the struct printer instead of the numeric fallback.
-is_indexed_struct_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
-    idx, ok := expr.(^Expr_Index)
-    if !ok { return false }
-    return as_struct_body(expr_type(idx)) != nil
-}
-
-is_plain_struct_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
-    if ident, ok := expr.(^Expr_Ident); ok {
-        if stv, stv_ok := get_struct(g, ident.name); stv_ok {
-            if _, st_ok := lookup_struct(g, stv.struct_name); st_ok {
-                return true
-            }
-        }
-    }
     return false
 }
 
@@ -2776,14 +2755,17 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     if ident, ok := expr.(^Expr_Ident); ok {
         av, _ = get_array(g, ident.name)
     } else {
-        // Field access / index yielding a fixed-size array — drive codegen
-        // to populate the field-array result, then claim it.
+        // Field access / index / call yielding a fixed-size array — materialize
+        // it, then claim the result: a field access fills the field slot, a call
+        // fills the call-result slot.
         gen_expr(g, expr)
-        cf, cf_ok := claim_field_array(g)
-        if !cf_ok {
+        if cf, cf_ok := claim_field_array(g); cf_ok {
+            av = cf
+        } else if cc, cc_ok := claim_call_result(g); cc_ok {
+            av = cc
+        } else {
             codegen_fatal(g, {}, CODE_PRINT_ARRAY_EXPRESSION_DID_RESOLVE)
         }
-        av = cf
     }
     arr_type := array_var_type(&av)
 

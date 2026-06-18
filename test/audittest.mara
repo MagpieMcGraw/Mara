@@ -1,0 +1,38 @@
+module audittest
+
+Inner :: struct {
+	x : i64 = 5
+}
+
+Wrap :: struct {
+	inner : Inner
+	arr   : [3]i64
+}
+
+make_struct :: fun() -> Inner {
+	r : Inner
+	r.x = 42
+	return r
+}
+
+make_array :: fun() -> [3]i64 {
+	r : [3]i64
+	r[0] = 1
+	r[1] = 2
+	r[2] = 3
+	return r
+}
+
+main :: fun() {
+	w : Wrap
+	w.inner.x = 9
+	w.arr[0] = 7
+	w.arr[1] = 8
+	w.arr[2] = 9
+
+	print("struct var:  ", w)
+	print("struct field:", w.inner)
+	print("array field: ", w.arr)
+	print("struct call: ", make_struct())
+	print("array call:  ", make_array())
+}
