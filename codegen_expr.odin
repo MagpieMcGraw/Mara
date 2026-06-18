@@ -2418,6 +2418,86 @@ is_plain_struct_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
 }
 
 // Print a struct as: StructName { field1: val1, field2: val2 }
+// Build a printf format-string pointer for `spec` — folds the get_string_literal
+// + GEP pair that every print site otherwise repeats by hand.
+emit_fmt_ptr :: proc(g: ^Codegen, spec: string) -> string {
+    name, n := get_string_literal(g, spec)
+    p := fresh_tmp(g)
+    emit_string_gep(g, p, n, name)
+    return p
+}
+
+// Print an already-loaded scalar VALUE given its Mara type — the value-level twin
+// of emit_print_arg's scalar dispatch, and the single source of truth for how a
+// scalar renders. Struct fields and array elements route through here so they
+// match a bare `print(x)`: chars as glyphs, sign-aware integers, %g floats.
+// Non-scalars (a nested struct/array field reaching here) hard-error rather than
+// mis-emit — aggregates are handled by their own recursion before this is called.
+emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
+    if ty == nil { codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, "<unknown>") }
+    bt := distinct_base(ty)
+
+    if _, ok := bt.(Type_Bool); ok { gen_print_bool(g, val); return }
+    if _, ok := bt.(Type_Utf8); ok {
+        // utf8 scalar = a character: render the glyph, not the code point.
+        ext := fresh_tmp(g)
+        emit(g, "  %s = zext i8 %s to i32", ext, val)
+        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), emit_fmt_ptr(g, "%c"), ext)
+        return
+    }
+    if et, ok := bt.(^Type_Enum); ok {
+        tag_ir := et.tag_type != "" ? tag_type_to_ir(et.tag_type) : "i64"
+        gen_print_enum(g, val, tag_ir, et)
+        return
+    }
+    if _, ok := bt.(Type_Err); ok {
+        emit(g, "  call void @__mara_print_err(i32 %s)", val)
+        return
+    }
+    if pt, ok := bt.(^Type_Ptr); ok {
+        spec := "%p"
+        if _, b := pt.elem.(Type_Byte); b { spec = "%s" }
+        if _, u := pt.elem.(Type_Utf8); u { spec = "%s" }
+        emit_printf_ptr(g, emit_fmt_ptr(g, spec), val)
+        return
+    }
+    if _, ok := bt.(Type_CString); ok {
+        emit_printf_ptr(g, emit_fmt_ptr(g, "%s"), val)
+        return
+    }
+
+    // Numeric (integers + floats): IR-width driven with sign awareness.
+    is_unsigned := false
+    if n, ok := bt.(Type_Numeric); ok { is_unsigned = n.kind == .Unsigned }
+    if _, ok := bt.(Type_Byte); ok { is_unsigned = true }
+    nt := llvm_type_from_checker(ty)
+    switch nt {
+    case "double":
+        emit_printf_double(g, emit_fmt_ptr(g, "%g"), val)
+    case "float":
+        ext := fresh_tmp(g)
+        emit(g, "  %s = fpext float %s to double", ext, val)
+        emit_printf_double(g, emit_fmt_ptr(g, "%g"), ext)
+    case "half":
+        ext := fresh_tmp(g)
+        emit(g, "  %s = fpext half %s to double", ext, val)
+        emit_printf_double(g, emit_fmt_ptr(g, "%g"), ext)
+    case "i64":
+        emit_printf_i64(g, emit_fmt_ptr(g, is_unsigned ? "%llu" : "%lld"), val)
+    case "i32":
+        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), emit_fmt_ptr(g, is_unsigned ? "%u" : "%d"), val)
+    case "i1":
+        gen_print_bool(g, val)
+    case "i8", "i16":
+        // C varargs promote sub-int integers to int (i32).
+        ext := fresh_tmp(g)
+        emit(g, "  %s = %s %s %s to i32", ext, is_unsigned ? "zext" : "sext", nt, val)
+        emit(g, "  call i32 (ptr, ...) %s(ptr %s, i32 %s)", printf_sym(g), emit_fmt_ptr(g, is_unsigned ? "%u" : "%d"), ext)
+    case:
+        codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ty))
+    }
+}
+
 gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
     st_llvm := struct_llvm_name(struct_key(st))
     // Print "StructName { "
@@ -2446,41 +2526,25 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
         acap := field_array_cap(&f)
         aelem := field_array_elem(&f)
         if acap > 0 {
-            // Array field — print as [v1, v2, ...]
+            // Array field — print as [v1, v2, ...]. The element's Mara type drives
+            // sign-aware / char-aware rendering of each element.
+            elem_mara: Type = nil
+            if fa, ok := distinct_base(f.type_).(^Type_Fixed_Array); ok { elem_mara = fa.elem }
             inner_cap, inner_elem, is_nested := parse_array_ir_type(ft)
             _ = inner_cap; _ = inner_elem
             if is_nested {
                 // Nested array like [4][4]f32 — print rows
-                gen_print_nested_array(g, gep, acap, aelem)
+                gen_print_nested_array(g, gep, acap, aelem, elem_mara)
             } else {
-                gen_print_array_inline(g, gep, acap, aelem)
+                gen_print_array_inline(g, gep, acap, aelem, elem_mara)
             }
         } else {
-            // Scalar field — load and print
+            // Scalar field — load and route through the shared value printer so
+            // it renders identically to a bare print(field): sign-aware ints,
+            // chars as glyphs, %g floats.
             val := fresh_tmp(g)
             emit_load_into(g, val, ft, gep)
-            switch {
-            case ft == "double":
-                fmt_name, fmt_len := get_string_literal(g, "%g")
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_double(g, fmt_ptr, val)
-            case ft == "float":
-                ext := fresh_tmp(g)
-                emit(g, "  %s = fpext float %s to double", ext, val)
-                fmt_name, fmt_len := get_string_literal(g, "%g")
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_double(g, fmt_ptr, ext)
-            case ft == "i1":
-                gen_print_bool(g, val)
-            case:
-                arg := coerce_int_to_ir(g, val, ft, "i64")
-                fmt_name, fmt_len := get_string_literal(g, "%lld")
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_i64(g, fmt_ptr, arg)
-            }
+            emit_print_value(g, val, f.type_)
         }
     }
 
@@ -2580,7 +2644,7 @@ gen_print_enum :: proc(g: ^Codegen, val: string, tag_ir: string, et: ^Type_Enum)
 }
 
 // Print a flat array inline: [v1, v2, v3]
-gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_type: string) {
+gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_type: string, elem_ty: Type) {
     open_name, open_len := get_string_literal(g, "[")
     open_ptr := fresh_tmp(g)
     emit_string_gep(g, open_ptr, open_len, open_name)
@@ -2598,28 +2662,7 @@ gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_typ
         emit_array_gep_const(g, gep, arr_type, data_ptr, i)
         val := fresh_tmp(g)
         emit_load_into(g, val, elem_type, gep)
-        switch {
-        case elem_type == "double":
-            fmt_name, fmt_len := get_string_literal(g, "%g")
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_double(g, fmt_ptr, val)
-        case elem_type == "float":
-            ext := fresh_tmp(g)
-            emit(g, "  %s = fpext float %s to double", ext, val)
-            fmt_name, fmt_len := get_string_literal(g, "%g")
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_double(g, fmt_ptr, ext)
-        case elem_type == "i1":
-            gen_print_bool(g, val)
-        case:
-            arg := coerce_int_to_ir(g, val, elem_type, "i64")
-            fmt_name, fmt_len := get_string_literal(g, "%lld")
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_i64(g, fmt_ptr, arg)
-        }
+        emit_print_value(g, val, elem_ty)
     }
 
     close_name, close_len := get_string_literal(g, "]")
@@ -2629,9 +2672,13 @@ gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_typ
 }
 
 // Print a nested array like [4][4]f32 as: [[v, v, v, v], [v, v, v, v], ...]
-gen_print_nested_array :: proc(g: ^Codegen, data_ptr: string, outer_cap: int, inner_ir_type: string) {
+gen_print_nested_array :: proc(g: ^Codegen, data_ptr: string, outer_cap: int, inner_ir_type: string, row_ty: Type) {
     inner_cap, inner_elem, _ := parse_array_ir_type(inner_ir_type)
     outer_arr_type := fmt.tprintf("[%d x %s]", outer_cap, inner_ir_type)
+    // row_ty is the inner row's Mara type (e.g. [M]T); its element type drives
+    // each scalar's sign-aware / char-aware rendering.
+    inner_elem_ty: Type = nil
+    if fa, ok := distinct_base(row_ty).(^Type_Fixed_Array); ok { inner_elem_ty = fa.elem }
 
     open_name, open_len := get_string_literal(g, "[")
     open_ptr := fresh_tmp(g)
@@ -2647,7 +2694,7 @@ gen_print_nested_array :: proc(g: ^Codegen, data_ptr: string, outer_cap: int, in
         }
         row_gep := fresh_tmp(g)
         emit_array_gep_const(g, row_gep, outer_arr_type, data_ptr, i)
-        gen_print_array_inline(g, row_gep, inner_cap, inner_elem)
+        gen_print_array_inline(g, row_gep, inner_cap, inner_elem, inner_elem_ty)
     }
 
     close_name, close_len := get_string_literal(g, "]")
@@ -2673,34 +2720,16 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     }
     arr_type := array_var_type(&av)
 
+    // The element's Mara type drives sign-aware / char-aware rendering (matches a
+    // bare print of the element). is_array_expr guarantees a fixed-array type.
+    elem_ty: Type = nil
+    if fa, ok := distinct_base(expr_type(expr)).(^Type_Fixed_Array); ok { elem_ty = fa.elem }
+
     // Nested array: delegate to gen_print_nested_array
     if inner_cap, inner_elem, is_nested := parse_array_ir_type(av.elem_type); is_nested {
-        gen_print_nested_array(g, av.alloca, av.capacity, av.elem_type)
+        gen_print_nested_array(g, av.alloca, av.capacity, av.elem_type, elem_ty)
         _ = inner_cap; _ = inner_elem
         return
-    }
-
-    // Determine printf format and LLVM type for elements based on elem_type
-    print_fmt: string
-    print_llvm_type: string
-    switch av.elem_type {
-    case "double":
-        print_fmt = "%f"
-        print_llvm_type = "double"
-    case "float":
-        // f32 must be promoted to double for variadic printf
-        print_fmt = "%f"
-        print_llvm_type = "float"
-    case "ptr":
-        print_fmt = "%s"
-        print_llvm_type = "ptr"
-    case "i1":
-        // Booleans print as true/false via gen_print_bool; print_fmt unused.
-        print_fmt = "%s"
-        print_llvm_type = "i1"
-    case:
-        print_fmt = "%lld"
-        print_llvm_type = "i64"
     }
 
     // Print opening bracket
@@ -2762,24 +2791,9 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     val := fresh_tmp(g)
     emit_load_into(g, val, av.elem_type, gep)
 
-    // For i1 (bool), zero-extend to i64 for printf; for double, use as-is
-    fmt_name, fmt_len := get_string_literal(g, print_fmt)
-    fmt_ptr := fresh_tmp(g)
-    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-    if print_llvm_type == "double" {
-        emit_printf_double(g, fmt_ptr, val)
-    } else if print_llvm_type == "float" {
-        // Promote f32 → double for variadic call
-        promoted := fresh_tmp(g)
-        emit(g, "  %s = fpext float %s to double", promoted, val)
-        emit_printf_double(g, fmt_ptr, promoted)
-    } else if print_llvm_type == "i1" {
-        gen_print_bool(g, val)
-    } else if print_llvm_type == "ptr" {
-        emit_printf_ptr(g, fmt_ptr, val)
-    } else {
-        emit_printf_i64(g, fmt_ptr, val)
-    }
+    // Route the element through the shared value printer — sign-aware, char
+    // glyphs, %g floats — identical to a bare print of the element.
+    emit_print_value(g, val, elem_ty)
 
     // Increment index
     next := fresh_tmp(g)

@@ -563,45 +563,6 @@ emit_struct_copy :: proc(g: ^Codegen, sd: ^Scope_Body, llvm_type: string, src_pt
     }
 }
 
-// Emit a printf call for a scalar value based on its IR type.
-// Handles double, float (promoted), i1 (zext), ptr, and integers (sext to i64).
-emit_printf_value :: proc(g: ^Codegen, val: string, ir_type: string) {
-    switch ir_type {
-    case "double":
-        fmt_name, fmt_len := get_string_literal(g, "%g")
-        fmt_ptr := fresh_tmp(g)
-        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        emit_printf_double(g, fmt_ptr, val)
-    case "float":
-        ext := fresh_tmp(g)
-        emit(g, "  %s = fpext float %s to double", ext, val)
-        fmt_name, fmt_len := get_string_literal(g, "%g")
-        fmt_ptr := fresh_tmp(g)
-        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        emit_printf_double(g, fmt_ptr, ext)
-    case "i1":
-        fmt_name, fmt_len := get_string_literal(g, "%d")
-        fmt_ptr := fresh_tmp(g)
-        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        ext := fresh_tmp(g)
-        emit(g, "  %s = zext i1 %s to i32", ext, val)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
-    case "ptr":
-        fmt_name, fmt_len := get_string_literal(g, "%s")
-        fmt_ptr := fresh_tmp(g)
-        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        emit_printf_ptr(g, fmt_ptr, val)
-    case:
-        // Widen to the i64 %lld slot. coerce_int_to_ir is a no-op when the value
-        // is already i64 (an explicit `sext i64 to i64` is invalid LLVM).
-        arg := coerce_int_to_ir(g, val, ir_type, "i64")
-        fmt_name, fmt_len := get_string_literal(g, "%lld")
-        fmt_ptr := fresh_tmp(g)
-        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        emit_printf_i64(g, fmt_ptr, arg)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Address chain — building and emitting
 // ---------------------------------------------------------------------------
