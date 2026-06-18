@@ -458,7 +458,6 @@ TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES :: "broadcast literal '{all ...}' for 
 TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED :: "broadcast value for field '%s' has type %s, expected %s (element of %s)"
 TYPE_FIELD_TYPE_SKIP_CONSTRUCTOR_REQUIRES :: "field '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)"
 TYPE_USING_FIELD_STRUCT_FIXED_ARRAY :: "using field '%s' must be a struct or fixed-array type"
-TYPE_STRUCT_NO_FIELDS :: "struct '%s' has no fields — a struct must declare at least one field (a fieldless struct has no layout, and a bare statement in the body is not a field)"
 TYPE_FUNCTION_MISSING_RETURN_ALL_CODE :: "function '%s' missing return on all code paths"
 TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE :: "cannot iterate over struct type '%s'"
 TYPE_CANNOT_ITERATE_OVER_TYPE :: "cannot iterate over type '%s'"

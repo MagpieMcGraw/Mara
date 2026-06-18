@@ -159,8 +159,6 @@ Type_Scope :: struct {
     using sd: Scope_Body,
     kind:           Scope_Kind, // .Struct = data layout, .Fun = callable body
     has_parens:     bool,       // true if declared with parens — affects callable detection
-    no_fields_reported: bool,   // one-shot guard: the "struct has no fields" error fires once
-                                // even though check_scope_body re-enters this scope across passes
 
     // Callable params (function parameters / constructor params)
     params:         [dynamic]Struct_Type_Field,
@@ -8320,20 +8318,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     for &f in ft.fields {
         f.type_ = solidify_type(f.type_)
     }
-    // A scope written as `:: struct` must carry data. Rely on the kind, not the
-    // legacy `len(fields) > 0` heuristic: a fieldless struct otherwise slips past
-    // constructor codegen (it reads as a fun with no body) and dies with an opaque
-    // "unknown function" fatal at the call site. Funs legitimately have no fields,
-    // so gate on kind. ft.fields is fully resolved above — parameterized structs
-    // keep their fields in the body and were already extracted into ft.fields.
-    // Exception: a struct that carries nested `::` definitions (types, consts,
-    // methods) but no fields is a pure namespace — e.g. `Nested.Inner.Innermost`
-    // path components. It's never constructed as a value, so the codegen hazard
-    // above doesn't apply; allow it.
-    if ft.kind == .Struct && len(ft.fields) == 0 && len(s.defs) == 0 && !ft.no_fields_reported {
-        ft.no_fields_reported = true
-        check_error(c, s.span, TYPE_STRUCT_NO_FIELDS, s.name)
-    }
+    // A fieldless struct is a legal zero-size type — it can be defined, declared
+    // (`x : Foo`), constructed (`Foo()`), held as a field, and passed around, the
+    // same as Go's `struct{}` or a Rust unit struct. The construction path gives
+    // it a self-return + init function below (see extract_checked_scope), so no
+    // codegen hazard remains; there is deliberately no "must have a field" error.
     if len(ft.params) == 0 && len(s.typed_params) > 0 {
         for tp in s.typed_params {
             pt := resolve_type_expr(tp.type_expr, c, s.span, env=&child)
@@ -9923,9 +9912,10 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
         origin       = origin,
         span         = s.span,
     }
-    // Returns. Data funs with fields produce their own layout via sret when
-    // the fun has no declared return.
-    if len(ft.return_types) == 0 && ft.kind == .Struct && len(ft.fields) > 0 {
+    // Returns. A data struct with no declared return produces its own layout
+    // via sret (Self). Fires for fieldless structs too — they're zero-size but
+    // still constructed through an init function, so they need the sret slot.
+    if len(ft.return_types) == 0 && ft.kind == .Struct {
         append(&cf.return_types, distinct_base(Type(ft)))
     } else if len(ft.return_types) > 0 && ft.kind == .Struct {
         // Fallible constructor: Self is the implicit, in-place sret slot 0,
@@ -13370,11 +13360,11 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     }
 
     // Pure data struct construction: args map directly to fields.
-    // Fires for struct-like scopes (kind=.Struct) with no constructor params but
-    // which have data fields. Codegen can skip the call overhead and write
-    // fields directly to memory. Covers old Type_Struct usages plus classes
-    // declared with empty parens `class Foo() { x: int }`.
-    if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.fields) > 0 && len(fun_type.return_types) == 0 {
+    // Fires for struct-like scopes (kind=.Struct) with no constructor params.
+    // Codegen can skip the call overhead and write fields directly to memory.
+    // Covers old Type_Struct usages plus classes declared with empty parens
+    // `class Foo() { x: int }`, and fieldless structs (`Foo()` → zero-size value).
+    if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.return_types) == 0 {
         return check_pure_struct_construction(c, e, fun_type, env)
     }
 

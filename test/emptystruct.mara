@@ -1,0 +1,41 @@
+module emptystruct
+
+// Fieldless structs are legal zero-size types: define, declare, construct,
+// hold as a field, pass as an arg — all work.
+
+use mara.core
+
+Marker :: struct{
+}
+
+Held :: struct{
+	m : Marker
+	n : i64 = 1
+}
+
+takes :: fun(x : Marker) -> i64 {
+	return 5
+}
+
+makes :: fun() -> Marker {
+	return Marker()
+}
+
+main :: fun() {
+	bare : Marker
+	print("bare decl ok")
+
+	made := Marker()          // construction call — the case that used to crash
+	print("ctor ok")
+
+	h : Held                  // empty struct as a field of another struct
+	assert(h.n == 1)
+
+	r := takes(made)          // empty struct as an arg
+	assert(r == 5)
+
+	ret := makes()            // empty struct returned by value
+	assert(takes(ret) == 5)
+
+	print("empty-struct ok")
+}
