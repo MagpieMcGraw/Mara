@@ -159,6 +159,8 @@ Type_Scope :: struct {
     using sd: Scope_Body,
     kind:           Scope_Kind, // .Struct = data layout, .Fun = callable body
     has_parens:     bool,       // true if declared with parens — affects callable detection
+    no_fields_reported: bool,   // one-shot guard: the "struct has no fields" error fires once
+                                // even though check_scope_body re-enters this scope across passes
 
     // Callable params (function parameters / constructor params)
     params:         [dynamic]Struct_Type_Field,
@@ -8287,6 +8289,16 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // never see a pinnable cell (which would be unsound cross-scope adoption).
     for &f in ft.fields {
         f.type_ = solidify_type(f.type_)
+    }
+    // A scope written as `:: struct` must carry data. Rely on the kind, not the
+    // legacy `len(fields) > 0` heuristic: a fieldless struct otherwise slips past
+    // constructor codegen (it reads as a fun with no body) and dies with an opaque
+    // "unknown function" fatal at the call site. Funs legitimately have no fields,
+    // so gate on kind. ft.fields is fully resolved above — parameterized structs
+    // keep their fields in the body and were already extracted into ft.fields.
+    if ft.kind == .Struct && len(ft.fields) == 0 && !ft.no_fields_reported {
+        ft.no_fields_reported = true
+        check_error(c, s.span, TYPE_STRUCT_NO_FIELDS, s.name)
     }
     if len(ft.params) == 0 && len(s.typed_params) > 0 {
         for tp in s.typed_params {
