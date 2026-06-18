@@ -2498,6 +2498,32 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
     }
 }
 
+// Print whatever lives at `addr` given its Mara type — the recursive core of
+// aggregate printing. Scalars load + emit_print_value; structs and fixed arrays
+// recurse. This is what lets struct fields and array elements render like a bare
+// print at any nesting depth (struct-in-struct, array-of-structs, ...).
+emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
+    if sd := as_struct_body(ty); sd != nil {
+        if print_st, ok := lookup_struct(g, sd.name); ok {
+            sv := Struct_Var{alloca = addr, struct_name = sd.name}
+            gen_print_struct(g, &sv, print_st)
+        }
+        return
+    }
+    if fa, ok := distinct_base(ty).(^Type_Fixed_Array); ok {
+        elem_ir := llvm_type_from_checker(fa.elem)
+        if _, nested := distinct_base(fa.elem).(^Type_Fixed_Array); nested {
+            gen_print_nested_array(g, addr, fa.size, elem_ir, fa.elem)
+        } else {
+            gen_print_array_inline(g, addr, fa.size, elem_ir, fa.elem)
+        }
+        return
+    }
+    val := fresh_tmp(g)
+    emit_load_into(g, val, llvm_type_from_checker(ty), addr)
+    emit_print_value(g, val, ty)
+}
+
 gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
     st_llvm := struct_llvm_name(struct_key(st))
     // Print "StructName { "
@@ -2519,33 +2545,11 @@ gen_print_struct :: proc(g: ^Codegen, stv: ^Struct_Var, st: ^Scope_Body) {
         emit_string_gep(g, label_ptr, label_len, label_name)
         emit_printf_void(g, label_ptr)
 
-        ft := field_ir_type(&f)
         gep := fresh_tmp(g)
         emit_field_gep_into(g, gep, st_llvm, stv.alloca, fi)
-
-        acap := field_array_cap(&f)
-        aelem := field_array_elem(&f)
-        if acap > 0 {
-            // Array field — print as [v1, v2, ...]. The element's Mara type drives
-            // sign-aware / char-aware rendering of each element.
-            elem_mara: Type = nil
-            if fa, ok := distinct_base(f.type_).(^Type_Fixed_Array); ok { elem_mara = fa.elem }
-            inner_cap, inner_elem, is_nested := parse_array_ir_type(ft)
-            _ = inner_cap; _ = inner_elem
-            if is_nested {
-                // Nested array like [4][4]f32 — print rows
-                gen_print_nested_array(g, gep, acap, aelem, elem_mara)
-            } else {
-                gen_print_array_inline(g, gep, acap, aelem, elem_mara)
-            }
-        } else {
-            // Scalar field — load and route through the shared value printer so
-            // it renders identically to a bare print(field): sign-aware ints,
-            // chars as glyphs, %g floats.
-            val := fresh_tmp(g)
-            emit_load_into(g, val, ft, gep)
-            emit_print_value(g, val, f.type_)
-        }
+        // One field, by its Mara type — scalar, nested struct, or array, each
+        // rendered identically to a bare print(field).
+        emit_print_at_addr(g, gep, f.type_)
     }
 
     // Print " }"
@@ -2660,9 +2664,7 @@ gen_print_array_inline :: proc(g: ^Codegen, data_ptr: string, cap: int, elem_typ
         }
         gep := fresh_tmp(g)
         emit_array_gep_const(g, gep, arr_type, data_ptr, i)
-        val := fresh_tmp(g)
-        emit_load_into(g, val, elem_type, gep)
-        emit_print_value(g, val, elem_ty)
+        emit_print_at_addr(g, gep, elem_ty)
     }
 
     close_name, close_len := get_string_literal(g, "]")
@@ -2788,12 +2790,8 @@ gen_print_array :: proc(g: ^Codegen, expr: Expr) {
     emit_load_into(g, idx3, w, idx_ptr)
     gep := fresh_tmp(g)
     emit_array_gep_var(g, gep, arr_type, av.alloca, idx3, w)
-    val := fresh_tmp(g)
-    emit_load_into(g, val, av.elem_type, gep)
-
-    // Route the element through the shared value printer — sign-aware, char
-    // glyphs, %g floats — identical to a bare print of the element.
-    emit_print_value(g, val, elem_ty)
+    // Print the element by its Mara type — handles structs / nested arrays too.
+    emit_print_at_addr(g, gep, elem_ty)
 
     // Increment index
     next := fresh_tmp(g)
