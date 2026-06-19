@@ -609,19 +609,24 @@ Type_Env :: struct {
 }
 
 // Durable scope-member lookup: a scope's nested types + funs live on its
-// Type_Scope (ft.types / ft.functions), reachable from a defs-layer env via its
-// class_scope / fun_scope back-link. Resolution consults these directly — the
-// first step of walking the durable Type_Scope graph instead of the per-check
-// copied env map (which check_scope_body still fills; copy removal is next).
+// Type_Scope (ft.types / ft.functions). From the env's class_scope / fun_scope
+// back-link, walk the durable parent_scope graph UPWARD, so member resolution
+// reads the persistent scope structure directly instead of relying on the
+// env.parent chain to hop defs layers. Crossing a scope boundary upward exposes
+// only members — no closures, so never the enclosing scope's locals — which is
+// exactly what the graph holds (locals + Self/consts + module names/includes
+// stay on the env walk, and are disjoint from ft.types/functions). This is the
+// Stage-1 redirect: defs-layer resolution no longer depends on env.parent.
 scope_member :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     ft := env.class_scope
     if ft == nil { ft = env.fun_scope }
-    if ft == nil { return nil, false }
-    if ft.types != nil {
-        if t, ok := ft.types[name]; ok { return t, true }
-    }
-    if ft.functions != nil {
-        if fn, ok := ft.functions[name]; ok && fn != nil { return fn, true }
+    for s := ft; s != nil; s = s.parent_scope {
+        if s.types != nil {
+            if t, ok := s.types[name]; ok { return t, true }
+        }
+        if s.functions != nil {
+            if fn, ok := s.functions[name]; ok && fn != nil { return fn, true }
+        }
     }
     return nil, false
 }
