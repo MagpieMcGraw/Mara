@@ -42,4 +42,4 @@ Maybe it's time to abandon the typed AST idea? Should a stack of type scope be t
 
 Investigate if Megastruct{} is sugar for Megastruct () {}
 
-Red Flag: parameterized structs. We have regular structs with constructors, and we have generics. Parameterized is not a struct thing.
+🚩 parameterized structs. We have regular structs with constructors, and we have generics. Parameterized is not a struct thing.
