@@ -174,7 +174,7 @@ data :: fun() {
 		print("\nStructs")
 		minimum_fields : u8 = 1
 	}
-	materialized : Basic
+	materialized : Basic // the above print happens here
 	print("Should have at least",
 		materialized.minimum_fields, "field")
 
@@ -209,5 +209,6 @@ data :: fun() {
 		}
 	}
 	data_layout : Mara_Style
-	print("Just sixty five:", data_layout)
+	print("Just sixty five:",
+		data_layout.your_data.made_real.number)
 }
