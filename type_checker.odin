@@ -11846,21 +11846,26 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
     return Type_Error{}
 }
 
-// Demand-driven signature resolution: ensure a struct's fields are resolved
-// before a use site reads them, so resolution no longer depends on a pre-pass
-// having run first. Only top-level structs carry a (persistent) decl_env; nested
-// structs are resolved eagerly within their scope and skip here. The memoization
-// and cycle guard live in check_scope_body, keyed on sig_state.
+// Demand-driven signature resolution: ensure a struct's fields (and, for a
+// parameterized constructor, its ctor params via check_scope_body's .Struct
+// block) are resolved before a use site reads them. Memoization + cycle guard
+// live in check_scope_body, keyed on sig_state.
 ensure_struct_signature :: proc(c: ^Checker, st: ^Scope_Body) {
-    if st == nil || st.sig_state != .Unresolved { return }
-    if st.decl_env != nil && st.ast != nil {
-        check_scope_body(c, st.ast, st.decl_env, signature_only = true)
-        return
+    if st == nil || st.sig_state != .Unresolved || st.ast == nil { return }
+    env := st.decl_env
+    if env == nil {
+        // Nested struct: its decl env was transient. Reconstruct it from the
+        // durable parent_scope graph and resolve THIS struct's body directly.
+        // (Recursing to the parent was wrong when the parent is a FUN — a fun's
+        // signature_only pass never descends into a nested struct's body, so a
+        // parameterized struct nested in a function, `data :: fun() { With_Args
+        // :: struct(cap){...} }`, never resolved its fields OR ctor params and
+        // construction saw it as 0-field. transmute: st IS a Type_Scope's sd in
+        // the nested case — parent_scope is only ever set on a Type_Scope.)
+        env = build_scope_decl_env(transmute(^Type_Scope)st)
     }
-    // Nested struct: transient decl env, so resolve through the parent — its
-    // signature pass recurses down and resolves this one.
-    if st.parent_scope != nil {
-        ensure_struct_signature(c, &st.parent_scope.sd)
+    if env != nil {
+        check_scope_body(c, st.ast, env, signature_only = true)
     }
 }
 

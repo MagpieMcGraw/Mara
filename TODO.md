@@ -39,3 +39,7 @@ Validate top level statements investigation. Do we actually need it?
 Type checking of unions and distinct is fucked up for some reason.
 
 Maybe it's time to abandon the typed AST idea? Should a stack of type scope be the new typed AST?
+
+Investigate if Megastruct{} is sugar for Megastruct () {}
+
+Red Flag: parameterized structs. We have regular structs with constructors, and we have generics. Parameterized is not a struct thing.

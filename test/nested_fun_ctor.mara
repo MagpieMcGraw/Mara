@@ -1,0 +1,22 @@
+module nested_fun_ctor
+
+// Regression guard: a PARAMETERIZED struct nested in a FUNCTION, constructed
+// with args. ensure_struct_signature must resolve it DIRECTLY from the durable
+// parent_scope graph (build_scope_decl_env), not by recursing to the parent —
+// a fun parent's signature_only pass never descends into a nested struct's body,
+// so before the fix `Boxed(234)` saw a 0-field struct and rejected the argument
+// ("has 0 field(s), got 1 argument(s)"). The eager pre-pass that used to mask
+// this was removed in the ctor-params-on-demand change (cef1c03); design/all.mara
+// caught it, but that file isn't in the suite — hence this fixture.
+
+main :: fun() {
+	Boxed :: struct(cap : i64 = 128) {
+		length : i32 = 0
+		capacity := cap
+		midpoint := cap / 2
+	}
+	a := Boxed()        // default cap = 128
+	b := Boxed(234)     // explicit cap = 234
+	print(a.capacity, a.midpoint)   // 128 64
+	print(b.capacity, b.midpoint)   // 234 117
+}
