@@ -1,0 +1,21 @@
+module ctor_param_infer
+
+// Guard: a parameterized struct's ctor params resolve ON DEMAND now (no eager
+// pre-pass in register_scope_defs / 1b — the param pass runs inside
+// check_scope_body right before the field pass). The intricate part the user
+// flagged: an untyped numeric ctor param must STILL settle at the width its
+// field initializers pin it to (the body drives the layout), since a ctor's
+// "body" is its field initializers. `cell` is untyped; `per_row : i32 = ...`
+// uses it at i32, pinning the whole param to i32 (not the i64 fallback).
+Grid :: struct(cell := 16) {
+	per_row : i32 = 64 / cell        // pins `cell` to i32
+	count   : i32 = per_row * per_row
+	origin  := cell                  // adopts cell's settled width (i32)
+}
+
+main :: fun() {
+	g := Grid(8)          // struct type inferred from the constructor call
+	print(g.per_row)      // 64 / 8  = 8
+	print(g.count)        // 8 * 8   = 64
+	print(g.origin)       // 8
+}

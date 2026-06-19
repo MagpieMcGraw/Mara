@@ -35,3 +35,5 @@ Byte reads might need new syntax. Maybe an = to read without auto-len, and a += 
 Figure out syntax for writing to bytes. Should number literals be writable? How about arrays? What should the casting syntax be for that, especially for arrays?
 
 Validate top level statements investigation. Do we actually need it?
+
+Type checking of unions and distinct is fucked up for some reason.

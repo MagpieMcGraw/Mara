@@ -6260,23 +6260,13 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                     def_ft.kind = .Fun
                 }
                 is_callable := !def_is_struct || len(s.typed_params) > 0
-                // Parameterized STRUCTS resolve their ctor-param signature eagerly
-                // here (read at construction sites, not pulled on demand yet).
-                // FUNS resolve their signature ON DEMAND — ensure_fun_signature ->
-                // resolve_fun_signature -> build_scope_decl_env rebuilds the decl
-                // env from the durable parent_scope graph — so they skip eager.
-                if def_is_struct && len(s.typed_params) > 0 {
-                    for tp in s.typed_params {
-                        pt := resolve_param_type(c, tp, &scope_env, s.span)
-                        append(&def_ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
-                    }
-                    build_param_map(def_ft)
-                }
-                if def_is_struct && len(s.return_types) > 0 {
-                    for rte in s.return_types {
-                        append(&def_ft.return_types, resolve_type_expr(rte, c, s.span, env=&scope_env))
-                    }
-                }
+                // Funs AND parameterized-struct constructors both resolve their
+                // signature (params + returns) ON DEMAND now — funs via
+                // ensure_fun_signature, ctors via ensure_struct_signature ->
+                // check_scope_body — so neither resolves eagerly here. (A ctor's
+                // field initializers reference its params, so the param pass runs
+                // inside check_scope_body right before the field pass; see the
+                // `ft.kind == .Struct` block there.)
                 // Register mangled name in the root (persistent) env, bare name in scope env
                 type_env_set(root_env, mangled, def_ft)
                 type_env_set(&scope_env, bare_name, def_ft)
@@ -6957,20 +6947,19 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         if is_struct {
                             register_scope_defs(c, fun_type, &fun_type.sd, s.defs, env)
                         }
-                        // Idempotent: register_type_names resolves these
-                        // eagerly for nested-scope funs (so forward refs from
-                        // sibling Stmt_Decls find a fully-typed signature).
-                        // Skip re-resolution if params/return_types are
-                        // already populated.
-                        if len(s.typed_params) > 0 && len(fun_type.params) == 0 {
+                        // FUN signatures: resolve params/returns for a pre-registered
+                        // top-level fun (idempotent — skips if a demand pull already
+                        // populated them). STRUCT ctors skip here: their params +
+                        // returns resolve ON DEMAND in check_scope_body, right before
+                        // the field pass, since field initializers reference the params.
+                        if !is_struct && len(s.typed_params) > 0 && len(fun_type.params) == 0 {
                             for tp in s.typed_params {
                                 pt := resolve_param_type(c, tp, env, s.span)
                                 append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                             }
                             build_param_map(fun_type)
                         }
-                        is_callable := !is_struct || len(s.typed_params) > 0
-                        if is_callable && len(s.return_types) > 0 && len(fun_type.return_types) == 0 {
+                        if !is_struct && len(s.return_types) > 0 && len(fun_type.return_types) == 0 {
                             for rte in s.return_types {
                                 rt := resolve_type_expr(rte, c, s.span, env = env)
                                 append(&fun_type.return_types, rt)
@@ -8198,6 +8187,26 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // On-demand: a fun's body binds its params and reads its returns, so resolve
     // its signature here if no call site demanded it first.
     if ft.kind == .Fun { ensure_fun_signature(c, ft) }
+
+    // On-demand: a parameterized struct's ctor params (and trailing-err returns)
+    // resolve here too — its field initializers reference the params, so they
+    // must be ready before the field pass and the param pre-registration below
+    // read them. Same resolve_param_type / Infer_Cell machinery as funs, so an
+    // untyped numeric ctor param settles at the width the body pins it to
+    // (solidify_param_defaults, after the body check). Resolved against the decl
+    // env (`env`), exactly like the fields. Idempotent via the len==0 guard.
+    if ft.kind == .Struct && len(ft.params) == 0 && len(s.typed_params) > 0 {
+        for tp in s.typed_params {
+            pt := resolve_param_type(c, tp, env, s.span)
+            append(&ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
+        }
+        build_param_map(ft)
+    }
+    if ft.kind == .Struct && len(ft.return_types) == 0 && len(s.return_types) > 0 {
+        for rte in s.return_types {
+            append(&ft.return_types, resolve_type_expr(rte, c, s.span, env = env))
+        }
+    }
 
     // On-demand signature resolution: memoize the signature pass so it runs once
     // per scope no matter how many sites demand it, and break cycles. Only the
