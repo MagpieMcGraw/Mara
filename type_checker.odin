@@ -8153,42 +8153,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 // Pass 2: Check all statement bodies (descend into child scopes)
 // ---------------------------------------------------------------------------
 
-check_struct_defaults :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
-    for stmt in stmts {
-        #partial switch s in stmt {
-        case ^Stmt_Scope:
-            if s.kind != .Struct { continue } // structs only — a paramless fun's "fields" are locals, checked in its own body
-            if len(s.typed_params) > 0 { continue } // pure-data structs only; constructor defaults run in the body
-            if len(s.generic_params) > 0 { continue }
-            st_name := make_flat_name(c.current_package, s.name)
-            sd: ^Scope_Body
-            if ss, ss_ok := c.table.structs[st_name]; ss_ok {
-                sd = &ss.sd
-            } else if sf, sf_ok := c.table.funs[st_name]; sf_ok {
-                sd = &sf.sd
-            }
-            if sd == nil { continue }
-            ensure_struct_signature(c, sd)  // resolve fields on demand before checking their defaults
-            for &field in sd.fields {
-                if field.default_value == nil { continue }
-                // Broadcast literal targeting a fixed- or partial-array field:
-                // expand `{all <expr>}` into per-slot entries on the literal so
-                // codegen can emit element-by-element stores. Handles the case
-                // `cameras: [..6]Camera = {all Camera(1280, 720, 90)}`.
-                if lit, lit_ok := field.default_value.(^Expr_Struct_Literal); lit_ok && lit.is_broadcast {
-                    expand_broadcast_array_literal(c, lit, field.type_, field.name, s.span, env)
-                    continue
-                }
-                dt := check_expr(c, field.default_value, env)
-                if types_incompatible(field.type_, dt) && !is_any(dt) {
-                    check_error(c, s.span, TYPE_DEFAULT_VALUE_FIELD_EXPECTED,
-                        field.name, type_name(field.type_), type_name(dt))
-                }
-            }
-        }
-    }
-}
-
 // Expand `{all <expr>}` into per-element entries on `lit.array_values`. The
 // expression is type-checked once against the array's element type; codegen
 // emits N independent stores (clones share the same checked AST node).
@@ -8562,6 +8526,20 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         type_env_set(&child, rb.name, rb_type)
     }
 
+    // Expand `all <expr>` broadcast defaults on array-typed fields against the
+    // field's resolved type, before the body check below reads them: codegen
+    // needs array_values populated, and a partial-array target (`[..6]Camera`)
+    // isn't handled by the inline literal path. Runs per struct in the full pass
+    // (errors on), so a field default is validated as part of checking the
+    // constructor — there is no separate struct-default pass.
+    if ft.kind == .Struct {
+        for field in ft.fields {
+            if lit, ok := field.default_value.(^Expr_Struct_Literal); ok && lit.is_broadcast {
+                expand_broadcast_array_literal(c, lit, field.type_, field.name, s.span, &child)
+            }
+        }
+    }
+
     // Split mode: compile-time defs come from s.defs, runtime from s.body.
     check_scope(c, s.body, &child, scope_defs = s.defs)
 
@@ -8813,13 +8791,11 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
 check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
     // (Former per-scope struct-signature pre-pass removed: struct fields resolve
     // ON DEMAND at the use site via ensure_struct_signature — field access,
-    // construction, literal matching, and field-default checking each pull the
-    // struct's signature when they need it, so a forward reference to a
-    // later-declared struct no longer needs a hoist. Function signatures are
-    // still resolved in Phase 1.)
-
-    // Type-check struct field default values (must run after all declarations registered)
-    check_struct_defaults(c, stmts, env)
+    // construction, literal matching each pull the struct's signature when they
+    // need it. Field DEFAULTS are no longer checked by a separate pass either:
+    // a struct's body IS its constructor, so its field decls — including `all`
+    // broadcast defaults — are validated in check_scope_body's full pass, the
+    // same path that checks any decl. Function signatures resolve in Phase 1.)
 
     for stmt in stmts {
         #partial switch s in stmt {
@@ -13652,13 +13628,18 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     return fn_primary_return(fun_type)
 }
 
-// Pure-struct positional construction: parameterless struct called with positional
-// args mapped to fields. Single entry point used by check_call's pure-struct
-// branch and check_generic_call's post-instantiation calls (Array(Player, 64),
-// Pair(int)(1, 2)).
+// Pure-struct positional construction: a parameterless struct called with
+// positional args mapped to fields, plus `_` substitution against field defaults
+// (the same surface the parameter-default path gives a function call).
 //
-// Supports `_` substitution against field defaults — same surface as the
-// regular function call path applies to parameter defaults.
+// DEPRECATED for direct use — function-call syntax on a no-arg struct, `Point(x, y)`,
+// is no longer accepted in source. check_call routes ALL struct construction through
+// the one constructor path (args bind to params; a pure-data struct has none), so
+// `Point()`, the brace literal `Point{...}`, and the override form `Point(){...}` are
+// the only spellings. This procedure now survives SOLELY as the generic-
+// monomorphization construction path (check_generic_call — e.g. Array(Player, 64),
+// Pair(int)(1, 2)), where the freshly instantiated struct is still built positionally
+// post-mono. Unify that path through check_call too and this can be deleted.
 check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Env) -> Type {
     ensure_struct_signature(c, &st.sd)  // resolve fields on demand before construction
     e.type_ = st

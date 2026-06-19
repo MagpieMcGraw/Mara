@@ -1,0 +1,35 @@
+module broadcast_field
+
+// Regression: `all <expr>` broadcast defaults on array-typed FIELDS. These were
+// expanded by a dedicated check_struct_defaults pass (pure-data structs only);
+// that pass is GONE — a struct's body IS its constructor, so its field decls,
+// including `all` broadcast defaults, are validated and expanded in
+// check_scope_body's full pass, the same path that checks any declaration.
+//
+// The partial-array STRUCT case (`[..N]T = all T()`, like Pounce's `cameras`)
+// is the one the suite never covered — only Pounce did. (The inline
+// check_array_struct_literal broadcast path for fixed-array literals is a
+// separate handler and is NOT exercised here.)
+
+Cell :: struct {
+	v : i32 = 7
+	tag := 3
+}
+
+Grid :: struct {
+	flags  : [4]i32    = all 9       // fixed-array scalar broadcast
+	counts : [..5]i32  = all 2       // partial-array scalar broadcast (len := size)
+	cells  : [..3]Cell = all Cell()  // partial-array STRUCT broadcast — each slot runs Cell()'s defaults
+}
+
+main :: fun() {
+	g := Grid{}
+	assert(g.flags[0] == 9)
+	assert(g.flags[3] == 9)
+	assert(g.counts.len == 5)
+	assert(g.counts[4] == 2)
+	assert(g.cells.len == 3)
+	assert(g.cells[0].v == 7)     // struct slot ran its field default
+	assert(g.cells[2].tag == 3)
+	print("broadcast_field ok")
+}

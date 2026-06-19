@@ -453,7 +453,6 @@ TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE :: "multi-return assign: left side has %d nam
 TYPE_CANNOT_ASSIGN_MULTI_RETURN :: "cannot assign %s to %s in multi-return"
 TYPE_MULTI_RETURN_ASSIGN_REQUIRES_FUNCTION :: "multi-return assign requires a function returning multiple values, got %s"
 TYPE_MULTI_RETURN_AS_ARG :: "a call returning %d values can't be used as a single argument — destructure it first (e.g. `a, b := f()`)"
-TYPE_DEFAULT_VALUE_FIELD_EXPECTED :: "default value for field '%s': expected %s, got %s"
 TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES :: "broadcast literal '{all ...}' for field '%s' requires an array type, got %s"
 TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED :: "broadcast value for field '%s' has type %s, expected %s (element of %s)"
 TYPE_FIELD_TYPE_SKIP_CONSTRUCTOR_REQUIRES :: "field '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)"
