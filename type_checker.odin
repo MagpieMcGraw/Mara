@@ -608,10 +608,31 @@ Type_Env :: struct {
     owner_module: ^Type_Scope,
 }
 
+// Durable scope-member lookup: a scope's nested types + funs live on its
+// Type_Scope (ft.types / ft.functions), reachable from a defs-layer env via its
+// class_scope / fun_scope back-link. Resolution consults these directly — the
+// first step of walking the durable Type_Scope graph instead of the per-check
+// copied env map (which check_scope_body still fills; copy removal is next).
+scope_member :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
+    ft := env.class_scope
+    if ft == nil { ft = env.fun_scope }
+    if ft == nil { return nil, false }
+    if ft.types != nil {
+        if t, ok := ft.types[name]; ok { return t, true }
+    }
+    if ft.functions != nil {
+        if fn, ok := ft.functions[name]; ok && fn != nil { return fn, true }
+    }
+    return nil, false
+}
+
 type_env_get :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     cur := env
     for cur != nil {
         if t, ok := cur.types[name]; ok {
+            return t, true
+        }
+        if t, ok := scope_member(cur, name); ok {
             return t, true
         }
         for inc in cur.includes {
@@ -631,6 +652,9 @@ type_env_locate :: proc(env: ^Type_Env, name: string) -> (Type, ^Type_Env, bool)
     cur := env
     for cur != nil {
         if t, ok := cur.types[name]; ok {
+            return t, cur, true
+        }
+        if t, ok := scope_member(cur, name); ok {
             return t, cur, true
         }
         for inc in cur.includes {
