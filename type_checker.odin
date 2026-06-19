@@ -5014,13 +5014,20 @@ type_carries_ref :: proc(t: Type) -> bool {
     return false
 }
 
-// Resolve a call to the callee's source AST, mirroring call_has_local_escape's
-// dispatch order: resolved name → source name → resolved_func name → stripped.
+// Resolve a call to the callee's source AST. Pointer-first: a directly resolved
+// call carries its callee signature (Resolved_Func.callee), which links straight
+// to the body via Type_Scope.ast — exact by construction, no name re-keying. The
+// name-keyed lookups below are the fallback for resolutions that don't carry a
+// callee pointer yet (monomorphizations, operator-overload synthesised calls).
 lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
+    if rf, rf_ok := call.resolved_func.?; rf_ok && rf.callee != nil && rf.callee.ast != nil {
+        return rf.callee.ast
+    }
     if scope, ok := c.table.fun_asts[call_resolved_name(call)]; ok { return scope }
     if scope, ok := c.table.fun_asts[call.name]; ok { return scope }
     if rf, rf_ok := call.resolved_func.?; rf_ok {
         if scope, ok := c.table.fun_asts[rf.name]; ok { return scope }
+        // Strip the longest `prefix_` and retry as a bare name.
         n := rf.name
         if idx := strings.last_index_byte(n, '_'); idx >= 0 {
             if scope, ok := c.table.fun_asts[n[idx+1:]]; ok { return scope }
@@ -5255,25 +5262,10 @@ collect_typed_local_decls :: proc(stmts: []Stmt, out: ^map[string]^Stmt_Assign) 
 // keys depending on the registration path, so we try the resolved name,
 // the source-level name, and a stripped-suffix fallback in turn.
 call_has_local_escape :: proc(c: ^Checker, call: ^Expr_Call) -> bool {
-    if scope, ok := c.table.fun_asts[call_resolved_name(call)]; ok {
-        return function_has_local_escape(scope)
-    }
-    if scope, ok := c.table.fun_asts[call.name]; ok {
-        return function_has_local_escape(scope)
-    }
-    if rf, rf_ok := call.resolved_func.?; rf_ok {
-        if scope, ok := c.table.fun_asts[rf.name]; ok {
-            return function_has_local_escape(scope)
-        }
-        // Strip the longest `prefix_` from rf.name and retry as bare.
-        n := rf.name
-        if idx := strings.last_index_byte(n, '_'); idx >= 0 {
-            if scope, ok := c.table.fun_asts[n[idx+1:]]; ok {
-                return function_has_local_escape(scope)
-            }
-        }
-    }
-    return false
+    // Same callee resolution as lookup_callee_scope (pointer-first, name-keyed
+    // fallback) — delegate instead of duplicating the dance.
+    scope := lookup_callee_scope(c, call)
+    return scope != nil && function_has_local_escape(scope)
 }
 
 // Check if an expression is a pointer/slice to local stack memory that won't
