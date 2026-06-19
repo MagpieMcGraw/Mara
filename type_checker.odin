@@ -5892,6 +5892,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         }
         if t_ok {
             if ft, ft_ok := t.(^Type_Scope); ft_ok {
+                ensure_fun_signature(c, ft)  // pull the callee's returns on demand before reading them
                 if ft.kind == .Struct { return ft }
                 if ft.kind == .Fun && len(ft.return_types) > 0 { return ft.return_types[0] }
             }
@@ -5910,6 +5911,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
             }
             if t_ok {
                 if fnt, fnt_ok := t.(^Type_Scope); fnt_ok {
+                    ensure_fun_signature(c, fnt)  // pull the callee's returns on demand before reading them
                     if fnt.kind == .Struct { return fnt }
                     if fnt.kind == .Fun && len(fnt.return_types) > 0 { return fnt.return_types[0] }
                 }
@@ -6074,9 +6076,10 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
     split := scope_defs != nil
     def_list := scope_defs if split else stmts
 
-    // Pass 1a: pre-register every `name :: ...` definition and resolve fun
-    // signatures, so any later statement can call them via forward reference.
-    register_type_names(c, def_list, env, owner, public_env, eager_signatures = true)
+    // Pass 1a: pre-register every `name :: ...` definition so any later
+    // statement can reference it. Fun signatures are NOT resolved here — they
+    // resolve on demand (ensure_fun_signature) at the first use site.
+    register_type_names(c, def_list, env, owner, public_env)
 
     // (Former "Pass 1a.5" nested-struct signature pre-pass removed: a nested
     // struct's fields resolve ON DEMAND when a sibling decl default or a
@@ -6258,15 +6261,19 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                     def_ft.kind = .Fun
                 }
                 is_callable := !def_is_struct || len(s.typed_params) > 0
-                // Resolve params and return type (signatures needed for forward references)
-                if len(s.typed_params) > 0 {
+                // Parameterized STRUCTS resolve their ctor-param signature eagerly
+                // here (read at construction sites, not pulled on demand yet).
+                // FUNS resolve their signature ON DEMAND — ensure_fun_signature ->
+                // resolve_fun_signature -> build_scope_decl_env rebuilds the decl
+                // env from the durable parent_scope graph — so they skip eager.
+                if def_is_struct && len(s.typed_params) > 0 {
                     for tp in s.typed_params {
                         pt := resolve_param_type(c, tp, &scope_env, s.span)
                         append(&def_ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
                     }
                     build_param_map(def_ft)
                 }
-                if is_callable && len(s.return_types) > 0 {
+                if def_is_struct && len(s.return_types) > 0 {
                     for rte in s.return_types {
                         append(&def_ft.return_types, resolve_type_expr(rte, c, s.span, env=&scope_env))
                     }
@@ -6501,7 +6508,7 @@ find_operator_overload :: proc(c: ^Checker, env: ^Type_Env, op: Token_Kind) -> (
 // register_and_check_declarations handle both halves in one go.
 // ---------------------------------------------------------------------------
 
-register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil, eager_signatures: bool = false) {
+register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
     pub := public_env if public_env != nil else env
     for stmt in stmts {
         #partial switch s in stmt {
@@ -6723,33 +6730,14 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                     }
                 }
                 if is_struct_type { pre_register_nested_struct_types(c, fun_type, s.defs) }
-                // Resolve params and return_types eagerly for non-struct funs
-                // so any statement in this scope (including a Stmt_Decl init
-                // expression sitting BEFORE this Stmt_Scope in source order)
-                // sees the fully-typed signature at type-check time. The
-                // deferred Pass 1b handler below is now idempotent on these
-                // fields — re-running on already-populated lists is a no-op.
-                //
-                // Only fires for nested scopes (check_scope passes
-                // eager_signatures=true). Top-level callers leave it false
-                // because at top-level Pass 1a runs BEFORE includes are
-                // processed; trying to resolve `filepath: cstr` here would
-                // fail because cstr isn't yet visible from mara.string.
-                if !is_struct_type && eager_signatures {
-                    if len(s.typed_params) > 0 {
-                        for tp in s.typed_params {
-                            pt := resolve_param_type(c, tp, env, s.span)
-                            append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
-                        }
-                        build_param_map(fun_type)
-                    }
-                    if len(s.return_types) > 0 {
-                        for rte in s.return_types {
-                            rt := resolve_type_expr(rte, c, s.span, env = env)
-                            append(&fun_type.return_types, rt)
-                        }
-                    }
-                }
+                // A fun's signature (params + return types) resolves ON DEMAND —
+                // ensure_fun_signature -> resolve_fun_signature reconstructs the
+                // decl env from the durable parent_scope graph at the first use
+                // site (a call, a dispatch match, a field-type inference reading
+                // its return). No eager pre-pass: a forward reference pulls the
+                // signature when it needs it. (This also dissolved the old
+                // top-level-vs-nested split — top-level Pass 1a couldn't resolve
+                // eagerly anyway because includes weren't processed yet.)
                 c.pre_registered_stmts[rawptr(s)] = true
             }
         }
@@ -11784,30 +11772,52 @@ ensure_struct_signature :: proc(c: ^Checker, st: ^Scope_Body) {
     }
 }
 
-// Resolve a fun's signature (param + return types) from its AST, in its decl
-// env. Idempotent — skips a list that's already populated. The same resolution
-// the register passes do eagerly, lifted out so a call site can demand it.
+// Reconstruct the env a scope's signature resolves against, from the durable
+// parent_scope graph — so a NESTED scope resolves on demand (its transient decl
+// env was discarded). Top-level scopes return their persistent decl_env.
+build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Env {
+    if ft == nil { return nil }
+    if ft.decl_env != nil { return ft.decl_env }
+    parent := ft.parent_scope
+    if parent == nil { return nil }
+    outer := build_scope_decl_env(parent)
+    if outer == nil { return nil }
+    env := new(Type_Env)
+    env.parent = outer
+    if parent.kind == .Struct { env.class_scope = parent } else { env.fun_scope = parent }
+    type_env_set(env, "Self", parent)
+    return env
+}
+
+// Resolve a fun's signature (param + return types) from its AST, in the env it
+// was declared in (build_scope_decl_env — durable, works for nested funs).
+// Idempotent: skips a list that's already populated, so repeated demand pulls
+// and the cycle guard are no-ops once resolved.
 resolve_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
-    if ft.ast == nil || ft.decl_env == nil { return }
+    if ft.ast == nil { return }
+    env := build_scope_decl_env(ft)
+    if env == nil { return }
     s := ft.ast
     if len(ft.params) == 0 && len(s.typed_params) > 0 {
         for tp in s.typed_params {
-            pt := resolve_param_type(c, tp, ft.decl_env, s.span)
+            pt := resolve_param_type(c, tp, env, s.span)
             append(&ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
         }
         build_param_map(ft)
     }
     if len(ft.return_types) == 0 && len(s.return_types) > 0 {
         for rte in s.return_types {
-            append(&ft.return_types, resolve_type_expr(rte, c, s.span, env = ft.decl_env))
+            append(&ft.return_types, resolve_type_expr(rte, c, s.span, env = env))
         }
     }
 }
 
 // Demand-driven fun-signature resolution: ensure a fun's params/returns are
 // resolved before a use site (a call, a dispatch match, the body's own param
-// binding) reads them. Memoized + cycle-guarded via sig_state. Only top-level
-// funs carry a decl_env; nested funs stay eagerly resolved in their scope.
+// binding, a field-type inference reading its return) reads them. Memoized +
+// cycle-guarded via sig_state. Works for ALL funs — top-level ones resolve
+// against their persistent decl_env, nested ones against a decl env rebuilt
+// from the durable parent_scope graph (build_scope_decl_env). No eager pass.
 ensure_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
     if ft == nil || ft.kind != .Fun || ft.sig_state != .Unresolved { return }
     ft.sig_state = .In_Progress
