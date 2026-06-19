@@ -2021,6 +2021,22 @@ struct_llvm_name :: proc(key: string) -> string {
     return fmt.tprintf("%%class.%s", key)
 }
 
+// IR type name of the synthetic Program context struct. The type checker names
+// the synthetic struct (it may be a bare "Program" or a mangled "mara_core_Program"
+// depending on how it interns alongside the user's generic Program template), and
+// register_struct_decl emits `%class.<that name>`. Codegen's global + its GEPs must
+// follow the SAME name rather than hardcode "%class.Program", or the storage global
+// references a type that was emitted under a different name. Falls back to the bare
+// name when there's no Program (a context-free build emits no global anyway).
+program_ir_name :: proc(checked: ^Checked_Program) -> string {
+    if checked != nil && checked.table != nil {
+        if prog, ok := checked.table.funs["Program"]; ok && prog != nil {
+            return struct_llvm_name(prog.name)
+        }
+    }
+    return "%class.Program"
+}
+
 // Look up a struct from checked data (returns the Scope_Body from either the structs or funs table).
 lookup_struct :: proc(g: ^Codegen, name: string) -> (^Scope_Body, bool) {
     if ss, ss_ok := g.checked.table.structs[name]; ss_ok {
@@ -2831,7 +2847,7 @@ get_context_arena_ptr :: proc(g: ^Codegen) -> string {
     ctx_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", ctx_ptr, " = load ptr, ptr @__mara_program"}))
     arena_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", arena_ptr, " = getelementptr %class.Program, ptr ", ctx_ptr, ", i32 0, i32 0"}))
+    emit_raw(g, strings.concatenate({"  ", arena_ptr, " = getelementptr ", program_ir_name(g.checked), ", ptr ", ctx_ptr, ", i32 0, i32 0"}))
     return arena_ptr
 }
 
@@ -3342,7 +3358,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         // Arena init (if scope allocator is active).
         if g.context_enabled {
             arena_ptr := fresh_tmp(&g)
-            emit_raw(&g, strings.concatenate({"  ", arena_ptr, " = getelementptr %class.Program, ptr ", ctx_alloca, ", i32 0, i32 0"}))
+            emit_raw(&g, strings.concatenate({"  ", arena_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 0"}))
             new_ir := mara_fn_name(&g, g.arena_new_name)
             alloc_size := "268435456"  // default 256 MB
             if checked.table.scope_allocator_args != nil && len(checked.table.scope_allocator_args) > 0 {
@@ -3360,7 +3376,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
         // GEP to the partial-array field within Context
         args_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", args_ptr, " = getelementptr %class.Program, ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
+        emit_raw(&g, strings.concatenate({"  ", args_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
 
         // Compute effective len = min(argc, 64). argc is already i32 from
         // the main signature; slice header len is i32 too.
@@ -3682,7 +3698,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         // in every TU (main TU defines it, others extern-declare it), so seed
         // its transitive closure into the used set even if the module's body
         // never names the type directly.
-        program_name :: "%class.Program"
+        program_name := program_ir_name(checked)
         if _, ok := struct_decl_by_name[program_name]; ok && !(program_name in used) {
             used[program_name] = true
             seed_ir := struct_decl_by_name[program_name]
@@ -3727,10 +3743,10 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     strings.write_string(&b, "; Context system\n")
     if is_main_tu {
         strings.write_string(&b, "@__mara_program = global ptr null\n")
-        strings.write_string(&b, "@__mara_program_storage = global %class.Program zeroinitializer\n\n")
+        strings.write_string(&b, strings.concatenate({"@__mara_program_storage = global ", program_ir_name(checked), " zeroinitializer\n\n"}))
     } else {
         strings.write_string(&b, "@__mara_program = external global ptr\n")
-        strings.write_string(&b, "@__mara_program_storage = external global %class.Program\n\n")
+        strings.write_string(&b, strings.concatenate({"@__mara_program_storage = external global ", program_ir_name(checked), "\n\n"}))
     }
 
     // libc + intrinsic + foreign declares — every TU declares regardless.
