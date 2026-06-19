@@ -97,6 +97,7 @@ Struct_Type_Field :: struct {
 // between data-layout scopes (struct/class) and callable scopes (fun).
 Scope_Body :: struct {
     name:           string,  // C-ified flat name (e.g. "game_Point", "sdl_Init"), "" for anonymous
+    source_name:    string,  // user-written bare name (e.g. "Point", "Init") for diagnostics; mirrors Type_Enum.source_name. "" falls back to name.
 
     // Owning module's flat package name (e.g. "iso_000", "mara_math"). Empty
     // for anonymous scopes that don't belong to a single module. Set at every
@@ -375,6 +376,7 @@ Type_Enum :: struct {
 
 Type_Union :: struct {
     name:            string,             // C-ified flat name
+    source_name:     string,             // user-written bare name for diagnostics ("" falls back to name)
     home_package:    string,             // owning module flat name (see Scope_Body.home_package)
     tag_type:        string,             // "" = default (i64), or "i32", "i16", etc.
     min_size:        int,                // 0 = no minimum, otherwise minimum total size in bytes (from union(128))
@@ -392,6 +394,7 @@ union_tag_pad_bytes :: proc(ut: ^Type_Union) -> int {
 
 Type_Distinct :: struct {
     name:             string,  // C-ified flat name
+    source_name:      string,  // user-written bare name for diagnostics ("" falls back to name)
     home_package:     string,  // owning module flat name (see Scope_Body.home_package)
     base_type:        Type,    // the underlying type (transparent at codegen level)
     default_cap_expr: Expr,    // for sized-slice aliases: default cap when decl omits `(N)`
@@ -2803,6 +2806,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
     // Create concrete Type_Scope with C-ified name
     st := new(Type_Scope)
     st.name = make_flat_name(tmpl.home_package, mangled)
+    st.source_name = mangled
     st.home_package = tmpl.home_package
     st.kind = .Struct
     st.ast = tmpl.ast
@@ -2871,6 +2875,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
 
     ut := new(Type_Union)
     ut.name = make_flat_name(tmpl.home_package, mangled)
+    ut.source_name = mangled
     ut.home_package = tmpl.home_package
     ut.tag_type = s.tag_type
     ut.min_size = s.min_size
@@ -3710,7 +3715,7 @@ type_name :: proc(t: Type) -> string {
     case ^Type_Ptr:         return fmt.tprintf("^%s", type_name(v.elem))
     case ^Type_Scope:
         if v.name != "" {
-            return v.name
+            return v.source_name if v.source_name != "" else v.name
         }
         b := strings.builder_make()
         strings.write_string(&b, "fun(")
@@ -3741,11 +3746,12 @@ type_name :: proc(t: Type) -> string {
         return fmt.tprintf("[]%s", type_name(v.elem))
     case ^Type_Partial_Array:
         return fmt.tprintf("[..%d]%s", v.size, type_name(v.elem))
-    case ^Type_Enum:        return v.name
-    case ^Type_Union:       return v.name
+    case ^Type_Enum:        return v.source_name if v.source_name != "" else v.name
+    case ^Type_Union:       return v.source_name if v.source_name != "" else v.name
     case ^Type_Distinct:
-        if v.is_alias { return v.name }
-        return fmt.tprintf("distinct %s", v.name)
+        disp := v.source_name if v.source_name != "" else v.name
+        if v.is_alias { return disp }
+        return fmt.tprintf("distinct %s", disp)
     case Type_Const_Int:    return fmt.tprintf("const_%d", v.value)
     case Type_Runtime_Size: return "vla"
     case Type_Any:          return "any"
@@ -6138,6 +6144,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_st.kind = .Struct
                 def_st.is_packed = s.is_packed
                 def_st.ast = s
+                def_st.source_name = bare_name
                 c.table.structs[mangled] = def_st
                 if st.types == nil { st.types = make(map[string]Type) }
                 st.types[bare_name] = def_st
@@ -6168,6 +6175,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_ft.home_package = c.current_package
                 def_ft.has_parens = s.has_parens
                 def_ft.ast = s
+                def_ft.source_name = bare_name
                 if def_is_struct {
                     def_ft.kind = .Struct
                     def_ft.is_packed = s.is_packed
@@ -6588,6 +6596,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 struct_type.kind = .Struct
                 struct_type.is_packed = s.is_packed
                 struct_type.ast = s
+                struct_type.source_name = s.name
                 c.table.structs[flat] = struct_type
                 // Body fields deferred to Pass 1b (register_scope_defs).
                 type_env_set(pub, s.name, struct_type)
@@ -6620,6 +6629,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 fun_type.name = flat_name
                 fun_type.home_package = c.current_package
                 fun_type.ast = s
+                fun_type.source_name = s.name
                 if is_struct_type {
                     fun_type.kind = .Struct
                 } else {
@@ -6796,6 +6806,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Data union: create tag enum, variant structs, and union type
                 ut := new(Type_Union)
                 ut.name = make_flat_name(c.current_package, s.name)
+                ut.source_name = s.name
                 ut.home_package = c.current_package
                 if ut.name in c.table.unions {
                     check_error(c, s.span, TYPE_UNION_ALREADY_DEFINED, s.name)
@@ -6860,6 +6871,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             base := resolve_type_expr(s.base_type, c, s.span)
             dt := new(Type_Distinct)
             dt.name = make_flat_name(c.current_package, s.name)
+            dt.source_name = s.name
             dt.home_package = c.current_package
             dt.base_type = base
             dt.default_cap_expr = s.default_cap_expr
@@ -6954,6 +6966,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 struct_type.kind = .Struct
                 struct_type.is_packed = s.is_packed
                 struct_type.ast = s
+                struct_type.source_name = s.name
                 if struct_type.name in c.table.structs || struct_type.name in c.table.funs {
                     check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
                     continue
@@ -6990,6 +7003,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 fun_type.name = make_flat_name(c.current_package, s.name)
                 fun_type.home_package = c.current_package
                 fun_type.ast = s
+                fun_type.source_name = s.name
                 if is_struct_type {
                     fun_type.kind = .Struct
                     c.table.funs[fun_type.name] = fun_type
