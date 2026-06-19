@@ -568,7 +568,8 @@ get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
 Type_Env :: struct {
     types:        map[string]Type,
     parent:       ^Type_Env,
-    return_types: [dynamic]Type, // expected return types for current function (empty = void)
+    // (return_types removed — derived from the nearest fun_scope/class_scope's
+    //  durable signature via enclosing_return_types, not carried per-env.)
     scope_depth: int,        // stack depth for escape analysis; module = 0, function body = 1+
     // Per-name analysis facts (param/let/provenance/local_slice_backed/read) for
     // names declared in THIS scope — one record each (see Binding). aliases and
@@ -1000,7 +1001,7 @@ type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
     // Inner blocks (if/for/match) inherit their parent's frame depth. Only
     // function-body envs bump scope_depth — see the explicit bump in
     // check_scope_body's `.Fun` path.
-    return Type_Env{parent = parent, return_types = parent.return_types, fn_name = parent.fn_name, scope_depth = parent.scope_depth}
+    return Type_Env{parent = parent, fn_name = parent.fn_name, scope_depth = parent.scope_depth}
 }
 
 // Walk up the env chain to find the enclosing function name (for #caller_name).
@@ -1011,6 +1012,19 @@ enclosing_fn_name :: proc(env: ^Type_Env) -> string {
         cur = cur.parent
     }
     return "main" // top-level code runs in main
+}
+
+// The expected return types of the nearest enclosing function / constructor body,
+// DERIVED from the durable scope graph (the scope's own signature) rather than a
+// per-env copy. Walks to the nearest fun_scope / class_scope marker and reads its
+// return_types. Empty (len 0) = void. This is the frame-lift form: env no longer
+// carries its own return_types copy — the durable Type_Scope already holds them.
+enclosing_return_types :: proc(env: ^Type_Env) -> []Type {
+    for cur := env; cur != nil; cur = cur.parent {
+        if cur.fun_scope != nil { return cur.fun_scope.return_types[:] }
+        if cur.class_scope != nil { return cur.class_scope.return_types[:] }
+    }
+    return nil
 }
 
 // Check if a statement body always diverges (return/break/continue as last statement).
@@ -3128,8 +3142,6 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
 
     // Create child scope for body checking
     child := type_env_child(env)
-    clear(&child.return_types)
-    for rt in fun_type.return_types { append(&child.return_types, rt) }
     child.fn_name = ast.name
 
     // Bind regular params with their concrete types
@@ -3259,8 +3271,6 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
 
     // Clone body and type-check with new param types
     child := type_env_child(env)
-    clear(&child.return_types)
-    for rt in mono_ft.return_types { append(&child.return_types, rt) }
     child.fn_name = ast.name
     for tp, i in ast.typed_params {
         if i < len(mono_ft.params) {
@@ -7955,9 +7965,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_try && inner_call != nil {
                     check_call(c, inner_call, env)
                     returns := call_return_list(c, inner_call, env)
+                    rts := enclosing_return_types(env)
                     if len(returns) == 0 || !is_err_type(returns[len(returns)-1]) {
                         check_error(c, s.span, TYPE_TRY_REQUIRES_ERR_RETURN)
-                    } else if len(env.return_types) == 0 || !is_err_type(env.return_types[len(env.return_types)-1]) {
+                    } else if len(rts) == 0 || !is_err_type(rts[len(rts)-1]) {
                         check_error(c, s.span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
                     } else {
                         non_err := returns[:len(returns)-1]
@@ -8472,8 +8483,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     }
 
     // Register params in scope
-    clear(&child.return_types)
-    for rt in ft.return_types { append(&child.return_types, rt) }
     child.fn_name = s.name
     for tp, i in s.typed_params {
         if i < len(ft.params) {
@@ -8631,7 +8640,8 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
 
 // Phase-2 checker for a `return` statement.
 check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
-    n_expected := len(env.return_types)
+    rts := enclosing_return_types(env)
+    n_expected := len(rts)
     n_supplied := len(s.values)
 
     // Trailing err return slots can be implicitly filled with `.Ok` (the err
@@ -8640,7 +8650,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
     // must supply: everything except trailing err slots.
     n_err_trailing := 0
     for i := n_expected - 1; i >= 0; i -= 1 {
-        if is_err_type(env.return_types[i]) {
+        if is_err_type(rts[i]) {
             n_err_trailing += 1
         } else {
             break
@@ -8676,7 +8686,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
     if count_ok {
         for val, i in s.values {
             if i >= n_expected { break }
-            expected := env.return_types[i]
+            expected := rts[i]
             c.expected_hint = expected
             vt := check_expr(c, val, env)
             if !is_any(vt) && !is_any(expected) {
@@ -13336,7 +13346,8 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Env) -> Type {
         check_error(c, e.span, TYPE_TRY_REQUIRES_ERR_RETURN)
         return Type_Error{}
     }
-    if len(env.return_types) == 0 || !is_err_type(env.return_types[len(env.return_types)-1]) {
+    rts := enclosing_return_types(env)
+    if len(rts) == 0 || !is_err_type(rts[len(rts)-1]) {
         check_error(c, e.span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
         return Type_Error{}
     }
