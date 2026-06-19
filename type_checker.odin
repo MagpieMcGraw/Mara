@@ -150,9 +150,15 @@ Scope_Body :: struct {
     // TYPES resolve against. Captured at registration for top-level structs,
     // whose file/module env outlives the check, so a use site in another file
     // can demand this struct's signature on the spot (ensure_struct_signature).
-    // nil for nested scopes (their decl env is transient) — those stay eagerly
-    // resolved within their enclosing scope's check.
+    // nil for nested scopes (their decl env is transient) — those resolve
+    // through their parent (parent_scope) instead.
     decl_env:       ^Type_Env,
+
+    // Enclosing scope for a nested struct (`Inner` inside `Box`). A nested
+    // struct's decl_env is transient, so on-demand resolution walks up to a
+    // parent that has a decl_env and resolves THAT — its signature pass recurses
+    // back down into this one. nil for top-level scopes.
+    parent_scope:   ^Type_Scope,
 
     // Associated definitions (scoped :: defs).
     // Values point to the actual Type the bare name resolves to — read
@@ -6105,6 +6111,7 @@ pre_register_nested_struct_types :: proc(c: ^Checker, parent: ^Type_Scope, body:
         nested.home_package = c.current_package
         nested.kind = .Struct
         nested.is_packed = s.is_packed
+        nested.parent_scope = parent
         if len(s.typed_params) == 0 {
             c.table.structs[mangled] = nested
         } else {
@@ -6127,6 +6134,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
     if self_type != nil {
         type_env_set(&scope_env, "Self", self_type)
     }
+    parent_ts, _ := self_type.(^Type_Scope)  // enclosing scope for nested structs' parent_scope (on-demand resolution)
     // Find the persistent root env (the module env) so mangled names survive
     // past this call. scope_envs created in recursive calls are stack-local.
     root_env := env
@@ -6170,6 +6178,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_st.is_packed = s.is_packed
                 def_st.ast = s
                 def_st.source_name = bare_name
+                def_st.parent_scope = parent_ts
                 c.table.structs[mangled] = def_st
                 if st.types == nil { st.types = make(map[string]Type) }
                 st.types[bare_name] = def_st
@@ -6201,6 +6210,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_ft.has_parens = s.has_parens
                 def_ft.ast = s
                 def_ft.source_name = bare_name
+                def_ft.parent_scope = parent_ts
                 if def_is_struct {
                     def_ft.kind = .Struct
                     def_ft.is_packed = s.is_packed
@@ -8069,7 +8079,8 @@ check_struct_defaults :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env)
     for stmt in stmts {
         #partial switch s in stmt {
         case ^Stmt_Scope:
-            if len(s.typed_params) > 0 { continue } // only funs with fields have struct defaults
+            if s.kind != .Struct { continue } // structs only — a paramless fun's "fields" are locals, checked in its own body
+            if len(s.typed_params) > 0 { continue } // pure-data structs only; constructor defaults run in the body
             if len(s.generic_params) > 0 { continue }
             st_name := make_flat_name(c.current_package, s.name)
             sd: ^Scope_Body
@@ -8079,6 +8090,7 @@ check_struct_defaults :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env)
                 sd = &sf.sd
             }
             if sd == nil { continue }
+            ensure_struct_signature(c, sd)  // resolve fields on demand before checking their defaults
             for &field in sd.fields {
                 if field.default_value == nil { continue }
                 // Broadcast literal targeting a fixed- or partial-array field:
@@ -8726,15 +8738,12 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
 }
 
 check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
-    // Phase 2a: resolve struct signatures (fields) before any function body
-    // is checked. Without this, forward references to a struct declared later
-    // in the scope would see an empty fields list and fail field access.
-    // Function signatures (params/return) are already resolved in Phase 1.
-    for stmt in stmts {
-        if s, ok := stmt.(^Stmt_Scope); ok && s.kind == .Struct {
-            check_scope_body(c, s, env, signature_only = true)
-        }
-    }
+    // (Former per-scope struct-signature pre-pass removed: struct fields resolve
+    // ON DEMAND at the use site via ensure_struct_signature — field access,
+    // construction, literal matching, and field-default checking each pull the
+    // struct's signature when they need it, so a forward reference to a
+    // later-declared struct no longer needs a hoist. Function signatures are
+    // still resolved in Phase 1.)
 
     // Type-check struct field default values (must run after all declarations registered)
     check_struct_defaults(c, stmts, env)
@@ -11806,8 +11815,15 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
 // and cycle guard live in check_scope_body, keyed on sig_state.
 ensure_struct_signature :: proc(c: ^Checker, st: ^Scope_Body) {
     if st == nil || st.sig_state != .Unresolved { return }
-    if st.ast == nil || st.decl_env == nil { return }
-    check_scope_body(c, st.ast, st.decl_env, signature_only = true)
+    if st.decl_env != nil && st.ast != nil {
+        check_scope_body(c, st.ast, st.decl_env, signature_only = true)
+        return
+    }
+    // Nested struct: transient decl env, so resolve through the parent — its
+    // signature pass recurses down and resolves this one.
+    if st.parent_scope != nil {
+        ensure_struct_signature(c, &st.parent_scope.sd)
+    }
 }
 
 // Shared struct field access logic — used for both direct and auto-deref (^Struct) paths.
@@ -11918,6 +11934,16 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         }
         check_error(c, e.span, TYPE_UNION_VARIANT, ut.name, e.field)
         return Type_Error{}
+    }
+    // On-demand: resolve the receiver struct's signature before the dispatch
+    // below, which keys on len(fields) — 0 until the struct is resolved. Covers a
+    // direct struct receiver and a single-level pointer (^Struct auto-deref).
+    {
+        rsd := as_scope_body(obj_type)
+        if rsd == nil {
+            if pt, pt_ok := obj_type.(^Type_Ptr); pt_ok { rsd = as_scope_body(pt.elem) }
+        }
+        ensure_struct_signature(c, rsd)
     }
     // On-demand: resolve the receiver struct's signature before the dispatch
     // below, which keys on len(fields) — 0 until the struct is resolved. Covers a
@@ -13464,6 +13490,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     // Codegen can skip the call overhead and write fields directly to memory.
     // Covers old Type_Struct usages plus classes declared with empty parens
     // `class Foo() { x: int }`, and fieldless structs (`Foo()` → zero-size value).
+    if fun_type.kind == .Struct {
+        ensure_struct_signature(c, &fun_type.sd)  // resolve fields on demand before construction
+    }
     if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.return_types) == 0 {
         return check_pure_struct_construction(c, e, fun_type, env)
     }
