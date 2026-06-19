@@ -10097,10 +10097,10 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
 //                                           statement-level decls; named struct-
 //                                           literal `::` constants are QUEUED here
 //                                           (their target's fields don't exist yet)
-//   1.5  register_main_top_level_constants — top-level constant VALUES into the
-//                                           symbol table. Main package only; an
-//                                           imported module's constants are
-//                                           registered by extract_module_into_checked.
+//   (1.5 removed)                         — a main-package constant pass used to
+//                                           run here; main-package constants are
+//                                           const-folded before codegen, so it was
+//                                           dead and is gone.
 //   (2a removed)                          — struct field types used to be hoisted
 //                                           here so a body in file A could read a
 //                                           struct from file B; now they resolve
@@ -10120,7 +10120,6 @@ check_package_files :: proc(
     file_envs: map[string]^Type_Env,
     owner: ^Type_Scope,
     pkg_env: ^Type_Env,
-    register_constants: bool,
 ) {
     for src in file_order {  // 1a
         register_type_names(c, files_by_src[src], file_envs[src], owner, pkg_env)
@@ -10132,11 +10131,9 @@ check_package_files :: proc(
     }
     c.defer_define_literals = false
 
-    if register_constants {  // 1.5 — main package only
-        for src in file_order {
-            register_main_top_level_constants(c, files_by_src[src], c.current_package)
-        }
-    }
+    // (1.5 main-package constant pass removed — see header. Main-package
+    // constants const-fold to literals during checking before codegen consults
+    // c.table.constants for them, so the registration was dead.)
 
     // (Former "2a" cross-file struct-signature hoist removed: struct fields now
     // resolve on demand at the use site — field access, construction, literal
@@ -10242,7 +10239,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // (mod_env is_module_scope=true). Modules skip the 1.5 constant pass —
     // extract_module_into_checked registers an imported module's constants.
     files_by_src, file_order, file_envs := partition_package_files(mod_program, mod_env)
-    check_package_files(c, files_by_src, file_order, file_envs, mod_struct, mod_env, register_constants = false)
+    check_package_files(c, files_by_src, file_order, file_envs, mod_struct, mod_env)
 
     // Preserve module's dispatch groups for propagation on `using include`
     mod_struct.dispatch_groups = c.dispatch_groups
@@ -10453,42 +10450,6 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
     }
 }
 
-// Walk a main-package file's top-level statements and register every constant
-// definition (Stmt_Define / Stmt_Assign / Stmt_Decl / Stmt_Multi_Assign) into
-// c.table.constants. Mirrors the loop in extract_module_into_checked that
-// runs for imported modules — the main package didn't have an equivalent
-// hook before this pass.
-register_main_top_level_constants :: proc(c: ^Checker, stmts: [dynamic]Stmt, module_name: string) {
-    if module_name == "" { return }
-    for stmt in stmts {
-        if assign, ok := stmt.(^Stmt_Assign); ok {
-            if _, is_include := assign.value.(^Expr_Include); !is_include && assign.value != nil {
-                register_module_constant(c, module_name, assign.name, assign.value)
-            }
-        }
-        if multi, ok := stmt.(^Stmt_Multi_Assign); ok {
-            for a in multi.assigns {
-                if a.value != nil {
-                    register_module_constant(c, module_name, a.name, a.value)
-                }
-            }
-        }
-        if decl, ok := stmt.(^Stmt_Decl); ok {
-            for inner in decl.checked {
-                if a, aok := inner.(^Stmt_Assign); aok {
-                    if _, is_include := a.value.(^Expr_Include); !is_include && a.value != nil {
-                        register_module_constant(c, module_name, a.name, a.value)
-                    }
-                }
-            }
-        }
-        if def, ok := stmt.(^Stmt_Define); ok {
-            if _, is_include := def.value.(^Expr_Include); !is_include && def.value != nil {
-                register_module_constant(c, module_name, def.name, def.value)
-            }
-        }
-    }
-}
 
 // Insert a top-level module constant into c.table.constants. The flat
 // (mangled) name is always inserted. The bare name is inserted only when no
@@ -10900,7 +10861,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         // and DOES run the 1.5 constant pass so body checks can resolve
         // top-level `::` values.
         main_files_by_src, main_file_order, main_file_envs := partition_package_files(main_prog^, env)
-        check_package_files(&c, main_files_by_src, main_file_order, main_file_envs, nil, env, register_constants = true)
+        check_package_files(&c, main_files_by_src, main_file_order, main_file_envs, nil, env)
 
         // Register a synthetic module-struct for any `use` of this package
         // (still possible from imported modules that happen to reference it).
