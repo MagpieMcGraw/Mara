@@ -1,0 +1,19 @@
+module nested_fwd_fun
+
+// Regression / property guard: a forward reference to a nested `::` fun defined
+// LATER in the same body. `v := compute(5)` is checked before `compute` appears
+// in source order, so the nested fun's signature must be resolved ahead of the
+// sibling decl that calls it (historically the "eager_signatures" pass in
+// check_scope). Only Pounce/suite-invisible before — this guards it directly.
+// (Top-level fun signatures resolve on demand now; nested ones still resolve
+// eagerly within their enclosing scope, which is what this exercises.)
+
+make :: fun() -> i64 {
+    v := compute(5)
+    compute :: fun(x: i64) -> i64 { return x * 2 }
+    return v
+}
+
+main :: fun() {
+    print(make())   // 10
+}
