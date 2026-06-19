@@ -57,6 +57,20 @@ for f in *.mara; do
     else xfail=$((xfail+1)); fi
   fi
 done
+
+# Multi-file module fixtures (cross-file resolution) live in opt-in subdirs
+# marked with a .multifile file. The flat per-file loop above can't combine
+# them, and loose multi-file modules collide on discovery in this directory.
+# Each marked test/<dir>/ is built as module <dir>; success = compiles.
+ROOT="$(cd .. && pwd)"
+for d in */; do
+  d="${d%/}"
+  [ -f "$d/.multifile" ] || continue
+  out=$(cd "$d" && "$ROOT/Mara.exe" build "$d" 2>&1)
+  if echo "$out" | grep -q "Compiled module"; then pass=$((pass+1)); else echo "REGRESSION (multi-file subdir, want pass): $d"; bad=$((bad+1)); fi
+  rm -f "$d/$d.exe" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
+done
+
 echo "----"
 echo "pass=$pass  xfail=$xfail  skip=$skip  mismatches=$bad"
 [ $bad -eq 0 ] && { echo "OK — all fixtures matched expectations"; exit 0; } || exit 1

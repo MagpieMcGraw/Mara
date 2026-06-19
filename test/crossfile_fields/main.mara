@@ -1,0 +1,17 @@
+module crossfile_fields
+
+// Regression / property guard (multi-file): a body in THIS file reads fields of
+// a struct declared in another file of the same module. Needs every struct's
+// signature resolved across ALL files before any body is checked (historically
+// "Pass 2a"). Only Pounce caught a break here before — this is the minimal
+// isolated guard. Lives in a subdir because loose multi-file modules collide on
+// discovery in the flat test/ directory.
+
+main :: fun() {
+    m := make_mesh()
+    print(i64(read_total(m)))   // 9
+}
+
+read_total :: fun(m: Mesh) -> i64 {
+    return m.verts + m.idx
+}

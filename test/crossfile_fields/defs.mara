@@ -1,0 +1,7 @@
+module crossfile_fields
+
+Mesh :: struct { verts: i64  idx: i64 }
+
+make_mesh :: fun() -> Mesh {
+    return Mesh{verts = 3, idx = 6}
+}

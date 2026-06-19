@@ -1,0 +1,19 @@
+module nested_fwd_field
+
+// Regression / property guard: a struct field default reads a field of a nested
+// struct defined LATER in the same parameterized-struct body. Exercises nested
+// type-signature resolution before sibling field defaults are checked
+// (historically the "Pass 1a.5" hand-off). Whatever resolves it — a phase today,
+// the on-demand resolver later — must keep this compiling.
+
+W :: struct(n: i32) {
+    head : Inner = Inner{count = 5}
+    body : i32 = head.count
+
+    Inner :: struct { count : i32 }
+}
+
+main :: fun() {
+    w := W(3)
+    print(i64(w.body))   // 5
+}
