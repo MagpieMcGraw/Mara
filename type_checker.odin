@@ -9976,6 +9976,94 @@ find_matching_modules :: proc(c: ^Checker, path: string) -> [dynamic]string {
 // (lazy_load_module_program removed — all modules are pre-parsed and looked up
 // from c.programs directly in check_module.)
 
+// Partition a package's statements into per-file buckets (preserving first-seen
+// file order) and create a file_env per file (parent = pkg_env). Per-file envs
+// keep include-introduced names private to their file, while defined names
+// register up into pkg_env so sibling files see them. Both the main package
+// (check_program) and imported modules (check_module) scope this way.
+partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
+    (files_by_src: map[string][dynamic]Stmt, file_order: [dynamic]string, file_envs: map[string]^Type_Env) {
+    for stmt in stmts {
+        src := stmt_span(stmt).file
+        if _, exists := files_by_src[src]; !exists {
+            files_by_src[src] = make([dynamic]Stmt)
+            append(&file_order, src)
+        }
+        bucket := &files_by_src[src]
+        append(bucket, stmt)
+    }
+    for src in file_order {
+        fe := new(Type_Env)
+        fe.parent = pkg_env
+        file_envs[src] = fe
+    }
+    return
+}
+
+// THE canonical per-file checking pipeline for one package. Both check_program
+// (main package) and check_module (imports) drive it, so the phase sequence
+// lives in exactly one place. Each phase runs across ALL files before the next
+// begins — that whole-package hoisting is what lets cross-file forward
+// references resolve regardless of (hash-seeded, non-deterministic) file order:
+//
+//   1a   register_type_names              — type + fn NAMES (+ eager signatures)
+//   1b   register_and_check_declarations  — body fields, base/param/return types,
+//                                           statement-level decls; named struct-
+//                                           literal `::` constants are QUEUED here
+//                                           (their target's fields don't exist yet)
+//   1.5  register_main_top_level_constants — top-level constant VALUES into the
+//                                           symbol table. Main package only; an
+//                                           imported module's constants are
+//                                           registered by extract_module_into_checked.
+//   2a   check_scope_body(signature_only) — struct field types, so a body in file
+//                                           A can read a struct declared in file B
+//   2a.5 flush_deferred_literals          — fields exist now: validate the queued
+//                                           named-literal constants from 1b
+//   2    check_bodies                     — full function-body type-checking
+//
+// owner is the module-struct that top-level decls attach to (nil for the main
+// package, which has no enclosing module-struct); pkg_env is the package scope
+// that defined names register into.
+check_package_files :: proc(
+    c: ^Checker,
+    files_by_src: map[string][dynamic]Stmt,
+    file_order: [dynamic]string,
+    file_envs: map[string]^Type_Env,
+    owner: ^Type_Scope,
+    pkg_env: ^Type_Env,
+    register_constants: bool,
+) {
+    for src in file_order {  // 1a
+        register_type_names(c, files_by_src[src], file_envs[src], owner, pkg_env)
+    }
+
+    c.defer_define_literals = true  // 1b — queue named struct literals (see flush below)
+    for src in file_order {
+        register_and_check_declarations(c, files_by_src[src], file_envs[src], owner, pkg_env)
+    }
+    c.defer_define_literals = false
+
+    if register_constants {  // 1.5 — main package only
+        for src in file_order {
+            register_main_top_level_constants(c, files_by_src[src], c.current_package)
+        }
+    }
+
+    for src in file_order {  // 2a — struct signatures, cross-file
+        for stmt in files_by_src[src] {
+            if sc, ok := stmt.(^Stmt_Scope); ok && sc.kind == .Struct {
+                check_scope_body(c, sc, file_envs[src], signature_only = true)
+            }
+        }
+    }
+
+    flush_deferred_literals(c)  // 2a.5
+
+    for src in file_order {  // 2 — bodies
+        check_bodies(c, files_by_src[src], file_envs[src])
+    }
+}
+
 // Type-check a module on demand (lazily, triggered by include).
 // Returns a Type_Scope (module-struct) with scope set to the module's checked env.
 // Modules are funs — Type_Scope with no data fields, only functions/types/scope.
@@ -10060,80 +10148,14 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     c.operator_overloads = {}
     c.deferred_literals = {}
 
-    // Type-check the module's declarations and bodies, with mod_struct as
-    // the owner so top-level decls are attached as functions/types.
-    //
-    // Per-file scoping: each .mara file in the module gets its own file_env
-    // (parent = mod_env). Defined names (functions, structs, types, constants)
-    // register into mod_env so siblings can see them. Include-introduced names
-    // register into the originating file's file_env, so they stay private to
-    // that file. Lookup chain inside a function body: body -> file_env ->
-    // mod_env -> STOP (mod_env is_module_scope=true).
-    files_by_src: map[string][dynamic]Stmt
-    file_order: [dynamic]string
-    for stmt in mod_program {
-        src := stmt_span(stmt).file
-        if _, exists := files_by_src[src]; !exists {
-            files_by_src[src] = make([dynamic]Stmt)
-            append(&file_order, src)
-        }
-        bucket := &files_by_src[src]
-        append(bucket, stmt)
-    }
-
-    file_envs: map[string]^Type_Env
-    for src in file_order {
-        fe := new(Type_Env)
-        fe.parent = mod_env
-        file_envs[src] = fe
-    }
-
-    // Pass 1a: pre-register type and function NAMES across all files first,
-    // so cross-file forward references in Pass 1b resolve regardless of
-    // file order. Multi-file modules need this because file iteration order
-    // is map-driven (hash-seeded, not deterministic). Single-file modules
-    // run through the same path harmlessly — pre-registration just primes
-    // the entries that Pass 1b would have allocated anyway.
-    for src in file_order {
-        register_type_names(c, files_by_src[src], file_envs[src], mod_struct, mod_env)
-    }
-
-    // Pass 1b: resolve body fields, base types, param/return types, and
-    // check statement-level declarations. Pre-registered entries get filled
-    // in; everything else (Stmt_Decl, Stmt_Assign, Stmt_Foreign, etc.)
-    // runs the original allocation-and-resolve flow. Struct-literal `::`
-    // constants get queued (fields don't exist until 2a) and flush below.
-    c.defer_define_literals = true
-    for src in file_order {
-        register_and_check_declarations(c, files_by_src[src], file_envs[src], mod_struct, mod_env)
-    }
-    c.defer_define_literals = false
-
-    // Pass 2a: resolve struct signatures (field types) across ALL files
-    // before any file's Pass 2b body-check runs. Without this, a body in
-    // one file that does `^OtherStruct`-field access against a struct
-    // declared in another file may see an empty fields list — the per-file
-    // check_bodies does its own Phase 2a, but that's too late: by the time
-    // file A's check_bodies runs Phase 2a for file A's structs, file B's
-    // check_bodies has already run Phase 2b body checks that may have
-    // tried to resolve those fields. Hoisting Phase 2a to the module
-    // level fixes the same cross-file forward-ref class of bug that the
-    // Pass 1a hoist fixed for registration.
-    for src in file_order {
-        for stmt in files_by_src[src] {
-            if sc, ok := stmt.(^Stmt_Scope); ok && sc.kind == .Struct {
-                check_scope_body(c, sc, file_envs[src], signature_only = true)
-            }
-        }
-    }
-
-    // Pass 2a.5: struct fields now exist — validate the queued literals.
-    flush_deferred_literals(c)
-
-    // Pass 2: type-check function bodies per-file under the file's env.
-    for src in file_order {
-        check_bodies(c, files_by_src[src], file_envs[src])
-    }
+    // Type-check the module's declarations and bodies via the canonical
+    // per-file pipeline (see check_package_files for the phase map). mod_struct
+    // owns the top-level decls; mod_env is the module scope names register into.
+    // Lookup chain inside a body: body -> file_env -> mod_env -> STOP
+    // (mod_env is_module_scope=true). Modules skip the 1.5 constant pass —
+    // extract_module_into_checked registers an imported module's constants.
+    files_by_src, file_order, file_envs := partition_package_files(mod_program, mod_env)
+    check_package_files(c, files_by_src, file_order, file_envs, mod_struct, mod_env, register_constants = false)
 
     // Preserve module's dispatch groups for propagation on `using include`
     mod_struct.dispatch_groups = c.dispatch_groups
@@ -10786,61 +10808,12 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // env via public_env; include-introduced names stay file-private.
     c.current_package = main_package
     {
-        main_files_by_src: map[string][dynamic]Stmt
-        main_file_order: [dynamic]string
-        for stmt in main_prog^ {
-            src := stmt_span(stmt).file
-            if _, exists := main_files_by_src[src]; !exists {
-                main_files_by_src[src] = make([dynamic]Stmt)
-                append(&main_file_order, src)
-            }
-            bucket := &main_files_by_src[src]
-            append(bucket, stmt)
-        }
-
-        main_file_envs: map[string]^Type_Env
-        for src in main_file_order {
-            fe := new(Type_Env)
-            fe.parent = env
-            main_file_envs[src] = fe
-        }
-
-        // Pass 1a: pre-register names across all files in this package.
-        for src in main_file_order {
-            register_type_names(&c, main_files_by_src[src], main_file_envs[src], nil, env)
-        }
-
-        // Pass 1b: register declarations per-file. Struct-literal `::`
-        // constants get queued (fields don't exist until 2a) and flush below.
-        c.defer_define_literals = true
-        for src in main_file_order {
-            register_and_check_declarations(&c, main_files_by_src[src], main_file_envs[src], nil, env)
-        }
-        c.defer_define_literals = false
-
-        // Pass 1.5: register main package's top-level constants in
-        // c.table.constants so body-check-time lookups can find them.
-        for src in main_file_order {
-            register_main_top_level_constants(&c, main_files_by_src[src], main_package)
-        }
-
-        // Pass 2a: resolve struct signatures across this package's files
-        // before any Pass 2b body-check runs.
-        for src in main_file_order {
-            for stmt in main_files_by_src[src] {
-                if sc, ok := stmt.(^Stmt_Scope); ok && sc.kind == .Struct {
-                    check_scope_body(&c, sc, main_file_envs[src], signature_only = true)
-                }
-            }
-        }
-
-        // Pass 2a.5: struct fields now exist — validate the queued literals.
-        flush_deferred_literals(&c)
-
-        // Pass 2: type-check function bodies per-file under the file's env.
-        for src in main_file_order {
-            check_bodies(&c, main_files_by_src[src], main_file_envs[src])
-        }
+        // Canonical per-file pipeline (see check_package_files for the phase
+        // map). The main package has no enclosing module-struct (owner = nil)
+        // and DOES run the 1.5 constant pass so body checks can resolve
+        // top-level `::` values.
+        main_files_by_src, main_file_order, main_file_envs := partition_package_files(main_prog^, env)
+        check_package_files(&c, main_files_by_src, main_file_order, main_file_envs, nil, env, register_constants = true)
 
         // Register a synthetic module-struct for any `use` of this package
         // (still possible from imported modules that happen to reference it).
