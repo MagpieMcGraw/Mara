@@ -6132,26 +6132,43 @@ register_enum_variants :: proc(c: ^Checker, et: ^Type_Enum, env: ^Type_Env, enum
 // forward signatures. Names only: fields/bodies still resolve in 1b/Phase 2,
 // and register_scope_defs REUSES these Type_Scopes (same pointer), so type
 // identity holds across both passes.
+// Mint (or reuse, to preserve type identity for an already-registered forward
+// signature) the Type_Scope for a nested struct / parameterized-struct `s`
+// declared in `parent`, keyed by its bare name. Sets only the identity fields
+// shared by the early name pass and the full register pass; callers fill
+// ast/source_name/params as needed. Mangled name = parent.name + "_" + bare.
+// One place mints a nested struct scope, so the name pass and register_scope_defs
+// can't drift on naming / table keys / parent_scope.
+register_nested_struct_scope :: proc(c: ^Checker, parent: ^Type_Scope, bare: string, s: ^Stmt_Scope) -> ^Type_Scope {
+    mangled := fmt.aprintf("%s_%s", parent.name, bare)
+    ts: ^Type_Scope
+    if parent.types != nil {
+        if existing, ok := parent.types[bare]; ok {
+            if ets, ets_ok := existing.(^Type_Scope); ets_ok { ts = ets }
+        }
+    }
+    if ts == nil { ts = new(Type_Scope) }
+    ts.name = mangled
+    ts.home_package = c.current_package
+    ts.kind = .Struct
+    ts.is_packed = s.is_packed
+    ts.parent_scope = parent
+    if len(s.typed_params) == 0 {
+        c.table.structs[mangled] = ts
+    } else {
+        c.table.funs[mangled] = ts
+    }
+    if parent.types == nil { parent.types = make(map[string]Type) }
+    parent.types[bare] = ts
+    return ts
+}
+
 pre_register_nested_struct_types :: proc(c: ^Checker, parent: ^Type_Scope, body: [dynamic]Stmt) {
     for def in body {
         s, is_scope := def.(^Stmt_Scope)
         if !is_scope { continue }
         if s.kind != .Struct { continue }
-        bare := s.name
-        mangled := fmt.aprintf("%s_%s", parent.name, bare)
-        nested := new(Type_Scope)
-        nested.name = mangled
-        nested.home_package = c.current_package
-        nested.kind = .Struct
-        nested.is_packed = s.is_packed
-        nested.parent_scope = parent
-        if len(s.typed_params) == 0 {
-            c.table.structs[mangled] = nested
-        } else {
-            c.table.funs[mangled] = nested
-        }
-        if parent.types == nil { parent.types = make(map[string]Type) }
-        parent.types[bare] = nested
+        nested := register_nested_struct_scope(c, parent, s.name, s)
         pre_register_nested_struct_types(c, nested, s.defs)
     }
 }
@@ -6198,23 +6215,9 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // Reuse the Type_Scope when pre_register_nested_struct_types already
                 // minted it (Pass 2a) — forward signatures captured that pointer,
                 // so a fresh object here would split type identity.
-                def_st: ^Type_Scope
-                if st.types != nil {
-                    if existing, ex_ok := st.types[bare_name]; ex_ok {
-                        if ets, ets_ok := existing.(^Type_Scope); ets_ok { def_st = ets }
-                    }
-                }
-                if def_st == nil { def_st = new(Type_Scope) }
-                def_st.name = mangled
-                def_st.home_package = c.current_package
-                def_st.kind = .Struct
-                def_st.is_packed = s.is_packed
+                def_st := register_nested_struct_scope(c, parent_ts, bare_name, s)
                 def_st.ast = s
                 def_st.source_name = bare_name
-                def_st.parent_scope = parent_ts
-                c.table.structs[mangled] = def_st
-                if st.types == nil { st.types = make(map[string]Type) }
-                st.types[bare_name] = def_st
                 // Recurse so this struct's OWN nested `::` defs (deeper types,
                 // consts, methods) register into def_st.types — needed for
                 // `Parent.Inner.Innermost` type-position resolution. Gate on
@@ -6232,32 +6235,28 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // Struct kinds may have been pre-registered by Pass 2a (see the
                 // pure-data branch above) — reuse to keep type identity.
                 def_ft: ^Type_Scope
-                if def_is_struct && st.types != nil {
-                    if existing, ex_ok := st.types[bare_name]; ex_ok {
-                        if ets, ets_ok := existing.(^Type_Scope); ets_ok { def_ft = ets }
-                    }
-                }
-                if def_ft == nil { def_ft = new(Type_Scope) }
-                def_ft.name = mangled
-                def_ft.home_package = c.current_package
-                def_ft.has_parens = s.has_parens
-                def_ft.ast = s
-                def_ft.source_name = bare_name
-                def_ft.parent_scope = parent_ts
                 if def_is_struct {
-                    def_ft.kind = .Struct
-                    def_ft.is_packed = s.is_packed
-                    // Phase 2 (check_bodies) resolves fields; we only register the name here.
-                    c.table.funs[mangled] = def_ft
-                    if st.types == nil { st.types = make(map[string]Type) }
-                    st.types[bare_name] = def_ft
-                    // Recurse to register this struct's nested `::` defs. Gate on
-                    // s.defs (what we register), not s.body: a struct can hold
-                    // nested types without any runtime body of its own.
+                    // Parameterized struct constructor — mint via the shared helper
+                    // (reuses a pre-registered pointer; sets name / kind / is_packed
+                    // / parent_scope / c.table.funs / st.types), then fill the
+                    // def-specific fields and recurse into its own nested defs.
+                    def_ft = register_nested_struct_scope(c, parent_ts, bare_name, s)
+                    def_ft.has_parens = s.has_parens
+                    def_ft.ast = s
+                    def_ft.source_name = bare_name
                     if len(s.defs) > 0 {
                         register_scope_defs(c, def_ft, &def_ft.sd, s.defs, &scope_env)
                     }
                 } else {
+                    // Plain nested fun — not a data type, so no c.table.funs / st.types
+                    // entry here (registered in st.functions + root_env below).
+                    def_ft = new(Type_Scope)
+                    def_ft.name = mangled
+                    def_ft.home_package = c.current_package
+                    def_ft.has_parens = s.has_parens
+                    def_ft.ast = s
+                    def_ft.source_name = bare_name
+                    def_ft.parent_scope = parent_ts
                     def_ft.kind = .Fun
                 }
                 is_callable := !def_is_struct || len(s.typed_params) > 0
