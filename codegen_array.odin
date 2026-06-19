@@ -297,15 +297,22 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
     } else if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         // Distinct-fixed-array struct literal (Quat{...}). Zero-init the slab
         // then store each non-nil slot; nil entries were checker-marked as
-        // zero-fill.
+        // zero-fill. A `[N]Struct = all S()` broadcast lands here too — its
+        // slots are struct constructions, so route those through the in-place
+        // ctor (gen_store_struct_into) rather than the scalar gen_expr+store.
         total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
         emit_memset_zero(g, av.alloca, total_bytes)
+        elem_sd := broadcast_array_elem_struct(sl.type_)
         for elem, i in sl.array_values {
             if elem == nil { continue }
-            val := gen_expr(g, elem, elem_type)
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, av.alloca, i)
-            emit_store(g, elem_type, val, gep)
+            if elem_sd != nil {
+                gen_store_struct_into(g, gep, elem_sd, elem)
+            } else {
+                val := gen_expr(g, elem, elem_type)
+                emit_store(g, elem_type, val, gep)
+            }
         }
     } else {
         // Value is an expression — copy from another array

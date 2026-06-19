@@ -1419,14 +1419,22 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         // like `Quat{w = 1}` into positional slots), so each element is
         // just a GEP+store into sret. Without this case the return was
         // silently emitting `ret void` with no writes — every distinct-
-        // array literal return produced uninitialized output.
+        // array literal return produced uninitialized output. A
+        // `[N]Struct = all S()` broadcast return lands here too; its slots are
+        // struct constructions, so route those through the in-place ctor
+        // instead of the scalar gen_expr+store (which would store a ptr).
         handled = true
+        elem_sd := broadcast_array_elem_struct(sl.type_)
         for elem, i in sl.array_values {
             if elem == nil { continue }   // nil slot — leave as zero
-            val := gen_expr(g, elem, sret_av.elem_type)
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
-            emit_store(g, sret_av.elem_type, val, gep)
+            if elem_sd != nil {
+                gen_store_struct_into(g, gep, elem_sd, elem)
+            } else {
+                val := gen_expr(g, elem, sret_av.elem_type)
+                emit_store(g, sret_av.elem_type, val, gep)
+            }
         }
     }
     if !handled {

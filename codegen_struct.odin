@@ -960,6 +960,19 @@ gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, arr
     gen_store_array_into(g, data_ptr, array_cap, array_elem, value)
 }
 
+// For a broadcast/distinct fixed-array literal, return the element's struct
+// body when the element type is a struct/class — so each slot is constructed
+// in place (e.g. `[4]Cell = all Cell()` runs Cell()'s ctor per slot). Returns
+// nil for scalar elements (Quat-style f32 slots) and when the literal carries
+// no type, leaving the plain gen_expr+store path in charge.
+broadcast_array_elem_struct :: proc(lit_type: Type) -> ^Scope_Body {
+    if lit_type == nil { return nil }
+    if fa, ok := distinct_base(lit_type).(^Type_Fixed_Array); ok {
+        return as_struct_body(fa.elem)
+    }
+    return nil
+}
+
 // Single point of truth for "store an array value into a destination pointer".
 // Handles every RHS shape that can produce a fixed-array value:
 //   - nil         → memset zero
@@ -1024,15 +1037,23 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
     }
 
     // Distinct-fixed-array struct literal (Quat{...} etc.) — array_values has
-    // per-slot exprs, nil meaning zero-fill.
+    // per-slot exprs, nil meaning zero-fill. A `[N]Struct = all S()` broadcast
+    // also lands here; its slots are struct constructions, so route those
+    // through gen_store_struct_into (in-place ctor) instead of the scalar
+    // gen_expr+store, which would store a ptr where a struct value is expected.
     if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         emit_memset_zero(g, dst_ptr, total_bytes)
+        elem_sd := broadcast_array_elem_struct(sl.type_)
         for elem, i in sl.array_values {
             if elem == nil { continue }
-            val := gen_expr(g, elem, elem_type)
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
-            emit_store(g, elem_type, val, gep)
+            if elem_sd != nil {
+                gen_store_struct_into(g, gep, elem_sd, elem)
+            } else {
+                val := gen_expr(g, elem, elem_type)
+                emit_store(g, elem_type, val, gep)
+            }
         }
         return
     }

@@ -8153,6 +8153,26 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 // Pass 2: Check all statement bodies (descend into child scopes)
 // ---------------------------------------------------------------------------
 
+// Fill lit.array_values[0..<size] with the broadcast value: slot 0 reuses the
+// original expr, later slots are independent clones. clone_expr clears
+// `resolved_func` and `type_` on each Expr_Call it copies, so each clone is
+// re-checked here — without this a constructing broadcast (`all Cell()`) would
+// reach codegen with an unresolved call ("unknown function"). The caller must
+// have already type-checked lit.broadcast_value against the element type.
+fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size: int, env: ^Type_Env) {
+    clear(&lit.array_values)
+    resize(&lit.array_values, size)
+    for i in 0..<size {
+        if i == 0 {
+            lit.array_values[0] = lit.broadcast_value
+        } else {
+            cloned := clone_expr(lit.broadcast_value)
+            check_expr(c, cloned, env)
+            lit.array_values[i] = cloned
+        }
+    }
+}
+
 // Expand `{all <expr>}` into per-element entries on `lit.array_values`. The
 // expression is type-checked once against the array's element type; codegen
 // emits N independent stores (clones share the same checked AST node).
@@ -8182,20 +8202,7 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
     if is_infer(val_type) {
         check_literal_overflow(c, lit.broadcast_value, elem_type, span)
     }
-    clear(&lit.array_values)
-    resize(&lit.array_values, size)
-    for i in 0..<size {
-        if i == 0 {
-            lit.array_values[0] = lit.broadcast_value
-        } else {
-            // clone_expr clears `resolved_func` and `type_` on each Expr_Call
-            // it copies — re-run check_expr so each clone has its own
-            // resolution before codegen sees it.
-            cloned := clone_expr(lit.broadcast_value)
-            check_expr(c, cloned, env)
-            lit.array_values[i] = cloned
-        }
-    }
+    fill_broadcast_array_slots(c, lit, size, env)
     lit.type_ = field_type
 }
 
@@ -9204,9 +9211,10 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
         if is_infer(val_type) {
             check_literal_overflow(c, lit.broadcast_value, fa.elem, lit.span)
         }
-        for i in 0..<fa.size {
-            lit.array_values[i] = i == 0 ? lit.broadcast_value : clone_expr(lit.broadcast_value)
-        }
+        // Re-check each clone (shared with the field-default path) so a
+        // constructing broadcast like `all Cell()` keeps its resolved_func per
+        // slot; codegen then constructs the element in place per slot.
+        fill_broadcast_array_slots(c, lit, fa.size, env)
         return
     }
 

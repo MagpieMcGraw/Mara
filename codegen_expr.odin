@@ -308,6 +308,21 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 fa_type = dt.base_type
             }
             if fa, fa_ok := fa_type.(^Type_Fixed_Array); fa_ok {
+                // Struct elements (`all Cell()` in value position, e.g. a call
+                // argument) can't be an inline array constant — each slot needs
+                // its ctor. Materialize into a temp, construct per slot through
+                // the unified store, then load the aggregate as a by-value value
+                // (matching how a [N]Struct parameter is passed).
+                if sd := as_struct_body(fa.elem); sd != nil {
+                    elem_ir := struct_llvm_name(struct_key(sd))
+                    arr_ir := fmt.tprintf("[%d x %s]", fa.size, elem_ir)
+                    tmp := fresh_tmp(g)
+                    emit_alloca(g, tmp, arr_ir)
+                    gen_store_array_into(g, tmp, fa.size, elem_ir, e)
+                    loaded := fresh_tmp(g)
+                    emit_load_into(g, loaded, arr_ir, tmp)
+                    return loaded
+                }
                 elem_t := llvm_type_from_checker(fa.elem)
                 zero_lit := elem_t == "float" || elem_t == "double" ? "0.0" : "0"
                 parts: [dynamic]string

@@ -6,20 +6,40 @@ module broadcast_field
 // including `all` broadcast defaults, are validated and expanded in
 // check_scope_body's full pass, the same path that checks any declaration.
 //
-// The partial-array STRUCT case (`[..N]T = all T()`, like Pounce's `cameras`)
-// is the one the suite never covered — only Pounce did. (The inline
-// check_array_struct_literal broadcast path for fixed-array literals is a
-// separate handler and is NOT exercised here.)
+// Coverage: every array-shape × element-kind combination of `all`:
+//   - fixed-array   scalar  ([4]i32   = all 9)
+//   - partial-array scalar  ([..5]i32 = all 2,    len := size)
+//   - partial-array STRUCT  ([..3]Cell = all Cell(), Pounce's `cameras`)
+//   - fixed-array   STRUCT  ([4]Cell  = all Cell()) — the one that used to break:
+//       the inline check_array_struct_literal broadcast path lost the clone's
+//       resolved_func (local case) and the per-slot store wrote a ptr where a
+//       struct value was expected. Every codegen site that lowers an
+//       array_values broadcast now runs the element ctor per slot: the struct
+//       field default (gen_store_array_into), the local decl (gen_array_assign),
+//       a fixed-array-of-struct return (gen_return_array), and value position /
+//       a call argument (gen_expr → materialize + load).
 
 Cell :: struct {
 	v : i32 = 7
 	tag := 3
 }
 
+// Return a fixed array of structs built by broadcast (gen_return_array path).
+make_cells :: fun() -> [4]Cell { return all Cell() }
+
+// Take a fixed array of structs by value; lets us pass `all Cell()` as a call
+// argument (the gen_expr value-position path).
+sum_v :: fun(cs : [4]Cell) -> i32 {
+	total : i32 = 0
+	for i in 0..4 { total = total + cs[i].v }
+	return total
+}
+
 Grid :: struct {
-	flags  : [4]i32    = all 9       // fixed-array scalar broadcast
-	counts : [..5]i32  = all 2       // partial-array scalar broadcast (len := size)
-	cells  : [..3]Cell = all Cell()  // partial-array STRUCT broadcast — each slot runs Cell()'s defaults
+	flags       : [4]i32    = all 9       // fixed-array scalar broadcast
+	counts      : [..5]i32  = all 2       // partial-array scalar broadcast (len := size)
+	cells       : [..3]Cell = all Cell()  // partial-array STRUCT broadcast — each slot runs Cell()'s defaults
+	cells_fixed : [4]Cell   = all Cell()  // fixed-array STRUCT broadcast — the formerly-broken case
 }
 
 main :: fun() {
@@ -31,5 +51,30 @@ main :: fun() {
 	assert(g.cells.len == 3)
 	assert(g.cells[0].v == 7)     // struct slot ran its field default
 	assert(g.cells[2].tag == 3)
+
+	// fixed-array struct field: every slot constructed with field defaults
+	assert(g.cells_fixed[0].v == 7)
+	assert(g.cells_fixed[3].v == 7)
+	assert(g.cells_fixed[2].tag == 3)
+
+	// fixed-array struct LOCAL: the inline-literal path (gen_array_assign).
+	local : [4]Cell = all Cell()
+	assert(local[0].v == 7)
+	assert(local[3].tag == 3)
+
+	// Slots are independent constructions, not aliases of one value.
+	local[1].v = 99
+	assert(local[1].v == 99)
+	assert(local[0].v == 7)
+	assert(local[2].v == 7)
+
+	// fixed-array struct RETURN value (gen_return_array path).
+	returned := make_cells()
+	assert(returned[0].v == 7)
+	assert(returned[3].tag == 3)
+
+	// fixed-array struct as a call ARGUMENT (gen_expr value position).
+	assert(sum_v(all Cell()) == 28)   // 4 slots × v=7
+
 	print("broadcast_field ok")
 }
