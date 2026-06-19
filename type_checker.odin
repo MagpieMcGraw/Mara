@@ -13596,9 +13596,11 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     } else if fun_type.kind == .Fun {
         ensure_fun_signature(c, fun_type)  // resolve params/returns on demand before arg matching
     }
-    if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.return_types) == 0 {
-        return check_pure_struct_construction(c, e, fun_type, env)
-    }
+    // Pure-data and parameterized constructors share ONE construction path: args
+    // bind to the constructor's PARAMS (a pure-data struct has none, so `Point()`
+    // is the only positional form — `Point(x, y)` fails arg-count below; field
+    // values go in the brace override block, `Point(){ x = 1, y = 2 }`). A
+    // pure-data struct is just a 0-param constructor whose body codegen skips.
 
     // `_` at any positional arg means "use the parameter's default value here."
     // Substitute before filling tail defaults so the two mechanisms compose
@@ -13619,12 +13621,20 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 
     check_call_args(c, check_args[:], fun_type, e.name, e.span, env)
 
-    // Constructor with params: the call's value IS the struct itself (Self).
-    // A fallible constructor also declares a trailing err — that's exposed to
-    // `?` and `t, e := ...` via constructor_effective_returns / call_return_list;
-    // in plain scalar context the result type is still Self.
-    if fun_type.kind == .Struct && len(fun_type.params) > 0 {
+    // Any struct construction: the call's value IS the struct itself (Self) —
+    // pure-data (0 params, args already rejected above) and parameterized alike.
+    // A fallible constructor also declares a trailing err — exposed to `?` and
+    // `t, e := ...` via constructor_effective_returns / call_return_list; in plain
+    // scalar context the result type is still Self. Brace overrides set fields.
+    if fun_type.kind == .Struct {
         e.type_ = fun_type
+        // A pure-data struct isn't in declared_funs, so the resolution dance above
+        // left resolved_func nil — set it here so codegen sees a construction (its
+        // callee is a struct) and zero-inits / runs the init fn, rather than
+        // emitting a function call to a name with no body (e.g. a fieldless struct).
+        if e.resolved_func == nil && fun_type.name != "" {
+            e.resolved_func = Resolved_Func{name = fun_type.name, callee = fun_type}
+        }
         if e.overrides != nil {
             check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env)
         }

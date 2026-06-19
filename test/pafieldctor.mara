@@ -22,8 +22,8 @@ Msg :: union(tag i32) {
 }
 
 main :: fun() {
-	// Positional pure-struct: greet (partial-array) PROVIDED + trailing DEFAULT n.
-	c := Config("hello")
+	// Struct-literal pure-struct: greet (partial-array) PROVIDED + trailing DEFAULT n.
+	c := Config{greet = "hello"}
 	assert(c.greet.len == 5)
 	assert(c.greet[0] == 'h')
 	assert(c.greet[4] == 'o')

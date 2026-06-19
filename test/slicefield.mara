@@ -9,11 +9,13 @@ module slicefield
 //    (llvm_type_from_checker) instead of typing the field []byte. Now it
 //    infers []elem, auto-dereffing a ^[]T / ^[N]T base like check_slice does.
 //
-// 2. A slice value passed to a pure-struct POSITIONAL constructor stored the
-//    header alloca POINTER where the {len,cap,ptr} aggregate was expected —
-//    invalid IR clang rejected ("'%t' defined with type 'ptr' but expected
-//    '{ i64, i64, ptr }'"). Now routed through gen_slice_value_ptr + header
-//    memcpy (gen_positional_ctor_field_store).
+// 2. A slice value as a struct-literal field value (`Wrap{data = view}`) must
+//    store the {len,cap,ptr} aggregate, not the header alloca POINTER — invalid
+//    IR clang rejected ("'%t' defined with type 'ptr' but expected
+//    '{ i64, i64, ptr }'"). Routed through gen_slice_value_ptr + header memcpy.
+//    (This originally exercised the positional pure-struct ctor `Wrap(view)`,
+//    since removed: pure-data structs take no positional args — only `Wrap()` /
+//    `Wrap{...}` literals. Brace field values hit the same slice-store logic.)
 
 Holder :: struct (bytes: ^[]byte) {
 	Wrap :: struct {
@@ -22,8 +24,8 @@ Holder :: struct (bytes: ^[]byte) {
 
 	view := bytes[2:5]           // 1: inferred slice-expr field → []byte
 	head := view[0:1]            // 1: slice of an already-typed sibling field
-	wrap := Wrap(bytes[3:6])     // 2: slice expr as positional ctor arg
-	lit  := Wrap{data = view}    // slice var via struct-literal field value
+	wrap := Wrap{data = bytes[3:6]}  // 2: slice expr as struct-literal field value
+	lit  := Wrap{data = view}        // slice var via struct-literal field value
 }
 
 main :: fun() {
@@ -43,12 +45,12 @@ main :: fun() {
 	assert(h.lit.data.len == 3)
 	assert(h.lit.data[2] == 40)
 
-	// 2, outside any ctor: slice VAR and slice EXPR as positional args.
+	// 2, outside any ctor: slice VAR and slice EXPR as struct-literal field values.
 	view := buf[2:5]
-	a := Wrap2(view)
+	a := Wrap2{data = view}
 	assert(a.data.len == 3)
 	assert(a.data[0] == 20)
-	b := Wrap2(buf[2:5])
+	b := Wrap2{data = buf[2:5]}
 	assert(b.data.len == 3)
 	assert(b.data[2] == 40)
 	print("slicefield ok")

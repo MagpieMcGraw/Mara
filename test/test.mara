@@ -1545,10 +1545,10 @@ test_underscore_default :: fun() {
 	print(with_two(_, _))      // 30
 	print(with_three(1, _, 9)) // 159
 	print(with_three(2, _, _)) // 257
-	a : Point3 = Point3(10, 20, 30)
+	a : Point3 = Point3{10, 20, 30}
 	print(a.x)                 // 10
 	print(a.z)                 // 30
-	b : Point3 = Point3(_, 7, _)
+	b : Point3 = Point3{y = 7}   // x, z take field defaults (100, 300)
 	print(b.x)                 // 100
 	print(b.y)                 // 7
 	print(b.z)                 // 300
