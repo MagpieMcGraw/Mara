@@ -391,9 +391,9 @@ direct_single :: proc(ir: string) -> Lowering {
 //   - Arg Direct[1 part]      → `<part>` (one positional arg)
 //   - Arg Direct[2 parts]     → `<p0>, <p1>` (two positional args)
 //   - Arg Indirect            → `ptr byval(<argty>)` (caller-allocated copy)
-build_c_declare :: proc(cs: ^Checked_Scope, link_name: string, os: Target_OS) -> string {
+build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> string {
     conv := Calling_Conv.C
-    if cs.type_ != nil { conv = cs.type_.calling_conv }
+    if cs != nil { conv = cs.calling_conv }
 
     parts: [dynamic]string
     defer delete(parts)
@@ -401,8 +401,8 @@ build_c_declare :: proc(cs: ^Checked_Scope, link_name: string, os: Target_OS) ->
     // Return lowering. C ABI has no multi-return; foreign return list is 0 or 1.
     ret_ir := "void"
     ret_single: Type
-    has_void_return := len(cs.return_types) == 0
-    if !has_void_return { ret_single = cs.return_types[0] }
+    has_void_return := len(cs.cg_returns) == 0
+    if !has_void_return { ret_single = cs.cg_returns[0] }
     if !has_void_return && is_untyped(ret_single) { has_void_return = true }
     if !has_void_return {
         ret_low := classify_ret(ret_single, conv, os)
@@ -417,7 +417,7 @@ build_c_declare :: proc(cs: ^Checked_Scope, link_name: string, os: Target_OS) ->
     }
 
     // Argument lowering.
-    for p in cs.params {
+    for p in cs.cg_params {
         plow := classify_arg(p.type_, conv, os)
         switch pp in plow {
         case Lowering_Direct:

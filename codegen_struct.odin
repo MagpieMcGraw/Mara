@@ -121,9 +121,9 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     // any foreign types) stay zero-initialized from the alloca-time memset
     // above. By construction they have no field defaults to apply.
     if init_fn, has_init := g.checked.functions[st.name]; has_init {
-        if init_fn.type_ != nil && len(init_fn.type_.params) > 0 {
+        if init_fn != nil && len(init_fn.cg_params) > 0 {
             arg_strs: [dynamic]string
-            for &param in init_fn.type_.params {
+            for &param in init_fn.cg_params {
                 pt := llvm_type_from_checker(param.type_)
                 if param.default_value != nil {
                     val := gen_expr(g, param.default_value, pt)

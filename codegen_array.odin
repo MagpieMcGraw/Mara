@@ -2186,9 +2186,9 @@ type_needs_construction :: proc(g: ^Codegen, t: Type) -> bool {
 emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: string) {
     init_fn, has_init := g.checked.functions[st_name]
     if !has_init { return }
-    if init_fn.type_ != nil && len(init_fn.type_.params) > 0 {
+    if init_fn != nil && len(init_fn.cg_params) > 0 {
         arg_strs: [dynamic]string
-        for &param in init_fn.type_.params {
+        for &param in init_fn.cg_params {
             pt := llvm_type_from_checker(param.type_)
             if param.default_value != nil {
                 val := gen_expr(g, param.default_value, pt)

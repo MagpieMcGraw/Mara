@@ -182,6 +182,51 @@ Scope_Body :: struct {
     // Generic monomorphization metadata
     generic_base:   string,        // "Array" if monomorphized from a template, "" otherwise
     generic_args:   [dynamic]Type, // e.g. [i64] for an Array(i64) instance — for reverse inference
+
+    // --- Codegen unit (formerly the separate Checked_Scope bundle) -----------
+    // A Type_Scope IS what codegen emits: the typed signature/layout PLUS its
+    // body. checked.functions points straight at the ^Type_Scope — no wrapper
+    // carrying a parallel copy of the AST. Populated at extract time (check
+    // phase, stable allocator) so codegen reads them directly.
+    body:                 [dynamic]Stmt,    // the scope's runtime statements (a struct's are its field decls)
+    origin:               Function_Origin,  // Source / Intrinsic / Foreign — codegen dispatch
+    body_span:            Span,             // span of the declaring statement (diagnostics)
+    is_exposed:           bool,             // `#expose` → dllexport linkage + unmangled symbol
+    return_binding_names: [dynamic]string,  // named-return locals (`fun() -> (fwd, up: Vec3)`)
+    // Codegen-facing signature caches (see populate_cg_signature). cg_returns
+    // prepends a struct ctor's Self (sret slot 0); both pre-unwrap distinct.
+    // Built at CHECK time so they stay stable when aliased into the cached
+    // Fun_Info. Replace the deleted Checked_Scope.return_types / .params.
+    cg_returns:           [dynamic]Type,
+    cg_params:            [dynamic]Struct_Type_Field,
+}
+
+// Build the codegen-facing signature caches (cg_returns + cg_params) into ft.
+// Both pre-unwrap distinct wrappers; cg_returns Self-prepends a struct ctor's
+// sret slot 0. Runs at CHECK time so the slices stay stable when codegen aliases
+// them into the cached Fun_Info — computing them during codegen under a transient
+// arena dangles. These are the exact transforms the deleted Checked_Scope caches
+// used, relocated onto the Type_Scope.
+populate_cg_signature :: proc(ft: ^Type_Scope) {
+    clear(&ft.cg_returns)
+    if len(ft.return_types) == 0 && ft.kind == .Struct {
+        append(&ft.cg_returns, distinct_base(Type(ft)))
+    } else if len(ft.return_types) > 0 && ft.kind == .Struct {
+        append(&ft.cg_returns, distinct_base(Type(ft)))
+        for rt in ft.return_types {
+            append(&ft.cg_returns, distinct_base(rt))
+        }
+    } else {
+        for rt in ft.return_types {
+            append(&ft.cg_returns, distinct_base(rt))
+        }
+    }
+    clear(&ft.cg_params)
+    for p in ft.params {
+        pp := p
+        pp.type_ = distinct_base(p.type_)
+        append(&ft.cg_params, pp)
+    }
 }
 
 // Unified scope type — holds struct/class definitions and callable funs.
@@ -1546,11 +1591,6 @@ is_real_field :: proc(sd: ^Scope_Body, name: string) -> bool {
 // ---------------------------------------------------------------------------
 
 // A resolved function parameter with name and type.
-Checked_Param :: struct {
-    name:  string,
-    type_: Type,
-}
-
 // Where this function comes from. Codegen branches on the variant:
 //   Source    → emit a normal function body in IR
 //   Intrinsic → emit a call to the LLVM intrinsic with `llvm_name`
@@ -1581,22 +1621,6 @@ Origin_Foreign :: struct {
 // A fully resolved function: signature, parameter names, body AST, and the
 // origin classification that drives codegen behaviour. Foreigns and
 // intrinsics have empty bodies; their work is dictated by the origin tag.
-Checked_Scope :: struct {
-    name:         string,
-    home_package: string,                // owning module flat name; mirrored from the Type_Scope at registration so post-check phases can partition by module without env lookups
-    type_:        ^Type_Scope,           // resolved param + return types
-    params:       [dynamic]Checked_Param,
-    return_types: [dynamic]Type,         // empty = void; len 1 = single; len > 1 = multi-return
-    body:         [dynamic]Stmt,         // original AST body
-    ast:          ^Stmt_Scope,           // original AST node (for auto-monomorphization)
-    origin:       Function_Origin,       // Source / Intrinsic / Foreign — codegen dispatch
-    span:         Span,
-
-    // Codegen-facing metadata lifted off the AST node at extract time so codegen
-    // never reaches back into `ast` for it (the only `.ast` reads codegen had).
-    is_exposed:           bool,            // `#expose` → dllexport linkage + unmangled symbol
-    return_binding_names: [dynamic]string, // named-return locals (`fun() -> (fwd, up: Vec3)`); only the names are needed
-}
 
 // Checked info for an aliased import package.
 // The complete output of check_program. Captures everything the type checker
@@ -1612,7 +1636,7 @@ Checked_Program :: struct {
     // Functions — source, foreign, and intrinsic all live here, distinguished
     // by Checked_Scope.origin. Codegen iterates this map and dispatches on the
     // origin variant when emitting bodies, declares, and the dynamic loader.
-    functions:      map[string]Checked_Scope,
+    functions:      map[string]^Type_Scope,
     foreign_libs:   map[string]bool,
 
     // Ordered list of main-package function names (preserves AST order for emission)
@@ -3175,7 +3199,7 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
 }
 
 // Instantiate a generic function template with concrete type substitutions.
-// Creates a Checked_Scope stored in checked.functions with the mangled name.
+// Registers a ^Type_Scope in checked.functions under the mangled name.
 instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^map[string]Type, mangled: string, env: ^Type_Env) {
     ast := tmpl.ast
 
@@ -3424,17 +3448,13 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         // path emits the body (apply field defaults, ret void).
         if c.checked != nil {
             if _, exists := c.checked.functions[st.name]; !exists {
-                cs := Checked_Scope{
-                    name         = st.name,
-                    home_package = tmpl.home_package,
-                    type_        = st,
-                    body         = tmpl.ast.body,
-                    ast          = tmpl.ast,
-                    origin       = Origin_Source{},
-                    span         = e.span,
-                }
-                append(&cs.return_types, Type(st))
-                c.checked.functions[st.name] = cs
+                st.home_package = tmpl.home_package
+                st.body = tmpl.ast.body
+                st.ast = tmpl.ast
+                st.origin = Origin_Source{}
+                st.body_span = e.span
+                populate_cg_signature(st)   // Self prepended for .Struct
+                c.checked.functions[st.name] = st
                 append(&c.checked.function_order, st.name)
             }
         }
@@ -10042,7 +10062,7 @@ extract_scope_fun_defs :: proc(checked: ^Checked_Program, defs: [dynamic]Stmt, e
     }
 }
 
-extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTable = nil) -> (Checked_Scope, bool) {
+extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTable = nil) -> (^Type_Scope, bool) {
     ft: ^Type_Scope
     if fun_type_raw, found := type_env_get(env, s.name); found {
         if v, ok := fun_type_raw.(^Type_Scope); ok { ft = v }
@@ -10055,56 +10075,27 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
             ft = table.funs[make_flat_name(home, s.name)]
         }
     }
-    if ft == nil { return {}, false }
+    if ft == nil { return nil, false }
     // Skip funs that have no callable signature (pure parameterless data funs without parens)
     // Exception: struct-kind scopes (struct/class) always get an init function emitted so
     // every construction path (including bare declaration `x: Foo`) can go through it.
     if len(ft.params) == 0 && len(ft.return_types) == 0 && !s.has_parens && ft.kind != .Struct {
-        return {}, false
+        return nil, false
     }
 
-    origin: Function_Origin = Origin_Source{}
+    ft.origin = Origin_Source{}
     if s.is_intrinsic {
-        origin = Origin_Intrinsic{llvm_name = s.intrinsic_name}
+        ft.origin = Origin_Intrinsic{llvm_name = s.intrinsic_name}
     }
-    cf := Checked_Scope{
-        name         = s.name,
-        home_package = ft.home_package,
-        type_        = ft,
-        body         = s.body,
-        ast          = s,
-        origin       = origin,
-        span         = s.span,
-        is_exposed   = s.is_exposed,
-    }
+    ft.body = s.body
+    ft.body_span = s.span
+    ft.is_exposed = s.is_exposed
+    clear(&ft.return_binding_names)
     for rb in s.return_bindings {
-        append(&cf.return_binding_names, rb.name)
+        append(&ft.return_binding_names, rb.name)
     }
-    // Returns. A data struct with no declared return produces its own layout
-    // via sret (Self). Fires for fieldless structs too — they're zero-size but
-    // still constructed through an init function, so they need the sret slot.
-    if len(ft.return_types) == 0 && ft.kind == .Struct {
-        append(&cf.return_types, distinct_base(Type(ft)))
-    } else if len(ft.return_types) > 0 && ft.kind == .Struct {
-        // Fallible constructor: Self is the implicit, in-place sret slot 0,
-        // then the declared returns (the trailing err) follow. The body only
-        // ever returns the declared slots — Self is built in place — so this
-        // prepend is the codegen-facing mirror of constructor_effective_returns.
-        append(&cf.return_types, distinct_base(Type(ft)))
-        for rt in ft.return_types {
-            append(&cf.return_types, distinct_base(rt))
-        }
-    } else {
-        for rt in ft.return_types {
-            append(&cf.return_types, distinct_base(rt))
-        }
-    }
-
-    for p in ft.params {
-        append(&cf.params, Checked_Param{name = p.name, type_ = distinct_base(p.type_)})
-    }
-
-    return cf, true
+    populate_cg_signature(ft)
+    return ft, true
 }
 
 // ---------------------------------------------------------------------------
@@ -10353,7 +10344,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
 // type error pointing at both definition sites. SDL2/SDL3 dual support is
 // not provided — projects that genuinely need to load both versions must
 // rename one side via `prefix`.
-make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Scope, library, prefix: string) -> Checked_Scope {
+make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Scope, library, prefix: string) -> ^Type_Scope {
     ln := decl.name
     if prefix != "" {
         ln = strings.concatenate({prefix, decl.name})
@@ -10365,27 +10356,18 @@ make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Sco
             if fo.link_name != ln { continue }
             check_error(c, decl.span,
                 TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY,
-                ln, fo.library, span_loc(existing.span))
+                ln, fo.library, span_loc(existing.body_span))
             break
         }
     }
-    cs := Checked_Scope{
-        name         = decl.name,
-        home_package = ft.home_package,
-        type_        = ft,
-        ast          = nil,
-        origin       = Origin_Foreign{
-            library    = library,
-            link_name  = ln,
-            prefix     = prefix,
-        },
-        span        = decl.span,
+    ft.origin = Origin_Foreign{
+        library    = library,
+        link_name  = ln,
+        prefix     = prefix,
     }
-    for rt in ft.return_types { append(&cs.return_types, distinct_base(rt)) }
-    for p in ft.params {
-        append(&cs.params, Checked_Param{name = p.name, type_ = distinct_base(p.type_)})
-    }
-    return cs
+    ft.body_span = decl.span
+    populate_cg_signature(ft)
+    return ft
 }
 
 // Walk a struct/class body for foreign blocks and register their decls in
@@ -10991,18 +10973,13 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         flat_key := make_flat_name(tmpl_home, mangled_name)
         // Use cloned body if available (each monomorphization has independent type annotations)
         body := c.table.mono_fun_bodies[mangled_name] if mangled_name in c.table.mono_fun_bodies else tmpl_ast.body
-        cf := Checked_Scope{
-            name         = flat_key,
-            home_package = tmpl_home,
-            type_        = ft,
-            body         = body,
-            span         = tmpl_ast.span,
-        }
-        for rt in ft.return_types { append(&cf.return_types, distinct_base(rt)) }
-        for p in ft.params {
-            append(&cf.params, Checked_Param{name = p.name, type_ = distinct_base(p.type_)})
-        }
-        checked.functions[flat_key] = cf
+        ft.name = flat_key   // codegen emits @mara_<name>; the call site resolves to flat_key
+        ft.home_package = tmpl_home
+        ft.body = body
+        ft.body_span = tmpl_ast.span
+        ft.origin = Origin_Source{}
+        populate_cg_signature(ft)
+        checked.functions[flat_key] = ft
     }
 
     // Phase 3: Validate the main package's program structure. Exe packages

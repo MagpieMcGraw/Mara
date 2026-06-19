@@ -239,7 +239,7 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
     g.all_vars[name] = Scalar_Var{alloca = addr}
 }
 
-gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
+gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     // Foreigns and intrinsics have no body to emit — foreign calls dispatch
     // through their `declare` and link_name; intrinsic calls expand inline at
     // each call site to an @llvm.* call.
@@ -259,13 +259,13 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     ret_slice_utf8 := false
     ret_partial_elem := ""
     ret_partial_cap := 0
-    if len(cf.return_types) > 1 {
+    if len(cf.cg_returns) > 1 {
         ret_type = "void"
-        ret_types = cf.return_types[:]
-    } else if len(cf.return_types) == 0 {
+        ret_types = cf.cg_returns[:]
+    } else if len(cf.cg_returns) == 0 {
         ret_type = "void"
     } else {
-        single := cf.return_types[0]
+        single := cf.cg_returns[0]
         if sd := as_struct_body(single); sd != nil {
             ret_type = "void"
             ret_struct_name = sd.name
@@ -293,7 +293,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
 
     // Build parameter list — struct params passed as ptr, slices as { ptr, i64 }
     param_strs: [dynamic]string
-    for p in cf.params {
+    for p in cf.cg_params {
         if sd := as_struct_body(p.type_); sd != nil {
             append(&param_strs, fmt.tprintf("ptr %%%s.arg", p.name))
         } else if _, ut_ok := p.type_.(^Type_Union); ut_ok {
@@ -346,8 +346,8 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // inside the DLL read the host's globals. Validated at type-check time:
     // first param is `^Context`. Use %<name>.arg directly (before the normal
     // per-param alloca dance, which would also write %<name>).
-    if cf.is_exposed && len(cf.params) > 0 {
-        emit(g, "  store ptr %%%s.arg, ptr @__mara_program", cf.params[0].name)
+    if cf.is_exposed && len(cf.cg_params) > 0 {
+        emit(g, "  store ptr %%%s.arg, ptr @__mara_program", cf.cg_params[0].name)
     }
 
     // Save and reset codegen state for this function
@@ -395,7 +395,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
         // skip their own alloca; subsequent reads and writes of bare field names
         // route through the caller's slot directly. Replaces the prior
         // copy-locals-to-sret epilogue.
-        if cf.type_ != nil && cf.type_.kind == .Struct {
+        if cf.kind == .Struct {
             if ret_st, rs_ok := lookup_struct(g, ret_struct_name); rs_ok {
                 sret_llvm := struct_llvm_name(ret_struct_name)
                 for &f, i in ret_st.fields {
@@ -422,7 +422,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // slots 1+. The g.ctor_has_self_sret flag tells the return machinery to skip
     // slot 0 — Self is never named in a `return`, only built field-by-field.
     g.ctor_has_self_sret = false
-    if ret_struct_name == "" && cf.type_ != nil && cf.type_.kind == .Struct && ret_types != nil {
+    if ret_struct_name == "" && cf.kind == .Struct && ret_types != nil {
         if self_sd := as_struct_body(ret_types[0]); self_sd != nil {
             g.ctor_has_self_sret = true
             sret_llvm := struct_llvm_name(self_sd.name)
@@ -555,7 +555,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     }
 
     // Alloca for each parameter
-    for p in cf.params {
+    for p in cf.cg_params {
         if sd := as_struct_body(p.type_); sd != nil {
             // Struct param: arg is already a ptr to the struct, no alloca needed
             g.all_vars[p.name] = Struct_Var{

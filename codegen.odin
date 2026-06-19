@@ -382,7 +382,7 @@ Codegen :: struct {
     // Saved/restored around nested gen_call invocations so each call site
     // gets a fresh cache.
     tuple_default_cache: map[rawptr]Tuple_Default_Entry,
-    // Fun_Info cache: avoids re-deriving from Checked_Scope on every call
+    // Fun_Info cache: avoids re-deriving from the checked scope on every call
     fun_info_cache:   map[string]Fun_Info,
     // Temp results: typed fields replacing magic __call_result / __field_result / __swizzle_result
     // in all_vars. Set by gen_call / gen_field_access / gen_swizzle_read_multi, claimed by callers.
@@ -982,7 +982,7 @@ call_resolved_name :: proc(e: ^Expr_Call) -> string {
     return e.name
 }
 
-// Derive Fun_Info from a Checked_Scope, with caching.
+// Derive Fun_Info from a checked ^Type_Scope, with caching.
 // Returns the info and true if found, or zero value and false if not.
 lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
     // Check cache first
@@ -997,13 +997,13 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
     info := Fun_Info{}
 
     // Return type: struct/array/multi-return/slice returns use void + sret convention
-    if len(cf.return_types) > 1 {
+    if len(cf.cg_returns) > 1 {
         info.ret_type = "void"
-        info.ret_types = cf.return_types[:]
-    } else if len(cf.return_types) == 0 {
+        info.ret_types = cf.cg_returns[:]
+    } else if len(cf.cg_returns) == 0 {
         info.ret_type = "void"
     } else {
-        single := cf.return_types[0]
+        single := cf.cg_returns[0]
         if sd := as_struct_body(single); sd != nil {
             info.ret_type = "void"
             info.ret_struct = sd.name
@@ -1026,7 +1026,7 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
     }
 
     // Parameter types
-    for p in cf.params {
+    for p in cf.cg_params {
         if sd := as_struct_body(p.type_); sd != nil {
             append(&info.param_types, "ptr")
             append(&info.param_structs, sd.name)
@@ -1491,7 +1491,7 @@ module_codegen_worker :: proc(t: thread.Task) {
     for fn_name in task.fn_names {
         cf, cf_ok := task.checked.functions[fn_name]
         if !cf_ok { continue }
-        gen_scope_def(&local, &cf)
+        gen_scope_def(&local, cf)
     }
     flush_current_module(&local)
 
@@ -3168,7 +3168,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
         // Check if alloc() takes debug params (name/span) beyond (arena, size)
         if alloc_cf, af_ok := checked.functions[g.arena_alloc_name]; af_ok {
-            g.arena_alloc_has_debug = len(alloc_cf.params) > 2
+            g.arena_alloc_has_debug = len(alloc_cf.cg_params) > 2
         }
     }
 
@@ -4032,7 +4032,7 @@ build_foreign_declares :: proc(g: ^Codegen, checked: ^Checked_Program) -> map[st
         cs := checked.functions[k]
         fo, is_foreign := cs.origin.(Origin_Foreign)
         if !is_foreign { continue }
-        result[fo.link_name] = build_c_declare(&cs, fo.link_name, checked.target_os)
+        result[fo.link_name] = build_c_declare(cs, fo.link_name, checked.target_os)
     }
     return result
 }

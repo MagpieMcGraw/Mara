@@ -63,8 +63,8 @@ build_call_graph :: proc(c: ^Checker) -> Call_Graph {
     // to analyze and are reachable by definition (external entry), so skip them.
     if c.checked != nil {
         for _, cs in c.checked.functions {
-            if _, is_source := cs.origin.(Origin_Source); is_source && cs.type_ != nil {
-                cg_node(&g, cs.type_)
+            if _, is_source := cs.origin.(Origin_Source); is_source && cs != nil {
+                cg_node(&g, cs)
             }
         }
     }

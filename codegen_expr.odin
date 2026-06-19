@@ -1307,7 +1307,7 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
 // already diverged twice (the SLICE_IR_TYPE and byte-buffer materialization
 // branches were each missing from a subset). Every branch produces exactly one
 // arg string, so a single return value suffices.
-gen_mara_call_arg :: proc(g: ^Codegen, arg: Expr, i: int, info: ^Fun_Info, cs_resolved: ^Checked_Scope, has_cs: bool) -> string {
+gen_mara_call_arg :: proc(g: ^Codegen, arg: Expr, i: int, info: ^Fun_Info, cs_resolved: ^Type_Scope, has_cs: bool) -> string {
     if i < len(info.param_structs) && info.param_structs[i] != "" {
         // Struct arg: pass as ptr (no target_type needed)
         val := gen_expr(g, arg)
@@ -1333,7 +1333,7 @@ gen_mara_call_arg :: proc(g: ^Codegen, arg: Expr, i: int, info: ^Fun_Info, cs_re
     if strings.has_prefix(pt, "[") {
         materialized := ""
         param_ty: Type
-        if has_cs && i < len(cs_resolved.params) { param_ty = cs_resolved.params[i].type_ }
+        if has_cs && i < len(cs_resolved.cg_params) { param_ty = cs_resolved.cg_params[i].type_ }
         if sl_expr, sl_ok := arg.(^Expr_Slice); sl_ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
             materialized = emit_array_from_byte_buffer(g, sl_expr.expr, sl_expr.low, pt, sl_expr.span, param_ty, sl_expr.is_big_endian)
         } else if idx_expr, idx_ok := arg.(^Expr_Index); idx_ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
@@ -1532,7 +1532,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     foreign_lookup := call_resolved_name(e)
     if cs, ok := g.checked.functions[foreign_lookup]; ok {
         if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
-            return gen_c_call(g, e, &cs, fo.link_name, foreign_lookup)
+            return gen_c_call(g, e, cs, fo.link_name, foreign_lookup)
         }
     }
 
@@ -1557,14 +1557,14 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         // Pull the resolved Checked_Scope for param checker types — needed for
         // shape-sensitive conversions (cstr → cstring, etc.) that the IR type
         // string alone can't disambiguate.
-        cs_resolved: Checked_Scope
+        cs_resolved: ^Type_Scope
         has_cs := false
         if cs_val, cs_ok := g.checked.functions[lookup_name]; cs_ok {
             cs_resolved = cs_val
             has_cs = true
         }
         for arg, i in e.args {
-            append(&arg_strs, gen_mara_call_arg(g, arg, i, &info, &cs_resolved, has_cs))
+            append(&arg_strs, gen_mara_call_arg(g, arg, i, &info, cs_resolved, has_cs))
         }
 
         if info.ret_struct != "" {
@@ -1721,18 +1721,18 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
 //   Direct return, scalar  → capture the SSA result
 //   Direct return, aggr.   → alloca slot + extract+store each part, return slot
 //   Indirect return        → alloca slot, pass as hidden sret first arg
-gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, foreign_lookup: string) -> string {
+gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Type_Scope, link_name, foreign_lookup: string) -> string {
     conv := Calling_Conv.C
-    if cs.type_ != nil { conv = cs.type_.calling_conv }
+    if cs != nil { conv = cs.calling_conv }
     os := g.checked.target_os
 
     arg_strs: [dynamic]string
 
     // Return lowering: prepend hidden sret slot for Indirect, set ret_ir for Direct.
-    // C ABI has no multi-return; cs.return_types has 0 or 1 elements for foreign funs.
+    // C ABI has no multi-return; cs.cg_returns has 0 or 1 elements for foreign funs.
     ret_single: Type
-    has_void_return := len(cs.return_types) == 0
-    if !has_void_return { ret_single = cs.return_types[0] }
+    has_void_return := len(cs.cg_returns) == 0
+    if !has_void_return { ret_single = cs.cg_returns[0] }
     if !has_void_return && is_untyped(ret_single) { has_void_return = true }
     ret_low: Lowering
     ret_ir := "void"
@@ -1752,13 +1752,13 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Checked_Scope, link_name, fo
 
     // Each user arg.
     for arg_expr, i in e.args {
-        if i >= len(cs.params) {
+        if i >= len(cs.cg_params) {
             // Variadic excess (not yet supported beyond best-effort scalar pass-through).
             val := gen_expr(g, arg_expr)
             append(&arg_strs, fmt.tprintf("i64 %s", val))
             continue
         }
-        pt := cs.params[i].type_
+        pt := cs.cg_params[i].type_
         p_low := classify_arg(pt, conv, os)
 
         switch pp in p_low {
@@ -1949,7 +1949,7 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
         ir_name = mara_fn_name(g, cn)
     }
 
-    cs_resolved: Checked_Scope
+    cs_resolved: ^Type_Scope
     has_cs := false
     if cs_val, cs_ok := g.checked.functions[cn]; cs_ok {
         cs_resolved = cs_val
@@ -1957,7 +1957,7 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
     }
     arg_strs: [dynamic]string
     for arg, i in e.args {
-        append(&arg_strs, gen_mara_call_arg(g, arg, i, info, &cs_resolved, has_cs))
+        append(&arg_strs, gen_mara_call_arg(g, arg, i, info, cs_resolved, has_cs))
     }
 
     append(&arg_strs, fmt.tprintf("ptr %s", dest_ptr))
@@ -1977,7 +1977,7 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
         ir_name = mara_fn_name(g, cn)
     }
 
-    cs_resolved: Checked_Scope
+    cs_resolved: ^Type_Scope
     has_cs := false
     if cs_val, cs_ok := g.checked.functions[cn]; cs_ok {
         cs_resolved = cs_val
@@ -1986,7 +1986,7 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
     // Build normal arguments
     arg_strs: [dynamic]string
     for arg, i in e.args {
-        append(&arg_strs, gen_mara_call_arg(g, arg, i, info, &cs_resolved, has_cs))
+        append(&arg_strs, gen_mara_call_arg(g, arg, i, info, cs_resolved, has_cs))
     }
 
     // Append the destination's data pointer as sret arg
@@ -3022,11 +3022,11 @@ is_ptr_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if _, is_ptr := t.(^Type_Ptr); is_ptr { return true }
     if call, ok := expr.(^Expr_Call); ok {
         if cs, cs_ok := g.checked.functions[call_resolved_name(call)]; cs_ok {
-            if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign && len(cs.return_types) > 0 {
+            if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign && len(cs.cg_returns) > 0 {
                 // Foreign returns: unwrap distinct so a `distinct ^utf8`
                 // return type (the new cstring) is recognized as a pointer
                 // via its underlying shape — no cstring-specific check.
-                ret_single := cs.return_types[0]
+                ret_single := cs.cg_returns[0]
                 base := distinct_base(ret_single)
                 if _, is_ptr := base.(^Type_Ptr); is_ptr { return true }
                 if _, is_cs := ret_single.(Type_CString); is_cs { return true }
