@@ -475,11 +475,12 @@ Resolved_Constant :: struct {
 Resolved_Func :: struct {
     name:         string,        // flat name: "add" or "math_add" — the codegen symbol key
     // Resolved callee signature (pointer identity). Set for direct function /
-    // constructor calls so consumers use the pointer instead of re-deriving from
-    // `name`: codegen reads the symbol off `callee.name`, lookup_callee_scope
-    // reaches the body via `callee.ast`, and the (future) call graph keys edges
-    // on it. nil for non-function resolutions (distinct-type casts) and, for now,
-    // operator-overload edges (those still carry `name` only — TODO callgraph).
+    // constructor calls AND operator-overload edges so consumers use the pointer
+    // instead of re-deriving from `name`: codegen reads the symbol off
+    // `callee.name`, lookup_callee_scope reaches the body via `callee.ast`, and
+    // the (future) call graph keys edges on it. nil only for non-function
+    // resolutions (distinct-type casts) and un-annotated / foreign calls with no
+    // callee Type_Scope (no body to reach — lookup falls through to nil, correctly).
     callee:       ^Type_Scope,
 }
 
@@ -2804,6 +2805,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
     st.name = make_flat_name(tmpl.home_package, mangled)
     st.home_package = tmpl.home_package
     st.kind = .Struct
+    st.ast = tmpl.ast
     st.generic_base = tmpl.name
     for arg in type_args {
         append(&st.generic_args, arg)
@@ -3022,6 +3024,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     fun_type := new(Type_Scope)
     fun_type.kind = .Fun
     fun_type.home_package = tmpl.home_package
+    fun_type.ast = ast  // template AST — structural escape check is clone-invariant
     for tp in ast.typed_params {
         pt := resolve_type_expr_with_subst(tp.type_expr, c, ast.span, subst)
         append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
@@ -3091,8 +3094,9 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
 
 // Auto-monomorphize a concrete function when called with a structurally-compatible but
 // differently-instantiated generic struct (e.g. add_string(^String(256)) called with ^String(64)).
-// Returns the flat mangled name of the specialized function, or "" if no specialization needed.
-auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Scope, actual_types: []Type, env: ^Type_Env) -> string {
+// Returns (flat mangled name, specialized fn Type_Scope), or ("", nil) when no
+// specialization is needed.
+auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Scope, actual_types: []Type, env: ^Type_Env) -> (string, ^Type_Scope) {
     // Check if any param needs specialization
     needs_spec := false
     for p, i in ft.params {
@@ -3110,7 +3114,7 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
             break
         }
     }
-    if !needs_spec { return "" }
+    if !needs_spec { return "", nil }
 
     // Build mangled name from function name + actual struct type args
     parts: [dynamic]string
@@ -3134,18 +3138,19 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     // Cache check
     if mangled in c.table.mono_fun_cache {
         home := resolve_fn_home(c, env,fn_name)
-        return make_flat_name(home, mangled)
+        return make_flat_name(home, mangled), c.table.mono_cache[mangled]
     }
 
     // Look up the original function's AST
     home := resolve_fn_home(c, env,fn_name)
     ast, ast_ok := c.table.fun_asts[fn_name]
-    if !ast_ok || ast == nil { return "" }
+    if !ast_ok || ast == nil { return "", nil }
 
     // Build concrete function type with actual param types
     mono_ft := new(Type_Scope)
     mono_ft.kind = .Fun
     mono_ft.home_package = home
+    mono_ft.ast = ast  // template AST — structural escape check is clone-invariant
     for tp, i in ast.typed_params {
         if i < len(actual_types) {
             // Use actual type for params that need specialization
@@ -3192,7 +3197,7 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     check_scope(c, cloned_body, &child, scope_defs = cloned_defs)
     c.table.mono_fun_bodies[mangled] = cloned_body
 
-    return make_flat_name(home, mangled)
+    return make_flat_name(home, mangled), mono_ft
 }
 
 // Check a call to a generic function: infer type params, instantiate, rewrite call.
@@ -5016,9 +5021,10 @@ type_carries_ref :: proc(t: Type) -> bool {
 
 // Resolve a call to the callee's source AST. Pointer-first: a directly resolved
 // call carries its callee signature (Resolved_Func.callee), which links straight
-// to the body via Type_Scope.ast — exact by construction, no name re-keying. The
-// name-keyed lookups below are the fallback for resolutions that don't carry a
-// callee pointer yet (monomorphizations, operator-overload synthesised calls).
+// to the body via Type_Scope.ast — exact by construction, no name re-keying.
+// Monomorphizations link their template AST (the structural escape check is
+// clone-invariant). The name-keyed lookups below remain as a safety net for
+// calls the checker didn't annotate with a callee (resolved_func left nil).
 lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
     if rf, rf_ok := call.resolved_func.?; rf_ok && rf.callee != nil && rf.callee.ast != nil {
         return rf.callee.ast
@@ -11212,6 +11218,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 // not-numeric error if no overload matches.
                 if dispatch_names, has_overload := find_operator_overload(c, env, e.op); has_overload {
                     best_flat := ""
+                    best_ft: ^Type_Scope = nil  // resolved callee for the winning best_flat
                     best_ret: Type = nil
                     best_score := 0  // 0=none, 2=concrete structural, 3=concrete exact
                     for dispatch_name in dispatch_names {
@@ -11227,6 +11234,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                                 if types_name_equal(ft.params[0].type_, operand_type) { score = 3 }
                                 if score > best_score {
                                     best_flat = make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
+                                    best_ft = ft
                                     best_ret = fn_primary_return(ft)
                                     best_score = score
                                 }
@@ -11234,7 +11242,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                         }
                     }
                     if best_score > 0 {
-                        e.overload_fn = Resolved_Func{name = best_flat}
+                        e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
                         return best_ret
                     }
                 }
@@ -12270,6 +12278,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
             // Collect all matching candidates, then pick the best (most specific) one.
             // Priority: concrete exact > concrete structural > generic
             best_flat := ""
+            best_ft: ^Type_Scope = nil  // resolved callee for the winning best_flat
             best_ret: Type = nil
             best_score := 0  // 0=none, 1=generic, 2=concrete structural, 3=concrete exact
 
@@ -12292,11 +12301,13 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                                 if score > best_score {
                                     // Check if auto-monomorphization is needed
                                     actual_types := [2]Type{left_type, right_type}
-                                    mono_flat := auto_monomorphize_for_struct(c, fn_name, ft, actual_types[:], env)
+                                    mono_flat, mono_ft := auto_monomorphize_for_struct(c, fn_name, ft, actual_types[:], env)
                                     if mono_flat != "" {
                                         best_flat = mono_flat
+                                        best_ft = mono_ft
                                     } else {
                                         best_flat = make_flat_name(resolve_fn_home(c, env,fn_name), fn_name)
+                                        best_ft = ft
                                     }
                                     best_ret = fn_primary_return(ft)
                                     best_score = score
@@ -12370,6 +12381,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
                                !types_incompatible(fun_type.params[1].type_, right_type) {
                                 if best_score < 1 {
                                     best_flat = make_flat_name(gtmpl.home_package, mangled)
+                                    best_ft = fun_type
                                     best_ret = fn_primary_return(fun_type)
                                     best_score = 1
                                 }
@@ -12380,7 +12392,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
             }
             // Use best match if found
             if best_score > 0 {
-                e.overload_fn = Resolved_Func{name = best_flat}
+                e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
                 return best_ret
             }
         }
