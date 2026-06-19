@@ -1242,7 +1242,11 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
         if sd := as_struct_body(resolved_type); sd != nil {
             struct_llvm := struct_llvm_name(sd.name)
             if lit, lit_ok := val.(^Expr_Struct_Literal); lit_ok {
-                emit_struct_literal_into(g, sd, struct_llvm, sret_ptr, lit)
+                // Same construction primitive as everywhere else: zero-init, run
+                // the init function for defaults, then layer the literal's fields
+                // — `Foo{...}` returned in a tuple slot behaves identically to a
+                // `Foo{...}` decl (and to `Foo(){...}`), no separate fill loop.
+                gen_store_struct_into(g, sret_ptr, sd, lit)
                 continue
             }
             if ident, id_ok := val.(^Expr_Ident); id_ok {
@@ -1301,37 +1305,6 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
         emit_store(g, "i32", "0", sret_ptr)
     }
     emit_ret_void(g)
-}
-
-// Write a struct literal (explicit fields + defaults) into a destination pointer.
-// Shared by single-struct and tuple-with-struct returns.
-emit_struct_literal_into :: proc(g: ^Codegen, sd: ^Scope_Body, struct_llvm: string, dst_ptr: string, lit: ^Expr_Struct_Literal) {
-    for field in lit.fields {
-        idx := struct_field_index(sd, field.name)
-        if idx < 0 { continue }
-        ft := field_ir_type(&sd.fields[idx])
-        val := gen_expr(g, field.value, ft)
-        gep := fresh_tmp(g)
-        emit_field_gep_into(g, gep, struct_llvm, dst_ptr, idx)
-        emit_store(g, ft, val, gep)
-    }
-    // Fill in defaults (skip for {0} zero-init)
-    if !lit.zero_init {
-        for &sdf, sdf_i in sd.fields {
-            if sdf.default_value == nil { continue }
-            provided := false
-            for field in lit.fields {
-                if field.name == sdf.name { provided = true; break }
-            }
-            if !provided {
-                sdf_ft := field_ir_type(&sdf)
-                val := gen_expr(g, sdf.default_value, sdf_ft)
-                gep := fresh_tmp(g)
-                emit_field_gep_into(g, gep, struct_llvm, dst_ptr, sdf_i)
-                emit_store(g, sdf_ft, val, gep)
-            }
-        }
-    }
 }
 
 // Struct return: copy value into %sret.

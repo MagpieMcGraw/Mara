@@ -1,0 +1,25 @@
+module multiret_struct_lit
+
+// Guard: a struct literal returned in a multi-return tuple slot. This used to go
+// through a bespoke emit_struct_literal_into (which re-implemented zero-init +
+// default-filling); it now uses the ONE construction primitive gen_store_struct_into
+// — the same path a `Pt{...}` decl and `Pt(){...}` take — so `Pt{x=5}` here zero-
+// inits, runs Pt's init function for defaults, then applies the explicit field.
+// `Pt{}` is sugar for `Pt(){}`: same construction, in every position.
+
+Pt :: struct {
+	x : i32 = 1
+	y : i32 = 2
+}
+
+two :: fun() -> (i32, Pt) {
+	return 9, Pt{x = 5}
+}
+
+main :: fun() {
+	n, p := two()
+	assert(n == 9)
+	assert(p.x == 5)   // explicit field
+	assert(p.y == 2)   // init-function default
+	print("multiret_struct_lit ok")
+}
