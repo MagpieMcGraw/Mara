@@ -6044,15 +6044,11 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
     // signatures, so any later statement can call them via forward reference.
     register_type_names(c, def_list, env, owner, public_env, eager_signatures = true)
 
-    // Pass 1a.5: signature-only pass on nested struct definitions, so their
-    // fields are populated before Stmt_Decl defaults that reference them get
-    // type-checked (e.g. `body := head.count` where Inner is defined later).
-    for stmt in def_list {
-        if s, ok := stmt.(^Stmt_Scope); ok && s.kind == .Struct &&
-            len(s.typed_params) == 0 && len(s.generic_params) == 0 {
-            check_scope_body(c, s, env, signature_only = true)
-        }
-    }
+    // (Former "Pass 1a.5" nested-struct signature pre-pass removed: a nested
+    // struct's fields resolve ON DEMAND when a sibling decl default or a
+    // forward-referencing use reaches them — ensure_struct_signature walks up via
+    // parent_scope to resolve the enclosing scope, whose signature pass recurses
+    // back down. e.g. `body := head.count` with `Inner` defined later.)
 
     // Pass 1b: register declarations and run deferred-body work for pre-
     // registered scopes. Pass 2: check everything, descending into child scopes.
