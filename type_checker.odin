@@ -1054,10 +1054,19 @@ enclosing_callable_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
 // (foreign / indirect / fn-typed-param) and calls outside any function.
 record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
     rf, ok := e.resolved_func.?
-    if !ok || rf.callee == nil { return }
+    if !ok { return }
+    callee := rf.callee
+    if callee == nil && rf.name != "" {
+        // Resolved by NAME (module-qualified / UFCS / dispatch) without a callee
+        // pointer — recover the durable Type_Scope from the global table so the
+        // edge still lands. Keeps the graph from missing the bulk of real calls.
+        if ft, fok := c.table.funs[rf.name];    fok { callee = ft }
+        else if st, sok := c.table.structs[rf.name]; sok { callee = st }
+    }
+    if callee == nil { return }
     caller := enclosing_callable_scope(env)
     if caller == nil { return }
-    c.call_edges[Call_Edge{from = caller, to = rf.callee}] = true
+    c.call_edges[Call_Edge{from = caller, to = callee}] = true
 }
 
 // Check if a statement body always diverges (return/break/continue as last statement).

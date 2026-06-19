@@ -18,6 +18,11 @@ fact :: fun(n: i64) -> i64 {
 	return n * fact(n - 1)
 }
 
+// Never called — must read as unreachable-from-main.
+dead_fn :: fun() -> i64 {
+	return 42
+}
+
 main :: fun() {
 	print(even(10))   // true
 	print(fact(5))    // 120

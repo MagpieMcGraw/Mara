@@ -30,6 +30,12 @@ Call_Graph :: struct {
     // callers — the order a bottom-up summary pass wants.
     scc_of:    [dynamic]int,
     sccs:      [dynamic][dynamic]int,
+
+    // Reachable from the program entry (`main`) via resolved/dispatch edges.
+    // reachable[n] == false on a source function = dead-code candidate. (Library
+    // functions live in the graph too, so "dead in this program" is a per-build
+    // property, not "delete it" — a warning would gate on the main package.)
+    reachable: [dynamic]bool,
 }
 
 // Intern a scope as a node, returning its id (stable for the graph's lifetime).
@@ -51,8 +57,54 @@ build_call_graph :: proc(c: ^Checker) -> Call_Graph {
         to   := cg_node(&g, edge.to)
         append(&g.out_edges[from], to)
     }
+    // Completeness: intern every source function as a node, so a call-free
+    // function (neither calls nor is called) is still a node — reachability/DCE
+    // needs it (uncalled IS the thing DCE flags). Foreign/intrinsic have no body
+    // to analyze and are reachable by definition (external entry), so skip them.
+    if c.checked != nil {
+        for _, cs in c.checked.functions {
+            if _, is_source := cs.origin.(Origin_Source); is_source && cs.type_ != nil {
+                cg_node(&g, cs.type_)
+            }
+        }
+    }
     cg_compute_sccs(&g)
+    cg_compute_reachability(&g)
     return g
+}
+
+// Mark every node reachable from the program entry (`main`) by a forward walk
+// over the resolved/dispatch call edges. Leaves all-false when there's no `main`
+// (a library / -shared build).
+//
+// CALL-reachability is NOT liveness — two seams make a LIVE function read as
+// call-unreachable, so this is a building block, not a drop-in DCE:
+//   1. opaque calls (fn-typed-param / indirect) aren't edges (§12 "honest seam").
+//   2. PLACEMENT: a Mara struct can be carved into a byte buffer rather than
+//      constructed via a call (Pounce's Megastruct at game_init), so there's no
+//      call edge TO it — its whole field-initializer subtree (the ctors its
+//      fields call) reads as unreachable despite being live. A sound DCE must
+//      also root from placed structs' field initializers.
+cg_compute_reachability :: proc(g: ^Call_Graph) {
+    resize(&g.reachable, len(g.nodes))
+    root := -1
+    for s, i in g.nodes {
+        if s.source_name == "main" { root = i; break }
+    }
+    if root < 0 { return }
+    stack: [dynamic]int
+    defer delete(stack)
+    append(&stack, root)
+    g.reachable[root] = true
+    for len(stack) > 0 {
+        v := pop(&stack)
+        for w in g.out_edges[v] {
+            if !g.reachable[w] {
+                g.reachable[w] = true
+                append(&stack, w)
+            }
+        }
+    }
 }
 
 // True when node `n` is recursive: it's in a multi-node SCC (mutual recursion)
