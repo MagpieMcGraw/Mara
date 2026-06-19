@@ -37,3 +37,5 @@ Figure out syntax for writing to bytes. Should number literals be writable? How 
 Validate top level statements investigation. Do we actually need it?
 
 Type checking of unions and distinct is fucked up for some reason.
+
+Maybe it's time to abandon the typed AST idea? Should a stack of type scope be the new typed AST?

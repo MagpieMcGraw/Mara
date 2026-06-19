@@ -518,6 +518,16 @@ Resolved_Func :: struct {
     callee:       ^Type_Scope,
 }
 
+// One directed edge of the materialized call graph: `from` calls `to`, both the
+// durable callee Type_Scopes (pointer identity — the same `callee` a resolved
+// call carries). Collected during checking (check_call records each resolved
+// call) and consumed post-check by build_call_graph to materialize nodes +
+// adjacency + SCCs. nil callees (foreign / indirect / fn-typed) record no edge.
+Call_Edge :: struct {
+    from: ^Type_Scope,
+    to:   ^Type_Scope,
+}
+
 // ---------------------------------------------------------------------------
 // Type environment (scope chain)
 // ---------------------------------------------------------------------------
@@ -1025,6 +1035,29 @@ enclosing_return_types :: proc(env: ^Type_Env) -> []Type {
         if cur.class_scope != nil { return cur.class_scope.return_types[:] }
     }
     return nil
+}
+
+// The nearest enclosing callable scope — the fun / ctor whose body we're checking.
+// The "caller" for call-graph edges. nil at module level (a call in a top-level
+// const value etc. has no enclosing function node).
+enclosing_callable_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
+    for cur := env; cur != nil; cur = cur.parent {
+        if cur.fun_scope != nil { return cur.fun_scope }
+        if cur.class_scope != nil { return cur.class_scope }
+    }
+    return nil
+}
+
+// Record a call-graph edge for a resolved call. Deferred from check_call, so it
+// fires at every exit once e.resolved_func is populated. Edge = (the enclosing
+// callable scope) -> (the resolved callee). Skips calls with no callee Type_Scope
+// (foreign / indirect / fn-typed-param) and calls outside any function.
+record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
+    rf, ok := e.resolved_func.?
+    if !ok || rf.callee == nil { return }
+    caller := enclosing_callable_scope(env)
+    if caller == nil { return }
+    c.call_edges[Call_Edge{from = caller, to = rf.callee}] = true
 }
 
 // Check if a statement body always diverges (return/break/continue as last statement).
@@ -1558,6 +1591,11 @@ Checked_Program :: struct {
     // Ordered list of main-package function names (preserves AST order for emission)
     function_order: [dynamic]string,
 
+    // Materialized call graph (nodes = callable scopes, edges = resolved calls,
+    // + strongly-connected components). Built post-check from Checker.call_edges.
+    // See callgraph.odin / design/mara_ask.md §12.
+    call_graph:     Call_Graph,
+
     // Compile-time constants: name -> resolved integer value (derived from table.constants)
     constant_values: map[string]int,
 
@@ -1658,6 +1696,11 @@ Checker :: struct {
     type_params:     map[string]Type,
     top_env:         ^Type_Env,
     declared_funs:   map[string]bool,  // bare names of Stmt_Scope declarations (direct calls vs variables)
+    // Call-graph edges collected during checking: each resolved call records
+    // (enclosing callable scope -> callee). Materialized post-check into the
+    // Checked_Program call graph (build_call_graph). A set, so duplicate call
+    // sites between the same pair collapse to one edge.
+    call_edges:      map[Call_Edge]bool,
     // True during the register-pass scan over a function's body fields.
     // Field types are resolved in declaration order, so annotations like
     // `h : fn g` may reference locals not yet added to env. Unresolved names
@@ -10965,6 +11008,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         audit_home_package(checked)
     }
 
+    checked.call_graph = build_call_graph(&c)
     checked.errors = c.errors
     return checked
 }
@@ -13362,6 +13406,10 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Env) -> Type {
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
+    // Collect the call-graph edge (caller -> resolved callee) at every exit,
+    // once resolved_func has been populated below. Every call funnels through
+    // check_call, so this is the one place the whole graph is observed.
+    defer record_call_edge(c, e, env)
     // A call that returns multiple values has nowhere to put the extras when
     // used as a single argument — codegen would silently keep only the first.
     // Reject it here (every call form funnels through check_call) so the user

@@ -1,0 +1,24 @@
+module callgraph_probe
+
+// Runtime guard for mutual + self recursion. Also the program the call-graph
+// skeleton was validated on: even/odd form one cyclic SCC, fact is self-
+// recursive. Kept as a plain recursion fixture (the call graph isn't a consumer
+// yet — it's a post-check artifact on Checked_Program).
+
+even :: fun(n: i64) -> bool {
+	if n == 0 { return true }
+	return odd(n - 1)
+}
+odd :: fun(n: i64) -> bool {
+	if n == 0 { return false }
+	return even(n - 1)
+}
+fact :: fun(n: i64) -> i64 {
+	if n <= 1 { return 1 }
+	return n * fact(n - 1)
+}
+
+main :: fun() {
+	print(even(10))   // true
+	print(fact(5))    // 120
+}
