@@ -771,6 +771,10 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
             }
             append(&matches, Match{typ = t, owner = owner})
         }
+        if t, found := scope_member(cur, name); found {
+            owner := cur.owner_module.name if cur.owner_module != nil else "<local>"
+            append(&matches, Match{typ = t, owner = owner})  // own def; pointer-dedup below drops the copy-duplicate
+        }
         for inc in cur.includes {
             if t, found := inc.types[name]; found {
                 owner := inc.owner_module.name if inc.owner_module != nil else "<anonymous-include>"
@@ -8245,14 +8249,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         ns_env = type_env_child(env)
         ns_env.class_scope = ft
         type_env_set(&ns_env, "Self", ft)
-        if ft.types != nil {
-            for bare, t in ft.types { type_env_set(&ns_env, bare, t) }
-        }
-        if ft.functions != nil {
-            for bare, fn in ft.functions {
-                if fn != nil { type_env_set(&ns_env, bare, fn) }
-            }
-        }
+        // (ns_env no longer copies ft.types / ft.functions — scope_member reads
+        // them off ft directly via ns_env's class_scope / fun_scope back-link.)
         parent_env = &ns_env
     } else if is_method {
         parent_env = env.parent
@@ -8280,14 +8278,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         ns_env = type_env_child(defs_parent)
         ns_env.fun_scope = ft
         type_env_set(&ns_env, "Self", ft)
-        if ft.types != nil {
-            for bare, t in ft.types { type_env_set(&ns_env, bare, t) }
-        }
-        if ft.functions != nil {
-            for bare, fn in ft.functions {
-                if fn != nil { type_env_set(&ns_env, bare, fn) }
-            }
-        }
+        // (ns_env no longer copies ft.types / ft.functions — scope_member reads
+        // them off ft directly via ns_env's class_scope / fun_scope back-link.)
         parent_env = &ns_env
     }
 
