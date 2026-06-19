@@ -7054,24 +7054,15 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // chain lookup just happens to work for them.
                     c.table.funs[fun_type.name] = fun_type
                 }
-                // Resolve params and return type now (Phase 1) — needed for forward references.
-                // Body-extracted fields are deferred to Phase 2.
-                // Pass env so `fn game_run` annotations on params find sibling
-                // functions that were registered earlier in this scope.
-                if len(s.typed_params) > 0 {
-                    for tp in s.typed_params {
-                        pt := resolve_param_type(c, tp, env, s.span)
-                        append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
-                    }
-                    build_param_map(fun_type)
+                // Resolve the signature now ONLY for parameterized structs — their
+                // params feed on-demand field resolution (ensure_struct_signature).
+                // FUNS resolve on demand at their call / body sites
+                // (ensure_fun_signature), so a top-level fun whose param type comes
+                // from an include resolves after includes are in, not before.
+                if is_struct_type {
+                    resolve_fun_signature(c, fun_type)
                 }
                 is_callable := !is_struct_type || len(s.typed_params) > 0
-                if is_callable && len(s.return_types) > 0 {
-                    for rte in s.return_types {
-                        rt := resolve_type_expr(rte, c, s.span, env = env)
-                        append(&fun_type.return_types, rt)
-                    }
-                }
                 // Register name in scope
                 type_env_set(pub, s.name, fun_type)
                 c.table.fun_asts[s.name] = s
@@ -8183,18 +8174,23 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     ft, ft_ok := fun_type_raw.(^Type_Scope)
     if !ft_ok { return }
 
+    // On-demand: a fun's body binds its params and reads its returns, so resolve
+    // its signature here if no call site demanded it first.
+    if ft.kind == .Fun { ensure_fun_signature(c, ft) }
+
     // On-demand signature resolution: memoize the signature pass so it runs once
     // per scope no matter how many sites demand it, and break cycles. Only the
     // signature_only pre-pass is gated — the full body check below always runs.
-    if signature_only {
+    if signature_only && ft.kind == .Struct {
         if ft.sig_state != .Unresolved { return }  // already Resolved, or In_Progress = cycle
         ft.sig_state = .In_Progress
     }
     // Function-scoped (not inside the if): never strand a scope In_Progress —
     // any exit from the signature pass (the bail below, or an early return on an
     // error path) marks it Resolved so a later demand doesn't mistake a finished
-    // scope for an unbreakable cycle. No-op outside the signature pass.
-    defer if signature_only && ft.sig_state == .In_Progress { ft.sig_state = .Resolved }
+    // scope for an unbreakable cycle. (Struct fields only; fun param/return
+    // signatures own sig_state via ensure_fun_signature.) No-op otherwise.
+    defer if signature_only && ft.kind == .Struct && ft.sig_state == .In_Progress { ft.sig_state = .Resolved }
 
     // Env structure for callable scopes:
     //
@@ -11783,6 +11779,37 @@ ensure_struct_signature :: proc(c: ^Checker, st: ^Scope_Body) {
     }
 }
 
+// Resolve a fun's signature (param + return types) from its AST, in its decl
+// env. Idempotent — skips a list that's already populated. The same resolution
+// the register passes do eagerly, lifted out so a call site can demand it.
+resolve_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
+    if ft.ast == nil || ft.decl_env == nil { return }
+    s := ft.ast
+    if len(ft.params) == 0 && len(s.typed_params) > 0 {
+        for tp in s.typed_params {
+            pt := resolve_param_type(c, tp, ft.decl_env, s.span)
+            append(&ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
+        }
+        build_param_map(ft)
+    }
+    if len(ft.return_types) == 0 && len(s.return_types) > 0 {
+        for rte in s.return_types {
+            append(&ft.return_types, resolve_type_expr(rte, c, s.span, env = ft.decl_env))
+        }
+    }
+}
+
+// Demand-driven fun-signature resolution: ensure a fun's params/returns are
+// resolved before a use site (a call, a dispatch match, the body's own param
+// binding) reads them. Memoized + cycle-guarded via sig_state. Only top-level
+// funs carry a decl_env; nested funs stay eagerly resolved in their scope.
+ensure_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
+    if ft == nil || ft.kind != .Fun || ft.sig_state != .Unresolved { return }
+    ft.sig_state = .In_Progress
+    resolve_fun_signature(c, ft)
+    ft.sig_state = .Resolved
+}
+
 // Shared struct field access logic — used for both direct and auto-deref (^Struct) paths.
 // Handles uninit checks, field resolution, and associated function lookup.
 check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope_Body, env: ^Type_Env) -> Type {
@@ -13449,6 +13476,8 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     // `class Foo() { x: int }`, and fieldless structs (`Foo()` → zero-size value).
     if fun_type.kind == .Struct {
         ensure_struct_signature(c, &fun_type.sd)  // resolve fields on demand before construction
+    } else if fun_type.kind == .Fun {
+        ensure_fun_signature(c, fun_type)  // resolve params/returns on demand before arg matching
     }
     if fun_type.kind == .Struct && len(fun_type.params) == 0 && len(fun_type.return_types) == 0 {
         return check_pure_struct_construction(c, e, fun_type, env)
