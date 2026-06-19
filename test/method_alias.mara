@@ -1,0 +1,42 @@
+module method_alias
+
+// Property guard: a method is just a fun nested in a struct (is_method special-
+// casing deleted). Exercises, at runtime, everything a method's defs layer must
+// reach now that it parents to the class's ns_env via the unified fun path:
+//   - ctor calls sibling methods by bare name        (compute/make_pair(#self))
+//   - a method body calls ANOTHER method by bare name (compute -> helper)  <-- key
+//   - a method uses a struct const by bare name       (LIMIT)
+//   - a method names a nested type in sig + body      (Pair)
+//   - a method reads a field off its ^Self receiver   (s.base)
+
+Box :: struct(n : i64) {
+	Pair :: struct { a: i64  b: i64 }
+
+	base := n
+	LIMIT :: 100
+	total : i64
+	pair  : Pair
+
+	total = compute(#self)
+	pair  = make_pair(#self)
+
+	compute :: fun(s: ^Self) -> i64 {
+		return helper(s) + LIMIT
+	}
+
+	helper :: fun(s: ^Self) -> i64 {
+		return s.base * 2
+	}
+
+	make_pair :: fun(s: ^Self) -> Pair {
+		return Pair{a = s.base, b = s.base + 1}
+	}
+}
+
+main :: fun() {
+	b := Box(7)
+	print(b.base)     // 7
+	print(b.total)    // helper = 14, + LIMIT 100 = 114
+	print(b.pair.a)   // 7
+	print(b.pair.b)   // 8
+}

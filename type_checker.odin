@@ -8229,8 +8229,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // Env structure for callable scopes:
     //
     //   class:   [ns_env: Self/types/methods/consts] <- [child: params/lets/body]
-    //   fun:                                            [child: Self/own-types/funcs/params/body]
-    //   method:  [class's ns_env, already on chain]  <- [child: own-types/funcs/params/body]
+    //   fun:     [ns_env: Self/own-types/funcs]      <- [child: params/body]
+    //   method:  same shape as fun — its ns_env just parents to the class's ns_env
     //
     // The class's namespace and its constructor body are distinct envs: the
     // namespace holds the shared surface (Self, nested types, sibling methods,
@@ -8238,10 +8238,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // bodies. The constructor body env adds constructor-only bindings (params,
     // class-body `let`/`:=` decls) without leaking them to siblings.
     //
-    // For a method's recursive check_scope_body call, env is the class body
-    // env, env.class_scope is nil, env.parent is the class ns_env (where
-    // class_scope was set). Detecting this lets us reparent past the class body.
-    is_method := ft.kind == .Fun && env.class_scope == nil && env.parent != nil && env.parent.class_scope != nil
+    // A method is just a fun whose enclosing scope is a struct — it takes the
+    // ft.kind == .Fun path below with no special-casing. The defs-parent walk
+    // stops at the class's ns_env (a class_scope marker), so the method's defs
+    // layer parents to the class and sees its members.
 
     ns_env: Type_Env
     parent_env := env
@@ -8252,20 +8252,20 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         // (ns_env no longer copies ft.types / ft.functions — scope_member reads
         // them off ft directly via ns_env's class_scope / fun_scope back-link.)
         parent_env = &ns_env
-    } else if is_method {
-        parent_env = env.parent
     } else if ft.kind == .Fun {
-        // Funs get the same two-layer shape as structs: a defs layer (ns_env)
-        // holding Self + this fun's nested ::defs, and a body layer (child,
-        // built below) holding params + locals. The defs layer parents to the
-        // ENCLOSING fun's defs layer — found by walking up to the nearest
-        // fun_scope marker — so name resolution crosses defs layers only and an
-        // enclosing fun's locals stay private (no closures to capture them).
-        // No enclosing fun ⇒ top-level: parent to env (the file/module scope).
-        // Module needs no special case; it's just the topmost defs layer.
+        // Funs — and methods, which are just funs nested in a struct — get the
+        // same two-layer shape as structs: a defs layer (ns_env) holding Self +
+        // this fun's nested ::defs, and a body layer (child, built below)
+        // holding params + locals. The defs layer parents to the nearest
+        // ENCLOSING scope — found by walking up to the nearest scope marker,
+        // fun_scope OR class_scope — so name resolution crosses defs layers only
+        // and an enclosing fun's locals stay private (no closures to capture
+        // them). A method's nearest marker is its struct's class_scope, so it
+        // parents to the class and sees the class's members.
+        // No enclosing scope ⇒ top-level: parent to env (the file/module scope).
         defs_parent := env
         walk := env
-        for walk != nil && walk.fun_scope == nil { walk = walk.parent }
+        for walk != nil && walk.fun_scope == nil && walk.class_scope == nil { walk = walk.parent }
         if walk != nil { defs_parent = walk }
         // Funs aren't registered at module-registration time (structs are), so
         // collect this fun's nested ::defs now, before exposing them. The
@@ -8288,23 +8288,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // bodies are just namespaces — fields don't live at a deeper depth.
     if ft.kind == .Fun {
         child.scope_depth = parent_env.scope_depth + 1
-    }
-    // Methods don't build their own defs layer (they hang off the class ns_env),
-    // so their nested ::defs are registered and exposed on the body env here.
-    // Non-method funs already did this on their ns_env above; a struct's nested
-    // defs land at module registration. ft.types guards re-mangling on re-entry.
-    if is_method {
-        if ft.types == nil && len(s.defs) > 0 {
-            register_scope_defs(c, ft, &ft.sd, s.defs, parent_env)
-        }
-        if ft.types != nil {
-            for bare, t in ft.types { type_env_set(&child, bare, t) }
-        }
-        if ft.functions != nil {
-            for bare, fn in ft.functions {
-                if fn != nil { type_env_set(&child, bare, fn) }
-            }
-        }
     }
 
     // Pre-register struct params in the field-resolution scope so that
@@ -8336,9 +8319,9 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             c.table.constants[bare] = def.value
             type_env_set(&child, def.name, val_type)
             type_env_set(&child, bare, val_type)
-            // Mirror onto the defs layer (ns_env) whenever there is one — structs
-            // and non-method funs — so sibling methods / nested funs reach the
-            // const by bare name. is_method has no own ns_env, so child only.
+            // Mirror onto the defs layer (ns_env) whenever there is one —
+            // structs and funs (methods included) — so sibling methods / nested
+            // funs reach the const by bare name.
             if parent_env == &ns_env {
                 type_env_set(&ns_env, def.name, val_type)
                 type_env_set(&ns_env, bare, val_type)
