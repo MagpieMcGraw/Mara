@@ -962,8 +962,8 @@ mara_fn_name :: proc(g: ^Codegen, name: string) -> string {
     // GetProcAddress("foo") directly without knowing Mara's flat-naming rule.
     // Mara-internal call sites resolve to the same symbol, so callers in the
     // same package stay wired up.
-    if cs, ok := g.checked.functions[name]; ok && cs.ast != nil && cs.ast.is_exposed {
-        return fmt.tprintf("@%s", cs.ast.name)
+    if cs, ok := g.checked.functions[name]; ok && cs.is_exposed {
+        return fmt.tprintf("@%s", cs.name)
     }
     // IR symbols are prefixed with "mara_" to namespace them against system
     // libraries. flat names from stdlib modules (`mara.math`) already include

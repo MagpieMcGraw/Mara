@@ -334,7 +334,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // `#expose` → dllexport linkage so the symbol is visible in the DLL/SO's
     // export table. The linker still produces a regular static lib otherwise.
     linkage := ""
-    if cf.ast != nil && cf.ast.is_exposed {
+    if cf.is_exposed {
         linkage = "dllexport "
     }
     fn_header := strings.concatenate({"define ", linkage, ret_type, " ", ir_name, "(", params_joined, ") {"})
@@ -346,7 +346,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // inside the DLL read the host's globals. Validated at type-check time:
     // first param is `^Context`. Use %<name>.arg directly (before the normal
     // per-param alloca dance, which would also write %<name>).
-    if cf.ast != nil && cf.ast.is_exposed && len(cf.params) > 0 {
+    if cf.is_exposed && len(cf.params) > 0 {
         emit(g, "  store ptr %%%s.arg, ptr @__mara_program", cf.params[0].name)
     }
 
@@ -475,8 +475,8 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
     // Register named return bindings as local variables (e.g. fun() -> (fwd, up: Vec3)).
     // NRVO: the binding's alloca IS the sret slot, so writes go directly into
     // the caller's slot. gen_return_tuple detects the self-copy at return and skips it.
-    if ret_types != nil && cf.ast != nil && len(cf.ast.return_bindings) > 0 {
-        for rb, i in cf.ast.return_bindings {
+    if ret_types != nil && len(cf.return_binding_names) > 0 {
+        for rb_name, i in cf.return_binding_names {
             if i >= len(ret_types) { break }
             rb_type := distinct_base(ret_types[i])
             sret_slot := fmt.tprintf("%%sret.%d", i)
@@ -484,26 +484,26 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Checked_Scope) {
                 elem_t := llvm_type_from_checker(fa.elem)
                 utf8 := false
                 if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
-                g.all_vars[rb.name] = Array_Var{
+                g.all_vars[rb_name] = Array_Var{
                     alloca    = sret_slot,
                     capacity  = fa.size,
                     elem_type = elem_t,
                     is_utf8   = utf8,
                 }
             } else if sd := as_struct_body(rb_type); sd != nil {
-                g.all_vars[rb.name] = Struct_Var{
+                g.all_vars[rb_name] = Struct_Var{
                     alloca      = sret_slot,
                     struct_name = sd.name,
                 }
             } else {
                 ir_t := llvm_type_from_checker(rb_type)
-                alloca_name := fmt.tprintf("%%%s", rb.name)
+                alloca_name := fmt.tprintf("%%%s", rb_name)
                 emit_alloca(g, alloca_name, ir_t)
                 // LLVM rejects `store float 0` — float and double slots need
                 // a float literal, not the integer 0.
                 zero_lit := ir_t == "float" || ir_t == "double" ? "0.0" : "0"
                 emit_store(g, ir_t, zero_lit, alloca_name)
-                g.all_vars[rb.name] = Scalar_Var{alloca = alloca_name}
+                g.all_vars[rb_name] = Scalar_Var{alloca = alloca_name}
             }
         }
     } else if ret_types != nil {

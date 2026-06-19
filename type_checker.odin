@@ -1591,6 +1591,11 @@ Checked_Scope :: struct {
     ast:          ^Stmt_Scope,           // original AST node (for auto-monomorphization)
     origin:       Function_Origin,       // Source / Intrinsic / Foreign — codegen dispatch
     span:         Span,
+
+    // Codegen-facing metadata lifted off the AST node at extract time so codegen
+    // never reaches back into `ast` for it (the only `.ast` reads codegen had).
+    is_exposed:           bool,            // `#expose` → dllexport linkage + unmangled symbol
+    return_binding_names: [dynamic]string, // named-return locals (`fun() -> (fwd, up: Vec3)`); only the names are needed
 }
 
 // Checked info for an aliased import package.
@@ -10070,6 +10075,10 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
         ast          = s,
         origin       = origin,
         span         = s.span,
+        is_exposed   = s.is_exposed,
+    }
+    for rb in s.return_bindings {
+        append(&cf.return_binding_names, rb.name)
     }
     // Returns. A data struct with no declared return produces its own layout
     // via sret (Self). Fires for fieldless structs too — they're zero-size but
