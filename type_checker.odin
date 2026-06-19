@@ -680,6 +680,9 @@ type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Ty
         if t, ok := cur.types[name]; ok {
             return t, cur, true
         }
+        if t, ok := scope_member(cur, name); ok {
+            return t, cur, true
+        }
         for inc in cur.includes {
             if t, ok := inc.types[name]; ok {
                 return t, inc, true
@@ -703,6 +706,9 @@ type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     cur := env
     for cur != nil {
         if t, ok := cur.types[name]; ok {
+            return t, true
+        }
+        if t, ok := scope_member(cur, name); ok {
             return t, true
         }
         if cur.is_module_scope { break }
