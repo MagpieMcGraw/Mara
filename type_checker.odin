@@ -1069,6 +1069,19 @@ record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
     c.call_edges[Call_Edge{from = caller, to = callee}] = true
 }
 
+// Record a call-graph edge for a struct-LITERAL construction (`Foo{...}` /
+// `Foo{}`). Brackets default-init a struct, which RUNS its field initializers —
+// the same constructor invocation `Foo(...)` parens trigger — so it's a call
+// edge too. Without this the bracket form is invisible to the graph: e.g.
+// `game^ = Megastruct{}` runs Megastruct's `camera := Camera(...)` field init,
+// but with only paren-call edges nothing reaches Megastruct (Pounce.mara:83).
+record_construction_edge :: proc(c: ^Checker, st: ^Type_Scope, env: ^Type_Env) {
+    if st == nil { return }
+    caller := enclosing_callable_scope(env)
+    if caller == nil { return }
+    c.call_edges[Call_Edge{from = caller, to = st}] = true
+}
+
 // Check if a statement body always diverges (return/break/continue as last statement).
 // Conservative: only detects these as the final statement.
 branch_diverges :: proc(body: [dynamic]Stmt) -> bool {
@@ -11501,6 +11514,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             flat := resolve_type_name(c, e.name, "", env)
             if st, ok := c.table.structs[flat]; ok {
                 e.type_ = st
+                record_construction_edge(c, st, env)
                 if !defer_literal_validation(c, e, &st.sd, env) {
                     check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 }
@@ -11508,6 +11522,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             }
             if st, ok := c.table.funs[flat]; ok {
                 e.type_ = st
+                record_construction_edge(c, st, env)
                 if !defer_literal_validation(c, e, &st.sd, env) {
                     check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 }
@@ -11528,6 +11543,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                         strings.has_suffix(ts.name, strings.concatenate({"_", e.name}))
                     if names_type {
                         e.type_ = ts
+                        record_construction_edge(c, ts, env)
                         if !defer_literal_validation(c, e, &ts.sd, env) {
                             check_struct_literal_fields(c, e, &ts.sd, e.span, env)
                         }

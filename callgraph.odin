@@ -77,14 +77,14 @@ build_call_graph :: proc(c: ^Checker) -> Call_Graph {
 // over the resolved/dispatch call edges. Leaves all-false when there's no `main`
 // (a library / -shared build).
 //
-// CALL-reachability is NOT liveness — two seams make a LIVE function read as
-// call-unreachable, so this is a building block, not a drop-in DCE:
+// CALL-reachability is NOT liveness — remaining seams make a LIVE function read
+// as call-unreachable, so this is a building block, not a drop-in DCE:
 //   1. opaque calls (fn-typed-param / indirect) aren't edges (§12 "honest seam").
-//   2. PLACEMENT: a Mara struct can be carved into a byte buffer rather than
-//      constructed via a call (Pounce's Megastruct at game_init), so there's no
-//      call edge TO it — its whole field-initializer subtree (the ctors its
-//      fields call) reads as unreachable despite being live. A sound DCE must
-//      also root from placed structs' field initializers.
+//   2. byte-read placement (`x : Head = #big_endian bytes[off]`) reinterprets a
+//      struct from bytes WITHOUT running its constructor — correctly no edge, but
+//      the struct is still TYPE-used (that's the type-dependency graph, not this).
+// (Bracket default-init `Foo{}` DOES run the ctor and IS now an edge —
+// record_construction_edge. That was the Megastruct/Camera gap on Pounce.mara:83.)
 cg_compute_reachability :: proc(g: ^Call_Graph) {
     resize(&g.reachable, len(g.nodes))
     root := -1
