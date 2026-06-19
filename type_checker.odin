@@ -146,6 +146,14 @@ Scope_Body :: struct {
     // call sites demand it, and breaks cycles. Zero value Unresolved.
     sig_state:      Resolution_State,
 
+    // The (persistent) env this scope was declared in — the env its field
+    // TYPES resolve against. Captured at registration for top-level structs,
+    // whose file/module env outlives the check, so a use site in another file
+    // can demand this struct's signature on the spot (ensure_struct_signature).
+    // nil for nested scopes (their decl env is transient) — those stay eagerly
+    // resolved within their enclosing scope's check.
+    decl_env:       ^Type_Env,
+
     // Associated definitions (scoped :: defs).
     // Values point to the actual Type the bare name resolves to — read
     // `.name` off the pointer when codegen needs the flat/mangled string.
@@ -6615,6 +6623,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 struct_type.is_packed = s.is_packed
                 struct_type.ast = s
                 struct_type.source_name = s.name
+                struct_type.decl_env = env
                 c.table.structs[flat] = struct_type
                 // Body fields deferred to Pass 1b (register_scope_defs).
                 type_env_set(pub, s.name, struct_type)
@@ -6648,6 +6657,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 fun_type.home_package = c.current_package
                 fun_type.ast = s
                 fun_type.source_name = s.name
+                fun_type.decl_env = env   // parameterized structs resolve fields on demand from here
                 if is_struct_type {
                     fun_type.kind = .Struct
                 } else {
@@ -6985,6 +6995,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 struct_type.is_packed = s.is_packed
                 struct_type.ast = s
                 struct_type.source_name = s.name
+                struct_type.decl_env = env
                 if struct_type.name in c.table.structs || struct_type.name in c.table.funs {
                     check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
                     continue
@@ -7022,6 +7033,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 fun_type.home_package = c.current_package
                 fun_type.ast = s
                 fun_type.source_name = s.name
+                fun_type.decl_env = env   // parameterized structs resolve fields on demand from here
                 if is_struct_type {
                     fun_type.kind = .Struct
                     c.table.funs[fun_type.name] = fun_type
@@ -8989,6 +9001,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
 // Validate that a struct literal's fields match a struct definition:
 // every literal field exists and has the right type, and no struct fields are missing.
 check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: ^Scope_Body, span: Span, env: ^Type_Env) {
+    ensure_struct_signature(c, st)  // resolve fields on demand before matching the literal
     // Positional form (`Foo{a, b, c}`): match entries to struct fields by index.
     if lit.positional {
         // Multi-return spread: `Foo{call()}` where call's return list matches
@@ -10083,10 +10096,13 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
 //                                           symbol table. Main package only; an
 //                                           imported module's constants are
 //                                           registered by extract_module_into_checked.
-//   2a   check_scope_body(signature_only) — struct field types, so a body in file
-//                                           A can read a struct declared in file B
-//   2a.5 flush_deferred_literals          — fields exist now: validate the queued
-//                                           named-literal constants from 1b
+//   (2a removed)                          — struct field types used to be hoisted
+//                                           here so a body in file A could read a
+//                                           struct from file B; now they resolve
+//                                           ON DEMAND at the use site
+//                                           (ensure_struct_signature), so no hoist.
+//   2a.5 flush_deferred_literals          — validate the queued named-literal
+//                                           constants from 1b
 //   2    check_bodies                     — full function-body type-checking
 //
 // owner is the module-struct that top-level decls attach to (nil for the main
@@ -10117,13 +10133,11 @@ check_package_files :: proc(
         }
     }
 
-    for src in file_order {  // 2a — struct signatures, cross-file
-        for stmt in files_by_src[src] {
-            if sc, ok := stmt.(^Stmt_Scope); ok && sc.kind == .Struct {
-                check_scope_body(c, sc, file_envs[src], signature_only = true)
-            }
-        }
-    }
+    // (Former "2a" cross-file struct-signature hoist removed: struct fields now
+    // resolve on demand at the use site — field access, construction, literal
+    // matching — via ensure_struct_signature, so a body in one file no longer
+    // needs every other file's structs pre-resolved. The struct carries its own
+    // decl_env and memoizes via sig_state.)
 
     flush_deferred_literals(c)  // 2a.5
 
@@ -11785,6 +11799,17 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
     return Type_Error{}
 }
 
+// Demand-driven signature resolution: ensure a struct's fields are resolved
+// before a use site reads them, so resolution no longer depends on a pre-pass
+// having run first. Only top-level structs carry a (persistent) decl_env; nested
+// structs are resolved eagerly within their scope and skip here. The memoization
+// and cycle guard live in check_scope_body, keyed on sig_state.
+ensure_struct_signature :: proc(c: ^Checker, st: ^Scope_Body) {
+    if st == nil || st.sig_state != .Unresolved { return }
+    if st.ast == nil || st.decl_env == nil { return }
+    check_scope_body(c, st.ast, st.decl_env, signature_only = true)
+}
+
 // Shared struct field access logic — used for both direct and auto-deref (^Struct) paths.
 // Handles uninit checks, field resolution, and associated function lookup.
 check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope_Body, env: ^Type_Env) -> Type {
@@ -11804,6 +11829,7 @@ check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope
             }
         }
     }
+    ensure_struct_signature(c, st)  // resolve fields on demand if no pre-pass did
     ft := resolve_struct_field(st, e.field, c.table)
     if ft != nil { return ft }
     // Associated function access (function as value)
@@ -11892,6 +11918,16 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         }
         check_error(c, e.span, TYPE_UNION_VARIANT, ut.name, e.field)
         return Type_Error{}
+    }
+    // On-demand: resolve the receiver struct's signature before the dispatch
+    // below, which keys on len(fields) — 0 until the struct is resolved. Covers a
+    // direct struct receiver and a single-level pointer (^Struct auto-deref).
+    {
+        rsd := as_scope_body(obj_type)
+        if rsd == nil {
+            if pt, pt_ok := obj_type.(^Type_Ptr); pt_ok { rsd = as_scope_body(pt.elem) }
+        }
+        ensure_struct_signature(c, rsd)
     }
     if sd := as_scope_body(obj_type); sd != nil && (len(sd.fields) > 0 || sd.scope != nil) {
         // Module-struct field access: look up in scope (env)
@@ -13482,6 +13518,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 // Supports `_` substitution against field defaults — same surface as the
 // regular function call path applies to parameter defaults.
 check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Env) -> Type {
+    ensure_struct_signature(c, &st.sd)  // resolve fields on demand before construction
     e.type_ = st
     if e.resolved_func == nil && st.name != "" {
         e.resolved_func = Resolved_Func{name = st.name, callee = st}
