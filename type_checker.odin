@@ -6504,6 +6504,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 }
                 ut := new(Type_Union)
                 ut.name = flat
+                ut.source_name = s.name
                 ut.home_package = c.current_package
                 ut.tag_type = s.tag_type
                 ut.min_size = s.min_size
@@ -7586,8 +7587,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
                 // Unwrap distinct types for structural checking (but store the distinct type)
                 check_ann := distinct_base(ann_type)
+                // The struct/union-literal and byte-buffer-reinterpret branches below
+                // only apply when the value IS a literal or a byte read. A plain value
+                // (call, variable, field) must fall through to the general nominal
+                // compatibility check — the literal helpers no-op on non-literals, so
+                // without this gate `p : Point = Color()` slipped through unchecked.
+                value_needs_literal_handling := val_is_struct_lit || is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
                 // Validate assignment compatibility (same as in check_assign)
-                if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 {
+                if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 && value_needs_literal_handling {
                     check_struct_literal_assign(c, s.span, s.value, sd, env)
                     // Byte-buffer reinterpret read into a struct (slice form): a
                     // span shorter than the struct is a partial fill (tail zero);
@@ -7617,7 +7624,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                     continue
                 }
-                if ut, ok := check_ann.(^Type_Union); ok {
+                if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
                     check_union_literal_assign(c, s.span, s.value, ut, env)
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
@@ -8898,16 +8905,20 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
             return
         }
 
-        // Literal assignment: delegate to structural check helpers (unwrap distinct)
+        // Literal assignment: delegate to structural check helpers (unwrap distinct).
+        // A plain (non-literal) value must instead reach the nominal-compatibility
+        // fallback below — the literal helpers no-op on non-literals, which let
+        // `p : Point = Color()` slip through unchecked.
         check_ann := distinct_base(ann_type)
-        if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 {
+        value_needs_literal_handling := val_is_struct_lit || is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
+        if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 && value_needs_literal_handling {
             check_struct_literal_assign(c, s.span, s.value, sd, env)
             s.var_type = distinct_base(ann_type)
             s.env_type = ann_type
             type_env_set(pub, s.name, ann_type)
             return
         }
-        if ut, ok := check_ann.(^Type_Union); ok {
+        if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
             check_union_literal_assign(c, s.span, s.value, ut, env)
             s.var_type = distinct_base(ann_type)
             s.env_type = ann_type
