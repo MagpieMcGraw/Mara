@@ -3508,12 +3508,15 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     case ^Type_Scope:
         vb, ok := b.(^Type_Scope)
         if !ok { return false }
-        // Nominal: if both have names, compare by name
-        if va.name != "" && vb.name != "" {
-            if va.name == vb.name { return true }
-            return false
-        }
-        // Structural: compare params + return types (for anonymous/callable funs)
+        // Interned nominal identity: every logical named type resolves to one
+        // canonical ^Type_Scope, so pointer equality IS type equality — no flat
+        // name string needed. (Verified: zero name-equal-but-pointer-different
+        // comparisons across the whole test suite + Pounce.)
+        if va == vb { return true }
+        // Two distinct named types are never equal.
+        if va.name != "" && vb.name != "" { return false }
+        // Structural: compare params + return types (for anonymous/callable funs,
+        // which carry no nominal name).
         if len(va.params) != len(vb.params) { return false }
         for p, i in va.params {
             if !types_equal(p.type_, vb.params[i].type_) { return false }
@@ -4256,7 +4259,8 @@ types_name_equal :: proc(a: Type, b: Type) -> bool {
     sa := as_scope_body(a)
     sb := as_scope_body(b)
     if sa != nil && sb != nil && sa.name != "" && sb.name != "" {
-        return sa.name == sb.name
+        // Interned identity: same logical type ⟺ same Scope_Body pointer.
+        return sa == sb
     }
     // For non-struct types, delegate to types_equal
     return types_equal(a, b)
