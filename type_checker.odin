@@ -92,6 +92,18 @@ Struct_Type_Field :: struct {
     is_using:      bool,
 }
 
+// Demand-driven resolution state for a scope's signature (a struct's fields, a
+// fun's params/returns). Unresolved → In_Progress → Resolved. The In_Progress
+// state is the cycle guard: re-entering a scope that's mid-resolution (a type
+// that refers to itself through a value field) is detected here rather than
+// recursing forever. This is the substrate for replacing the fixed signature
+// pre-passes (the old "1a.5"/"2a"/check_bodies hoists) with on-demand resolution.
+Resolution_State :: enum {
+    Unresolved,
+    In_Progress,
+    Resolved,
+}
+
 // The body of a Type_Scope — embedded via `using sd: Scope_Body`.
 // Holds the fields, nested defs, methods, and other content shared
 // between data-layout scopes (struct/class) and callable scopes (fun).
@@ -128,6 +140,11 @@ Scope_Body :: struct {
     // Program global, etc.). Lets a resolved call reach the callee's body by
     // pointer (lookup_callee_scope) instead of re-keying fun_asts by name.
     ast:            ^Stmt_Scope,
+
+    // Signature (field) resolution state — memoizes check_scope_body's
+    // signature pass so it runs exactly once per scope regardless of how many
+    // call sites demand it, and breaks cycles. Zero value Unresolved.
+    sig_state:      Resolution_State,
 
     // Associated definitions (scoped :: defs).
     // Values point to the actual Type the bare name resolves to — read
@@ -8146,6 +8163,19 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     ft, ft_ok := fun_type_raw.(^Type_Scope)
     if !ft_ok { return }
 
+    // On-demand signature resolution: memoize the signature pass so it runs once
+    // per scope no matter how many sites demand it, and break cycles. Only the
+    // signature_only pre-pass is gated — the full body check below always runs.
+    if signature_only {
+        if ft.sig_state != .Unresolved { return }  // already Resolved, or In_Progress = cycle
+        ft.sig_state = .In_Progress
+    }
+    // Function-scoped (not inside the if): never strand a scope In_Progress —
+    // any exit from the signature pass (the bail below, or an early return on an
+    // error path) marks it Resolved so a later demand doesn't mistake a finished
+    // scope for an unbreakable cycle. No-op outside the signature pass.
+    defer if signature_only && ft.sig_state == .In_Progress { ft.sig_state = .Resolved }
+
     // Env structure for callable scopes:
     //
     //   class:   [ns_env: Self/types/methods/consts] <- [child: params/lets/body]
@@ -8398,7 +8428,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     }
 
     // Pre-pass bails here — signature resolved, body deferred to main pass.
-    if signature_only { return }
+    if signature_only {
+        ft.sig_state = .Resolved
+        return
+    }
 
     // Nothing to descend into only when BOTH are empty. A pure-namespace struct
     // (only nested `::` defs, no runtime body) still needs check_scope below so
