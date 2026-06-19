@@ -954,7 +954,8 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
 }
 
 // Generate the IR name for a user-defined function.
-// Names are already flat (e.g., "sdl_Init") from flatten_for_codegen.
+// Names are already flat (e.g., "sdl_Init") — flattened during type-checking
+// by make_flat_name at registration.
 mara_fn_name :: proc(g: ^Codegen, name: string) -> string {
     if name == "main" { return "@main" }
     // `#expose fun foo` → unmangled `@foo` so a DLL host can call
@@ -989,7 +990,7 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
         return cached, true
     }
 
-    // All functions are in checked.functions with flat keys (after flatten_for_codegen)
+    // All functions are in checked.functions with flat keys (flattened during type-checking)
     cf, found := g.checked.functions[fn_name]
     if !found { return {}, false }
 
@@ -1994,7 +1995,7 @@ usable_cap :: proc(av: ^Array_Var) -> int {
     return av.capacity
 }
 
-// Codegen key for a struct type — names are already flat after flatten_for_codegen.
+// Codegen key for a struct type — names are already flat (flattened during type-checking).
 struct_key_fun :: proc(st: ^Type_Scope) -> string {
     return st.name
 }
@@ -3208,7 +3209,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         register_struct_decl(&g, st)
     }
 
-    // Register all unions from checked type data (keys are flat after flatten_for_codegen)
+    // Register all unions from checked type data (keys are flat — flattened during type-checking)
     union_keys: [dynamic]string
     defer delete(union_keys)
     for k in checked.table.unions { append(&union_keys, k) }

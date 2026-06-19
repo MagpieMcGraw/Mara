@@ -121,6 +121,13 @@ Scope_Body :: struct {
                              // headers point at &struct.backing[offset] using the struct's
                              // own address (correct under RVO; stale after a downstream copy).
 
+    // Back-reference to the declaring AST node (the `fun`/`struct`/`class`
+    // statement). Set at registration alongside the fun_asts entry. nil for
+    // types with no single source statement (foreign decls, the synthetic
+    // Program global, etc.). Lets a resolved call reach the callee's body by
+    // pointer (lookup_callee_scope) instead of re-keying fun_asts by name.
+    ast:            ^Stmt_Scope,
+
     // Associated definitions (scoped :: defs).
     // Values point to the actual Type the bare name resolves to — read
     // `.name` off the pointer when codegen needs the flat/mangled string.
@@ -466,7 +473,14 @@ Resolved_Constant :: struct {
 }
 
 Resolved_Func :: struct {
-    name:         string,  // flat name: "add" or "math_add"
+    name:         string,        // flat name: "add" or "math_add" — the codegen symbol key
+    // Resolved callee signature (pointer identity). Set for direct function /
+    // constructor calls so consumers use the pointer instead of re-deriving from
+    // `name`: codegen reads the symbol off `callee.name`, lookup_callee_scope
+    // reaches the body via `callee.ast`, and the (future) call graph keys edges
+    // on it. nil for non-function resolutions (distinct-type casts) and, for now,
+    // operator-overload edges (those still carry `name` only — TODO callgraph).
+    callee:       ^Type_Scope,
 }
 
 // ---------------------------------------------------------------------------
@@ -3239,7 +3253,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         // instantiated struct's flat name — same shape Point() takes.
         e.args = {}
         e.name = st.name
-        e.resolved_func = Resolved_Func{name = st.name}
+        e.resolved_func = Resolved_Func{name = st.name, callee = st}
 
         // Codegen needs an init function for the instantiated struct so the
         // call site has something to call. Type-position uses (e.g. `var
@@ -3333,7 +3347,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     // Step 7: Rewrite the call to target the mangled name
     e.name = mangled
     fn_flat_name := make_flat_name(tmpl.home_package, mangled)
-    e.resolved_func = Resolved_Func{name = fn_flat_name}
+    e.resolved_func = Resolved_Func{name = fn_flat_name, callee = fun_type}
 
     // Step 8: Validate arg count matches concrete param count
     if len(args) != len(fun_type.params) {
@@ -6121,6 +6135,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_st.home_package = c.current_package
                 def_st.kind = .Struct
                 def_st.is_packed = s.is_packed
+                def_st.ast = s
                 c.table.structs[mangled] = def_st
                 if st.types == nil { st.types = make(map[string]Type) }
                 st.types[bare_name] = def_st
@@ -6150,6 +6165,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 def_ft.name = mangled
                 def_ft.home_package = c.current_package
                 def_ft.has_parens = s.has_parens
+                def_ft.ast = s
                 if def_is_struct {
                     def_ft.kind = .Struct
                     def_ft.is_packed = s.is_packed
@@ -6569,6 +6585,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 struct_type.home_package = c.current_package
                 struct_type.kind = .Struct
                 struct_type.is_packed = s.is_packed
+                struct_type.ast = s
                 c.table.structs[flat] = struct_type
                 // Body fields deferred to Pass 1b (register_scope_defs).
                 type_env_set(pub, s.name, struct_type)
@@ -6600,6 +6617,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 fun_type.has_parens = s.has_parens
                 fun_type.name = flat_name
                 fun_type.home_package = c.current_package
+                fun_type.ast = s
                 if is_struct_type {
                     fun_type.kind = .Struct
                 } else {
@@ -6933,6 +6951,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 struct_type.home_package = c.current_package
                 struct_type.kind = .Struct
                 struct_type.is_packed = s.is_packed
+                struct_type.ast = s
                 if struct_type.name in c.table.structs || struct_type.name in c.table.funs {
                     check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
                     continue
@@ -6968,6 +6987,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // to emit LLVM struct types; funs are emitted separately).
                 fun_type.name = make_flat_name(c.current_package, s.name)
                 fun_type.home_package = c.current_package
+                fun_type.ast = s
                 if is_struct_type {
                     fun_type.kind = .Struct
                     c.table.funs[fun_type.name] = fun_type
@@ -13178,7 +13198,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
 
     disp_flat := make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
     e.name = fn_name  // rewrite call target for codegen
-    e.resolved_func = Resolved_Func{name = disp_flat}
+    e.resolved_func = Resolved_Func{name = disp_flat, callee = ft}
     return fn_primary_return(ft)
 }
 
@@ -13354,8 +13374,13 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
         }
     }
 
-    // Single write: record resolution for codegen
+    // Single write: record resolution for codegen. fun_type is the resolved
+    // callee for every path that reaches here (qualified: paired with resolution
+    // by resolve_qualified_call; unqualified: the same env lookup resolution was
+    // built from), so attach it as the callee pointer. Dispatch/generic paths
+    // return earlier and set their own resolved_func.
     if res, res_ok := resolution.?; res_ok {
+        res.callee = fun_type
         e.resolved_func = res
     }
 
@@ -13420,7 +13445,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Env) -> Type {
     e.type_ = st
     if e.resolved_func == nil && st.name != "" {
-        e.resolved_func = Resolved_Func{name = st.name}
+        e.resolved_func = Resolved_Func{name = st.name, callee = st}
     }
 
     // `Foo()` (no args) is always valid — equivalent to bare declaration `x : Foo`.
