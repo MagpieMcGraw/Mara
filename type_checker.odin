@@ -247,6 +247,19 @@ populate_cg_signature :: proc(ft: ^Type_Scope) {
 //   .Struct, with params: class with constructor args (`class Foo(a: int)`)
 //   .Fun,    with params: regular function (`fun add(x,y: int) -> int`)
 //   .Fun,    no params:   nullary function (`fun hello() { ... }`)
+//
+// ARCHITECTURE — the DURABLE half of the checker's analysis split (see Type_Env
+// for the transient half). Type_Scope is the typed-AST node: one per
+// declaration, it persists past checking and is what codegen consumes. Every
+// fact that is FIXED-at-declaration or MONOTONE-ACCUMULATING over a body belongs
+// here — the signature, body, members/layout, the per-declaration analysis facts
+// (is_param, `read`, ...), and the per-function interprocedural summaries
+// (purity, arg-sets). The symbol table and per-decl facts that Type_Env still
+// MIRRORS are migrating onto this struct / the durable scope graph.
+//
+// It must NOT hold point-sensitive flow state: "is x initialized HERE" has a
+// different value at every program point and forks at branches, so it can't live
+// on a single per-declaration record — that's Type_Env's job.
 Type_Scope :: struct {
     using sd: Scope_Body,
     kind:           Scope_Kind, // .Struct = data layout, .Fun = callable body
@@ -681,6 +694,22 @@ get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
     return b
 }
 
+// ARCHITECTURE — the TRANSIENT half of the checker's analysis split (see
+// Type_Scope for the durable half). Type_Env's reason to exist is POINT-SENSITIVE
+// flow state: facts a single durable record CAN'T hold because they fork at
+// branches (an `if/else` has two live init-sets at once, merged at the join).
+// That's `invalid_refs` / `newly_inited` (definite-assignment — a MUST fact,
+// intersected at joins) and `aliases` (intra-procedural points-to).
+//
+// Everything else here is a transient MIRROR of durable data that belongs on
+// Type_Scope and is cruft to delete as lookups move to the persistent scope
+// graph: `types` / `parent` / class_scope / fun_scope / fn_name / includes (the
+// symbol table + lexical structure) and the fixed/accumulating per-name facts in
+// `bindings` (is_param / is_let / read).
+//
+// THE TEST for where a new fact goes: point-sensitive (changes as you walk the
+// body, forks at branches) ⇒ here; fixed-at-declaration or monotone-accumulating
+// ⇒ Type_Scope.
 Type_Env :: struct {
     types:        map[string]Type,
     parent:       ^Type_Env,
