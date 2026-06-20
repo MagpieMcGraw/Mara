@@ -732,10 +732,11 @@ mark_read :: proc(env: ^Type_Env, name: string) {
 Type_Env :: struct {
     types:        map[string]Type,
     parent:       ^Type_Env,
-    // Blocks-as-scopes migration: for an if/for/defer block env, the durable
-    // .Block Type_Scope this env shadows — its locals (in .types) and
-    // parent_scope link mirror what the env carries, so name lookup can move
-    // onto the scope graph. nil for non-block envs (function bodies / modules).
+    // Blocks-as-scopes: the durable .Block Type_Scope this env shadows — its
+    // locals (in .types) and parent_scope link mirror what the env carries, so
+    // local lookup runs off the scope graph (type_env_locate). Set for the
+    // function/ctor BODY (the outermost block) and every if/for/defer/match-arm
+    // block; nil only for non-body envs (the defs/namespace layer and modules).
     block_scope:  ^Type_Scope,
     // (return_types removed — derived from the nearest fun_scope/class_scope's
     //  durable signature via enclosing_return_types, not carried per-env.)
