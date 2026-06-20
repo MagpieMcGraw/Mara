@@ -39,6 +39,11 @@ Flow_Stats :: struct {
     // Functions flagged for "missing return on all code paths" — the first
     // analysis this pass OWNS (emitted below, not just collected).
     missing_return: [dynamic]string,
+
+    // Names flagged for unused-err (validation mode — collected, not yet emitted;
+    // the inline check_unused_locals is still authoritative). Confirms agreement:
+    // a program that compiles must collect 0, an unused-err fixture must collect it.
+    unused_err: [dynamic]string,
 }
 
 // Entry point — called post-check (after build_call_graph). Walks every source
@@ -60,6 +65,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
             check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
             append(&stats.missing_return, name)
         }
+        flow_check_unused(ft, &stats.unused_err)
     }
     flow_dump_stats(stats)
 }
@@ -75,6 +81,175 @@ flow_missing_return :: proc(ft: ^Type_Scope) -> bool {
     if is_any(ft.return_types[0]) { return false }      // unresolved generic return
     if all_err_returns(ft.return_types) { return false } // all-err can fall off (.Ok fill)
     return !always_returns(ft.body)
+}
+
+// --- must-use-err ---------------------------------------------------------
+// An err-typed local that is declared but never read — not checked, not
+// propagated with `?` (which leaves no binding), not discarded with `_` — is an
+// error. This reproduces the inline check_unused_locals/flag_unused_local over
+// the durable body: a per-block scope close over that block's own err-decls,
+// with a read ANYWHERE in the block or a descendant clearing it. Shadowing is
+// respected via the frame stack (a read binds the nearest enclosing decl).
+//
+// VALIDATION MODE: flagged names are collected into `out`, NOT emitted — the
+// inline check is still authoritative. Green programs must collect nothing
+// (they compile), and an unused-err fixture must show up.
+
+Flow_Err_Local :: struct {
+    span: Span,
+    read: bool,
+}
+
+// One lexical block's err-typed locals (name -> declared/read). Empty for the
+// vast majority of blocks, so the map is allocated lazily on first err-decl.
+Flow_Frame :: struct {
+    errs: map[string]Flow_Err_Local,
+}
+
+flow_check_unused :: proc(ft: ^Type_Scope, out: ^[dynamic]string) {
+    stack: [dynamic]^Flow_Frame
+    defer delete(stack)
+    flow_unused_block(&stack, ft.body[:], out)
+}
+
+// Walk one block: push a frame, process its statements (recording err-decls and
+// marking reads on the stack), then at close flag every err-decl left unread.
+flow_unused_block :: proc(stack: ^[dynamic]^Flow_Frame, stmts: []Stmt, out: ^[dynamic]string) {
+    frame: Flow_Frame
+    append(stack, &frame)
+    for s in stmts { flow_unused_stmt(stack, s, out) }
+    for name, loc in frame.errs {
+        if !loc.read { append(out, name) }
+    }
+    delete(frame.errs)
+    pop(stack)
+}
+
+flow_unused_stmt :: proc(stack: ^[dynamic]^Flow_Frame, s: Stmt, out: ^[dynamic]string) {
+    #partial switch v in s {
+    case ^Stmt_Decl:
+        for e in v.init_values { flow_expr_reads(stack, e) }
+        flow_expr_reads(stack, v.slice_cap_expr)
+        // The desugared `.checked` carries the per-name resolved types; the span
+        // stays the Stmt_Decl's, matching the inline flag_unused_local location.
+        for inner in v.checked {
+            #partial switch a in inner {
+            case ^Stmt_Assign:
+                if a.is_decl { flow_record_err_decl(stack, a.name, a.var_type, v.span) }
+            case ^Stmt_Multi_Return_Assign:
+                if a.is_decl {
+                    for n, i in a.names {
+                        if i < len(a.var_types) { flow_record_err_decl(stack, n, a.var_types[i], v.span) }
+                    }
+                }
+            }
+        }
+    case ^Stmt_Assign:
+        flow_expr_reads(stack, v.value)
+        flow_expr_reads(stack, v.target)
+        if v.is_decl { flow_record_err_decl(stack, v.name, v.var_type, v.span) }
+    case ^Stmt_Multi_Assign:
+        for a in v.assigns { flow_unused_stmt(stack, a, out) }
+    case ^Stmt_Multi_Return_Assign:
+        for e in v.values { flow_expr_reads(stack, e) }
+        for e in v.targets { flow_expr_reads(stack, e) }
+    case Stmt_Call:
+        flow_expr_reads(stack, v.expr)
+    case Stmt_Return:
+        for e in v.values { flow_expr_reads(stack, e) }
+    case ^Stmt_If:
+        flow_expr_reads(stack, v.condition)
+        flow_unused_block(stack, v.body[:], out)
+        flow_unused_block(stack, v.else_body[:], out)
+    case ^Stmt_For:
+        if v.init != nil { flow_unused_stmt(stack, v.init, out) }
+        flow_expr_reads(stack, v.condition)
+        flow_expr_reads(stack, v.range_low)
+        flow_expr_reads(stack, v.range_high)
+        flow_expr_reads(stack, v.collection)
+        flow_expr_reads(stack, v.collection_len)
+        flow_unused_block(stack, v.body[:], out)
+        if v.post != nil { flow_unused_stmt(stack, v.post, out) }
+    case ^Stmt_Match:
+        flow_expr_reads(stack, v.subject)
+        for arm in v.arms {
+            flow_expr_reads(stack, arm.value)
+            flow_unused_block(stack, arm.body[:], out)
+        }
+    case ^Stmt_Defer:
+        flow_unused_block(stack, v.body[:], out)
+    }
+}
+
+// Record an err-typed declared name into the innermost frame. Skips `_` and
+// non-err types — exactly what flag_unused_local actions today.
+flow_record_err_decl :: proc(stack: ^[dynamic]^Flow_Frame, name: string, t: Type, span: Span) {
+    if name == "_" || name == "" { return }
+    if !is_err_type(t) { return }
+    top := stack[len(stack) - 1]
+    if top.errs == nil { top.errs = make(map[string]Flow_Err_Local) }
+    top.errs[name] = Flow_Err_Local{span = span, read = false}
+}
+
+// Mark a name read in the NEAREST enclosing frame that declared it as an err —
+// the shadowing-correct equivalent of the inline read flag reaching the binding's
+// declaring env via the chain.
+flow_mark_read :: proc(stack: ^[dynamic]^Flow_Frame, name: string) {
+    #reverse for frame in stack^ {
+        if loc, ok := frame.errs[name]; ok {
+            loc.read = true
+            frame.errs[name] = loc
+            return
+        }
+    }
+}
+
+// Recursively mark every identifier read in an expression. A bare Expr_Ident is
+// the read; everything else just recurses into sub-expressions. Leaves
+// (literals, Self, size_of, type names) contain no local reads. Call names are
+// NOT reads — the inline checker marks reads at Expr_Ident sites only, and a
+// call's callee is a name string, not an ident.
+flow_expr_reads :: proc(stack: ^[dynamic]^Flow_Frame, e: Expr) {
+    if e == nil { return }
+    #partial switch v in e {
+    case ^Expr_Ident:
+        flow_mark_read(stack, v.name)
+    case ^Expr_Unary:
+        flow_expr_reads(stack, v.operand)
+    case ^Expr_Binary:
+        flow_expr_reads(stack, v.left)
+        flow_expr_reads(stack, v.right)
+    case ^Expr_Call:
+        flow_expr_reads(stack, v.qualifier)
+        for a in v.args { flow_expr_reads(stack, a) }
+        if v.overrides != nil {
+            for f in v.overrides.fields { flow_expr_reads(stack, f.value) }
+        }
+    case ^Expr_Index:
+        flow_expr_reads(stack, v.expr)
+        flow_expr_reads(stack, v.index)
+    case ^Expr_Slice:
+        flow_expr_reads(stack, v.expr)
+        flow_expr_reads(stack, v.low)
+        flow_expr_reads(stack, v.high)
+    case ^Expr_Field_Access:
+        flow_expr_reads(stack, v.expr)
+    case ^Expr_Array:
+        for el in v.elements { flow_expr_reads(stack, el) }
+    case ^Expr_Struct_Literal:
+        for f in v.fields { flow_expr_reads(stack, f.value) }
+    case ^Expr_Try:
+        flow_expr_reads(stack, v.inner)
+    case ^Expr_If:
+        flow_expr_reads(stack, v.condition)
+        flow_expr_reads(stack, v.then_expr)
+        flow_expr_reads(stack, v.else_expr)
+    case ^Expr_Assert:
+        flow_expr_reads(stack, v.cond)
+    case ^Expr_Take:
+        flow_expr_reads(stack, v.storage)
+        flow_expr_reads(stack, v.count_expr)
+    }
 }
 
 // Recurse the control-flow tree, counting coverage. Descends if/for/defer/match
@@ -114,4 +289,6 @@ flow_dump_stats :: proc(stats: Flow_Stats) {
     )
     fmt.eprintf("[flow] missing-return flagged: %d %v\n",
         len(stats.missing_return), stats.missing_return)
+    fmt.eprintf("[flow] unused-err flagged: %d %v\n",
+        len(stats.unused_err), stats.unused_err)
 }
