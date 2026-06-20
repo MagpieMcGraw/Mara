@@ -10048,7 +10048,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             } else {
                 check_error(c, s.span, TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING, arm.dot_shorthand)
             }
-            child := type_env_child(env)
+            child := type_env_block_child(env)
             check_scope(c, arm.body, &child)
             append(&arm_inits, child.newly_inited)
             append(&arm_divs, branch_diverges(arm.body))
@@ -10074,7 +10074,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                     arm.binding_name = subj_ident.name
                 }
             }
-            child := type_env_child(env)
+            child := type_env_block_child(env)
             // Bind the payload variable as the variant's struct type
             struct_name := arm.variant_name
             if is_union_match {
@@ -10099,7 +10099,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             append(&arm_divs, branch_diverges(arm.body))
         } else if arm.is_else {
             // Else (wildcard) arm — just type-check the body
-            child := type_env_child(env)
+            child := type_env_block_child(env)
             check_scope(c, arm.body, &child)
             append(&arm_inits, child.newly_inited)
             append(&arm_divs, branch_diverges(arm.body))
@@ -10111,7 +10111,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                         // Promote bare ident to dot_shorthand arm
                         arm.dot_shorthand = ident.name
                         arm.resolved_tag = tag_val
-                        child := type_env_child(env)
+                        child := type_env_block_child(env)
                         check_scope(c, arm.body, &child)
                         append(&arm_inits, child.newly_inited)
                         append(&arm_divs, branch_diverges(arm.body))
@@ -10128,7 +10128,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                         } else if arm_st, arm_st_ok := c.table.funs[ds_struct]; arm_st_ok {
                             arm.resolved_struct = arm_st.name
                         }
-                        child := type_env_child(env)
+                        child := type_env_block_child(env)
                         check_scope(c, arm.body, &child)
                         append(&arm_inits, child.newly_inited)
                         append(&arm_divs, branch_diverges(arm.body))
@@ -10138,7 +10138,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             }
             // Regular value match arm
             check_expr(c, arm.value, env)
-            child := type_env_child(env)
+            child := type_env_block_child(env)
             check_scope(c, arm.body, &child)
             append(&arm_inits, child.newly_inited)
             append(&arm_divs, branch_diverges(arm.body))

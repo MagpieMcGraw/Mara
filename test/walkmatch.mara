@@ -1,0 +1,22 @@
+module walkmatch
+
+Shape :: union(tag u32) {
+	Circle = 1 { r: i32 = 7 }
+	Square = 2 { s: i32 = 3 }
+}
+
+area :: fun(sh: Shape) -> i32 {
+	base := 10
+	match sh {
+	Circle c
+		return c.r * c.r + base
+	Square q
+		return q.s * q.s + base
+	}
+	return 0
+}
+
+main :: fun() {
+	a : Shape = Circle{r = 3}
+	assert(area(a) == 19)
+}
