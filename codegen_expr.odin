@@ -348,17 +348,18 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         // construct semantics: zero-init, init-fn defaults, then field stores.
         // Union-typed variant literal in value position (`return A{...}`,
         // `f(A{...})`, nested in another literal). The node types as the union;
-        // materialize the flat variant struct into a zeroed, UNION-sized temp
-        // (so the value is safe to load or copy at any boundary) and yield the
-        // pointer. Niche unions construct through their own bare-pointer path.
-        if ut, ut_ok := e.type_.(^Type_Union); ut_ok && e.name != "" && !is_niche_layout(g, ut) {
-            if vst, vok := lookup_struct(g, ut.variant_structs[e.name]); vok {
-                tmp := fresh_tmp(g)
-                emit_alloca(g, tmp, union_llvm_name(union_key(ut)))
+        // materialize it into a union-sized temp and yield the pointer so the
+        // value is safe to load or copy at any boundary. emit_union_literal_store
+        // handles both shapes — the tag-inclusive variant for a normal union, a
+        // bare ptr/null for a niche one (which fills all 8 bytes, no memset).
+        if ut, ut_ok := e.type_.(^Type_Union); ut_ok && e.name != "" {
+            tmp := fresh_tmp(g)
+            emit_alloca(g, tmp, union_llvm_name(union_key(ut)))
+            if !is_niche_layout(g, ut) {
                 emit_memset_zero(g, tmp, union_byte_size(g, ut))
-                gen_store_struct_into(g, tmp, vst, e)
-                return tmp
             }
+            emit_union_literal_store(g, ut, e, tmp)
+            return tmp
         }
         if sd := as_struct_body(e.type_); sd != nil {
             tmp := fresh_tmp(g)

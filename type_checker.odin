@@ -11625,13 +11625,12 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 e.type_ = hint
                 return hint
             }
-            // Union-typed context: a variant literal `A{...}` builds the union's
-            // variant struct (which carries the tag). Type the node as that
-            // struct so codegen materializes it through the struct path, but
-            // report the UNION as the expression's type so it satisfies the
-            // union-typed slot (return / argument / nested field). Niche unions
-            // (Maybe(^T)) keep their separate bare-pointer construction.
-            if ut, ut_ok := distinct_base(hint).(^Type_Union); ut_ok && e.name != "" && e.name in ut.tag_map && !union_is_niche_shape(c, ut) {
+            // Union-typed context: a variant literal `A{...}` in a return slot,
+            // argument, or nested field. Validate the variant's fields and type
+            // the node as the UNION so it satisfies the slot; codegen
+            // materializes the value from e.name (the tag-inclusive variant for
+            // a normal union, the bare pointer for a niche one).
+            if ut, ut_ok := distinct_base(hint).(^Type_Union); ut_ok && e.name != "" && e.name in ut.tag_map {
                 if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
                     check_struct_literal_fields(c, e, &st.sd, e.span, env)
                     return ut   // node types as the union; codegen materializes the variant from e.name

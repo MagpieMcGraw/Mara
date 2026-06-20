@@ -1,0 +1,58 @@
+module nicheexpr
+
+// Niche unions (bare nullable pointer: None | Some{^T}) flowing as first-class
+// values — return, bind-from-call, and argument positions — same as ordinary
+// unions. Construction in place was already supported; this covers the rest.
+
+use mara.maybe
+
+Opt :: union(tag u8) {
+	Nope
+	Yep { p: ^i64 }
+}
+
+find :: fun(x: ^i64, want: bool) -> Opt {
+	if want {
+		return Yep{p = x}              // niche variant literal in return position
+	}
+	return Nope{}
+}
+
+deref_or :: fun(o: Opt, fallback: i64) -> i64 {
+	match o {
+	Nope
+		return fallback
+	Yep y
+		return y.p^
+	}
+	return -1
+}
+
+some_node :: fun(z: ^i64, yes: bool) -> Maybe(^i64) {
+	if yes {
+		return Some{value = z}
+	}
+	return None{}
+}
+
+main :: fun() {
+	x := 7
+	a := find(&x, true)                   // bind a niche union from a call
+	assert(deref_or(a, 0) == 7)
+	b := find(&x, false)
+	assert(deref_or(b, -1) == -1)
+
+	assert(deref_or(Yep{p = &x}, 0) == 7)   // niche variant literal as argument
+	assert(deref_or(Nope{}, 99) == 99)
+
+	z := 42
+	m := some_node(&z, true)              // generic Maybe(^T) returned + matched
+	match m {
+	None
+		assert(false)
+	Some s
+		assert(s.value^ == 42)
+	}
+
+	print("nicheexpr ok")
+}
