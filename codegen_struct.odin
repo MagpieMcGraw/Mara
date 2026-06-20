@@ -1167,6 +1167,34 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
 }
 
 
+// Apply each field's compile-time default into a freshly-zeroed struct
+// region. Used for structs WITHOUT an init function (union variant structs
+// carry field defaults but get no generated constructor) — normal structs
+// apply their defaults through the init fn. Fields the literal sets
+// explicitly are skipped; those land in apply_struct_literal_fields.
+apply_struct_field_defaults :: proc(g: ^Codegen, st: ^Scope_Body, llvm_name: string, base_ptr: string, lit: ^Expr_Struct_Literal) {
+    span: Span
+    if lit != nil { span = lit.span }
+    for &sdf, i in st.fields {
+        if sdf.default_value == nil { continue }
+        provided := false
+        if lit != nil {
+            for field in lit.fields {
+                if field.name == sdf.name { provided = true; break }
+            }
+        }
+        if provided { continue }
+        gep := fresh_tmp(g)
+        emit_field_gep_into(g, gep, llvm_name, base_ptr, i)
+        if !gen_partial_array_field_store(g, &sdf, gep, sdf.default_value, span) {
+            ft := field_ir_type(&sdf)
+            val := gen_expr(g, sdf.default_value, ft)
+            emit_store(g, ft, val, gep)
+        }
+    }
+}
+
+
 // Single point of truth for "store a struct-typed value into a destination
 // pointer". Replaces the duplicated dispatch logic that used to live in
 // gen_struct_assign (local var), gen_field_assign (obj.f = ...),
@@ -1199,6 +1227,10 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         if !lit.zero_init {
             if _, has_init := g.checked.functions[st.name]; has_init {
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
+            } else {
+                // No init fn (union variant structs): apply field defaults
+                // directly so they survive the routing through this path.
+                apply_struct_field_defaults(g, st, llvm_name, dst_ptr, lit)
             }
         }
         apply_struct_literal_fields(g, lit, st, llvm_name, dst_ptr)
@@ -1977,40 +2009,12 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
     payload_ptr := fresh_tmp(g)
     emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 1", payload_ptr, llvm_name, union_ptr)
 
-    // Fill payload fields using the variant's struct layout
+    // Fill the payload through the same struct-construction path a plain
+    // struct literal uses (zero-init + field defaults + explicit fields).
+    // The variant struct carries no init fn, so gen_store_struct_into applies
+    // its field defaults directly via apply_struct_field_defaults.
     variant_struct_name := ut.variant_structs[lit.name]
     vst, vst_ok := lookup_struct(g, variant_struct_name)
     if !vst_ok { return }
-    vst_llvm := struct_llvm_name(variant_struct_name)
-
-    for field in lit.fields {
-        idx := struct_field_index(vst, field.name)
-        if idx < 0 { continue }
-        gep := fresh_tmp(g)
-        emit_field_gep_into(g, gep, vst_llvm, payload_ptr, idx)
-        if !gen_partial_array_field_store(g, &vst.fields[idx], gep, field.value, lit.span) {
-            ft := field_ir_type(&vst.fields[idx])
-            val := gen_expr_coerced(g, field.value, ft)
-            emit_store(g, ft, val, gep)
-        }
-    }
-    // Fill in defaults for variant fields (skip for {0} zero-init)
-    if !lit.zero_init {
-        for &sdf, sdf_i in vst.fields {
-            if sdf.default_value == nil { continue }
-            provided := false
-            for field in lit.fields {
-                if field.name == sdf.name { provided = true; break }
-            }
-            if !provided {
-                gep := fresh_tmp(g)
-                emit_field_gep_into(g, gep, vst_llvm, payload_ptr, sdf_i)
-                if !gen_partial_array_field_store(g, &sdf, gep, sdf.default_value, lit.span) {
-                    sdf_ft := field_ir_type(&sdf)
-                    val := gen_expr(g, sdf.default_value, sdf_ft)
-                    emit_store(g, sdf_ft, val, gep)
-                }
-            }
-        }
-    }
+    gen_store_struct_into(g, payload_ptr, vst, value)
 }
