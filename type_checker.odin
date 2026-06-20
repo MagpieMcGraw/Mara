@@ -781,6 +781,48 @@ scope_member :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     return nil, false
 }
 
+// Block-scoped LOCAL lookup over the DURABLE scope graph — the migration target
+// for the env.parent walk. From the starting block scope, walk parent_scope
+// checking each .Block's locals (.types) and STOP at the first non-.Block (the
+// enclosing fun/ctor/struct). The stop encodes "no closures": a block sees its
+// own + enclosing blocks' + the function's top-level locals (all .Block scopes),
+// but never an outer function's. Members (nested ::types/funs) are NOT here —
+// that is scope_member's job, walking past the function boundary.
+scope_local_lookup :: proc(start: ^Type_Scope, name: string) -> (Type, bool) {
+    for s := start; s != nil && s.kind == .Block; s = s.parent_scope {
+        if s.types != nil {
+            if t, ok := s.types[name]; ok { return t, true }
+        }
+    }
+    return nil, false
+}
+
+// VALIDATION SCAFFOLD (gated by MARA_WALK_CHECK=1): when a name resolves to a
+// local (found in a BLOCK env's .types) and the lookup STARTED inside a block,
+// the durable parent_scope walk must find the same type. A divergence means a
+// block site is not yet wired into the scope graph. Logs (doesn't abort) so a
+// full compile surfaces every gap at once. Goes away once the walk replaces the
+// env chain for locals.
+g_walk_check_state := 0 // 0 = unknown, 1 = on, 2 = off
+walk_check_on :: proc() -> bool {
+    if g_walk_check_state == 0 {
+        buf: [8]byte
+        g_walk_check_state = os.get_env_buf(buf[:], "MARA_WALK_CHECK") == "1" ? 1 : 2
+    }
+    return g_walk_check_state == 1
+}
+walk_validate_local :: proc(start: ^Type_Env, found_in: ^Type_Env, name: string, t: Type) {
+    if !walk_check_on() { return }
+    if start.block_scope == nil { return }    // lookup didn't start in a block — blind spot, skip
+    if found_in.block_scope == nil { return } // resolved to a non-local (Self / const mirror / module name)
+    wt, wok := scope_local_lookup(start.block_scope, name)
+    if !wok {
+        fmt.eprintf("[WALK-MISS] %s: env found local, scope walk did not\n", name)
+    } else if !types_equal(wt, t) {
+        fmt.eprintf("[WALK-DIFF] %s: env=%s walk=%s\n", name, type_name(t), type_name(wt))
+    }
+}
+
 // THE name-lookup walk (type_env_get / type_env_locate_below_module are thin
 // wrappers — this is the single site the env→scope-graph migration touches).
 // At each env level: locals (cur.types), then durable members (scope_member up
@@ -795,6 +837,7 @@ type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> 
     for cur := env; cur != nil; cur = cur.parent {
         if below_module && cur.is_module_scope { break }
         if t, ok := cur.types[name]; ok {
+            walk_validate_local(env, cur, name, t)
             return t, cur, true
         }
         if t, ok := scope_member(cur, name); ok {
@@ -8463,7 +8506,12 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         parent_env = &ns_env
     }
 
-    child := type_env_child(parent_env)
+    // The body is the function/ctor's OUTERMOST block: params + top-level locals
+    // land on its .Block scope (parent_scope = ft, via enclosing_callable_scope of
+    // the defs layer), and nested if/for/defer blocks chain to it. So the durable
+    // scope_local_lookup walk reaches every local of the current function and
+    // stops at ft (the no-closures boundary).
+    child := type_env_block_child(parent_env)
     // Function bodies open a new stack frame for escape analysis. Class
     // bodies are just namespaces — fields don't live at a deeper depth.
     if ft.kind == .Fun {
