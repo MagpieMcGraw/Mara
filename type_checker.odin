@@ -732,7 +732,6 @@ Type_Env :: struct {
                                      // aliases[it] = "root". Empty-string value means the alias
                                      // was explicitly cleared in this scope (shadows parent).
                                      // Lets field-access uninit checks see through pointer aliases.
-    fn_name: string,             // enclosing function name (for #caller_name)
     class_scope: ^Type_Scope,    // when non-nil, this env is the body of that class/struct — field names
                                  // in this env should not leak to nested method bodies as bare identifiers.
     fun_scope: ^Type_Scope,      // when non-nil, this env is a function's DEFS layer (its ns_env), pointing
@@ -1146,15 +1145,15 @@ type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
     // Inner blocks (if/for/match) inherit their parent's frame depth. Only
     // function-body envs bump scope_depth — see the explicit bump in
     // check_scope_body's `.Fun` path.
-    return Type_Env{parent = parent, fn_name = parent.fn_name, scope_depth = parent.scope_depth}
+    return Type_Env{parent = parent, scope_depth = parent.scope_depth}
 }
 
-// Walk up the env chain to find the enclosing function name (for #caller_name).
+// The enclosing function's user name (for #caller_name), read from the DURABLE
+// scope graph — the nearest fun/ctor's Type_Scope — instead of a per-env mirror.
+// (Frame-lift: Type_Env no longer carries an fn_name copy.)
 enclosing_fn_name :: proc(env: ^Type_Env) -> string {
-    cur := env
-    for cur != nil {
-        if cur.fn_name != "" { return cur.fn_name }
-        cur = cur.parent
+    if s := enclosing_callable_scope(env); s != nil {
+        return s.source_name if s.source_name != "" else s.name
     }
     return "main" // top-level code runs in main
 }
@@ -3342,7 +3341,6 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
 
     // Create child scope for body checking
     child := type_env_child(env)
-    child.fn_name = ast.name
 
     // Bind regular params with their concrete types
     for tp, i in ast.typed_params {
@@ -3471,7 +3469,6 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
 
     // Clone body and type-check with new param types
     child := type_env_child(env)
-    child.fn_name = ast.name
     for tp, i in ast.typed_params {
         if i < len(mono_ft.params) {
             type_env_set(&child, tp.name, mono_ft.params[i].type_)
@@ -8654,7 +8651,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     }
 
     // Register params in scope
-    child.fn_name = s.name
     for tp, i in s.typed_params {
         if i < len(ft.params) {
             type_env_set(&child, tp.name, ft.params[i].type_)

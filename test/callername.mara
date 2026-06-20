@@ -1,0 +1,14 @@
+module callername
+
+// #caller_name resolves (at the call site) to the caller's enclosing function
+// name — now read from the durable Type_Scope instead of a Type_Env mirror.
+// Guards that it's the SOURCE name ("helper"), not the flat name.
+
+who    :: fun(n: ^byte = #caller_name) -> ^byte { return n }
+helper :: fun() -> ^byte { return who() }      // caller is `helper`
+
+main :: fun() {
+	assert(who()^ == 'm')        // called from main   -> "main"
+	assert(helper()^ == 'h')     // who's caller is helper -> "helper"
+	print("callername ok")
+}
