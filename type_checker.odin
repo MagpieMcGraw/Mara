@@ -694,6 +694,25 @@ get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
     return b
 }
 
+// Mark a name's binding as read (must-use-err / unused tracking). Locals now
+// resolve their TYPE over the durable scope graph (type_env_locate), so the
+// caller no longer has the declaring env in hand — but the flow binding still
+// lives on that env, where flag_unused_local later reads it. Walk the env chain
+// (the flow frame's spine) to the DECLARING env — the first whose .types holds
+// the name — and mark the binding there, creating it if the read is its first
+// mention. This reproduces the old `get_or_make_binding(loc_env)` exactly:
+// loc_env was precisely that .types-matching env. Falls back to the start env
+// for a name with no env-level type (a member — read is inert for those).
+mark_read :: proc(env: ^Type_Env, name: string) {
+    for cur := env; cur != nil; cur = cur.parent {
+        if _, ok := cur.types[name]; ok {
+            get_or_make_binding(cur, name).read = true
+            return
+        }
+    }
+    get_or_make_binding(env, name).read = true
+}
+
 // ARCHITECTURE — the TRANSIENT half of the checker's analysis split (see
 // Type_Scope for the durable half). Type_Env's reason to exist is POINT-SENSITIVE
 // flow state: facts a single durable record CAN'T hold because they fork at
@@ -834,6 +853,21 @@ walk_validate_local :: proc(start: ^Type_Env, found_in: ^Type_Env, name: string,
 // with the module's own auto-injected binding. Otherwise the module env is
 // consulted and the walk stops after it.
 type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Env, bool) {
+    // LOCALS resolve over the durable block-scope graph (parent_scope), not the
+    // env.parent chain: from the current block up through enclosing blocks and the
+    // function's body block, stopping at the function boundary (no closures). This
+    // is the validated switch — scope_local_lookup was proven to match the old env
+    // walk exactly (MARA_WALK_CHECK, zero divergences over Pounce + all.mara).
+    //
+    // The found-in env returned is the START env: a local never lives in a class
+    // namespace, so the field-leak guards (which fire only when loc_env.class_scope
+    // is set — i.e. a member resolved below) correctly skip, and read-marking now
+    // goes through mark_read (which walks the env chain to the owning binding).
+    if env.block_scope != nil {
+        if t, ok := scope_local_lookup(env.block_scope, name); ok {
+            return t, env, true
+        }
+    }
     for cur := env; cur != nil; cur = cur.parent {
         if below_module && cur.is_module_scope { break }
         if t, ok := cur.types[name]; ok {
@@ -11400,7 +11434,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // Check env (common case: local vars, params, functions)
         t, loc_env, ok := type_env_locate(env, e.name)
         if ok {
-            get_or_make_binding(loc_env, e.name).read = true // consumes an err binding
+            mark_read(env, e.name) // consumes an err binding (walks to the owning env)
             // Field-leak guard: if the name was found in an ancestor env that belongs
             // to a class body, AND the name is a field of that class, the caller is
             // a nested scope (method body) trying to access a field as a bare name.
