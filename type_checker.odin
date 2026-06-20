@@ -11200,6 +11200,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     }
 
     checked.call_graph = build_call_graph(&c)
+    flow_analyze_program(checked) // post-check intraproc flow (skeleton — inert)
     checked.errors = c.errors
     return checked
 }
