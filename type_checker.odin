@@ -684,7 +684,6 @@ Binding :: struct {
     is_param:           bool,       // function parameter (read-only contract)
     is_let:             bool,       // take-bound view (storage aliased at source)
     local_slice_backed: bool,       // holds a struct whose slice fields point into our frame
-    read:               bool,       // referenced somewhere (must-use-err / unused-local)
 }
 
 get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
@@ -692,25 +691,6 @@ get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
     b := new(Binding)
     env.bindings[name] = b
     return b
-}
-
-// Mark a name's binding as read (must-use-err / unused tracking). Locals now
-// resolve their TYPE over the durable scope graph (type_env_locate), so the
-// caller no longer has the declaring env in hand — but the flow binding still
-// lives on that env, where flag_unused_local later reads it. Walk the env chain
-// (the flow frame's spine) to the DECLARING env — the first whose .types holds
-// the name — and mark the binding there, creating it if the read is its first
-// mention. This reproduces the old `get_or_make_binding(loc_env)` exactly:
-// loc_env was precisely that .types-matching env. Falls back to the start env
-// for a name with no env-level type (a member — read is inert for those).
-mark_read :: proc(env: ^Type_Env, name: string) {
-    for cur := env; cur != nil; cur = cur.parent {
-        if _, ok := cur.types[name]; ok {
-            get_or_make_binding(cur, name).read = true
-            return
-        }
-    }
-    get_or_make_binding(env, name).read = true
 }
 
 // ARCHITECTURE — the TRANSIENT half of the checker's analysis split (see
@@ -862,8 +842,7 @@ type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> 
     //
     // The found-in env returned is the START env: a local never lives in a class
     // namespace, so the field-leak guards (which fire only when loc_env.class_scope
-    // is set — i.e. a member resolved below) correctly skip, and read-marking now
-    // goes through mark_read (which walks the env chain to the owning binding).
+    // is set — i.e. a member resolved below) correctly skip.
     if env.block_scope != nil {
         if t, ok := scope_local_lookup(env.block_scope, name); ok {
             return t, env, true
@@ -6288,38 +6267,6 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     return Type_Any{}
 }
 
-// Flag one local binding if it was never read. Part of the general unused-local
-// pass: every local's read state is tracked in env.reads (set at the Expr_Ident
-// read site). Today only an `err` binding is actioned — never reading it is an
-// error (the must-use-err rule: check it, propagate with `?`, or discard with
-// `_`). Non-err unused locals are tracked identically but not yet reported —
-// the `else` branch is where an opt-in `unused-locals` warning will hook in.
-flag_unused_local :: proc(c: ^Checker, env: ^Type_Env, name: string, span: Span) {
-    if name == "_" || name == "" { return }
-    if b, ok := env.bindings[name]; ok && b.read { return }
-    t, ok := env.types[name]
-    if !ok { return }
-    if is_err_type(t) {
-        check_error(c, span, TYPE_UNUSED_ERR, name)
-    }
-    // else: unused non-err local — reserved for a future `unused-locals` warning.
-}
-
-// Scope-close pass: report unused err bindings declared in THIS scope. Walks only
-// this scope's own decls — nested blocks run their own check_scope, and a read
-// anywhere clears the name in its declaring env via the chain (type_env_locate).
-// Params and named return bindings aren't Stmt_Decls here, so they're exempt.
-check_unused_locals :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
-    for stmt in stmts {
-        #partial switch s in stmt {
-        case ^Stmt_Decl:
-            for n in s.names { flag_unused_local(c, env, n, s.span) }
-        case ^Stmt_Assign:
-            if s.is_decl { flag_unused_local(c, env, s.name, s.span) }
-        }
-    }
-}
-
 // Storage routing, applied uniformly at every local declaration: a value big
 // enough to route through the arena (routes_to_arena) needs an allocator to
 // route to. With none declared there's nowhere safe to put it, so error at the
@@ -6327,8 +6274,8 @@ check_unused_locals :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
 // array, struct, …), instead of letting a partial array silently stack-overflow
 // or a struct trip a late codegen fatal. When an allocator IS declared this is a
 // no-op here; codegen does the actual arena routing on the same predicate.
-// Per-scope and top-level only, like check_unused_locals — nested if/for/match
-// bodies re-enter check_scope and get their own pass.
+// Per-scope and top-level only — nested if/for/match bodies re-enter check_scope
+// and get their own pass.
 check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
     if c.table.has_scope_allocator || c.table.context_expected_at_runtime { return }
     guard :: proc(c: ^Checker, env: ^Type_Env, name: string, t: Type, span: Span) {
@@ -6383,9 +6330,8 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
     check_bodies(c, def_list, env)
     if split { check_bodies(c, stmts, env) }
 
-    // Pass 3 (unused err bindings) and Pass 4 (stack/arena routing) are
-    // runtime-only — over the body statements.
-    check_unused_locals(c, stmts, env)
+    // Pass 4 (stack/arena routing) is runtime-only — over the body statements.
+    // (Unused-err is now the post-check flow pass's job — see flow.odin.)
     check_storage_sizes(c, stmts, env)
 }
 
@@ -11432,7 +11378,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // Check env (common case: local vars, params, functions)
         t, loc_env, ok := type_env_locate(env, e.name)
         if ok {
-            mark_read(env, e.name) // consumes an err binding (walks to the owning env)
             // Field-leak guard: if the name was found in an ancestor env that belongs
             // to a class body, AND the name is a field of that class, the caller is
             // a nested scope (method body) trying to access a field as a bare name.

@@ -40,10 +40,6 @@ Flow_Stats :: struct {
     // analysis this pass OWNS (emitted below, not just collected).
     missing_return: [dynamic]string,
 
-    // Names flagged for unused-err (validation mode — collected, not yet emitted;
-    // the inline check_unused_locals is still authoritative). Confirms agreement:
-    // a program that compiles must collect 0, an unused-err fixture must collect it.
-    unused_err: [dynamic]string,
 }
 
 // Entry point — called post-check (after build_call_graph). Walks every source
@@ -65,7 +61,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
             check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
             append(&stats.missing_return, name)
         }
-        flow_check_unused(ft, &stats.unused_err)
+        flow_check_unused(c, ft)
     }
     flow_dump_stats(stats)
 }
@@ -91,9 +87,8 @@ flow_missing_return :: proc(ft: ^Type_Scope) -> bool {
 // with a read ANYWHERE in the block or a descendant clearing it. Shadowing is
 // respected via the frame stack (a read binds the nearest enclosing decl).
 //
-// VALIDATION MODE: flagged names are collected into `out`, NOT emitted — the
-// inline check is still authoritative. Green programs must collect nothing
-// (they compile), and an unused-err fixture must show up.
+// The pass OWNS this diagnostic: the inline check_unused_locals/flag_unused_local
+// and the whole read-flag machinery (Binding.read, mark_read) are gone.
 
 Flow_Err_Local :: struct {
     span: Span,
@@ -106,26 +101,27 @@ Flow_Frame :: struct {
     errs: map[string]Flow_Err_Local,
 }
 
-flow_check_unused :: proc(ft: ^Type_Scope, out: ^[dynamic]string) {
+flow_check_unused :: proc(c: ^Checker, ft: ^Type_Scope) {
     stack: [dynamic]^Flow_Frame
     defer delete(stack)
-    flow_unused_block(&stack, ft.body[:], out)
+    flow_unused_block(c, &stack, ft.body[:])
 }
 
 // Walk one block: push a frame, process its statements (recording err-decls and
-// marking reads on the stack), then at close flag every err-decl left unread.
-flow_unused_block :: proc(stack: ^[dynamic]^Flow_Frame, stmts: []Stmt, out: ^[dynamic]string) {
+// marking reads on the stack), then at close emit TYPE_UNUSED_ERR for every
+// err-decl left unread.
+flow_unused_block :: proc(c: ^Checker, stack: ^[dynamic]^Flow_Frame, stmts: []Stmt) {
     frame: Flow_Frame
     append(stack, &frame)
-    for s in stmts { flow_unused_stmt(stack, s, out) }
+    for s in stmts { flow_unused_stmt(c, stack, s) }
     for name, loc in frame.errs {
-        if !loc.read { append(out, name) }
+        if !loc.read { check_error(c, loc.span, TYPE_UNUSED_ERR, name) }
     }
     delete(frame.errs)
     pop(stack)
 }
 
-flow_unused_stmt :: proc(stack: ^[dynamic]^Flow_Frame, s: Stmt, out: ^[dynamic]string) {
+flow_unused_stmt :: proc(c: ^Checker, stack: ^[dynamic]^Flow_Frame, s: Stmt) {
     #partial switch v in s {
     case ^Stmt_Decl:
         for e in v.init_values { flow_expr_reads(stack, e) }
@@ -149,7 +145,7 @@ flow_unused_stmt :: proc(stack: ^[dynamic]^Flow_Frame, s: Stmt, out: ^[dynamic]s
         flow_expr_reads(stack, v.target)
         if v.is_decl { flow_record_err_decl(stack, v.name, v.var_type, v.span) }
     case ^Stmt_Multi_Assign:
-        for a in v.assigns { flow_unused_stmt(stack, a, out) }
+        for a in v.assigns { flow_unused_stmt(c, stack, a) }
     case ^Stmt_Multi_Return_Assign:
         for e in v.values { flow_expr_reads(stack, e) }
         for e in v.targets { flow_expr_reads(stack, e) }
@@ -159,25 +155,25 @@ flow_unused_stmt :: proc(stack: ^[dynamic]^Flow_Frame, s: Stmt, out: ^[dynamic]s
         for e in v.values { flow_expr_reads(stack, e) }
     case ^Stmt_If:
         flow_expr_reads(stack, v.condition)
-        flow_unused_block(stack, v.body[:], out)
-        flow_unused_block(stack, v.else_body[:], out)
+        flow_unused_block(c, stack, v.body[:])
+        flow_unused_block(c, stack, v.else_body[:])
     case ^Stmt_For:
-        if v.init != nil { flow_unused_stmt(stack, v.init, out) }
+        if v.init != nil { flow_unused_stmt(c, stack, v.init) }
         flow_expr_reads(stack, v.condition)
         flow_expr_reads(stack, v.range_low)
         flow_expr_reads(stack, v.range_high)
         flow_expr_reads(stack, v.collection)
         flow_expr_reads(stack, v.collection_len)
-        flow_unused_block(stack, v.body[:], out)
-        if v.post != nil { flow_unused_stmt(stack, v.post, out) }
+        flow_unused_block(c, stack, v.body[:])
+        if v.post != nil { flow_unused_stmt(c, stack, v.post) }
     case ^Stmt_Match:
         flow_expr_reads(stack, v.subject)
         for arm in v.arms {
             flow_expr_reads(stack, arm.value)
-            flow_unused_block(stack, arm.body[:], out)
+            flow_unused_block(c, stack, arm.body[:])
         }
     case ^Stmt_Defer:
-        flow_unused_block(stack, v.body[:], out)
+        flow_unused_block(c, stack, v.body[:])
     }
 }
 
@@ -289,6 +285,4 @@ flow_dump_stats :: proc(stats: Flow_Stats) {
     )
     fmt.eprintf("[flow] missing-return flagged: %d %v\n",
         len(stats.missing_return), stats.missing_return)
-    fmt.eprintf("[flow] unused-err flagged: %d %v\n",
-        len(stats.unused_err), stats.unused_err)
 }
