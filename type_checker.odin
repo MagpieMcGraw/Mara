@@ -713,6 +713,11 @@ get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
 Type_Env :: struct {
     types:        map[string]Type,
     parent:       ^Type_Env,
+    // Blocks-as-scopes migration: for an if/for/defer block env, the durable
+    // .Block Type_Scope this env shadows — its locals (in .types) and
+    // parent_scope link mirror what the env carries, so name lookup can move
+    // onto the scope graph. nil for non-block envs (function bodies / modules).
+    block_scope:  ^Type_Scope,
     // (return_types removed — derived from the nearest fun_scope/class_scope's
     //  durable signature via enclosing_return_types, not carried per-env.)
     scope_depth: int,        // stack depth for escape analysis; module = 0, function body = 1+
@@ -940,6 +945,12 @@ raw_type_key :: proc(t: Type) -> rawptr {
 
 type_env_set :: proc(env: ^Type_Env, name: string, t: Type) {
     env.types[name] = t
+    // Mirror the local onto the durable .Block scope (blocks-as-scopes), so the
+    // scope graph carries what the env does. Block scopes have no members, so
+    // .types is free to hold locals. nil for non-block envs.
+    if env.block_scope != nil {
+        env.block_scope.types[name] = t
+    }
 }
 
 // Check if a variable is an uninitialized pointer/slice (walks scope chain).
@@ -1117,6 +1128,24 @@ type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
     // function-body envs bump scope_depth — see the explicit bump in
     // check_scope_body's `.Fun` path.
     return Type_Env{parent = parent, scope_depth = parent.scope_depth}
+}
+
+// Like type_env_child but also mints the durable .Block Type_Scope this block
+// env shadows, linked into the parent_scope graph at the nearest enclosing scope
+// (a containing block if there is one, else the enclosing fun/ctor). Used at the
+// if/for/defer block sites; locals declared in the block land on bs.types via
+// type_env_set. Additive for now — name lookup still runs off the env chain; the
+// block scope is built so the kind-gated parent_scope walk can be validated
+// against it before the env walk is retired.
+type_env_block_child :: proc(parent: ^Type_Env) -> Type_Env {
+    child := type_env_child(parent)
+    enclosing := parent.block_scope
+    if enclosing == nil { enclosing = enclosing_callable_scope(parent) }
+    bs := new(Type_Scope)
+    bs.kind = .Block
+    bs.parent_scope = enclosing
+    child.block_scope = bs
+    return child
 }
 
 // The enclosing function's user name (for #caller_name), read from the DURABLE
@@ -8683,7 +8712,7 @@ all_err_returns :: proc(types: [dynamic]Type) -> bool {
 
 // Phase-2 checker for a `for` statement: dispatches to collection-for, range-for, or C-style.
 check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
-    child := type_env_child(env)
+    child := type_env_block_child(env)
     if s.is_collection_for {
         coll_type := check_expr(c, s.collection, &child)
 
@@ -8918,10 +8947,10 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
                 check_error(c, s.span, TYPE_CONDITION_BOOL_2, type_name(cond_type))
             }
-            child := type_env_child(env)
+            child := type_env_block_child(env)
             check_scope(c, s.body, &child)
             if len(s.else_body) > 0 {
-                else_child := type_env_child(env)
+                else_child := type_env_block_child(env)
                 check_scope(c, s.else_body, &else_child)
                 // Promote initializations that BOTH branches performed
                 inits := [2]map[string]bool{ child.newly_inited, else_child.newly_inited }
@@ -9006,7 +9035,7 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             // Body is checked in a child env so any declarations inside the
             // defer stay scoped to the deferred block. At runtime the body
             // executes on scope exit (LIFO across defers in the same scope).
-            child := type_env_child(env)
+            child := type_env_block_child(env)
             check_scope(c, s.body, &child)
 
         // Declarations were already fully handled in register_and_check_declarations

@@ -625,7 +625,7 @@ Stmt_If :: struct {
 // Only codegen cares about the distinction — the type checker treats both
 // kinds of scope the same (same field resolution, same name lookup, same
 // Self binding, etc.). See project_mara_history.md for the design rationale.
-Scope_Kind :: enum { Struct, Fun }
+Scope_Kind :: enum { Struct, Fun, Block }   // Block = an if/for/defer body — locals only (in .types), no members/params/returns
 
 Stmt_Scope :: struct {
     name:           string,
