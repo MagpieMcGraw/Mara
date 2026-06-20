@@ -1497,9 +1497,16 @@ gen_return_partial_array :: proc(g: ^Codegen, s: Stmt_Return) {
 // Type checker enforces value type matches; the only special case is the
 // `return 0` for ptr returns where infer-int 0 becomes the ptr null literal.
 gen_return_scalar :: proc(g: ^Codegen, s: Stmt_Return) {
-    val := gen_expr_coerced(g, s.values[0], g.current_ret_type)
     ret_type := g.current_ret_type
-    if ret_type == "ptr" && val == "0" {
+    val := gen_expr_coerced(g, s.values[0], ret_type)
+    if strings.has_prefix(ret_type, "%union.") {
+        // Union returned by value: gen_expr yields a pointer to the union
+        // storage (a materialized variant literal, a union local, …); load the
+        // aggregate so it's returned by value.
+        loaded := fresh_tmp(g)
+        emit_load_into(g, loaded, ret_type, val)
+        val = loaded
+    } else if ret_type == "ptr" && val == "0" {
         val = "null"
     }
     emit_return_resets(g)

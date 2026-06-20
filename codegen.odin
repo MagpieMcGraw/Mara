@@ -3044,6 +3044,34 @@ register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
     register_struct_decl_sd(g, &st.sd)
 }
 
+// The user-field payload size of a (non-niche) union: the largest variant's
+// size minus the tag+pad area each variant struct now carries, floored by the
+// declared min_size. Shared by register_union_type (type emission) and
+// union_byte_size so the two can't drift.
+union_payload_bytes :: proc(g: ^Codegen, ut: ^Type_Union) -> int {
+    tag_area := elem_byte_size(union_tag_ir_type(ut)) + union_tag_pad_bytes(ut)
+    max_bytes := 0
+    for _, sname in ut.variant_structs {
+        if st, ok := lookup_struct(g, sname); ok {
+            size := struct_byte_size_sd(st, g.checked) - tag_area
+            if size > max_bytes { max_bytes = size }
+        }
+    }
+    if ut.min_size > 0 && ut.min_size - tag_area > max_bytes {
+        max_bytes = ut.min_size - tag_area
+    }
+    return max_bytes
+}
+
+// Total in-memory size of a union value (tag area + payload). Niche unions are
+// just a bare pointer. Used to size the union temp the materialize path allocas
+// so a union value is safe to copy/load at any boundary.
+union_byte_size :: proc(g: ^Codegen, ut: ^Type_Union) -> int {
+    if is_niche_layout(g, ut) { return 8 }
+    tag_area := elem_byte_size(union_tag_ir_type(ut)) + union_tag_pad_bytes(ut)
+    return tag_area + union_payload_bytes(g, ut)
+}
+
 // Register a union's LLVM type declaration and compute its payload size.
 //
 // Layout produced:
@@ -3071,26 +3099,7 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     pad_bytes := union_tag_pad_bytes(ut)
     tag_area_bytes := tag_bytes + pad_bytes
 
-    // Calculate payload size from largest variant struct. Variant structs now
-    // carry the tag (+pad) header as their first fields, so subtract that area
-    // to recover the user-field payload size — the union keeps its existing
-    // { tag_field, [payload] } shape, byte-identical to before.
-    max_bytes := 0
-    for _, struct_name in ut.variant_structs {
-        if st, st_ok := lookup_struct(g, struct_name); st_ok {
-            size := struct_byte_size_sd(st, g.checked) - tag_area_bytes
-            if size > max_bytes {
-                max_bytes = size
-            }
-        }
-    }
-    // Enforce min_size: union(128) means total size >= 128 bytes
-    if ut.min_size > 0 {
-        min_payload := ut.min_size - tag_area_bytes
-        if min_payload > max_bytes {
-            max_bytes = min_payload
-        }
-    }
+    max_bytes := union_payload_bytes(g, ut)
     payload_str := fmt.tprintf("[%d x i8]", max_bytes)
     tag_field: string
     if pad_bytes > 0 {

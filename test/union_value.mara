@@ -1,0 +1,60 @@
+module union_value
+
+// Union values flowing as first-class values: returned from a function, bound
+// from that call, passed as an argument (literal, local, or field), and nested
+// in a struct literal. (Construction in place — `m: M = A{...}` — always worked.)
+
+Shape :: union(tag u32) {
+	Circle = 1 { r: i32 = 7 }
+	Rect   = 2 { w: i32  h: i32 }
+}
+
+make_shape :: fun(which: i32) -> Shape {
+	if which == 0 {
+		return Circle{r = 5}              // variant literal in return position
+	}
+	return Rect{w = 3, h = 4}
+}
+
+measure :: fun(s: Shape) -> i32 {
+	match s {
+	Circle c
+		return c.r
+	Rect r
+		return r.w * r.h
+	}
+	return -1
+}
+
+Wrapper :: struct {
+	shape: Shape
+	label: i32
+}
+
+main :: fun() {
+	a := make_shape(0)                    // bind a union value from a call
+	match a {
+	Circle c
+		assert(c.r == 5)
+	Rect r
+		assert(false)
+	}
+
+	b := make_shape(1)
+	assert(measure(b) == 12)              // union local as an argument
+	assert(measure(Circle{r = 9}) == 9)   // variant literal as an argument
+
+	w := Wrapper{shape = Rect{w = 5, h = 6}, label = 42}   // variant nested in a struct literal
+	assert(w.label == 42)
+	assert(measure(w.shape) == 30)        // union field-access as an argument
+	cp := w.shape                         // copy a union field into a local
+	assert(measure(cp) == 30)
+	match w.shape {
+	Circle c
+		assert(false)
+	Rect r
+		assert(r.w == 5)
+	}
+
+	print("union_value ok")
+}

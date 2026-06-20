@@ -334,6 +334,19 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             emit_memcpy(g, gep, src_ptr, size)
             continue
         }
+        // Union field (`%union.X`): the RHS is a variant literal (materialized
+        // into a union temp) or another union value — pointer-valued either
+        // way, so memcpy by the union's true size. checker_type_byte_size
+        // reports a placeholder 8 for unions, so size from union_byte_size.
+        if strings.has_prefix(ft, "%union.") {
+            src_ptr := gen_expr(g, field.value, ft)
+            gep := fresh_tmp(g)
+            emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
+            size := 8
+            if ut, ok := distinct_base(f.type_).(^Type_Union); ok { size = union_byte_size(g, ut) }
+            emit_memcpy(g, gep, src_ptr, size)
+            continue
+        }
         // Scalar field.
         val := gen_expr_coerced(g, field.value, ft)
         gep := fresh_tmp(g)
@@ -577,6 +590,13 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         addr := emit_address_chain(g, &chain)
         switch chain.final_kind {
         case .Scalar:
+            // A union field is an aggregate, not a scalar: yield its address
+            // (pointer-valued, like a struct field) so it can be matched,
+            // copied, or passed by pointer — never loaded as an SSA value.
+            if strings.has_prefix(chain.final_type, "%union.") {
+                set_field_result(g, Union_Var{alloca = addr, union_name = chain.final_type[len("%union."):]})
+                return addr
+            }
             return emit_load(g, chain.final_type, addr)
         case .Struct:
             set_field_result(g, Struct_Var{alloca = addr, struct_name = chain.struct_name})
@@ -1966,7 +1986,16 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
     }
 
     uv, _ := get_union(g, name)
-    emit_union_literal_store(g, ut, value, uv.alloca)
+    if lit, ok := value.(^Expr_Struct_Literal); ok && lit.name != "" {
+        emit_union_literal_store(g, ut, value, uv.alloca)
+    } else {
+        // Any other union-valued RHS — a union-returning call, a union local,
+        // a field access — is pointer-valued; copy it into the slot.
+        src := gen_expr(g, value, llvm_name)
+        if src != uv.alloca {
+            emit_memcpy(g, uv.alloca, src, union_byte_size(g, ut))
+        }
+    }
 }
 
 // Store a union literal at `union_ptr`. The variant struct carries the tag

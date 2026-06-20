@@ -346,6 +346,20 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         // a temp alloca and yield the pointer — struct-shaped expressions are
         // ptr-valued (see expr_ir_type). gen_store_struct_into gives the full
         // construct semantics: zero-init, init-fn defaults, then field stores.
+        // Union-typed variant literal in value position (`return A{...}`,
+        // `f(A{...})`, nested in another literal). The node types as the union;
+        // materialize the flat variant struct into a zeroed, UNION-sized temp
+        // (so the value is safe to load or copy at any boundary) and yield the
+        // pointer. Niche unions construct through their own bare-pointer path.
+        if ut, ut_ok := e.type_.(^Type_Union); ut_ok && e.name != "" && !is_niche_layout(g, ut) {
+            if vst, vok := lookup_struct(g, ut.variant_structs[e.name]); vok {
+                tmp := fresh_tmp(g)
+                emit_alloca(g, tmp, union_llvm_name(union_key(ut)))
+                emit_memset_zero(g, tmp, union_byte_size(g, ut))
+                gen_store_struct_into(g, tmp, vst, e)
+                return tmp
+            }
+        }
         if sd := as_struct_body(e.type_); sd != nil {
             tmp := fresh_tmp(g)
             emit_alloca(g, tmp, struct_llvm_name(struct_key(sd)))
@@ -1663,6 +1677,17 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             args_joined := strings.join(arg_strs[:], ", ")
             tmp := fresh_tmp(g)
             emit(g, "  %s = call %s %s(%s)", tmp, info.ret_type, ir_name, args_joined)
+            if strings.has_prefix(info.ret_type, "%union.") {
+                // Union returned by value: spill the aggregate into a slot so a
+                // union call result is pointer-valued like every other union
+                // expression (locals, materialized literals). Uniform pointers
+                // let the boundary copies (return load, decl memcpy, arg pass)
+                // treat any union value identically.
+                slot := fresh_tmp(g)
+                emit_alloca(g, slot, info.ret_type)
+                emit_store(g, info.ret_type, tmp, slot)
+                return slot
+            }
             return tmp
         }
     }

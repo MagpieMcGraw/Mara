@@ -9218,7 +9218,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         if idx, ok := st.field_map[field.name]; ok {
             sf := st.fields[idx]
             provided[field.name] = true
-            if needs_field_type_hint(field.value) {
+            if needs_field_type_hint(field.value) || needs_union_variant_hint(sf.type_, field.value) {
                 c.expected_hint = sf.type_
             }
             ft := check_expr(c, field.value, env)
@@ -9274,6 +9274,17 @@ needs_field_type_hint :: proc(e: Expr) -> bool {
     lit, ok := e.(^Expr_Struct_Literal)
     if !ok { return false }
     return lit.name == "" && lit.type_expr == nil && !lit.is_broadcast
+}
+
+// A NAMED variant literal (`Rect{...}`) in a union-typed field or argument
+// needs the union as its hint so check_expr's union-context branch can resolve
+// it. Unlike needs_field_type_hint this fires for named literals — the name
+// identifies the variant, the hint supplies the owning union.
+needs_union_variant_hint :: proc(field_type: Type, value: Expr) -> bool {
+    ut, ok := distinct_base(field_type).(^Type_Union)
+    if !ok { return false }
+    lit, lit_ok := value.(^Expr_Struct_Literal)
+    return lit_ok && lit.name != "" && lit.name in ut.tag_map
 }
 
 // Validate a `Quat{...}` / `Vec3{...}` style literal that constructs a value of
@@ -11613,6 +11624,18 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 check_struct_literal_fields(c, e, sd, e.span, env)
                 e.type_ = hint
                 return hint
+            }
+            // Union-typed context: a variant literal `A{...}` builds the union's
+            // variant struct (which carries the tag). Type the node as that
+            // struct so codegen materializes it through the struct path, but
+            // report the UNION as the expression's type so it satisfies the
+            // union-typed slot (return / argument / nested field). Niche unions
+            // (Maybe(^T)) keep their separate bare-pointer construction.
+            if ut, ut_ok := distinct_base(hint).(^Type_Union); ut_ok && e.name != "" && e.name in ut.tag_map && !union_is_niche_shape(c, ut) {
+                if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
+                    check_struct_literal_fields(c, e, &st.sd, e.span, env)
+                    return ut   // node types as the union; codegen materializes the variant from e.name
+                }
             }
         }
         // Anonymous struct literal: just check each field value. A name that
