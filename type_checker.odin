@@ -128,6 +128,14 @@ Scope_Body :: struct {
     // LLVM struct-type emission (`<{ ... }>`).
     is_packed:      bool,
 
+    // Union-variant marker. A union's variant struct carries the tag (+pad) as
+    // its first field(s) — `__tag` at index 0, `__pad` next when the union has
+    // padding — so the variant IS the union value and rides struct codegen.
+    // codegen writes `union_variant_tag` into field 0 at construction time
+    // (the tag isn't a user-set field). False/0 for ordinary structs.
+    is_union_variant:  bool,
+    union_variant_tag: i64,
+
     backing_bytes:  int,     // size of hidden trailing buffer for sized-slice fields' backing
                              // storage. Computed by codegen at register-struct time so the
                              // backing rides along with the struct on sret/memcpy — slice
@@ -460,6 +468,59 @@ Type_Union :: struct {
     variants:        [dynamic]string,    // variant names in declaration order
     tag_map:         map[string]int,     // variant name -> tag value
     variant_structs: map[string]string,  // variant name -> struct name
+    tag_enum:        ^Type_Enum,         // the <Name>_Tag enum; type of each variant struct's prepended tag field
+}
+
+// Checker-side niche-shape test, matching codegen's is_niche_layout: exactly
+// two variants, one fieldless (None), one holding a single pointer (Some).
+// Runs on the resolved, pre-header variant structs to decide whether to fold
+// in the tag header — niche unions store no tag, so they stay untouched.
+union_is_niche_shape :: proc(c: ^Checker, ut: ^Type_Union) -> bool {
+    if len(ut.variants) != 2 { return false }
+    has_empty, has_ptr := false, false
+    for vname in ut.variants {
+        vst, ok := c.table.structs[ut.variant_structs[vname]]
+        if !ok { return false }
+        switch len(vst.fields) {
+        case 0:
+            has_empty = true
+        case 1:
+            if _, is_ptr := vst.fields[0].type_.(^Type_Ptr); is_ptr {
+                has_ptr = true
+            } else {
+                return false
+            }
+        case:
+            return false
+        }
+    }
+    return has_empty && has_ptr
+}
+
+// Once a union's variant structs have their user fields resolved, fold the tag
+// (+pad) into each as LEADING fields so the variant IS the union value and
+// rides struct codegen: `__tag` at index 0 (typed as the union's tag enum),
+// `__pad` next when the union declares padding. The reserved names can't
+// collide with user fields; codegen writes the tag value, so neither header
+// field needs a default. Niche unions (Maybe(^T)) keep their bare-pointer
+// layout and are skipped — their `is_union_variant` stays false, which is how
+// codegen tells the two representations apart.
+finalize_union_variant_headers :: proc(c: ^Checker, ut: ^Type_Union) {
+    if union_is_niche_shape(c, ut) { return }
+    for vname in ut.variants {
+        vst, ok := c.table.structs[ut.variant_structs[vname]]
+        if !ok || vst.is_union_variant { continue }   // idempotent
+        vst.is_union_variant = true
+        vst.union_variant_tag = i64(ut.tag_map[vname])
+        with_header := make([dynamic]Struct_Type_Field)
+        append(&with_header, Struct_Type_Field{name = "__tag", type_ = ut.tag_enum})
+        if ut.tag_pad != nil {
+            append(&with_header, Struct_Type_Field{name = "__pad", type_ = ut.tag_pad})
+        }
+        for f in vst.fields { append(&with_header, f) }
+        vst.fields = with_header
+        build_field_map(&vst.sd)
+    }
 }
 
 // Byte size of a union's tag_pad field. Returns 0 when no pad was declared.
@@ -3072,6 +3133,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
         tag_et.variants[vdef.name] = vdef.tag
     }
     c.table.enums[tag_et.name] = tag_et
+    ut.tag_enum = tag_et
 
     // Variant structs with substituted field types.
     for vdef in s.variants {
@@ -3095,6 +3157,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
         ut.tag_map[vdef.name] = vdef.tag
         ut.variant_structs[vdef.name] = vst.name
     }
+    finalize_union_variant_headers(c, ut)
 
     c.table.unions[ut.name] = ut
     c.table.mono_union_cache[mangled] = ut
@@ -6686,6 +6749,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 }
                 c.table.enums[tag_et.name] = tag_et
                 register_enum_variants(c, tag_et, env, tag_et.name, public_env = public_env)
+                ut.tag_enum = tag_et
                 // Variant structs registered as empty placeholders; their fields
                 // get resolved in Pass 1b.
                 for vdef in s.variants {
@@ -6909,6 +6973,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 build_field_map(&vst.sd)
                             }
                         }
+                        finalize_union_variant_headers(c, ut)
                     }
                 }
                 delete_key(&c.pre_registered_stmts, rawptr(s))
@@ -6974,6 +7039,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     register_enum_variants(c, tag_et, env, tag_et.name, public_env = public_env)
 
                     // 2. Create variant structs (Name_Variant)
+                    ut.tag_enum = tag_et
                     ut.tag_type = s.tag_type
                     ut.min_size = s.min_size
                     if s.tag_pad != nil {
@@ -6995,6 +7061,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         ut.tag_map[vdef.name] = vdef.tag
                         ut.variant_structs[vdef.name] = vst.name
                     }
+                    finalize_union_variant_headers(c, ut)
 
                     // 3. Register Type_Union
                     c.table.unions[ut.name] = ut

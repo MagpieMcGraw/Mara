@@ -1,0 +1,61 @@
+module utag
+
+// Exercises the flat tag-inclusive variant struct: tag (+pad) prepended to
+// each variant's field list, construction/match riding struct codegen.
+
+Shape :: union(tag u32) {
+	Circle = 1 {
+		r: i32 = 7        // field default — must survive the gen_store_struct_into path
+	}
+	Rect = 2 {
+		w: i32
+		h: i32            // multi-field: offsets shift past the prepended tag
+	}
+}
+
+// A padded union — header is tag + pad, user fields land after both.
+Packet :: union(tag u32, pad u32) {
+	Ping = 10 {
+		seq: i32
+	}
+	Pong = 11 {
+		seq: i32
+		ack: i32
+	}
+}
+
+main :: fun() {
+	a: Shape = Circle{}            // default r = 7
+	b: Shape = Rect{w = 3, h = 4}
+
+	match a {
+	Circle c
+		assert(c.r == 7)
+	Rect r
+		assert(false)
+	}
+	match b {
+	Circle c
+		assert(false)
+	Rect r
+		assert(r.w == 3)
+		assert(r.h == 4)
+	}
+
+	// .tag accessor reads the discriminant at offset 0 (the variant's tag field).
+	assert(a.tag == 1)
+	assert(b.tag == 2)
+
+	// Padded union: user field sits after tag(4) + pad(4).
+	p: Packet = Pong{seq = 100, ack = 200}
+	match p {
+	Ping x
+		assert(false)
+	Pong x
+		assert(x.seq == 100)
+		assert(x.ack == 200)
+	}
+	assert(p.tag == 11)
+
+	print("utag ok")
+}

@@ -1,0 +1,53 @@
+module nichetest
+
+use mara.maybe
+
+// User-defined niche-shaped union: two variants, one fieldless, one holding a
+// single pointer. The compiler collapses it to a bare nullable pointer (no
+// tag), so its variant structs must stay header-free — this is the case the
+// flat-variant rework has to leave alone.
+Opt :: union(tag u8) {
+	Nope
+	Yep {
+		p: ^i64
+	}
+}
+
+main :: fun() {
+	x := 7
+	a: Opt = Yep{p = &x}
+	match a {
+	Nope
+		assert(false)
+	Yep y
+		assert(y.p^ == 7)        // Some payload aliases the niche pointer at offset 0
+	}
+
+	b: Opt = Nope{}
+	match b {
+	Nope
+		assert(true)
+	Yep y
+		assert(false)
+	}
+
+	// Generic Maybe(^T) — niche via the generic-instantiation path.
+	z := 99
+	m: Maybe(^i64) = Some{value = &z}
+	match m {
+	None
+		assert(false)
+	Some s
+		assert(s.value^ == 99)
+	}
+
+	n: Maybe(^i64) = None{}
+	match n {
+	None
+		assert(true)
+	Some s
+		assert(false)
+	}
+
+	print("niche ok")
+}

@@ -2132,6 +2132,10 @@ is_niche_layout :: proc(g: ^Codegen, ut: ^Type_Union) -> bool {
         if !ok { return false }
         sd, sd_ok := lookup_struct(g, vst_name)
         if !sd_ok { return false }
+        // Non-niche unions fold the tag into their variant structs; that flag
+        // distinguishes them from the bare-pointer niche form, whose variants
+        // stay header-free.
+        if sd.is_union_variant { return false }
         switch len(sd.fields) {
         case 0:
             has_empty = true
@@ -3067,11 +3071,14 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     pad_bytes := union_tag_pad_bytes(ut)
     tag_area_bytes := tag_bytes + pad_bytes
 
-    // Calculate payload size from largest variant struct
+    // Calculate payload size from largest variant struct. Variant structs now
+    // carry the tag (+pad) header as their first fields, so subtract that area
+    // to recover the user-field payload size — the union keeps its existing
+    // { tag_field, [payload] } shape, byte-identical to before.
     max_bytes := 0
     for _, struct_name in ut.variant_structs {
         if st, st_ok := lookup_struct(g, struct_name); st_ok {
-            size := struct_byte_size_sd(st, g.checked)
+            size := struct_byte_size_sd(st, g.checked) - tag_area_bytes
             if size > max_bytes {
                 max_bytes = size
             }

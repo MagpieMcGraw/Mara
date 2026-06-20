@@ -1224,6 +1224,15 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         // the zero memset stands alone. Structs without an init function
         // stay zero (no defaults to apply by construction).
         emit_memset_zero(g, dst_ptr, total)
+        if st.is_union_variant && len(st.fields) > 0 {
+            // Field 0 is the union discriminant. A union value always carries
+            // its tag — set it even for `{0}` zero-init. User fields can't
+            // overwrite it (the tag field's reserved name never matches one).
+            tag_gep := fresh_tmp(g)
+            emit_field_gep_into(g, tag_gep, llvm_name, dst_ptr, 0)
+            tag_ir := field_ir_type(&st.fields[0])
+            emit_store(g, tag_ir, fmt.tprintf("%d", st.union_variant_tag), tag_gep)
+        }
         if !lit.zero_init {
             if _, has_init := g.checked.functions[st.name]; has_init {
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
@@ -1960,23 +1969,21 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
     emit_union_literal_store(g, ut, value, uv.alloca)
 }
 
-// Emit the tag+payload store sequence for a union literal at `union_ptr`.
-// `union_ptr` must point at storage laid out as the union's LLVM type
-// (i.e. `%union.X = type { tag, [N x i8] }`). Used by both direct union
-// variable assignment and struct-field assignment where the field type
-// is a union.
+// Store a union literal at `union_ptr`. The variant struct carries the tag
+// (+pad) header as its first fields and IS the union value, so this routes
+// straight through gen_store_struct_into — the same path a plain struct
+// literal uses — which writes the discriminant (field 0) and the user fields.
+// Niche unions (Maybe(^T)) keep their bare-pointer representation. Used by
+// both direct union variable assignment and union-typed struct-field assignment.
 emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, union_ptr: string) {
     ukey := union_key(ut)
-    llvm_name := union_llvm_name(ukey)
-    tag_ir := union_tag_ir_type(ut)
 
     lit, ok := value.(^Expr_Struct_Literal)
     if !ok || lit.name == "" {
         codegen_fatal(g, {}, CODE_UNION_ASSIGNMENT_REQUIRES_NAMED_STRUCT)
     }
 
-    tag, tag_ok := ut.tag_map[lit.name]
-    if !tag_ok {
+    if _, tag_ok := ut.tag_map[lit.name]; !tag_ok {
         codegen_fatal(g, lit.span, CODE_VARIANT_UNION, lit.name, ukey)
     }
 
@@ -2000,21 +2007,11 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
         return
     }
 
-    // Store tag at field 0
-    tag_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, llvm_name, union_ptr)
-    emit(g, "  store %s %d, ptr %s", tag_ir, tag, tag_ptr)
-
-    // Get payload pointer (field 1)
-    payload_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 1", payload_ptr, llvm_name, union_ptr)
-
-    // Fill the payload through the same struct-construction path a plain
-    // struct literal uses (zero-init + field defaults + explicit fields).
-    // The variant struct carries no init fn, so gen_store_struct_into applies
-    // its field defaults directly via apply_struct_field_defaults.
+    // Non-niche: construct the tag-inclusive variant struct directly at the
+    // union pointer (offset 0). gen_store_struct_into sets the discriminant
+    // and fills the user fields — no separate tag store or payload offset.
     variant_struct_name := ut.variant_structs[lit.name]
     vst, vst_ok := lookup_struct(g, variant_struct_name)
     if !vst_ok { return }
-    gen_store_struct_into(g, payload_ptr, vst, value)
+    gen_store_struct_into(g, union_ptr, vst, value)
 }

@@ -135,10 +135,6 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
     emit_load_into(g, tag_val, tag_type, tag_ptr)
     switch_type := tag_type
 
-    // Get payload pointer (field 1)
-    payload_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 1", payload_ptr, llvm_name, union_ptr)
-
     // Generate labels
     end_label := fresh_label(g, "match.end")
 
@@ -184,8 +180,11 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
                 if struct_name == "" {
                     struct_name = ut.variant_structs[arm.variant_name] or_else arm.variant_name
                 }
+                // The variant struct carries the tag header and overlays the
+                // union at offset 0, so bind it at the union pointer — its
+                // user fields sit at the same absolute offsets as before.
                 g.all_vars[arm.binding_name] = Struct_Var{
-                    alloca = payload_ptr,
+                    alloca = union_ptr,
                     struct_name = struct_name,
                 }
             }
