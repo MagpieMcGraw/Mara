@@ -1,0 +1,14 @@
+module retmiss
+//@ expect-fail: missing return
+
+// Non-void fun that falls off the end on the x<=0 path — the post-check flow
+// pass must flag this exactly as the inline check does.
+maybe :: fun(x: i64) -> i64 {
+	if x > 0 {
+		return 1
+	}
+}
+
+main :: fun() {
+	print(maybe(5))
+}
