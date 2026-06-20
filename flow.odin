@@ -21,13 +21,13 @@ import "core:os"
 // interprocedural call-graph summaries (purity, fallibility) that already live
 // post-check (see callgraph.odin / project_call_graph).
 //
-// SKELETON (this commit): the traversal scaffold ONLY. It visits every source
-// function and recurses the control-flow tree (if/for/defer/match bodies — the
-// .Block scopes), but performs NO analysis and raises NO diagnostics. The inline
-// checker is still the sole authority. MARA_DUMP_FLOW=1 dumps coverage stats so
-// the walk can be confirmed exhaustive over the constructs the real analysis
-// will care about (decls, branch joins) before any of it is ported in. Inert —
-// no behavior change.
+// STATUS: the traversal scaffold visits every source function and recurses the
+// control-flow tree (if/for/defer/match bodies — the .Block scopes), not nested
+// Stmt_Scope (separate functions). It OWNS its first analysis: all-paths-return
+// (the inline check at check_scope_body has been removed; this pass raises
+// TYPE_FUNCTION_MISSING_RETURN_ALL_CODE). Still to port: must-use-err, then
+// definite-assignment (branch-merge). MARA_DUMP_FLOW=1 dumps coverage + what was
+// flagged.
 
 Flow_Stats :: struct {
     functions:  int, // source functions walked
@@ -36,18 +36,16 @@ Flow_Stats :: struct {
     branches:   int, // if / match — the merge points
     max_depth:  int, // deepest control-flow nesting reached
 
-    // First analysis ported in (validation mode): the names of functions this
-    // pass would flag for "missing return on all code paths". The inline check
-    // is still authoritative — these are collected only so the pass can be
-    // confirmed to agree: on a program that compiles, this list MUST be empty
-    // (any name here would have been an inline error), and an expect-fail
-    // missing-return fixture MUST appear here.
+    // Functions flagged for "missing return on all code paths" — the first
+    // analysis this pass OWNS (emitted below, not just collected).
     missing_return: [dynamic]string,
 }
 
 // Entry point — called post-check (after build_call_graph). Walks every source
-// function; the analyses run here are validation-only for now (no diagnostics).
-flow_analyze_program :: proc(checked: ^Checked_Program) {
+// function and raises the intraprocedural diagnostics it owns. Takes the Checker
+// purely as the error sink (check_error); the analysis itself reads only the
+// durable Checked_Program.
+flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     stats: Flow_Stats
     for _, ft in checked.functions {
         if ft == nil { continue }
@@ -57,7 +55,10 @@ flow_analyze_program :: proc(checked: ^Checked_Program) {
         stats.functions += 1
         flow_walk_stmts(&stats, ft.body[:], 1)
         if flow_missing_return(ft) {
-            append(&stats.missing_return, ft.source_name if ft.source_name != "" else ft.name)
+            name := ft.source_name if ft.source_name != "" else ft.name
+            // Same message + span the inline check used (ft.body_span == s.span).
+            check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
+            append(&stats.missing_return, name)
         }
     }
     flow_dump_stats(stats)

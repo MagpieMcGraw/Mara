@@ -8773,14 +8773,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         solidify_param_defaults(c, ft)
     }
 
-    // Return check — void functions (return_types empty) don't need return statements.
-    // Functions whose return slots are all err can also fall off the end —
-    // each slot gets implicitly filled with `.Ok`.
-    if len(ft.return_types) > 0 && !is_any(ft.return_types[0]) && !always_returns(s.body) {
-        if !all_err_returns(ft.return_types) {
-            check_error(c, s.span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, s.name)
-        }
-    }
+    // Return check (void / all-err functions can fall off the end) now lives in
+    // the post-check flow pass (flow.odin, flow_missing_return) — it recomputes
+    // the same verdict over the durable ft.body. Removed from the inline walk as
+    // the first analysis to migrate off the during-check traversal.
 }
 
 // True when every return slot is err-typed — the function can fall off the
@@ -11201,7 +11197,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     }
 
     checked.call_graph = build_call_graph(&c)
-    flow_analyze_program(checked) // post-check intraproc flow (skeleton — inert)
+    flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
     checked.errors = c.errors
     return checked
 }
