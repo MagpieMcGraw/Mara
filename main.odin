@@ -1139,4 +1139,7 @@ main :: proc() {
     perf_timer_end(&perf)
     flush_diagnostics()
     fmt.printf("Compiled module '%s' -> %s\n", args.pkg_name, out_name)
+    if pure_n, total := cg_purity_stats(&checked.call_graph); total > 0 {
+        fmt.printf("Purity quotient: %d%% — %d of %d functions pure\n", pure_n * 100 / total, pure_n, total)
+    }
 }

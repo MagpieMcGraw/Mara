@@ -177,6 +177,19 @@ cg_is_pure :: proc(g: ^Call_Graph, s: ^Type_Scope) -> bool {
     return false
 }
 
+// Pure vs total over SOURCE functions (the ones with bodies — foreign/external
+// nodes are impure by definition and aren't "the program's code"). The numbers
+// behind the purity quotient printed on a successful build.
+cg_purity_stats :: proc(g: ^Call_Graph) -> (pure_n: int, total: int) {
+    for s, i in g.nodes {
+        if s == nil { continue }
+        if _, src := s.origin.(Origin_Source); !src { continue }
+        total += 1
+        if g.pure[i] { pure_n += 1 }
+    }
+    return
+}
+
 // Diagnostic: `MARA_DUMP_PURITY=1` prints each function's purity verdict. The
 // framework has no real consumer yet, so this is how the result is inspected.
 cg_dump_purity :: proc(g: ^Call_Graph) {
