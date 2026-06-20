@@ -1,5 +1,8 @@
 package mara
 
+import "core:fmt"
+import "core:os"
+
 // ---------------------------------------------------------------------------
 // Materialized call graph (design/mara_ask.md §12)
 //
@@ -36,6 +39,11 @@ Call_Graph :: struct {
     // functions live in the graph too, so "dead in this program" is a per-build
     // property, not "delete it" — a warning would gate on the main package.)
     reachable: [dynamic]bool,
+
+    // Purity summary (cg_compute_purity): pure[n] == false means the function
+    // directly or transitively hits the outside world (IO / foreign). The first
+    // interprocedural summary computed via the bottom-up framework below.
+    pure:      [dynamic]bool,
 }
 
 // Intern a scope as a node, returning its id (stable for the graph's lifetime).
@@ -70,6 +78,8 @@ build_call_graph :: proc(c: ^Checker) -> Call_Graph {
     }
     cg_compute_sccs(&g)
     cg_compute_reachability(&g)
+    cg_compute_purity(&g, c)
+    cg_dump_purity(&g)
     return g
 }
 
@@ -113,6 +123,70 @@ cg_is_recursive :: proc(g: ^Call_Graph, n: int) -> bool {
     if len(g.sccs[g.scc_of[n]]) > 1 { return true }
     for w in g.out_edges[n] { if w == n { return true } }
     return false
+}
+
+// --- Interprocedural summary framework -------------------------------------
+// The bottom-up engine every summary pass shares. `transfer(g, node)` recomputes
+// a node's summary from its callees' summaries and returns whether it changed.
+// SCCs are visited callees-first (reverse-topo order Tarjan already produced),
+// so a node's callees are final before it's reached; a non-trivial SCC iterates
+// to a fixpoint. Each analysis supplies a state array on the Call_Graph and a
+// monotone transfer — the recursion/cycle handling that fun_return_arg_set
+// hand-rolled with its `-1` guard lives here, once.
+
+cg_bottom_up :: proc(g: ^Call_Graph, transfer: proc(g: ^Call_Graph, node: int) -> bool) {
+    for scc in g.sccs {
+        if len(scc) == 1 && !cg_is_recursive(g, scc[0]) {
+            transfer(g, scc[0])
+            continue
+        }
+        for {
+            changed := false
+            for node in scc { if transfer(g, node) { changed = true } }
+            if !changed { break }
+        }
+    }
+}
+
+// Purity: a function is impure if it directly hits the outside world — an IO
+// built-in or a foreign call, seeded into Checker.effectful_callers during
+// checking — or transitively calls something that does. Pure functions are
+// const-eval candidates. Optimistic seed (pure until proven otherwise) + the
+// bottom-up monotone propagation = the transitive verdict.
+cg_compute_purity :: proc(g: ^Call_Graph, c: ^Checker) {
+    resize(&g.pure, len(g.nodes))
+    for s, i in g.nodes {
+        // A foreign node has an opaque body — impure by definition.
+        g.pure[i] = !(s == nil || s.calling_conv == .C || c.effectful_callers[s])
+    }
+    cg_bottom_up(g, cg_purity_transfer)
+}
+
+@(private="file")
+cg_purity_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
+    if !g.pure[n] { return false }   // monotone: impurity only grows
+    for callee in g.out_edges[n] {
+        if !g.pure[callee] { g.pure[n] = false; return true }
+    }
+    return false
+}
+
+// Query a scope's purity verdict (false if it isn't a graph node).
+cg_is_pure :: proc(g: ^Call_Graph, s: ^Type_Scope) -> bool {
+    if i, ok := g.index_of[s]; ok { return g.pure[i] }
+    return false
+}
+
+// Diagnostic: `MARA_DUMP_PURITY=1` prints each function's purity verdict. The
+// framework has no real consumer yet, so this is how the result is inspected.
+cg_dump_purity :: proc(g: ^Call_Graph) {
+    env_buf: [8]u8
+    if os.get_env_buf(env_buf[:], "MARA_DUMP_PURITY") == "" { return }
+    fmt.eprintln("--- call-graph purity ---")
+    for s, i in g.nodes {
+        name := s.source_name if s.source_name != "" else s.name
+        fmt.eprintf("  %-30s %s\n", name, g.pure[i] ? "pure" : "impure")
+    }
 }
 
 // --- Tarjan's strongly-connected-components (recursive: recursion goes to call

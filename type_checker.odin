@@ -1159,6 +1159,14 @@ enclosing_callable_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
 // callable scope) -> (the resolved callee). Skips calls with no callee Type_Scope
 // (foreign / indirect / fn-typed-param) and calls outside any function.
 record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
+    caller := enclosing_callable_scope(env)
+    if caller == nil { return }   // call outside any callable — nothing to attribute
+    // Direct-effect seed for purity. `print` is a special-form built-in with no
+    // resolved callee (so it never becomes an edge) — catch it by name here,
+    // before the resolved-call early-out.
+    if strings.has_prefix(e.name, "print") {
+        c.effectful_callers[caller] = true
+    }
     rf, ok := e.resolved_func.?
     if !ok { return }
     callee := rf.callee
@@ -1170,8 +1178,10 @@ record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
         else if st, sok := c.table.structs[rf.name]; sok { callee = st }
     }
     if callee == nil { return }
-    caller := enclosing_callable_scope(env)
-    if caller == nil { return }
+    // A foreign (.C) callee reaches outside the program — a direct effect.
+    if callee.calling_conv == .C {
+        c.effectful_callers[caller] = true
+    }
     c.call_edges[Call_Edge{from = caller, to = callee}] = true
 }
 
@@ -1813,6 +1823,10 @@ Checker :: struct {
     // Checked_Program call graph (build_call_graph). A set, so duplicate call
     // sites between the same pair collapse to one edge.
     call_edges:      map[Call_Edge]bool,
+    // Call-graph effect seed: callable scopes whose body has a DIRECT effect —
+    // an IO built-in (`print`) or a foreign (.C) call. The bottom-up purity pass
+    // (cg_compute_purity) propagates these up the graph to a transitive summary.
+    effectful_callers: map[^Type_Scope]bool,
     // True during the register-pass scan over a function's body fields.
     // Field types are resolved in declaration order, so annotations like
     // `h : fn g` may reference locals not yet added to env. Unresolved names

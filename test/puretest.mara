@@ -1,0 +1,18 @@
+module puretest
+
+// Exercises the call-graph purity summary (cg_compute_purity): a direct IO
+// effect, transitive propagation, and a mutually-recursive cycle that must
+// settle to pure (the SCC fixpoint). No consumer reads purity yet, so this is
+// a compile+run fixture; verdicts are inspected with MARA_DUMP_PURITY=1.
+
+pure_add   :: fun(a: i32, b: i32) -> i32 { return a + b }       // pure
+calls_pure :: fun(x: i32) -> i32 { return pure_add(x, 1) }      // pure (calls pure)
+does_io    :: fun(x: i32) { print(x) }                          // impure (IO)
+io_caller  :: fun() { does_io(5) }                              // impure (transitive)
+even2 :: fun(n: i64) -> bool { if n == 0 { return true }  return odd2(n - 1) }   // pure cycle
+odd2  :: fun(n: i64) -> bool { if n == 0 { return false } return even2(n - 1) }
+
+main :: fun() {
+	print(calls_pure(2))   // 3
+	io_caller()            // 5
+}
