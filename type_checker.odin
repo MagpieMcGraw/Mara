@@ -776,71 +776,42 @@ scope_member :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     return nil, false
 }
 
+// THE name-lookup walk (type_env_get / type_env_locate_below_module are thin
+// wrappers — this is the single site the env→scope-graph migration touches).
+// At each env level: locals (cur.types), then durable members (scope_member up
+// the parent_scope graph), then bare-included modules. Returns the env the name
+// was found in, so callers can inspect it (e.g. class-scope field-leak checks).
+//
+// `below_module` stops BEFORE the enclosing module scope — the shadowing policy
+// for `:=` decls, so a local `shader := gl.CreateShader(...)` doesn't conflate
+// with the module's own auto-injected binding. Otherwise the module env is
+// consulted and the walk stops after it.
+type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Env, bool) {
+    for cur := env; cur != nil; cur = cur.parent {
+        if below_module && cur.is_module_scope { break }
+        if t, ok := cur.types[name]; ok {
+            return t, cur, true
+        }
+        if t, ok := scope_member(cur, name); ok {
+            return t, cur, true
+        }
+        for inc in cur.includes {
+            if t, ok := inc.types[name]; ok {
+                return t, inc, true
+            }
+        }
+        if !below_module && cur.is_module_scope { break }
+    }
+    return nil, nil, false
+}
+
 type_env_get :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
-    cur := env
-    for cur != nil {
-        if t, ok := cur.types[name]; ok {
-            return t, true
-        }
-        if t, ok := scope_member(cur, name); ok {
-            return t, true
-        }
-        for inc in cur.includes {
-            if t, ok := inc.types[name]; ok {
-                return t, true
-            }
-        }
-        if cur.is_module_scope { break }
-        cur = cur.parent
-    }
-    return nil, false
+    t, _, ok := type_env_locate(env, name)
+    return t, ok
 }
 
-// Same as type_env_get but also returns the env in which the name was found,
-// so callers can inspect that env (e.g. to detect class-scope field leaks).
-type_env_locate :: proc(env: ^Type_Env, name: string) -> (Type, ^Type_Env, bool) {
-    cur := env
-    for cur != nil {
-        if t, ok := cur.types[name]; ok {
-            return t, cur, true
-        }
-        if t, ok := scope_member(cur, name); ok {
-            return t, cur, true
-        }
-        for inc in cur.includes {
-            if t, ok := inc.types[name]; ok {
-                return t, inc, true
-            }
-        }
-        if cur.is_module_scope { break }
-        cur = cur.parent
-    }
-    return nil, nil, false
-}
-
-// Like type_env_locate but stops BEFORE entering the enclosing module scope —
-// matches the shadowing-check policy (function bodies are allowed to shadow
-// module-level names). Used for `:=` declarations so e.g. a local `shader :=
-// gl.CreateShader(...)` doesn't conflate with the module's own auto-injected
-// name binding (when the file's module is `gfx.shader`).
 type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Type_Env, bool) {
-    cur := env
-    for cur != nil {
-        if cur.is_module_scope { break }
-        if t, ok := cur.types[name]; ok {
-            return t, cur, true
-        }
-        if t, ok := scope_member(cur, name); ok {
-            return t, cur, true
-        }
-        for inc in cur.includes {
-            if t, ok := inc.types[name]; ok {
-                return t, inc, true
-            }
-        }
-        cur = cur.parent
-    }
-    return nil, nil, false
+    return type_env_locate(env, name, below_module = true)
 }
 
 // Like type_env_get but with own-types-first semantics across the whole chain:
