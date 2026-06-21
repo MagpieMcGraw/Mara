@@ -143,21 +143,22 @@ ask_intern :: proc(res: ^Ask_Result, t: Type) -> (id: int, is_new: bool) {
 // One resolved definition the name could refer to.
 Ask_Match :: struct {
     type_: Type,
-    label: string,   // source name as written
+    label: string,   // source / display name (what the user types)
+    flat:  string,   // package-prefixed unique name
     sub:   string,   // "struct" / "enum" / "union" / "distinct" / "fun"
     span:  Span,
 }
 
-// Collect EVERY definition that answers to `target`, deduped by source span.
+// Every definition in (optionally) the scoped file, deduped by source span.
 // The span dedup is load-bearing, not cosmetic: a struct and its synthesized
 // constructor live in two tables (`.structs` and `.funs`) but share one def
 // site, and every monomorphization of a generic shares the generic's def site —
-// so without it, a perfectly unambiguous `Foo` would report as N "definitions".
-// With it, those collapse to the single definition the user means, while two
+// so without it a perfectly unambiguous `Foo` would report as N "definitions".
+// With it, those collapse to the one definition the user means, while two
 // genuinely distinct same-named types (different files) stay separate.
 // `scope_file` (a bare filename) restricts to definitions declared in that file —
 // the disambiguation lever behind `in <file>`.
-ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string) -> [dynamic]Ask_Match {
+ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string) -> [dynamic]Ask_Match {
     matches: [dynamic]Ask_Match
     seen: map[Span]bool
     consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Span]bool, t: Type, scope_file: string) {
@@ -166,14 +167,105 @@ ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string)
         if seen[sp] { return }
         seen[sp] = true
         sub, _ := ask_sub(t)
-        append(matches, Ask_Match{ type_ = t, label = ask_label(t), sub = sub, span = sp })
+        append(matches, Ask_Match{ type_ = t, label = ask_label(t), flat = ask_type_name(t), sub = sub, span = sp })
     }
-    for _, s in table.structs        { if s.source_name == target || s.name == target { consider(&matches, &seen, s, scope_file) } }
-    for _, f in table.funs           { if f.source_name == target || f.name == target { consider(&matches, &seen, f, scope_file) } }
-    for _, e in table.enums          { if e.source_name == target || e.name == target { consider(&matches, &seen, e, scope_file) } }
-    for _, u in table.unions         { if u.source_name == target || u.name == target { consider(&matches, &seen, u, scope_file) } }
-    for _, d in table.distinct_types { if d.source_name == target || d.name == target { consider(&matches, &seen, d, scope_file) } }
+    for _, s in table.structs        { consider(&matches, &seen, s, scope_file) }
+    for _, f in table.funs           { consider(&matches, &seen, f, scope_file) }
+    for _, e in table.enums          { consider(&matches, &seen, e, scope_file) }
+    for _, u in table.unions         { consider(&matches, &seen, u, scope_file) }
+    for _, d in table.distinct_types { consider(&matches, &seen, d, scope_file) }
     return matches
+}
+
+// Exact resolution: the definitions whose name the user typed verbatim.
+ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string) -> [dynamic]Ask_Match {
+    out: [dynamic]Ask_Match
+    for m in ask_all_definitions(table, scope_file) {
+        if m.label == target || m.flat == target { append(&out, m) }
+    }
+    return out
+}
+
+// --- fuzzy fallback: "did you mean" when exact resolution finds nothing -------
+
+ASK_FUZZY_LIMIT :: 7
+
+// Loose match score, higher = better, 0 = not a candidate. Tiers (strongest
+// first) so good matches always outrank weak ones: case-only equality, prefix,
+// substring, in-order subsequence, then a small edit distance for typos. The
+// `- len` tiebreakers prefer the shorter (more specific) name.
+ask_fuzzy_score :: proc(query, name: string) -> int {
+    if len(query) == 0 || len(name) == 0 { return 0 }
+    q := strings.to_lower(query)
+    n := strings.to_lower(name)
+    if q == n                           { return 1000 }
+    if strings.has_prefix(n, q)         { return 850 - len(n) }
+    if i := strings.index(n, q); i >= 0 { return 700 - i*2 - len(n) }
+    if gaps, ok := ask_subseq_gaps(q, n); ok { return 450 - gaps*3 - len(n) }
+    d := ask_levenshtein(q, n)
+    if 3*d <= len(q)                    { return 250 - d*30 }
+    return 0
+}
+
+// Are all of q's bytes present in n in order? Returns the count of n's bytes
+// skipped between matches (a tightness penalty). q/n are lowercase ASCII.
+ask_subseq_gaps :: proc(q, n: string) -> (gaps: int, ok: bool) {
+    qi, last := 0, -1
+    for i in 0 ..< len(n) {
+        if qi >= len(q) { break }
+        if n[i] == q[qi] {
+            if last >= 0 { gaps += i - last - 1 }
+            last = i
+            qi += 1
+        }
+    }
+    return gaps, qi == len(q)
+}
+
+// Classic two-row Levenshtein edit distance (ASCII, short strings).
+ask_levenshtein :: proc(a, b: string) -> int {
+    la, lb := len(a), len(b)
+    if la == 0 { return lb }
+    if lb == 0 { return la }
+    prev := make([]int, lb + 1)
+    curr := make([]int, lb + 1)
+    for j in 0 ..= lb { prev[j] = j }
+    for i in 1 ..= la {
+        curr[0] = i
+        for j in 1 ..= lb {
+            cost := 0 if a[i-1] == b[j-1] else 1
+            curr[j] = min(prev[j] + 1, curr[j-1] + 1, prev[j-1] + cost)
+        }
+        copy(prev, curr)
+    }
+    return prev[lb]
+}
+
+// Top-N definitions by fuzzy score against `target`, ties broken by name for
+// determinism. Used only when exact resolution returns nothing.
+ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit: int) -> [dynamic]Ask_Match {
+    Scored :: struct { m: Ask_Match, score: int }
+    pool: [dynamic]Scored
+    for m in ask_all_definitions(table, scope_file) {
+        if sc := ask_fuzzy_score(target, m.label); sc > 0 {
+            append(&pool, Scored{ m = m, score = sc })
+        }
+    }
+    out: [dynamic]Ask_Match
+    n := len(pool)
+    k := min(limit, n)
+    for i in 0 ..< k {                       // partial selection of the top k
+        best := i
+        for j in i + 1 ..< n {
+            if pool[j].score > pool[best].score ||
+               (pool[j].score == pool[best].score && pool[j].m.label < pool[best].m.label) {
+                best = j
+            }
+        }
+        pool[i], pool[best] = pool[best], pool[i]
+        append(&out, pool[i].m)
+    }
+    return out
 }
 
 // --- deps: forward type-dependency walk ------------------------------------
@@ -362,7 +454,16 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
     scope_desc := pkg if scope_file == "" else fmt.tprintf("%s, file %s", pkg, scope_file)
 
     if len(matches) == 0 {
-        fmt.sbprintf(&b, "mara ask: no type or function named '%s' in %s\n", target, scope_desc)
+        // No exact hit — offer the closest names rather than a bare miss.
+        suggestions := ask_fuzzy(checked.table, target, scope_file, ASK_FUZZY_LIMIT)
+        if len(suggestions) > 0 {
+            fmt.sbprintf(&b, "mara ask: no exact match for '%s' in %s — did you mean:\n", target, scope_desc)
+            for m in suggestions {
+                fmt.sbprintf(&b, "    %-8s %s  %s\n", m.sub, m.label, ask_loc(m.span))
+            }
+        } else {
+            fmt.sbprintf(&b, "mara ask: no type or function named '%s' in %s\n", target, scope_desc)
+        }
         fmt.sbprint(&b, "  (variables are not queryable yet — coming with variable support.)\n")
         return strings.to_string(b), false
     }
