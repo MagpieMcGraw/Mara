@@ -25,6 +25,7 @@ package mara
 // ---------------------------------------------------------------------------
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import "core:path/filepath"
 
@@ -210,18 +211,28 @@ ASK_FUZZY_LIMIT :: 7
 
 // Loose match score, higher = better, 0 = not a candidate. Tiers (strongest
 // first) so good matches always outrank weak ones: case-only equality, prefix,
-// substring, in-order subsequence, then a small edit distance for typos. The
-// `- len` tiebreakers prefer the shorter (more specific) name.
+// substring, a small edit distance for typos, then in-order subsequence for
+// abbreviations. The `- len` tiebreakers prefer the shorter (more specific) name.
+//
+// Two deliberate choices keep "did you mean" honest:
+//   * A real typo (small edit distance) outranks a loose subsequence, so
+//     `Camara` surfaces `Camera` ABOVE sprawling matches like `camera_turn_walking`.
+//   * The subsequence tier is ANCHORED on a shared first character. Without it a
+//     short query coincidentally subsequences half the table (`idle` is in order
+//     inside `file_delete`); anchoring kills that noise — a no-substring miss
+//     with no close name now correctly suggests nothing.
 ask_fuzzy_score :: proc(query, name: string) -> int {
     if len(query) == 0 || len(name) == 0 { return 0 }
     q := strings.to_lower(query)
     n := strings.to_lower(name)
     if q == n                           { return 1000 }
-    if strings.has_prefix(n, q)         { return 850 - len(n) }
-    if i := strings.index(n, q); i >= 0 { return 700 - i*2 - len(n) }
-    if gaps, ok := ask_subseq_gaps(q, n); ok { return 450 - gaps*3 - len(n) }
+    if strings.has_prefix(n, q)         { return 900 - len(n) }
+    if i := strings.index(n, q); i >= 0 { return 800 - i*2 - len(n) }
     d := ask_levenshtein(q, n)
-    if 3*d <= len(q)                    { return 250 - d*30 }
+    if 3*d <= len(q)                    { return 600 - d*120 }
+    if q[0] == n[0] {
+        if gaps, ok := ask_subseq_gaps(q, n); ok { return 400 - gaps*6 - len(n) }
+    }
     return 0
 }
 
@@ -284,6 +295,26 @@ ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit
         append(&out, pool[i].m)
     }
     return out
+}
+
+// --- variant fallback: a variant name isn't a queryable type --------------
+
+// A variant name (`Idle`, `DropFile`) is not a queryable type on its own, so
+// exact resolution misses it — yet it's a natural thing to type after seeing
+// `Stream_State` is an enum. Find its owning enum / union and point there
+// instead of dropping to a noisy fuzzy guess. Reads only variant NAME lists
+// (no union-layout machinery).
+ask_find_variant :: proc(table: ^SymbolTable, target: string) -> (owner: string, kind: string, ok: bool) {
+    for _, e in table.enums {
+        if e.is_synthetic { continue }   // a union's internal `_Tag`: point at the union, not its tag enum
+        if _, has := e.variants[target]; has { return ask_label(e), "enum", true }
+    }
+    for _, u in table.unions {
+        for vn in u.variants {
+            if vn == target { return ask_label(u), "union", true }
+        }
+    }
+    return "", "", false
 }
 
 // --- deps: forward type-dependency walk ------------------------------------
@@ -472,6 +503,13 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
     scope_desc := pkg if scope_file == "" else fmt.tprintf("%s, file %s", pkg, scope_file)
 
     if len(matches) == 0 {
+        // Before guessing: if the name is a known variant, say so — it's the
+        // single most likely reason a real-looking name fails to resolve.
+        if owner, kind, is_variant := ask_find_variant(checked.table, target); is_variant {
+            fmt.sbprintf(&b, "mara ask: '%s' is a variant of %s %s — variants aren't queryable yet.\n", target, kind, owner)
+            fmt.sbprintf(&b, "  (try `mara ask %s`)\n", owner)
+            return strings.to_string(b), false
+        }
         // No exact hit — offer the closest names rather than a bare miss.
         suggestions := ask_fuzzy(checked.table, target, scope_file, ASK_FUZZY_LIMIT)
         if len(suggestions) > 0 {
@@ -489,6 +527,13 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
         // Subject ambiguity: don't guess. List the candidates and tell the user
         // how to pick one. (For types this is rare; it becomes the norm only once
         // variables/slices land — the `in <scope>` lever is already here for it.)
+        // Sort for a stable listing — `matches` arrives in (non-deterministic)
+        // map-iteration order, like the edges that `ask_sort_edges` already fixes.
+        slice.sort_by(matches[:], proc(a, b: Ask_Match) -> bool {
+            if a.label != b.label         { return a.label < b.label }
+            if a.span.file != b.span.file { return a.span.file < b.span.file }
+            return a.span.line < b.span.line
+        })
         fmt.sbprintf(&b, "mara ask: '%s' is ambiguous — %d definitions in %s (narrow with `in <module|file>`):\n",
                      target, len(matches), scope_desc)
         for m in matches {

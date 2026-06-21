@@ -958,6 +958,7 @@ CLI_Args :: struct {
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [deps|users] [in <module|file>]"
+ASK_USAGE :: "Usage: mara ask <name> [deps|users] [in <module|file>]"
 
 parse_args :: proc() -> CLI_Args {
     args: CLI_Args
@@ -1006,6 +1007,15 @@ parse_args :: proc() -> CLI_Args {
     if subcmd == "ask" {
         rest := positional[2:]   // tokens after the `ask` subcommand
 
+        // An explicit help request prints usage rather than being looked up as a
+        // name — `mara ask --help` must not 404 on a type called "--help".
+        for tok in rest {
+            if tok == "-h" || tok == "--help" {
+                fmt.println(ASK_USAGE)
+                return args
+            }
+        }
+
         // Peel a trailing `in <scope>` (a module name or a file). The actual
         // file -> module resolution happens after discovery, in main().
         for idx in 0 ..< len(rest) {
@@ -1025,7 +1035,7 @@ parse_args :: proc() -> CLI_Args {
         switch len(rest) {
         case 1:
             if ask_is_verb(rest[0]) {
-                fmt.println("Usage: mara ask <name> [deps|users] [in <module|file>]")
+                fmt.println(ASK_USAGE)
                 return args
             }
             args.ask_target = rest[0]   // ask_query stays "" => both directions
@@ -1044,7 +1054,7 @@ parse_args :: proc() -> CLI_Args {
                 return args
             }
         case:
-            fmt.println("Usage: mara ask <name> [deps|users] [in <module|file>]")
+            fmt.println(ASK_USAGE)
             return args
         }
 
