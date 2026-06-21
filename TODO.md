@@ -53,3 +53,5 @@ Investigate if Megastruct{} is sugar for Megastruct () {}
 🚩 class_scope / fun_scope — == scope for ns-envs (both set to the same ft at 8182/8211). Their marker role ("am I inside a class/fun?") is just "nearest .Struct/.Fun walking up scope.parent_scope." Derivable — even the defs-parent walk at 8200 is a scope-chain walk wearing an env costume.
 
 Pull control flow graph into it's own system. It's currently implicitly used to check that every branch has valid return statements.
+
+Robustify the mara ask interface, decide on sensible defaults for the various options, handle typos, dedupe the output, etc...
