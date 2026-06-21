@@ -1109,9 +1109,7 @@ raw_type_key :: proc(t: Type) -> rawptr {
 
 type_env_set :: proc(env: ^Type_Env, name: string, t: Type) {
     env.types[name] = t
-    // Mirror onto the env's durable scope so the scope graph carries every name
-    // (locals, params, consts, monos, aliases) — what resolution will walk once
-    // it moves off env.types. (block_scope == scope for block envs.)
+    // Mirror onto the env's durable scope — what resolution walks.
     if env.scope != nil {
         if env.scope.types == nil { env.scope.types = make(map[string]Type) }
         env.scope.types[name] = t
@@ -6517,21 +6515,22 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body,
 // ambiguous variant (same name in two enums) only errors when both owners
 // are actually in scope here.
 is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
-    has_enum :: proc(e: ^Type_Env, flat: string) -> bool {
-        if e == nil { return false }
-        for _, t in e.types {
+    scope_has_enum :: proc(s: ^Scope_Body, flat: string) -> bool {
+        if s == nil { return false }
+        for _, t in s.types {
             if et, ok := t.(^Type_Enum); ok && et.name == flat { return true }
         }
         return false
     }
-    cur := env
-    for cur != nil {
-        if has_enum(cur, flat_name) { return true }
+    // Own definitions up the durable scope graph, then each env level's includes.
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if scope_has_enum(s, flat_name) { return true }
+    }
+    for cur := env; cur != nil; cur = cur.parent {
         for inc in cur.includes {
-            if has_enum(inc.scope, flat_name) { return true }
+            if scope_has_enum(inc, flat_name) { return true }
         }
         if cur.is_module_scope { break }
-        cur = cur.parent
     }
     return false
 }
@@ -7539,7 +7538,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // of any local binding in an enclosing scope up to the module boundary.
             // Reassignment with `=` is unaffected — those parse as Stmt_Assign with
             // is_decl=false and never reach this branch's Stmt_Decl-derived path.
-            if s.is_decl && s.name in env.types {
+            _, declared_here := scope_defines(env.scope, s.name)
+            if s.is_decl && declared_here {
                 check_error(c, s.span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, s.name)
                 continue
             }
@@ -7549,19 +7549,31 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // the immediate parent is a class/struct scope.
             in_struct_body := env.parent != nil && env.parent.class_scope != nil
             if s.is_decl && !env.is_module_scope && !in_struct_body {
-                outer := env.parent
-                for outer != nil {
-                    if outer.is_module_scope { break }
-                    if s.name in outer.types {
+                // Shadowing of an enclosing local: walk the durable scope chain
+                // above the current scope, below the module.
+                start: ^Type_Scope = env.scope.parent_scope if env.scope != nil else nil
+                for sc := start; sc != nil && !sc.is_module; sc = sc.parent_scope {
+                    if _, found := scope_defines(sc, s.name); found {
                         check_error(c, s.span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, s.name)
                         break
                     }
-                    outer = outer.parent
+                }
+                if walk_check_on() {
+                    leg := false
+                    for outer := env.parent; outer != nil; outer = outer.parent {
+                        if outer.is_module_scope { break }
+                        if s.name in outer.types { leg = true; break }
+                    }
+                    dur := false
+                    for sc := start; sc != nil && !sc.is_module; sc = sc.parent_scope {
+                        if _, found := scope_defines(sc, s.name); found { dur = true; break }
+                    }
+                    if leg != dur { fmt.eprintf("[SHADOW-DIV] %s legacy=%v dur=%v\n", s.name, leg, dur) }
                 }
             }
 
             // Nothing can shadow a constant from an outer scope
-            if s.name in c.table.constants && s.name not_in env.types {
+            if s.name in c.table.constants && !declared_here {
                 check_error(c, s.span, TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE, s.name)
                 continue
             }
@@ -9014,7 +9026,12 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
     // is the module env (so siblings see it); otherwise it's env (back-compat).
     pub := public_env if public_env != nil else env
     // Skip if already pre-registered (parent's body scan)
-    if s.name in pub.types {
+    _, pre_registered := scope_defines(pub.scope, s.name)
+    if walk_check_on() {
+        leg := s.name in pub.types
+        if leg != pre_registered { fmt.eprintf("[DEFINE-DIV] %s legacy=%v dur=%v\n", s.name, leg, pre_registered) }
+    }
+    if pre_registered {
         return
     }
     // Cross-module bare-name collisions are tracked in c.table.constant_owners
@@ -10304,16 +10321,9 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_struct.dispatch_groups = c.dispatch_groups
     mod_struct.operator_overloads = c.operator_overloads
 
-    // Finalize the module's durable name surface: registration populates
-    // mod_struct.types/functions with types/funs/distincts, but consts and
-    // late-bound entries only ever land on the module env during body checking.
-    // Mirror the full env surface onto the durable scope now (the env holds only
-    // this module's own public names — flatten_module_exports doesn't pollute it
-    // with includes), so consumers resolve a module's names off its scope alone.
-    if mod_struct.types == nil { mod_struct.types = make(map[string]Type) }
-    for name, t in mod_env.types {
-        mod_struct.types[name] = t
-    }
+    // (The module's durable name surface — mod_struct.types/functions — is kept
+    // in sync by type_env_set writing through mod_env.scope == mod_struct as the
+    // module body is checked, so no end-of-module mirror copy is needed.)
 
     // Restore checker state
     c.current_package = saved_package
@@ -10706,6 +10716,16 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     env := new(Type_Env)       // heap-allocated so it outlives check_program
     env.is_module_scope = true // root env is the main package's module scope; lookup terminates here
     table.root_env = env
+    // The main package's durable module scope, wired upfront so builtins
+    // (std / void / Program / this_program) and every top-level name land on it
+    // directly via type_env_set — no env.types-mirror copy needed.
+    main_mod := new(Type_Scope)
+    main_mod.name = main_package
+    main_mod.home_package = main_package
+    main_mod.kind = .Struct
+    main_mod.is_module = true
+    main_mod.scope = env
+    env.scope = main_mod
 
     c := Checker{ table = table }
     checked := new(Checked_Program)
@@ -10917,21 +10937,10 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // env via public_env; include-introduced names stay file-private.
     c.current_package = main_package
     {
-        // Give the main package a real module-struct upfront (like check_module),
-        // so its top-level names live on a durable scope the env walks — and so a
-        // `use` of this package finds it. (Was a synthetic post-check stub.)
-        main_mod := new(Type_Scope)
-        main_mod.name = main_package
-        main_mod.home_package = main_package
-        main_mod.kind = .Struct
-        main_mod.is_module = true
-        main_mod.scope = env
-        env.scope = main_mod
+        // main_mod was created + wired to env upfront (above); builtins and
+        // top-level names already live on it. Just register it as this package's
+        // checked module so a `use` of this package finds it.
         c.checked_modules[main_package] = main_mod
-        // Builtins (void / this_program / Program / std) were registered on env
-        // before it had a scope — carry them onto main_mod so they resolve durably.
-        main_mod.types = make(map[string]Type)
-        for k, v in env.types { main_mod.types[k] = v }
 
         // Canonical per-file pipeline (see check_package_files for the phase map).
         main_files_by_src, main_file_order, main_file_envs := partition_package_files(main_prog^, env)
