@@ -100,6 +100,31 @@ ask_span :: proc(t: Type) -> Span {
     return Span{}
 }
 
+// The owning module's name (`mara.math`, `camera`, ""). The map / module-surface
+// views group definitions by this.
+ask_home_package :: proc(t: Type) -> string {
+    #partial switch v in t {
+    case ^Type_Scope:    return v.home_package
+    case ^Type_Enum:     return v.home_package
+    case ^Type_Union:    return v.home_package
+    case ^Type_Distinct: return v.home_package
+    }
+    return ""
+}
+
+// The user-written name. Empty for monomorphized instances and other synthetic
+// types — the signal the module views use to list DECLARATIONS (the generic
+// `Program`), not instances (`mara_core_Program` minted under whoever uses it).
+ask_source_name :: proc(t: Type) -> string {
+    #partial switch v in t {
+    case ^Type_Scope:    return v.source_name
+    case ^Type_Enum:     return v.source_name
+    case ^Type_Union:    return v.source_name
+    case ^Type_Distinct: return v.source_name
+    }
+    return ""
+}
+
 // structs / unions / distinct have further type deps worth recursing into; enums
 // are leaves (variants are integer constants), and funs expand only at the root.
 ask_recurses :: proc(t: Type) -> bool {
@@ -503,6 +528,11 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
     scope_desc := pkg if scope_file == "" else fmt.tprintf("%s, file %s", pkg, scope_file)
 
     if len(matches) == 0 {
+        // A module name? Show its surface (declared types + funs). Checked before
+        // the variant / fuzzy guesses — a module is an intentional, exact target.
+        if surface, is_mod := ask_module_surface(checked, target); is_mod {
+            return surface, true
+        }
         // Before guessing: if the name is a known variant, say so — it's the
         // single most likely reason a real-looking name fails to resolve.
         if owner, kind, is_variant := ask_find_variant(checked.table, target); is_variant {
@@ -633,4 +663,148 @@ ask_distinct_sources :: proc(res: ^Ask_Result) -> int {
     seen: map[int]bool
     for e in res.edges { seen[e.from] = true }
     return len(seen)
+}
+
+// ---------------------------------------------------------------------------
+// Module-level orientation: the map (`mara ask`) and the surface (`mara ask
+// <Module>`). These sit ABOVE the per-name views — the drill-down is
+// map -> module -> name -> deps/users, each level pointing at the next.
+// ---------------------------------------------------------------------------
+
+ask_plural :: proc(n: int, noun: string) -> string {
+    return fmt.tprintf("%d %s", n, noun) if n == 1 else fmt.tprintf("%d %ss", n, noun)
+}
+
+// Does `file` belong to the stdlib? Discovery stores stdlib files with an
+// absolute path under `compiler_dir` and local files relative to the cwd, so a
+// prefix match (when compiler_dir is absolute) or, failing that, absoluteness
+// itself classifies it. "local" is the safe default.
+ask_file_is_stdlib :: proc(file, compiler_dir: string) -> bool {
+    if file == "" { return false }
+    if compiler_dir != "" && strings.has_prefix(file, compiler_dir) { return true }
+    return filepath.is_abs(file)
+}
+
+// A type's distinct-user count — the reverse-edge in-degree, reusing the very
+// graph `users` renders. The orientation signal for "which type matters here".
+ask_user_count :: proc(table: ^SymbolTable, t: Type) -> int {
+    res := ask_compute(table, t, "users")
+    return ask_distinct_sources(&res)
+}
+
+// --- module surface: what one module declares ------------------------------
+
+// `home_package` is the module name verbatim (`mara.math`, `camera`); the `mara.`
+// prefix is an optional alias (the checker resolves `math` to `mara.math` too —
+// see is_package), so both spellings match here.
+ask_module_name_matches :: proc(home, query: string) -> bool {
+    if home == query { return true }
+    return strings.has_prefix(home, "mara.") && home[len("mara."):] == query
+}
+
+// `mara ask <Module>` — the module's own types (ranked by how many things use
+// them) and funs (source order). Returns ok=false when `target` names no loaded
+// module, so the caller falls through to variant / fuzzy handling.
+ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: string, ok: bool) {
+    Entry :: struct { m: Ask_Match, users: int }
+    types: [dynamic]Entry
+    funs:  [dynamic]Ask_Match
+    canonical := target
+    for m in ask_all_definitions(checked.table, "") {
+        hp := ask_home_package(m.type_)
+        if m.mark == "synthetic" || ask_source_name(m.type_) == "" { continue }   // skip instances/synthetic
+        if !ask_module_name_matches(hp, target) { continue }
+        canonical = hp
+        if m.sub == "fun" { append(&funs, m) }
+        else              { append(&types, Entry{ m = m, users = ask_user_count(checked.table, m.type_) }) }
+    }
+    if len(types) == 0 && len(funs) == 0 { return "", false }   // not a (loaded) module
+
+    slice.sort_by(types[:], proc(a, b: Entry) -> bool {
+        if a.users != b.users { return a.users > b.users }      // most-used first
+        return a.m.label < b.m.label
+    })
+    slice.sort_by(funs[:], proc(a, b: Ask_Match) -> bool {
+        if a.span.file != b.span.file { return a.span.file < b.span.file }
+        return a.span.line < b.span.line
+    })
+
+    b := strings.builder_make()
+    fmt.sbprintf(&b, "%s — module   (%s, %s)\n", canonical, ask_plural(len(types), "type"), ask_plural(len(funs), "fun"))
+    if len(types) > 0 {
+        fmt.sbprint(&b, "\n  types        (most-used first)\n")
+        for e in types {
+            tail := fmt.tprintf("   ·  %s", ask_plural(e.users, "user")) if e.users > 0 else ""
+            fmt.sbprintf(&b, "    %-8s %s  %s%s%s\n", e.m.sub, e.m.label, ask_loc(e.m.span), ask_mark_suffix(e.m.mark), tail)
+        }
+    }
+    if len(funs) > 0 {
+        fmt.sbprint(&b, "\n  funs         (source order)\n")
+        for m in funs {
+            fmt.sbprintf(&b, "    %-8s %s  %s\n", m.sub, m.label, ask_loc(m.span))
+        }
+    }
+    return strings.to_string(b), true
+}
+
+// --- module map: the project at a glance -----------------------------------
+
+Ask_Module_Info :: struct {
+    name:     string,   // source module name, e.g. "mara.core"
+    types:    int,
+    funs:     int,
+    has_main: bool,
+    stdlib:   bool,
+}
+
+// `mara ask` with no name — every loaded module with its declared-type / fun
+// counts, local modules first (a stranger's entry point), stdlib after. Modules
+// carrying a `main` are flagged: the cwd's entry points. The hint teaches the
+// next drill-down step.
+ask_module_map :: proc(checked: ^Checked_Program, programs: map[string]^Program, all_files: map[string][dynamic]^Source_File, compiler_dir, root_pkg: string) -> string {
+    // One pass over the deduped definitions -> per-module (flat) counts + a
+    // representative file for the local/stdlib split. Tables hold every CHECKED
+    // module — local AND the stdlib modules actually pulled in — so this is the
+    // authoritative module set (`programs` carries only the local ones).
+    Counts :: struct { types, funs: int, file: string }
+    by_home: map[string]Counts
+    for m in ask_all_definitions(checked.table, "") {
+        if m.mark == "synthetic" || ask_source_name(m.type_) == "" { continue }   // skip instances/synthetic
+        hp := ask_home_package(m.type_)
+        if hp == "" { continue }
+        c := by_home[hp]
+        if m.sub == "fun" { c.funs += 1 } else { c.types += 1 }
+        if c.file == "" { c.file = m.span.file }
+        by_home[hp] = c
+    }
+
+    // `home_package` IS the module name (`mara.math`, `camera`) — the same key
+    // `all_files` and `programs` use. A home that names no discovered module is
+    // an internal/synthetic package (skip it).
+    infos: [dynamic]Ask_Module_Info
+    for hp, c in by_home {
+        if hp not_in all_files { continue }
+        prog, in_programs := programs[hp]
+        append(&infos, Ask_Module_Info{
+            name = hp, types = c.types, funs = c.funs,
+            has_main = in_programs && pkg_has_main(prog),
+            stdlib   = ask_file_is_stdlib(c.file, compiler_dir),
+        })
+    }
+    slice.sort_by(infos[:], proc(a, b: Ask_Module_Info) -> bool {
+        if a.stdlib != b.stdlib { return !a.stdlib }   // local before stdlib
+        return a.name < b.name
+    })
+
+    b := strings.builder_make()
+    fmt.sbprintf(&b, "%s — module map   (run `mara ask <module>` to look inside one)\n", root_pkg)
+    group := ""
+    for info in infos {
+        g := "stdlib" if info.stdlib else "your code"
+        if g != group { fmt.sbprintf(&b, "\n  %s\n", g); group = g }
+        main_tag := "   · main" if info.has_main else ""
+        fmt.sbprintf(&b, "    %-14s %-9s · %s%s\n",
+                     info.name, ask_plural(info.types, "type"), ask_plural(info.funs, "fun"), main_tag)
+    }
+    return strings.to_string(b)
 }

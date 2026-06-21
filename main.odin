@@ -960,6 +960,18 @@ CLI_Args :: struct {
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [deps|users] [in <module|file>]"
 ASK_USAGE :: "Usage: mara ask <name> [deps|users] [in <module|file>]"
 
+// Per-package build mode: a package with a top-level `main` is an executable,
+// one without is a DLL (`-shared` forces all-shared). Also feeds the `main`
+// flags in `mara ask`'s module map.
+pkg_has_main :: proc(program: ^Program) -> bool {
+    for stmt in program^ {
+        if scope, ok := stmt.(^Stmt_Scope); ok && scope.name == "main" {
+            return true
+        }
+    }
+    return false
+}
+
 parse_args :: proc() -> CLI_Args {
     args: CLI_Args
     args.compiler_dir = get_compiler_dir()
@@ -1033,6 +1045,8 @@ parse_args :: proc() -> CLI_Args {
         // What remains is the name and an optional verb, in either order. The
         // verb is folded to its canonical spelling here (`user` -> `users`).
         switch len(rest) {
+        case 0:
+            // Bare `mara ask` — no name: the module map. `ask_target` stays "".
         case 1:
             if ask_is_verb(rest[0]) {
                 fmt.println(ASK_USAGE)
@@ -1141,18 +1155,6 @@ main :: proc() {
     when ODIN_OS == .Linux  { target_os = .Linux  }
     when ODIN_OS == .Darwin { target_os = .Mac    }
 
-    // Per-package build mode detection: a package with a top-level `main`
-    // becomes an executable; a package without becomes a DLL. The `-shared`
-    // CLI flag still works as a force-all-shared override.
-    pkg_has_main :: proc(program: ^Program) -> bool {
-        for stmt in program^ {
-            if scope, ok := stmt.(^Stmt_Scope); ok && scope.name == "main" {
-                return true
-            }
-        }
-        return false
-    }
-
     // Abort early on ANY parse errors — not just in the requested package.
     // Imported modules with broken parses produce partial ASTs that the
     // type checker may quietly accept (as Type_Error placeholders) and the
@@ -1225,6 +1227,11 @@ main :: proc() {
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {
         flush_diagnostics()
+        if args.ask_target == "" {
+            // Bare `mara ask` — the module map (the project at a glance).
+            fmt.print(ask_module_map(checked, programs, all_files, args.compiler_dir, args.pkg_name))
+            return
+        }
         out, found := ask(checked, args.ask_target, args.ask_query, args.pkg_name, ask_scope_file)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed
