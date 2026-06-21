@@ -3108,6 +3108,25 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
     }
 }
 
+// Build the body-check env for a monomorphized function. Its durable scope is a
+// .Block under the mono fun (kind .Fun), so:
+//  - locals resolve via scope_local_lookup and STOP at the fun boundary — no
+//    call-site leak (the old .Struct shadow scope hid this by accident, by not
+//    being a .Block at all),
+//  - enclosing_callable_scope / enclosing_return_types find the MONO FUN, not the
+//    call site (the latent bug this fixes — a mono body had no fun marker).
+// The mono fun chains to the call-site scope so module-level names resolve exactly
+// as before; fun.types/functions are empty, so interposing it adds no resolvable
+// names (resolution-preserving).
+mono_body_env :: proc(env: ^Type_Env, fun: ^Type_Scope) -> Type_Env {
+    child := type_env_child(env)
+    child.scope.kind = .Block
+    child.scope.parent_scope = fun
+    child.fun_scope = fun
+    if fun.parent_scope == nil { fun.parent_scope = env.scope }
+    return child
+}
+
 // Instantiate a generic function template with concrete type substitutions.
 // Registers a ^Type_Scope in checked.functions under the mangled name.
 instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^map[string]Type, mangled: string, env: ^Type_Env) {
@@ -3144,8 +3163,8 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     }
     c.table.mono_cache[mangled] = fun_type
 
-    // Create child scope for body checking
-    child := type_env_child(env)
+    // Body-check env: a proper .Block body under the mono fun (see mono_body_env).
+    child := mono_body_env(env, fun_type)
 
     // Bind regular params with their concrete types
     for tp, i in ast.typed_params {
@@ -3272,8 +3291,8 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     c.table.mono_cache[mangled] = mono_ft
     c.table.mono_fun_cache[mangled] = fn_name
 
-    // Clone body and type-check with new param types
-    child := type_env_child(env)
+    // Body-check env: a proper .Block body under the mono fun (see mono_body_env).
+    child := mono_body_env(env, mono_ft)
     for tp, i in ast.typed_params {
         if i < len(mono_ft.params) {
             type_env_set(&child, tp.name, mono_ft.params[i].type_)
