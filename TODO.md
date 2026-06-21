@@ -44,4 +44,10 @@ Investigate if Megastruct{} is sugar for Megastruct () {}
 
 🚩 parameterized structs. We have regular structs with constructors, and we have generics. Parameterized is not a struct thing.
 
-🚩 Want me to take that type-checker unification next (the genuine {}/() merge)
+🚩 (the genuine {}/() merge)
+
+🚩 Why do we track which module is the main module?
+
+🚩 Why do we need 8 different arrays to track the various :: definitions?
+
+🚩 class_scope / fun_scope — == scope for ns-envs (both set to the same ft at 8182/8211). Their marker role ("am I inside a class/fun?") is just "nearest .Struct/.Fun walking up scope.parent_scope." Derivable — even the defs-parent walk at 8200 is a scope-chain walk wearing an env costume.
