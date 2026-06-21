@@ -994,44 +994,77 @@ type_env_get_owned_first_legacy :: proc(env: ^Type_Env, name: string) -> (Type, 
 resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (typ: Type, ok: bool, ambiguous_owners: [dynamic]string) {
     // `Self` is the enclosing struct/fun's own scope — derive it from the durable
     // graph (the nearest class_scope/fun_scope marker) rather than an env binding.
-    // This also sidesteps the inner/outer-Self ambiguity the walk below guards
-    // against: the nearest marker is a single unambiguous answer.
     if name == "Self" {
         if s := enclosing_callable_scope(env); s != nil { return s, true, nil }
         return nil, false, nil
     }
-    Match :: struct {
-        typ:   Type,
-        owner: string,
+    // An OWN definition (a local type, an enclosing class member, or a module
+    // definition) wins unambiguously over any import — walk the durable scope
+    // graph own-only, inner-to-outer (lexical shadowing built in).
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if t, found := scope_defines(s, name); found {
+            typ, ok = t, true
+            break
+        }
     }
+    if !ok {
+        // No own definition: gather distinct include owners at the nearest env
+        // level that provides the name (the per-level stop). Two+ distinct
+        // imports of the same name = ambiguous; the caller errors.
+        owner_list: [dynamic]string
+        distinct_typs: map[rawptr]bool
+        distinct_owners: map[string]bool
+        first_typ: Type
+        for cur := env; cur != nil; cur = cur.parent {
+            found_any := false
+            for inc in cur.includes {
+                if t, found := include_lookup(inc, name); found {
+                    found_any = true
+                    if first_typ == nil { first_typ = t }
+                    key := raw_type_key(t)
+                    if key not_in distinct_typs {
+                        distinct_typs[key] = true
+                        owner := inc.name if inc != nil else "<anonymous-include>"
+                        if owner not_in distinct_owners {
+                            distinct_owners[owner] = true
+                            append(&owner_list, owner)
+                        }
+                    }
+                }
+            }
+            if found_any { break }  // stop at nearest level with includes
+            if cur.is_module_scope { break }
+        }
+        if len(distinct_typs) == 1 { typ, ok = first_typ, true }
+        else if len(distinct_typs) > 1 { ambiguous_owners = owner_list }
+    }
+    if walk_check_on() {
+        lt, lok, lamb := resolve_with_ambiguity_legacy(c, env, name)
+        if lok != ok || (ok && type_ptr_ident(lt) != type_ptr_ident(typ)) || (len(lamb) > 0) != (len(ambiguous_owners) > 0) {
+            fmt.eprintf("[RWA-ORDER] %s legacy(ok=%v,amb=%d) new(ok=%v,amb=%d)\n", name, lok, len(lamb), ok, len(ambiguous_owners))
+        }
+    }
+    return
+}
+
+// Legacy reference (env.types per-level) — kept only to validate the switch.
+resolve_with_ambiguity_legacy :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (typ: Type, ok: bool, ambiguous_owners: [dynamic]string) {
+    if name == "Self" {
+        if s := enclosing_callable_scope(env); s != nil { return s, true, nil }
+        return nil, false, nil
+    }
+    Match :: struct { typ: Type, owner: string }
     matches: [dynamic]Match
     cur := env
-    // Walk the parent chain with lexical shadowing: collect matches at the
-    // current level (own .types + sibling includes), and if any are found,
-    // stop. Otherwise climb to the parent. Without the stop, an inner
-    // `Self` binding (set per-class by register_scope_defs / check_scope_body)
-    // appears alongside the enclosing class's `Self`, the same-name pair gets
-    // flagged as ambiguous, and both lookups fail — breaking `^Self` in any
-    // nested type.
     for cur != nil {
         level_start := len(matches)
         if t, found := cur.types[name]; found {
-            if walk_check_on() {
-                st, _, sok := scope_resolve(env, name)
-                if !sok { fmt.eprintf("[RWA-GAP] %s\n", name) }
-                else if type_ptr_ident(t) != type_ptr_ident(st) { fmt.eprintf("[RWA-MISMATCH] %s\n", name) }
-            }
-            owner: string
-            if cur.is_module_scope {
-                owner = c.current_package
-            } else {
-                owner = "<local>"
-            }
+            owner := c.current_package if cur.is_module_scope else "<local>"
             append(&matches, Match{typ = t, owner = owner})
         }
         if t, found := scope_member(cur, name); found {
             owner := c.current_package if cur.is_module_scope else "<local>"
-            append(&matches, Match{typ = t, owner = owner})  // own def; pointer-dedup below drops the copy-duplicate
+            append(&matches, Match{typ = t, owner = owner})
         }
         for inc in cur.includes {
             if t, found := include_lookup(inc, name); found {
@@ -1045,7 +1078,6 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
     }
     if len(matches) == 0 { return nil, false, nil }
     if len(matches) == 1 { return matches[0].typ, true, nil }
-    // Pointer dedup so re-exports of the same declaration don't trigger.
     distinct_typs: map[rawptr]bool
     distinct_owners: map[string]bool
     owner_list: [dynamic]string
