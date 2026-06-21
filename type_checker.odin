@@ -6701,6 +6701,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 c.table.fun_asts[s.name] = s
                 c.table.fun_homes[s.name] = c.current_package
                 if owner != nil {
+                    struct_type.parent_scope = owner // chain to the module/enclosing scope
                     if owner.types == nil { owner.types = make(map[string]Type) }
                     owner.types[s.name] = struct_type
                     append(&owner.fields, Struct_Type_Field{name = s.name, type_ = struct_type})
@@ -6742,6 +6743,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 is_callable := !is_struct_type || len(s.typed_params) > 0
                 if is_callable { c.declared_funs[s.name] = true }
                 if owner != nil {
+                    fun_type.parent_scope = owner // chain to the module/enclosing scope
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
                         owner.types[s.name] = fun_type
