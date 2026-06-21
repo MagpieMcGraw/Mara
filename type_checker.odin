@@ -729,10 +729,10 @@ Type_Env :: struct {
                                  // at that function. A nested fun walks up to the nearest fun_scope to parent
                                  // its own defs layer there, so the up-walk crosses defs layers only — an
                                  // enclosing function's locals (on its body env) stay private.
-    is_module_scope: bool,       // true on the env of a module/package — name lookup terminates here.
-                                 // File envs (which hold a file's private include names) sit BELOW the
-                                 // module env and walk through it; consumers cross module boundaries
-                                 // only via explicit includes.
+    // (is_module_scope removed — derived from the durable scope via env_is_module:
+    //  a module/package env is one whose `scope.is_module` and whose scope's
+    //  back-ref names this env. Lookup terminates there. File envs share the module
+    //  scope but the back-ref names the module env, so they're not terminators.)
     includes:    [dynamic]^Scope_Body, // the durable module scopes of bare-`include`d modules.
                                  // Lookup at each env walks own names, then each include's own names
                                  // (its durable .types / .functions; non-transitive, matches Mara2).
@@ -748,6 +748,14 @@ scope_defines :: proc(s: ^Type_Scope, name: string) -> (Type, bool) {
     if s.types != nil { if t, ok := s.types[name]; ok { return t, true } }
     if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, true } }
     return nil, false
+}
+
+// True if this env is a module/package namespace — name lookup terminates here.
+// Derived from the durable scope: a module scope (is_module) whose back-ref names
+// THIS env. A file env shares the module's scope, but the back-ref points at the
+// module env — so files correctly are NOT terminators.
+env_is_module :: proc(env: ^Type_Env) -> bool {
+    return env != nil && env.scope != nil && env.scope.is_module && env.scope.scope == env
 }
 
 // Look up a bare name exported by an included module — off the module's own
@@ -792,9 +800,9 @@ scope_resolve :: proc(env: ^Type_Env, name: string, below_module := false) -> (T
         if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, s, true } }
     }
     for cur := env; cur != nil; cur = cur.parent {
-        if below_module && cur.is_module_scope { break }
+        if below_module && env_is_module(cur) { break }
         for inc in cur.includes { if t, ok := include_lookup(inc, name); ok { return t, nil, true } }
-        if cur.is_module_scope { break }
+        if env_is_module(cur) { break }
     }
     return nil, nil, false
 }
@@ -905,7 +913,7 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
                 }
             }
             if found_any { break }  // stop at nearest level with includes
-            if cur.is_module_scope { break }
+            if env_is_module(cur) { break }
         }
         if len(distinct_typs) == 1 { typ, ok = first_typ, true }
         else if len(distinct_typs) > 1 { ambiguous_owners = owner_list }
@@ -1135,7 +1143,7 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
     if env != nil {
         cur := env
         for cur != nil {
-            if cur.is_module_scope {
+            if env_is_module(cur) {
                 if _, found := scope_defines(cur.scope, bare_name); found {
                     return make_flat_name(c.current_package, bare_name)
                 }
@@ -1146,7 +1154,7 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
                     return make_flat_name(inc.name, bare_name)
                 }
             }
-            if cur.is_module_scope { break }
+            if env_is_module(cur) { break }
             cur = cur.parent
         }
     }
@@ -1380,14 +1388,14 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
     if env != nil {
         cur := env
         for cur != nil {
-            if cur.is_module_scope {
+            if env_is_module(cur) {
                 if t, found := scope_defines(cur.scope, name); found {
                     if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
                         return c.current_package, true, nil
                     }
                 }
             }
-            if cur.is_module_scope { break }
+            if env_is_module(cur) { break }
             cur = cur.parent
         }
     }
@@ -1409,7 +1417,7 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
                     }
                 }
             }
-            if cur.is_module_scope { break }
+            if env_is_module(cur) { break }
             cur = cur.parent
         }
     }
@@ -1433,7 +1441,7 @@ resolve_fn_home :: proc(c: ^Checker, env: ^Type_Env, name: string) -> string {
     if env != nil {
         cur := env
         for cur != nil {
-            if cur.is_module_scope {
+            if env_is_module(cur) {
                 if t, found := scope_defines(cur.scope, name); found {
                     if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun {
                         return c.current_package
@@ -1448,7 +1456,7 @@ resolve_fn_home :: proc(c: ^Checker, env: ^Type_Env, name: string) -> string {
                     }
                 }
             }
-            if cur.is_module_scope { break }
+            if env_is_module(cur) { break }
             cur = cur.parent
         }
     }
@@ -6347,7 +6355,7 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
         for inc in cur.includes {
             if scope_has_enum(inc, flat_name) { return true }
         }
-        if cur.is_module_scope { break }
+        if env_is_module(cur) { break }
     }
     return false
 }
@@ -6364,7 +6372,7 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
 module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bool {
     if env == nil { return true }  // no env context to gate against — don't reject
     // The package being checked always sees its own constants. The own-module
-    // branch below (cur.is_module_scope) covers this for module envs, but it's
+    // branch below (env_is_module(cur)) covers this for module envs, but it's
     // kept explicit so the main package's top-level constants are visible in
     // size position even before the env walk.
     if owner, mapped := c.table.constant_owners[bare]; mapped && owner != "" && owner == c.current_package {
@@ -6372,7 +6380,7 @@ module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bo
     }
     cur := env
     for cur != nil {
-        if cur.is_module_scope {
+        if env_is_module(cur) {
             if _, ok := c.table.constants[make_flat_name(c.current_package, bare)]; ok { return true }
         }
         for inc in cur.includes {
@@ -6380,7 +6388,7 @@ module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bo
                 if _, ok := c.table.constants[make_flat_name(inc.name, bare)]; ok { return true }
             }
         }
-        if cur.is_module_scope { break }
+        if env_is_module(cur) { break }
         cur = cur.parent
     }
     return false
@@ -7087,7 +7095,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             in_class_scope := false
             for cur := env; cur != nil; cur = cur.parent {
                 if cur.class_scope != nil { in_class_scope = true; break }
-                if cur.is_module_scope { break }
+                if env_is_module(cur) { break }
             }
             if in_class_scope { continue }
             // Register each foreign function in the type environment.
@@ -7365,7 +7373,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // shadow file-scope or module-scope bindings. Skip the walk when
             // the immediate parent is a class/struct scope.
             in_struct_body := env.parent != nil && env.parent.class_scope != nil
-            if s.is_decl && !env.is_module_scope && !in_struct_body {
+            if s.is_decl && !env_is_module(env) && !in_struct_body {
                 // Shadowing of an enclosing local: walk the durable scope chain
                 // above the current scope, below the module.
                 start: ^Type_Scope = env.scope.parent_scope if env.scope != nil else nil
@@ -10059,11 +10067,12 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // so the module's own functions can reference `context.X` etc., same
     // as a main package's file_env can.
     mod_env := new(Type_Env)
-    mod_env.is_module_scope = true
 
     // Create the module-struct upfront so it can own top-level declarations during
     // registration AND serve as the module env's durable scope before any name is
     // set. Dispatch groups / operator overloads filled after check_scope completes.
+    // (env_is_module(mod_env) derives "module namespace" from this wiring:
+    //  mod_struct.is_module + the mod_struct.scope==mod_env back-ref.)
     mod_struct := new(Type_Scope)
     mod_struct.name = module_name
     mod_struct.home_package = module_name  // module is its own home
@@ -10515,11 +10524,12 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
                       target_os: Target_OS = .Windows) -> ^Checked_Program {
     table := new(SymbolTable)
     env := new(Type_Env)       // heap-allocated so it outlives check_program
-    env.is_module_scope = true // root env is the main package's module scope; lookup terminates here
     table.root_env = env
     // The main package's durable module scope, wired upfront so builtins
     // (std / void / Program / this_program) and every top-level name land on it
-    // directly via type_env_set — no env.types-mirror copy needed.
+    // directly via type_env_set — no env.types-mirror copy needed. This wiring is
+    // also what makes env_is_module(env) true: the root env IS the main package's
+    // module scope, so lookup terminates here.
     main_mod := new(Type_Scope)
     main_mod.name = main_package
     main_mod.home_package = main_package
