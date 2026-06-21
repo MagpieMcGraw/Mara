@@ -26,6 +26,7 @@ package mara
 
 import "core:fmt"
 import "core:strings"
+import "core:path/filepath"
 
 Ask_Edge_Kind :: enum { Contains, Embeds, Takes, Returns, Base }
 
@@ -139,13 +140,40 @@ ask_intern :: proc(res: ^Ask_Result, t: Type) -> (id: int, is_new: bool) {
 
 // --- target resolution (user types the source name, tables key on flat) ----
 
-ask_resolve :: proc(table: ^SymbolTable, target: string) -> (Type, bool) {
-    for _, s in table.structs        { if s.source_name == target || s.name == target { return s, true } }
-    for _, f in table.funs           { if f.source_name == target || f.name == target { return f, true } }
-    for _, e in table.enums          { if e.source_name == target || e.name == target { return e, true } }
-    for _, u in table.unions         { if u.source_name == target || u.name == target { return u, true } }
-    for _, d in table.distinct_types { if d.source_name == target || d.name == target { return d, true } }
-    return nil, false
+// One resolved definition the name could refer to.
+Ask_Match :: struct {
+    type_: Type,
+    label: string,   // source name as written
+    sub:   string,   // "struct" / "enum" / "union" / "distinct" / "fun"
+    span:  Span,
+}
+
+// Collect EVERY definition that answers to `target`, deduped by source span.
+// The span dedup is load-bearing, not cosmetic: a struct and its synthesized
+// constructor live in two tables (`.structs` and `.funs`) but share one def
+// site, and every monomorphization of a generic shares the generic's def site —
+// so without it, a perfectly unambiguous `Foo` would report as N "definitions".
+// With it, those collapse to the single definition the user means, while two
+// genuinely distinct same-named types (different files) stay separate.
+// `scope_file` (a bare filename) restricts to definitions declared in that file —
+// the disambiguation lever behind `in <file>`.
+ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string) -> [dynamic]Ask_Match {
+    matches: [dynamic]Ask_Match
+    seen: map[Span]bool
+    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Span]bool, t: Type, scope_file: string) {
+        sp := ask_span(t)
+        if scope_file != "" && filepath.base(sp.file) != scope_file { return }
+        if seen[sp] { return }
+        seen[sp] = true
+        sub, _ := ask_sub(t)
+        append(matches, Ask_Match{ type_ = t, label = ask_label(t), sub = sub, span = sp })
+    }
+    for _, s in table.structs        { if s.source_name == target || s.name == target { consider(&matches, &seen, s, scope_file) } }
+    for _, f in table.funs           { if f.source_name == target || f.name == target { consider(&matches, &seen, f, scope_file) } }
+    for _, e in table.enums          { if e.source_name == target || e.name == target { consider(&matches, &seen, e, scope_file) } }
+    for _, u in table.unions         { if u.source_name == target || u.name == target { consider(&matches, &seen, u, scope_file) } }
+    for _, d in table.distinct_types { if d.source_name == target || d.name == target { consider(&matches, &seen, d, scope_file) } }
+    return matches
 }
 
 // --- deps: forward type-dependency walk ------------------------------------
@@ -311,21 +339,103 @@ ask_is_verb :: proc(s: string) -> bool {
     return ok
 }
 
-run_ask :: proc(checked: ^Checked_Program, target: string, verb: string) -> (Ask_Result, bool) {
+// Compute one direction's graph for an already-resolved subject type.
+ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string) -> Ask_Result {
     res: Ask_Result
     res.root = -1
-    root, found := ask_resolve(checked.table, target)
-    if !found { return res, false }
     switch verb {
-    case "deps":  ask_deps(checked.table, &res, root)
-    case "users": ask_users(checked.table, &res, root)
-    case:         return res, false
+    case "deps":  ask_deps(table, &res, root)
+    case "users": ask_users(table, &res, root)
     }
     ask_sort_edges(&res)
-    return res, true
+    return res
+}
+
+// Top-level entry. Resolve `target` (optionally pinned to a `scope_file`), then
+// render. `verb == ""` asks for BOTH directions. Returns the rendered text and
+// whether a single subject was found — on false (not found / ambiguous) the text
+// already explains why, and the caller exits non-zero.
+ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) -> (out: string, ok: bool) {
+    matches := ask_resolve_all(checked.table, target, scope_file)
+    b := strings.builder_make()
+
+    scope_desc := pkg if scope_file == "" else fmt.tprintf("%s, file %s", pkg, scope_file)
+
+    if len(matches) == 0 {
+        fmt.sbprintf(&b, "mara ask: no type or function named '%s' in %s\n", target, scope_desc)
+        fmt.sbprint(&b, "  (variables are not queryable yet — coming with variable support.)\n")
+        return strings.to_string(b), false
+    }
+    if len(matches) > 1 {
+        // Subject ambiguity: don't guess. List the candidates and tell the user
+        // how to pick one. (For types this is rare; it becomes the norm only once
+        // variables/slices land — the `in <scope>` lever is already here for it.)
+        fmt.sbprintf(&b, "mara ask: '%s' is ambiguous — %d definitions in %s (narrow with `in <module|file>`):\n",
+                     target, len(matches), scope_desc)
+        for m in matches {
+            fmt.sbprintf(&b, "    %-8s %s  %s\n", m.sub, m.label, ask_loc(m.span))
+        }
+        return strings.to_string(b), false
+    }
+
+    subject := matches[0]
+    fmt.sbprintf(&b, "%s — %s  %s   (package %s)\n", subject.label, subject.sub, ask_loc(subject.span), pkg)
+
+    if verb == "" || verb == "deps" {
+        res := ask_compute(checked.table, subject.type_, "deps")
+        render_ask_deps(&b, &res)
+    }
+    if verb == "" || verb == "users" {
+        res := ask_compute(checked.table, subject.type_, "users")
+        render_ask_users(&b, &res, subject.sub == "fun")
+    }
+    // The broad "tell me about this name" form is honest about its coverage gap;
+    // the targeted deps/users forms stay terse.
+    if verb == "" {
+        fmt.sbprint(&b, "\n(variables: not queryable yet)\n")
+    }
+    return strings.to_string(b), true
 }
 
 // --- renderer (text adjacency dump) ----------------------------------------
+
+// deps: one adjacency block per node (root first), each node with its location
+// and its direct typed edges. The whole block is the TRANSITIVE closure.
+render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result) {
+    fmt.sbprintf(b, "\ndeps   (%d types, %d edges, TRANSITIVE closure)\n", len(res.nodes), len(res.edges))
+    for node, i in res.nodes {
+        fmt.sbprintf(b, "\n  %s  %s  %s\n", node.label, node.sub, ask_loc(node.span))
+        any := false
+        for e in res.edges {
+            if e.from != i { continue }
+            any = true
+            tgt := res.nodes[e.to]
+            via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
+            fmt.sbprintf(b, "    %s%s : %s%s\n", ask_edge_word(e.kind), via, e.wrap, tgt.label)
+        }
+        if !any { fmt.sbprint(b, "    (no type dependencies)\n") }
+    }
+}
+
+// users: the DIRECT (one-hop) reverse references. Header separates distinct
+// users from use-sites so neither count is misread.
+render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, subject_is_fun: bool) {
+    fmt.sbprintf(b, "\nusers   (%d users, %d use-sites, DIRECT one-hop)\n",
+                 ask_distinct_sources(res), len(res.edges))
+    // A function subject's reverse set is a known blind spot: call edges are not
+    // modeled, so `(no users)` here must NOT be read as "no callers".
+    if subject_is_fun {
+        fmt.sbprint(b, "  note: call edges are NOT tracked yet — this lists only type-level\n")
+        fmt.sbprint(b, "        references (e.g. a `fn <name>` nominal type), NOT callers.\n")
+    }
+    if len(res.edges) == 0 { fmt.sbprint(b, "  (no users)\n"); return }
+    root_label := res.nodes[res.root].label
+    for e in res.edges {
+        u := res.nodes[e.from]
+        via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
+        fmt.sbprintf(b, "  %-6s %s  (%s%s : %s%s)\n", u.sub, u.label, ask_edge_word(e.kind), via, e.wrap, root_label)
+    }
+}
 
 ask_edge_word :: proc(k: Ask_Edge_Kind) -> string {
     #partial switch k {
@@ -350,49 +460,4 @@ ask_distinct_sources :: proc(res: ^Ask_Result) -> int {
     seen: map[int]bool
     for e in res.edges { seen[e.from] = true }
     return len(seen)
-}
-
-render_ask :: proc(res: ^Ask_Result, target: string, verb: string, pkg: string) -> string {
-    b := strings.builder_make()
-
-    if verb == "users" {
-        root := res.nodes[res.root]
-        // Header advertises DIRECT (one-hop) and separates distinct users from
-        // use-sites, so a reader never reads len(edges) as a transitive or a
-        // distinct-entity count.
-        fmt.sbprintf(&b, "ask users %s   (package %s — %d users, %d use-sites, DIRECT one-hop)\n\n",
-                     target, pkg, ask_distinct_sources(res), len(res.edges))
-        fmt.sbprintf(&b, "%s  %s  %s\n", root.label, root.sub, ask_loc(root.span))
-        // A function target's reverse set is a known blind spot: call edges are
-        // not modeled, so `(no users)` here must NOT be read as "no callers".
-        if root.sub == "fun" {
-            fmt.sbprint(&b, "  note: call edges are NOT tracked yet — this lists only type-level\n")
-            fmt.sbprint(&b, "        references (e.g. a `fn <name>` nominal type), NOT callers.\n")
-        }
-        if len(res.edges) == 0 { fmt.sbprint(&b, "  (no users)\n"); return strings.to_string(b) }
-        fmt.sbprint(&b, "  used by:\n")
-        for e in res.edges {
-            u := res.nodes[e.from]
-            via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
-            fmt.sbprintf(&b, "    %-6s %s  (%s%s : %s%s)\n", u.sub, u.label, ask_edge_word(e.kind), via, e.wrap, target)
-        }
-        return strings.to_string(b)
-    }
-
-    // deps: one adjacency block per node, root first (interned at id 0).
-    fmt.sbprintf(&b, "ask deps %s   (package %s — %d types, %d edges, TRANSITIVE closure)\n",
-                 target, pkg, len(res.nodes), len(res.edges))
-    for node, i in res.nodes {
-        fmt.sbprintf(&b, "\n%s  %s  %s\n", node.label, node.sub, ask_loc(node.span))
-        any := false
-        for e in res.edges {
-            if e.from != i { continue }
-            any = true
-            tgt := res.nodes[e.to]
-            via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
-            fmt.sbprintf(&b, "  %s%s : %s%s\n", ask_edge_word(e.kind), via, e.wrap, tgt.label)
-        }
-        if !any { fmt.sbprint(&b, "  (no type dependencies)\n") }
-    }
-    return strings.to_string(b)
 }

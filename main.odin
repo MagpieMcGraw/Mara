@@ -216,6 +216,20 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
     return result
 }
 
+// Is a file of this basename anywhere in the discovered set? An `ask ... in
+// <file>` scope keeps the cwd module as the (buildable) analysis root and only
+// pins the subject to the file — a sub-module often won't type-check standalone —
+// so we just need existence here, not the file's owning module.
+ask_file_discovered :: proc(all_files: map[string][dynamic]^Source_File, token: string) -> bool {
+    base := filepath.base(token)
+    for _, files in all_files {
+        for f in files {
+            if filepath.base(f.path) == base { return true }
+        }
+    }
+    return false
+}
+
 // Walk the use graph from `target` and return the subset of `all_files` we
 // need to lex + parse. Same exact-match rule the type checker uses: a `use foo`
 // enqueues exactly the module `foo`. Submodules `foo.*` are pulled in only when
@@ -939,7 +953,8 @@ CLI_Args :: struct {
     // Runs the front half of the pipeline and stops after check_program.
     ask:          bool,
     ask_target:   string,  // the type/fn the query is about
-    ask_query:    string,  // "deps" | "users"
+    ask_query:    string,  // "deps" | "users" | "" (both)
+    ask_scope:    string,  // optional `in <module|file>` token; "" = cwd default
 }
 
 USAGE :: "Usage: mara build [package-name] [-web] [-shared] [-release] [-no assert]\n       mara ask <Type> <deps|users>"
@@ -985,29 +1000,57 @@ parse_args :: proc() -> CLI_Args {
     // positional[0] is the exe name itself. positional[1] is the subcommand.
     subcmd := positional[1] if len(positional) >= 2 else ""
 
-    // `mara ask <Type> <deps|users>` — analyze the package in the cwd (like
-    // `build` with no package arg) and answer a static query about <Type>.
+    // `mara ask <name> [deps|users] [in <module|file>]` — analyze the package in
+    // the cwd (or the `in` scope) and answer a static query about <name>. With no
+    // verb, BOTH deps and users are reported.
     if subcmd == "ask" {
-        if len(positional) < 4 {
-            fmt.println("Usage: mara ask <Type|fn> <deps|users>   (args may be given in either order)")
-            return args
+        rest := positional[2:]   // tokens after the `ask` subcommand
+
+        // Peel a trailing `in <scope>` (a module name or a file). The actual
+        // file -> module resolution happens after discovery, in main().
+        for idx in 0 ..< len(rest) {
+            if rest[idx] == "in" {
+                if idx + 1 >= len(rest) {
+                    fmt.println("mara ask: `in` needs a module or file name")
+                    return args
+                }
+                args.ask_scope = rest[idx + 1]
+                rest = rest[:idx]
+                break
+            }
         }
-        // Accept the target and query in either order — whichever token is a
-        // known verb is the query, the other is the type or function name. The
+
+        // What remains is the name and an optional verb, in either order. The
         // verb is folded to its canonical spelling here (`user` -> `users`).
-        a, b := positional[2], positional[3]
-        av, aok := ask_canon_verb(a)
-        bv, bok := ask_canon_verb(b)
-        switch {
-        case aok && !bok: args.ask_query = av; args.ask_target = b
-        case bok:         args.ask_query = bv; args.ask_target = a
+        switch len(rest) {
+        case 1:
+            if ask_is_verb(rest[0]) {
+                fmt.println("Usage: mara ask <name> [deps|users] [in <module|file>]")
+                return args
+            }
+            args.ask_target = rest[0]   // ask_query stays "" => both directions
+        case 2:
+            a, b := rest[0], rest[1]
+            av, aok := ask_canon_verb(a)
+            bv, bok := ask_canon_verb(b)
+            switch {
+            case aok && !bok: args.ask_query = av; args.ask_target = b
+            case bok && !aok: args.ask_query = bv; args.ask_target = a
+            case !aok && !bok:
+                fmt.printf("mara ask: unknown query (got '%s' and '%s') — try: deps, users\n", a, b)
+                return args
+            case:
+                fmt.printf("mara ask: expected a name, got two verbs ('%s' and '%s')\n", a, b)
+                return args
+            }
         case:
-            fmt.printf("mara ask: unknown query (got '%s' and '%s') — try: deps, users\n", a, b)
+            fmt.println("Usage: mara ask <name> [deps|users] [in <module|file>]")
             return args
         }
+
         args.ask = true
         cwd, _ := os.get_working_directory(context.allocator)
-        args.pkg_name = filepath.base(cwd)
+        args.pkg_name = filepath.base(cwd)   // may be overridden by `in <scope>` after discovery
         args.ok = true
         return args
     }
@@ -1043,6 +1086,25 @@ main :: proc() {
     perf_timer_begin(&perf, "discover")
 
     all_files := discover_all_files(args.compiler_dir, args.search_dir)
+
+    // `ask ... in <scope>`. A MODULE name re-roots the analysis there (explicit,
+    // and it errors if that module doesn't check standalone). A FILE keeps the
+    // cwd module as the analysis root and only pins the SUBJECT to that file —
+    // re-rooting to the file's own sub-module would defeat the disambiguation the
+    // file form exists for, since sub-modules of a project frequently don't
+    // type-check on their own. Resolved here (post-discovery) as the file set
+    // only exists now.
+    ask_scope_file := ""
+    if args.ask && args.ask_scope != "" {
+        if args.ask_scope in all_files {
+            args.pkg_name = args.ask_scope                   // module scope: re-root
+        } else if ask_file_discovered(all_files, args.ask_scope) {
+            ask_scope_file = filepath.base(args.ask_scope)   // file scope: pin subject, keep root
+        } else {
+            fmt.printf("mara ask: '%s' is not a known module or file\n", args.ask_scope)
+            os.exit(1)
+        }
+    }
 
     // Validate up front that the requested package was discovered so the user
     // gets one clean error block rather than partial-build noise.
@@ -1142,18 +1204,20 @@ main :: proc() {
         perf_timer_end(&perf)
         flush_diagnostics()
         fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
+        // An `ask ... in <module>` re-roots analysis there; a sub-module that is
+        // only valid inside a larger one won't check standalone. Point the way out.
+        if args.ask && args.ask_scope in all_files {
+            fmt.printf("(mara ask: module '%s' did not type-check standalone — query from a parent module, or use `in <file>` to keep the current root.)\n", args.ask_scope)
+        }
         os.exit(1)
     }
 
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {
         flush_diagnostics()
-        result, ok := run_ask(checked, args.ask_target, args.ask_query)
-        if !ok {
-            fmt.printf("mara ask: no type or function named '%s' in package '%s'\n", args.ask_target, args.pkg_name)
-            os.exit(1)
-        }
-        fmt.print(render_ask(&result, args.ask_target, args.ask_query, args.pkg_name))
+        out, found := ask(checked, args.ask_target, args.ask_query, args.pkg_name, ask_scope_file)
+        fmt.print(out)
+        if !found { os.exit(1) }   // not-found / ambiguous: text already printed
         return
     }
 
