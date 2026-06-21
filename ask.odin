@@ -34,6 +34,7 @@ Ask_Node :: struct {
     label: string,   // user-facing type / fn name
     sub:   string,   // "struct" / "enum" / "union" / "distinct" / "fun"
     span:  Span,
+    mark:  string,   // "" for ordinary types; e.g. "synthetic" for compiler-generated ones
 }
 
 Ask_Edge :: struct {
@@ -128,12 +129,22 @@ ask_peel :: proc(t: Type) -> (core: Type, wrap: string) {
 
 // --- node interning --------------------------------------------------------
 
+// A marker for compiler-GENERATED types, "" for ordinary user declarations.
+// Only the truly synthetic case (a union's `_Tag` discriminant enum) is flagged;
+// variant structs are source-backed (a `Name = tag {…}` line) and stay unmarked.
+ask_mark :: proc(t: Type) -> string {
+    #partial switch v in t {
+    case ^Type_Enum: if v.is_synthetic { return "synthetic" }
+    }
+    return ""
+}
+
 ask_intern :: proc(res: ^Ask_Result, t: Type) -> (id: int, is_new: bool) {
     key := raw_type_key(t)
     if existing, ok := res.index_of[key]; ok { return existing, false }
     sub, _ := ask_sub(t)
     id = len(res.nodes)
-    append(&res.nodes, Ask_Node{ label = ask_label(t), sub = sub, span = ask_span(t) })
+    append(&res.nodes, Ask_Node{ label = ask_label(t), sub = sub, span = ask_span(t), mark = ask_mark(t) })
     res.index_of[key] = id
     return id, true
 }
@@ -147,6 +158,7 @@ Ask_Match :: struct {
     flat:  string,   // package-prefixed unique name
     sub:   string,   // "struct" / "enum" / "union" / "distinct" / "fun"
     span:  Span,
+    mark:  string,   // "" for ordinary types; e.g. "synthetic" for compiler-generated ones
 }
 
 // Every definition in (optionally) the scoped file, deduped by (span, kind).
@@ -173,7 +185,7 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string) -> [dynamic
         key := Ask_Dedup_Key{ span = sp, sub = sub }
         if seen[key] { return }
         seen[key] = true
-        append(matches, Ask_Match{ type_ = t, label = ask_label(t), flat = ask_type_name(t), sub = sub, span = sp })
+        append(matches, Ask_Match{ type_ = t, label = ask_label(t), flat = ask_type_name(t), sub = sub, span = sp, mark = ask_mark(t) })
     }
     for _, s in table.structs        { consider(&matches, &seen, s, scope_file) }
     for _, f in table.funs           { consider(&matches, &seen, f, scope_file) }
@@ -465,7 +477,7 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
         if len(suggestions) > 0 {
             fmt.sbprintf(&b, "mara ask: no exact match for '%s' in %s — did you mean:\n", target, scope_desc)
             for m in suggestions {
-                fmt.sbprintf(&b, "    %-8s %s  %s\n", m.sub, m.label, ask_loc(m.span))
+                fmt.sbprintf(&b, "    %-8s %s  %s%s\n", m.sub, m.label, ask_loc(m.span), ask_mark_suffix(m.mark))
             }
         } else {
             fmt.sbprintf(&b, "mara ask: no type or function named '%s' in %s\n", target, scope_desc)
@@ -480,13 +492,13 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
         fmt.sbprintf(&b, "mara ask: '%s' is ambiguous — %d definitions in %s (narrow with `in <module|file>`):\n",
                      target, len(matches), scope_desc)
         for m in matches {
-            fmt.sbprintf(&b, "    %-8s %s  %s\n", m.sub, m.label, ask_loc(m.span))
+            fmt.sbprintf(&b, "    %-8s %s  %s%s\n", m.sub, m.label, ask_loc(m.span), ask_mark_suffix(m.mark))
         }
         return strings.to_string(b), false
     }
 
     subject := matches[0]
-    fmt.sbprintf(&b, "%s — %s  %s   (package %s)\n", subject.label, subject.sub, ask_loc(subject.span), pkg)
+    fmt.sbprintf(&b, "%s — %s  %s   (package %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
 
     if verb == "" || verb == "deps" {
         res := ask_compute(checked.table, subject.type_, "deps")
@@ -509,9 +521,13 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
 // deps: one adjacency block per node (root first), each node with its location
 // and its direct typed edges. The whole block is the TRANSITIVE closure.
 render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result) {
-    fmt.sbprintf(b, "\ndeps   (%d types, %d edges, TRANSITIVE closure)\n", len(res.nodes), len(res.edges))
+    // Count TYPE nodes only — the root may be a `fun` (the subject), which is not
+    // a type and must not inflate the count (a fn's own node sits at index 0).
+    types := 0
+    for n in res.nodes { if n.sub != "fun" { types += 1 } }
+    fmt.sbprintf(b, "\ndeps   (%d types, %d edges, TRANSITIVE closure)\n", types, len(res.edges))
     for node, i in res.nodes {
-        fmt.sbprintf(b, "\n  %s  %s  %s\n", node.label, node.sub, ask_loc(node.span))
+        fmt.sbprintf(b, "\n  %s  %s  %s%s\n", node.label, node.sub, ask_loc(node.span), ask_mark_suffix(node.mark))
         any := false
         for e in res.edges {
             if e.from != i { continue }
@@ -540,7 +556,7 @@ render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, subject_is_fun: 
     for e in res.edges {
         u := res.nodes[e.from]
         via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
-        fmt.sbprintf(b, "  %-6s %s  (%s%s : %s%s)\n", u.sub, u.label, ask_edge_word(e.kind), via, e.wrap, root_label)
+        fmt.sbprintf(b, "  %-6s %s  (%s%s : %s%s)%s\n", u.sub, u.label, ask_edge_word(e.kind), via, e.wrap, root_label, ask_mark_suffix(u.mark))
     }
 }
 
@@ -558,6 +574,11 @@ ask_edge_word :: proc(k: Ask_Edge_Kind) -> string {
 ask_loc :: proc(span: Span) -> string {
     if span.file == "" { return "?" }
     return fmt.tprintf("%s:%d", span.file, span.line)
+}
+
+// A type's marker as a bracketed suffix (" [synthetic]"), or "" when ordinary.
+ask_mark_suffix :: proc(mark: string) -> string {
+    return "" if mark == "" else fmt.tprintf(" [%s]", mark)
 }
 
 // Distinct source nodes among the edges — the real "how many things use this"

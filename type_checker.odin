@@ -494,6 +494,7 @@ Type_Enum :: struct {
     variants:      map[string]int,
     is_error_kind: bool,    // true for `Name :: error { ... }` â€” flat tag set in the global `err` type
     error_set_id:  int,     // 1-based set ID assigned at type-check end; 0 = not an error_kind
+    is_synthetic:  bool,    // compiler-generated, not a user declaration (e.g. a union's `_Tag` discriminant)
 }
 
 Type_Union :: struct {
@@ -3031,6 +3032,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
     tag_et.home_package = tmpl.home_package
     tag_et.tag_type = s.tag_type
     tag_et.span = s.span   // synthetic discriminant: locate at the union decl
+    tag_et.is_synthetic = true
     for vdef in s.variants {
         tag_et.variants[vdef.name] = vdef.tag
     }
@@ -6592,6 +6594,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 tag_et.home_package = c.current_package
                 tag_et.tag_type = s.tag_type
                 tag_et.span = s.span   // synthetic discriminant: locate at the union decl
+                tag_et.is_synthetic = true
                 for vdef in s.variants {
                     tag_et.variants[vdef.name] = vdef.tag
                 }
