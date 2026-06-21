@@ -1040,6 +1040,26 @@ env_class_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
     return nil
 }
 
+// The nearest enclosing struct/class scope, walking the durable scope graph
+// (uniform — modules/funs/blocks in the chain are just skipped). For `#self` and
+// "am I inside a class body" — find-nearest-struct, a query over the one chain.
+enclosing_struct_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
+    if env == nil { return nil }
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if s.kind == .Struct && !s.is_module { return s }
+    }
+    return nil
+}
+
+// The struct scope this env's block sits DIRECTLY inside (its scope's immediate
+// parent), or nil — for "is this decl in a struct body" (a field decl).
+parent_struct_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
+    if env == nil || env.scope == nil { return nil }
+    p := env.scope.parent_scope
+    if p != nil && p.kind == .Struct && !p.is_module { return p }
+    return nil
+}
+
 // DERIVED from the durable scope graph: walk from this env's scope up parent_scope
 // to the nearest callable (fun/ctor) and read its return_types. Empty = void.
 enclosing_return_types :: proc(env: ^Type_Env) -> []Type {
@@ -1422,17 +1442,15 @@ fold_comptime_ifs_children :: proc(c: ^Checker, s: Stmt) {
 resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (home: string, ok: bool, ambiguous_owners: [dynamic]string) {
     // Phase 1: own definitions in any enclosing module (always unambiguous).
     if env != nil {
-        cur := env
-        for cur != nil {
-            if env_is_module(cur) {
-                if t, found := scope_defines(cur.scope, name); found {
+        for s := env.scope; s != nil; s = s.parent_scope {
+            if s.is_module {
+                if t, found := scope_defines(s, name); found {
                     if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
                         return c.current_package, true, nil
                     }
                 }
+                break
             }
-            if env_is_module(cur) { break }
-            cur = cur.parent
         }
     }
     // Phase 2: gather distinct include owners exposing this fn.
@@ -7121,12 +7139,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // package (mara_os_CreateFileA) instead of the struct-mangled
             // form (mara_os_platform_win32_CreateFileA). Detect class scope
             // up the env chain and skip â€” Phase 1 already did the work.
-            in_class_scope := false
-            for cur := env; cur != nil; cur = cur.parent {
-                if env_class_scope(cur) != nil { in_class_scope = true; break }
-                if env_is_module(cur) { break }
-            }
-            if in_class_scope { continue }
+            if enclosing_struct_scope(env) != nil { continue } // inside a class body
             // Register each foreign function in the type environment.
             // Pass env to resolve_type_expr so type names like `Event` resolve
             // to the current module's flavor when multiple modules export the
@@ -7401,7 +7414,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // via `obj.field`, never as a bare identifier), so they can't
             // shadow file-scope or module-scope bindings. Skip the walk when
             // the immediate parent is a class/struct scope.
-            in_struct_body := env_class_scope(env.parent) != nil
+            in_struct_body := parent_struct_scope(env) != nil
             if s.is_decl && !env_is_module(env) && !in_struct_body {
                 // Shadowing of an enclosing local: walk the durable scope chain
                 // above the current scope, below the module.
@@ -7756,14 +7769,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // `field := value` decl shouldn't be misread as a reassignment of
                 // a same-named binding in an outer file / module scope. Suppress
                 // the walk-up lookup when we're directly inside a struct body.
-                in_struct_body := env_class_scope(env.parent) != nil
+                in_struct_body := parent_struct_scope(env) != nil
                 // Un-annotated struct field: adopt the finalized layout width
                 // (resolved in the register pass) for numeric fields, so the
                 // constructor local's var_type matches the field slot codegen
                 // GEPs into. Slice/struct fields fall through to the normal decl
                 // path (which sets up slice-backing / aliasing).
                 if in_struct_body {
-                    if cs := env_class_scope(env.parent); cs != nil {
+                    if cs := parent_struct_scope(env); cs != nil {
                         if idx, fm := cs.field_map[s.name]; fm && idx < len(cs.fields) && is_numeric(cs.fields[idx].type_) {
                             lt := cs.fields[idx].type_
                             s.var_type = distinct_base(lt)
@@ -11596,19 +11609,12 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         return src_type
     case ^Expr_Self:
-        // `#self` â€” pointer the constructor is writing into. Walk the env
-        // chain for the nearest class_scope (set on a struct/class body's
-        // ns_env). Nested funs are reparented past the class ns_env at
-        // check_scope_body, so the lookup fails inside them â€” explicit
-        // ^Self params are still required for helpers.
-        cur := env
-        for cur != nil {
-            if cs := env_class_scope(cur); cs != nil {
-                t := new_clone(Type_Ptr{elem = cs})
-                e.type_ = t
-                return t
-            }
-            cur = cur.parent
+        // `#self` — the struct the constructor is writing into: the nearest
+        // enclosing struct scope, over the durable graph.
+        if cs := enclosing_struct_scope(env); cs != nil {
+            t := new_clone(Type_Ptr{elem = cs})
+            e.type_ = t
+            return t
         }
         check_error(c, e.span, TYPE_SELF_ONLY_LEGAL_INSIDE_STRUCT)
         return Type_Error{}
