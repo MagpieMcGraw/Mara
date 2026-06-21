@@ -1,0 +1,13 @@
+module uninitfield
+//@ expect-fail: before being assigned
+
+Node :: struct {
+	next : ^Node
+	val  : i64
+}
+
+main :: fun() {
+	n : Node
+	m := n.next
+	print(m == void)
+}

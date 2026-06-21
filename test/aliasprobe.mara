@@ -1,0 +1,11 @@
+module aliasprobe
+//@ expect-fail: before being assigned
+
+Node :: struct { next : ^Node  val : i64 }
+
+main :: fun() {
+	root : Node
+	it := &root
+	m := it.next
+	print(m == void)
+}

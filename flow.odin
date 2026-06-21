@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 
 // flow.odin — post-check intraprocedural flow analysis.
 //
@@ -40,6 +41,10 @@ Flow_Stats :: struct {
     // analysis this pass OWNS (emitted below, not just collected).
     missing_return: [dynamic]string,
 
+    // Uninit reads collected by the definite-assignment pass (validation mode —
+    // NOT emitted yet; inline is_invalid_ref still authoritative). A program that
+    // compiles must collect 0.
+    uninit_reads: [dynamic]Flow_Uninit_Read,
 }
 
 // Entry point — called post-check (after build_call_graph). Walks every source
@@ -62,6 +67,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
             append(&stats.missing_return, name)
         }
         flow_check_unused(c, ft)
+        flow_check_init(c, ft, &stats.uninit_reads)
     }
     flow_dump_stats(stats)
 }
@@ -248,6 +254,324 @@ flow_expr_reads :: proc(stack: ^[dynamic]^Flow_Frame, e: Expr) {
     }
 }
 
+// --- definite assignment --------------------------------------------------
+// Reading a pointer/slice (or a struct's pointer/slice field) before it has been
+// given a usable value is an error. This is a FORWARD DATAFLOW: a single mutable
+// `uninit` set of keys (plain `name`, or `var.field` composites) threaded through
+// the walk, CLONED at each branch and INTERSECTED at the join — a key stays
+// uninit after an if/match iff some non-diverging branch left it uninit (the
+// inline promote_branch_inits, recomputed directly). Because the pass owns one
+// mutable set, the inline `newly_inited` env-merge artifact dissolves entirely.
+//
+// VALIDATION MODE: flagged reads are collected into `out`, NOT emitted — the
+// inline is_invalid_ref checks are still authoritative. A program that compiles
+// must collect nothing; an uninit-read fixture must show up.
+
+Flow_Uninit_Read :: struct {
+    span:         Span,
+    name:         string, // the variable (the receiver, for a field read)
+    field:        string, // "" for a plain var read; the field name for `var.field`
+    alias_target: string, // non-"" → field reached because `name` aliases this var (`name = &target`)
+}
+
+// The current function's `x = &y` aliases, for the field-uninit redirect
+// (`it = &root` makes `it.next` fire on `root.next`). A pass-local var rather
+// than a threaded param: the pass is synchronous and only the field-access read
+// consults it. Reset per function. Block-scoping/branch-forking of aliases is
+// not modelled — a stale alias is only ever consulted on an in-scope receiver,
+// so the worst case is the same refinement firing one extra/fewer time in
+// contrived nested-reassignment code; the common `it = &root; it.f` is exact.
+@(private = "file") g_flow_alias: map[string]string
+
+flow_check_init :: proc(c: ^Checker, ft: ^Type_Scope, out: ^[dynamic]Flow_Uninit_Read) {
+    uninit: map[string]bool
+    defer delete(uninit)
+    clear(&g_flow_alias)
+    flow_init_block(c, ft.body[:], &uninit, out)
+}
+
+// Record/clear `name`'s alias from its assigned value (`name = &ident`).
+flow_update_alias :: proc(name: string, value: Expr) {
+    if name == "_" || name == "" || value == nil { return }
+    if tgt, ok := address_of_ident(value); ok {
+        g_flow_alias[name] = tgt
+    } else {
+        delete_key(&g_flow_alias, name)
+    }
+}
+
+flow_clone_set :: proc(m: map[string]bool) -> map[string]bool {
+    r := make(map[string]bool)
+    for k in m { r[k] = true }
+    return r
+}
+
+// True if the statement list's tail diverges (return/break/continue) — the same
+// test branch_diverges applies, over a slice.
+flow_diverges :: proc(stmts: []Stmt) -> bool {
+    if len(stmts) == 0 { return false }
+    #partial switch _ in stmts[len(stmts) - 1] {
+    case Stmt_Return, Stmt_Break, Stmt_Continue:
+        return true
+    }
+    return false
+}
+
+// Walk a block: mutate `uninit` in place, drop keys this block itself declared at
+// close (out of scope), and report whether the block diverges.
+flow_init_block :: proc(c: ^Checker, stmts: []Stmt, uninit: ^map[string]bool, out: ^[dynamic]Flow_Uninit_Read) -> bool {
+    local: [dynamic]string
+    defer delete(local)
+    for s in stmts { flow_init_stmt(c, s, uninit, &local, out) }
+    for k in local { delete_key(uninit, k) }
+    return flow_diverges(stmts)
+}
+
+// Merge sibling branches (if/else, match arms) back into `uninit`: a key is
+// uninit-after iff some non-diverging branch left it uninit. All branches
+// diverge → the code after is unreachable, leave `uninit` unchanged.
+flow_init_merge :: proc(c: ^Checker, uninit: ^map[string]bool, out: ^[dynamic]Flow_Uninit_Read, branches: [][]Stmt) {
+    merged: map[string]bool
+    defer delete(merged)
+    any_live := false
+    for b in branches {
+        bc := flow_clone_set(uninit^)
+        div := flow_init_block(c, b, &bc, out)
+        if !div {
+            any_live = true
+            for k in bc { merged[k] = true }
+        }
+        delete(bc)
+    }
+    if any_live {
+        clear(uninit)
+        for k in merged { uninit^[k] = true }
+    }
+}
+
+flow_init_stmt :: proc(c: ^Checker, s: Stmt, uninit: ^map[string]bool, local: ^[dynamic]string, out: ^[dynamic]Flow_Uninit_Read) {
+    #partial switch v in s {
+    case ^Stmt_Decl:
+        for e in v.init_values { flow_init_reads(c, e, uninit, out) }
+        flow_init_reads(c, v.slice_cap_expr, uninit, out)
+        for inner in v.checked {
+            #partial switch a in inner {
+            case ^Stmt_Assign:
+                if a.is_decl {
+                    flow_apply_decl(uninit, local, a.name, a.var_type, a.value, a.slice_cap_expr != nil)
+                    flow_update_alias(a.name, a.value)
+                }
+            // Multi_Return_Assign names take the call's results — always inited.
+            }
+        }
+    case ^Stmt_Assign:
+        flow_init_reads(c, v.value, uninit, out)
+        if v.target != nil {
+            // Complex LHS write. `ident.field =` clears that field key and
+            // read-checks only the base; index/deref targets are ordinary reads.
+            if fa, ok := v.target.(^Expr_Field_Access); ok {
+                if id, idok := fa.expr.(^Expr_Ident); idok {
+                    delete_key(uninit, strings.concatenate({id.name, ".", fa.field}))
+                }
+                flow_init_reads(c, fa.expr, uninit, out)
+            } else {
+                flow_init_reads(c, v.target, uninit, out)
+            }
+        } else if v.is_decl {
+            flow_apply_decl(uninit, local, v.name, v.var_type, v.value, v.slice_cap_expr != nil)
+            flow_update_alias(v.name, v.value)
+        } else {
+            // Reassignment: `= void` de-inits a scalar/pointer; otherwise the
+            // whole var is inited and its field entries cleared.
+            if v.value != nil && is_void_literal(v.value) {
+                flow_apply_decl(uninit, local, v.name, v.var_type, v.value, false)
+            } else {
+                delete_key(uninit, v.name)
+                flow_clear_fields(uninit, v.name)
+            }
+            flow_update_alias(v.name, v.value)
+        }
+    case ^Stmt_Multi_Assign:
+        for a in v.assigns { flow_init_stmt(c, a, uninit, local, out) }
+    case ^Stmt_Multi_Return_Assign:
+        for e in v.values { flow_init_reads(c, e, uninit, out) }
+        for e in v.targets { flow_init_reads(c, e, uninit, out) }
+        for n in v.names { delete_key(uninit, n) } // inited from the call results
+    case Stmt_Call:
+        flow_init_reads(c, v.expr, uninit, out)
+    case Stmt_Return:
+        for e in v.values { flow_init_reads(c, e, uninit, out) }
+    case ^Stmt_If:
+        flow_init_reads(c, v.condition, uninit, out)
+        branches := [2][]Stmt{ v.body[:], v.else_body[:] }
+        flow_init_merge(c, uninit, out, branches[:])
+    case ^Stmt_For:
+        if v.init != nil { flow_init_stmt(c, v.init, uninit, local, out) }
+        flow_init_reads(c, v.condition, uninit, out)
+        flow_init_reads(c, v.range_low, uninit, out)
+        flow_init_reads(c, v.range_high, uninit, out)
+        flow_init_reads(c, v.collection, uninit, out)
+        flow_init_reads(c, v.collection_len, uninit, out)
+        // The body may run zero times, so its inits don't promote — walk a clone
+        // for the read-checks inside, then discard.
+        bc := flow_clone_set(uninit^)
+        flow_init_block(c, v.body[:], &bc, out)
+        delete(bc)
+        if v.post != nil { flow_init_stmt(c, v.post, uninit, local, out) }
+    case ^Stmt_Match:
+        flow_init_reads(c, v.subject, uninit, out)
+        branches: [dynamic][]Stmt
+        defer delete(branches)
+        for arm in v.arms { append(&branches, arm.body[:]) }
+        flow_init_merge(c, uninit, out, branches[:])
+    case ^Stmt_Defer:
+        // Runs at scope exit — its inits don't affect the main flow. Read-check
+        // on a clone.
+        bc := flow_clone_set(uninit^)
+        flow_init_block(c, v.body[:], &bc, out)
+        delete(bc)
+    }
+}
+
+// Apply a declaration's effect on the uninit set. A pointer/slice declared
+// without a usable value (no initializer, or `= void`) becomes uninit; anything
+// else is initialized. (Struct fields are Phase B.)
+flow_apply_decl :: proc(uninit: ^map[string]bool, local: ^[dynamic]string, name: string, t: Type, value: Expr, has_slice_cap: bool) {
+    if name == "_" || name == "" { return }
+    base := distinct_base(t)
+    no_value := value == nil
+    if !no_value {
+        if _, skip := value.(^Expr_Skip_Constructor); skip { no_value = true }
+    }
+    is_void := value != nil && is_void_literal(value)
+    if _, is_ptr := base.(^Type_Ptr); is_ptr {
+        if no_value || is_void {
+            uninit^[name] = true
+            append(local, name)
+        } else {
+            delete_key(uninit, name)
+        }
+        return
+    }
+    if _, is_slice := base.(^Type_Slice); is_slice {
+        if no_value && !has_slice_cap {
+            uninit^[name] = true
+            append(local, name)
+        } else {
+            delete_key(uninit, name)
+        }
+        return
+    }
+    // Struct: track uninit ptr/slice FIELDS. A no-value decl (`x : Struct`) leaves
+    // every such field uninit; a struct literal leaves the ones it doesn't
+    // provide; any other initializer (a call, etc.) fully inits the struct.
+    if sd := as_scope_body(base); sd != nil && len(sd.fields) > 0 {
+        provided: map[string]bool
+        defer delete(provided)
+        track := no_value
+        if lit, ok := value.(^Expr_Struct_Literal); ok {
+            track = true
+            for f in lit.fields { provided[f.name] = true }
+        }
+        if track { flow_add_struct_fields(uninit, local, name, sd, provided) }
+    }
+}
+
+// Mirror of add_struct_invalid_fields: mark each ptr/slice field without a
+// default (and not provided in a literal, not an auto-init sized slice) uninit.
+flow_add_struct_fields :: proc(uninit: ^map[string]bool, local: ^[dynamic]string, var_name: string, sd: ^Scope_Body, provided: map[string]bool) {
+    for &f in sd.fields {
+        if f.name in provided { continue }
+        if f.default_value != nil { continue }
+        if dt, ok := f.type_.(^Type_Distinct); ok {
+            if _, sl := dt.base_type.(^Type_Slice); sl && dt.default_cap_expr != nil { continue }
+        }
+        base := distinct_base(f.type_)
+        is_ref := false
+        #partial switch _ in base {
+        case ^Type_Ptr, ^Type_Slice:
+            is_ref = true
+        }
+        if is_ref {
+            key := strings.concatenate({var_name, ".", f.name})
+            uninit^[key] = true
+            append(local, key)
+        }
+    }
+}
+
+// Clear every `var.field` entry for a variable (whole-struct reassignment).
+flow_clear_fields :: proc(uninit: ^map[string]bool, var_name: string) {
+    prefix := strings.concatenate({var_name, "."})
+    defer delete(prefix)
+    to_del: [dynamic]string
+    defer delete(to_del)
+    for k in uninit^ {
+        if strings.has_prefix(k, prefix) { append(&to_del, k) }
+    }
+    for k in to_del { delete_key(uninit, k) }
+}
+
+// Read-check walk: at each Expr_Ident or `ident.field` access, if the key is in
+// the uninit set, collect a flagged read. Recurses sub-expressions exactly like
+// flow_expr_reads. (Field keys are Phase B; the base ident is still checked.)
+flow_init_reads :: proc(c: ^Checker, e: Expr, uninit: ^map[string]bool, out: ^[dynamic]Flow_Uninit_Read) {
+    if e == nil { return }
+    #partial switch v in e {
+    case ^Expr_Ident:
+        if v.name in uninit^ { append(out, Flow_Uninit_Read{span = v.span, name = v.name}) }
+    case ^Expr_Unary:
+        flow_init_reads(c, v.operand, uninit, out)
+    case ^Expr_Binary:
+        flow_init_reads(c, v.left, uninit, out)
+        flow_init_reads(c, v.right, uninit, out)
+    case ^Expr_Call:
+        flow_init_reads(c, v.qualifier, uninit, out)
+        for a in v.args { flow_init_reads(c, a, uninit, out) }
+        if v.overrides != nil {
+            for f in v.overrides.fields { flow_init_reads(c, f.value, uninit, out) }
+        }
+    case ^Expr_Index:
+        flow_init_reads(c, v.expr, uninit, out)
+        flow_init_reads(c, v.index, uninit, out)
+    case ^Expr_Slice:
+        flow_init_reads(c, v.expr, uninit, out)
+        flow_init_reads(c, v.low, uninit, out)
+        flow_init_reads(c, v.high, uninit, out)
+    case ^Expr_Field_Access:
+        if id, ok := v.expr.(^Expr_Ident); ok {
+            key := strings.concatenate({id.name, ".", v.field})
+            if key in uninit^ {
+                append(out, Flow_Uninit_Read{span = v.span, name = id.name, field = v.field})
+            } else if tgt, has := g_flow_alias[id.name]; has {
+                // `id` aliases `tgt` (id = &tgt) — id.field reads tgt.field.
+                akey := strings.concatenate({tgt, ".", v.field})
+                if akey in uninit^ {
+                    append(out, Flow_Uninit_Read{span = v.span, name = id.name, field = v.field, alias_target = tgt})
+                }
+                delete(akey)
+            }
+            delete(key)
+        }
+        flow_init_reads(c, v.expr, uninit, out)
+    case ^Expr_Array:
+        for el in v.elements { flow_init_reads(c, el, uninit, out) }
+    case ^Expr_Struct_Literal:
+        for f in v.fields { flow_init_reads(c, f.value, uninit, out) }
+    case ^Expr_Try:
+        flow_init_reads(c, v.inner, uninit, out)
+    case ^Expr_If:
+        flow_init_reads(c, v.condition, uninit, out)
+        flow_init_reads(c, v.then_expr, uninit, out)
+        flow_init_reads(c, v.else_expr, uninit, out)
+    case ^Expr_Assert:
+        flow_init_reads(c, v.cond, uninit, out)
+    case ^Expr_Take:
+        flow_init_reads(c, v.storage, uninit, out)
+        flow_init_reads(c, v.count_expr, uninit, out)
+    }
+}
+
 // Recurse the control-flow tree, counting coverage. Descends if/for/defer/match
 // bodies (the .Block scopes) but NOT a nested Stmt_Scope — a nested fun/struct is
 // a separate function with its own checked.functions entry and its own flow, so
@@ -285,4 +609,14 @@ flow_dump_stats :: proc(stats: Flow_Stats) {
     )
     fmt.eprintf("[flow] missing-return flagged: %d %v\n",
         len(stats.missing_return), stats.missing_return)
+    fmt.eprintf("[flow] uninit-read flagged: %d\n", len(stats.uninit_reads))
+    for r in stats.uninit_reads {
+        if r.field == "" {
+            fmt.eprintf("    %s (var)\n", r.name)
+        } else if r.alias_target != "" {
+            fmt.eprintf("    %s.%s (field via alias %s->%s)\n", r.name, r.field, r.name, r.alias_target)
+        } else {
+            fmt.eprintf("    %s.%s (field)\n", r.name, r.field)
+        }
+    }
 }

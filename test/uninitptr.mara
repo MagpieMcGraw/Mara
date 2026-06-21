@@ -1,0 +1,7 @@
+module uninitptr
+//@ expect-fail: before being assigned
+
+main :: fun() {
+	p : ^i64
+	print(p^)
+}

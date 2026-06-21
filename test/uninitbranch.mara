@@ -1,0 +1,15 @@
+module uninitbranch
+//@ expect-fail: before being assigned
+
+pick :: fun(cond: bool, src: ^i64) {
+	p : ^i64
+	if cond {
+		p = src
+	}
+	print(p^)
+}
+
+main :: fun() {
+	v := 7
+	pick(true, &v)
+}
