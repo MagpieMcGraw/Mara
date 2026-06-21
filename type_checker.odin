@@ -744,11 +744,11 @@ scope_defines :: proc(s: ^Type_Scope, name: string) -> (Type, bool) {
 }
 
 // True if this env is a module/package namespace â€” name lookup terminates here.
-// Derived from the durable scope: a module scope (is_module) whose back-ref names
-// THIS env. A file env shares the module's scope, but the back-ref points at the
-// module env â€” so files correctly are NOT terminators.
+// Derived purely from the durable scope: each file now gets its OWN .Block scope
+// chained to the module (partition_package_files), so a file scope is never the
+// module scope â€” `is_module` alone distinguishes them, no env-identity back-ref.
 env_is_module :: proc(env: ^Type_Env) -> bool {
-    return env != nil && env.scope != nil && env.scope.is_module && env.scope.scope == env
+    return env != nil && env.scope != nil && env.scope.is_module
 }
 
 // Look up a bare name exported by an included module â€” off the module's own
