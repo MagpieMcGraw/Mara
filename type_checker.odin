@@ -11371,10 +11371,8 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             }
         }
 
-        // Check for reading an uninitialized pointer/slice
-        if is_invalid_ref(env, e.name) {
-            check_error(c, e.span, TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, e.name)
-        }
+        // (Reading an uninitialized pointer/slice is now caught by the post-check
+        // flow pass — flow.odin / definite-assignment.)
         // Check env (common case: local vars, params, functions)
         t, loc_env, ok := type_env_locate(env, e.name)
         if ok {
@@ -12048,22 +12046,8 @@ ensure_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
 // Shared struct field access logic — used for both direct and auto-deref (^Struct) paths.
 // Handles uninit checks, field resolution, and associated function lookup.
 check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope_Body, env: ^Type_Env) -> Type {
-    // Check for reading an uninitialized pointer/slice field.
-    // If the receiver is a pointer alias (e.g. `it = &root`), look through the
-    // alias too — `it.next` should fire the same error as `root.next`.
-    if ident, ident_ok := e.expr.(^Expr_Ident); ident_ok {
-        field_key := strings.concatenate({ident.name, ".", e.field})
-        if is_invalid_ref(env, field_key) {
-            check_error(c, e.span, TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, e.field, ident.name)
-        } else if target, has_alias := lookup_alias(env, ident.name); has_alias {
-            aliased_key := strings.concatenate({target, ".", e.field})
-            if is_invalid_ref(env, aliased_key) {
-                check_error(c, e.span,
-                    TYPE_FIELD_ALIASED_VIA_USED_BEFORE,
-                    e.field, target, ident.name)
-            }
-        }
-    }
+    // (Reading an uninitialized pointer/slice field — including through an
+    // `it = &root` alias — is now caught by the post-check flow pass.)
     ensure_struct_signature(c, st)  // resolve fields on demand if no pre-pass did
     ft := resolve_struct_field(st, e.field, c.table)
     if ft != nil { return ft }

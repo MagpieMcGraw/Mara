@@ -40,11 +40,6 @@ Flow_Stats :: struct {
     // Functions flagged for "missing return on all code paths" — the first
     // analysis this pass OWNS (emitted below, not just collected).
     missing_return: [dynamic]string,
-
-    // Uninit reads collected by the definite-assignment pass (validation mode —
-    // NOT emitted yet; inline is_invalid_ref still authoritative). A program that
-    // compiles must collect 0.
-    uninit_reads: [dynamic]Flow_Uninit_Read,
 }
 
 // Entry point — called post-check (after build_call_graph). Walks every source
@@ -67,7 +62,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
             append(&stats.missing_return, name)
         }
         flow_check_unused(c, ft)
-        flow_check_init(c, ft, &stats.uninit_reads)
+        flow_check_init(c, ft)
     }
     flow_dump_stats(stats)
 }
@@ -283,11 +278,24 @@ Flow_Uninit_Read :: struct {
 // contrived nested-reassignment code; the common `it = &root; it.f` is exact.
 @(private = "file") g_flow_alias: map[string]string
 
-flow_check_init :: proc(c: ^Checker, ft: ^Type_Scope, out: ^[dynamic]Flow_Uninit_Read) {
+flow_check_init :: proc(c: ^Checker, ft: ^Type_Scope) {
     uninit: map[string]bool
     defer delete(uninit)
+    reads: [dynamic]Flow_Uninit_Read
+    defer delete(reads)
     clear(&g_flow_alias)
-    flow_init_block(c, ft.body[:], &uninit, out)
+    flow_init_block(c, ft.body[:], &uninit, &reads)
+    // Emit in walk (source) order — the same three diagnostics the inline
+    // is_invalid_ref checks raised (var / field / aliased field).
+    for r in reads {
+        if r.field == "" {
+            check_error(c, r.span, TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, r.name)
+        } else if r.alias_target != "" {
+            check_error(c, r.span, TYPE_FIELD_ALIASED_VIA_USED_BEFORE, r.field, r.alias_target, r.name)
+        } else {
+            check_error(c, r.span, TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, r.field, r.name)
+        }
+    }
 }
 
 // Record/clear `name`'s alias from its assigned value (`name = &ident`).
@@ -358,7 +366,7 @@ flow_init_stmt :: proc(c: ^Checker, s: Stmt, uninit: ^map[string]bool, local: ^[
             #partial switch a in inner {
             case ^Stmt_Assign:
                 if a.is_decl {
-                    flow_apply_decl(uninit, local, a.name, a.var_type, a.value, a.slice_cap_expr != nil)
+                    flow_apply_decl(uninit, local, a.name, a.var_type, a.value, a.slice_cap_expr != nil, a.type_expr != nil)
                     flow_update_alias(a.name, a.value)
                 }
             // Multi_Return_Assign names take the call's results — always inited.
@@ -378,13 +386,13 @@ flow_init_stmt :: proc(c: ^Checker, s: Stmt, uninit: ^map[string]bool, local: ^[
                 flow_init_reads(c, v.target, uninit, out)
             }
         } else if v.is_decl {
-            flow_apply_decl(uninit, local, v.name, v.var_type, v.value, v.slice_cap_expr != nil)
+            flow_apply_decl(uninit, local, v.name, v.var_type, v.value, v.slice_cap_expr != nil, v.type_expr != nil)
             flow_update_alias(v.name, v.value)
         } else {
             // Reassignment: `= void` de-inits a scalar/pointer; otherwise the
             // whole var is inited and its field entries cleared.
             if v.value != nil && is_void_literal(v.value) {
-                flow_apply_decl(uninit, local, v.name, v.var_type, v.value, false)
+                flow_apply_decl(uninit, local, v.name, v.var_type, v.value, false, false)
             } else {
                 delete_key(uninit, v.name)
                 flow_clear_fields(uninit, v.name)
@@ -436,7 +444,7 @@ flow_init_stmt :: proc(c: ^Checker, s: Stmt, uninit: ^map[string]bool, local: ^[
 // Apply a declaration's effect on the uninit set. A pointer/slice declared
 // without a usable value (no initializer, or `= void`) becomes uninit; anything
 // else is initialized. (Struct fields are Phase B.)
-flow_apply_decl :: proc(uninit: ^map[string]bool, local: ^[dynamic]string, name: string, t: Type, value: Expr, has_slice_cap: bool) {
+flow_apply_decl :: proc(uninit: ^map[string]bool, local: ^[dynamic]string, name: string, t: Type, value: Expr, has_slice_cap: bool, annotated: bool) {
     if name == "_" || name == "" { return }
     base := distinct_base(t)
     no_value := value == nil
@@ -462,9 +470,12 @@ flow_apply_decl :: proc(uninit: ^map[string]bool, local: ^[dynamic]string, name:
         }
         return
     }
-    // Struct: track uninit ptr/slice FIELDS. A no-value decl (`x : Struct`) leaves
-    // every such field uninit; a struct literal leaves the ones it doesn't
+    // Struct: track uninit ptr/slice FIELDS — but ONLY for an ANNOTATED decl, to
+    // match the inline (which tracks fields at `x : Struct` and `x : Struct =
+    // Foo{}`, never for an inferred `a := Foo{...}`). A no-value decl leaves every
+    // such field uninit; an annotated struct literal leaves the ones it doesn't
     // provide; any other initializer (a call, etc.) fully inits the struct.
+    if !annotated { return }
     if sd := as_scope_body(base); sd != nil && len(sd.fields) > 0 {
         provided: map[string]bool
         defer delete(provided)
@@ -609,14 +620,4 @@ flow_dump_stats :: proc(stats: Flow_Stats) {
     )
     fmt.eprintf("[flow] missing-return flagged: %d %v\n",
         len(stats.missing_return), stats.missing_return)
-    fmt.eprintf("[flow] uninit-read flagged: %d\n", len(stats.uninit_reads))
-    for r in stats.uninit_reads {
-        if r.field == "" {
-            fmt.eprintf("    %s (var)\n", r.name)
-        } else if r.alias_target != "" {
-            fmt.eprintf("    %s.%s (field via alias %s->%s)\n", r.name, r.field, r.name, r.alias_target)
-        } else {
-            fmt.eprintf("    %s.%s (field)\n", r.name, r.field)
-        }
-    }
 }
