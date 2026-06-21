@@ -489,6 +489,7 @@ Type_Enum :: struct {
     name:          string,  // C-ified flat name
     source_name:   string,  // user-written name (used for namespaced printing of error_kinds)
     home_package:  string,  // owning module flat name (see Scope_Body.home_package)
+    span:          Span,    // declaring statement's span (diagnostics / `mara ask` locations)
     tag_type:      string,                    // "" = default (i64), or "i32", "i16", etc.
     variants:      map[string]int,
     is_error_kind: bool,    // true for `Name :: error { ... }` â€” flat tag set in the global `err` type
@@ -499,6 +500,7 @@ Type_Union :: struct {
     name:            string,             // C-ified flat name
     source_name:     string,             // user-written bare name for diagnostics ("" falls back to name)
     home_package:    string,             // owning module flat name (see Scope_Body.home_package)
+    span:            Span,               // declaring statement's span (diagnostics / `mara ask` locations)
     tag_type:        string,             // "" = default (i64), or "i32", "i16", etc.
     min_size:        int,                // 0 = no minimum, otherwise minimum total size in bytes (from union(128))
     tag_pad:         Type,               // type of padding between tag and payload (nil = none); reachable as `value.pad`
@@ -570,6 +572,7 @@ Type_Distinct :: struct {
     name:             string,  // C-ified flat name
     source_name:      string,  // user-written bare name for diagnostics ("" falls back to name)
     home_package:     string,  // owning module flat name (see Scope_Body.home_package)
+    span:             Span,    // declaring statement's span (diagnostics / `mara ask` locations)
     base_type:        Type,    // the underlying type (transparent at codegen level)
     default_cap_expr: Expr,    // for sized-slice aliases: default cap when decl omits `(N)`
     is_alias:         bool,    // true for `Name :: type(T)` â€” transparent in types_equal; false for `distinct T` â€” nominal
@@ -3013,6 +3016,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
     ut.name = make_flat_name(tmpl.home_package, mangled)
     ut.source_name = mangled
     ut.home_package = tmpl.home_package
+    ut.span = s.span
     ut.tag_type = s.tag_type
     ut.min_size = s.min_size
     if s.tag_pad != nil {
@@ -6550,6 +6554,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 et.name = flat
                 et.source_name = s.name
                 et.home_package = c.current_package
+                et.span = s.span
                 et.tag_type = s.tag_type
                 et.is_error_kind = s.is_error_kind
                 if s.is_error_kind {
@@ -6585,6 +6590,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 ut.name = flat
                 ut.source_name = s.name
                 ut.home_package = c.current_package
+                ut.span = s.span
                 ut.tag_type = s.tag_type
                 ut.min_size = s.min_size
                 // tag_pad: deferred to Pass 1b (type expr)
@@ -6630,6 +6636,8 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
             }
             dt := new(Type_Distinct)
             dt.name = flat
+            dt.source_name = s.name
+            dt.span = s.span
             dt.home_package = c.current_package
             dt.default_cap_expr = s.default_cap_expr
             dt.is_alias = s.is_alias
@@ -6847,6 +6855,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 et.name = make_flat_name(c.current_package, s.name)
                 et.source_name = s.name
                 et.home_package = c.current_package
+                et.span = s.span
                 et.tag_type = s.tag_type
                 et.is_error_kind = s.is_error_kind
                 if et.name in c.table.enums {
@@ -6879,6 +6888,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 ut.name = make_flat_name(c.current_package, s.name)
                 ut.source_name = s.name
                 ut.home_package = c.current_package
+                ut.span = s.span
                 if ut.name in c.table.unions {
                     check_error(c, s.span, TYPE_UNION_ALREADY_DEFINED, s.name)
                 } else {
@@ -6946,6 +6956,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             dt.name = make_flat_name(c.current_package, s.name)
             dt.source_name = s.name
             dt.home_package = c.current_package
+            dt.span = s.span
             dt.base_type = base
             dt.default_cap_expr = s.default_cap_expr
             dt.is_alias = s.is_alias

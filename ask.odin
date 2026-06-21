@@ -81,7 +81,12 @@ ask_sub :: proc(t: Type) -> (sub: string, named: bool) {
 }
 
 ask_span :: proc(t: Type) -> Span {
-    if v, ok := t.(^Type_Scope); ok { return v.body_span }
+    #partial switch v in t {
+    case ^Type_Scope:    return v.body_span
+    case ^Type_Enum:     return v.span
+    case ^Type_Union:    return v.span
+    case ^Type_Distinct: return v.span
+    }
     return Span{}
 }
 
@@ -138,34 +143,53 @@ ask_resolve :: proc(table: ^SymbolTable, target: string) -> (Type, bool) {
 
 // --- deps: forward type-dependency walk ------------------------------------
 
-ask_add_dep :: proc(res: ^Ask_Result, worklist: ^[dynamic]Type, from: int, ty: Type, kind: Ask_Edge_Kind, via: string) {
-    core, wrap := ask_peel(ty)
-    if _, named := ask_sub(core); !named { return }   // skip primitive / numeric leaves
-    to, _ := ask_intern(res, core)
-    append(&res.edges, Ask_Edge{ from = from, to = to, kind = kind, via = via, wrap = wrap })
-    if ask_recurses(core) { append(worklist, core) }
+// Outgoing typed edges of a container type — the SINGLE source of truth shared
+// by `deps` (forward) and `users` (reverse), so the two can never disagree about
+// the graph. struct/ctor -> its fields; fun -> params + returns; distinct -> its
+// base; union -> its variant structs. NOTE: a parameterized struct is stored as
+// a `kind == .Struct` callable in `table.funs` (its constructor), with its data
+// fields in `.fields` (not `.params`) — so a full reverse scan MUST route every
+// container through here, or every field of a generic goes missing from `users`.
+Ask_Out_Edge :: struct {
+    core: Type,            // target type, wrappers already peeled (may be primitive — caller filters)
+    kind: Ask_Edge_Kind,
+    via:  string,          // field / param name ("" for returns / base)
+    wrap: string,          // "^" / "[]" / "[..]" prefix shown on the target
 }
 
-ask_emit_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, t: Type, from: int, worklist: ^[dynamic]Type) {
+ask_out_edges :: proc(table: ^SymbolTable, t: Type, out: ^[dynamic]Ask_Out_Edge) {
+    add :: proc(out: ^[dynamic]Ask_Out_Edge, ty: Type, kind: Ask_Edge_Kind, via: string) {
+        core, wrap := ask_peel(ty)
+        append(out, Ask_Out_Edge{ core = core, kind = kind, via = via, wrap = wrap })
+    }
     #partial switch v in t {
     case ^Type_Scope:
         if v.kind == .Struct {
-            for f in v.fields { ask_add_dep(res, worklist, from, f.type_, (.Embeds if f.is_using else .Contains), f.name) }
+            for f in v.fields { add(out, f.type_, (.Embeds if f.is_using else .Contains), f.name) }
         } else {
-            for p in v.params        { ask_add_dep(res, worklist, from, p.type_, .Takes, p.name) }
-            for rt in v.return_types { ask_add_dep(res, worklist, from, rt, .Returns, "") }
+            for p in v.params        { add(out, p.type_, .Takes, p.name) }
+            for rt in v.return_types { add(out, rt, .Returns, "") }
         }
     case ^Type_Distinct:
-        ask_add_dep(res, worklist, from, v.base_type, .Base, "")
+        add(out, v.base_type, .Base, "")
     case ^Type_Union:
         // A union depends on its variant structs (looked up via variant_structs).
         for vn in v.variants {
             sname, ok := v.variant_structs[vn]; if !ok { continue }
             st, ok2 := table.structs[sname];    if !ok2 { continue }
-            to, _ := ask_intern(res, Type(st))
-            append(&res.edges, Ask_Edge{ from = from, to = to, kind = .Contains, via = vn, wrap = "" })
-            append(worklist, Type(st))
+            append(out, Ask_Out_Edge{ core = Type(st), kind = .Contains, via = vn, wrap = "" })
         }
+    }
+}
+
+ask_emit_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, t: Type, from: int, worklist: ^[dynamic]Type) {
+    edges: [dynamic]Ask_Out_Edge
+    ask_out_edges(table, t, &edges)
+    for e in edges {
+        if _, named := ask_sub(e.core); !named { continue }   // skip primitive / numeric leaves
+        to, _ := ask_intern(res, e.core)
+        append(&res.edges, Ask_Edge{ from = from, to = to, kind = e.kind, via = e.via, wrap = e.wrap })
+        if ask_recurses(e.core) { append(worklist, e.core) }
     }
 }
 
@@ -187,25 +211,57 @@ ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type) {
 
 // --- users: reverse — who references the target ----------------------------
 
-ask_add_user :: proc(res: ^Ask_Result, user: Type, rid: int, ty: Type, kind: Ask_Edge_Kind, via: string, tkey: rawptr) {
-    core, _ := ask_peel(ty)
-    if raw_type_key(core) != tkey { return }
-    _, wrap := ask_peel(ty)
-    uid, _ := ask_intern(res, user)
-    append(&res.edges, Ask_Edge{ from = uid, to = rid, kind = kind, via = via, wrap = wrap })
+// Match by the flat (package-prefixed, globally unique) NAME, not by pointer
+// identity. A parameterized struct's monomorphized fields hold distinct type-
+// objects that nonetheless share the canonical flat name, so a raw-pointer
+// compare silently misses every usage inside a generic — the exact "what breaks
+// if I change this" the query exists to answer. The forward `deps` walk is
+// immune because it interns whatever object it meets and labels it by
+// source_name; only this reverse compare-against-a-resolved-target needs a
+// monomorphization-stable key.
+ask_type_name :: proc(t: Type) -> string {
+    #partial switch v in t {
+    case ^Type_Scope:    return v.name
+    case ^Type_Enum:     return v.name
+    case ^Type_Union:    return v.name
+    case ^Type_Distinct: return v.name
+    }
+    return ""
+}
+
+// Scan one container's outgoing edges (via the shared model) for any that land
+// on the target, recording each as a reverse edge. Dedups by container identity
+// because a scope can be reachable from more than one table.
+ask_scan_user :: proc(table: ^SymbolTable, res: ^Ask_Result, seen: ^map[rawptr]bool, container: Type, rid: int, tname: string) {
+    // A module namespace is a `kind == .Struct` scope that lists every type it
+    // declares as a member field — those aren't real "uses", so skip it (else
+    // every type shows its own module as a bogus user).
+    if sc, ok := container.(^Type_Scope); ok && sc.is_module { return }
+    key := raw_type_key(container)
+    if seen[key] { return }
+    seen[key] = true
+    edges: [dynamic]Ask_Out_Edge
+    ask_out_edges(table, container, &edges)
+    for e in edges {
+        if ask_type_name(e.core) != tname { continue }
+        uid, _ := ask_intern(res, container)
+        append(&res.edges, Ask_Edge{ from = uid, to = rid, kind = e.kind, via = e.via, wrap = e.wrap })
+    }
 }
 
 ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type) {
     rid, _ := ask_intern(res, target)
     res.root = rid
-    tkey := raw_type_key(target)
-    for _, s in table.structs {
-        for f in s.fields { ask_add_user(res, s, rid, f.type_, (.Embeds if f.is_using else .Contains), f.name, tkey) }
-    }
-    for _, fn in table.funs {
-        for p in fn.params        { ask_add_user(res, fn, rid, p.type_, .Takes, p.name, tkey) }
-        for rt in fn.return_types { ask_add_user(res, fn, rid, rt, .Returns, "", tkey) }
-    }
+    tname := ask_type_name(target)
+    if tname == "" { return }   // an unnamed target can't be matched by name
+    // Every container kind, mirroring `deps`. Parameterized structs live in
+    // `table.funs` (as `kind == .Struct` constructors), so both scope tables
+    // must be walked — scanning only `table.structs` misses every generic.
+    seen: map[rawptr]bool
+    for _, s in table.structs        { ask_scan_user(table, res, &seen, s, rid, tname) }
+    for _, s in table.funs           { ask_scan_user(table, res, &seen, s, rid, tname) }
+    for _, u in table.unions         { ask_scan_user(table, res, &seen, u, rid, tname) }
+    for _, d in table.distinct_types { ask_scan_user(table, res, &seen, d, rid, tname) }
 }
 
 // --- determinism: sort edges so the rendered output is golden-test stable ---
