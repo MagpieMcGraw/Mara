@@ -103,9 +103,10 @@ ask_peel :: proc(t: Type) -> (core: Type, wrap: string) {
     parts: [dynamic]string
     peel: for {
         #partial switch v in cur {
-        case ^Type_Ptr:         append(&parts, "^");  cur = v.elem
-        case ^Type_Slice:       append(&parts, "[]"); cur = v.elem
-        case ^Type_Fixed_Array: append(&parts, "[]"); cur = v.elem
+        case ^Type_Ptr:           append(&parts, "^");    cur = v.elem
+        case ^Type_Slice:         append(&parts, "[]");   cur = v.elem
+        case ^Type_Fixed_Array:   append(&parts, "[]");   cur = v.elem
+        case ^Type_Partial_Array: append(&parts, "[..]"); cur = v.elem
         case: break peel
         }
     }
@@ -228,6 +229,12 @@ ask_sort_edges :: proc(res: ^Ask_Result) {
 }
 
 // --- engine entry ----------------------------------------------------------
+
+// The closed set of query verbs — lets the CLI accept the target and verb in
+// EITHER order (`ask deps Font` or `ask Font deps`) by spotting which is a verb.
+ask_is_verb :: proc(s: string) -> bool {
+    return s == "deps" || s == "users"
+}
 
 run_ask :: proc(checked: ^Checked_Program, target: string, verb: string) -> (Ask_Result, bool) {
     res: Ask_Result

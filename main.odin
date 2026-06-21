@@ -989,12 +989,20 @@ parse_args :: proc() -> CLI_Args {
     // `build` with no package arg) and answer a static query about <Type>.
     if subcmd == "ask" {
         if len(positional) < 4 {
-            fmt.println("Usage: mara ask <Type> <deps|users>")
+            fmt.println("Usage: mara ask <Type> <deps|users>   (the two may be given in either order)")
             return args
         }
-        args.ask        = true
-        args.ask_target = positional[2]
-        args.ask_query  = positional[3]
+        // Accept the target and query in either order — whichever token is a
+        // known verb is the query, the other is the type.
+        a, b := positional[2], positional[3]
+        switch {
+        case ask_is_verb(a) && !ask_is_verb(b): args.ask_query = a; args.ask_target = b
+        case ask_is_verb(b):                    args.ask_query = b; args.ask_target = a
+        case:
+            fmt.printf("mara ask: unknown query (got '%s' and '%s') — try: deps, users\n", a, b)
+            return args
+        }
+        args.ask = true
         cwd, _ := os.get_working_directory(context.allocator)
         args.pkg_name = filepath.base(cwd)
         args.ok = true
@@ -1139,8 +1147,7 @@ main :: proc() {
         flush_diagnostics()
         result, ok := run_ask(checked, args.ask_target, args.ask_query)
         if !ok {
-            fmt.printf("ask: could not resolve type '%s', or unknown query '%s' (try: deps, users)\n",
-                       args.ask_target, args.ask_query)
+            fmt.printf("mara ask: no type named '%s' in package '%s'\n", args.ask_target, args.pkg_name)
             os.exit(1)
         }
         fmt.print(render_ask(&result, args.ask_target, args.ask_query))
