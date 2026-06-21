@@ -6,16 +6,20 @@ package mara
 // The first ask: a type dependency graph, read straight off the symbol table —
 // no dataflow walk. The target may be a TYPE (struct / enum / union / distinct)
 // or a FUNCTION name.
-//   mara ask <Type|fn> deps    what it pulls in — a type's field/embed types
-//                              (TRANSITIVE closure); a fun's parameter + return
-//                              types (and through any struct among them).
+//   mara ask <Type|fn> deps    what it pulls in — a type's field/embed types;
+//                              a fun's parameter + return types (and through any
+//                              struct among them).
 //   mara ask <Type|fn> users   who depends on it — who contains / embeds / takes /
-//                              returns it. DIRECT (one hop), NOT transitive. The
-//                              "what breaks if I change this" query. CAVEAT: call
-//                              edges are not yet modeled, so `users` on a fun does
-//                              NOT list its callers (only type-level references,
-//                              e.g. a `fn <name>` nominal type).
-// Verbs accept singular or plural (`dep`/`deps`, `user`/`users`), in either order.
+//                              returns it. The "what breaks if I change this"
+//                              query. CAVEAT: call edges are not yet modeled, so
+//                              `users` on a fun does NOT list its callers (only
+//                              type-level references, e.g. a `fn <name>` type).
+//   mara ask <Type|fn> [depth] both directions take an optional hop budget:
+//                              0 = direct edges only, omitted = the full
+//                              transitive closure (the default). Same knob both
+//                              ways — it caps `deps` and expands `users`.
+// Verbs accept singular or plural (`dep`/`deps`, `user`/`users`), in either order;
+// a bare integer anywhere among the tokens is the depth.
 //
 // The engine (`run_ask`) is a PURE function over Checked_Program returning an
 // Ask_Result graph; the renderer is separate (a --json serializer is a trivial
@@ -36,6 +40,7 @@ Ask_Node :: struct {
     sub:   string,   // "struct" / "enum" / "union" / "distinct" / "fun"
     span:  Span,
     mark:  string,   // "" for ordinary types; e.g. "synthetic" for compiler-generated ones
+    dist:  int,      // shortest hop distance from the query root (0 = the root itself)
 }
 
 Ask_Edge :: struct {
@@ -383,30 +388,40 @@ ask_out_edges :: proc(table: ^SymbolTable, t: Type, out: ^[dynamic]Ask_Out_Edge)
     }
 }
 
-ask_emit_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, t: Type, from: int, worklist: ^[dynamic]Type) {
-    edges: [dynamic]Ask_Out_Edge
-    ask_out_edges(table, t, &edges)
-    for e in edges {
-        if _, named := ask_sub(e.core); !named { continue }   // skip primitive / numeric leaves
-        to, _ := ask_intern(res, e.core)
-        append(&res.edges, Ask_Edge{ from = from, to = to, kind = e.kind, via = e.via, wrap = e.wrap })
-        if ask_recurses(e.core) { append(worklist, e.core) }
-    }
-}
-
-ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type) {
+// Forward type-dependency BFS, bounded to `depth` hops (depth < 0 = unbounded).
+// A node is EXPANDED — has its outgoing edges emitted — iff it sits within depth
+// of the root; nodes exactly one hop past the budget are still interned (so they
+// appear as edge targets) but never expanded, which is how depth 0 yields the
+// root's direct adjacency and nothing deeper. BFS (not the old stack pop) so each
+// node's recorded `dist` is its SHORTEST distance — the value the renderer gates
+// on. Field/param slice order is deterministic, so intern order (hence output)
+// stays stable without sorting nodes.
+ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int) {
     rid, _ := ask_intern(res, root)
     res.root = rid
-    worklist: [dynamic]Type
-    append(&worklist, root)
+    res.nodes[rid].dist = 0
     processed: map[rawptr]bool
-    for len(worklist) > 0 {
-        t := pop(&worklist)
+    queue: [dynamic]Type
+    append(&queue, root)
+    for head := 0; head < len(queue); head += 1 {
+        t := queue[head]
         key := raw_type_key(t)
         if processed[key] { continue }
         processed[key] = true
         from, _ := ask_intern(res, t)
-        ask_emit_deps(table, res, t, from, &worklist)
+        d := res.nodes[from].dist
+        edges: [dynamic]Ask_Out_Edge
+        ask_out_edges(table, t, &edges)
+        for e in edges {
+            if _, named := ask_sub(e.core); !named { continue }   // skip primitive / numeric leaves
+            to, is_new := ask_intern(res, e.core)
+            if is_new { res.nodes[to].dist = d + 1 }
+            append(&res.edges, Ask_Edge{ from = from, to = to, kind = e.kind, via = e.via, wrap = e.wrap })
+            // Only follow into a target that can recurse AND still fits the budget.
+            if ask_recurses(e.core) && (depth < 0 || d + 1 <= depth) && !processed[raw_type_key(e.core)] {
+                append(&queue, e.core)
+            }
+        }
     }
 }
 
@@ -430,39 +445,79 @@ ask_type_name :: proc(t: Type) -> string {
     return ""
 }
 
-// Scan one container's outgoing edges (via the shared model) for any that land
-// on the target, recording each as a reverse edge. Dedups by container identity
-// because a scope can be reachable from more than one table.
-ask_scan_user :: proc(table: ^SymbolTable, res: ^Ask_Result, seen: ^map[rawptr]bool, container: Type, rid: int, tname: string) {
-    // A module namespace is not a "user" of the types it declares — declaring is
-    // not using. (Module structs carry no data fields, so the field scan is
-    // already empty for them; this stays as the explicit invariant.)
-    if sc, ok := container.(^Type_Scope); ok && sc.is_module { return }
-    key := raw_type_key(container)
-    if seen[key] { return }
-    seen[key] = true
-    edges: [dynamic]Ask_Out_Edge
-    ask_out_edges(table, container, &edges)
-    for e in edges {
-        if ask_type_name(e.core) != tname { continue }
-        uid, _ := ask_intern(res, container)
-        append(&res.edges, Ask_Edge{ from = uid, to = rid, kind = e.kind, via = e.via, wrap = e.wrap })
+// One reverse reference: a container that points at some type, with the edge
+// detail. The reverse walk is a BFS over an index of these (keyed by the flat
+// name of the type referenced) rather than a full-table rescan per hop.
+Ask_Rev_Ref :: struct { container: Type, kind: Ask_Edge_Kind, via: string, wrap: string }
+
+// flat type name -> every container that references it (one outgoing edge each).
+// Built once from the SAME `ask_out_edges` model `deps` uses, so the two
+// directions can't disagree about the graph. Keyed by flat name (not pointer) so
+// a generic's monomorphized fields — distinct objects sharing a canonical name —
+// all fold onto the one queryable type. Containers are deduped by identity: a
+// parameterized struct lives in BOTH `.structs` and `.funs` (data struct + ctor),
+// and counting its edges twice would double every use-site.
+ask_build_reverse_index :: proc(table: ^SymbolTable) -> map[string][dynamic]Ask_Rev_Ref {
+    rev: map[string][dynamic]Ask_Rev_Ref
+    seen: map[rawptr]bool
+    add :: proc(table: ^SymbolTable, rev: ^map[string][dynamic]Ask_Rev_Ref, seen: ^map[rawptr]bool, container: Type) {
+        // Declaring a type is not "using" it — a module namespace owns no data
+        // fields, so this only formalizes an already-empty scan.
+        if sc, ok := container.(^Type_Scope); ok && sc.is_module { return }
+        key := raw_type_key(container)
+        if seen[key] { return }
+        seen[key] = true
+        edges: [dynamic]Ask_Out_Edge
+        ask_out_edges(table, container, &edges)
+        for e in edges {
+            name := ask_type_name(e.core)
+            if name == "" { continue }
+            list := rev^[name]                                  // map values aren't addressable —
+            append(&list, Ask_Rev_Ref{ container = container, kind = e.kind, via = e.via, wrap = e.wrap })
+            rev^[name] = list                                   // append to a local copy, store back
+        }
     }
+    for _, s in table.structs        { add(table, &rev, &seen, s) }
+    for _, s in table.funs           { add(table, &rev, &seen, s) }
+    for _, u in table.unions         { add(table, &rev, &seen, u) }
+    for _, d in table.distinct_types { add(table, &rev, &seen, d) }
+    return rev
 }
 
-ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type) {
+// users: reverse reachability out to `depth` hops (depth < 0 = unbounded). Each
+// recorded edge is container -> the closer-to-root type it references, so the
+// rings read outward: a depth-1 user references the target itself; a depth-2 user
+// references some depth-1 user; and so on. BFS over the reverse index gives every
+// node its SHORTEST distance (the value the renderer groups on).
+ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type, depth: int) {
     rid, _ := ask_intern(res, target)
     res.root = rid
-    tname := ask_type_name(target)
-    if tname == "" { return }   // an unnamed target can't be matched by name
-    // Every container kind, mirroring `deps`. Parameterized structs live in
-    // `table.funs` (as `kind == .Struct` constructors), so both scope tables
-    // must be walked — scanning only `table.structs` misses every generic.
-    seen: map[rawptr]bool
-    for _, s in table.structs        { ask_scan_user(table, res, &seen, s, rid, tname) }
-    for _, s in table.funs           { ask_scan_user(table, res, &seen, s, rid, tname) }
-    for _, u in table.unions         { ask_scan_user(table, res, &seen, u, rid, tname) }
-    for _, d in table.distinct_types { ask_scan_user(table, res, &seen, d, rid, tname) }
+    res.nodes[rid].dist = 0
+    if ask_type_name(target) == "" { return }   // an unnamed target can't be matched by name
+    rev := ask_build_reverse_index(table)
+    processed: map[rawptr]bool
+    queue: [dynamic]Type
+    append(&queue, target)
+    for head := 0; head < len(queue); head += 1 {
+        cur := queue[head]
+        ckey := raw_type_key(cur)
+        if processed[ckey] { continue }
+        processed[ckey] = true
+        cur_id, _ := ask_intern(res, cur)
+        d := res.nodes[cur_id].dist
+        cname := ask_type_name(cur)
+        if cname == "" { continue }
+        refs := rev[cname]   // bind first: ranging a map index of an ABSENT key faults (transient lvalue)
+        for ref in refs {
+            uid, is_new := ask_intern(res, ref.container)
+            if is_new { res.nodes[uid].dist = d + 1 }
+            append(&res.edges, Ask_Edge{ from = uid, to = cur_id, kind = ref.kind, via = ref.via, wrap = ref.wrap })
+            // Walk a user's own users only while still within the hop budget.
+            if (depth < 0 || d + 1 <= depth) && !processed[raw_type_key(ref.container)] {
+                append(&queue, ref.container)
+            }
+        }
+    }
 }
 
 // --- determinism: sort edges so the rendered output is golden-test stable ---
@@ -505,13 +560,14 @@ ask_is_verb :: proc(s: string) -> bool {
     return ok
 }
 
-// Compute one direction's graph for an already-resolved subject type.
-ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string) -> Ask_Result {
+// Compute one direction's graph for an already-resolved subject type, bounded to
+// `depth` hops (depth < 0 = unbounded / full closure).
+ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int) -> Ask_Result {
     res: Ask_Result
     res.root = -1
     switch verb {
-    case "deps":  ask_deps(table, &res, root)
-    case "users": ask_users(table, &res, root)
+    case "deps":  ask_deps(table, &res, root, depth)
+    case "users": ask_users(table, &res, root, depth)
     }
     ask_sort_edges(&res)
     return res
@@ -521,7 +577,7 @@ ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string) -> Ask_Result
 // render. `verb == ""` asks for BOTH directions. Returns the rendered text and
 // whether a single subject was found — on false (not found / ambiguous) the text
 // already explains why, and the caller exits non-zero.
-ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) -> (out: string, ok: bool) {
+ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
     matches := ask_resolve_all(checked.table, target, scope_file)
     b := strings.builder_make()
 
@@ -576,12 +632,12 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
     fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
 
     if verb == "" || verb == "deps" {
-        res := ask_compute(checked.table, subject.type_, "deps")
-        render_ask_deps(&b, &res)
+        res := ask_compute(checked.table, subject.type_, "deps", depth)
+        render_ask_deps(&b, &res, depth)
     }
     if verb == "" || verb == "users" {
-        res := ask_compute(checked.table, subject.type_, "users")
-        render_ask_users(&b, &res, subject.sub == "fun")
+        res := ask_compute(checked.table, subject.type_, "users", depth)
+        render_ask_users(&b, &res, subject.sub == "fun", depth)
     }
     // The broad "tell me about this name" form is honest about its coverage gap;
     // the targeted deps/users forms stay terse.
@@ -593,15 +649,19 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
 
 // --- renderer (text adjacency dump) ----------------------------------------
 
-// deps: one adjacency block per node (root first), each node with its location
-// and its direct typed edges. The whole block is the TRANSITIVE closure.
-render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result) {
+// deps: one adjacency block per EXPANDED node (root first), each with its
+// location and its direct typed edges. At unbounded depth the blocks are the
+// full transitive closure; at depth N the fringe (nodes one hop past the budget)
+// appears only as edge targets, never as its own block — so depth 0 is exactly
+// the root's direct adjacency.
+render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
     // Count TYPE nodes only — the root may be a `fun` (the subject), which is not
     // a type and must not inflate the count (a fn's own node sits at index 0).
     types := 0
     for n in res.nodes { if n.sub != "fun" { types += 1 } }
-    fmt.sbprintf(b, "\ndeps   (%d types, %d edges, TRANSITIVE closure)\n", types, len(res.edges))
+    fmt.sbprintf(b, "\ndeps   (%d types, %d edges, %s)\n", types, len(res.edges), ask_depth_label(depth))
     for node, i in res.nodes {
+        if depth >= 0 && node.dist > depth { continue }   // fringe target — interned, not expanded
         fmt.sbprintf(b, "\n  %s  %s  %s%s\n", node.label, node.sub, ask_loc(node.span), ask_mark_suffix(node.mark))
         any := false
         for e in res.edges {
@@ -615,11 +675,20 @@ render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result) {
     }
 }
 
-// users: the DIRECT (one-hop) reverse references. Header separates distinct
-// users from use-sites so neither count is misread.
-render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, subject_is_fun: bool) {
-    fmt.sbprintf(b, "\nusers   (%d users, %d use-sites, DIRECT one-hop)\n",
-                 ask_distinct_sources(res), len(res.edges))
+// "full closure (depth ∞)" when unbounded, else "depth N" — shared by both
+// direction headers so they describe the hop budget identically.
+ask_depth_label :: proc(depth: int) -> string {
+    return "full closure (depth ∞)" if depth < 0 else fmt.tprintf("depth %d", depth)
+}
+
+// users: the reverse references, grouped by hop distance from the subject. Header
+// separates distinct users from use-sites so neither count is misread. When the
+// view reaches past one hop, rows are bucketed under "N hops" subheaders and each
+// names the closer-to-root type it references (not the subject), so a chain like
+// Megastruct -> Camera -> Object -> Vec3 reads outward ring by ring.
+render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, subject_is_fun: bool, depth: int) {
+    fmt.sbprintf(b, "\nusers   (%d users, %d use-sites, %s)\n",
+                 ask_distinct_sources(res), len(res.edges), ask_depth_label(depth))
     // A function subject's reverse set is a known blind spot: call edges are not
     // modeled, so `(no users)` here must NOT be read as "no callers".
     if subject_is_fun {
@@ -627,11 +696,42 @@ render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, subject_is_fun: 
         fmt.sbprint(b, "        references (e.g. a `fn <name>` nominal type), NOT callers.\n")
     }
     if len(res.edges) == 0 { fmt.sbprint(b, "  (no users)\n"); return }
-    root_label := res.nodes[res.root].label
+
+    // Flatten to self-contained rows so the sort needs no captured `res` (Odin
+    // proc literals don't close over locals). Order by (hop, user, edge) — all
+    // content, so the reverse scan's map-iteration order never leaks into output.
+    Row :: struct {
+        dist:                              int,
+        sub, label, via, wrap, to, mark:   string,
+        kind:                              Ask_Edge_Kind,
+    }
+    rows: [dynamic]Row
+    max_hop := 0
     for e in res.edges {
         u := res.nodes[e.from]
-        via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
-        fmt.sbprintf(b, "  %-6s %s  (%s%s : %s%s)%s\n", u.sub, u.label, ask_edge_word(e.kind), via, e.wrap, root_label, ask_mark_suffix(u.mark))
+        if u.dist > max_hop { max_hop = u.dist }
+        append(&rows, Row{ dist = u.dist, sub = u.sub, label = u.label, via = e.via,
+                           wrap = e.wrap, to = res.nodes[e.to].label, mark = u.mark, kind = e.kind })
+    }
+    slice.sort_by(rows[:], proc(x, y: Row) -> bool {
+        if x.dist  != y.dist  { return x.dist  < y.dist  }
+        if x.label != y.label { return x.label < y.label }
+        if x.via   != y.via   { return x.via   < y.via   }
+        return x.to < y.to
+    })
+
+    multi  := max_hop > 1                 // single-ring views stay flat, like before
+    curhop := -1
+    for r in rows {
+        if multi && r.dist != curhop {
+            curhop = r.dist
+            tag := " (direct)" if r.dist == 1 else ""
+            fmt.sbprintf(b, "\n  %s%s:\n", ask_plural(r.dist, "hop"), tag)
+        }
+        indent := "    " if multi else "  "
+        via := fmt.tprintf(" %s", r.via) if r.via != "" else ""
+        fmt.sbprintf(b, "%s%-6s %s  (%s%s : %s%s)%s\n",
+                     indent, r.sub, r.label, ask_edge_word(r.kind), via, r.wrap, r.to, ask_mark_suffix(r.mark))
     }
 }
 
@@ -688,7 +788,7 @@ ask_file_is_stdlib :: proc(file, compiler_dir: string) -> bool {
 // A type's distinct-user count — the reverse-edge in-degree, reusing the very
 // graph `users` renders. The orientation signal for "which type matters here".
 ask_user_count :: proc(table: ^SymbolTable, t: Type) -> int {
-    res := ask_compute(table, t, "users")
+    res := ask_compute(table, t, "users", 0)   // DIRECT users only — the surface ranks by one-hop in-degree
     return ask_distinct_sources(&res)
 }
 

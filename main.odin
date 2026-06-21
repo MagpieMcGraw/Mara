@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:mem/virtual"
 import "core:os"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:c/libc"
 import "core:path/filepath"
@@ -955,10 +956,11 @@ CLI_Args :: struct {
     ask_target:   string,  // the type/fn the query is about
     ask_query:    string,  // "deps" | "users" | "" (both)
     ask_scope:    string,  // optional `in <module|file>` token; "" = cwd default
+    ask_depth:    int,     // hop budget for deps/users; -1 = unbounded (the default)
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [deps|users] [in <module|file>]"
-ASK_USAGE :: `Usage: mara ask <name> [deps|users] [in <module|file>]
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users] [in <module|file>]"
+ASK_USAGE :: `Usage: mara ask <name> [depth] [deps|users] [in <module|file>]
 
   mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
   folder whose .mara files declare a module. Use 'in <module>' to target a
@@ -966,8 +968,10 @@ ASK_USAGE :: `Usage: mara ask <name> [deps|users] [in <module|file>]
 
     (no name)      module map — every module in the project at a glance
     <name>         a type or function's deps AND users
-    deps           what <name> pulls in   (transitive type dependencies)
-    users          what depends on <name> (direct references, one hop)
+    depth          hops of graph to expand: 0 = direct edges only,
+                   omitted = the full transitive closure (default)
+    deps           what <name> pulls in   (its dependency closure)
+    users          what depends on <name> (who references it)
     in <module>    analyze that module instead of the current directory
     in <file>      keep the current module; resolve <name> within one file`
 
@@ -978,6 +982,16 @@ is_help_flag :: proc(tok: string) -> bool {
     case "-h", "--h", "-help", "--help": return true
     }
     return false
+}
+
+// A bare non-negative integer among the ask tokens is the depth (hops of graph to
+// expand). Self-identifying — no Mara identifier starts with a digit — so it can
+// sit anywhere among the positionals, like a verb, and never collide with a name.
+ask_parse_depth :: proc(tok: string) -> (depth: int, ok: bool) {
+    if len(tok) == 0 { return 0, false }
+    for c in tok { if c < '0' || c > '9' { return 0, false } }
+    v, _ := strconv.parse_int(tok, 10)
+    return v, true
 }
 
 // Per-package build mode: a package with a top-level `main` is an executable,
@@ -1062,6 +1076,20 @@ parse_args :: proc() -> CLI_Args {
                 rest = rest[:idx]
                 break
             }
+        }
+
+        // Peel an optional depth — the first bare integer anywhere in the tokens.
+        // -1 is the omitted sentinel (unbounded); an explicit value is >= 0.
+        args.ask_depth = -1
+        {
+            kept: [dynamic]string
+            for tok in rest {
+                if args.ask_depth < 0 {
+                    if d, ok := ask_parse_depth(tok); ok { args.ask_depth = d; continue }
+                }
+                append(&kept, tok)
+            }
+            rest = kept[:]
         }
 
         // What remains is the name and an optional verb, in either order. The
@@ -1260,7 +1288,7 @@ main :: proc() {
             fmt.print(ask_module_map(checked, programs, all_files, args.compiler_dir, args.pkg_name))
             return
         }
-        out, found := ask(checked, args.ask_target, args.ask_query, args.pkg_name, ask_scope_file)
+        out, found := ask(checked, args.ask_target, args.ask_query, args.pkg_name, ask_scope_file, args.ask_depth)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed
         return
