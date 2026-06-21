@@ -761,14 +761,13 @@ scope_member :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     return nil, false
 }
 
-// Look up a bare name exported by an included module. The module's full name
-// surface (types + funs + distincts + const types, plus late-bound entries from
-// body checking) lives on its scope env; the durable scope struct (inc) carries
-// the module IDENTITY (inc.name, dispatch tables). So names come from inc.scope,
-// identity from inc — which is what lets owner_module go.
+// Look up a bare name exported by an included module — off the module's own
+// DURABLE scope (inc.types), which check_module finalizes to the full name
+// surface (types + funs + distincts + const/late-bound types) at the end of the
+// module's check. A scope holds its names; resolution reads them there.
 include_lookup :: proc(inc: ^Scope_Body, name: string) -> (Type, bool) {
-    if inc == nil || inc.scope == nil { return nil, false }
-    if t, ok := inc.scope.types[name]; ok { return t, true }
+    if inc == nil { return nil, false }
+    if t, ok := inc.types[name]; ok { return t, true }
     return nil, false
 }
 
@@ -10180,6 +10179,17 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // Preserve module's dispatch groups for propagation on `using include`
     mod_struct.dispatch_groups = c.dispatch_groups
     mod_struct.operator_overloads = c.operator_overloads
+
+    // Finalize the module's durable name surface: registration populates
+    // mod_struct.types/functions with types/funs/distincts, but consts and
+    // late-bound entries only ever land on the module env during body checking.
+    // Mirror the full env surface onto the durable scope now (the env holds only
+    // this module's own public names — flatten_module_exports doesn't pollute it
+    // with includes), so consumers resolve a module's names off its scope alone.
+    if mod_struct.types == nil { mod_struct.types = make(map[string]Type) }
+    for name, t in mod_env.types {
+        mod_struct.types[name] = t
+    }
 
     // Restore checker state
     c.current_package = saved_package
