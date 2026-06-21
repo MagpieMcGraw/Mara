@@ -55,3 +55,7 @@ Investigate if Megastruct{} is sugar for Megastruct () {}
 Pull control flow graph into it's own system. It's currently implicitly used to check that every branch has valid return statements.
 
 Robustify the mara ask interface, decide on sensible defaults for the various options, handle typos, dedupe the output, etc...
+
+Mara ask, record all queries(instead of graphs), so you can later replay them in the viewer.
+
+Fix FFI functions for mara ask. Probably some array on type scope was skipped?
