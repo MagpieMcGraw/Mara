@@ -888,7 +888,38 @@ type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> 
             return t, nil, true  // a local never lives in a class namespace
         }
     }
-    return scope_resolve(env, name, below_module)
+    t, s, ok := scope_resolve(env, name, below_module)
+    // VALIDATION (MARA_WALK_CHECK): scope_resolve is globally owned-first (all own
+    // definitions, then includes), but the legacy walk was PER-LEVEL (own+includes
+    // interleaved, climbing). Compare against the legacy walk to catch any
+    // include-vs-outer-own precedence change the earlier probe (cur.types-path
+    // only) couldn't see.
+    if walk_check_on() {
+        lt, lok := type_env_locate_legacy(env, name, below_module)
+        if lok != ok || (ok && type_ptr_ident(lt) != type_ptr_ident(t)) {
+            fmt.eprintf("[TEL-ORDER] %s legacy_ok=%v new_ok=%v\n", name, lok, ok)
+        }
+    }
+    return t, s, ok
+}
+
+// Reference implementation of the legacy per-level env walk — kept ONLY to
+// validate the scope_resolve switch (gated by MARA_WALK_CHECK). Removed once the
+// ordering equivalence is confirmed.
+type_env_locate_legacy :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, bool) {
+    if env.block_scope != nil {
+        if t, ok := scope_local_lookup(env.block_scope, name); ok { return t, true }
+    }
+    for cur := env; cur != nil; cur = cur.parent {
+        if below_module && cur.is_module_scope { break }
+        if t, ok := cur.types[name]; ok { return t, true }
+        if t, ok := scope_member(cur, name); ok { return t, true }
+        for inc in cur.includes {
+            if t, ok := include_lookup(inc, name); ok { return t, true }
+        }
+        if !below_module && cur.is_module_scope { break }
+    }
+    return nil, false
 }
 
 type_env_get :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
@@ -909,25 +940,32 @@ type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Ty
 // class-body field resolution and other paths that rely on cur.includes
 // being checked before walking to cur.parent.types.
 type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
-    // Phase 1: own definitions up the chain.
+    // scope_resolve IS owned-first by construction (all own definitions up the
+    // parent_scope graph, then all includes up the env chain) — exactly this
+    // proc's two-phase shape. Delegate to the durable walk.
+    t, _, ok := scope_resolve(env, name)
+    if walk_check_on() {
+        lt, lok := type_env_get_owned_first_legacy(env, name)
+        if lok != ok || (ok && type_ptr_ident(lt) != type_ptr_ident(t)) {
+            fmt.eprintf("[OF-ORDER] %s legacy_ok=%v new_ok=%v\n", name, lok, ok)
+        }
+    }
+    return t, ok
+}
+
+// Legacy reference (env.types per-level) — kept only to validate the switch.
+type_env_get_owned_first_legacy :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     cur := env
     for cur != nil {
-        if t, ok := cur.types[name]; ok {
-            return t, true
-        }
-        if t, ok := scope_member(cur, name); ok {
-            return t, true
-        }
+        if t, ok := cur.types[name]; ok { return t, true }
+        if t, ok := scope_member(cur, name); ok { return t, true }
         if cur.is_module_scope { break }
         cur = cur.parent
     }
-    // Phase 2: included names up the chain.
     cur = env
     for cur != nil {
         for inc in cur.includes {
-            if t, ok := include_lookup(inc, name); ok {
-                return t, true
-            }
+            if t, ok := include_lookup(inc, name); ok { return t, true }
         }
         if cur.is_module_scope { break }
         cur = cur.parent
