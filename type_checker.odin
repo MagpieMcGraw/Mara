@@ -914,6 +914,14 @@ type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
 // always means the type. If only variant aliases remain, fall back to one
 // of them so the original variant-shorthand semantics still work.
 resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (typ: Type, ok: bool, ambiguous_owners: [dynamic]string) {
+    // `Self` is the enclosing struct/fun's own scope — derive it from the durable
+    // graph (the nearest class_scope/fun_scope marker) rather than an env binding.
+    // This also sidesteps the inner/outer-Self ambiguity the walk below guards
+    // against: the nearest marker is a single unambiguous answer.
+    if name == "Self" {
+        if s := enclosing_callable_scope(env); s != nil { return s, true, nil }
+        return nil, false, nil
+    }
     Match :: struct {
         typ:   Type,
         owner: string,
@@ -6210,9 +6218,6 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
     // Phase 1 only: mangle names and register in scope. No type resolution.
     // Type resolution happens in Phase 2 (check_bodies) uniformly for all funs.
     scope_env := Type_Env{parent = env}
-    if self_type != nil {
-        type_env_set(&scope_env, "Self", self_type)
-    }
     parent_ts, _ := self_type.(^Type_Scope)  // enclosing scope for nested structs' parent_scope (on-demand resolution)
     // Find the persistent root env (the module env) so mangled names survive
     // past this call. scope_envs created in recursive calls are stack-local.
@@ -8201,7 +8206,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.kind == .Struct {
         ns_env = type_env_child(env)
         ns_env.class_scope = ft
-        type_env_set(&ns_env, "Self", ft)
         // (ns_env no longer copies ft.types / ft.functions — scope_member reads
         // them off ft directly via ns_env's class_scope / fun_scope back-link.)
         parent_env = &ns_env
@@ -8230,7 +8234,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         }
         ns_env = type_env_child(defs_parent)
         ns_env.fun_scope = ft
-        type_env_set(&ns_env, "Self", ft)
         // (ns_env no longer copies ft.types / ft.functions — scope_member reads
         // them off ft directly via ns_env's class_scope / fun_scope back-link.)
         parent_env = &ns_env
@@ -11721,7 +11724,6 @@ build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Env {
     env := new(Type_Env)
     env.parent = outer
     if parent.kind == .Struct { env.class_scope = parent } else { env.fun_scope = parent }
-    type_env_set(env, "Self", parent)
     return env
 }
 
