@@ -716,44 +716,21 @@ esc_get_prov :: proc(name: string) -> (Provenance, bool) {
 }
 esc_top :: proc() -> ^Escape_Frame { return g_esc[len(g_esc) - 1] if len(g_esc) > 0 else nil }
 
-// ARCHITECTURE â€” the TRANSIENT half of the checker's analysis split (see
-// Type_Scope for the durable half). Type_Env used to OWN the point-sensitive flow
-// state (definite-assignment's invalid_refs/newly_inited, the aliases points-to)
-// â€” facts that fork at branches and merge at joins. That state is GONE: all
-// intraprocedural flow analysis now runs as a post-check pass over the durable
-// graph (flow.odin). Name resolution is GONE from here too: every name lives on
-// the durable scope graph (Type_Scope) and resolution walks it via scope_resolve
-// â€” the env no longer carries a `types` map. What remains is the transient
-// lexical spine (`parent` / `scope` / class_scope / fun_scope / includes) and the
-// fixed-at-declaration per-name facts in `bindings` (is_param / is_let /
-// provenance), consumed by escape analysis.
+// Type_Env is now a thin handle over a durable scope — a single `scope` pointer.
+// Everything it used to carry has moved onto the durable graph or out to a pass:
+//   types        -> the scope graph (resolution walks scope.parent_scope)
+//   parent       -> the scope graph (env.scope.parent_scope IS the nesting)
+//   class/fun_scope, is_module_scope, block_scope -> derived from scope (kind /
+//                   is_module / the back-ref); return_types -> enclosing_return_types
+//   includes     -> Scope_Body.includes
+//   bindings (provenance/is_let/local_slice_backed) -> the escape pass frame stack
+//   definite-assignment flow state -> flow.odin
+// It survives only because `env` is still threaded through the checker as the
+// "current scope" handle; collapsing it to a bare ^Type_Scope is a separate, wide
+// mechanical change. The two roles `scope` plays: resolution context (walk up
+// parent_scope) and the durable home top-level names register into.
 Type_Env :: struct {
-    parent:       ^Type_Env,
-    // The durable Type_Scope this env's names live on. Every env has one, chained
-    // via parent_scope to the parent env's scope â€” so the scope graph mirrors the
-    // env graph and resolution walks it (scope_resolve) instead of any env-local
-    // name map. For a block it's the .Block scope; for a fun/class defs layer that
-    // scope; for a module the module struct; elsewhere a fresh shadow.
-    scope:        ^Type_Scope,
-    // (block_scope removed â€” the env's own `scope` IS the .Block for a block body;
-    //  scope_local_lookup self-guards on .Block so locals resolve off env.scope.)
-    // (return_types removed â€” derived from the nearest fun_scope/class_scope's
-    //  durable signature via enclosing_return_types, not carried per-env.)
-    // (scope_depth removed â€” escape frame depth is derived from the durable scope
-    //  graph by counting enclosing .Fun scopes; see enclosing_fun_depth.)
-    // (bindings removed â€” escape per-name state (provenance / is_let /
-    //  local_slice_backed) now lives on the post-check escape pass's frame stack,
-    //  escape.odin; definite-assignment moved to flow.odin earlier.)
-    // (class_scope / fun_scope removed â€” a defs-layer env's `scope` IS the class/fun
-    //  ft, so the markers are derived: env_class_scope (non-module .Struct) and
-    //  scope_is_callable (fun or non-module struct). Walks up parent_scope.)
-    // (is_module_scope removed â€” derived from the durable scope via env_is_module:
-    //  a module/package env is one whose `scope.is_module` and whose scope's
-    //  back-ref names this env. Lookup terminates there. File envs share the module
-    //  scope but the back-ref names the module env, so they're not terminators.)
-    // (includes removed â€” bare-`include`d module scopes now live on the durable
-    //  scope (Scope_Body.includes); scope_resolve walks them up parent_scope. A
-    //  file scope holds that file's private includes, a module scope re-exports.)
+    scope: ^Type_Scope,
 }
 
 // Durable scope-member lookup: a scope's nested types + funs live on its
@@ -988,11 +965,11 @@ address_of_ident :: proc(e: Expr) -> (name: string, ok: bool) {
 
 type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
     // Every child env gets its own durable scope, chained to the parent's, so the
-    // scope graph parallels the env graph. Specific creators (block/ns/module)
-    // override `scope` with the right concrete scope; this is the default shadow.
+    // scope graph carries the nesting. Specific creators (block/ns/module) override
+    // `scope` with the right concrete scope; this is the default shadow.
     s := new(Type_Scope)
     s.parent_scope = parent.scope
-    return Type_Env{parent = parent, scope = s}
+    return Type_Env{scope = s}
 }
 
 // Like type_env_child but also mints the durable .Block Type_Scope this block
@@ -1028,6 +1005,21 @@ enclosing_fn_name :: proc(env: ^Type_Env) -> string {
 // a non-module struct (class defs layer) or a fun. Derive instead of storing.
 scope_is_callable :: proc(s: ^Type_Scope) -> bool {
     return s != nil && (s.kind == .Fun || (s.kind == .Struct && !s.is_module))
+}
+
+// The module scope at the top of a scope's parent_scope chain (the durable
+// equivalent of "walk env.parent to the root env"). nil if `s` is nil.
+module_scope :: proc(start: ^Type_Scope) -> ^Type_Scope {
+    s := start
+    for s != nil && s.parent_scope != nil { s = s.parent_scope }
+    return s
+}
+
+// Register a (mangled) name persistently on the module scope.
+register_on_module :: proc(root: ^Type_Scope, name: string, t: Type) {
+    if root == nil { return }
+    if root.types == nil { root.types = make(map[string]Type) }
+    root.types[name] = t
 }
 
 // The class/struct scope an env is the defs layer of â€” nil unless env.scope is a
@@ -6208,15 +6200,14 @@ pre_register_nested_struct_types :: proc(c: ^Checker, parent: ^Type_Scope, body:
 // e.g., Mega :: fun { test_print :: fun() { ... } } â†’ registers "Mega_test_print" as a function.
 // self_type is the Type value wrapping `st` (always ^Type_Scope). It gets bound to
 // the name "Self" in this scope so methods can reference `^Self` / `Self` inside.
-register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs: [dynamic]Stmt, env: ^Type_Env) {
+register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs: [dynamic]Stmt) {
     // Phase 1 only: mangle names and register in scope. No type resolution.
     // Type resolution happens in Phase 2 (check_bodies) uniformly for all funs.
-    scope_env := Type_Env{parent = env}
-    parent_ts, _ := self_type.(^Type_Scope)  // enclosing scope for nested structs' parent_scope (on-demand resolution)
-    // Find the persistent root env (the module env) so mangled names survive
-    // past this call. scope_envs created in recursive calls are stack-local.
-    root_env := env
-    for root_env.parent != nil { root_env = root_env.parent }
+    parent_ts, _ := self_type.(^Type_Scope)  // the scope these defs nest under (their parent_scope)
+    scope_env := Type_Env{} // transient env for resolve_type_expr on foreign sigs
+    // Mangled names register persistently on the module scope (the top of the
+    // durable chain) so they survive past this call and reach codegen.
+    root_scope := module_scope(parent_ts)
     for def in defs {
         #partial switch s in def {
         case ^Stmt_Scope:
@@ -6252,11 +6243,11 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // s.defs, not s.body: a pure-namespace struct (only nested
                 // types) has an empty runtime body but non-empty defs.
                 if len(s.defs) > 0 {
-                    register_scope_defs(c, def_st, &def_st.sd, s.defs, &scope_env)
+                    register_scope_defs(c, def_st, &def_st.sd, s.defs)
                 }
-                // Register mangled name in the root (persistent) env, bare name in scope env
-                type_env_set(root_env, mangled, def_st)
-                type_env_set(&scope_env, bare_name, def_st)
+                // Mangled name persists on the module scope; the bare name is already
+                // on parent_ts.types via register_nested_struct_scope.
+                register_on_module(root_scope, mangled, def_st)
                 c.table.fun_asts[mangled] = s
             } else {
                 // Function or struct constructor (has params) â€” create Type_Scope.
@@ -6273,7 +6264,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                     def_ft.ast = s
                     def_ft.source_name = bare_name
                     if len(s.defs) > 0 {
-                        register_scope_defs(c, def_ft, &def_ft.sd, s.defs, &scope_env)
+                        register_scope_defs(c, def_ft, &def_ft.sd, s.defs)
                     }
                 } else {
                     // Plain nested fun â€” not a data type, so no c.table.funs / st.types
@@ -6295,9 +6286,9 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 // field initializers reference its params, so the param pass runs
                 // inside check_scope_body right before the field pass; see the
                 // `ft.kind == .Struct` block there.)
-                // Register mangled name in the root (persistent) env, bare name in scope env
-                type_env_set(root_env, mangled, def_ft)
-                type_env_set(&scope_env, bare_name, def_ft)
+                // Mangled name persists on the module scope; plain funs live in
+                // st.functions (below) for bare-name resolution.
+                register_on_module(root_scope, mangled, def_ft)
                 c.table.fun_asts[mangled] = s
                 if is_callable {
                     c.declared_funs[mangled] = true
@@ -6346,12 +6337,10 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 st.functions[bare_name] = fun_type
                 c.declared_funs[mangled] = true
                 c.table.fun_homes[mangled] = c.current_package
-                // Bare name in the struct's local scope env so wrapper bodies
-                // checked under ns_env (which copies st.functions) can resolve
-                // the symbol; mangled name in the persistent root_env so
-                // codegen lookups via call_resolved_name resolve.
-                type_env_set(&scope_env, bare_name, fun_type)
-                type_env_set(root_env, mangled, fun_type)
+                // Bare name in st.functions (above) for wrapper-body resolution;
+                // mangled name on the module scope so codegen lookups via
+                // call_resolved_name resolve.
+                register_on_module(root_scope, mangled, fun_type)
             }
             c.in_foreign_sig = false
         }
@@ -6975,12 +6964,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 flat := make_flat_name(c.current_package, s.name)
                 if is_struct && len(s.typed_params) == 0 {
                     if struct_type, ok := c.table.structs[flat]; ok {
-                        register_scope_defs(c, struct_type, &struct_type.sd, s.defs, env)
+                        register_scope_defs(c, struct_type, &struct_type.sd, s.defs)
                     }
                 } else {
                     if fun_type, ok := c.table.funs[flat]; ok {
                         if is_struct {
-                            register_scope_defs(c, fun_type, &fun_type.sd, s.defs, env)
+                            register_scope_defs(c, fun_type, &fun_type.sd, s.defs)
                         }
                         // FUN signatures: resolve params/returns for a pre-registered
                         // top-level fun (idempotent â€” skips if a demand pull already
@@ -7052,7 +7041,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     continue
                 }
                 c.table.structs[struct_type.name] = struct_type
-                register_scope_defs(c, struct_type, &struct_type.sd, s.defs, env)
+                register_scope_defs(c, struct_type, &struct_type.sd, s.defs)
                 type_env_set(pub, s.name, struct_type)
                 c.table.fun_asts[s.name] = s
                 c.table.fun_homes[s.name] = c.current_package
@@ -7088,7 +7077,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_struct_type {
                     fun_type.kind = .Struct
                     c.table.funs[fun_type.name] = fun_type
-                    register_scope_defs(c, fun_type, &fun_type.sd, s.defs, env)
+                    register_scope_defs(c, fun_type, &fun_type.sd, s.defs)
                 } else {
                     fun_type.kind = .Fun
                     // Also register in the global funs table so post-check
@@ -8188,40 +8177,23 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // stops at the class's ns_env (a class_scope marker), so the method's defs
     // layer parents to the class and sees its members.
 
+    // One shape for structs AND funs (class is a struct alias; a method is just a
+    // fun nested in a struct): a defs layer (ns_env) whose durable `scope` IS this
+    // scope's own ft — so its members / nested ::defs / Self resolve, and the
+    // no-closures rule + nesting fall out of the parent_scope graph uniformly,
+    // with no struct-vs-fun branch on how scopes chain.
     ns_env: Type_Env
     parent_env := env
-    if ft.kind == .Struct {
+    if ft.kind == .Struct || ft.kind == .Fun {
         ns_env = type_env_child(env)
-        ns_env.scope = ft // the class's own scope holds its members/nested defs;
-                          // env_class_scope derives the old class_scope marker from it.
+        ns_env.scope = ft
         parent_env = &ns_env
-    } else if ft.kind == .Fun {
-        // Funs â€” and methods, which are just funs nested in a struct â€” get the
-        // same two-layer shape as structs: a defs layer (ns_env) holding Self +
-        // this fun's nested ::defs, and a body layer (child, built below)
-        // holding params + locals. The defs layer parents to the nearest
-        // ENCLOSING scope â€” found by walking up to the nearest scope marker,
-        // fun_scope OR class_scope â€” so name resolution crosses defs layers only
-        // and an enclosing fun's locals stay private (no closures to capture
-        // them). A method's nearest marker is its struct's class_scope, so it
-        // parents to the class and sees the class's members.
-        // No enclosing scope â‡’ top-level: parent to env (the file/module scope).
-        defs_parent := env
-        walk := env
-        for walk != nil && !scope_is_callable(walk.scope) { walk = walk.parent }
-        if walk != nil { defs_parent = walk }
-        // Funs aren't registered at module-registration time (structs are), so
-        // collect this fun's nested ::defs now, before exposing them. The
-        // ft.types guard keeps a re-entry from re-mangling the nested names.
-        // Gate on s.defs (what gets registered), not s.body â€” a fun that's a
-        // pure type namespace has nested defs but no runtime body.
-        if ft.types == nil && len(s.defs) > 0 {
-            register_scope_defs(c, ft, &ft.sd, s.defs, defs_parent)
+        // Funs register their nested ::defs lazily here; structs already did at
+        // module-registration time (so ft.types is populated). Gate on s.defs,
+        // not s.body — a pure type-namespace fun has defs but no runtime body.
+        if ft.kind == .Fun && ft.types == nil && len(s.defs) > 0 {
+            register_scope_defs(c, ft, &ft.sd, s.defs)
         }
-        ns_env = type_env_child(defs_parent)
-        ns_env.scope = ft // the fun's own scope holds its nested defs;
-                          // scope_is_callable(ns_env.scope) marks it as a fun layer.
-        parent_env = &ns_env
     }
 
     // The body is the function/ctor's OUTERMOST block: params + top-level locals
@@ -9925,7 +9897,6 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
     }
     for src in file_order {
         fe := new(Type_Env)
-        fe.parent = pkg_env
         // Each file gets its OWN durable scope, chained to the module scope. It
         // holds the file's private includes (its `use`/`include` imports stay
         // file-local); definitions still register on the module scope (public).
@@ -10547,7 +10518,6 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     std_fun.home_package = "std"
     std_fun.kind = .Struct
     std_fun.scope = new(Type_Env)
-    std_fun.scope.parent = env
     c.std_fun = std_fun
     type_env_set(env, "std", std_fun)
 
@@ -11653,12 +11623,10 @@ build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Env {
     if ft.decl_env != nil { return ft.decl_env }
     parent := ft.parent_scope
     if parent == nil { return nil }
-    outer := build_scope_decl_env(parent)
-    if outer == nil { return nil }
+    // Resolution walks env.scope up its parent_scope chain, so a synthetic env
+    // whose scope is the rebuilt scope reaches everything — no env.parent chain.
     env := new(Type_Env)
-    env.parent = outer
-    env.scope = parent // resolution walks the scope being rebuilt + its parent_scope;
-                       // env_class_scope / scope_is_callable derive the markers from it.
+    env.scope = parent
     return env
 }
 
