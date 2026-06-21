@@ -989,15 +989,18 @@ parse_args :: proc() -> CLI_Args {
     // `build` with no package arg) and answer a static query about <Type>.
     if subcmd == "ask" {
         if len(positional) < 4 {
-            fmt.println("Usage: mara ask <Type> <deps|users>   (the two may be given in either order)")
+            fmt.println("Usage: mara ask <Type|fn> <deps|users>   (args may be given in either order)")
             return args
         }
         // Accept the target and query in either order — whichever token is a
-        // known verb is the query, the other is the type.
+        // known verb is the query, the other is the type or function name. The
+        // verb is folded to its canonical spelling here (`user` -> `users`).
         a, b := positional[2], positional[3]
+        av, aok := ask_canon_verb(a)
+        bv, bok := ask_canon_verb(b)
         switch {
-        case ask_is_verb(a) && !ask_is_verb(b): args.ask_query = a; args.ask_target = b
-        case ask_is_verb(b):                    args.ask_query = b; args.ask_target = a
+        case aok && !bok: args.ask_query = av; args.ask_target = b
+        case bok:         args.ask_query = bv; args.ask_target = a
         case:
             fmt.printf("mara ask: unknown query (got '%s' and '%s') — try: deps, users\n", a, b)
             return args
@@ -1147,10 +1150,10 @@ main :: proc() {
         flush_diagnostics()
         result, ok := run_ask(checked, args.ask_target, args.ask_query)
         if !ok {
-            fmt.printf("mara ask: no type named '%s' in package '%s'\n", args.ask_target, args.pkg_name)
+            fmt.printf("mara ask: no type or function named '%s' in package '%s'\n", args.ask_target, args.pkg_name)
             os.exit(1)
         }
-        fmt.print(render_ask(&result, args.ask_target, args.ask_query))
+        fmt.print(render_ask(&result, args.ask_target, args.ask_query, args.pkg_name))
         return
     }
 

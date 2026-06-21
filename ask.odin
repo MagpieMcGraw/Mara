@@ -4,11 +4,18 @@ package mara
 // `mara ask` — static type-dependency queries (design/mara_ask.md §4.1)
 //
 // The first ask: a type dependency graph, read straight off the symbol table —
-// no dataflow walk.
-//   mara ask <Type> deps    what this type pulls in (its field/embed types,
-//                           transitively; a fun's signature types)
-//   mara ask <Type> users   who depends on it (who contains/embeds/takes/returns
-//                           it) — the "what breaks if I change this" query
+// no dataflow walk. The target may be a TYPE (struct / enum / union / distinct)
+// or a FUNCTION name.
+//   mara ask <Type|fn> deps    what it pulls in — a type's field/embed types
+//                              (TRANSITIVE closure); a fun's parameter + return
+//                              types (and through any struct among them).
+//   mara ask <Type|fn> users   who depends on it — who contains / embeds / takes /
+//                              returns it. DIRECT (one hop), NOT transitive. The
+//                              "what breaks if I change this" query. CAVEAT: call
+//                              edges are not yet modeled, so `users` on a fun does
+//                              NOT list its callers (only type-level references,
+//                              e.g. a `fn <name>` nominal type).
+// Verbs accept singular or plural (`dep`/`deps`, `user`/`users`), in either order.
 //
 // The engine (`run_ask`) is a PURE function over Checked_Program returning an
 // Ask_Result graph; the renderer is separate (a --json serializer is a trivial
@@ -288,8 +295,20 @@ ask_sort_edges :: proc(res: ^Ask_Result) {
 
 // The closed set of query verbs — lets the CLI accept the target and verb in
 // EITHER order (`ask deps Font` or `ask Font deps`) by spotting which is a verb.
+// Both natural spellings of each verb are accepted (singular/plural) and folded
+// to the canonical form the engine switches on, so the doc's `user` and the
+// engine's `users` can never drift apart again.
+ask_canon_verb :: proc(s: string) -> (canon: string, ok: bool) {
+    switch s {
+    case "deps", "dep":   return "deps", true
+    case "users", "user": return "users", true
+    }
+    return "", false
+}
+
 ask_is_verb :: proc(s: string) -> bool {
-    return s == "deps" || s == "users"
+    _, ok := ask_canon_verb(s)
+    return ok
 }
 
 run_ask :: proc(checked: ^Checked_Program, target: string, verb: string) -> (Ask_Result, bool) {
@@ -324,13 +343,32 @@ ask_loc :: proc(span: Span) -> string {
     return fmt.tprintf("%s:%d", span.file, span.line)
 }
 
-render_ask :: proc(res: ^Ask_Result, target: string, verb: string) -> string {
+// Distinct source nodes among the edges — the real "how many things use this"
+// count, as opposed to len(edges), which counts use-SITES: one fn taking the
+// type in two params (or returning it twice) is ONE user but several sites.
+ask_distinct_sources :: proc(res: ^Ask_Result) -> int {
+    seen: map[int]bool
+    for e in res.edges { seen[e.from] = true }
+    return len(seen)
+}
+
+render_ask :: proc(res: ^Ask_Result, target: string, verb: string, pkg: string) -> string {
     b := strings.builder_make()
 
     if verb == "users" {
         root := res.nodes[res.root]
-        fmt.sbprintf(&b, "ask users %s   (%d users)\n\n", target, len(res.edges))
+        // Header advertises DIRECT (one-hop) and separates distinct users from
+        // use-sites, so a reader never reads len(edges) as a transitive or a
+        // distinct-entity count.
+        fmt.sbprintf(&b, "ask users %s   (package %s — %d users, %d use-sites, DIRECT one-hop)\n\n",
+                     target, pkg, ask_distinct_sources(res), len(res.edges))
         fmt.sbprintf(&b, "%s  %s  %s\n", root.label, root.sub, ask_loc(root.span))
+        // A function target's reverse set is a known blind spot: call edges are
+        // not modeled, so `(no users)` here must NOT be read as "no callers".
+        if root.sub == "fun" {
+            fmt.sbprint(&b, "  note: call edges are NOT tracked yet — this lists only type-level\n")
+            fmt.sbprint(&b, "        references (e.g. a `fn <name>` nominal type), NOT callers.\n")
+        }
         if len(res.edges) == 0 { fmt.sbprint(&b, "  (no users)\n"); return strings.to_string(b) }
         fmt.sbprint(&b, "  used by:\n")
         for e in res.edges {
@@ -342,7 +380,8 @@ render_ask :: proc(res: ^Ask_Result, target: string, verb: string) -> string {
     }
 
     // deps: one adjacency block per node, root first (interned at id 0).
-    fmt.sbprintf(&b, "ask deps %s   (%d types, %d edges)\n", target, len(res.nodes), len(res.edges))
+    fmt.sbprintf(&b, "ask deps %s   (package %s — %d types, %d edges, TRANSITIVE closure)\n",
+                 target, pkg, len(res.nodes), len(res.edges))
     for node, i in res.nodes {
         fmt.sbprintf(&b, "\n%s  %s  %s\n", node.label, node.sub, ask_loc(node.span))
         any := false
