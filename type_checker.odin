@@ -721,22 +721,11 @@ Type_Env :: struct {
     // (return_types removed — derived from the nearest fun_scope/class_scope's
     //  durable signature via enclosing_return_types, not carried per-env.)
     scope_depth: int,        // stack depth for escape analysis; module = 0, function body = 1+
-    // Per-name analysis facts (param/let/provenance/local_slice_backed/read) for
-    // names declared in THIS scope — one record each (see Binding). aliases and
-    // invalid_refs/newly_inited stay separate below: they use present-but-empty
-    // ("cleared") or cross-env `name.field` keys a per-name record can't carry.
+    // Per-name analysis facts (param/let/provenance/local_slice_backed) for
+    // names declared in THIS scope — one record each (see Binding).
+    // (Definite-assignment state — invalid_refs / newly_inited / aliases — is
+    // gone: it now lives in the post-check flow pass, flow.odin.)
     bindings: map[string]^Binding,
-    invalid_refs: map[string]bool, // ptr/slice vars without a usable value at this point
-                                  // (declared without initializer, OR pointer-typed and
-                                  // currently assigned the `void` null literal — both
-                                  // are "not safe to read" by the same definition).
-                                  // Read = error. Deref counts as read via the Expr_Ident
-                                  // path that fires is_invalid_ref.
-    newly_inited: map[string]bool, // ancestor uninit vars initialized in THIS scope (for definite assignment)
-    aliases:      map[string]string, // simple intra-procedural points-to: `it = &root` records
-                                     // aliases[it] = "root". Empty-string value means the alias
-                                     // was explicitly cleared in this scope (shadows parent).
-                                     // Lets field-access uninit checks see through pointer aliases.
     class_scope: ^Type_Scope,    // when non-nil, this env is the body of that class/struct — field names
                                  // in this env should not leak to nested method bodies as bare identifiers.
     fun_scope: ^Type_Scope,      // when non-nil, this env is a function's DEFS layer (its ns_env), pointing
@@ -1010,126 +999,12 @@ type_env_set :: proc(env: ^Type_Env, name: string, t: Type) {
     }
 }
 
-// Check if a variable is an uninitialized pointer/slice (walks scope chain).
-// Respects newly_inited: if a child scope initialized it, it's not uninit in that scope.
-is_invalid_ref :: proc(env: ^Type_Env, name: string) -> bool {
-    cur := env
-    for cur != nil {
-        if name in cur.newly_inited { return false } // shadowed by init in this scope
-        if name in cur.invalid_refs { return true }
-        cur = cur.parent
-    }
-    return false
-}
-
 // True if the expression is exactly the `void` literal — Mara's null
 // pointer constant. Treated semantically as "no usable value": assigning
 // it to a pointer is equivalent to leaving the pointer uninitialized.
 is_void_literal :: proc(e: Expr) -> bool {
     if id, ok := e.(^Expr_Ident); ok && id.name == "void" { return true }
     return false
-}
-
-// Mark a variable as initialized. If declared in this scope, removes directly.
-// If declared in an ancestor scope, records in newly_inited (doesn't mutate parent).
-mark_initialized :: proc(env: ^Type_Env, name: string) {
-    // Local scope: delete directly
-    if name in env.invalid_refs {
-        delete_key(&env.invalid_refs, name)
-        return
-    }
-    // Ancestor scope: record locally, don't mutate parent
-    cur := env.parent
-    for cur != nil {
-        if name in cur.invalid_refs {
-            env.newly_inited[name] = true
-            return
-        }
-        // Also check if an intermediate scope already has it in newly_inited
-        if name in cur.newly_inited {
-            env.newly_inited[name] = true
-            return
-        }
-        cur = cur.parent
-    }
-}
-
-// Track uninitialized pointer/slice fields inside a struct variable.
-// `provided` is the set of field names explicitly initialized (from a struct literal).
-add_struct_invalid_fields :: proc(env: ^Type_Env, var_name: string, st: ^Scope_Body, provided: map[string]bool = nil) {
-    for &f in st.fields {
-        if provided != nil && f.name in provided { continue }
-        if f.default_value != nil { continue }
-        // Sized-slice fields (`field : String` where `String :: type([,0]utf8(128))`)
-        // are auto-initialized by codegen — backing storage and header set up at
-        // the parent struct's alloca. Don't mark them as uninit-on-read.
-        if dt, ok := f.type_.(^Type_Distinct); ok {
-            if _, sl_ok := dt.base_type.(^Type_Slice); sl_ok && dt.default_cap_expr != nil {
-                continue
-            }
-        }
-        base := distinct_base(f.type_)
-        is_ref := false
-        if _, is_ptr := base.(^Type_Ptr); is_ptr { is_ref = true }
-        if _, is_slice := base.(^Type_Slice); is_slice { is_ref = true }
-        if is_ref {
-            key := strings.concatenate({var_name, ".", f.name})
-            env.invalid_refs[key] = true
-        }
-    }
-}
-
-// Clear all field-level uninit entries for a variable (e.g. when the whole struct is reassigned).
-// Local entries are deleted directly; ancestor entries are recorded in newly_inited.
-clear_struct_invalid_fields :: proc(env: ^Type_Env, var_name: string) {
-    prefix := strings.concatenate({var_name, "."})
-    // Clear from current scope directly
-    keys_to_delete: [dynamic]string
-    for key in env.invalid_refs {
-        if strings.has_prefix(key, prefix) {
-            append(&keys_to_delete, key)
-        }
-    }
-    for key in keys_to_delete {
-        delete_key(&env.invalid_refs, key)
-    }
-    // For ancestor scopes, record in newly_inited
-    cur := env.parent
-    for cur != nil {
-        for key in cur.invalid_refs {
-            if strings.has_prefix(key, prefix) {
-                env.newly_inited[key] = true
-            }
-        }
-        cur = cur.parent
-    }
-}
-
-// Look up the target a local variable currently aliases via `&ident` assignment.
-// Walks the scope chain; an empty-string entry means the alias was explicitly
-// cleared in that scope (the variable was reassigned to something else).
-lookup_alias :: proc(env: ^Type_Env, name: string) -> (target: string, ok: bool) {
-    cur := env
-    for cur != nil {
-        if t, found := cur.aliases[name]; found {
-            if t == "" { return "", false }
-            return t, true
-        }
-        cur = cur.parent
-    }
-    return "", false
-}
-
-// Record `name` as aliasing `target` (from `name = &target`). Writes to current
-// scope's map; lookups walk up and find this entry before any parent.
-record_alias :: proc(env: ^Type_Env, name, target: string) {
-    env.aliases[name] = target
-}
-
-// Mark `name`'s alias as cleared in the current scope. Lookups stop at this
-// shadow entry instead of reaching an outer-scope alias.
-clear_alias :: proc(env: ^Type_Env, name: string) {
-    env.aliases[name] = ""
 }
 
 // If `e` is `&<ident>` for a plain identifier, return that name. Used to detect
@@ -1141,43 +1016,6 @@ address_of_ident :: proc(e: Expr) -> (name: string, ok: bool) {
         }
     }
     return "", false
-}
-
-// Refresh the alias entry for `name` after an assignment. If the RHS is `&ident`,
-// record the alias; otherwise clear any prior alias (the variable now points
-// somewhere the analysis can't follow).
-update_alias_from_value :: proc(env: ^Type_Env, name: string, value: Expr) {
-    if target, ok := address_of_ident(value); ok {
-        record_alias(env, name, target)
-    } else {
-        clear_alias(env, name)
-    }
-}
-
-// Check if a variable has any uninitialized pointer/slice fields.
-// Returns the first uninit field name, or nil. Respects newly_inited shadowing.
-first_invalid_field :: proc(env: ^Type_Env, var_name: string) -> Maybe(string) {
-    prefix := strings.concatenate({var_name, "."})
-    // Collect all newly_inited keys from this scope up
-    inited: map[string]bool
-    cur := env
-    for cur != nil {
-        for key in cur.newly_inited {
-            if strings.has_prefix(key, prefix) { inited[key] = true }
-        }
-        cur = cur.parent
-    }
-    // Find first uninit that isn't shadowed
-    cur = env
-    for cur != nil {
-        for key in cur.invalid_refs {
-            if strings.has_prefix(key, prefix) && key not_in inited {
-                return key[len(prefix):]
-            }
-        }
-        cur = cur.parent
-    }
-    return nil
 }
 
 type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
@@ -1283,18 +1121,6 @@ record_construction_edge :: proc(c: ^Checker, st: ^Type_Scope, env: ^Type_Env) {
     c.call_edges[Call_Edge{from = caller, to = st}] = true
 }
 
-// Check if a statement body always diverges (return/break/continue as last statement).
-// Conservative: only detects these as the final statement.
-branch_diverges :: proc(body: [dynamic]Stmt) -> bool {
-    if len(body) == 0 { return false }
-    last := body[len(body) - 1]
-    #partial switch _ in last {
-    case Stmt_Return:   return true
-    case Stmt_Break:    return true
-    case Stmt_Continue: return true
-    }
-    return false
-}
 
 // Check if a statement body guarantees a return on all code paths.
 // Used to detect missing returns in non-void functions.
@@ -1337,30 +1163,6 @@ always_returns :: proc(body: [dynamic]Stmt) -> bool {
     return false
 }
 
-// After checking branches (if/else, match arms), promote initializations to the parent scope.
-// A name is promoted only if ALL branches either initialize it or diverge (return/break/continue).
-promote_branch_inits :: proc(env: ^Type_Env, branch_inits: []map[string]bool, diverges: []bool) {
-    if len(branch_inits) == 0 { return }
-    // Collect union of all names any branch initialized
-    all_names: map[string]bool
-    for inits in branch_inits {
-        for name in inits { all_names[name] = true }
-    }
-    // Promote only names that ALL branches cover (init or diverge)
-    for name in all_names {
-        promoted := true
-        for inits, i in branch_inits {
-            if diverges[i] { continue } // diverging branch covers everything
-            if name not_in inits {
-                promoted = false
-                break
-            }
-        }
-        if promoted {
-            mark_initialized(env, name)
-        }
-    }
-}
 
 // Build "prefix_name" without fmt.tprintf (avoids temp allocator overhead).
 // Returns name unchanged if prefix is empty.
@@ -7703,20 +7505,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 s.env_type = ann_type
                 type_env_set(env, s.name, ann_type)
                 set_provenance(env, s.name, prov_local(env)) // uninitialized local is at our depth
-                // Track uninitialized pointers/slices — reading before assignment is an error
-                base := distinct_base(ann_type)
-                if _, is_ptr := base.(^Type_Ptr); is_ptr {
-                    env.invalid_refs[s.name] = true
-                } else if _, is_slice := base.(^Type_Slice); is_slice {
-                    // Sized slices `name : []T(N)` allocate storage at decl time,
-                    // so they're not uninitialized.
-                    if s.slice_cap_expr == nil {
-                        env.invalid_refs[s.name] = true
-                    }
-                } else if sd := as_scope_body(base); sd != nil && len(sd.fields) > 0 {
-                    // Track uninit ptr/slice fields inside a struct declared without initializer
-                    add_struct_invalid_fields(env, s.name, sd)
-                }
+                // (Uninit ptr/slice/field read-before-init tracking now lives in
+                // the post-check flow pass — flow.odin.)
                 continue
             }
 
@@ -7888,12 +7678,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.env_type = ann_type
                     type_env_set(env, s.name, ann_type)
                     set_provenance(env, s.name, prov_local(env)) // struct literal is local
-                    // Track uninit ptr/slice fields not provided in the literal
-                    if lit, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok {
-                        provided: map[string]bool
-                        for field in lit.fields { provided[field.name] = true }
-                        add_struct_invalid_fields(env, s.name, sd, provided)
-                    }
                     continue
                 }
                 if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
@@ -7990,17 +7774,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 type_env_set(env, s.name, ann_type)
                 set_provenance(env, s.name, expr_provenance(c, s.value, env))
                 mark_local_slice_backed_if_needed(c, env, s.name, s.value)
-                update_alias_from_value(env, s.name, s.value)
-                // Pointer-typed and assigned `void` (the null literal) is
-                // semantically "no usable value yet" — same definition as
-                // declared-without-initializer. Route through the existing
-                // invalid_refs path so the deref check at the Expr_Ident site
-                // catches it with the same error.
-                if _, is_ptr := distinct_base(ann_type).(^Type_Ptr); is_ptr {
-                    if is_void_literal(s.value) {
-                        env.invalid_refs[s.name] = true
-                    }
-                }
             } else {
                 // No type annotation: variables solidify.
                 // But DON'T overwrite if the variable already has a declared type
@@ -8105,12 +7878,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     type_env_set(env, s.name, binding_type)
                     set_provenance(env, s.name, expr_provenance(c, s.value, env))
                     mark_local_slice_backed_if_needed(c, env, s.name, s.value)
-                    update_alias_from_value(env, s.name, s.value)
-                    if _, is_ptr := distinct_base(binding_type).(^Type_Ptr); is_ptr {
-                        if is_void_literal(s.value) {
-                            env.invalid_refs[s.name] = true
-                        }
-                    }
                 } else {
                     // Reassignment with `void` DE-INITIALIZES. Scalars and
                     // pointers re-enter the read-before-write pool (the
@@ -8121,14 +7888,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // pointer `p = void` keeps its null store.
                     if is_void_literal(s.value) {
                         base_t := distinct_base(existing_type)
-                        is_aggregate_t := false
-                        #partial switch _ in base_t {
-                        case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array: is_aggregate_t = true
-                        }
-                        if sd := as_scope_body(base_t); sd != nil { is_aggregate_t = true }
-                        if !is_aggregate_t {
-                            env.invalid_refs[s.name] = true
-                        }
                         if _, ok := base_t.(^Type_Ptr); !ok {
                             s.value = new_clone(Expr_Skip_Constructor{span = s.span})
                         }
@@ -8136,10 +7895,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         s.env_type = existing_type
                         continue
                     }
-                    // Reassignment: mark as initialized (clears invalid_refs for ptr/slice)
-                    mark_initialized(env, s.name)
-                    // Also clear any field-level uninit entries (whole struct reassignment)
-                    clear_struct_invalid_fields(env, s.name)
                     // Reassigning a slice var with a literal would repoint its
                     // header at rodata (and silently drop any sized backing).
                     check_no_literal_slice_binding(c, existing_type, s.value, s.span)
@@ -8159,7 +7914,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.var_type = distinct_base(existing_type)
                     s.env_type = existing_type
                     set_provenance(env, s.name, expr_provenance(c, s.value, env))
-                    update_alias_from_value(env, s.name, s.value)
                 }
             }
         case ^Stmt_Multi_Assign:
@@ -8977,12 +8731,8 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             if len(s.else_body) > 0 {
                 else_child := type_env_block_child(env)
                 check_scope(c, s.else_body, &else_child)
-                // Promote initializations that BOTH branches performed
-                inits := [2]map[string]bool{ child.newly_inited, else_child.newly_inited }
-                divs := [2]bool{ branch_diverges(s.body), branch_diverges(s.else_body) }
-                promote_branch_inits(env, inits[:], divs[:])
             }
-            // No else → the "fall-through" path initializes nothing → no promotion
+            // (Definite-assignment branch-merge now lives in the flow pass.)
 
         case ^Stmt_For:
             check_for_body(c, s, env)
@@ -9814,11 +9564,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             }
             // `obj.view = "lit"` — a slice-typed field would alias rodata.
             check_no_literal_slice_binding(c, ft, s.value, s.span)
-            // Mark field as initialized (clears invalid_refs for ptr/slice struct fields)
-            if ident, ident_ok := fa_expr.expr.(^Expr_Ident); ident_ok {
-                field_key := strings.concatenate({ident.name, ".", fa_expr.field})
-                mark_initialized(env, field_key)
-            }
+            // (Field-init clearing for definite-assignment now in the flow pass.)
             if is_byte_buffer(val_type) {
                 // Byte buffer reinterpret read via slice: obj.field = mem[lo:hi]
                 field_size := checker_type_byte_size(ft)
@@ -9997,9 +9743,6 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
         }
     }
 
-    // Track per-arm initializations for definite assignment promotion
-    arm_inits: [dynamic]map[string]bool
-    arm_divs: [dynamic]bool
 
     for &arm in s.arms {
         if arm.dot_shorthand != "" {
@@ -10027,8 +9770,6 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             }
             child := type_env_block_child(env)
             check_scope(c, arm.body, &child)
-            append(&arm_inits, child.newly_inited)
-            append(&arm_divs, branch_diverges(arm.body))
         } else if arm.is_union_arm {
             // Union pattern arm: VariantName [bindingName] { body }
             if is_union_match {
@@ -10072,14 +9813,10 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                 }
             }
             check_scope(c, arm.body, &child)
-            append(&arm_inits, child.newly_inited)
-            append(&arm_divs, branch_diverges(arm.body))
         } else if arm.is_else {
             // Else (wildcard) arm — just type-check the body
             child := type_env_block_child(env)
             check_scope(c, arm.body, &child)
-            append(&arm_inits, child.newly_inited)
-            append(&arm_divs, branch_diverges(arm.body))
         } else {
             // Value match arm — try to infer bare identifiers as enum/union variants
             if ident, ident_ok := arm.value.(^Expr_Ident); ident_ok {
@@ -10090,8 +9827,6 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                         arm.resolved_tag = tag_val
                         child := type_env_block_child(env)
                         check_scope(c, arm.body, &child)
-                        append(&arm_inits, child.newly_inited)
-                        append(&arm_divs, branch_diverges(arm.body))
                         continue
                     }
                 } else if is_union_match {
@@ -10107,8 +9842,6 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                         }
                         child := type_env_block_child(env)
                         check_scope(c, arm.body, &child)
-                        append(&arm_inits, child.newly_inited)
-                        append(&arm_divs, branch_diverges(arm.body))
                         continue
                     }
                 }
@@ -10117,8 +9850,6 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             check_expr(c, arm.value, env)
             child := type_env_block_child(env)
             check_scope(c, arm.body, &child)
-            append(&arm_inits, child.newly_inited)
-            append(&arm_divs, branch_diverges(arm.body))
         }
     }
     // An else arm (with or without a body) opts out of the variant-coverage
@@ -10131,11 +9862,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             break
         }
     }
-    // Promote definite assignments if the match is exhaustive — either via
-    // an else wildcard with a body or (below) by covering every variant.
-    if has_wildcard && len(arm_inits) > 0 {
-        promote_branch_inits(env, arm_inits[:], arm_divs[:])
-    }
+    // (Definite-assignment branch-merge across arms now lives in the flow pass.)
     // Strict-default exhaustiveness: when the subject is an enum or union and
     // there's no else wildcard, every variant must have an arm. else is the
     // only opt-out — write `else do {…}` to acknowledge you're not covering
@@ -10165,10 +9892,6 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                     check_error(c, s.span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, ut.name, variant)
                 }
             }
-        }
-        // Match passed exhaustiveness — promote definite assignments.
-        if len(arm_inits) > 0 {
-            promote_branch_inits(env, arm_inits[:], arm_divs[:])
         }
     }
 }

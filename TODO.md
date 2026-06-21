@@ -43,3 +43,5 @@ Maybe it's time to abandon the typed AST idea? Should a stack of type scope be t
 Investigate if Megastruct{} is sugar for Megastruct () {}
 
 🚩 parameterized structs. We have regular structs with constructors, and we have generics. Parameterized is not a struct thing.
+
+🚩 Want me to take that type-checker unification next (the genuine {}/() merge)
