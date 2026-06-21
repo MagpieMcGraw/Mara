@@ -958,7 +958,18 @@ CLI_Args :: struct {
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [deps|users] [in <module|file>]"
-ASK_USAGE :: "Usage: mara ask <name> [deps|users] [in <module|file>]"
+ASK_USAGE :: `Usage: mara ask <name> [deps|users] [in <module|file>]
+
+  mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
+  folder whose .mara files declare a module. Use 'in <module>' to target a
+  different discovered module without changing directories.
+
+    (no name)      module map — every module in the project at a glance
+    <name>         a type or function's deps AND users
+    deps           what <name> pulls in   (transitive type dependencies)
+    users          what depends on <name> (direct references, one hop)
+    in <module>    analyze that module instead of the current directory
+    in <file>      keep the current module; resolve <name> within one file`
 
 // Per-package build mode: a package with a top-level `main` is an executable,
 // one without is a DLL (`-shared` forces all-shared). Also feeds the `main`
@@ -1131,12 +1142,18 @@ main :: proc() {
     }
 
     // Validate up front that the requested package was discovered so the user
-    // gets one clean error block rather than partial-build noise.
+    // gets one clean error block rather than partial-build noise. `ask` defaults
+    // its root to the cwd's folder name, so a miss there is usually "you ran this
+    // outside a module dir", not "module not found" — give it query-shaped help.
     if args.pkg_name not_in all_files {
-        fmt.println("Error: no files found for the following modules:")
-        fmt.printf("  %s\n", args.pkg_name)
-        fmt.println("Available modules:")
-        for name in all_files { fmt.printf("  %s\n", name) }
+        if args.ask {
+            fmt.print(ask_no_module_here(all_files, args.compiler_dir, args.pkg_name, args.ask_target, args.ask_query))
+        } else {
+            fmt.println("Error: no files found for the following modules:")
+            fmt.printf("  %s\n", args.pkg_name)
+            fmt.println("Available modules:")
+            for name in all_files { fmt.printf("  %s\n", name) }
+        }
         os.exit(1)
     }
 

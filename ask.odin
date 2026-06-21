@@ -747,6 +747,63 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: s
     return strings.to_string(b), true
 }
 
+// --- no analyzable module in the cwd ---------------------------------------
+
+// `mara ask` runs against the module in the current directory (its folder name
+// is the default root). When that folder names no discovered module, the generic
+// build error ("no files found for module X") buries the real problem and never
+// mentions the user's query. This renders ask-shaped guidance instead: name the
+// miss, show the modules that ARE analyzable (local first, then stdlib — exactly
+// the valid `in <module>` arguments), and teach the two ways forward — cd into a
+// module's directory, or pin one inline with `in <module>`. The local/stdlib
+// split classifies each module by a representative file, like the module map.
+ask_no_module_here :: proc(all_files: map[string][dynamic]^Source_File, compiler_dir, cwd_name, target, query: string) -> string {
+    locals: [dynamic]string
+    libs:   [dynamic]string
+    for name, files in all_files {
+        if len(files) == 0 { continue }
+        if ask_file_is_stdlib(files[0].path, compiler_dir) { append(&libs, name) }
+        else                                               { append(&locals, name) }
+    }
+    less := proc(a, b: string) -> bool { return a < b }
+    slice.sort_by(locals[:], less)
+    slice.sort_by(libs[:], less)
+
+    // Echo the user's own command in the inline-fix hint so the fix is copy-paste.
+    inline_hint := "mara ask <name> in <module>"
+    if target != "" {
+        q := fmt.tprintf(" %s", query) if query != "" else ""
+        inline_hint = fmt.tprintf("mara ask %s%s in <module>", target, q)
+    }
+
+    b := strings.builder_make()
+    if len(locals) == 0 {
+        // The user's third case: the directory holds no Mara module at all.
+        fmt.sbprintf(&b, "mara ask: no Mara module in the current directory ('%s').\n", cwd_name)
+        fmt.sbprint(&b,  "  mara ask analyzes the module in the directory you run it from —\n")
+        fmt.sbprint(&b,  "  a folder whose .mara files declare a module. cd into one, or pin a\n")
+        fmt.sbprint(&b,  "  module inline:\n")
+    } else {
+        // A module IS here, just under a name other than the folder's.
+        fmt.sbprintf(&b, "mara ask: '%s' (this folder's name) is not a module here.\n", cwd_name)
+        fmt.sbprint(&b,  "  Run mara ask from a module's own directory, or pin one inline:\n")
+    }
+    fmt.sbprintf(&b, "      %s\n", inline_hint)
+
+    if len(locals) > 0 || len(libs) > 0 {
+        fmt.sbprint(&b, "\n  modules on the search path (each valid as `in <module>`):\n")
+        if len(locals) > 0 {
+            fmt.sbprint(&b, "    your code\n")
+            for n in locals { fmt.sbprintf(&b, "      %s\n", n) }
+        }
+        if len(libs) > 0 {
+            fmt.sbprint(&b, "    stdlib\n")
+            for n in libs { fmt.sbprintf(&b, "      %s\n", n) }
+        }
+    }
+    return strings.to_string(b)
+}
+
 // --- module map: the project at a glance -----------------------------------
 
 Ask_Module_Info :: struct {
