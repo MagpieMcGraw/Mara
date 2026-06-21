@@ -723,12 +723,9 @@ Type_Env :: struct {
     // (Definite-assignment state — invalid_refs / newly_inited / aliases — is
     // gone: it now lives in the post-check flow pass, flow.odin.)
     bindings: map[string]^Binding,
-    class_scope: ^Type_Scope,    // when non-nil, this env is the body of that class/struct — field names
-                                 // in this env should not leak to nested method bodies as bare identifiers.
-    fun_scope: ^Type_Scope,      // when non-nil, this env is a function's DEFS layer (its ns_env), pointing
-                                 // at that function. A nested fun walks up to the nearest fun_scope to parent
-                                 // its own defs layer there, so the up-walk crosses defs layers only — an
-                                 // enclosing function's locals (on its body env) stay private.
+    // (class_scope / fun_scope removed — a defs-layer env's `scope` IS the class/fun
+    //  ft, so the markers are derived: env_class_scope (non-module .Struct) and
+    //  scope_is_callable (fun or non-module struct). Walks up parent_scope.)
     // (is_module_scope removed — derived from the durable scope via env_is_module:
     //  a module/package env is one whose `scope.is_module` and whose scope's
     //  back-ref names this env. Lookup terminates there. File envs share the module
@@ -1000,25 +997,41 @@ enclosing_fn_name :: proc(env: ^Type_Env) -> string {
 }
 
 // The expected return types of the nearest enclosing function / constructor body,
-// DERIVED from the durable scope graph (the scope's own signature) rather than a
-// per-env copy. Walks to the nearest fun_scope / class_scope marker and reads its
-// return_types. Empty (len 0) = void. This is the frame-lift form: env no longer
-// carries its own return_types copy — the durable Type_Scope already holds them.
+// A callable scope: a fun, or a non-module struct/class (a ctor body). Modules
+// are .Struct too but never a callable. This is what the old class_scope/fun_scope
+// env markers identified — they were always set to the env's own .scope, which is
+// a non-module struct (class defs layer) or a fun. Derive instead of storing.
+scope_is_callable :: proc(s: ^Type_Scope) -> bool {
+    return s != nil && (s.kind == .Fun || (s.kind == .Struct && !s.is_module))
+}
+
+// The class/struct scope an env is the defs layer of — nil unless env.scope is a
+// non-module struct. Replaces the old env.class_scope marker (a class ns_env set
+// class_scope = its own ft = env.scope).
+env_class_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
+    if env != nil && env.scope != nil && env.scope.kind == .Struct && !env.scope.is_module {
+        return env.scope
+    }
+    return nil
+}
+
+// DERIVED from the durable scope graph: walk from this env's scope up parent_scope
+// to the nearest callable (fun/ctor) and read its return_types. Empty = void.
 enclosing_return_types :: proc(env: ^Type_Env) -> []Type {
-    for cur := env; cur != nil; cur = cur.parent {
-        if cur.fun_scope != nil { return cur.fun_scope.return_types[:] }
-        if cur.class_scope != nil { return cur.class_scope.return_types[:] }
+    if env == nil { return nil }
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if scope_is_callable(s) { return s.return_types[:] }
     }
     return nil
 }
 
 // The nearest enclosing callable scope — the fun / ctor whose body we're checking.
 // The "caller" for call-graph edges. nil at module level (a call in a top-level
-// const value etc. has no enclosing function node).
+// const value etc. has no enclosing function node). Walks the durable scope graph.
 enclosing_callable_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
-    for cur := env; cur != nil; cur = cur.parent {
-        if cur.fun_scope != nil { return cur.fun_scope }
-        if cur.class_scope != nil { return cur.class_scope }
+    if env == nil { return nil }
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if scope_is_callable(s) { return s }
     }
     return nil
 }
@@ -3108,23 +3121,26 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
     }
 }
 
-// Build the body-check env for a monomorphized function. Its durable scope is a
-// .Block under the mono fun (kind .Fun), so:
-//  - locals resolve via scope_local_lookup and STOP at the fun boundary — no
-//    call-site leak (the old .Struct shadow scope hid this by accident, by not
-//    being a .Block at all),
+// Build the body-check env for a monomorphized function — the SAME two-layer
+// shape as a regular fun (check_scope_body): a defs layer whose durable scope IS
+// the mono fun (kind .Fun, the enclosing-callable marker), and a .Block body
+// under it. `ns` is caller storage that must outlive the returned body env (it's
+// the body's env.parent). Effects:
 //  - enclosing_callable_scope / enclosing_return_types find the MONO FUN, not the
-//    call site (the latent bug this fixes — a mono body had no fun marker).
+//    call site (the latent bug this fixes — a mono body had no marker at all),
+//  - locals resolve via scope_local_lookup and STOP at the fun boundary (no
+//    call-site leak; the old raw .Struct shadow scope hid this by not being a
+//    .Block at all),
+//  - scope_is_callable(ns.scope) recognises the layer just like a real fun's
+//    ns_env, so the marker is the durable scope — no env.fun_scope field needed.
 // The mono fun chains to the call-site scope so module-level names resolve exactly
 // as before; fun.types/functions are empty, so interposing it adds no resolvable
 // names (resolution-preserving).
-mono_body_env :: proc(env: ^Type_Env, fun: ^Type_Scope) -> Type_Env {
-    child := type_env_child(env)
-    child.scope.kind = .Block
-    child.scope.parent_scope = fun
-    child.fun_scope = fun
+mono_body_env :: proc(env: ^Type_Env, fun: ^Type_Scope, ns: ^Type_Env) -> Type_Env {
     if fun.parent_scope == nil { fun.parent_scope = env.scope }
-    return child
+    ns^ = type_env_child(env)
+    ns.scope = fun
+    return type_env_block_child(ns)
 }
 
 // Instantiate a generic function template with concrete type substitutions.
@@ -3163,8 +3179,10 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     }
     c.table.mono_cache[mangled] = fun_type
 
-    // Body-check env: a proper .Block body under the mono fun (see mono_body_env).
-    child := mono_body_env(env, fun_type)
+    // Body-check env: two-layer (defs layer scope=fun_type, .Block body) — see
+    // mono_body_env. mono_ns must outlive `child` (it's child's env.parent).
+    mono_ns: Type_Env
+    child := mono_body_env(env, fun_type, &mono_ns)
 
     // Bind regular params with their concrete types
     for tp, i in ast.typed_params {
@@ -3291,8 +3309,10 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     c.table.mono_cache[mangled] = mono_ft
     c.table.mono_fun_cache[mangled] = fn_name
 
-    // Body-check env: a proper .Block body under the mono fun (see mono_body_env).
-    child := mono_body_env(env, mono_ft)
+    // Body-check env: two-layer (defs layer scope=mono_ft, .Block body) — see
+    // mono_body_env. mono_ns must outlive `child` (it's child's env.parent).
+    mono_ns: Type_Env
+    child := mono_body_env(env, mono_ft, &mono_ns)
     for tp, i in ast.typed_params {
         if i < len(mono_ft.params) {
             type_env_set(&child, tp.name, mono_ft.params[i].type_)
@@ -7113,7 +7133,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // up the env chain and skip — Phase 1 already did the work.
             in_class_scope := false
             for cur := env; cur != nil; cur = cur.parent {
-                if cur.class_scope != nil { in_class_scope = true; break }
+                if env_class_scope(cur) != nil { in_class_scope = true; break }
                 if env_is_module(cur) { break }
             }
             if in_class_scope { continue }
@@ -7391,7 +7411,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // via `obj.field`, never as a bare identifier), so they can't
             // shadow file-scope or module-scope bindings. Skip the walk when
             // the immediate parent is a class/struct scope.
-            in_struct_body := env.parent != nil && env.parent.class_scope != nil
+            in_struct_body := env_class_scope(env.parent) != nil
             if s.is_decl && !env_is_module(env) && !in_struct_body {
                 // Shadowing of an enclosing local: walk the durable scope chain
                 // above the current scope, below the module.
@@ -7754,14 +7774,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // `field := value` decl shouldn't be misread as a reassignment of
                 // a same-named binding in an outer file / module scope. Suppress
                 // the walk-up lookup when we're directly inside a struct body.
-                in_struct_body := env.parent != nil && env.parent.class_scope != nil
+                in_struct_body := env_class_scope(env.parent) != nil
                 // Un-annotated struct field: adopt the finalized layout width
                 // (resolved in the register pass) for numeric fields, so the
                 // constructor local's var_type matches the field slot codegen
                 // GEPs into. Slice/struct fields fall through to the normal decl
                 // path (which sets up slice-backing / aliasing).
                 if in_struct_body {
-                    if cs := env.parent.class_scope; cs != nil {
+                    if cs := env_class_scope(env.parent); cs != nil {
                         if idx, fm := cs.field_map[s.name]; fm && idx < len(cs.fields) && is_numeric(cs.fields[idx].type_) {
                             lt := cs.fields[idx].type_
                             s.var_type = distinct_base(lt)
@@ -8180,10 +8200,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     parent_env := env
     if ft.kind == .Struct {
         ns_env = type_env_child(env)
-        ns_env.class_scope = ft
-        ns_env.scope = ft // the class's own scope holds its members/nested defs
-        // (ns_env no longer copies ft.types / ft.functions — scope_member reads
-        // them off ft directly via ns_env's class_scope / fun_scope back-link.)
+        ns_env.scope = ft // the class's own scope holds its members/nested defs;
+                          // env_class_scope derives the old class_scope marker from it.
         parent_env = &ns_env
     } else if ft.kind == .Fun {
         // Funs — and methods, which are just funs nested in a struct — get the
@@ -8198,7 +8216,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         // No enclosing scope ⇒ top-level: parent to env (the file/module scope).
         defs_parent := env
         walk := env
-        for walk != nil && walk.fun_scope == nil && walk.class_scope == nil { walk = walk.parent }
+        for walk != nil && !scope_is_callable(walk.scope) { walk = walk.parent }
         if walk != nil { defs_parent = walk }
         // Funs aren't registered at module-registration time (structs are), so
         // collect this fun's nested ::defs now, before exposing them. The
@@ -8209,10 +8227,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             register_scope_defs(c, ft, &ft.sd, s.defs, defs_parent)
         }
         ns_env = type_env_child(defs_parent)
-        ns_env.fun_scope = ft
-        ns_env.scope = ft // the fun's own scope holds its nested defs
-        // (ns_env no longer copies ft.types / ft.functions — scope_member reads
-        // them off ft directly via ns_env's class_scope / fun_scope back-link.)
+        ns_env.scope = ft // the fun's own scope holds its nested defs;
+                          // scope_is_callable(ns_env.scope) marks it as a fun layer.
         parent_env = &ns_env
     }
 
@@ -11661,8 +11677,8 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // ^Self params are still required for helpers.
         cur := env
         for cur != nil {
-            if cur.class_scope != nil {
-                t := new_clone(Type_Ptr{elem = cur.class_scope})
+            if cs := env_class_scope(cur); cs != nil {
+                t := new_clone(Type_Ptr{elem = cs})
                 e.type_ = t
                 return t
             }
@@ -11709,8 +11725,8 @@ build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Env {
     if outer == nil { return nil }
     env := new(Type_Env)
     env.parent = outer
-    env.scope = parent // resolution walks the scope being rebuilt + its parent_scope
-    if parent.kind == .Struct { env.class_scope = parent } else { env.fun_scope = parent }
+    env.scope = parent // resolution walks the scope being rebuilt + its parent_scope;
+                       // env_class_scope / scope_is_callable derive the markers from it.
     return env
 }
 
