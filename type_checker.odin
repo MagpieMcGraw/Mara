@@ -11579,10 +11579,16 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         return src_type
     case ^Expr_Self:
-        // `#self` — the struct the constructor is writing into: the nearest
-        // enclosing struct scope, over the durable graph.
-        if cs := enclosing_struct_scope(env); cs != nil {
-            t := new_clone(Type_Ptr{elem = cs})
+        // `#self` is the receiver the CONSTRUCTOR is writing into — a FRAME
+        // concept, not a namespace one. Resolve it through the nearest enclosing
+        // FRAME (enclosing_callable_scope), which stops at the no-closures
+        // boundary, rather than the namespace walk to the nearest struct: it's
+        // legal iff the frame we are the body of IS a struct (a constructor).
+        // A method or a nested helper, whose frame is a .Fun, must take an
+        // explicit `^Self` param instead — `#self` there has no sret to point at
+        // (codegen would emit an undefined %sret), so reject it here.
+        if f := enclosing_callable_scope(env); f != nil && f.kind == .Struct {
+            t := new_clone(Type_Ptr{elem = f})
             e.type_ = t
             return t
         }

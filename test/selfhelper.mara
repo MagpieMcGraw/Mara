@@ -1,0 +1,18 @@
+//@ expect-fail: only legal directly in a constructor body
+// #self in a NON-constructor nested helper used to type-check (resolving to the
+// enclosing struct via the namespace chain) and then crash codegen with an
+// undefined %sret. The frame walk now rejects it: the helper's frame is a .Fun,
+// not the constructor struct, so #self has no receiver to point at.
+module selfhelper
+
+Thing :: struct(x: i32) {
+	value: i32 = x
+	helper :: fun() -> ^Thing {
+		return #self
+	}
+}
+
+main :: fun() {
+	t := Thing(5)
+	print(t.value)
+}
