@@ -233,9 +233,9 @@ ask_type_name :: proc(t: Type) -> string {
 // on the target, recording each as a reverse edge. Dedups by container identity
 // because a scope can be reachable from more than one table.
 ask_scan_user :: proc(table: ^SymbolTable, res: ^Ask_Result, seen: ^map[rawptr]bool, container: Type, rid: int, tname: string) {
-    // A module namespace is a `kind == .Struct` scope that lists every type it
-    // declares as a member field — those aren't real "uses", so skip it (else
-    // every type shows its own module as a bogus user).
+    // A module namespace is not a "user" of the types it declares — declaring is
+    // not using. (Module structs carry no data fields, so the field scan is
+    // already empty for them; this stays as the explicit invariant.)
     if sc, ok := container.(^Type_Scope); ok && sc.is_module { return }
     key := raw_type_key(container)
     if seen[key] { return }

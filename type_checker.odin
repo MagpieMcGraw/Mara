@@ -4873,7 +4873,6 @@ ctor_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
         st := lookup_struct_type_scope(c, scope.name)
         if st != nil {
             for &f, i in st.fields {
-                if field_is_nested_type_def(&st.sd, &f) { continue }
                 if type_carries_ref(f.type_) { append_unique(&consensus, i) }
             }
         }
@@ -5130,23 +5129,13 @@ is_ref_type :: proc(t: Type) -> bool {
 // depth â€” nested struct fields and array/partial-array elements included.
 // TTF is the motivating case: its only ref is glyf.data, one struct down,
 // so a shallow scan called it ref-free and returning one escaped the
-// checker. Nested TYPE DEFINITIONS registered as pseudo-fields are skipped
-// (defining a ref-carrying type is not storing one). Value nesting is
-// acyclic and ptr fields return true without recursing, so this terminates.
+// checker. Value nesting is acyclic and ptr fields return true without
+// recursing, so this terminates.
 struct_has_ref_field :: proc(sd: ^Scope_Body) -> bool {
     for &f in sd.fields {
-        if field_is_nested_type_def(sd, &f) { continue }
         if type_carries_ref(f.type_) { return true }
     }
     return false
-}
-
-// A nested type registered as a pseudo-field: the field's name maps to the
-// same Type in the scope's types table.
-field_is_nested_type_def :: proc(sd: ^Scope_Body, f: ^Struct_Type_Field) -> bool {
-    if sd.types == nil { return false }
-    t, ok := sd.types[f.name]
-    return ok && t == f.type_
 }
 
 type_carries_ref :: proc(t: Type) -> bool {
@@ -6700,8 +6689,6 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                     struct_type.parent_scope = env if env != nil else owner // file/enclosing scope -> module
                     if owner.types == nil { owner.types = make(map[string]Type) }
                     owner.types[s.name] = struct_type
-                    append(&owner.fields, Struct_Type_Field{name = s.name, type_ = struct_type})
-                    owner.field_map[s.name] = len(owner.fields) - 1
                 }
                 pre_register_nested_struct_types(c, struct_type, s.defs)
                 c.pre_registered_stmts[rawptr(s)] = true
@@ -6743,8 +6730,6 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
                         owner.types[s.name] = fun_type
-                        append(&owner.fields, Struct_Type_Field{name = s.name, type_ = fun_type})
-                        owner.field_map[s.name] = len(owner.fields) - 1
                     }
                     if is_callable {
                         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
@@ -7065,8 +7050,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if owner != nil {
                     if owner.types == nil { owner.types = make(map[string]Type) }
                     owner.types[s.name] = struct_type
-                    append(&owner.fields, Struct_Type_Field{name = s.name, type_ = struct_type})
-                    owner.field_map[s.name] = len(owner.fields) - 1
                 }
             } else {
                 // Function or struct constructor (has params)
@@ -7124,8 +7107,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
                         owner.types[s.name] = fun_type
-                        append(&owner.fields, Struct_Type_Field{name = s.name, type_ = fun_type})
-                        owner.field_map[s.name] = len(owner.fields) - 1
                     }
                     if is_callable {
                         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
