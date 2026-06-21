@@ -713,12 +713,8 @@ Type_Env :: struct {
     // name map. For a block it's the .Block scope; for a fun/class defs layer that
     // scope; for a module the module struct; elsewhere a fresh shadow.
     scope:        ^Type_Scope,
-    // Blocks-as-scopes: the durable .Block Type_Scope this env shadows — its
-    // locals (in .types) and parent_scope link mirror what the env carries, so
-    // local lookup runs off the scope graph (type_env_locate). Set for the
-    // function/ctor BODY (the outermost block) and every if/for/defer/match-arm
-    // block; nil only for non-body envs (the defs/namespace layer and modules).
-    block_scope:  ^Type_Scope,
+    // (block_scope removed — the env's own `scope` IS the .Block for a block body;
+    //  scope_local_lookup self-guards on .Block so locals resolve off env.scope.)
     // (return_types removed — derived from the nearest fun_scope/class_scope's
     //  durable signature via enclosing_return_types, not carried per-env.)
     scope_depth: int,        // stack depth for escape analysis; module = 0, function body = 1+
@@ -745,28 +741,6 @@ Type_Env :: struct {
 }
 
 // Durable scope-member lookup: a scope's nested types + funs live on its
-// Type_Scope (ft.types / ft.functions). From the env's class_scope / fun_scope
-// back-link, walk the durable parent_scope graph UPWARD, so member resolution
-// reads the persistent scope structure directly instead of relying on the
-// env.parent chain to hop defs layers. Crossing a scope boundary upward exposes
-// only members — no closures, so never the enclosing scope's locals — which is
-// exactly what the graph holds (locals + Self/consts + module names/includes
-// stay on the env walk, and are disjoint from ft.types/functions). This is the
-// Stage-1 redirect: defs-layer resolution no longer depends on env.parent.
-scope_member :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
-    ft := env.class_scope
-    if ft == nil { ft = env.fun_scope }
-    for s := ft; s != nil; s = s.parent_scope {
-        if s.types != nil {
-            if t, ok := s.types[name]; ok { return t, true }
-        }
-        if s.functions != nil {
-            if fn, ok := s.functions[name]; ok && fn != nil { return fn, true }
-        }
-    }
-    return nil, false
-}
-
 // Does scope `s` define `name` directly (its own types or functions)? One level,
 // no parent_scope walk — the durable equivalent of a single env's own .types.
 scope_defines :: proc(s: ^Type_Scope, name: string) -> (Type, bool) {
@@ -837,10 +811,11 @@ scope_resolve :: proc(env: ^Type_Env, name: string, below_module := false) -> (T
 // (validated under MARA_WALK_CHECK: zero gaps and zero type-identity mismatches
 // vs the old env.types walk across every fixture, Pounce, and all.mara).
 type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
-    if env.block_scope != nil {
-        if t, ok := scope_local_lookup(env.block_scope, name); ok {
-            return t, nil, true  // a local never lives in a class namespace
-        }
+    // LOCALS first: scope_local_lookup self-guards on .Block (the env's scope is a
+    // .Block iff this is a block body), so an enclosing fun/class/module scope
+    // stops the walk immediately and falls through to scope_resolve.
+    if t, ok := scope_local_lookup(env.scope, name); ok {
+        return t, nil, true  // a local never lives in a class namespace
     }
     return scope_resolve(env, name, below_module)
 }
@@ -1003,7 +978,6 @@ type_env_block_child :: proc(parent: ^Type_Env) -> Type_Env {
     // nearest enclosing scope (a containing block, else the enclosing fun/ctor),
     // so the chain matches the old enclosing-scope link.
     child.scope.kind = .Block
-    child.block_scope = child.scope
     return child
 }
 
