@@ -183,6 +183,12 @@ Scope_Body :: struct {
     // Module scope (non-nil for module-structs created by `include`)
     scope:          ^Type_Env,         // module namespace scope — nil for normal structs
 
+    // Bare-`include`d modules' durable scopes, visible from this scope (a file
+    // scope holds that file's private includes; a module scope holds re-exports).
+    // Name resolution walks parent_scope and checks each scope's includes —
+    // non-transitive (we don't follow inc.includes).
+    includes:       [dynamic]^Scope_Body,
+
     // Module dispatch groups (stored on module-struct for propagation on `using include`)
     dispatch_groups:    map[string][dynamic]string,
     operator_overloads: map[Token_Kind][dynamic]string,
@@ -6688,7 +6694,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 c.table.fun_asts[s.name] = s
                 c.table.fun_homes[s.name] = c.current_package
                 if owner != nil {
-                    struct_type.parent_scope = owner // chain to the module/enclosing scope
+                    struct_type.parent_scope = env.scope if env.scope != nil else owner // file/enclosing scope -> module
                     if owner.types == nil { owner.types = make(map[string]Type) }
                     owner.types[s.name] = struct_type
                     append(&owner.fields, Struct_Type_Field{name = s.name, type_ = struct_type})
@@ -6730,7 +6736,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 is_callable := !is_struct_type || len(s.typed_params) > 0
                 if is_callable { c.declared_funs[s.name] = true }
                 if owner != nil {
-                    fun_type.parent_scope = owner // chain to the module/enclosing scope
+                    fun_type.parent_scope = env.scope if env.scope != nil else owner // file/enclosing scope -> module
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
                         owner.types[s.name] = fun_type
@@ -7108,7 +7114,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Attach as a member of the enclosing module struct (if any).
                 // Mirrors the work extract_module_into_checked used to do post-hoc.
                 if owner != nil {
-                    fun_type.parent_scope = owner // chain to the module/enclosing scope
+                    fun_type.parent_scope = env.scope if env.scope != nil else owner // file/enclosing scope -> module
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
                         owner.types[s.name] = fun_type
@@ -9999,7 +10005,16 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
     for src in file_order {
         fe := new(Type_Env)
         fe.parent = pkg_env
-        fe.scope = pkg_env.scope // file names resolve over the module scope
+        // Each file gets its OWN durable scope, chained to the module scope. It
+        // holds the file's private includes (its `use`/`include` imports stay
+        // file-local); definitions still register on the module scope (public).
+        // kind = .Block / is_module = false so the marker derivations skip it.
+        fs := new(Type_Scope)
+        fs.kind = .Block
+        fs.home_package = pkg_env.scope.home_package if pkg_env.scope != nil else ""
+        fs.parent_scope = pkg_env.scope
+        fs.scope = fe
+        fe.scope = fs
         file_envs[src] = fe
     }
     return
