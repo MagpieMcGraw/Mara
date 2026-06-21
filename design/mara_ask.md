@@ -1,7 +1,33 @@
 # `mara ask` — static data-flow & dependency queries
 
-**Status:** design only. Not scheduled, not started. Captured while the idea was fresh
-(grew out of hand-slicing `draw_state_render`'s inputs in Pounce).
+**Status:** substrate built; first version chosen. The "definitional summaries built
+once" layer (§3) that this feature presumes now exists for real — §12's materialized
+call graph shipped during the Type_Env teardown (callgraph.odin: skeleton, SCCs, the
+`cg_bottom_up` summary framework, purity, return-arg-sets). The first `mara ask` to
+build (decided 2026-06-21) is the **type dependency graph** — `<Type> deps`, §4:
+who-contains-what / who-embeds-what / who-calls-what over the symbol table. It's the
+right first cut because it's almost entirely *structural* (struct field + embed edges,
+function-signature type edges) — it reads `SymbolTable.structs`/`.funs` directly and
+barely touches the dataflow walk, so it ships value without the field-granular
+machinery `inputs` (§5) still needs. (Grew out of hand-slicing `draw_state_render`'s
+inputs in Pounce.)
+
+> **Doc currency.** Most of this doc predates the Type_Env teardown. The *concepts* all
+> hold and the substrate is stronger now, but several named handles moved. §1/§2/§12 are
+> corrected inline; the later dataflow sections (§5/§7/§8/§10/§11) still use the old names
+> because those queries aren't built yet — read them through this table:
+>
+> | doc says | now |
+> | --- | --- |
+> | `Checked_Scope` | folded into `^Type_Scope` (its `.params`/`.return_types`/`.origin`) |
+> | `Type_Env` | deleted — the checker threads `^Type_Scope` directly |
+> | `Type_Env.aliases` | flow.odin's `g_flow_alias` (`it = &root` redirect); rebuild a local map for the ask walk |
+> | `Type_Env.scope_depth` | escape.odin's `enclosing_fun_depth` |
+> | `Binding.provenance` | escape.odin frame-stack `get/set_provenance` (default `PROV_GLOBAL`) |
+> | `Binding.read` | flow.odin's `flow_expr_reads` (read-tracking moved to the flow pass) |
+> | `fun_return_arg_set` "SymbolTable cache, `-1` cycles" | query over `Checked_Program.call_graph.return_args` (SCC fixpoint) |
+>
+> The call graph in §12 is no longer "future" — it's built.
 
 A small query command over a checked program: "what feeds this function?", "what
 contributes to this value?", "what depends on this struct?". The motivating session
@@ -28,11 +54,16 @@ can't escape (returning a local-backed slice/pointer is already a hard error). S
   the two dangling edges in `draw_state_render` are *visible as missing edges* rather
   than hidden behind a may-alias fixpoint.
 
-The compiler already encodes this invariant:
-- `Type_Env.scope_depth` — module scope is depth 0; the escape check is
-  `depth >= env.scope_depth`. Module-level bindings outlive everything.
-- `Binding.provenance` — defaults to `PROV_GLOBAL` (immutable root), distinct from
-  param/local provenance. Top-level names are constants, never producers.
+The compiler already encodes this invariant — now in the post-check escape pass
+(escape.odin), which re-derives it over the durable scope graph rather than on a
+transient env:
+- **frame depth** — `enclosing_fun_depth` counts enclosing `.Fun` scopes; the escape
+  check rejects a value living at our frame depth or deeper. Module-level bindings
+  (depth 0) outlive everything. (Was `Type_Env.scope_depth`.)
+- **provenance** — defaults to `PROV_GLOBAL` (immutable root), distinct from
+  param/local provenance; tracked on the pass's block-scoped frame stack
+  (`get_provenance`/`set_provenance`). Top-level names are constants, never producers.
+  (Was `Binding.provenance`.)
 
 So the queries below are graph reachability over edges the checker can already see —
 not interprocedural points-to.
@@ -41,8 +72,12 @@ not interprocedural points-to.
 
 ## 2. We have already built 80% of this
 
+(Now more than 80%: §12's materialized call graph + bottom-up summary framework
+shipped too — see that section. The backward slice below predates it and still
+stands.)
+
 The checker contains a **backward interprocedural slice** today: escape analysis.
-Look at `eval_expr_arg_set` (type_checker.odin, ~4808):
+Look at `eval_expr_arg_set` (type_checker.odin, ~5049):
 
 ```odin
 // Given an expr, returns the set of fn_scope parameter indices whose data flows into it.
@@ -56,28 +91,29 @@ eval_expr_arg_set :: proc(c, e, fn_scope, tracking) -> [dynamic]int {
 ```
 
 That `Expr_Call` case is the crux: it resolves the callee
-(`lookup_callee_scope`, ~4919 — mirrors dispatch order: resolved name → source name →
+(`lookup_callee_scope`, ~5163 — mirrors dispatch order: resolved name → source name →
 `resolved_func` name → stripped monomorph suffix), asks which of the callee's args
-flow to its return (`fun_return_arg_set`, cached on the `SymbolTable`, cycles return
-`-1`), and **recurses through the matching argument expressions**. That is a
-return→arg backward walk across the call graph. `mara ask` generalizes the same walk
-to more questions and finer granularity.
+flow to its return (`fun_return_arg_set`, ~4832 — now a query over the materialized
+`Checked_Program.call_graph.return_args`; the old `-1` cycle hack is gone, replaced by
+the SCC fixpoint in `cg_bottom_up`), and **recurses through the matching argument
+expressions**. That is a return→arg backward walk across the call graph. `mara ask`
+generalizes the same walk to more questions and finer granularity.
 
 Reusable parts already in place:
 
 | Need | Existing handle |
 | --- | --- |
-| Post-check IR to query (no re-walk) | `Checked_Program` — `functions: map[string]Checked_Scope`, `function_order`, `constant_values`, `table` |
+| Post-check IR to query (no re-walk) | `Checked_Program` — `functions: map[string]^Type_Scope`, `function_order`, `call_graph: Call_Graph`, `constant_values`, `table` |
 | Name → function AST | `SymbolTable.fun_asts` (`map[string]^Stmt_Scope`) |
 | Call → callee resolution (incl. dispatch/UFCS) | `lookup_callee_scope`, `Expr_Call.resolved_func: Maybe(Resolved_Func)`, `find_dispatch` / `dispatch_groups` |
 | Operator → function resolution | `Expr_Binary.overload_fn` / `Expr_Unary.overload_fn` (`Maybe(Resolved_Func)`) — already resolved on the node |
-| Return → arg dataflow | `fun_return_arg_set` (+ `arg_set_freeze`) |
-| Params / fields / returns of a fn | `Stmt_Scope.typed_params`, `.fields`, `.return_types`; `Checked_Scope.params` |
+| Return → arg dataflow | `fun_return_arg_set` → `Checked_Program.call_graph.return_args` (computed by `cg_compute_return_args` over `cg_bottom_up`) |
+| Params / fields / returns of a fn | `Stmt_Scope.typed_params`, `.fields`, `.return_types`; on the checked side `^Type_Scope.params` / `.fields` / `.return_types` (Checked_Scope folded into Type_Scope) |
 | Field/index/deref write sites | `Stmt_Assign.target` (complex LHS) + `Expr_Field_Access` / `Expr_Index` |
-| Intra-proc points-to | `Type_Env.aliases` (`it = &root` → `aliases[it]="root"`) |
-| Foreign / intrinsic leaves | `Checked_Scope.origin` (`Source` / `Foreign` / `Intrinsic`) |
+| Intra-proc points-to | flow.odin's `g_flow_alias` (`it = &root` redirect, same idea as the old `Type_Env.aliases`; rebuild a local map for the ask walk) |
+| Foreign / intrinsic leaves | `^Type_Scope.origin` (`Origin_Source` / `Origin_Foreign` / `Origin_Intrinsic`) |
 | Source locations (for the LSP) | `Span` on every AST node |
-| "Is this name ever read?" | `Binding.read` (already tracked for must-use-err / unused-locals) |
+| "Is this name ever read?" | flow.odin's read-walker `flow_expr_reads` (the analysis moved to the post-check flow pass; `Binding.read` is gone) |
 
 ---
 
@@ -89,16 +125,20 @@ the printer.** This is the same separation the codebase already keeps ("codegen 
 no analysis").
 
 ```odin
-Ask_Node_Kind :: enum { Function, Field, Param, Const, File, Foreign, Opaque }
+Ask_Node_Kind :: enum { Function, Type, Field, Param, Const, File, Foreign, Opaque }
+// `Type` (struct/enum/union/distinct) is the v1 node — §4.1. The rest are for the
+// dataflow queries (`inputs`/`contributors`).
 
 Ask_Node :: struct {
     kind:  Ask_Node_Kind,
-    label: string,        // "draw_state_create", "DrawState.texture", "instanced_text.glsl"
+    label: string,        // "draw_state_create", "DrawState", "DrawState.texture", "instanced_text.glsl"
     span:  Span,          // for LSP jump-to / inline; zero for synthesized leaves
     flags: bit_set[Ask_Flag],   // .Dangling (read, never produced), .Opaque (indirect call), ...
 }
 
-Ask_Edge :: struct { from, to: int, kind: enum { Produces, Consumes, Calls, Returns } }
+// Contains/Embeds/Takes/Returns/Calls are the structural v1 edges (§4.1);
+// Produces/Consumes are the dataflow edges (§5).
+Ask_Edge :: struct { from, to: int, kind: enum { Contains, Embeds, Takes, Returns, Calls, Produces, Consumes } }
 
 Ask_Result :: struct { nodes: [dynamic]Ask_Node, edges: [dynamic]Ask_Edge, root: int }
 
@@ -143,7 +183,8 @@ in. The point-at-the-call UX is not just ergonomics, it is the cost model.
 ```
 mara ask <fn> inputs                 # producer/consumer set of fn's reachable input surface
 mara ask <fn>.<param> contributors   # backward slice toward sources (generalized escape walk)
-mara ask <Type> deps                 # struct dependency graph
+mara ask <Type> deps                 # v1: type dependency graph — what this type pulls in (§4.1)
+mara ask <Type> users                # v1: reverse — who contains/embeds/takes/returns this type (§4.1)
 mara ask <Type>.<field> writers      # every site that assigns this field, program-wide
 mara ask <var> in <fn> assignments    # every assignment to a specific local
 mara ask <var> in <fn> readers         # every read of a local/store, counting the loop back-edge (§11)
@@ -154,9 +195,57 @@ mara ask at <file>:<line> inputs        # 'inputs' anchored on the concrete call
 Flags: `--dot`, `--json`, `--depth N` (cap transitive walk), `--module <m>` (scope the
 search). All read-only; all stop after type-checking (see §6).
 
-`inputs` is the headline. `<fn> deps` for structs is nearly free (read
-`SymbolTable.structs`, edges = field types). `contributors` is literally
-`eval_expr_arg_set` lifted out of escape analysis and run to a printed result.
+`inputs` is the headline *eventually*. `contributors` is literally `eval_expr_arg_set`
+lifted out of escape analysis and run to a printed result. But the **first version to
+build** is `deps` — see §4.1.
+
+---
+
+## 4.1 First version: the type dependency graph (`deps` / `users`)
+
+**Chosen first cut (2026-06-21).** Of the query surface, the type dependency graph is the
+one that ships real value with the least new machinery: it is almost entirely
+*structural*. Where `inputs` (§5) needs field-granular read/write footprints that don't
+exist yet, `deps` reads what the symbol table already holds — struct layouts and function
+signatures — and emits a graph. It barely touches the dataflow walk, and the one
+cross-function edge it wants (who calls what) is now free from the materialized call graph
+(§12). It is also broadly useful on its own ("what does this type pull in", "who embeds
+`DrawState`", "who takes a `^Camera`") and exercises the whole §3/§6 spine — query parse →
+`run_ask` → `Ask_Result` → text/`--dot` renderers, stopping after `check_program` — on a
+low-risk query before the harder `inputs` walk.
+
+**Nodes.** Types (`.Struct` data scopes, enums, unions, distinct) and functions. Reuse §3's
+`Ask_Node`; add a `Type` node kind to `Ask_Node_Kind` (the enum has `Function` but no type
+node yet). `label` = the type/fn name, `span` from the `^Type_Scope` / `^Stmt_Scope`.
+
+**Edges — all read directly off declarations, no analysis pass:**
+
+| Edge | Source |
+| --- | --- |
+| struct **contains** type | `^Type_Scope.fields[].type_` (a field whose type is/embeds another scope/enum/union) — `SymbolTable.structs` |
+| struct **embeds** type | the `using` field(s) on a struct — the "who embeds what" the language already distinguishes from a plain field |
+| fn **takes** type | `^Type_Scope.params[].type_` (unwrap `^T` / `[]T` / `[N]T` to the underlying named type) |
+| fn **returns** type | `^Type_Scope.return_types[]` |
+| fn **calls** fn | `Checked_Program.call_graph` out-edges — already materialized; *optional* in v1, the type edges alone are useful |
+
+Unwrapping pointer/slice/array wrappers to the underlying named type is the only real
+walk; it's the same `distinct_base`/element-unwrap the codegen layout already does.
+
+**Two directions, and the reverse is the prize.** `mara ask <Type> deps` = forward (what
+`Visual` pulls in: its field types, transitively). `mara ask <Type> users` = reverse (who
+contains/embeds/takes/returns `Visual`) — the "what breaks if I change this struct" query,
+which is the one people actually reach for. Both are the same edge set walked in opposite
+directions; build the edge set once, traverse either way. `--depth N` caps the transitive
+walk; `--dot` is the headline output (this graph is meant to be *seen*).
+
+**What v1 deliberately omits** (all present in later queries, none needed here): field-level
+read/write footprints, the dangling check (§5), the anchored/per-call walk (§5), provenance
+(§10), flow sensitivity (§11). v1 is pure declaration-structure + the call edges.
+
+**Validation.** `mara ask Visual deps` and a `<core type> users` case as golden fixtures
+(§9 style — diff the rendered tree against a checked-in golden). A cheap honesty check: the
+type graph's strongly-connected components are mutually-recursive type groups, which must
+already be the ones codegen forward-declares — a free cross-check against existing behavior.
 
 ---
 
@@ -522,19 +611,26 @@ in `test/`.
 
 ---
 
-## 12. Future: the materialized call graph as shared substrate
+## 12. The materialized call graph as shared substrate — BUILT
 
-**Status: not scheduled.** Captured here because it fell out of §3 — the "definitional
-summaries built once" layer presumes a call graph, and `mara ask` is the feature that first
-makes its absence felt. They are the same feature seen from two ends.
+**Status: BUILT (callgraph.odin), 2026-06-20/21.** It landed during the Type_Env
+teardown, ahead of `mara ask`, because several analyses wanted it at once. A
+post-`check_program` artifact on `Checked_Program.call_graph`: nodes = callable scopes,
+edges = resolved calls + construction edges, Tarjan SCCs, reachability-from-`main`, and
+— the real prize — the `cg_bottom_up` summary framework (visit SCCs callees-first,
+iterate each to a fixpoint). Two summaries ride it today: **purity** (`cg_compute_purity`
++ `MARA_DUMP_PURITY`) and **return-arg-sets** (`cg_compute_return_args` →
+`call_graph.return_args`, which `fun_return_arg_set` now queries — the `-1` hack retired,
+and *more precise* for recursion than the lazy version it replaced). The rest of this
+section is the original vision; it reads as "future" but the skeleton + framework are now
+real, so the remaining items are summaries to add, not infrastructure to invent.
 
-**It already exists, as scattered re-derivations.** The checker has no materialized call
-graph, yet it walks one constantly: `fun_return_arg_set` follows callees through
-`lookup_callee_scope` and hand-rolls cycle detection (that `-1` return *is* an ad-hoc SCC
+**Why it was scattered re-derivations before.** The checker walked a call graph
+constantly without materializing one: `fun_return_arg_set` followed callees through
+`lookup_callee_scope` and hand-rolled cycle detection (that `-1` return *was* an ad-hoc SCC
 check). Codegen re-derives the same edges from callee resolution + `function_order` for its
-emission order and parallel scheduling. The graph is real; it is just recomputed per
-consumer. Materializing it once sits upstream of all of them — the consolidation the codebase
-already favors (one `Binding`, not parallel maps; function-is-island).
+emission order and parallel scheduling. Materializing it once sits upstream of all of them —
+the consolidation the codebase already favors (function-is-island).
 
 **The skeleton is not the prize — the summary framework is.** Every interprocedural summary
 in this doc — arg-sets, the read/write footprints (§5, §10), provenance — is the *same*
@@ -544,24 +640,27 @@ on the nodes as `resolved_func` / `overload_fn` / `dispatch_groups`) and the sum
 *framework* over it instead of N bespoke walks each with its own cycle guard.
 `fun_return_arg_set`'s `-1` hack becomes "the SCC this node is in," computed once and shared.
 
-**What it unlocks beyond `ask`** — each is a propagation over the same edges:
+**What it unlocks beyond `ask`** — each is a propagation over the same edges (✓ = already
+built on `cg_bottom_up`; the rest are summaries still to add):
 
 - **Static stack bounds — the scope allocator made analyzable.** Frame sizes are known at
   check time; graph + SCCs give worst-case stack depth per entry point, flag recursion (a
   cycle = unbounded = must arena/heap, not stack), and could drive stack-vs-arena placement
   statically. This is the *static* form of the overflow already hit and fixed by the
   big-tuple-slot arena bump — and it fits the TigerStyle bar: bounded, provable resources.
-- **Interprocedural provenance.** Provenance is already here *intra*-procedurally
-  (`Binding.provenance`, `Type_Env.aliases`, the local-slice-backed escape check). The graph
-  lifts it *across* calls — "this returned slice's backing originated at buffer X two frames
-  up" — which is exactly `contributors`, and what makes "returning a local-backed slice is a
-  hard error" interprocedurally *exact* rather than conservative. The graph doesn't add
-  provenance; it makes the provenance already in the checker precise.
-- **Reachability / dead-function elimination** — what's reachable from `main`; the rest is a
-  warning or DCE.
-- **Purity / effect propagation** — does a function transitively touch foreign / I/O? If not,
-  it is a const-eval candidate. Comptime-evaluability *is* a call-graph property; this ties
-  straight into the existing `#if` / `constant_values` machinery.
+- **Interprocedural provenance — ✓ partially.** Provenance is here *intra*-procedurally (the
+  escape pass's frame stack + the local-slice-backed check). The graph lifts it *across*
+  calls; the return→arg half is already done — escape's `fun_return_arg_set` is now the
+  `call_graph.return_args` summary, so a returned slice's backing is traced to the param it
+  came from interprocedurally and *exactly* (the SCC fixpoint catches recursive laundering the
+  old lazy guard missed). The full "backing originated at buffer X two frames up" form is
+  `contributors`, still to surface.
+- **Reachability / dead-function elimination — ✓.** `cg_compute_reachability` marks what's
+  reachable from `main`; the rest is a warning or DCE (no consumer acts on it yet).
+- **Purity / effect propagation — ✓.** `cg_compute_purity`: does a function transitively touch
+  foreign / I/O? If not, it is a const-eval candidate. Comptime-evaluability *is* a call-graph
+  property; ties into the existing `#if` / `constant_values` machinery (no const-eval consumer
+  acts on it yet — the verdict is computed and dumpable, not yet used).
 - **Fallibility propagation** — transitive "can this error," for the `?` / must-use-err
   system; would flag a `-> err` function whose body can't actually fail.
 - **Parallel codegen scheduling** — the SCC DAG *is* the dependency structure parallel
