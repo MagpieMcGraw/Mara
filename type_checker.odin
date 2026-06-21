@@ -731,9 +731,10 @@ Type_Env :: struct {
                                  // File envs (which hold a file's private include names) sit BELOW the
                                  // module env and walk through it; consumers cross module boundaries
                                  // only via explicit includes.
-    includes:    [dynamic]^Type_Env, // pointers to envs of bare-`include`d modules. Lookup at each
-                                 // env walks own names, then each include's own names (non-transitive,
-                                 // matches Mara2). Bare includes set this; `name :: include path` and
+    includes:    [dynamic]^Scope_Body, // the durable module scopes of bare-`include`d modules.
+                                 // Lookup at each env walks own names, then each include's own names
+                                 // (its durable .types / .functions; non-transitive, matches Mara2).
+                                 // Bare includes set this; `name :: include path` and
                                  // `name := include path` only install the named handle and skip this list.
     // When this env is the `mod_env` of a module (set by check_module), this
     // points back at the module's Type_Scope so consumers walking env.includes
@@ -762,6 +763,17 @@ scope_member :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
             if fn, ok := s.functions[name]; ok && fn != nil { return fn, true }
         }
     }
+    return nil, false
+}
+
+// Look up a bare name exported by an included module. The module's full name
+// surface (types + funs + distincts + const types, plus late-bound entries from
+// body checking) lives on its scope env; the durable scope struct (inc) carries
+// the module IDENTITY (inc.name, dispatch tables). So names come from inc.scope,
+// identity from inc — which is what lets owner_module go.
+include_lookup :: proc(inc: ^Scope_Body, name: string) -> (Type, bool) {
+    if inc == nil || inc.scope == nil { return nil, false }
+    if t, ok := inc.scope.types[name]; ok { return t, true }
     return nil, false
 }
 
@@ -842,8 +854,8 @@ type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> 
             return t, cur, true
         }
         for inc in cur.includes {
-            if t, ok := inc.types[name]; ok {
-                return t, inc, true
+            if t, ok := include_lookup(inc, name); ok {
+                return t, inc.scope, true
             }
         }
         if !below_module && cur.is_module_scope { break }
@@ -885,7 +897,7 @@ type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     cur = env
     for cur != nil {
         for inc in cur.includes {
-            if t, ok := inc.types[name]; ok {
+            if t, ok := include_lookup(inc, name); ok {
                 return t, true
             }
         }
@@ -951,8 +963,8 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
             append(&matches, Match{typ = t, owner = owner})  // own def; pointer-dedup below drops the copy-duplicate
         }
         for inc in cur.includes {
-            if t, found := inc.types[name]; found {
-                owner := inc.owner_module.name if inc.owner_module != nil else "<anonymous-include>"
+            if t, found := include_lookup(inc, name); found {
+                owner := inc.name if inc != nil else "<anonymous-include>"
                 append(&matches, Match{typ = t, owner = owner})
             }
         }
@@ -1206,9 +1218,9 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
                 }
             }
             for inc in cur.includes {
-                if inc.owner_module == nil { continue }
-                if _, found := inc.types[bare_name]; found {
-                    return make_flat_name(inc.owner_module.name, bare_name)
+                if inc == nil { continue }
+                if _, found := include_lookup(inc, bare_name); found {
+                    return make_flat_name(inc.name, bare_name)
                 }
             }
             if cur.is_module_scope { break }
@@ -1463,10 +1475,10 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
         cur := env
         for cur != nil {
             for inc in cur.includes {
-                if inc.owner_module == nil { continue }
-                if t, found := inc.types[name]; found {
+                if inc == nil { continue }
+                if t, found := include_lookup(inc, name); found {
                     if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
-                        owner := inc.owner_module.name
+                        owner := inc.name
                         if owner not_in distinct_owners {
                             distinct_owners[owner] = true
                             append(&owner_list, owner)
@@ -1506,10 +1518,10 @@ resolve_fn_home :: proc(c: ^Checker, env: ^Type_Env, name: string) -> string {
                 }
             }
             for inc in cur.includes {
-                if inc.owner_module == nil { continue }
-                if t, found := inc.types[name]; found {
+                if inc == nil { continue }
+                if t, found := include_lookup(inc, name); found {
                     if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun {
-                        return inc.owner_module.name
+                        return inc.name
                     }
                 }
             }
@@ -6378,7 +6390,7 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body,
     // module are not made available at the call site, only `name.X` access.
     // Used to keep colliding bindings (SDL2 vs SDL3, etc.) properly isolated.
     if is_sealed { return }
-    append(&env.includes, mod_sd.scope)
+    append(&env.includes, mod_sd)
     for name, t in mod_sd.scope.types {
         if name == "void" { continue }  // don't re-export the void null-pointer literal
         if tf, is_func := t.(^Type_Scope); is_func && (len(tf.params) > 0 || tf.has_parens) {
@@ -6408,7 +6420,7 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
     for cur != nil {
         if has_enum(cur, flat_name) { return true }
         for inc in cur.includes {
-            if has_enum(inc, flat_name) { return true }
+            if has_enum(inc.scope, flat_name) { return true }
         }
         if cur.is_module_scope { break }
         cur = cur.parent
@@ -6440,8 +6452,8 @@ module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bo
             if _, ok := c.table.constants[make_flat_name(cur.owner_module.name, bare)]; ok { return true }
         }
         for inc in cur.includes {
-            if inc.owner_module != nil {
-                if _, ok := c.table.constants[make_flat_name(inc.owner_module.name, bare)]; ok { return true }
+            if inc != nil {
+                if _, ok := c.table.constants[make_flat_name(inc.name, bare)]; ok { return true }
             }
         }
         if cur.is_module_scope { break }
@@ -6489,8 +6501,8 @@ find_dispatch :: proc(c: ^Checker, env: ^Type_Env, name: string) -> ([dynamic]st
     }
     for cur := env; cur != nil; cur = cur.parent {
         for inc in cur.includes {
-            if inc.owner_module != nil {
-                if fns, ok := inc.owner_module.dispatch_groups[name]; ok {
+            if inc != nil {
+                if fns, ok := inc.dispatch_groups[name]; ok {
                     for f in fns { append(&result, f) }
                 }
             }
@@ -6507,8 +6519,8 @@ find_operator_overload :: proc(c: ^Checker, env: ^Type_Env, op: Token_Kind) -> (
     }
     for cur := env; cur != nil; cur = cur.parent {
         for inc in cur.includes {
-            if inc.owner_module != nil {
-                if names, ok := inc.owner_module.operator_overloads[op]; ok {
+            if inc != nil {
+                if names, ok := inc.operator_overloads[op]; ok {
                     for n in names { append(&result, n) }
                 }
             }
@@ -6652,6 +6664,10 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             // base_type: deferred to Pass 1b
             c.table.distinct_types[flat] = dt
             type_env_set(pub, s.name, dt)
+            if owner != nil {
+                if owner.types == nil { owner.types = make(map[string]Type) }
+                owner.types[s.name] = dt
+            }
             c.pre_registered_stmts[rawptr(s)] = true
         case ^Stmt_Scope:
             // Already registered by a parent struct's register_scope_defs
