@@ -971,6 +971,15 @@ ASK_USAGE :: `Usage: mara ask <name> [deps|users] [in <module|file>]
     in <module>    analyze that module instead of the current directory
     in <file>      keep the current module; resolve <name> within one file`
 
+// Help-flag spellings honored wherever a help request is accepted — the common
+// one/two-dash, short/long variants, so a user's muscle memory always lands.
+is_help_flag :: proc(tok: string) -> bool {
+    switch tok {
+    case "-h", "--h", "-help", "--help": return true
+    }
+    return false
+}
+
 // Per-package build mode: a package with a top-level `main` is an executable,
 // one without is a DLL (`-shared` forces all-shared). Also feeds the `main`
 // flags in `mara ask`'s module map.
@@ -1031,11 +1040,13 @@ parse_args :: proc() -> CLI_Args {
         rest := positional[2:]   // tokens after the `ask` subcommand
 
         // An explicit help request prints usage rather than being looked up as a
-        // name — `mara ask --help` must not 404 on a type called "--help".
+        // name — `mara ask --help` must not 404 on a type called "--help". Help is
+        // a successful terminal action, so exit 0 directly (the `return args`
+        // error paths leave ok=false, which main turns into exit 1).
         for tok in rest {
-            if tok == "-h" || tok == "--help" {
+            if is_help_flag(tok) {
                 fmt.println(ASK_USAGE)
-                return args
+                os.exit(0)
             }
         }
 
