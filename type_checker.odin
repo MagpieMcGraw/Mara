@@ -736,11 +736,9 @@ Type_Env :: struct {
     //  a module/package env is one whose `scope.is_module` and whose scope's
     //  back-ref names this env. Lookup terminates there. File envs share the module
     //  scope but the back-ref names the module env, so they're not terminators.)
-    includes:    [dynamic]^Scope_Body, // the durable module scopes of bare-`include`d modules.
-                                 // Lookup at each env walks own names, then each include's own names
-                                 // (its durable .types / .functions; non-transitive, matches Mara2).
-                                 // Bare includes set this; `name :: include path` and
-                                 // `name := include path` only install the named handle and skip this list.
+    // (includes removed — bare-`include`d module scopes now live on the durable
+    //  scope (Scope_Body.includes); scope_resolve walks them up parent_scope. A
+    //  file scope holds that file's private includes, a module scope re-exports.)
 }
 
 // Durable scope-member lookup: a scope's nested types + funs live on its
@@ -796,17 +794,26 @@ scope_local_lookup :: proc(start: ^Type_Scope, name: string) -> (Type, bool) {
 // `below_module` stops BEFORE the enclosing module scope — the `:=` shadowing
 // policy, so a local `shader := gl.CreateShader(...)` doesn't conflate with the
 // module's own auto-injected binding.
+// Bare-included names via the DURABLE scope graph: walk parent_scope, check each
+// scope's own includes, stop at the module. The migration target for the legacy
+// env.parent + cur.includes walk (now that decls chain through their file scope,
+// the scope chain reaches every include-holding scope the env chain did).
+scope_includes_lookup :: proc(env: ^Type_Env, name: string, below_module: bool) -> (Type, bool) {
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if below_module && s.is_module { break }
+        for inc in s.includes { if t, ok := include_lookup(inc, name); ok { return t, true } }
+        if s.is_module { break }
+    }
+    return nil, false
+}
+
 scope_resolve :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
     for s := env.scope; s != nil; s = s.parent_scope {
         if below_module && s.is_module { break }
         if s.types != nil { if t, ok := s.types[name]; ok { return t, s, true } }
         if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, s, true } }
     }
-    for cur := env; cur != nil; cur = cur.parent {
-        if below_module && env_is_module(cur) { break }
-        for inc in cur.includes { if t, ok := include_lookup(inc, name); ok { return t, nil, true } }
-        if env_is_module(cur) { break }
-    }
+    if t, ok := scope_includes_lookup(env, name, below_module); ok { return t, nil, true }
     return nil, nil, false
 }
 
@@ -898,9 +905,9 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
         distinct_typs: map[rawptr]bool
         distinct_owners: map[string]bool
         first_typ: Type
-        for cur := env; cur != nil; cur = cur.parent {
+        for s := env.scope; s != nil; s = s.parent_scope {
             found_any := false
-            for inc in cur.includes {
+            for inc in s.includes {
                 if t, found := include_lookup(inc, name); found {
                     found_any = true
                     if first_typ == nil { first_typ = t }
@@ -916,7 +923,7 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
                 }
             }
             if found_any { break }  // stop at nearest level with includes
-            if env_is_module(cur) { break }
+            if s.is_module { break }
         }
         if len(distinct_typs) == 1 { typ, ok = first_typ, true }
         else if len(distinct_typs) > 1 { ambiguous_owners = owner_list }
@@ -1160,21 +1167,19 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
     // which is important when two modules export the same name (e.g. `Event`
     // in both mara_sdl and mara_sdl2).
     if env != nil {
-        cur := env
-        for cur != nil {
-            if env_is_module(cur) {
-                if _, found := scope_defines(cur.scope, bare_name); found {
+        for s := env.scope; s != nil; s = s.parent_scope {
+            if s.is_module {
+                if _, found := scope_defines(s, bare_name); found {
                     return make_flat_name(c.current_package, bare_name)
                 }
             }
-            for inc in cur.includes {
+            for inc in s.includes {
                 if inc == nil { continue }
                 if _, found := include_lookup(inc, bare_name); found {
                     return make_flat_name(inc.name, bare_name)
                 }
             }
-            if env_is_module(cur) { break }
-            cur = cur.parent
+            if s.is_module { break }
         }
     }
     // Local fallback for purely-local names (callers without env, or names
@@ -1422,9 +1427,8 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
     distinct_owners: map[string]bool
     owner_list: [dynamic]string
     if env != nil {
-        cur := env
-        for cur != nil {
-            for inc in cur.includes {
+        for s := env.scope; s != nil; s = s.parent_scope {
+            for inc in s.includes {
                 if inc == nil { continue }
                 if t, found := include_lookup(inc, name); found {
                     if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
@@ -1436,8 +1440,7 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
                     }
                 }
             }
-            if env_is_module(cur) { break }
-            cur = cur.parent
+            if s.is_module { break }
         }
     }
     if len(owner_list) == 0 {
@@ -1458,16 +1461,15 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
 // package.
 resolve_fn_home :: proc(c: ^Checker, env: ^Type_Env, name: string) -> string {
     if env != nil {
-        cur := env
-        for cur != nil {
-            if env_is_module(cur) {
-                if t, found := scope_defines(cur.scope, name); found {
+        for s := env.scope; s != nil; s = s.parent_scope {
+            if s.is_module {
+                if t, found := scope_defines(s, name); found {
                     if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun {
                         return c.current_package
                     }
                 }
             }
-            for inc in cur.includes {
+            for inc in s.includes {
                 if inc == nil { continue }
                 if t, found := include_lookup(inc, name); found {
                     if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun {
@@ -1475,8 +1477,7 @@ resolve_fn_home :: proc(c: ^Checker, env: ^Type_Env, name: string) -> string {
                     }
                 }
             }
-            if env_is_module(cur) { break }
-            cur = cur.parent
+            if s.is_module { break }
         }
     }
     if h, ok := c.table.fun_homes[name]; ok && h != "" { return h }
@@ -6366,7 +6367,7 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body,
     // module are not made available at the call site, only `name.X` access.
     // Used to keep colliding bindings (SDL2 vs SDL3, etc.) properly isolated.
     if is_sealed { return }
-    append(&env.includes, mod_sd)
+    if env.scope != nil { append(&env.scope.includes, mod_sd) }
     for name, t in mod_sd.types {
         if name == "void" { continue }  // don't re-export the void null-pointer literal
         if tf, is_func := t.(^Type_Scope); is_func && (len(tf.params) > 0 || tf.has_parens) {
@@ -6392,15 +6393,13 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
         }
         return false
     }
-    // Own definitions up the durable scope graph, then each env level's includes.
+    // Own definitions + each scope's includes up the durable scope graph.
     for s := env.scope; s != nil; s = s.parent_scope {
         if scope_has_enum(s, flat_name) { return true }
-    }
-    for cur := env; cur != nil; cur = cur.parent {
-        for inc in cur.includes {
+        for inc in s.includes {
             if scope_has_enum(inc, flat_name) { return true }
         }
-        if env_is_module(cur) { break }
+        if s.is_module { break }
     }
     return false
 }
@@ -6423,18 +6422,16 @@ module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bo
     if owner, mapped := c.table.constant_owners[bare]; mapped && owner != "" && owner == c.current_package {
         return true
     }
-    cur := env
-    for cur != nil {
-        if env_is_module(cur) {
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if s.is_module {
             if _, ok := c.table.constants[make_flat_name(c.current_package, bare)]; ok { return true }
         }
-        for inc in cur.includes {
+        for inc in s.includes {
             if inc != nil {
                 if _, ok := c.table.constants[make_flat_name(inc.name, bare)]; ok { return true }
             }
         }
-        if env_is_module(cur) { break }
-        cur = cur.parent
+        if s.is_module { break }
     }
     return false
 }
@@ -6476,8 +6473,8 @@ find_dispatch :: proc(c: ^Checker, env: ^Type_Env, name: string) -> ([dynamic]st
     if fns, ok := c.dispatch_groups[name]; ok {
         for f in fns { append(&result, f) }
     }
-    for cur := env; cur != nil; cur = cur.parent {
-        for inc in cur.includes {
+    for s := env.scope; s != nil; s = s.parent_scope {
+        for inc in s.includes {
             if inc != nil {
                 if fns, ok := inc.dispatch_groups[name]; ok {
                     for f in fns { append(&result, f) }
@@ -6494,8 +6491,8 @@ find_operator_overload :: proc(c: ^Checker, env: ^Type_Env, op: Token_Kind) -> (
     if names, ok := c.operator_overloads[op]; ok {
         for n in names { append(&result, n) }
     }
-    for cur := env; cur != nil; cur = cur.parent {
-        for inc in cur.includes {
+    for s := env.scope; s != nil; s = s.parent_scope {
+        for inc in s.includes {
             if inc != nil {
                 if names, ok := inc.operator_overloads[op]; ok {
                     for n in names { append(&result, n) }
