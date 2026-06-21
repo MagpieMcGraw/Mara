@@ -12,10 +12,16 @@ Mara code:
 mara build game    	# build module "game" from all .mara files with `module game`
 mara build         	# build module matching current directory name
 
-Mara analyzer:
+# Analyzer
+
+Mara has a graph based code analyzer that can reveal information about the structure of Mara programs. Eventually it will support forward and backward slice analysis.
+
 mara ask			# gives info about cwd
 mara ask name		# gives info about module or type or function or variable
-mara ask name deps|users in module	# optional arguments to narrow the output
+
+You can pass a number to specify the depth
+You can use "deps|user" to narrow the output
+You can pass "in module" to narrow the output
 
 ## Workflow
 

@@ -56,6 +56,8 @@ Pull control flow graph into it's own system. It's currently implicitly used to 
 
 Robustify the mara ask interface, decide on sensible defaults for the various options, handle typos, dedupe the output, etc...
 
-Mara ask, record all queries(instead of graphs), so you can later replay them in the viewer.
+Fix mara ask performance issue
+
+Mara ask, record all queries(instead of graphs), so you can later replay them in the viewer. Render the whole program graph, color the queried parts. That data can be overlaid for a more complete picture. Also distunguish results, a direct ask shows where the AI attention is.
 
 Fix FFI functions for mara ask. Probably some array on type scope was skipped?
