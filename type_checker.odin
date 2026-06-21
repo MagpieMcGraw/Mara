@@ -699,20 +699,19 @@ get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
 // state (definite-assignment's invalid_refs/newly_inited, the aliases points-to)
 // — facts that fork at branches and merge at joins. That state is GONE: all
 // intraprocedural flow analysis now runs as a post-check pass over the durable
-// graph (flow.odin). What remains here is purely a transient MIRROR of durable
-// data — the symbol table + lexical structure (`types` / `parent` / class_scope /
-// fun_scope / includes) and the fixed-at-declaration per-name facts in `bindings`
-// (is_param / is_let / provenance) — cruft to delete as the last lookup roles
-// (Self, module names) move onto the persistent scope graph, after which Type_Env
-// can go entirely.
+// graph (flow.odin). Name resolution is GONE from here too: every name lives on
+// the durable scope graph (Type_Scope) and resolution walks it via scope_resolve
+// — the env no longer carries a `types` map. What remains is the transient
+// lexical spine (`parent` / `scope` / class_scope / fun_scope / includes) and the
+// fixed-at-declaration per-name facts in `bindings` (is_param / is_let /
+// provenance), consumed by escape analysis.
 Type_Env :: struct {
-    types:        map[string]Type,
     parent:       ^Type_Env,
     // The durable Type_Scope this env's names live on. Every env has one, chained
     // via parent_scope to the parent env's scope — so the scope graph mirrors the
-    // env graph and resolution can walk it instead of env.types/env.parent. For a
-    // block it's the .Block scope; for a fun/class defs layer that scope; for a
-    // module the module struct; elsewhere a fresh shadow.
+    // env graph and resolution walks it (scope_resolve) instead of any env-local
+    // name map. For a block it's the .Block scope; for a fun/class defs layer that
+    // scope; for a module the module struct; elsewhere a fresh shadow.
     scope:        ^Type_Scope,
     // Blocks-as-scopes: the durable .Block Type_Scope this env shadows — its
     // locals (in .types) and parent_scope link mirror what the env carries, so
@@ -803,51 +802,6 @@ scope_local_lookup :: proc(start: ^Type_Scope, name: string) -> (Type, bool) {
     return nil, false
 }
 
-// VALIDATION SCAFFOLD (gated by MARA_WALK_CHECK=1): when a name resolves to a
-// local (found in a BLOCK env's .types) and the lookup STARTED inside a block,
-// the durable parent_scope walk must find the same type. A divergence means a
-// block site is not yet wired into the scope graph. Logs (doesn't abort) so a
-// full compile surfaces every gap at once. Goes away once the walk replaces the
-// env chain for locals.
-g_walk_check_state := 0 // 0 = unknown, 1 = on, 2 = off
-walk_check_on :: proc() -> bool {
-    if g_walk_check_state == 0 {
-        buf: [8]byte
-        g_walk_check_state = os.get_env_buf(buf[:], "MARA_WALK_CHECK") == "1" ? 1 : 2
-    }
-    return g_walk_check_state == 1
-}
-walk_validate_local :: proc(start: ^Type_Env, found_in: ^Type_Env, name: string, t: Type) {
-    if !walk_check_on() { return }
-    if start.block_scope == nil { return }    // lookup didn't start in a block — blind spot, skip
-    if found_in.block_scope == nil { return } // resolved to a non-local (Self / const mirror / module name)
-    wt, wok := scope_local_lookup(start.block_scope, name)
-    if !wok {
-        fmt.eprintf("[WALK-MISS] %s: env found local, scope walk did not\n", name)
-    } else if !types_equal(wt, t) {
-        fmt.eprintf("[WALK-DIFF] %s: env=%s walk=%s\n", name, type_name(t), type_name(wt))
-    }
-}
-
-// Resolve a name purely over the durable scope graph: walk env.scope up its
-// parent_scope chain checking .types / .functions, then the includes. This is
-// what replaces the env.types/env.parent walk once every name lives on a scope.
-// Pointer identity of a Type's payload (nil for value-typed variants). Used only
-// by the env→scope migration validation to detect divergent resolutions.
-type_ptr_ident :: proc(t: Type) -> rawptr {
-    #partial switch v in t {
-    case ^Type_Scope:         return v
-    case ^Type_Enum:          return v
-    case ^Type_Union:         return v
-    case ^Type_Distinct:      return v
-    case ^Type_Ptr:           return v
-    case ^Type_Slice:         return v
-    case ^Type_Partial_Array: return v
-    case ^Type_Fixed_Array:   return v
-    }
-    return nil
-}
-
 // THE durable name-lookup walk: from the current scope up the parent_scope graph
 // (own .types/.functions at each level — definitions beat includes), then bare
 // includes up the env chain. Returns the SCOPE the name was found in (nil for an
@@ -888,38 +842,7 @@ type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> 
             return t, nil, true  // a local never lives in a class namespace
         }
     }
-    t, s, ok := scope_resolve(env, name, below_module)
-    // VALIDATION (MARA_WALK_CHECK): scope_resolve is globally owned-first (all own
-    // definitions, then includes), but the legacy walk was PER-LEVEL (own+includes
-    // interleaved, climbing). Compare against the legacy walk to catch any
-    // include-vs-outer-own precedence change the earlier probe (cur.types-path
-    // only) couldn't see.
-    if walk_check_on() {
-        lt, lok := type_env_locate_legacy(env, name, below_module)
-        if lok != ok || (ok && type_ptr_ident(lt) != type_ptr_ident(t)) {
-            fmt.eprintf("[TEL-ORDER] %s legacy_ok=%v new_ok=%v\n", name, lok, ok)
-        }
-    }
-    return t, s, ok
-}
-
-// Reference implementation of the legacy per-level env walk — kept ONLY to
-// validate the scope_resolve switch (gated by MARA_WALK_CHECK). Removed once the
-// ordering equivalence is confirmed.
-type_env_locate_legacy :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, bool) {
-    if env.block_scope != nil {
-        if t, ok := scope_local_lookup(env.block_scope, name); ok { return t, true }
-    }
-    for cur := env; cur != nil; cur = cur.parent {
-        if below_module && cur.is_module_scope { break }
-        if t, ok := cur.types[name]; ok { return t, true }
-        if t, ok := scope_member(cur, name); ok { return t, true }
-        for inc in cur.includes {
-            if t, ok := include_lookup(inc, name); ok { return t, true }
-        }
-        if !below_module && cur.is_module_scope { break }
-    }
-    return nil, false
+    return scope_resolve(env, name, below_module)
 }
 
 type_env_get :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
@@ -944,33 +867,7 @@ type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     // parent_scope graph, then all includes up the env chain) — exactly this
     // proc's two-phase shape. Delegate to the durable walk.
     t, _, ok := scope_resolve(env, name)
-    if walk_check_on() {
-        lt, lok := type_env_get_owned_first_legacy(env, name)
-        if lok != ok || (ok && type_ptr_ident(lt) != type_ptr_ident(t)) {
-            fmt.eprintf("[OF-ORDER] %s legacy_ok=%v new_ok=%v\n", name, lok, ok)
-        }
-    }
     return t, ok
-}
-
-// Legacy reference (env.types per-level) — kept only to validate the switch.
-type_env_get_owned_first_legacy :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
-    cur := env
-    for cur != nil {
-        if t, ok := cur.types[name]; ok { return t, true }
-        if t, ok := scope_member(cur, name); ok { return t, true }
-        if cur.is_module_scope { break }
-        cur = cur.parent
-    }
-    cur = env
-    for cur != nil {
-        for inc in cur.includes {
-            if t, ok := include_lookup(inc, name); ok { return t, true }
-        }
-        if cur.is_module_scope { break }
-        cur = cur.parent
-    }
-    return nil, false
 }
 
 // Resolve a bare name across env-chain own definitions and includes, with
@@ -1038,60 +935,7 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
         if len(distinct_typs) == 1 { typ, ok = first_typ, true }
         else if len(distinct_typs) > 1 { ambiguous_owners = owner_list }
     }
-    if walk_check_on() {
-        lt, lok, lamb := resolve_with_ambiguity_legacy(c, env, name)
-        if lok != ok || (ok && type_ptr_ident(lt) != type_ptr_ident(typ)) || (len(lamb) > 0) != (len(ambiguous_owners) > 0) {
-            fmt.eprintf("[RWA-ORDER] %s legacy(ok=%v,amb=%d) new(ok=%v,amb=%d)\n", name, lok, len(lamb), ok, len(ambiguous_owners))
-        }
-    }
     return
-}
-
-// Legacy reference (env.types per-level) — kept only to validate the switch.
-resolve_with_ambiguity_legacy :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (typ: Type, ok: bool, ambiguous_owners: [dynamic]string) {
-    if name == "Self" {
-        if s := enclosing_callable_scope(env); s != nil { return s, true, nil }
-        return nil, false, nil
-    }
-    Match :: struct { typ: Type, owner: string }
-    matches: [dynamic]Match
-    cur := env
-    for cur != nil {
-        level_start := len(matches)
-        if t, found := cur.types[name]; found {
-            owner := c.current_package if cur.is_module_scope else "<local>"
-            append(&matches, Match{typ = t, owner = owner})
-        }
-        if t, found := scope_member(cur, name); found {
-            owner := c.current_package if cur.is_module_scope else "<local>"
-            append(&matches, Match{typ = t, owner = owner})
-        }
-        for inc in cur.includes {
-            if t, found := include_lookup(inc, name); found {
-                owner := inc.name if inc != nil else "<anonymous-include>"
-                append(&matches, Match{typ = t, owner = owner})
-            }
-        }
-        if len(matches) > level_start { break }
-        if cur.is_module_scope { break }
-        cur = cur.parent
-    }
-    if len(matches) == 0 { return nil, false, nil }
-    if len(matches) == 1 { return matches[0].typ, true, nil }
-    distinct_typs: map[rawptr]bool
-    distinct_owners: map[string]bool
-    owner_list: [dynamic]string
-    for m in matches {
-        key := raw_type_key(m.typ)
-        if key in distinct_typs { continue }
-        distinct_typs[key] = true
-        if m.owner not_in distinct_owners {
-            distinct_owners[m.owner] = true
-            append(&owner_list, m.owner)
-        }
-    }
-    if len(distinct_typs) == 1 { return matches[0].typ, true, nil }
-    return nil, false, owner_list
 }
 
 raw_type_key :: proc(t: Type) -> rawptr {
@@ -1108,8 +952,7 @@ raw_type_key :: proc(t: Type) -> rawptr {
 }
 
 type_env_set :: proc(env: ^Type_Env, name: string, t: Type) {
-    env.types[name] = t
-    // Mirror onto the env's durable scope — what resolution walks.
+    // Names live on the durable scope graph — what resolution walks.
     if env.scope != nil {
         if env.scope.types == nil { env.scope.types = make(map[string]Type) }
         env.scope.types[name] = t
@@ -4790,7 +4633,7 @@ routes_to_arena :: proc(t: Type) -> bool {
 // Returns true for top-level variables, false for locals and parameters.
 is_global_var :: proc(c: ^Checker, name: string) -> bool {
     if c.table.root_env == nil { return false }
-    _, in_root := c.table.root_env.types[name]
+    _, in_root := scope_defines(c.table.root_env.scope, name)
     return in_root
 }
 
@@ -6497,7 +6340,7 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body,
     // Used to keep colliding bindings (SDL2 vs SDL3, etc.) properly isolated.
     if is_sealed { return }
     append(&env.includes, mod_sd)
-    for name, t in mod_sd.scope.types {
+    for name, t in mod_sd.types {
         if name == "void" { continue }  // don't re-export the void null-pointer literal
         if tf, is_func := t.(^Type_Scope); is_func && (len(tf.params) > 0 || tf.has_parens) {
             c.declared_funs[name] = true
@@ -7557,18 +7400,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         check_error(c, s.span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, s.name)
                         break
                     }
-                }
-                if walk_check_on() {
-                    leg := false
-                    for outer := env.parent; outer != nil; outer = outer.parent {
-                        if outer.is_module_scope { break }
-                        if s.name in outer.types { leg = true; break }
-                    }
-                    dur := false
-                    for sc := start; sc != nil && !sc.is_module; sc = sc.parent_scope {
-                        if _, found := scope_defines(sc, s.name); found { dur = true; break }
-                    }
-                    if leg != dur { fmt.eprintf("[SHADOW-DIV] %s legacy=%v dur=%v\n", s.name, leg, dur) }
                 }
             }
 
@@ -9027,10 +8858,6 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
     pub := public_env if public_env != nil else env
     // Skip if already pre-registered (parent's body scan)
     _, pre_registered := scope_defines(pub.scope, s.name)
-    if walk_check_on() {
-        leg := s.name in pub.types
-        if leg != pre_registered { fmt.eprintf("[DEFINE-DIV] %s legacy=%v dur=%v\n", s.name, leg, pre_registered) }
-    }
     if pre_registered {
         return
     }
@@ -12044,7 +11871,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
                 // a module's scope, so `mara_open_gl.ARRAY_BUFFER` won't find
                 // ARRAY_BUFFER directly. Walk the module's types for an enum
                 // or union containing this variant name.
-                for _, mt in sd.scope.types {
+                for _, mt in sd.types {
                     if et, et_ok := mt.(^Type_Enum); et_ok {
                         if val, v_ok := et.variants[e.field]; v_ok {
                             e.resolved = Resolved_Enum_Variant{
