@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:os"
+import "core:slice"
 
 // ---------------------------------------------------------------------------
 // Materialized call graph (design/mara_ask.md §12)
@@ -44,6 +45,14 @@ Call_Graph :: struct {
     // directly or transitively hits the outside world (IO / foreign). The first
     // interprocedural summary computed via the bottom-up framework below.
     pure:      [dynamic]bool,
+
+    // Return-arg-set summary (cg_compute_return_args): return_args[n] = the sorted
+    // set of parameter indices node n's return value can trace back to (Self-field
+    // indices for a ctor). Backs the escape pass's laundering check. stmt_to_node
+    // bridges the AST key fun_return_arg_set is queried with (^Stmt_Scope) to the
+    // graph's node id (a node's Type_Scope.ast IS that Stmt_Scope).
+    return_args:  [dynamic][]int,
+    stmt_to_node: map[^Stmt_Scope]int,
 }
 
 // Intern a scope as a node, returning its id (stable for the graph's lifetime).
@@ -169,6 +178,34 @@ cg_purity_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
         if !g.pure[callee] { g.pure[n] = false; return true }
     }
     return false
+}
+
+// Return-arg-set: which parameter indices each function's return can trace back
+// to. The second interprocedural summary on the bottom-up framework. A function's
+// set is recomputed from its body (compute_return_arg_set, which reads callees'
+// sets via fun_return_arg_set → this graph); cg_bottom_up visits callees-first
+// and iterates each SCC to a fixpoint — so a recursive/mutually-recursive
+// function gets the precise transitive answer the lazy `pending → nil` guard
+// only approximated (conservatively empty). c.cg must already point at `g`.
+@(private="file") g_cg_c: ^Checker
+
+cg_compute_return_args :: proc(g: ^Call_Graph, c: ^Checker) {
+    g_cg_c = c
+    for ts, i in g.nodes {
+        if ts != nil && ts.ast != nil { g.stmt_to_node[ts.ast] = i } // node.ast IS the Stmt_Scope key
+    }
+    resize(&g.return_args, len(g.nodes))
+    cg_bottom_up(g, cg_return_args_transfer)
+}
+
+@(private="file")
+cg_return_args_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
+    ts := g.nodes[n]
+    if ts == nil || ts.ast == nil { return false } // foreign/no body — empty set
+    new_set := compute_return_arg_set(g_cg_c, ts.ast)
+    if slice.equal(g.return_args[n], new_set) { return false }
+    g.return_args[n] = new_set // monotone: the set only grows toward its fixpoint
+    return true
 }
 
 // Query a scope's purity verdict (false if it isn't a graph node).

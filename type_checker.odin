@@ -1638,17 +1638,10 @@ SymbolTable :: struct {
     fun_asts:       map[string]^Stmt_Scope,         // bare name -> AST for auto-monomorphization
     fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
 
-    // Provenance propagation through call boundaries. For functions returning
-    // a ref type (slice/ptr), records the SET of parameter indices the return
-    // value could trace back to. A call's depth at the site is the max over
-    // depth(call.args[i]) for i in the set. Empty set = no tracked sources,
-    // depth defaults to 0 (globals / literals / external).
-    //
-    // The set captures the conditional case: when different control-flow
-    // paths assign different params, the union of contributors propagates.
-    // Computed lazily on first lookup; pending guards against cycles.
-    fun_return_arg_set:     map[^Stmt_Scope][]int,
-    fun_return_arg_pending: map[^Stmt_Scope]bool,
+    // (return-arg-set provenance summary moved to the call graph —
+    //  Call_Graph.return_args via cg_compute_return_args, queried by
+    //  fun_return_arg_set; the lazy cache + pending cycle-guard are gone, the SCC
+    //  fixpoint handles recursion.)
 
     // Config
     has_scope_allocator: bool,
@@ -1688,6 +1681,10 @@ Checker :: struct {
     // Checked_Program call graph (build_call_graph). A set, so duplicate call
     // sites between the same pair collapse to one edge.
     call_edges:      map[Call_Edge]bool,
+    // The materialized call graph (set post-check, after build_call_graph) — its
+    // bottom-up summaries (return-arg-set) back fun_return_arg_set for the escape
+    // pass. Points at checked.call_graph.
+    cg:              ^Call_Graph,
     // Call-graph effect seed: callable scopes whose body has a DIRECT effect â€”
     // an IO built-in (`print`) or a foreign (.C) call. The bottom-up purity pass
     // (cg_compute_purity) propagates these up the graph to a transitive summary.
@@ -4814,44 +4811,34 @@ set_provenance :: proc(env: ^Type_Env, name: string, p: Provenance) {
 //   outer { storage : [..N]byte; return helper(&storage) }
 // Without this, helper's call result would land at depth 0 (global-like)
 // and outer's return would silently pass the static checker.
+// QUERY: which parameter indices a function's return value can trace back to —
+// read off the call graph's bottom-up summary (cg_compute_return_args). Used by
+// the escape pass (expr_provenance) to track whether a call result is rooted in
+// caller-owned storage (safe) or a local (escapes). Empty/nil = no tracked source.
 fun_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
+    if scope == nil || c.cg == nil { return nil }
+    if n, ok := c.cg.stmt_to_node[scope]; ok { return c.cg.return_args[n] }
+    return nil
+}
+
+// COMPUTATION: recompute one function's return-arg-set from its body. Called by
+// the cg_bottom_up transfer (callees-first), reading callees' already-computed
+// summaries via fun_return_arg_set. NO cache / pending guard — cg_bottom_up's SCC
+// fixpoint replaces the hand-rolled `-1`/pending cycle handling.
+compute_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     if scope == nil { return nil }
-    if set, ok := c.table.fun_return_arg_set[scope]; ok { return set }
-    if c.table.fun_return_arg_pending[scope] { return nil }
-    c.table.fun_return_arg_pending[scope] = true
-    defer delete_key(&c.table.fun_return_arg_pending, scope)
-
-    // Constructor call: the returned value is Self, and a ctor body has no
-    // `return Self` for the walk below to find â€” without this arm a ctor
-    // call always produced the empty set (PROV_GLOBAL), so
-    // `return Font(&local_buf)` escaped the checker while the equivalent
-    // plain-fn laundering was caught.
-    if scope.kind == .Struct {
-        final := ctor_return_arg_set(c, scope)
-        c.table.fun_return_arg_set[scope] = final
-        return final
-    }
-
-    // Flow-sensitive walk: each local carries a SET of parameter indices
-    // it could trace back to. Branch merges are unions â€” if one path
-    // assigns `out` from param 0 and another from param 1, post-join out
-    // tracks {0, 1}. Empty set = no tracked source (depth 0 at call sites).
-    //
-    // The set encoding captures both:
-    //   - straight-line reassignment, where the last write shadows
-    //     previous ones (set replaces, doesn't union, on sequential
-    //     writes);
-    //   - conditional reassignment, where different branches contribute
-    //     different params (set unions at the branch join).
+    // Constructor: the returned value is Self, and a ctor body has no `return
+    // Self` for the walk to find — so `return Font(&local_buf)` would launder a
+    // local without this arm.
+    if scope.kind == .Struct { return ctor_return_arg_set(c, scope) }
+    // Flow-sensitive walk: each local carries a SET of parameter indices it could
+    // trace back to; branch merges union, sequential writes replace.
     tracking: map[string][dynamic]int
     defer cleanup_arg_set_tracking(&tracking)
     consensus: [dynamic]int
     defer delete(consensus)
     walk_for_return_arg_sets(c, scope.body[:], scope, &tracking, &consensus)
-
-    final := arg_set_freeze(consensus[:])
-    c.table.fun_return_arg_set[scope] = final
-    return final
+    return arg_set_freeze(consensus[:])
 }
 
 // Which constructor-arg indices can the constructed Self reference?
@@ -10802,8 +10789,10 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     }
 
     checked.call_graph = build_call_graph(&c)
+    c.cg = &checked.call_graph
+    cg_compute_return_args(c.cg, &c) // return-arg-set summary — backs fun_return_arg_set
     flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
-    escape_analyze_program(&c, checked) // post-check intraproc escape (validation mode)
+    escape_analyze_program(&c, checked) // post-check intraproc escape
     checked.errors = c.errors
     return checked
 }
