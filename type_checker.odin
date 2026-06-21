@@ -736,11 +736,6 @@ Type_Env :: struct {
                                  // (its durable .types / .functions; non-transitive, matches Mara2).
                                  // Bare includes set this; `name :: include path` and
                                  // `name := include path` only install the named handle and skip this list.
-    // When this env is the `mod_env` of a module (set by check_module), this
-    // points back at the module's Type_Scope so consumers walking env.includes
-    // can reach the module's dispatch_groups / operator_overloads tables for
-    // include-scoped lookup. nil for non-module envs.
-    owner_module: ^Type_Scope,
 }
 
 // Durable scope-member lookup: a scope's nested types + funs live on its
@@ -951,15 +946,15 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
         level_start := len(matches)
         if t, found := cur.types[name]; found {
             owner: string
-            if cur.owner_module != nil {
-                owner = cur.owner_module.name
+            if cur.is_module_scope {
+                owner = c.current_package
             } else {
                 owner = "<local>"
             }
             append(&matches, Match{typ = t, owner = owner})
         }
         if t, found := scope_member(cur, name); found {
-            owner := cur.owner_module.name if cur.owner_module != nil else "<local>"
+            owner := c.current_package if cur.is_module_scope else "<local>"
             append(&matches, Match{typ = t, owner = owner})  // own def; pointer-dedup below drops the copy-duplicate
         }
         for inc in cur.includes {
@@ -1212,9 +1207,9 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
     if env != nil {
         cur := env
         for cur != nil {
-            if cur.owner_module != nil {
+            if cur.is_module_scope {
                 if _, found := cur.types[bare_name]; found {
-                    return make_flat_name(cur.owner_module.name, bare_name)
+                    return make_flat_name(c.current_package, bare_name)
                 }
             }
             for inc in cur.includes {
@@ -1457,10 +1452,10 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
     if env != nil {
         cur := env
         for cur != nil {
-            if cur.owner_module != nil {
+            if cur.is_module_scope {
                 if t, found := cur.types[name]; found {
                     if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
-                        return cur.owner_module.name, true, nil
+                        return c.current_package, true, nil
                     }
                 }
             }
@@ -1510,10 +1505,10 @@ resolve_fn_home :: proc(c: ^Checker, env: ^Type_Env, name: string) -> string {
     if env != nil {
         cur := env
         for cur != nil {
-            if cur.owner_module != nil {
+            if cur.is_module_scope {
                 if t, found := cur.types[name]; found {
                     if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun {
-                        return cur.owner_module.name
+                        return c.current_package
                     }
                 }
             }
@@ -6399,8 +6394,8 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body,
     }
     // Dispatches and operator overloads stay on the included module's struct
     // (see Scope_Body.dispatch_groups). Lookups in the includer walk
-    // env.includes' owner_modules at call time, so we don't merge here —
-    // matches the non-transitive include semantics used elsewhere.
+    // env.includes (the durable module scopes) at call time, so we don't merge
+    // here — matches the non-transitive include semantics used elsewhere.
 }
 
 // is_enum_visible reports whether the enum identified by `flat_name`
@@ -6435,21 +6430,21 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
 // gated by the env walk at lookup time; this is what reintroduces visibility.
 // It mirrors type_env_get / is_enum_visible: own scope, then each include's
 // scope, stop at the module boundary. Matching is by the flat key
-// make_flat_name(M.name, bare), which lines up with registration because a
-// module's owner_module.name == the module_name used to register its constants.
+// make_flat_name(M.name, bare): the own module qualifies with c.current_package,
+// each include with its durable scope's name (inc.name).
 module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bool {
     if env == nil { return true }  // no env context to gate against — don't reject
-    // The package being checked always sees its own constants. Module envs
-    // carry owner_module and pass the walk below anyway, but main-package
-    // envs never get one (only check_module sets it), so without this the
-    // main package's own top-level constants are invisible in size position.
+    // The package being checked always sees its own constants. The own-module
+    // branch below (cur.is_module_scope) covers this for module envs, but it's
+    // kept explicit so the main package's top-level constants are visible in
+    // size position even before the env walk.
     if owner, mapped := c.table.constant_owners[bare]; mapped && owner != "" && owner == c.current_package {
         return true
     }
     cur := env
     for cur != nil {
-        if cur.owner_module != nil {
-            if _, ok := c.table.constants[make_flat_name(cur.owner_module.name, bare)]; ok { return true }
+        if cur.is_module_scope {
+            if _, ok := c.table.constants[make_flat_name(c.current_package, bare)]; ok { return true }
         }
         for inc in cur.includes {
             if inc != nil {
@@ -10151,7 +10146,6 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_struct.home_package = module_name  // module is its own home
     mod_struct.kind = .Struct
     mod_struct.scope = mod_env
-    mod_env.owner_module = mod_struct
 
     // Self-binding under the module's bare name was removed: the feature
     // (write `time.Timer` inside `module mara.time` to disambiguate from a
