@@ -51,11 +51,13 @@ camera_move :: fun(camera: ^Camera, keyboard: ^Keyboard, loop_time: f32) {
 
 	fwd, up, right := obj_get_directions(camera.obj.dir)
 
+	// The view looks toward -fwd (obj_get_directions' "fwd" is the local +Z
+	// column, opposite the OpenGL view axis), so W = -fwd walks into the screen.
 	if keyboard.held[sdl.Scancode.W] {
-		direction += fwd
+		direction -= fwd
 	}
 	if keyboard.held[sdl.Scancode.S] {
-		direction -= fwd
+		direction += fwd
 	}
 	if keyboard.held[sdl.Scancode.A] {
 		direction -= right
@@ -126,10 +128,11 @@ camera_turn_walking :: fun(camera: ^Camera, mouse: ^Mouse) {
 		camera.obj.dir = yaw_quat * camera.obj.dir
 	}
 
-	// Pitch around camera's local right axis (look up/down)
+	// Pitch around camera's local right axis (look up/down). Negated so moving the
+	// mouse up looks up (the looked-down camera frame inverts the raw yrel sense).
 	if mouse.yrel != 0 {
 		_, _, camera_right := obj_get_directions(camera.obj.dir)
-		pitch_quat := quat_angle_axis(y_rot, camera_right)
+		pitch_quat := quat_angle_axis(-y_rot, camera_right)
 		camera.obj.dir = pitch_quat * camera.obj.dir
 	}
 }

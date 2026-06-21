@@ -16,7 +16,6 @@ MAX_INSTANCES_PER_BATCH  :: 512
 Mesh_Batch :: struct {
     mesh_id:        i64
     instances:      [..MAX_INSTANCES_PER_BATCH]Instance
-    instance_count: u32
 }
 
 // DrawCommand for MultiDrawIndirect
@@ -122,7 +121,7 @@ get_or_create_batch :: fun(state: ^DrawState, mesh_id: i64) -> ^Mesh_Batch {
     }
     batch := &state.batches[state.batch_count]
     batch.mesh_id = mesh_id
-    batch.instance_count = 0
+    batch.instances.len = 0
     state.batch_count += 1
     return batch
 }
@@ -160,9 +159,8 @@ draw_state_append :: fun(
 			color = vis.color,
 			layer = vis.texture.layer,
 		}
-		batch.instances[i] = instance
+		&batch.instances + instance
 
-		print(highlight_state.command_buffer)
 		if highlight_state != void and obj.highlighted {
 			highlight_batch := get_or_create_batch(highlight_state, mesh_id)
 			// Fixed offset gives consistent outline thickness
@@ -173,7 +171,7 @@ draw_state_append :: fun(
 				highlight_scale,
 				camera.view, camera.proj
 			)
-			highlight_batch.instances[i] = Instance{
+			&highlight_batch.instances + Instance{
 				mvp_matrix = highlight_mvp,
 				tex_coords = vis.texture.uv,
 				color = {0, 1, 0},  // bright green
@@ -234,7 +232,6 @@ append_one :: fun(
 
 draw_state_reset :: fun(state: ^DrawState) {
     for i in 0..state.batch_count {
-        state.batches[i].instance_count = 0
         state.batches[i].instances.len = 0
     }
     state.batch_count = 0
@@ -251,28 +248,27 @@ draw_state_render :: fun(state: ^DrawState) {
 	state.command_count = 0
 	for i in 0..state.batch_count {
 	    batch := &state.batches[i]
-	    // instance_count and the partial-array len are two counters for the
-	    // same thing; if they disagree, an append updated one but not the
-	    // other and this batch silently draws the wrong instance count.
-	    assert(batch.instance_count == batch.instances.len)
-	    if batch.instance_count == 0 do continue
+	    // instances.len is the single source of truth for the instance count
+	    // (the append operator maintains it). No second counter to fall out of sync.
+	    count := batch.instances.len
+	    if count == 0 do continue
 	    if batch.mesh_id not in 0..vao_info.mesh_count do continue
 	    if state.command_count > 255 do break
 	    mesh := vao_info.meshes[batch.mesh_id]
 	    state.commands[state.command_count] = DrawCommand{
 	        index_count    = mesh.index_count,
-	        instance_count = batch.instance_count,
+	        instance_count = u32(count),
 	        first_index    = mesh.first_index,
 	        base_vertex    = mesh.base_vertex,
 	        base_instance  = u32(gpu_offset),
 	    }
 	    state.command_count += 1
-	    bytes := batch.instance_count * size_of(Instance)
+	    bytes := count * size_of(Instance)
 	    gl.BufferSubData(gl.ARRAY_BUFFER,
 	                     gpu_offset * size_of(Instance),
 	                     isize(bytes),
 	                     &batch.instances[0])
-	    gpu_offset += isize(batch.instance_count)
+	    gpu_offset += isize(count)
 	}
 
 	// Upload command data

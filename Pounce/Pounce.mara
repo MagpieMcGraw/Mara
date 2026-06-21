@@ -107,6 +107,28 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 
 	&game.assets.init(&game.vao, "data/fonts/Inter_18pt-Regular.ttf")
 
+	// Texture binding flows asset -> draw state: the object shader samples the
+	// image atlas, the text shader samples the font atlas. Without this the
+	// draw states sample texture 0 and discard everything (draw_state_assert_ready
+	// catches it).
+	game.draw_state_object.texture = game.assets.texture_id
+	game.draw_state_text.texture = game.assets.font_texture_id
+
+	// Camera setup mirrors the Warlock reference (Warlock.odin): sit at the origin
+	// and look_down (a 180 flip about Y). At raw identity the camera's view axis is
+	// parallel to the world up (+Z) that camera_turn_walking yaws around, so
+	// horizontal mouselook rolled instead of panning; look_down fixes the
+	// orientation. The scene then sits out along +Z in front of the camera.
+	game.camera.obj.pos = Vec3{0, 0, 0}
+	camera_look_down(&game.camera)
+
+	// Playa quad shows the whole font atlas (layer 0) so the MDEI text path has
+	// real glyph data to sample. tex_coords {1,1,0,0} maps the quad's 0..1 UVs
+	// across the full sheet ({0,0,0,0} would sample one empty corner and discard).
+	game.playa.obj.pos = Vec3{0, 0, 120}
+	game.playa.obj.scale = Vec3{70, 70, 70}
+	game.playa.visual.texture = ATLAS_TEXTURE
+
 	game.running = true
 	game.initialized = true
 }
@@ -129,33 +151,62 @@ game_events :: fun(game: ^Megastruct) {
 		print(quit_msg)
 		game.running = false
 	}
+
+	// Mouselook gate (matches the Warlock reference): right-click toggles it.
+	// Enabling turns on relative mouse mode, which locks the cursor to the window
+	// and feeds unbounded relative motion — so turning never stops at the window
+	// edge. The turn itself runs once per frame here, not per fixed step.
+	if ev.mouse.pressed[3] {
+		game.mouse_look = not game.mouse_look
+		_ = sdl.SetWindowRelativeMouseMode(game.window, game.mouse_look)
+	}
+	if game.mouse_look do camera_turn_walking(&game.camera, &ev.mouse)
 }
 game_update :: fun(game: ^Megastruct, dt: f64) {
 	camera_move(&game.camera, &game.events.keyboard, f32(game.timers.fixed.step))
-	camera_turn_walking(&game.camera, &game.events.mouse)
 	camera_update(&game.camera, f32(game.timers.fixed.step))
 }
+// Append a solid-colored quad through the object shader. The image atlas holds a
+// white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
+// and `color` comes through flat — a clean orientation marker.
+draw_marker :: fun(state: ^DrawState, pos: Vec3, color: [3]f32, camera: Camera) {
+	obj := Object{pos = pos, scale = Vec3{40, 40, 40}, exists = true}
+	vis := Visual{color = color}
+	append_one(state, obj, vis, camera)
+}
+
 game_draw :: fun(game: ^Megastruct) {
-	// --- Everything OpenGL needs to draw the playa this frame ---
+	// --- Everything OpenGL needs to draw this frame ---
 	// Static GPU state (checked by draw_state_assert_ready):
 	//   shader         linked program        (0 = link failed)
 	//   command_buffer MDI indirect buffer
-	//   texture        sampler2DArray source (font atlas for the text shader)
+	//   texture        sampler2DArray source (image / font atlas)
 	//   vao + 3 VBOs   vao / vertex_vbo / ebo / instance_vbo
 	//   mesh_count>0   at least one mesh uploaded to the shared VAO
 	//   index_offset>0 geometry actually uploaded (indices exist to draw)
 	// Per-frame data (checked inside draw_state_render):
-	//   instance_count matches instances.len for each batch
+	//   each batch's instances.len is its instance count (one source of truth)
 	//   each mesh_id resolves to a VAO_Mesh with index_count > 0
 	//   command_count > 0 once batches are flattened to DrawCommands
+	draw_state_assert_ready(&game.draw_state_object)
 	draw_state_assert_ready(&game.draw_state_text)
 
 	ClearColor(0.85, 0.80, 0.70, 1.0)
 	Clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
 
+	// Orientation cross of solid quads around the playa, so one object isn't the
+	// only thing on screen: +X red, +Y green, -X blue, -Y yellow, at the playa's
+	// depth. Drawn through the object shader / image atlas.
+	draw_marker(&game.draw_state_object, Vec3{ 90,   0, 120}, [1, 0, 0], game.camera)
+	draw_marker(&game.draw_state_object, Vec3{  0,  90, 120}, [0, 1, 0], game.camera)
+	draw_marker(&game.draw_state_object, Vec3{-90,   0, 120}, [0, 0, 1], game.camera)
+	draw_marker(&game.draw_state_object, Vec3{  0, -90, 120}, [1, 1, 0], game.camera)
+	draw_state_render(&game.draw_state_object)
+	draw_state_reset(&game.draw_state_object)
+
+	// Playa quad through the text shader / font atlas.
 	append_one(&game.draw_state_text,
 		game.playa.obj, game.playa.visual, game.camera)
-	draw_state_bind(&game.draw_state_text)
 	draw_state_render(&game.draw_state_text)
 	draw_state_reset(&game.draw_state_text)
 

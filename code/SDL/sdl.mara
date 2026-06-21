@@ -1100,6 +1100,8 @@ foreign static_lib "SDL3" prefix SDL_ {
     fun DestroyWindow(window: Window)
     fun GetWindowSize(window: Window, w: ^i32, h: ^i32) -> bool
     fun GetWindowSizeInPixels(window: Window, w: ^i32, h: ^i32) -> bool
+    // Locks the cursor to the window, hides it, and feeds relative motion.
+    fun SetWindowRelativeMouseMode(window: Window, enabled: bool) -> bool
     fun PollEvent(event: ^Event) -> bool
     fun Delay(ms: u32)
     fun Quit()
