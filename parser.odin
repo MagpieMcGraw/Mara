@@ -131,6 +131,7 @@ Union_Variant_Def :: struct {
     tag:     int,                       // explicit or auto-assigned tag value
     has_tag: bool,                      // true if = N was specified
     fields:  [dynamic]Scope_Binding, // empty for pure-enum variants
+    span:    Span,                      // the variant name's source location (for the synthetic variant struct)
 }
 
 // AST node types
@@ -2003,7 +2004,9 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
     auto_tag := 0
 
     for current_kind(p) != .Right_Brace && current_kind(p) != .EOF {
-        variant_name := expect(p, .Identifier).text
+        name_tok := expect(p, .Identifier)
+        variant_name := name_tok.text
+        variant_span := token_span(p, name_tok)
 
         // Optional explicit tag: = N
         tag := auto_tag
@@ -2046,7 +2049,7 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
             expect(p, .Right_Brace)
         }
 
-        append(&variant_defs, Union_Variant_Def{name = variant_name, tag = tag, has_tag = has_tag, fields = fields})
+        append(&variant_defs, Union_Variant_Def{name = variant_name, tag = tag, has_tag = has_tag, fields = fields, span = variant_span})
         if current_kind(p) == .Comma { advance(p) }
         skip_newlines(p)
     }
@@ -2077,9 +2080,9 @@ parse_error_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
 
     variant_defs: [dynamic]Union_Variant_Def
     for current_kind(p) != .Right_Brace && current_kind(p) != .EOF {
-        variant_name := expect(p, .Identifier).text
+        name_tok := expect(p, .Identifier)
         // Tag value is filled in at type-check time (set_id<<16 | local_tag).
-        append(&variant_defs, Union_Variant_Def{name = variant_name})
+        append(&variant_defs, Union_Variant_Def{name = name_tok.text, span = token_span(p, name_tok)})
         if current_kind(p) == .Comma { advance(p) }
         skip_newlines(p)
     }

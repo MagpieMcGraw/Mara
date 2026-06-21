@@ -3030,6 +3030,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
     tag_et.name = make_flat_name(tmpl.home_package, tag_enum_name)
     tag_et.home_package = tmpl.home_package
     tag_et.tag_type = s.tag_type
+    tag_et.span = s.span   // synthetic discriminant: locate at the union decl
     for vdef in s.variants {
         tag_et.variants[vdef.name] = vdef.tag
     }
@@ -3043,6 +3044,7 @@ instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, ty
         vst.name = make_flat_name(tmpl.home_package, struct_name)
         vst.home_package = tmpl.home_package
         vst.kind = .Struct
+        vst.body_span = vdef.span
         for field in vdef.fields {
             ft := resolve_type_expr_with_subst(field.type_expr, c, span, &subst)
             append(&vst.fields, Struct_Type_Field{
@@ -6589,6 +6591,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 tag_et.name = make_flat_name(c.current_package, tag_enum_name)
                 tag_et.home_package = c.current_package
                 tag_et.tag_type = s.tag_type
+                tag_et.span = s.span   // synthetic discriminant: locate at the union decl
                 for vdef in s.variants {
                     tag_et.variants[vdef.name] = vdef.tag
                 }
@@ -6603,6 +6606,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                     vst.name = make_flat_name(c.current_package, struct_name)
                     vst.home_package = c.current_package
                     vst.kind = .Struct
+                    vst.body_span = vdef.span
                     c.table.structs[vst.name] = vst
                     append(&ut.variants, vdef.name)
                     ut.tag_map[vdef.name] = vdef.tag
@@ -6902,6 +6906,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         vst.name = make_flat_name(c.current_package, struct_name)
                         vst.home_package = c.current_package
                         vst.kind = .Struct
+                        vst.body_span = vdef.span
                         for field in vdef.fields {
                             ft := resolve_type_expr(field.type_expr, c, s.span)
                             append(&vst.fields, Struct_Type_Field{name = field.name, type_ = ft, default_value = field.default_value, is_using = field.is_using})

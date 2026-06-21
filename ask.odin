@@ -149,24 +149,30 @@ Ask_Match :: struct {
     span:  Span,
 }
 
-// Every definition in (optionally) the scoped file, deduped by source span.
-// The span dedup is load-bearing, not cosmetic: a struct and its synthesized
+// Every definition in (optionally) the scoped file, deduped by (span, kind).
+// The dedup is load-bearing, not cosmetic: a struct and its synthesized
 // constructor live in two tables (`.structs` and `.funs`) but share one def
 // site, and every monomorphization of a generic shares the generic's def site —
 // so without it a perfectly unambiguous `Foo` would report as N "definitions".
 // With it, those collapse to the one definition the user means, while two
-// genuinely distinct same-named types (different files) stay separate.
+// genuinely distinct same-named types (different files) stay separate. The KIND
+// is part of the key because a union and its synthesized tag enum legitimately
+// share one source span (the union decl) — span alone would shadow one with the
+// other; same kind + same span is the actual "same definition" signal.
 // `scope_file` (a bare filename) restricts to definitions declared in that file —
 // the disambiguation lever behind `in <file>`.
+Ask_Dedup_Key :: struct { span: Span, sub: string }
+
 ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string) -> [dynamic]Ask_Match {
     matches: [dynamic]Ask_Match
-    seen: map[Span]bool
-    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Span]bool, t: Type, scope_file: string) {
+    seen: map[Ask_Dedup_Key]bool
+    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]bool, t: Type, scope_file: string) {
         sp := ask_span(t)
         if scope_file != "" && filepath.base(sp.file) != scope_file { return }
-        if seen[sp] { return }
-        seen[sp] = true
         sub, _ := ask_sub(t)
+        key := Ask_Dedup_Key{ span = sp, sub = sub }
+        if seen[key] { return }
+        seen[key] = true
         append(matches, Ask_Match{ type_ = t, label = ask_label(t), flat = ask_type_name(t), sub = sub, span = sp })
     }
     for _, s in table.structs        { consider(&matches, &seen, s, scope_file) }
