@@ -707,6 +707,12 @@ get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
 Type_Env :: struct {
     types:        map[string]Type,
     parent:       ^Type_Env,
+    // The durable Type_Scope this env's names live on. Every env has one, chained
+    // via parent_scope to the parent env's scope — so the scope graph mirrors the
+    // env graph and resolution can walk it instead of env.types/env.parent. For a
+    // block it's the .Block scope; for a fun/class defs layer that scope; for a
+    // module the module struct; elsewhere a fresh shadow.
+    scope:        ^Type_Scope,
     // Blocks-as-scopes: the durable .Block Type_Scope this env shadows — its
     // locals (in .types) and parent_scope link mirror what the env carries, so
     // local lookup runs off the scope graph (type_env_locate). Set for the
@@ -813,6 +819,37 @@ walk_validate_local :: proc(start: ^Type_Env, found_in: ^Type_Env, name: string,
     }
 }
 
+// Resolve a name purely over the durable scope graph: walk env.scope up its
+// parent_scope chain checking .types / .functions, then the includes. This is
+// what replaces the env.types/env.parent walk once every name lives on a scope.
+// Pointer identity of a Type's payload (nil for value-typed variants). Used only
+// by the env→scope migration validation to detect divergent resolutions.
+type_ptr_ident :: proc(t: Type) -> rawptr {
+    #partial switch v in t {
+    case ^Type_Scope:         return v
+    case ^Type_Enum:          return v
+    case ^Type_Union:         return v
+    case ^Type_Distinct:      return v
+    case ^Type_Ptr:           return v
+    case ^Type_Slice:         return v
+    case ^Type_Partial_Array: return v
+    case ^Type_Fixed_Array:   return v
+    }
+    return nil
+}
+
+scope_resolve :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if s.types != nil { if t, ok := s.types[name]; ok { return t, true } }
+        if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, true } }
+    }
+    for cur := env; cur != nil; cur = cur.parent {
+        for inc in cur.includes { if t, ok := include_lookup(inc, name); ok { return t, true } }
+        if cur.is_module_scope { break }
+    }
+    return nil, false
+}
+
 // THE name-lookup walk (type_env_get / type_env_locate_below_module are thin
 // wrappers — this is the single site the env→scope-graph migration touches).
 // At each env level: locals (cur.types), then durable members (scope_member up
@@ -842,6 +879,11 @@ type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> 
         if below_module && cur.is_module_scope { break }
         if t, ok := cur.types[name]; ok {
             walk_validate_local(env, cur, name, t)
+            if walk_check_on() {
+                st, sok := scope_resolve(env, name)
+                if !sok { fmt.eprintf("[TEL-GAP] %s\n", name) }
+                else if type_ptr_ident(t) != type_ptr_ident(st) { fmt.eprintf("[TEL-MISMATCH] %s\n", name) }
+            }
             return t, cur, true
         }
         if t, ok := scope_member(cur, name); ok {
@@ -944,6 +986,11 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
     for cur != nil {
         level_start := len(matches)
         if t, found := cur.types[name]; found {
+            if walk_check_on() {
+                st, sok := scope_resolve(env, name)
+                if !sok { fmt.eprintf("[RWA-GAP] %s\n", name) }
+                else if type_ptr_ident(t) != type_ptr_ident(st) { fmt.eprintf("[RWA-MISMATCH] %s\n", name) }
+            }
             owner: string
             if cur.is_module_scope {
                 owner = c.current_package
@@ -1000,11 +1047,12 @@ raw_type_key :: proc(t: Type) -> rawptr {
 
 type_env_set :: proc(env: ^Type_Env, name: string, t: Type) {
     env.types[name] = t
-    // Mirror the local onto the durable .Block scope (blocks-as-scopes), so the
-    // scope graph carries what the env does. Block scopes have no members, so
-    // .types is free to hold locals. nil for non-block envs.
-    if env.block_scope != nil {
-        env.block_scope.types[name] = t
+    // Mirror onto the env's durable scope so the scope graph carries every name
+    // (locals, params, consts, monos, aliases) — what resolution will walk once
+    // it moves off env.types. (block_scope == scope for block envs.)
+    if env.scope != nil {
+        if env.scope.types == nil { env.scope.types = make(map[string]Type) }
+        env.scope.types[name] = t
     }
 }
 
@@ -1031,7 +1079,12 @@ type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
     // Inner blocks (if/for/match) inherit their parent's frame depth. Only
     // function-body envs bump scope_depth — see the explicit bump in
     // check_scope_body's `.Fun` path.
-    return Type_Env{parent = parent, scope_depth = parent.scope_depth}
+    // Every child env gets its own durable scope, chained to the parent's, so the
+    // scope graph parallels the env graph. Specific creators (block/ns/module)
+    // override `scope` with the right concrete scope; this is the default shadow.
+    s := new(Type_Scope)
+    s.parent_scope = parent.scope
+    return Type_Env{parent = parent, scope_depth = parent.scope_depth, scope = s}
 }
 
 // Like type_env_child but also mints the durable .Block Type_Scope this block
@@ -1042,13 +1095,12 @@ type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
 // block scope is built so the kind-gated parent_scope walk can be validated
 // against it before the env walk is retired.
 type_env_block_child :: proc(parent: ^Type_Env) -> Type_Env {
-    child := type_env_child(parent)
-    enclosing := parent.block_scope
-    if enclosing == nil { enclosing = enclosing_callable_scope(parent) }
-    bs := new(Type_Scope)
-    bs.kind = .Block
-    bs.parent_scope = enclosing
-    child.block_scope = bs
+    child := type_env_child(parent) // child.scope minted, parent_scope = parent.scope
+    // The env's durable scope IS the block scope. parent.scope already equals the
+    // nearest enclosing scope (a containing block, else the enclosing fun/ctor),
+    // so the chain matches the old enclosing-scope link.
+    child.scope.kind = .Block
+    child.block_scope = child.scope
     return child
 }
 
@@ -7131,6 +7183,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Attach as a member of the enclosing module struct (if any).
                 // Mirrors the work extract_module_into_checked used to do post-hoc.
                 if owner != nil {
+                    fun_type.parent_scope = owner // chain to the module/enclosing scope
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
                         owner.types[s.name] = fun_type
@@ -8218,6 +8271,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.kind == .Struct {
         ns_env = type_env_child(env)
         ns_env.class_scope = ft
+        ns_env.scope = ft // the class's own scope holds its members/nested defs
         // (ns_env no longer copies ft.types / ft.functions — scope_member reads
         // them off ft directly via ns_env's class_scope / fun_scope back-link.)
         parent_env = &ns_env
@@ -8246,6 +8300,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         }
         ns_env = type_env_child(defs_parent)
         ns_env.fun_scope = ft
+        ns_env.scope = ft // the fun's own scope holds its nested defs
         // (ns_env no longer copies ft.types / ft.functions — scope_member reads
         // them off ft directly via ns_env's class_scope / fun_scope back-link.)
         parent_env = &ns_env
@@ -10017,6 +10072,7 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
     for src in file_order {
         fe := new(Type_Env)
         fe.parent = pkg_env
+        fe.scope = pkg_env.scope // file names resolve over the module scope
         file_envs[src] = fe
     }
     return
@@ -10121,6 +10177,16 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_env := new(Type_Env)
     mod_env.is_module_scope = true
 
+    // Create the module-struct upfront so it can own top-level declarations during
+    // registration AND serve as the module env's durable scope before any name is
+    // set. Dispatch groups / operator overloads filled after check_scope completes.
+    mod_struct := new(Type_Scope)
+    mod_struct.name = module_name
+    mod_struct.home_package = module_name  // module is its own home
+    mod_struct.kind = .Struct
+    mod_struct.scope = mod_env
+    mod_env.scope = mod_struct
+
     if c.top_env != nil {
         for name in ([]string{"this_program", "Program", "std", "void"}) {
             if t, ok := c.top_env.types[name]; ok {
@@ -10136,15 +10202,6 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
         void_type.elem = Type_Any{}
         type_env_set(mod_env, "void", void_type)
     }
-
-    // Create module-struct upfront so it can own top-level declarations
-    // during registration. Dispatch groups / operator overloads filled after
-    // check_scope completes.
-    mod_struct := new(Type_Scope)
-    mod_struct.name = module_name
-    mod_struct.home_package = module_name  // module is its own home
-    mod_struct.kind = .Struct
-    mod_struct.scope = mod_env
 
     // Self-binding under the module's bare name was removed: the feature
     // (write `time.Timer` inside `module mara.time` to disambiguate from a
@@ -10793,24 +10850,24 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // env via public_env; include-introduced names stay file-private.
     c.current_package = main_package
     {
-        // Canonical per-file pipeline (see check_package_files for the phase
-        // map). The main package has no enclosing module-struct (owner = nil)
-        // and DOES run the 1.5 constant pass so body checks can resolve
-        // top-level `::` values.
-        main_files_by_src, main_file_order, main_file_envs := partition_package_files(main_prog^, env)
-        check_package_files(&c, main_files_by_src, main_file_order, main_file_envs, nil, env)
+        // Give the main package a real module-struct upfront (like check_module),
+        // so its top-level names live on a durable scope the env walks — and so a
+        // `use` of this package finds it. (Was a synthetic post-check stub.)
+        main_mod := new(Type_Scope)
+        main_mod.name = main_package
+        main_mod.home_package = main_package
+        main_mod.kind = .Struct
+        main_mod.scope = env
+        env.scope = main_mod
+        c.checked_modules[main_package] = main_mod
+        // Builtins (void / this_program / Program / std) were registered on env
+        // before it had a scope — carry them onto main_mod so they resolve durably.
+        main_mod.types = make(map[string]Type)
+        for k, v in env.types { main_mod.types[k] = v }
 
-        // Register a synthetic module-struct for any `use` of this package
-        // (still possible from imported modules that happen to reference it).
-        if _, already := c.checked_modules[main_package]; !already {
-            mod_struct := new(Type_Scope)
-            mod_struct.name = main_package
-            mod_struct.home_package = main_package
-            mod_struct.kind = .Struct
-            mod_struct.scope = new(Type_Env)
-            mod_struct.scope.is_module_scope = true
-            c.checked_modules[main_package] = mod_struct
-        }
+        // Canonical per-file pipeline (see check_package_files for the phase map).
+        main_files_by_src, main_file_order, main_file_envs := partition_package_files(main_prog^, env)
+        check_package_files(&c, main_files_by_src, main_file_order, main_file_envs, main_mod, env)
     }
 
     // Validate scope allocator API after all types are resolved.
@@ -11745,6 +11802,7 @@ build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Env {
     if outer == nil { return nil }
     env := new(Type_Env)
     env.parent = outer
+    env.scope = parent // resolution walks the scope being rebuilt + its parent_scope
     if parent.kind == .Struct { env.class_scope = parent } else { env.fun_scope = parent }
     return env
 }
