@@ -768,6 +768,15 @@ scope_member :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     return nil, false
 }
 
+// Does scope `s` define `name` directly (its own types or functions)? One level,
+// no parent_scope walk — the durable equivalent of a single env's own .types.
+scope_defines :: proc(s: ^Type_Scope, name: string) -> (Type, bool) {
+    if s == nil { return nil, false }
+    if s.types != nil { if t, ok := s.types[name]; ok { return t, true } }
+    if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, true } }
+    return nil, false
+}
+
 // Look up a bare name exported by an included module — off the module's own
 // DURABLE scope (inc.types), which check_module finalizes to the full name
 // surface (types + funs + distincts + const/late-bound types) at the end of the
@@ -1242,7 +1251,7 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
         cur := env
         for cur != nil {
             if cur.is_module_scope {
-                if _, found := cur.types[bare_name]; found {
+                if _, found := scope_defines(cur.scope, bare_name); found {
                     return make_flat_name(c.current_package, bare_name)
                 }
             }
@@ -1487,7 +1496,7 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
         cur := env
         for cur != nil {
             if cur.is_module_scope {
-                if t, found := cur.types[name]; found {
+                if t, found := scope_defines(cur.scope, name); found {
                     if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
                         return c.current_package, true, nil
                     }
@@ -1540,7 +1549,7 @@ resolve_fn_home :: proc(c: ^Checker, env: ^Type_Env, name: string) -> string {
         cur := env
         for cur != nil {
             if cur.is_module_scope {
-                if t, found := cur.types[name]; found {
+                if t, found := scope_defines(cur.scope, name); found {
                     if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun {
                         return c.current_package
                     }
@@ -10177,7 +10186,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
 
     if c.top_env != nil {
         for name in ([]string{"this_program", "Program", "std", "void"}) {
-            if t, ok := c.top_env.types[name]; ok {
+            if t, ok := scope_defines(c.top_env.scope, name); ok {
                 type_env_set(mod_env, name, t)
             }
         }
@@ -10185,7 +10194,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
 
     // If `void` wasn't in c.top_env yet (early in setup), register a fresh
     // null-pointer type so the module body's void literals still type-check.
-    if _, has_void := mod_env.types["void"]; !has_void {
+    if _, has_void := scope_defines(mod_env.scope, "void"); !has_void {
         void_type := new(Type_Ptr)
         void_type.elem = Type_Any{}
         type_env_set(mod_env, "void", void_type)
