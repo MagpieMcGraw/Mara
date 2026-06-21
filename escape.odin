@@ -34,16 +34,15 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
 
 escape_check_fn :: proc(c: ^Checker, ft: ^Type_Scope) {
     if ft.ast == nil { return }
-    // Synthetic env: only its `scope` is read (by enclosing_fun_depth / is_param /
-    // enclosing_callable_scope) — provenance comes from the frame stack.
-    synth := Type_Env{ scope = ft }
+    // The fun's own scope is the resolution context (read by enclosing_fun_depth /
+    // is_param / enclosing_callable_scope) — provenance comes from the frame stack.
     exempt := ft.home_package == "memory" // arena_alloc must return slices
-    escape_block(c, &synth, ft.ast.body[:], ft, exempt)
+    escape_block(c, ft, ft.ast.body[:], ft, exempt)
 }
 
 // One lexical block: push a frame, walk its statements, pop. Block-scoping of
 // provenance falls out exactly as it did from env.bindings + env.parent.
-escape_block :: proc(c: ^Checker, env: ^Type_Env, stmts: []Stmt, ft: ^Type_Scope, exempt: bool) {
+escape_block :: proc(c: ^Checker, env: ^Type_Scope, stmts: []Stmt, ft: ^Type_Scope, exempt: bool) {
     frame: Escape_Frame
     frame.prov = make(map[string]Provenance)
     frame.is_let = make(map[string]bool)
@@ -54,7 +53,7 @@ escape_block :: proc(c: ^Checker, env: ^Type_Env, stmts: []Stmt, ft: ^Type_Scope
     delete(frame.prov); delete(frame.is_let); delete(frame.slice_backed)
 }
 
-escape_stmt :: proc(c: ^Checker, env: ^Type_Env, s: Stmt, ft: ^Type_Scope, exempt: bool) {
+escape_stmt :: proc(c: ^Checker, env: ^Type_Scope, s: Stmt, ft: ^Type_Scope, exempt: bool) {
     #partial switch v in s {
     case ^Stmt_Decl:
         // The desugared per-name assigns carry the resolved value; set provenance
@@ -101,7 +100,7 @@ escape_stmt :: proc(c: ^Checker, env: ^Type_Env, s: Stmt, ft: ^Type_Scope, exemp
 //   uninit    -> prov_local
 //   struct/union literal -> prov_local (the value's bytes live in our frame)
 //   else      -> expr_provenance(value)
-escape_decl :: proc(c: ^Checker, env: ^Type_Env, name: string, value: Expr) {
+escape_decl :: proc(c: ^Checker, env: ^Type_Scope, name: string, value: Expr) {
     if name == "" || name == "_" { return }
     if value == nil {
         set_provenance(env, name, prov_local(env))
@@ -120,7 +119,7 @@ escape_decl :: proc(c: ^Checker, env: ^Type_Env, name: string, value: Expr) {
 }
 
 // The three return-escape checks (check_scope_body's Stmt_Return tail).
-escape_return_value :: proc(c: ^Checker, env: ^Type_Env, val: Expr, span: Span) {
+escape_return_value :: proc(c: ^Checker, env: ^Type_Scope, val: Expr, span: Span) {
     if is_local_ref(c, val, env) {
         report_return_escape(c, val, span, env)
     }
@@ -134,7 +133,7 @@ escape_return_value :: proc(c: ^Checker, env: ^Type_Env, val: Expr, span: Span) 
 
 // Writing a local reference through a param pointer (`p^ = &local`) or into a
 // param struct's ref field (`p.field = &local`).
-escape_param_write :: proc(c: ^Checker, env: ^Type_Env, s: ^Stmt_Assign, exempt: bool) {
+escape_param_write :: proc(c: ^Checker, env: ^Type_Scope, s: ^Stmt_Assign, exempt: bool) {
     if exempt || s.target == nil || s.value == nil { return }
     // `p^ = value`
     if un, ok := s.target.(^Expr_Unary); ok && un.op == .Caret {

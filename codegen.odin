@@ -2990,7 +2990,7 @@ emit_return_resets :: proc(g: ^Codegen) {
 
 // Generate an LLVM type declaration for a struct from checked type data.
 register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
-    if sd.scope != nil { return }  // module-struct — namespace only, no data layout
+    if sd_is_module(sd) { return }  // module-struct — namespace only, no data layout
     key := sd.name
     if key in g.registered_structs { return }
     g.registered_structs[key] = true

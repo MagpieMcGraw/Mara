@@ -160,7 +160,7 @@ Scope_Body :: struct {
     // can demand this struct's signature on the spot (ensure_struct_signature).
     // nil for nested scopes (their decl env is transient) â€” those resolve
     // through their parent (parent_scope) instead.
-    decl_env:       ^Type_Env,
+    decl_env:       ^Type_Scope,
 
     // Enclosing scope for a nested struct (`Inner` inside `Box`). A nested
     // struct's decl_env is transient, so on-demand resolution walks up to a
@@ -179,9 +179,6 @@ Scope_Body :: struct {
     // Class-internal `name :: value` constants. Tracked separately from
     // functions because constants are AST-level values, not Types.
     consts:         map[string]^Stmt_Define,
-
-    // Module scope (non-nil for module-structs created by `include`)
-    scope:          ^Type_Env,         // module namespace scope â€” nil for normal structs
 
     // Bare-`include`d modules' durable scopes, visible from this scope (a file
     // scope holds that file's private includes; a module scope holds re-exports).
@@ -324,7 +321,7 @@ constructor_effective_returns :: proc(ft: ^Type_Scope) -> ([]Type, bool) {
 // Must be invoked AFTER check_expr on the call, so resolved_func is populated
 // (UFCS / package-qualified call names like `string.find` get rewritten to a
 // flat name like `mara_string_find` during type checking).
-call_return_list :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> []Type {
+call_return_list :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> []Type {
     call, ok := e.(^Expr_Call)
     if !ok { return nil }
     // Prefer the resolved flat name (set by check_expr) over the AST name.
@@ -391,6 +388,26 @@ as_struct_body :: proc(t: Type) -> ^Scope_Body {
 as_scope_body :: proc(t: Type) -> ^Scope_Body {
     if ft, ok := t.(^Type_Scope); ok { return &ft.sd }
     return nil
+}
+
+// A Scope_Body is always the offset-0 `sd` head of a Type_Scope (as_scope_body
+// returns &ft.sd; Type_Scope embeds `using sd: Scope_Body`), so we can recover the
+// containing Type_Scope by transmute â€” the same trick ensure_struct_signature uses.
+// `is_module` (the namespace marker) lives on Type_Scope, so a ^Scope_Body reaches
+// it through here. This replaces the old `sd.scope != nil` test, which used a
+// back-ref env field purely as a "this is a module namespace" proxy.
+sd_type_scope :: proc(sd: ^Scope_Body) -> ^Type_Scope {
+    return transmute(^Type_Scope)sd if sd != nil else nil
+}
+sd_is_module :: proc(sd: ^Scope_Body) -> bool {
+    ts := sd_type_scope(sd)
+    return ts != nil && ts.is_module
+}
+// The module namespace scope to resolve members against, or nil if `sd` is not a
+// module-struct (was: the back-ref env, whose .scope was this very Type_Scope).
+sd_module_scope :: proc(sd: ^Scope_Body) -> ^Type_Scope {
+    ts := sd_type_scope(sd)
+    return ts if (ts != nil && ts.is_module) else nil
 }
 
 // Check if a Type is a data-layout scope.
@@ -683,16 +700,16 @@ PROV_GLOBAL  :: Provenance{depth = 0}                                    // outl
 // than carried per-env: the escape check is relative (a value is rejected iff it
 // lives at OUR frame depth or deeper), so the absolute count only has to be
 // self-consistent within a function â€” which counting .Fun up parent_scope is.
-enclosing_fun_depth :: proc(env: ^Type_Env) -> int {
+enclosing_fun_depth :: proc(env: ^Type_Scope) -> int {
     d := 0
-    for s := (env.scope if env != nil else nil); s != nil; s = s.parent_scope {
+    for s := (env if env != nil else nil); s != nil; s = s.parent_scope {
         if s.kind == .Fun { d += 1 }
     }
     return d
 }
 
-prov_local :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = enclosing_fun_depth(env)} }
-prov_param :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = enclosing_fun_depth(env) - 1} }
+prov_local :: proc(env: ^Type_Scope) -> Provenance { return Provenance{depth = enclosing_fun_depth(env)} }
+prov_param :: proc(env: ^Type_Scope) -> Provenance { return Provenance{depth = enclosing_fun_depth(env) - 1} }
 
 // One lexical block's escape state for the POST-CHECK escape pass (escape.odin):
 // the per-name facts (provenance / take-bound / locally-slice-backed) the
@@ -716,22 +733,16 @@ esc_get_prov :: proc(name: string) -> (Provenance, bool) {
 }
 esc_top :: proc() -> ^Escape_Frame { return g_esc[len(g_esc) - 1] if len(g_esc) > 0 else nil }
 
-// Type_Env is now a thin handle over a durable scope — a single `scope` pointer.
-// Everything it used to carry has moved onto the durable graph or out to a pass:
-//   types        -> the scope graph (resolution walks scope.parent_scope)
-//   parent       -> the scope graph (env.scope.parent_scope IS the nesting)
-//   class/fun_scope, is_module_scope, block_scope -> derived from scope (kind /
-//                   is_module / the back-ref); return_types -> enclosing_return_types
-//   includes     -> Scope_Body.includes
-//   bindings (provenance/is_let/local_slice_backed) -> the escape pass frame stack
-//   definite-assignment flow state -> flow.odin
-// It survives only because `env` is still threaded through the checker as the
-// "current scope" handle; collapsing it to a bare ^Type_Scope is a separate, wide
-// mechanical change. The two roles `scope` plays: resolution context (walk up
-// parent_scope) and the durable home top-level names register into.
-Type_Env :: struct {
-    scope: ^Type_Scope,
-}
+// Type_Env is GONE. It was a transient per-scope handle carrying resolution state
+// during checking; over the teardown every field it held moved onto the durable
+// graph or out to a post-check pass (types -> the scope graph; parent -> the
+// parent_scope chain; class/fun_scope, is_module_scope, block_scope -> derived
+// from scope kind/is_module; return_types -> enclosing_return_types; includes ->
+// Scope_Body.includes; bindings -> the escape/flow pass frame stacks). Once it was
+// a one-field wrapper `{ scope }`, the wrapper itself was redundant: `env` IS the
+// durable ^Type_Scope it pointed at. The checker now threads ^Type_Scope directly
+// as the "current scope" handle, walking parent_scope for resolution and
+// registering top-level names straight onto the scope.
 
 // Durable scope-member lookup: a scope's nested types + funs live on its
 // Does scope `s` define `name` directly (its own types or functions)? One level,
@@ -747,8 +758,8 @@ scope_defines :: proc(s: ^Type_Scope, name: string) -> (Type, bool) {
 // Derived purely from the durable scope: each file now gets its OWN .Block scope
 // chained to the module (partition_package_files), so a file scope is never the
 // module scope â€” `is_module` alone distinguishes them, no env-identity back-ref.
-env_is_module :: proc(env: ^Type_Env) -> bool {
-    return env != nil && env.scope != nil && env.scope.is_module
+env_is_module :: proc(env: ^Type_Scope) -> bool {
+    return env != nil && env != nil && env.is_module
 }
 
 // Look up a bare name exported by an included module â€” off the module's own
@@ -790,8 +801,8 @@ scope_local_lookup :: proc(start: ^Type_Scope, name: string) -> (Type, bool) {
 // scope's own includes, stop at the module. The migration target for the legacy
 // env.parent + cur.includes walk (now that decls chain through their file scope,
 // the scope chain reaches every include-holding scope the env chain did).
-scope_includes_lookup :: proc(env: ^Type_Env, name: string, below_module: bool) -> (Type, bool) {
-    for s := env.scope; s != nil; s = s.parent_scope {
+scope_includes_lookup :: proc(env: ^Type_Scope, name: string, below_module: bool) -> (Type, bool) {
+    for s := env; s != nil; s = s.parent_scope {
         if below_module && s.is_module { break }
         for inc in s.includes { if t, ok := include_lookup(inc, name); ok { return t, true } }
         if s.is_module { break }
@@ -799,8 +810,8 @@ scope_includes_lookup :: proc(env: ^Type_Env, name: string, below_module: bool) 
     return nil, false
 }
 
-scope_resolve :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
-    for s := env.scope; s != nil; s = s.parent_scope {
+scope_resolve :: proc(env: ^Type_Scope, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
+    for s := env; s != nil; s = s.parent_scope {
         if below_module && s.is_module { break }
         if s.types != nil { if t, ok := s.types[name]; ok { return t, s, true } }
         if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, s, true } }
@@ -820,22 +831,22 @@ scope_resolve :: proc(env: ^Type_Env, name: string, below_module := false) -> (T
 // it walks the durable parent_scope graph that runs parallel to the env chain
 // (validated under MARA_WALK_CHECK: zero gaps and zero type-identity mismatches
 // vs the old env.types walk across every fixture, Pounce, and all.mara).
-type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
+type_env_locate :: proc(env: ^Type_Scope, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
     // LOCALS first: scope_local_lookup self-guards on .Block (the env's scope is a
     // .Block iff this is a block body), so an enclosing fun/class/module scope
     // stops the walk immediately and falls through to scope_resolve.
-    if t, ok := scope_local_lookup(env.scope, name); ok {
+    if t, ok := scope_local_lookup(env, name); ok {
         return t, nil, true  // a local never lives in a class namespace
     }
     return scope_resolve(env, name, below_module)
 }
 
-type_env_get :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
+type_env_get :: proc(env: ^Type_Scope, name: string) -> (Type, bool) {
     t, _, ok := type_env_locate(env, name)
     return t, ok
 }
 
-type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Type_Scope, bool) {
+type_env_locate_below_module :: proc(env: ^Type_Scope, name: string) -> (Type, ^Type_Scope, bool) {
     return type_env_locate(env, name, below_module = true)
 }
 
@@ -847,7 +858,7 @@ type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Ty
 // (own-then-includes per level) because flipping it globally regresses
 // class-body field resolution and other paths that rely on cur.includes
 // being checked before walking to cur.parent.types.
-type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
+type_env_get_owned_first :: proc(env: ^Type_Scope, name: string) -> (Type, bool) {
     // scope_resolve IS owned-first by construction (all own definitions up the
     // parent_scope graph, then all includes up the env chain) â€” exactly this
     // proc's two-phase shape. Delegate to the durable walk.
@@ -873,7 +884,7 @@ type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
 // when a real type with the same name is also visible â€” the user almost
 // always means the type. If only variant aliases remain, fall back to one
 // of them so the original variant-shorthand semantics still work.
-resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (typ: Type, ok: bool, ambiguous_owners: [dynamic]string) {
+resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Scope, name: string) -> (typ: Type, ok: bool, ambiguous_owners: [dynamic]string) {
     // `Self` is the enclosing struct/fun's own scope â€” derive it from the durable
     // graph (the nearest class_scope/fun_scope marker) rather than an env binding.
     if name == "Self" {
@@ -883,7 +894,7 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
     // An OWN definition (a local type, an enclosing class member, or a module
     // definition) wins unambiguously over any import â€” walk the durable scope
     // graph own-only, inner-to-outer (lexical shadowing built in).
-    for s := env.scope; s != nil; s = s.parent_scope {
+    for s := env; s != nil; s = s.parent_scope {
         if t, found := scope_defines(s, name); found {
             typ, ok = t, true
             break
@@ -897,7 +908,7 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
         distinct_typs: map[rawptr]bool
         distinct_owners: map[string]bool
         first_typ: Type
-        for s := env.scope; s != nil; s = s.parent_scope {
+        for s := env; s != nil; s = s.parent_scope {
             found_any := false
             for inc in s.includes {
                 if t, found := include_lookup(inc, name); found {
@@ -936,11 +947,11 @@ raw_type_key :: proc(t: Type) -> rawptr {
     return nil
 }
 
-type_env_set :: proc(env: ^Type_Env, name: string, t: Type) {
+type_env_set :: proc(s: ^Type_Scope, name: string, t: Type) {
     // Names live on the durable scope graph â€” what resolution walks.
-    if env.scope != nil {
-        if env.scope.types == nil { env.scope.types = make(map[string]Type) }
-        env.scope.types[name] = t
+    if s != nil {
+        if s.types == nil { s.types = make(map[string]Type) }
+        s.types[name] = t
     }
 }
 
@@ -963,13 +974,13 @@ address_of_ident :: proc(e: Expr) -> (name: string, ok: bool) {
     return "", false
 }
 
-type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
-    // Every child env gets its own durable scope, chained to the parent's, so the
-    // scope graph carries the nesting. Specific creators (block/ns/module) override
-    // `scope` with the right concrete scope; this is the default shadow.
+type_env_child :: proc(parent: ^Type_Scope) -> ^Type_Scope {
+    // Every child scope is chained to the parent's, so the durable graph carries
+    // the nesting. Specific creators (block/ns/module) use a concrete scope
+    // directly; this is the default shadow.
     s := new(Type_Scope)
-    s.parent_scope = parent.scope
-    return Type_Env{scope = s}
+    s.parent_scope = parent
+    return s
 }
 
 // Like type_env_child but also mints the durable .Block Type_Scope this block
@@ -979,19 +990,19 @@ type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
 // type_env_set. Additive for now â€” name lookup still runs off the env chain; the
 // block scope is built so the kind-gated parent_scope walk can be validated
 // against it before the env walk is retired.
-type_env_block_child :: proc(parent: ^Type_Env) -> Type_Env {
-    child := type_env_child(parent) // child.scope minted, parent_scope = parent.scope
-    // The env's durable scope IS the block scope. parent.scope already equals the
+type_env_block_child :: proc(parent: ^Type_Scope) -> ^Type_Scope {
+    child := type_env_child(parent) // minted, parent_scope = parent
+    // The minted durable scope IS the block scope. parent already equals the
     // nearest enclosing scope (a containing block, else the enclosing fun/ctor),
     // so the chain matches the old enclosing-scope link.
-    child.scope.kind = .Block
+    child.kind = .Block
     return child
 }
 
 // The enclosing function's user name (for #caller_name), read from the DURABLE
 // scope graph â€” the nearest fun/ctor's Type_Scope â€” instead of a per-env mirror.
 // (Frame-lift: Type_Env no longer carries an fn_name copy.)
-enclosing_fn_name :: proc(env: ^Type_Env) -> string {
+enclosing_fn_name :: proc(env: ^Type_Scope) -> string {
     if s := enclosing_callable_scope(env); s != nil {
         return s.source_name if s.source_name != "" else s.name
     }
@@ -1022,12 +1033,12 @@ register_on_module :: proc(root: ^Type_Scope, name: string, t: Type) {
     root.types[name] = t
 }
 
-// The class/struct scope an env is the defs layer of â€” nil unless env.scope is a
+// The class/struct scope an env is the defs layer of â€” nil unless env is a
 // non-module struct. Replaces the old env.class_scope marker (a class ns_env set
-// class_scope = its own ft = env.scope).
-env_class_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
-    if env != nil && env.scope != nil && env.scope.kind == .Struct && !env.scope.is_module {
-        return env.scope
+// class_scope = its own ft = env).
+env_class_scope :: proc(env: ^Type_Scope) -> ^Type_Scope {
+    if env != nil && env != nil && env.kind == .Struct && !env.is_module {
+        return env
     }
     return nil
 }
@@ -1035,9 +1046,9 @@ env_class_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
 // The nearest enclosing struct/class scope, walking the durable scope graph
 // (uniform — modules/funs/blocks in the chain are just skipped). For `#self` and
 // "am I inside a class body" — find-nearest-struct, a query over the one chain.
-enclosing_struct_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
+enclosing_struct_scope :: proc(env: ^Type_Scope) -> ^Type_Scope {
     if env == nil { return nil }
-    for s := env.scope; s != nil; s = s.parent_scope {
+    for s := env; s != nil; s = s.parent_scope {
         if s.kind == .Struct && !s.is_module { return s }
     }
     return nil
@@ -1045,18 +1056,18 @@ enclosing_struct_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
 
 // The struct scope this env's block sits DIRECTLY inside (its scope's immediate
 // parent), or nil — for "is this decl in a struct body" (a field decl).
-parent_struct_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
-    if env == nil || env.scope == nil { return nil }
-    p := env.scope.parent_scope
+parent_struct_scope :: proc(env: ^Type_Scope) -> ^Type_Scope {
+    if env == nil || env == nil { return nil }
+    p := env.parent_scope
     if p != nil && p.kind == .Struct && !p.is_module { return p }
     return nil
 }
 
 // DERIVED from the durable scope graph: walk from this env's scope up parent_scope
 // to the nearest callable (fun/ctor) and read its return_types. Empty = void.
-enclosing_return_types :: proc(env: ^Type_Env) -> []Type {
+enclosing_return_types :: proc(env: ^Type_Scope) -> []Type {
     if env == nil { return nil }
-    for s := env.scope; s != nil; s = s.parent_scope {
+    for s := env; s != nil; s = s.parent_scope {
         if scope_is_callable(s) { return s.return_types[:] }
     }
     return nil
@@ -1065,9 +1076,9 @@ enclosing_return_types :: proc(env: ^Type_Env) -> []Type {
 // The nearest enclosing callable scope â€” the fun / ctor whose body we're checking.
 // The "caller" for call-graph edges. nil at module level (a call in a top-level
 // const value etc. has no enclosing function node). Walks the durable scope graph.
-enclosing_callable_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
+enclosing_callable_scope :: proc(env: ^Type_Scope) -> ^Type_Scope {
     if env == nil { return nil }
-    for s := env.scope; s != nil; s = s.parent_scope {
+    for s := env; s != nil; s = s.parent_scope {
         if scope_is_callable(s) { return s }
     }
     return nil
@@ -1077,7 +1088,7 @@ enclosing_callable_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
 // fires at every exit once e.resolved_func is populated. Edge = (the enclosing
 // callable scope) -> (the resolved callee). Skips calls with no callee Type_Scope
 // (foreign / indirect / fn-typed-param) and calls outside any function.
-record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
+record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) {
     caller := enclosing_callable_scope(env)
     if caller == nil { return }   // call outside any callable â€” nothing to attribute
     // Direct-effect seed for purity. `print` is a special-form built-in with no
@@ -1110,7 +1121,7 @@ record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
 // edge too. Without this the bracket form is invisible to the graph: e.g.
 // `game^ = Megastruct{}` runs Megastruct's `camera := Camera(...)` field init,
 // but with only paren-call edges nothing reaches Megastruct (Pounce.mara:83).
-record_construction_edge :: proc(c: ^Checker, st: ^Type_Scope, env: ^Type_Env) {
+record_construction_edge :: proc(c: ^Checker, st: ^Type_Scope, env: ^Type_Scope) {
     if st == nil { return }
     caller := enclosing_callable_scope(env)
     if caller == nil { return }
@@ -1173,13 +1184,13 @@ make_flat_name :: proc(prefix, name: string) -> string {
 // Resolve a user-written type name to its canonical flat map key.
 // If qualifier is non-empty, looks up the import alias to find the package.
 // Returns "" when qualifier is not an import alias (caller handles union inner types etc.).
-resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = "", env: ^Type_Env = nil) -> string {
+resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = "", env: ^Type_Scope = nil) -> string {
     if qualifier != "" {
         // Try module-qualified resolution: look up qualifier in env
         if env != nil {
             qual_type, found := type_env_get(env, qualifier)
             if found {
-                if mod_sd := as_scope_body(qual_type); mod_sd != nil && mod_sd.scope != nil {
+                if mod_sd := as_scope_body(qual_type); sd_is_module(mod_sd) {
                     return make_flat_name(mod_sd.name, bare_name)
                 }
             }
@@ -1191,7 +1202,7 @@ resolve_type_name :: proc(c: ^Checker, bare_name: string, qualifier: string = ""
     // which is important when two modules export the same name (e.g. `Event`
     // in both mara_sdl and mara_sdl2).
     if env != nil {
-        for s := env.scope; s != nil; s = s.parent_scope {
+        for s := env; s != nil; s = s.parent_scope {
             if s.is_module {
                 if _, found := scope_defines(s, bare_name); found {
                     return make_flat_name(c.current_package, bare_name)
@@ -1228,7 +1239,7 @@ resolve_to_struct_type :: proc(c: ^Checker, t: Type) -> ^Scope_Body {
 
 // Resolve a dotted name like "game.test_print" or "Widget.greet" to a flat function name.
 // Checks: variable.assoc_fn, then StructName.assoc_fn.
-resolve_fn_type_name :: proc(c: ^Checker, dotted: string, env: ^Type_Env) -> string {
+resolve_fn_type_name :: proc(c: ^Checker, dotted: string, env: ^Type_Scope) -> string {
     dot := strings.index_byte(dotted, '.')
     if dot < 0 { return "" }
     left := dotted[:dot]
@@ -1269,7 +1280,7 @@ resolve_fn_type_name :: proc(c: ^Checker, dotted: string, env: ^Type_Env) -> str
 // from another's (`is_corner : [..edges.cap]bool`). Anything else returns
 // ok=false; callers should emit a "comptime-known integer expected" error so
 // the user gets a clear diagnostic.
-evaluate_comptime_int :: proc(c: ^Checker, e: Expr, env: ^Type_Env = nil) -> (value: i64, ok: bool) {
+evaluate_comptime_int :: proc(c: ^Checker, e: Expr, env: ^Type_Scope = nil) -> (value: i64, ok: bool) {
     #partial switch v in e {
     case ^Expr_Number:
         return i64(v.value), true
@@ -1431,10 +1442,10 @@ fold_comptime_ifs_children :: proc(c: ^Checker, s: Stmt) {
 // own definitions in any enclosing scope still win unambiguously; ambiguity
 // only fires when the name comes from imports and 2+ imports expose it
 // (e.g. `include mara.sdl + include mara.sdl2`, both with PollEvent).
-resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (home: string, ok: bool, ambiguous_owners: [dynamic]string) {
+resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Scope, name: string) -> (home: string, ok: bool, ambiguous_owners: [dynamic]string) {
     // Phase 1: own definitions in any enclosing module (always unambiguous).
     if env != nil {
-        for s := env.scope; s != nil; s = s.parent_scope {
+        for s := env; s != nil; s = s.parent_scope {
             if s.is_module {
                 if t, found := scope_defines(s, name); found {
                     if ts, fok := t.(^Type_Scope); fok && ts.kind == .Fun {
@@ -1449,7 +1460,7 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
     distinct_owners: map[string]bool
     owner_list: [dynamic]string
     if env != nil {
-        for s := env.scope; s != nil; s = s.parent_scope {
+        for s := env; s != nil; s = s.parent_scope {
             for inc in s.includes {
                 if inc == nil { continue }
                 if t, found := include_lookup(inc, name); found {
@@ -1481,9 +1492,9 @@ resolve_fn_home_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string
 // mara_sdl and mara_sdl2). Falls back to fun_homes (populated at registration
 // time) for sites that were unable to thread env through, then to current
 // package.
-resolve_fn_home :: proc(c: ^Checker, env: ^Type_Env, name: string) -> string {
+resolve_fn_home :: proc(c: ^Checker, env: ^Type_Scope, name: string) -> string {
     if env != nil {
-        for s := env.scope; s != nil; s = s.parent_scope {
+        for s := env; s != nil; s = s.parent_scope {
             if s.is_module {
                 if t, found := scope_defines(s, name); found {
                     if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun {
@@ -1668,7 +1679,7 @@ SymbolTable :: struct {
     context_expected_at_runtime: bool,
 
     // Root type environment (top-level scope)
-    root_env: ^Type_Env,
+    root_env: ^Type_Scope,
 }
 
 // ---------------------------------------------------------------------------
@@ -1684,7 +1695,7 @@ Checker :: struct {
     target_shared:   bool,                // -shared build flag â€” package compiles to a DLL/SO; no `main` required
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
     type_params:     map[string]Type,
-    top_env:         ^Type_Env,
+    top_env:         ^Type_Scope,
     declared_funs:   map[string]bool,  // bare names of Stmt_Scope declarations (direct calls vs variables)
     // Call-graph edges collected during checking: each resolved call records
     // (enclosing callable scope -> callee). Materialized post-check into the
@@ -1721,7 +1732,7 @@ Checker :: struct {
     compiler_dir:         string,                  // compiler exe dir (kept for diagnostics)
     search_dir:           string,                  // user source dir (kept for diagnostics)
     // Program structure: mara :: fun { std :: fun { ... }, user_modules... }
-    mara_env:             ^Type_Env,               // root scope (contains std + user modules)
+    mara_env:             ^Type_Scope,               // root scope (contains std + user modules)
     std_fun:              ^Type_Scope,               // std module (contains stdlib modules)
     // Expected type hint for the next check_expr call. Set by sites that know
     // the target type (function args, typed assignments, return statements,
@@ -1749,14 +1760,14 @@ Checker :: struct {
 Deferred_Literal :: struct {
     lit: ^Expr_Struct_Literal,
     sd:  ^Scope_Body,
-    env: ^Type_Env,
+    env: ^Type_Scope,
 }
 
 // Gate for the named-literal branches: during Pass 1b, a literal aimed at a
 // struct whose fields aren't resolved yet gets queued for post-2a validation
 // instead of failing against an empty field list. Returns true if queued
 // (caller returns the type without validating).
-defer_literal_validation :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, sd: ^Scope_Body, env: ^Type_Env) -> bool {
+defer_literal_validation :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, sd: ^Scope_Body, env: ^Type_Scope) -> bool {
     if !c.defer_define_literals || len(sd.fields) > 0 { return false }
     append(&c.deferred_literals, Deferred_Literal{lit = lit, sd = sd, env = env})
     return true
@@ -1787,7 +1798,7 @@ push_expected_hint :: proc(c: ^Checker, hint: Type) -> Type {
 // isn't a variant-bearing type), and `dot` is true, searches all visible
 // enums/unions in scope. Returns the resolved type and writes Resolved_Name
 // metadata onto the ident. Returns nil + false if not resolved.
-resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Type_Env, dot: bool) -> (Type, bool) {
+resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Type_Scope, dot: bool) -> (Type, bool) {
     // 1. Try the hint directly.
     if hint != nil {
         if et, ok := hint.(^Type_Enum); ok {
@@ -2175,7 +2186,7 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
 // Checked here, at the single entry point every source type annotation
 // passes through; recursion re-enters via the public name so nested
 // positions (`^cstring`, fields, fn types) are covered too.
-resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Env = nil) -> Type {
+resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Scope = nil) -> Type {
     t := resolve_type_expr_impl(te, c, span, const_values, env)
     if c != nil && !c.in_foreign_sig && is_cstring(t) {
         check_error(c, span, TYPE_CSTRING_FOREIGN_ONLY)
@@ -2183,7 +2194,7 @@ resolve_type_expr :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, con
     return t
 }
 
-resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Env = nil) -> Type {
+resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}, const_values: ^map[string]int = nil, env: ^Type_Scope = nil) -> Type {
     // `~T` outside a generic-parameter declaration: the tilde modifier is
     // only meaningful as a shape constraint on a generic param's type
     // (`Foo :: struct (s: ~T)`). At any other use site it's a syntax
@@ -3148,30 +3159,25 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
 }
 
 // Build the body-check env for a monomorphized function â€” the SAME two-layer
-// shape as a regular fun (check_scope_body): a defs layer whose durable scope IS
-// the mono fun (kind .Fun, the enclosing-callable marker), and a .Block body
-// under it. `ns` is caller storage that must outlive the returned body env (it's
-// the body's env.parent). Effects:
+// shape as a regular fun (check_scope_body): the mono fun IS the defs layer (kind
+// .Fun, the enclosing-callable marker), and a .Block body chains under it. Effects:
 //  - enclosing_callable_scope / enclosing_return_types find the MONO FUN, not the
 //    call site (the latent bug this fixes â€” a mono body had no marker at all),
 //  - locals resolve via scope_local_lookup and STOP at the fun boundary (no
 //    call-site leak; the old raw .Struct shadow scope hid this by not being a
 //    .Block at all),
-//  - scope_is_callable(ns.scope) recognises the layer just like a real fun's
-//    ns_env, so the marker is the durable scope â€” no env.fun_scope field needed.
+//  - scope_is_callable(fun) recognises the layer just like a real fun's ns layer.
 // The mono fun chains to the call-site scope so module-level names resolve exactly
 // as before; fun.types/functions are empty, so interposing it adds no resolvable
 // names (resolution-preserving).
-mono_body_env :: proc(env: ^Type_Env, fun: ^Type_Scope, ns: ^Type_Env) -> Type_Env {
-    if fun.parent_scope == nil { fun.parent_scope = env.scope }
-    ns^ = type_env_child(env)
-    ns.scope = fun
-    return type_env_block_child(ns)
+mono_body_env :: proc(env: ^Type_Scope, fun: ^Type_Scope) -> ^Type_Scope {
+    if fun.parent_scope == nil { fun.parent_scope = env }
+    return type_env_block_child(fun)
 }
 
 // Instantiate a generic function template with concrete type substitutions.
 // Registers a ^Type_Scope in checked.functions under the mangled name.
-instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^map[string]Type, mangled: string, env: ^Type_Env) {
+instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^map[string]Type, mangled: string, env: ^Type_Scope) {
     ast := tmpl.ast
 
     // Build concrete function type
@@ -3205,22 +3211,21 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     }
     c.table.mono_cache[mangled] = fun_type
 
-    // Body-check env: two-layer (defs layer scope=fun_type, .Block body) â€” see
-    // mono_body_env. mono_ns must outlive `child` (it's child's env.parent).
-    mono_ns: Type_Env
-    child := mono_body_env(env, fun_type, &mono_ns)
+    // Body-check scope: two-layer (defs layer = fun_type, .Block body) â€” see
+    // mono_body_env.
+    child := mono_body_env(env, fun_type)
 
     // Bind regular params with their concrete types
     for tp, i in ast.typed_params {
         if i < len(fun_type.params) {
-            type_env_set(&child, tp.name, fun_type.params[i].type_)
+            type_env_set(child, tp.name, fun_type.params[i].type_)
         }
     }
 
     // Bind generic type param names so they resolve in the body
     // (e.g., `x : T = ...` inside a generic function should know T is int)
     for name, t in subst {
-        type_env_set(&child, name, t)
+        type_env_set(child, name, t)
     }
 
     // Set active type params so resolve_type_expr can find them during body checking
@@ -3236,7 +3241,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     cloned_defs := clone_stmts(ast.defs)
 
     // Type-check the cloned function body
-    check_scope(c, cloned_body, &child, scope_defs = cloned_defs)
+    check_scope(c, cloned_body, child, scope_defs = cloned_defs)
 
     // Store cloned body for codegen extraction
     c.table.mono_fun_bodies[mangled] = cloned_body
@@ -3249,7 +3254,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
 // differently-instantiated generic struct (e.g. add_string(^String(256)) called with ^String(64)).
 // Returns (flat mangled name, specialized fn Type_Scope), or ("", nil) when no
 // specialization is needed.
-auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Scope, actual_types: []Type, env: ^Type_Env) -> (string, ^Type_Scope) {
+auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Scope, actual_types: []Type, env: ^Type_Scope) -> (string, ^Type_Scope) {
     // Check if any param needs specialization
     needs_spec := false
     for p, i in ft.params {
@@ -3335,25 +3340,24 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     c.table.mono_cache[mangled] = mono_ft
     c.table.mono_fun_cache[mangled] = fn_name
 
-    // Body-check env: two-layer (defs layer scope=mono_ft, .Block body) â€” see
-    // mono_body_env. mono_ns must outlive `child` (it's child's env.parent).
-    mono_ns: Type_Env
-    child := mono_body_env(env, mono_ft, &mono_ns)
+    // Body-check scope: two-layer (defs layer = mono_ft, .Block body) â€” see
+    // mono_body_env.
+    child := mono_body_env(env, mono_ft)
     for tp, i in ast.typed_params {
         if i < len(mono_ft.params) {
-            type_env_set(&child, tp.name, mono_ft.params[i].type_)
+            type_env_set(child, tp.name, mono_ft.params[i].type_)
         }
     }
     cloned_body := clone_stmts(ast.body)
     cloned_defs := clone_stmts(ast.defs)
-    check_scope(c, cloned_body, &child, scope_defs = cloned_defs)
+    check_scope(c, cloned_body, child, scope_defs = cloned_defs)
     c.table.mono_fun_bodies[mangled] = cloned_body
 
     return make_flat_name(home, mangled), mono_ft
 }
 
 // Check a call to a generic function: infer type params, instantiate, rewrite call.
-check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, args: []Expr, env: ^Type_Env) -> Type {
+check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, args: []Expr, env: ^Type_Scope) -> Type {
     // Step 1: Check all argument types
     arg_types: [dynamic]Type
     defer delete(arg_types)
@@ -4680,7 +4684,7 @@ routes_to_arena :: proc(t: Type) -> bool {
 // Returns true for top-level variables, false for locals and parameters.
 is_global_var :: proc(c: ^Checker, name: string) -> bool {
     if c.table.root_env == nil { return false }
-    _, in_root := scope_defines(c.table.root_env.scope, name)
+    _, in_root := scope_defines(c.table.root_env, name)
     return in_root
 }
 
@@ -4688,7 +4692,7 @@ is_global_var :: proc(c: ^Checker, name: string) -> bool {
 // Is `name` a parameter of the function/ctor whose body we're in? Derived from
 // the durable scope (the enclosing callable's params) rather than a per-env flag
 // â€” no closures, so the nearest callable IS the one that owns the params.
-is_param :: proc(env: ^Type_Env, name: string) -> bool {
+is_param :: proc(env: ^Type_Scope, name: string) -> bool {
     ft := enclosing_callable_scope(env)
     if ft == nil { return false }
     for p in ft.params { if p.name == name { return true } }
@@ -4697,7 +4701,7 @@ is_param :: proc(env: ^Type_Env, name: string) -> bool {
 
 // Check if a variable was declared with `name : let T = src` â€” i.e. its storage
 // aliases an existing source pointer rather than being a fresh allocation.
-is_let_name :: proc(env: ^Type_Env, name: string) -> bool {
+is_let_name :: proc(env: ^Type_Scope, name: string) -> bool {
     #reverse for f in g_esc { if v, ok := f.is_let[name]; ok { return v } }
     return false
 }
@@ -4712,7 +4716,7 @@ is_let_name :: proc(env: ^Type_Env, name: string) -> bool {
 // writes, no header reassign, no `&s`); `s: ^[]T` is mutable. Without this,
 // slice param writes would silently propagate to the caller (slices are
 // reference types at the ABI), making slices the odd one out.
-is_immutable_param :: proc(env: ^Type_Env, name: string) -> bool {
+is_immutable_param :: proc(env: ^Type_Scope, name: string) -> bool {
     if !is_param(env, name) { return false }
     t, ok := type_env_get(env, name)
     if !ok { return false }
@@ -4727,7 +4731,7 @@ is_immutable_param :: proc(env: ^Type_Env, name: string) -> bool {
 // Walk an assignment LHS down to its root identifier. Returns (name, true) if
 // the write lands on an immutable param's storage WITHOUT crossing a pointer
 // (which would shift the write to the pointed-to memory, not the param).
-write_root_immutable_param :: proc(e: Expr, env: ^Type_Env) -> (name: string, ok: bool) {
+write_root_immutable_param :: proc(e: Expr, env: ^Type_Scope) -> (name: string, ok: bool) {
     cur := e
     for {
         #partial switch v in cur {
@@ -4760,17 +4764,17 @@ write_root_immutable_param :: proc(e: Expr, env: ^Type_Env) -> (name: string, ok
 // Provenance / let-ness / local-slice-backed of a name â€” read off the escape
 // pass's block-scoped frame stack. (The `env` param is vestigial: kept so the
 // shared helpers can pass it, but escape state no longer lives on the env.)
-get_provenance :: proc(env: ^Type_Env, name: string) -> Provenance {
+get_provenance :: proc(env: ^Type_Scope, name: string) -> Provenance {
     p, _ := esc_get_prov(name)
     return p
 }
 
-get_local_slice_backed :: proc(env: ^Type_Env, name: string) -> bool {
+get_local_slice_backed :: proc(env: ^Type_Scope, name: string) -> bool {
     #reverse for f in g_esc { if v, ok := f.slice_backed[name]; ok { return v } }
     return false
 }
 
-set_local_slice_backed :: proc(env: ^Type_Env, name: string) {
+set_local_slice_backed :: proc(env: ^Type_Scope, name: string) {
     if f := esc_top(); f != nil { f.slice_backed[name] = true }
 }
 
@@ -4779,7 +4783,7 @@ set_local_slice_backed :: proc(env: ^Type_Env, name: string) {
 // functions with escape locals (sibling/pool storage in the caller frame)
 // and struct literals whose slice-field sources are themselves local-
 // slice-backed. Anything else: leave the flag unset (assume safe).
-mark_local_slice_backed_if_needed :: proc(c: ^Checker, env: ^Type_Env, name: string, value: Expr) {
+mark_local_slice_backed_if_needed :: proc(c: ^Checker, env: ^Type_Scope, name: string, value: Expr) {
     if name == "" || value == nil { return }
     if call, ok := value.(^Expr_Call); ok {
         if call_has_local_escape(c, call) {
@@ -4807,7 +4811,7 @@ mark_local_slice_backed_if_needed :: proc(c: ^Checker, env: ^Type_Env, name: str
 }
 
 // Set provenance for a name in the top escape frame.
-set_provenance :: proc(env: ^Type_Env, name: string, p: Provenance) {
+set_provenance :: proc(env: ^Type_Scope, name: string, p: Provenance) {
     if f := esc_top(); f != nil { f.prov[name] = p }
 }
 
@@ -5180,7 +5184,7 @@ lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
 // The return-from-function check is `depth >= env.scope_depth`. Within a
 // function body, locals are at env.scope_depth and refs from params are
 // (conservatively) at env.scope_depth - 1.
-expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
+expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> Provenance {
     // &x â€” address-of always points to the local copy, even for params.
     // Parameters are passed by value, so &param is a pointer to stack memory.
     if unary, ok := e.(^Expr_Unary); ok && unary.op == .Ampersand {
@@ -5294,7 +5298,7 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
 // For calls, look up the callee's tracked arg-set and name the specific
 // parameter(s) bound to local data â€” turns a generic message into one
 // that points at exactly which argument is the problem.
-report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Env) {
+report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Scope) {
     if call, ok := val.(^Expr_Call); ok {
         callee := lookup_callee_scope(c, call)
         arg_set := fun_return_arg_set(c, callee) if callee != nil else nil
@@ -5408,7 +5412,7 @@ call_has_local_escape :: proc(c: ^Checker, call: ^Expr_Call) -> bool {
 // Check if an expression is a pointer/slice to local stack memory that won't
 // survive the current function return. Only applies to ref types (ptr, slice) â€”
 // returning a struct by value is safe (copied via sret).
-is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
+is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> bool {
     t := expr_type(e)
     is_ref := false
     if _, ok := t.(^Type_Ptr); ok { is_ref = true }
@@ -5438,7 +5442,7 @@ is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
 // holds slice headers pointing at our locally-allocated sibling/pool buffers.
 // Same for `return call_with_escape()` when the result isn't bound: the
 // returned struct's slice fields would dangle past our frame.
-returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
+returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> bool {
     if e == nil { return false }
     t := expr_type(e)
     sd := as_struct_body(distinct_base(t))
@@ -5471,7 +5475,7 @@ returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> b
 // globals are fine; locals, by-value array params, call temps, and `arr[:]` of a
 // local are not. (No relocation exception â€” that machinery is gone; the
 // pass-down pattern, e.g. Mesh_Data over a `storage` param, is the way.)
-returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Env) -> bool {
+returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Scope) -> bool {
     for field, i in lit.fields {
         ft := struct_lit_field_type(c, lit, i)
         if ft == nil || !is_ref_type(ft) { continue }
@@ -5742,7 +5746,7 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
 // an index / offset / count, so a slice length flows into the param cast-free.
 // Want a narrower param? annotate it: `name: i32 = 0`.
 // Floats and non-literal defaults fall through to infer_field_type_from_default.
-infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) -> Type {
+infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Scope) -> Type {
     if n, ok := value.(^Expr_Number); ok && !n.is_float {
         return slice_header_width_type
     }
@@ -5762,7 +5766,7 @@ infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
 // so `Grid :: struct(size := 16) { per_row : i32 = size }` settles size at i32
 // rather than rejecting an i64-into-i32 narrowing. solidify_param_defaults freezes
 // the cell back into the signature once the body is checked.
-resolve_param_type :: proc(c: ^Checker, tp: Scope_Binding, env: ^Type_Env, span: Span) -> Type {
+resolve_param_type :: proc(c: ^Checker, tp: Scope_Binding, env: ^Type_Scope, span: Span) -> Type {
     if tp.type_expr != nil {
         return resolve_type_expr(tp.type_expr, c, span, env = env)
     }
@@ -5871,7 +5875,7 @@ cast_target_same_as_operand :: proc(src_raw: Type, target: Type) -> bool {
 // (which would fail because the enclosing fun's params/locals aren't in scope yet).
 // Handles: identifiers (constants/variables in env), number/string/bool literals,
 // and calls to known struct constructors / functions with a return type.
-infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, ft: ^Type_Scope = nil) -> Type {
+infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Scope, ft: ^Type_Scope = nil) -> Type {
     if ident, id_ok := value.(^Expr_Ident); id_ok {
         if t, t_ok := type_env_get(env, ident.name); t_ok {
             return t
@@ -5939,7 +5943,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         if ct, is_cast := cast_result_type(call.name); is_cast {
             return ct
         }
-        lookup := proc(env: ^Type_Env, name: string) -> (Type, bool) {
+        lookup := proc(env: ^Type_Scope, name: string) -> (Type, bool) {
             return type_env_get(env, name)
         }
         t, t_ok := lookup(env, call.name)
@@ -6067,9 +6071,9 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
 // no-op here; codegen does the actual arena routing on the same predicate.
 // Per-scope and top-level only â€” nested if/for/match bodies re-enter check_scope
 // and get their own pass.
-check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
+check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
     if c.table.has_scope_allocator || c.table.context_expected_at_runtime { return }
-    guard :: proc(c: ^Checker, env: ^Type_Env, name: string, t: Type, span: Span) {
+    guard :: proc(c: ^Checker, env: ^Type_Scope, name: string, t: Type, span: Span) {
         // Take-bound views alias existing storage â€” they don't allocate, so a
         // big viewed type isn't a stack cost.
         if is_let_name(env, name) { return }
@@ -6091,7 +6095,7 @@ check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
     }
 }
 
-check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil, scope_defs: [dynamic]Stmt = nil) {
+check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil, scope_defs: [dynamic]Stmt = nil) {
     // SPLIT mode (a Stmt_Scope body): compile-time defs live in `scope_defs`,
     // runtime statements in `stmts`. The registration/check passes run over the
     // defs first (so forward references resolve), then over the body. MIXED mode
@@ -6134,7 +6138,7 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
 // fallback (`.Core` with no expected type) can find variants by name across
 // visible enums/unions. We deliberately do NOT bind variants as bare names in
 // any env: bare variant resolution must go through an expected type.
-register_enum_variants :: proc(c: ^Checker, et: ^Type_Enum, env: ^Type_Env, enum_key: string = "", skip_func_names := false, public_env: ^Type_Env = nil) {
+register_enum_variants :: proc(c: ^Checker, et: ^Type_Enum, env: ^Type_Scope, enum_key: string = "", skip_func_names := false, public_env: ^Type_Scope = nil) {
     key := enum_key if enum_key != "" else et.name
     for vname in et.variants {
         if existing_enum, mapped := c.table.variant_to_enum[vname]; mapped {
@@ -6204,7 +6208,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
     // Phase 1 only: mangle names and register in scope. No type resolution.
     // Type resolution happens in Phase 2 (check_bodies) uniformly for all funs.
     parent_ts, _ := self_type.(^Type_Scope)  // the scope these defs nest under (their parent_scope)
-    scope_env := Type_Env{} // transient env for resolve_type_expr on foreign sigs
+    scope_env := new(Type_Scope) // empty transient scope for resolve_type_expr on foreign sigs
     // Mangled names register persistently on the module scope (the top of the
     // durable chain) so they survive past this call and reach codegen.
     root_scope := module_scope(parent_ts)
@@ -6326,11 +6330,11 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 mangled := fmt.aprintf("%s_%s", st.name, bare_name)
                 fun_type.name = mangled
                 for tp in decl.typed_params {
-                    pt := resolve_type_expr(tp.type_expr, c, decl.span, env=&scope_env)
+                    pt := resolve_type_expr(tp.type_expr, c, decl.span, env=scope_env)
                     append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt})
                 }
                 for rte in decl.return_types {
-                    append(&fun_type.return_types, resolve_type_expr(rte, c, decl.span, env=&scope_env))
+                    append(&fun_type.return_types, resolve_type_expr(rte, c, decl.span, env=scope_env))
                 }
                 build_param_map(fun_type)
                 if st.functions == nil { st.functions = make(map[string]^Type_Scope) }
@@ -6354,14 +6358,14 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
 // step, `name :: include path` would force qualified `name.X` access for every
 // member, which makes stdlib swaps (SDL3 â†’ SDL2 et al.) ripple through every
 // caller â€” see TODO note on module aliasing.
-flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body, mod_name: string, is_aliased := false, is_sealed := false) {
-    assert(mod_sd.scope != nil, "module-struct must have scope")
+flatten_module_exports :: proc(c: ^Checker, env: ^Type_Scope, mod_sd: ^Scope_Body, mod_name: string, is_aliased := false, is_sealed := false) {
+    assert(sd_is_module(mod_sd), "module-struct must have scope")
     // Sealed includes (`name :: sealed include path`) skip the env.includes
     // append AND the c.declared_funs writes â€” bare names from the included
     // module are not made available at the call site, only `name.X` access.
     // Used to keep colliding bindings (SDL2 vs SDL3, etc.) properly isolated.
     if is_sealed { return }
-    if env.scope != nil { append(&env.scope.includes, mod_sd) }
+    if env != nil { append(&env.includes, mod_sd) }
     for name, t in mod_sd.types {
         if name == "void" { continue }  // don't re-export the void null-pointer literal
         if tf, is_func := t.(^Type_Scope); is_func && (len(tf.params) > 0 || tf.has_parens) {
@@ -6379,7 +6383,7 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body,
 // or its parents. Used by the variant-ambiguity check so that a globally
 // ambiguous variant (same name in two enums) only errors when both owners
 // are actually in scope here.
-is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
+is_enum_visible :: proc(env: ^Type_Scope, flat_name: string) -> bool {
     scope_has_enum :: proc(s: ^Scope_Body, flat: string) -> bool {
         if s == nil { return false }
         for _, t in s.types {
@@ -6388,7 +6392,7 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
         return false
     }
     // Own definitions + each scope's includes up the durable scope graph.
-    for s := env.scope; s != nil; s = s.parent_scope {
+    for s := env; s != nil; s = s.parent_scope {
         if scope_has_enum(s, flat_name) { return true }
         for inc in s.includes {
             if scope_has_enum(inc, flat_name) { return true }
@@ -6407,7 +6411,7 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
 // scope, stop at the module boundary. Matching is by the flat key
 // make_flat_name(M.name, bare): the own module qualifies with c.current_package,
 // each include with its durable scope's name (inc.name).
-module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bool {
+module_constant_visible :: proc(c: ^Checker, env: ^Type_Scope, bare: string) -> bool {
     if env == nil { return true }  // no env context to gate against â€” don't reject
     // The package being checked always sees its own constants. The own-module
     // branch below (env_is_module(cur)) covers this for module envs, but it's
@@ -6416,7 +6420,7 @@ module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bo
     if owner, mapped := c.table.constant_owners[bare]; mapped && owner != "" && owner == c.current_package {
         return true
     }
-    for s := env.scope; s != nil; s = s.parent_scope {
+    for s := env; s != nil; s = s.parent_scope {
         if s.is_module {
             if _, ok := c.table.constants[make_flat_name(c.current_package, bare)]; ok { return true }
         }
@@ -6438,7 +6442,7 @@ module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bo
 // with another module's constant it never `use`d. Returns ("", false) when
 // every constant ref is visible (or the name isn't a module constant at all,
 // in which case evaluate_comptime_int / the size-name path handles it).
-first_invisible_const_ref :: proc(c: ^Checker, env: ^Type_Env, e: Expr) -> (string, bool) {
+first_invisible_const_ref :: proc(c: ^Checker, env: ^Type_Scope, e: Expr) -> (string, bool) {
     if env == nil { return "", false }
     #partial switch v in e {
     case ^Expr_Ident:
@@ -6462,12 +6466,12 @@ first_invisible_const_ref :: proc(c: ^Checker, env: ^Type_Env, e: Expr) -> (stri
 // sqrt_f64 }`) can be extended by user code that includes the stdlib module.
 // Non-transitive: we don't follow inc.includes â€” re-export of re-exports is
 // opt-in (the user would `include` again themselves), matching type_env_get.
-find_dispatch :: proc(c: ^Checker, env: ^Type_Env, name: string) -> ([dynamic]string, bool) {
+find_dispatch :: proc(c: ^Checker, env: ^Type_Scope, name: string) -> ([dynamic]string, bool) {
     result: [dynamic]string
     if fns, ok := c.dispatch_groups[name]; ok {
         for f in fns { append(&result, f) }
     }
-    for s := env.scope; s != nil; s = s.parent_scope {
+    for s := env; s != nil; s = s.parent_scope {
         for inc in s.includes {
             if inc != nil {
                 if fns, ok := inc.dispatch_groups[name]; ok {
@@ -6480,12 +6484,12 @@ find_dispatch :: proc(c: ^Checker, env: ^Type_Env, name: string) -> ([dynamic]st
 }
 
 // find_operator_overload mirrors find_dispatch for `overload OP name` decls.
-find_operator_overload :: proc(c: ^Checker, env: ^Type_Env, op: Token_Kind) -> ([dynamic]string, bool) {
+find_operator_overload :: proc(c: ^Checker, env: ^Type_Scope, op: Token_Kind) -> ([dynamic]string, bool) {
     result: [dynamic]string
     if names, ok := c.operator_overloads[op]; ok {
         for n in names { append(&result, n) }
     }
-    for s := env.scope; s != nil; s = s.parent_scope {
+    for s := env; s != nil; s = s.parent_scope {
         for inc in s.includes {
             if inc != nil {
                 if names, ok := inc.operator_overloads[op]; ok {
@@ -6511,7 +6515,7 @@ find_operator_overload :: proc(c: ^Checker, env: ^Type_Env, op: Token_Kind) -> (
 // register_and_check_declarations handle both halves in one go.
 // ---------------------------------------------------------------------------
 
-register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
+register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil) {
     pub := public_env if public_env != nil else env
     for stmt in stmts {
         #partial switch s in stmt {
@@ -6685,7 +6689,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 c.table.fun_asts[s.name] = s
                 c.table.fun_homes[s.name] = c.current_package
                 if owner != nil {
-                    struct_type.parent_scope = env.scope if env.scope != nil else owner // file/enclosing scope -> module
+                    struct_type.parent_scope = env if env != nil else owner // file/enclosing scope -> module
                     if owner.types == nil { owner.types = make(map[string]Type) }
                     owner.types[s.name] = struct_type
                     append(&owner.fields, Struct_Type_Field{name = s.name, type_ = struct_type})
@@ -6727,7 +6731,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 is_callable := !is_struct_type || len(s.typed_params) > 0
                 if is_callable { c.declared_funs[s.name] = true }
                 if owner != nil {
-                    fun_type.parent_scope = env.scope if env.scope != nil else owner // file/enclosing scope -> module
+                    fun_type.parent_scope = env if env != nil else owner // file/enclosing scope -> module
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
                         owner.types[s.name] = fun_type
@@ -6768,14 +6772,14 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
 // and `::` constants (left to the shadowing check). The single-assign path and
 // both multi-assign branches (destructure, broadcast) share this one rule so
 // the exemptions can't drift apart.
-is_undeclared_reassign :: proc(c: ^Checker, env: ^Type_Env, name: string, is_decl: bool) -> bool {
+is_undeclared_reassign :: proc(c: ^Checker, env: ^Type_Scope, name: string, is_decl: bool) -> bool {
     if is_decl || name == "" || name == "_" { return false }
     if name in c.table.constants { return false }
     _, found := type_env_get(env, name)
     return !found
 }
 
-register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^Type_Scope = nil, public_env: ^Type_Env = nil) {
+register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil) {
     // pub: where defined names (fun/struct/type/foreign/constants) get registered.
     // - In single-env mode (callers from inside fun bodies, struct bodies): public_env is nil
     //   and pub == env, so behavior is unchanged.
@@ -7105,7 +7109,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // Attach as a member of the enclosing module struct (if any).
                 // Mirrors the work extract_module_into_checked used to do post-hoc.
                 if owner != nil {
-                    fun_type.parent_scope = env.scope if env.scope != nil else owner // file/enclosing scope -> module
+                    fun_type.parent_scope = env if env != nil else owner // file/enclosing scope -> module
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
                         owner.types[s.name] = fun_type
@@ -7394,7 +7398,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // of any local binding in an enclosing scope up to the module boundary.
             // Reassignment with `=` is unaffected â€” those parse as Stmt_Assign with
             // is_decl=false and never reach this branch's Stmt_Decl-derived path.
-            _, declared_here := scope_defines(env.scope, s.name)
+            _, declared_here := scope_defines(env, s.name)
             if s.is_decl && declared_here {
                 check_error(c, s.span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, s.name)
                 continue
@@ -7407,7 +7411,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             if s.is_decl && !env_is_module(env) && !in_struct_body {
                 // Shadowing of an enclosing local: walk the durable scope chain
                 // above the current scope, below the module.
-                start: ^Type_Scope = env.scope.parent_scope if env.scope != nil else nil
+                start: ^Type_Scope = env.parent_scope if env != nil else nil
                 for sc := start; sc != nil && !sc.is_module; sc = sc.parent_scope {
                     if _, found := scope_defines(sc, s.name); found {
                         check_error(c, s.span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, s.name)
@@ -7785,8 +7789,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // A field redecl inside its own struct body â€” never a leak
                     // (loc_scope stays nil), just records the prior binding. Reads
                     // this env level's own durable scope (== the old env.types).
-                    if env.scope != nil {
-                        if t, ok := env.scope.types[s.name]; ok {
+                    if env != nil {
+                        if t, ok := env.types[s.name]; ok {
                             existing_type = t
                             already_declared = true
                         }
@@ -8045,7 +8049,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 // re-checked here â€” without this a constructing broadcast (`all Cell()`) would
 // reach codegen with an unresolved call ("unknown function"). The caller must
 // have already type-checked lit.broadcast_value against the element type.
-fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size: int, env: ^Type_Env) {
+fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size: int, env: ^Type_Scope) {
     clear(&lit.array_values)
     resize(&lit.array_values, size)
     for i in 0..<size {
@@ -8062,7 +8066,7 @@ fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size:
 // Expand `{all <expr>}` into per-element entries on `lit.array_values`. The
 // expression is type-checked once against the array's element type; codegen
 // emits N independent stores (clones share the same checked AST node).
-expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, field_type: Type, field_name: string, span: Span, env: ^Type_Env) {
+expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, field_type: Type, field_name: string, span: Span, env: ^Type_Scope) {
     size := 0
     elem_type: Type
     base := distinct_base(field_type)
@@ -8098,7 +8102,7 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
 // from the Phase-2 pre-pass to populate struct fields before any function
 // body is checked, so forward references to structs work regardless of
 // declaration order.
-check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_only: bool = false) {
+check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signature_only: bool = false) {
     if len(s.generic_params) > 0 { return }
     if s.is_intrinsic {
         // Body is compiler-generated. Validate the declared signature against
@@ -8182,12 +8186,9 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // scope's own ft — so its members / nested ::defs / Self resolve, and the
     // no-closures rule + nesting fall out of the parent_scope graph uniformly,
     // with no struct-vs-fun branch on how scopes chain.
-    ns_env: Type_Env
     parent_env := env
     if ft.kind == .Struct || ft.kind == .Fun {
-        ns_env = type_env_child(env)
-        ns_env.scope = ft
-        parent_env = &ns_env
+        parent_env = ft   // the defs layer IS this scope's own ft (members/::defs/Self)
         // Funs register their nested ::defs lazily here; structs already did at
         // module-registration time (so ft.types is populated). Gate on s.defs,
         // not s.body — a pure type-namespace fun has defs but no runtime body.
@@ -8210,7 +8211,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // `max_vertices := max_v` or `using items: [n]item`).
     if ft.kind == .Struct {
         for p in ft.params {
-            type_env_set(&child, p.name, p.type_)
+            type_env_set(child, p.name, p.type_)
         }
     }
 
@@ -8228,18 +8229,18 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.consts != nil {
         for bare, def in ft.consts {
             if def.value == nil { continue }
-            val_type := check_expr(c, def.value, &child)
+            val_type := check_expr(c, def.value, child)
             def.var_type = val_type
             c.table.constants[def.name] = def.value
             c.table.constants[bare] = def.value
-            type_env_set(&child, def.name, val_type)
-            type_env_set(&child, bare, val_type)
-            // Mirror onto the defs layer (ns_env) whenever there is one â€”
-            // structs and funs (methods included) â€” so sibling methods / nested
-            // funs reach the const by bare name.
-            if parent_env == &ns_env {
-                type_env_set(&ns_env, def.name, val_type)
-                type_env_set(&ns_env, bare, val_type)
+            type_env_set(child, def.name, val_type)
+            type_env_set(child, bare, val_type)
+            // Mirror onto the defs layer (ft) whenever there is one â€” structs and
+            // funs (methods included) â€” so sibling methods / nested funs reach the
+            // const by bare name.
+            if parent_env == ft {
+                type_env_set(ft, def.name, val_type)
+                type_env_set(ft, bare, val_type)
             }
         }
     }
@@ -8270,7 +8271,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         if _, already := ft.field_map[field.name]; already { continue }
         field_type: Type
         if field.type_expr != nil {
-            field_type = resolve_type_expr(field.type_expr, c, s.span, env=&child)
+            field_type = resolve_type_expr(field.type_expr, c, s.span, env=child)
             // `f : T = void` (non-pointer T) â€” per-field uninitialized
             // marker: desugar to the skip node the constructor codegen
             // already recognizes (field left unconstructed; the struct
@@ -8297,7 +8298,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
                 check_error(c, s.span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, field.name, field.name)
                 field_type = Type_Error{}
             } else {
-                field_type = infer_field_type_from_default(c, field.default_value, &child, ft)
+                field_type = infer_field_type_from_default(c, field.default_value, child, ft)
             }
         } else {
             field_type = Type_Any{}
@@ -8334,14 +8335,14 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // codegen hazard remains; there is deliberately no "must have a field" error.
     if len(ft.params) == 0 && len(s.typed_params) > 0 {
         for tp in s.typed_params {
-            pt := resolve_type_expr(tp.type_expr, c, s.span, env=&child)
+            pt := resolve_type_expr(tp.type_expr, c, s.span, env=child)
             append(&ft.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
         }
         build_param_map(ft)
     }
     if len(ft.return_types) == 0 && len(s.return_types) > 0 {
         for rte in s.return_types {
-            rt := resolve_type_expr(rte, c, s.span, env=&child)
+            rt := resolve_type_expr(rte, c, s.span, env=child)
             append(&ft.return_types, rt)
         }
     }
@@ -8359,7 +8360,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     for stmt in s.defs {
         if nested, ok := stmt.(^Stmt_Scope); ok && nested.kind == .Struct &&
             len(nested.typed_params) == 0 && len(nested.generic_params) == 0 {
-            check_scope_body(c, nested, &child, signature_only = true)
+            check_scope_body(c, nested, child, signature_only = true)
         }
     }
 
@@ -8388,14 +8389,14 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // Register params in scope (is_param is derived from ft.params, not flagged).
     for tp, i in s.typed_params {
         if i < len(ft.params) {
-            type_env_set(&child, tp.name, ft.params[i].type_)
+            type_env_set(child, tp.name, ft.params[i].type_)
         }
     }
 
     // Register named return bindings as fields in the function scope
     for rb in s.return_bindings {
-        rb_type := resolve_type_expr(rb.type_expr, c, s.span, env=&child)
-        type_env_set(&child, rb.name, rb_type)
+        rb_type := resolve_type_expr(rb.type_expr, c, s.span, env=child)
+        type_env_set(child, rb.name, rb_type)
     }
 
     // Expand `all <expr>` broadcast defaults on array-typed fields against the
@@ -8407,13 +8408,13 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.kind == .Struct {
         for field in ft.fields {
             if lit, ok := field.default_value.(^Expr_Struct_Literal); ok && lit.is_broadcast {
-                expand_broadcast_array_literal(c, lit, field.type_, field.name, s.span, &child)
+                expand_broadcast_array_literal(c, lit, field.type_, field.name, s.span, child)
             }
         }
     }
 
     // Split mode: compile-time defs come from s.defs, runtime from s.body.
-    check_scope(c, s.body, &child, scope_defs = s.defs)
+    check_scope(c, s.body, child, scope_defs = s.defs)
 
     // Freeze any deferred default-param cells now the body has pinned them to the
     // width they're used at (or, for funs, unpinned â†’ the sole numeric return type).
@@ -8441,10 +8442,10 @@ all_err_returns :: proc(types: [dynamic]Type) -> bool {
 }
 
 // Phase-2 checker for a `for` statement: dispatches to collection-for, range-for, or C-style.
-check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
+check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
     child := type_env_block_child(env)
     if s.is_collection_for {
-        coll_type := check_expr(c, s.collection, &child)
+        coll_type := check_expr(c, s.collection, child)
 
         elem_type: Type
         switch ct in coll_type {
@@ -8471,22 +8472,22 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         }
 
         if s.elem_var != "" {
-            type_env_set(&child, s.elem_var, elem_type)
+            type_env_set(child, s.elem_var, elem_type)
         }
         if s.index_var != "" {
             // Index lives at slice header width â€” that's what codegen allocates
             // the counter as. Typing it as i64 here would force users to cast
             // when feeding it back into other slice ops.
-            type_env_set(&child, s.index_var, Type_Numeric{kind = .Signed, bits = 32})
+            type_env_set(child, s.index_var, Type_Numeric{kind = .Signed, bits = 32})
         }
 
         s.elem_type_ = distinct_base(elem_type)
         s.collection_type = coll_type
 
-        check_scope(c, s.body, &child)
+        check_scope(c, s.body, child)
     } else if s.is_range {
-        low_type  := check_expr(c, s.range_low, &child)
-        high_type := check_expr(c, s.range_high, &child)
+        low_type  := check_expr(c, s.range_low, child)
+        high_type := check_expr(c, s.range_high, child)
 
         iter_type: Type
         if s.iter_type != nil {
@@ -8516,16 +8517,16 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         // only counts up, so `4..-3` would silently iterate zero times. Catch
         // it loudly at build time (matches Odin's "Invalid interval range").
         // Bounds that aren't comptime-known are left as an empty loop.
-        lo_const, lo_ok := evaluate_comptime_int(c, s.range_low, &child)
-        hi_const, hi_ok := evaluate_comptime_int(c, s.range_high, &child)
+        lo_const, lo_ok := evaluate_comptime_int(c, s.range_low, child)
+        hi_const, hi_ok := evaluate_comptime_int(c, s.range_high, child)
         if lo_ok && hi_ok && lo_const > hi_const {
             check_error(c, s.span, TYPE_DESCENDING_RANGE, lo_const, hi_const, lo_const, hi_const)
         }
 
-        type_env_set(&child, s.loop_var, iter_type)
+        type_env_set(child, s.loop_var, iter_type)
         s.var_type = distinct_base(iter_type)
 
-        check_scope(c, s.body, &child)
+        check_scope(c, s.body, child)
     } else {
         // C-style for or simple for-condition loop.
         // Register init in the loop scope so the loop var is visible in
@@ -8533,24 +8534,24 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         if s.init != nil {
             init_stmts: [dynamic]Stmt
             append(&init_stmts, s.init)
-            register_and_check_declarations(c, init_stmts, &child)
-            check_bodies(c, init_stmts, &child)
+            register_and_check_declarations(c, init_stmts, child)
+            check_bodies(c, init_stmts, child)
         }
-        cond_type := check_expr(c, s.condition, &child)
+        cond_type := check_expr(c, s.condition, child)
         if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
             check_error(c, s.span, TYPE_CONDITION_BOOL, type_name(cond_type))
         }
         if s.post != nil {
             post_stmts: [dynamic]Stmt
             append(&post_stmts, s.post)
-            check_bodies(c, post_stmts, &child)
+            check_bodies(c, post_stmts, child)
         }
-        check_scope(c, s.body, &child)
+        check_scope(c, s.body, child)
     }
 }
 
 // Phase-2 checker for a `return` statement.
-check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
+check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
     rts := enclosing_return_types(env)
     n_expected := len(rts)
     n_supplied := len(s.values)
@@ -8623,7 +8624,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
     //  post-check escape pass, escape.odin.)
 }
 
-check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
+check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
     // (Former per-scope struct-signature pre-pass removed: struct fields resolve
     // ON DEMAND at the use site via ensure_struct_signature â€” field access,
     // construction, literal matching each pull the struct's signature when they
@@ -8645,10 +8646,10 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
                 check_error(c, s.span, TYPE_CONDITION_BOOL_2, type_name(cond_type))
             }
             child := type_env_block_child(env)
-            check_scope(c, s.body, &child)
+            check_scope(c, s.body, child)
             if len(s.else_body) > 0 {
                 else_child := type_env_block_child(env)
-                check_scope(c, s.else_body, &else_child)
+                check_scope(c, s.else_body, else_child)
             }
             // (Definite-assignment branch-merge now lives in the flow pass.)
 
@@ -8729,7 +8730,7 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             // defer stay scoped to the deferred block. At runtime the body
             // executes on scope exit (LIFO across defers in the same scope).
             child := type_env_block_child(env)
-            check_scope(c, s.body, &child)
+            check_scope(c, s.body, child)
 
         // Declarations were already fully handled in register_and_check_declarations
         case ^Stmt_Assign:
@@ -8796,12 +8797,12 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
 // Assignment checking helpers (extracted from the old monolithic check_stmt)
 // ---------------------------------------------------------------------------
 
-check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^Type_Env = nil) {
+check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env: ^Type_Scope = nil) {
     // pub: where the constant binding is registered. In module-scope mode this
     // is the module env (so siblings see it); otherwise it's env (back-compat).
     pub := public_env if public_env != nil else env
     // Skip if already pre-registered (parent's body scan)
-    _, pre_registered := scope_defines(pub.scope, s.name)
+    _, pre_registered := scope_defines(pub, s.name)
     if pre_registered {
         return
     }
@@ -8889,7 +8890,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
 
 // Validate that a struct literal's fields match a struct definition:
 // every literal field exists and has the right type, and no struct fields are missing.
-check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: ^Scope_Body, span: Span, env: ^Type_Env) {
+check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: ^Scope_Body, span: Span, env: ^Type_Scope) {
     ensure_struct_signature(c, st)  // resolve fields on demand before matching the literal
     // Positional form (`Foo{a, b, c}`): match entries to struct fields by index.
     if lit.positional {
@@ -8970,13 +8971,13 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
     // then defaults are applied for unspecified fields. Partial literals are allowed.
 }
 
-check_struct_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, st: ^Scope_Body, env: ^Type_Env) {
+check_struct_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, st: ^Scope_Body, env: ^Type_Scope) {
     lit, lit_ok := value.(^Expr_Struct_Literal)
     if !lit_ok { return }
     check_struct_literal_fields(c, lit, st, span, env)
 }
 
-check_union_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, ut: ^Type_Union, env: ^Type_Env) {
+check_union_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, ut: ^Type_Union, env: ^Type_Scope) {
     lit, lit_ok := value.(^Expr_Struct_Literal)
     if !lit_ok { return }
 
@@ -9029,7 +9030,7 @@ needs_union_variant_hint :: proc(field_type: Type, value: Expr) -> bool {
 //   Name{x: v, ...}   â€” named; each name must be a swizzle char (x/y/z/w or
 //                       r/g/b/a) whose index is within fa.size; duplicates
 //                       rejected; missing slots zero-fill
-check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^Type_Fixed_Array, env: ^Type_Env) {
+check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^Type_Fixed_Array, env: ^Type_Scope) {
     clear(&lit.array_values)
     resize(&lit.array_values, fa.size)
 
@@ -9148,7 +9149,7 @@ check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixe
     }
 }
 
-check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
+check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     un := s.target.(^Expr_Unary)
     ptr_type := check_expr(c, un.operand, env)
     val_type := check_expr(c, s.value, env)
@@ -9169,7 +9170,7 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     //  by the post-check escape pass, escape.odin.)
 }
 
-check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
+check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     ix := s.target.(^Expr_Index)
     ix.index = rewrite_subscript_dots(ix.expr, ix.index)
     // `::` constants can be read by index â€” the codegen routes that through
@@ -9290,7 +9291,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     }
 }
 
-check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
+check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     sl := s.target.(^Expr_Slice)
     sl.low  = rewrite_subscript_dots(sl.expr, sl.low)
     sl.high = rewrite_subscript_dots(sl.expr, sl.high)
@@ -9416,7 +9417,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     }
 }
 
-check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
+check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     fa_expr := s.target.(^Expr_Field_Access)
     obj_type := check_expr(c, fa_expr.expr, env)
 
@@ -9592,7 +9593,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     }
 }
 
-check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
+check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     // match dispatches on a union value, so it always needs a subject. The
     // parser already reports a missing one; bail here so we don't deref nil.
     if s.subject == nil {
@@ -9660,7 +9661,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                 check_error(c, s.span, TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING, arm.dot_shorthand)
             }
             child := type_env_block_child(env)
-            check_scope(c, arm.body, &child)
+            check_scope(c, arm.body, child)
         } else if arm.is_union_arm {
             // Union pattern arm: VariantName [bindingName] { body }
             if is_union_match {
@@ -9695,19 +9696,19 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             if st, st_ok := c.table.structs[struct_name]; st_ok {
                 arm.resolved_struct = st.name
                 if arm.binding_name != "" {
-                    type_env_set(&child, arm.binding_name, st)
+                    type_env_set(child, arm.binding_name, st)
                 }
             } else if st, st_ok := c.table.funs[struct_name]; st_ok {
                 arm.resolved_struct = st.name
                 if arm.binding_name != "" {
-                    type_env_set(&child, arm.binding_name, st)
+                    type_env_set(child, arm.binding_name, st)
                 }
             }
-            check_scope(c, arm.body, &child)
+            check_scope(c, arm.body, child)
         } else if arm.is_else {
             // Else (wildcard) arm â€” just type-check the body
             child := type_env_block_child(env)
-            check_scope(c, arm.body, &child)
+            check_scope(c, arm.body, child)
         } else {
             // Value match arm â€” try to infer bare identifiers as enum/union variants
             if ident, ident_ok := arm.value.(^Expr_Ident); ident_ok {
@@ -9717,7 +9718,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                         arm.dot_shorthand = ident.name
                         arm.resolved_tag = tag_val
                         child := type_env_block_child(env)
-                        check_scope(c, arm.body, &child)
+                        check_scope(c, arm.body, child)
                         continue
                     }
                 } else if is_union_match {
@@ -9732,7 +9733,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
                             arm.resolved_struct = arm_st.name
                         }
                         child := type_env_block_child(env)
-                        check_scope(c, arm.body, &child)
+                        check_scope(c, arm.body, child)
                         continue
                     }
                 }
@@ -9740,7 +9741,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             // Regular value match arm
             check_expr(c, arm.value, env)
             child := type_env_block_child(env)
-            check_scope(c, arm.body, &child)
+            check_scope(c, arm.body, child)
         }
     }
     // An else arm (with or without a body) opts out of the variant-coverage
@@ -9793,7 +9794,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
 
 // Helper: extract a Checked_Scope from a Stmt_Scope using resolved types from an env.
 // Extract function definitions from a scope's body into checked.functions.
-extract_scope_fun_defs :: proc(checked: ^Checked_Program, defs: [dynamic]Stmt, env: ^Type_Env, main_package: string) {
+extract_scope_fun_defs :: proc(checked: ^Checked_Program, defs: [dynamic]Stmt, env: ^Type_Scope, main_package: string) {
     for def in defs {
         #partial switch s in def {
         case ^Stmt_Scope:
@@ -9818,7 +9819,7 @@ extract_scope_fun_defs :: proc(checked: ^Checked_Program, defs: [dynamic]Stmt, e
     }
 }
 
-extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTable = nil) -> (^Type_Scope, bool) {
+extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Scope, table: ^SymbolTable = nil) -> (^Type_Scope, bool) {
     ft: ^Type_Scope
     if fun_type_raw, found := type_env_get(env, s.name); found {
         if v, ok := fun_type_raw.(^Type_Scope); ok { ft = v }
@@ -9884,8 +9885,8 @@ find_matching_modules :: proc(c: ^Checker, path: string) -> [dynamic]string {
 // keep include-introduced names private to their file, while defined names
 // register up into pkg_env so sibling files see them. Both the main package
 // (check_program) and imported modules (check_module) scope this way.
-partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
-    (files_by_src: map[string][dynamic]Stmt, file_order: [dynamic]string, file_envs: map[string]^Type_Env) {
+partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Scope) ->
+    (files_by_src: map[string][dynamic]Stmt, file_order: [dynamic]string, file_envs: map[string]^Type_Scope) {
     for stmt in stmts {
         src := stmt_span(stmt).file
         if _, exists := files_by_src[src]; !exists {
@@ -9896,17 +9897,14 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
         append(bucket, stmt)
     }
     for src in file_order {
-        fe := new(Type_Env)
         // Each file gets its OWN durable scope, chained to the module scope. It
         // holds the file's private includes (its `use`/`include` imports stay
         // file-local); definitions still register on the module scope (public).
         // kind = .Block / is_module = false so the marker derivations skip it.
-        fs := new(Type_Scope)
-        fs.kind = .Block
-        fs.home_package = pkg_env.scope.home_package if pkg_env.scope != nil else ""
-        fs.parent_scope = pkg_env.scope
-        fs.scope = fe
-        fe.scope = fs
+        fe := new(Type_Scope)
+        fe.kind = .Block
+        fe.home_package = pkg_env.home_package if pkg_env != nil else ""
+        fe.parent_scope = pkg_env
         file_envs[src] = fe
     }
     return
@@ -9943,9 +9941,9 @@ check_package_files :: proc(
     c: ^Checker,
     files_by_src: map[string][dynamic]Stmt,
     file_order: [dynamic]string,
-    file_envs: map[string]^Type_Env,
+    file_envs: map[string]^Type_Scope,
     owner: ^Type_Scope,
-    pkg_env: ^Type_Env,
+    pkg_env: ^Type_Scope,
 ) {
     for src in file_order {  // 1a
         register_type_names(c, files_by_src[src], file_envs[src], owner, pkg_env)
@@ -10008,24 +10006,20 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // sit on the other side of the is_module_scope barrier. Copy them in
     // so the module's own functions can reference `context.X` etc., same
     // as a main package's file_env can.
-    mod_env := new(Type_Env)
-
     // Create the module-struct upfront so it can own top-level declarations during
-    // registration AND serve as the module env's durable scope before any name is
-    // set. Dispatch groups / operator overloads filled after check_scope completes.
-    // (env_is_module(mod_env) derives "module namespace" from this wiring:
-    //  mod_struct.is_module + the mod_struct.scope==mod_env back-ref.)
+    // registration AND serve as the module scope before any name is set. Dispatch
+    // groups / operator overloads filled after check_scope completes.
+    // (env_is_module(mod_env) derives "module namespace" from mod_struct.is_module.)
     mod_struct := new(Type_Scope)
     mod_struct.name = module_name
     mod_struct.home_package = module_name  // module is its own home
     mod_struct.kind = .Struct
     mod_struct.is_module = true
-    mod_struct.scope = mod_env
-    mod_env.scope = mod_struct
+    mod_env := mod_struct   // the module scope IS the env now
 
     if c.top_env != nil {
         for name in ([]string{"this_program", "Program", "std", "void"}) {
-            if t, ok := scope_defines(c.top_env.scope, name); ok {
+            if t, ok := scope_defines(c.top_env, name); ok {
                 type_env_set(mod_env, name, t)
             }
         }
@@ -10033,7 +10027,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
 
     // If `void` wasn't in c.top_env yet (early in setup), register a fresh
     // null-pointer type so the module body's void literals still type-check.
-    if _, has_void := scope_defines(mod_env.scope, "void"); !has_void {
+    if _, has_void := scope_defines(mod_env, "void"); !has_void {
         void_type := new(Type_Ptr)
         void_type.elem = Type_Any{}
         type_env_set(mod_env, "void", void_type)
@@ -10074,7 +10068,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_struct.operator_overloads = c.operator_overloads
 
     // (The module's durable name surface â€” mod_struct.types/functions â€” is kept
-    // in sync by type_env_set writing through mod_env.scope == mod_struct as the
+    // in sync by type_env_set writing through mod_env == mod_struct as the
     // module body is checked, so no end-of-module mirror copy is needed.)
 
     // Restore checker state
@@ -10098,7 +10092,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // Other modules go into mara_env (root scope) under their full name.
     if strings.has_prefix(module_name, "mara.") && c.std_fun != nil {
         bare := module_name[len("mara."):]  // "mara.math" -> "math"
-        type_env_set(c.std_fun.scope, bare, mod_struct)
+        type_env_set(c.std_fun, bare, mod_struct)
     } else if c.mara_env != nil {
         type_env_set(c.mara_env, module_name, mod_struct)
     }
@@ -10148,7 +10142,7 @@ make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Sco
 // produces at the call site. Recurses into nested struct bodies so deeper
 // nesting works without further changes. (Module-level foreign extraction
 // is handled directly in extract_module_into_checked.)
-extract_nested_foreigns_into_checked :: proc(c: ^Checker, body: [dynamic]Stmt, mod_env: ^Type_Env, struct_flat_name: string) {
+extract_nested_foreigns_into_checked :: proc(c: ^Checker, body: [dynamic]Stmt, mod_env: ^Type_Scope, struct_flat_name: string) {
     checked := c.checked
     if checked == nil { return }
     for stmt in body {
@@ -10180,7 +10174,7 @@ extract_nested_foreigns_into_checked :: proc(c: ^Checker, body: [dynamic]Stmt, m
 // Extract all declarations from a checked module into the Checked_Program for codegen.
 // Handles: functions, foreign declarations, types, constants, and variables.
 // Also populates the module-struct's functions/types.
-extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: ^Type_Env, module_name: string, mod_struct: ^Type_Scope = nil) {
+extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: ^Type_Scope, module_name: string, mod_struct: ^Type_Scope = nil) {
     checked := c.checked
     if checked == nil { return }
 
@@ -10347,7 +10341,7 @@ validate_scope_allocator :: proc(c: ^Checker) {
 // Recurses through comptime `#if` so e.g. shader source `::` constants and
 // foreign decls inside `#if #web { ... }` reach codegen. Mirrors the analogous
 // gap that was already fixed in extract_module_into_checked.
-extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts: [dynamic]Stmt, env: ^Type_Env, main_package: string) {
+extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts: [dynamic]Stmt, env: ^Type_Scope, main_package: string) {
     for stmt in stmts {
         #partial switch s in stmt {
         case ^Stmt_Scope:
@@ -10465,20 +10459,17 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
                       shared: bool = false,
                       target_os: Target_OS = .Windows) -> ^Checked_Program {
     table := new(SymbolTable)
-    env := new(Type_Env)       // heap-allocated so it outlives check_program
-    table.root_env = env
-    // The main package's durable module scope, wired upfront so builtins
-    // (std / void / Program / this_program) and every top-level name land on it
-    // directly via type_env_set â€” no env.types-mirror copy needed. This wiring is
-    // also what makes env_is_module(env) true: the root env IS the main package's
-    // module scope, so lookup terminates here.
+    // The main package's durable module scope IS the root env, wired upfront so
+    // builtins (std / void / Program / this_program) and every top-level name land
+    // on it directly via type_env_set. is_module makes env_is_module(env) true: the
+    // root scope is the main package's module scope, so lookup terminates here.
     main_mod := new(Type_Scope)
     main_mod.name = main_package
     main_mod.home_package = main_package
     main_mod.kind = .Struct
     main_mod.is_module = true
-    main_mod.scope = env
-    env.scope = main_mod
+    env := main_mod            // heap-allocated (new) so it outlives check_program
+    table.root_env = env
 
     c := Checker{ table = table }
     checked := new(Checked_Program)
@@ -10517,7 +10508,6 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     std_fun.name = "std"
     std_fun.home_package = "std"
     std_fun.kind = .Struct
-    std_fun.scope = new(Type_Env)
     c.std_fun = std_fun
     type_env_set(env, "std", std_fun)
 
@@ -10910,13 +10900,13 @@ set_expr_type :: proc(expr: Expr, t: Type) {
     if p := expr_type_ptr(expr); p != nil { p^ = t }
 }
 
-check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
+check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     result := check_expr_impl(c, expr, env)
     set_expr_type(expr, result)
     return result
 }
 
-check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
+check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     switch e in expr {
     case ^Expr_Number:
         if e.is_float {
@@ -11526,7 +11516,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // check_module accepts dotted names directly (mara.X submodules and
         // user modules use the same resolution path).
         if existing, found := type_env_get(env, e.path); found {
-            if existing_sd := as_scope_body(existing); existing_sd != nil && existing_sd.scope != nil {
+            if existing_sd := as_scope_body(existing); sd_is_module(existing_sd) {
                 return existing
             }
         }
@@ -11621,19 +11611,14 @@ ensure_struct_signature :: proc(c: ^Checker, st: ^Scope_Body) {
     }
 }
 
-// Reconstruct the env a scope's signature resolves against, from the durable
-// parent_scope graph â€” so a NESTED scope resolves on demand (its transient decl
-// env was discarded). Top-level scopes return their persistent decl_env.
-build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Env {
+// The scope a scope's signature resolves against. Resolution walks up the durable
+// parent_scope chain, so this is just the declaring (parent) scope — a NESTED
+// scope resolves on demand against it; top-level scopes keep a persistent
+// decl_env pinned at registration time.
+build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Scope {
     if ft == nil { return nil }
     if ft.decl_env != nil { return ft.decl_env }
-    parent := ft.parent_scope
-    if parent == nil { return nil }
-    // Resolution walks env.scope up its parent_scope chain, so a synthetic env
-    // whose scope is the rebuilt scope reaches everything — no env.parent chain.
-    env := new(Type_Env)
-    env.scope = parent
-    return env
+    return ft.parent_scope
 }
 
 // Resolve a fun's signature (param + return types) from its AST, in the env it
@@ -11674,7 +11659,7 @@ ensure_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
 
 // Shared struct field access logic â€” used for both direct and auto-deref (^Struct) paths.
 // Handles uninit checks, field resolution, and associated function lookup.
-check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope_Body, env: ^Type_Env) -> Type {
+check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope_Body, env: ^Type_Scope) -> Type {
     // (Reading an uninitialized pointer/slice field â€” including through an
     // `it = &root` alias â€” is now caught by the post-check flow pass.)
     ensure_struct_signature(c, st)  // resolve fields on demand if no pre-pass did
@@ -11691,7 +11676,7 @@ check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope
     return Type_Error{}
 }
 
-check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -> Type {
+check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope) -> Type {
     // Self-module qualification: `<current_package>.X` resolves X via the
     // current module's flat-name table or env directly. The main package
     // doesn't get a synthesized mod_struct (unlike imported modules), so its
@@ -11787,10 +11772,10 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         }
         ensure_struct_signature(c, rsd)
     }
-    if sd := as_scope_body(obj_type); sd != nil && (len(sd.fields) > 0 || sd.scope != nil) {
-        // Module-struct field access: look up in scope (env)
-        if sd.scope != nil {
-            t, found := type_env_get(sd.scope, e.field)
+    if sd := as_scope_body(obj_type); sd != nil && (len(sd.fields) > 0 || sd_is_module(sd)) {
+        // Module-struct field access: look up in the module scope
+        if msc := sd_module_scope(sd); msc != nil {
+            t, found := type_env_get(msc, e.field)
             if !found {
                 // Fallback: variants are no longer registered as bare names in
                 // a module's scope, so `mara_open_gl.ARRAY_BUFFER` won't find
@@ -11939,8 +11924,8 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
 
 // Check a call against all built-in functions. Returns (result_type, true) if the
 // name matched a builtin, or (_, false) if it should be resolved as a user function.
-check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_Env) -> (Type, bool) {
-    check_args_n :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_Env, n: int) {
+check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_Scope) -> (Type, bool) {
+    check_args_n :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_Scope, n: int) {
         if len(args) != n {
             check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_2,
                 e.name, n, n == 1 ? "" : "s", len(args))
@@ -12207,7 +12192,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
     return Type_Error{}, false
 }
 
-check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
+check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
     // Propagate the hint to both sides so `OpenGL | Resizable` resolves both
     // operands against the surrounding `WindowFlags` expectation.
     hint := c.expected_hint
@@ -12597,7 +12582,7 @@ substitute_underscore_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_S
 
 // Fill in default args for a call that has fewer args than params.
 // Creates fresh intrinsic nodes resolved at the call site.
-fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env: ^Type_Env) {
+fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env: ^Type_Scope) {
     for i := len(e.args); i < len(fun_type.params); i += 1 {
         def := fun_type.params[i].default_value
         if def == nil { continue }
@@ -12637,7 +12622,7 @@ fn_params_desc :: proc(ft: ^Type_Scope) -> string {
 }
 
 // Shared helper: check that args match a function's parameter types.
-check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, display_name: string, span: Span, env: ^Type_Env) {
+check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, display_name: string, span: Span, env: ^Type_Scope) {
     required := count_required_params(fun_type)
     if len(args) < required || len(args) > len(fun_type.params) {
         // Show the module-qualified name + the expected parameter list, so the
@@ -12730,7 +12715,7 @@ flatten_name_path :: proc(e: Expr) -> string {
 // Pure name paths only; returns nil for value paths / unknown names so the
 // caller falls through to value-qualified resolution. Never emits diagnostics â€”
 // it's a speculative lookup.
-resolve_type_path_scope :: proc(c: ^Checker, qualifier: Expr, env: ^Type_Env) -> ^Scope_Body {
+resolve_type_path_scope :: proc(c: ^Checker, qualifier: Expr, env: ^Type_Scope) -> ^Scope_Body {
     path := flatten_name_path(qualifier)
     if path == "" { return nil }
     segs := strings.split(path, ".")
@@ -12762,7 +12747,7 @@ resolve_type_path_scope :: proc(c: ^Checker, qualifier: Expr, env: ^Type_Env) ->
 }
 
 resolve_qualified_call :: proc(
-    c: ^Checker, e: ^Expr_Call, env: ^Type_Env, check_args: ^[dynamic]Expr,
+    c: ^Checker, e: ^Expr_Call, env: ^Type_Scope, check_args: ^[dynamic]Expr,
 ) -> (resolution: Maybe(Resolved_Func), fn_type: ^Type_Scope, qual_dispatch_fns: [dynamic]string, error: bool) {
     resolved_assoc := false
 
@@ -12795,7 +12780,7 @@ resolve_qualified_call :: proc(
                         }
                     }
 
-                    if !is_type_qualifier && qual_sd.scope == nil {
+                    if !is_type_qualifier && !sd_is_module(qual_sd) {
                         // Instance-method detection: first param Self / ^Self.
                         first_param_is_self := false
                         first_param_wants_ptr := false
@@ -12844,7 +12829,7 @@ resolve_qualified_call :: proc(
                     for a in e.args { append(check_args, a) }
                     qual_dispatch_fns = fns
                     resolved_assoc = true
-                } else if qual_sd.scope != nil {
+                } else if sd_is_module(qual_sd) {
                     check_error(c, e.span, TYPE_MODULE_FUNCTION, qual_sd.name, e.name)
                     return nil, nil, nil, true
                 }
@@ -12989,7 +12974,7 @@ resolve_qualified_call :: proc(
 // also be omitted as long as the missing positions have defaults â€” those
 // fill in after the candidate is picked. All matching candidates are
 // collected; if more than one matches, the call is rejected as ambiguous.
-check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]string, check_args: []Expr, env: ^Type_Env) -> Type {
+check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]string, check_args: []Expr, env: ^Type_Scope) -> Type {
     // Mark underscore positions â€” they can't be typed without knowing which
     // overload (and therefore which default) they'll take. Non-underscore
     // args get typed once; their arg_types slot stays nil for underscores.
@@ -13142,7 +13127,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
 // calls, the single value for `(T, err)` calls. Multi-value calls (`(T, U,
 // err)`) aren't supported yet since Mara doesn't have true value tuples; the
 // flat err-set design is what the user signed up for and that's covered.
-check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Env) -> Type {
+check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Scope) -> Type {
     inner_t := check_expr(c, e.inner, env)
     _ = inner_t
 
@@ -13171,7 +13156,7 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Env) -> Type {
     return rets[0]
 }
 
-check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
+check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // Collect the call-graph edge (caller -> resolved callee) at every exit,
     // once resolved_func has been populated below. Every call funnels through
     // check_call, so this is the one place the whole graph is observed.
@@ -13400,7 +13385,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 // monomorphization construction path (check_generic_call â€” e.g. Array(Player, 64),
 // Pair(int)(1, 2)), where the freshly instantiated struct is still built positionally
 // post-mono. Unify that path through check_call too and this can be deleted.
-check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Env) -> Type {
+check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Scope) -> Type {
     ensure_struct_signature(c, &st.sd)  // resolve fields on demand before construction
     e.type_ = st
     if e.resolved_func == nil && st.name != "" {
@@ -13468,7 +13453,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
 
 // check_module_call removed â€” module calls now resolve through the unified
 // assoc_fn/types path in check_call, same as type-qualified calls.
-check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Env) -> Type {
+check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Type {
     if len(e.elements) == 0 {
         // Empty array literal â€” type is unknown until assigned
         return Type_Error{}
@@ -13541,7 +13526,7 @@ rewrite_subscript_dots :: proc(base: Expr, sub: Expr) -> Expr {
     return subscript_dot_rewrite(base, sub)
 }
 
-check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
+check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope) -> Type {
     e.index = rewrite_subscript_dots(e.expr, e.index)
     target_type := distinct_base(check_expr(c, e.expr, env))
     // Auto-deref: `^[]T` and `^[N]T` index like their pointee. Mirrors the
@@ -13602,7 +13587,7 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
     return Type_Error{}
 }
 
-check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Env) -> Type {
+check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
     e.low  = rewrite_subscript_dots(e.expr, e.low)
     e.high = rewrite_subscript_dots(e.expr, e.high)
     target_type := check_expr(c, e.expr, env)
