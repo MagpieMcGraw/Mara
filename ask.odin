@@ -37,7 +37,7 @@ Ask_Edge_Kind :: enum { Contains, Embeds, Takes, Returns, Base }
 
 Ask_Node :: struct {
     label: string,   // user-facing type / fn name
-    sub:   string,   // "struct" / "enum" / "union" / "distinct" / "fun"
+    sub:   string,   // "struct" / "union" / "error" / "distinct" / "fun" ("enum" only for a union's synthetic tag)
     span:  Span,
     mark:  string,   // "" for ordinary types; e.g. "synthetic" for compiler-generated ones
     dist:  int,      // shortest hop distance from the query root (0 = the root itself)
@@ -88,11 +88,24 @@ ask_demangle :: proc(name: string, home_package: string) -> string {
 ask_sub :: proc(t: Type) -> (sub: string, named: bool) {
     #partial switch v in t {
     case ^Type_Scope:    return ("fun" if v.kind == .Fun else "struct"), true
-    case ^Type_Enum:     return "enum", true
+    case ^Type_Enum:     return ask_enum_sub(v), true
     case ^Type_Union:    return "union", true
     case ^Type_Distinct: return "distinct", true
     }
     return "", false
+}
+
+// A Type_Enum is never spelled `enum` in Mara source — there is no `enum`
+// keyword. It is the lowered form of a payloadless `union { ... }` (the common
+// case), an `error { ... }` set, or a data union's compiler-generated `_Tag`
+// discriminant. Report the SOURCE form so `mara ask` echoes what the user wrote.
+// The synthetic `_Tag` keeps the "enum" label deliberately: a data union's
+// Type_Union shares its span, and ask_all_definitions dedups on (span, sub), so
+// relabeling the tag "union" would collapse it onto the union and hide one.
+ask_enum_sub :: proc(e: ^Type_Enum) -> string {
+    if e.is_synthetic  { return "enum" }
+    if e.is_error_kind { return "error" }
+    return "union"
 }
 
 ask_span :: proc(t: Type) -> Span {
@@ -187,7 +200,7 @@ Ask_Match :: struct {
     type_: Type,
     label: string,   // source / display name (what the user types)
     flat:  string,   // package-prefixed unique name
-    sub:   string,   // "struct" / "enum" / "union" / "distinct" / "fun"
+    sub:   string,   // "struct" / "union" / "error" / "distinct" / "fun" ("enum" only for a union's synthetic tag)
     span:  Span,
     mark:  string,   // "" for ordinary types; e.g. "synthetic" for compiler-generated ones
 }
@@ -337,7 +350,7 @@ ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit
 ask_find_variant :: proc(table: ^SymbolTable, target: string) -> (owner: string, kind: string, ok: bool) {
     for _, e in table.enums {
         if e.is_synthetic { continue }   // a union's internal `_Tag`: point at the union, not its tag enum
-        if _, has := e.variants[target]; has { return ask_label(e), "enum", true }
+        if _, has := e.variants[target]; has { return ask_label(e), ask_enum_sub(e), true }
     }
     for _, u in table.unions {
         for vn in u.variants {
@@ -659,7 +672,7 @@ render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
     // a type and must not inflate the count (a fn's own node sits at index 0).
     types := 0
     for n in res.nodes { if n.sub != "fun" { types += 1 } }
-    fmt.sbprintf(b, "\ndeps   (%d types, %d edges, %s)\n", types, len(res.edges), ask_depth_label(depth))
+    fmt.sbprintf(b, "\ndeps   (%s, %s, %s)\n", ask_plural(types, "type"), ask_plural(len(res.edges), "edge"), ask_depth_label(depth))
     for node, i in res.nodes {
         if depth >= 0 && node.dist > depth { continue }   // fringe target — interned, not expanded
         fmt.sbprintf(b, "\n  %s  %s  %s%s\n", node.label, node.sub, ask_loc(node.span), ask_mark_suffix(node.mark))
@@ -687,8 +700,8 @@ ask_depth_label :: proc(depth: int) -> string {
 // names the closer-to-root type it references (not the subject), so a chain like
 // Megastruct -> Camera -> Object -> Vec3 reads outward ring by ring.
 render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, subject_is_fun: bool, depth: int) {
-    fmt.sbprintf(b, "\nusers   (%d users, %d use-sites, %s)\n",
-                 ask_distinct_sources(res), len(res.edges), ask_depth_label(depth))
+    fmt.sbprintf(b, "\nusers   (%s, %s, %s)\n",
+                 ask_plural(ask_distinct_sources(res), "user"), ask_plural(len(res.edges), "use-site"), ask_depth_label(depth))
     // A function subject's reverse set is a known blind spot: call edges are not
     // modeled, so `(no users)` here must NOT be read as "no callers".
     if subject_is_fun {
