@@ -934,9 +934,15 @@ CLI_Args :: struct {
     release:      bool,    // -release — pass -O3 to clang for an optimized build
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     ok:           bool,
+
+    // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
+    // Runs the front half of the pipeline and stops after check_program.
+    ask:          bool,
+    ask_target:   string,  // the type/fn the query is about
+    ask_query:    string,  // "deps" | "users"
 }
 
-USAGE :: "Usage: mara build [package-name] [-web] [-shared] [-release] [-no assert]"
+USAGE :: "Usage: mara build [package-name] [-web] [-shared] [-release] [-no assert]\n       mara ask <Type> <deps|users>"
 
 parse_args :: proc() -> CLI_Args {
     args: CLI_Args
@@ -976,8 +982,26 @@ parse_args :: proc() -> CLI_Args {
         i += 1
     }
 
-    // positional[0] is the exe name itself. positional[1] should be "build".
-    if len(positional) < 2 || positional[1] != "build" {
+    // positional[0] is the exe name itself. positional[1] is the subcommand.
+    subcmd := positional[1] if len(positional) >= 2 else ""
+
+    // `mara ask <Type> <deps|users>` — analyze the package in the cwd (like
+    // `build` with no package arg) and answer a static query about <Type>.
+    if subcmd == "ask" {
+        if len(positional) < 4 {
+            fmt.println("Usage: mara ask <Type> <deps|users>")
+            return args
+        }
+        args.ask        = true
+        args.ask_target = positional[2]
+        args.ask_query  = positional[3]
+        cwd, _ := os.get_working_directory(context.allocator)
+        args.pkg_name = filepath.base(cwd)
+        args.ok = true
+        return args
+    }
+
+    if subcmd != "build" {
         fmt.println(USAGE)
         return args
     }
@@ -1004,6 +1028,7 @@ main :: proc() {
     if !args.ok { os.exit(1) }
 
     perf: Performance_Timer
+    perf.quiet = args.ask   // `ask` keeps stdout clean for machine/AI consumption
     perf_timer_begin(&perf, "discover")
 
     all_files := discover_all_files(args.compiler_dir, args.search_dir)
@@ -1081,7 +1106,9 @@ main :: proc() {
         }
         return false
     }
-    if !args.shared {
+    // `ask` is read-only static analysis — it has no entry-point requirement
+    // (a library package is a perfectly valid thing to query).
+    if !args.shared && !args.ask {
         if !pkg_has_main(programs[args.pkg_name]) && !pkg_has_expose(programs[args.pkg_name]) {
             perf_timer_end(&perf)
             flush_diagnostics()
@@ -1105,6 +1132,19 @@ main :: proc() {
         flush_diagnostics()
         fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
         os.exit(1)
+    }
+
+    // `ask` stops here — the checked program is the query substrate; no codegen.
+    if args.ask {
+        flush_diagnostics()
+        result, ok := run_ask(checked, args.ask_target, args.ask_query)
+        if !ok {
+            fmt.printf("ask: could not resolve type '%s', or unknown query '%s' (try: deps, users)\n",
+                       args.ask_target, args.ask_query)
+            os.exit(1)
+        }
+        fmt.print(render_ask(&result, args.ask_target, args.ask_query))
+        return
     }
 
     perf_timer_mark(&perf, "codegen")

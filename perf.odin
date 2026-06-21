@@ -11,6 +11,7 @@ Performance_Timer :: struct {
     count:       int,
     phase_start: time.Time,                  // Start of current phase
     total_start: time.Time,                  // Start of entire timing session
+    quiet:       bool,                       // suppress all printing (e.g. `mara ask` keeps stdout clean)
 }
 
 // Begin timing session - call once at the start. Prints the header so
@@ -20,7 +21,7 @@ perf_timer_begin :: proc(timer: ^Performance_Timer, first_phase: string) {
     timer.total_start = time.now()
     timer.phase_start = timer.total_start
     timer.names[0] = first_phase
-    fmt.println("=== Performance ===")
+    if !timer.quiet { fmt.println("=== Performance ===") }
 }
 
 // End current phase and start a new one - single call per phase transition.
@@ -32,7 +33,7 @@ perf_timer_mark :: proc(timer: ^Performance_Timer, next_phase: string) {
     if timer.count < MAX_PERF_PHASES {
         elapsed := time.duration_seconds(time.diff(timer.phase_start, now))
         timer.times[timer.count] = elapsed
-        fmt.printf("  %s: %.1fms\n", timer.names[timer.count], elapsed * 1000)
+        if !timer.quiet { fmt.printf("  %s: %.1fms\n", timer.names[timer.count], elapsed * 1000) }
         timer.count += 1
     }
 
@@ -52,10 +53,11 @@ perf_timer_end :: proc(timer: ^Performance_Timer) {
     if timer.count < MAX_PERF_PHASES {
         elapsed := time.duration_seconds(time.diff(timer.phase_start, now))
         timer.times[timer.count] = elapsed
-        fmt.printf("  %s: %.1fms\n", timer.names[timer.count], elapsed * 1000)
+        if !timer.quiet { fmt.printf("  %s: %.1fms\n", timer.names[timer.count], elapsed * 1000) }
         timer.count += 1
     }
 
+    if timer.quiet { return }
     total := time.duration_seconds(time.diff(timer.total_start, now))
     fmt.printf("  Total: %.1fms\n", total * 1000)
     // Closing divider — same width as "=== Performance ===" (19 chars).

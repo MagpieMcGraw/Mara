@@ -1,0 +1,296 @@
+package mara
+
+// ---------------------------------------------------------------------------
+// `mara ask` — static type-dependency queries (design/mara_ask.md §4.1)
+//
+// The first ask: a type dependency graph, read straight off the symbol table —
+// no dataflow walk.
+//   mara ask <Type> deps    what this type pulls in (its field/embed types,
+//                           transitively; a fun's signature types)
+//   mara ask <Type> users   who depends on it (who contains/embeds/takes/returns
+//                           it) — the "what breaks if I change this" query
+//
+// The engine (`run_ask`) is a PURE function over Checked_Program returning an
+// Ask_Result graph; the renderer is separate (a --json serializer is a trivial
+// later add over the same graph). Output is a deterministic text adjacency dump:
+// each type printed once with its direct typed edges, sorted for stable diffs —
+// AI-readable, greppable, golden-testable. Stops after check_program (no codegen).
+// ---------------------------------------------------------------------------
+
+import "core:fmt"
+import "core:strings"
+
+Ask_Edge_Kind :: enum { Contains, Embeds, Takes, Returns, Base }
+
+Ask_Node :: struct {
+    label: string,   // user-facing type / fn name
+    sub:   string,   // "struct" / "enum" / "union" / "distinct" / "fun"
+    span:  Span,
+}
+
+Ask_Edge :: struct {
+    from, to: int,
+    kind:     Ask_Edge_Kind,
+    via:      string,   // field / param name carrying the dependency ("" for returns / base)
+    wrap:     string,   // "^" / "[]" wrapper shown on the target, "" if direct
+}
+
+Ask_Result :: struct {
+    nodes:    [dynamic]Ask_Node,
+    edges:    [dynamic]Ask_Edge,
+    root:     int,
+    index_of: map[rawptr]int,   // type identity -> node id (intern dedup)
+}
+
+// --- type → display helpers ------------------------------------------------
+
+ask_label :: proc(t: Type) -> string {
+    #partial switch v in t {
+    case ^Type_Scope:    return v.source_name if v.source_name != "" else ask_demangle(v.name, v.home_package)
+    case ^Type_Enum:     return v.source_name if v.source_name != "" else ask_demangle(v.name, v.home_package)
+    case ^Type_Union:    return v.source_name if v.source_name != "" else ask_demangle(v.name, v.home_package)
+    case ^Type_Distinct: return v.source_name if v.source_name != "" else ask_demangle(v.name, v.home_package)
+    }
+    return type_flat_name(t)
+}
+
+// A flat name is `<flattened home_package>_<bare>` (the module path's dots become
+// underscores in the mangle, e.g. home "mara.math" -> name "mara_math_Vec3").
+// Recover the bare name for display when no source_name was recorded (cross-module
+// / monomorphized types).
+ask_demangle :: proc(name: string, home_package: string) -> string {
+    if home_package == "" { return name }
+    flat_home, _ := strings.replace_all(home_package, ".", "_")
+    if strings.has_prefix(name, flat_home) {
+        rest := name[len(flat_home):]
+        if len(rest) > 1 && rest[0] == '_' { return rest[1:] }
+    }
+    return name
+}
+
+// The node's category, and whether it is a NAMED type worth a node at all
+// (primitives / numerics are leaves — not type dependencies, so not interned).
+ask_sub :: proc(t: Type) -> (sub: string, named: bool) {
+    #partial switch v in t {
+    case ^Type_Scope:    return ("fun" if v.kind == .Fun else "struct"), true
+    case ^Type_Enum:     return "enum", true
+    case ^Type_Union:    return "union", true
+    case ^Type_Distinct: return "distinct", true
+    }
+    return "", false
+}
+
+ask_span :: proc(t: Type) -> Span {
+    if v, ok := t.(^Type_Scope); ok { return v.body_span }
+    return Span{}
+}
+
+// structs / unions / distinct have further type deps worth recursing into; enums
+// are leaves (variants are integer constants), and funs expand only at the root.
+ask_recurses :: proc(t: Type) -> bool {
+    #partial switch v in t {
+    case ^Type_Scope:    return v.kind == .Struct
+    case ^Type_Union:    return true
+    case ^Type_Distinct: return true
+    }
+    return false
+}
+
+// Peel ^ / [] / [N] wrappers, returning the core type and a wrapper prefix
+// (outermost first) to render on the target — e.g. `[]^Mesh` -> (Mesh, "[]^").
+ask_peel :: proc(t: Type) -> (core: Type, wrap: string) {
+    cur := t
+    parts: [dynamic]string
+    peel: for {
+        #partial switch v in cur {
+        case ^Type_Ptr:         append(&parts, "^");  cur = v.elem
+        case ^Type_Slice:       append(&parts, "[]"); cur = v.elem
+        case ^Type_Fixed_Array: append(&parts, "[]"); cur = v.elem
+        case: break peel
+        }
+    }
+    return cur, strings.concatenate(parts[:])
+}
+
+// --- node interning --------------------------------------------------------
+
+ask_intern :: proc(res: ^Ask_Result, t: Type) -> (id: int, is_new: bool) {
+    key := raw_type_key(t)
+    if existing, ok := res.index_of[key]; ok { return existing, false }
+    sub, _ := ask_sub(t)
+    id = len(res.nodes)
+    append(&res.nodes, Ask_Node{ label = ask_label(t), sub = sub, span = ask_span(t) })
+    res.index_of[key] = id
+    return id, true
+}
+
+// --- target resolution (user types the source name, tables key on flat) ----
+
+ask_resolve :: proc(table: ^SymbolTable, target: string) -> (Type, bool) {
+    for _, s in table.structs        { if s.source_name == target || s.name == target { return s, true } }
+    for _, f in table.funs           { if f.source_name == target || f.name == target { return f, true } }
+    for _, e in table.enums          { if e.source_name == target || e.name == target { return e, true } }
+    for _, u in table.unions         { if u.source_name == target || u.name == target { return u, true } }
+    for _, d in table.distinct_types { if d.source_name == target || d.name == target { return d, true } }
+    return nil, false
+}
+
+// --- deps: forward type-dependency walk ------------------------------------
+
+ask_add_dep :: proc(res: ^Ask_Result, worklist: ^[dynamic]Type, from: int, ty: Type, kind: Ask_Edge_Kind, via: string) {
+    core, wrap := ask_peel(ty)
+    if _, named := ask_sub(core); !named { return }   // skip primitive / numeric leaves
+    to, _ := ask_intern(res, core)
+    append(&res.edges, Ask_Edge{ from = from, to = to, kind = kind, via = via, wrap = wrap })
+    if ask_recurses(core) { append(worklist, core) }
+}
+
+ask_emit_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, t: Type, from: int, worklist: ^[dynamic]Type) {
+    #partial switch v in t {
+    case ^Type_Scope:
+        if v.kind == .Struct {
+            for f in v.fields { ask_add_dep(res, worklist, from, f.type_, (.Embeds if f.is_using else .Contains), f.name) }
+        } else {
+            for p in v.params        { ask_add_dep(res, worklist, from, p.type_, .Takes, p.name) }
+            for rt in v.return_types { ask_add_dep(res, worklist, from, rt, .Returns, "") }
+        }
+    case ^Type_Distinct:
+        ask_add_dep(res, worklist, from, v.base_type, .Base, "")
+    case ^Type_Union:
+        // A union depends on its variant structs (looked up via variant_structs).
+        for vn in v.variants {
+            sname, ok := v.variant_structs[vn]; if !ok { continue }
+            st, ok2 := table.structs[sname];    if !ok2 { continue }
+            to, _ := ask_intern(res, Type(st))
+            append(&res.edges, Ask_Edge{ from = from, to = to, kind = .Contains, via = vn, wrap = "" })
+            append(worklist, Type(st))
+        }
+    }
+}
+
+ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type) {
+    rid, _ := ask_intern(res, root)
+    res.root = rid
+    worklist: [dynamic]Type
+    append(&worklist, root)
+    processed: map[rawptr]bool
+    for len(worklist) > 0 {
+        t := pop(&worklist)
+        key := raw_type_key(t)
+        if processed[key] { continue }
+        processed[key] = true
+        from, _ := ask_intern(res, t)
+        ask_emit_deps(table, res, t, from, &worklist)
+    }
+}
+
+// --- users: reverse — who references the target ----------------------------
+
+ask_add_user :: proc(res: ^Ask_Result, user: Type, rid: int, ty: Type, kind: Ask_Edge_Kind, via: string, tkey: rawptr) {
+    core, _ := ask_peel(ty)
+    if raw_type_key(core) != tkey { return }
+    _, wrap := ask_peel(ty)
+    uid, _ := ask_intern(res, user)
+    append(&res.edges, Ask_Edge{ from = uid, to = rid, kind = kind, via = via, wrap = wrap })
+}
+
+ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type) {
+    rid, _ := ask_intern(res, target)
+    res.root = rid
+    tkey := raw_type_key(target)
+    for _, s in table.structs {
+        for f in s.fields { ask_add_user(res, s, rid, f.type_, (.Embeds if f.is_using else .Contains), f.name, tkey) }
+    }
+    for _, fn in table.funs {
+        for p in fn.params        { ask_add_user(res, fn, rid, p.type_, .Takes, p.name, tkey) }
+        for rt in fn.return_types { ask_add_user(res, fn, rid, rt, .Returns, "", tkey) }
+    }
+}
+
+// --- determinism: sort edges so the rendered output is golden-test stable ---
+// Tables are maps (non-deterministic iteration), so edges must be sorted by a
+// content key. Edge counts per query are small, so an O(n^2) selection sort with
+// no closure-capture (res passed explicitly) is the simplest correct option.
+
+ask_edge_key :: proc(res: ^Ask_Result, e: Ask_Edge) -> string {
+    return fmt.tprintf("%s|%02d|%s|%s", res.nodes[e.from].label, int(e.kind), e.via, res.nodes[e.to].label)
+}
+
+ask_sort_edges :: proc(res: ^Ask_Result) {
+    n := len(res.edges)
+    for i in 0 ..< n {
+        m := i
+        for j in i + 1 ..< n {
+            if ask_edge_key(res, res.edges[j]) < ask_edge_key(res, res.edges[m]) { m = j }
+        }
+        if m != i { res.edges[i], res.edges[m] = res.edges[m], res.edges[i] }
+    }
+}
+
+// --- engine entry ----------------------------------------------------------
+
+run_ask :: proc(checked: ^Checked_Program, target: string, verb: string) -> (Ask_Result, bool) {
+    res: Ask_Result
+    res.root = -1
+    root, found := ask_resolve(checked.table, target)
+    if !found { return res, false }
+    switch verb {
+    case "deps":  ask_deps(checked.table, &res, root)
+    case "users": ask_users(checked.table, &res, root)
+    case:         return res, false
+    }
+    ask_sort_edges(&res)
+    return res, true
+}
+
+// --- renderer (text adjacency dump) ----------------------------------------
+
+ask_edge_word :: proc(k: Ask_Edge_Kind) -> string {
+    #partial switch k {
+    case .Contains: return "field"
+    case .Embeds:   return "embed"
+    case .Takes:    return "param"
+    case .Returns:  return "return"
+    case .Base:     return "base"
+    }
+    return "?"
+}
+
+ask_loc :: proc(span: Span) -> string {
+    if span.file == "" { return "?" }
+    return fmt.tprintf("%s:%d", span.file, span.line)
+}
+
+render_ask :: proc(res: ^Ask_Result, target: string, verb: string) -> string {
+    b := strings.builder_make()
+
+    if verb == "users" {
+        root := res.nodes[res.root]
+        fmt.sbprintf(&b, "ask users %s   (%d users)\n\n", target, len(res.edges))
+        fmt.sbprintf(&b, "%s  %s  %s\n", root.label, root.sub, ask_loc(root.span))
+        if len(res.edges) == 0 { fmt.sbprint(&b, "  (no users)\n"); return strings.to_string(b) }
+        fmt.sbprint(&b, "  used by:\n")
+        for e in res.edges {
+            u := res.nodes[e.from]
+            via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
+            fmt.sbprintf(&b, "    %-6s %s  (%s%s : %s%s)\n", u.sub, u.label, ask_edge_word(e.kind), via, e.wrap, target)
+        }
+        return strings.to_string(b)
+    }
+
+    // deps: one adjacency block per node, root first (interned at id 0).
+    fmt.sbprintf(&b, "ask deps %s   (%d types, %d edges)\n", target, len(res.nodes), len(res.edges))
+    for node, i in res.nodes {
+        fmt.sbprintf(&b, "\n%s  %s  %s\n", node.label, node.sub, ask_loc(node.span))
+        any := false
+        for e in res.edges {
+            if e.from != i { continue }
+            any = true
+            tgt := res.nodes[e.to]
+            via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
+            fmt.sbprintf(&b, "  %s%s : %s%s\n", ask_edge_word(e.kind), via, e.wrap, tgt.label)
+        }
+        if !any { fmt.sbprint(&b, "  (no type dependencies)\n") }
+    }
+    return strings.to_string(b)
+}
