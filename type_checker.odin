@@ -263,6 +263,7 @@ populate_cg_signature :: proc(ft: ^Type_Scope) {
 Type_Scope :: struct {
     using sd: Scope_Body,
     kind:           Scope_Kind, // .Struct = data layout, .Fun = callable body
+    is_module:      bool,       // true for a package/module namespace scope (top of the parent_scope chain)
     has_parens:     bool,       // true if declared with parens — affects callable detection
 
     // Callable params (function parameters / constructor params)
@@ -838,65 +839,47 @@ type_ptr_ident :: proc(t: Type) -> rawptr {
     return nil
 }
 
-scope_resolve :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
-    for s := env.scope; s != nil; s = s.parent_scope {
-        if s.types != nil { if t, ok := s.types[name]; ok { return t, true } }
-        if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, true } }
-    }
-    for cur := env; cur != nil; cur = cur.parent {
-        for inc in cur.includes { if t, ok := include_lookup(inc, name); ok { return t, true } }
-        if cur.is_module_scope { break }
-    }
-    return nil, false
-}
-
-// THE name-lookup walk (type_env_get / type_env_locate_below_module are thin
-// wrappers — this is the single site the env→scope-graph migration touches).
-// At each env level: locals (cur.types), then durable members (scope_member up
-// the parent_scope graph), then bare-included modules. Returns the env the name
-// was found in, so callers can inspect it (e.g. class-scope field-leak checks).
+// THE durable name-lookup walk: from the current scope up the parent_scope graph
+// (own .types/.functions at each level — definitions beat includes), then bare
+// includes up the env chain. Returns the SCOPE the name was found in (nil for an
+// include hit or a not-found), so callers can ask "was this a field of an
+// enclosing class?" without an env back-reference.
 //
-// `below_module` stops BEFORE the enclosing module scope — the shadowing policy
-// for `:=` decls, so a local `shader := gl.CreateShader(...)` doesn't conflate
-// with the module's own auto-injected binding. Otherwise the module env is
-// consulted and the walk stops after it.
-type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Env, bool) {
-    // LOCALS resolve over the durable block-scope graph (parent_scope), not the
-    // env.parent chain: from the current block up through enclosing blocks and the
-    // function's body block, stopping at the function boundary (no closures). This
-    // is the validated switch — scope_local_lookup was proven to match the old env
-    // walk exactly (MARA_WALK_CHECK, zero divergences over Pounce + all.mara).
-    //
-    // The found-in env returned is the START env: a local never lives in a class
-    // namespace, so the field-leak guards (which fire only when loc_env.class_scope
-    // is set — i.e. a member resolved below) correctly skip.
-    if env.block_scope != nil {
-        if t, ok := scope_local_lookup(env.block_scope, name); ok {
-            return t, env, true
-        }
+// `below_module` stops BEFORE the enclosing module scope — the `:=` shadowing
+// policy, so a local `shader := gl.CreateShader(...)` doesn't conflate with the
+// module's own auto-injected binding.
+scope_resolve :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
+    for s := env.scope; s != nil; s = s.parent_scope {
+        if below_module && s.is_module { break }
+        if s.types != nil { if t, ok := s.types[name]; ok { return t, s, true } }
+        if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, s, true } }
     }
     for cur := env; cur != nil; cur = cur.parent {
         if below_module && cur.is_module_scope { break }
-        if t, ok := cur.types[name]; ok {
-            walk_validate_local(env, cur, name, t)
-            if walk_check_on() {
-                st, sok := scope_resolve(env, name)
-                if !sok { fmt.eprintf("[TEL-GAP] %s\n", name) }
-                else if type_ptr_ident(t) != type_ptr_ident(st) { fmt.eprintf("[TEL-MISMATCH] %s\n", name) }
-            }
-            return t, cur, true
-        }
-        if t, ok := scope_member(cur, name); ok {
-            return t, cur, true
-        }
-        for inc in cur.includes {
-            if t, ok := include_lookup(inc, name); ok {
-                return t, inc.scope, true
-            }
-        }
-        if !below_module && cur.is_module_scope { break }
+        for inc in cur.includes { if t, ok := include_lookup(inc, name); ok { return t, nil, true } }
+        if cur.is_module_scope { break }
     }
     return nil, nil, false
+}
+
+// THE name-lookup walk (type_env_get / type_env_locate_below_module are thin
+// wrappers). LOCALS first over the block-scope graph (stops at the function
+// boundary — no closures), then the durable scope_resolve walk (enclosing class
+// members + module names + bare includes). Returns the SCOPE the name was found
+// in — nil for a local or an include hit — so the field-leak guards can ask
+// "is this a field of an enclosing class?" (a non-module .Struct scope).
+//
+// This is the env→scope-graph switch: name resolution no longer reads env.types;
+// it walks the durable parent_scope graph that runs parallel to the env chain
+// (validated under MARA_WALK_CHECK: zero gaps and zero type-identity mismatches
+// vs the old env.types walk across every fixture, Pounce, and all.mara).
+type_env_locate :: proc(env: ^Type_Env, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
+    if env.block_scope != nil {
+        if t, ok := scope_local_lookup(env.block_scope, name); ok {
+            return t, nil, true  // a local never lives in a class namespace
+        }
+    }
+    return scope_resolve(env, name, below_module)
 }
 
 type_env_get :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
@@ -904,7 +887,7 @@ type_env_get :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     return t, ok
 }
 
-type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Type_Env, bool) {
+type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Type_Scope, bool) {
     return type_env_locate(env, name, below_module = true)
 }
 
@@ -987,7 +970,7 @@ resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (ty
         level_start := len(matches)
         if t, found := cur.types[name]; found {
             if walk_check_on() {
-                st, sok := scope_resolve(env, name)
+                st, _, sok := scope_resolve(env, name)
                 if !sok { fmt.eprintf("[RWA-GAP] %s\n", name) }
                 else if type_ptr_ident(t) != type_ptr_ident(st) { fmt.eprintf("[RWA-MISMATCH] %s\n", name) }
             }
@@ -7869,13 +7852,17 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                 }
                 existing_type: Type
-                loc_env: ^Type_Env
+                loc_scope: ^Type_Scope
                 already_declared: bool
                 if in_struct_body {
-                    if t, ok := env.types[s.name]; ok {
-                        existing_type = t
-                        loc_env = env
-                        already_declared = true
+                    // A field redecl inside its own struct body — never a leak
+                    // (loc_scope stays nil), just records the prior binding. Reads
+                    // this env level's own durable scope (== the old env.types).
+                    if env.scope != nil {
+                        if t, ok := env.scope.types[s.name]; ok {
+                            existing_type = t
+                            already_declared = true
+                        }
                     }
                 } else if s.is_decl {
                     // Declarations skip module-scope bindings: function bodies
@@ -7883,17 +7870,17 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // module's own self-binding, e.g. `shader` inside
                     // `module gfx.shader`). Matches the shadowing-check
                     // policy at the top of this branch.
-                    existing_type, loc_env, already_declared = type_env_locate_below_module(env, s.name)
+                    existing_type, loc_scope, already_declared = type_env_locate_below_module(env, s.name)
                 } else {
-                    existing_type, loc_env, already_declared = type_env_locate(env, s.name)
+                    existing_type, loc_scope, already_declared = type_env_locate(env, s.name)
                 }
-                // Field-leak guard: reassignment targeting a name that lives in
+                // Field-leak guard: reassignment targeting a name that resolves in
                 // an ancestor class scope is a field written without receiver.
-                if already_declared && loc_env != env && loc_env.class_scope != nil {
-                    if is_real_field(&loc_env.class_scope.sd, s.name) {
+                if already_declared && loc_scope != nil && loc_scope.kind == .Struct && !loc_scope.is_module {
+                    if is_real_field(&loc_scope.sd, s.name) {
                         check_error(c, s.span,
                             TYPE_FIELD_ASSIGN_THROUGH_RECEIVER,
-                            s.name, loc_env.class_scope.name, s.name)
+                            s.name, loc_scope.name, s.name)
                         continue
                     }
                 }
@@ -10184,6 +10171,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_struct.name = module_name
     mod_struct.home_package = module_name  // module is its own home
     mod_struct.kind = .Struct
+    mod_struct.is_module = true
     mod_struct.scope = mod_env
     mod_env.scope = mod_struct
 
@@ -10857,6 +10845,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         main_mod.name = main_package
         main_mod.home_package = main_package
         main_mod.kind = .Struct
+        main_mod.is_module = true
         main_mod.scope = env
         env.scope = main_mod
         c.checked_modules[main_package] = main_mod
@@ -11174,17 +11163,17 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // (Reading an uninitialized pointer/slice is now caught by the post-check
         // flow pass — flow.odin / definite-assignment.)
         // Check env (common case: local vars, params, functions)
-        t, loc_env, ok := type_env_locate(env, e.name)
+        t, loc_scope, ok := type_env_locate(env, e.name)
         if ok {
-            // Field-leak guard: if the name was found in an ancestor env that belongs
-            // to a class body, AND the name is a field of that class, the caller is
-            // a nested scope (method body) trying to access a field as a bare name.
+            // Field-leak guard: if the name resolved in an ancestor class scope (a
+            // non-module .Struct) AND is a field of that class, the caller is a
+            // nested scope (method body) trying to access a field as a bare name.
             // Require receiver access instead.
-            if loc_env != env && loc_env.class_scope != nil {
-                if is_real_field(&loc_env.class_scope.sd, e.name) {
+            if loc_scope != nil && loc_scope.kind == .Struct && !loc_scope.is_module {
+                if is_real_field(&loc_scope.sd, e.name) {
                     check_error(c, e.span,
                         TYPE_FIELD_ACCESS_THROUGH_RECEIVER,
-                        e.name, loc_env.class_scope.name, e.name)
+                        e.name, loc_scope.name, e.name)
                     return Type_Error{}
                 }
             }
