@@ -12,30 +12,30 @@ import "core:strings"
 
 Type :: union {
     Type_F64,
-    Type_Infer_Int,   // numeric literal (integer) — adopts concrete type from context
-    Type_Infer_Float, // numeric literal (float) — adopts concrete float type from context
+    Type_Infer_Int,   // numeric literal (integer) â€” adopts concrete type from context
+    Type_Infer_Float, // numeric literal (float) â€” adopts concrete float type from context
     Type_Bool,
     Type_CString,
     Type_Utf8,        // UTF-8 byte: string element type AND the type of a character literal ('A')
-    Type_Byte,        // raw memory byte — no arithmetic, used in []byte for reinterpret
+    Type_Byte,        // raw memory byte â€” no arithmetic, used in []byte for reinterpret
     Type_Numeric,
     ^Type_Ptr,
     ^Type_Scope,        // unified scope type: data struct/class (kind=.Struct) or callable fun (kind=.Fun)
     ^Type_Fixed_Array,
-    ^Type_Slice,      // [:]T — slice (view into array: {ptr, len, cap})
-    ^Type_Partial_Array, // [..N]T — partial array (value with inline storage + cursor)
+    ^Type_Slice,      // [:]T â€” slice (view into array: {ptr, len, cap})
+    ^Type_Partial_Array, // [..N]T â€” partial array (value with inline storage + cursor)
     ^Type_Enum,
     ^Type_Union,
     ^Type_Distinct,   // named wrapper around another type (same layout, different identity)
-    Type_Const_Int,      // compile-time integer value — used as const generic param (e.g., n=256)
+    Type_Const_Int,      // compile-time integer value â€” used as const generic param (e.g., n=256)
     Type_Runtime_Size,   // runtime-sized const generic param (e.g., String(n) where n is a variable)
-    Type_Any,            // for opaque pointer elements only (ptr → ^Type_Ptr{elem=Type_Any{}})
-    Type_Void,           // zero-sized "nothing here" — used as the default for `~T`
+    Type_Any,            // for opaque pointer elements only (ptr â†’ ^Type_Ptr{elem=Type_Any{}})
+    Type_Void,           // zero-sized "nothing here" â€” used as the default for `~T`
                          //   shape-constrained generic params. Satisfies any `~T`
                          //   trivially; reading or method-calling a void value is
                          //   a type error.
-    Type_Error,       // error recovery — suppresses cascading type errors
-    Type_Err,         // open error type — accepts any variant from any `error { ... }` decl
+    Type_Error,       // error recovery â€” suppresses cascading type errors
+    Type_Err,         // open error type â€” accepts any variant from any `error { ... }` decl
 }
 
 Type_F64 :: struct {}
@@ -76,7 +76,7 @@ Type_Slice :: struct {
     elem:         Type,
 }
 
-// [..N]T — partial array. IR layout: {ptr, len, cap, elements: [N x T]}, with
+// [..N]T â€” partial array. IR layout: {ptr, len, cap, elements: [N x T]}, with
 // ptr initialised to &elements at decl time. First 24 bytes match Type_Slice's
 // {ptr, len, cap} shape so partial arrays can flow through `^[]T` (umbrella)
 // without monomorphization. Pinned in practice: moving the value breaks ptr.
@@ -93,7 +93,7 @@ Struct_Type_Field :: struct {
 }
 
 // Demand-driven resolution state for a scope's signature (a struct's fields, a
-// fun's params/returns). Unresolved → In_Progress → Resolved. The In_Progress
+// fun's params/returns). Unresolved â†’ In_Progress â†’ Resolved. The In_Progress
 // state is the cycle guard: re-entering a scope that's mid-resolution (a type
 // that refers to itself through a value field) is detected here rather than
 // recursing forever. This is the substrate for replacing the fixed signature
@@ -104,7 +104,7 @@ Resolution_State :: enum {
     Resolved,
 }
 
-// The body of a Type_Scope — embedded via `using sd: Scope_Body`.
+// The body of a Type_Scope â€” embedded via `using sd: Scope_Body`.
 // Holds the fields, nested defs, methods, and other content shared
 // between data-layout scopes (struct/class) and callable scopes (fun).
 Scope_Body :: struct {
@@ -118,7 +118,7 @@ Scope_Body :: struct {
     // to partition symbols by their compilation unit.
     home_package:   string,
 
-    // Data fields — the members of a struct/class, or extracted locals on a fun scope
+    // Data fields â€” the members of a struct/class, or extracted locals on a fun scope
     fields:         [dynamic]Struct_Type_Field,
     field_map:      map[string]int,  // field name -> index into fields (for O(1) lookup)
 
@@ -129,8 +129,8 @@ Scope_Body :: struct {
     is_packed:      bool,
 
     // Union-variant marker. A union's variant struct carries the tag (+pad) as
-    // its first field(s) — `__tag` at index 0, `__pad` next when the union has
-    // padding — so the variant IS the union value and rides struct codegen.
+    // its first field(s) â€” `__tag` at index 0, `__pad` next when the union has
+    // padding â€” so the variant IS the union value and rides struct codegen.
     // codegen writes `union_variant_tag` into field 0 at construction time
     // (the tag isn't a user-set field). False/0 for ordinary structs.
     is_union_variant:  bool,
@@ -138,7 +138,7 @@ Scope_Body :: struct {
 
     backing_bytes:  int,     // size of hidden trailing buffer for sized-slice fields' backing
                              // storage. Computed by codegen at register-struct time so the
-                             // backing rides along with the struct on sret/memcpy — slice
+                             // backing rides along with the struct on sret/memcpy â€” slice
                              // headers point at &struct.backing[offset] using the struct's
                              // own address (correct under RVO; stale after a downstream copy).
 
@@ -149,30 +149,30 @@ Scope_Body :: struct {
     // pointer (lookup_callee_scope) instead of re-keying fun_asts by name.
     ast:            ^Stmt_Scope,
 
-    // Signature (field) resolution state — memoizes check_scope_body's
+    // Signature (field) resolution state â€” memoizes check_scope_body's
     // signature pass so it runs exactly once per scope regardless of how many
     // call sites demand it, and breaks cycles. Zero value Unresolved.
     sig_state:      Resolution_State,
 
-    // The (persistent) env this scope was declared in — the env its field
+    // The (persistent) env this scope was declared in â€” the env its field
     // TYPES resolve against. Captured at registration for top-level structs,
     // whose file/module env outlives the check, so a use site in another file
     // can demand this struct's signature on the spot (ensure_struct_signature).
-    // nil for nested scopes (their decl env is transient) — those resolve
+    // nil for nested scopes (their decl env is transient) â€” those resolve
     // through their parent (parent_scope) instead.
     decl_env:       ^Type_Env,
 
     // Enclosing scope for a nested struct (`Inner` inside `Box`). A nested
     // struct's decl_env is transient, so on-demand resolution walks up to a
-    // parent that has a decl_env and resolves THAT — its signature pass recurses
+    // parent that has a decl_env and resolves THAT â€” its signature pass recurses
     // back down into this one. nil for top-level scopes.
     parent_scope:   ^Type_Scope,
 
     // Associated definitions (scoped :: defs).
-    // Values point to the actual Type the bare name resolves to — read
+    // Values point to the actual Type the bare name resolves to â€” read
     // `.name` off the pointer when codegen needs the flat/mangled string.
     // (Was `map[string]string` carrying the flat name redundantly with
-    // Type_Scope.name etc. — consolidated as part of the Mara2-style
+    // Type_Scope.name etc. â€” consolidated as part of the Mara2-style
     // env-pointer cleanup.)
     functions:      map[string]^Type_Scope, // bare name -> callable fun/struct
     types:    map[string]Type,         // bare name -> nested type (struct/enum/union/distinct)
@@ -181,11 +181,11 @@ Scope_Body :: struct {
     consts:         map[string]^Stmt_Define,
 
     // Module scope (non-nil for module-structs created by `include`)
-    scope:          ^Type_Env,         // module namespace scope — nil for normal structs
+    scope:          ^Type_Env,         // module namespace scope â€” nil for normal structs
 
     // Bare-`include`d modules' durable scopes, visible from this scope (a file
     // scope holds that file's private includes; a module scope holds re-exports).
-    // Name resolution walks parent_scope and checks each scope's includes —
+    // Name resolution walks parent_scope and checks each scope's includes â€”
     // non-transitive (we don't follow inc.includes).
     includes:       [dynamic]^Scope_Body,
 
@@ -195,17 +195,17 @@ Scope_Body :: struct {
 
     // Generic monomorphization metadata
     generic_base:   string,        // "Array" if monomorphized from a template, "" otherwise
-    generic_args:   [dynamic]Type, // e.g. [i64] for an Array(i64) instance — for reverse inference
+    generic_args:   [dynamic]Type, // e.g. [i64] for an Array(i64) instance â€” for reverse inference
 
     // --- Codegen unit (formerly the separate Checked_Scope bundle) -----------
     // A Type_Scope IS what codegen emits: the typed signature/layout PLUS its
-    // body. checked.functions points straight at the ^Type_Scope — no wrapper
+    // body. checked.functions points straight at the ^Type_Scope â€” no wrapper
     // carrying a parallel copy of the AST. Populated at extract time (check
     // phase, stable allocator) so codegen reads them directly.
     body:                 [dynamic]Stmt,    // the scope's runtime statements (a struct's are its field decls)
-    origin:               Function_Origin,  // Source / Intrinsic / Foreign — codegen dispatch
+    origin:               Function_Origin,  // Source / Intrinsic / Foreign â€” codegen dispatch
     body_span:            Span,             // span of the declaring statement (diagnostics)
-    is_exposed:           bool,             // `#expose` → dllexport linkage + unmangled symbol
+    is_exposed:           bool,             // `#expose` â†’ dllexport linkage + unmangled symbol
     return_binding_names: [dynamic]string,  // named-return locals (`fun() -> (fwd, up: Vec3)`)
     // Codegen-facing signature caches (see populate_cg_signature). cg_returns
     // prepends a struct ctor's Self (sret slot 0); both pre-unwrap distinct.
@@ -218,7 +218,7 @@ Scope_Body :: struct {
 // Build the codegen-facing signature caches (cg_returns + cg_params) into ft.
 // Both pre-unwrap distinct wrappers; cg_returns Self-prepends a struct ctor's
 // sret slot 0. Runs at CHECK time so the slices stay stable when codegen aliases
-// them into the cached Fun_Info — computing them during codegen under a transient
+// them into the cached Fun_Info â€” computing them during codegen under a transient
 // arena dangles. These are the exact transforms the deleted Checked_Scope caches
 // used, relocated onto the Type_Scope.
 populate_cg_signature :: proc(ft: ^Type_Scope) {
@@ -243,41 +243,41 @@ populate_cg_signature :: proc(ft: ^Type_Scope) {
     }
 }
 
-// Unified scope type — holds struct/class definitions and callable funs.
+// Unified scope type â€” holds struct/class definitions and callable funs.
 // The `kind` tag (set by the parser from the source keyword) tells codegen
 // whether to emit a data layout or a function body:
-//   .Struct → data/struct layout (pure struct, class with or without ctor)
-//   .Fun    → callable function body
+//   .Struct â†’ data/struct layout (pure struct, class with or without ctor)
+//   .Fun    â†’ callable function body
 // Structural combinations:
 //   .Struct, no params:   struct / class without constructor args
 //   .Struct, with params: class with constructor args (`class Foo(a: int)`)
 //   .Fun,    with params: regular function (`fun add(x,y: int) -> int`)
 //   .Fun,    no params:   nullary function (`fun hello() { ... }`)
 //
-// ARCHITECTURE — the DURABLE half of the checker's analysis split (see Type_Env
+// ARCHITECTURE â€” the DURABLE half of the checker's analysis split (see Type_Env
 // for the transient half). Type_Scope is the typed-AST node: one per
 // declaration, it persists past checking and is what codegen consumes. Every
 // fact that is FIXED-at-declaration or MONOTONE-ACCUMULATING over a body belongs
-// here — the signature, body, members/layout, the per-declaration analysis facts
+// here â€” the signature, body, members/layout, the per-declaration analysis facts
 // (is_param, `read`, ...), and the per-function interprocedural summaries
 // (purity, arg-sets). The symbol table and per-decl facts that Type_Env still
 // MIRRORS are migrating onto this struct / the durable scope graph.
 //
 // It must NOT hold point-sensitive flow state: "is x initialized HERE" has a
 // different value at every program point and forks at branches, so it can't live
-// on a single per-declaration record — that's Type_Env's job.
+// on a single per-declaration record â€” that's Type_Env's job.
 Type_Scope :: struct {
     using sd: Scope_Body,
     kind:           Scope_Kind, // .Struct = data layout, .Fun = callable body
     is_module:      bool,       // true for a package/module namespace scope (top of the parent_scope chain)
-    has_parens:     bool,       // true if declared with parens — affects callable detection
+    has_parens:     bool,       // true if declared with parens â€” affects callable detection
 
     // Callable params (function parameters / constructor params)
     params:         [dynamic]Struct_Type_Field,
 
     // Return types for callable scopes (kind=.Fun). Empty for data scopes and
     // for void-returning funs. Single-return funs have one element; multi-return
-    // funs have N. Mara has no tuple type — multi-return is a list, not a tuple.
+    // funs have N. Mara has no tuple type â€” multi-return is a list, not a tuple.
     return_types:   [dynamic]Type,
 
     // ABI calling convention. Defaults to .Mara (zero value). Foreign declarations
@@ -292,7 +292,7 @@ fn_has_multi_return :: proc(ft: ^Type_Scope) -> bool {
     return len(ft.return_types) > 1
 }
 
-// Primary return type — the only return for single-return funs, the first for
+// Primary return type â€” the only return for single-return funs, the first for
 // multi-return funs, nil for void. Multi-return callers should iterate the list
 // directly rather than relying on this.
 fn_primary_return :: proc(ft: ^Type_Scope) -> Type {
@@ -303,7 +303,7 @@ fn_primary_return :: proc(ft: ^Type_Scope) -> Type {
 // A parameterized constructor's effective return list as callers see it: the
 // struct itself (the implicit, in-place sret slot 0) followed by its declared
 // returns (the trailing err). The constructor BODY only ever returns the
-// declared slots — Self is built in place, never named in a `return` — so this
+// declared slots â€” Self is built in place, never named in a `return` â€” so this
 // prepend lives at the call boundary, not in the stored return_types. Returns
 // (nil, false) for anything that isn't a fallible constructor.
 constructor_effective_returns :: proc(ft: ^Type_Scope) -> ([]Type, bool) {
@@ -333,8 +333,8 @@ call_return_list :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> []Type {
         lookup_name = rf.name
     }
     if lookup_name == "" { return nil }
-    // Global function table is keyed by flat name — covers module-qualified
-    // calls (e.g. `string.find` → `mara_string_find`) that the local env
+    // Global function table is keyed by flat name â€” covers module-qualified
+    // calls (e.g. `string.find` â†’ `mara_string_find`) that the local env
     // doesn't expose under their flat name.
     if ft, ok2 := c.table.funs[lookup_name]; ok2 {
         if list, is_ctor := constructor_effective_returns(ft); is_ctor {
@@ -386,7 +386,7 @@ as_struct_body :: proc(t: Type) -> ^Scope_Body {
 
 // Get the Scope_Body from any scope-like Type (^Type_Scope, regardless of kind).
 // Returns nil if the type is not ^Type_Scope.
-// Unlike as_struct_body, does NOT require .Struct kind — used by the type checker
+// Unlike as_struct_body, does NOT require .Struct kind â€” used by the type checker
 // which relies on structural checks (len(fields) > 0, scope != nil) to discriminate.
 as_scope_body :: proc(t: Type) -> ^Scope_Body {
     if ft, ok := t.(^Type_Scope); ok { return &ft.sd }
@@ -415,10 +415,10 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
             //   name := value        (inferred type)
             //   name : type = value  (explicit type)
             // A reassignment (is_decl == false) mutates an existing binding and
-            // is NOT a new field — whether simple (`x = 10`) or to a complex
+            // is NOT a new field â€” whether simple (`x = 10`) or to a complex
             // target (`h.tables = ...`, `arr[i] = v`). Complex targets also
             // carry name == "", so extracting them minted a bogus empty-named
-            // field whose default couldn't be inferred → Type_Any → codegen panic.
+            // field whose default couldn't be inferred â†’ Type_Any â†’ codegen panic.
             if s.is_decl {
                 append(&fields, Scope_Binding{
                     name          = s.name,
@@ -428,7 +428,7 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
                 })
             }
         case ^Stmt_Multi_Assign:
-            // x, y, z : type → multiple fields
+            // x, y, z : type â†’ multiple fields
             for a in s.assigns {
                 append(&fields, Scope_Binding{
                     name          = a.name,
@@ -438,8 +438,8 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
                 })
             }
         case ^Stmt_Decl:
-            // x : T, x := v, x, y : T, x, y := a, b → one field per name
-            // x, y, z := call() — single-init multi-name is tuple-destructure:
+            // x : T, x := v, x, y : T, x, y := a, b â†’ one field per name
+            // x, y, z := call() â€” single-init multi-name is tuple-destructure:
             // each binding gets an Expr_Tuple_Default so infer_field_type_from_default
             // unwraps the i-th slot of the call's tuple return type. Same wrapper
             // shape that stmt_decl_to_bindings produces for params/named returns.
@@ -474,7 +474,7 @@ Type_Enum :: struct {
     home_package:  string,  // owning module flat name (see Scope_Body.home_package)
     tag_type:      string,                    // "" = default (i64), or "i32", "i16", etc.
     variants:      map[string]int,
-    is_error_kind: bool,    // true for `Name :: error { ... }` — flat tag set in the global `err` type
+    is_error_kind: bool,    // true for `Name :: error { ... }` â€” flat tag set in the global `err` type
     error_set_id:  int,     // 1-based set ID assigned at type-check end; 0 = not an error_kind
 }
 
@@ -494,7 +494,7 @@ Type_Union :: struct {
 // Checker-side niche-shape test, matching codegen's is_niche_layout: exactly
 // two variants, one fieldless (None), one holding a single pointer (Some).
 // Runs on the resolved, pre-header variant structs to decide whether to fold
-// in the tag header — niche unions store no tag, so they stay untouched.
+// in the tag header â€” niche unions store no tag, so they stay untouched.
 union_is_niche_shape :: proc(c: ^Checker, ut: ^Type_Union) -> bool {
     if len(ut.variants) != 2 { return false }
     has_empty, has_ptr := false, false
@@ -523,7 +523,7 @@ union_is_niche_shape :: proc(c: ^Checker, ut: ^Type_Union) -> bool {
 // `__pad` next when the union declares padding. The reserved names can't
 // collide with user fields; codegen writes the tag value, so neither header
 // field needs a default. Niche unions (Maybe(^T)) keep their bare-pointer
-// layout and are skipped — their `is_union_variant` stays false, which is how
+// layout and are skipped â€” their `is_union_variant` stays false, which is how
 // codegen tells the two representations apart.
 finalize_union_variant_headers :: proc(c: ^Checker, ut: ^Type_Union) {
     if union_is_niche_shape(c, ut) { return }
@@ -555,10 +555,10 @@ Type_Distinct :: struct {
     home_package:     string,  // owning module flat name (see Scope_Body.home_package)
     base_type:        Type,    // the underlying type (transparent at codegen level)
     default_cap_expr: Expr,    // for sized-slice aliases: default cap when decl omits `(N)`
-    is_alias:         bool,    // true for `Name :: type(T)` — transparent in types_equal; false for `distinct T` — nominal
+    is_alias:         bool,    // true for `Name :: type(T)` â€” transparent in types_equal; false for `distinct T` â€” nominal
 }
 
-// OS target — drives #windows / #linux / #mac comptime predicates. Defaults
+// OS target â€” drives #windows / #linux / #mac comptime predicates. Defaults
 // to the host OS (read from ODIN_OS in main); cross-compilation flags would
 // override it when added.
 Target_OS :: enum {
@@ -568,7 +568,7 @@ Target_OS :: enum {
 }
 
 // ---------------------------------------------------------------------------
-// Generic templates — stored during registration, instantiated on use
+// Generic templates â€” stored during registration, instantiated on use
 // ---------------------------------------------------------------------------
 
 Generic_Template :: struct {
@@ -589,7 +589,7 @@ Generic_Union_Template :: struct {
 }
 
 // ---------------------------------------------------------------------------
-// Resolved names — the result of name resolution
+// Resolved names â€” the result of name resolution
 // ---------------------------------------------------------------------------
 
 Resolved_Name :: union {
@@ -614,13 +614,13 @@ Resolved_Union_Variant :: struct {
     struct_name: string,  // "Shape_Circle"
 }
 
-// `union_value.tag` accessor — reads the discriminant of a union value as
+// `union_value.tag` accessor â€” reads the discriminant of a union value as
 // its corresponding `<Union>_Tag` enum value.
 Resolved_Union_Tag :: struct {
     union_name: string,  // flat name, e.g. "mara_sdl_Event"
 }
 
-// `union_value.pad` accessor — reads the typed padding bytes between the tag
+// `union_value.pad` accessor â€” reads the typed padding bytes between the tag
 // and the payload, as the type declared by `union(... pad T ...)`. Useful for
 // inspecting reserved bytes the host writes (e.g. SDL3's reserved u32).
 Resolved_Union_Pad :: struct {
@@ -633,19 +633,19 @@ Resolved_Constant :: struct {
 }
 
 Resolved_Func :: struct {
-    name:         string,        // flat name: "add" or "math_add" — the codegen symbol key
+    name:         string,        // flat name: "add" or "math_add" â€” the codegen symbol key
     // Resolved callee signature (pointer identity). Set for direct function /
     // constructor calls AND operator-overload edges so consumers use the pointer
     // instead of re-deriving from `name`: codegen reads the symbol off
     // `callee.name`, lookup_callee_scope reaches the body via `callee.ast`, and
     // the (future) call graph keys edges on it. nil only for non-function
     // resolutions (distinct-type casts) and un-annotated / foreign calls with no
-    // callee Type_Scope (no body to reach — lookup falls through to nil, correctly).
+    // callee Type_Scope (no body to reach â€” lookup falls through to nil, correctly).
     callee:       ^Type_Scope,
 }
 
 // One directed edge of the materialized call graph: `from` calls `to`, both the
-// durable callee Type_Scopes (pointer identity — the same `callee` a resolved
+// durable callee Type_Scopes (pointer identity â€” the same `callee` a resolved
 // call carries). Collected during checking (check_call records each resolved
 // call) and consumed post-check by build_call_graph to materialize nodes +
 // adjacency + SCCs. nil callees (foreign / indirect / fn-typed) record no edge.
@@ -682,7 +682,7 @@ PROV_GLOBAL  :: Provenance{depth = 0}                                    // outl
 // is just a namespace, not a frame). Derived from the durable scope graph rather
 // than carried per-env: the escape check is relative (a value is rejected iff it
 // lives at OUR frame depth or deeper), so the absolute count only has to be
-// self-consistent within a function — which counting .Fun up parent_scope is.
+// self-consistent within a function â€” which counting .Fun up parent_scope is.
 enclosing_fun_depth :: proc(env: ^Type_Env) -> int {
     d := 0
     for s := (env.scope if env != nil else nil); s != nil; s = s.parent_scope {
@@ -694,69 +694,71 @@ enclosing_fun_depth :: proc(env: ^Type_Env) -> int {
 prov_local :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = enclosing_fun_depth(env)} }
 prov_param :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = enclosing_fun_depth(env) - 1} }
 
-// Per-name analysis facts, unified from the old parallel env maps (provenance,
-// param/let flags, local_slice_backed, read). A name's Binding lives in the env
-// that declares it; the lookup helpers walk the parent chain. Zero values are
-// the "no opinion" defaults, matching the old not-in-map fallbacks (PROV_GLOBAL,
-// not-a-param, not-read, ...).
-Binding :: struct {
-    provenance:         Provenance, // where this name's pointer/slice data lives
-    is_let:             bool,       // take-bound view (storage aliased at source)
-    local_slice_backed: bool,       // holds a struct whose slice fields point into our frame
+// One lexical block's escape state for the POST-CHECK escape pass (escape.odin):
+// the per-name facts (provenance / take-bound / locally-slice-backed) the
+// during-check analysis used to keep on Type_Env.bindings. The pass pushes/pops
+// these as it walks the control-flow tree, so name lookups resolve to the nearest
+// enclosing decl â€” exactly the env.parent block-scoping it replaced. The shared
+// escape helpers (expr_provenance / is_local_ref / ...) read this stack via the
+// provenance accessors; a package global rather than threading a context through
+// every accessor, since the pass is single-shot.
+Escape_Frame :: struct {
+    prov:         map[string]Provenance,
+    is_let:       map[string]bool,
+    slice_backed: map[string]bool,
 }
+g_esc: [dynamic]^Escape_Frame
 
-get_or_make_binding :: proc(env: ^Type_Env, name: string) -> ^Binding {
-    if b, ok := env.bindings[name]; ok { return b }
-    b := new(Binding)
-    env.bindings[name] = b
-    return b
+// Walk the escape frame stack innermost-first for `name`'s provenance.
+esc_get_prov :: proc(name: string) -> (Provenance, bool) {
+    #reverse for f in g_esc { if p, ok := f.prov[name]; ok { return p, true } }
+    return PROV_GLOBAL, false
 }
+esc_top :: proc() -> ^Escape_Frame { return g_esc[len(g_esc) - 1] if len(g_esc) > 0 else nil }
 
-// ARCHITECTURE — the TRANSIENT half of the checker's analysis split (see
+// ARCHITECTURE â€” the TRANSIENT half of the checker's analysis split (see
 // Type_Scope for the durable half). Type_Env used to OWN the point-sensitive flow
 // state (definite-assignment's invalid_refs/newly_inited, the aliases points-to)
-// — facts that fork at branches and merge at joins. That state is GONE: all
+// â€” facts that fork at branches and merge at joins. That state is GONE: all
 // intraprocedural flow analysis now runs as a post-check pass over the durable
 // graph (flow.odin). Name resolution is GONE from here too: every name lives on
 // the durable scope graph (Type_Scope) and resolution walks it via scope_resolve
-// — the env no longer carries a `types` map. What remains is the transient
+// â€” the env no longer carries a `types` map. What remains is the transient
 // lexical spine (`parent` / `scope` / class_scope / fun_scope / includes) and the
 // fixed-at-declaration per-name facts in `bindings` (is_param / is_let /
 // provenance), consumed by escape analysis.
 Type_Env :: struct {
     parent:       ^Type_Env,
     // The durable Type_Scope this env's names live on. Every env has one, chained
-    // via parent_scope to the parent env's scope — so the scope graph mirrors the
+    // via parent_scope to the parent env's scope â€” so the scope graph mirrors the
     // env graph and resolution walks it (scope_resolve) instead of any env-local
     // name map. For a block it's the .Block scope; for a fun/class defs layer that
     // scope; for a module the module struct; elsewhere a fresh shadow.
     scope:        ^Type_Scope,
-    // (block_scope removed — the env's own `scope` IS the .Block for a block body;
+    // (block_scope removed â€” the env's own `scope` IS the .Block for a block body;
     //  scope_local_lookup self-guards on .Block so locals resolve off env.scope.)
-    // (return_types removed — derived from the nearest fun_scope/class_scope's
+    // (return_types removed â€” derived from the nearest fun_scope/class_scope's
     //  durable signature via enclosing_return_types, not carried per-env.)
-    // (scope_depth removed — escape frame depth is derived from the durable scope
+    // (scope_depth removed â€” escape frame depth is derived from the durable scope
     //  graph by counting enclosing .Fun scopes; see enclosing_fun_depth.)
-    // Per-name analysis facts (param/let/provenance/local_slice_backed) for
-    // names declared in THIS scope — one record each (see Binding).
-    // (Definite-assignment state — invalid_refs / newly_inited / aliases — is
-    // gone: it now lives in the post-check flow pass, flow.odin.)
-    bindings: map[string]^Binding,
-    // (class_scope / fun_scope removed — a defs-layer env's `scope` IS the class/fun
+    // (bindings removed â€” escape per-name state (provenance / is_let /
+    //  local_slice_backed) now lives on the post-check escape pass's frame stack,
+    //  escape.odin; definite-assignment moved to flow.odin earlier.)
+    // (class_scope / fun_scope removed â€” a defs-layer env's `scope` IS the class/fun
     //  ft, so the markers are derived: env_class_scope (non-module .Struct) and
     //  scope_is_callable (fun or non-module struct). Walks up parent_scope.)
-    // (is_module_scope removed — derived from the durable scope via env_is_module:
+    // (is_module_scope removed â€” derived from the durable scope via env_is_module:
     //  a module/package env is one whose `scope.is_module` and whose scope's
     //  back-ref names this env. Lookup terminates there. File envs share the module
     //  scope but the back-ref names the module env, so they're not terminators.)
-    // (includes removed — bare-`include`d module scopes now live on the durable
+    // (includes removed â€” bare-`include`d module scopes now live on the durable
     //  scope (Scope_Body.includes); scope_resolve walks them up parent_scope. A
     //  file scope holds that file's private includes, a module scope re-exports.)
 }
 
 // Durable scope-member lookup: a scope's nested types + funs live on its
 // Does scope `s` define `name` directly (its own types or functions)? One level,
-// no parent_scope walk — the durable equivalent of a single env's own .types.
+// no parent_scope walk â€” the durable equivalent of a single env's own .types.
 scope_defines :: proc(s: ^Type_Scope, name: string) -> (Type, bool) {
     if s == nil { return nil, false }
     if s.types != nil { if t, ok := s.types[name]; ok { return t, true } }
@@ -764,15 +766,15 @@ scope_defines :: proc(s: ^Type_Scope, name: string) -> (Type, bool) {
     return nil, false
 }
 
-// True if this env is a module/package namespace — name lookup terminates here.
+// True if this env is a module/package namespace â€” name lookup terminates here.
 // Derived from the durable scope: a module scope (is_module) whose back-ref names
 // THIS env. A file env shares the module's scope, but the back-ref points at the
-// module env — so files correctly are NOT terminators.
+// module env â€” so files correctly are NOT terminators.
 env_is_module :: proc(env: ^Type_Env) -> bool {
     return env != nil && env.scope != nil && env.scope.is_module && env.scope.scope == env
 }
 
-// Look up a bare name exported by an included module — off the module's own
+// Look up a bare name exported by an included module â€” off the module's own
 // DURABLE scope (inc.types), which check_module finalizes to the full name
 // surface (types + funs + distincts + const/late-bound types) at the end of the
 // module's check. A scope holds its names; resolution reads them there.
@@ -782,12 +784,12 @@ include_lookup :: proc(inc: ^Scope_Body, name: string) -> (Type, bool) {
     return nil, false
 }
 
-// Block-scoped LOCAL lookup over the DURABLE scope graph — the migration target
+// Block-scoped LOCAL lookup over the DURABLE scope graph â€” the migration target
 // for the env.parent walk. From the starting block scope, walk parent_scope
 // checking each .Block's locals (.types) and STOP at the first non-.Block (the
 // enclosing fun/ctor/struct). The stop encodes "no closures": a block sees its
 // own + enclosing blocks' + the function's top-level locals (all .Block scopes),
-// but never an outer function's. Members (nested ::types/funs) are NOT here —
+// but never an outer function's. Members (nested ::types/funs) are NOT here â€”
 // that is scope_member's job, walking past the function boundary.
 scope_local_lookup :: proc(start: ^Type_Scope, name: string) -> (Type, bool) {
     for s := start; s != nil && s.kind == .Block; s = s.parent_scope {
@@ -799,12 +801,12 @@ scope_local_lookup :: proc(start: ^Type_Scope, name: string) -> (Type, bool) {
 }
 
 // THE durable name-lookup walk: from the current scope up the parent_scope graph
-// (own .types/.functions at each level — definitions beat includes), then bare
+// (own .types/.functions at each level â€” definitions beat includes), then bare
 // includes up the env chain. Returns the SCOPE the name was found in (nil for an
 // include hit or a not-found), so callers can ask "was this a field of an
 // enclosing class?" without an env back-reference.
 //
-// `below_module` stops BEFORE the enclosing module scope — the `:=` shadowing
+// `below_module` stops BEFORE the enclosing module scope â€” the `:=` shadowing
 // policy, so a local `shader := gl.CreateShader(...)` doesn't conflate with the
 // module's own auto-injected binding.
 // Bare-included names via the DURABLE scope graph: walk parent_scope, check each
@@ -832,12 +834,12 @@ scope_resolve :: proc(env: ^Type_Env, name: string, below_module := false) -> (T
 
 // THE name-lookup walk (type_env_get / type_env_locate_below_module are thin
 // wrappers). LOCALS first over the block-scope graph (stops at the function
-// boundary — no closures), then the durable scope_resolve walk (enclosing class
+// boundary â€” no closures), then the durable scope_resolve walk (enclosing class
 // members + module names + bare includes). Returns the SCOPE the name was found
-// in — nil for a local or an include hit — so the field-leak guards can ask
+// in â€” nil for a local or an include hit â€” so the field-leak guards can ask
 // "is this a field of an enclosing class?" (a non-module .Struct scope).
 //
-// This is the env→scope-graph switch: name resolution no longer reads env.types;
+// This is the envâ†’scope-graph switch: name resolution no longer reads env.types;
 // it walks the durable parent_scope graph that runs parallel to the env chain
 // (validated under MARA_WALK_CHECK: zero gaps and zero type-identity mismatches
 // vs the old env.types walk across every fixture, Pounce, and all.mara).
@@ -870,7 +872,7 @@ type_env_locate_below_module :: proc(env: ^Type_Env, name: string) -> (Type, ^Ty
 // being checked before walking to cur.parent.types.
 type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
     // scope_resolve IS owned-first by construction (all own definitions up the
-    // parent_scope graph, then all includes up the env chain) — exactly this
+    // parent_scope graph, then all includes up the env chain) â€” exactly this
     // proc's two-phase shape. Delegate to the durable walk.
     t, _, ok := scope_resolve(env, name)
     return t, ok
@@ -883,7 +885,7 @@ type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
 //                                  same lookup level (caller should error)
 //   - ok=false, nil ambiguous:     name not found anywhere
 //
-// Own definitions in any enclosing scope still win over imports — those are
+// Own definitions in any enclosing scope still win over imports â€” those are
 // never ambiguous because the user explicitly wrote the local definition.
 // Ambiguity only fires when the name comes from imports and 2+ imports
 // expose it (e.g. `include mara.sdl3 + include mara.sdl2`, both with
@@ -891,18 +893,18 @@ type_env_get_owned_first :: proc(env: ^Type_Env, name: string) -> (Type, bool) {
 //
 // Variant aliases (enum entries written into env.types so `Init_Flags.Timer`
 // can be referenced bare as `Timer` in expression position) are filtered out
-// when a real type with the same name is also visible — the user almost
+// when a real type with the same name is also visible â€” the user almost
 // always means the type. If only variant aliases remain, fall back to one
 // of them so the original variant-shorthand semantics still work.
 resolve_with_ambiguity :: proc(c: ^Checker, env: ^Type_Env, name: string) -> (typ: Type, ok: bool, ambiguous_owners: [dynamic]string) {
-    // `Self` is the enclosing struct/fun's own scope — derive it from the durable
+    // `Self` is the enclosing struct/fun's own scope â€” derive it from the durable
     // graph (the nearest class_scope/fun_scope marker) rather than an env binding.
     if name == "Self" {
         if s := enclosing_callable_scope(env); s != nil { return s, true, nil }
         return nil, false, nil
     }
     // An OWN definition (a local type, an enclosing class member, or a module
-    // definition) wins unambiguously over any import — walk the durable scope
+    // definition) wins unambiguously over any import â€” walk the durable scope
     // graph own-only, inner-to-outer (lexical shadowing built in).
     for s := env.scope; s != nil; s = s.parent_scope {
         if t, found := scope_defines(s, name); found {
@@ -958,14 +960,14 @@ raw_type_key :: proc(t: Type) -> rawptr {
 }
 
 type_env_set :: proc(env: ^Type_Env, name: string, t: Type) {
-    // Names live on the durable scope graph — what resolution walks.
+    // Names live on the durable scope graph â€” what resolution walks.
     if env.scope != nil {
         if env.scope.types == nil { env.scope.types = make(map[string]Type) }
         env.scope.types[name] = t
     }
 }
 
-// True if the expression is exactly the `void` literal — Mara's null
+// True if the expression is exactly the `void` literal â€” Mara's null
 // pointer constant. Treated semantically as "no usable value": assigning
 // it to a pointer is equivalent to leaving the pointer uninitialized.
 is_void_literal :: proc(e: Expr) -> bool {
@@ -997,7 +999,7 @@ type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
 // env shadows, linked into the parent_scope graph at the nearest enclosing scope
 // (a containing block if there is one, else the enclosing fun/ctor). Used at the
 // if/for/defer block sites; locals declared in the block land on bs.types via
-// type_env_set. Additive for now — name lookup still runs off the env chain; the
+// type_env_set. Additive for now â€” name lookup still runs off the env chain; the
 // block scope is built so the kind-gated parent_scope walk can be validated
 // against it before the env walk is retired.
 type_env_block_child :: proc(parent: ^Type_Env) -> Type_Env {
@@ -1010,7 +1012,7 @@ type_env_block_child :: proc(parent: ^Type_Env) -> Type_Env {
 }
 
 // The enclosing function's user name (for #caller_name), read from the DURABLE
-// scope graph — the nearest fun/ctor's Type_Scope — instead of a per-env mirror.
+// scope graph â€” the nearest fun/ctor's Type_Scope â€” instead of a per-env mirror.
 // (Frame-lift: Type_Env no longer carries an fn_name copy.)
 enclosing_fn_name :: proc(env: ^Type_Env) -> string {
     if s := enclosing_callable_scope(env); s != nil {
@@ -1022,13 +1024,13 @@ enclosing_fn_name :: proc(env: ^Type_Env) -> string {
 // The expected return types of the nearest enclosing function / constructor body,
 // A callable scope: a fun, or a non-module struct/class (a ctor body). Modules
 // are .Struct too but never a callable. This is what the old class_scope/fun_scope
-// env markers identified — they were always set to the env's own .scope, which is
+// env markers identified â€” they were always set to the env's own .scope, which is
 // a non-module struct (class defs layer) or a fun. Derive instead of storing.
 scope_is_callable :: proc(s: ^Type_Scope) -> bool {
     return s != nil && (s.kind == .Fun || (s.kind == .Struct && !s.is_module))
 }
 
-// The class/struct scope an env is the defs layer of — nil unless env.scope is a
+// The class/struct scope an env is the defs layer of â€” nil unless env.scope is a
 // non-module struct. Replaces the old env.class_scope marker (a class ns_env set
 // class_scope = its own ft = env.scope).
 env_class_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
@@ -1048,7 +1050,7 @@ enclosing_return_types :: proc(env: ^Type_Env) -> []Type {
     return nil
 }
 
-// The nearest enclosing callable scope — the fun / ctor whose body we're checking.
+// The nearest enclosing callable scope â€” the fun / ctor whose body we're checking.
 // The "caller" for call-graph edges. nil at module level (a call in a top-level
 // const value etc. has no enclosing function node). Walks the durable scope graph.
 enclosing_callable_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
@@ -1065,9 +1067,9 @@ enclosing_callable_scope :: proc(env: ^Type_Env) -> ^Type_Scope {
 // (foreign / indirect / fn-typed-param) and calls outside any function.
 record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
     caller := enclosing_callable_scope(env)
-    if caller == nil { return }   // call outside any callable — nothing to attribute
+    if caller == nil { return }   // call outside any callable â€” nothing to attribute
     // Direct-effect seed for purity. `print` is a special-form built-in with no
-    // resolved callee (so it never becomes an edge) — catch it by name here,
+    // resolved callee (so it never becomes an edge) â€” catch it by name here,
     // before the resolved-call early-out.
     if strings.has_prefix(e.name, "print") {
         c.effectful_callers[caller] = true
@@ -1077,13 +1079,13 @@ record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
     callee := rf.callee
     if callee == nil && rf.name != "" {
         // Resolved by NAME (module-qualified / UFCS / dispatch) without a callee
-        // pointer — recover the durable Type_Scope from the global table so the
+        // pointer â€” recover the durable Type_Scope from the global table so the
         // edge still lands. Keeps the graph from missing the bulk of real calls.
         if ft, fok := c.table.funs[rf.name];    fok { callee = ft }
         else if st, sok := c.table.structs[rf.name]; sok { callee = st }
     }
     if callee == nil { return }
-    // A foreign (.C) callee reaches outside the program — a direct effect.
+    // A foreign (.C) callee reaches outside the program â€” a direct effect.
     if callee.calling_conv == .C {
         c.effectful_callers[caller] = true
     }
@@ -1091,8 +1093,8 @@ record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) {
 }
 
 // Record a call-graph edge for a struct-LITERAL construction (`Foo{...}` /
-// `Foo{}`). Brackets default-init a struct, which RUNS its field initializers —
-// the same constructor invocation `Foo(...)` parens trigger — so it's a call
+// `Foo{}`). Brackets default-init a struct, which RUNS its field initializers â€”
+// the same constructor invocation `Foo(...)` parens trigger â€” so it's a call
 // edge too. Without this the bracket form is invisible to the graph: e.g.
 // `game^ = Megastruct{}` runs Megastruct's `camera := Camera(...)` field init,
 // but with only paren-call edges nothing reaches Megastruct (Pounce.mara:83).
@@ -1111,7 +1113,7 @@ always_returns :: proc(body: [dynamic]Stmt) -> bool {
     // into this body before the checker ran, so any live arm's return is inline.
     for i := len(body) - 1; i >= 0; i -= 1 {
         last := body[i]
-        // Definitions aren't executable — a body whose tail is nested fn /
+        // Definitions aren't executable â€” a body whose tail is nested fn /
         // type / const definitions ends at the statement before them, so
         // keep walking ("helpers at the bottom" layout). Stmt_Scope is a
         // named fun/struct definition, not an executable block.
@@ -1247,10 +1249,10 @@ resolve_fn_type_name :: proc(c: ^Checker, dotted: string, env: ^Type_Env) -> str
 
 // evaluate_comptime_int resolves a comptime-known integer expression. Used
 // by sites like `slice_from_ptr` that need to refuse runtime-derived values
-// — accepting an attacker-controlled length there is a classic OOB-read/write
+// â€” accepting an attacker-controlled length there is a classic OOB-read/write
 // foot-gun. Handles literals, unary minus, named `::` constants (recursively),
-// basic arithmetic + bit-shift operators on comptime operands, and — when the
-// caller passes its env — `.cap`/`.len` of a variable whose type carries a
+// basic arithmetic + bit-shift operators on comptime operands, and â€” when the
+// caller passes its env â€” `.cap`/`.len` of a variable whose type carries a
 // static size (fixed array, partial array), so one array's bound can derive
 // from another's (`is_corner : [..edges.cap]bool`). Anything else returns
 // ok=false; callers should emit a "comptime-known integer expected" error so
@@ -1271,7 +1273,7 @@ evaluate_comptime_int :: proc(c: ^Checker, e: Expr, env: ^Type_Env = nil) -> (va
     case ^Expr_Field_Access:
         // `arr.cap` (or `arr.len` of a FIXED array, where len == cap == N) is
         // part of arr's TYPE, not its runtime state. A partial array's .len is
-        // runtime — only its capacity folds.
+        // runtime â€” only its capacity folds.
         if env != nil && (v.field == "cap" || v.field == "len") {
             if base, base_ok := v.expr.(^Expr_Ident); base_ok {
                 if bt, found := type_env_get(env, base.name); found {
@@ -1321,7 +1323,7 @@ evaluate_comptime_int :: proc(c: ^Checker, e: Expr, env: ^Type_Env = nil) -> (va
 // this covers the small surface needed by `#if`: the `#web`/`#native`
 // intrinsics, plain bool literals, and `not` of either. Compound boolean
 // operators (`and`/`or`) and parens are easy extensions when there's a real
-// use case — kept minimal so the failure mode for unsupported expressions is
+// use case â€” kept minimal so the failure mode for unsupported expressions is
 // a clear "comptime-known boolean expected" error rather than a partial
 // evaluation that gives wrong answers.
 evaluate_comptime_bool :: proc(c: ^Checker, e: Expr) -> (value: bool, ok: bool) {
@@ -1347,7 +1349,7 @@ evaluate_comptime_bool :: proc(c: ^Checker, e: Expr) -> (value: bool, ok: bool) 
 
 // fold_comptime_ifs resolves every comptime `#if` in `stmts` in place, BEFORE the
 // checker runs. The live arm's statements replace the `#if` (so they keep source
-// order); the dead arm is dropped entirely — it is never checked, so its
+// order); the dead arm is dropped entirely â€” it is never checked, so its
 // platform-specific names that don't exist on this target never need to resolve.
 // Recurses through every nested body so no comptime `#if` survives to the checker
 // (the def/runtime split downstream then never has to treat `#if` as a hybrid).
@@ -1367,7 +1369,7 @@ fold_comptime_ifs :: proc(c: ^Checker, stmts: ^[dynamic]Stmt) -> (folded_here: b
         if cif, ok := s.(^Stmt_If); ok && cif.is_comptime {
             live, eval_ok := evaluate_comptime_bool(c, cif.condition)
             if !eval_ok {
-                append(&out, s)   // unevaluable — leave it for the checker to report
+                append(&out, s)   // unevaluable â€” leave it for the checker to report
                 continue
             }
             arm := &cif.body if live else &cif.else_body
@@ -1388,7 +1390,7 @@ fold_comptime_ifs_children :: proc(c: ^Checker, s: Stmt) {
     #partial switch v in s {
     case ^Stmt_Scope:
         fold_comptime_ifs(c, &v.body)   // recurses into nested scopes too
-        // Partition the (folded) body into compile-time defs and runtime body —
+        // Partition the (folded) body into compile-time defs and runtime body â€”
         // disjoint, each kept in source order. Scope-walks read defs; codegen and
         // the runtime passes read body.
         new_defs: [dynamic]Stmt
@@ -1413,7 +1415,7 @@ fold_comptime_ifs_children :: proc(c: ^Checker, s: Stmt) {
 }
 
 // Like resolve_fn_home but reports ambiguity when 2+ visible includes provide
-// the same function name. Mirrors resolve_with_ambiguity for type names —
+// the same function name. Mirrors resolve_with_ambiguity for type names â€”
 // own definitions in any enclosing scope still win unambiguously; ambiguity
 // only fires when the name comes from imports and 2+ imports expose it
 // (e.g. `include mara.sdl + include mara.sdl2`, both with PollEvent).
@@ -1521,14 +1523,14 @@ is_real_field :: proc(sd: ^Scope_Body, name: string) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Checked program output — the result of type checking
+// Checked program output â€” the result of type checking
 // ---------------------------------------------------------------------------
 
 // A resolved function parameter with name and type.
 // Where this function comes from. Codegen branches on the variant:
-//   Source    → emit a normal function body in IR
-//   Intrinsic → emit a call to the LLVM intrinsic with `llvm_name`
-//   Foreign   → emit `declare`s and call the external symbol via static
+//   Source    â†’ emit a normal function body in IR
+//   Intrinsic â†’ emit a call to the LLVM intrinsic with `llvm_name`
+//   Foreign   â†’ emit `declare`s and call the external symbol via static
 //               import lib (the linker writes the DLL/SO dep into the binary)
 //
 // Foreign-only metadata (library, link_name, prefix) lives in the Foreign
@@ -1558,7 +1560,7 @@ Origin_Foreign :: struct {
 
 // Checked info for an aliased import package.
 // The complete output of check_program. Captures everything the type checker
-// knows about the program — type definitions, function signatures, variable
+// knows about the program â€” type definitions, function signatures, variable
 // types, package info. Downstream consumers (codegen, tools) can read this
 // instead of re-walking the raw AST.
 Checked_Program :: struct {
@@ -1567,7 +1569,7 @@ Checked_Program :: struct {
 
     errors:         int,
 
-    // Functions — source, foreign, and intrinsic all live here, distinguished
+    // Functions â€” source, foreign, and intrinsic all live here, distinguished
     // by Checked_Scope.origin. Codegen iterates this map and dispatches on the
     // origin variant when emitting bodies, declares, and the dynamic loader.
     functions:      map[string]^Type_Scope,
@@ -1578,25 +1580,25 @@ Checked_Program :: struct {
 
     // Materialized call graph (nodes = callable scopes, edges = resolved calls,
     // + strongly-connected components). Built post-check from Checker.call_edges.
-    // See callgraph.odin / design/mara_ask.md §12.
+    // See callgraph.odin / design/mara_ask.md Â§12.
     call_graph:     Call_Graph,
 
     // Compile-time constants: name -> resolved integer value (derived from table.constants)
     constant_values: map[string]int,
 
-    // Target platform — drives ABI lowering for .C-convention functions.
+    // Target platform â€” drives ABI lowering for .C-convention functions.
     // Inherited from the checker; stamped at check completion.
     target_os:      Target_OS,
 
     // The main package name (e.g. "Pounce" or "test_1M"). Used by codegen as
     // the default home for symbols not attributable to any specific module
-    // — compiler-synthesized helpers, @main, etc. — so per-module emission
+    // â€” compiler-synthesized helpers, @main, etc. â€” so per-module emission
     // has a single canonical "main TU" to drop them into.
     main_package:   string,
 }
 
 // ---------------------------------------------------------------------------
-// Symbol table — single source of truth for all type/symbol information.
+// Symbol table â€” single source of truth for all type/symbol information.
 // Persists across checking phases; shared between Checker and Checked_Program.
 // ---------------------------------------------------------------------------
 
@@ -1608,13 +1610,13 @@ SymbolTable :: struct {
     unions:         map[string]^Type_Union,
     distinct_types: map[string]^Type_Distinct,
 
-    // Error_kind set ID assignment counter — incremented as each
+    // Error_kind set ID assignment counter â€” incremented as each
     // `Name :: error { ... }` is registered. Encoded as the high 16 bits of
     // each variant's u32 tag so any error_kind variant fits in the open
     // `err` type with a globally unique value.
     error_set_counter: int,
 
-    // Generic templates (unified — data-type and callable)
+    // Generic templates (unified â€” data-type and callable)
     generic_templates:       map[string]Generic_Template,
     generic_union_templates: map[string]Generic_Union_Template,
 
@@ -1622,7 +1624,7 @@ SymbolTable :: struct {
     constants:       map[string]Expr,
     // bare-name -> owning module (flat package name), or "" if multiple
     // modules define the same bare constant name. Bare-name uses error when
-    // this maps to "" — the user must qualify with `Module.const_name`.
+    // this maps to "" â€” the user must qualify with `Module.const_name`.
     constant_owners: map[string]string,
 
     // Name resolution helpers
@@ -1667,7 +1669,7 @@ SymbolTable :: struct {
 }
 
 // ---------------------------------------------------------------------------
-// Checker state — transient state used during a single checking pass.
+// Checker state â€” transient state used during a single checking pass.
 // Holds a pointer to the shared SymbolTable plus per-check mutable state.
 // ---------------------------------------------------------------------------
 
@@ -1676,7 +1678,7 @@ Checker :: struct {
     errors:          int,
     current_package: string,
     target_web:      bool,                // -web build flag, drives #web / #native intrinsics
-    target_shared:   bool,                // -shared build flag — package compiles to a DLL/SO; no `main` required
+    target_shared:   bool,                // -shared build flag â€” package compiles to a DLL/SO; no `main` required
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
     type_params:     map[string]Type,
     top_env:         ^Type_Env,
@@ -1686,7 +1688,7 @@ Checker :: struct {
     // Checked_Program call graph (build_call_graph). A set, so duplicate call
     // sites between the same pair collapse to one edge.
     call_edges:      map[Call_Edge]bool,
-    // Call-graph effect seed: callable scopes whose body has a DIRECT effect —
+    // Call-graph effect seed: callable scopes whose body has a DIRECT effect â€”
     // an IO built-in (`print`) or a foreign (.C) call. The bottom-up purity pass
     // (cg_compute_purity) propagates these up the graph to a transitive summary.
     effectful_callers: map[^Type_Scope]bool,
@@ -1696,13 +1698,13 @@ Checker :: struct {
     // in this pass return Type_Error{} silently; the body-check pass re-runs
     // resolution with all locals in scope and emits real errors then.
     in_register_pass: bool,
-    // True while resolving a `foreign` declaration's signature — the only
+    // True while resolving a `foreign` declaration's signature â€” the only
     // context where `cstring` may be named as a type (see resolve_type_expr).
     in_foreign_sig: bool,
     // Dispatch and operator overloading (per-package, saved/restored on module boundaries)
     dispatch_groups:    map[string][dynamic]string,
     operator_overloads: map[Token_Kind][dynamic]string,
-    // Module system — all modules are pre-discovered, lexed, and parsed before
+    // Module system â€” all modules are pre-discovered, lexed, and parsed before
     // check_program runs. The checker is a pure consumer of `programs`.
     checked:              ^Checked_Program,        // output: codegen-ready data
     checked_modules:      map[string]^Type_Scope,  // cache: flat name -> checked module-struct
@@ -1722,7 +1724,7 @@ Checker :: struct {
     // union/enum. Push with `with_expected_hint`; the helper restores after.
     expected_hint: Type,
     // A named struct literal checked during Pass 1b (module-level `::`
-    // constant or top-level binding) can't validate its fields yet — struct
+    // constant or top-level binding) can't validate its fields yet â€” struct
     // FIELDS only resolve in Pass 2a (signature pass), so the matching check
     // would see every struct as empty. The literal's TYPE identity is known
     // in 1b, though, and consumers (struct field defaults like
@@ -1753,7 +1755,7 @@ defer_literal_validation :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, sd: ^Sc
     return true
 }
 
-// Validate the queued literals (Pass 2a.5) — struct fields exist now. Runs
+// Validate the queued literals (Pass 2a.5) â€” struct fields exist now. Runs
 // with the defer flag off so nested literals take the normal path.
 flush_deferred_literals :: proc(c: ^Checker) {
     saved := c.defer_define_literals
@@ -1793,7 +1795,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
         }
         if ut, ok := hint.(^Type_Union); ok {
             if _, v_ok := ut.tag_map[e.name]; v_ok {
-                // Data-union variant — return the union type. Codegen for
+                // Data-union variant â€” return the union type. Codegen for
                 // a bare/dot variant value isn't fully meaningful (no payload
                 // fields), but match arms / payload-free uses can still
                 // reference the variant by name.
@@ -1801,7 +1803,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
             }
         }
         // Open `err` hint: the slot doesn't pin down a single enum, so we
-        // search visible error_kind enums by name — same shape as the
+        // search visible error_kind enums by name â€” same shape as the
         // dot-fallback below, but restricted to error sets so a non-error
         // variant with a matching name can't accidentally satisfy the slot.
         // Lets `return File_Open_Failed` work in an err return position
@@ -1874,7 +1876,7 @@ check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
     emit_diagnostic(.Warning, format_location(span.file, span.line, span.col), msg, ..args)
 }
 
-// Render a readable source-level name for an expression used in a diagnostic —
+// Render a readable source-level name for an expression used in a diagnostic â€”
 // e.g. `dst_x`, `glyphs[i].x`, `ttf.head`. Returns "" for expressions with no
 // natural name (literals, calls, arithmetic) so callers can omit the clause.
 expr_diag_name :: proc(e: Expr) -> string {
@@ -1898,7 +1900,7 @@ expr_diag_name :: proc(e: Expr) -> string {
 }
 
 // Collect the named sub-expressions of `e` whose stamped type is a wider
-// numeric than `target` can hold — the operands that pushed a compound
+// numeric than `target` can hold â€” the operands that pushed a compound
 // expression past the assignment's width. Each renders as "name (type)". Used
 // to point a numeric-mismatch error at where the offending width entered.
 collect_wide_sources :: proc(e: Expr, target: Type, out: ^[dynamic]string) {
@@ -1933,7 +1935,7 @@ wide_source_clause :: proc(e: Expr, target: Type) -> string {
     return strings.join(srcs[:], ", ")
 }
 
-// Emit "cannot assign X to variable 'v' of type Y", appending a "— from
+// Emit "cannot assign X to variable 'v' of type Y", appending a "â€” from
 // <sources>" trailer that names the wide operands when the RHS is a compound
 // expression whose extra width traces to named sub-expressions.
 emit_assign_var_error :: proc(c: ^Checker, span: Span, val_type: Type, name: string, target: Type, rhs: Expr) {
@@ -1957,7 +1959,7 @@ assign_source_desc :: proc(e: Expr, t: Type) -> string {
 
 // Walk an expression looking for `Expr_Call` whose direct args include
 // `Expr_Self`. Returns the call's name on first hit. DFS order means
-// nested-most hits first — `wrap(view_and_projections(#self))` reports
+// nested-most hits first â€” `wrap(view_and_projections(#self))` reports
 // "view_and_projections" (the actual #self consumer), not the wrapper.
 find_self_call_name :: proc(e: Expr) -> (name: string, found: bool) {
     if e == nil { return "", false }
@@ -2046,7 +2048,7 @@ contains_self_anywhere :: proc(e: Expr) -> bool {
 // Warn when a struct field initializer hands `#self` to anything that
 // could read partially-constructed state, while other field decls
 // still follow. The function-call form (`x := helper(#self)`) is the
-// silent-zero case from the Camera porting session — helper reads
+// silent-zero case from the Camera porting session â€” helper reads
 // `cam.fov_y` etc. and gets zeros because later decls haven't written
 // yet. The inline shape (`x := #self.fov_y * 2`) is caught by the
 // same check via `contains_self_anywhere` as a fallback.
@@ -2093,7 +2095,7 @@ check_early_self_decls :: proc(c: ^Checker, body: [dynamic]Stmt) {
 //
 // `field: Arena_Basic` means "use constructor defaults", but if the ctor has
 // a required arg with no default (e.g. `class(cap: int)`), no valid defaults
-// exist — the declaration is unresolvable. Catch it here rather than letting
+// exist â€” the declaration is unresolvable. Catch it here rather than letting
 // codegen walk the class body and fail with nonsense "undefined variable"
 // errors about ctor args the user never wrote.
 //
@@ -2101,7 +2103,7 @@ check_early_self_decls :: proc(c: ^Checker, body: [dynamic]Stmt) {
 // Pure data structs (kind=.Struct, no params) and callable funs aren't affected.
 check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, field_type: Type) {
     // Walk through fixed-array and partial-array layers: `[6]Camera` and
-    // `[..6]Camera` need the same check as bare `Camera` — every element
+    // `[..6]Camera` need the same check as bare `Camera` â€” every element
     // requires construction, and the array can't bulk-default-construct.
     elem_type := field_type
     is_array := false
@@ -2161,7 +2163,7 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
 
 // `cstring` is the C boundary type: only `foreign` signatures may declare it
 // (c.in_foreign_sig is set around their resolution). Regular Mara code takes
-// `[]utf8` and lets the call-site conversion write the terminator — without
+// `[]utf8` and lets the call-site conversion write the terminator â€” without
 // this gate the type leaks up every call chain that eventually touches C.
 // Checked here, at the single entry point every source type annotation
 // passes through; recursion re-enters via the public name so nested
@@ -2178,7 +2180,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
     // `~T` outside a generic-parameter declaration: the tilde modifier is
     // only meaningful as a shape constraint on a generic param's type
     // (`Foo :: struct (s: ~T)`). At any other use site it's a syntax
-    // error — the promotion to a generic param has to happen at the
+    // error â€” the promotion to a generic param has to happen at the
     // declaration, not at the use, so the type-checker can monomorphize.
     if tn, is_tn := te.(Type_Name); is_tn && tn.tilde {
         if c != nil {
@@ -2206,7 +2208,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
         case "void":   return Type_Void{}
         case "err":    return Type_Err{}
         case "cstring":
-            // Built-in C boundary type — no stdlib decl, no import needed.
+            // Built-in C boundary type â€” no stdlib decl, no import needed.
             // The foreign-only placement rule lives in the resolve_type_expr
             // wrapper (is_cstring check); the `cstring(s)` constructor is a
             // builtin call handled in check_call.
@@ -2233,7 +2235,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
         // is the marker; codegen picks the actual width per build.
         case "usize":  return Type_Numeric{kind = .Unsigned, bits = 0}
         case "isize":  return Type_Numeric{kind = .Signed,   bits = 0}
-        // "IO" removed — functions without return type have nil return_type
+        // "IO" removed â€” functions without return type have nil return_type
         }
         // Check for qualified type name (e.g. "cam.Camera" -> look up in package)
         dot := strings.index_byte(t.name, '.')
@@ -2352,7 +2354,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
                 return dt
             }
             // Bare-name fallback for compiler-synthesized globals like
-            // `Context` and `Args` — they're registered in c.table.funs
+            // `Context` and `Args` â€” they're registered in c.table.funs
             // without a package prefix and would otherwise miss the lookup.
             if st, ok := c.table.funs[t.name]; ok {
                 return st
@@ -2405,7 +2407,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
                     return fa
                 }
                 // Register-pass scan of a scope body: locals the size refers
-                // to (`other.cap`) may not be in env yet — stay silent; the
+                // to (`other.cap`) may not be in env yet â€” stay silent; the
                 // body-check pass re-resolves with all locals visible and
                 // emits the real error at the decl's own span.
                 if !c.in_register_pass {
@@ -2435,7 +2437,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
                         check_error(c, span, TYPE_ARRAY_SIZE_CONSTANT_COMPILE_TIME, t.size_name)
                     }
                 } else {
-                    // Not a constant — runtime-sized arrays must use var Array
+                    // Not a constant â€” runtime-sized arrays must use var Array
                     check_error(c, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, t.size_name, type_name(elem))
                     return Type_Error{}
                 }
@@ -2527,7 +2529,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
         if tp, tp_ok := &c.table.generic_templates[t.name]; tp_ok {
             tmpl_ptr = tp
         }
-        // Resolve type arguments — const params that are bare identifiers become runtime size refs
+        // Resolve type arguments â€” const params that are bare identifiers become runtime size refs
         type_args: [dynamic]Type
         for arg, i in t.type_args {
             is_const_param := tmpl_ptr != nil && i < len(tmpl_ptr.generic_params) && tmpl_ptr.generic_params[i].is_const
@@ -2542,14 +2544,14 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
                         append(&type_args, Type_Const_Int{value = 0})
                         continue
                     }
-                    // Bare identifier in const position — check if it's a compile-time constant
+                    // Bare identifier in const position â€” check if it's a compile-time constant
                     if const_expr, found := c.table.constants[tn.name]; found {
                         if _, i_val, ok := extract_constant_value(const_expr); ok {
                             append(&type_args, Type_Const_Int{value = int(i_val)})
                             continue
                         }
                     }
-                    // Not a constant — treat as runtime variable reference
+                    // Not a constant â€” treat as runtime variable reference
                     ident := new_clone(Expr_Ident{name = tn.name, span = tn.span})
                     append(&type_args, Type_Runtime_Size{expr = ident})
                     continue
@@ -2579,7 +2581,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
             return instantiate_generic_struct(c, tmpl, type_args[:], span)
         }
         // Generic union template: `Maybe(int)` / `Maybe(^Foo)`. Parallel path
-        // to generic structs — each (template, type-args) tuple monomorphizes
+        // to generic structs â€” each (template, type-args) tuple monomorphizes
         // to a concrete Type_Union, cached in mono_union_cache.
         if utmpl_ptr, utmpl_ok := &c.table.generic_union_templates[t.name]; utmpl_ok {
             if len(type_args) != len(utmpl_ptr.generic_params) {
@@ -2600,12 +2602,12 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
                     return dt
                 }
             }
-            // `[]Mesh_Data(12)` — non-generic struct as a sized-slice element.
+            // `[]Mesh_Data(12)` â€” non-generic struct as a sized-slice element.
             // Resolve to the bare struct type; the (12) is allocation info
             // that Stmt_Decl.slice_cap_expr captures separately on the decl
             // (see the slice-elem rewrite in register_and_check_declarations).
             // For struct-field contexts (where there's no slice_cap_expr slot)
-            // the (12) is silently ignored — the field is just a slice header.
+            // the (12) is silently ignored â€” the field is just a slice header.
             if ss, ss_ok := c.table.structs[flat]; ss_ok {
                 return ss
             }
@@ -2619,7 +2621,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
         }
         // If the name resolves to a struct/class with constructor params, the
         // user has written `field: Name(args)` thinking of it as a
-        // constructor call — that's the expression-position form, not type
+        // constructor call â€” that's the expression-position form, not type
         // position. Point them at the right syntax.
         if env != nil {
             if t_val, t_ok := type_env_get(env, t.name); t_ok {
@@ -2644,14 +2646,14 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
         }
         return ft
     case Type_Of_Name:
-        // `fn name` — resolves to the nominal function type of a named function
+        // `fn name` â€” resolves to the nominal function type of a named function
         // or function-valued alias. Env first (catches local aliases like
         // `game_frame := game_run` then `x : fn game_frame`); falls back to the
         // module function table for `fn game_run`. Qualified names like
         // `fn sdl.init` resolve through the alias env or package.
         //
         // During register-pass scanning of a function body's fields, locals
-        // may not yet be in env — we return Type_Error silently and let the
+        // may not yet be in env â€” we return Type_Error silently and let the
         // body-check pass emit real errors.
         silent := c != nil && c.in_register_pass
         dot := strings.index_byte(t.name, '.')
@@ -2680,7 +2682,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
             }
             return Type_Error{}
         }
-        // Qualified: fn alias.name — alias is either a module include or a local
+        // Qualified: fn alias.name â€” alias is either a module include or a local
         // struct variable exposing functions.
         alias := t.name[:dot]
         bare := t.name[dot+1:]
@@ -2878,7 +2880,7 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
         }
         return ft
     case Type_Of_Name:
-        // `fn name` inside a generic: substitutions don't affect it — the name
+        // `fn name` inside a generic: substitutions don't affect it â€” the name
         // refers to a specific function, not a type parameter. Delegate to the
         // non-subst resolver.
         return resolve_type_expr(te, c, span)
@@ -2970,7 +2972,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
 }
 
 // Instantiate a generic union template with concrete type arguments. Mirrors
-// instantiate_generic_struct but produces a Type_Union — builds variant structs
+// instantiate_generic_struct but produces a Type_Union â€” builds variant structs
 // with substituted field types, the tag enum, and registers everything into
 // c.table.unions / c.table.structs / c.table.enums under mangled names.
 instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, type_args: []Type, span: Span) -> ^Type_Union {
@@ -3078,9 +3080,9 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
             // drives slice-shaped inference. Pointer case stays closed.
             infer_type_params(subst, t.elem, fa.elem, c)
         } else if pa, ok := actual.(^Type_Partial_Array); ok {
-            // Partial arrays coerce to slice views (`[]$T` ← [..N]T), so
+            // Partial arrays coerce to slice views (`[]$T` â† [..N]T), so
             // they drive slice-shaped inference too. This is what lets the
-            // generic slice_add serve `&s + "lit"` — string literals are
+            // generic slice_add serve `&s + "lit"` â€” string literals are
             // partial arrays of utf8.
             infer_type_params(subst, t.elem, pa.elem, c)
         }
@@ -3115,10 +3117,10 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
             }
         }
     case Type_Const_Value:
-        // Nothing to infer — this is a concrete value
+        // Nothing to infer â€” this is a concrete value
         break
     case Type_Const_Expr:
-        // Nothing to infer — this is a runtime expression
+        // Nothing to infer â€” this is a runtime expression
         break
     case ^Type_Func_Expr:
         if ft, ok := actual.(^Type_Scope); ok {
@@ -3134,22 +3136,22 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
             }
         }
     case Type_Of_Name:
-        // `fn name` is nominal — no type parameters to infer through it.
+        // `fn name` is nominal â€” no type parameters to infer through it.
     }
 }
 
-// Build the body-check env for a monomorphized function — the SAME two-layer
+// Build the body-check env for a monomorphized function â€” the SAME two-layer
 // shape as a regular fun (check_scope_body): a defs layer whose durable scope IS
 // the mono fun (kind .Fun, the enclosing-callable marker), and a .Block body
 // under it. `ns` is caller storage that must outlive the returned body env (it's
 // the body's env.parent). Effects:
 //  - enclosing_callable_scope / enclosing_return_types find the MONO FUN, not the
-//    call site (the latent bug this fixes — a mono body had no marker at all),
+//    call site (the latent bug this fixes â€” a mono body had no marker at all),
 //  - locals resolve via scope_local_lookup and STOP at the fun boundary (no
 //    call-site leak; the old raw .Struct shadow scope hid this by not being a
 //    .Block at all),
 //  - scope_is_callable(ns.scope) recognises the layer just like a real fun's
-//    ns_env, so the marker is the durable scope — no env.fun_scope field needed.
+//    ns_env, so the marker is the durable scope â€” no env.fun_scope field needed.
 // The mono fun chains to the call-site scope so module-level names resolve exactly
 // as before; fun.types/functions are empty, so interposing it adds no resolvable
 // names (resolution-preserving).
@@ -3169,7 +3171,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     fun_type := new(Type_Scope)
     fun_type.kind = .Fun
     fun_type.home_package = tmpl.home_package
-    fun_type.ast = ast  // template AST — structural escape check is clone-invariant
+    fun_type.ast = ast  // template AST â€” structural escape check is clone-invariant
     for tp in ast.typed_params {
         pt := resolve_type_expr_with_subst(tp.type_expr, c, ast.span, subst)
         append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
@@ -3183,7 +3185,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     if c.top_env != nil {
         type_env_set(c.top_env, mangled, fun_type)
     } else {
-        // During package checking, top_env may be nil — register in local env
+        // During package checking, top_env may be nil â€” register in local env
         type_env_set(env, mangled, fun_type)
     }
     // Also register in the call-site env. The env chain terminates at the
@@ -3196,7 +3198,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     }
     c.table.mono_cache[mangled] = fun_type
 
-    // Body-check env: two-layer (defs layer scope=fun_type, .Block body) — see
+    // Body-check env: two-layer (defs layer scope=fun_type, .Block body) â€” see
     // mono_body_env. mono_ns must outlive `child` (it's child's env.parent).
     mono_ns: Type_Env
     child := mono_body_env(env, fun_type, &mono_ns)
@@ -3294,7 +3296,7 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     mono_ft := new(Type_Scope)
     mono_ft.kind = .Fun
     mono_ft.home_package = home
-    mono_ft.ast = ast  // template AST — structural escape check is clone-invariant
+    mono_ft.ast = ast  // template AST â€” structural escape check is clone-invariant
     for tp, i in ast.typed_params {
         if i < len(actual_types) {
             // Use actual type for params that need specialization
@@ -3326,7 +3328,7 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     c.table.mono_cache[mangled] = mono_ft
     c.table.mono_fun_cache[mangled] = fn_name
 
-    // Body-check env: two-layer (defs layer scope=mono_ft, .Block body) — see
+    // Body-check env: two-layer (defs layer scope=mono_ft, .Block body) â€” see
     // mono_body_env. mono_ns must outlive `child` (it's child's env.parent).
     mono_ns: Type_Env
     child := mono_body_env(env, mono_ft, &mono_ns)
@@ -3366,9 +3368,9 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     }
 
     // Struct-kind generic templates often have *every* typed_param promoted to
-    // a generic_param by the parser (Array's `item: $T, n: i64 = 256` → both
+    // a generic_param by the parser (Array's `item: $T, n: i64 = 256` â†’ both
     // become generic_params, typed_params empty). In that shape the call's
-    // args are positional generic bindings — `Array(Player, 64)` means
+    // args are positional generic bindings â€” `Array(Player, 64)` means
     // item=Player, n=64. Route directly through instantiate_generic_struct,
     // the same path resolve_type_expr_with_subst uses for type-position
     // `Array(byte, 256)`. That path does the const-ident-to-literal field
@@ -3398,7 +3400,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         st := instantiate_generic_struct(c, tmpl, type_args[:], e.span)
         // Args were consumed as generic bindings, not field initializers.
         // Clear them and rewrite the call as a parameterless Foo() on the
-        // instantiated struct's flat name — same shape Point() takes.
+        // instantiated struct's flat name â€” same shape Point() takes.
         e.args = {}
         e.name = st.name
         e.resolved_func = Resolved_Func{name = st.name, callee = st}
@@ -3436,7 +3438,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         }
     }
 
-    // Step 4: Build mangled name — include both declared params and auto-captured const params
+    // Step 4: Build mangled name â€” include both declared params and auto-captured const params
     type_args: [dynamic]Type
     defer delete(type_args)
     for param in tmpl.generic_params {
@@ -3506,7 +3508,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
 // ---------------------------------------------------------------------------
 
 // Recognize the built-in cstring type. (Historically this also matched a
-// stdlib `distinct ^utf8` decl by flat name — that decl is gone; the type
+// stdlib `distinct ^utf8` decl by flat name â€” that decl is gone; the type
 // is fully built-in again and Type_CString is its only spelling.)
 is_cstring :: proc(t: Type) -> bool {
     _, ok := t.(Type_CString)
@@ -3523,13 +3525,13 @@ is_err_type :: proc(t: Type) -> bool {
     return false
 }
 
-// Through a pointer there is no array→slice decay: the pointee must already
+// Through a pointer there is no arrayâ†’slice decay: the pointee must already
 // have the target's memory layout. A fixed array `[N]T` is N inline elements
 // with NO {ptr,len,cap} header, so `^[N]T` cannot stand in for `^[]T` or
-// `^[..M]T` — doing so let `&fixed + x` bind to core's `slice_add` (param
+// `^[..M]T` â€” doing so let `&fixed + x` bind to core's `slice_add` (param
 // `^[]$T`) and then read a header off raw inline elements. Returns true for
 // that mismatch: exactly one side a fixed array, the other a header-shaped
-// buffer (slice / partial array). Fixed↔fixed and slice↔partial (both
+// buffer (slice / partial array). Fixedâ†”fixed and sliceâ†”partial (both
 // consistent layouts) are NOT mismatches and keep flowing.
 ptr_pointee_layout_mismatch :: proc(a, b: Type) -> bool {
     _, a_fixed := a.(^Type_Fixed_Array)
@@ -3545,7 +3547,7 @@ ptr_pointee_layout_mismatch :: proc(a, b: Type) -> bool {
 }
 
 types_equal :: proc(a: Type, b: Type) -> bool {
-    // nil return type (void) — only matches itself
+    // nil return type (void) â€” only matches itself
     if a == nil && b == nil { return true }
     if a == nil || b == nil { return false }
 
@@ -3567,7 +3569,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     }
 
     // Transparent type aliases (`Name :: type(T)`) unwrap to their base
-    // before any other comparison. They have no nominal identity — they
+    // before any other comparison. They have no nominal identity â€” they
     // exist purely as renames. `distinct` types do not unwrap here.
     a := unwrap_alias(resolve_infer(a))
     b := unwrap_alias(resolve_infer(b))
@@ -3612,7 +3614,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     case Type_CString:
         if is_cstring(b) { return true }
         // utf8 partial arrays are TYPE-compatible so string LITERALS (typed
-        // [..tier]utf8) pass free — their rodata globals carry the \0. The
+        // [..tier]utf8) pass free â€” their rodata globals carry the \0. The
         // call-site argument check restricts the implicit path to literal
         // EXPRESSIONS; every runtime string goes through the explicit
         // `cstring(s)` constructor (copy + terminator), so codegen never
@@ -3640,7 +3642,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // ^byte accepts any pointer (all memory is bytes)
         if _, ba := va.elem.(Type_Byte); ba { return true }
         if _, bb := vb.elem.(Type_Byte); bb { return true }
-        // No array→slice decay through a pointer: ^[N]T must not satisfy
+        // No arrayâ†’slice decay through a pointer: ^[N]T must not satisfy
         // ^[]T / ^[..M]T (a fixed array has no slice header to alias).
         if ptr_pointee_layout_mismatch(va.elem, vb.elem) { return false }
         return types_equal(va.elem, vb.elem)
@@ -3648,7 +3650,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         vb, ok := b.(^Type_Scope)
         if !ok { return false }
         // Interned nominal identity: every logical named type resolves to one
-        // canonical ^Type_Scope, so pointer equality IS type equality — no flat
+        // canonical ^Type_Scope, so pointer equality IS type equality â€” no flat
         // name string needed. (Verified: zero name-equal-but-pointer-different
         // comparisons across the whole test suite + Pounce.)
         if va == vb { return true }
@@ -3669,11 +3671,11 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // A slice (`[]T`) is NOT accepted as a fixed-array source: a fixed
         // array is a value (N inline elements) and a slice is a reference
         // ({ptr,len,cap}). Converting one to the other is a copy with a
-        // runtime-length question, so it must be explicit — never an implicit
+        // runtime-length question, so it must be explicit â€” never an implicit
         // coercion. (This arm used to accept []T; codegen then silently
         // dropped the copy on the return path and zeroed the result.)
         // Implicit coercion: [N]T is compatible with [..M]T (partial array
-        // view). Lets fixed-array decls take partial-array sources — most
+        // view). Lets fixed-array decls take partial-array sources â€” most
         // importantly `fa : [N]utf8 = "lit"` after the literal-type
         // change made literals partial.
         if pa, pa_ok := b.(^Type_Partial_Array); pa_ok {
@@ -3682,15 +3684,15 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         vb, ok := b.(^Type_Fixed_Array)
         if !ok { return false }
         return buffer_elem_compatible(va.elem, vb.elem)
-        // Note: we don't compare size here — arrays of same elem type are compatible
+        // Note: we don't compare size here â€” arrays of same elem type are compatible
         // Size checking is done at assignment/init time
     case ^Type_Slice:
         // By-value fixed-array -> slice decay: `[N]T` materialises a slice
-        // header {ptr=&arr[0], len=cap=N} — honest, since [N]T is exactly N
+        // header {ptr=&arr[0], len=cap=N} â€” honest, since [N]T is exactly N
         // elements (e.g. Mesh_Data{primitive_quad()}). The source is hoisted to
         // a scope-lived local, and lifetime past that scope is policed by
         // return-escape analysis. NOT allowed THROUGH A POINTER (^[N]T has no
-        // header to alias) — that gate is ptr_pointee_layout_mismatch above,
+        // header to alias) â€” that gate is ptr_pointee_layout_mismatch above,
         // which short-circuits before this case is ever reached for ^[]T.
         if fa, fa_ok := b.(^Type_Fixed_Array); fa_ok {
             return buffer_elem_compatible(va.elem, fa.elem)
@@ -3705,7 +3707,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         // Partial arrays coerce to [:]T (slice view) and to [N]T (fixed array)
         // by element type. The first 24 bytes of a partial array's layout
         // match a slice header, so `^[..N]T` flows safely into `^[:]T` param
-        // slots — cursor mutations propagate back through the aliased memory.
+        // slots â€” cursor mutations propagate back through the aliased memory.
         if sl, sl_ok := b.(^Type_Slice); sl_ok {
             return buffer_elem_compatible(va.elem, sl.elem)
         }
@@ -3749,7 +3751,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
         if _, ok := b.(Type_Runtime_Size); ok { return true }
         return false
     case Type_Any:
-        // Type_Any no longer acts as a wildcard — only used as opaque ptr element.
+        // Type_Any no longer acts as a wildcard â€” only used as opaque ptr element.
         // Matching Type_Any with Type_Any is OK (e.g. two opaque ptrs).
         if _, ok := b.(Type_Any); ok { return true }
         return false
@@ -3762,7 +3764,7 @@ types_equal :: proc(a: Type, b: Type) -> bool {
     case Type_Err:
         // Symmetric handling lives at the top of types_equal so we can short-
         // circuit before alias unwrapping; reaching this arm means neither
-        // side matched there — be conservative and report inequality.
+        // side matched there â€” be conservative and report inequality.
         return false
     }
     return false
@@ -3779,7 +3781,7 @@ distinct_base :: proc(t: Type) -> Type {
 // True when `t` transitively contains a `Type_Partial_Array` somewhere in
 // its layout. Used to reject struct-copy assignments that would silently
 // break the inner partial array's self-referential ptr field. The top-level
-// partial-array case is NOT flagged here — direct partial-to-partial copy
+// partial-array case is NOT flagged here â€” direct partial-to-partial copy
 // has a dedicated codegen helper (`partial_array_copy`) that re-anchors ptr.
 type_contains_partial_array :: proc(t: Type) -> bool {
     if t == nil { return false }
@@ -3801,7 +3803,7 @@ type_contains_partial_array :: proc(t: Type) -> bool {
 }
 
 // True when `t` is a struct (or distinct-of-struct) that holds a partial
-// array somewhere inside. A top-level `Type_Partial_Array` returns false —
+// array somewhere inside. A top-level `Type_Partial_Array` returns false â€”
 // only wrapped occurrences matter, since the direct case has its own copy
 // path.
 struct_contains_partial_array :: proc(t: Type) -> bool {
@@ -3815,7 +3817,7 @@ struct_contains_partial_array :: proc(t: Type) -> bool {
     return false
 }
 
-// Unwrap transparent type aliases (`Name :: type(T)`) — recursively — to
+// Unwrap transparent type aliases (`Name :: type(T)`) â€” recursively â€” to
 // reveal the underlying type. Distinct types (with is_alias=false) are
 // preserved so their nominal identity is kept intact for type-equality
 // checks; aliases dissolve.
@@ -3865,7 +3867,7 @@ type_name :: proc(t: Type) -> string {
             strings.write_string(&b, " -> ")
             strings.write_string(&b, type_name(v.return_types[0]))
         case:
-            // Multi-return: `fun(...) -> T, U` — parens are cosmetic at the
+            // Multi-return: `fun(...) -> T, U` â€” parens are cosmetic at the
             // source level so we leave them out here.
             strings.write_string(&b, " -> ")
             for rt, i in v.return_types {
@@ -3907,7 +3909,7 @@ is_numeric :: proc(t: Type) -> bool {
     return false
 }
 
-// True for the 8-bit "memory view" scalar types — byte, utf8, c8, u8/i8.
+// True for the 8-bit "memory view" scalar types â€” byte, utf8, c8, u8/i8.
 // All four occupy one byte with the same memory layout; they differ only in
 // what operations the type system permits on the scalar.
 is_byte_sized_memory_type :: proc(t: Type) -> bool {
@@ -3922,16 +3924,16 @@ is_byte_sized_memory_type :: proc(t: Type) -> bool {
 
 // Element compatibility for buffer types (slice / fixed-array / partial-array).
 // Looser than scalar types_equal: any two 8-bit memory-view types are mutually
-// compatible at the buffer element level, so `[]u8 → []byte`, `[8]u8 → []byte`,
-// `[]byte → []utf8` etc. all flow without explicit casts. The arithmetic
+// compatible at the buffer element level, so `[]u8 â†’ []byte`, `[8]u8 â†’ []byte`,
+// `[]byte â†’ []utf8` etc. all flow without explicit casts. The arithmetic
 // restriction on byte still holds at the scalar binop level (is_numeric
-// excludes Type_Byte), so this doesn't enable `byte + byte` — it only enables
+// excludes Type_Byte), so this doesn't enable `byte + byte` â€” it only enables
 // reinterpreting a buffer's element view, which is the natural shape for
 // raw-memory work like file parsing.
 // Quantized capacity tier for an inferred string-literal type: the smallest
 // of 64/256/1024 STRICTLY larger than the byte length, so a `:=` copy always
 // has headroom for appends and the cstring terminator. Three types cover
-// every literal; giants (≥1024) fall back to exact size — rare, and usually
+// every literal; giants (â‰¥1024) fall back to exact size â€” rare, and usually
 // passed straight to a call rather than bound.
 string_literal_cap :: proc(byte_len: int) -> int {
     if byte_len < 64 { return 64 }
@@ -3955,8 +3957,8 @@ is_integer :: proc(t: Type) -> bool {
 
 // True when `t` is an integer-family operand a wrapping op (`+%`/`-%`/`*%`)
 // accepts: any signed/unsigned int, byte/utf8, enum tag, an untyped int literal
-// (which adopts the other operand's width), or a distinct over one. Floats —
-// including untyped float literals — and non-numerics are rejected. Error/any
+// (which adopts the other operand's width), or a distinct over one. Floats â€”
+// including untyped float literals â€” and non-numerics are rejected. Error/any
 // pass through so a wrapping op on already-errored operands doesn't double-report.
 is_wrap_operand :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(resolve_infer(t)) {
@@ -3969,13 +3971,13 @@ is_wrap_operand :: proc(t: Type) -> bool {
     return false
 }
 
-// Slice header width — kept in sync with codegen's slice_layout.len_ir.
+// Slice header width â€” kept in sync with codegen's slice_layout.len_ir.
 // Currently i32; flip both sides together when widening to i64.
 slice_header_width_type :: Type_Numeric{kind = .Signed, bits = 64}
 
 // Does `t` coerce to slice-header width without an implicit cast at the
 // codegen boundary? Used by indexing / slice-bound / take-count / slice_from_ptr
-// — every site where the codegen used to silently sext/trunc.
+// â€” every site where the codegen used to silently sext/trunc.
 // Width, kind, and "is it numeric" for a scalar numeric type. Peels distinct
 // for the width/kind read, but value_preserving_widen guards distinctness
 // separately so a `distinct i32` stays nominal.
@@ -3988,37 +3990,37 @@ numeric_info :: proc(t: Type) -> (bits: int, kind: Numeric_Kind, ok: bool) {
     return 0, .Signed, false
 }
 
-// True when a value of type `from` converts to `to` with NO loss — the rule
+// True when a value of type `from` converts to `to` with NO loss â€” the rule
 // for implicit widening (everything else stays an explicit cast). Same-kind
-// only: int→int and float→float. int↔float is always explicit (its lossless
+// only: intâ†’int and floatâ†’float. intâ†”float is always explicit (its lossless
 // cases are a precision table, not a rule). The integer test is value-
 // preserving, which is about representable range, not just bit width:
-//   signed → wider signed         (sign-extend)
-//   unsigned → wider-or-eq... no: wider unsigned (zero-extend)
-//   unsigned → STRICTLY wider signed (every unsigned value fits)
-//   signed → unsigned             : never (negatives have no representation)
-//   same width across signedness  : never (e.g. u32→i32 overflows)
+//   signed â†’ wider signed         (sign-extend)
+//   unsigned â†’ wider-or-eq... no: wider unsigned (zero-extend)
+//   unsigned â†’ STRICTLY wider signed (every unsigned value fits)
+//   signed â†’ unsigned             : never (negatives have no representation)
+//   same width across signedness  : never (e.g. u32â†’i32 overflows)
 value_preserving_widen :: proc(from: Type, to: Type) -> bool {
-    // Distinct numerics are nominal — don't silently widen across the boundary.
+    // Distinct numerics are nominal â€” don't silently widen across the boundary.
     if _, ok := from.(^Type_Distinct); ok { return false }
     if _, ok := to.(^Type_Distinct);   ok { return false }
     fb, fk, fok := numeric_info(from)
     tb, tk, tok := numeric_info(to)
     if !fok || !tok { return false }
     if fk == .Float || tk == .Float {
-        return fk == .Float && tk == .Float && tb > fb   // f32 → f64 (and f16 → f32)
+        return fk == .Float && tk == .Float && tb > fb   // f32 â†’ f64 (and f16 â†’ f32)
     }
     if fk == .Signed   && tk == .Signed   { return tb > fb }
     if fk == .Unsigned && tk == .Unsigned { return tb > fb }
     if fk == .Unsigned && tk == .Signed   { return tb > fb }  // strictly wider holds all
-    return false  // signed → unsigned: never
+    return false  // signed â†’ unsigned: never
 }
 
-// The smallest numeric type that represents EVERY value of both a and b — the
+// The smallest numeric type that represents EVERY value of both a and b â€” the
 // common type for value-preserving operand mixing in binary ops. (nil,false)
-// when none exists, so the op stays an explicit cast. Same-kind → the wider;
-// cross-sign → a SIGNED type wide enough for the unsigned operand's range and
-// the signed operand (u32 vs i32 → i64; i64 vs u64 → none); int↔float → none.
+// when none exists, so the op stays an explicit cast. Same-kind â†’ the wider;
+// cross-sign â†’ a SIGNED type wide enough for the unsigned operand's range and
+// the signed operand (u32 vs i32 â†’ i64; i64 vs u64 â†’ none); intâ†”float â†’ none.
 // Two-sided analogue of value_preserving_widen, and the rule that keeps mixed
 // arithmetic out of C's "unsigned wins" swamp: -1 stays -1, 4e9 stays 4e9.
 common_numeric_type :: proc(a: Type, b: Type) -> (Type, bool) {
@@ -4031,7 +4033,7 @@ common_numeric_type :: proc(a: Type, b: Type) -> (Type, bool) {
         if ak == .Float && bk == .Float { return ab >= bb ? a : b, true }
         return nil, false  // int <-> float stays explicit
     }
-    if ak == bk { return ab >= bb ? a : b, true }  // same signedness → wider
+    if ak == bk { return ab >= bb ? a : b, true }  // same signedness â†’ wider
     // cross-sign: signed type strictly wider than the unsigned operand AND at
     // least as wide as the signed operand.
     ubits := ak == .Unsigned ? ab : bb
@@ -4057,7 +4059,7 @@ common_numeric_type :: proc(a: Type, b: Type) -> (Type, bool) {
 // too-wide value safe (codegen bounds-checks at the index's width, before any
 // narrowing, so an out-of-range value traps rather than wrapping). This is
 // looser than coerces_to_slice_width, which still gates counts / sizes /
-// capacities — those have no bounds check to lean on, so a silent narrow there
+// capacities â€” those have no bounds check to lean on, so a silent narrow there
 // could under-allocate. Floats are excluded (callers check is_numeric first,
 // then this rejects the non-integer). infer/any/error pass for flexibility.
 coerces_to_index_width :: proc(t: Type) -> bool {
@@ -4076,11 +4078,11 @@ coerces_to_slice_width :: proc(t: Type) -> bool {
     case Type_Any:       return true   // error recovery
     case Type_Error:     return true   // error suppression
     case ^Type_Enum:
-        // Enums lower to their tag width — accept if tag IR matches.
+        // Enums lower to their tag width â€” accept if tag IR matches.
         return tag_type_matches_slice_width(v.tag_type)
     case ^Type_Union:
         // Tagged unions used as indices (e.g. SDL's `union(tag u32) Scancode`)
-        // — accept if the tag IR matches.
+        // â€” accept if the tag IR matches.
         return tag_type_matches_slice_width(v.tag_type)
     case ^Type_Distinct:
         return coerces_to_slice_width(v.base_type)
@@ -4090,7 +4092,7 @@ coerces_to_slice_width :: proc(t: Type) -> bool {
     // boundary). With an i64 header that's every signed <=64 / unsigned <64, so a
     // plain `n := 0` (i64) or a legacy i32 both flow into a count / bound / size
     // losslessly. Genuine narrowing (i64->i32 header, or u64) stays an explicit
-    // cast. Brings counts/bounds in line with coerces_to_index_width — lossless only.
+    // cast. Brings counts/bounds in line with coerces_to_index_width â€” lossless only.
     bits, kind, ok := numeric_info(t)
     if !ok { return false }   // floats / non-numerics rejected
     if kind == slice_header_width_type.kind && bits == slice_header_width_type.bits {
@@ -4100,7 +4102,7 @@ coerces_to_slice_width :: proc(t: Type) -> bool {
 }
 
 // `tag_type` strings on Type_Enum/Type_Union are "" (default, currently i64),
-// "i8"/"i16"/"i32"/"i64", or "u8"/.../u64. Width comparison only — sign
+// "i8"/"i16"/"i32"/"i64", or "u8"/.../u64. Width comparison only â€” sign
 // doesn't matter at the GEP-index level.
 tag_type_matches_slice_width :: proc(tag: string) -> bool {
     // Default tag is i64, and the slice header is also i64, so a default-tag
@@ -4138,7 +4140,7 @@ is_any :: proc(t: Type) -> bool {
     // Opaque pointers (ptr) pass all type checks (compatible with everything).
     // Also handle ^<error> recursively so a poisoned root type silences
     // cascading errors from operations on the resulting pointer (field
-    // access, indexing, etc.) — the user has the original error and doesn't
+    // access, indexing, etc.) â€” the user has the original error and doesn't
     // need a chain of dependent ones.
     if pt, pt_ok := t.(^Type_Ptr); pt_ok {
         return is_any(pt.elem)
@@ -4183,7 +4185,7 @@ is_infer :: proc(t: Type) -> bool {
 }
 
 // True when a type is a byte slice ([]byte). Auto-derefs one level of ^Ptr
-// (so `^[]byte` is recognized — codegen already binds it as a Slice_Var via
+// (so `^[]byte` is recognized â€” codegen already binds it as a Slice_Var via
 // slice_through_distinct_and_ptr) and unwraps distinct/alias wrappers so
 // user-named byte containers (`Block :: type [16]byte`, etc.) get the
 // reinterpret-read/write machinery too.
@@ -4208,7 +4210,7 @@ is_byte_fixed_array :: proc(t: Type) -> bool {
 }
 
 // True when a type is a byte-element partial array [..N]byte. Same unwrap
-// shape as the slice / fixed-array helpers — distinct/alias wrappers,
+// shape as the slice / fixed-array helpers â€” distinct/alias wrappers,
 // auto-deref of one ^Ptr.
 is_byte_partial_array :: proc(t: Type) -> bool {
     cur := distinct_base(t)
@@ -4219,16 +4221,16 @@ is_byte_partial_array :: proc(t: Type) -> bool {
     return is_byte
 }
 
-// True when a type is any byte-addressable buffer — shares the same
+// True when a type is any byte-addressable buffer â€” shares the same
 // reinterpret read/write semantics as []byte.
 is_byte_buffer :: proc(t: Type) -> bool {
     return is_byte_slice(t) || is_byte_fixed_array(t) || is_byte_partial_array(t)
 }
 
 // True when t is array-shaped: a fixed array, slice, or partial array. On the
-// byte-target assignment path this tells a content copy (`buf[lo:hi] = src` —
+// byte-target assignment path this tells a content copy (`buf[lo:hi] = src` â€”
 // copy the bytes src points AT) from a reinterpret span write
-// (`buf[lo:hi] = structVal` — blit the value's own bytes).
+// (`buf[lo:hi] = structVal` â€” blit the value's own bytes).
 is_array_shaped :: proc(t: Type) -> bool {
     #partial switch _ in distinct_base(t) {
     case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array: return true
@@ -4260,7 +4262,7 @@ expr_is_big_endian :: proc(e: Expr) -> bool {
 }
 
 // When a typed-pointer site receives `&buf[i]` over a byte buffer, the existing
-// ^byte → ^T compatibility rule (types_equal) accepts the assignment but loses
+// ^byte â†’ ^T compatibility rule (types_equal) accepts the assignment but loses
 // the size information needed for a runtime bounds check. Stamp the address-of
 // node so codegen emits the check before producing the pointer.
 maybe_stamp_byte_view :: proc(c: ^Checker, expected: Type, value: Expr) {
@@ -4385,7 +4387,7 @@ const_eval_int :: proc(e: Expr, c: ^Checker = nil) -> (int, bool) {
     return 0, false
 }
 
-// True when two types are genuinely incompatible — neither is untyped
+// True when two types are genuinely incompatible â€” neither is untyped
 // (Type_Any, Type_Error, opaque pointer) and they don't match.
 // Strict nominal equality: checks struct/enum/union names match exactly.
 // Unlike types_equal, does not allow structural compatibility for array classes.
@@ -4399,7 +4401,7 @@ types_name_equal :: proc(a: Type, b: Type) -> bool {
     sa := as_scope_body(a)
     sb := as_scope_body(b)
     if sa != nil && sb != nil && sa.name != "" && sb.name != "" {
-        // Interned identity: same logical type ⟺ same Scope_Body pointer.
+        // Interned identity: same logical type âŸº same Scope_Body pointer.
         return sa == sb
     }
     // For non-struct types, delegate to types_equal
@@ -4408,7 +4410,7 @@ types_name_equal :: proc(a: Type, b: Type) -> bool {
 
 types_incompatible :: proc(a: Type, b: Type) -> bool {
     if is_any(a) || is_any(b) { return false }
-    // Allow `^byte → fn(...)` for raw-pointer-to-function-pointer assignments.
+    // Allow `^byte â†’ fn(...)` for raw-pointer-to-function-pointer assignments.
     // This is the unsafe coercion that lets `game_run : fn(...) = find_symbol(...)`
     // work. The type annotation IS the user's assertion of the function's
     // shape; codegen lowers it as a no-op since `ptr` is `ptr` in LLVM IR.
@@ -4428,7 +4430,7 @@ types_incompatible :: proc(a: Type, b: Type) -> bool {
 //   - At a slot with a `~T` shape constraint, the type-arg is a
 //     Type_Const_Expr wrapping an Expr_Call.
 //   - The user hasn't supplied an init.
-// Idempotent — after the first run the args are Type_Name, so re-running
+// Idempotent â€” after the first run the args are Type_Name, so re-running
 // is a no-op. Multiple shape-constrained slots stack their bindings into
 // one literal.
 desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
@@ -4477,7 +4479,7 @@ desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
 // types_equal for everything else. Used by the shape-constraint method
 // signature check, where the constraint's `^Self` resolves to the
 // constraint's own scope and the concrete impl's `^Self` resolves to its
-// own scope — naively types_equal would never match them.
+// own scope â€” naively types_equal would never match them.
 self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope) -> bool {
     if ts, ok := ct_type.(^Type_Scope); ok && ts == ct_self {
         if ts2, ok2 := arg_type.(^Type_Scope); ok2 && ts2 == arg_self { return true }
@@ -4507,7 +4509,7 @@ self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope)
 //     filler field).
 // Each shortcoming surfaces as its own diagnostic at `span`.
 check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, home_package: string, span: Span) {
-    // `void` is the universal subtype for shape constraints — used as the
+    // `void` is the universal subtype for shape constraints â€” used as the
     // default type-arg when the user writes `p : Program` (no arena).
     // Trivially satisfies any `~T` requirement (no API to miss, zero size
     // to budget). Reads / method calls on the resulting void slot are
@@ -4516,7 +4518,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
     constraint_name := param.shape_constraint
     // Resolve the constraint type by name. The bare identifier in `~T` is
     // looked up against the home package of the template that declared the
-    // constraint — that's the only module the parser could have referenced
+    // constraint â€” that's the only module the parser could have referenced
     // when stamping `shape_constraint`. We try the flat key first; if that
     // misses, fall back to a bare-name search across both tables to cover
     // intrinsic-style types registered without a package prefix.
@@ -4527,7 +4529,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
     else if ts, ok := c.table.structs[constraint_name]; ok { ct = ts }
     else if ts, ok := c.table.funs[constraint_name]; ok { ct = ts }
     if ct == nil {
-        // Couldn't find the constraint — the parser stashed a bare name, so
+        // Couldn't find the constraint â€” the parser stashed a bare name, so
         // a typo or unimported module slips through to here. Bail loud.
         check_error(c, span,
             TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD,
@@ -4549,7 +4551,7 @@ check_shape_constraint :: proc(c: ^Checker, param: Generic_Param, arg: Type, hom
                 arg_scope.name, constraint_name, fn_name)
             continue
         }
-        // Extra trailing params on the concrete are fine — provided they
+        // Extra trailing params on the concrete are fine â€” provided they
         // all have defaults. A caller using the constraint's signature
         // omits them, and Mara's default-arg lowering fills them in.
         // Fewer params, or extras without defaults, breaks the API.
@@ -4625,7 +4627,7 @@ checker_type_byte_size :: proc(t: Type) -> int {
         return 1
     case ^Type_Slice:      return slice_header_bytes
     case ^Type_Partial_Array:
-        // { len, cap, ptr, [N x T] } — slice_header_bytes for the header,
+        // { len, cap, ptr, [N x T] } â€” slice_header_bytes for the header,
         // followed by N * sizeof(elem) backing storage.
         return slice_header_bytes + v.size * checker_type_byte_size(v.elem)
     case ^Type_Scope:      return checker_struct_byte_size(v)
@@ -4644,18 +4646,18 @@ checker_type_byte_size :: proc(t: Type) -> int {
 }
 
 // ---------------------------------------------------------------------------
-// Storage routing — two operations, one policy
+// Storage routing â€” two operations, one policy
 // ---------------------------------------------------------------------------
 // Every value's size is knowable at compile time (no runtime-sized types), so
 // the whole "stack vs arena" decision reduces to two operations:
 //
-//   1. Find the value's size       — checker_type_byte_size, above. It returns
+//   1. Find the value's size       â€” checker_type_byte_size, above. It returns
 //      the TOTAL inline footprint: struct padding, fixed-array storage, and
 //      partial-array backing are all counted; a slice is just its header (its
 //      backing is a separate allocation, routed on its own).
-//   2. Route it to the right store — routes_to_arena, below.
+//   2. Route it to the right store â€” routes_to_arena, below.
 //
-// Both the type checker (check_storage_sizes — the early "declare an allocator"
+// Both the type checker (check_storage_sizes â€” the early "declare an allocator"
 // error) and codegen (alloca vs arena_bump) gate on routes_to_arena, so the
 // threshold lives in exactly one place and the two stages can't drift.
 
@@ -4678,7 +4680,7 @@ is_global_var :: proc(c: ^Checker, name: string) -> bool {
 // Check if a variable name is a function parameter (walks env chain).
 // Is `name` a parameter of the function/ctor whose body we're in? Derived from
 // the durable scope (the enclosing callable's params) rather than a per-env flag
-// — no closures, so the nearest callable IS the one that owns the params.
+// â€” no closures, so the nearest callable IS the one that owns the params.
 is_param :: proc(env: ^Type_Env, name: string) -> bool {
     ft := enclosing_callable_scope(env)
     if ft == nil { return false }
@@ -4686,20 +4688,16 @@ is_param :: proc(env: ^Type_Env, name: string) -> bool {
     return false
 }
 
-// Check if a variable was declared with `name : let T = src` — i.e. its storage
+// Check if a variable was declared with `name : let T = src` â€” i.e. its storage
 // aliases an existing source pointer rather than being a fresh allocation.
 is_let_name :: proc(env: ^Type_Env, name: string) -> bool {
-    cur := env
-    for cur != nil {
-        if b, ok := cur.bindings[name]; ok { return b.is_let }
-        cur = cur.parent
-    }
+    #reverse for f in g_esc { if v, ok := f.is_let[name]; ok { return v } }
     return false
 }
 
 // True if `name` is a parameter of a reference-type (aggregate or slice)
 // without `^`. These params are passed as pointers under the hood for
-// performance, but the missing `^` is the read-only contract — writes through
+// performance, but the missing `^` is the read-only contract â€” writes through
 // this name are rejected. `^T` params remain mutable; scalar params are
 // unaffected (writes only touch the local copy and aren't caller-visible).
 //
@@ -4752,30 +4750,21 @@ write_root_immutable_param :: proc(e: Expr, env: ^Type_Env) -> (name: string, ok
     }
 }
 
-// Look up provenance for a variable name (walks env chain).
+// Provenance / let-ness / local-slice-backed of a name â€” read off the escape
+// pass's block-scoped frame stack. (The `env` param is vestigial: kept so the
+// shared helpers can pass it, but escape state no longer lives on the env.)
 get_provenance :: proc(env: ^Type_Env, name: string) -> Provenance {
-    cur := env
-    for cur != nil {
-        if b, ok := cur.bindings[name]; ok { return b.provenance }
-        cur = cur.parent
-    }
-    return PROV_GLOBAL
+    p, _ := esc_get_prov(name)
+    return p
 }
 
-// Walk the env chain for the local-slice-backed flag — true means the named
-// variable holds a struct whose slice fields point at frame-local memory and
-// thus must not flow into a longer-lived scope (return, longer-lived field).
 get_local_slice_backed :: proc(env: ^Type_Env, name: string) -> bool {
-    cur := env
-    for cur != nil {
-        if b, ok := cur.bindings[name]; ok { return b.local_slice_backed }
-        cur = cur.parent
-    }
+    #reverse for f in g_esc { if v, ok := f.slice_backed[name]; ok { return v } }
     return false
 }
 
 set_local_slice_backed :: proc(env: ^Type_Env, name: string) {
-    get_or_make_binding(env, name).local_slice_backed = true
+    if f := esc_top(); f != nil { f.slice_backed[name] = true }
 }
 
 // Mark `name` if `value` would leave it holding slice fields pointing at
@@ -4810,9 +4799,9 @@ mark_local_slice_backed_if_needed :: proc(c: ^Checker, env: ^Type_Env, name: str
     }
 }
 
-// Set provenance for a variable in the current env scope.
+// Set provenance for a name in the top escape frame.
 set_provenance :: proc(env: ^Type_Env, name: string, p: Provenance) {
-    get_or_make_binding(env, name).provenance = p
+    if f := esc_top(); f != nil { f.prov[name] = p }
 }
 
 // For a function returning a ref-typed value, find the parameter index
@@ -4833,7 +4822,7 @@ fun_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     defer delete_key(&c.table.fun_return_arg_pending, scope)
 
     // Constructor call: the returned value is Self, and a ctor body has no
-    // `return Self` for the walk below to find — without this arm a ctor
+    // `return Self` for the walk below to find â€” without this arm a ctor
     // call always produced the empty set (PROV_GLOBAL), so
     // `return Font(&local_buf)` escaped the checker while the equivalent
     // plain-fn laundering was caught.
@@ -4844,7 +4833,7 @@ fun_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     }
 
     // Flow-sensitive walk: each local carries a SET of parameter indices
-    // it could trace back to. Branch merges are unions — if one path
+    // it could trace back to. Branch merges are unions â€” if one path
     // assigns `out` from param 0 and another from param 1, post-join out
     // tracks {0, 1}. Empty set = no tracked source (depth 0 at call sites).
     //
@@ -5079,8 +5068,8 @@ eval_expr_arg_set :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope, tracking:
     if lit, ok := e.(^Expr_Struct_Literal); ok {
         // Union over ref-carrying fields (deep: a struct-valued field whose
         // nested fields hold refs propagates too). An unresolvable field type
-        // — e.g. a literal of a NESTED struct type, whose bare name isn't in
-        // the global tables — is treated as ref-carrying rather than skipped:
+        // â€” e.g. a literal of a NESTED struct type, whose bare name isn't in
+        // the global tables â€” is treated as ref-carrying rather than skipped:
         // missing it is how `Wrap{data = bytes[lo:hi]}` escaped.
         for field, i in lit.fields {
             ft := struct_lit_field_type(c, lit, i)
@@ -5133,7 +5122,7 @@ is_ref_type :: proc(t: Type) -> bool {
 }
 
 // True when the struct carries a ref-typed field (ptr/slice) at any VALUE
-// depth — nested struct fields and array/partial-array elements included.
+// depth â€” nested struct fields and array/partial-array elements included.
 // TTF is the motivating case: its only ref is glyf.data, one struct down,
 // so a shallow scan called it ref-free and returning one escaped the
 // checker. Nested TYPE DEFINITIONS registered as pseudo-fields are skipped
@@ -5166,7 +5155,7 @@ type_carries_ref :: proc(t: Type) -> bool {
 
 // Resolve a call to the callee's source AST. Pointer-first: a directly resolved
 // call carries its callee signature (Resolved_Func.callee), which links straight
-// to the body via Type_Scope.ast — exact by construction, no name re-keying.
+// to the body via Type_Scope.ast â€” exact by construction, no name re-keying.
 // Monomorphizations link their template AST (the structural escape check is
 // clone-invariant). The name-keyed lookups below remain as a safety net for
 // calls the checker didn't annotate with a callee (resolved_func left nil).
@@ -5189,16 +5178,16 @@ lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
 
 // Determine the provenance of an expression as a stack-depth integer.
 // Lower depth = lives in an outer scope = outlives more.
-//   depth = 0           — global / literal / external (outlives the program)
-//   depth = N (0 < N)   — backing data lives in a scope at depth N
+//   depth = 0           â€” global / literal / external (outlives the program)
+//   depth = N (0 < N)   â€” backing data lives in a scope at depth N
 // The return-from-function check is `depth >= env.scope_depth`. Within a
 // function body, locals are at env.scope_depth and refs from params are
 // (conservatively) at env.scope_depth - 1.
 expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
-    // &x — address-of always points to the local copy, even for params.
+    // &x â€” address-of always points to the local copy, even for params.
     // Parameters are passed by value, so &param is a pointer to stack memory.
     if unary, ok := e.(^Expr_Unary); ok && unary.op == .Ampersand {
-        // &slice[i] / &arr[i] — the address points into the indexed thing's
+        // &slice[i] / &arr[i] â€” the address points into the indexed thing's
         // storage, so provenance follows the source. For a param slice the
         // data pointer lives in the caller's memory (safe to return); for a
         // local array it's still local (and rightly flagged on return).
@@ -5211,7 +5200,7 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
             // so the resulting pointer inherits src's provenance.
             if is_let_name(env, ident.name) { return get_provenance(env, ident.name) }
             // &slice_param / &ptr_param: slice and ptr params are reference
-            // types — their header lives in the caller's frame, so the
+            // types â€” their header lives in the caller's frame, so the
             // address-of is a caller-owned pointer, not stack-local.
             if is_param(env, ident.name) {
                 t := expr_type(unary.operand)
@@ -5229,12 +5218,12 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
         }
         return prov_local(env)
     }
-    // arr[low:high] — slice of an array/slice. The resulting slice's data pointer
+    // arr[low:high] â€” slice of an array/slice. The resulting slice's data pointer
     // points into the source's memory, so inherit provenance from the source.
     if sl, ok := e.(^Expr_Slice); ok {
         return expr_provenance(c, sl.expr, env)
     }
-    // Variable reference — look up its tracked provenance
+    // Variable reference â€” look up its tracked provenance
     if ident, ok := e.(^Expr_Ident); ok {
         if is_param(env, ident.name) {
             // Reference-type params (ptr, slice): data lives in caller's frame.
@@ -5247,7 +5236,7 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
         if is_global_var(c, ident.name) { return PROV_GLOBAL }
         return get_provenance(env, ident.name)
     }
-    // Field access on a struct — the slice/ptr field's data could point anywhere.
+    // Field access on a struct â€” the slice/ptr field's data could point anywhere.
     // We can't determine the backing memory from the field access alone.
     // Exception: if the root variable has known provenance, inherit it for ptr fields.
     if fa, ok := e.(^Expr_Field_Access); ok {
@@ -5257,18 +5246,18 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
             return expr_provenance(c, fa.expr, env)
         }
         // A slice field's data pointer is independent of the struct's location.
-        // e.g., arena.base — the struct is on the stack but the slice data is from vm_reserve.
+        // e.g., arena.base â€” the struct is on the stack but the slice data is from vm_reserve.
         // We can't trace through the slice data pointer statically, so global.
         return PROV_GLOBAL
     }
-    // Literals (array, number, string) — backing memory at our depth.
+    // Literals (array, number, string) â€” backing memory at our depth.
     if _, ok := e.(^Expr_Array); ok { return prov_local(env) }
     if _, ok := e.(^Expr_Number); ok { return prov_local(env) }
     if _, ok := e.(^Expr_String); ok { return prov_local(env) }
-    // Struct literal — for structs with ref fields, the value's effective
+    // Struct literal â€” for structs with ref fields, the value's effective
     // depth is the max over the EXPLICITLY-ASSIGNED ref fields (those are
     // what would dangle; the struct's bytes are sret-copied at return).
-    // Ref fields with no explicit value zero-init to null/empty — safe.
+    // Ref fields with no explicit value zero-init to null/empty â€” safe.
     // So a `Megastruct{}` zero-init literal returns PROV_GLOBAL even if
     // the type has slice fields.
     if lit, ok := e.(^Expr_Struct_Literal); ok {
@@ -5282,10 +5271,10 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
         if max_depth >= 0 { return Provenance{depth = max_depth} }
         return PROV_GLOBAL
     }
-    // Function call — the callee's return value depth bounds by the max
+    // Function call â€” the callee's return value depth bounds by the max
     // depth of the arguments at the indices the callee can return from.
     // Set encoding handles both straight-line (single tracked index) and
-    // conditional reassignment (union across branches). Empty set →
+    // conditional reassignment (union across branches). Empty set â†’
     // PROV_GLOBAL (the function's return is rooted in literals/globals
     // / external sources, none of which can dangle from the caller).
     if call, ok := e.(^Expr_Call); ok {
@@ -5306,7 +5295,7 @@ expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> Provenance {
 
 // Emit the type error for a `return value` where `value` would dangle.
 // For calls, look up the callee's tracked arg-set and name the specific
-// parameter(s) bound to local data — turns a generic message into one
+// parameter(s) bound to local data â€” turns a generic message into one
 // that points at exactly which argument is the problem.
 report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Env) {
     if call, ok := val.(^Expr_Call); ok {
@@ -5348,7 +5337,7 @@ report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Env)
 // Walk a function's body looking for a `return Foo{a, b}` where Foo has slice
 // fields filled by local fixed-array idents. Same shape that codegen detects
 // to drive escape-local sibling/pool allocation; here we use it to decide
-// whether the call's result has caller-local backing. True ⇒ the returned
+// whether the call's result has caller-local backing. True â‡’ the returned
 // struct's slice fields point into the caller's frame, so returning the
 // result further would dangle.
 function_has_local_escape :: proc(scope: ^Stmt_Scope) -> bool {
@@ -5374,7 +5363,7 @@ scope_has_escape_return :: proc(stmts: []Stmt) -> bool {
                 if _, is_fa := decl.var_type.(^Type_Fixed_Array); !is_fa { continue }
                 // Distinguish a TRUE local array decl (`verts : [4]Vertex`,
                 // s.value == nil) from a take-bound view (`verts := take(...)`)
-                // — the latter's storage is caller-provided and the returned
+                // â€” the latter's storage is caller-provided and the returned
                 // slice is safe to escape through.
                 if decl.value == nil {
                     return true
@@ -5414,13 +5403,13 @@ collect_typed_local_decls :: proc(stmts: []Stmt, out: ^map[string]^Stmt_Assign) 
 // the source-level name, and a stripped-suffix fallback in turn.
 call_has_local_escape :: proc(c: ^Checker, call: ^Expr_Call) -> bool {
     // Same callee resolution as lookup_callee_scope (pointer-first, name-keyed
-    // fallback) — delegate instead of duplicating the dance.
+    // fallback) â€” delegate instead of duplicating the dance.
     scope := lookup_callee_scope(c, call)
     return scope != nil && function_has_local_escape(scope)
 }
 
 // Check if an expression is a pointer/slice to local stack memory that won't
-// survive the current function return. Only applies to ref types (ptr, slice) —
+// survive the current function return. Only applies to ref types (ptr, slice) â€”
 // returning a struct by value is safe (copied via sret).
 is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
     t := expr_type(e)
@@ -5429,7 +5418,7 @@ is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
     if _, ok := t.(^Type_Slice); ok { is_ref = true }
     // Struct values with ref fields: the struct's bytes are sret-copied at
     // return, but the ref-content can still dangle. Treat as ref-like for
-    // the depth check — EXCEPT when the value is a struct literal directly
+    // the depth check â€” EXCEPT when the value is a struct literal directly
     // at the return site. Codegen's escape mechanism relocates the local
     // backing storage of `return Foo{verts_uninit_local}` to the caller's
     // sret region; static rejection here would block that legitimate
@@ -5448,7 +5437,7 @@ is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
 // Check if returning `e` would leak slice fields whose backing is in our
 // frame. The escape mechanism handles direct `return StructLit{local_arr,..}`
 // (the compiler relocates the storage to the caller's sret region), but the
-// passthrough form `data := call_with_escape(); return data` doesn't — data
+// passthrough form `data := call_with_escape(); return data` doesn't â€” data
 // holds slice headers pointing at our locally-allocated sibling/pool buffers.
 // Same for `return call_with_escape()` when the result isn't bound: the
 // returned struct's slice fields would dangle past our frame.
@@ -5483,7 +5472,7 @@ returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> b
 // This flags any explicitly-assigned ref field of a returned struct literal
 // whose backing is in our frame. Caller-passed storage (a pointer param) and
 // globals are fine; locals, by-value array params, call temps, and `arr[:]` of a
-// local are not. (No relocation exception — that machinery is gone; the
+// local are not. (No relocation exception â€” that machinery is gone; the
 // pass-down pattern, e.g. Mesh_Data over a `storage` param, is the way.)
 returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Env) -> bool {
     for field, i in lit.fields {
@@ -5493,7 +5482,7 @@ returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, 
         d: int
         if _, fa := expr_type(v).(^Type_Fixed_Array); fa {
             // Field is a slice; the value is a fixed array being decayed, so the
-            // backing is the array's own STORAGE — which lives in THIS frame (a
+            // backing is the array's own STORAGE â€” which lives in THIS frame (a
             // local decl, a `:=`-from-value local, a by-value param copy, a call
             // temp, an array literal) unless it's a global. We decide that
             // structurally: expr_provenance tracks where a slice's *data* points,
@@ -5527,21 +5516,21 @@ solidify_type :: proc(t: Type) -> Type {
 // ---------------------------------------------------------------------------
 // A `:=` binding whose initializer is an untyped literal/const no longer
 // solidifies to i64 at the declaration. It gets a fresh Infer_Cell and stays
-// open; its width is decided the first time it flows into a concrete context —
+// open; its width is decided the first time it flows into a concrete context â€”
 // arithmetic against a sized operand, an argument, an assignment, a return.
-// Still open at codegen → i64/f64. Two open bindings combined in arithmetic are
+// Still open at codegen â†’ i64/f64. Two open bindings combined in arithmetic are
 // union-find linked so they resolve together. A binding pinned to one width and
 // then used at a narrower / cross-sign width is a hard error asking for an
 // explicit annotation (no silent narrowing). Literals and constant references
 // stay ANONYMOUS (nil cell): each use adopts its own context independently, as
-// before — only a named binding carries a cell, since only it has one storage
+// before â€” only a named binding carries a cell, since only it has one storage
 // slot to pin.
 Infer_Cell :: struct {
     resolved:      Type,        // concrete type once decided; nil while open
-    resolved_span: Span,        // where `resolved` was first pinned — for the conflict diagnostic
+    resolved_span: Span,        // where `resolved` was first pinned â€” for the conflict diagnostic
     link:          ^Infer_Cell, // union-find parent; nil at the root
-    name:          string,      // binding name — for the conflict diagnostic
-    span:          Span,        // binding decl site — for the conflict diagnostic
+    name:          string,      // binding name â€” for the conflict diagnostic
+    span:          Span,        // binding decl site â€” for the conflict diagnostic
 }
 
 infer_cell_of :: proc(t: Type) -> ^Infer_Cell {
@@ -5576,7 +5565,7 @@ resolve_infer :: proc(t: Type) -> Type {
 // the conflict case. Callers pass a target already known to be numeric.
 unify_infer_concrete :: proc(c: ^Checker, cell: ^Infer_Cell, target: Type, span: Span) {
     tgt := resolve_infer(target)
-    if is_infer(tgt) { return }   // target still open — nothing concrete to pin to yet
+    if is_infer(tgt) { return }   // target still open â€” nothing concrete to pin to yet
     r := infer_root(cell)
     if r.resolved == nil {
         r.resolved = tgt
@@ -5610,9 +5599,9 @@ unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Spa
 
 // At a site where `val` flows into a concrete `target` (argument, assignment,
 // field init, return): if val is a deferred binding whose family matches the
-// target's (int→int, float→float), pin its cell to target and report handled,
+// target's (intâ†’int, floatâ†’float), pin its cell to target and report handled,
 // so the caller skips its normal compat check (the pin owns the diagnostic).
-// Anonymous infers, concretes, and cross-family (int↔float) return false so the
+// Anonymous infers, concretes, and cross-family (intâ†”float) return false so the
 // normal check still runs.
 coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> bool {
     cell := infer_cell_of(val)
@@ -5621,14 +5610,14 @@ coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> boo
     _, tkind, tok := numeric_info(tgt)
     if !tok { return false }
     _, is_float_infer := val.(Type_Infer_Float)
-    if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
+    if is_float_infer != (tkind == .Float) { return false }   // intâ†”float stays explicit
     unify_infer_concrete(c, cell, tgt, span)
     return true
 }
 
 // Pin any deferred (inference-cell) struct fields referenced in `expr` to the
-// concrete `target` width — so an annotated field's default settles the fields
-// that feed it (`per_row : i32 = size / cell` → size and cell become i32). Runs
+// concrete `target` width â€” so an annotated field's default settles the fields
+// that feed it (`per_row : i32 = size / cell` â†’ size and cell become i32). Runs
 // during the register loop, where field_map isn't built yet, so it linear-scans
 // ft.fields.
 pin_field_refs :: proc(c: ^Checker, expr: Expr, target: Type, ft: ^Type_Scope, span: Span) {
@@ -5651,7 +5640,7 @@ pin_field_refs :: proc(c: ^Checker, expr: Expr, target: Type, ft: ^Type_Scope, s
 }
 
 // Try to extract a compile-time constant numeric value from an expression.
-// Returns both forms — f64 (for fractional/range-vs-float comparisons) and
+// Returns both forms â€” f64 (for fractional/range-vs-float comparisons) and
 // i128 (exact for integer literals up to u64 width). Callers use whichever
 // matches the type they're checking. f64 is lossy above 2^53 but i128 stays
 // exact for the full u64-width literal range and its negation.
@@ -5688,13 +5677,13 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
 
     #partial switch v in target {
     case Type_Numeric:
-        // Word-sized (bits=0): skip — width is decided at codegen, and the 32-bit
+        // Word-sized (bits=0): skip â€” width is decided at codegen, and the 32-bit
         // case is conservative (anything that would overflow there already
         // overflows on the 64-bit case worth catching).
         if v.bits == 0 { return }
         switch v.kind {
         case .Signed:
-            // i128 covers the storage range exactly — anything that reached us
+            // i128 covers the storage range exactly â€” anything that reached us
             // already fits. Width=128 also skips the formula below where
             // `1 << 127` would wrap.
             if v.bits == 128 { return }
@@ -5729,9 +5718,9 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
             }
         }
     case Type_F64:
-        // f64 — no meaningful overflow from a literal
+        // f64 â€” no meaningful overflow from a literal
     case:
-        // Non-numeric target — nothing to check
+        // Non-numeric target â€” nothing to check
     }
 }
 
@@ -5743,7 +5732,7 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
 //   Pass 1 (register): Record all declarations (functions, structs, enums,
 //           unions, variables, foreign blocks) into the scope. Function bodies
 //           and block bodies are NOT entered yet.
-//   Pass 2 (check):    Check all statements fully — validate expressions,
+//   Pass 2 (check):    Check all statements fully â€” validate expressions,
 //           descend into function bodies and block bodies (which themselves
 //           go through check_scope recursively).
 //
@@ -5751,7 +5740,7 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
 // at the same scope level is already known. Forward references just work.
 
 // Param-only variant: an integer-literal default takes the slice-header width
-// (`slice_header_width_type` — i64 since the 8-8-8 migration; was i32 under
+// (`slice_header_width_type` â€” i64 since the 8-8-8 migration; was i32 under
 // 4-4-8). It tracks the slice width on purpose: `name := 0` is overwhelmingly
 // an index / offset / count, so a slice length flows into the param cast-free.
 // Want a narrower param? annotate it: `name: i32 = 0`.
@@ -5763,15 +5752,15 @@ infer_param_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env) 
     return infer_field_type_from_default(c, value, env)
 }
 
-// Resolve a callable parameter's declared type — the single cascade shared by
+// Resolve a callable parameter's declared type â€” the single cascade shared by
 // every registration path (register_type_names, register_and_check_declarations,
 // register_scope_defs):
-//   - explicit `p: T`       → resolve the annotation
-//   - untyped with default  → infer from the default value
-//   - neither               → Type_Error (an un-annotated, un-defaulted param)
+//   - explicit `p: T`       â†’ resolve the annotation
+//   - untyped with default  â†’ infer from the default value
+//   - neither               â†’ Type_Error (an un-annotated, un-defaulted param)
 // An untyped numeric default seeds a deferred inference cell instead of
 // solidifying to i64 right now, so the param adopts the width it's used at in the
-// body — exactly like a `:=` local. This applies to struct CONSTRUCTORS too: a
+// body â€” exactly like a `:=` local. This applies to struct CONSTRUCTORS too: a
 // parameterized struct has a body (its field initializers) that uses the param,
 // so `Grid :: struct(size := 16) { per_row : i32 = size }` settles size at i32
 // rather than rejecting an i64-into-i32 narrowing. solidify_param_defaults freezes
@@ -5803,9 +5792,9 @@ resolve_param_type :: proc(c: ^Checker, tp: Scope_Binding, env: ^Type_Env, span:
 // that to a concrete type and write it back into the signature, so callers and
 // codegen (extract_checked_scope) never see an open cell. A FUNCTION param that
 // flowed into no concrete context falls back to the function's sole numeric
-// return type (the int↔float guard lives in coerce_deferred), then to i64 via
+// return type (the intâ†”float guard lives in coerce_deferred), then to i64 via
 // solidify_type. Constructors return Self, not a scalar, so they skip that
-// fallback — an unused constructor param just lands on i64.
+// fallback â€” an unused constructor param just lands on i64.
 solidify_param_defaults :: proc(c: ^Checker, ft: ^Type_Scope) {
     ret_fallback: Type
     if ft.kind == .Fun && len(ft.return_types) == 1 {
@@ -5821,7 +5810,7 @@ solidify_param_defaults :: proc(c: ^Checker, ft: ^Type_Scope) {
     }
 }
 
-// The result type of a primitive cast `name(x)` — f32(x) → f32, i32(x) → i32.
+// The result type of a primitive cast `name(x)` â€” f32(x) â†’ f32, i32(x) â†’ i32.
 // Returns (_, false) for non-cast names. Pure mapping, no checks/side effects;
 // shared by the cast checker and the field-default mini-evaluator so the latter
 // doesn't mistake a cast for an unknown function and fall back to `any`.
@@ -5848,16 +5837,16 @@ cast_result_type :: proc(name: string) -> (Type, bool) {
     return nil, false
 }
 
-// Strict same-type test for the redundant-cast warning. NOT types_equal —
+// Strict same-type test for the redundant-cast warning. NOT types_equal â€”
 // that's a COMPATIBILITY test (it reports Type_Infer_Int as equal to every
 // numeric, floats included), which would flag `f32(SOME_INT_CONST)` as an
-// identity when it's really an int→float conversion. This is true only when
+// identity when it's really an intâ†’float conversion. This is true only when
 // `src` is ALREADY the exact concrete type the cast produces:
-//   - infer/untyped operands → false: the cast is the literal's type ascription
+//   - infer/untyped operands â†’ false: the cast is the literal's type ascription
 //     (`CACHE_MAGIC :: u32(0x...)`, `f32(RASTER_QUAD_STEPS)` where the const is
 //     an untyped int), and a pinned `:=` binding has already resolved to a
 //     concrete type so it still qualifies.
-//   - distinct operands → false: `i32(some_distinct)` is a real unwrap.
+//   - distinct operands â†’ false: `i32(some_distinct)` is a real unwrap.
 //   - the same-width byte/u8/utf8 trio stays distinct (nominally different).
 cast_target_same_as_operand :: proc(src_raw: Type, target: Type) -> bool {
     src := resolve_infer(src_raw)
@@ -5899,7 +5888,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         }
         // Fall back to the in-progress struct's already-typed fields. Lets
         // `fov_x := fov_y * w_width / w_height` see the earlier `fov_y` field
-        // — without this it would resolve to Type_Any → IR `i64` and the
+        // â€” without this it would resolve to Type_Any â†’ IR `i64` and the
         // float multiplication would lower to `smul.with.overflow.i64`.
         if ft != nil {
             if idx, fm_ok := ft.field_map[ident.name]; fm_ok && idx < len(ft.fields) {
@@ -5925,18 +5914,18 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         return Type_Numeric{kind = .Signed, bits = 64}
     }
     // A bare string-literal default takes the same quantized tier as any
-    // inferred literal binding (string_literal_cap — [..64]/[..256]/
+    // inferred literal binding (string_literal_cap â€” [..64]/[..256]/
     // [..1024]utf8). (Annotated string fields like `name : [..16]utf8 = ...`
     // take the type_expr branch instead.) Without this the field fell
-    // through to Type_Any → i64.
+    // through to Type_Any â†’ i64.
     if s, ok := value.(^Expr_String); ok {
         pa := new(Type_Partial_Array)
         pa.size = string_literal_cap(len(s.value))
         pa.elem = Type_Utf8{}
         return pa
     }
-    // Char literal default — an 8-bit character. Without this it fell through
-    // to Type_Any → i64 (wrong width: a char field is i8, not i64).
+    // Char literal default â€” an 8-bit character. Without this it fell through
+    // to Type_Any â†’ i64 (wrong width: a char field is i8, not i64).
     if _, ok := value.(^Expr_Char); ok {
         return Type_Utf8{}
     }
@@ -5944,11 +5933,11 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
         return Type_Bool{}
     }
     // Call expressions: look up the callee's Type_Scope in the env.
-    //   struct constructor (kind=.Struct with params)  → the struct type itself
-    //   function call       (kind=.Fun with returns)   → primary return type
+    //   struct constructor (kind=.Struct with params)  â†’ the struct type itself
+    //   function call       (kind=.Fun with returns)   â†’ primary return type
     if call, ok := value.(^Expr_Call); ok && call.name != "" {
-        // Primitive cast: f32(x) → f32, i32(x) → i32. Must precede the env
-        // lookup — the cast name isn't a function symbol, so the lookup would
+        // Primitive cast: f32(x) â†’ f32, i32(x) â†’ i32. Must precede the env
+        // lookup â€” the cast name isn't a function symbol, so the lookup would
         // miss and the proc would silently fall through to Type_Any.
         if ct, is_cast := cast_result_type(call.name); is_cast {
             return ct
@@ -5968,7 +5957,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
             }
         }
     }
-    // `field := call()?` — the `?` strips the trailing err, so the field's type
+    // `field := call()?` â€” the `?` strips the trailing err, so the field's type
     // is the inner call's first (non-err) return, mirroring check_try. Without
     // this the Expr_Try falls through to the int default and a fallible helper's
     // i32 result would size the field as i64. A fallible constructor inner
@@ -5988,7 +5977,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
             }
         }
     }
-    // Struct literals: `obj := Object { ... }` — look up the named struct
+    // Struct literals: `obj := Object { ... }` â€” look up the named struct
     // type. Without this, the field's type falls through to Type_Any and
     // lowers to i64 in IR, which silently corrupts later nested-field
     // accesses (e.g. `cam.obj.pos` loads 8 bytes from Camera[0] instead
@@ -6004,7 +5993,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
             }
         }
     }
-    // Slice expressions: `view := buf[lo:hi]` — the field is a []elem view of
+    // Slice expressions: `view := buf[lo:hi]` â€” the field is a []elem view of
     // the source. Mirrors check_slice's result derivation (auto-deref ^[]T /
     // ^[N]T, element from slice / fixed array / partial array); bound checking
     // stays in the body pass. Without this the field fell through to Type_Any
@@ -6028,7 +6017,7 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     }
     // Binary ops: arithmetic / bitwise / shift preserve the operand type.
     // Comparison ops produce bool. Recurse on the left operand so e.g.
-    // `1 << 16` (Number << Number) → i64.
+    // `1 << 16` (Number << Number) â†’ i64.
     if bin, ok := value.(^Expr_Binary); ok {
         #partial switch bin.op {
         case .Equal_Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .And, .Or:
@@ -6037,13 +6026,13 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
             return infer_field_type_from_default(c, bin.left, env, ft)
         }
     }
-    // Unary ops: same idea — type follows the operand.
+    // Unary ops: same idea â€” type follows the operand.
     if un, ok := value.(^Expr_Unary); ok {
         return infer_field_type_from_default(c, un.operand, env, ft)
     }
     // Multi-return destructure default: source is a multi-return call. Look
     // up the call's resolved fun to pick the i-th return type. Non-call
-    // source is the broadcast case (`a, b := 1 << 16` — three names sharing
+    // source is the broadcast case (`a, b := 1 << 16` â€” three names sharing
     // one scalar default), so each binding takes the source's type directly.
     if td, ok := value.(^Expr_Tuple_Default); ok {
         if call, call_ok := td.source.(^Expr_Call); call_ok && call.name != "" {
@@ -6063,9 +6052,9 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
     }
     // Unhandled default-expr form. Stay Type_Any (NOT Type_Error): codegen now
     // panics on a Type_Any value type, so an unhandled form surfaces as a loud
-    // abort rather than a silent miscompile. Type_Error would be worse here —
+    // abort rather than a silent miscompile. Type_Error would be worse here â€”
     // it lowers to i64 silently in codegen, reintroducing the fallback. The
-    // right long-term fix is a real "cannot infer field type — annotate it"
+    // right long-term fix is a real "cannot infer field type â€” annotate it"
     // diagnostic, but the register pass silences errors (check_expr can't run:
     // the enclosing scope's locals aren't bound yet), so that belongs in a
     // later body-pass refinement.
@@ -6075,16 +6064,16 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Env, 
 // Storage routing, applied uniformly at every local declaration: a value big
 // enough to route through the arena (routes_to_arena) needs an allocator to
 // route to. With none declared there's nowhere safe to put it, so error at the
-// declaration — early and clear — for EVERY value kind (fixed array, partial
-// array, struct, …), instead of letting a partial array silently stack-overflow
+// declaration â€” early and clear â€” for EVERY value kind (fixed array, partial
+// array, struct, â€¦), instead of letting a partial array silently stack-overflow
 // or a struct trip a late codegen fatal. When an allocator IS declared this is a
 // no-op here; codegen does the actual arena routing on the same predicate.
-// Per-scope and top-level only — nested if/for/match bodies re-enter check_scope
+// Per-scope and top-level only â€” nested if/for/match bodies re-enter check_scope
 // and get their own pass.
 check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
     if c.table.has_scope_allocator || c.table.context_expected_at_runtime { return }
     guard :: proc(c: ^Checker, env: ^Type_Env, name: string, t: Type, span: Span) {
-        // Take-bound views alias existing storage — they don't allocate, so a
+        // Take-bound views alias existing storage â€” they don't allocate, so a
         // big viewed type isn't a stack cost.
         if is_let_name(env, name) { return }
         if routes_to_arena(t) {
@@ -6115,13 +6104,13 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
     def_list := scope_defs if split else stmts
 
     // Pass 1a: pre-register every `name :: ...` definition so any later
-    // statement can reference it. Fun signatures are NOT resolved here — they
+    // statement can reference it. Fun signatures are NOT resolved here â€” they
     // resolve on demand (ensure_fun_signature) at the first use site.
     register_type_names(c, def_list, env, owner, public_env)
 
     // (Former "Pass 1a.5" nested-struct signature pre-pass removed: a nested
     // struct's fields resolve ON DEMAND when a sibling decl default or a
-    // forward-referencing use reaches them — ensure_struct_signature walks up via
+    // forward-referencing use reaches them â€” ensure_struct_signature walks up via
     // parent_scope to resolve the enclosing scope, whose signature pass recurses
     // back down. e.g. `body := head.count` with `Inner` defined later.)
 
@@ -6135,8 +6124,8 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, owner: ^T
     check_bodies(c, def_list, env)
     if split { check_bodies(c, stmts, env) }
 
-    // Pass 4 (stack/arena routing) is runtime-only — over the body statements.
-    // (Unused-err is now the post-check flow pass's job — see flow.odin.)
+    // Pass 4 (stack/arena routing) is runtime-only â€” over the body statements.
+    // (Unused-err is now the post-check flow pass's job â€” see flow.odin.)
     check_storage_sizes(c, stmts, env)
 }
 
@@ -6153,7 +6142,7 @@ register_enum_variants :: proc(c: ^Checker, et: ^Type_Enum, env: ^Type_Env, enum
     for vname in et.variants {
         if existing_enum, mapped := c.table.variant_to_enum[vname]; mapped {
             if existing_enum != "" && existing_enum != key {
-                c.table.variant_to_enum[vname] = "" // ambiguous — different enum
+                c.table.variant_to_enum[vname] = "" // ambiguous â€” different enum
             }
         } else {
             c.table.variant_to_enum[vname] = key
@@ -6163,7 +6152,7 @@ register_enum_variants :: proc(c: ^Checker, et: ^Type_Enum, env: ^Type_Env, enum
 
 
 // Pre-register nested struct TYPE NAMES (recursively) so `Parent.Inner`
-// resolves in TYPE position — e.g. a `^TTF.Decoded` parameter — even when
+// resolves in TYPE position â€” e.g. a `^TTF.Decoded` parameter â€” even when
 // the reference sits ABOVE the parent in the file. Pass 1b
 // (register_scope_defs) walks bodies in source order, which is too late for
 // forward signatures. Names only: fields/bodies still resolve in 1b/Phase 2,
@@ -6211,7 +6200,7 @@ pre_register_nested_struct_types :: proc(c: ^Checker, parent: ^Type_Scope, body:
 }
 
 // Register :: definitions from a fun's scope as top-level entities with mangled names.
-// e.g., Mega :: fun { test_print :: fun() { ... } } → registers "Mega_test_print" as a function.
+// e.g., Mega :: fun { test_print :: fun() { ... } } â†’ registers "Mega_test_print" as a function.
 // self_type is the Type value wrapping `st` (always ^Type_Scope). It gets bound to
 // the name "Self" in this scope so methods can reference `^Self` / `Self` inside.
 register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs: [dynamic]Stmt, env: ^Type_Env) {
@@ -6231,29 +6220,29 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
             s.name = mangled
             // Data/layout vs callable is now determined by the AST kind tag
             // set by the parser from the declaration keyword:
-            //   struct / class  → .Struct (data layout)
-            //   fun             → .Fun    (callable)
+            //   struct / class  â†’ .Struct (data layout)
+            //   fun             â†’ .Fun    (callable)
             // This replaces the old body-walking heuristic (which couldn't
             // tell a method's `:=` locals from a class body's init computation).
             def_is_struct := s.kind == .Struct
             // A parameterized constructor MAY declare return types (its trailing
-            // err); a pure-data struct (no params) may not — there's no body to
+            // err); a pure-data struct (no params) may not â€” there's no body to
             // run, so nothing to return besides the layout.
             if def_is_struct && len(s.return_types) > 0 && len(s.typed_params) == 0 {
                 check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, bare_name)
                 clear(&s.return_types)  // suppress cascading return-path errors
             }
             if def_is_struct && len(s.typed_params) == 0 {
-                // Pure data struct — create Type_Scope with kind=.Struct, no params
+                // Pure data struct â€” create Type_Scope with kind=.Struct, no params
                 // Phase 2 (check_bodies) resolves fields; we only register the name here.
                 // Reuse the Type_Scope when pre_register_nested_struct_types already
-                // minted it (Pass 2a) — forward signatures captured that pointer,
+                // minted it (Pass 2a) â€” forward signatures captured that pointer,
                 // so a fresh object here would split type identity.
                 def_st := register_nested_struct_scope(c, parent_ts, bare_name, s)
                 def_st.ast = s
                 def_st.source_name = bare_name
                 // Recurse so this struct's OWN nested `::` defs (deeper types,
-                // consts, methods) register into def_st.types — needed for
+                // consts, methods) register into def_st.types â€” needed for
                 // `Parent.Inner.Innermost` type-position resolution. Gate on
                 // s.defs, not s.body: a pure-namespace struct (only nested
                 // types) has an empty runtime body but non-empty defs.
@@ -6265,12 +6254,12 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 type_env_set(&scope_env, bare_name, def_st)
                 c.table.fun_asts[mangled] = s
             } else {
-                // Function or struct constructor (has params) — create Type_Scope.
+                // Function or struct constructor (has params) â€” create Type_Scope.
                 // Struct kinds may have been pre-registered by Pass 2a (see the
-                // pure-data branch above) — reuse to keep type identity.
+                // pure-data branch above) â€” reuse to keep type identity.
                 def_ft: ^Type_Scope
                 if def_is_struct {
-                    // Parameterized struct constructor — mint via the shared helper
+                    // Parameterized struct constructor â€” mint via the shared helper
                     // (reuses a pre-registered pointer; sets name / kind / is_packed
                     // / parent_scope / c.table.funs / st.types), then fill the
                     // def-specific fields and recurse into its own nested defs.
@@ -6282,7 +6271,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                         register_scope_defs(c, def_ft, &def_ft.sd, s.defs, &scope_env)
                     }
                 } else {
-                    // Plain nested fun — not a data type, so no c.table.funs / st.types
+                    // Plain nested fun â€” not a data type, so no c.table.funs / st.types
                     // entry here (registered in st.functions + root_env below).
                     def_ft = new(Type_Scope)
                     def_ft.name = mangled
@@ -6295,9 +6284,9 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 }
                 is_callable := !def_is_struct || len(s.typed_params) > 0
                 // Funs AND parameterized-struct constructors both resolve their
-                // signature (params + returns) ON DEMAND now — funs via
+                // signature (params + returns) ON DEMAND now â€” funs via
                 // ensure_fun_signature, ctors via ensure_struct_signature ->
-                // check_scope_body — so neither resolves eagerly here. (A ctor's
+                // check_scope_body â€” so neither resolves eagerly here. (A ctor's
                 // field initializers reference its params, so the param pass runs
                 // inside check_scope_body right before the field pass; see the
                 // `ft.kind == .Struct` block there.)
@@ -6317,13 +6306,13 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
             bare_name := s.name
             mangled := fmt.aprintf("%s_%s", st.name, bare_name)
             s.name = mangled
-            // Constants don't have a Type_Scope to point at — track them in a
+            // Constants don't have a Type_Scope to point at â€” track them in a
             // dedicated map so the body-check pass can materialize bare-name
             // aliases (see check_callable_body's consts loop).
             if st.consts == nil { st.consts = make(map[string]^Stmt_Define) }
             st.consts[bare_name] = s
         case ^Stmt_Foreign:
-            // Foreign block inside a struct body — register each foreign decl
+            // Foreign block inside a struct body â€” register each foreign decl
             // as if it were a method of the parent struct. Mirrors the module-
             // level handling at the Stmt_Foreign case in register_and_check_
             // declarations: build a Type_Scope per decl, register in
@@ -6364,17 +6353,17 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
     }
 }
 
-// flatten_module_exports — make an included module's exports reachable in the
+// flatten_module_exports â€” make an included module's exports reachable in the
 // includer's scope. Both bare `include path` and named `name :: include path`
 // call this; the only difference between them is whether the module is also
 // addressable by an alias (named) or by its own bare name (bare). Without this
 // step, `name :: include path` would force qualified `name.X` access for every
-// member, which makes stdlib swaps (SDL3 → SDL2 et al.) ripple through every
-// caller — see TODO note on module aliasing.
+// member, which makes stdlib swaps (SDL3 â†’ SDL2 et al.) ripple through every
+// caller â€” see TODO note on module aliasing.
 flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body, mod_name: string, is_aliased := false, is_sealed := false) {
     assert(mod_sd.scope != nil, "module-struct must have scope")
     // Sealed includes (`name :: sealed include path`) skip the env.includes
-    // append AND the c.declared_funs writes — bare names from the included
+    // append AND the c.declared_funs writes â€” bare names from the included
     // module are not made available at the call site, only `name.X` access.
     // Used to keep colliding bindings (SDL2 vs SDL3, etc.) properly isolated.
     if is_sealed { return }
@@ -6388,7 +6377,7 @@ flatten_module_exports :: proc(c: ^Checker, env: ^Type_Env, mod_sd: ^Scope_Body,
     // Dispatches and operator overloads stay on the included module's struct
     // (see Scope_Body.dispatch_groups). Lookups in the includer walk
     // env.includes (the durable module scopes) at call time, so we don't merge
-    // here — matches the non-transitive include semantics used elsewhere.
+    // here â€” matches the non-transitive include semantics used elsewhere.
 }
 
 // is_enum_visible reports whether the enum identified by `flat_name`
@@ -6416,7 +6405,7 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
 }
 
 // module_constant_visible reports whether a bare module constant `bare` is
-// reachable from `env` — i.e. defined by the current module or by one that's
+// reachable from `env` â€” i.e. defined by the current module or by one that's
 // been `use`/`include`d. Constants live in the global c.table.constants under
 // both a flat (module-qualified) and a bare key, so unlike types they are NOT
 // gated by the env walk at lookup time; this is what reintroduces visibility.
@@ -6425,7 +6414,7 @@ is_enum_visible :: proc(env: ^Type_Env, flat_name: string) -> bool {
 // make_flat_name(M.name, bare): the own module qualifies with c.current_package,
 // each include with its durable scope's name (inc.name).
 module_constant_visible :: proc(c: ^Checker, env: ^Type_Env, bare: string) -> bool {
-    if env == nil { return true }  // no env context to gate against — don't reject
+    if env == nil { return true }  // no env context to gate against â€” don't reject
     // The package being checked always sees its own constants. The own-module
     // branch below (env_is_module(cur)) covers this for module envs, but it's
     // kept explicit so the main package's top-level constants are visible in
@@ -6477,7 +6466,7 @@ first_invisible_const_ref :: proc(c: ^Checker, env: ^Type_Env, e: Expr) -> (stri
 // Multiple modules may contribute candidates to the same dispatch name; all
 // matches are merged so a stdlib dispatch (e.g. `sqrt :: dispatch { sqrt_f32,
 // sqrt_f64 }`) can be extended by user code that includes the stdlib module.
-// Non-transitive: we don't follow inc.includes — re-export of re-exports is
+// Non-transitive: we don't follow inc.includes â€” re-export of re-exports is
 // opt-in (the user would `include` again themselves), matching type_env_get.
 find_dispatch :: proc(c: ^Checker, env: ^Type_Env, name: string) -> ([dynamic]string, bool) {
     result: [dynamic]string
@@ -6601,7 +6590,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                 ut.tag_type = s.tag_type
                 ut.min_size = s.min_size
                 // tag_pad: deferred to Pass 1b (type expr)
-                // Tag enum can be fully built — variant tags are integers, no type refs.
+                // Tag enum can be fully built â€” variant tags are integers, no type refs.
                 tag_enum_name := strings.concatenate({s.name, "_Tag"})
                 tag_et := new(Type_Enum)
                 tag_et.name = make_flat_name(c.current_package, tag_enum_name)
@@ -6664,7 +6653,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
             if s.name in c.table.fun_asts && c.table.fun_asts[s.name] == s {
                 continue
             }
-            // Generic templates store the AST — no resolution to defer.
+            // Generic templates store the AST â€” no resolution to defer.
             if len(s.generic_params) > 0 {
                 if _, exists := c.table.generic_templates[s.name]; exists { continue }
                 c.table.generic_templates[s.name] = Generic_Template{
@@ -6719,7 +6708,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                     }
                 } else {
                     if flat_name in c.table.funs {
-                        // Function name collisions — Pass 1b will diagnose with
+                        // Function name collisions â€” Pass 1b will diagnose with
                         // proper context (env lookup, etc.). Skip here.
                         continue
                     }
@@ -6757,13 +6746,13 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
                     }
                 }
                 if is_struct_type { pre_register_nested_struct_types(c, fun_type, s.defs) }
-                // A fun's signature (params + return types) resolves ON DEMAND —
+                // A fun's signature (params + return types) resolves ON DEMAND â€”
                 // ensure_fun_signature -> resolve_fun_signature reconstructs the
                 // decl env from the durable parent_scope graph at the first use
                 // site (a call, a dispatch match, a field-type inference reading
                 // its return). No eager pre-pass: a forward reference pulls the
                 // signature when it needs it. (This also dissolved the old
-                // top-level-vs-nested split — top-level Pass 1a couldn't resolve
+                // top-level-vs-nested split â€” top-level Pass 1a couldn't resolve
                 // eagerly anyway because includes weren't processed yet.)
                 c.pre_registered_stmts[rawptr(s)] = true
             }
@@ -6776,10 +6765,10 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env, o
 // statement-level declarations. When called after register_type_names (the
 // two-pass module path), allocations are already in c.table.* and we just
 // fill them in. When called in single-pass mode (nested scopes), we
-// allocate fresh — same as before.
+// allocate fresh â€” same as before.
 // ---------------------------------------------------------------------------
 
-// True when `name` is the LHS of a `=` reassignment with no existing binding —
+// True when `name` is the LHS of a `=` reassignment with no existing binding â€”
 // a genuine "assign to undeclared variable" error. Exempts declarations (`:=`,
 // is_decl), the blank discard `_`, the empty name used for expression targets,
 // and `::` constants (left to the shadowing check). The single-assign path and
@@ -6797,7 +6786,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
     // - In single-env mode (callers from inside fun bodies, struct bodies): public_env is nil
     //   and pub == env, so behavior is unchanged.
     // - In per-file mode (callers from check_module / check_program): public_env is the module
-    //   env and env is the file env — defined names go to the module env (visible to siblings
+    //   env and env is the file env â€” defined names go to the module env (visible to siblings
     //   via the chain file_env -> mod_env), include names stay in the file env (private).
     pub := public_env if public_env != nil else env
     for stmt in stmts {
@@ -6976,7 +6965,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // fields via register_scope_defs, fun params, return type).
             if c.pre_registered_stmts[rawptr(s)] {
                 delete_key(&c.pre_registered_stmts, rawptr(s))
-                if len(s.generic_params) > 0 { continue }  // generic — nothing more to do
+                if len(s.generic_params) > 0 { continue }  // generic â€” nothing more to do
                 is_struct := s.kind == .Struct
                 flat := make_flat_name(c.current_package, s.name)
                 if is_struct && len(s.typed_params) == 0 {
@@ -6989,7 +6978,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             register_scope_defs(c, fun_type, &fun_type.sd, s.defs, env)
                         }
                         // FUN signatures: resolve params/returns for a pre-registered
-                        // top-level fun (idempotent — skips if a demand pull already
+                        // top-level fun (idempotent â€” skips if a demand pull already
                         // populated them). STRUCT ctors skip here: their params +
                         // returns resolve ON DEMAND in check_scope_body, right before
                         // the field pass, since field initializers reference the params.
@@ -7010,7 +6999,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
                 continue
             }
-            // Generic template — store and continue
+            // Generic template â€” store and continue
             if len(s.generic_params) > 0 {
                 c.table.generic_templates[s.name] = Generic_Template{
                     name           = s.name,
@@ -7021,7 +7010,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if len(s.typed_params) > 0 { c.declared_funs[s.name] = true }
                 continue
             }
-            // Already registered by a parent's register_scope_defs pass — skip.
+            // Already registered by a parent's register_scope_defs pass â€” skip.
             // That pass resolves params and return type as well.
             if s.name in c.table.fun_asts && c.table.fun_asts[s.name] == s {
                 continue
@@ -7044,7 +7033,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 clear(&s.return_types)  // suppress cascading return-path errors
             }
             if is_struct_type && len(s.typed_params) == 0 {
-                // Pure data struct — create Type_Scope with kind=.Struct, no params
+                // Pure data struct â€” create Type_Scope with kind=.Struct, no params
                 struct_type := new(Type_Scope)
                 struct_type.name = make_flat_name(c.current_package, s.name)
                 struct_type.home_package = c.current_package
@@ -7083,7 +7072,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 fun_type.has_parens = s.has_parens
                 // Name is set for both struct and fun kinds so types_equal
                 // compares them nominally (two funs with same shape but different
-                // names are distinct — honors `fn name` identity). Only struct
+                // names are distinct â€” honors `fn name` identity). Only struct
                 // kinds are added to c.table.funs (the map is used by codegen
                 // to emit LLVM struct types; funs are emitted separately).
                 fun_type.name = make_flat_name(c.current_package, s.name)
@@ -7100,12 +7089,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // Also register in the global funs table so post-check
                     // passes (extract_checked_scope, codegen helpers) can
                     // find nested funs whose registering env is a function
-                    // body — those envs aren't reachable from the package
+                    // body â€” those envs aren't reachable from the package
                     // env's chain. Top-level funs go in here too; the env
                     // chain lookup just happens to work for them.
                     c.table.funs[fun_type.name] = fun_type
                 }
-                // Resolve the signature now ONLY for parameterized structs — their
+                // Resolve the signature now ONLY for parameterized structs â€” their
                 // params feed on-demand field resolution (ensure_struct_signature).
                 // FUNS resolve on demand at their call / body sites
                 // (ensure_fun_signature), so a top-level fun whose param type comes
@@ -7138,13 +7127,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
         case ^Stmt_Foreign:
             // Foreigns inside a struct/class body are registered by Phase 1's
             // register_scope_defs (with mangled names). Phase 2 walks the same
-            // body via check_scope → register_and_check_declarations; if we
+            // body via check_scope â†’ register_and_check_declarations; if we
             // re-ran the module-level handler here, bare names like
             // `CreateFileA` would land in c.declared_funs and the call-site
             // resolution would route bare-name calls back to the module
             // package (mara_os_CreateFileA) instead of the struct-mangled
             // form (mara_os_platform_win32_CreateFileA). Detect class scope
-            // up the env chain and skip — Phase 1 already did the work.
+            // up the env chain and skip â€” Phase 1 already did the work.
             in_class_scope := false
             for cur := env; cur != nil; cur = cur.parent {
                 if env_class_scope(cur) != nil { in_class_scope = true; break }
@@ -7188,7 +7177,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // spelling; `::` is the comptime-correct one since includes are
             // comptime-only).
             if inc, is_include := s.value.(^Expr_Include); is_include {
-                // `name :: use path` — explicit aliasing form. Resolve `path`
+                // `name :: use path` â€” explicit aliasing form. Resolve `path`
                 // to exactly that module (no parent-glob; submodules are pulled
                 // in by their own explicit `use`), load and flatten it. That
                 // module binds to s.name so qualified access like `name.X` works.
@@ -7264,7 +7253,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
             }
             // Bare distinct slice alias with a default cap: `s : String` where
-            // `String :: distinct [,0]utf8(128)` — pick up the default.
+            // `String :: distinct [,0]utf8(128)` â€” pick up the default.
             if tn, tn_ok := s.type_expr.(Type_Name); tn_ok && s.slice_cap_expr == nil {
                 flat := resolve_type_name(c, tn.name, "", env)
                 if flat == "" { flat = tn.name }
@@ -7316,7 +7305,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // Multi-package builds run the checker once per package, and a
             // shared AST node (e.g. a stdlib decl reached from two packages)
             // would hit this code twice. Skip the synthesis if s.checked is
-            // already populated — the prior run did it and the desugared
+            // already populated â€” the prior run did it and the desugared
             // statements still apply.
             if len(s.checked) == 0 {
                 if len(s.init_values) == 1 && len(s.names) > 1 {
@@ -7324,7 +7313,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     mra := new(Stmt_Multi_Return_Assign)
                     mra.span = s.span
                     mra.type_expr = s.type_expr
-                    mra.is_decl = true   // derived from a Stmt_Decl — bare names are declared
+                    mra.is_decl = true   // derived from a Stmt_Decl â€” bare names are declared
                     for n in s.names { append(&mra.names, n) }
                     for v in s.init_values { append(&mra.values, v) }
                     append(&s.checked, Stmt(mra))
@@ -7346,22 +7335,22 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             register_and_check_declarations(c, s.checked, env, owner, public_env)
         case ^Stmt_Assign:
             // Complex LHS (field / index / slice / deref): registration is a
-            // no-op — no new binding enters scope. The typing logic runs in
+            // no-op â€” no new binding enters scope. The typing logic runs in
             // check_bodies via per-target-kind dispatch.
             if s.target != nil {
                 continue
             }
-            // `this_program = Program(...)` is a compiler-managed marker —
+            // `this_program = Program(...)` is a compiler-managed marker â€”
             // Phase 0 already extracted the arena type info; the assignment
             // is a no-op at codegen, the storage gets synthesized in main's
             // entry. Skip the regular type-check so the user can write the
             // configuration line without satisfying a strict LHS type.
             if s.name == "this_program" && !s.is_decl { continue }
             // Include expressions: scope-based resolution.
-            // mara.X → look up X in std scope (stdlib modules)
-            // bare Y → walk scope chain for sibling, lazy-load if not found
+            // mara.X â†’ look up X in std scope (stdlib modules)
+            // bare Y â†’ walk scope chain for sibling, lazy-load if not found
             if inc, is_include := s.value.(^Expr_Include); is_include {
-                // Bare `use path` — the path is a dotted module name. Resolve
+                // Bare `use path` â€” the path is a dotted module name. Resolve
                 // it to exactly that module (no parent-glob; submodules are
                 // pulled in by their own explicit `use`), load and flatten it.
                 matching := find_matching_modules(c, inc.path)
@@ -7397,7 +7386,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // REASSIGNMENT: the name must already be a binding. Without this
             // guard the registration path below would `type_env_set` a brand-new
             // binding for it, so `x = 7` on an undeclared `x` silently declared
-            // it (and broadcast `x, y = 7` minted two locals — the bug that
+            // it (and broadcast `x, y = 7` minted two locals â€” the bug that
             // motivated this). Bind it to Type_Error to recover.
             if is_undeclared_reassign(c, env, s.name, s.is_decl) {
                 check_error(c, s.span, TYPE_ASSIGN_UNDECLARED_VARIABLE, s.name)
@@ -7414,7 +7403,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 
             // Reject same-scope redeclarations (`x := 5` then `x := 7`) and shadowing
             // of any local binding in an enclosing scope up to the module boundary.
-            // Reassignment with `=` is unaffected — those parse as Stmt_Assign with
+            // Reassignment with `=` is unaffected â€” those parse as Stmt_Assign with
             // is_decl=false and never reach this branch's Stmt_Decl-derived path.
             _, declared_here := scope_defines(env.scope, s.name)
             if s.is_decl && declared_here {
@@ -7445,7 +7434,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             }
 
             // Take binding: `name := take(T, storage)` (or with an annotation).
-            // Same alias-into-caller-storage semantics as let — mark the name
+            // Same alias-into-caller-storage semantics as let â€” mark the name
             // as a view binding so it can't escape via return.
             if take_expr, is_take := s.value.(^Expr_Take); is_take {
                 val_type := check_expr(c, s.value, env)
@@ -7462,15 +7451,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 s.var_type = distinct_base(final_type)
                 s.env_type = final_type
                 type_env_set(env, s.name, final_type)
-                get_or_make_binding(env, s.name).is_let = true
-                set_provenance(env, s.name, expr_provenance(c, take_expr.storage, env))
                 continue
             }
 
             // Declaration without initializer (e.g. ev : SDL_Event)
             if s.value == nil {
                 if _, is_err := ann_type.(Type_Error); is_err {
-                    // Type resolution already reported an error — skip further checks
+                    // Type resolution already reported an error â€” skip further checks
                     s.var_type = ann_type
                     type_env_set(env, s.name, ann_type)
                     continue
@@ -7479,9 +7466,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     check_error(c, s.span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE)
                 }
                 // (Large-value stack/arena routing is handled uniformly for
-                // every value kind in check_storage_sizes — Pass 4 of check_scope.)
+                // every value kind in check_storage_sizes â€” Pass 4 of check_scope.)
                 // Function type from named source: auto-initialize to the function itself.
-                // e.g. `remote_print : game.test_print` → value is game.test_print
+                // e.g. `remote_print : game.test_print` â†’ value is game.test_print
                 if tf, is_func := ann_type.(^Type_Scope); is_func && len(tf.params) > 0 {
                     if tn, tn_ok := s.type_expr.(Type_Name); tn_ok {
                         dot := strings.index_byte(tn.name, '.')
@@ -7498,7 +7485,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         }
                     }
                 }
-                // Sized slice decl `name : []T(N)` — validate N is numeric.
+                // Sized slice decl `name : []T(N)` â€” validate N is numeric.
                 if s.slice_cap_expr != nil {
                     cap_type := check_expr(c, s.slice_cap_expr, env)
                     if !is_any(cap_type) && !is_numeric(cap_type) {
@@ -7509,9 +7496,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 s.var_type = distinct_base(ann_type)
                 s.env_type = ann_type
                 type_env_set(env, s.name, ann_type)
-                set_provenance(env, s.name, prov_local(env)) // uninitialized local is at our depth
                 // (Uninit ptr/slice/field read-before-init tracking now lives in
-                // the post-check flow pass — flow.odin.)
+                // the post-check flow pass â€” flow.odin.)
                 continue
             }
 
@@ -7527,12 +7513,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         TYPE_SLICE_CAPACITY_INTEGER, type_name(cap_type))
                 }
             }
-            // `x : T = void` (non-pointer T) — void is the universal
+            // `x : T = void` (non-pointer T) â€” void is the universal
             // uninitialized marker: desugar to the skip-constructor node the
             // rest of the pipeline already understands (no construction, no
             // stores). Pointer targets keep void's null-init meaning.
             // (Read-before-write tracking for aggregates waits for the
-            // zero-init stage — today's invalid_refs machinery flags
+            // zero-init stage â€” today's invalid_refs machinery flags
             // element WRITES as uses, which would forbid filling the
             // storage `= void` exists to leave fillable.)
             if is_void_literal(s.value) {
@@ -7541,11 +7527,11 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
             }
             // A bare reassignment (`q = expr`) carries no annotation, so
-            // ann_type is untyped — but the target already has a type. Use it
+            // ann_type is untyped â€” but the target already has a type. Use it
             // as the hint so an all-infer RHS (e.g. `128 >> 1`) adopts the
             // target's signedness/width, matching the annotated-declaration
             // path. Without it the literal stays infer and codegen defaults to
-            // signed — wrong shift (ashr vs lshr) and wrong overflow semantics.
+            // signed â€” wrong shift (ashr vs lshr) and wrong overflow semantics.
             assign_hint := ann_type
             if !s.is_decl {
                 if existing, ok := type_env_get(env, s.name); ok && !is_untyped(existing) {
@@ -7554,12 +7540,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             }
             c.expected_hint = assign_hint
             val_type := check_expr(c, s.value, env)
-            // `x : []utf8 = "lit"` — writable view over rodata; sized slices
+            // `x : []utf8 = "lit"` â€” writable view over rodata; sized slices
             // (`[:N]utf8`, cap_expr set) copy into owned backing and pass.
             if s.slice_cap_expr == nil {
                 check_no_literal_slice_binding(c, ann_type, s.value, s.span)
             }
-            // `#big_endian buf[off]` / `#big_endian buf[lo:hi]` — the flag has
+            // `#big_endian buf[off]` / `#big_endian buf[lo:hi]` â€” the flag has
             // no meaning unless the source is a byte buffer. Codegen would
             // silently drop the flag in that case; flag it loudly here.
             if expr_is_big_endian(s.value) {
@@ -7577,7 +7563,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // this, the binding would silently take on the call's primary
             // (first) return type and the user would lose the rest with no
             // diagnostic. `x, y := f()` (multi-return assign) is the supported
-            // form — that path goes through Stmt_Multi_Return_Assign.
+            // form â€” that path goes through Stmt_Multi_Return_Assign.
             if s.is_decl {
                 if returns := call_return_list(c, s.value, env); len(returns) > 1 {
                     check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE,
@@ -7589,7 +7575,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // Reject copies of structs whose layout transitively contains a
             // partial-array field. A byte-for-byte copy of such a struct would
             // leave the inner partial array's `ptr` still aliasing the source's
-            // elements — subsequent reads/writes through the copy would silently
+            // elements â€” subsequent reads/writes through the copy would silently
             // hit (and clobber) the source. Only flag when the RHS is reading
             // from existing storage (ident or field access); literals and calls
             // construct in place and are fine.
@@ -7598,7 +7584,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             if _, ok := s.value.(^Expr_Field_Access); ok { is_copy_source = true }
             // A `::` constant ident is NOT a copy: codegen inline-substitutes
             // the constant's literal expression (gen_expr Expr_Ident, constant
-            // branch), so the decl constructs in place — no source to alias.
+            // branch), so the decl constructs in place â€” no source to alias.
             if ident, ok := s.value.(^Expr_Ident); ok {
                 if _, is_const := c.table.constants[ident.name]; is_const {
                     is_copy_source = false
@@ -7611,7 +7597,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             }
             if !is_any(ann_type) {
                 // If ann_type is distinct and val_type is NOT a literal (array/struct),
-                // skip structural checks — use nominal comparison directly.
+                // skip structural checks â€” use nominal comparison directly.
                 // Also take the nominal path when the literal already produced a
                 // matching distinct type (e.g. `bar : Vec3 = Vec3{1,2,3}`): the
                 // RHS constructor's check_array_struct_literal validated element
@@ -7623,7 +7609,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 val_carries_matching_distinct := ann_is_distinct && types_equal(ann_type, val_type)
                 if ann_is_distinct && (!val_is_array && !val_is_struct_lit || val_carries_matching_distinct) {
                     // Byte-buffer reinterpret read overrides the nominal type
-                    // match — `win : sdl.Window = mem[0]` reads sizeof(Window)
+                    // match â€” `win : sdl.Window = mem[0]` reads sizeof(Window)
                     // bytes regardless of the distinct wrapper.
                     is_byte_read := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
                     if is_byte_read {
@@ -7649,7 +7635,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
                     type_env_set(env, s.name, ann_type)
-                    set_provenance(env, s.name, expr_provenance(c, s.value, env))
                     continue
                 }
                 // Unwrap distinct types for structural checking (but store the distinct type)
@@ -7657,7 +7642,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // The struct/union-literal and byte-buffer-reinterpret branches below
                 // only apply when the value IS a literal or a byte read. A plain value
                 // (call, variable, field) must fall through to the general nominal
-                // compatibility check — the literal helpers no-op on non-literals, so
+                // compatibility check â€” the literal helpers no-op on non-literals, so
                 // without this gate `p : Point = Color()` slipped through unchecked.
                 value_needs_literal_handling := val_is_struct_lit || is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
                 // Validate assignment compatibility (same as in check_assign)
@@ -7682,7 +7667,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
                     type_env_set(env, s.name, ann_type)
-                    set_provenance(env, s.name, prov_local(env)) // struct literal is local
                     continue
                 }
                 if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
@@ -7690,7 +7674,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
                     type_env_set(env, s.name, ann_type)
-                    set_provenance(env, s.name, prov_local(env)) // union literal is local
                     continue
                 }
                 if fa, ok := check_ann.(^Type_Fixed_Array); ok {
@@ -7720,7 +7703,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         check_array_assign(c, s.span, s.name, fa, val_type, s.value)
                     }
                     // (Large-value stack/arena routing handled uniformly in
-                    // check_storage_sizes — Pass 4 of check_scope.)
+                    // check_storage_sizes â€” Pass 4 of check_scope.)
                 } else if pa, ok := check_ann.(^Type_Partial_Array); ok && is_byte_buffer(val_type) {
                     // Partial-array byte-buffer reinterpret read:
                     //   arr : [..N]T = bytes[lo:hi]
@@ -7777,8 +7760,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 s.var_type = distinct_base(ann_type)
                 s.env_type = ann_type
                 type_env_set(env, s.name, ann_type)
-                set_provenance(env, s.name, expr_provenance(c, s.value, env))
-                mark_local_slice_backed_if_needed(c, env, s.name, s.value)
             } else {
                 // No type annotation: variables solidify.
                 // But DON'T overwrite if the variable already has a declared type
@@ -7812,7 +7793,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 loc_scope: ^Type_Scope
                 already_declared: bool
                 if in_struct_body {
-                    // A field redecl inside its own struct body — never a leak
+                    // A field redecl inside its own struct body â€” never a leak
                     // (loc_scope stays nil), just records the prior binding. Reads
                     // this env level's own durable scope (== the old env.types).
                     if env.scope != nil {
@@ -7854,8 +7835,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // Deferred inference: an un-annotated binding whose
                     // initializer is still open (untyped literal/const, or
                     // another open binding) gets a fresh inference cell rather
-                    // than solidifying to i64 here — its width is decided by the
-                    // first concrete use; unbound at codegen → i64/f64.
+                    // than solidifying to i64 here â€” its width is decided by the
+                    // first concrete use; unbound at codegen â†’ i64/f64.
                     binding_type: Type
                     if is_infer(val_type) {
                         cell := new(Infer_Cell)
@@ -7875,7 +7856,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             check_warning(c, s.span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, s.name)
                         }
                         // Storing a cstring (e.g. `e := GetError()`) is banned
-                        // — the pointer's terminator is only fresh at the
+                        // â€” the pointer's terminator is only fresh at the
                         // moment of the call. Convert at the boundary instead
                         // (scan to []utf8, or pass straight to another C call).
                         if is_cstring(binding_type) {
@@ -7885,13 +7866,11 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     s.var_type = distinct_base(binding_type)
                     s.env_type = binding_type
                     type_env_set(env, s.name, binding_type)
-                    set_provenance(env, s.name, expr_provenance(c, s.value, env))
-                    mark_local_slice_backed_if_needed(c, env, s.name, s.value)
                 } else {
                     // Reassignment with `void` DE-INITIALIZES. Scalars and
                     // pointers re-enter the read-before-write pool (the
                     // existing tracking handles whole-name reads/writes);
-                    // aggregates skip the marking for now — element writes
+                    // aggregates skip the marking for now â€” element writes
                     // would be flagged as uses by today's machinery. For
                     // non-pointers codegen emits nothing (skip desugar);
                     // pointer `p = void` keeps its null store.
@@ -7909,7 +7888,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     check_no_literal_slice_binding(c, existing_type, s.value, s.span)
                     // Reassignment: check value type matches existing variable type.
                     // A byte-buffer reinterpret read (off16 = mem[off] or mem[lo:hi])
-                    // is recognized here too — same as the decl-init and field-assign
+                    // is recognized here too â€” same as the decl-init and field-assign
                     // paths: the read size comes from the target type, not the byte
                     // value. Without this the RHS types as a bare `byte` and fails.
                     is_byte_reinterpret := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
@@ -7922,11 +7901,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                     s.var_type = distinct_base(existing_type)
                     s.env_type = existing_type
-                    set_provenance(env, s.name, expr_provenance(c, s.value, env))
                 }
             }
         case ^Stmt_Multi_Assign:
-            // Wrapper of individual assigns — check each one
+            // Wrapper of individual assigns â€” check each one
             inner: [dynamic]Stmt
             for a in s.assigns { append(&inner, Stmt(a)) }
             register_and_check_declarations(c, inner, env, public_env = public_env)
@@ -7938,7 +7916,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // The trailing err is consumed by propagation; the LHS binds
                 // the remaining values. We bypass check_expr on the Try here
                 // because check_try restricts single-bind to 0 or 1 non-err
-                // values — the destructure context is precisely where 2+
+                // values â€” the destructure context is precisely where 2+
                 // non-err values is legal.
                 try_node, is_try := s.values[0].(^Expr_Try)
                 inner_call: ^Expr_Call
@@ -7988,7 +7966,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 } else {
                     // Single RHS (multi-return call): x, y := call()
                     val_type := check_expr(c, s.values[0], env)
-                    // Source the return arity from the resolved fun directly —
+                    // Source the return arity from the resolved fun directly â€”
                     // there is no tuple value on the frontend. The call must be
                     // an Expr_Call whose callee is a multi-return fun.
                     returns := call_return_list(c, s.values[0], env)
@@ -8025,14 +8003,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     } else {
                         // Broadcast: `a, b = v` (or `a, b := v`). Desugar into one
                         // assignment per target that shares the RHS, then register +
-                        // check + (later) codegen those Stmt_Assigns directly — codegen
+                        // check + (later) codegen those Stmt_Assigns directly â€” codegen
                         // never sees a broadcast. Routing through the normal single-
                         // assign path is what gives each target its declare-vs-reassign
                         // rule (the undeclared-on-`=` guard, `:=` declares) and its type
                         // check for free, and it fixes the old non-main-fn segfault:
                         // gen_broadcast_assign built Stmt_Assigns at codegen time with
                         // hand-set fields; real type-checked assigns lower correctly.
-                        // The RHS is re-evaluated per target — bind an effectful RHS to
+                        // The RHS is re-evaluated per target â€” bind an effectful RHS to
                         // a local first if exactly-once evaluation matters.
                         for name, i in s.names {
                             a := new(Stmt_Assign)
@@ -8063,7 +8041,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             }
             append(&c.operator_overloads[s.op], s.dispatch_name)
         case Stmt_Module:
-            // Module declaration — nothing to register
+            // Module declaration â€” nothing to register
         }
     }
 }
@@ -8075,7 +8053,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 // Fill lit.array_values[0..<size] with the broadcast value: slot 0 reuses the
 // original expr, later slots are independent clones. clone_expr clears
 // `resolved_func` and `type_` on each Expr_Call it copies, so each clone is
-// re-checked here — without this a constructing broadcast (`all Cell()`) would
+// re-checked here â€” without this a constructing broadcast (`all Cell()`) would
 // reach codegen with an unresolved call ("unknown function"). The caller must
 // have already type-checked lit.broadcast_value against the element type.
 fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size: int, env: ^Type_Env) {
@@ -8127,7 +8105,7 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
 
 // Phase-2 checker for a single function/method/struct/module body.
 // check_scope_body resolves a scope's signature (fields/params/return) and
-// then — unless signature_only is set — checks the body. Set signature_only
+// then â€” unless signature_only is set â€” checks the body. Set signature_only
 // from the Phase-2 pre-pass to populate struct fields before any function
 // body is checked, so forward references to structs work regardless of
 // declaration order.
@@ -8149,7 +8127,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // can shadow the struct's own Type_Scope with an unrelated enum-variant
     // entry (Init_Flags.Timer). Without owned-first, the bare lookup would
     // return Init_Flags, ft_ok would fail, and the function would silently
-    // bail — leaving the struct's fields uninitialized.
+    // bail â€” leaving the struct's fields uninitialized.
     fun_type_raw, _ := type_env_get_owned_first(env, s.name)
 
     ft, ft_ok := fun_type_raw.(^Type_Scope)
@@ -8160,7 +8138,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     if ft.kind == .Fun { ensure_fun_signature(c, ft) }
 
     // On-demand: a parameterized struct's ctor params (and trailing-err returns)
-    // resolve here too — its field initializers reference the params, so they
+    // resolve here too â€” its field initializers reference the params, so they
     // must be ready before the field pass and the param pre-registration below
     // read them. Same resolve_param_type / Infer_Cell machinery as funs, so an
     // untyped numeric ctor param settles at the width the body pins it to
@@ -8181,12 +8159,12 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
 
     // On-demand signature resolution: memoize the signature pass so it runs once
     // per scope no matter how many sites demand it, and break cycles. Only the
-    // signature_only pre-pass is gated — the full body check below always runs.
+    // signature_only pre-pass is gated â€” the full body check below always runs.
     if signature_only && ft.kind == .Struct {
         if ft.sig_state != .Unresolved { return }  // already Resolved, or In_Progress = cycle
         ft.sig_state = .In_Progress
     }
-    // Function-scoped (not inside the if): never strand a scope In_Progress —
+    // Function-scoped (not inside the if): never strand a scope In_Progress â€”
     // any exit from the signature pass (the bail below, or an early return on an
     // error path) marks it Resolved so a later demand doesn't mistake a finished
     // scope for an unbreakable cycle. (Struct fields only; fun param/return
@@ -8197,7 +8175,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     //
     //   class:   [ns_env: Self/types/methods/consts] <- [child: params/lets/body]
     //   fun:     [ns_env: Self/own-types/funcs]      <- [child: params/body]
-    //   method:  same shape as fun — its ns_env just parents to the class's ns_env
+    //   method:  same shape as fun â€” its ns_env just parents to the class's ns_env
     //
     // The class's namespace and its constructor body are distinct envs: the
     // namespace holds the shared surface (Self, nested types, sibling methods,
@@ -8205,7 +8183,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // bodies. The constructor body env adds constructor-only bindings (params,
     // class-body `let`/`:=` decls) without leaking them to siblings.
     //
-    // A method is just a fun whose enclosing scope is a struct — it takes the
+    // A method is just a fun whose enclosing scope is a struct â€” it takes the
     // ft.kind == .Fun path below with no special-casing. The defs-parent walk
     // stops at the class's ns_env (a class_scope marker), so the method's defs
     // layer parents to the class and sees its members.
@@ -8218,16 +8196,16 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
                           // env_class_scope derives the old class_scope marker from it.
         parent_env = &ns_env
     } else if ft.kind == .Fun {
-        // Funs — and methods, which are just funs nested in a struct — get the
+        // Funs â€” and methods, which are just funs nested in a struct â€” get the
         // same two-layer shape as structs: a defs layer (ns_env) holding Self +
         // this fun's nested ::defs, and a body layer (child, built below)
         // holding params + locals. The defs layer parents to the nearest
-        // ENCLOSING scope — found by walking up to the nearest scope marker,
-        // fun_scope OR class_scope — so name resolution crosses defs layers only
+        // ENCLOSING scope â€” found by walking up to the nearest scope marker,
+        // fun_scope OR class_scope â€” so name resolution crosses defs layers only
         // and an enclosing fun's locals stay private (no closures to capture
         // them). A method's nearest marker is its struct's class_scope, so it
         // parents to the class and sees the class's members.
-        // No enclosing scope ⇒ top-level: parent to env (the file/module scope).
+        // No enclosing scope â‡’ top-level: parent to env (the file/module scope).
         defs_parent := env
         walk := env
         for walk != nil && !scope_is_callable(walk.scope) { walk = walk.parent }
@@ -8235,7 +8213,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         // Funs aren't registered at module-registration time (structs are), so
         // collect this fun's nested ::defs now, before exposing them. The
         // ft.types guard keeps a re-entry from re-mangling the nested names.
-        // Gate on s.defs (what gets registered), not s.body — a fun that's a
+        // Gate on s.defs (what gets registered), not s.body â€” a fun that's a
         // pure type namespace has nested defs but no runtime body.
         if ft.types == nil && len(s.defs) > 0 {
             register_scope_defs(c, ft, &ft.sd, s.defs, defs_parent)
@@ -8252,8 +8230,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // scope_local_lookup walk reaches every local of the current function and
     // stops at ft (the no-closures boundary).
     child := type_env_block_child(parent_env)
-    // (Escape frame depth — a .Fun body opens a new frame, a class/ctor body does
-    //  not — is derived from the durable scope graph now; see enclosing_fun_depth.)
+    // (Escape frame depth â€” a .Fun body opens a new frame, a class/ctor body does
+    //  not â€” is derived from the durable scope graph now; see enclosing_fun_depth.)
 
     // Pre-register struct params in the field-resolution scope so that
     // field defaults / field types can reference them (e.g.
@@ -8265,15 +8243,15 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     }
 
     // Pre-register constants with bare-name aliases for sibling access.
-    // ft.consts maps bare → ^Stmt_Define (s.name has been mangled by
+    // ft.consts maps bare â†’ ^Stmt_Define (s.name has been mangled by
     // register_scope_defs at this point, so we register both forms).
     // For classes, the canonical home is the namespace env so methods reach
     // them via walk-up. We also mirror onto child (the constructor body env)
-    // so check_define's "already pre-registered" early-return — which checks
-    // pub.types directly without walking — still recognises them.
+    // so check_define's "already pre-registered" early-return â€” which checks
+    // pub.types directly without walking â€” still recognises them.
     // MUST run before the field-resolution loop below: a field declared as
     // `pool : [..CAP]T` with `CAP :: 1 << 16` a sibling const needs CAP in
-    // c.table.constants when its array size resolves — scope consts Just
+    // c.table.constants when its array size resolves â€” scope consts Just
     // Work regardless of where in the body they sit.
     if ft.consts != nil {
         for bare, def in ft.consts {
@@ -8284,8 +8262,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             c.table.constants[bare] = def.value
             type_env_set(&child, def.name, val_type)
             type_env_set(&child, bare, val_type)
-            // Mirror onto the defs layer (ns_env) whenever there is one —
-            // structs and funs (methods included) — so sibling methods / nested
+            // Mirror onto the defs layer (ns_env) whenever there is one â€”
+            // structs and funs (methods included) â€” so sibling methods / nested
             // funs reach the const by bare name.
             if parent_env == &ns_env {
                 type_env_set(&ns_env, def.name, val_type)
@@ -8296,7 +8274,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
 
     // Shape-shortcut pre-pass: rewrite `p : Foo(Bar(args))` decls in the
     // body to `p : Foo(Bar)` plus a synthesized init. Must precede the
-    // field-resolution loop below — that loop resolves each Stmt_Decl's
+    // field-resolution loop below â€” that loop resolves each Stmt_Decl's
     // type_expr and would otherwise hit the un-desugared Type_Const_Expr
     // and fail the shape-constraint check with a "got vla" diagnostic.
     for stmt in s.body {
@@ -8321,7 +8299,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         field_type: Type
         if field.type_expr != nil {
             field_type = resolve_type_expr(field.type_expr, c, s.span, env=&child)
-            // `f : T = void` (non-pointer T) — per-field uninitialized
+            // `f : T = void` (non-pointer T) â€” per-field uninitialized
             // marker: desugar to the skip node the constructor codegen
             // already recognizes (field left unconstructed; the struct
             // memset still zeroes it today). Pointer fields keep void's
@@ -8342,7 +8320,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         } else if field.default_value != nil {
             _, is_uninit := field.default_value.(^Expr_Skip_Constructor)
             if is_uninit || is_void_literal(field.default_value) {
-                // No type to infer an uninitialized field from — annotate:
+                // No type to infer an uninitialized field from â€” annotate:
                 // `f : T = void`.
                 check_error(c, s.span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, field.name, field.name)
                 field_type = Type_Error{}
@@ -8354,7 +8332,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         }
         if field.is_using {
             if _, fa_ok := field_type.(^Type_Fixed_Array); fa_ok {
-                // array class — validated below
+                // array class â€” validated below
             } else if using_sd := as_scope_body(field_type); using_sd == nil || len(using_sd.fields) == 0 {
                 check_error(c, s.span, TYPE_USING_FIELD_STRUCT_FIXED_ARRAY, field.name)
             }
@@ -8372,12 +8350,12 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     }
     // Finalize deferred field-default widths: resolve each inference cell to its
     // pinned width (or i64/f64 if never pinned). After this the layout is
-    // concrete, so external `obj.field` readers — checked in a later pass —
+    // concrete, so external `obj.field` readers â€” checked in a later pass â€”
     // never see a pinnable cell (which would be unsound cross-scope adoption).
     for &f in ft.fields {
         f.type_ = solidify_type(f.type_)
     }
-    // A fieldless struct is a legal zero-size type — it can be defined, declared
+    // A fieldless struct is a legal zero-size type â€” it can be defined, declared
     // (`x : Foo`), constructed (`Foo()`), held as a field, and passed around, the
     // same as Go's `struct{}` or a Rust unit struct. The construction path gives
     // it a self-return + init function below (see extract_checked_scope), so no
@@ -8395,14 +8373,14 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
             append(&ft.return_types, rt)
         }
     }
-    // The register-pass scan ends here — the body check below must run with
+    // The register-pass scan ends here â€” the body check below must run with
     // errors ON, or the "body pass re-resolves and emits the real error"
     // contract the scan's silence depends on never happens. (The defer above
     // still guards early exits inside the scan.)
     c.in_register_pass = prev_in_register
 
     // Recurse into nested struct definitions so their field lists are populated
-    // too — a sibling field default or a forward-referencing outer function that
+    // too â€” a sibling field default or a forward-referencing outer function that
     // reaches `x.nested.field` needs the nested type's fields, not just its name.
     // Mirrors the module-level signature hoist (check_module Pass 2a), one level
     // down. Idempotent: the field loop skips already-mapped fields.
@@ -8413,7 +8391,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         }
     }
 
-    // Pre-pass bails here — signature resolved, body deferred to main pass.
+    // Pre-pass bails here â€” signature resolved, body deferred to main pass.
     if signature_only {
         ft.sig_state = .Resolved
         return
@@ -8421,7 +8399,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
 
     // Nothing to descend into only when BOTH are empty. A pure-namespace struct
     // (only nested `::` defs, no runtime body) still needs check_scope below so
-    // its nested types get a full body check — without it their field defaults
+    // its nested types get a full body check â€” without it their field defaults
     // never desugar and construction zero-inits them.
     if len(s.body) == 0 && len(s.defs) == 0 { return }
 
@@ -8429,7 +8407,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // #self to anything that could read partially-constructed state
     // while later field decls still come below it. Lives after the
     // signature_only bail so it fires once per struct (the pre-pass and
-    // full pass both reach this function — only the full pass continues
+    // full pass both reach this function â€” only the full pass continues
     // past the bail).
     if ft.kind == .Struct {
         check_early_self_decls(c, s.body)
@@ -8453,7 +8431,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // needs array_values populated, and a partial-array target (`[..6]Camera`)
     // isn't handled by the inline literal path. Runs per struct in the full pass
     // (errors on), so a field default is validated as part of checking the
-    // constructor — there is no separate struct-default pass.
+    // constructor â€” there is no separate struct-default pass.
     if ft.kind == .Struct {
         for field in ft.fields {
             if lit, ok := field.default_value.(^Expr_Struct_Literal); ok && lit.is_broadcast {
@@ -8466,21 +8444,21 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     check_scope(c, s.body, &child, scope_defs = s.defs)
 
     // Freeze any deferred default-param cells now the body has pinned them to the
-    // width they're used at (or, for funs, unpinned → the sole numeric return type).
+    // width they're used at (or, for funs, unpinned â†’ the sole numeric return type).
     // After this the signature is concrete, so callers and codegen never see an open
-    // cell. Constructors (.Struct) defer their params too — a parameterized struct's
+    // cell. Constructors (.Struct) defer their params too â€” a parameterized struct's
     // field initializers are the body that pins them.
     if ft.kind == .Fun || ft.kind == .Struct {
         solidify_param_defaults(c, ft)
     }
 
     // Return check (void / all-err functions can fall off the end) now lives in
-    // the post-check flow pass (flow.odin, flow_missing_return) — it recomputes
+    // the post-check flow pass (flow.odin, flow_missing_return) â€” it recomputes
     // the same verdict over the durable ft.body. Removed from the inline walk as
     // the first analysis to migrate off the during-check traversal.
 }
 
-// True when every return slot is err-typed — the function can fall off the
+// True when every return slot is err-typed â€” the function can fall off the
 // end and each slot gets implicitly filled with `.Ok`.
 all_err_returns :: proc(types: [dynamic]Type) -> bool {
     if len(types) == 0 { return false }
@@ -8524,7 +8502,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
             type_env_set(&child, s.elem_var, elem_type)
         }
         if s.index_var != "" {
-            // Index lives at slice header width — that's what codegen allocates
+            // Index lives at slice header width â€” that's what codegen allocates
             // the counter as. Typing it as i64 here would force users to cast
             // when feeding it back into other slice ops.
             type_env_set(&child, s.index_var, Type_Numeric{kind = .Signed, bits = 32})
@@ -8542,7 +8520,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Env) {
         if s.iter_type != nil {
             iter_type = resolve_type_expr(s.iter_type, c, s.span)
         } else {
-            // Silent promote — the loop will gracefully fall back to slice
+            // Silent promote â€” the loop will gracefully fall back to slice
             // header width if low/high don't agree (common when one side is
             // an `int` default param and the other is an i32-typed `.len`).
             // Users who genuinely want i64 spell it: `for k: i64 in a..b`.
@@ -8643,7 +8621,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
     }
 
     // Per-value type check for each supplied value against its positional slot.
-    // Skip when count is wrong — the count error already explains the shape.
+    // Skip when count is wrong â€” the count error already explains the shape.
     if count_ok {
         for val, i in s.values {
             if i >= n_expected { break }
@@ -8668,51 +8646,18 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Env) {
         }
     }
     // Escape analysis: prevent returning pointers/slices to local memory.
-    // Exempt: memory package (arena_alloc must return slices).
-    if c.current_package != "memory" {
-        for val in s.values {
-            if is_local_ref(c, val, env) {
-                report_return_escape(c, val, s.span, env)
-            }
-            // Struct-with-slice-fields escape: a `return StructLit{local_arr,..}`
-            // is OK (the compiler relocates storage to the caller's sret), but
-            // returning an intermediate variable that holds such a struct
-            // would dangle. Same for the bare `return call_with_escape()`
-            // passthrough where this function doesn't itself participate in
-            // the escape relocation.
-            if returns_locally_backed_struct(c, val, env) {
-                check_error(c, s.span,
-                    TYPE_CANNOT_RETURN_STRUCT_WHOSE_SLICE)
-            }
-            // Direct `return Foo{r[:]}` / `return Foo{make_arr()}`: a ref field
-            // viewing this frame's storage. is_local_ref exempts struct literals
-            // and the check above only covers call/ident passthrough, so this is
-            // the gap that let such returns dangle silently.
-            if lit, lit_ok := val.(^Expr_Struct_Literal);
-               lit_ok && returned_struct_literal_dangles(c, lit, env) {
-                check_error(c, s.span,
-                    TYPE_CANNOT_RETURN_STRUCT_WHOSE_SLICE)
-            }
-        }
-    }
-    // Note: returning a take-bound view by value used to be rejected here as
-    // "view binding is scoped to the function." That was a redundancy concern
-    // (the caller could read the memory directly) dressed up as a safety rule.
-    // The actual dangling cases — returning `&local_view` or a struct whose
-    // slice fields point at local memory — are caught by is_local_ref and
-    // returns_locally_backed_struct above. A bare `return p` where p is a
-    // take-bound struct copies the bytes into the caller's sret slot just
-    // like any other by-value return; nothing dangles. So the blanket rule
-    // is gone.
+    // (Return-escape analysis â€” returning &local / a struct whose slice fields
+    //  point at local memory / a laundered call result â€” now runs in the
+    //  post-check escape pass, escape.odin.)
 }
 
 check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
     // (Former per-scope struct-signature pre-pass removed: struct fields resolve
-    // ON DEMAND at the use site via ensure_struct_signature — field access,
+    // ON DEMAND at the use site via ensure_struct_signature â€” field access,
     // construction, literal matching each pull the struct's signature when they
     // need it. Field DEFAULTS are no longer checked by a separate pass either:
-    // a struct's body IS its constructor, so its field decls — including `all`
-    // broadcast defaults — are validated in check_scope_body's full pass, the
+    // a struct's body IS its constructor, so its field decls â€” including `all`
+    // broadcast defaults â€” are validated in check_scope_body's full pass, the
     // same path that checks any decl. Function signatures resolve in Phase 1.)
 
     for stmt in stmts {
@@ -8743,7 +8688,7 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
 
         case Stmt_Call:
             // In-place struct override: `var{ a = x; b = y }` as a statement,
-            // where the literal's name is a struct VARIABLE — validate the
+            // where the literal's name is a struct VARIABLE â€” validate the
             // fields against the variable's struct and tag the node so codegen
             // applies the writes in place. Detected at STATEMENT position so a
             // value-position literal (`p := P{...}`) is never mistaken for an
@@ -8775,14 +8720,14 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
                 }
                 // A NAMED struct-literal statement whose name resolved to nothing
                 // (Type_Error comes only from the unresolved-name fallthrough; a
-                // real construction returns its type) is an undefined name — e.g.
+                // real construction returns its type) is an undefined name â€” e.g.
                 // `bogus{ x = 1 }`, which used to no-op silently. A struct-variable
                 // override was already handled above, so this only fires for genuine
                 // garbage (or a variant misused as a bare statement).
                 if lit, is_lit := s.expr.(^Expr_Struct_Literal); is_lit && lit.name != "" {
                     // Only "undefined" if the name is truly unbound. A name that
-                    // IS a binding — e.g. a local struct variable whose in-place
-                    // override didn't resolve — is defined; don't mislabel it.
+                    // IS a binding â€” e.g. a local struct variable whose in-place
+                    // override didn't resolve â€” is defined; don't mislabel it.
                     _, _, name_bound := type_env_locate(env, lit.name)
                     if _, is_err := rt.(Type_Error); is_err && !name_bound {
                         check_error(c, s.span, TYPE_UNDEFINED_IDENTIFIER, lit.name)
@@ -8796,7 +8741,7 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Env) {
             // Destructure was fully checked during registration (s.checked empty).
             // Broadcast desugared into s.checked there; run the body pass on those
             // so field/index targets get their per-target check and bare-name env
-            // updates apply (same handoff as Stmt_Decl). Empty list → no-op.
+            // updates apply (same handoff as Stmt_Decl). Empty list â†’ no-op.
             check_bodies(c, s.checked, env)
 
         case Stmt_Return:
@@ -8894,7 +8839,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
     // their own constant of the same name; the user disambiguates with
     // `Module.name` when both are visible.
 
-    // `::` is constant-by-definition — register the value expression so
+    // `::` is constant-by-definition â€” register the value expression so
     // codegen can inline-substitute every use site. Module-level constants
     // are pre-registered by register_module_constant; this covers function-
     // body and nested-scope `::` declarations regardless of value type.
@@ -8925,7 +8870,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
 
         // Literal assignment: delegate to structural check helpers (unwrap distinct).
         // A plain (non-literal) value must instead reach the nominal-compatibility
-        // fallback below — the literal helpers no-op on non-literals, which let
+        // fallback below â€” the literal helpers no-op on non-literals, which let
         // `p : Point = Color()` slip through unchecked.
         check_ann := distinct_base(ann_type)
         value_needs_literal_handling := val_is_struct_lit || is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
@@ -8968,7 +8913,6 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Env, public_env: ^
     s.var_type = distinct_base(val_type)
     s.env_type = val_type
     type_env_set(pub, s.name, val_type)
-    set_provenance(env, s.name, expr_provenance(c, s.value, env))
 }
 
 // Validate that a struct literal's fields match a struct definition:
@@ -8979,7 +8923,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
     if lit.positional {
         // Multi-return spread: `Foo{call()}` where call's return list matches
         // Foo's fields one-to-one (with normal compatibility, including
-        // array→slice coercion). Codegen detects the same pattern and routes
+        // arrayâ†’slice coercion). Codegen detects the same pattern and routes
         // the call's sret args into temps then into the struct.
         if len(lit.fields) == 1 && len(st.fields) > 1 {
             single_val := lit.fields[0].value
@@ -9008,7 +8952,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         for field, i in lit.fields {
             if i >= len(st.fields) { break }
             sf := st.fields[i]
-            // Only set the hint for anonymous nested literals — these need
+            // Only set the hint for anonymous nested literals â€” these need
             // the field type to determine their shape. Other expression
             // shapes (idents, calls, field-accesses, arithmetic) self-type
             // and a stray hint can mistype intermediate sub-expressions.
@@ -9027,7 +8971,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         }
         return
     }
-    // Named form: O(literal_fields) — validate each literal field against
+    // Named form: O(literal_fields) â€” validate each literal field against
     // struct definition via field_map.
     provided: map[string]bool
     for field in lit.fields {
@@ -9081,7 +9025,7 @@ check_union_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, ut: ^Ty
 
 // True when an expression needs a type hint from its surrounding context to
 // be type-checked correctly. Today this is only anonymous struct/array
-// literals (`{a, b, c}` with no leading name and no inline `[N]T`) — the
+// literals (`{a, b, c}` with no leading name and no inline `[N]T`) â€” the
 // type checker uses the hint at check_expr's Expr_Struct_Literal branch to
 // dispatch to check_array_struct_literal. Idents, field accesses, calls,
 // arithmetic, etc. all self-type without a hint, so we don't propagate one
@@ -9094,7 +9038,7 @@ needs_field_type_hint :: proc(e: Expr) -> bool {
 
 // A NAMED variant literal (`Rect{...}`) in a union-typed field or argument
 // needs the union as its hint so check_expr's union-context branch can resolve
-// it. Unlike needs_field_type_hint this fires for named literals — the name
+// it. Unlike needs_field_type_hint this fires for named literals â€” the name
 // identifies the variant, the hint supplies the owning union.
 needs_union_variant_hint :: proc(field_type: Type, value: Expr) -> bool {
     ut, ok := distinct_base(field_type).(^Type_Union)
@@ -9105,19 +9049,19 @@ needs_union_variant_hint :: proc(field_type: Type, value: Expr) -> bool {
 
 // Validate a `Quat{...}` / `Vec3{...}` style literal that constructs a value of
 // a distinct fixed array type. Populates lit.array_values with positional
-// entries (nil means "zero this slot" — codegen fills from memset).
+// entries (nil means "zero this slot" â€” codegen fills from memset).
 //
 // Three surface forms are accepted:
-//   Name{}            — zero-init every slot
-//   Name{v0, v1, ...} — positional; must have exactly fa.size entries
-//   Name{x: v, ...}   — named; each name must be a swizzle char (x/y/z/w or
+//   Name{}            â€” zero-init every slot
+//   Name{v0, v1, ...} â€” positional; must have exactly fa.size entries
+//   Name{x: v, ...}   â€” named; each name must be a swizzle char (x/y/z/w or
 //                       r/g/b/a) whose index is within fa.size; duplicates
 //                       rejected; missing slots zero-fill
 check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^Type_Fixed_Array, env: ^Type_Env) {
     clear(&lit.array_values)
     resize(&lit.array_values, fa.size)
 
-    // Broadcast: `{all <expr>}` — check the expression once against the
+    // Broadcast: `{all <expr>}` â€” check the expression once against the
     // element type, then fill every slot with a clone so codegen emits
     // independent stores per element.
     if lit.is_broadcast {
@@ -9137,7 +9081,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
         return
     }
 
-    // Zero-init or empty — all slots stay nil
+    // Zero-init or empty â€” all slots stay nil
     if lit.zero_init || len(lit.fields) == 0 { return }
 
     if lit.positional {
@@ -9186,11 +9130,11 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
 
 // A string literal may not initialize or be assigned to a plain `[]utf8`
 // location: a literal is `[..N]utf8` STORAGE (read-only rodata bytes), not a
-// view — a slice binding would be a writable header over those bytes, and
+// view â€” a slice binding would be a writable header over those bytes, and
 // element writes through it compile and then page-fault at runtime.
 // Parameter position stays legal (by-value params are immutable, so the free
 // view is safe). Sized-slice decls (`[:N]utf8 = "lit"`) copy into owned
-// backing and are exempt — callers gate on slice_cap_expr.
+// backing and are exempt â€” callers gate on slice_cap_expr.
 check_no_literal_slice_binding :: proc(c: ^Checker, target: Type, value: Expr, span: Span) {
     if value == nil { return }
     if _, is_lit := value.(^Expr_String); !is_lit { return }
@@ -9213,7 +9157,7 @@ check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixe
         // literal-type change). Same element check; the size check ensures
         // the source CONTENT fits in the fixed-array storage. A string
         // literal's TYPE carries the quantized tier cap (string_literal_cap)
-        // while its content is the byte length — compare the content, so
+        // while its content is the byte length â€” compare the content, so
         // `fa : [16]utf8 = "hi"` doesn't trip over the literal's [..64] tier.
         src_size := pv.size
         if lit, lit_ok := value.(^Expr_String); lit_ok {
@@ -9249,25 +9193,14 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     } else if !is_any(ptr_type) {
         check_error(c, s.span, TYPE_CANNOT_DEREFERENCE_ASSIGN_NON_POINTER, type_name(ptr_type))
     }
-    // Escape analysis: prevent writing local references through param pointers.
-    // e.g., param^ = &local_var would let a local reference escape.
-    if c.current_package != "memory" {
-        if is_local_ref(c, s.value, env) {
-            if ident, ok := un.operand.(^Expr_Ident); ok {
-                if is_param(env, ident.name) {
-                    check_error(c, s.span,
-                        TYPE_CANNOT_WRITE_LOCAL_REFERENCE_THROUGH,
-                        ident.name)
-                }
-            }
-        }
-    }
+    // (Writing a local ref through a param pointer â€” `param^ = &local` â€” is caught
+    //  by the post-check escape pass, escape.odin.)
 }
 
 check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     ix := s.target.(^Expr_Index)
     ix.index = rewrite_subscript_dots(ix.expr, ix.index)
-    // `::` constants can be read by index — the codegen routes that through
+    // `::` constants can be read by index â€” the codegen routes that through
     // the literal's .rodata global. But writing through one would attempt
     // to mutate read-only memory at runtime, so reject at the type-check
     // stage with a hint about how to fix.
@@ -9285,7 +9218,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     idx_type := check_expr(c, ix.index, env)
     // Hint the value with the element type so an infer literal (`a[i] = 0`)
     // resolves to the element width rather than defaulting. Byte targets are
-    // left unhinted — their reinterpret-write path (below) types the value on
+    // left unhinted â€” their reinterpret-write path (below) types the value on
     // its own and accepts any width.
     if fa, ok := target_type.(^Type_Fixed_Array); ok {
         c.expected_hint = fa.elem
@@ -9311,7 +9244,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 
     // A byte buffer's indexed write is a reinterpret write of sizeof(value)
     // bytes (`buf[off] = some_u32` writes 4). An untyped number literal has no
-    // concrete width — rather than assume one (which silently wrote 8 bytes for
+    // concrete width â€” rather than assume one (which silently wrote 8 bytes for
     // `buf[i] = 6`, or trapped at the buffer's end), require an explicit cast to
     // pin the width. Concrete-typed values carry their own width and are fine.
     if is_infer(val_type) {
@@ -9352,12 +9285,12 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     // Non-byte element write into a fixed array, partial array, or slice. The
     // value must reach the element slot without losing information:
     //   - same type, or the 8-bit memory family (byte/c8/utf8/i8/u8) that all
-    //     lower to i8 and may alias a slot — buffer_elem_compatible; or
+    //     lower to i8 and may alias a slot â€” buffer_elem_compatible; or
     //   - a value-preserving widen (u16->u32, i32->i64, f32->f64), which
     //     gen_index_assign materializes through gen_expr_coerced (zext/sext/
     //     fpext) at the store.
-    // Anything else — narrowing (i64->i32) or a same-width cross-sign
-    // (i32->u32) — is a located error: the index-store codegen can't insert
+    // Anything else â€” narrowing (i64->i32) or a same-width cross-sign
+    // (i32->u32) â€” is a located error: the index-store codegen can't insert
     // that conversion, so without this gate the mismatch reaches codegen and
     // emits a typed store LLVM rejects. An explicit cast is the fix.
     elem_type: Type
@@ -9418,7 +9351,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     }
 
     // Byte slice reinterpret write: mem[off:off+N] = value.
-    // Reinterpret only applies to scalar/struct writes — a fixed-array or slice
+    // Reinterpret only applies to scalar/struct writes â€” a fixed-array or slice
     // RHS is an element copy (the bytes the slice points AT, not its header) and
     // falls through to the array-copy path (gen_slice_range_assign).
     if is_byte_slice(target_type) {
@@ -9445,7 +9378,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     // arrays carry a slice header at the front of their inline storage and
     // codegen treats them as Slice_Vars, so the byte-target write helper
     // resolves the data pointer the same way. Same fixed-array/slice RHS guard
-    // as above — those are content copies, not reinterprets.
+    // as above â€” those are content copies, not reinterprets.
     if is_byte_partial_array(target_type) {
         if !is_array_shaped(val_type) {
             solid_val_type := solidify_type(val_type)
@@ -9467,7 +9400,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
 
     // Byte fixed-array reinterpret write: buf[off:off+N] = value
     // (array-class byte buffers reach here post-desugar as [N]byte)
-    // Reinterpret only applies to scalar/struct writes — fixed-array, slice, or
+    // Reinterpret only applies to scalar/struct writes â€” fixed-array, slice, or
     // partial-array RHS values fall through to the regular array-copy path below.
     if is_byte_fixed_array(target_type) {
         if !is_array_shaped(val_type) {
@@ -9564,7 +9497,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
                     TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER,
                     fa_expr.field, pname)
             }
-            // `obj.view = "lit"` — a slice-typed field would alias rodata.
+            // `obj.view = "lit"` â€” a slice-typed field would alias rodata.
             check_no_literal_slice_binding(c, ft, s.value, s.span)
             // (Field-init clearing for definite-assignment now in the flow pass.)
             if is_byte_buffer(val_type) {
@@ -9593,31 +9526,15 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
             if is_infer(val_type) {
                 check_literal_overflow(c, s.value, ft, s.span)
             }
-            // Escape analysis: prevent writing local refs into param struct fields.
-            // e.g., param.ptr_field = &local_var
-            if c.current_package != "memory" {
-                is_ref_field := false
-                if ft != nil {
-                    if _, ptr_ok := ft.(^Type_Ptr); ptr_ok { is_ref_field = true }
-                    if _, sl_ok := ft.(^Type_Slice); sl_ok { is_ref_field = true }
-                }
-                if is_ref_field && is_local_ref(c, s.value, env) {
-                    if ident, ok := fa_expr.expr.(^Expr_Ident); ok {
-                        if is_param(env, ident.name) {
-                            check_error(c, s.span,
-                                TYPE_CANNOT_WRITE_LOCAL_REFERENCE_FIELD,
-                                fa_expr.field, ident.name)
-                        }
-                    }
-                }
-            }
+            // (Writing a local ref into a param struct's ref field â€”
+            //  `param.field = &local` â€” is caught by the post-check escape pass.)
         } else {
             check_error(c, s.span, TYPE_CLASS_FIELD, st.name, fa_expr.field)
         }
         return
     }
 
-    // Auto-deref ^Slice / ^Partial_Array — `data.len = ...` where data is
+    // Auto-deref ^Slice / ^Partial_Array â€” `data.len = ...` where data is
     // `^[]byte` writes through the pointer. Mirrors the read-side unwrap in
     // check_field_access.
     if pt, ok := obj_type.(^Type_Ptr); ok {
@@ -9632,7 +9549,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Env) {
     }
 
     // Slice / partial-array .len / .cap / .ptr writes. Previously this path
-    // had no type check at all — any value type silently flowed into the
+    // had no type check at all â€” any value type silently flowed into the
     // slice's narrow header fields, and the codegen had to trunc/widen at
     // its end with no real ABI contract. Match the read-side type the
     // field-access resolver returns and run the standard compat check.
@@ -9714,7 +9631,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
     et, is_enum_match := subj_type.(^Type_Enum)
     _, is_err_match := subj_type.(Type_Err)
 
-    // Union-only: match is for variant dispatch — payload unions, payload-less
+    // Union-only: match is for variant dispatch â€” payload unions, payload-less
     // unions (a.k.a. enums), and open `err`. Structs, scalars, bools, etc. are
     // not matchable; use if/elif for value or predicate branching.
     if !is_union_match && !is_enum_match && !is_err_match {
@@ -9722,7 +9639,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
         return
     }
 
-    // Open `err` matches can never be exhaustive — the universe of error
+    // Open `err` matches can never be exhaustive â€” the universe of error
     // variants is open across the whole program. Force an explicit `else`
     // arm so unhandled errors stay structurally visible rather than
     // silently falling through.
@@ -9736,7 +9653,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
         }
     }
 
-    // Validate wildcard 'else' arms. Empty body is fine — it's the explicit
+    // Validate wildcard 'else' arms. Empty body is fine â€” it's the explicit
     // no-op opt-out ("ignore unhandled variants on purpose"), same idiom as
     // Rust's `_ => {}`.
     for arm, i in s.arms {
@@ -9748,7 +9665,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
 
     for &arm in s.arms {
         if arm.dot_shorthand != "" {
-            // Dot shorthand arm: .Variant — resolve against subject's enum or union type
+            // Dot shorthand arm: .Variant â€” resolve against subject's enum or union type
             if is_enum_match {
                 if tag_val, v_ok := et.variants[arm.dot_shorthand]; v_ok {
                     arm.resolved_tag = tag_val
@@ -9786,7 +9703,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             // arm's body. The arm body can then access variant fields through
             // the subject's existing name (`e.scancode`) instead of needing a
             // dedicated alias (`KeyDown key` + `key.scancode`). Only triggers
-            // when the subject is a simple identifier — non-ident subjects
+            // when the subject is a simple identifier â€” non-ident subjects
             // have no name to rebind, so the user falls back to the explicit
             // binding form.
             if arm.binding_name == "" {
@@ -9816,11 +9733,11 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
             }
             check_scope(c, arm.body, &child)
         } else if arm.is_else {
-            // Else (wildcard) arm — just type-check the body
+            // Else (wildcard) arm â€” just type-check the body
             child := type_env_block_child(env)
             check_scope(c, arm.body, &child)
         } else {
-            // Value match arm — try to infer bare identifiers as enum/union variants
+            // Value match arm â€” try to infer bare identifiers as enum/union variants
             if ident, ident_ok := arm.value.(^Expr_Ident); ident_ok {
                 if is_enum_match {
                     if tag_val, v_ok := et.variants[ident.name]; v_ok {
@@ -9855,7 +9772,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
         }
     }
     // An else arm (with or without a body) opts out of the variant-coverage
-    // check below — its presence is the explicit acknowledgment that the
+    // check below â€” its presence is the explicit acknowledgment that the
     // user is not covering every variant on purpose.
     has_wildcard := false
     for arm in s.arms {
@@ -9867,7 +9784,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
     // (Definite-assignment branch-merge across arms now lives in the flow pass.)
     // Strict-default exhaustiveness: when the subject is an enum or union and
     // there's no else wildcard, every variant must have an arm. else is the
-    // only opt-out — write `else do {…}` to acknowledge you're not covering
+    // only opt-out â€” write `else do {â€¦}` to acknowledge you're not covering
     // every variant on purpose.
     if !has_wildcard && (is_enum_match || is_union_match) {
         // Collect covered variant names from match arms
@@ -9899,7 +9816,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Env) {
 }
 
 // ---------------------------------------------------------------------------
-// Check program — entry point
+// Check program â€” entry point
 // ---------------------------------------------------------------------------
 
 // Helper: extract a Checked_Scope from a Stmt_Scope using resolved types from an env.
@@ -9966,13 +9883,13 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Env, table: ^SymbolTabl
 }
 
 // ---------------------------------------------------------------------------
-// Module system — modules are pre-parsed; checker looks up by name
+// Module system â€” modules are pre-parsed; checker looks up by name
 // ---------------------------------------------------------------------------
 
 // Resolve a `use <path>` to the module it names. Matching is EXACT: `use foo`
 // pulls in the module declared `module foo` and nothing else. A submodule
 // `foo.bar` is an independent module, reached only by an explicit `use foo.bar`
-// (typically written inside `foo` itself — the way `gfx` does `use gfx.shader`).
+// (typically written inside `foo` itself â€” the way `gfx` does `use gfx.shader`).
 // So a submodule stays private to whoever uses it, like any other dependency;
 // there is no parent-glob that drags `foo.*` into a `use foo`.
 //
@@ -9987,7 +9904,7 @@ find_matching_modules :: proc(c: ^Checker, path: string) -> [dynamic]string {
 }
 
 
-// (lazy_load_module_program removed — all modules are pre-parsed and looked up
+// (lazy_load_module_program removed â€” all modules are pre-parsed and looked up
 // from c.programs directly in check_module.)
 
 // Partition a package's statements into per-file buckets (preserving first-seen
@@ -10027,26 +9944,26 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Env) ->
 // THE canonical per-file checking pipeline for one package. Both check_program
 // (main package) and check_module (imports) drive it, so the phase sequence
 // lives in exactly one place. Each phase runs across ALL files before the next
-// begins — that whole-package hoisting is what lets cross-file forward
+// begins â€” that whole-package hoisting is what lets cross-file forward
 // references resolve regardless of (hash-seeded, non-deterministic) file order:
 //
-//   1a   register_type_names              — type + fn NAMES (+ eager signatures)
-//   1b   register_and_check_declarations  — body fields, base/param/return types,
+//   1a   register_type_names              â€” type + fn NAMES (+ eager signatures)
+//   1b   register_and_check_declarations  â€” body fields, base/param/return types,
 //                                           statement-level decls; named struct-
 //                                           literal `::` constants are QUEUED here
 //                                           (their target's fields don't exist yet)
-//   (1.5 removed)                         — a main-package constant pass used to
+//   (1.5 removed)                         â€” a main-package constant pass used to
 //                                           run here; main-package constants are
 //                                           const-folded before codegen, so it was
 //                                           dead and is gone.
-//   (2a removed)                          — struct field types used to be hoisted
+//   (2a removed)                          â€” struct field types used to be hoisted
 //                                           here so a body in file A could read a
 //                                           struct from file B; now they resolve
 //                                           ON DEMAND at the use site
 //                                           (ensure_struct_signature), so no hoist.
-//   2a.5 flush_deferred_literals          — validate the queued named-literal
+//   2a.5 flush_deferred_literals          â€” validate the queued named-literal
 //                                           constants from 1b
-//   2    check_bodies                     — full function-body type-checking
+//   2    check_bodies                     â€” full function-body type-checking
 //
 // owner is the module-struct that top-level decls attach to (nil for the main
 // package, which has no enclosing module-struct); pkg_env is the package scope
@@ -10063,32 +9980,32 @@ check_package_files :: proc(
         register_type_names(c, files_by_src[src], file_envs[src], owner, pkg_env)
     }
 
-    c.defer_define_literals = true  // 1b — queue named struct literals (see flush below)
+    c.defer_define_literals = true  // 1b â€” queue named struct literals (see flush below)
     for src in file_order {
         register_and_check_declarations(c, files_by_src[src], file_envs[src], owner, pkg_env)
     }
     c.defer_define_literals = false
 
-    // (1.5 main-package constant pass removed — see header. Main-package
+    // (1.5 main-package constant pass removed â€” see header. Main-package
     // constants const-fold to literals during checking before codegen consults
     // c.table.constants for them, so the registration was dead.)
 
     // (Former "2a" cross-file struct-signature hoist removed: struct fields now
-    // resolve on demand at the use site — field access, construction, literal
-    // matching — via ensure_struct_signature, so a body in one file no longer
+    // resolve on demand at the use site â€” field access, construction, literal
+    // matching â€” via ensure_struct_signature, so a body in one file no longer
     // needs every other file's structs pre-resolved. The struct carries its own
     // decl_env and memoizes via sig_state.)
 
     flush_deferred_literals(c)  // 2a.5
 
-    for src in file_order {  // 2 — bodies
+    for src in file_order {  // 2 â€” bodies
         check_bodies(c, files_by_src[src], file_envs[src])
     }
 }
 
 // Type-check a module on demand (lazily, triggered by include).
 // Returns a Type_Scope (module-struct) with scope set to the module's checked env.
-// Modules are funs — Type_Scope with no data fields, only functions/types/scope.
+// Modules are funs â€” Type_Scope with no data fields, only functions/types/scope.
 check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scope {
     // Return cached if already checked
     if existing, ok := c.checked_modules[module_name]; ok {
@@ -10113,7 +10030,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     c.modules_in_progress[module_name] = true
 
     // Create isolated env for this module. is_module_scope=true means the
-    // env lookup walker stops here when looking up unqualified names —
+    // env lookup walker stops here when looking up unqualified names â€”
     // module locals don't leak into sibling modules' lookup chains. But
     // we DO want module bodies to see the build-wide globals (context,
     // Context, std, void), which live in c.top_env (root) and otherwise
@@ -10176,7 +10093,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // per-file pipeline (see check_package_files for the phase map). mod_struct
     // owns the top-level decls; mod_env is the module scope names register into.
     // Lookup chain inside a body: body -> file_env -> mod_env -> STOP
-    // (mod_env is_module_scope=true). Modules skip the 1.5 constant pass —
+    // (mod_env is_module_scope=true). Modules skip the 1.5 constant pass â€”
     // extract_module_into_checked registers an imported module's constants.
     files_by_src, file_order, file_envs := partition_package_files(mod_program, mod_env)
     check_package_files(c, files_by_src, file_order, file_envs, mod_struct, mod_env)
@@ -10185,7 +10102,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     mod_struct.dispatch_groups = c.dispatch_groups
     mod_struct.operator_overloads = c.operator_overloads
 
-    // (The module's durable name surface — mod_struct.types/functions — is kept
+    // (The module's durable name surface â€” mod_struct.types/functions â€” is kept
     // in sync by type_env_set writing through mod_env.scope == mod_struct as the
     // module body is checked, so no end-of-module mirror copy is needed.)
 
@@ -10225,7 +10142,7 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
 // declared by exactly one `foreign` block across the program. If another
 // foreign with the same link_name is already registered, this surfaces a
 // type error pointing at both definition sites. SDL2/SDL3 dual support is
-// not provided — projects that genuinely need to load both versions must
+// not provided â€” projects that genuinely need to load both versions must
 // rename one side via `prefix`.
 make_foreign_checked_scope :: proc(c: ^Checker, decl: Foreign_Fun, ft: ^Type_Scope, library, prefix: string) -> ^Type_Scope {
     ln := decl.name
@@ -10271,7 +10188,7 @@ extract_nested_foreigns_into_checked :: proc(c: ^Checker, body: [dynamic]Stmt, m
                 ff_key := make_flat_name(struct_flat_name, decl.name)
                 ft_raw, ft_found := type_env_get(mod_env, ff_key)
                 if !ft_found {
-                    // Fall back to the global tables — register_scope_defs
+                    // Fall back to the global tables â€” register_scope_defs
                     // wrote root_env, which may not be reachable from mod_env
                     // when the struct sits inside a sealed/private file scope.
                     if t, ok := c.table.funs[ff_key]; ok { ft_raw = t; ft_found = true }
@@ -10311,12 +10228,12 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
             }
             // mod_struct.types / functions attachments are handled by
             // register_and_check_declarations' owner-threading (Step B).
-            // Extract as Checked_Scope — extract_checked_scope decides based on
+            // Extract as Checked_Scope â€” extract_checked_scope decides based on
             // kind/params/has_parens whether this scope is callable. Pure struct
             // scopes are now always extracted so every construction path goes
             // through a generated init function.
             cf, cf_ok := extract_checked_scope(s, mod_env, c.table)
-            // `main` is special — it's the program entry point, only meaningful
+            // `main` is special â€” it's the program entry point, only meaningful
             // when extracted via extract_main_program_stmts (which registers it
             // under the bare key "main", consumed by the @main codegen wrapper).
             // Skip it when walked as a regular module here.
@@ -10324,7 +10241,7 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
                 flat_key := make_flat_name(module_name, s.name)
                 // Dedup: a main package can also be imported as a module by
                 // another main package, in which case the same function gets
-                // walked twice — once here, once via extract_main_program_stmts.
+                // walked twice â€” once here, once via extract_main_program_stmts.
                 // Same content either way; just don't add to function_order
                 // twice or codegen emits the function definition twice.
                 _, already := checked.functions[flat_key]
@@ -10348,7 +10265,7 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
         }
 
         // Handle top-level variable/constant declarations.
-        // Module variables are effectively compile-time values — store in constants
+        // Module variables are effectively compile-time values â€” store in constants
         // so codegen can resolve them cross-function (g.all_vars is per-function).
         if assign, ok := stmt.(^Stmt_Assign); ok {
             if _, is_include := assign.value.(^Expr_Include); !is_include && assign.value != nil {
@@ -10373,8 +10290,8 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
                 }
             }
         }
-        // Stmt_Define: `name :: value` or `name : Type : value` — always a compile-time constant.
-        // Skip include forms (`name :: include path`) — those are handled by the
+        // Stmt_Define: `name :: value` or `name : Type : value` â€” always a compile-time constant.
+        // Skip include forms (`name :: include path`) â€” those are handled by the
         // include-processing path in register_and_check_declarations, same as
         // `name := include path`.
         if def, ok := stmt.(^Stmt_Define); ok {
@@ -10399,7 +10316,7 @@ register_module_constant :: proc(c: ^Checker, module_name: string, bare: string,
             // Same module re-registering: idempotent.
             return
         }
-        // Different module already owns this bare name — ambiguous.
+        // Different module already owns this bare name â€” ambiguous.
         c.table.constant_owners[bare] = ""
         return
     }
@@ -10437,10 +10354,10 @@ validate_scope_allocator :: proc(c: ^Checker) {
         return
     }
 
-    // Flat form: the allocator class itself is the arena — methods (mark,
+    // Flat form: the allocator class itself is the arena â€” methods (mark,
     // alloc, reset) take ^Self as first param. No inner Arena type needed.
 
-    // Check required functions (new is no longer required — the allocator's
+    // Check required functions (new is no longer required â€” the allocator's
     // constructor is the class itself)
     required_fns := [?]string{"mark", "alloc", "reset"}
     for req in required_fns {
@@ -10524,7 +10441,7 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                     } else {
                         ret := resolve_type_expr(s.return_types[0], c, s.span)
                         if is_any(ret) { is_void = true }
-                        // main may return i64 — the process exit code.
+                        // main may return i64 â€” the process exit code.
                         if vn, ok := ret.(Type_Numeric); ok && vn.kind == .Signed && vn.bits == 64 { is_int = true }
                     }
                 }
@@ -10535,7 +10452,7 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                     check_error(c, s.span, TYPE_FUN_MAIN_TAKE_PARAMETERS)
                 }
             }
-            // `#expose fun foo(ctx: ^Context, ...)` — DLL entry points must
+            // `#expose fun foo(ctx: ^Context, ...)` â€” DLL entry points must
             // take a Context pointer as their first param. Each call stores it
             // into the DLL's @__mara_context, so internal Mara code inside the
             // DLL sees the host's context. Skipping the param means the global
@@ -10557,7 +10474,7 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                 }
             }
         case ^Stmt_If:
-            // A runtime `if` at top level is illegal — comptime `#if` was folded
+            // A runtime `if` at top level is illegal â€” comptime `#if` was folded
             // away before this ran, so any Stmt_If here is a runtime conditional.
             check_error(c, s.span, TYPE_EXECUTABLE_STATEMENTS_INSIDE_FUN_MAIN)
         case ^Stmt_Assign, ^Stmt_Multi_Assign, ^Stmt_Multi_Return_Assign,
@@ -10581,7 +10498,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     table.root_env = env
     // The main package's durable module scope, wired upfront so builtins
     // (std / void / Program / this_program) and every top-level name land on it
-    // directly via type_env_set — no env.types-mirror copy needed. This wiring is
+    // directly via type_env_set â€” no env.types-mirror copy needed. This wiring is
     // also what makes env_is_module(env) true: the root env IS the main package's
     // module scope, so lookup terminates here.
     main_mod := new(Type_Scope)
@@ -10608,7 +10525,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     c.target_os     = target_os
 
     // Resolve comptime `#if` up front: fold the live arm inline, drop the dead
-    // one. After this no `#if` reaches the checker — the dead arm's platform
+    // one. After this no `#if` reaches the checker â€” the dead arm's platform
     // names never resolve here, and the def/runtime split never sees a hybrid.
     for _, prog in c.programs {
         fold_comptime_ifs(&c, prog)
@@ -10639,7 +10556,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // packages know whether a scope allocator is available.
     //
     // Two shapes accepted (both supplied by the shape-shortcut desugar at
-    // type-check time, but Phase 0 runs before desugar — so we peel the
+    // type-check time, but Phase 0 runs before desugar â€” so we peel the
     // shapes here directly):
     //
     //   this_program = Program(Arena_Debug(50 * MB))   // shortcut form
@@ -10650,7 +10567,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     //                                                  //   in this scan)
     //
     // Bare `this_program = Program()` and `this_program : Program` mean the
-    // void default — no arena, allocation sites fail with a clear diagnostic.
+    // void default â€” no arena, allocation sites fail with a clear diagnostic.
     scan_allocator :: proc(c: ^Checker, target: Expr, value: Expr) {
         ident, id_ok := target.(^Expr_Ident)
         if !id_ok || ident.name != "this_program" { return }
@@ -10739,12 +10656,12 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // Build Context struct: { arena? , args: [..64][]utf8 }
     {
         ARGS_CAP :: 64
-        // Element type: []utf8 slice — argv strings are strlen-scanned into
+        // Element type: []utf8 slice â€” argv strings are strlen-scanned into
         // plain {len, cap, ptr} headers by the @main prologue.
         arg_slice := new(Type_Slice)
         arg_slice.elem = Type_Byte{}
 
-        // Args is a partial array: [..64][]utf8 — header {len,cap,ptr}
+        // Args is a partial array: [..64][]utf8 â€” header {len,cap,ptr}
         // followed by inline [64 x slice] storage.
         args_type := new(Type_Partial_Array)
         args_type.size = ARGS_CAP
@@ -10757,10 +10674,10 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         // `this_program.scope_allocator` and `this_program.args` without
         // depending on the user having loaded mara.core. The user's generic
         // `Program` template stays in generic_templates under the bare name
-        // "Program" — separate path.
+        // "Program" â€” separate path.
         prog_type := new(Type_Scope)
         prog_type.name = "Program"
-        // Synthetic Program belongs to the main package — that's the only TU
+        // Synthetic Program belongs to the main package â€” that's the only TU
         // that will emit its init body, so cross-module references resolve
         // there. Without a real home_package, the per-module IR split has
         // nowhere to put its definition and downstream modules can't extern
@@ -10779,21 +10696,21 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         type_env_set(env, "this_program", prog_type)
         // Expose `Program` (the type name) for cross-DLL signatures like
         // `game_run : fn(^Program, ...)`. The user's generic Program template
-        // also lives in c.table.generic_templates under the same bare name —
+        // also lives in c.table.generic_templates under the same bare name â€”
         // env binding wins for type-expr lookups via resolve_type_expr, so
         // `^Program` here resolves to the synthesized program-global type.
         type_env_set(env, "Program", prog_type)
     }
 
     // Register `void` as the built-in null-pointer literal. Reads as
-    // "this pointer points into the void — no data to be read there".
+    // "this pointer points into the void â€” no data to be read there".
     void_type := new(Type_Ptr)
     void_type.elem = Type_Any{}
     type_env_set(env, "void", void_type)
 
     // Phase 1: Scope-based checking of every main package, in turn.
     // Imports reached from any of them go through check_module which caches
-    // results in c.checked_modules — so a stdlib AST that's used by two
+    // results in c.checked_modules â€” so a stdlib AST that's used by two
     // main packages is processed exactly once.
     c.top_env = env
 
@@ -10818,7 +10735,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     }
 
     // Phase 2: Extract checked info from the completed scope.
-    // Type definitions are already shared via table pointer — no copying needed.
+    // Type definitions are already shared via table pointer â€” no copying needed.
     // Extract resolved constant values for codegen.
     for name, expr in c.table.constants {
         if _, i_val, ok := extract_constant_value(expr); ok {
@@ -10886,6 +10803,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
 
     checked.call_graph = build_call_graph(&c)
     flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
+    escape_analyze_program(&c, checked) // post-check intraproc escape (validation mode)
     checked.errors = c.errors
     return checked
 }
@@ -10974,7 +10892,7 @@ stmt_span :: proc(stmt: Stmt) -> Span {
 }
 
 // ---------------------------------------------------------------------------
-// Check expressions — returns the inferred type
+// Check expressions â€” returns the inferred type
 // ---------------------------------------------------------------------------
 
 // Return a pointer to the type_ field of any expression node.
@@ -11035,14 +10953,14 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         return Type_Infer_Int{}
     case ^Expr_String:
         // String literals are partial arrays of utf8 at a QUANTIZED capacity
-        // tier — [..64] / [..256] / [..1024]utf8, smallest tier strictly
+        // tier â€” [..64] / [..256] / [..1024]utf8, smallest tier strictly
         // larger than the byte length (see string_literal_cap). Three types
         // serve every literal instead of one per length, and a `:=` copy is
         // born with headroom, so appends and cstring conversion both work
         // on it. The bytes live in rodata (one global per unique literal,
-        // deduped at codegen, with a trailing \0 so literal→cstring is
-        // free); use sites synthesize an HONEST header — len = cap = byte
-        // length — pointing at the global, so the quantized cap only
+        // deduped at codegen, with a trailing \0 so literalâ†’cstring is
+        // free); use sites synthesize an HONEST header â€” len = cap = byte
+        // length â€” pointing at the global, so the quantized cap only
         // materializes when the literal is copied into storage the user
         // owns (decl init, field default).
         pa := new(Type_Partial_Array)
@@ -11054,7 +10972,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
     case ^Expr_Bool:
         return Type_Bool{}
     case ^Expr_Skip_Constructor:
-        // `---` carries no intrinsic type — the type comes from the LHS
+        // `---` carries no intrinsic type â€” the type comes from the LHS
         // (a field's declared type or a local's type annotation). The
         // checker treats it as Type_Any so any LHS accepts it; codegen
         // recognizes the marker and skips constructor / default emission.
@@ -11114,7 +11032,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
 
         // (Reading an uninitialized pointer/slice is now caught by the post-check
-        // flow pass — flow.odin / definite-assignment.)
+        // flow pass â€” flow.odin / definite-assignment.)
         // Check env (common case: local vars, params, functions)
         t, loc_scope, ok := type_env_locate(env, e.name)
         if ok {
@@ -11131,7 +11049,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 }
             }
             // Set variant resolution metadata if this is an enum variant.
-            // Only attach when the env binding actually IS the enum — without
+            // Only attach when the env binding actually IS the enum â€” without
             // this guard, any local `N :: 1000` would silently get overridden
             // by an imported `Scancode.N` variant of the same name. The
             // variant_to_enum table is meant for the `.N` dot-shorthand
@@ -11158,7 +11076,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             }
             return t
         }
-        // Not in env — check for better error messages
+        // Not in env â€” check for better error messages
         ident_flat := resolve_type_name(c, e.name, "", env)
         if ident_flat in c.table.funs {
             check_error(c, e.span, TYPE_TYPE_VALUE_DID_MEAN, e.name, e.name)
@@ -11239,7 +11157,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             return operand_type
         case .Ampersand:
             // Address-of: &x produces ^T. Reject if the address would land in
-            // immutable-param storage — letting `&t` escape would silently
+            // immutable-param storage â€” letting `&t` escape would silently
             // grant the mutation that declaring `t` without `^` denied.
             if pname, immut := write_root_immutable_param(e.operand, env); immut {
                 check_error(c, e.span,
@@ -11256,7 +11174,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             pt.elem = operand_type
             return pt
         case .Caret:
-            // Dereference: p^ — operand must be a pointer. The Expr_Ident
+            // Dereference: p^ â€” operand must be a pointer. The Expr_Ident
             // check at the operand site already fires is_invalid_ref, which
             // covers both no-initializer pointers and pointers currently
             // holding `void` (see invalid_refs comment on Type_Env).
@@ -11302,7 +11220,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 e.type_ = resolved
                 return resolved
             }
-            // Empty partial-array literal: `[..N]T{}` — a default-init
+            // Empty partial-array literal: `[..N]T{}` â€” a default-init
             // constructor that yields a fresh partial array with .len = 0,
             // .cap = N, .ptr aimed at the destination's inline elements.
             // Codegen emits the in-place init; the literal itself doesn't
@@ -11334,7 +11252,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             }
         }
         // Dotted type path: `Parent.Inner{...}` / `mod.Type{...}` /
-        // `Union.Variant{...}` — resolve through the same machinery as type
+        // `Union.Variant{...}` â€” resolve through the same machinery as type
         // position, which owns all the dotted cases (module aliases, nested
         // types, variant structs). A dotted name can never be a variable or
         // a local, so a resolution miss is a hard error here rather than the
@@ -11385,8 +11303,8 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
             // a module-flat name that doesn't match, so a local `LocalStruct{...}`
             // misses the lookups above. Find it through the env, which binds the
             // nested type directly (codegen's lookup_struct then finds it by the
-            // same mangled name). Guard with a name match — the type's mangled
-            // name equals or ends with `_<e.name>` — so a VARIABLE of that struct
+            // same mangled name). Guard with a name match â€” the type's mangled
+            // name equals or ends with `_<e.name>` â€” so a VARIABLE of that struct
             // type (`var{...}`, the copy form) isn't silently turned into a
             // construct-new; that stays unsupported for now.
             if tv, found := type_env_get(env, e.name); found {
@@ -11401,7 +11319,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                         }
                         return ts
                     }
-                    // e.name is a struct VARIABLE in value position — the
+                    // e.name is a struct VARIABLE in value position â€” the
                     // copy-with-overrides form (`new := var{...}`), which is
                     // not implemented. Hard error; the old fallthrough yielded
                     // an untyped value with checking bypassed.
@@ -11421,7 +11339,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 e.type_ = hint
                 return hint
             }
-            // Struct-typed context (call argument, mainly — assignments,
+            // Struct-typed context (call argument, mainly â€” assignments,
             // decls and returns have their own special-cased paths): give a
             // bare literal the same field-matching treatment those get.
             if sd := as_scope_body(distinct_base(hint)); sd != nil && len(sd.fields) > 0 {
@@ -11444,7 +11362,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // Anonymous struct literal: just check each field value. A name that
         // matched no type, struct variable, variant, or hint reaches here and
         // stays a suppressed Type_Error (e.g. context-typed variant literals
-        // are validated by the enclosing decl, not here) — so we can't turn
+        // are validated by the enclosing decl, not here) â€” so we can't turn
         // this into a hard "undefined" error without false-flagging them.
         for field in e.fields {
             check_expr(c, field.value, env)
@@ -11453,7 +11371,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
     case ^Expr_Field_Access:
         return check_field_access(c, e, env)
     case ^Expr_Size_Of:
-        // size_of(Type) — compile-time constant, infers type from context (like Zig's @sizeOf)
+        // size_of(Type) â€” compile-time constant, infers type from context (like Zig's @sizeOf)
         resolved := resolve_type_expr(e.type_expr, c, e.span, env=env)
         if _, is_err := resolved.(Type_Error); is_err {
             check_error(c, e.span, TYPE_SIZE_UNKNOWN_TYPE)
@@ -11461,7 +11379,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         e.resolved_type = resolved
         return Type_Infer_Int{}
     case ^Expr_Assert:
-        // assert(cond) — cond must be boolean; the expression yields no value.
+        // assert(cond) â€” cond must be boolean; the expression yields no value.
         cond_type := check_expr(c, e.cond, env)
         if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
             check_error(c, e.span, TYPE_CONDITION_BOOL, type_name(cond_type))
@@ -11470,17 +11388,17 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         return Type_Void{}
     case ^Expr_Take:
         // Two forms:
-        //   take(T, slice)      — carve from slice's cursor; advances slice.len
-        //   take(T, &slice[i])  — positional view at a specific address; no
+        //   take(T, slice)      â€” carve from slice's cursor; advances slice.len
+        //   take(T, &slice[i])  â€” positional view at a specific address; no
         //                         cursor mutation. Subsumes the old `let`
         //                         behavior; useful for the "same location
         //                         every call" pattern (game state, etc.).
         // The type arg comes in three shapes:
-        //   take([N]T, ...)     — fixed-size array; resolves to [N]T.
-        //   take([]T(n), ...)   — runtime-counted slice; n is lifted out into
+        //   take([N]T, ...)     â€” fixed-size array; resolves to [N]T.
+        //   take([]T(n), ...)   â€” runtime-counted slice; n is lifted out into
         //                         count_expr, type_expr is rewritten to a bare
         //                         []T, and the result is a slice with len=cap=n.
-        //   take(T, ...)        — any other type; the byte size is sizeof(T).
+        //   take(T, ...)        â€” any other type; the byte size is sizeof(T).
         // Detect the slice form before resolution: `[]Vertex(n)` parses as
         // Type_Slice_Expr{elem = Type_Generic_Instance{Vertex, [n]}}. When the
         // elem name is not a generic template and there's exactly one type-arg,
@@ -11490,9 +11408,9 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 if gi, gi_ok := ts.elem.(^Type_Generic_Instance); gi_ok && len(gi.type_args) == 1 {
                     if _, is_generic := c.table.generic_templates[gi.name]; !is_generic {
                         // Arg shapes from parse_generic_arg:
-                        //   Type_Const_Value  — number literal: take([]T(4), ...)
-                        //   Type_Name         — bare identifier:  take([]T(n), ...)
-                        //   Type_Const_Expr   — anything else:    take([]T(n*2), ...), take([]T(f(x)), ...)
+                        //   Type_Const_Value  â€” number literal: take([]T(4), ...)
+                        //   Type_Name         â€” bare identifier:  take([]T(n), ...)
+                        //   Type_Const_Expr   â€” anything else:    take([]T(n*2), ...), take([]T(f(x)), ...)
                         if cv, cv_ok := gi.type_args[0].(Type_Const_Value); cv_ok {
                             num := new(Expr_Number)
                             num.int_value = i128(cv.value)
@@ -11511,7 +11429,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 }
             }
         }
-        // 1-arg `slice(source)` — no type_expr. Pull the slice's element type
+        // 1-arg `slice(source)` â€” no type_expr. Pull the slice's element type
         // from the expected_hint set by check_field_assign (the LHS field
         // being assigned to). Without the hint there's nowhere to derive T,
         // so we error.
@@ -11555,8 +11473,8 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         src_type := check_expr(c, e.storage, env)
         src_base := distinct_base(src_type)
         // Cursor form needs ^[]byte (or ^distinct-byte-slice). Passing []byte
-        // directly would let array→slice coercion create a fresh header per
-        // call site, each with cursor=0, silently clobbering prior takes —
+        // directly would let arrayâ†’slice coercion create a fresh header per
+        // call site, each with cursor=0, silently clobbering prior takes â€”
         // and mutating a bare []byte param would violate the immutable-param
         // rule anyway. ^byte is the positional form (no cursor mutation).
         is_slice_ptr_arg := false
@@ -11574,7 +11492,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
                 TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM,
                 type_name(src_type))
         }
-        // Lifetime: storage must not point into our own frame (or deeper) —
+        // Lifetime: storage must not point into our own frame (or deeper) â€”
         // a slice carved from it would dangle after this function returns.
         src_prov := expr_provenance(c, e.storage, env)
         if src_prov.depth >= enclosing_fun_depth(env) {
@@ -11669,10 +11587,10 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         return Type_Error{}
     case ^Expr_Tuple_Default:
-        // Type-check the source once (idempotent — the same source pointer is
+        // Type-check the source once (idempotent â€” the same source pointer is
         // shared by every binding in the destructure group). If the source is
         // a multi-return call, this binding's type is the i-th return slot.
-        // Otherwise the user wrote a single non-multi value with N names —
+        // Otherwise the user wrote a single non-multi value with N names â€”
         // that's the broadcast case (`a, b: i64 = 7`), so each binding takes
         // the source's type directly and codegen re-evaluates per binding.
         src_type := check_expr(c, e.source, env)
@@ -11689,10 +11607,10 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         }
         return src_type
     case ^Expr_Self:
-        // `#self` — pointer the constructor is writing into. Walk the env
+        // `#self` â€” pointer the constructor is writing into. Walk the env
         // chain for the nearest class_scope (set on a struct/class body's
         // ns_env). Nested funs are reparented past the class ns_env at
-        // check_scope_body, so the lookup fails inside them — explicit
+        // check_scope_body, so the lookup fails inside them â€” explicit
         // ^Self params are still required for helpers.
         cur := env
         for cur != nil {
@@ -11719,12 +11637,12 @@ ensure_struct_signature :: proc(c: ^Checker, st: ^Scope_Body) {
     if env == nil {
         // Nested struct: its decl env was transient. Reconstruct it from the
         // durable parent_scope graph and resolve THIS struct's body directly.
-        // (Recursing to the parent was wrong when the parent is a FUN — a fun's
+        // (Recursing to the parent was wrong when the parent is a FUN â€” a fun's
         // signature_only pass never descends into a nested struct's body, so a
         // parameterized struct nested in a function, `data :: fun() { With_Args
         // :: struct(cap){...} }`, never resolved its fields OR ctor params and
         // construction saw it as 0-field. transmute: st IS a Type_Scope's sd in
-        // the nested case — parent_scope is only ever set on a Type_Scope.)
+        // the nested case â€” parent_scope is only ever set on a Type_Scope.)
         env = build_scope_decl_env(transmute(^Type_Scope)st)
     }
     if env != nil {
@@ -11733,7 +11651,7 @@ ensure_struct_signature :: proc(c: ^Checker, st: ^Scope_Body) {
 }
 
 // Reconstruct the env a scope's signature resolves against, from the durable
-// parent_scope graph — so a NESTED scope resolves on demand (its transient decl
+// parent_scope graph â€” so a NESTED scope resolves on demand (its transient decl
 // env was discarded). Top-level scopes return their persistent decl_env.
 build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Env {
     if ft == nil { return nil }
@@ -11750,7 +11668,7 @@ build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Env {
 }
 
 // Resolve a fun's signature (param + return types) from its AST, in the env it
-// was declared in (build_scope_decl_env — durable, works for nested funs).
+// was declared in (build_scope_decl_env â€” durable, works for nested funs).
 // Idempotent: skips a list that's already populated, so repeated demand pulls
 // and the cycle guard are no-ops once resolved.
 resolve_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
@@ -11775,7 +11693,7 @@ resolve_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
 // Demand-driven fun-signature resolution: ensure a fun's params/returns are
 // resolved before a use site (a call, a dispatch match, the body's own param
 // binding, a field-type inference reading its return) reads them. Memoized +
-// cycle-guarded via sig_state. Works for ALL funs — top-level ones resolve
+// cycle-guarded via sig_state. Works for ALL funs â€” top-level ones resolve
 // against their persistent decl_env, nested ones against a decl env rebuilt
 // from the durable parent_scope graph (build_scope_decl_env). No eager pass.
 ensure_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
@@ -11785,11 +11703,11 @@ ensure_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
     ft.sig_state = .Resolved
 }
 
-// Shared struct field access logic — used for both direct and auto-deref (^Struct) paths.
+// Shared struct field access logic â€” used for both direct and auto-deref (^Struct) paths.
 // Handles uninit checks, field resolution, and associated function lookup.
 check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope_Body, env: ^Type_Env) -> Type {
-    // (Reading an uninitialized pointer/slice field — including through an
-    // `it = &root` alias — is now caught by the post-check flow pass.)
+    // (Reading an uninitialized pointer/slice field â€” including through an
+    // `it = &root` alias â€” is now caught by the post-check flow pass.)
     ensure_struct_signature(c, st)  // resolve fields on demand if no pre-pass did
     ft := resolve_struct_field(st, e.field, c.table)
     if ft != nil { return ft }
@@ -11808,7 +11726,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
     // Self-module qualification: `<current_package>.X` resolves X via the
     // current module's flat-name table or env directly. The main package
     // doesn't get a synthesized mod_struct (unlike imported modules), so its
-    // own name isn't in env — we intercept the qualifier here. Imported
+    // own name isn't in env â€” we intercept the qualifier here. Imported
     // modules already have mod_struct registered, so they fall through to
     // the normal field-access flow.
     if ident, ok := e.expr.(^Expr_Ident); ok && ident.name == c.current_package && c.current_package != "" {
@@ -11845,7 +11763,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
     }
     // Qualified union variant access: UnionName.Variant
     if ut, ok := obj_type.(^Type_Union); ok {
-        // Special accessor: union_value.tag — reads the discriminant as the
+        // Special accessor: union_value.tag â€” reads the discriminant as the
         // corresponding `<Union>_Tag` enum value. Reserves "tag" as a name
         // (no payloaded union variant may be named "tag"; Mara variants are
         // capitalized by convention, so the collision risk is minimal).
@@ -11881,7 +11799,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         return Type_Error{}
     }
     // On-demand: resolve the receiver struct's signature before the dispatch
-    // below, which keys on len(fields) — 0 until the struct is resolved. Covers a
+    // below, which keys on len(fields) â€” 0 until the struct is resolved. Covers a
     // direct struct receiver and a single-level pointer (^Struct auto-deref).
     {
         rsd := as_scope_body(obj_type)
@@ -11891,7 +11809,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Env) -
         ensure_struct_signature(c, rsd)
     }
     // On-demand: resolve the receiver struct's signature before the dispatch
-    // below, which keys on len(fields) — 0 until the struct is resolved. Covers a
+    // below, which keys on len(fields) â€” 0 until the struct is resolved. Covers a
     // direct struct receiver and a single-level pointer (^Struct auto-deref).
     {
         rsd := as_scope_body(obj_type)
@@ -12106,7 +12024,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
                 fmt_value = lit.value
                 ok = true
             } else if ident, id_ok := args[0].(^Expr_Ident); id_ok {
-                // Skip if the bare name is ambiguous — the Expr_Ident path
+                // Skip if the bare name is ambiguous â€” the Expr_Ident path
                 // already reported it, and looking up c.table.constants
                 // would silently pick a stale module's value.
                 ambiguous := false
@@ -12200,7 +12118,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             if !is_numeric(size_type) && !is_any(size_type) {
                 check_error(c, e.span, TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC, type_name(size_type))
             } else if !coerces_to_slice_width(size_type) {
-                // Codegen does NOT emit an implicit narrow/widen — user must
+                // Codegen does NOT emit an implicit narrow/widen â€” user must
                 // cast at the boundary.
                 check_error(c, e.span,
                     TYPE_SLICE_PTR_SECOND_ARGUMENT_WIDTH,
@@ -12220,11 +12138,11 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         byte_slice.elem = Type_Byte{}
         return byte_slice, true
     case "cstring":
-        // Built-in constructor: cstring(s) — copies a Mara string into a
+        // Built-in constructor: cstring(s) â€” copies a Mara string into a
         // fresh NUL-terminated buffer (scope arena when live, stack
         // otherwise) and yields the C pointer. Literal args skip the copy:
         // their deduped rodata global already ends in \0. The result can
-        // only feed argument positions — binding it is caught by the
+        // only feed argument positions â€” binding it is caught by the
         // cstring storage ban.
         if len(args) != 1 {
             check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, e.name, len(args))
@@ -12247,7 +12165,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             check_error(c, e.span, TYPE_CSTRING_CTOR_ARGUMENT, type_name(src_type))
         }
         // A runtime string's NUL-terminated copy bump-allocates from the
-        // scope arena — no arena, no allocation (a runtime-sized stack
+        // scope arena â€” no arena, no allocation (a runtime-sized stack
         // alloca would be a VLA: unbounded, input-driven growth; rejected).
         // The requirement is enforced at RUNTIME by codegen (loud crash at
         // the conversion site) rather than here: a compile-time rule would
@@ -12276,12 +12194,12 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             return Type_Error{}, true
         }
         src_type := check_expr(c, args[0], env)
-        // Redundant-cast warning: an identity cast — the operand already has the
-        // target type — is a no-op in every context, so the fossil can be
+        // Redundant-cast warning: an identity cast â€” the operand already has the
+        // target type â€” is a no-op in every context, so the fossil can be
         // dropped. cast_target_same_as_operand is a STRICT same-type test (not
         // types_equal, which treats untyped literals as every numeric): it skips
         // literal/const ascriptions, distinct unwraps, and the byte/u8/utf8
-        // trio. Widening casts are left alone — their removability is
+        // trio. Widening casts are left alone â€” their removability is
         // context-dependent (see WARN_REDUNDANT_CAST).
         if target_t, t_ok := cast_result_type(e.name); t_ok {
             if cast_target_same_as_operand(src_type, target_t) {
@@ -12329,7 +12247,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
     c.expected_hint = hint
     right_type := check_expr(c, e.right, env)
 
-    // Wrapping operators (`+%`/`-%`/`*%`) are integer-only — two's-complement
+    // Wrapping operators (`+%`/`-%`/`*%`) are integer-only â€” two's-complement
     // wrap has no meaning for floats, and there's no overload concept. Otherwise
     // they type exactly like `+`/`-`/`*` (op was already mapped), so fall through.
     if e.wrapping {
@@ -12568,11 +12486,11 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Env) -> Type {
 // When promote_numeric leaves a binary result as an infer type, adopt the
 // surrounding expected hint so e.type_ carries concrete signedness/width to
 // codegen. Without this, `c : u8 = 200 + 100` would type-check as Type_Infer_Int
-// and codegen would default to signed arithmetic — wrong overflow semantics.
+// and codegen would default to signed arithmetic â€” wrong overflow semantics.
 // If the infer carries a binding cell (a `:=` local or a deferred default param),
-// PIN the cell to the hint as well — otherwise the binding stays open and later
+// PIN the cell to the hint as well â€” otherwise the binding stays open and later
 // solidifies to i64, disagreeing with the width the hint forced here (for a param
-// that surfaced as a signature-i64-vs-body-i32 mismatch → bad IR). The pin mirrors
+// that surfaced as a signature-i64-vs-body-i32 mismatch â†’ bad IR). The pin mirrors
 // coerce_deferred at a direct decl/arg/return; this is that site reached through
 // arithmetic.
 coerce_infer_to_hint :: proc(c: ^Checker, t, hint: Type, span: Span) -> Type {
@@ -12617,8 +12535,8 @@ try_promote_numeric :: proc(a: Type, b: Type) -> Type {
     if types_equal(a, b) { return a }
 
     // Value-preserving operand mixing: widen both to the smallest type that
-    // holds every value of both (i32 vs i64 → i64, i32 vs u32 → i64). No such
-    // type (i64 vs u64, int vs float) → Type_Error → explicit cast required.
+    // holds every value of both (i32 vs i64 â†’ i64, i32 vs u32 â†’ i64). No such
+    // type (i64 vs u64, int vs float) â†’ Type_Error â†’ explicit cast required.
     if common, ok := common_numeric_type(a, b); ok { return common }
 
     return Type_Error{}
@@ -12769,7 +12687,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             arg_type := check_expr(c, arg, env)
             // Byte-buffer reinterpret-read at the call boundary: a param
             // typed `[N]T` accepts `buf[off]` or `buf[lo:hi]` from a byte
-            // buffer — same shape as `arr : [N]T = buf[off]` at decl sites.
+            // buffer â€” same shape as `arr : [N]T = buf[off]` at decl sites.
             // The size is in the param type; codegen materializes the
             // fixed-array value via alloca + memcpy + load.
             is_byte_reinterpret := false
@@ -12780,7 +12698,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
                 }
             }
             // `cstring` params take literals free (rodata carries the \0)
-            // and explicit `cstring(s)` constructions — but NOT runtime
+            // and explicit `cstring(s)` constructions â€” but NOT runtime
             // strings implicitly: the copy and terminator write should be
             // visible at the call site. Const idents inlining a literal
             // pass like the literal they are.
@@ -12818,13 +12736,13 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
 // Mutates e to rewrite the call target, then fills `check_args` with the
 // effective arg list (UFCS prepends the qualifier). Returns the resolved
 // func name to write into e.resolved_func later, the resolved Type_Scope
-// (so the caller can skip an env lookup with the now-flat e.name — env
+// (so the caller can skip an env lookup with the now-flat e.name â€” env
 // keys functions by bare name through the includes pointer chain, not by
 // flat key), and an error flag if the qualifier named a module that
 // doesn't contain the requested function.
 // Flatten a pure name path to a dotted string: an Ident ("Outer") or a
 // Field_Access chain of names ("Outer.Inner.Deep"). Returns "" the moment a
-// segment isn't a plain name (a call/index in the chain) — those are value
+// segment isn't a plain name (a call/index in the chain) â€” those are value
 // expressions, not type paths.
 flatten_name_path :: proc(e: Expr) -> string {
     #partial switch v in e {
@@ -12841,7 +12759,7 @@ flatten_name_path :: proc(e: Expr) -> string {
 // Resolve a nested-type-path qualifier (`Outer.Inner`, parsed as a Field_Access
 // chain) to the named type's scope body by walking the nested `types` maps.
 // Pure name paths only; returns nil for value paths / unknown names so the
-// caller falls through to value-qualified resolution. Never emits diagnostics —
+// caller falls through to value-qualified resolution. Never emits diagnostics â€”
 // it's a speculative lookup.
 resolve_type_path_scope :: proc(c: ^Checker, qualifier: Expr, env: ^Type_Env) -> ^Scope_Body {
     path := flatten_name_path(qualifier)
@@ -12879,7 +12797,7 @@ resolve_qualified_call :: proc(
 ) -> (resolution: Maybe(Resolved_Func), fn_type: ^Type_Scope, qual_dispatch_fns: [dynamic]string, error: bool) {
     resolved_assoc := false
 
-    // Type-qualified call (TypeName.method or mod.func) — check before
+    // Type-qualified call (TypeName.method or mod.func) â€” check before
     // check_expr to avoid "type is not a value" errors.
     if ident, ok := e.qualifier.(^Expr_Ident); ok {
         qual_type, qual_found := type_env_get(env, ident.name)
@@ -12951,7 +12869,7 @@ resolve_qualified_call :: proc(
                     resolved_assoc = true
                 } else if fns, found := qual_sd.dispatch_groups[e.name]; found {
                     // Qualified dispatch (e.g. `m.sqrt(x)`): pick from this
-                    // module's dispatch candidates only — don't merge with
+                    // module's dispatch candidates only â€” don't merge with
                     // the includer's other visible dispatches of the same name.
                     e.qualifier = nil
                     for a in e.args { append(check_args, a) }
@@ -12987,7 +12905,7 @@ resolve_qualified_call :: proc(
     // Nested-type-path qualifier: `Outer.Inner.Ctor(args)` parses with the
     // qualifier as a Field_Access chain (Outer.Inner), which the bare-ident
     // branch above can't see. Resolve the chain to its type scope and look up
-    // e.name as a nested type (construction) or associated function — the same
+    // e.name as a nested type (construction) or associated function â€” the same
     // resolution the ident branch does, one or more levels deeper. Runs before
     // the value-qualified path below so a real type path isn't mis-checked as a
     // field access; a value path resolves to nil here and falls through.
@@ -13013,7 +12931,7 @@ resolve_qualified_call :: proc(
             }
         }
     }
-    // Value-qualified call (obj.method) — type-check qualifier to find struct type.
+    // Value-qualified call (obj.method) â€” type-check qualifier to find struct type.
     if !resolved_assoc {
         qual_type := check_expr(c, e.qualifier, env)
         if assoc_st := resolve_to_struct_type(c, qual_type); assoc_st != nil {
@@ -13065,13 +12983,13 @@ resolve_qualified_call :: proc(
         }
     }
     if !resolved_assoc {
-        // Not a package alias or associated function — UFCS: x.f(args) -> f(x, args).
+        // Not a package alias or associated function â€” UFCS: x.f(args) -> f(x, args).
         // Rewrite the AST so codegen sees a plain call with qualifier prepended as first arg.
         //
         // For the flat (mangled) name, prefer a direct env lookup: a function
         // declared in an enclosing class/struct body is registered there under
         // its bare name with a mangled `.name` like
-        // `<module>_<parent>_<bare>` — make_flat_name(home, bare) would mint
+        // `<module>_<parent>_<bare>` â€” make_flat_name(home, bare) would mint
         // `<module>_<bare>` and miss it. Fall back to the home-based mint only
         // when the bare name doesn't resolve to a known function in scope.
         ufcs_flat := ""
@@ -13099,11 +13017,11 @@ resolve_qualified_call :: proc(
 //
 // `_` placeholders are resolved per-candidate: each `_` arg matches any
 // candidate that has a default for that param position. Trailing args may
-// also be omitted as long as the missing positions have defaults — those
+// also be omitted as long as the missing positions have defaults â€” those
 // fill in after the candidate is picked. All matching candidates are
 // collected; if more than one matches, the call is rejected as ambiguous.
 check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]string, check_args: []Expr, env: ^Type_Env) -> Type {
-    // Mark underscore positions — they can't be typed without knowing which
+    // Mark underscore positions â€” they can't be typed without knowing which
     // overload (and therefore which default) they'll take. Non-underscore
     // args get typed once; their arg_types slot stays nil for underscores.
     is_underscore := make([]bool, len(check_args))
@@ -13187,7 +13105,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     }
 
     if len(matched_fns) > 1 {
-        // Two or more candidates can serve this call shape — usually because a
+        // Two or more candidates can serve this call shape â€” usually because a
         // trailing-default overload overlaps an exact-arity overload. Mara
         // doesn't pick a winner; the user disambiguates by supplying the
         // distinguishing arg explicitly or removing the default.
@@ -13251,7 +13169,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
 // `?` postfix propagation. Validates that the inner expression produces an
 // err-compatible trailing slot AND that the enclosing function has an
 // err-compatible trailing return slot to bubble into. The Expr_Try's value
-// type is the inner return list minus the trailing err — void for err-only
+// type is the inner return list minus the trailing err â€” void for err-only
 // calls, the single value for `(T, err)` calls. Multi-value calls (`(T, U,
 // err)`) aren't supported yet since Mara doesn't have true value tuples; the
 // flat err-set design is what the user signed up for and that's covered.
@@ -13279,7 +13197,7 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Env) -> Type {
     // destructuring (Stmt_Multi_Return_Assign) consults the full return list
     // directly, so 2+ non-err returns are still legal in that context.
     // Single-bind callers (`x := foo()?` on a 2+ non-err call) get only the
-    // first value bound — flagged at the multi-vs-single assignment layer
+    // first value bound â€” flagged at the multi-vs-single assignment layer
     // (the bind shape determines the right error message, not us here).
     return rets[0]
 }
@@ -13290,7 +13208,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     // check_call, so this is the one place the whole graph is observed.
     defer record_call_edge(c, e, env)
     // A call that returns multiple values has nowhere to put the extras when
-    // used as a single argument — codegen would silently keep only the first.
+    // used as a single argument â€” codegen would silently keep only the first.
     // Reject it here (every call form funnels through check_call) so the user
     // destructures first. Valid multi-return positions (`a, b := f()`, `f()?`,
     // struct-literal fields) don't pass the call through `e.args`, so they're
@@ -13326,7 +13244,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
         for a in e.args { append(&check_args, a) }
     }
 
-    // Phase 2: Check the call — builtins, then user-defined functions.
+    // Phase 2: Check the call â€” builtins, then user-defined functions.
     builtin_result, is_builtin := check_builtin_call(c, e, check_args[:], env)
     if is_builtin { return builtin_result }
 
@@ -13337,7 +13255,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     }
 
     // Dispatch group resolution: mul(a,b) -> mat4_mul(a,b)
-    // Only fires for unqualified calls — qualified resolution already picked
+    // Only fires for unqualified calls â€” qualified resolution already picked
     // a specific function.
     if qual_fn_type == nil {
         if fn_names, is_dispatch := find_dispatch(c, env, e.name); is_dispatch {
@@ -13370,7 +13288,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
         // mapped over for user-defined named wrappers. Single arg required;
         // type must be compatible with the underlying. At IR level this is
         // a no-op (codegen just evaluates the arg in the underlying's IR
-        // type) — the distinct-ness is purely a type-system identity.
+        // type) â€” the distinct-ness is purely a type-system identity.
         if dt, is_distinct := fun_type_raw.(^Type_Distinct); is_distinct {
             if len(check_args) != 1 {
                 check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, e.name, len(check_args))
@@ -13400,7 +13318,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     }
 
     // For bare calls (no qualifier), annotate with flat package-qualified name for codegen.
-    // Skip if this is a function-value variable (indirect call) — leave resolution nil
+    // Skip if this is a function-value variable (indirect call) â€” leave resolution nil
     // so codegen knows to emit an indirect call through the pointer.
     if resolution == nil {
         // Only annotate if env actually bound `e.name` to a declared function.
@@ -13439,7 +13357,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     // Fires for struct-like scopes (kind=.Struct) with no constructor params.
     // Codegen can skip the call overhead and write fields directly to memory.
     // Covers old Type_Struct usages plus classes declared with empty parens
-    // `class Foo() { x: int }`, and fieldless structs (`Foo()` → zero-size value).
+    // `class Foo() { x: int }`, and fieldless structs (`Foo()` â†’ zero-size value).
     if fun_type.kind == .Struct {
         ensure_struct_signature(c, &fun_type.sd)  // resolve fields on demand before construction
     } else if fun_type.kind == .Fun {
@@ -13447,7 +13365,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
     }
     // Pure-data and parameterized constructors share ONE construction path: args
     // bind to the constructor's PARAMS (a pure-data struct has none, so `Point()`
-    // is the only positional form — `Point(x, y)` fails arg-count below; field
+    // is the only positional form â€” `Point(x, y)` fails arg-count below; field
     // values go in the brace override block, `Point(){ x = 1, y = 2 }`). A
     // pure-data struct is just a 0-param constructor whose body codegen skips.
 
@@ -13470,15 +13388,15 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 
     check_call_args(c, check_args[:], fun_type, e.name, e.span, env)
 
-    // Any struct construction: the call's value IS the struct itself (Self) —
+    // Any struct construction: the call's value IS the struct itself (Self) â€”
     // pure-data (0 params, args already rejected above) and parameterized alike.
-    // A fallible constructor also declares a trailing err — exposed to `?` and
+    // A fallible constructor also declares a trailing err â€” exposed to `?` and
     // `t, e := ...` via constructor_effective_returns / call_return_list; in plain
     // scalar context the result type is still Self. Brace overrides set fields.
     if fun_type.kind == .Struct {
         e.type_ = fun_type
         // A pure-data struct isn't in declared_funs, so the resolution dance above
-        // left resolved_func nil — set it here so codegen sees a construction (its
+        // left resolved_func nil â€” set it here so codegen sees a construction (its
         // callee is a struct) and zero-inits / runs the init fn, rather than
         // emitting a function call to a name with no body (e.g. a fieldless struct).
         if e.resolved_func == nil && fun_type.name != "" {
@@ -13505,12 +13423,12 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Env) -> Type {
 // positional args mapped to fields, plus `_` substitution against field defaults
 // (the same surface the parameter-default path gives a function call).
 //
-// DEPRECATED for direct use — function-call syntax on a no-arg struct, `Point(x, y)`,
+// DEPRECATED for direct use â€” function-call syntax on a no-arg struct, `Point(x, y)`,
 // is no longer accepted in source. check_call routes ALL struct construction through
 // the one constructor path (args bind to params; a pure-data struct has none), so
 // `Point()`, the brace literal `Point{...}`, and the override form `Point(){...}` are
 // the only spellings. This procedure now survives SOLELY as the generic-
-// monomorphization construction path (check_generic_call — e.g. Array(Player, 64),
+// monomorphization construction path (check_generic_call â€” e.g. Array(Player, 64),
 // Pair(int)(1, 2)), where the freshly instantiated struct is still built positionally
 // post-mono. Unify that path through check_call too and this can be deleted.
 check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Env) -> Type {
@@ -13520,7 +13438,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
         e.resolved_func = Resolved_Func{name = st.name, callee = st}
     }
 
-    // `Foo()` (no args) is always valid — equivalent to bare declaration `x : Foo`.
+    // `Foo()` (no args) is always valid â€” equivalent to bare declaration `x : Foo`.
     // Init function applies defaults and zero-inits fields without defaults.
     if len(e.args) == 0 {
         if e.overrides != nil {
@@ -13579,11 +13497,11 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
     return st
 }
 
-// check_module_call removed — module calls now resolve through the unified
+// check_module_call removed â€” module calls now resolve through the unified
 // assoc_fn/types path in check_call, same as type-qualified calls.
 check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Env) -> Type {
     if len(e.elements) == 0 {
-        // Empty array literal — type is unknown until assigned
+        // Empty array literal â€” type is unknown until assigned
         return Type_Error{}
     }
 
@@ -13605,14 +13523,14 @@ check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Env) -> Type
 }
 
 // --- subscript `.len` / `.cap` shorthand ------------------------------------
-// Inside a subscript — an `arr[...]` index or `arr[lo:hi]` bound — a bare `.len`
+// Inside a subscript â€” an `arr[...]` index or `arr[lo:hi]` bound â€” a bare `.len`
 // or `.cap` is shorthand for the base array's own `.len` / `.cap`. The parser
 // emits these as dot-idents (the `.Variant` shorthand), so before the index is
 // resolved (and fails as an unknown variant) we rewrite each `.len`/`.cap`
 // dot-ref into a field access on the base: `a.fonts[.len]` -> `a.fonts[a.fonts.len]`.
 // Recurses through arithmetic so `[.len - 1]` and `[.len:.cap]` work. Only
 // pure-lvalue bases (ident or field-access chains) are rewritten, so the base
-// cloned into the index can't double-evaluate a side effect. Idempotent — once
+// cloned into the index can't double-evaluate a side effect. Idempotent â€” once
 // rewritten there are no dot-refs left for a second pass to touch.
 
 subscript_base_is_pure :: proc(e: Expr) -> bool {
@@ -13684,7 +13602,7 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
 
     // Array indexing returns element type
     if fa, ok := target_type.(^Type_Fixed_Array); ok {
-        // Compile-time bounds check when we have both pieces — the
+        // Compile-time bounds check when we have both pieces â€” the
         // array's visible size is fa.size, and a literal/const index
         // folds via evaluate_comptime_int. Lets `s := "hello"; s[5]`
         // be a compile error instead of a runtime trap.
@@ -13703,7 +13621,7 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Env) -> Type {
         return sl.elem
     }
 
-    // Partial array indexing — same as slice; the header has matching first
+    // Partial array indexing â€” same as slice; the header has matching first
     // slice_header_bytes so codegen can reuse the slice indexing path.
     if pa, ok := target_type.(^Type_Partial_Array); ok {
         return pa.elem
@@ -13740,7 +13658,7 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Env) -> Type {
         return Type_Error{}
     }
 
-    // Check that low/high are numeric AND match slice header width — codegen
+    // Check that low/high are numeric AND match slice header width â€” codegen
     // does NOT emit an implicit narrow/widen.
     if e.low != nil {
         lt := check_expr(c, e.low, env)
