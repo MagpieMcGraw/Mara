@@ -181,6 +181,8 @@ in. The point-at-the-call UX is not just ergonomics, it is the cost model.
 ## 4. Query surface
 
 ```
+mara ask                             # BUILT: module map — every loaded module (local first, then stdlib); main-bearing ones flagged
+mara ask <Module>                    # BUILT: module surface — that module's declared types (ranked by user-count) + funs (source order)
 mara ask <fn> inputs                 # producer/consumer set of fn's reachable input surface
 mara ask <fn>.<param> contributors   # backward slice toward sources (generalized escape walk)
 mara ask <Type> deps                 # v1: type dependency graph — what this type pulls in (§4.1)
@@ -198,6 +200,12 @@ search). All read-only; all stop after type-checking (see §6).
 `inputs` is the headline *eventually*. `contributors` is literally `eval_expr_arg_set`
 lifted out of escape analysis and run to a printed result. But the **first version to
 build** is `deps` — see §4.1.
+
+The no-name **map** and `<Module>` **surface** are the orientation layer above the
+per-name queries — the drill-down is `mara ask` → `mara ask <Module>` → `mara ask
+<Name> deps|users`. Both read the same symbol table: a module is matched by
+`home_package` (the `mara.` alias accepted), surface types rank by reverse-edge user
+count, and only declarations are listed (monomorphized instances filtered out).
 
 ---
 
