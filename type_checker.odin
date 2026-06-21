@@ -678,8 +678,21 @@ Provenance :: struct {
 
 PROV_GLOBAL  :: Provenance{depth = 0}                                    // outlives everything
 
-prov_local :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env.scope_depth} }
-prov_param :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env.scope_depth - 1} }
+// Escape frame depth = the number of enclosing .Fun scopes (a ctor/class body
+// is just a namespace, not a frame). Derived from the durable scope graph rather
+// than carried per-env: the escape check is relative (a value is rejected iff it
+// lives at OUR frame depth or deeper), so the absolute count only has to be
+// self-consistent within a function — which counting .Fun up parent_scope is.
+enclosing_fun_depth :: proc(env: ^Type_Env) -> int {
+    d := 0
+    for s := (env.scope if env != nil else nil); s != nil; s = s.parent_scope {
+        if s.kind == .Fun { d += 1 }
+    }
+    return d
+}
+
+prov_local :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = enclosing_fun_depth(env)} }
+prov_param :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = enclosing_fun_depth(env) - 1} }
 
 // Per-name analysis facts, unified from the old parallel env maps (provenance,
 // param/let flags, local_slice_backed, read). A name's Binding lives in the env
@@ -722,7 +735,8 @@ Type_Env :: struct {
     //  scope_local_lookup self-guards on .Block so locals resolve off env.scope.)
     // (return_types removed — derived from the nearest fun_scope/class_scope's
     //  durable signature via enclosing_return_types, not carried per-env.)
-    scope_depth: int,        // stack depth for escape analysis; module = 0, function body = 1+
+    // (scope_depth removed — escape frame depth is derived from the durable scope
+    //  graph by counting enclosing .Fun scopes; see enclosing_fun_depth.)
     // Per-name analysis facts (param/let/provenance/local_slice_backed) for
     // names declared in THIS scope — one record each (see Binding).
     // (Definite-assignment state — invalid_refs / newly_inited / aliases — is
@@ -971,15 +985,12 @@ address_of_ident :: proc(e: Expr) -> (name: string, ok: bool) {
 }
 
 type_env_child :: proc(parent: ^Type_Env) -> Type_Env {
-    // Inner blocks (if/for/match) inherit their parent's frame depth. Only
-    // function-body envs bump scope_depth — see the explicit bump in
-    // check_scope_body's `.Fun` path.
     // Every child env gets its own durable scope, chained to the parent's, so the
     // scope graph parallels the env graph. Specific creators (block/ns/module)
     // override `scope` with the right concrete scope; this is the default shadow.
     s := new(Type_Scope)
     s.parent_scope = parent.scope
-    return Type_Env{parent = parent, scope_depth = parent.scope_depth, scope = s}
+    return Type_Env{parent = parent, scope = s}
 }
 
 // Like type_env_child but also mints the durable .Block Type_Scope this block
@@ -5309,7 +5320,7 @@ report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Env)
             unsafe_count := 0
             for ci in arg_set {
                 if ci < 0 || ci >= len(call.args) { continue }
-                if expr_provenance(c, call.args[ci], env).depth < env.scope_depth { continue }
+                if expr_provenance(c, call.args[ci], env).depth < enclosing_fun_depth(env) { continue }
                 if unsafe_count > 0 { strings.write_string(&sb, ", ") }
                 if ci < len(callee.typed_params) {
                     fmt.sbprintf(&sb, "parameter `%s`", callee.typed_params[ci].name)
@@ -5431,7 +5442,7 @@ is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Env) -> bool {
         }
     }
     if !is_ref { return false }
-    return expr_provenance(c, e, env).depth >= env.scope_depth
+    return expr_provenance(c, e, env).depth >= enclosing_fun_depth(env)
 }
 
 // Check if returning `e` would leak slice fields whose backing is in our
@@ -5488,7 +5499,7 @@ returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, 
             // structurally: expr_provenance tracks where a slice's *data* points,
             // but a fixed array's value provenance (e.g. make_arr()) reflects
             // where its initializer came from, not where its bytes now live.
-            d = env.scope_depth
+            d = enclosing_fun_depth(env)
             #partial switch vv in v {
             case ^Expr_Ident:        if is_global_var(c, vv.name) { d = 0 }
             case ^Expr_Field_Access: d = expr_provenance(c, vv.expr, env).depth
@@ -5498,7 +5509,7 @@ returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, 
             // pointer's provenance already tells us where the backing lives.
             d = expr_provenance(c, v, env).depth
         }
-        if d >= env.scope_depth { return true }
+        if d >= enclosing_fun_depth(env) { return true }
     }
     return false
 }
@@ -8241,11 +8252,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
     // scope_local_lookup walk reaches every local of the current function and
     // stops at ft (the no-closures boundary).
     child := type_env_block_child(parent_env)
-    // Function bodies open a new stack frame for escape analysis. Class
-    // bodies are just namespaces — fields don't live at a deeper depth.
-    if ft.kind == .Fun {
-        child.scope_depth = parent_env.scope_depth + 1
-    }
+    // (Escape frame depth — a .Fun body opens a new frame, a class/ctor body does
+    //  not — is derived from the durable scope graph now; see enclosing_fun_depth.)
 
     // Pre-register struct params in the field-resolution scope so that
     // field defaults / field types can reference them (e.g.
@@ -11569,7 +11577,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Env) -> Type {
         // Lifetime: storage must not point into our own frame (or deeper) —
         // a slice carved from it would dangle after this function returns.
         src_prov := expr_provenance(c, e.storage, env)
-        if src_prov.depth >= env.scope_depth {
+        if src_prov.depth >= enclosing_fun_depth(env) {
             check_error(c, e.span,
                 TYPE_TAKE_STORAGE_POINTS_INTO_LOCAL)
         }
