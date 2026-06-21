@@ -957,7 +957,7 @@ CLI_Args :: struct {
     ask_scope:    string,  // optional `in <module|file>` token; "" = cwd default
 }
 
-USAGE :: "Usage: mara build [package-name] [-web] [-shared] [-release] [-no assert]\n       mara ask <Type> <deps|users>"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [deps|users] [in <module|file>]"
 
 parse_args :: proc() -> CLI_Args {
     args: CLI_Args
@@ -1160,7 +1160,7 @@ main :: proc() {
                 fmt.printf(BUILD_PARSE_ERRORS_ABORT, n, pkg)
             }
         } else {
-            fmt.printf("Found %d parse error(s) across %d package(s). Aborting.\n", total_errs, len(parse_errors))
+            fmt.printf("Found %d parse error(s) across %d module(s). Aborting.\n", total_errs, len(parse_errors))
             for pkg, n in parse_errors {
                 fmt.printf("  - %s: %d error(s)\n", pkg, n)
             }

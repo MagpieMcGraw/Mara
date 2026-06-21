@@ -498,7 +498,7 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string) ->
     }
 
     subject := matches[0]
-    fmt.sbprintf(&b, "%s — %s  %s   (package %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
+    fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
 
     if verb == "" || verb == "deps" {
         res := ask_compute(checked.table, subject.type_, "deps")

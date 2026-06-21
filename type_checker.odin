@@ -10495,7 +10495,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
 
     main_prog, prog_ok := programs[main_package]
     if !prog_ok {
-        check_error(&c, {}, "no parsed program for main package '%s'", main_package)
+        check_error(&c, {}, "no parsed program for main module '%s'", main_package)
         checked.errors = c.errors
         return checked
     }
@@ -10749,7 +10749,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     found_main := false
     validate_top_level_stmts(&c, main_prog^, &found_main)
     if !found_main && !shared {
-        check_error(&c, {}, "package '%s' must define fun main()", main_package)
+        check_error(&c, {}, "module '%s' must define fun main()", main_package)
     }
 
     // Sanity check (debug builds only): every named entity should have a

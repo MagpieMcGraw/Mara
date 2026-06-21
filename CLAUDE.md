@@ -9,8 +9,12 @@ The compiler:
 odin build . -debug
 
 Mara code:
-mara build game       # build module "game" from all .mara files with `module game`
-mara build            # build module matching current directory name
+mara build game    # build module "game" from all .mara files with `module game`
+mara build         # build module matching current directory name
+
+Mara analyzer:
+mara ask <name> [deps|users] [in <module|file>]   # <name>=type or fn; omit the verb for both; fuzzy-matched on miss
+# Runs on the cwd's module, like `mara build`. The compiler searches its own `code/` dir (the stdlib) and the cwd.
 
 ## Workflow
 
