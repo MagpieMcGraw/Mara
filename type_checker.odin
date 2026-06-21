@@ -688,7 +688,6 @@ prov_param :: proc(env: ^Type_Env) -> Provenance { return Provenance{depth = env
 // not-a-param, not-read, ...).
 Binding :: struct {
     provenance:         Provenance, // where this name's pointer/slice data lives
-    is_param:           bool,       // function parameter (read-only contract)
     is_let:             bool,       // take-bound view (storage aliased at source)
     local_slice_backed: bool,       // holds a struct whose slice fields point into our frame
 }
@@ -4666,12 +4665,13 @@ is_global_var :: proc(c: ^Checker, name: string) -> bool {
 }
 
 // Check if a variable name is a function parameter (walks env chain).
+// Is `name` a parameter of the function/ctor whose body we're in? Derived from
+// the durable scope (the enclosing callable's params) rather than a per-env flag
+// — no closures, so the nearest callable IS the one that owns the params.
 is_param :: proc(env: ^Type_Env, name: string) -> bool {
-    cur := env
-    for cur != nil {
-        if b, ok := cur.bindings[name]; ok { return b.is_param }
-        cur = cur.parent
-    }
+    ft := enclosing_callable_scope(env)
+    if ft == nil { return false }
+    for p in ft.params { if p.name == name { return true } }
     return false
 }
 
@@ -8427,11 +8427,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Env, signature_
         check_early_self_decls(c, s.body)
     }
 
-    // Register params in scope
+    // Register params in scope (is_param is derived from ft.params, not flagged).
     for tp, i in s.typed_params {
         if i < len(ft.params) {
             type_env_set(&child, tp.name, ft.params[i].type_)
-            get_or_make_binding(&child, tp.name).is_param = true
         }
     }
 
