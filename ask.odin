@@ -168,8 +168,12 @@ ask_recurses :: proc(t: Type) -> bool {
     return false
 }
 
-// Peel ^ / [] / [N] wrappers, returning the core type and a wrapper prefix
-// (outermost first) to render on the target — e.g. `[]^Mesh` -> (Mesh, "[]^").
+// Peel ^ / [] / [N] / [..] wrappers, returning the core type and a wrapper prefix
+// (outermost first) to render on the target — e.g. `[]^Mesh` -> (Mesh, "[]^"),
+// `[4][4]f32` -> (f32, "[4][4]"). Fixed-array SIZES are kept so the wrapper reads
+// back as source (Vec3's `[3]f32` vs Quat's `[4]f32` stay distinct — collapsing
+// both to `[]f32` made them indistinguishable). Slices stay `[]` (no compile-time
+// size) and partial arrays `[..]` (capacity omitted — often unspecified at decl).
 ask_peel :: proc(t: Type) -> (core: Type, wrap: string) {
     cur := t
     parts: [dynamic]string
@@ -177,7 +181,7 @@ ask_peel :: proc(t: Type) -> (core: Type, wrap: string) {
         #partial switch v in cur {
         case ^Type_Ptr:           append(&parts, "^");    cur = v.elem
         case ^Type_Slice:         append(&parts, "[]");   cur = v.elem
-        case ^Type_Fixed_Array:   append(&parts, "[]");   cur = v.elem
+        case ^Type_Fixed_Array:   append(&parts, fmt.tprintf("[%d]", v.size)); cur = v.elem
         case ^Type_Partial_Array: append(&parts, "[..]"); cur = v.elem
         case: break peel
         }
