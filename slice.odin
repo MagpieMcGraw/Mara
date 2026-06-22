@@ -209,7 +209,7 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
     slice.sort_by(ctrl[:],   guard_span_less)
 
     b := strings.builder_make()
-    fmt.sbprintf(&b, "%s — contributors to the return value  (backward slice)\n", label)
+    fmt.sbprint(&b, "\nabove (data) — contributors to the return value  (backward slice)\n")
     if len(params) > 0 {
         fmt.sbprintf(&b, "\n  parameters (%d)\n", len(params))
         for d in params { fmt.sbprintf(&b, "    %-14s %s\n", d.binding.name, ask_loc(d.span)) }
@@ -365,7 +365,7 @@ render_affects :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: string
     defer delete(feeders)
 
     b := strings.builder_make()
-    fmt.sbprintf(&b, "%s — what each parameter affects  (forward slice)\n", label)
+    fmt.sbprint(&b, "\nbelow (data) — what each parameter affects  (forward slice)\n")
     for p in ft.params {
         if p.name == "" || p.name == "_" { continue }
         pdef := slice_param_def(checked, ft, p.name)
@@ -395,7 +395,7 @@ render_affects :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: string
         }
     }
     fmt.sbprint(&b, "\n  note: data + control dependence (from the control-flow graph) within this\n")
-    fmt.sbprint(&b, "        function; effects through calls use return_args, like `contributors`.\n")
+    fmt.sbprint(&b, "        function; effects through calls use return_args, like the backward slice.\n")
     return strings.to_string(b)
 }
 

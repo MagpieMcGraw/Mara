@@ -574,24 +574,30 @@ ask_sort_edges :: proc(res: ^Ask_Result) {
 
 // --- engine entry ----------------------------------------------------------
 
-// The closed set of query verbs — lets the CLI accept the target and verb in
-// EITHER order (`ask deps Font` or `ask Font deps`) by spotting which is a verb.
-// Both natural spellings of each verb are accepted (singular/plural) and folded
-// to the canonical form the engine switches on, so the doc's `user` and the
-// engine's `users` can never drift apart again.
-ask_canon_verb :: proc(s: string) -> (canon: string, ok: bool) {
+// mara ask takes two optional filter axes after a name — KIND (which graph) and
+// DIRECTION (which way) — in any order. Each folds to a canonical spelling so the
+// CLI can tell a filter token from the name. Omitting an axis widens it to both.
+ask_canon_kind :: proc(s: string) -> (canon: string, ok: bool) {
     switch s {
-    case "deps", "dep":             return "deps", true
-    case "users", "user":           return "users", true
-    case "contributors", "contrib": return "contributors", true
-    case "affects", "affected":     return "affects", true
+    case "types", "type": return "types", true
+    case "data":          return "data", true
     }
     return "", false
 }
 
-ask_is_verb :: proc(s: string) -> bool {
-    _, ok := ask_canon_verb(s)
-    return ok
+ask_canon_dir :: proc(s: string) -> (canon: string, ok: bool) {
+    switch s {
+    case "above": return "above", true
+    case "below": return "below", true
+    }
+    return "", false
+}
+
+// A space-joined echo of the active filters, for command-echo in error hints.
+ask_filters_str :: proc(kind, dir: string) -> string {
+    if kind != "" && dir != "" { return fmt.tprintf("%s %s", kind, dir) }
+    if kind != "" { return kind }
+    return dir
 }
 
 // Compute one direction's graph for an already-resolved subject type, bounded to
@@ -608,10 +614,10 @@ ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, f
 }
 
 // Top-level entry. Resolve `target` (optionally pinned to a `scope_file`), then
-// render. `verb == ""` asks for BOTH directions. Returns the rendered text and
-// whether a single subject was found — on false (not found / ambiguous) the text
-// already explains why, and the caller exits non-zero.
-ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
+// render the selected (kind, dir) filters — an empty axis means "both". Returns
+// the rendered text and whether a single subject was found — on false (not found
+// / ambiguous) the text already explains why, and the caller exits non-zero.
+ask :: proc(checked: ^Checked_Program, target, kind, dir, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
     matches := ask_resolve_all(checked.table, target, scope_file, checked.functions)
     b := strings.builder_make()
 
@@ -664,36 +670,50 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, de
 
     subject := matches[0]
 
-    // Backward/forward slices of a function. Each renders its own header; early return.
-    if verb == "contributors" || verb == "affects" {
-        ft, is_fn := subject.type_.(^Type_Scope)
-        if !is_fn || ft.kind != .Fun {
-            what := "backward slice of a function's return value" if verb == "contributors" else "forward slice of a function's parameters"
-            return fmt.tprintf("mara ask: '%s' is the %s; '%s' is a %s.\n", verb, what, subject.label, subject.sub), false
-        }
-        if verb == "contributors" { return render_contributors(checked, ft, subject.label), true }
-        return render_affects(checked, ft, subject.label), true
-    }
+    show_types := kind == "" || kind == "types"
+    show_data  := kind == "" || kind == "data"
+    show_above := dir  == "" || dir  == "above"
+    show_below := dir  == "" || dir  == "below"
+
+    ft, is_fn := subject.type_.(^Type_Scope)
+    is_fn = is_fn && ft.kind == .Fun
 
     fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
+    header_len := len(strings.to_string(b))
 
-    if verb == "" || verb == "deps" {
+    // ABOVE — what the subject is built from / what feeds it. Type dependencies for
+    // any subject; for a function, the backward data slice of its return as well.
+    if show_above && show_types {
         res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions)
         render_ask_deps(&b, &res, depth)
     }
-    if verb == "" || verb == "users" {
-        if subject.sub == "fun" {
-            render_fn_users(&b, checked, subject.type_.(^Type_Scope))   // callers, from the call graph
-        } else {
-            res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
-            render_ask_users(&b, &res, depth)
+    if show_above && show_data && is_fn {
+        fmt.sbprint(&b, render_contributors(checked, ft, subject.label))
+    }
+
+    // BELOW — what depends on the subject / what it feeds. Type users for a type;
+    // for a function, its callers plus the forward data slice of its parameters.
+    if show_below && show_types && !is_fn {
+        res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
+        render_ask_users(&b, &res, depth)
+    }
+    if show_below && show_data && is_fn {
+        render_fn_users(&b, checked, ft)   // callers, from the call graph
+        fmt.sbprint(&b, render_affects(checked, ft, subject.label))
+    }
+
+    // The chosen filters can name a graph this subject lacks (a type has no data
+    // slice; a function has no type-level users). Don't return a bare header.
+    if len(strings.to_string(b)) == header_len {
+        reason := "matching graph"
+        if show_data && !show_types {
+            reason = "data-flow slice"
+        } else if is_fn {
+            reason = "type-level users"
         }
+        fmt.sbprintf(&b, "\n(nothing to show — a %s has no %s here)\n", subject.sub, reason)
     }
-    // The broad "tell me about this name" form is honest about its coverage gap;
-    // the targeted deps/users forms stay terse.
-    if verb == "" {
-        fmt.sbprint(&b, "\n(variables: not queryable yet)\n")
-    }
+
     return strings.to_string(b), true
 }
 
@@ -708,14 +728,14 @@ render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
     // No edges = nothing this type/fn pulls in. Say so plainly rather than listing
     // the subject itself as a lone "1 type" with "(no type dependencies)".
     if len(res.edges) == 0 {
-        fmt.sbprint(b, "\ndeps   (no dependencies)\n")
+        fmt.sbprint(b, "\nabove (types)   (no type dependencies)\n")
         return
     }
     // Count TYPE nodes only — the root may be a `fun` (the subject), which is not
     // a type and must not inflate the count (a fn's own node sits at index 0).
     types := 0
     for n in res.nodes { if n.sub != "fun" { types += 1 } }
-    fmt.sbprintf(b, "\ndeps   (%s, %s, %s)\n", ask_plural(types, "type"), ask_plural(len(res.edges), "edge"), ask_depth_label(depth))
+    fmt.sbprintf(b, "\nabove (types)   (%s, %s, %s)\n", ask_plural(types, "type"), ask_plural(len(res.edges), "edge"), ask_depth_label(depth))
     for node, i in res.nodes {
         if depth >= 0 && node.dist > depth { continue }   // fringe target — interned, not expanded
         fmt.sbprintf(b, "\n  %s  %s  %s%s\n", node.label, node.sub, ask_loc(node.span), ask_mark_suffix(node.mark))
@@ -763,7 +783,7 @@ render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
         if la != lb { return la < lb }
         return a.body_span.line < b.body_span.line
     })
-    fmt.sbprintf(b, "\nusers   (%s)\n", ask_plural(len(callers), "caller"))
+    fmt.sbprintf(b, "\nbelow (calls)   (%s)\n", ask_plural(len(callers), "caller"))
     if len(callers) == 0 {
         fmt.sbprint(b, "  (no direct callers; indirect calls via fn-typed params aren't tracked)\n")
         return
@@ -775,7 +795,7 @@ render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
 }
 
 render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
-    fmt.sbprintf(b, "\nusers   (%s, %s, %s)\n",
+    fmt.sbprintf(b, "\nbelow (types)   (%s, %s, %s)\n",
                  ask_plural(ask_distinct_sources(res), "user"), ask_plural(len(res.edges), "use-site"), ask_depth_label(depth))
     if len(res.edges) == 0 { fmt.sbprint(b, "  (no users)\n"); return }
 

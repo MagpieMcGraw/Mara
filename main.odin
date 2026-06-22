@@ -953,29 +953,34 @@ CLI_Args :: struct {
     // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
     // Runs the front half of the pipeline and stops after check_program.
     ask:          bool,
-    ask_target:   string,  // the type/fn the query is about
-    ask_query:    string,  // "deps" | "users" | "" (both)
+    ask_target:   string,  // the type/fn/variable the query is about
+    ask_kind:     string,  // "types" | "data" | "" (both graphs)
+    ask_dir:      string,  // "above" | "below" | "" (both directions)
     ask_scope:    string,  // optional `in <module|file>` token; "" = cwd default
-    ask_depth:    int,     // hop budget for deps/users; -1 = unbounded (the default)
+    ask_depth:    int,     // hop budget; -1 = unbounded (the default)
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
-ASK_USAGE :: `Usage: mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]
+ASK_USAGE :: `Usage: mara ask <name> [types|data] [above|below] [depth] [in <module|file>]
 
   mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
   folder whose .mara files declare a module. Use 'in <module>' to target a
   different discovered module without changing directories.
 
     (no name)      module map — every module in the project at a glance
-    <name>         a type or function's deps AND users
+    <name>         everything about a type or function: both graphs, both directions
+    above          only the sources — what <name> is built from / what feeds it
+    below          only the consumers — what depends on <name> / what it feeds
+    types          only the type graph (fields, params, returns, embeds)
+    data           only the data-flow slice (a function's value flow + its callers)
     depth          hops of graph to expand: 0 = direct edges only,
                    omitted = the full transitive closure (default)
-    deps           what <name> pulls in   (its dependency closure)
-    users          what depends on <name> (who references it)
-    contributors   a function's return value, sliced back to its inputs (backward slice)
-    affects        forward slice — what each parameter influences (and the return?)
     in <module>    analyze that module instead of the current directory
-    in <file>      keep the current module; resolve <name> within one file`
+    in <file>      keep the current module; resolve <name> within one file
+
+  Filters compose and may appear in any order:
+    mara ask Font types above     just Font's type sources
+    mara ask camera_move data     just the function's value flow + callers`
 
 // Help-flag spellings honored wherever a help request is accepted — the common
 // one/two-dash, short/long variants, so a user's muscle memory always lands.
@@ -1094,33 +1099,37 @@ parse_args :: proc() -> CLI_Args {
             rest = kept[:]
         }
 
-        // What remains is the name and an optional verb, in either order. The
-        // verb is folded to its canonical spelling here (`user` -> `users`).
-        switch len(rest) {
-        case 0:
-            // Bare `mara ask` — no name: the module map. `ask_target` stays "".
-        case 1:
-            if ask_is_verb(rest[0]) {
-                fmt.println(ASK_USAGE)
+        // What remains is the name plus optional filters, in any order:
+        //   kind = types | data    (which graph)
+        //   dir  = above | below   (which direction)
+        // Omitting a filter widens to both. The lone non-filter token is the name.
+        for tok in rest {
+            if k, kok := ask_canon_kind(tok); kok {
+                if args.ask_kind != "" && args.ask_kind != k {
+                    fmt.printf("mara ask: conflicting kind filters ('%s' and '%s')\n", args.ask_kind, k)
+                    return args
+                }
+                args.ask_kind = k
+                continue
+            }
+            if d, dok := ask_canon_dir(tok); dok {
+                if args.ask_dir != "" && args.ask_dir != d {
+                    fmt.printf("mara ask: conflicting direction filters ('%s' and '%s')\n", args.ask_dir, d)
+                    return args
+                }
+                args.ask_dir = d
+                continue
+            }
+            if args.ask_target != "" {
+                fmt.printf("mara ask: expected one name, got '%s' and '%s'\n", args.ask_target, tok)
                 return args
             }
-            args.ask_target = rest[0]   // ask_query stays "" => both directions
-        case 2:
-            a, b := rest[0], rest[1]
-            av, aok := ask_canon_verb(a)
-            bv, bok := ask_canon_verb(b)
-            switch {
-            case aok && !bok: args.ask_query = av; args.ask_target = b
-            case bok && !aok: args.ask_query = bv; args.ask_target = a
-            case !aok && !bok:
-                fmt.printf("mara ask: unknown query (got '%s' and '%s') — try: deps, users\n", a, b)
-                return args
-            case:
-                fmt.printf("mara ask: expected a name, got two verbs ('%s' and '%s')\n", a, b)
-                return args
-            }
-        case:
-            fmt.println(ASK_USAGE)
+            args.ask_target = tok
+        }
+        // A filter with no name has nothing to act on; bare `mara ask` (no name, no
+        // filters) is the module map and leaves ask_target "".
+        if args.ask_target == "" && (args.ask_kind != "" || args.ask_dir != "") {
+            fmt.println("mara ask: a filter needs a name — e.g. `mara ask <name> above`")
             return args
         }
 
@@ -1188,7 +1197,7 @@ main :: proc() {
     // outside a module dir", not "module not found" — give it query-shaped help.
     if args.pkg_name not_in all_files {
         if args.ask {
-            fmt.print(ask_no_module_here(all_files, args.compiler_dir, args.pkg_name, args.ask_target, args.ask_query))
+            fmt.print(ask_no_module_here(all_files, args.compiler_dir, args.pkg_name, args.ask_target, ask_filters_str(args.ask_kind, args.ask_dir)))
         } else {
             fmt.println("Error: no files found for the following modules:")
             fmt.printf("  %s\n", args.pkg_name)
@@ -1290,7 +1299,7 @@ main :: proc() {
             fmt.print(ask_module_map(checked, programs, all_files, args.compiler_dir, args.pkg_name))
             return
         }
-        out, found := ask(checked, args.ask_target, args.ask_query, args.pkg_name, ask_scope_file, args.ask_depth)
+        out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, args.pkg_name, ask_scope_file, args.ask_depth)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed
         return
