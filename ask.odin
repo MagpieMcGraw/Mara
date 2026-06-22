@@ -728,6 +728,16 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         else     { flow_build_type_guards(checked, subject.type_) }
     }
 
+    // A function with no call sites is an entry point or dead code. The three
+    // call-related views (above flow, below calls, below flow) would each announce
+    // "never called" on their own — consolidate to one line up top and suppress the
+    // per-section repeats. No call sites ⟹ no callers either, so this lone check
+    // covers all three. (call_sites is populated by flow_analyze_all, run just above.)
+    fn_uncalled := is_fn && show_flow && len(checked.call_sites[ft]) == 0
+    if fn_uncalled && (show_above || show_below) {
+        fmt.sbprintf(&b, "\n%s has no callers — an entry point or unused (indirect calls via fn-typed params aren't tracked)\n", subject.label)
+    }
+
     // ABOVE — what feeds the subject. Type dependencies (any subject); plus the
     // backward flow slice — what computes a function's arguments at its call sites,
     // or what feeds every value of a type.
@@ -736,7 +746,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         render_ask_deps(&b, &res, depth)
     }
     if show_above && show_flow {
-        if is_fn { render_fn_flow_above(&b, checked, ft, subject.label) }
+        if is_fn { if !fn_uncalled { render_fn_flow_above(&b, checked, ft, subject.label) } }
         else     { render_type_flow_above(&b, checked, subject.type_, subject.label) }
     }
 
@@ -749,8 +759,10 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     }
     if show_below && show_flow {
         if is_fn {
-            render_fn_users(&b, checked, ft)   // callers, from the call graph
-            render_fn_flow_below(&b, checked, ft, subject.label)
+            if !fn_uncalled {
+                render_fn_users(&b, checked, ft)   // callers, from the call graph
+                render_fn_flow_below(&b, checked, ft, subject.label)
+            }
         } else {
             render_type_flow_below(&b, checked, subject.type_, subject.label, depth)
         }
