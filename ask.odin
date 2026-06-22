@@ -581,8 +581,9 @@ ask_sort_edges :: proc(res: ^Ask_Result) {
 // engine's `users` can never drift apart again.
 ask_canon_verb :: proc(s: string) -> (canon: string, ok: bool) {
     switch s {
-    case "deps", "dep":   return "deps", true
-    case "users", "user": return "users", true
+    case "deps", "dep":             return "deps", true
+    case "users", "user":           return "users", true
+    case "contributors", "contrib": return "contributors", true
     }
     return "", false
 }
@@ -661,6 +662,16 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, de
     }
 
     subject := matches[0]
+
+    // Backward data slice of a function's return value. Its own header; returns early.
+    if verb == "contributors" {
+        ft, is_fn := subject.type_.(^Type_Scope)
+        if !is_fn || ft.kind != .Fun {
+            return fmt.tprintf("mara ask: 'contributors' is the backward slice of a function's return value; '%s' is a %s.\n", subject.label, subject.sub), false
+        }
+        return render_contributors(checked, ft, subject.label), true
+    }
+
     fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
 
     if verb == "" || verb == "deps" {

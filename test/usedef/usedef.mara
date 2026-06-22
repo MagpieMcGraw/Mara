@@ -29,8 +29,23 @@ flow :: fun(p: i64) -> i64 {
 	return b
 }
 
+// step 3: interprocedural backward slice. `pick_first` returns its FIRST param,
+// so its return_args = {0}: `dead` does not contribute.
+pick_first :: fun(a: i64, b: i64) -> i64 {
+	dead := b + 1
+	return a
+}
+
+// Slicing `caller`'s return must include `x` and the call, but NOT `y` (the
+// callee ignores it) and NOT `junk` (dead w.r.t. the return).
+caller :: fun(x: i64, y: i64) -> i64 {
+	r := pick_first(x, y)
+	junk := y * 100
+	return r
+}
+
 main :: fun() {
-	c := shadow(3)
-	d := flow(c)
-	e := c + d
+	s := shadow(3)
+	f := flow(s)
+	c := caller(f, 7)
 }

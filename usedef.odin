@@ -89,6 +89,13 @@ ud_fn :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
         ud_bind(&u, p.name, b)
         reach_gen(&st, b, ud_def(&u, b, .Param, ft.body_span, nil))   // a param is defined on entry
     }
+    // Named return values (`fun() -> (x, y: f32)`) are output bindings the body
+    // assigns and returns implicitly — bind them so those assignments are tracked.
+    if ft.ast != nil {
+        for rb in ft.ast.return_bindings {
+            ud_bind(&u, rb.name, ud_new(&u, rb.name, ft.body_span, .Local, nil))
+        }
+    }
     for s in ft.body { ud_stmt(&u, s, &st) }
     ud_pop(&u)
 }
