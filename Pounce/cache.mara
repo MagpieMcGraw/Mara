@@ -195,15 +195,14 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
 //   cache_open(&c, path)?               // header read + validated, handle left open
 //   for i in 0..c.count {
 //       e := cache_entry(&c, i)?        // one TOC entry (name, w/h or counts, size)
-//       cache_read(&c, e, &dst)?                    // fill dst with a texture's pixels, or
-//       cache_read_mesh(&c, e, &scratch, &verts, &inds)?   // fill verts/inds with a mesh
+//       px := cache_read(&c, e, &dst)?              // a texture's pixels (a view into dst), or
+//       m  := cache_read_mesh(&c, e, &scratch, &verts, &inds)?   // a mesh
 //   }
 //   cache_close(&c)
 //
-// The read functions return err only and fill a caller-owned buffer rather than
-// returning a slice: a slice bound from a multi-value return (`px, e := f()`)
-// isn't usable yet (the codegen tracks it as neither array nor slice). The caller
-// owns the destination and already holds the entry, so it knows the size.
+// The read functions fill a caller-owned buffer and return a slice / Mesh_Data
+// VIEWING it — the return-a-view-into-a-passed-buffer idiom. The caller owns the
+// destination, so the payload outlives `c` (survives cache_close).
 // ---------------------------------------------------------------------------
 
 // A streaming handle: an open cache file plus its entry count. The TOC is read on
@@ -260,22 +259,24 @@ cache_entry :: fun(c: ^Cache, index: i64) -> Cache_Entry, err {
     return e
 }
 
-// Stream an entry's raw payload into `dst`'s backing (texture pixels). `dst` must
-// have capacity for e.data_size bytes; that many land at dst[0:]. One seek + one
-// read — `dst[0:size]` has len = cap = size, so file_read reads exactly this entry
-// and never spills into the next. The caller holds the entry, so it knows the size.
-cache_read :: fun(c: ^Cache, e: Cache_Entry, dst: ^[]byte) -> err {
+// Stream an entry's raw payload into `dst`'s backing and return a view of it
+// (texture pixels). `dst` must have capacity for e.data_size bytes. One seek +
+// one read — `dst[0:size]` has len = cap = size, so file_read reads exactly this
+// entry and never spills into the next. The returned slice views `dst`, which the
+// caller owns, so it stays valid past cache_close.
+cache_read :: fun(c: ^Cache, e: Cache_Entry, dst: ^[]byte) -> []byte, err {
     size := i64(e.data_size)
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
     buf := dst[0 : size]
     file_read(c.file, &buf)?
+    return buf
 }
 
 // Stream a mesh entry: read its payload into `scratch`, then reinterpret the bytes
 // into the caller's verts/inds backing (vao_add_mesh wants real []Vertex / []u32,
-// and those outlive any file buffer). `scratch` must hold e.data_size bytes; the
-// counts are e.meta[0]/[1]. Caller builds Mesh_Data{verts[0:vc], inds[0:ic]}.
-cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte, verts: ^[]Vertex, inds: ^[]u32) -> err {
+// and those outlive any file buffer). `scratch` must hold e.data_size bytes. The
+// returned Mesh_Data views verts/inds, which the caller owns.
+cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte, verts: ^[]Vertex, inds: ^[]u32) -> Mesh_Data, err {
     vcount := i64(e.meta[0])
     icount := i64(e.meta[1])
     size := i64(e.data_size)
@@ -293,4 +294,6 @@ cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte, verts: ^[]Ve
         ix : u32 = buf[ioff + k * size_of(u32)]
         inds[k] = ix
     }
+
+    return Mesh_Data{ verts[0:vcount], inds[0:icount] }
 }

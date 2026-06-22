@@ -125,11 +125,12 @@ stream_entry :: fun(c: ^St, index: i64) -> Entry, err {
     return e
 }
 
-stream_read :: fun(c: ^St, e: Entry, dst: ^[]byte) -> err {
+stream_read :: fun(c: ^St, e: Entry, dst: ^[]byte) -> []byte, err {
     size := i64(e.data_size)
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
     buf := dst[0 : size]
     file_read(c.file, &buf)?
+    return buf
 }
 
 main :: fun() {
@@ -220,13 +221,13 @@ main :: fun() {
     name0 : str64
     get_name(&r0, &name0)
     tex_back : [64]byte
-    dst0 := tex_back[0 : 64]            // []byte, len = cap = 64 (indexable after fill)
-    p0err := stream_read(&st, r0, &dst0)
+    dst0 := tex_back[0 : 64]
+    payload0, p0err := stream_read(&st, r0, &dst0)   // a slice view from a multi-return
     if bool(p0err) { print("READ0 FAILED:", p0err); return }
-    print("tex name=% w=% h=% size=% first3=% % %",
-        name0, r0.meta[0], r0.meta[1], r0.data_size,
-        dst0[0], dst0[1], dst0[2])
-    // expected: name kenney/bridge, w 4 h 4, size 16, first3 0 3 6
+    print("tex name=% w=% h=% size=% got=% first3=% % %",
+        name0, r0.meta[0], r0.meta[1], r0.data_size, payload0.len,
+        payload0[0], payload0[1], payload0[2])
+    // expected: name kenney/bridge, w 4 h 4, size 16, got 16, first3 0 3 6
 
     // entry 1 (mesh): stream the payload into scratch, reinterpret verts/inds
     r1, r1err := stream_entry(&st, 1)
@@ -236,16 +237,16 @@ main :: fun() {
     rvcount := i64(r1.meta[0])
     ricount := i64(r1.meta[1])
     mesh_back : [512]byte
-    scratch := mesh_back[0 : 512]       // []byte, len = cap = 512
-    mErr := stream_read(&st, r1, &scratch)
+    scratch := mesh_back[0 : 512]
+    mbuf, mErr := stream_read(&st, r1, &scratch)     // a slice view from a multi-return
     if bool(mErr) { print("READ1 FAILED:", mErr); return }
-    v_last : Vtx = scratch[(rvcount - 1) * size_of(Vtx)]
+    v_last : Vtx = mbuf[(rvcount - 1) * size_of(Vtx)]
     last_ioff := rvcount * size_of(Vtx)
-    i_last : u32 = scratch[last_ioff + (ricount - 1) * size_of(u32)]
-    print("mesh name=% vcount=% icount=% last_vpos=% % % last_idx=%",
-        name1, rvcount, ricount,
+    i_last : u32 = mbuf[last_ioff + (ricount - 1) * size_of(u32)]
+    print("mesh name=% vcount=% icount=% got=% last_vpos=% % % last_idx=%",
+        name1, rvcount, ricount, mbuf.len,
         v_last.position[0], v_last.position[1], v_last.position[2], i_last)
-    // expected: name tri, vcount 3, icount 3, last_vpos 2 2.5 2.25, last_idx 2
+    // expected: name tri, vcount 3, icount 3, got 108 (3*32 + 3*4), last_vpos 2 2.5 2.25, last_idx 2
 
     // --- magic validation: corrupt header (in-RAM), expect Bad_Header ---
     bad : [..64]byte
