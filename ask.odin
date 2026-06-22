@@ -617,7 +617,12 @@ ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, f
 // render the selected (kind, dir) filters — an empty axis means "both". Returns
 // the rendered text and whether a single subject was found — on false (not found
 // / ambiguous) the text already explains why, and the caller exits non-zero.
-ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
+ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
+    // Precise variable criterion — `at <file>:<line>` identifies a variable by its
+    // definition site; no name needed.
+    if at != "" {
+        return ask_try_at(checked, at, kind, dir, pkg)
+    }
     // Variable criterion — `<name> in <fn>`. A non-empty `scope` named something
     // that was not a module or file (main() consumes those), so resolve it as a
     // function and slice the local/parameter `target` inside it.
@@ -764,6 +769,49 @@ ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pk
         return strings.to_string(sb), false, true
     }
     return render_var_slice(checked, vars[0], scope, kind, dir, pkg), true, true
+}
+
+// Precise variable criterion: `mara ask at <file>:<line>`. A function carries no
+// source range, so analyze the functions declared in that file (their def sites
+// then exist) and pick the variable defined at exactly (file, line). A line that
+// assigns several variables lists them; one with none reports the miss.
+ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string) -> (out: string, ok: bool) {
+    file, line, pok := ask_parse_at(loc)
+    if !pok {
+        return fmt.tprintf("mara ask: `at` expects <file>:<line> (e.g. `at camera.mara:176`); got '%s'\n", loc), false
+    }
+    // Populate def sites by analyzing the functions declared in that file.
+    for _, ft in checked.functions {
+        if ft != nil && ft.kind == .Fun && filepath.base(ft.body_span.file) == file {
+            ensure_fn_analysis(checked, ft)
+        }
+    }
+    // Distinct variables with a definition at exactly (file, line).
+    bindings: [dynamic]^Var_Binding
+    defer delete(bindings)
+    seen: map[^Var_Binding]bool
+    defer delete(seen)
+    for d in checked.defs {
+        if d.binding == nil || seen[d.binding] { continue }
+        if d.span.line == line && filepath.base(d.span.file) == file {
+            seen[d.binding] = true
+            append(&bindings, d.binding)
+        }
+    }
+    if len(bindings) == 0 {
+        return fmt.tprintf("mara ask: no variable defined at %s:%d — point `at` at a declaration or assignment.\n", file, line), false
+    }
+    if len(bindings) > 1 {
+        slice.sort_by(bindings[:], proc(a, b: ^Var_Binding) -> bool { return a.name < b.name })
+        sb := strings.builder_make()
+        fmt.sbprintf(&sb, "mara ask: %s:%d defines %d variables — name one with `<var> in <fn>`:\n", file, line, len(bindings))
+        for vb in bindings {
+            knd := "param" if vb.kind == .Param else "local"
+            fmt.sbprintf(&sb, "    %-6s %s\n", knd, vb.name)
+        }
+        return strings.to_string(sb), false
+    }
+    return render_var_slice(checked, bindings[0], ask_label(bindings[0].fn), kind, dir, pkg), true
 }
 
 // --- renderer (text adjacency dump) ----------------------------------------

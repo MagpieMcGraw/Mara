@@ -956,12 +956,13 @@ CLI_Args :: struct {
     ask_target:   string,  // the type/fn/variable the query is about
     ask_kind:     string,  // "types" | "data" | "" (both graphs)
     ask_dir:      string,  // "above" | "below" | "" (both directions)
-    ask_scope:    string,  // optional `in <module|file>` token; "" = cwd default
+    ask_scope:    string,  // optional `in <module|file|fn>` token; "" = cwd default
+    ask_at:       string,  // optional `at <file>:<line>` precise variable location
     ask_depth:    int,     // hop budget; -1 = unbounded (the default)
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
-ASK_USAGE :: `Usage: mara ask <name> [types|data] [above|below] [depth] [in <module|file>]
+ASK_USAGE :: `Usage: mara ask <name> [types|data] [above|below] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
   folder whose .mara files declare a module. Use 'in <module>' to target a
@@ -977,10 +978,14 @@ ASK_USAGE :: `Usage: mara ask <name> [types|data] [above|below] [depth] [in <mod
                    omitted = the full transitive closure (default)
     in <module>    analyze that module instead of the current directory
     in <file>      keep the current module; resolve <name> within one file
+    in <fn>        slice the local/parameter <name> inside that function
+    at F:L         slice the variable defined at file F, line L (precise)
 
   Filters compose and may appear in any order:
-    mara ask Font types above     just Font's type sources
-    mara ask camera_move data     just the function's value flow + callers`
+    mara ask Font types above        just Font's type sources
+    mara ask camera_move data        just the function's value flow + callers
+    mara ask pos in world_to_screen  slice the local 'pos' (both directions)
+    mara ask at camera.mara:176      slice whatever is defined on that line`
 
 // Help-flag spellings honored wherever a help request is accepted — the common
 // one/two-dash, short/long variants, so a user's muscle memory always lands.
@@ -999,6 +1004,17 @@ ask_parse_depth :: proc(tok: string) -> (depth: int, ok: bool) {
     for c in tok { if c < '0' || c > '9' { return 0, false } }
     v, _ := strconv.parse_int(tok, 10)
     return v, true
+}
+
+// Split an `at` location `<file>:<line>` into a file basename and line number.
+// Splits on the LAST colon so a copy-pasted path (drive colon and all) still
+// parses; the file is reduced to its basename for matching against spans.
+ask_parse_at :: proc(loc: string) -> (file: string, line: int, ok: bool) {
+    idx := strings.last_index_byte(loc, ':')
+    if idx <= 0 || idx == len(loc) - 1 { return "", 0, false }
+    line, ok = strconv.parse_int(loc[idx + 1:], 10)
+    if !ok || line <= 0 { return "", 0, false }
+    return filepath.base(loc[:idx]), line, true
 }
 
 // Per-package build mode: a package with a top-level `main` is an executable,
@@ -1089,6 +1105,21 @@ parse_args :: proc() -> CLI_Args {
             }
         }
 
+        // Peel an optional `at <file>:<line>` — precise variable addressing.
+        for idx in 0 ..< len(rest) {
+            if rest[idx] == "at" {
+                if idx + 1 >= len(rest) {
+                    fmt.println("mara ask: `at` needs a <file>:<line> location")
+                    return args
+                }
+                args.ask_at = rest[idx + 1]
+                kept: [dynamic]string
+                for t, j in rest { if j != idx && j != idx + 1 { append(&kept, t) } }
+                rest = kept[:]
+                break
+            }
+        }
+
         // Peel an optional depth — the first bare integer anywhere in the tokens.
         // -1 is the omitted sentinel (unbounded); an explicit value is >= 0.
         args.ask_depth = -1
@@ -1130,9 +1161,20 @@ parse_args :: proc() -> CLI_Args {
             }
             args.ask_target = tok
         }
-        // A filter with no name has nothing to act on; bare `mara ask` (no name, no
-        // filters) is the module map and leaves ask_target "".
-        if args.ask_target == "" && (args.ask_kind != "" || args.ask_dir != "") {
+        // `at` and `in` are two ways to address the same kind of thing (a
+        // variable); accepting both is ambiguous. And `at` already identifies the
+        // variable, so a bare <name> alongside it is contradictory.
+        if args.ask_at != "" && args.ask_scope != "" {
+            fmt.println("mara ask: use either `in <fn>` or `at <file>:<line>`, not both")
+            return args
+        }
+        if args.ask_at != "" && args.ask_target != "" {
+            fmt.printf("mara ask: `at` already identifies the variable — drop the name '%s'\n", args.ask_target)
+            return args
+        }
+        // A filter with no criterion has nothing to act on; bare `mara ask` (no
+        // name, no `at`, no filters) is the module map and leaves ask_target "".
+        if args.ask_target == "" && args.ask_at == "" && (args.ask_kind != "" || args.ask_dir != "") {
             fmt.println("mara ask: a filter needs a name — e.g. `mara ask <name> above`")
             return args
         }
@@ -1298,12 +1340,13 @@ main :: proc() {
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {
         flush_diagnostics()
-        if args.ask_target == "" {
-            // Bare `mara ask` — the module map (the project at a glance).
+        if args.ask_target == "" && args.ask_at == "" {
+            // Bare `mara ask` — the module map (the project at a glance). `at`
+            // identifies a variable without a name, so it is not the bare form.
             fmt.print(ask_module_map(checked, programs, all_files, args.compiler_dir, args.pkg_name))
             return
         }
-        out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.pkg_name, ask_scope_file, args.ask_depth)
+        out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.ask_at, args.pkg_name, ask_scope_file, args.ask_depth)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed
         return
