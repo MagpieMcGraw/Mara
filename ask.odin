@@ -771,6 +771,13 @@ ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pk
     ft := fns[0]
     ensure_fn_analysis(checked, ft)
 
+    // `return` is the function's output endpoint — the inside view (what feeds the
+    // return), the counterpart to slicing a parameter. `return` is a keyword, so it
+    // can never collide with a local name.
+    if target == "return" {
+        return render_return_slice(checked, ft, scope, kind, dir, pkg), true, true
+    }
+
     vars: [dynamic]^Var_Binding
     defer delete(vars)
     for vb in checked.var_bindings {

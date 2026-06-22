@@ -979,6 +979,7 @@ ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [depth] [in <sco
     in <module>    analyze that module instead of the current directory
     in <file>      keep the current module; resolve <name> within one file
     in <fn>        slice the local/parameter <name> inside that function
+    return in <fn> slice what feeds <fn>'s return value (the inside view)
     at F:L         slice the variable defined at file F, line L (precise)
 
   Filters compose and may appear in any order:

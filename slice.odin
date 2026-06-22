@@ -330,14 +330,6 @@ slice_return_feeders :: proc(checked: ^Checked_Program, stmts: []Stmt, feeders: 
 }
 
 @(private="file")
-slice_param_def :: proc(checked: ^Checked_Program, ft: ^Type_Scope, name: string) -> ^Def {
-    for d in checked.defs {
-        if d.kind == .Param && d.binding != nil && d.binding.fn == ft && d.binding.name == name { return d }
-    }
-    return nil
-}
-
-@(private="file")
 slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^Def]bool {
     seen: map[^Def]bool
     stack: [dynamic]^Def
@@ -354,50 +346,6 @@ slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^De
     return seen
 }
 
-render_affects :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: string) -> string {
-    ensure_fn_analysis(checked, ft)   // build this function's def-use graph + control deps on demand
-    if len(ft.params) == 0 {
-        return fmt.tprintf("%s has no parameters to trace forward.\n", label)
-    }
-    succ := slice_build_succ(checked, ft)
-    defer slice_free_succ(&succ)
-    feeders := slice_build_feeders(checked, ft)
-    defer delete(feeders)
-
-    b := strings.builder_make()
-    fmt.sbprint(&b, "\nbelow (flow) — what each parameter affects  (forward slice)\n")
-    for p in ft.params {
-        if p.name == "" || p.name == "_" { continue }
-        pdef := slice_param_def(checked, ft, p.name)
-        if pdef == nil { continue }
-        reached := slice_forward_reach(succ, pdef)
-        defer delete(reached)
-
-        stmts: [dynamic]^Def
-        defer delete(stmts)
-        ret := false
-        for d in reached {
-            if feeders[d] { ret = true }
-            if d != pdef && d.kind != .Param { append(&stmts, d) }
-        }
-        slice.sort_by(stmts[:], slice_def_less)
-
-        tail: string
-        switch {
-        case ret && len(stmts) > 0: tail = fmt.tprintf("the return + %s", ask_plural(len(stmts), "statement"))
-        case ret:                   tail = "the return"
-        case len(stmts) > 0:        tail = fmt.tprintf("%s (not the return)", ask_plural(len(stmts), "statement"))
-        case:                       tail = "nothing"
-        }
-        fmt.sbprintf(&b, "\n  %-14s ->  %s\n", p.name, tail)
-        for d in stmts {
-            fmt.sbprintf(&b, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
-        }
-    }
-    fmt.sbprint(&b, "\n  note: data + control dependence (from the control-flow graph) within this\n")
-    fmt.sbprint(&b, "        function; effects through calls use return_args, like the backward slice.\n")
-    return strings.to_string(b)
-}
 
 @(private="file")
 slice_def_less :: proc(a, b: ^Def) -> bool {
@@ -810,4 +758,32 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
     if len(stmts) == 0 && inline == 0 {
         fmt.sbprint(bb, "\n  (results are discarded — nothing consumes them)\n")
     }
+}
+
+// `mara ask return in <fn>` — the inside view of a function's output: slice the
+// return value backward to what feeds it (the contributors). The return's forward
+// flow leaves the function, so for that direction the caller is pointed at the
+// outside view (`mara ask <fn> flow below`).
+render_return_slice :: proc(checked: ^Checked_Program, ft: ^Type_Scope, fn_label, kind, dir, pkg: string) -> string {
+    ensure_fn_analysis(checked, ft)
+    bb := strings.builder_make()
+    fmt.sbprintf(&bb, "return — the value returned by %s  %s   (module %s)\n", fn_label, ask_loc(ft.body_span), pkg)
+
+    if len(ft.return_types) == 0 {
+        fmt.sbprintf(&bb, "\n(%s returns no value — nothing to slice)\n", fn_label)
+        return strings.to_string(bb)
+    }
+    if kind == "types" {
+        fmt.sbprint(&bb, "\n(the return value has no type graph — flow only; drop the `types` filter)\n")
+        return strings.to_string(bb)
+    }
+    show_above := dir == "" || dir == "above"
+    show_below := dir == "" || dir == "below"
+    if show_above {
+        fmt.sbprint(&bb, render_contributors(checked, ft, fn_label))
+    }
+    if show_below {
+        fmt.sbprintf(&bb, "\nbelow (flow) — the return exits to callers; for where results flow use `mara ask %s flow below`\n", fn_label)
+    }
+    return strings.to_string(bb)
 }
