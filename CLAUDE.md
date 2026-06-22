@@ -47,6 +47,7 @@ mara ask at file:line        # the variable defined at that exact spot (precise)
 mara ask name in module      # analyze a different discovered module
 mara ask name in file        # resolve the name within one file
 mara ask var in fn in module # two `in` scopes compose (a function + a module), any order
+mara ask at file:line in module  # `at` + `in <module>`: precise address in a non-cwd module
 ```
 
 `types`/`flow` pick the graph, `above`/`below` the direction; omit either to get

@@ -984,8 +984,9 @@ ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [depth] [in <sco
     return in <fn> slice what feeds <fn>'s return value (the inside view)
     at F:L         slice the variable defined at file F, line L (precise)
 
-  Two 'in' scopes compose (a function + a module), in any order:
-    mara ask v in fn in mymod        slice 'v' in fn, in a module that isn't the cwd
+  Scopes compose to reach a variable in a module that isn't the cwd:
+    mara ask v in fn in mymod        slice 'v' in fn, in module mymod (any order)
+    mara ask at f.mara:12 in mymod   precise address + module pin ('at' + 'in <module>')
 
   Filters compose and may appear in any order:
     mara ask Font types above        just Font's type sources
@@ -1178,13 +1179,11 @@ parse_args :: proc() -> CLI_Args {
             }
             args.ask_target = tok
         }
-        // `at` and `in` are two ways to address the same kind of thing (a
-        // variable); accepting both is ambiguous. And `at` already identifies the
-        // variable, so a bare <name> alongside it is contradictory.
-        if args.ask_at != "" && args.ask_scope != "" {
-            fmt.println("mara ask: use either `in <fn>` or `at <file>:<line>`, not both")
-            return args
-        }
+        // `at` already identifies the variable, so a bare <name> alongside it is
+        // contradictory. (`at` + `in` is checked after discovery: `in <module>`
+        // composes with `at` — re-root, then address — but `in <fn>`/`in <file>`
+        // is a second variable address and conflicts. Module vs fn isn't known
+        // until the discovered file set exists, so that check lives in main().)
         if args.ask_at != "" && args.ask_target != "" {
             fmt.printf("mara ask: `at` already identifies the variable — drop the name '%s'\n", args.ask_target)
             return args
@@ -1259,6 +1258,13 @@ main :: proc() {
                 if ask_scope_name != "" { fmt.println("mara ask: two function scopes — disambiguate one with `at <file>:<line>`"); os.exit(1) }
                 ask_scope_name = sc                              // not a module/file — try it as a function in `ask`
             }
+        }
+        // `at` precisely identifies a variable, so a SECOND variable address —
+        // `in <fn>` or `in <file>` — conflicts. `in <module>` only re-roots, so it
+        // composes: `at f.mara:12 in mymod` addresses a variable in a non-cwd module.
+        if args.ask_at != "" && (ask_scope_name != "" || ask_scope_file != "") {
+            fmt.println("mara ask: `at` already identifies the variable — use `in <module>` only to pin where it lives, not `in <fn>`/`in <file>`")
+            os.exit(1)
         }
     }
 
