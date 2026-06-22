@@ -11,10 +11,18 @@ primitive is missing underneath all of it: a link from a variable's use back to
 its declaration (today resolution only yields a type, and the flow passes track
 variables by name).
 
-**Status: shipped.** All five phases below are implemented and surfaced as
-`mara ask <fn> contributors` (backward) and `mara ask <fn> affects` (forward).
-Commits: f594d89 (1) · 1a83d75 (2) · 71ce3ce (3) · 367d812 (4) · 4b2c93f (5).
-Control dependence is now exact: a real control-flow graph (cfg.odin) drives both
+**Status: shipped + generalized.** All five phases are implemented. The slice is
+surfaced through the unified `mara ask` vocabulary: a function's backward slice is
+`above (data)`, its forward slice `below (data)`, both shown by a bare
+`mara ask <fn>`. The criterion also generalizes from function endpoints to any
+VARIABLE — `mara ask <var> in <fn>` or `mara ask at <file>:<line>` slices an
+arbitrary local/parameter (above = what feeds it, below = what it feeds), reusing
+the same def-use graph seeded from the variable's definitions instead of the
+return / parameters.
+Slice phases: f594d89 (1) · 1a83d75 (2) · 71ce3ce (3) · 367d812 (4) · 4b2c93f (5).
+Vocabulary + variable criterion: cc0bf23 (above/below × types/data) · aebb48e
+(`<var> in <fn>`) · d69c947 (`at <file>:<line>`).
+Control dependence is exact: a real control-flow graph (cfg.odin) drives both
 missing-return checking and post-dominator control dependence — early-return /
 break guard clauses included. CFG: 81d0e6d (build) · 2642583 (return-check) ·
 00c3ef6 (control dependence).

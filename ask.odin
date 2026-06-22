@@ -629,6 +629,11 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     if scope != "" {
         vout, vok, handled := ask_try_variable(checked, target, kind, dir, scope, pkg)
         if handled { return vout, vok }
+        // Not a function. A struct is a named scope too, but its members are fields
+        // (not sliceable) and methods (queryable by name), so point there instead.
+        if tmatches := ask_resolve_all(checked.table, scope, "", checked.functions); len(tmatches) > 0 {
+            return fmt.tprintf("mara ask: '%s' is a %s, not a function — `in` scopes to a function's variables; query the %s directly with `mara ask %s`.\n", scope, tmatches[0].sub, tmatches[0].sub, scope), false
+        }
         return fmt.tprintf("mara ask: '%s' is not a known module, file, or function in %s\n", scope, pkg), false
     }
 
