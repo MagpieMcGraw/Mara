@@ -209,7 +209,7 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
     slice.sort_by(ctrl[:],   guard_span_less)
 
     b := strings.builder_make()
-    fmt.sbprint(&b, "\nabove (data) — contributors to the return value  (backward slice)\n")
+    fmt.sbprint(&b, "\nabove (flow) — contributors to the return value  (backward slice)\n")
     if len(params) > 0 {
         fmt.sbprintf(&b, "\n  parameters (%d)\n", len(params))
         for d in params { fmt.sbprintf(&b, "    %-14s %s\n", d.binding.name, ask_loc(d.span)) }
@@ -365,7 +365,7 @@ render_affects :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: string
     defer delete(feeders)
 
     b := strings.builder_make()
-    fmt.sbprint(&b, "\nbelow (data) — what each parameter affects  (forward slice)\n")
+    fmt.sbprint(&b, "\nbelow (flow) — what each parameter affects  (forward slice)\n")
     for p in ft.params {
         if p.name == "" || p.name == "_" { continue }
         pdef := slice_param_def(checked, ft, p.name)
@@ -436,7 +436,7 @@ render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, k
 
     // The `types` filter selects a graph a variable doesn't have. Say so plainly.
     if kind == "types" {
-        fmt.sbprint(&bb, "\n(a variable has no type graph — its slice is data only; drop the `types` filter)\n")
+        fmt.sbprint(&bb, "\n(a variable has no type graph — its slice is flow only; drop the `types` filter)\n")
         return strings.to_string(bb)
     }
     show_above := dir == "" || dir == "above"
@@ -472,7 +472,7 @@ render_var_contributors :: proc(bb: ^strings.Builder, checked: ^Checked_Program,
     slice.sort_by(stmts[:],  slice_def_less)
     slice.sort_by(s.ctrl[:], guard_span_less)
 
-    fmt.sbprint(bb, "\nabove (data) — what feeds this variable  (backward slice)\n")
+    fmt.sbprint(bb, "\nabove (flow) — what feeds this variable  (backward slice)\n")
     if len(params) > 0 {
         fmt.sbprintf(bb, "\n  parameters (%d)\n", len(params))
         for d in params { fmt.sbprintf(bb, "    %-14s %s\n", d.binding.name, ask_loc(d.span)) }
@@ -521,7 +521,7 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     }
     slice.sort_by(stmts[:], slice_def_less)
 
-    fmt.sbprint(bb, "\nbelow (data) — what this variable affects  (forward slice)\n")
+    fmt.sbprint(bb, "\nbelow (flow) — what this variable affects  (forward slice)\n")
     tail: string
     switch {
     case ret && len(stmts) > 0: tail = fmt.tprintf("the return + %s", ask_plural(len(stmts), "statement"))

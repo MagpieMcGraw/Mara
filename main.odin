@@ -954,7 +954,7 @@ CLI_Args :: struct {
     // Runs the front half of the pipeline and stops after check_program.
     ask:          bool,
     ask_target:   string,  // the type/fn/variable the query is about
-    ask_kind:     string,  // "types" | "data" | "" (both graphs)
+    ask_kind:     string,  // "types" | "flow" | "" (both graphs)
     ask_dir:      string,  // "above" | "below" | "" (both directions)
     ask_scope:    string,  // optional `in <module|file|fn>` token; "" = cwd default
     ask_at:       string,  // optional `at <file>:<line>` precise variable location
@@ -962,7 +962,7 @@ CLI_Args :: struct {
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
-ASK_USAGE :: `Usage: mara ask <name> [types|data] [above|below] [depth] [in <scope> | at <file>:<line>]
+ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
   folder whose .mara files declare a module. Use 'in <module>' to target a
@@ -973,7 +973,7 @@ ASK_USAGE :: `Usage: mara ask <name> [types|data] [above|below] [depth] [in <sco
     above          only the sources — what <name> is built from / what feeds it
     below          only the consumers — what depends on <name> / what it feeds
     types          only the type graph (fields, params, returns, embeds)
-    data           only the data-flow slice (a function's value flow + its callers)
+    flow           only the data-flow slice (a function's value flow + its callers)
     depth          hops of graph to expand: 0 = direct edges only,
                    omitted = the full transitive closure (default)
     in <module>    analyze that module instead of the current directory
@@ -983,7 +983,7 @@ ASK_USAGE :: `Usage: mara ask <name> [types|data] [above|below] [depth] [in <sco
 
   Filters compose and may appear in any order:
     mara ask Font types above        just Font's type sources
-    mara ask camera_move data        just the function's value flow + callers
+    mara ask camera_move flow        just the function's value flow + callers
     mara ask pos in world_to_screen  slice the local 'pos' (both directions)
     mara ask at camera.mara:176      slice whatever is defined on that line`
 

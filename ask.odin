@@ -580,7 +580,7 @@ ask_sort_edges :: proc(res: ^Ask_Result) {
 ask_canon_kind :: proc(s: string) -> (canon: string, ok: bool) {
     switch s {
     case "types", "type": return "types", true
-    case "data":          return "data", true
+    case "flow":          return "flow", true
     }
     return "", false
 }
@@ -690,7 +690,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     subject := matches[0]
 
     show_types := kind == "" || kind == "types"
-    show_data  := kind == "" || kind == "data"
+    show_flow  := kind == "" || kind == "flow"
     show_above := dir  == "" || dir  == "above"
     show_below := dir  == "" || dir  == "below"
 
@@ -706,7 +706,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions)
         render_ask_deps(&b, &res, depth)
     }
-    if show_above && show_data && is_fn {
+    if show_above && show_flow && is_fn {
         fmt.sbprint(&b, render_contributors(checked, ft, subject.label))
     }
 
@@ -716,7 +716,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
         render_ask_users(&b, &res, depth)
     }
-    if show_below && show_data && is_fn {
+    if show_below && show_flow && is_fn {
         render_fn_users(&b, checked, ft)   // callers, from the call graph
         fmt.sbprint(&b, render_affects(checked, ft, subject.label))
     }
@@ -725,8 +725,8 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     // slice; a function has no type-level users). Don't return a bare header.
     if len(strings.to_string(b)) == header_len {
         reason := "matching graph"
-        if show_data && !show_types {
-            reason = "data-flow slice"
+        if show_flow && !show_types {
+            reason = "flow slice"
         } else if is_fn {
             reason = "type-level users"
         }
