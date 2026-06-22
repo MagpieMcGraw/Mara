@@ -143,6 +143,19 @@ ask_source_name :: proc(t: Type) -> string {
     return ""
 }
 
+// An FFI function — a `fun` inside a `foreign` block. These live ONLY in
+// checked.functions (never table.funs) and carry no source_name (their bare name
+// is recovered from the mangled name by ask_demangle), so the enumerators add
+// them explicitly and the module views keep them past the "drop the unnamed"
+// instance filter.
+ask_is_foreign :: proc(t: Type) -> bool {
+    if ts, ok := t.(^Type_Scope); ok {
+        _, is_ffi := ts.origin.(Origin_Foreign)
+        return is_ffi
+    }
+    return false
+}
+
 // structs / unions / distinct have further type deps worth recursing into; enums
 // are leaves (variants are integer constants), and funs expand only at the root.
 ask_recurses :: proc(t: Type) -> bool {
@@ -219,7 +232,7 @@ Ask_Match :: struct {
 // the disambiguation lever behind `in <file>`.
 Ask_Dedup_Key :: struct { span: Span, sub: string }
 
-ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string) -> [dynamic]Ask_Match {
+ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[string]^Type_Scope) -> [dynamic]Ask_Match {
     matches: [dynamic]Ask_Match
     seen: map[Ask_Dedup_Key]bool
     consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]bool, t: Type, scope_file: string) {
@@ -236,13 +249,16 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string) -> [dynamic
     for _, e in table.enums          { consider(&matches, &seen, e, scope_file) }
     for _, u in table.unions         { consider(&matches, &seen, u, scope_file) }
     for _, d in table.distinct_types { consider(&matches, &seen, d, scope_file) }
+    // FFI functions are absent from table.funs — surface the foreign ones from
+    // checked.functions so resolution, fuzzy, and the module views all see them.
+    for _, f in funcs { if ask_is_foreign(f) { consider(&matches, &seen, f, scope_file) } }
     return matches
 }
 
 // Exact resolution: the definitions whose name the user typed verbatim.
-ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string) -> [dynamic]Ask_Match {
+ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string, funcs: map[string]^Type_Scope) -> [dynamic]Ask_Match {
     out: [dynamic]Ask_Match
-    for m in ask_all_definitions(table, scope_file) {
+    for m in ask_all_definitions(table, scope_file, funcs) {
         if m.label == target || m.flat == target { append(&out, m) }
     }
     return out
@@ -315,10 +331,10 @@ ask_levenshtein :: proc(a, b: string) -> int {
 
 // Top-N definitions by fuzzy score against `target`, ties broken by name for
 // determinism. Used only when exact resolution returns nothing.
-ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit: int) -> [dynamic]Ask_Match {
+ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit: int, funcs: map[string]^Type_Scope) -> [dynamic]Ask_Match {
     Scored :: struct { m: Ask_Match, score: int }
     pool: [dynamic]Scored
-    for m in ask_all_definitions(table, scope_file) {
+    for m in ask_all_definitions(table, scope_file, funcs) {
         if sc := ask_fuzzy_score(target, m.label); sc > 0 {
             append(&pool, Scored{ m = m, score = sc })
         }
@@ -470,7 +486,7 @@ Ask_Rev_Ref :: struct { container: Type, kind: Ask_Edge_Kind, via: string, wrap:
 // all fold onto the one queryable type. Containers are deduped by identity: a
 // parameterized struct lives in BOTH `.structs` and `.funs` (data struct + ctor),
 // and counting its edges twice would double every use-site.
-ask_build_reverse_index :: proc(table: ^SymbolTable) -> map[string][dynamic]Ask_Rev_Ref {
+ask_build_reverse_index :: proc(table: ^SymbolTable, funcs: map[string]^Type_Scope) -> map[string][dynamic]Ask_Rev_Ref {
     rev: map[string][dynamic]Ask_Rev_Ref
     seen: map[rawptr]bool
     add :: proc(table: ^SymbolTable, rev: ^map[string][dynamic]Ask_Rev_Ref, seen: ^map[rawptr]bool, container: Type) {
@@ -494,6 +510,9 @@ ask_build_reverse_index :: proc(table: ^SymbolTable) -> map[string][dynamic]Ask_
     for _, s in table.funs           { add(table, &rev, &seen, s) }
     for _, u in table.unions         { add(table, &rev, &seen, u) }
     for _, d in table.distinct_types { add(table, &rev, &seen, d) }
+    // FFI functions reference types through their params/returns (e.g. every SDL
+    // fn taking a `Window`), so scan the foreign ones too or `users` misses them.
+    for _, f in funcs { if ask_is_foreign(f) { add(table, &rev, &seen, f) } }
     return rev
 }
 
@@ -502,12 +521,12 @@ ask_build_reverse_index :: proc(table: ^SymbolTable) -> map[string][dynamic]Ask_
 // rings read outward: a depth-1 user references the target itself; a depth-2 user
 // references some depth-1 user; and so on. BFS over the reverse index gives every
 // node its SHORTEST distance (the value the renderer groups on).
-ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type, depth: int) {
+ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type, depth: int, funcs: map[string]^Type_Scope) {
     rid, _ := ask_intern(res, target)
     res.root = rid
     res.nodes[rid].dist = 0
     if ask_type_name(target) == "" { return }   // an unnamed target can't be matched by name
-    rev := ask_build_reverse_index(table)
+    rev := ask_build_reverse_index(table, funcs)
     processed: map[rawptr]bool
     queue: [dynamic]Type
     append(&queue, target)
@@ -575,12 +594,12 @@ ask_is_verb :: proc(s: string) -> bool {
 
 // Compute one direction's graph for an already-resolved subject type, bounded to
 // `depth` hops (depth < 0 = unbounded / full closure).
-ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int) -> Ask_Result {
+ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, funcs: map[string]^Type_Scope) -> Ask_Result {
     res: Ask_Result
     res.root = -1
     switch verb {
     case "deps":  ask_deps(table, &res, root, depth)
-    case "users": ask_users(table, &res, root, depth)
+    case "users": ask_users(table, &res, root, depth, funcs)
     }
     ask_sort_edges(&res)
     return res
@@ -591,7 +610,7 @@ ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int) -
 // whether a single subject was found — on false (not found / ambiguous) the text
 // already explains why, and the caller exits non-zero.
 ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
-    matches := ask_resolve_all(checked.table, target, scope_file)
+    matches := ask_resolve_all(checked.table, target, scope_file, checked.functions)
     b := strings.builder_make()
 
     scope_desc := pkg if scope_file == "" else fmt.tprintf("%s, file %s", pkg, scope_file)
@@ -610,7 +629,7 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, de
             return strings.to_string(b), false
         }
         // No exact hit — offer the closest names rather than a bare miss.
-        suggestions := ask_fuzzy(checked.table, target, scope_file, ASK_FUZZY_LIMIT)
+        suggestions := ask_fuzzy(checked.table, target, scope_file, ASK_FUZZY_LIMIT, checked.functions)
         if len(suggestions) > 0 {
             fmt.sbprintf(&b, "mara ask: no exact match for '%s' in %s — did you mean:\n", target, scope_desc)
             for m in suggestions {
@@ -645,11 +664,11 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, de
     fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
 
     if verb == "" || verb == "deps" {
-        res := ask_compute(checked.table, subject.type_, "deps", depth)
+        res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions)
         render_ask_deps(&b, &res, depth)
     }
     if verb == "" || verb == "users" {
-        res := ask_compute(checked.table, subject.type_, "users", depth)
+        res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
         render_ask_users(&b, &res, subject.sub == "fun", depth)
     }
     // The broad "tell me about this name" form is honest about its coverage gap;
@@ -800,8 +819,8 @@ ask_file_is_stdlib :: proc(file, compiler_dir: string) -> bool {
 
 // A type's distinct-user count — the reverse-edge in-degree, reusing the very
 // graph `users` renders. The orientation signal for "which type matters here".
-ask_user_count :: proc(table: ^SymbolTable, t: Type) -> int {
-    res := ask_compute(table, t, "users", 0)   // DIRECT users only — the surface ranks by one-hop in-degree
+ask_user_count :: proc(table: ^SymbolTable, t: Type, funcs: map[string]^Type_Scope) -> int {
+    res := ask_compute(table, t, "users", 0, funcs)   // DIRECT users only — the surface ranks by one-hop in-degree
     return ask_distinct_sources(&res)
 }
 
@@ -823,13 +842,13 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: s
     types: [dynamic]Entry
     funs:  [dynamic]Ask_Match
     canonical := target
-    for m in ask_all_definitions(checked.table, "") {
+    for m in ask_all_definitions(checked.table, "", checked.functions) {
         hp := ask_home_package(m.type_)
-        if m.mark == "synthetic" || ask_source_name(m.type_) == "" { continue }   // skip instances/synthetic
+        if m.mark == "synthetic" || (ask_source_name(m.type_) == "" && !ask_is_foreign(m.type_)) { continue }   // skip instances/synthetic, keep FFI funs
         if !ask_module_name_matches(hp, target) { continue }
         canonical = hp
         if m.sub == "fun" { append(&funs, m) }
-        else              { append(&types, Entry{ m = m, users = ask_user_count(checked.table, m.type_) }) }
+        else              { append(&types, Entry{ m = m, users = ask_user_count(checked.table, m.type_, checked.functions) }) }
     }
     if len(types) == 0 && len(funs) == 0 { return "", false }   // not a (loaded) module
 
@@ -938,8 +957,8 @@ ask_module_map :: proc(checked: ^Checked_Program, programs: map[string]^Program,
     // authoritative module set (`programs` carries only the local ones).
     Counts :: struct { types, funs: int, file: string }
     by_home: map[string]Counts
-    for m in ask_all_definitions(checked.table, "") {
-        if m.mark == "synthetic" || ask_source_name(m.type_) == "" { continue }   // skip instances/synthetic
+    for m in ask_all_definitions(checked.table, "", checked.functions) {
+        if m.mark == "synthetic" || (ask_source_name(m.type_) == "" && !ask_is_foreign(m.type_)) { continue }   // skip instances/synthetic, keep FFI funs
         hp := ask_home_package(m.type_)
         if hp == "" { continue }
         c := by_home[hp]
