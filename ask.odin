@@ -733,12 +733,15 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
 
     // Flow is the "outside" view, and for both a type (every value of it) and a
     // function (every call of it) it aggregates across the whole program, so every
-    // function's def-use graph must exist first (data-only, cheap). Then build
-    // control-deps just for the functions the slice actually touches.
+    // function's def-use graph must exist first (data-only, cheap). Control deps
+    // (post-dominators) are the expensive step — build them only on `control`, and
+    // only for the functions the slice actually touches.
     if show_flow {
         flow_analyze_all(checked)
-        if is_fn { flow_build_fn_guards(checked, ft) }
-        else     { flow_build_type_guards(checked, subject.type_) }
+        if checked.want_control_deps {
+            if is_fn { flow_build_fn_guards(checked, ft) }
+            else     { flow_build_type_guards(checked, subject.type_) }
+        }
     }
 
     // A function with no call sites is an entry point or dead code. The three

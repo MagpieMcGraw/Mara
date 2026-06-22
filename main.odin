@@ -960,10 +960,11 @@ CLI_Args :: struct {
     ask_scope2:   string,  // second `in` token — the two compose (`<var> in <fn> in <module>`)
     ask_at:       string,  // optional `at <file>:<line>` precise variable location
     ask_depth:    int,     // hop budget; -1 = unbounded (the default)
+    ask_control:  bool,    // the `control` filter — add control dependence (post-doms); off = data-only (the fast default)
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
-ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [depth] [in <scope> | at <file>:<line>]
+ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
   folder whose .mara files declare a module. Use 'in <module>' to target a
@@ -975,6 +976,9 @@ ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [depth] [in <sco
     below          only the consumers — what depends on <name> / what it feeds
     types          only the type graph (fields, params, returns, embeds)
     flow           only the data-flow slice (a function's value flow + its callers)
+    control        also show CONTROL dependence — the branches/loops a value drives
+                   (or that guard what feeds it). Off by default: it needs the
+                   post-dominator pass, the analyzer's one slow step. Data is hot.
     depth          hops to expand. TYPES: 0 = direct edges, omitted = full closure.
                    FLOW (forward): call hops to follow into callees — omitted = 1,
                    0 = none (count only), N = N hops.
@@ -1171,6 +1175,13 @@ parse_args :: proc() -> CLI_Args {
                     return args
                 }
                 args.ask_dir = d
+                continue
+            }
+            // `control` adds control dependence (loop/branch guards) to a flow
+            // slice — the post-dominator pass, off by default so the data slice
+            // stays fast. A flag, not a kind/dir, so it composes with both.
+            if tok == "control" || tok == "ctrl" {
+                args.ask_control = true
                 continue
             }
             if args.ask_target != "" {
@@ -1377,6 +1388,7 @@ main :: proc() {
             fmt.print(ask_module_map(checked, programs, all_files, args.compiler_dir, args.pkg_name))
             return
         }
+        checked.want_control_deps = args.ask_control   // gate the post-dominator pass (off = the fast data-only default)
         out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.ask_at, args.pkg_name, ask_scope_file, args.ask_depth)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed

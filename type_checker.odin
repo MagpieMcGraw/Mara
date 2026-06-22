@@ -1603,6 +1603,11 @@ Checked_Program :: struct {
     // Functions whose slice analysis (control deps + def-use) has been built —
     // it is lazy and per-function (ensure_fn_analysis), kept off the compile path.
     analyzed:       map[^Type_Scope]bool,
+    // Whether the current `ask` query wants CONTROL dependence (the `control`
+    // filter). Off by default: the post-dominator computation is the analyzer's
+    // one expensive step (it dwarfs the data slice), so the hot path stays
+    // data-only and control deps are computed lazily only when asked.
+    want_control_deps: bool,
     // Every call site indexed by callee — the function-flow "outside" view slices
     // the arguments / results around each call. Populated by ud_expr during analysis.
     call_sites:     map[^Type_Scope][dynamic]Fn_Call_Site,

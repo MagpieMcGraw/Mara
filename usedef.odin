@@ -95,7 +95,9 @@ UD :: struct {
 ensure_fn_analysis :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
     if ft == nil || checked.analyzed[ft] { return }
     checked.analyzed[ft] = true
-    if cfg, ok := checked.cfgs[ft]; ok { cfg_build_control_deps(checked, cfg) }
+    if checked.want_control_deps {
+        if cfg, ok := checked.cfgs[ft]; ok { cfg_build_control_deps(checked, cfg) }
+    }
     ud_fn(checked, ft)
     ud_dump(checked)
 }

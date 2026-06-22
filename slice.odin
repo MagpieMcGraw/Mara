@@ -233,8 +233,12 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
     if len(params) == 0 && len(stmts) == 0 {
         fmt.sbprint(&b, "\n  (no variable contributors — the return value is a constant)\n")
     }
-    fmt.sbprint(&b, "\n  note: data + control dependence — control comes from the control-flow\n")
-    fmt.sbprint(&b, "        graph, so early-return / break guard clauses are included.\n")
+    if checked.want_control_deps {
+        fmt.sbprint(&b, "\n  note: data + control dependence — control comes from the control-flow\n")
+        fmt.sbprint(&b, "        graph, so early-return / break guard clauses are included.\n")
+    } else {
+        fmt.sbprint(&b, "\n  note: data dependence only — add `control` for the guarding branches/loops\n")
+    }
     return strings.to_string(b)
 }
 
@@ -273,16 +277,19 @@ guard_word :: proc(k: Guard_Kind) -> string {
 // forward hop above.
 // ---------------------------------------------------------------------------
 
-// Forward dependency edges D1 -> {D2}: D2 reads a binding D1 defines (in D2's RHS
-// or in a guard controlling D2). The inverse of the backward dependency.
+// Forward dependency edges D1 -> {D2}: D2 reads a binding D1 defines. `data_only`
+// counts just D2's RHS (pure data flow); the full graph also counts a binding read
+// in a guard CONTROLLING D2 (control dependence — D2 runs inside a branch/loop D1
+// drives). The two-graph split is how the forward slice separates data from
+// control: reach via data_only, then via full; the difference is control-only.
 @(private="file")
-slice_build_succ :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> map[^Def][dynamic]^Def {
+slice_build_succ :: proc(checked: ^Checked_Program, ft: ^Type_Scope, data_only: bool) -> map[^Def][dynamic]^Def {
     succ: map[^Def][dynamic]^Def
     for d2 in checked.defs {
         if d2.binding == nil || d2.binding.fn != ft { continue }
         deps: map[^Expr_Ident]bool
         slice_collect(checked, d2.value, &deps)
-        for g in d2.guards { for c in g.conds { slice_collect(checked, c, &deps) } }
+        if !data_only { for g in d2.guards { for c in g.conds { slice_collect(checked, c, &deps) } } }
         for u in deps {
             rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
             for d1 in rdefs {
@@ -442,7 +449,7 @@ arg_reads_targets :: proc(checked: ^Checked_Program, arg: Expr, targets: map[^Va
 @(private="file")
 flow_targets :: proc(checked: ^Checked_Program, fn: ^Type_Scope, seeds: map[^Var_Binding]bool) -> map[^Var_Binding]bool {
     targets: map[^Var_Binding]bool
-    succ := slice_build_succ(checked, fn)
+    succ := slice_build_succ(checked, fn, true)   // a value "lands in" a call by data flow, not control
     defer slice_free_succ(&succ)
     for b in seeds {
         if b.fn != fn { continue }
@@ -770,8 +777,9 @@ render_var_contributors :: proc(bb: ^strings.Builder, checked: ^Checked_Program,
 render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int) {
     flow_analyze_all(checked)   // the interprocedural hop reads callees' param bindings
 
-    succ := slice_build_succ(checked, b.fn)
-    defer slice_free_succ(&succ)
+    // Data reach: pure value flow (no CFG). The hot path.
+    data_succ := slice_build_succ(checked, b.fn, true)
+    defer slice_free_succ(&data_succ)
     feeders := slice_build_feeders(checked, b.fn)
     defer delete(feeders)
 
@@ -779,7 +787,7 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     defer delete(reached)
     for d in checked.defs {
         if d.binding == b {
-            r := slice_forward_reach(succ, d)
+            r := slice_forward_reach(data_succ, d)
             for k in r { reached[k] = true }
             delete(r)
         }
@@ -794,6 +802,29 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     }
     slice.sort_by(stmts[:], slice_def_less)
 
+    // Control reach (opt-in `control`): statements that run inside a branch/loop
+    // this value drives but aren't computed from its data — full reach minus data.
+    ctrl_stmts: [dynamic]^Def
+    defer delete(ctrl_stmts)
+    if checked.want_control_deps {
+        full_succ := slice_build_succ(checked, b.fn, false)
+        defer slice_free_succ(&full_succ)
+        full: map[^Def]bool
+        defer delete(full)
+        for d in checked.defs {
+            if d.binding == b {
+                r := slice_forward_reach(full_succ, d)
+                for k in r { full[k] = true }
+                delete(r)
+            }
+        }
+        for d in full {
+            if reached[d] { continue }
+            if d.binding != b && d.kind != .Param { append(&ctrl_stmts, d) }
+        }
+        slice.sort_by(ctrl_stmts[:], slice_def_less)
+    }
+
     seeds: map[^Var_Binding]bool
     defer delete(seeds)
     seeds[b] = true
@@ -804,6 +835,12 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), hop1_calls))
     for d in stmts {
         fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
+    }
+    if len(ctrl_stmts) > 0 {
+        fmt.sbprintf(bb, "\n  control — runs inside branches/loops it drives (%d)\n", len(ctrl_stmts))
+        for d in ctrl_stmts {
+            fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
+        }
     }
     render_landings(bb, landings[:], unfollowed)
 }
@@ -931,24 +968,36 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     seeds := type_flow_seeds(checked, T)
     defer delete(seeds)
 
-    reached:  map[^Def]bool
+    reached:  map[^Def]bool          // data reach (the hot path)
+    ctrl:     map[^Def]bool          // control-only reach (opt-in `control`)
     ret_fns:  map[^Type_Scope]bool   // functions where a value of type T reaches the return
     done_fns: map[^Type_Scope]bool   // build each owning function's forward graph once
-    defer { delete(reached); delete(ret_fns); delete(done_fns) }
+    defer { delete(reached); delete(ctrl); delete(ret_fns); delete(done_fns) }
     for b in seeds {
         G := b.fn
         if done_fns[G] { continue }
         done_fns[G] = true
-        succ := slice_build_succ(checked, G)
+        data_succ := slice_build_succ(checked, G, true)
         feeders := slice_build_feeders(checked, G)
         for d in checked.defs {
             if d.binding != nil && seeds[d.binding] && d.binding.fn == G {
-                r := slice_forward_reach(succ, d)
+                r := slice_forward_reach(data_succ, d)
                 for k in r { reached[k] = true; if feeders[k] { ret_fns[G] = true } }
                 delete(r)
             }
         }
-        slice_free_succ(&succ)
+        slice_free_succ(&data_succ)
+        if checked.want_control_deps {
+            full_succ := slice_build_succ(checked, G, false)
+            for d in checked.defs {
+                if d.binding != nil && seeds[d.binding] && d.binding.fn == G {
+                    r := slice_forward_reach(full_succ, d)
+                    for k in r { ctrl[k] = true }
+                    delete(r)
+                }
+            }
+            slice_free_succ(&full_succ)
+        }
         delete(feeders)
     }
 
@@ -959,6 +1008,16 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         if d.kind != .Param { append(&stmts, d) }
     }
     slice.sort_by(stmts[:], slice_def_less)
+
+    // Control-only = reachable through guards but not through data (and not a seed).
+    ctrl_stmts: [dynamic]^Def
+    defer delete(ctrl_stmts)
+    for d in ctrl {
+        if reached[d] { continue }
+        if d.binding != nil && seeds[d.binding] { continue }
+        if d.kind != .Param { append(&ctrl_stmts, d) }
+    }
+    slice.sort_by(ctrl_stmts[:], slice_def_less)
 
     // The calls these values feed, followed into the callee parameters they land
     // in (flow_reach spans every seed-holding function, up to the hop budget).
@@ -974,11 +1033,15 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
         for d in stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
     }
+    if len(ctrl_stmts) > 0 {
+        fmt.sbprintf(bb, "\n  control — run inside branches/loops these values drive (%d)\n", len(ctrl_stmts))
+        for d in ctrl_stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
+    }
     if len(ret_fns) > 0 {
         fmt.sbprintf(bb, "\n  reaches the return of %s\n", ask_plural(len(ret_fns), "function"))
     }
     render_landings(bb, landings[:], unfollowed)
-    if len(stmts) == 0 && len(ret_fns) == 0 && len(landings) == 0 && unfollowed == 0 {
+    if len(stmts) == 0 && len(ctrl_stmts) == 0 && len(ret_fns) == 0 && len(landings) == 0 && unfollowed == 0 {
         fmt.sbprint(bb, "\n  (these values don't flow onward — terminal or unused)\n")
     }
 }
@@ -1059,7 +1122,7 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
         G := rd.binding.fn
         if done_fns[G] { continue }
         done_fns[G] = true
-        succ := slice_build_succ(checked, G)
+        succ := slice_build_succ(checked, G, true)   // where results flow = data flow
         for rd2 in result_defs {
             if rd2.binding.fn == G {
                 r := slice_forward_reach(succ, rd2)

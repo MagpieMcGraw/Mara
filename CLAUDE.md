@@ -29,6 +29,9 @@ mara ask name above          # only the sources   (what it's built from / what f
 mara ask name below          # only the consumers (what depends on it / what it feeds)
 mara ask name types above    # filters combine — just the type sources
 mara ask name 2              # search depth, default is inf, beware wall of text
+mara ask name flow control   # add CONTROL dependence (branches/loops); off by
+                             # default — it needs the post-dom pass, the one slow
+                             # step. The default flow slice is data-only and hot.
 
 # `flow` is the "outside" view, consistent across subjects:
 mara ask Type flow           # aggregate the slice over every value of that type
