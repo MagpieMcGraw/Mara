@@ -44,8 +44,22 @@ caller :: fun(x: i64, y: i64) -> i64 {
 	return r
 }
 
+// step 4: control dependence. `c` never flows into `r`, but it decides WHICH
+// branch assigns `r`, so changing it changes the result — it must show up as a
+// (control) contributor, pulled in by the `if` that guards `r`'s definitions.
+guarded :: fun(p: i64, c: i64) -> i64 {
+	r := 0
+	if c > 0 {
+		r = p * 2
+	else
+		r = p * 3
+	}
+	return r
+}
+
 main :: fun() {
 	s := shadow(3)
 	f := flow(s)
 	c := caller(f, 7)
+	g := guarded(c, s)
 }

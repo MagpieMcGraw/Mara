@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:os"
+import "core:slice"
 
 // ---------------------------------------------------------------------------
 // Variable identity + the def-use graph — slice analysis steps 1 & 2.
@@ -43,11 +44,36 @@ Def_Kind :: enum { Param, Decl, Assign, Loop_Var, Destructure, Complex }
 // One definition site: a point that gives `binding` a value. `value` is the RHS
 // that drives it (an assignment's value, a loop's iteration source, a call) —
 // nil for a parameter, which is an external input and thus a slice boundary.
+// `guards` are the branches/loops lexically enclosing the def — its control
+// dependence: the def runs only when those predicates select its branch.
 Def :: struct {
     binding: ^Var_Binding,
     kind:    Def_Kind,
     span:    Span,
     value:   Expr,
+    guards:  []Guard,
+}
+
+// A control structure (if / for / match) enclosing a statement. The statement
+// runs only when the structure's condition selects its branch, so the statement
+// is control-dependent on `conds` (the predicate's driving expressions).
+Guard_Kind :: enum { If, For, Match }
+Guard :: struct {
+    kind:  Guard_Kind,
+    span:  Span,
+    conds: []Expr,
+}
+
+guard_if    :: proc(v: ^Stmt_If)    -> Guard { c := make([]Expr, 1); c[0] = v.condition; return Guard{ .If,    v.span, c } }
+guard_match :: proc(v: ^Stmt_Match) -> Guard { c := make([]Expr, 1); c[0] = v.subject;   return Guard{ .Match, v.span, c } }
+guard_for   :: proc(v: ^Stmt_For)   -> Guard {
+    c: [dynamic]Expr
+    if v.condition      != nil { append(&c, v.condition) }
+    if v.range_low      != nil { append(&c, v.range_low) }
+    if v.range_high     != nil { append(&c, v.range_high) }
+    if v.collection     != nil { append(&c, v.collection) }
+    if v.collection_len != nil { append(&c, v.collection_len) }
+    return Guard{ .For, v.span, c[:] }
 }
 
 // --- reaching-definitions state --------------------------------------------
@@ -61,6 +87,7 @@ UD :: struct {
     fn:      ^Type_Scope,
     frames:  [dynamic]map[string]^Var_Binding, // lexical scope stack (innermost last)
     uses:    [dynamic]^Expr_Ident,              // every recorded use, in order (for the loop back-edge patch)
+    guards:  [dynamic]Guard,                    // enclosing branches/loops (control dependence, innermost last)
 }
 
 // --- entry -----------------------------------------------------------------
@@ -79,6 +106,7 @@ ud_fn :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
     u := UD{ checked = checked, fn = ft }
     defer delete(u.frames)
     defer delete(u.uses)
+    defer delete(u.guards)
     st := make(Reach)
     defer reach_free(&st)
 
@@ -104,6 +132,9 @@ ud_fn :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
 
 @(private="file") ud_push :: proc(u: ^UD) { append(&u.frames, make(map[string]^Var_Binding)) }
 @(private="file") ud_pop  :: proc(u: ^UD) { f := pop(&u.frames); delete(f) }
+
+@(private="file") ud_gpush :: proc(u: ^UD, g: Guard) { append(&u.guards, g) }
+@(private="file") ud_gpop  :: proc(u: ^UD) { pop(&u.guards) }
 
 @(private="file")
 ud_bind :: proc(u: ^UD, name: string, b: ^Var_Binding) {
@@ -131,7 +162,7 @@ ud_new :: proc(u: ^UD, name: string, span: Span, kind: Binding_Kind, decl: ^Stmt
 @(private="file")
 ud_def :: proc(u: ^UD, b: ^Var_Binding, kind: Def_Kind, span: Span, value: Expr) -> ^Def {
     d := new(Def)
-    d^ = Def{ binding = b, kind = kind, span = span, value = value }
+    d^ = Def{ binding = b, kind = kind, span = span, value = value, guards = slice.clone(u.guards[:]) }
     append(&u.checked.defs, d)
     return d
 }
@@ -240,11 +271,13 @@ ud_stmt :: proc(u: ^UD, s: Stmt, st: ^Reach) {
     case Stmt_Return:
         for e in v.values { ud_expr(u, e, st) }
     case ^Stmt_If:
-        ud_expr(u, v.condition, st)
+        ud_expr(u, v.condition, st)              // the condition is evaluated in the OUTER context
         then_st := reach_clone(st)
         else_st := reach_clone(st)
+        ud_gpush(u, guard_if(v))                 // both bodies are control-dependent on the condition
         ud_block(u, v.body[:],      &then_st)
         ud_block(u, v.else_body[:], &else_st)
+        ud_gpop(u)
         reach_clear(st)                          // st := then ∪ else (union at the join)
         reach_merge(st, &then_st)
         reach_merge(st, &else_st)
@@ -258,12 +291,14 @@ ud_stmt :: proc(u: ^UD, s: Stmt, st: ^Reach) {
         ud_expr(u, v.condition, st)
         ud_expr(u, v.range_low, st);  ud_expr(u, v.range_high, st)
         ud_expr(u, v.collection, st); ud_expr(u, v.collection_len, st)
+        ud_gpush(u, guard_for(v))                // loop var + body are control-dependent on the loop bounds
         loop_src: Expr = v.collection if v.is_collection_for else v.range_high
         if v.loop_var  != "" { ud_declare(u, v.loop_var,  v.span, nil, .Loop_Var, loop_src,     st) }
         if v.elem_var  != "" { ud_declare(u, v.elem_var,  v.span, nil, .Loop_Var, v.collection, st) }
         if v.index_var != "" { ud_declare(u, v.index_var, v.span, nil, .Loop_Var, nil,          st) }
         ud_block(u, v.body[:], st)
         if v.post != nil { ud_stmt(u, v.post, st) }
+        ud_gpop(u)
         ud_loop_patch(u, use_start, def_start)   // back-edge: loop defs may reach loop uses in a later iteration
         reach_merge(st, &pre)
         reach_free(&pre)
@@ -272,6 +307,7 @@ ud_stmt :: proc(u: ^UD, s: Stmt, st: ^Reach) {
         ud_expr(u, v.subject, st)
         arm_states: [dynamic]Reach
         defer delete(arm_states)
+        ud_gpush(u, guard_match(v))              // every arm is control-dependent on the subject
         for arm in v.arms {
             as := reach_clone(st)
             ud_push(u)
@@ -283,6 +319,7 @@ ud_stmt :: proc(u: ^UD, s: Stmt, st: ^Reach) {
             ud_pop(u)
             append(&arm_states, as)
         }
+        ud_gpop(u)
         reach_clear(st)                          // st := union of all arms
         for &as in arm_states { reach_merge(st, &as); reach_free(&as) }
     case ^Stmt_Defer:
