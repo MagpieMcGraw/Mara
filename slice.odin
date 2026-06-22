@@ -571,26 +571,41 @@ type_flow_seeds :: proc(checked: ^Checked_Program, T: Type) -> map[^Var_Binding]
     return seeds
 }
 
-// flow_analyze_all is data-only (no post-dominators) for speed, so the aggregate
-// would miss control dependence. But a slice stays inside the function holding the
-// seed (calls are crossed by summary), so only functions that hold a value of type
-// T need control-deps. Build them just for those, then re-stamp their defs' guards
-// (the defs were created data-only, with empty guards). Keeps the cost ~O(uses of
-// T) instead of O(all functions) while restoring full program-slice fidelity.
-flow_build_type_guards :: proc(checked: ^Checked_Program, T: Type) {
-    done: map[^Type_Scope]bool
-    defer delete(done)
-    for b in checked.var_bindings {
-        if b.type_ == nil || b.fn == nil || done[b.fn] { continue }
-        if flow_type_base(b.type_) != T { continue }
-        done[b.fn] = true
-        cfg, ok := checked.cfgs[b.fn]
+// flow_analyze_all is data-only (no post-dominators) for speed, so an aggregate
+// would miss control dependence. But a slice stays inside the function holding its
+// seed (calls are crossed by summary), so only the functions that actually hold a
+// relevant occurrence need control-deps. Build them just for `fns`, then re-stamp
+// their defs' guards (the defs were created data-only, with empty guards). Keeps
+// the cost ~O(uses) instead of O(all functions) while restoring full fidelity.
+@(private="file")
+flow_build_guards :: proc(checked: ^Checked_Program, fns: map[^Type_Scope]bool) {
+    for ft in fns {
+        cfg, ok := checked.cfgs[ft]
         if !ok { continue }
         cfg_build_control_deps(checked, cfg)
         for d in checked.defs {
-            if d.binding != nil && d.binding.fn == b.fn { d.guards = checked.control_deps[d.span] }
+            if d.binding != nil && d.binding.fn == ft { d.guards = checked.control_deps[d.span] }
         }
     }
+}
+
+// Control-deps for the functions holding a value of type T (where type-flow slices).
+flow_build_type_guards :: proc(checked: ^Checked_Program, T: Type) {
+    fns: map[^Type_Scope]bool
+    defer delete(fns)
+    for b in checked.var_bindings {
+        if b.type_ != nil && b.fn != nil && flow_type_base(b.type_) == T { fns[b.fn] = true }
+    }
+    flow_build_guards(checked, fns)
+}
+
+// Control-deps for the functions that call F (where function-flow slices the args).
+flow_build_fn_guards :: proc(checked: ^Checked_Program, F: ^Type_Scope) {
+    fns: map[^Type_Scope]bool
+    defer delete(fns)
+    sites := checked.call_sites[F]
+    for site in sites { if site.caller != nil { fns[site.caller] = true } }
+    flow_build_guards(checked, fns)
 }
 
 render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, T: Type, label: string) {
@@ -686,5 +701,113 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     }
     if len(stmts) == 0 && len(ret_fns) == 0 {
         fmt.sbprint(bb, "\n  (these values don't flow onward — terminal or unused)\n")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Function flow — `mara ask <fn> flow`.
+//
+// The "outside" view of a function: look around it, at its call sites, not inside
+// its body (the inside — what feeds the return / what the parameters reach — is a
+// slice of the return / parameters as variables: `mara ask <var> in <fn>`).
+// above = what computes the arguments at every call; below = where each call's
+// result flows. Aggregated across all call sites, each row tagged with its caller.
+// ---------------------------------------------------------------------------
+
+render_fn_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F: ^Type_Scope, label: string) {
+    sites := checked.call_sites[F]
+    if len(sites) == 0    { fmt.sbprintf(bb, "\nabove (flow) — %s is never called\n", label); return }
+    if len(F.params) == 0 { fmt.sbprintf(bb, "\nabove (flow) — %s takes no arguments  (%s)\n", label, ask_plural(len(sites), "call site")); return }
+
+    s := Slice{ checked = checked }
+    defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen); delete(s.result); delete(s.ctrl) }
+    for site in sites { for arg in site.call.args { slice_value(&s, arg) } }
+    for len(s.work) > 0 {
+        u := pop(&s.work)
+        rdefs := checked.reaching[u]
+        for d in rdefs { slice_add_def(&s, d) }
+    }
+
+    params: [dynamic]^Def
+    stmts:  [dynamic]^Def
+    defer { delete(params); delete(stmts) }
+    for d in s.result {
+        if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
+    }
+    slice.sort_by(params[:], slice_def_less)
+    slice.sort_by(stmts[:],  slice_def_less)
+    slice.sort_by(s.ctrl[:], guard_span_less)
+
+    fmt.sbprintf(bb, "\nabove (flow) — what feeds the arguments at its %s  (backward slice)\n", ask_plural(len(sites), "call site"))
+    if len(params) > 0 {
+        fmt.sbprintf(bb, "\n  parameters (%d)\n", len(params))
+        for d in params { fmt.sbprintf(bb, "    %-14s %s  (in %s)\n", d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
+    }
+    if len(stmts) > 0 {
+        fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
+        for d in stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
+    }
+    if len(s.ctrl) > 0 {
+        fmt.sbprintf(bb, "\n  control (%d)\n", len(s.ctrl))
+        for g in s.ctrl { fmt.sbprintf(bb, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span)) }
+    }
+    if len(params) == 0 && len(stmts) == 0 {
+        fmt.sbprint(bb, "\n  (arguments are constants or literals — nothing feeds them)\n")
+    }
+}
+
+render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F: ^Type_Scope, label: string) {
+    sites := checked.call_sites[F]
+    if len(sites) == 0            { fmt.sbprintf(bb, "\nbelow (flow) — %s is never called\n", label); return }
+    if len(F.return_types) == 0   { fmt.sbprintf(bb, "\nbelow (flow) — %s returns no value  (%s)\n", label, ask_plural(len(sites), "call site")); return }
+
+    // Result definitions: a call to F bound to a variable (`r := F(...)`). Calls
+    // whose result is used inline aren't a def, so they're counted, not traced.
+    result_defs: map[^Def]bool
+    defer delete(result_defs)
+    for d in checked.defs {
+        if call, ok := d.value.(^Expr_Call); ok && d.binding != nil {
+            if rf, rok := call.resolved_func.?; rok && rf.callee == F { result_defs[d] = true }
+        }
+    }
+    inline := len(sites) - len(result_defs)
+    if inline < 0 { inline = 0 }
+
+    reached:  map[^Def]bool
+    done_fns: map[^Type_Scope]bool
+    defer { delete(reached); delete(done_fns) }
+    for rd in result_defs {
+        G := rd.binding.fn
+        if done_fns[G] { continue }
+        done_fns[G] = true
+        succ := slice_build_succ(checked, G)
+        for rd2 in result_defs {
+            if rd2.binding.fn == G {
+                r := slice_forward_reach(succ, rd2)
+                for k in r { reached[k] = true }
+                delete(r)
+            }
+        }
+        slice_free_succ(&succ)
+    }
+
+    stmts: [dynamic]^Def
+    defer delete(stmts)
+    for d in reached {
+        if result_defs[d] { continue }   // the result variables themselves
+        if d.kind != .Param { append(&stmts, d) }
+    }
+    slice.sort_by(stmts[:], slice_def_less)
+
+    fmt.sbprintf(bb, "\nbelow (flow) — where its results flow, across %s  (forward slice)\n", ask_plural(len(sites), "call site"))
+    if len(stmts) > 0 {
+        fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
+        for d in stmts { fmt.sbprintf(bb, "    %-7s %-14s %s  (in %s)\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span), ask_label(d.binding.fn)) }
+    }
+    if inline > 0 {
+        fmt.sbprintf(bb, "\n  %s use the result inline (flows into the enclosing expression — not traced)\n", ask_plural(inline, "call"))
+    }
+    if len(stmts) == 0 && inline == 0 {
+        fmt.sbprint(bb, "\n  (results are discarded — nothing consumes them)\n")
     }
 }

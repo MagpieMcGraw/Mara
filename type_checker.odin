@@ -1603,6 +1603,9 @@ Checked_Program :: struct {
     // Functions whose slice analysis (control deps + def-use) has been built —
     // it is lazy and per-function (ensure_fn_analysis), kept off the compile path.
     analyzed:       map[^Type_Scope]bool,
+    // Every call site indexed by callee — the function-flow "outside" view slices
+    // the arguments / results around each call. Populated by ud_expr during analysis.
+    call_sites:     map[^Type_Scope][dynamic]Fn_Call_Site,
 }
 
 // ---------------------------------------------------------------------------

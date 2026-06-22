@@ -39,6 +39,14 @@ Var_Binding :: struct {
     type_:       Type,           // resolved type (params exact; locals = RHS type) — for type-flow matching; nil if unknown
 }
 
+// One call occurrence: a call expression and the function it appears in (the
+// caller's def-use graph is where its arguments / result get sliced). Indexed by
+// callee in Checked_Program.call_sites for the function-flow "outside" view.
+Fn_Call_Site :: struct {
+    caller: ^Type_Scope,
+    call:   ^Expr_Call,
+}
+
 Def_Kind :: enum { Param, Decl, Assign, Loop_Var, Destructure, Complex }
 
 // One definition site: a point that gives `binding` a value. `value` is the RHS
@@ -393,6 +401,11 @@ ud_expr :: proc(u: ^UD, e: Expr, st: ^Reach) {
     case ^Expr_Unary:        ud_expr(u, v.operand, st)
     case ^Expr_Binary:       ud_expr(u, v.left, st); ud_expr(u, v.right, st)
     case ^Expr_Call:
+        if rf, ok := v.resolved_func.?; ok && rf.callee != nil {
+            sites := u.checked.call_sites[rf.callee]   // bind before append (transient map-index lvalue)
+            append(&sites, Fn_Call_Site{ caller = u.fn, call = v })
+            u.checked.call_sites[rf.callee] = sites
+        }
         ud_expr(u, v.qualifier, st)
         for a in v.args { ud_expr(u, a, st) }
         if v.overrides != nil { ud_expr(u, v.overrides, st) }

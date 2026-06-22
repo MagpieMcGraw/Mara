@@ -700,36 +700,42 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
     header_len := len(strings.to_string(b))
 
-    // Flow (the "outside" view) over a type aggregates across the whole program,
-    // so every function's def-use graph must exist first (data-only, cheap), then
-    // control-deps just for the functions that actually hold a value of this type.
-    if show_flow && !is_fn {
+    // Flow is the "outside" view, and for both a type (every value of it) and a
+    // function (every call of it) it aggregates across the whole program, so every
+    // function's def-use graph must exist first (data-only, cheap). Then build
+    // control-deps just for the functions the slice actually touches.
+    if show_flow {
         flow_analyze_all(checked)
-        flow_build_type_guards(checked, subject.type_)
+        if is_fn { flow_build_fn_guards(checked, ft) }
+        else     { flow_build_type_guards(checked, subject.type_) }
     }
 
     // ABOVE — what feeds the subject. Type dependencies (any subject); plus the
-    // backward flow slice — a function's return contributors, or every value of a
-    // type traced back to what feeds it.
+    // backward flow slice — what computes a function's arguments at its call sites,
+    // or what feeds every value of a type.
     if show_above && show_types {
         res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions)
         render_ask_deps(&b, &res, depth)
     }
     if show_above && show_flow {
-        if is_fn { fmt.sbprint(&b, render_contributors(checked, ft, subject.label)) }
+        if is_fn { render_fn_flow_above(&b, checked, ft, subject.label) }
         else     { render_type_flow_above(&b, checked, subject.type_, subject.label) }
     }
 
     // BELOW — what the subject feeds. Type users (a type); a function's callers;
-    // plus the forward flow slice — a function's parameter affects, or every value
-    // of a type traced forward to what it feeds.
+    // plus the forward flow slice — where a function's results flow from its call
+    // sites, or what every value of a type feeds.
     if show_below && show_types && !is_fn {
         res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
         render_ask_users(&b, &res, depth)
     }
     if show_below && show_flow {
-        if is_fn { render_fn_users(&b, checked, ft); fmt.sbprint(&b, render_affects(checked, ft, subject.label)) }
-        else     { render_type_flow_below(&b, checked, subject.type_, subject.label) }
+        if is_fn {
+            render_fn_users(&b, checked, ft)   // callers, from the call graph
+            render_fn_flow_below(&b, checked, ft, subject.label)
+        } else {
+            render_type_flow_below(&b, checked, subject.type_, subject.label)
+        }
     }
 
     // The chosen filters can name a graph this subject lacks (a type has no data
