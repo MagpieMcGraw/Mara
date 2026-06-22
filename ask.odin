@@ -41,6 +41,7 @@ Ask_Node :: struct {
     span:  Span,
     mark:  string,   // "" for ordinary types; e.g. "synthetic" for compiler-generated ones
     dist:  int,      // shortest hop distance from the query root (0 = the root itself)
+    basics: [dynamic]string,  // basic-typed members (primitive fields / params) — shown inline, no graph node
 }
 
 Ask_Edge :: struct {
@@ -442,7 +443,16 @@ ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int) 
         edges: [dynamic]Ask_Out_Edge
         ask_out_edges(table, t, &edges)
         for e in edges {
-            if _, named := ask_sub(e.core); !named { continue }   // skip primitive / numeric leaves
+            if _, named := ask_sub(e.core); !named {
+                // Primitive / numeric member — it carries no graph node, so without
+                // this it vanishes entirely. Record it as an inline field line so the
+                // node shows its real shape (a leaf struct like Glyph lists its
+                // x,y,w,h:i32 instead of reading as empty). Spacing mirrors the
+                // typed-edge renderer in render_ask_deps.
+                via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
+                append(&res.nodes[from].basics, fmt.tprintf("    %s%s : %s%s", ask_edge_word(e.kind), via, e.wrap, type_name(e.core)))
+                continue
+            }
             to, is_new := ask_intern(res, e.core)
             if is_new { res.nodes[to].dist = d + 1 }
             append(&res.edges, Ask_Edge{ from = from, to = to, kind = e.kind, via = e.via, wrap = e.wrap })
@@ -697,7 +707,11 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     ft, is_fn := subject.type_.(^Type_Scope)
     is_fn = is_fn && ft.kind == .Fun
 
-    fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
+    // The module shown is the subject's OWN home package, not the cwd project
+    // (`pkg`) — a stdlib type queried from a game dir is `mara.font`, not `Pounce`.
+    home_pkg := ask_home_package(subject.type_)
+    if home_pkg == "" { home_pkg = pkg }
+    fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), home_pkg, ask_mark_suffix(subject.mark))
     header_len := len(strings.to_string(b))
 
     // Flow is the "outside" view, and for both a type (every value of it) and a
@@ -851,10 +865,20 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
 // appears only as edge targets, never as its own block — so depth 0 is exactly
 // the root's direct adjacency.
 render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
-    // No edges = nothing this type/fn pulls in. Say so plainly rather than listing
-    // the subject itself as a lone "1 type" with "(no type dependencies)".
+    // No NAMED dependencies. The subject still has a shape worth showing — its
+    // basic-typed fields (a struct built only from i32/f32, like Glyph) or a fn's
+    // basic-typed signature. List those and call it "basic types only"; that
+    // describes the struct, where the dep-walker's "no type dependencies" only
+    // describes the tool. Truly empty (no members at all) keeps the plain wording.
     if len(res.edges) == 0 {
-        fmt.sbprint(b, "\nabove (types)   (no type dependencies)\n")
+        root := &res.nodes[res.root]
+        if len(root.basics) == 0 {
+            fmt.sbprint(b, "\nabove (types)   (no type dependencies)\n")
+            return
+        }
+        fmt.sbprint(b, "\nabove (types)   (basic types only)\n")
+        fmt.sbprintf(b, "\n  %s  %s  %s%s\n", root.label, root.sub, ask_loc(root.span), ask_mark_suffix(root.mark))
+        for line in root.basics { fmt.sbprintf(b, "%s\n", line) }
         return
     }
     // Count TYPE nodes only — the root may be a `fun` (the subject), which is not
@@ -873,6 +897,9 @@ render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
             via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
             fmt.sbprintf(b, "    %s%s : %s%s\n", ask_edge_word(e.kind), via, e.wrap, tgt.label)
         }
+        // Basic-typed members carry no edge; show them inline so each node displays
+        // its full shape — typed slots above, primitive ones here, in field order.
+        for line in node.basics { fmt.sbprintf(b, "%s\n", line); any = true }
         if !any { fmt.sbprint(b, "    (no type dependencies)\n") }
     }
 }

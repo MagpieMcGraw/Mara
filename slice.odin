@@ -691,7 +691,9 @@ render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, k
     ensure_fn_analysis(checked, b.fn)
     knd := "param" if b.kind == .Param else "local"
     bb := strings.builder_make()
-    fmt.sbprintf(&bb, "%s — %s in %s  %s   (module %s)\n", b.name, knd, fn_label, ask_loc(b.span), pkg)
+    home_pkg := ask_home_package(b.fn)
+    if home_pkg == "" { home_pkg = pkg }
+    fmt.sbprintf(&bb, "%s — %s in %s  %s   (module %s)\n", b.name, knd, fn_label, ask_loc(b.span), home_pkg)
 
     // The `types` filter selects a graph a variable doesn't have. Say so plainly.
     if kind == "types" {
@@ -1086,7 +1088,9 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
 render_return_slice :: proc(checked: ^Checked_Program, ft: ^Type_Scope, fn_label, kind, dir, pkg: string) -> string {
     ensure_fn_analysis(checked, ft)
     bb := strings.builder_make()
-    fmt.sbprintf(&bb, "return — the value returned by %s  %s   (module %s)\n", fn_label, ask_loc(ft.body_span), pkg)
+    home_pkg := ask_home_package(ft)
+    if home_pkg == "" { home_pkg = pkg }
+    fmt.sbprintf(&bb, "return — the value returned by %s  %s   (module %s)\n", fn_label, ask_loc(ft.body_span), home_pkg)
 
     if len(ft.return_types) == 0 {
         fmt.sbprintf(&bb, "\n(%s returns no value — nothing to slice)\n", fn_label)
