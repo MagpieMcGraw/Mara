@@ -344,7 +344,8 @@ ud_loop_patch :: proc(u: ^UD, use_start, def_start: int) {
         if b == nil { continue }
         seen: Def_Set
         defer delete(seen)
-        for d in u.checked.reaching[use] { seen[d] = true }
+        existing := u.checked.reaching[use]   // bind before ranging (transient map-index lvalue)
+        for d in existing { seen[d] = true }
         grew := false
         for di in def_start ..< n_defs {
             d := u.checked.defs[di]

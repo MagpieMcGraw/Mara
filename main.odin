@@ -959,8 +959,8 @@ CLI_Args :: struct {
     ask_depth:    int,     // hop budget for deps/users; -1 = unbounded (the default)
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors] [in <module|file>]"
-ASK_USAGE :: `Usage: mara ask <name> [depth] [deps|users|contributors] [in <module|file>]
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
+ASK_USAGE :: `Usage: mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]
 
   mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
   folder whose .mara files declare a module. Use 'in <module>' to target a
@@ -972,7 +972,8 @@ ASK_USAGE :: `Usage: mara ask <name> [depth] [deps|users|contributors] [in <modu
                    omitted = the full transitive closure (default)
     deps           what <name> pulls in   (its dependency closure)
     users          what depends on <name> (who references it)
-    contributors   a function's return value, sliced back to its inputs (data deps)
+    contributors   a function's return value, sliced back to its inputs (backward slice)
+    affects        forward slice — what each parameter influences (and the return?)
     in <module>    analyze that module instead of the current directory
     in <file>      keep the current module; resolve <name> within one file`
 
