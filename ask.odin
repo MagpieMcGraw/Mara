@@ -682,8 +682,12 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, de
         render_ask_deps(&b, &res, depth)
     }
     if verb == "" || verb == "users" {
-        res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
-        render_ask_users(&b, &res, subject.sub == "fun", depth)
+        if subject.sub == "fun" {
+            render_fn_users(&b, checked, subject.type_.(^Type_Scope))   // callers, from the call graph
+        } else {
+            res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
+            render_ask_users(&b, &res, depth)
+        }
     }
     // The broad "tell me about this name" form is honest about its coverage gap;
     // the targeted deps/users forms stay terse.
@@ -701,6 +705,12 @@ ask :: proc(checked: ^Checked_Program, target, verb, pkg, scope_file: string, de
 // appears only as edge targets, never as its own block — so depth 0 is exactly
 // the root's direct adjacency.
 render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
+    // No edges = nothing this type/fn pulls in. Say so plainly rather than listing
+    // the subject itself as a lone "1 type" with "(no type dependencies)".
+    if len(res.edges) == 0 {
+        fmt.sbprint(b, "\ndeps   (no dependencies)\n")
+        return
+    }
     // Count TYPE nodes only — the root may be a `fun` (the subject), which is not
     // a type and must not inflate the count (a fn's own node sits at index 0).
     types := 0
@@ -732,15 +742,41 @@ ask_depth_label :: proc(depth: int) -> string {
 // view reaches past one hop, rows are bucketed under "N hops" subheaders and each
 // names the closer-to-root type it references (not the subject), so a chain like
 // Megastruct -> Camera -> Object -> Vec3 reads outward ring by ring.
-render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, subject_is_fun: bool, depth: int) {
+// users on a FUNCTION = its callers, read off the materialized call graph
+// (Checked_Program.call_graph — resolved direct calls collected during checking).
+// Indirect calls through fn-typed params are not edges, so a function reached only
+// that way reads as having no callers.
+render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope) {
+    cg := &checked.call_graph
+    callers: [dynamic]^Type_Scope
+    defer delete(callers)
+    if nf, ok := cg.index_of[ft]; ok {
+        for callees, c in cg.out_edges {
+            if c == nf { continue }   // a recursive self-call isn't an external user
+            for callee in callees {
+                if callee == nf { append(&callers, cg.nodes[c]); break }
+            }
+        }
+    }
+    slice.sort_by(callers[:], proc(a, b: ^Type_Scope) -> bool {
+        la, lb := ask_label(a), ask_label(b)
+        if la != lb { return la < lb }
+        return a.body_span.line < b.body_span.line
+    })
+    fmt.sbprintf(b, "\nusers   (%s)\n", ask_plural(len(callers), "caller"))
+    if len(callers) == 0 {
+        fmt.sbprint(b, "  (no direct callers; indirect calls via fn-typed params aren't tracked)\n")
+        return
+    }
+    for c in callers {
+        sub, _ := ask_sub(c)
+        fmt.sbprintf(b, "  %-6s %s  %s\n", sub, ask_label(c), ask_loc(ask_span(c)))
+    }
+}
+
+render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
     fmt.sbprintf(b, "\nusers   (%s, %s, %s)\n",
                  ask_plural(ask_distinct_sources(res), "user"), ask_plural(len(res.edges), "use-site"), ask_depth_label(depth))
-    // A function subject's reverse set is a known blind spot: call edges are not
-    // modeled, so `(no users)` here must NOT be read as "no callers".
-    if subject_is_fun {
-        fmt.sbprint(b, "  note: call edges are NOT tracked yet — this lists only type-level\n")
-        fmt.sbprint(b, "        references (e.g. a `fn <name>` nominal type), NOT callers.\n")
-    }
     if len(res.edges) == 0 { fmt.sbprint(b, "  (no users)\n"); return }
 
     // Flatten to self-contained rows so the sort needs no captured `res` (Odin
