@@ -1092,6 +1092,38 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                 }
                 continue
             }
+            // Slice element: the sret slot holds the {ptr,len,cap} header — for the
+            // return-a-slice-into-a-caller-buffer idiom (`view, e := fill(&buf)`,
+            // where `view` aliases buf) its ptr views that buffer. Claim/copy it as
+            // a Slice_Var so `view[i]` / `view.len` work; the scalar fallback below
+            // would bind it Scalar_Var (the header loaded as an opaque value) and
+            // indexing would fail. Mirrors the partial-array case above.
+            if sl, sl_ok := distinct_base(ret_types[i]).(^Type_Slice); sl_ok {
+                sl_elem_t := llvm_type_from_checker(sl.elem)
+                _, sl_utf8 := sl.elem.(Type_Utf8)
+                if name == "" {
+                    addr, addr_ok := gen_multi_return_target_addr(g, s, i)
+                    if !addr_ok {
+                        codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
+                    }
+                    hdr := fresh_tmp(g)
+                    emit_load_into(g, hdr, elem_type, src_ptr)
+                    emit_store(g, elem_type, hdr, addr)
+                    continue
+                }
+                if existing, exists := get_slice(g, name); exists {
+                    hdr := fresh_tmp(g)
+                    emit_load_into(g, hdr, elem_type, src_ptr)
+                    emit_store(g, elem_type, hdr, existing.alloca)
+                    continue
+                }
+                g.all_vars[name] = Slice_Var{
+                    alloca    = src_ptr,
+                    elem_type = sl_elem_t,
+                    is_utf8   = sl_utf8,
+                }
+                continue
+            }
         }
 
         val := fresh_tmp(g)

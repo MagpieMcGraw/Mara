@@ -1,0 +1,29 @@
+module multiret
+
+// Regression: a slice bound from a multi-value return — `view, n := f(&buf)`,
+// the return-a-view-into-a-caller-buffer idiom — must be usable AS a slice
+// (indexing, .len). Before the fix, gen_multi_return_assign had no Type_Slice
+// case, so the result bound as a Scalar_Var and `view[i]` / `view.len` failed
+// codegen with "not an array or slice". The scalar sibling (`n`) must still bind.
+
+fill :: fun(buf: ^[]byte, n: i64) -> []byte, i64 {
+    for i in 0..n {
+        buf[i] = u8(i * 3)
+    }
+    return buf[0:n], n          // a slice viewing the caller's buffer + a count
+}
+
+main :: fun() {
+    back : [16]byte
+    b := back[0:16]
+    view, cnt := fill(&b, 4)    // view aliases back[0:4]
+
+    sum : i64 = 0
+    for i in 0..view.len {      // .len on a multi-return slice
+        sum += i64(view[i])     // indexing a multi-return slice
+    }
+
+    assert(view.len == 4)       // bytes 0,3,6,9
+    assert(sum == 18)
+    assert(cnt == 4)            // the scalar sibling still binds
+}
