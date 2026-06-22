@@ -466,9 +466,11 @@ flow_targets :: proc(checked: ^Checked_Program, fn: ^Type_Scope, seeds: map[^Var
 }
 
 // Collect the callee-param landings out of `fn`: for every call whose argument
-// reads a target, the parameter that argument lands in. Walks the same statement
-// shapes the rest of the slicer does (bare calls + calls driving a loop/if/match;
-// a result-binding call's RETURN flow is already traced by the def->def graph).
+// reads a target, the parameter that argument lands in. Walks bare calls, calls
+// driving a loop/if/match, AND result-binding calls — a value lands in a callee's
+// params whether or not the callee's RETURN carries it back. (The def->def graph
+// only traces the return, so without this a glyph's w/h vanishing into pack_rect —
+// which returns a skyline position, not the glyph — would be invisible.)
 // `unfollowed` counts consuming calls whose callee has no body to follow into.
 @(private="file")
 collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: map[^Var_Binding]bool, out: ^[dynamic]Hop_Landing) -> (unfollowed: int) {
@@ -485,6 +487,13 @@ ld_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Var_Bin
         case ^Stmt_For:   ld_call(checked, v.condition, targets, out, unfollowed); ld_stmts(checked, v.body[:], targets, out, unfollowed)
         case ^Stmt_Match: ld_call(checked, v.subject, targets, out, unfollowed); for arm in v.arms { ld_stmts(checked, arm.body[:], targets, out, unfollowed) }
         case ^Stmt_Defer: ld_stmts(checked, v.body[:], targets, out, unfollowed)
+        // Result-binding calls: the value lands in the callee's params even when the
+        // callee's return doesn't carry it back. `px,py := pack_rect(sky,w,h)` — w/h
+        // (glyph-derived) land in pack_rect; its result is a skyline slot, not the
+        // glyph, so the def->def graph alone never shows the glyph reaching pack_rect.
+        case ^Stmt_Decl:   ld_stmts(checked, v.checked[:], targets, out, unfollowed)
+        case ^Stmt_Assign: ld_call(checked, v.value, targets, out, unfollowed)
+        case ^Stmt_Multi_Return_Assign: if len(v.values) > 0 { ld_call(checked, v.values[0], targets, out, unfollowed) }
         }
     }
 }
