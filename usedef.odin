@@ -303,7 +303,14 @@ ud_stmt :: proc(u: ^UD, s: Stmt, st: ^Reach) {
         ud_expr(u, v.condition, st)
         ud_expr(u, v.range_low, st);  ud_expr(u, v.range_high, st)
         ud_expr(u, v.collection, st); ud_expr(u, v.collection_len, st)
-        loop_src: Expr = v.collection if v.is_collection_for else v.range_high
+        // A range loop var's DATA source is the START (range_low) — `for i in a..b`
+        // makes i take a, a+1, …; i never equals the bound b, so b is the loop's
+        // CONTROL input (iteration count via the CFG condition), NOT i's data. Using
+        // range_high here wrongly data-linked i to the bound, so `for i in 0..xs.len`
+        // tainted i — and everything indexed by it — as "xs flows here", flooding the
+        // slice with iteration machinery (e.g. glyph_index→parse_glyph→read_u16be).
+        // A collection loop's elem var genuinely IS the collection's data.
+        loop_src: Expr = v.collection if v.is_collection_for else v.range_low
         if v.loop_var  != "" { ud_declare(u, v.loop_var,  v.span, nil, .Loop_Var, loop_src,     st) }
         if v.elem_var  != "" { ud_declare(u, v.elem_var,  v.span, nil, .Loop_Var, v.collection, st) }
         if v.index_var != "" { ud_declare(u, v.index_var, v.span, nil, .Loop_Var, nil,          st) }
