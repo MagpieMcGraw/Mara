@@ -11,6 +11,12 @@ primitive is missing underneath all of it: a link from a variable's use back to
 its declaration (today resolution only yields a type, and the flow passes track
 variables by name).
 
+**Status: shipped.** All five phases below are implemented and surfaced as
+`mara ask <fn> contributors` (backward) and `mara ask <fn> affects` (forward).
+Commits: f594d89 (1) · 1a83d75 (2) · 71ce3ce (3) · 367d812 (4) · 4b2c93f (5).
+Remaining refinement: control dependence is lexical only — early-return / break
+paths need post-dominators.
+
 ## Phases (cheapest-useful first)
 
 1. **Variable identity.** Give every variable use a stable link to its
