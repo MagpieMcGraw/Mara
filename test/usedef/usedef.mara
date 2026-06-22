@@ -1,5 +1,6 @@
 module usedef
 
+// step 1: sibling-scope shadowing — the two `y` are distinct bindings
 shadow :: fun(x: i64) -> i64 {
 	total := x
 	if x > 0 {
@@ -9,14 +10,27 @@ shadow :: fun(x: i64) -> i64 {
 		y := x - 10
 		total = total + y
 	}
-	for i in 0..x {
-		total = total + i
-	}
 	return total
 }
 
+// step 2: a branch-merge (`a` reaches BOTH branch defs) and a loop back-edge
+// (`b` inside the loop reaches the previous iteration's def)
+flow :: fun(p: i64) -> i64 {
+	a := p
+	if p > 0 {
+		a = p + 1
+	else
+		a = p + 2
+	}
+	b := a
+	for i in 0..p {
+		b = b + i
+	}
+	return b
+}
+
 main :: fun() {
-	a := 5
-	b := shadow(a)
-	c := a + b
+	c := shadow(3)
+	d := flow(c)
+	e := c + d
 }

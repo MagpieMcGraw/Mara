@@ -1621,13 +1621,18 @@ Checked_Program :: struct {
     // has a single canonical "main TU" to drop them into.
     main_package:   string,
 
-    // Slice analysis — step 1: variable identity (usedef.odin). Each variable
-    // USE (an Expr_Ident naming a local or parameter) is linked, shadow-correctly,
-    // to the binding it refers to. `var_bindings` owns the binding records;
-    // `use_def` maps each use site to its binding. The foundation the def-use
-    // graph and the slice queries build on.
+    // Slice analysis (usedef.odin). Step 1 — variable identity: each variable USE
+    // (an Expr_Ident naming a local/parameter) is linked, shadow-correctly, to the
+    // binding it refers to (`use_def`); `var_bindings` owns the binding records.
+    // Step 2 — the def-use graph: `defs` is the pool of definition sites, and
+    // `reaching` maps each use to the set of definitions that may reach it
+    // (reaching-definitions, with sound loop back-edges). Backward slice = walk
+    // `reaching` from a use; forward slice = its inverse. The substrate the slice
+    // queries build on.
     var_bindings:   [dynamic]^Var_Binding,
     use_def:        map[^Expr_Ident]^Var_Binding,
+    defs:           [dynamic]^Def,
+    reaching:       map[^Expr_Ident][]^Def,
 }
 
 // ---------------------------------------------------------------------------
