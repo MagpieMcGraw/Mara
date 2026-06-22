@@ -1,0 +1,22 @@
+module usedef
+
+shadow :: fun(x: i64) -> i64 {
+	total := x
+	if x > 0 {
+		y := x + 1
+		total = total + y
+	else
+		y := x - 10
+		total = total + y
+	}
+	for i in 0..x {
+		total = total + i
+	}
+	return total
+}
+
+main :: fun() {
+	a := 5
+	b := shadow(a)
+	c := a + b
+}

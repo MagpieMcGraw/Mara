@@ -1620,6 +1620,14 @@ Checked_Program :: struct {
     // â€” compiler-synthesized helpers, @main, etc. â€” so per-module emission
     // has a single canonical "main TU" to drop them into.
     main_package:   string,
+
+    // Slice analysis — step 1: variable identity (usedef.odin). Each variable
+    // USE (an Expr_Ident naming a local or parameter) is linked, shadow-correctly,
+    // to the binding it refers to. `var_bindings` owns the binding records;
+    // `use_def` maps each use site to its binding. The foundation the def-use
+    // graph and the slice queries build on.
+    var_bindings:   [dynamic]^Var_Binding,
+    use_def:        map[^Expr_Ident]^Var_Binding,
 }
 
 // ---------------------------------------------------------------------------
@@ -10766,6 +10774,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     cg_compute_return_args(c.cg, &c) // return-arg-set summary — backs fun_return_arg_set
     flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
     escape_analyze_program(&c, checked) // post-check intraproc escape
+    build_use_def(checked)             // post-check variable identity (slice analysis step 1)
     checked.errors = c.errors
     return checked
 }
