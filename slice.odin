@@ -347,6 +347,88 @@ slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^De
 }
 
 
+// ---------------------------------------------------------------------------
+// Consumed-by-call detection — the forward slice's blind spot.
+//
+// The def->def forward graph links a value only to OTHER definitions (a decl it
+// initializes, a reassignment, a partial write) and to `return`. A value passed
+// as an argument to a call whose result is discarded — a bare call statement, or
+// a call standing as a loop/if predicate or a match subject — mints no definition
+// and reaches no return, so the forward walk drops it and the slice reads
+// "nothing". But the value IS consumed: the call receives it (and may mutate it
+// through a pointer, or act on it via I/O). We don't trace across the call — that
+// is the interprocedural summary's job, and an argument's downstream effect is
+// not a `return_args` edge — so we surface it honestly as "feeds N call(s)
+// (effect not traced)", the same hedge `render_fn_flow_below` uses for inline
+// results, instead of claiming the value flows nowhere.
+// ---------------------------------------------------------------------------
+
+// Does any argument (or receiver / override) of `call` read one of `targets`?
+// return_args-filtered through nested calls, exactly like the backward slice, so
+// the two directions agree about which calls a value reaches.
+@(private="file")
+call_reads_target :: proc(checked: ^Checked_Program, call: ^Expr_Call, targets: map[^Var_Binding]bool) -> bool {
+    uses: map[^Expr_Ident]bool
+    defer delete(uses)
+    for arg in call.args { slice_collect(checked, arg, &uses) }
+    slice_collect(checked, call.qualifier, &uses)                       // nil-safe
+    if call.overrides != nil { slice_collect(checked, call.overrides, &uses) }
+    for u in uses {
+        if b := checked.use_def[u]; b != nil && targets[b] { return true }
+    }
+    return false
+}
+
+// Count the result-discarded calls in `ft` that consume one of `targets`: bare
+// call statements, plus calls standing as a loop/if predicate or a match subject
+// (the result drives control, but the argument carrying the value still flows in
+// untraced). A call whose result binds a variable is NOT counted — that is a
+// definition the def->def graph already traces as a reached statement.
+@(private="file")
+count_consumed_by_calls :: proc(checked: ^Checked_Program, ft: ^Type_Scope, targets: map[^Var_Binding]bool) -> int {
+    n := 0
+    cc_stmts(checked, ft.body[:], targets, &n)
+    return n
+}
+
+@(private="file")
+cc_call :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Var_Binding]bool, n: ^int) {
+    if call, ok := e.(^Expr_Call); ok && call_reads_target(checked, call, targets) { n^ += 1 }
+}
+
+@(private="file")
+cc_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Var_Binding]bool, n: ^int) {
+    for s in stmts {
+        #partial switch v in s {
+        case Stmt_Call:   cc_call(checked, v.expr, targets, n)
+        case ^Stmt_If:    cc_call(checked, v.condition, targets, n); cc_stmts(checked, v.body[:], targets, n); cc_stmts(checked, v.else_body[:], targets, n)
+        case ^Stmt_For:   cc_call(checked, v.condition, targets, n); cc_stmts(checked, v.body[:], targets, n)
+        case ^Stmt_Match: cc_call(checked, v.subject, targets, n); for arm in v.arms { cc_stmts(checked, arm.body[:], targets, n) }
+        case ^Stmt_Defer: cc_stmts(checked, v.body[:], targets, n)
+        // nested ^Stmt_Scope is its own slice (matches usedef.odin); Stmt_Decl /
+        // Stmt_Assign RHS calls bind a result, so the def->def graph traces them.
+        }
+    }
+}
+
+// Render the "X -> ..." summary of a forward slice: a value can reach the return,
+// other statements (definitions), and/or calls it feeds untraced — joined, or
+// "nothing" when it reaches none of the three.
+@(private="file")
+flow_affects_tail :: proc(ret: bool, n_stmts, n_calls: int) -> string {
+    parts: [3]string
+    k := 0
+    if ret         { parts[k] = "the return";                                              k += 1 }
+    if n_stmts > 0 { parts[k] = ask_plural(n_stmts, "statement");                           k += 1 }
+    if n_calls > 0 { parts[k] = fmt.tprintf("%s (effect not traced)", ask_plural(n_calls, "call")); k += 1 }
+    switch k {
+    case 0:  return "nothing"
+    case 1:  return parts[0]
+    case 2:  return fmt.tprintf("%s + %s", parts[0], parts[1])
+    case:    return fmt.tprintf("%s + %s + %s", parts[0], parts[1], parts[2])
+    }
+}
+
 @(private="file")
 slice_def_less :: proc(a, b: ^Def) -> bool {
     if a.span.file != b.span.file { return a.span.file < b.span.file }
@@ -469,15 +551,13 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     }
     slice.sort_by(stmts[:], slice_def_less)
 
+    targets: map[^Var_Binding]bool
+    defer delete(targets)
+    targets[b] = true
+    calls := count_consumed_by_calls(checked, b.fn, targets)
+
     fmt.sbprint(bb, "\nbelow (flow) — what this variable affects  (forward slice)\n")
-    tail: string
-    switch {
-    case ret && len(stmts) > 0: tail = fmt.tprintf("the return + %s", ask_plural(len(stmts), "statement"))
-    case ret:                   tail = "the return"
-    case len(stmts) > 0:        tail = fmt.tprintf("%s (not the return)", ask_plural(len(stmts), "statement"))
-    case:                       tail = "nothing"
-    }
-    fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, tail)
+    fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), calls))
     for d in stmts {
         fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
     }
@@ -635,6 +715,18 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     }
     slice.sort_by(stmts[:], slice_def_less)
 
+    // Calls these values feed untraced — counted once per seed-holding function
+    // (seeds spans many). `seeds` as targets is safe: a use in function G's body
+    // resolves to a G binding, which is a seed only if it is one.
+    calls := 0
+    counted_fns: map[^Type_Scope]bool
+    defer delete(counted_fns)
+    for b in seeds {
+        if b.fn == nil || counted_fns[b.fn] { continue }
+        counted_fns[b.fn] = true
+        calls += count_consumed_by_calls(checked, b.fn, seeds)
+    }
+
     fmt.sbprintf(bb, "\nbelow (flow) — what values of type %s feed  (%s, forward slice)\n", label, ask_plural(len(seeds), "value"))
     if len(seeds) == 0 {
         fmt.sbprintf(bb, "  (no variables or parameters of type %s)\n", label)
@@ -647,7 +739,10 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     if len(ret_fns) > 0 {
         fmt.sbprintf(bb, "\n  reaches the return of %s\n", ask_plural(len(ret_fns), "function"))
     }
-    if len(stmts) == 0 && len(ret_fns) == 0 {
+    if calls > 0 {
+        fmt.sbprintf(bb, "\n  feeds %s  (effect not traced — passed as a call argument)\n", ask_plural(calls, "call"))
+    }
+    if len(stmts) == 0 && len(ret_fns) == 0 && calls == 0 {
         fmt.sbprint(bb, "\n  (these values don't flow onward — terminal or unused)\n")
     }
 }
