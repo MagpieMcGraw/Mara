@@ -1600,6 +1600,9 @@ Checked_Program :: struct {
     // from CFG post-dominators) — the analyzer's guard source.
     cfgs:           map[^Type_Scope]^CFG,
     control_deps:   map[Span][]Guard,
+    // Functions whose slice analysis (control deps + def-use) has been built —
+    // it is lazy and per-function (ensure_fn_analysis), kept off the compile path.
+    analyzed:       map[^Type_Scope]bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -10744,10 +10747,11 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     checked.call_graph = build_call_graph(&c)
     c.cg = &checked.call_graph
     cg_compute_return_args(c.cg, &c) // return-arg-set summary — backs fun_return_arg_set
-    build_cfgs(checked)               // per-function control-flow graphs (return-check + analyzer)
+    build_cfgs(checked)               // per-function control-flow graphs (cheap; for return-check)
     flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
     escape_analyze_program(&c, checked) // post-check intraproc escape
-    build_use_def(checked)             // post-check variable identity (slice analysis step 1)
+    // NOTE: the slice analysis (def-use graph + control dependence) is built lazily
+    // per function on the first `mara ask … contributors/affects` — ensure_fn_analysis.
     checked.errors = c.errors
     return checked
 }

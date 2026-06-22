@@ -79,13 +79,15 @@ UD :: struct {
 
 // --- entry -----------------------------------------------------------------
 
-build_use_def :: proc(checked: ^Checked_Program) {
-    for _, ft in checked.functions {
-        if ft == nil { continue }
-        if _, src := ft.origin.(Origin_Source); !src { continue }      // foreign/intrinsic: no body
-        if ft.ast != nil && len(ft.ast.generic_params) > 0 { continue } // uninstantiated template
-        ud_fn(checked, ft)
-    }
+// Build a function's slice analysis on demand — only when a `contributors` /
+// `affects` query needs it, scoped to that function and cached. This keeps the
+// costly control-dependence (post-dominator) computation OFF the compile path;
+// the CFG itself is already built eagerly for return-checking.
+ensure_fn_analysis :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
+    if ft == nil || checked.analyzed[ft] { return }
+    checked.analyzed[ft] = true
+    if cfg, ok := checked.cfgs[ft]; ok { cfg_build_control_deps(checked, cfg) }
+    ud_fn(checked, ft)
     ud_dump(checked)
 }
 

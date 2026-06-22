@@ -46,13 +46,15 @@ CFG :: struct {
 build_cfgs :: proc(checked: ^Checked_Program) {
     // Every source function, templates included — control flow is type-independent,
     // so the missing-return check is uniform (the analyzer only queries concretes).
+    // Control dependence (post-dominators) is NOT computed here: it's expensive and
+    // only the slice queries need it, so it is built lazily per function
+    // (ensure_fn_analysis) to keep the compile path cheap.
     for _, ft in checked.functions {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
         cfg := new(CFG)
         cfg_construct(cfg, ft)
         checked.cfgs[ft] = cfg
-        cfg_build_control_deps(checked, cfg)
     }
     cfg_dump(checked)
 }
@@ -80,7 +82,6 @@ cfg_set_eq :: proc(a, b: map[int]bool) -> bool {
     return true
 }
 
-@(private="file")
 cfg_build_control_deps :: proc(checked: ^Checked_Program, c: ^CFG) {
     n := len(c.nodes)
     if n == 0 { return }

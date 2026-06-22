@@ -191,6 +191,7 @@ slice_run :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> (defs: [dynamic
 // --- render ----------------------------------------------------------------
 
 render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: string) -> string {
+    ensure_fn_analysis(checked, ft)   // build this function's def-use graph + control deps on demand
     if len(ft.return_types) == 0 {
         return fmt.tprintf("%s returns no value — nothing to slice.\n", label)
     }
@@ -354,6 +355,7 @@ slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^De
 }
 
 render_affects :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: string) -> string {
+    ensure_fn_analysis(checked, ft)   // build this function's def-use graph + control deps on demand
     if len(ft.params) == 0 {
         return fmt.tprintf("%s has no parameters to trace forward.\n", label)
     }
