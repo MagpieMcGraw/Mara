@@ -36,6 +36,7 @@ Var_Binding :: struct {
     span:        Span,           // declaration site
     decl:        ^Stmt_Assign,   // declaring assignment for locals; nil for params / loop / destructure vars
     param_index: int,            // parameter position when kind == .Param; -1 otherwise
+    type_:       Type,           // resolved type (params exact; locals = RHS type) — for type-flow matching; nil if unknown
 }
 
 Def_Kind :: enum { Param, Decl, Assign, Loop_Var, Destructure, Complex }
@@ -91,6 +92,21 @@ ensure_fn_analysis :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
     ud_dump(checked)
 }
 
+// Analyze every function — the aggregate flow views (type-flow, call-site flow)
+// seed from occurrences spread across the whole program, so all per-function
+// def-use graphs must exist. DATA-ONLY: the post-dominator control-dependence is
+// skipped (it is the expensive pass, and a cross-function control section is
+// noise in an aggregate), so this stays cheap over hundreds of functions. A CLI
+// run issues one query, so marking these `analyzed` can't starve a later
+// control-dependent per-function query in the same process.
+flow_analyze_all :: proc(checked: ^Checked_Program) {
+    for _, ft in checked.functions {
+        if ft == nil || ft.kind != .Fun || checked.analyzed[ft] { continue }
+        checked.analyzed[ft] = true
+        ud_fn(checked, ft)
+    }
+}
+
 ud_fn :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
     u := UD{ checked = checked, fn = ft }
     defer delete(u.frames)
@@ -102,6 +118,7 @@ ud_fn :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
     for p, i in ft.params {
         b := ud_new(&u, p.name, ft.body_span, .Param, nil, i)
         if b == nil { continue }
+        b.type_ = p.type_
         ud_bind(&u, p.name, b)
         reach_gen(&st, b, ud_def(&u, b, .Param, ft.body_span, nil))   // a param is defined on entry
     }
@@ -158,6 +175,7 @@ ud_def :: proc(u: ^UD, b: ^Var_Binding, kind: Def_Kind, span: Span, value: Expr)
 ud_declare :: proc(u: ^UD, name: string, span: Span, decl: ^Stmt_Assign, kind: Def_Kind, value: Expr, st: ^Reach) {
     b := ud_new(u, name, span, .Local, decl)
     if b == nil { return }
+    if value != nil { b.type_ = expr_type(value) }   // RHS type; base-stripped at match time (recovers loop/slice elems)
     ud_bind(u, name, b)
     reach_gen(st, b, ud_def(u, b, kind, span, value))
 }

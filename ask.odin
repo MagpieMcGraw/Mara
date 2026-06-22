@@ -700,25 +700,36 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     fmt.sbprintf(&b, "%s — %s  %s   (module %s)%s\n", subject.label, subject.sub, ask_loc(subject.span), pkg, ask_mark_suffix(subject.mark))
     header_len := len(strings.to_string(b))
 
-    // ABOVE — what the subject is built from / what feeds it. Type dependencies for
-    // any subject; for a function, the backward data slice of its return as well.
+    // Flow (the "outside" view) over a type aggregates across the whole program,
+    // so every function's def-use graph must exist first (data-only, cheap), then
+    // control-deps just for the functions that actually hold a value of this type.
+    if show_flow && !is_fn {
+        flow_analyze_all(checked)
+        flow_build_type_guards(checked, subject.type_)
+    }
+
+    // ABOVE — what feeds the subject. Type dependencies (any subject); plus the
+    // backward flow slice — a function's return contributors, or every value of a
+    // type traced back to what feeds it.
     if show_above && show_types {
         res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions)
         render_ask_deps(&b, &res, depth)
     }
-    if show_above && show_flow && is_fn {
-        fmt.sbprint(&b, render_contributors(checked, ft, subject.label))
+    if show_above && show_flow {
+        if is_fn { fmt.sbprint(&b, render_contributors(checked, ft, subject.label)) }
+        else     { render_type_flow_above(&b, checked, subject.type_, subject.label) }
     }
 
-    // BELOW — what depends on the subject / what it feeds. Type users for a type;
-    // for a function, its callers plus the forward data slice of its parameters.
+    // BELOW — what the subject feeds. Type users (a type); a function's callers;
+    // plus the forward flow slice — a function's parameter affects, or every value
+    // of a type traced forward to what it feeds.
     if show_below && show_types && !is_fn {
         res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
         render_ask_users(&b, &res, depth)
     }
-    if show_below && show_flow && is_fn {
-        render_fn_users(&b, checked, ft)   // callers, from the call graph
-        fmt.sbprint(&b, render_affects(checked, ft, subject.label))
+    if show_below && show_flow {
+        if is_fn { render_fn_users(&b, checked, ft); fmt.sbprint(&b, render_affects(checked, ft, subject.label)) }
+        else     { render_type_flow_below(&b, checked, subject.type_, subject.label) }
     }
 
     // The chosen filters can name a graph this subject lacks (a type has no data
