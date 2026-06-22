@@ -4,27 +4,31 @@ module askflow
 // Not auto-checked for query output (the harness only gates compile pass/fail),
 // but a stable, predictable target to validate the hop machinery by hand. From a
 // dir whose name is `askflow`:  mara ask n in driver below  yields
-//   n  ->  the return + 1 statement + 1 call
+//   n  ->  the return + 2 statements + 1 call
+//     decl    m              (consume's computed `x + 1` data-depends on n)
 //     decl    k              (forward returns its first arg -> k traces to n)
 //   into calls — the value lands in (1 parameter)
 //     mutate  (param p : ^i64)        the one bare-call pointer hop
 // What this pins down:
 //   * the bare pointer call mutate(&n) IS followed -> a landing in mutate.p;
 //   * consume/forward bind their result, so they are NOT landings (their flow is
-//     the def->def trace, the cross-call return-arg summary's job);
-//   * `k` is reached but `m` is NOT — return_args is aliasing-based, so forward's
-//     identity `return a` traces to n while consume's `x + 1` (a fresh value)
-//     aliases nothing. (A pre-existing slice property, not the hop's doing.)
+//     the def->def trace, the cross-call return-DEP summary's job);
+//   * BOTH `m` and `k` are reached: the slice crosses a call by DATA DEPENDENCE
+//     (cg.return_deps, not escape's aliasing cg.return_args), so consume's computed
+//     `x + 1` traces back to n exactly as forward's identity `return a` does;
+//   * yet the summary stays PRECISE, not a blunt "all args": forward returns only
+//     `a`, so `mara ask m in driver below` is empty — m feeds forward's IGNORED
+//     second parameter and so never reaches k.
 
 mutate  :: fun(p: ^i64)          { p^ = 5 }
-consume :: fun(x: i64) -> i64    { return x + 1 }    // computed return: aliases no arg
-forward :: fun(a: i64, b: i64) -> i64 { return a }   // identity return of its FIRST arg
+consume :: fun(x: i64) -> i64    { return x + 1 }    // computed return: data-depends on x, aliases nothing
+forward :: fun(a: i64, b: i64) -> i64 { return a }   // identity return of its FIRST arg (b ignored)
 
 driver :: fun() -> i64 {
 	n := 10
 	mutate(&n)          // bare call, by pointer -> n lands in mutate.p
-	m := consume(n)     // result bound, computed -> neither a landing nor a reached decl
-	k := forward(n, m)  // returns a -> k traces to n (def->def), b ignored
+	m := consume(n)     // result bound; computed return now traces m back to n (data-dep)
+	k := forward(n, m)  // returns a -> k traces to n (def->def), b (=m) ignored
 	return k
 }
 

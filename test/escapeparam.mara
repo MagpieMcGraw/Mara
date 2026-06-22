@@ -1,0 +1,19 @@
+module escapeparam
+
+//@ expect-fail: cannot return local reference
+
+// Soundness guard for the return_args/return_deps split. `buf` is a LOCAL whose
+// bytes are written from the param `x`. The returned slice aliases `buf` (a local)
+// — that MUST stay an escape error. If the data-dependence summary (return_deps)
+// ever leaked into escape's aliasing summary (return_args), `buf` would trace to
+// param 0 and wrongly look caller-rooted, silently dropping this error.
+leak :: fun(x: i64) -> []i64 {
+	buf: [4]i64
+	buf[0] = x
+	return buf[:]
+}
+
+main :: fun() -> i64 {
+	s := leak(5)
+	return s[0]
+}

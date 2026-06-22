@@ -14,10 +14,11 @@ import "core:strings"
 // own definitions (parameters + statements) that feed the return.
 //
 // Calls are crossed by SUMMARY, not by inlining: a call contributes only the
-// arguments its return value traces back to — the call graph's `return_args`
-// set, the same interprocedural summary escape analysis uses — so `pick_first(x,
-// y)` that returns its first parameter pulls in `x` and NOT `y`. Unknown callees
-// (foreign / indirect / no summary) fall back to all arguments (sound).
+// arguments its return value is computed from — the call graph's `return_deps`
+// set (the DATA-dependence twin of escape's narrower aliasing `return_args`) — so
+// `pick_first(x, y)` returning its first parameter pulls in `x` and NOT `y`, and
+// `len_of(x)` returning a count computed from `x` still pulls in `x`. Unknown
+// callees (foreign / indirect / no summary) fall back to all arguments (sound).
 //
 // This is a DATA slice: it omits control dependence (the branch conditions that
 // guard the contributing statements) — that is step 4.
@@ -66,7 +67,7 @@ slice_guards :: proc(s: ^Slice, guards: []Guard) {
 
 
 // Enqueue every variable use that contributes to an expression's value. A call
-// contributes only the arguments its RETURN traces back to (return_args) — the
+// contributes only the arguments its RETURN is computed from (return_deps) — the
 // interprocedural step — falling back to all arguments when the callee or its
 // summary is unknown.
 @(private="file")
@@ -75,7 +76,7 @@ slice_value :: proc(s: ^Slice, e: Expr) {
     #partial switch v in e {
     case ^Expr_Ident: slice_use(s, v)
     case ^Expr_Call:
-        if ra, ok := slice_return_args(s.checked, v); ok {
+        if ra, ok := slice_return_deps(s.checked, v); ok {
             for i in ra { if i >= 0 && i < len(v.args) { slice_value(s, v.args[i]) } }
         } else {
             for a in v.args { slice_value(s, a) }
@@ -97,20 +98,25 @@ slice_value :: proc(s: ^Slice, e: Expr) {
     }
 }
 
-// The callee's return-arg set (which parameter indices its return traces to),
-// read off the materialized call graph. ok=false for foreign / indirect / no-
-// summary calls — the caller then conservatively follows all arguments.
+// The callee's return-DEP set (which parameter indices its return value is
+// computed from), read off the materialized call graph. This is the data-
+// dependence summary (cg.return_deps), NOT escape's narrower aliasing set
+// (cg.return_args): a value computed from a param — `obj_get_directions(dir)`
+// returning a column of `mat4_from_quat(dir)` — depends on `dir` even though it
+// doesn't alias its storage, and the slice must cross the call on that. ok=false
+// for foreign / indirect / no-summary calls — the caller then conservatively
+// follows all arguments.
 @(private="file")
-slice_return_args :: proc(checked: ^Checked_Program, call: ^Expr_Call) -> ([]int, bool) {
+slice_return_deps :: proc(checked: ^Checked_Program, call: ^Expr_Call) -> ([]int, bool) {
     rf, ok := call.resolved_func.?
     if !ok || rf.callee == nil || rf.callee.ast == nil { return nil, false }
     cg := &checked.call_graph
     node, found := cg.stmt_to_node[rf.callee.ast]
-    if !found || node >= len(cg.return_args) { return nil, false }
-    return cg.return_args[node], true
+    if !found || node >= len(cg.return_deps) { return nil, false }
+    return cg.return_deps[node], true
 }
 
-// The uses an expression depends on (return_args-filtered) — the collection-form
+// The uses an expression depends on (return_deps-filtered) — the collection-form
 // mirror of `slice_value`, used to build the forward dependency edges so the two
 // directions agree about which arguments a call propagates.
 @(private="file")
@@ -119,7 +125,7 @@ slice_collect :: proc(checked: ^Checked_Program, e: Expr, out: ^map[^Expr_Ident]
     #partial switch v in e {
     case ^Expr_Ident: out[v] = true
     case ^Expr_Call:
-        if ra, ok := slice_return_args(checked, v); ok {
+        if ra, ok := slice_return_deps(checked, v); ok {
             for i in ra { if i >= 0 && i < len(v.args) { slice_collect(checked, v.args[i], out) } }
         } else {
             for a in v.args { slice_collect(checked, a, out) }
@@ -255,12 +261,12 @@ guard_word :: proc(k: Guard_Kind) -> string {
 // The mirror of `contributors`: "what does each parameter affect?" Built on the
 // SAME def-use graph, walked the other way. We materialize the def -> def
 // dependency edges (D1 -> D2 when D2's value or a guard controlling it reads a
-// binding D1 defines, return_args-filtered exactly like the backward slice),
+// binding D1 defines, return_deps-filtered exactly like the backward slice),
 // then BFS forward from a parameter's definition. A parameter affects the return
 // when its forward set reaches a definition that feeds a `return`.
 //
 // Within the queried function this is the def->def reach; value flow OUT of a
-// call's return uses the same return_args summary the backward direction does, so
+// call's return uses the same return_deps summary the backward direction does, so
 // `affects` and `contributors` agree. Value flow INTO a call (a bare/predicate
 // call's argument, where the value is consumed by the callee, not returned) is
 // followed ONE hop to the callee parameter it lands in — see the interprocedural
@@ -357,7 +363,7 @@ slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^De
 // function and to `return`. A value passed as a call argument — a bare call, a
 // loop/if predicate, a match subject, a pointer the callee mutates — flows into
 // the CALLEE, where this function's def-use graph can't see it. That flow does
-// not exist in the caller at all (it is a side effect, not a `return_args` edge),
+// not exist in the caller at all (it is a side effect, not a `return_deps` edge),
 // so the slice used to report it honestly but blindly as "feeds N calls (effect
 // not traced)".
 //
@@ -416,7 +422,7 @@ hop_param_binding :: proc(checked: ^Checked_Program, callee: ^Type_Scope, idx: i
     return nil
 }
 
-// Does an argument expression read one of `targets`? return_args-filtered through
+// Does an argument expression read one of `targets`? return_deps-filtered through
 // nested calls (slice_collect), exactly like the slices, so the directions agree.
 @(private="file")
 arg_reads_targets :: proc(checked: ^Checked_Program, arg: Expr, targets: map[^Var_Binding]bool) -> bool {

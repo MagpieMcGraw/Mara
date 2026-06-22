@@ -52,6 +52,16 @@ Call_Graph :: struct {
     // bridges the AST key fun_return_arg_set is queried with (^Stmt_Scope) to the
     // graph's node id (a node's Type_Scope.ast IS that Stmt_Scope).
     return_args:  [dynamic][]int,
+
+    // Return-DEP summary (cg_compute_return_deps): return_deps[n] = the sorted set
+    // of parameter indices node n's return value DATA-depends on (vs return_args,
+    // which is the narrower ALIASING relation escape needs). A value computed from
+    // a param — `obj_get_directions(dir)` returning `mat4_from_quat(dir)[2].xyz` —
+    // is in return_deps but NOT return_args (it doesn't alias `dir`'s storage).
+    // The `ask` slicer crosses calls with THIS set so a call contributes the args
+    // its result is computed from, not just the ones it aliases. Same node ids and
+    // stmt_to_node bridge as return_args.
+    return_deps:  [dynamic][]int,
     stmt_to_node: map[^Stmt_Scope]int,
 }
 
@@ -202,9 +212,32 @@ cg_compute_return_args :: proc(g: ^Call_Graph, c: ^Checker) {
 cg_return_args_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
     ts := g.nodes[n]
     if ts == nil || ts.ast == nil { return false } // foreign/no body — empty set
-    new_set := compute_return_arg_set(g_cg_c, ts.ast)
+    new_set := compute_return_arg_set(g_cg_c, ts.ast, .Escape)
     if slice.equal(g.return_args[n], new_set) { return false }
     g.return_args[n] = new_set // monotone: the set only grows toward its fixpoint
+    return true
+}
+
+// Data-dependence twin of cg_compute_return_args: which parameter indices each
+// function's return value is COMPUTED from. Same bottom-up framework, same body
+// walk, but in .Data_Dep mode (traverses arithmetic / field reads / index reads
+// and credits field-writes into named returns) — see compute_return_arg_set.
+cg_compute_return_deps :: proc(g: ^Call_Graph, c: ^Checker) {
+    g_cg_c = c
+    for ts, i in g.nodes {
+        if ts != nil && ts.ast != nil { g.stmt_to_node[ts.ast] = i }
+    }
+    resize(&g.return_deps, len(g.nodes))
+    cg_bottom_up(g, cg_return_deps_transfer)
+}
+
+@(private="file")
+cg_return_deps_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
+    ts := g.nodes[n]
+    if ts == nil || ts.ast == nil { return false } // foreign/no body — empty set
+    new_set := compute_return_arg_set(g_cg_c, ts.ast, .Data_Dep)
+    if slice.equal(g.return_deps[n], new_set) { return false }
+    g.return_deps[n] = new_set // monotone: the set only grows toward its fixpoint
     return true
 }
 
