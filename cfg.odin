@@ -52,6 +52,7 @@ build_cfgs :: proc(checked: ^Checked_Program) {
         cfg := new(CFG)
         cfg_construct(cfg, ft)
         checked.cfgs[ft] = cfg
+        cfg_build_control_deps(checked, cfg)
     }
     cfg_dump(checked)
 }
@@ -63,6 +64,79 @@ cfg_falls_off :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool {
     cfg, ok := checked.cfgs[ft]
     if !ok || cfg == nil { return false }
     return len(cfg.fall_off) > 0
+}
+
+// --- post-dominators -> control dependence ---------------------------------
+// A statement Y is control-dependent on a branch X when one of X's outgoing
+// paths always reaches Y and another can avoid it — i.e. some successor A of X
+// is post-dominated by Y while X itself is not. This captures the guard the
+// LEXICAL approximation missed: after `if bad { return }`, the rest is
+// control-dependent on `bad` even though it is not lexically inside the `if`.
+
+@(private="file")
+cfg_set_eq :: proc(a, b: map[int]bool) -> bool {
+    if len(a) != len(b) { return false }
+    for k in a { if k not_in b { return false } }
+    return true
+}
+
+@(private="file")
+cfg_build_control_deps :: proc(checked: ^Checked_Program, c: ^CFG) {
+    n := len(c.nodes)
+    if n == 0 { return }
+
+    // Post-dominator sets by iterative dataflow: pd[n] = {n} ∪ ⋂ pd[successors].
+    pd := make([]map[int]bool, n)
+    defer { for s in pd { delete(s) }; delete(pd) }
+    for i in 0 ..< n {
+        pd[i] = make(map[int]bool)
+        if i == c.exit { pd[i][i] = true } else { for j in 0 ..< n { pd[i][j] = true } }
+    }
+    changed := true
+    for changed {
+        changed = false
+        for i in 0 ..< n {
+            if i == c.exit { continue }
+            ns := make(map[int]bool)
+            ns[i] = true
+            succ := c.nodes[i].succ
+            if len(succ) > 0 {
+                inter := make(map[int]bool)
+                for k in pd[succ[0]] { inter[k] = true }
+                for si in 1 ..< len(succ) {
+                    for k in inter { if k not_in pd[succ[si]] { delete_key(&inter, k) } }
+                }
+                for k in inter { ns[k] = true }
+                delete(inter)
+            }
+            if cfg_set_eq(ns, pd[i]) { delete(ns) } else { delete(pd[i]); pd[i] = ns; changed = true }
+        }
+    }
+
+    // For each branch X and successor A: every Y that post-dominates A but not X
+    // is control-dependent on X. Record per node the set of controlling branches.
+    cd := make([]map[int]bool, n)
+    defer { for s in cd { delete(s) }; delete(cd) }
+    for i in 0 ..< n { cd[i] = make(map[int]bool) }
+    for x in 0 ..< n {
+        if len(c.nodes[x].succ) < 2 { continue }
+        for a in c.nodes[x].succ {
+            for y in pd[a] { if y not_in pd[x] { cd[y][x] = true } }
+        }
+    }
+
+    // Project onto statement spans: control_deps[span] = guards for its branches.
+    for y in 0 ..< n {
+        if len(cd[y]) == 0 { continue }
+        sp := c.nodes[y].span
+        if sp.file == "" || sp in checked.control_deps { continue }
+        guards: [dynamic]Guard
+        for x in cd[y] {
+            bn := c.nodes[x]
+            append(&guards, Guard{ kind = bn.bkind, span = bn.span, conds = bn.conds })
+        }
+        checked.control_deps[sp] = guards[:]
+    }
 }
 
 @(private="file")
@@ -171,8 +245,28 @@ cfg_stmt :: proc(c: ^CFG, s: Stmt, preds: []int, brk, cont: int) -> [dynamic]int
         return out
 
     case:   // simple straight-line statement (assign / decl / multi / call)
-        n := cfg_new(c, .Simple, cfg_stmt_span(s)); cfg_wire(c, preds, n)
+        n := cfg_new(c, .Simple, cfg_stmt_span(s))
+        cfg_register_decl_spans(c, s, n)
+        cfg_wire(c, preds, n)
         return cfg_one(n)
+    }
+}
+
+// A Stmt_Decl desugars into per-name assigns whose spans the def-use pass keys
+// each def on. Map those inner spans to this node too, so a declared variable's
+// control dependence resolves (the CFG walks the body-level Stmt_Decl; the
+// analyzer keys on the inner assign's span).
+@(private="file")
+cfg_register_decl_spans :: proc(c: ^CFG, s: Stmt, node: int) {
+    decl, ok := s.(^Stmt_Decl)
+    if !ok { return }
+    for inner in decl.checked {
+        sp: Span
+        #partial switch a in inner {
+        case ^Stmt_Assign:              sp = a.span
+        case ^Stmt_Multi_Return_Assign: sp = a.span
+        }
+        if sp.file != "" && sp not_in c.span_node { c.span_node[sp] = node }
     }
 }
 

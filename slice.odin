@@ -64,13 +64,6 @@ slice_guards :: proc(s: ^Slice, guards: []Guard) {
     }
 }
 
-@(private="file")
-slice_guards_plus :: proc(guards: []Guard, g: Guard) -> []Guard {
-    out := make([]Guard, len(guards) + 1)
-    copy(out, guards)
-    out[len(guards)] = g
-    return out
-}
 
 // Enqueue every variable use that contributes to an expression's value. A call
 // contributes only the arguments its RETURN traces back to (return_args) — the
@@ -151,23 +144,17 @@ slice_collect :: proc(checked: ^Checked_Program, e: Expr, out: ^map[^Expr_Ident]
 // Seed the worklist from every `return` in the body (recursing into nested
 // blocks, but not nested functions — those are separate slices).
 @(private="file")
-slice_seed :: proc(s: ^Slice, stmts: []Stmt, guards: []Guard) {
+slice_seed :: proc(s: ^Slice, stmts: []Stmt) {
     for st in stmts {
         #partial switch v in st {
         case Stmt_Return:
             for e in v.values { slice_value(s, e) }
-            slice_guards(s, guards)             // a return is control-dependent on its enclosing branches
-        case ^Stmt_If:
-            g := slice_guards_plus(guards, guard_if(v))
-            slice_seed(s, v.body[:], g)
-            slice_seed(s, v.else_body[:], g)
-        case ^Stmt_For:
-            slice_seed(s, v.body[:], slice_guards_plus(guards, guard_for(v)))
-        case ^Stmt_Match:
-            mg := slice_guards_plus(guards, guard_match(v))
-            for arm in v.arms { slice_seed(s, arm.body[:], mg) }
-        case ^Stmt_Defer:
-            slice_seed(s, v.body[:], guards)
+            g := s.checked.control_deps[v.span]   // the return's control dependence, from the CFG
+            slice_guards(s, g)
+        case ^Stmt_If:    slice_seed(s, v.body[:]); slice_seed(s, v.else_body[:])
+        case ^Stmt_For:   slice_seed(s, v.body[:])
+        case ^Stmt_Match: for arm in v.arms { slice_seed(s, arm.body[:]) }
+        case ^Stmt_Defer: slice_seed(s, v.body[:])
         }
     }
 }
@@ -191,7 +178,7 @@ slice_seed_named_returns :: proc(s: ^Slice, ft: ^Type_Scope) {
 slice_run :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> (defs: [dynamic]^Def, ctrl: [dynamic]Guard) {
     s := Slice{ checked = checked }
     defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen) }
-    slice_seed(&s, ft.body[:], nil)
+    slice_seed(&s, ft.body[:])
     slice_seed_named_returns(&s, ft)
     for len(s.work) > 0 {
         u := pop(&s.work)
@@ -239,8 +226,8 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
     if len(params) == 0 && len(stmts) == 0 {
         fmt.sbprint(&b, "\n  (no variable contributors — the return value is a constant)\n")
     }
-    fmt.sbprint(&b, "\n  note: control dependence is lexical (statements inside the branches/loops\n")
-    fmt.sbprint(&b, "        shown); paths via early return / break are not yet folded in.\n")
+    fmt.sbprint(&b, "\n  note: data + control dependence — control comes from the control-flow\n")
+    fmt.sbprint(&b, "        graph, so early-return / break guard clauses are included.\n")
     return strings.to_string(b)
 }
 
@@ -405,8 +392,8 @@ render_affects :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: string
             fmt.sbprintf(&b, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
         }
     }
-    fmt.sbprint(&b, "\n  note: data + (lexical) control dependence within this function; effects\n")
-    fmt.sbprint(&b, "        through calls use the same return_args summary as `contributors`.\n")
+    fmt.sbprint(&b, "\n  note: data + control dependence (from the control-flow graph) within this\n")
+    fmt.sbprint(&b, "        function; effects through calls use return_args, like `contributors`.\n")
     return strings.to_string(b)
 }
 

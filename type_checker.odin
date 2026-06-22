@@ -1595,8 +1595,11 @@ Checked_Program :: struct {
     reaching:       map[^Expr_Ident][]^Def,
 
     // Per-function control-flow graphs (cfg.odin). Shared by missing-return
-    // checking and the analyzer's control dependence.
+    // checking and the analyzer's control dependence. `control_deps` maps a
+    // statement's span to the branches/loops it is control-dependent on (computed
+    // from CFG post-dominators) — the analyzer's guard source.
     cfgs:           map[^Type_Scope]^CFG,
+    control_deps:   map[Span][]Guard,
 }
 
 // ---------------------------------------------------------------------------
