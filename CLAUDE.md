@@ -28,14 +28,14 @@ mara ask name flow           # only the data-flow slice (the "outside" view)
 mara ask name above          # only the sources   (what it's built from / what feeds it)
 mara ask name below          # only the consumers (what depends on it / what it feeds)
 mara ask name types above    # filters combine — just the type sources
-mara ask name 2              # a number = depth: type-graph hops, OR forward-flow call hops
+mara ask name 2              # search depth, default is inf, beware wall of text
 
 # `flow` is the "outside" view, consistent across subjects:
 mara ask Type flow           # aggregate the slice over every value of that type
 mara ask fn flow             # the call-site view: what feeds the args / where results go
 
-# A forward flow slice FOLLOWS the calls a value feeds, one hop into the callee
-# parameter it lands in; the number is the call-hop budget (omit = 1, 0 = none):
+# A forward flow slice FOLLOWS the calls a value feeds, hop by hop into the callee
+# parameter it lands in; the number caps the call-hop budget (omit = full, 0 = none):
 mara ask var in fn 2         # follow the value two call hops deep, bucketed by hop
 
 # Slicing — address a variable, then it gets sliced (above = feeds it, below = it feeds):
@@ -51,9 +51,9 @@ mara ask at file:line in module  # `at` + `in <module>`: precise address in a no
 ```
 
 `types`/`flow` pick the graph, `above`/`below` the direction; omit either to get
-both. A number is depth: it bounds the type graph (omit = full closure) and the
-forward-flow call-following (omit = 1 hop, 0 = count only). Backward slices are
-always full (calls crossed by the return-args summary).
+both. A number is depth: it bounds the type graph and the forward-flow call-
+following alike — omit = full for both (0 = count only for flow). Backward slices
+are always full (calls crossed by the return-args summary).
 
 ## Workflow
 

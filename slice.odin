@@ -371,13 +371,17 @@ slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^De
 // ---------------------------------------------------------------------------
 
 // The call-hop budget for a forward flow query. The shared `depth` token is the
-// type-graph hop budget for type queries; for flow it bounds call-following, and
-// an omitted depth (-1) defaults to a single hop — the readable default, since a
-// value threaded through a god-object reaches most of the program at full depth.
-// An explicit 0 disables following (the pre-hop "feeds N calls" count only).
+// type-graph hop budget for type queries; for flow it bounds call-following. An
+// omitted depth (-1) follows to UNBOUNDED depth, matching the type-graph default
+// (omit = full closure) so the token reads identically on both axes. It still
+// terminates: flow_reach expands each parameter once (its `expanded` cycle guard)
+// over a finite call graph, so a budget past any real call chain is "no cap" — a
+// value through a god-object now reaches most of the program (the wall the old
+// 1-hop default avoided, accepted here for a consistent default). An explicit 0
+// disables following (the pre-hop "feeds N calls" count only); N caps at N hops.
 @(private="file")
 flow_max_hops :: proc(depth: int) -> int {
-    return 1 if depth < 0 else depth
+    return (1 << 30) if depth < 0 else depth   // 1<<30 ≈ 1e9 hops — effectively ∞
 }
 
 // One landing: a callee parameter a traced value flows into. `site` is a
