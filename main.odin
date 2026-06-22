@@ -964,7 +964,7 @@ CLI_Args :: struct {
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
-ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
+ASK_USAGE :: `Usage: mara ask <name> [types|flow|lineage] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
   folder whose .mara files declare a module. Use 'in <module>' to target a
@@ -976,6 +976,9 @@ ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [control] [depth
     below          only the consumers — what depends on <name> / what it feeds
     types          only the type graph (fields, params, returns, embeds)
     flow           only the data-flow slice (a function's value flow + its callers)
+    lineage        per-variable backward producer TREE (provenance): what builds
+                   this value, following every input into the calls that make it.
+                   Address a variable: <var> in <fn>, or at <file>:<line>
     control        also show CONTROL dependence — the branches/loops a value drives
                    (or that guard what feeds it). Off by default: it needs the
                    post-dominator pass, the analyzer's one slow step. Data is hot.

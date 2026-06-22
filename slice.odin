@@ -715,6 +715,8 @@ slice_def_word :: proc(k: Def_Kind) -> string {
 
 render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, kind, dir, pkg: string, depth: int) -> string {
     ensure_fn_analysis(checked, b.fn)
+    // Lineage is its own view (backward producer tree) — hand the whole query off.
+    if kind == "lineage" { return render_lineage(checked, b, fn_label, pkg, depth) }
     knd := "param" if b.kind == .Param else "local"
     bb := strings.builder_make()
     home_pkg := ask_home_package(b.fn)

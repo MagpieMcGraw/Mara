@@ -41,6 +41,9 @@ mara ask fn flow             # the call-site view: what feeds the args / where r
 # parameter it lands in; the number caps the call-hop budget (omit = full, 0 = none):
 mara ask var in fn 2         # follow the value two call hops deep, bucketed by hop
 
+# Lineage (provenance) — what BUILDS a value, as a tree following all call inputs:
+mara ask var in fn lineage   # var ⟵ producing-call ⟵ its inputs ⟵ … (back to params/disk)
+
 # Slicing — address a variable, then it gets sliced (above = feeds it, below = it feeds):
 mara ask var in fn           # a local or parameter inside a function
 mara ask return in fn        # what feeds a function's return value (the inside view)
