@@ -1633,6 +1633,10 @@ Checked_Program :: struct {
     use_def:        map[^Expr_Ident]^Var_Binding,
     defs:           [dynamic]^Def,
     reaching:       map[^Expr_Ident][]^Def,
+
+    // Per-function control-flow graphs (cfg.odin). Shared by missing-return
+    // checking and the analyzer's control dependence.
+    cfgs:           map[^Type_Scope]^CFG,
 }
 
 // ---------------------------------------------------------------------------
@@ -10777,6 +10781,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     checked.call_graph = build_call_graph(&c)
     c.cg = &checked.call_graph
     cg_compute_return_args(c.cg, &c) // return-arg-set summary — backs fun_return_arg_set
+    build_cfgs(checked)               // per-function control-flow graphs (return-check + analyzer)
     flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
     escape_analyze_program(&c, checked) // post-check intraproc escape
     build_use_def(checked)             // post-check variable identity (slice analysis step 1)
