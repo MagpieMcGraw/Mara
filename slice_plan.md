@@ -14,8 +14,10 @@ variables by name).
 **Status: shipped.** All five phases below are implemented and surfaced as
 `mara ask <fn> contributors` (backward) and `mara ask <fn> affects` (forward).
 Commits: f594d89 (1) · 1a83d75 (2) · 71ce3ce (3) · 367d812 (4) · 4b2c93f (5).
-Remaining refinement: control dependence is lexical only — early-return / break
-paths need post-dominators.
+Control dependence is now exact: a real control-flow graph (cfg.odin) drives both
+missing-return checking and post-dominator control dependence — early-return /
+break guard clauses included. CFG: 81d0e6d (build) · 2642583 (return-check) ·
+00c3ef6 (control dependence).
 
 ## Phases (cheapest-useful first)
 
