@@ -55,7 +55,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         if len(ft.body) == 0 { continue }
         stats.functions += 1
         flow_walk_stmts(&stats, ft.body[:], 1)
-        if flow_missing_return(ft) {
+        if flow_missing_return(checked, ft) {
             name := ft.source_name if ft.source_name != "" else ft.name
             // Same message + span the inline check used (ft.body_span == s.span).
             check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
@@ -67,17 +67,16 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     flow_dump_stats(stats)
 }
 
-// All-paths-return analysis, recomputed over the durable scope (ft.return_types
-// + ft.body) — a faithful copy of the inline check (check_scope_body ~8778):
-// a non-void function whose first return isn't `any` and whose returns aren't
-// all-err must return on every path. always_returns / is_any / all_err_returns
-// are the same shared helpers the inline site uses, so this is the SAME verdict,
-// just relocated to the post-check pass.
-flow_missing_return :: proc(ft: ^Type_Scope) -> bool {
+// Missing-return: a non-void function whose first return isn't `any` and whose
+// returns aren't all-err must return on every path. The all-paths verdict now
+// comes from the control-flow graph (cfg_falls_off) instead of the structural
+// always_returns tail-walk — so loops, early returns, and break/continue are all
+// handled correctly, not just a returning tail.
+flow_missing_return :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool {
     if len(ft.return_types) == 0 { return false }       // void
     if is_any(ft.return_types[0]) { return false }      // unresolved generic return
     if all_err_returns(ft.return_types) { return false } // all-err can fall off (.Ok fill)
-    return !always_returns(ft.body)
+    return cfg_falls_off(checked, ft)
 }
 
 // --- must-use-err ---------------------------------------------------------

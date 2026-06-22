@@ -1133,46 +1133,6 @@ record_construction_edge :: proc(c: ^Checker, st: ^Type_Scope, env: ^Type_Scope)
 }
 
 
-// Check if a statement body guarantees a return on all code paths.
-// Used to detect missing returns in non-void functions.
-always_returns :: proc(body: [dynamic]Stmt) -> bool {
-    // Walk backward to the last executable statement. Comptime `#if` was folded
-    // into this body before the checker ran, so any live arm's return is inline.
-    for i := len(body) - 1; i >= 0; i -= 1 {
-        last := body[i]
-        // Definitions aren't executable â€” a body whose tail is nested fn /
-        // type / const definitions ends at the statement before them, so
-        // keep walking ("helpers at the bottom" layout). Stmt_Scope is a
-        // named fun/struct definition, not an executable block.
-        #partial switch _ in last {
-        case ^Stmt_Scope, ^Stmt_Define, ^Stmt_Union_Def, ^Stmt_Distinct_Def,
-             ^Stmt_Dispatch_Def, Stmt_Overload, ^Stmt_Foreign:
-            continue
-        }
-        #partial switch s in last {
-        case Stmt_Return:
-            return true
-        case ^Stmt_If:
-            // Both branches must exist and both must always return
-            if len(s.else_body) == 0 { return false }
-            return always_returns(s.body) && always_returns(s.else_body)
-        case ^Stmt_Match:
-            // Subject-less / namespace form has no exhaustiveness guarantee
-            // (each arm is an independent bool predicate, no arm is forced
-            // to fire), so the match can't be proven to always return.
-            if s.subject == nil { return false }
-            // Strict-default match on enum/union: every match either covers
-            // all variants (enforced by the type checker) or has an else arm.
-            // So if every arm always returns, the match as a whole does too.
-            for arm in s.arms {
-                if !always_returns(arm.body) { return false }
-            }
-            return len(s.arms) > 0
-        }
-        return false
-    }
-    return false
-}
 
 
 // Build "prefix_name" without fmt.tprintf (avoids temp allocator overhead).

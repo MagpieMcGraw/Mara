@@ -44,15 +44,25 @@ CFG :: struct {
 // --- construction ----------------------------------------------------------
 
 build_cfgs :: proc(checked: ^Checked_Program) {
+    // Every source function, templates included — control flow is type-independent,
+    // so the missing-return check is uniform (the analyzer only queries concretes).
     for _, ft in checked.functions {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
-        if ft.ast != nil && len(ft.ast.generic_params) > 0 { continue }
         cfg := new(CFG)
         cfg_construct(cfg, ft)
         checked.cfgs[ft] = cfg
     }
     cfg_dump(checked)
+}
+
+// Can control reach the function's end without a `return`? (A fall-through path
+// to Exit.) The missing-return verdict, handling loops / early returns / break /
+// continue uniformly — what the structural always_returns could not.
+cfg_falls_off :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool {
+    cfg, ok := checked.cfgs[ft]
+    if !ok || cfg == nil { return false }
+    return len(cfg.fall_off) > 0
 }
 
 @(private="file")
