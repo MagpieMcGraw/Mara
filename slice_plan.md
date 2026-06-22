@@ -21,7 +21,12 @@ the same def-use graph seeded from the variable's definitions instead of the
 return / parameters.
 Slice phases: f594d89 (1) · 1a83d75 (2) · 71ce3ce (3) · 367d812 (4) · 4b2c93f (5).
 Vocabulary + variable criterion: cc0bf23 (above/below × types/data) · aebb48e
-(`<var> in <fn>`) · d69c947 (`at <file>:<line>`).
+(`<var> in <fn>`) · d69c947 (`at <file>:<line>`). The `data` axis was then renamed
+`flow` and generalized to the "outside" view on ANY subject: a TYPE aggregates the
+slice over every value of it; a FUNCTION shows its call-site view (what feeds the
+args / where results flow), replacing the internal slice — which moved to slicing
+the endpoints as variables (`<param> in <fn>`, `return in <fn>`). Commits 56f83a0
+(rename) · a1f5032 (type-flow) · f85c3bb (fn call-site flow) · af4b336 (`return`).
 Control dependence is exact: a real control-flow graph (cfg.odin) drives both
 missing-return checking and post-dominator control dependence — early-return /
 break guard clauses included. CFG: 81d0e6d (build) · 2642583 (return-check) ·
