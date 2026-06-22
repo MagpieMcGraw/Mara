@@ -259,9 +259,12 @@ guard_word :: proc(k: Guard_Kind) -> string {
 // then BFS forward from a parameter's definition. A parameter affects the return
 // when its forward set reaches a definition that feeds a `return`.
 //
-// Intraprocedural (within the queried function); effects through calls use the
-// same return_args summary the backward direction does, so `affects` and
-// `contributors` agree (a callee-ignored argument affects nothing through it).
+// Within the queried function this is the def->def reach; value flow OUT of a
+// call's return uses the same return_args summary the backward direction does, so
+// `affects` and `contributors` agree. Value flow INTO a call (a bare/predicate
+// call's argument, where the value is consumed by the callee, not returned) is
+// followed ONE hop to the callee parameter it lands in — see the interprocedural
+// forward hop above.
 // ---------------------------------------------------------------------------
 
 // Forward dependency edges D1 -> {D2}: D2 reads a binding D1 defines (in D2's RHS
@@ -348,79 +351,228 @@ slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^De
 
 
 // ---------------------------------------------------------------------------
-// Consumed-by-call detection — the forward slice's blind spot.
+// Interprocedural forward hop — following a value into the callees it feeds.
 //
-// The def->def forward graph links a value only to OTHER definitions (a decl it
-// initializes, a reassignment, a partial write) and to `return`. A value passed
-// as an argument to a call whose result is discarded — a bare call statement, or
-// a call standing as a loop/if predicate or a match subject — mints no definition
-// and reaches no return, so the forward walk drops it and the slice reads
-// "nothing". But the value IS consumed: the call receives it (and may mutate it
-// through a pointer, or act on it via I/O). We don't trace across the call — that
-// is the interprocedural summary's job, and an argument's downstream effect is
-// not a `return_args` edge — so we surface it honestly as "feeds N call(s)
-// (effect not traced)", the same hedge `render_fn_flow_below` uses for inline
-// results, instead of claiming the value flows nowhere.
+// The def->def forward graph links a value only to OTHER definitions in the SAME
+// function and to `return`. A value passed as a call argument — a bare call, a
+// loop/if predicate, a match subject, a pointer the callee mutates — flows into
+// the CALLEE, where this function's def-use graph can't see it. That flow does
+// not exist in the caller at all (it is a side effect, not a `return_args` edge),
+// so the slice used to report it honestly but blindly as "feeds N calls (effect
+// not traced)".
+//
+// The call graph closes the gap by following ONE hop into the callee: a resolved
+// call carries its callee (resolved_func.callee), and post-UFCS-desugar the
+// receiver is folded into args[0], so call.args[i] maps positionally to
+// callee.params[i]. We report where the value lands — `callee (param p)`. Deeper
+// hops are a drill-down: slice that parameter (`mara ask p in callee`). Only
+// resolved calls with a body are followed; foreign / indirect / bodiless callees
+// stay an honest "not followed" count.
 // ---------------------------------------------------------------------------
 
-// Does any argument (or receiver / override) of `call` read one of `targets`?
-// return_args-filtered through nested calls, exactly like the backward slice, so
-// the two directions agree about which calls a value reaches.
+// One landing: a callee parameter a traced value flows into. `site` is a
+// representative (earliest) call site; `sites` counts how many calls land the
+// value in this same parameter (the value reaching `draw_marker.state` from four
+// call sites is one landing, ×4, not four rows).
 @(private="file")
-call_reads_target :: proc(checked: ^Checked_Program, call: ^Expr_Call, targets: map[^Var_Binding]bool) -> bool {
+Hop_Landing :: struct {
+    callee: ^Type_Scope,
+    param:  ^Var_Binding,
+    site:   Span,
+    sites:  int,
+}
+
+// The callee a resolved call reaches, or nil (distinct-cast / foreign / indirect).
+@(private="file")
+hop_callee :: proc(call: ^Expr_Call) -> ^Type_Scope {
+    if rf, ok := call.resolved_func.?; ok { return rf.callee }
+    return nil
+}
+
+// The ^Var_Binding for parameter `idx` of `callee`. nil when the callee has no
+// analyzed parameters (e.g. a constructor, which flow_analyze_all skips) or idx
+// is out of range — the caller then treats that argument as not-followed.
+@(private="file")
+hop_param_binding :: proc(checked: ^Checked_Program, callee: ^Type_Scope, idx: int) -> ^Var_Binding {
+    for b in checked.var_bindings {
+        if b.fn == callee && b.kind == .Param && b.param_index == idx { return b }
+    }
+    return nil
+}
+
+// Does an argument expression read one of `targets`? return_args-filtered through
+// nested calls (slice_collect), exactly like the slices, so the directions agree.
+@(private="file")
+arg_reads_targets :: proc(checked: ^Checked_Program, arg: Expr, targets: map[^Var_Binding]bool) -> bool {
     uses: map[^Expr_Ident]bool
     defer delete(uses)
-    for arg in call.args { slice_collect(checked, arg, &uses) }
-    slice_collect(checked, call.qualifier, &uses)                       // nil-safe
-    if call.overrides != nil { slice_collect(checked, call.overrides, &uses) }
+    slice_collect(checked, arg, &uses)
     for u in uses {
         if b := checked.use_def[u]; b != nil && targets[b] { return true }
     }
     return false
 }
 
-// Count the result-discarded calls in `ft` that consume one of `targets`: bare
-// call statements, plus calls standing as a loop/if predicate or a match subject
-// (the result drives control, but the argument carrying the value still flows in
-// untraced). A call whose result binds a variable is NOT counted — that is a
-// definition the def->def graph already traces as a reached statement.
+// Every binding the seeds reach within `fn` — the seeds plus their forward
+// def->def closure. This is the set of names that carry the traced value, so a
+// call reading ANY of them (a local the value was copied into, a field pointer
+// carved from it) consumes the value, not only a call reading the seed directly.
 @(private="file")
-count_consumed_by_calls :: proc(checked: ^Checked_Program, ft: ^Type_Scope, targets: map[^Var_Binding]bool) -> int {
-    n := 0
-    cc_stmts(checked, ft.body[:], targets, &n)
-    return n
+flow_targets :: proc(checked: ^Checked_Program, fn: ^Type_Scope, seeds: map[^Var_Binding]bool) -> map[^Var_Binding]bool {
+    targets: map[^Var_Binding]bool
+    succ := slice_build_succ(checked, fn)
+    defer slice_free_succ(&succ)
+    for b in seeds {
+        if b.fn != fn { continue }
+        targets[b] = true
+        for d in checked.defs {
+            if d.binding == b {
+                r := slice_forward_reach(succ, d)
+                for k in r { if k.binding != nil { targets[k.binding] = true } }
+                delete(r)
+            }
+        }
+    }
+    return targets
+}
+
+// Collect the callee-param landings out of `fn`: for every call whose argument
+// reads a target, the parameter that argument lands in. Walks the same statement
+// shapes the rest of the slicer does (bare calls + calls driving a loop/if/match;
+// a result-binding call's RETURN flow is already traced by the def->def graph).
+// `unfollowed` counts consuming calls whose callee has no body to follow into.
+@(private="file")
+collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: map[^Var_Binding]bool, out: ^[dynamic]Hop_Landing) -> (unfollowed: int) {
+    ld_stmts(checked, fn.body[:], targets, out, &unfollowed)
+    return
 }
 
 @(private="file")
-cc_call :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Var_Binding]bool, n: ^int) {
-    if call, ok := e.(^Expr_Call); ok && call_reads_target(checked, call, targets) { n^ += 1 }
-}
-
-@(private="file")
-cc_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Var_Binding]bool, n: ^int) {
+ld_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Var_Binding]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
     for s in stmts {
         #partial switch v in s {
-        case Stmt_Call:   cc_call(checked, v.expr, targets, n)
-        case ^Stmt_If:    cc_call(checked, v.condition, targets, n); cc_stmts(checked, v.body[:], targets, n); cc_stmts(checked, v.else_body[:], targets, n)
-        case ^Stmt_For:   cc_call(checked, v.condition, targets, n); cc_stmts(checked, v.body[:], targets, n)
-        case ^Stmt_Match: cc_call(checked, v.subject, targets, n); for arm in v.arms { cc_stmts(checked, arm.body[:], targets, n) }
-        case ^Stmt_Defer: cc_stmts(checked, v.body[:], targets, n)
-        // nested ^Stmt_Scope is its own slice (matches usedef.odin); Stmt_Decl /
-        // Stmt_Assign RHS calls bind a result, so the def->def graph traces them.
+        case Stmt_Call:   ld_call(checked, v.expr, targets, out, unfollowed)
+        case ^Stmt_If:    ld_call(checked, v.condition, targets, out, unfollowed); ld_stmts(checked, v.body[:], targets, out, unfollowed); ld_stmts(checked, v.else_body[:], targets, out, unfollowed)
+        case ^Stmt_For:   ld_call(checked, v.condition, targets, out, unfollowed); ld_stmts(checked, v.body[:], targets, out, unfollowed)
+        case ^Stmt_Match: ld_call(checked, v.subject, targets, out, unfollowed); for arm in v.arms { ld_stmts(checked, arm.body[:], targets, out, unfollowed) }
+        case ^Stmt_Defer: ld_stmts(checked, v.body[:], targets, out, unfollowed)
         }
     }
 }
 
+@(private="file")
+ld_call :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Var_Binding]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
+    call, ok := e.(^Expr_Call)
+    if !ok { return }
+    callee := hop_callee(call)
+    followable := callee != nil && callee.ast != nil
+    consuming, landed := false, false
+    for arg, i in call.args {
+        if !arg_reads_targets(checked, arg, targets) { continue }
+        consuming = true
+        if !followable { continue }
+        if p := hop_param_binding(checked, callee, i); p != nil {
+            append(out, Hop_Landing{ callee = callee, param = p, site = call.span })
+            landed = true
+        }
+    }
+    if consuming && !landed { unfollowed^ += 1 }
+}
+
+// One interprocedural hop over a seed set: the callee-param landings the values
+// reach (collapsed per parameter, with a site count), the total number of call
+// sites feeding them, and the count of consuming calls with no followable body.
+// Seeds may span functions (type-flow aggregates over every value of a type).
+@(private="file")
+flow_one_hop :: proc(checked: ^Checked_Program, seeds: map[^Var_Binding]bool) -> (landings: [dynamic]Hop_Landing, call_sites: int, unfollowed: int) {
+    fns: [dynamic]^Type_Scope
+    defer delete(fns)
+    seen_fn: map[^Type_Scope]bool
+    defer delete(seen_fn)
+    for b in seeds {
+        if b.fn != nil && !seen_fn[b.fn] { seen_fn[b.fn] = true; append(&fns, b.fn) }
+    }
+    slice.sort_by(fns[:], proc(a, b: ^Type_Scope) -> bool { return ask_label(a) < ask_label(b) })
+
+    by_param: map[^Var_Binding]Hop_Landing   // collapse repeated (callee,param) landings
+    defer delete(by_param)
+    all_sites: map[Span]bool                  // distinct call sites feeding the value
+    defer delete(all_sites)
+    for fn in fns {
+        targets := flow_targets(checked, fn, seeds)
+        defer delete(targets)
+        raw: [dynamic]Hop_Landing
+        defer delete(raw)
+        unfollowed += collect_landings(checked, fn, targets, &raw)
+        for L in raw {
+            all_sites[L.site] = true
+            if cur, ok := by_param[L.param]; ok {
+                cur.sites += 1
+                if landing_site_less(L.site, cur.site) { cur.site = L.site }
+                by_param[L.param] = cur
+            } else {
+                e := L; e.sites = 1; by_param[L.param] = e
+            }
+        }
+    }
+    for _, L in by_param { append(&landings, L) }
+    slice.sort_by(landings[:], landing_less)
+    call_sites = len(all_sites) + unfollowed
+    return
+}
+
+@(private="file")
+landing_site_less :: proc(a, b: Span) -> bool {
+    if a.file != b.file { return a.file < b.file }
+    return a.line < b.line
+}
+
+@(private="file")
+landing_less :: proc(a, b: Hop_Landing) -> bool {
+    la, lb := ask_label(a.callee), ask_label(b.callee)
+    if la != lb { return la < lb }
+    if a.param.param_index != b.param.param_index { return a.param.param_index < b.param.param_index }
+    if a.site.file != b.site.file { return a.site.file < b.site.file }
+    return a.site.line < b.site.line
+}
+
+// A parameter's type as the compiler prints it (`^Megastruct`, `f64`) — the ^ vs
+// value distinction tells the reader whether the callee can mutate the caller's
+// value. `type_name` is the same renderer the type-checker diagnostics use.
+@(private="file")
+flow_param_type :: proc(t: Type) -> string {
+    if t == nil { return "" }
+    return type_name(t)
+}
+
+// The param-landing block shared by the variable and type-flow forward views:
+// where the value flows in one interprocedural hop, plus any calls we can't follow.
+@(private="file")
+render_landings :: proc(bb: ^strings.Builder, landings: []Hop_Landing, unfollowed: int) {
+    if len(landings) > 0 {
+        fmt.sbprintf(bb, "\n  into calls — the value lands in  (%s)\n", ask_plural(len(landings), "parameter"))
+        for L in landings {
+            ty := flow_param_type(L.param.type_)
+            tystr := fmt.tprintf(" : %s", ty) if ty != "" else ""
+            more := fmt.tprintf("  (+%d more)", L.sites - 1) if L.sites > 1 else ""
+            fmt.sbprintf(bb, "    %-22s (param %s%s)  %s%s\n", ask_label(L.callee), L.param.name, tystr, ask_loc(L.site), more)
+        }
+    }
+    if unfollowed > 0 {
+        fmt.sbprintf(bb, "\n  %s not followed  (foreign / indirect / no body)\n", ask_plural(unfollowed, "call"))
+    }
+}
+
 // Render the "X -> ..." summary of a forward slice: a value can reach the return,
-// other statements (definitions), and/or calls it feeds untraced — joined, or
-// "nothing" when it reaches none of the three.
+// other statements (definitions), and/or calls it feeds (detailed below as param
+// landings) — joined, or "nothing" when it reaches none of the three.
 @(private="file")
 flow_affects_tail :: proc(ret: bool, n_stmts, n_calls: int) -> string {
     parts: [3]string
     k := 0
-    if ret         { parts[k] = "the return";                                              k += 1 }
-    if n_stmts > 0 { parts[k] = ask_plural(n_stmts, "statement");                           k += 1 }
-    if n_calls > 0 { parts[k] = fmt.tprintf("%s (effect not traced)", ask_plural(n_calls, "call")); k += 1 }
+    if ret         { parts[k] = "the return";                  k += 1 }
+    if n_stmts > 0 { parts[k] = ask_plural(n_stmts, "statement"); k += 1 }
+    if n_calls > 0 { parts[k] = ask_plural(n_calls, "call");      k += 1 }
     switch k {
     case 0:  return "nothing"
     case 1:  return parts[0]
@@ -527,6 +679,8 @@ render_var_contributors :: proc(bb: ^strings.Builder, checked: ^Checked_Program,
 // it reaches the return.
 @(private="file")
 render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
+    flow_analyze_all(checked)   // the interprocedural hop reads callees' param bindings
+
     succ := slice_build_succ(checked, b.fn)
     defer slice_free_succ(&succ)
     feeders := slice_build_feeders(checked, b.fn)
@@ -551,16 +705,18 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     }
     slice.sort_by(stmts[:], slice_def_less)
 
-    targets: map[^Var_Binding]bool
-    defer delete(targets)
-    targets[b] = true
-    calls := count_consumed_by_calls(checked, b.fn, targets)
+    seeds: map[^Var_Binding]bool
+    defer delete(seeds)
+    seeds[b] = true
+    landings, call_sites, unfollowed := flow_one_hop(checked, seeds)
+    defer delete(landings)
 
     fmt.sbprint(bb, "\nbelow (flow) — what this variable affects  (forward slice)\n")
-    fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), calls))
+    fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), call_sites))
     for d in stmts {
         fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
     }
+    render_landings(bb, landings[:], unfollowed)
 }
 
 // ---------------------------------------------------------------------------
@@ -715,17 +871,10 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     }
     slice.sort_by(stmts[:], slice_def_less)
 
-    // Calls these values feed untraced — counted once per seed-holding function
-    // (seeds spans many). `seeds` as targets is safe: a use in function G's body
-    // resolves to a G binding, which is a seed only if it is one.
-    calls := 0
-    counted_fns: map[^Type_Scope]bool
-    defer delete(counted_fns)
-    for b in seeds {
-        if b.fn == nil || counted_fns[b.fn] { continue }
-        counted_fns[b.fn] = true
-        calls += count_consumed_by_calls(checked, b.fn, seeds)
-    }
+    // The calls these values feed, followed one hop into the callee parameters
+    // they land in (flow_one_hop spans every seed-holding function).
+    landings, _, unfollowed := flow_one_hop(checked, seeds)
+    defer delete(landings)
 
     fmt.sbprintf(bb, "\nbelow (flow) — what values of type %s feed  (%s, forward slice)\n", label, ask_plural(len(seeds), "value"))
     if len(seeds) == 0 {
@@ -739,10 +888,8 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     if len(ret_fns) > 0 {
         fmt.sbprintf(bb, "\n  reaches the return of %s\n", ask_plural(len(ret_fns), "function"))
     }
-    if calls > 0 {
-        fmt.sbprintf(bb, "\n  feeds %s  (effect not traced — passed as a call argument)\n", ask_plural(calls, "call"))
-    }
-    if len(stmts) == 0 && len(ret_fns) == 0 && calls == 0 {
+    render_landings(bb, landings[:], unfollowed)
+    if len(stmts) == 0 && len(ret_fns) == 0 && len(landings) == 0 && unfollowed == 0 {
         fmt.sbprint(bb, "\n  (these values don't flow onward — terminal or unused)\n")
     }
 }

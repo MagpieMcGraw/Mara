@@ -1,0 +1,33 @@
+module askflow
+
+// Fixture for `mara ask` interprocedural forward slicing (slice.odin).
+// Not auto-checked for query output (the harness only gates compile pass/fail),
+// but a stable, predictable target to validate the hop machinery by hand. From a
+// dir whose name is `askflow`:  mara ask n in driver below  yields
+//   n  ->  the return + 1 statement + 1 call
+//     decl    k              (forward returns its first arg -> k traces to n)
+//   into calls — the value lands in (1 parameter)
+//     mutate  (param p : ^i64)        the one bare-call pointer hop
+// What this pins down:
+//   * the bare pointer call mutate(&n) IS followed -> a landing in mutate.p;
+//   * consume/forward bind their result, so they are NOT landings (their flow is
+//     the def->def trace, the cross-call return-arg summary's job);
+//   * `k` is reached but `m` is NOT — return_args is aliasing-based, so forward's
+//     identity `return a` traces to n while consume's `x + 1` (a fresh value)
+//     aliases nothing. (A pre-existing slice property, not the hop's doing.)
+
+mutate  :: fun(p: ^i64)          { p^ = 5 }
+consume :: fun(x: i64) -> i64    { return x + 1 }    // computed return: aliases no arg
+forward :: fun(a: i64, b: i64) -> i64 { return a }   // identity return of its FIRST arg
+
+driver :: fun() -> i64 {
+	n := 10
+	mutate(&n)          // bare call, by pointer -> n lands in mutate.p
+	m := consume(n)     // result bound, computed -> neither a landing nor a reached decl
+	k := forward(n, m)  // returns a -> k traces to n (def->def), b ignored
+	return k
+}
+
+main :: fun() -> i64 {
+	return driver()
+}
