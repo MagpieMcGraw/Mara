@@ -617,7 +617,16 @@ ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, f
 // render the selected (kind, dir) filters — an empty axis means "both". Returns
 // the rendered text and whether a single subject was found — on false (not found
 // / ambiguous) the text already explains why, and the caller exits non-zero.
-ask :: proc(checked: ^Checked_Program, target, kind, dir, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
+ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
+    // Variable criterion — `<name> in <fn>`. A non-empty `scope` named something
+    // that was not a module or file (main() consumes those), so resolve it as a
+    // function and slice the local/parameter `target` inside it.
+    if scope != "" {
+        vout, vok, handled := ask_try_variable(checked, target, kind, dir, scope, pkg)
+        if handled { return vout, vok }
+        return fmt.tprintf("mara ask: '%s' is not a known module, file, or function in %s\n", scope, pkg), false
+    }
+
     matches := ask_resolve_all(checked.table, target, scope_file, checked.functions)
     b := strings.builder_make()
 
@@ -715,6 +724,46 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, pkg, scope_file: strin
     }
 
     return strings.to_string(b), true
+}
+
+// Variable criterion: `mara ask <name> in <fn>`. `scope` named a thing that was
+// not a module or file (main() consumes those), so try it as a function and look
+// for a local/parameter `target` inside it. handled=false only when `scope` is
+// not a function at all, so the caller can report what a scope may be.
+ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pkg: string) -> (out: string, ok: bool, handled: bool) {
+    matches := ask_resolve_all(checked.table, scope, "", checked.functions)
+    fns: [dynamic]^Type_Scope
+    defer delete(fns)
+    for m in matches {
+        if ft, isfn := m.type_.(^Type_Scope); isfn && ft.kind == .Fun { append(&fns, ft) }
+    }
+    if len(fns) == 0 { return "", false, false }   // not a function — let the caller report
+    if len(fns) > 1 {
+        return fmt.tprintf("mara ask: scope '%s' is ambiguous — %d functions share that name; address the variable with `at <file>:<line>`.\n", scope, len(fns)), false, true
+    }
+    ft := fns[0]
+    ensure_fn_analysis(checked, ft)
+
+    vars: [dynamic]^Var_Binding
+    defer delete(vars)
+    for vb in checked.var_bindings {
+        if vb.fn == ft && vb.name == target { append(&vars, vb) }
+    }
+    if len(vars) == 0 {
+        return fmt.tprintf("mara ask: no variable '%s' in function '%s' — its parameters and locals are sliceable.\n", target, scope), false, true
+    }
+    if len(vars) > 1 {
+        // Shadowing: same name, different declarations. Don't guess — list them.
+        slice.sort_by(vars[:], proc(a, b: ^Var_Binding) -> bool { return a.span.line < b.span.line })
+        sb := strings.builder_make()
+        fmt.sbprintf(&sb, "mara ask: '%s' names %d variables in '%s' (shadowing) — pick one with `at <file>:<line>`:\n", target, len(vars), scope)
+        for vb in vars {
+            knd := "param" if vb.kind == .Param else "local"
+            fmt.sbprintf(&sb, "    %-6s %s\n", knd, ask_loc(vb.span))
+        }
+        return strings.to_string(sb), false, true
+    }
+    return render_var_slice(checked, vars[0], scope, kind, dir, pkg), true, true
 }
 
 // --- renderer (text adjacency dump) ----------------------------------------

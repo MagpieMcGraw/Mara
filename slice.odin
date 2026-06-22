@@ -418,3 +418,119 @@ slice_def_word :: proc(k: Def_Kind) -> string {
     }
     return "?"
 }
+
+// ---------------------------------------------------------------------------
+// Variable slice — `mara ask <var> in <fn>`.
+//
+// The same def-use machinery the function-endpoint slices use, seeded from an
+// arbitrary variable instead of the return / parameters. `above` is the backward
+// slice (what feeds the variable); `below` is the forward slice (what it feeds).
+// A variable has no type graph — its query is data-only.
+// ---------------------------------------------------------------------------
+
+render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, kind, dir, pkg: string) -> string {
+    ensure_fn_analysis(checked, b.fn)
+    knd := "param" if b.kind == .Param else "local"
+    bb := strings.builder_make()
+    fmt.sbprintf(&bb, "%s — %s in %s  %s   (module %s)\n", b.name, knd, fn_label, ask_loc(b.span), pkg)
+
+    // The `types` filter selects a graph a variable doesn't have. Say so plainly.
+    if kind == "types" {
+        fmt.sbprint(&bb, "\n(a variable has no type graph — its slice is data only; drop the `types` filter)\n")
+        return strings.to_string(bb)
+    }
+    show_above := dir == "" || dir == "above"
+    show_below := dir == "" || dir == "below"
+    if show_above { render_var_contributors(&bb, checked, b) }
+    if show_below { render_var_affects(&bb, checked, b) }
+    return strings.to_string(bb)
+}
+
+// Backward: seed a slice from every definition of the variable, drain to a
+// fixpoint, then report the contributing params/statements (the variable's own
+// definitions excluded — they are not contributors to themselves) plus the
+// branches/loops guarding them.
+@(private="file")
+render_var_contributors :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
+    s := Slice{ checked = checked }
+    defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen) }
+    for d in checked.defs { if d.binding == b { slice_add_def(&s, d) } }
+    for len(s.work) > 0 {
+        u := pop(&s.work)
+        rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
+        for d in rdefs { slice_add_def(&s, d) }
+    }
+
+    params: [dynamic]^Def
+    stmts:  [dynamic]^Def
+    defer { delete(params); delete(stmts) }
+    for d in s.result {
+        if d.binding == b { continue }   // the variable's own defs aren't contributors to it
+        if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
+    }
+    slice.sort_by(params[:], slice_def_less)
+    slice.sort_by(stmts[:],  slice_def_less)
+    slice.sort_by(s.ctrl[:], guard_span_less)
+
+    fmt.sbprint(bb, "\nabove (data) — what feeds this variable  (backward slice)\n")
+    if len(params) > 0 {
+        fmt.sbprintf(bb, "\n  parameters (%d)\n", len(params))
+        for d in params { fmt.sbprintf(bb, "    %-14s %s\n", d.binding.name, ask_loc(d.span)) }
+    }
+    if len(stmts) > 0 {
+        fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
+        for d in stmts {
+            fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
+        }
+    }
+    if len(s.ctrl) > 0 {
+        fmt.sbprintf(bb, "\n  control — branches/loops guarding the above (%d)\n", len(s.ctrl))
+        for g in s.ctrl { fmt.sbprintf(bb, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span)) }
+    }
+    if len(params) == 0 && len(stmts) == 0 {
+        fmt.sbprint(bb, "\n  (nothing — the variable's value is a constant or an external input)\n")
+    }
+}
+
+// Forward: BFS the def -> def edges from every definition of the variable, then
+// report the definitions it reaches (its own + parameters excluded) and whether
+// it reaches the return.
+@(private="file")
+render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
+    succ := slice_build_succ(checked, b.fn)
+    defer slice_free_succ(&succ)
+    feeders := slice_build_feeders(checked, b.fn)
+    defer delete(feeders)
+
+    reached: map[^Def]bool
+    defer delete(reached)
+    for d in checked.defs {
+        if d.binding == b {
+            r := slice_forward_reach(succ, d)
+            for k in r { reached[k] = true }
+            delete(r)
+        }
+    }
+
+    stmts: [dynamic]^Def
+    defer delete(stmts)
+    ret := false
+    for d in reached {
+        if feeders[d] { ret = true }
+        if d.binding != b && d.kind != .Param { append(&stmts, d) }
+    }
+    slice.sort_by(stmts[:], slice_def_less)
+
+    fmt.sbprint(bb, "\nbelow (data) — what this variable affects  (forward slice)\n")
+    tail: string
+    switch {
+    case ret && len(stmts) > 0: tail = fmt.tprintf("the return + %s", ask_plural(len(stmts), "statement"))
+    case ret:                   tail = "the return"
+    case len(stmts) > 0:        tail = fmt.tprintf("%s (not the return)", ask_plural(len(stmts), "statement"))
+    case:                       tail = "nothing"
+    }
+    fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, tail)
+    for d in stmts {
+        fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
+    }
+}

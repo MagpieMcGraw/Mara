@@ -1080,7 +1080,11 @@ parse_args :: proc() -> CLI_Args {
                     return args
                 }
                 args.ask_scope = rest[idx + 1]
-                rest = rest[:idx]
+                // Excise just the `in <scope>` pair — filters may follow it
+                // (`<var> in <fn> above`), so don't truncate the tail.
+                kept: [dynamic]string
+                for t, j in rest { if j != idx && j != idx + 1 { append(&kept, t) } }
+                rest = kept[:]
                 break
             }
         }
@@ -1180,14 +1184,14 @@ main :: proc() {
     // type-check on their own. Resolved here (post-discovery) as the file set
     // only exists now.
     ask_scope_file := ""
+    ask_scope_name := ""   // a fn scope (for `<var> in <fn>`), resolved post-check in `ask`
     if args.ask && args.ask_scope != "" {
         if args.ask_scope in all_files {
             args.pkg_name = args.ask_scope                   // module scope: re-root
         } else if ask_file_discovered(all_files, args.ask_scope) {
             ask_scope_file = filepath.base(args.ask_scope)   // file scope: pin subject, keep root
         } else {
-            fmt.printf("mara ask: '%s' is not a known module or file\n", args.ask_scope)
-            os.exit(1)
+            ask_scope_name = args.ask_scope                  // not a module/file — try it as a function in `ask`
         }
     }
 
@@ -1299,7 +1303,7 @@ main :: proc() {
             fmt.print(ask_module_map(checked, programs, all_files, args.compiler_dir, args.pkg_name))
             return
         }
-        out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, args.pkg_name, ask_scope_file, args.ask_depth)
+        out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.pkg_name, ask_scope_file, args.ask_depth)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed
         return
