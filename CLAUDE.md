@@ -14,14 +14,38 @@ mara build         	# build module matching current directory name
 
 # Analyzer
 
-Mara has a graph based code analyzer that can reveal information about the structure of Mara programs. Eventually it will support forward and backward slice analysis.
+Mara has a graph-based code analyzer that reveals the structure and data flow of
+Mara programs — type dependencies and forward/backward program slices — from the
+compiler itself.
 
-mara ask			# gives info about cwd
-mara ask name		# gives info about module or type or function or variable
+```
+mara ask                     # the cwd project: every module at a glance
+mara ask name                # a type, function, or module — everything about it
 
-You can pass a number to specify the depth
-You can use "deps|user" to narrow the output
-You can pass "in module" to narrow the output
+# Two filter axes, composable, in any order:
+mara ask name types          # only the type graph (fields / params / returns / embeds)
+mara ask name flow           # only the data-flow slice (the "outside" view)
+mara ask name above          # only the sources   (what it's built from / what feeds it)
+mara ask name below          # only the consumers (what depends on it / what it feeds)
+mara ask name types above    # filters combine — just the type sources
+mara ask name 2              # a number is the type-graph depth (0 = direct edges only)
+
+# `flow` is the "outside" view, consistent across subjects:
+mara ask Type flow           # aggregate the slice over every value of that type
+mara ask fn flow             # the call-site view: what feeds the args / where results go
+
+# Slicing — address a variable, then it gets sliced (above = feeds it, below = it feeds):
+mara ask var in fn           # a local or parameter inside a function
+mara ask return in fn        # what feeds a function's return value (the inside view)
+mara ask at file:line        # the variable defined at that exact spot (precise)
+
+# Narrow where a name resolves:
+mara ask name in module      # analyze a different discovered module
+mara ask name in file        # resolve the name within one file
+```
+
+`types`/`flow` pick the graph, `above`/`below` the direction; omit either to get
+both. Depth (a number) bounds the type graph only — slices are always full.
 
 ## Workflow
 
