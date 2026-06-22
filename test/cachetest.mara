@@ -1,10 +1,12 @@
 module cachetest
 
-// Self-contained validation of the cache.mara idioms:
+// Self-contained validation of the cache.mara STREAMING idioms:
 //   * native struct blit into a []byte buffer through a ^[]byte param
 //   * [64]utf8 name + str64 round-trip (out-param)
-//   * typed element loop (mesh verts/inds) staged + read back
-//   * incremental file_open_write/file_write + read_entire_file
+//   * typed element loop (mesh verts/inds) staged on write, reinterpreted on read
+//   * incremental file_open_write/file_write to build the .bin, then per-entry
+//     STREAMING read: file_open_read once, file_seek to each entry / payload,
+//     file_read just that slice (dst[0:size] -> len=cap=size, exact read)
 //   * `?` propagation, bool(err), magic/version validation
 
 use mara.core
@@ -77,9 +79,57 @@ open_cache :: fun(image: []byte) -> i64, err {
     return i64(h.count)
 }
 
-read_entry :: fun(image: []byte, i: i64) -> Entry {
-    e : Entry = image[HSZ + i * ESZ]
+// --- streaming reader (mirrors cache.mara: Cache / cache_open / cache_entry /
+// --- cache_read), self-contained on this fixture's Header / Entry. -----------
+
+St :: struct {
+    file:    os.File_Id
+    is_open: bool
+    count:   i64
+}
+
+stream_open :: fun(c: ^St, path: []utf8) -> err {
+    c.is_open = false
+    c.count = 0
+    id := file_open_read(path)?
+    hbuf : [HSZ]byte = void
+    head := hbuf[0 : HSZ]
+    rerr := file_read(id, &head)
+    if bool(rerr) or head.len < HSZ {
+        file_close(id)
+        return Bad_Header
+    }
+    h : Header = head[0]
+    if h.magic != MAGIC or h.version != VERSION {
+        file_close(id)
+        return Bad_Header
+    }
+    c.file = id
+    c.is_open = true
+    c.count = i64(h.count)
+}
+
+stream_close :: fun(c: ^St) {
+    if c.is_open {
+        file_close(c.file)
+        c.is_open = false
+    }
+}
+
+stream_entry :: fun(c: ^St, index: i64) -> Entry, err {
+    file_seek(c.file, HSZ + index * ESZ, SEEK_SET)?
+    ebuf : [ESZ]byte = void
+    es := ebuf[0 : ESZ]
+    file_read(c.file, &es)?
+    e : Entry = es[0]
     return e
+}
+
+stream_read :: fun(c: ^St, e: Entry, dst: ^[]byte) -> err {
+    size := i64(e.data_size)
+    file_seek(c.file, i64(e.data_offset), SEEK_SET)?
+    buf := dst[0 : size]
+    file_read(c.file, &buf)?
 }
 
 main :: fun() {
@@ -154,48 +204,50 @@ main :: fun() {
         return
     }
 
-    // --- read it back ---
-    readbuf : [..2048]byte
-    rerr := read_entire_file("cachetest.bin", &readbuf)
-    if bool(rerr) {
-        print("READ FAILED:", rerr)
-        return
-    }
-
-    count, oerr := open_cache(readbuf[:])
+    // --- read it back by STREAMING: open once, seek per entry/payload ---
+    st : St
+    oerr := stream_open(&st, "cachetest.bin")
     if bool(oerr) {
         print("OPEN FAILED:", oerr)
         return
     }
-    print("opened, count=%", count)
+    defer stream_close(&st)
+    print("opened, count=%", st.count)
 
-    // verify entry 0 (texture bytes)
-    r0 := read_entry(readbuf[:], 0)
+    // entry 0 (texture bytes): read the TOC entry, then stream its payload
+    r0, r0err := stream_entry(&st, 0)
+    if bool(r0err) { print("ENTRY0 FAILED:", r0err); return }
     name0 : str64
     get_name(&r0, &name0)
-    lo := i64(r0.data_offset)
-    payload0 := readbuf[lo : lo + i64(r0.data_size)]
+    tex_back : [64]byte
+    dst0 := tex_back[0 : 64]            // []byte, len = cap = 64 (indexable after fill)
+    p0err := stream_read(&st, r0, &dst0)
+    if bool(p0err) { print("READ0 FAILED:", p0err); return }
     print("tex name=% w=% h=% size=% first3=% % %",
         name0, r0.meta[0], r0.meta[1], r0.data_size,
-        payload0[0], payload0[1], payload0[2])
+        dst0[0], dst0[1], dst0[2])
     // expected: name kenney/bridge, w 4 h 4, size 16, first3 0 3 6
 
-    // verify entry 1 (mesh, typed read back)
-    r1 := read_entry(readbuf[:], 1)
+    // entry 1 (mesh): stream the payload into scratch, reinterpret verts/inds
+    r1, r1err := stream_entry(&st, 1)
+    if bool(r1err) { print("ENTRY1 FAILED:", r1err); return }
     name1 : str64
     get_name(&r1, &name1)
     rvcount := i64(r1.meta[0])
     ricount := i64(r1.meta[1])
-    mbase := i64(r1.data_offset)
-    v_last : Vtx = readbuf[mbase + (rvcount - 1) * size_of(Vtx)]
-    last_ioff := mbase + rvcount * size_of(Vtx)
-    i_last : u32 = readbuf[last_ioff + (ricount - 1) * size_of(u32)]
+    mesh_back : [512]byte
+    scratch := mesh_back[0 : 512]       // []byte, len = cap = 512
+    mErr := stream_read(&st, r1, &scratch)
+    if bool(mErr) { print("READ1 FAILED:", mErr); return }
+    v_last : Vtx = scratch[(rvcount - 1) * size_of(Vtx)]
+    last_ioff := rvcount * size_of(Vtx)
+    i_last : u32 = scratch[last_ioff + (ricount - 1) * size_of(u32)]
     print("mesh name=% vcount=% icount=% last_vpos=% % % last_idx=%",
         name1, rvcount, ricount,
         v_last.position[0], v_last.position[1], v_last.position[2], i_last)
     // expected: name tri, vcount 3, icount 3, last_vpos 2 2.5 2.25, last_idx 2
 
-    // --- magic validation: corrupt header, expect Bad_Header ---
+    // --- magic validation: corrupt header (in-RAM), expect Bad_Header ---
     bad : [..64]byte
     bad.len = 16
     badcount, berr := open_cache(bad[:])
