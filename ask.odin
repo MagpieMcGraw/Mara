@@ -621,13 +621,13 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     // Precise variable criterion — `at <file>:<line>` identifies a variable by its
     // definition site; no name needed.
     if at != "" {
-        return ask_try_at(checked, at, kind, dir, pkg)
+        return ask_try_at(checked, at, kind, dir, pkg, depth)
     }
     // Variable criterion — `<name> in <fn>`. A non-empty `scope` named something
     // that was not a module or file (main() consumes those), so resolve it as a
     // function and slice the local/parameter `target` inside it.
     if scope != "" {
-        vout, vok, handled := ask_try_variable(checked, target, kind, dir, scope, pkg)
+        vout, vok, handled := ask_try_variable(checked, target, kind, dir, scope, pkg, depth)
         if handled { return vout, vok }
         // Not a function. A struct is a named scope too, but its members are fields
         // (not sliceable) and methods (queryable by name), so point there instead.
@@ -734,7 +734,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
             render_fn_users(&b, checked, ft)   // callers, from the call graph
             render_fn_flow_below(&b, checked, ft, subject.label)
         } else {
-            render_type_flow_below(&b, checked, subject.type_, subject.label)
+            render_type_flow_below(&b, checked, subject.type_, subject.label, depth)
         }
     }
 
@@ -757,7 +757,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
 // not a module or file (main() consumes those), so try it as a function and look
 // for a local/parameter `target` inside it. handled=false only when `scope` is
 // not a function at all, so the caller can report what a scope may be.
-ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pkg: string) -> (out: string, ok: bool, handled: bool) {
+ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pkg: string, depth: int) -> (out: string, ok: bool, handled: bool) {
     matches := ask_resolve_all(checked.table, scope, "", checked.functions)
     fns: [dynamic]^Type_Scope
     defer delete(fns)
@@ -797,14 +797,14 @@ ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pk
         }
         return strings.to_string(sb), false, true
     }
-    return render_var_slice(checked, vars[0], scope, kind, dir, pkg), true, true
+    return render_var_slice(checked, vars[0], scope, kind, dir, pkg, depth), true, true
 }
 
 // Precise variable criterion: `mara ask at <file>:<line>`. A function carries no
 // source range, so analyze the functions declared in that file (their def sites
 // then exist) and pick the variable defined at exactly (file, line). A line that
 // assigns several variables lists them; one with none reports the miss.
-ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string) -> (out: string, ok: bool) {
+ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth: int) -> (out: string, ok: bool) {
     file, line, pok := ask_parse_at(loc)
     if !pok {
         return fmt.tprintf("mara ask: `at` expects <file>:<line> (e.g. `at camera.mara:176`); got '%s'\n", loc), false
@@ -840,7 +840,7 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string) -> (o
         }
         return strings.to_string(sb), false
     }
-    return render_var_slice(checked, bindings[0], ask_label(bindings[0].fn), kind, dir, pkg), true
+    return render_var_slice(checked, bindings[0], ask_label(bindings[0].fn), kind, dir, pkg, depth), true
 }
 
 // --- renderer (text adjacency dump) ----------------------------------------

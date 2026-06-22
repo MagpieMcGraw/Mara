@@ -957,6 +957,7 @@ CLI_Args :: struct {
     ask_kind:     string,  // "types" | "flow" | "" (both graphs)
     ask_dir:      string,  // "above" | "below" | "" (both directions)
     ask_scope:    string,  // optional `in <module|file|fn>` token; "" = cwd default
+    ask_scope2:   string,  // second `in` token — the two compose (`<var> in <fn> in <module>`)
     ask_at:       string,  // optional `at <file>:<line>` precise variable location
     ask_depth:    int,     // hop budget; -1 = unbounded (the default)
 }
@@ -974,18 +975,23 @@ ASK_USAGE :: `Usage: mara ask <name> [types|flow] [above|below] [depth] [in <sco
     below          only the consumers — what depends on <name> / what it feeds
     types          only the type graph (fields, params, returns, embeds)
     flow           only the data-flow slice (a function's value flow + its callers)
-    depth          hops of graph to expand: 0 = direct edges only,
-                   omitted = the full transitive closure (default)
+    depth          hops to expand. TYPES: 0 = direct edges, omitted = full closure.
+                   FLOW (forward): call hops to follow into callees — omitted = 1,
+                   0 = none (count only), N = N hops.
     in <module>    analyze that module instead of the current directory
     in <file>      keep the current module; resolve <name> within one file
     in <fn>        slice the local/parameter <name> inside that function
     return in <fn> slice what feeds <fn>'s return value (the inside view)
     at F:L         slice the variable defined at file F, line L (precise)
 
+  Two 'in' scopes compose (a function + a module), in any order:
+    mara ask v in fn in mymod        slice 'v' in fn, in a module that isn't the cwd
+
   Filters compose and may appear in any order:
     mara ask Font types above        just Font's type sources
     mara ask camera_move flow        just the function's value flow + callers
     mara ask pos in world_to_screen  slice the local 'pos' (both directions)
+    mara ask game in game_run 2      forward slice, following calls two hops deep
     mara ask at camera.mara:176      slice whatever is defined on that line`
 
 // Help-flag spellings honored wherever a help request is accepted — the common
@@ -1088,22 +1094,32 @@ parse_args :: proc() -> CLI_Args {
             }
         }
 
-        // Peel a trailing `in <scope>` (a module name or a file). The actual
-        // file -> module resolution happens after discovery, in main().
-        for idx in 0 ..< len(rest) {
-            if rest[idx] == "in" {
-                if idx + 1 >= len(rest) {
-                    fmt.println("mara ask: `in` needs a module or file name")
-                    return args
-                }
-                args.ask_scope = rest[idx + 1]
-                // Excise just the `in <scope>` pair — filters may follow it
-                // (`<var> in <fn> above`), so don't truncate the tail.
-                kept: [dynamic]string
-                for t, j in rest { if j != idx && j != idx + 1 { append(&kept, t) } }
-                rest = kept[:]
-                break
+        // Peel `in <scope>` tokens — up to two, which COMPOSE: `<var> in <fn> in
+        // <module>` scopes the variable to a function AND pins the module. Each
+        // value's role (module re-root / file pin / fn scope) is classified after
+        // discovery in main(), so the two are order-independent here. The actual
+        // file -> module resolution also happens after discovery.
+        for {
+            found := -1
+            for idx in 0 ..< len(rest) { if rest[idx] == "in" { found = idx; break } }
+            if found < 0 { break }
+            if found + 1 >= len(rest) {
+                fmt.println("mara ask: `in` needs a module, file, or function name")
+                return args
             }
+            val := rest[found + 1]
+            switch {
+            case args.ask_scope  == "": args.ask_scope  = val
+            case args.ask_scope2 == "": args.ask_scope2 = val
+            case:
+                fmt.println("mara ask: at most two `in` scopes (e.g. a function and a module)")
+                return args
+            }
+            // Excise just the `in <scope>` pair — filters may follow it
+            // (`<var> in <fn> above`), so don't truncate the tail.
+            kept: [dynamic]string
+            for t, j in rest { if j != found && j != found + 1 { append(&kept, t) } }
+            rest = kept[:]
         }
 
         // Peel an optional `at <file>:<line>` — precise variable addressing.
@@ -1228,13 +1244,21 @@ main :: proc() {
     // only exists now.
     ask_scope_file := ""
     ask_scope_name := ""   // a fn scope (for `<var> in <fn>`), resolved post-check in `ask`
-    if args.ask && args.ask_scope != "" {
-        if args.ask_scope in all_files {
-            args.pkg_name = args.ask_scope                   // module scope: re-root
-        } else if ask_file_discovered(all_files, args.ask_scope) {
-            ask_scope_file = filepath.base(args.ask_scope)   // file scope: pin subject, keep root
-        } else {
-            ask_scope_name = args.ask_scope                  // not a module/file — try it as a function in `ask`
+    if args.ask {
+        rerooted := false
+        for sc in ([2]string{ args.ask_scope, args.ask_scope2 }) {
+            if sc == "" { continue }
+            if sc in all_files {
+                if rerooted { fmt.println("mara ask: two module scopes — only one `in <module>` re-roots the analysis"); os.exit(1) }
+                args.pkg_name = sc                               // module scope: re-root
+                rerooted = true
+            } else if ask_file_discovered(all_files, sc) {
+                if ask_scope_file != "" { fmt.println("mara ask: two file scopes — pin one file at a time"); os.exit(1) }
+                ask_scope_file = filepath.base(sc)               // file scope: pin subject, keep root
+            } else {
+                if ask_scope_name != "" { fmt.println("mara ask: two function scopes — disambiguate one with `at <file>:<line>`"); os.exit(1) }
+                ask_scope_name = sc                              // not a module/file — try it as a function in `ask`
+            }
         }
     }
 

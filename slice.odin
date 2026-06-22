@@ -370,16 +370,28 @@ slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^De
 // stay an honest "not followed" count.
 // ---------------------------------------------------------------------------
 
+// The call-hop budget for a forward flow query. The shared `depth` token is the
+// type-graph hop budget for type queries; for flow it bounds call-following, and
+// an omitted depth (-1) defaults to a single hop — the readable default, since a
+// value threaded through a god-object reaches most of the program at full depth.
+// An explicit 0 disables following (the pre-hop "feeds N calls" count only).
+@(private="file")
+flow_max_hops :: proc(depth: int) -> int {
+    return 1 if depth < 0 else depth
+}
+
 // One landing: a callee parameter a traced value flows into. `site` is a
 // representative (earliest) call site; `sites` counts how many calls land the
 // value in this same parameter (the value reaching `draw_marker.state` from four
-// call sites is one landing, ×4, not four rows).
+// call sites is one landing, ×4, not four rows); `depth` is the shortest call-hop
+// distance from the queried value (1 = a direct call).
 @(private="file")
 Hop_Landing :: struct {
     callee: ^Type_Scope,
     param:  ^Var_Binding,
     site:   Span,
     sites:  int,
+    depth:  int,
 }
 
 // The callee a resolved call reaches, or nil (distinct-cast / foreign / indirect).
@@ -479,46 +491,98 @@ ld_call :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Var_Binding]bo
     if consuming && !landed { unfollowed^ += 1 }
 }
 
-// One interprocedural hop over a seed set: the callee-param landings the values
-// reach (collapsed per parameter, with a site count), the total number of call
-// sites feeding them, and the count of consuming calls with no followable body.
-// Seeds may span functions (type-flow aggregates over every value of a type).
+// Interprocedural forward reach over a seed set, up to `max_hops` call hops (a
+// breadth-first walk: hop 1 = the calls the seeds feed directly, hop 2 = the
+// calls THOSE callee parameters feed, and so on). Returns the callee-param
+// landings (collapsed per parameter, each tagged with its shortest hop depth and
+// a site count), the number of distinct calls at hop 1 (the "feeds N calls"
+// tail), and the count of consuming calls with no followable body across all hops.
+// A parameter is expanded once (the `expanded` set is the cycle / recursion guard,
+// seeded with the query's own values so a hop landing back on them stops).
 @(private="file")
-flow_one_hop :: proc(checked: ^Checked_Program, seeds: map[^Var_Binding]bool) -> (landings: [dynamic]Hop_Landing, call_sites: int, unfollowed: int) {
+flow_reach :: proc(checked: ^Checked_Program, seeds: map[^Var_Binding]bool, max_hops: int) -> (landings: [dynamic]Hop_Landing, hop1_calls: int, unfollowed: int) {
+    by_param: map[^Var_Binding]Hop_Landing
+    defer delete(by_param)
+    expanded: map[^Var_Binding]bool
+    defer delete(expanded)
+    for b in seeds { expanded[b] = true }
+
+    // Hop 1: the initial seeds, grouped by their owning functions (sorted for a
+    // deterministic representative site when the same param is reached twice).
     fns: [dynamic]^Type_Scope
     defer delete(fns)
-    seen_fn: map[^Type_Scope]bool
-    defer delete(seen_fn)
-    for b in seeds {
-        if b.fn != nil && !seen_fn[b.fn] { seen_fn[b.fn] = true; append(&fns, b.fn) }
+    {
+        seen_fn: map[^Type_Scope]bool
+        defer delete(seen_fn)
+        for b in seeds { if b.fn != nil && !seen_fn[b.fn] { seen_fn[b.fn] = true; append(&fns, b.fn) } }
     }
     slice.sort_by(fns[:], proc(a, b: ^Type_Scope) -> bool { return ask_label(a) < ask_label(b) })
 
-    by_param: map[^Var_Binding]Hop_Landing   // collapse repeated (callee,param) landings
-    defer delete(by_param)
-    all_sites: map[Span]bool                  // distinct call sites feeding the value
-    defer delete(all_sites)
-    for fn in fns {
-        targets := flow_targets(checked, fn, seeds)
-        defer delete(targets)
-        raw: [dynamic]Hop_Landing
-        defer delete(raw)
-        unfollowed += collect_landings(checked, fn, targets, &raw)
-        for L in raw {
-            all_sites[L.site] = true
-            if cur, ok := by_param[L.param]; ok {
-                cur.sites += 1
-                if landing_site_less(L.site, cur.site) { cur.site = L.site }
-                by_param[L.param] = cur
-            } else {
-                e := L; e.sites = 1; by_param[L.param] = e
+    // Hop 1 is always counted (the "feeds N calls" tail), but only RECORDED as
+    // landings when we're following (max_hops >= 1). depth 0 = count only, no block.
+    follow := max_hops >= 1
+    frontier: [dynamic]^Var_Binding
+    defer delete(frontier)
+    {
+        hop1_sites: map[Span]bool
+        defer delete(hop1_sites)
+        hop1_uf := 0
+        for fn in fns {
+            targets := flow_targets(checked, fn, seeds)
+            raw: [dynamic]Hop_Landing
+            hop1_uf += collect_landings(checked, fn, targets, &raw)
+            for L in raw {
+                hop1_sites[L.site] = true
+                if follow {
+                    flow_record(&by_param, L, 1)
+                    if !expanded[L.param] { expanded[L.param] = true; append(&frontier, L.param) }
+                }
             }
+            delete(targets); delete(raw)
         }
+        hop1_calls = len(hop1_sites) + hop1_uf
+        if follow { unfollowed += hop1_uf }
     }
+    if !follow { return }   // depth 0: the count is in hop1_calls; emit no landings
+
+    // Hops 2..max_hops: each frontier parameter is a seed inside its own callee.
+    depth := 1
+    for depth < max_hops && len(frontier) > 0 {
+        depth += 1
+        next: [dynamic]^Var_Binding
+        for p in frontier {
+            ps: map[^Var_Binding]bool
+            ps[p] = true
+            targets := flow_targets(checked, p.fn, ps)
+            raw: [dynamic]Hop_Landing
+            unfollowed += collect_landings(checked, p.fn, targets, &raw)
+            for L in raw {
+                flow_record(&by_param, L, depth)
+                if !expanded[L.param] { expanded[L.param] = true; append(&next, L.param) }
+            }
+            delete(ps); delete(targets); delete(raw)
+        }
+        delete(frontier)
+        frontier = next
+    }
+
     for _, L in by_param { append(&landings, L) }
     slice.sort_by(landings[:], landing_less)
-    call_sites = len(all_sites) + unfollowed
     return
+}
+
+// Fold a raw landing into the per-parameter map: bump the site count, keep the
+// shallowest hop depth and the earliest call site.
+@(private="file")
+flow_record :: proc(by_param: ^map[^Var_Binding]Hop_Landing, L: Hop_Landing, depth: int) {
+    if cur, ok := by_param[L.param]; ok {
+        cur.sites += 1
+        if depth < cur.depth { cur.depth = depth }
+        if landing_site_less(L.site, cur.site) { cur.site = L.site }
+        by_param[L.param] = cur
+    } else {
+        e := L; e.sites = 1; e.depth = depth; by_param[L.param] = e
+    }
 }
 
 @(private="file")
@@ -527,8 +591,11 @@ landing_site_less :: proc(a, b: Span) -> bool {
     return a.line < b.line
 }
 
+// Sort landings by hop depth first (so the render can bucket "N hops:"), then by
+// callee / parameter / site for stable output within a hop.
 @(private="file")
 landing_less :: proc(a, b: Hop_Landing) -> bool {
+    if a.depth != b.depth { return a.depth < b.depth }
     la, lb := ask_label(a.callee), ask_label(b.callee)
     if la != lb { return la < lb }
     if a.param.param_index != b.param.param_index { return a.param.param_index < b.param.param_index }
@@ -550,12 +617,22 @@ flow_param_type :: proc(t: Type) -> string {
 @(private="file")
 render_landings :: proc(bb: ^strings.Builder, landings: []Hop_Landing, unfollowed: int) {
     if len(landings) > 0 {
+        max_d := 1
+        for L in landings { if L.depth > max_d { max_d = L.depth } }
+        multi := max_d > 1   // a single ring stays flat, like before; deeper views bucket by hop
         fmt.sbprintf(bb, "\n  into calls — the value lands in  (%s)\n", ask_plural(len(landings), "parameter"))
+        cur_d := 0
         for L in landings {
+            if multi && L.depth != cur_d {
+                cur_d = L.depth
+                tag := " (direct)" if L.depth == 1 else ""
+                fmt.sbprintf(bb, "    %s%s:\n", ask_plural(L.depth, "hop"), tag)
+            }
+            indent := "      " if multi else "    "
             ty := flow_param_type(L.param.type_)
             tystr := fmt.tprintf(" : %s", ty) if ty != "" else ""
             more := fmt.tprintf("  (+%d more)", L.sites - 1) if L.sites > 1 else ""
-            fmt.sbprintf(bb, "    %-22s (param %s%s)  %s%s\n", ask_label(L.callee), L.param.name, tystr, ask_loc(L.site), more)
+            fmt.sbprintf(bb, "%s%-22s (param %s%s)  %s%s\n", indent, ask_label(L.callee), L.param.name, tystr, ask_loc(L.site), more)
         }
     }
     if unfollowed > 0 {
@@ -610,7 +687,7 @@ slice_def_word :: proc(k: Def_Kind) -> string {
 // A variable has no type graph — its query is data-only.
 // ---------------------------------------------------------------------------
 
-render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, kind, dir, pkg: string) -> string {
+render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, kind, dir, pkg: string, depth: int) -> string {
     ensure_fn_analysis(checked, b.fn)
     knd := "param" if b.kind == .Param else "local"
     bb := strings.builder_make()
@@ -624,7 +701,7 @@ render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, k
     show_above := dir == "" || dir == "above"
     show_below := dir == "" || dir == "below"
     if show_above { render_var_contributors(&bb, checked, b) }
-    if show_below { render_var_affects(&bb, checked, b) }
+    if show_below { render_var_affects(&bb, checked, b, depth) }
     return strings.to_string(bb)
 }
 
@@ -678,7 +755,7 @@ render_var_contributors :: proc(bb: ^strings.Builder, checked: ^Checked_Program,
 // report the definitions it reaches (its own + parameters excluded) and whether
 // it reaches the return.
 @(private="file")
-render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
+render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int) {
     flow_analyze_all(checked)   // the interprocedural hop reads callees' param bindings
 
     succ := slice_build_succ(checked, b.fn)
@@ -708,11 +785,11 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     seeds: map[^Var_Binding]bool
     defer delete(seeds)
     seeds[b] = true
-    landings, call_sites, unfollowed := flow_one_hop(checked, seeds)
+    landings, hop1_calls, unfollowed := flow_reach(checked, seeds, flow_max_hops(depth))
     defer delete(landings)
 
     fmt.sbprint(bb, "\nbelow (flow) — what this variable affects  (forward slice)\n")
-    fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), call_sites))
+    fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), hop1_calls))
     for d in stmts {
         fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
     }
@@ -838,7 +915,7 @@ render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     }
 }
 
-render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, T: Type, label: string) {
+render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, T: Type, label: string, depth: int) {
     seeds := type_flow_seeds(checked, T)
     defer delete(seeds)
 
@@ -871,9 +948,9 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     }
     slice.sort_by(stmts[:], slice_def_less)
 
-    // The calls these values feed, followed one hop into the callee parameters
-    // they land in (flow_one_hop spans every seed-holding function).
-    landings, _, unfollowed := flow_one_hop(checked, seeds)
+    // The calls these values feed, followed into the callee parameters they land
+    // in (flow_reach spans every seed-holding function, up to the hop budget).
+    landings, _, unfollowed := flow_reach(checked, seeds, flow_max_hops(depth))
     defer delete(landings)
 
     fmt.sbprintf(bb, "\nbelow (flow) — what values of type %s feed  (%s, forward slice)\n", label, ask_plural(len(seeds), "value"))
