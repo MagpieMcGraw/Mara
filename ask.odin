@@ -241,6 +241,19 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[
     matches: [dynamic]Ask_Match
     seen: map[Ask_Dedup_Key]bool
     consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]bool, t: Type, scope_file: string) {
+        // A module's backing namespace is a `.Struct`-kind Type_Scope with
+        // is_module set — a compiler-generated scope holding the module's defs,
+        // not a data type. It has no fields, no span, and no users, yet ask_sub
+        // labels it "struct" and ask_label gives it the module's own name (any
+        // case — `camera`, `Pounce`). Enumerating it lets `mara ask <module>`
+        // resolve to a phantom `struct ?` subject instead of the module surface.
+        // Worse, which module won was map-order-dependent: every such scope shares
+        // the empty-span dedup key, so only one survived per run (why `mara ask
+        // Pounce` usually worked while peers flaked). Module names are served by
+        // ask_module_surface / the module map; skip the namespace here so a module
+        // name always resolves there, structurally (not by case) — while a
+        // separately-named data type like the struct `Camera` resolves as itself.
+        if ts, ok := t.(^Type_Scope); ok && ts.is_module { return }
         sp := ask_span(t)
         if scope_file != "" && filepath.base(sp.file) != scope_file { return }
         sub, _ := ask_sub(t)
