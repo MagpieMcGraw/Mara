@@ -1,0 +1,128 @@
+module entity
+
+// Renderable entity types (Shape, Glyph) + their factories and the scene
+// generators. Port of Warlock's game.odin (renamed: a `game` module would
+// shadow Pounce's pervasive `game` local). `Visual` already lives in `object`.
+//
+// Warlock stored these in a generic `Array(T)`; here they flow through plain
+// `[..N]T` partial arrays (Pounce's idiom), so the generators take `^[]T` and
+// append. Object removal is by the `exists` flag (iteration skips it), not slot
+// reuse — enough for the static scenes these build.
+
+use mara.core
+use mara.math
+use object
+use camera
+use stuff
+
+Shape :: struct {
+	obj:    Object
+	visual: Visual
+}
+
+Glyph :: struct {
+	using shape: Shape
+	letter:      utf8
+	font_index:  i64   // -1 = unresolved, >=0 = index into assets.fonts
+}
+
+// A white, auto-resolving visual on the default quad/texture.
+visual_create :: fun() -> Visual {
+	v := Visual{}
+	v.color   = [1, 1, 1]
+	v.resolve = true
+	return v
+}
+
+game_shape_create :: fun(
+	x: f32, y: f32, z: f32, size: f32,
+	mesh:    []utf8 = "=quad",
+	texture: []utf8 = "DEFAULT") -> Shape
+{
+	shape: Shape
+	shape.obj       = Object{}
+	shape.obj.pos   = Vec3{x, y, z}
+	shape.obj.scale = Vec3{size, size, size}
+	shape.visual    = visual_create()
+	shape.visual.mesh.name    = mesh
+	shape.visual.texture.name = texture
+	return shape
+}
+
+game_glyph_create :: fun(x: f32, y: f32, z: f32, char: utf8, font_name: []utf8) -> Glyph {
+	glyph: Glyph
+	glyph.shape        = game_shape_create(x, y, z, 1)
+	glyph.visual.color = [1, 1, 1]
+	glyph.visual.font  = font_name
+	glyph.letter       = char
+	glyph.font_index   = -1
+	return glyph
+}
+
+// 16 quads in a row, each showing a successive atlas layer.
+game_create_shapes_line :: fun(arr: ^[]Shape, start_x: f32, size: f32, spacing: f32) {
+	for i in 0..16 {
+		x := start_x + f32(i) * spacing
+		shape := game_shape_create(x, 0, 0, size)
+		shape.obj.dir            = Quat{w = 1.0}   // QUAT_IDENTITY const can't be `=`-stored to a field
+		shape.visual.texture.layer = u32(i)
+		shape.visual.texture.name  = ""
+		shape.visual.texture.uv    = [1, 1, 0, 0]   // ATLAS_TEXTURE.uv
+		arr + shape
+	}
+}
+
+// Quads arranged in a half circle facing the camera.
+game_create_shapes_half_circle :: fun(
+	arr: ^[]Shape, camera: ^Camera, count: i64, distance: f32, size: f32)
+{
+	points : [..64]Circle_Point
+	place_half_circle(&points, count, camera.obj.pos, camera.obj.dir, distance)
+
+	world_up := Vec3{0, 0, -1}   // HACK (matches Warlock)
+	for i in 0..points.len {
+		pos := points[i].pos
+		shape := game_shape_create(pos.x, pos.y, pos.z, size)
+
+		fwd := shape.obj.pos - camera.obj.pos
+		shape.obj.dir             = quat_from_fwd_and_up(fwd, world_up)
+		shape.visual.texture.name  = ""
+		shape.visual.texture.uv    = [1, 1, 0, 0]   // ATLAS_TEXTURE.uv
+		shape.visual.texture.layer = u32(i)
+		arr + shape
+	}
+}
+
+// A glyph per character code 0..255 in a 16x16 grid (resolved later).
+game_create_font_grid :: fun(
+	arr: ^[]Glyph, font_name: []utf8, origin: Vec3, cell_size: f32, spacing: f32)
+{
+	for char_code in 0..256 {
+		row := char_code / 16
+		col := char_code % 16
+
+		x := origin.x + f32(col) * (cell_size + spacing)
+		y := origin.y - f32(row) * (cell_size + spacing)
+
+		glyph := game_glyph_create(x, y, origin.z, utf8(char_code), font_name)
+		glyph.obj.scale    = Vec3{cell_size, cell_size, cell_size}
+		glyph.visual.color = [1, 0.5, 0.5]
+		arr + glyph
+	}
+}
+
+// Quads displaying successive font-atlas layers.
+game_create_font_atlas_display :: fun(
+	arr: ^[]Shape, start_x: f32, y: f32, size: f32, spacing: f32, count: i64)
+{
+	for i in 0..count {
+		x := start_x + f32(i) * spacing
+		shape := game_shape_create(x, y, 10, size, "=quad")
+		shape.obj.dir              = Quat{w = 1.0}   // QUAT_IDENTITY const can't be `=`-stored to a field
+		shape.visual.texture.layer = u32(i)
+		shape.visual.texture.name  = ""
+		shape.visual.texture.uv    = [1, 1, 0, 0]   // full atlas
+		shape.visual.resolve       = false
+		arr + shape
+	}
+}
