@@ -1,0 +1,49 @@
+Design for the mara ask code analyzer
+
+Basic usage should be:
+mara ask 	// shows info about modules in cwd
+mara ask name	// shows info about a symbol, which must be in some module in cwd
+name can be a module, struct, function, variable
+
+2 types of analysis: type and flow
+2 types of direction: above and below
+
+For type analysis:
+above|bfor - what I contain, what I need to be constructed
+below|aftr - who contains me after I have been constructed
+
+For flow analysis
+above|bfor - the tree of variables who supply me data, inlcuding across function calls
+below|aftr - the tree of variables who I supply data, including across function calls
+
+Matrix of argument combinations:
+module type above // modules that I include, types I use, functions I call, with counts
+module type below // modules that include me, and which of my types and functions they use
+
+struct type above // what I have as a field, and the functions that operate on those types. Also functions that return me.
+struct type below // who has me as a field or param, and the functions that operate on those types.
+
+ABOVE SHOULD DO ARGS AND RETURN VALUES
+BELOW SHOULD DO CALLERS AND DISPATCH BLOCKS
+fun type above	// my argument types, and their related types
+fun type below	// my return value types, and their related types
+ADD NEW CALL ANALYSIS
+FOR VARS, CALL DOES FLOW ANALYSIS AND ONLY SHOWS FUNCTION CALLS
+ADD ex ARGUMENT TO SHOW THE FULL TREE, BY DEFAULT SHOW ONLY DIRECT TREE
+
+var type above // get the type of the var, and then do type analysis
+var type below // same but below
+
+struct flow above // do the 'var flow above' analysis on every instance of this struct
+struct flow below // same but below
+
+fun flow above // do 'var flow above' analysis for all my args at all my callsites
+fun flow below // do 'var flow below' analysis for all my return values at all my callsites
+
+module flow above // do 'var flow above' analysis for all my structs and functions
+module flow below // same but below
+
+Arguments to narrow and specify the results:
+mara ask name 1		// a numeric argument will limit analysis depth, which is infinite by default
+mara ask var in scope 	// query specific variables or struct fields.
+mara ask var at file.mara // query variable in a file, with optional line number
