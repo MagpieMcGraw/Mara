@@ -715,32 +715,64 @@ slice_def_word :: proc(k: Def_Kind) -> string {
 
 render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, kind, dir, pkg: string, depth: int) -> string {
     ensure_fn_analysis(checked, b.fn)
-    // Lineage is its own view (backward producer tree) — hand the whole query off.
-    if kind == "lineage" { return render_lineage(checked, b, fn_label, pkg, depth) }
     knd := "param" if b.kind == .Param else "local"
     bb := strings.builder_make()
     home_pkg := ask_home_package(b.fn)
     if home_pkg == "" { home_pkg = pkg }
     fmt.sbprintf(&bb, "%s — %s in %s  %s   (module %s)\n", b.name, knd, fn_label, ask_loc(b.span), home_pkg)
 
-    // The `types` filter selects a graph a variable doesn't have. Say so plainly.
-    if kind == "types" {
-        fmt.sbprint(&bb, "\n(a variable has no type graph — its slice is flow only; drop the `types` filter)\n")
-        return strings.to_string(bb)
-    }
     show_above := dir == "" || dir == "above"
     show_below := dir == "" || dir == "below"
-    if show_above { render_var_contributors(&bb, checked, b) }
-    if show_below { render_var_affects(&bb, checked, b, depth) }
+    // A variable's natural view is its FLOW slice, so a bare query (no kind) is flow.
+    // `types` (the type graph of its own type) and `call` (the calls around it) are
+    // explicit opt-ins — the broad-but-overlapping variable cells of mara_ask.txt.
+    show_types := kind == "types"
+    show_call  := kind == "call"
+    show_flow  := kind == "" || kind == "flow"
+
+    if show_types { render_var_type_graph(&bb, checked, b, show_above, show_below, depth) }
+    if show_call {
+        if show_above { render_var_calls_above(&bb, checked, b) }
+        if show_below { render_var_calls_below(&bb, checked, b, depth) }
+    }
+    if show_flow {
+        if show_above { render_lineage_body(checked, &bb, b, depth) }   // flow above = the lineage / producer tree
+        if show_below { render_var_affects(&bb, checked, b, depth) }
+    }
     return strings.to_string(bb)
 }
 
-// Backward: seed a slice from every definition of the variable, drain to a
-// fixpoint, then report the contributing params/statements (the variable's own
-// definitions excluded — they are not contributors to themselves) plus the
-// branches/loops guarding them.
+// var `types` — the type graph of the variable's OWN type (pointer/slice/array
+// layers stripped to the nominal type). above = what that type is built from
+// (deps); below = the structs that contain/embed it (structural users only — fns
+// taking/returning the type are the type's `call` cells, queryable on the type).
 @(private="file")
-render_var_contributors :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
+render_var_type_graph :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, show_above, show_below: bool, depth: int) {
+    if b.type_ == nil {
+        fmt.sbprint(bb, "\n(this variable's type is unknown — no type graph)\n")
+        return
+    }
+    base := flow_type_base(b.type_)
+    if _, named := ask_sub(base); !named {
+        fmt.sbprintf(bb, "\n(%s : %s — a basic type, no type graph)\n", b.name, type_name(b.type_))
+        return
+    }
+    fmt.sbprintf(bb, "\ntype of %s = %s   (type graph of %s)\n", b.name, type_name(b.type_), ask_label(base))
+    if show_above {
+        res := ask_compute(checked.table, base, "deps", depth, checked.functions)
+        render_ask_deps(bb, &res, depth, "above")
+    }
+    if show_below {
+        res := ask_compute(checked.table, base, "users", depth, checked.functions, users_kinds = {.Contains, .Embeds, .Base})
+        render_ask_users(bb, &res, depth)
+    }
+}
+
+// var `call above` — the function calls that SUPPLY this value: the call-valued
+// definitions in its backward slice (its own producer plus transitive producers up
+// the chain). A cast (`i32(x)`) is not a call and is skipped, matching lineage.
+@(private="file")
+render_var_calls_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
     s := Slice{ checked = checked }
     defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen) }
     for d in checked.defs { if d.binding == b { slice_add_def(&s, d) } }
@@ -749,35 +781,46 @@ render_var_contributors :: proc(bb: ^strings.Builder, checked: ^Checked_Program,
         rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
         for d in rdefs { slice_add_def(&s, d) }
     }
-
-    params: [dynamic]^Def
-    stmts:  [dynamic]^Def
-    defer { delete(params); delete(stmts) }
+    Row :: struct { callee, recv: string, span: Span }
+    rows: [dynamic]Row
+    defer delete(rows)
+    seen: map[Span]bool
+    defer delete(seen)
     for d in s.result {
-        if d.binding == b { continue }   // the variable's own defs aren't contributors to it
-        if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
+        callee, ok := lineage_call_label(d.value)
+        if !ok || seen[d.span] { continue }
+        seen[d.span] = true
+        recv := d.binding.name if d.binding != nil else ""
+        append(&rows, Row{ callee = callee, recv = recv, span = d.span })
     }
-    slice.sort_by(params[:], slice_def_less)
-    slice.sort_by(stmts[:],  slice_def_less)
-    slice.sort_by(s.ctrl[:], guard_span_less)
+    slice.sort_by(rows[:], proc(x, y: Row) -> bool {
+        if x.span.file != y.span.file { return x.span.file < y.span.file }
+        return x.span.line < y.span.line
+    })
+    fmt.sbprintf(bb, "\nabove (calls) — calls that supply %s  (%s)\n", b.name, ask_plural(len(rows), "call"))
+    if len(rows) == 0 {
+        fmt.sbprint(bb, "  (no calls supply it — built from literals, parameters, or operators)\n")
+        return
+    }
+    for r in rows {
+        fmt.sbprintf(bb, "  %-22s ->  %-14s %s\n", fmt.tprintf("%s()", r.callee), r.recv, ask_loc(r.span))
+    }
+}
 
-    fmt.sbprint(bb, "\nabove (flow) — what feeds this variable  (backward slice)\n")
-    if len(params) > 0 {
-        fmt.sbprintf(bb, "\n  parameters (%d)\n", len(params))
-        for d in params { fmt.sbprintf(bb, "    %-14s %s\n", d.binding.name, ask_loc(d.span)) }
-    }
-    if len(stmts) > 0 {
-        fmt.sbprintf(bb, "\n  statements (%d)\n", len(stmts))
-        for d in stmts {
-            fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
-        }
-    }
-    if len(s.ctrl) > 0 {
-        fmt.sbprintf(bb, "\n  control — branches/loops guarding the above (%d)\n", len(s.ctrl))
-        for g in s.ctrl { fmt.sbprintf(bb, "    %-6s %s\n", guard_word(g.kind), ask_loc(g.span)) }
-    }
-    if len(params) == 0 && len(stmts) == 0 {
-        fmt.sbprint(bb, "\n  (nothing — the variable's value is a constant or an external input)\n")
+// var `call below` — the function calls this value SUPPLIES (the forward slice's
+// "lands in" set), reusing flow_reach + render_landings.
+@(private="file")
+render_var_calls_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int) {
+    flow_analyze_all(checked)
+    seeds: map[^Var_Binding]bool
+    defer delete(seeds)
+    seeds[b] = true
+    landings, _, unfollowed := flow_reach(checked, seeds, flow_max_hops(depth))
+    defer delete(landings)
+    fmt.sbprintf(bb, "\nbelow (calls) — calls %s supplies\n", b.name)
+    render_landings(bb, landings[:], unfollowed)
+    if len(landings) == 0 && unfollowed == 0 {
+        fmt.sbprintf(bb, "  (feeds no calls — %s is terminal or used only in local expressions)\n", b.name)
     }
 }
 

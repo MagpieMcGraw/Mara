@@ -626,8 +626,7 @@ ask_canon_kind :: proc(s: string) -> (canon: string, ok: bool) {
     switch s {
     case "types", "type":       return "types", true
     case "call", "calls":       return "call", true      // the call graph (callees / callers)
-    case "flow":                return "flow", true
-    case "lineage", "source":   return "lineage", true   // backward producer tree (per variable)
+    case "flow":                return "flow", true      // the dataflow slice (above = lineage / producer tree)
     }
     return "", false
 }
@@ -735,12 +734,6 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     }
 
     subject := matches[0]
-
-    // Lineage is rooted at a single value — it only reaches here if the target was
-    // a TYPE or function (a variable goes through ask_try_variable / ask_try_at).
-    if kind == "lineage" {
-        return fmt.tprintf("mara ask: `lineage` traces one value — address a variable: `mara ask <var> in <fn> lineage` or `mara ask at <file>:<line> lineage`.\n"), false
-    }
 
     show_types := kind == "" || kind == "types"
     show_call  := kind == "" || kind == "call"

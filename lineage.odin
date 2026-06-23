@@ -22,16 +22,15 @@ import "core:strings"
 // (a shared/looping producer shows fully the first time, then "(shown above)").
 // ---------------------------------------------------------------------------
 
-// `mara ask <var> in <fn> lineage` / `at <file>:<line> lineage`. Builds its own
-// header, so render_var_slice hands the whole query off here.
-render_lineage :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, pkg: string, depth: int) -> string {
-    ensure_fn_analysis(checked, b.fn)
-    bb := strings.builder_make()
+// `flow above` for a variable: the lineage / producer tree (folded in from the old
+// standalone `lineage` verb — see render_var_slice). Writes into the caller's
+// builder, under the variable header render_var_slice already printed; the caller
+// has run ensure_fn_analysis. "What builds this value", following every input into
+// the calls that produce it.
+render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: ^Var_Binding, depth: int) {
     knd := "param" if b.kind == .Param else "local"
-    home_pkg := ask_home_package(b.fn)
-    if home_pkg == "" { home_pkg = pkg }
-    fmt.sbprintf(&bb, "%s — %s in %s  %s   (module %s)\n", b.name, knd, fn_label, ask_loc(b.span), home_pkg)
-    fmt.sbprint(&bb, "\nlineage — what builds this value, following every input into the calls that produce it\n\n")
+    fn_label := ask_label(b.fn)
+    fmt.sbprint(bb, "\nabove (flow) — what builds this value, following every input into the calls that produce it\n\n")
 
     // The producing defs of the root (a write/decl with a value). A bare parameter
     // has only its entry def (value nil) — an external input with no local origin.
@@ -41,8 +40,8 @@ render_lineage :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, pkg
         if d.binding == b && d.value != nil { append(&producing, d) }
     }
     if len(producing) == 0 {
-        fmt.sbprintf(&bb, "  %s   (a %s — external input; nothing in %s builds it)\n", b.name, knd, fn_label)
-        return strings.to_string(bb)
+        fmt.sbprintf(bb, "  %s   (a %s — external input; nothing in %s builds it)\n", b.name, knd, fn_label)
+        return
     }
     slice.sort_by(producing[:], lineage_def_less)
 
@@ -50,9 +49,8 @@ render_lineage :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, pkg
     seen: map[^Def]bool
     defer delete(seen)
     for d in producing {
-        lineage_node(checked, &bb, d, budget, 0, &seen)
+        lineage_node(checked, bb, d, budget, 0, &seen)
     }
-    return strings.to_string(bb)
 }
 
 // One node of the tree: `binding ⟵ producer   loc`, then its inputs indented below.
@@ -114,7 +112,7 @@ lineage_pad :: proc(bb: ^strings.Builder, indent: int) {
 // The producing call's display name, or ok=false when the value isn't a call.
 // A numeric/built-in CAST (`i32(px)`) is spelled like a call but produces nothing
 // — it's a no-op rung, so report it as a non-call and let the operand show through.
-@(private="file")
+// Shared with slice.odin's `var call above` view (the supplying-calls list).
 lineage_call_label :: proc(value: Expr) -> (name: string, ok: bool) {
     call: ^Expr_Call
     #partial switch v in value {
