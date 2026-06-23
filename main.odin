@@ -966,9 +966,10 @@ CLI_Args :: struct {
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
 ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
-  mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
-  folder whose .mara files declare a module. Use 'in <module>' to target a
-  different discovered module without changing directories.
+  mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara
+  files plus the stdlib they use — so run it from a folder whose .mara files
+  declare a module. 'in <scope>' narrows where <name> resolves; it never
+  changes that root.
 
     (no name)      module map — every module in the project at a glance
     <name>         everything about a type or function: every graph, both directions
@@ -987,15 +988,15 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     depth          hops to expand. TYPES: 0 = direct edges, omitted = full closure.
                    FLOW (forward): call hops to follow into callees — omitted = 1,
                    0 = none (count only), N = N hops.
-    in <module>    analyze that module instead of the current directory
-    in <file>      keep the current module; resolve <name> within one file
+    in <module>    resolve <name> within that module's namespace (disambiguation)
+    in <file>      resolve <name> within one file
     in <fn>        slice the local/parameter <name> inside that function
     return in <fn> slice what feeds <fn>'s return value (the inside view)
     at F:L         slice the variable defined at file F, line L (precise)
 
-  Scopes compose to reach a variable in a module that isn't the cwd:
-    mara ask v in fn in mymod        slice 'v' in fn, in module mymod (any order)
-    mara ask at f.mara:12 in mymod   precise address + module pin ('at' + 'in <module>')
+  Scopes compose (any order):
+    mara ask v in fn in mymod        slice 'v' in fn, with fn resolved in mymod
+    mara ask Type in mymod           the Type declared in module mymod (disambiguation)
 
   Filters compose and may appear in any order:
     mara ask Font types above        just Font's type sources
@@ -1106,10 +1107,10 @@ parse_args :: proc() -> CLI_Args {
         }
 
         // Peel `in <scope>` tokens — up to two, which COMPOSE: `<var> in <fn> in
-        // <module>` scopes the variable to a function AND pins the module. Each
-        // value's role (module re-root / file pin / fn scope) is classified after
-        // discovery in main(), so the two are order-independent here. The actual
-        // file -> module resolution also happens after discovery.
+        // <module>` scopes the variable to a function AND narrows the module. Each
+        // value's role (module / file / fn scope) is classified after discovery in
+        // main(), so the two are order-independent here. The actual file -> module
+        // resolution also happens after discovery.
         for {
             found := -1
             for idx in 0 ..< len(rest) { if rest[idx] == "in" { found = idx; break } }
@@ -1198,9 +1199,10 @@ parse_args :: proc() -> CLI_Args {
         }
         // `at` already identifies the variable, so a bare <name> alongside it is
         // contradictory. (`at` + `in` is checked after discovery: `in <module>`
-        // composes with `at` — re-root, then address — but `in <fn>`/`in <file>`
-        // is a second variable address and conflicts. Module vs fn isn't known
-        // until the discovered file set exists, so that check lives in main().)
+        // composes with `at` — it only narrows where the name lives — but
+        // `in <fn>`/`in <file>` is a second variable address and conflicts. Module
+        // vs fn isn't known until the discovered file set exists, so that check
+        // lives in main().)
         if args.ask_at != "" && args.ask_target != "" {
             fmt.printf("mara ask: `at` already identifies the variable — drop the name '%s'\n", args.ask_target)
             return args
@@ -1251,23 +1253,22 @@ main :: proc() {
 
     all_files := discover_all_files(args.compiler_dir, args.search_dir)
 
-    // `ask ... in <scope>`. A MODULE name re-roots the analysis there (explicit,
-    // and it errors if that module doesn't check standalone). A FILE keeps the
-    // cwd module as the analysis root and only pins the SUBJECT to that file —
-    // re-rooting to the file's own sub-module would defeat the disambiguation the
-    // file form exists for, since sub-modules of a project frequently don't
-    // type-check on their own. Resolved here (post-discovery) as the file set
-    // only exists now.
+    // `ask ... in <scope>`. Every `in` form NARROWS where the subject name
+    // resolves; none re-root. The analyzed program is always cwd + the stdlib it
+    // uses (that's how the compiler sees a program). A MODULE name scopes
+    // resolution to that module's namespace; a FILE pins the subject to that file;
+    // anything else is tried as a function (for `<var> in <fn>`). Resolved here
+    // (post-discovery) as the file set only exists now; a module's membership in
+    // the use-closure is checked once that closure is built, below.
     ask_scope_file := ""
+    ask_scope_module := ""   // a module scope (`<name> in <module>`) — narrows resolution, never re-roots
     ask_scope_name := ""   // a fn scope (for `<var> in <fn>`), resolved post-check in `ask`
     if args.ask {
-        rerooted := false
         for sc in ([2]string{ args.ask_scope, args.ask_scope2 }) {
             if sc == "" { continue }
             if sc in all_files {
-                if rerooted { fmt.println("mara ask: two module scopes — only one `in <module>` re-roots the analysis"); os.exit(1) }
-                args.pkg_name = sc                               // module scope: re-root
-                rerooted = true
+                if ask_scope_module != "" { fmt.println("mara ask: two module scopes — narrow to one module at a time"); os.exit(1) }
+                ask_scope_module = sc                            // module scope: narrow resolution, keep the cwd root
             } else if ask_file_discovered(all_files, sc) {
                 if ask_scope_file != "" { fmt.println("mara ask: two file scopes — pin one file at a time"); os.exit(1) }
                 ask_scope_file = filepath.base(sc)               // file scope: pin subject, keep root
@@ -1277,8 +1278,9 @@ main :: proc() {
             }
         }
         // `at` precisely identifies a variable, so a SECOND variable address —
-        // `in <fn>` or `in <file>` — conflicts. `in <module>` only re-roots, so it
-        // composes: `at f.mara:12 in mymod` addresses a variable in a non-cwd module.
+        // `in <fn>` or `in <file>` — conflicts. `in <module>` only narrows where a
+        // name resolves (it never re-roots), so it still composes with the already-
+        // precise `at`: `at f.mara:12 in mymod` is allowed (the module is redundant).
         if args.ask_at != "" && (ask_scope_name != "" || ask_scope_file != "") {
             fmt.println("mara ask: `at` already identifies the variable — use `in <module>` only to pin where it lives, not `in <fn>`/`in <file>`")
             os.exit(1)
@@ -1305,6 +1307,14 @@ main :: proc() {
     // the closure aren't lexed/parsed, so unrelated `.mara` files in the
     // search dir can't dump diagnostics into the build.
     files := compute_use_closure(all_files, args.pkg_name)
+
+    // `in <module>` narrows where the SUBJECT resolves; it never re-roots — the
+    // program analyzed is always cwd plus the stdlib it uses. A module that exists
+    // on disk but the cwd project doesn't pull in simply isn't part of this program.
+    if args.ask && ask_scope_module != "" && ask_scope_module not_in files {
+        fmt.printf("mara ask: module '%s' isn't part of this program — %s (cwd) doesn't use it.\n", ask_scope_module, args.pkg_name)
+        os.exit(1)
+    }
 
     perf_timer_mark(&perf, "lex")
     lex_target_files(files)
@@ -1378,11 +1388,6 @@ main :: proc() {
         perf_timer_end(&perf)
         flush_diagnostics()
         fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
-        // An `ask ... in <module>` re-roots analysis there; a sub-module that is
-        // only valid inside a larger one won't check standalone. Point the way out.
-        if args.ask && args.ask_scope in all_files {
-            fmt.printf("(mara ask: module '%s' did not type-check standalone — query from a parent module, or use `in <file>` to keep the current root.)\n", args.ask_scope)
-        }
         os.exit(1)
     }
 
@@ -1396,7 +1401,7 @@ main :: proc() {
             return
         }
         checked.want_control_deps = args.ask_control   // gate the post-dominator pass (off = the fast data-only default)
-        out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.ask_at, args.pkg_name, ask_scope_file, args.ask_depth)
+        out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.ask_at, args.pkg_name, ask_scope_file, ask_scope_module, args.ask_depth)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed
         return

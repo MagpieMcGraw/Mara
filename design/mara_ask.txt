@@ -102,5 +102,8 @@ EXTRA (beyond the matrix):
     branches/loops a value drives, or that guard what feeds it) to a flow
     slice. Off by default: it needs the slow post-dominator pass.
   - `in <module>` / `in <file>` scopes; two `in` scopes compose
-    (`<var> in <fn> in <module>`, any order).
+    (`<var> in <fn> in <module>`, any order). Every `in` form NARROWS where the
+    name resolves over a fixed root — the cwd program (cwd + the stdlib it uses);
+    it never re-roots. A module discovered on disk but not pulled in by the cwd
+    project isn't part of the program (plain not-found, no fallback).
   - `return in <fn>` — slices what feeds a function's return (the inside view).

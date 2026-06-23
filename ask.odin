@@ -244,10 +244,10 @@ Ask_Match :: struct {
 // the disambiguation lever behind `in <file>`.
 Ask_Dedup_Key :: struct { span: Span, sub: string }
 
-ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[string]^Type_Scope) -> [dynamic]Ask_Match {
+ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[string]^Type_Scope, scope_module := "") -> [dynamic]Ask_Match {
     matches: [dynamic]Ask_Match
     seen: map[Ask_Dedup_Key]bool
-    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]bool, t: Type, scope_file: string) {
+    consider :: proc(matches: ^[dynamic]Ask_Match, seen: ^map[Ask_Dedup_Key]bool, t: Type, scope_file: string, scope_module: string) {
         // A module's backing namespace is a `.Struct`-kind Type_Scope with
         // is_module set — a compiler-generated scope holding the module's defs,
         // not a data type. It has no fields, no span, and no users, yet ask_sub
@@ -263,27 +263,32 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[
         if ts, ok := t.(^Type_Scope); ok && ts.is_module { return }
         sp := ask_span(t)
         if scope_file != "" && filepath.base(sp.file) != scope_file { return }
+        // `in <module>` narrows resolution to one module's namespace — the same
+        // disambiguation lever as scope_file, one level coarser. The analysis root
+        // never moves (always cwd + the stdlib it uses); this only filters which
+        // definition of a name the subject resolves to.
+        if scope_module != "" && ask_home_package(t) != scope_module { return }
         sub, _ := ask_sub(t)
         key := Ask_Dedup_Key{ span = sp, sub = sub }
         if seen[key] { return }
         seen[key] = true
         append(matches, Ask_Match{ type_ = t, label = ask_label(t), flat = ask_type_name(t), sub = sub, span = sp, mark = ask_mark(t) })
     }
-    for _, s in table.structs        { consider(&matches, &seen, s, scope_file) }
-    for _, f in table.funs           { consider(&matches, &seen, f, scope_file) }
-    for _, e in table.enums          { consider(&matches, &seen, e, scope_file) }
-    for _, u in table.unions         { consider(&matches, &seen, u, scope_file) }
-    for _, d in table.distinct_types { consider(&matches, &seen, d, scope_file) }
+    for _, s in table.structs        { consider(&matches, &seen, s, scope_file, scope_module) }
+    for _, f in table.funs           { consider(&matches, &seen, f, scope_file, scope_module) }
+    for _, e in table.enums          { consider(&matches, &seen, e, scope_file, scope_module) }
+    for _, u in table.unions         { consider(&matches, &seen, u, scope_file, scope_module) }
+    for _, d in table.distinct_types { consider(&matches, &seen, d, scope_file, scope_module) }
     // FFI functions are absent from table.funs — surface the foreign ones from
     // checked.functions so resolution, fuzzy, and the module views all see them.
-    for _, f in funcs { if ask_is_foreign(f) { consider(&matches, &seen, f, scope_file) } }
+    for _, f in funcs { if ask_is_foreign(f) { consider(&matches, &seen, f, scope_file, scope_module) } }
     return matches
 }
 
 // Exact resolution: the definitions whose name the user typed verbatim.
-ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string, funcs: map[string]^Type_Scope) -> [dynamic]Ask_Match {
+ask_resolve_all :: proc(table: ^SymbolTable, target: string, scope_file: string, funcs: map[string]^Type_Scope, scope_module := "") -> [dynamic]Ask_Match {
     out: [dynamic]Ask_Match
-    for m in ask_all_definitions(table, scope_file, funcs) {
+    for m in ask_all_definitions(table, scope_file, funcs, scope_module) {
         if m.label == target || m.flat == target { append(&out, m) }
     }
     return out
@@ -356,10 +361,10 @@ ask_levenshtein :: proc(a, b: string) -> int {
 
 // Top-N definitions by fuzzy score against `target`, ties broken by name for
 // determinism. Used only when exact resolution returns nothing.
-ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit: int, funcs: map[string]^Type_Scope) -> [dynamic]Ask_Match {
+ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit: int, funcs: map[string]^Type_Scope, scope_module := "") -> [dynamic]Ask_Match {
     Scored :: struct { m: Ask_Match, score: int }
     pool: [dynamic]Scored
-    for m in ask_all_definitions(table, scope_file, funcs) {
+    for m in ask_all_definitions(table, scope_file, funcs, scope_module) {
         if sc := ask_fuzzy_score(target, m.label); sc > 0 {
             append(&pool, Scored{ m = m, score = sc })
         }
@@ -388,12 +393,16 @@ ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit
 // `Stream_State` is an enum. Find its owning enum / union and point there
 // instead of dropping to a noisy fuzzy guess. Reads only variant NAME lists
 // (no union-layout machinery).
-ask_find_variant :: proc(table: ^SymbolTable, target: string) -> (owner: string, kind: string, ok: bool) {
+ask_find_variant :: proc(table: ^SymbolTable, target: string, scope_module := "") -> (owner: string, kind: string, ok: bool) {
+    // When `in <module>` is active, only owners in that module count — otherwise
+    // the hint points at a union in some other module, contradicting the scope.
     for _, e in table.enums {
         if e.is_synthetic { continue }   // a union's internal `_Tag`: point at the union, not its tag enum
+        if scope_module != "" && e.home_package != scope_module { continue }
         if _, has := e.variants[target]; has { return ask_label(e), ask_enum_sub(e), true }
     }
     for _, u in table.unions {
+        if scope_module != "" && u.home_package != scope_module { continue }
         for vn in u.variants {
             if vn == target { return ask_label(u), "union", true }
         }
@@ -663,7 +672,7 @@ ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, f
 // render the selected (kind, dir) filters — an empty axis means "both". Returns
 // the rendered text and whether a single subject was found — on false (not found
 // / ambiguous) the text already explains why, and the caller exits non-zero.
-ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_file: string, depth: int) -> (out: string, ok: bool) {
+ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_file, scope_module: string, depth: int) -> (out: string, ok: bool) {
     // Precise variable criterion — `at <file>:<line>` identifies a variable by its
     // definition site; no name needed.
     if at != "" {
@@ -673,20 +682,25 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     // that was not a module or file (main() consumes those), so resolve it as a
     // function and slice the local/parameter `target` inside it.
     if scope != "" {
-        vout, vok, handled := ask_try_variable(checked, target, kind, dir, scope, pkg, depth)
+        vout, vok, handled := ask_try_variable(checked, target, kind, dir, scope, pkg, scope_module, depth)
         if handled { return vout, vok }
         // Not a function. A struct is a named scope too, but its members are fields
         // (not sliceable) and methods (queryable by name), so point there instead.
-        if tmatches := ask_resolve_all(checked.table, scope, "", checked.functions); len(tmatches) > 0 {
+        if tmatches := ask_resolve_all(checked.table, scope, "", checked.functions, scope_module); len(tmatches) > 0 {
             return fmt.tprintf("mara ask: '%s' is a %s, not a function — `in` scopes to a function's variables; query the %s directly with `mara ask %s`.\n", scope, tmatches[0].sub, tmatches[0].sub, scope), false
         }
         return fmt.tprintf("mara ask: '%s' is not a known module, file, or function in %s\n", scope, pkg), false
     }
 
-    matches := ask_resolve_all(checked.table, target, scope_file, checked.functions)
+    matches := ask_resolve_all(checked.table, target, scope_file, checked.functions, scope_module)
     b := strings.builder_make()
 
-    scope_desc := pkg if scope_file == "" else fmt.tprintf("%s, file %s", pkg, scope_file)
+    // Describe the resolution scope for the not-found / ambiguity messages. The
+    // root is always the cwd project (`pkg`); `in <module>` / `in <file>` narrow
+    // within it, so name them when present.
+    scope_desc := pkg
+    if scope_module != "" { scope_desc = fmt.tprintf("module %s", scope_module) }
+    if scope_file != ""   { scope_desc = fmt.tprintf("%s, file %s", scope_desc, scope_file) }
 
     if len(matches) == 0 {
         // A module name? Show its surface (declared types + funs). Checked before
@@ -696,13 +710,13 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         }
         // Before guessing: if the name is a known variant, say so — it's the
         // single most likely reason a real-looking name fails to resolve.
-        if owner, kind, is_variant := ask_find_variant(checked.table, target); is_variant {
+        if owner, kind, is_variant := ask_find_variant(checked.table, target, scope_module); is_variant {
             fmt.sbprintf(&b, "mara ask: '%s' is a variant of %s %s — variants aren't queryable yet.\n", target, kind, owner)
             fmt.sbprintf(&b, "  (try `mara ask %s`)\n", owner)
             return strings.to_string(b), false
         }
         // No exact hit — offer the closest names rather than a bare miss.
-        suggestions := ask_fuzzy(checked.table, target, scope_file, ASK_FUZZY_LIMIT, checked.functions)
+        suggestions := ask_fuzzy(checked.table, target, scope_file, ASK_FUZZY_LIMIT, checked.functions, scope_module)
         if len(suggestions) > 0 {
             fmt.sbprintf(&b, "mara ask: no exact match for '%s' in %s — did you mean:\n", target, scope_desc)
             for m in suggestions {
@@ -835,8 +849,10 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
 // not a module or file (main() consumes those), so try it as a function and look
 // for a local/parameter `target` inside it. handled=false only when `scope` is
 // not a function at all, so the caller can report what a scope may be.
-ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pkg: string, depth: int) -> (out: string, ok: bool, handled: bool) {
-    matches := ask_resolve_all(checked.table, scope, "", checked.functions)
+ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pkg, scope_module: string, depth: int) -> (out: string, ok: bool, handled: bool) {
+    // `var in fn in module` composes: the module narrows WHICH `fn` we slice into
+    // when the function name is shared across modules.
+    matches := ask_resolve_all(checked.table, scope, "", checked.functions, scope_module)
     fns: [dynamic]^Type_Scope
     defer delete(fns)
     for m in matches {
