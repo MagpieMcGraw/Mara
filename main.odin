@@ -963,7 +963,7 @@ CLI_Args :: struct {
     ask_control:  bool,    // the `control` filter — add control dependence (post-doms); off = data-only (the fast default)
 }
 
-USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
+USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]"
 ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the program rooted at the CURRENT DIRECTORY — its .mara
