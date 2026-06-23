@@ -162,6 +162,31 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game.initialized = true
 }
 
+// Ray-pick the nearest scene shape along the camera's view axis and toggle its
+// highlight flag. A center-screen pick (not the mouse ray yet) — enough to drive
+// collision.ray_obb_intersect from the loop.
+pick_shape :: fun(game: ^Megastruct) {
+	cam := &game.camera
+	fwd, up, right := obj_get_directions(cam.obj.dir)
+	_ = up		_ = right
+	ray_origin := cam.obj.pos
+	ray_dir    := vec3_negate(fwd)   // the view looks toward -fwd
+
+	best_t : f32 = -1.0
+	best_i : i64 = -1
+	for i in 0..game.shapes.len {
+		if not game.shapes[i].obj.exists do continue
+		s    := &game.shapes[i]
+		half := s.obj.scale * 0.5
+		t    := ray_obb_intersect(ray_origin, ray_dir, s.obj.pos, s.obj.dir, half)
+		if t >= 0.0 and (best_i < 0 or t < best_t) {
+			best_t = t
+			best_i = i
+		}
+	}
+	if best_i >= 0 do game.shapes[best_i].obj.highlighted = not game.shapes[best_i].obj.highlighted
+}
+
 game_events :: fun(game: ^Megastruct) {
 	quit_msg := ""
 	&quit_msg + "Escaping..."
@@ -190,6 +215,9 @@ game_events :: fun(game: ^Megastruct) {
 		_ = sdl.SetWindowRelativeMouseMode(game.window, game.mouse_look)
 	}
 	if game.mouse_look do camera_turn_walking(&game.camera, &ev.mouse)
+
+	// Left click ray-picks the nearest scene shape (toggles its highlight flag).
+	if ev.mouse.pressed[1] do pick_shape(game)
 }
 game_update :: fun(game: ^Megastruct, dt: f64) {
 	camera_move(&game.camera, &game.events.keyboard, f32(game.timers.fixed.step))
