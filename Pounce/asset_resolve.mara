@@ -1,0 +1,175 @@
+module asset_resolve
+
+// Bridges Visual/Glyph string names to concrete assets, plus per-glyph metrics.
+// Port of Warlock's asset_resolve.odin. The stbtt path is gone — glyph rects
+// come from mara.font (loaded by asset.load_font_test into Font.glyphs).
+
+use mara.core
+use mara.math
+use asset
+use object
+use entity
+
+// === Convenience setters for Visual ===
+
+// Texture/Mesh carry a str64 (partial array), so they can't be copied by value
+// (the copy would alias the source). Copy field-by-field through these helpers.
+texture_assign :: fun(dst: ^Texture, src: ^Texture) {
+	dst.name  = src.name
+	dst.uv    = src.uv
+	dst.layer = src.layer
+}
+mesh_assign :: fun(dst: ^Mesh, src: ^Mesh) {
+	dst.name  = src.name
+	dst.index = src.index
+}
+
+// Assign a texture by query now if found, else stash the name for later resolve.
+set_texture :: fun(a: ^Assets, v: ^Visual, query: []utf8) {
+	tx, ok := get_texture(a, query)
+	if ok {
+		texture_assign(&v.texture, &tx)
+	else
+		v.texture.name = query
+	}
+}
+
+set_mesh :: fun(a: ^Assets, v: ^Visual, query: []utf8) {
+	m, ok := get_mesh(a, query)
+	if ok {
+		mesh_assign(&v.mesh, &m)
+	else
+		v.mesh.name = query
+	}
+}
+
+set_visual :: fun(a: ^Assets, v: ^Visual, mesh_query: []utf8, texture_query: []utf8) {
+	set_mesh(a, v, mesh_query)
+	set_texture(a, v, texture_query)
+}
+
+// === Glyph metrics ===
+
+Glyph_Info :: struct {
+	uv:      [4]f32   // [scale_x, scale_y, offset_x, offset_y], like textures
+	size:    [2]f32   // width, height in pixels
+	offset:  [2]f32   // x, y offset from the cursor
+	advance: f32
+}
+
+tex_uv_eq :: fun(a: [4]f32, b: [4]f32) -> bool {
+	return a[0] == b[0] and a[1] == b[1] and a[2] == b[2] and a[3] == b[3]
+}
+
+// Glyph render info for one character. mara.font stores each glyph as an atlas
+// pixel rect (x,y,w,h) + metrics; turn that into the shader's [scale, offset]
+// UV convention (scale negative to match its UV flip, like Warlock's stbtt path).
+get_glyph :: fun(font: ^Font, char: utf8, atlas_size: f32) -> Glyph_Info {
+	if font == void do return Glyph_Info{}
+	idx := i64(char)
+	if idx < 0 or idx >= font.glyphs.len do return Glyph_Info{}
+
+	g   := font.glyphs[idx]
+	inv := 1.0 / atlas_size
+	u0  := f32(g.x) * inv
+	v0  := f32(g.y) * inv
+	u1  := f32(g.x + g.w) * inv
+	v1  := f32(g.y + g.h) * inv
+
+	return Glyph_Info{
+		uv      = [u0 - u1, v0 - v1, u1, v1],
+		size    = [f32(g.w), f32(g.h)],
+		offset  = [g.bearing_x, g.bearing_y],
+		advance = g.advance,
+	}
+}
+
+// Resolve a Glyph's font reference — look up font by name, fetch the glyph rect,
+// stamp UVs/layer/scale. Resolves once, then clears resolve. True when settled.
+glyph_resolve :: fun(a: ^Assets, g: ^Glyph) -> bool {
+	if not g.visual.resolve do return true
+	if g.visual.font.len == 0 do return true
+
+	font : ^Font = void
+	if g.font_index >= 0 and g.font_index < a.fonts.len {
+		font = &a.fonts[g.font_index]
+	else
+		g.font_index = get_font_index(a, g.visual.font)
+		if g.font_index < 0 do return false   // font not loaded yet
+		font = &a.fonts[g.font_index]
+	}
+
+	info := get_glyph(font, g.letter, f32(a.font_texture_size))
+	if info.size[0] == 0 and info.size[1] == 0 do return false   // invalid glyph
+
+	g.visual.texture.uv    = info.uv
+	g.visual.texture.layer = font.layer
+
+	// Fill scale if it was left zero (glyph created before the font loaded).
+	// Preserve z as the uniform factor (or 1).
+	if g.obj.scale.x == 0 or g.obj.scale.y == 0 {
+		us := if g.obj.scale.z > 0 do g.obj.scale.z else 1.0
+		g.obj.scale = Vec3{info.size[0] * us, info.size[1] * us, g.obj.scale.z}
+	}
+
+	// Resolve mesh too.
+	mesh_resolved := g.visual.mesh.name.len == 0
+	if not mesh_resolved {
+		m, ok := get_mesh(a, g.visual.mesh.name)
+		if ok {
+			mesh_assign(&g.visual.mesh, &m)
+			mesh_resolved = true
+		}
+	}
+	if mesh_resolved {
+		g.visual.resolve = false
+		return true
+	}
+	return false
+}
+
+// Resolve a Visual's name references to actual assets. Resolves once. True when
+// both mesh and texture are settled (an empty name counts as resolved).
+visual_resolve :: fun(a: ^Assets, v: ^Visual) -> bool {
+	if not v.resolve do return true
+
+	mesh_resolved    := v.mesh.name.len == 0
+	texture_resolved := v.texture.name.len == 0
+
+	if not mesh_resolved {
+		m, ok := get_mesh(a, v.mesh.name)
+		if ok {
+			mesh_assign(&v.mesh, &m)
+			mesh_resolved = true
+		}
+	}
+	if not texture_resolved {
+		tx, ok := get_texture(a, v.texture.name)
+		if ok {
+			texture_assign(&v.texture, &tx)
+			texture_resolved = true
+		}
+	}
+
+	if mesh_resolved and texture_resolved {
+		v.resolve = false
+		return true
+	}
+	return false
+}
+
+// Reverse: recover asset names from the current indices/layer+uv.
+visual_unresolve :: fun(a: ^Assets, v: ^Visual) {
+	for i in 0..a.meshes.len {
+		if a.meshes[i].index == v.mesh.index {
+			v.mesh.name = a.meshes[i].name
+			break
+		}
+	}
+	for i in 0..a.textures.len {
+		if a.textures[i].layer == v.texture.layer and tex_uv_eq(a.textures[i].uv, v.texture.uv) {
+			v.texture.name = a.textures[i].name
+			break
+		}
+	}
+}

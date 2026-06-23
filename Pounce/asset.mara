@@ -10,6 +10,7 @@ gl :: use mara.open_gl
 use object
 use gfx
 use cache
+use stuff   // string_match
 
 Font :: struct {
 	size : i32 = 1024
@@ -379,4 +380,70 @@ Texture_Packer :: struct {
     pack_nodes: [64]byte,	// placeholder
     size: i32,
     is_full: bool,
+}
+
+// === Asset lookup by fuzzy name (string_match, lower position = better) ===
+// Replaces Warlock's get_texture/get_mesh/get_font; counts are the partial
+// arrays' .len, and the (T, bool) returns map straight onto Mara multi-return.
+
+get_texture_index :: fun(a: ^Assets, query: []utf8) -> i64 {
+    best_idx : i64 = -1
+    best_pos : i64 = -1
+    for i in 0..a.textures.len {
+        pos := string_match(a.textures[i].name, query)
+        if pos >= 0 and (best_idx < 0 or pos < best_pos) {
+            best_pos = pos
+            best_idx = i
+        }
+    }
+    return best_idx
+}
+
+get_texture :: fun(a: ^Assets, query: []utf8) -> Texture, bool {
+    idx := get_texture_index(a, query)
+    if idx >= 0 do return a.textures[idx], true
+    return Texture{}, false
+}
+
+get_mesh :: fun(a: ^Assets, query: []utf8) -> Mesh, bool {
+    best_idx : i64 = -1
+    best_pos : i64 = -1
+    for i in 0..a.meshes.len {
+        pos := string_match(a.meshes[i].name, query)
+        if pos >= 0 and (best_idx < 0 or pos < best_pos) {
+            best_pos = pos
+            best_idx = i
+        }
+    }
+    if best_idx >= 0 do return a.meshes[best_idx], true
+    return Mesh{}, false
+}
+
+get_font_index :: fun(a: ^Assets, query: []utf8) -> i64 {
+    best_idx : i64 = -1
+    best_pos : i64 = -1
+    for i in 0..a.fonts.len {
+        pos := string_match(a.fonts[i].name, query)
+        if pos >= 0 and (best_idx < 0 or pos < best_pos) {
+            best_pos = pos
+            best_idx = i
+        }
+    }
+    return best_idx
+}
+
+get_font :: fun(a: ^Assets, query: []utf8) -> ^Font {
+    idx := get_font_index(a, query)
+    if idx >= 0 do return &a.fonts[idx]
+    return void
+}
+
+texture_loaded :: fun(a: ^Assets, query: []utf8) -> bool { return get_texture_index(a, query) >= 0 }
+font_loaded    :: fun(a: ^Assets, query: []utf8) -> bool { return get_font_index(a, query) >= 0 }
+
+mesh_loaded :: fun(a: ^Assets, query: []utf8) -> bool {
+    for i in 0..a.meshes.len {
+        if string_match(a.meshes[i].name, query) >= 0 do return true
+    }
+    return false
 }
