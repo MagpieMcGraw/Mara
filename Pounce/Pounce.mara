@@ -150,6 +150,14 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game_create_shapes_half_circle(&game.shapes, &game.camera, 12, 300.0, 40.0)
 	game_create_font_grid(&game.glyphs, "Inter", Vec3{-240, 220, 120}, 22.0, 4.0)
 
+	// World-space UI overlay: an orientation gizmo + a frame-time graph. Their
+	// shapes are appended into `game.shapes`, so the scene render loop draws them
+	// once resolved; they track the camera via tracking_offset each frame.
+	game.axes_gizmo  = ui_gizmo_create_pixels(-140, -90, 70, &game.shapes)
+	// Pass color explicitly: the default (COLOR_GREEN) would resolve to Pounce's
+	// Vec3 COLOR_GREEN in this scope, not ui's [3]f32 one.
+	game.frame_graph = ui_graph_create_pixels(120, -90, 200, 70, 33.3, &game.shapes, [0.2, 0.75, 0.2])
+
 	game.running = true
 	game.initialized = true
 }
@@ -196,6 +204,14 @@ game_update :: fun(game: ^Megastruct, dt: f64) {
 	for i in 0..game.glyphs.len {
 		_ = glyph_resolve(&game.assets, &game.glyphs[i])
 	}
+
+	// UI overlay: resolve once (builds its shapes' geometry), feed the frame-time
+	// sample, then track the camera so the widgets sit in screen corners.
+	_ = ui_gizmo_resolve(&game.axes_gizmo, &game.shapes, game.camera.fov_y, game.camera.w_height)
+	_ = ui_graph_resolve(&game.frame_graph, &game.shapes, game.camera.fov_y, game.camera.w_height)
+	ui_graph_add_sample(&game.frame_graph, f32(dt * 1000.0))
+	ui_gizmo_update(&game.axes_gizmo, &game.shapes, game.camera.obj)
+	ui_graph_update(&game.frame_graph, &game.shapes, game.camera.obj)
 }
 // Append a solid-colored quad through the object shader. The image atlas holds a
 // white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
