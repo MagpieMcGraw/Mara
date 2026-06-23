@@ -1,0 +1,8 @@
+module cgflat
+use cgflat_helper
+use cgflat_other
+// cgflat_other reuses the name SHARED (999) and clobbers the global bare key.
+// get_it()'s default is helper's SHARED (42) and must still resolve to 42.
+main :: fun() -> i64 {
+	return get_it() + cgflat_other.SHARED - 999
+}

@@ -1,0 +1,8 @@
+//@ expect-fail: ambiguous
+module scollide
+use scollide_helper
+SHARED :: "wrong"
+main :: fun() -> i64 {
+	v := SHARED
+	return get_it()
+}

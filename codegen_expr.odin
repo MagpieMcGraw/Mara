@@ -77,6 +77,15 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if ev, ev_ok := e.resolved.(Resolved_Enum_Variant); ev_ok {
             return fmt.tprintf("%d", ev.value)
         }
+        // Module constant the checker resolved to a specific module (it recorded
+        // the flat key): inline THAT module's value. The bare key below is a
+        // global slot another module can clobber by reusing the name, so prefer
+        // the resolved flat key when present.
+        if rc, rc_ok := e.resolved.(Resolved_Constant); rc_ok {
+            if const_expr, ok := g.checked.table.constants[rc.name]; ok {
+                return gen_expr(g, const_expr, target_type)
+            }
+        }
         // Infer-type constant: emit inline with target type
         if const_expr, ok := g.checked.table.constants[e.name]; ok {
             return gen_expr(g, const_expr, target_type)

@@ -6559,6 +6559,46 @@ module_constant_visible :: proc(c: ^Checker, env: ^Type_Scope, bare: string) -> 
     return false
 }
 
+// resolve_const_ref resolves a bare module-constant name through the SCOPE — the
+// reference's own module plus each `use`d include — making the scope the single
+// resolver (the global table is just a flat value index keyed by the result).
+// Returns the unique definer's flat key and how many VISIBLE modules define it:
+//   0 -> not a visible module constant
+//   1 -> unambiguous; `flat` is the key codegen/comptime should use
+//   2+ -> ambiguous; the user must qualify (Module.name)
+// The own module is derived from `env` (home_package), NOT c.current_package,
+// which is the CALLER during cross-module default-argument resolution.
+resolve_const_ref :: proc(c: ^Checker, env: ^Type_Scope, bare: string) -> (flat: string, count: int) {
+    if env == nil { return "", 0 }
+    own_mod := ""
+    for s := env; s != nil; s = s.parent_scope {
+        if s.home_package != "" { own_mod = s.home_package; break }
+        if s.is_module { break }
+    }
+    if own_mod == "" { own_mod = c.current_package }
+
+    seen: map[string]bool
+    defer delete(seen)
+    seen[own_mod] = true
+    if _, ok := c.table.constants[make_flat_name(own_mod, bare)]; ok {
+        flat = make_flat_name(own_mod, bare)
+        count += 1
+    }
+    for s := env; s != nil; s = s.parent_scope {
+        for inc in s.includes {
+            if inc == nil || seen[inc.name] { continue }
+            seen[inc.name] = true
+            fk := make_flat_name(inc.name, bare)
+            if _, ok := c.table.constants[fk]; ok {
+                flat = fk
+                count += 1
+            }
+        }
+        if s.is_module { break }
+    }
+    return
+}
+
 // first_invisible_const_ref walks an array-size / const-generic expression and
 // returns the first bare identifier that names a registered module constant
 // which is NOT visible from `env`. Array sizes and const-generic args resolve
@@ -10812,6 +10852,33 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         // checked module so a `use` of this package finds it.
         c.checked_modules[main_package] = main_mod
 
+        // Forward-register the main package's top-level constants (flat key +
+        // owner) BEFORE its bodies are checked. Imported modules registered theirs
+        // during their own extraction (which runs earlier), but the main package's
+        // extraction (extract_main_program_stmts) runs later — so without this its
+        // own constants are invisible to resolve_const_ref while its bodies check,
+        // and a main-vs-import name collision goes undetected. Mirrors the
+        // const-registration loop in extract_module_into_checked.
+        if main_package != "" {
+            for stmt in main_prog^ {
+                if assign, ok := stmt.(^Stmt_Assign); ok {
+                    if _, is_inc := assign.value.(^Expr_Include); !is_inc && assign.value != nil {
+                        register_module_constant(&c, main_package, assign.name, assign.value)
+                    }
+                }
+                if multi, ok := stmt.(^Stmt_Multi_Assign); ok {
+                    for a in multi.assigns {
+                        if a.value != nil { register_module_constant(&c, main_package, a.name, a.value) }
+                    }
+                }
+                if def, ok := stmt.(^Stmt_Define); ok {
+                    if _, is_inc := def.value.(^Expr_Include); !is_inc && def.value != nil {
+                        register_module_constant(&c, main_package, def.name, def.value)
+                    }
+                }
+            }
+        }
+
         // Canonical per-file pipeline (see check_package_files for the phase map).
         main_files_by_src, main_file_order, main_file_envs := partition_package_files(main_prog^, env)
         check_package_files(&c, main_files_by_src, main_file_order, main_file_envs, main_mod, env)
@@ -11095,34 +11162,38 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             }
         }
 
-        // Cross-module bare constant collision: two or more visible modules
-        // define the same bare name. Force the user to qualify (Module.name)
-        // so it's unambiguous which constant they meant.
-        if owner, mapped := c.table.constant_owners[e.name]; mapped && owner == "" {
+        // A bare module-constant must resolve to exactly ONE visible module.
+        // resolve_const_ref walks the scope (own module + each `use`d include);
+        // 2+ visible definers -> force qualification (Module.name). The scope is
+        // the resolver; this replaces the old global constant_owners=="" check,
+        // which was too coarse (it flagged a name reused by a module out of scope).
+        if cflat, vis_count := resolve_const_ref(c, env, e.name); vis_count >= 2 {
             owners: [dynamic]string
             defer delete(owners)
             suffix := strings.concatenate({"_", e.name})
             for flat, _ in c.table.constants {
                 if strings.has_suffix(flat, suffix) && flat != e.name {
                     pkg := flat[:len(flat) - len(suffix)]
-                    // Flat names use underscore as separator; dotted-name
-                    // modules like "mara.memory" appear here as
-                    // "mara_memory". Convert to the user-facing dotted form
-                    // for the diagnostic so they see "mara.memory" rather
-                    // than the internal flat encoding.
+                    // Flat names use underscore as separator; dotted-name modules
+                    // like "mara.memory" appear here as "mara_memory". Convert to
+                    // the user-facing dotted form for the diagnostic.
                     if strings.has_prefix(pkg, "mara_") {
                         pkg = strings.concatenate({"mara.", pkg[len("mara_"):]})
                     }
                     append(&owners, pkg)
                 }
             }
-            if len(owners) > 1 {
-                joined := strings.join(owners[:], ", ")
-                check_error(c, e.span,
-                    TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED,
-                    e.name, joined, owners[0], e.name)
-                return Type_Error{}
-            }
+            joined := strings.join(owners[:], ", ")
+            first := owners[0] if len(owners) > 0 else e.name
+            check_error(c, e.span,
+                TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED,
+                e.name, joined, first, e.name)
+            return Type_Error{}
+        } else if vis_count == 1 {
+            // Unambiguous module constant: record the flat key so codegen inlines
+            // THIS module's value, not whatever last won the (global) bare key —
+            // another module out of this scope can reuse the name harmlessly.
+            e.resolved = Resolved_Constant{name = cflat}
         }
 
         // (Reading an uninitialized pointer/slice is now caught by the post-check

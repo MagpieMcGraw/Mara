@@ -1,0 +1,3 @@
+module scollide_helper
+SHARED :: 42
+get_it :: fun(x: i64 = SHARED) -> i64 { return x }
