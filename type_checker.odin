@@ -8415,6 +8415,15 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     if ft.consts != nil {
         for bare, def in ft.consts {
             if def.value == nil { continue }
+            // Feed the annotation as an expected-type hint, mirroring check_define
+            // and the runtime-decl path. This loop — not check_define — is where
+            // a LOCAL `::` const's value is actually checked (it registers the
+            // const into the scope, so check_define then early-returns on it), so
+            // an annotated `FOO : A : Dup{...}` needs the hint here to resolve the
+            // bare variant literal to its union instead of falling through to the
+            // hint-less inference / ambiguity path.
+            ann := resolve_type_expr(def.type_expr, c, def.span, env = child)
+            c.expected_hint = ann if !is_any(ann) else nil
             val_type := check_expr(c, def.value, child)
             def.var_type = val_type
             c.table.constants[def.name] = def.value
@@ -9005,6 +9014,17 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
     c.table.constants[s.name] = s.value
 
     ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
+    // Feed the annotation to the value as an expected-type hint, mirroring the
+    // runtime-decl path (search `c.expected_hint = assign_hint`). This lets an
+    // annotated `::` bound to a bare union-variant literal — `FOO : A : Dup{...}`
+    // — resolve at the union-hint branch in check_expr_impl and TYPE the literal
+    // as its union, instead of falling through untyped to codegen's null-pointer
+    // backstop (CODE_STRUCT_LITERAL_UNTYPED_EXPR): check_union_literal_assign
+    // below validates the fields but never sets lit.type_. With no annotation we
+    // clear the hint so a genuinely hint-less variant literal (`FOO :: Dup{...}`)
+    // reaches the bare-variant inference / ambiguity path cleanly instead of
+    // inheriting a stale hint left by a previous statement.
+    c.expected_hint = ann_type if !is_any(ann_type) else nil
     val_type := check_expr(c, s.value, env)
 
     if !is_any(ann_type) {
@@ -11588,6 +11608,38 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                     e.type_ = ut
                     return ut
                 }
+            }
+        }
+        // Bare variant literal whose name is shared by 2+ unions/enums — the
+        // ambiguity sentinel "" that register_enum_variants writes into
+        // variant_to_enum (variant_owner_union returns nil for it). We only
+        // reach here HINT-LESS: the union-hint branch above returns for any
+        // context that supplies an expected type, and check_define now feeds an
+        // annotated `::`'s type as a hint too — so the name has no single
+        // inferred owner. Emit a located error pointing at the qualified form
+        // (`A.Dup{...}`, handled by the dotted path above) or annotating the
+        // binding, mirroring resolve_variant_ident's ambiguity diagnostic for
+        // the `.Variant` dot-shorthand. Without this the literal silently stays
+        // Type_Error and codegen aborts one phase too late
+        // (CODE_STRUCT_LITERAL_UNTYPED_EXPR).
+        if e.name != "" {
+            if owner, mapped := c.table.variant_to_enum[e.name]; mapped && owner == "" {
+                // List only the UNIONS that own this variant: a `{...}` literal
+                // constructs a payload, which is meaningful for unions but not
+                // plain enums, and the synthetic <Name>_Tag enums each union
+                // carries would otherwise pollute the list.
+                owners: [dynamic]string
+                defer delete(owners)
+                for _, ut in c.table.unions {
+                    if e.name in ut.tag_map {
+                        append(&owners, ut.source_name if ut.source_name != "" else ut.name)
+                    }
+                }
+                slice.sort(owners[:])
+                first := owners[0] if len(owners) > 0 else e.name
+                check_error(c, e.span, TYPE_AMBIGUOUS_VARIANT_LITERAL,
+                    e.name, strings.join(owners[:], ", "), first, e.name)
+                return Type_Error{}
             }
         }
         // Anonymous struct literal: just check each field value. A name that

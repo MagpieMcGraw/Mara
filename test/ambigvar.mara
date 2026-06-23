@@ -1,0 +1,24 @@
+module ambigvar
+//@ expect-fail: ambiguous variant 'Dup'
+
+// GAP 1: a bare variant literal whose name belongs to TWO unions, in a hint-less,
+// unannotated binding position, has no single inferred owner. The checker must
+// say so cleanly (qualify as `A.Dup{...}` or annotate) instead of silently
+// accepting an untyped literal and letting codegen abort one phase too late with
+// the null-pointer backstop (CODE_STRUCT_LITERAL_UNTYPED_EXPR).
+
+A :: union(tag u8) { Dup = 1 { x: i32 } }
+B :: union(tag u8) { Dup = 1 { y: i32 } }
+
+useA :: fun(a: A) -> i32 {
+	match a {
+	Dup d
+		return d.x
+	}
+	return 0
+}
+
+main :: fun() {
+	FOO :: Dup{x = 5}        // Dup is a variant of BOTH A and B — ambiguous
+	assert(useA(FOO) == 5)
+}

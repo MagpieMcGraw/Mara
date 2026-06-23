@@ -1,0 +1,47 @@
+module variantanno
+
+// GAP 2: an annotated `::` bound to a bare union-variant literal must feed its
+// own annotation to the variant literal as an expected-type hint, so the literal
+// self-types to the union (mirroring the runtime-decl path) instead of falling
+// through untyped to codegen's null-pointer backstop. `Dup` is shared by two
+// unions, so the annotation (or the `A.` qualifier) is what disambiguates it —
+// the bare hint-less form is a clean error (see test/ambigvar.mara).
+
+A :: union(tag u8) { Dup = 1 { x: i32 } }
+B :: union(tag u8) { Dup = 1 { y: i32 } }
+
+// Module-level annotated `::` — the annotation disambiguates here via check_define
+// (the function-local form below goes through the ft.consts loop instead).
+TOP : A : Dup{x = 11}
+
+useA :: fun(a: A) -> i32 {
+	match a {
+	Dup d
+		return d.x
+	}
+	return 0
+}
+
+useB :: fun(b: B) -> i32 {
+	match b {
+	Dup d
+		return d.y
+	}
+	return 0
+}
+
+main :: fun() {
+	FOO : A : Dup{x = 5}        // annotated `::` disambiguates -> A (ft.consts path)
+	assert(useA(FOO) == 5)
+	assert(useA(FOO) == 5)      // inlined again at a second use site
+
+	assert(useA(TOP) == 11)     // module-level annotated `::` (check_define path)
+
+	qux := A.Dup{x = 9}         // qualified dotted form types as the variant struct
+	assert(qux.x == 9)          // ...and resolves (no codegen backstop), field readable
+
+	baz : B = Dup{y = 7}        // annotated runtime decl -> B
+	assert(useB(baz) == 7)
+
+	print("variantanno ok")
+}
