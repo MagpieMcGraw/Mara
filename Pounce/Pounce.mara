@@ -24,15 +24,22 @@ use entity
 use asset_resolve
 use ui
 
-// Only the color Pounce actually uses. ui keeps its own COLOR_GREEN; defining
-// the same name in both modules is now a hard error (a bare const must resolve
-// to exactly one visible module).
-COLOR_RED :: [3]f32{0.9, 0.2, 0.2}
+// Pounce's palette. ui (imported below) defines the same names — that's allowed;
+// a bare use that's ambiguous across two visible modules just has to be qualified.
+COLOR_RED     :: [3]f32{0.9, 0.2, 0.2}
+COLOR_ORANGE  :: [3]f32{0.95, 0.5, 0.1}
+COLOR_YELLOW  :: [3]f32{0.95, 0.85, 0.1}
+COLOR_GREEN   :: [3]f32{0.2, 0.75, 0.2}
+COLOR_TEAL    :: [3]f32{0.1, 0.7, 0.7}
+COLOR_BLUE    :: [3]f32{0.2, 0.4, 0.9}
+COLOR_PURPLE  :: [3]f32{0.6, 0.2, 0.8}
+COLOR_MAGENTA :: [3]f32{0.9, 0.2, 0.6}
 
 Player :: struct {
 	x, y: i64
 	size  := 50
-	color := COLOR_RED
+	// Qualified: bare COLOR_RED is ambiguous now that `use ui` also defines it.
+	color : [3]f32 = Pounce.COLOR_RED
 }
 
 Timers :: struct {

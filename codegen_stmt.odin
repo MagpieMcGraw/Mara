@@ -843,9 +843,9 @@ codegen_const_eval_int :: proc(g: ^Codegen, e: Expr) -> (int, bool) {
         if val, found := g.checked.constant_values[ident.name]; found {
             return val, true
         }
-        if const_expr, found := g.checked.table.constants[ident.name]; found {
-            return codegen_const_eval_int(g, const_expr)
-        }
+    }
+    if const_expr, found := codegen_const_value(g, e); found {
+        return codegen_const_eval_int(g, const_expr)
     }
     return 0, false
 }

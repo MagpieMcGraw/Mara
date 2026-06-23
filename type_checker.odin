@@ -648,11 +648,12 @@ Resolved_Union_Pad :: struct {
     union_name: string,
 }
 
+// A reference (however spelled — bare `X`, `Module.X`, `Self.X`) that the checker
+// has resolved to a single constant. Codegen just inlines `value_expr`; it never
+// looks a constant up by name or knows anything about module qualifiers.
 Resolved_Constant :: struct {
-    name:      string,
-    int_value: int,   // exact integer form (sizes, integer consts)
-    value:     f64,   // float value, for float-typed module constants (math.PI)
-    is_float:  bool,  // emit `value` (float) vs `int_value` at codegen
+    value_expr: Expr,   // the constant's value expression — inline this
+    int_value:  int,    // computed integer (fixed-array .len/.cap) when value_expr == nil
 }
 
 Resolved_Func :: struct {
@@ -11190,10 +11191,12 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                 e.name, joined, first, e.name)
             return Type_Error{}
         } else if vis_count == 1 {
-            // Unambiguous module constant: record the flat key so codegen inlines
-            // THIS module's value, not whatever last won the (global) bare key —
-            // another module out of this scope can reuse the name harmlessly.
-            e.resolved = Resolved_Constant{name = cflat}
+            // Unambiguous module constant: resolve it to THIS module's value
+            // expression, so codegen inlines the right value without re-resolving
+            // by name (another module out of scope can reuse the name harmlessly).
+            if vexpr, vok := c.table.constants[cflat]; vok {
+                e.resolved = Resolved_Constant{value_expr = vexpr}
+            }
         }
 
         // (Reading an uninitialized pointer/slice is now caught by the post-check
@@ -11889,18 +11892,9 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     if ident, ok := e.expr.(^Expr_Ident); ok && ident.name == c.current_package && c.current_package != "" {
         flat := make_flat_name(c.current_package, e.field)
         if const_expr, ce_ok := c.table.constants[flat]; ce_ok {
-            // Mirror the inference behavior used at module-qualified access
-            // sites: integer constants get a Resolved_Constant annotation;
-            // string and other constants stay as referenced expressions and
-            // get their type from the constant's value at codegen time.
-            if f_val, i_val, is_const := extract_constant_value(const_expr); is_const {
-                e.resolved = Resolved_Constant{
-                    name      = e.field,
-                    int_value = int(i_val),
-                    value     = f_val,
-                    is_float  = const_is_float(const_expr),
-                }
-            }
+            // Self-module qualifier (`Pkg.X` inside Pkg): resolve to the value
+            // expression — codegen inlines it for any type, scalar or aggregate.
+            e.resolved = Resolved_Constant{value_expr = const_expr}
             // Best-effort type: re-check the constant value's expression.
             return check_expr(c, const_expr, env)
         }
@@ -12023,18 +12017,11 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
                     return t
                 }
             }
-            // Resolve constants for codegen
+            // Imported qualifier (`mod.X`): resolve to the value expression so
+            // codegen inlines it for any type (scalar or aggregate).
             flat := make_flat_name(sd.name, e.field)
             if const_expr, ce_ok := c.table.constants[flat]; ce_ok {
-                f_val, i_val, is_const := extract_constant_value(const_expr)
-                if is_const {
-                    e.resolved = Resolved_Constant{
-                        name      = e.field,
-                        int_value = int(i_val),
-                        value     = f_val,
-                        is_float  = const_is_float(const_expr),
-                    }
-                }
+                e.resolved = Resolved_Constant{value_expr = const_expr}
             }
             return t
         }
@@ -12064,7 +12051,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     if fa, fa_ok := obj_type.(^Type_Fixed_Array); fa_ok {
         // Fixed arrays have no distinct len (cap == len always). Accept both names.
         if e.field == "len" || e.field == "cap" {
-            e.resolved = Resolved_Constant{name = e.field, int_value = fa.size}
+            e.resolved = Resolved_Constant{int_value = fa.size}
             return Type_Numeric{kind = .Signed, bits = 64}
         }
         if is_swizzle_field(e.field, fa.size) {
@@ -12114,7 +12101,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
             if ident, id_ok := e.expr.(^Expr_Ident); id_ok {
                 if const_expr, ck := c.table.constants[ident.name]; ck {
                     if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
-                        e.resolved = Resolved_Constant{name = e.field, int_value = len(lit.value)}
+                        e.resolved = Resolved_Constant{int_value = len(lit.value)}
                     }
                 }
             }

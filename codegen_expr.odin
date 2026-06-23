@@ -77,17 +77,10 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if ev, ev_ok := e.resolved.(Resolved_Enum_Variant); ev_ok {
             return fmt.tprintf("%d", ev.value)
         }
-        // Module constant the checker resolved to a specific module (it recorded
-        // the flat key): inline THAT module's value. The bare key below is a
-        // global slot another module can clobber by reusing the name, so prefer
-        // the resolved flat key when present.
-        if rc, rc_ok := e.resolved.(Resolved_Constant); rc_ok {
-            if const_expr, ok := g.checked.table.constants[rc.name]; ok {
-                return gen_expr(g, const_expr, target_type)
-            }
-        }
-        // Infer-type constant: emit inline with target type
-        if const_expr, ok := g.checked.table.constants[e.name]; ok {
+        // A constant reference inlines its value expression — the checker already
+        // resolved which constant (module const via annotation, scope-local via
+        // its unique name). Codegen never interprets a module qualifier.
+        if const_expr, ok := codegen_const_value(g, expr); ok {
             return gen_expr(g, const_expr, target_type)
         }
         // SSA-bound synthetic binding (compound assignment's pre-loaded LHS):
@@ -383,12 +376,14 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         }
         codegen_fatal(g, e.span, CODE_STRUCT_LITERAL_UNTYPED_EXPR)
     case ^Expr_Field_Access:
-        // A module-qualified constant (math.PI, asset.MAX_FONTS) or a fixed-array
-        // .len/.cap resolves to a Resolved_Constant. Lower it here, where the IR
-        // target type is known, so floats keep full precision and the right width
-        // — gen_field_access has no target_type and would emit a bare integer.
+        // A resolved constant: a module const (math.PI, ui.COLOR_GREEN) carries
+        // its value expression — inline it for any type; a fixed-array .len/.cap
+        // carries a computed int. Codegen never re-resolves the qualifier.
         if rc, ok := e.resolved.(Resolved_Constant); ok {
-            return emit_number_literal(target_type, rc.value, i128(rc.int_value), rc.is_float)
+            if rc.value_expr != nil {
+                return gen_expr(g, rc.value_expr, target_type)
+            }
+            return emit_number_literal(target_type, 0, i128(rc.int_value), false)
         }
         return gen_field_access(g, e)
     case ^Expr_Size_Of:
@@ -1157,14 +1152,13 @@ gen_expr_coerced :: proc(g: ^Codegen, e: Expr, target_ir: string) -> string {
 // to a `{ ptr, i64, i64 }` slice header — callers wrap as needed (arg
 // strings, memcpy sources for struct field stores, etc.).
 gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
-    // Constant ident: inline the value expression and let the shape-aware
-    // paths below (string-literal, array-literal, ...) fire on the
-    // underlying value. Covers `TAG :: "x"` then `f(TAG)` where f takes a
-    // slice — without this, the Expr_String case never matches the ident.
-    if ident, id_ok := arg.(^Expr_Ident); id_ok {
-        if const_expr, ck := g.checked.table.constants[ident.name]; ck {
-            return gen_slice_value_ptr(g, const_expr)
-        }
+    // Constant reference (bare, Module.X, or scope-local): inline the value
+    // expression and let the shape-aware paths below (string-literal,
+    // array-literal, ...) fire on the underlying value. Covers `TAG :: "x"` then
+    // `f(TAG)` where f takes a slice — without this the Expr_String case never
+    // matches the reference.
+    if vexpr, vok := codegen_const_value(g, arg); vok {
+        return gen_slice_value_ptr(g, vexpr)
     }
     arg_checker_type := expr_type(arg)
     // String literal: typed as a partial array since the
@@ -2131,29 +2125,13 @@ gen_print :: proc(g: ^Codegen, e: ^Expr_Call) {
     emit_print_newline(g)
 }
 
-// If `expr` is (transitively) a string literal — either an inline literal,
-// an identifier bound to a `name :: "..."` constant, or `Module.name` access
-// to the same — return its value.
+// If `expr` is (transitively) a string literal — either an inline literal or a
+// reference resolved to a `name :: "..."` constant (bare or `Module.name`) —
+// return its value. Uses the checker's resolution; no name lookup, no qualifiers.
 resolve_format_string_value :: proc(g: ^Codegen, expr: Expr) -> (string, bool) {
     if lit, ok := expr.(^Expr_String); ok { return lit.value, true }
-    if ident, ok := expr.(^Expr_Ident); ok {
-        if const_expr, found := g.checked.table.constants[ident.name]; found {
-            if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
-                return lit.value, true
-            }
-        }
-    }
-    if fa, ok := expr.(^Expr_Field_Access); ok {
-        if qual, q_ok := fa.expr.(^Expr_Ident); q_ok {
-            // Try the flat-key form `Module_field` — covers self-module
-            // qualification and imported-module qualification uniformly.
-            flat := strings.concatenate({qual.name, "_", fa.field})
-            if const_expr, found := g.checked.table.constants[flat]; found {
-                if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
-                    return lit.value, true
-                }
-            }
-        }
+    if vexpr, vok := codegen_const_value(g, expr); vok {
+        if lit, lit_ok := vexpr.(^Expr_String); lit_ok { return lit.value, true }
     }
     return "", false
 }
@@ -3165,9 +3143,7 @@ expr_ir_type :: proc(g: ^Codegen, expr: Expr) -> string {
 // so post-hoc conversion is unnecessary.
 is_infer_expr :: proc(g: ^Codegen, expr: Expr) -> bool {
     if _, ok := expr.(^Expr_Number); ok { return true }
-    if e, ok := expr.(^Expr_Ident); ok {
-        if _, c_ok := g.checked.table.constants[e.name]; c_ok { return true }
-    }
+    if _, c_ok := codegen_const_value(g, expr); c_ok { return true }
     // Check the type checker annotation: if infer, gen_expr already
     // used target_type to emit the correct IR type.
     t := expr_type(expr)

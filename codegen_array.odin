@@ -204,11 +204,44 @@ emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, ca
 // Array codegen
 // ---------------------------------------------------------------------------
 
+// If `expr` is a reference the checker resolved to a constant — bare `X`,
+// `Module.X`, or `Self.X` — return the constant's value expression. The single
+// place codegen turns a constant reference into its value, without re-resolving
+// the name or knowing anything about module qualifiers (that was the checker's
+// job). Used to substitute a constant RHS with its literal before materializing.
+resolved_const_value :: proc(expr: Expr) -> (Expr, bool) {
+    #partial switch e in expr {
+    case ^Expr_Ident:
+        if rc, ok := e.resolved.(Resolved_Constant); ok && rc.value_expr != nil { return rc.value_expr, true }
+    case ^Expr_Field_Access:
+        if rc, ok := e.resolved.(Resolved_Constant); ok && rc.value_expr != nil { return rc.value_expr, true }
+    }
+    return nil, false
+}
+
+// Like resolved_const_value, but also covers a scope-local constant (function-
+// body `::`) — which the checker doesn't annotate (it's not a module constant),
+// so it's still found by its unique name. Module constants always go through the
+// annotation; the table is only consulted for an un-annotated local ident.
+codegen_const_value :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
+    if v, ok := resolved_const_value(expr); ok { return v, true }
+    if ident, ok := expr.(^Expr_Ident); ok {
+        if v, ok := g.checked.table.constants[ident.name]; ok { return v, true }
+    }
+    return nil, false
+}
+
 gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, loc: string = "<unknown>", elem_mara: Type = nil) {
     // `= void` (skip marker) on a fixed array — same as no initializer:
     // allocate, register, and stop — under the zero-init policy, `= void`
     // is the opt-out, so the skip marker leaves the bytes untouched.
     value := value
+    // A constant RHS (however spelled — bare, Module.X, or a scope-local `::`)
+    // inlines its value — substitute the value expression so the literal handling
+    // below materializes it.
+    if vexpr, vok := codegen_const_value(g, value); vok {
+        value = vexpr
+    }
     skip_zero := false
     if _, is_skip := value.(^Expr_Skip_Constructor); is_skip {
         value = nil
@@ -322,20 +355,10 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
 
 // Copy an array expression result into a named array variable.
 gen_array_copy_expr :: proc(g: ^Codegen, name: string, value: Expr) {
+    // (A constant RHS was already substituted for its value in gen_array_assign,
+    // so `value` here is never a constant — only a real array expression.)
     // For an identifier (copying one array to another)
     if ident, ok := value.(^Expr_Ident); ok {
-        // Compile-time constant referring to an array-shaped value (e.g.
-        // `QUAT_IDENTITY :: Quat{w = 1.0}`): inline the constant's expression
-        // through the normal gen_array_assign dispatch so its
-        // struct-literal / array-literal handling kicks in.
-        if const_expr, const_ok := g.checked.table.constants[ident.name]; const_ok {
-            dst, dst_ok := get_array(g, name)
-            if dst_ok {
-                loc := format_location(ident.span.file, ident.span.line, ident.span.col)
-                gen_array_assign(g, name, dst.capacity, dst.elem_type, const_expr, dst.is_utf8, loc)
-            }
-            return
-        }
         src, src_ok := get_array(g, ident.name)
         if !src_ok {
             codegen_fatal(g, ident.span, CODE_ARRAY, ident.name)
@@ -793,7 +816,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
         // same way any other byte buffer would. Writes are already
         // blocked at type-check (TYPE_CANNOT_ASSIGN_CONSTANT_TYPE),
         // so this path only fires for reads.
-        if const_expr, found := g.checked.table.constants[ident.name]; found {
+        if const_expr, found := codegen_const_value(g, ident); found {
             if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
                 global_name, byte_len := get_string_literal(g, lit.value)
                 idx := gen_checked_index(g, e.index, fmt.tprintf("%d", byte_len), ident.name, e.span)
