@@ -82,6 +82,15 @@ Megastruct :: struct {
 	quad:   Quad_Renderer
 	player: Player
 	playa : Playa
+
+	// Game entities (Warlock's shapes/glyphs arrays). Resolved lazily over the
+	// first frames, then rendered each frame through the object/text draw states.
+	shapes: [..256]Shape
+	glyphs: [..512]entity.Glyph   // qualify: mara.font also defines a Glyph
+
+	// World-space UI overlay (shapes/glyphs for these live in the arrays above).
+	axes_gizmo:  UI_Gizmo
+	frame_graph: UI_Graph
 }
 
 game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
@@ -134,6 +143,13 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game.playa.obj.scale = Vec3{70, 70, 70}
 	game.playa.visual.texture = ATLAS_TEXTURE
 
+	// Scene: a ring of atlas quads + a 16x16 glyph grid. Both carry string asset
+	// references that resolve lazily (visual_resolve / glyph_resolve) over the
+	// next frames as the font/atlas layers come online. "Inter" fuzzy-matches the
+	// loaded font path.
+	game_create_shapes_half_circle(&game.shapes, &game.camera, 12, 300.0, 40.0)
+	game_create_font_grid(&game.glyphs, "Inter", Vec3{-240, 220, 120}, 22.0, 4.0)
+
 	game.running = true
 	game.initialized = true
 }
@@ -170,6 +186,16 @@ game_events :: fun(game: ^Megastruct) {
 game_update :: fun(game: ^Megastruct, dt: f64) {
 	camera_move(&game.camera, &game.events.keyboard, f32(game.timers.fixed.step))
 	camera_update(&game.camera, f32(game.timers.fixed.step))
+
+	// Deferred asset resolution. Each call resolves once then no-ops, so this is
+	// cheap after the first few frames: shapes resolve mesh/texture names; glyphs
+	// resolve their font into atlas UVs + a pixel-sized scale.
+	for i in 0..game.shapes.len {
+		_ = visual_resolve(&game.assets, &game.shapes[i].visual)
+	}
+	for i in 0..game.glyphs.len {
+		_ = glyph_resolve(&game.assets, &game.glyphs[i])
+	}
 }
 // Append a solid-colored quad through the object shader. The image atlas holds a
 // white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
@@ -206,12 +232,26 @@ game_draw :: fun(game: ^Megastruct) {
 	draw_marker(&game.draw_state_object, Vec3{  0,  90, 120}, [0, 1, 0], game.camera)
 	draw_marker(&game.draw_state_object, Vec3{-90,   0, 120}, [0, 0, 1], game.camera)
 	draw_marker(&game.draw_state_object, Vec3{  0, -90, 120}, [1, 1, 0], game.camera)
+
+	// Scene shapes (the half-circle ring), resolved to atlas quads.
+	for i in 0..game.shapes.len {
+		if game.shapes[i].obj.exists {
+			append_one(&game.draw_state_object,
+				game.shapes[i].obj, game.shapes[i].visual, game.camera)
+		}
+	}
 	draw_state_render(&game.draw_state_object)
 	draw_state_reset(&game.draw_state_object)
 
-	// Playa quad through the text shader / font atlas.
+	// Playa quad + the glyph grid through the text shader / font atlas.
 	append_one(&game.draw_state_text,
 		game.playa.obj, game.playa.visual, game.camera)
+	for i in 0..game.glyphs.len {
+		if game.glyphs[i].obj.exists {
+			append_one(&game.draw_state_text,
+				game.glyphs[i].obj, game.glyphs[i].visual, game.camera)
+		}
+	}
 	draw_state_render(&game.draw_state_text)
 	draw_state_reset(&game.draw_state_text)
 
