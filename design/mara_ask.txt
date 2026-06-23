@@ -3,7 +3,7 @@ Design for the mara ask code analyzer
 Basic usage should be:
 mara ask 	// shows info about modules in cwd
 mara ask name	// shows info about a symbol, which must be in some module in cwd
-name can be a module, struct, function, variable
+		// name can be a module, struct, function, variable
 
 3 types of analysis: type and call and flow
 2 types of direction: above and below
@@ -13,39 +13,32 @@ above|bfor - what I contain, what I need to be constructed
 below|aftr - who contains me after I have been constructed
 
 For call analysis:
-above|bfor - Function calls that feed me
-below|aftr - Function calls that I feed
+above|bfor - Function calls that supply me
+below|aftr - Function calls that I supply
 
 For flow analysis:
-above|bfor - the tree of variables that feed me, inlcuding across function calls
-below|aftr - the tree of variables that I feed, including across function calls
-
-
-
-Matrix of argument combinations:
-module type above // modules that I include, types I use, functions I call, with counts
-module type below // modules that include me, and which of my types and functions they use
-
-struct type above // what I have as a field, and the functions that operate on those types. Also functions that return me.
-struct type below // who has me as a field or param, and the functions that operate on those types.
-
-fun type above	// type above analysis on the types of my arguments and returns
-fun type below	// type below analysis on the types of my arguments and returns
-
-var type above // get the type of the var, and then do type analysis
-var type below // same but below
-
-struct flow above // do the 'var flow above' analysis on every instance of this struct
-struct flow below // same but below
-
-fun flow above // do 'var flow above' analysis for all my args at all my callsites
-fun flow below // do 'var flow below' analysis for all my return values at all my callsites
-
-module flow above // do 'var flow above' analysis for all my structs and functions
-module flow below // same but below
+above|bfor - the tree of variables that supply me, inlcuding across function calls
+below|aftr - the tree of variables that I supply, including across function calls
 
 Arguments to narrow and specify the results:
-mara ask name 1			// a numeric argument will limit analysis depth, which is infinite by default
-mara ask name ex		// exhaustive connections
+mara ask name 1			// number - limit analysis depth, default infinite
+mara ask name ex		// exhaustive connections, default direct
 mara ask var in scope 		// query specific variables or struct fields.
 mara ask var in file.mara.line 	// query variable in a file, with optional line number
+
+
+Matrix of arg combinations:
+module call above	// functions this module imports and calls
+module call below 	// functions defined in this module, imported and called elsewhere
+
+struct call above 	// functions that need to be called to make this struct
+struct call below	// functions that take this struct as an arg
+
+fun call above	// functions called by this function
+fun call below 	// functions that call this function
+
+var call above 	// function calls which supply this variable
+var call below 	// function calls this variable supplies
+
+fun type above	// the type analysis of this function's arguments
+fun type below 	// the type analysis of this function's return values

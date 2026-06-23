@@ -7712,6 +7712,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
             }
             c.expected_hint = assign_hint
+            errors_before_value := c.errors
             val_type := check_expr(c, s.value, env)
             // `x : []utf8 = "lit"` â€” writable view over rodata; sized slices
             // (`[:N]utf8`, cap_expr set) copy into owned backing and pass.
@@ -8025,7 +8026,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         }
                     } else {
                         binding_type = solidify_type(val_type)
-                        if is_untyped(binding_type) {
+                        // Only warn about a silently-untyped binding when the
+                        // value checked cleanly. If checking it already emitted a
+                        // diagnostic (e.g. `d := Nonexist{...}` now reports the
+                        // unknown type), "type checking bypassed" is both false
+                        // and redundant noise.
+                        if is_untyped(binding_type) && c.errors == errors_before_value {
                             check_warning(c, s.span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, s.name)
                         }
                         // Storing a cstring (e.g. `e := GetError()`) is banned
@@ -11550,6 +11556,24 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         // stays a suppressed Type_Error (e.g. context-typed variant literals
         // are validated by the enclosing decl, not here) â€” so we can't turn
         // this into a hard "undefined" error without false-flagging them.
+        //
+        // BUT a NAMED literal whose name is neither a known variant nor a bound
+        // local matched nothing at all — `Nonexist{...}`. That is a genuine
+        // unknown type, so emit the same `unknown type 'X'` the type-annotation
+        // path gives, one phase before codegen's null-pointer backstop
+        // (CODE_STRUCT_LITERAL_UNTYPED_EXPR) would otherwise fire. A bare variant
+        // literal (`Circle{...}`) is spared: it is validated later against its
+        // union by the enclosing annotated decl / return / arg (check_define
+        // runs check_expr hint-lessly first). Variant ownership lives in the same
+        // variant→owner index the `.N` dot-shorthand resolves through — union
+        // variants land there via each union's synthetic tag enum — so reuse it
+        // rather than rescanning the union table.
+        _, is_known_variant := c.table.variant_to_enum[e.name]
+        if e.name != "" && !is_known_variant {
+            if _, _, bound := type_env_locate(env, e.name); !bound {
+                check_error(c, e.span, TYPE_UNKNOWN_TYPE, e.name)
+            }
+        }
         for field in e.fields {
             check_expr(c, field.value, env)
         }

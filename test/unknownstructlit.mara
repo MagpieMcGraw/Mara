@@ -1,0 +1,11 @@
+module unknownstructlit
+
+// A struct literal in expression position whose type name is undefined must be
+// rejected at CHECK time with `unknown type 'X'` — the same diagnostic the
+// type-annotation path emits — not deferred to codegen's null-pointer backstop.
+//@ expect-fail: unknown type
+
+main :: fun() -> i64 {
+    d := Nonexist{v = 7}
+    return d.v
+}
