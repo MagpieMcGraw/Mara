@@ -778,14 +778,21 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
 
     subject := matches[0]
 
-    show_types := kind == "" || kind == "types"
-    show_call  := kind == "" || kind == "call"
-    show_flow  := kind == "" || kind == "flow"
-    show_above := dir  == "" || dir  == "above"
-    show_below := dir  == "" || dir  == "below"
-
     ft, is_fn := subject.type_.(^Type_Scope)
     is_fn = is_fn && ft.kind == .Fun
+
+    // A bare query (no kind) shows the subject's NATURAL kind, not all three: a
+    // function's calls, any other type's structure. (A variable's natural kind is
+    // flow — that default lives in render_var_slice.) An explicit kind overrides.
+    // This keeps `mara ask Foo` focused — one analysis, not a three-kind dump — and
+    // mirrors how the variable view already picks flow for a bare query.
+    eff_kind := kind
+    if eff_kind == "" { eff_kind = "call" if is_fn else "types" }
+    show_types := eff_kind == "types"
+    show_call  := eff_kind == "call"
+    show_flow  := eff_kind == "flow"
+    show_above := dir  == "" || dir  == "above"
+    show_below := dir  == "" || dir  == "below"
 
     // The module shown is the subject's OWN home package, not the cwd project
     // (`pkg`) — a stdlib type queried from a game dir is `mara.font`, not `Pounce`.

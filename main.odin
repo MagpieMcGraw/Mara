@@ -972,7 +972,8 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
   changes that root.
 
     (no name)      module map — every module in the project at a glance
-    <name>         everything about a type or function: every graph, both directions
+    <name>         the subject's natural view, both directions — a type's structure,
+                   a function's calls, a variable's flow (add types|call|flow to switch)
     above          only the sources — what <name> is built from / what feeds it
     below          only the consumers — what depends on <name> / what it feeds
     types          only the type graph — a struct's fields/embeds; a function's
