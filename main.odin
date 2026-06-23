@@ -1007,10 +1007,12 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask at camera.mara:176      slice whatever is defined on that line`
 
 // Help-flag spellings honored wherever a help request is accepted — the common
-// one/two-dash, short/long variants, so a user's muscle memory always lands.
+// one/two-dash, short/long variants, the Windows `/?`, plus the bare `help`/`?`
+// a new user reaches for first, so muscle memory always lands on usage instead
+// of a 404 ("no type named 'help'").
 is_help_flag :: proc(tok: string) -> bool {
     switch tok {
-    case "-h", "--h", "-help", "--help": return true
+    case "-h", "--h", "-help", "--help", "-?", "/?", "help", "?": return true
     }
     return false
 }
@@ -1192,7 +1194,18 @@ parse_args :: proc() -> CLI_Args {
                 continue
             }
             if args.ask_target != "" {
-                fmt.printf("mara ask: expected one name, got '%s' and '%s'\n", args.ask_target, tok)
+                // Two name-like tokens. Usually one is really a mistyped filter or
+                // a retired keyword (`lineage`) — surface that, since the bare
+                // "two names" complaint misdiagnoses the actual mistake. Check the
+                // trailing token first (the common `<name> <typo>` order), then the
+                // leading one, then fall back to the plain error + a help pointer.
+                if hint, hok := ask_keyword_hint(tok); hok {
+                    fmt.printf("mara ask: %s\n", hint)
+                } else if hint, hok := ask_keyword_hint(args.ask_target); hok {
+                    fmt.printf("mara ask: %s\n", hint)
+                } else {
+                    fmt.printf("mara ask: expected one name, got '%s' and '%s'  (see `mara ask --help`)\n", args.ask_target, tok)
+                }
                 return args
             }
             args.ask_target = tok

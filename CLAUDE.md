@@ -12,55 +12,6 @@ Mara code:
 mara build game    	# build module "game" from all .mara files with `module game`
 mara build         	# build module matching current directory name
 
-# Analyzer
-
-Mara has a graph-based code analyzer that reveals the structure and data flow of
-Mara programs — type dependencies and forward/backward program slices — from the
-compiler itself.
-
-```
-mara ask                     # the cwd project: every module at a glance
-mara ask name                # a type, function, or module — everything about it
-
-# Two filter axes, composable, in any order:
-mara ask name types          # only the type graph (fields / params / returns / embeds)
-mara ask name flow           # only the data-flow slice (the "outside" view)
-mara ask name above          # only the sources   (what it's built from / what feeds it)
-mara ask name below          # only the consumers (what depends on it / what it feeds)
-mara ask name types above    # filters combine — just the type sources
-mara ask name 2              # search depth, default is inf, beware wall of text
-mara ask name flow control   # add CONTROL dependence (branches/loops); off by
-                             # default — it needs the post-dom pass, the one slow
-                             # step. The default flow slice is data-only and hot.
-
-# `flow` is the "outside" view, consistent across subjects:
-mara ask Type flow           # aggregate the slice over every value of that type
-mara ask fn flow             # the call-site view: what feeds the args / where results go
-
-# A forward flow slice FOLLOWS the calls a value feeds, hop by hop into the callee
-# parameter it lands in; the number caps the call-hop budget (omit = full, 0 = none):
-mara ask var in fn 2         # follow the value two call hops deep, bucketed by hop
-
-# Lineage (provenance) — what BUILDS a value, as a tree following all call inputs:
-mara ask var in fn lineage   # var ⟵ producing-call ⟵ its inputs ⟵ … (back to params/disk)
-
-# Slicing — address a variable, then it gets sliced (above = feeds it, below = it feeds):
-mara ask var in fn           # a local or parameter inside a function
-mara ask return in fn        # what feeds a function's return value (the inside view)
-mara ask at file:line        # the variable defined at that exact spot (precise)
-
-# Narrow where a name resolves:
-mara ask name in module      # analyze a different discovered module
-mara ask name in file        # resolve the name within one file
-mara ask var in fn in module # two `in` scopes compose (a function + a module), any order
-mara ask at file:line in module  # `at` + `in <module>`: precise address in a non-cwd module
-```
-
-`types`/`flow` pick the graph, `above`/`below` the direction; omit either to get
-both. A number is depth: it bounds the type graph and the forward-flow call-
-following alike — omit = full for both (0 = count only for flow). Backward slices
-are always full (calls crossed by the return-args summary).
-
 ## Workflow
 
 Make a git commit before starting work.
@@ -79,3 +30,112 @@ I may make small edits to various files while you are working. Usually touching 
 # Reference
 
 Old odin game project can be found at C:\Users\magpie\Desktop\Warlock Odin
+
+# Analyzer (`mara ask`)
+
+A graph-based code analyzer that reveals the structure and data flow of Mara
+programs — from the compiler itself. Full write-up in `design/mara_ask.txt`
+(this spec + matrix) and `design/mara_ask.md` (rationale, algorithms, limits).
+
+## Basic usage
+
+```
+mara ask                # info about the modules in cwd
+mara ask name           # info about a symbol — a module, struct, function, or variable;
+                        # with no filters, a general overview of name
+```
+
+Every query has two axes — **3 kinds of analysis** (`types`, `call`, `flow`) and
+**2 directions** (`above`, `below`). Omitting a kind widens to all that apply;
+omitting a direction gives both. What each direction means, per kind:
+
+```
+types  above  — what I contain / what I need to be constructed
+       below  — who contains me, after I'm constructed
+call   above  — function calls that supply me
+       below  — function calls that I supply
+flow   above  — the tree of variables that supply me, across function calls
+       below  — the tree of variables that I supply, across function calls
+```
+
+## Other arguments
+
+```
+mara ask name 2              # number — limit analysis depth (default: infinite)
+mara ask var in fn           # query a specific variable or struct field
+mara ask at file:line        # query the variable defined at that spot (note: `at`, not `in`)
+mara ask return in fn        # what feeds a function's return value (the inside view)
+mara ask name in module      # narrow where name resolves (also `in file`); scopes compose
+mara ask var in fn flow above control   # `control` adds control-dependence (see below)
+```
+
+## The matrix — subject × kind × direction
+
+```
+module type above   # structs this module imports and uses
+module type below   # structs defined in this module, imported and used elsewhere
+struct type above   # structs that are fields of this struct
+struct type below   # structs that this struct is a field of
+fun    type above   # the type analysis of this function's arguments
+fun    type below   # the type analysis of this function's return values
+var    type above   # run `type above` on the type of var
+var    type below   # run `type below` on the type of var
+
+module call above   # functions this module imports and calls
+module call below   # functions defined in this module, imported and called elsewhere
+struct call above   # functions that need to be called to make this struct
+struct call below   # functions that take this struct as an arg
+fun    call above   # functions called by this function
+fun    call below   # functions that call this function, and dispatch blocks
+var    call above   # function calls which supply this variable
+var    call below   # function calls this variable supplies
+
+var    flow above   # chain of variables and operations that supply this variable
+var    flow below   # chain of variables and operations that this variable supplies
+fun    flow above   # `flow above` on all call sites of this function
+fun    flow below   # `flow below` on all call sites of this function
+struct flow above   # `flow above` on all fields of all instances of this struct
+struct flow below   # `flow below` on all fields of all instances of this struct
+module flow above   # `flow above` on all instances of everything in the module
+module flow below   # `flow below` on all instances of everything in the module
+```
+
+## Spec vs. actual (2026-06-23)
+
+What the tool does today, and where it diverges from the matrix above.
+
+**Implemented (matches the matrix):**
+- `struct` / `fun` / `var` × `type` / `call` / `flow` × `above` / `below` — all live.
+- `fun type`: above = parameter types, below = return types.
+- `fun call`: above = callees, below = callers (off the materialized call graph).
+- `struct call`: below = fns that take it, above = fns that return it.
+- `struct type below`: now ONLY structs that contain/embed it — fns that take/return it moved to `call`.
+- `var type`: the type graph of the variable's own type.
+- `var call`: above = calls that supply it, below = calls it supplies.
+
+**Deferred (not built):**
+- All MODULE-level analysis. `mara ask <module>` shows the module SURFACE
+  (declared types ranked by user-count, plus funs), not the above/below
+  analyses; a kind/dir filter on a module is currently ignored.
+
+**Divergences from the matrix:**
+- `var flow above` is the LINEAGE tree (producer tree, following the calls that
+  build the value). This folded in what was a separate `lineage` verb — the
+  `lineage`/`source` keyword is **retired**. (`flow below` = forward slice.)
+- A bare `<var> in <fn>` (no kind) shows FLOW only — a variable's natural view;
+  `types`/`call` on a variable are explicit opt-ins. A bare `<fn>` or `<struct>`
+  still shows all three kinds.
+- `struct call above` = functions that RETURN the struct by value (factories). It
+  does NOT include the auto-generated constructor, and is not yet a true "what
+  builds this value" producer analysis.
+
+**Extra (beyond the matrix):**
+- `control` — a FLAG (not a kind) that adds control dependence (the branches/loops
+  a value drives, or that guard what feeds it) to a flow slice. Off by default: it
+  needs the slow post-dominator pass.
+- `in <module>` / `in <file>` scopes; two `in` scopes compose (`<var> in <fn> in
+  <module>`, any order). Every `in` NARROWS where the name resolves over a fixed
+  root — the cwd program (cwd + the stdlib it uses); it never re-roots. A module
+  on disk but not pulled in by the cwd project isn't part of the program (plain
+  not-found, no fallback).
+- `return in <fn>` — slices what feeds a function's return (the inside view).

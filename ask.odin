@@ -359,6 +359,35 @@ ask_levenshtein :: proc(a, b: string) -> int {
     return prev[lb]
 }
 
+// A leftover ask token that is neither the subject name nor a live filter. Tells
+// a RETIRED keyword (give the current spelling) apart from a TYPO of a live
+// filter (suggest it) apart from a genuine second name (no hint — the caller
+// falls back to the plain "expected one name"). Without this, `... lineage` and
+// `... flw` both misreport as a stray second name, hiding the real mistake.
+ask_keyword_hint :: proc(tok: string) -> (hint: string, ok: bool) {
+    switch strings.to_lower(tok) {
+    case "lineage", "source", "provenance":
+        return "`lineage` is retired — a variable's `flow above` IS its lineage tree. Try `mara ask <var> in <fn> flow above`, or just `<var> in <fn>` (which already shows flow).", true
+    case "deps", "uses", "users", "contributors", "affects":
+        return fmt.tprintf("`%s` is retired — kinds are now `types` / `call` / `flow`, each with `above` / `below`. See `mara ask --help`.", tok), true
+    }
+    // A typo of a live filter? Anchor on the first letter and require a small edit
+    // distance relative to the token — mirroring the name-fuzzy edit tier — so
+    // `flw`->`flow` and `typs`->`types` resolve, but a real short name like `cam`
+    // is not dragged onto `call`.
+    lower := strings.to_lower(tok)
+    if len(lower) == 0 { return "", false }
+    KEYWORDS := []string{"types", "call", "flow", "above", "below", "control"}
+    best, best_d := "", max(int)
+    for k in KEYWORDS {
+        if d := ask_levenshtein(lower, k); d < best_d { best_d, best = d, k }
+    }
+    if best_d > 0 && lower[0] == best[0] && 3 * best_d <= len(lower) {
+        return fmt.tprintf("unknown filter `%s` — did you mean `%s`? (filters: types|call|flow, above|below, control)", tok, best), true
+    }
+    return "", false
+}
+
 // Top-N definitions by fuzzy score against `target`, ties broken by name for
 // determinism. Used only when exact resolution returns nothing.
 ask_fuzzy :: proc(table: ^SymbolTable, target: string, scope_file: string, limit: int, funcs: map[string]^Type_Scope, scope_module := "") -> [dynamic]Ask_Match {
