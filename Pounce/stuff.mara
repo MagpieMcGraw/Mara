@@ -1,0 +1,184 @@
+module stuff
+
+// Misc gameplay/utility helpers — fuzzy asset-name matching, random spawn
+// placement, screen→world projection. Port of Warlock's stuff.odin.
+//
+// Two deviations from the Odin original, both forced by Mara's model:
+//   * No stdlib RNG, so we carry a tiny xorshift64 generator here.
+//   * Odin's `random_string`/`place_half_circle` returned heap slices; Mara
+//     hard-errors on returning a local-backed slice, so both now FILL a
+//     caller-provided buffer (`out: ^[]T`) instead.
+
+use mara.core    // utf8/slice append overloads
+use mara.math
+use mara.string
+use camera
+use object
+
+PI :: TAU * 0.5
+
+// === Tiny PRNG — stands in for core:math/rand ===
+// A 32-bit LCG kept in a u64 so the multiply can't overflow-trap: the widest
+// intermediate is (2^32-1) * 1103515245 ≈ 4.7e18, comfortably under u64's
+// 1.8e19 ceiling. Mara has no xor operator (`^` is the pointer type) and traps
+// on arithmetic overflow, so xorshift / a 64-bit LCG are both out.
+
+rng_state : u64 = 0x2545F491
+
+rand_u32 :: fun() -> u32 {
+	rng_state = (rng_state * 1103515245 + 12345) & 0xFFFFFFFF
+	return u32(rng_state)
+}
+
+// Uniform float in [0, 1): take the top 24 bits (f32 has 24 mantissa bits).
+rand_f32_01 :: fun() -> f32 {
+	return f32(rand_u32() >> 8) / 16777216.0
+}
+
+rand_f32_range :: fun(lo: f32, hi: f32) -> f32 {
+	return lo + (hi - lo) * rand_f32_01()
+}
+
+// Uniform int in [0, n).
+rand_i32_max :: fun(n: i32) -> i32 {
+	if n <= 0 do return 0
+	return i32(rand_u32() % u32(n))
+}
+
+// === Fuzzy string matching with space-separated filters ===
+// Returns match position (lower = better), or -1 if no match.
+// "fir" matches "fireball" at pos 0, "spitfire" at pos 4.
+// "ship blue" matches "blue_ship.glb" only if "blue" comes after "ship".
+// Prefix with "=" for exact match: "=ship" only matches "ship".
+
+ascii_lower :: fun(c: utf8) -> utf8 {
+	n := u8(c)                                   // utf8 isn't ordered-comparable; go through u8
+	if n >= 65 and n <= 90 do return utf8(n + 32)  // 'A'..'Z' -> +32 = 'a'..'z'
+	return c
+}
+
+// Copy `src` lowercased into `dst` (reset to empty first). Bounded by dst.cap.
+// `dst` is already a ^[]utf8, so append with `dst + item` (no extra `&`).
+lower_into :: fun(src: []utf8, dst: ^[]utf8) {
+	dst.len = 0
+	for i in 0..src.len {
+		if dst.len >= dst.cap do break
+		dst + ascii_lower(src[i])
+	}
+}
+
+str_eq :: fun(a: []utf8, b: []utf8) -> bool {
+	if a.len != b.len do return false
+	for i in 0..a.len {
+		if a[i] != b[i] do return false
+	}
+	return true
+}
+
+string_match :: fun(name: []utf8, query: []utf8) -> i64 {
+	// Exact-match prefix "=".
+	if query.len > 0 and query[0] == '=' {
+		exact_query := query[1:]
+		if str_eq(name, exact_query) do return 0
+		return -1
+	}
+
+	// Lowercase both for case-insensitive matching.
+	name_buf  : [..256]utf8
+	query_buf : [..256]utf8
+	lower_into(name,  &name_buf)
+	lower_into(query, &query_buf)
+	name_lower  := name_buf[:]
+	query_lower := query_buf[:]
+
+	filter1 := query_lower
+	filter2 := query_lower[0:0]
+	space_idx, has_space := find_byte(query_lower, ' ')
+	if has_space {
+		filter1 = query_lower[:space_idx]
+		filter2 = query_lower[space_idx + 1:]
+	}
+
+	idx1, ok1 := find(name_lower, filter1)
+	if not ok1 do return -1
+
+	if filter2.len > 0 {
+		remaining := name_lower[idx1 + filter1.len:]
+		_, ok2 := find(remaining, filter2)
+		if not ok2 do return -1
+	}
+	return idx1
+}
+
+// === Random spawn position inside a cylinder along a direction ===
+game_spawn_in_cylinder :: fun(base_angle: f32, min_dist: f32, max_dist: f32, radius: f32) -> Vec3 {
+	dist         := rand_f32_range(min_dist, max_dist)
+	offset_angle := rand_f32_range(0.0, TAU)
+	offset_r     := rand_f32_range(0.0, radius)
+
+	dir_x := cos(base_angle)
+	dir_z := sin(base_angle)
+	pos_x := dir_x * dist
+	pos_z := dir_z * dist
+	pos_y := sin(offset_angle) * offset_r
+
+	perp_x := -dir_z
+	perp_z := dir_x
+	pos_x += perp_x * cos(offset_angle) * offset_r
+	pos_z += perp_z * cos(offset_angle) * offset_r
+	return Vec3{pos_x, pos_y, pos_z}
+}
+
+// === Screen position → camera-local offset (forward, right, up) ===
+// Converted to world space each frame using the camera's current orientation.
+game_screen_to_local_offset :: fun(screen_x: i32, screen_y: i32, distance: f32, camera: ^Camera) -> Vec3 {
+	// Screen coords → normalized device coords (-1..1).
+	ndc_x := (2.0 * f32(screen_x)) / camera.w_width - 1.0
+	ndc_y := 1.0 - (2.0 * f32(screen_y)) / camera.w_height
+
+	tan_half_fov_y := tan(camera.fov_y * 0.5)
+	tan_half_fov_x := tan(camera.fov_x * 0.5)
+
+	offset_x := ndc_x * tan_half_fov_x * distance
+	offset_y := ndc_y * tan_half_fov_y * distance
+
+	// (forward distance, right offset, up offset) in camera-local space.
+	return Vec3{distance, offset_x, offset_y}
+}
+
+// === Random alphanumeric string → fills caller buffer `out` ===
+random_string :: fun(out: ^[]utf8, length: i64) {
+	chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	out.len = 0
+	for i in 0..length {
+		if out.len >= out.cap do break
+		out + chars[rand_i32_max(i32(chars.len))]
+	}
+}
+
+// A bare Vec3 can't be a slice element (distinct-array elements mis-codegen on
+// store), so half-circle points come back wrapped in a one-field struct — which
+// stores fine, like any struct-with-Vec3-field does.
+Circle_Point :: struct { pos: Vec3 }
+
+// === Points arranged in a half circle (180°) → fills caller buffer `out` ===
+// Distributed evenly, right side to left. The half circle lies in the plane
+// perpendicular to the quaternion's forward direction.
+place_half_circle :: fun(out: ^[]Circle_Point, count: i64, center: Vec3, dir: Quat, radius: f32) {
+	out.len = 0
+	_, up, right := obj_get_directions(dir)
+
+	denom := count - 1
+	if denom < 1 do denom = 1
+
+	for i in 0..count {
+		if i >= out.cap do break
+		// Angle 0..PI (half circle).
+		t     := f32(i) / f32(denom)
+		angle := t * PI
+
+		p := center + right * (cos(angle) * radius) + up * (sin(angle) * radius)
+		out[i] = Circle_Point{pos = p}
+		out.len = i + 1
+	}
+}

@@ -1,0 +1,75 @@
+module collision
+
+use mara.math
+
+// Test if ray intersects a sphere. Returns distance to intersection, or -1 if no hit.
+ray_sphere_intersect :: fun(
+	ray_origin:    Vec3,
+	ray_dir:       Vec3,
+	sphere_center: Vec3,
+	radius:        f32,
+) -> f32 {
+	oc := ray_origin - sphere_center
+	a  := dot(ray_dir, ray_dir)
+	b  := 2.0 * dot(oc, ray_dir)
+	c  := dot(oc, oc) - radius * radius
+	discriminant := b * b - 4.0 * a * c
+
+	if discriminant < 0.0 do return -1.0
+
+	t := (-b - sqrt(discriminant)) / (2.0 * a)
+	if t < 0.0 {
+		t = (-b + sqrt(discriminant)) / (2.0 * a)
+	}
+	return if t >= 0.0 do t else -1.0
+}
+
+// Test if ray intersects an oriented bounding box. Returns distance to intersection, or -1 if no hit.
+// box_center: world position of box center
+// box_dir: orientation quaternion
+// box_half_extents: half-size along each local axis (typically obj.scale * 0.5 for unit cube)
+ray_obb_intersect :: fun(
+	ray_origin:       Vec3,
+	ray_dir:          Vec3,
+	box_center:       Vec3,
+	box_dir:          Quat,
+	box_half_extents: Vec3,
+) -> f32 {
+	// Box local axes from the orientation quaternion (rows of the rotation matrix).
+	rot_mx := mat4_from_quat(box_dir)
+	axis_x := Vec3{rot_mx[0].x, rot_mx[0].y, rot_mx[0].z}
+	axis_y := Vec3{rot_mx[1].x, rot_mx[1].y, rot_mx[1].z}
+	axis_z := Vec3{rot_mx[2].x, rot_mx[2].y, rot_mx[2].z}
+
+	// Transform the ray into the box's local space by projecting onto each axis.
+	delta := ray_origin - box_center
+	origin_local := Vec3{dot(delta, axis_x), dot(delta, axis_y), dot(delta, axis_z)}
+	dir_local    := Vec3{dot(ray_dir, axis_x), dot(ray_dir, axis_y), dot(ray_dir, axis_z)}
+
+	// Slab intersection test for each axis.
+	t_min : f32 = -999999.0
+	t_max : f32 =  999999.0
+
+	axes    := [3]f32{box_half_extents.x, box_half_extents.y, box_half_extents.z}
+	origins := [3]f32{origin_local.x, origin_local.y, origin_local.z}
+	dirs    := [3]f32{dir_local.x, dir_local.y, dir_local.z}
+
+	for i in 0..3 {
+		if abs(dirs[i]) < 0.0001 {
+			// Ray parallel to slab — miss if the origin sits outside it.
+			if origins[i] < -axes[i] or origins[i] > axes[i] do return -1.0
+		else
+			t_lo := (-axes[i] - origins[i]) / dirs[i]
+			t_hi := ( axes[i] - origins[i]) / dirs[i]
+			if t_lo > t_hi do t_lo, t_hi = t_hi, t_lo
+			t_min = max(t_min, t_lo)
+			t_max = min(t_max, t_hi)
+			if t_min > t_max do return -1.0
+		}
+	}
+
+	// Nearest positive intersection.
+	if t_min >= 0.0 do return t_min
+	if t_max >= 0.0 do return t_max
+	return -1.0
+}
