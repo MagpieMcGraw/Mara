@@ -1,0 +1,710 @@
+module ui
+
+// Port of Warlock's ui.odin. UI elements (text), gizmos (3D axes), and graphs
+// (frame-time bars) that track the camera and live in screen space.
+//
+// Two deviations from the Odin original, both forced by Mara's model:
+//   * Warlock stored glyphs/shapes in a generic `Array(T)` and recovered the
+//     start index with a raw_data/uintptr pointer-diff hack. Pounce uses plain
+//     `[..N]T` partial arrays, so each element records `start_index`
+//     (= glyphs.len at append time) and a count, then slices
+//     `glyphs[start_index : start_index+count]` on demand.
+//   * `[2]f32`/Vec3 elementwise ops and `.xy` swizzles aren't available, so the
+//     Bounds math is expanded to scalar components.
+
+use mara.core
+use mara.math
+use object
+use entity
+use asset
+use asset_resolve
+
+// 2D bounding box for UI layout calculations. Stored as scalar components
+// (Mara's `[2]f32` has no elementwise operators, and bare computed `[2]f32`
+// literals don't lower in every position), so min/max are kept as four floats.
+Bounds :: struct {
+	min_x: f32
+	min_y: f32
+	max_x: f32
+	max_y: f32
+}
+
+// Calculate bounds from a slice of glyphs (each has .obj).
+// Uses tracking_offset and scale to determine extents.
+bounds_from_glyphs :: fun(objects: []Glyph) -> Bounds {
+	bounds: Bounds
+	bounds.min_x =  999999.0
+	bounds.min_y =  999999.0
+	bounds.max_x = -999999.0
+	bounds.max_y = -999999.0
+
+	for i in 0..objects.len {
+		if not objects[i].obj.exists do continue
+
+		off_x := objects[i].obj.tracking_offset.x
+		off_y := objects[i].obj.tracking_offset.y
+		half_x := objects[i].obj.scale.x * 0.5
+		half_y := objects[i].obj.scale.y * 0.5
+
+		bounds.min_x = min(bounds.min_x, off_x - half_x)
+		bounds.min_y = min(bounds.min_y, off_y - half_y)
+		bounds.max_x = max(bounds.max_x, off_x + half_x)
+		bounds.max_y = max(bounds.max_y, off_y + half_y)
+	}
+
+	return bounds
+}
+
+// Same, for shapes (gizmo / graph). Two concrete copies because the only two
+// instantiations Warlock used were []Glyph and []Shape.
+bounds_from_shapes :: fun(objects: []Shape) -> Bounds {
+	bounds: Bounds
+	bounds.min_x =  999999.0
+	bounds.min_y =  999999.0
+	bounds.max_x = -999999.0
+	bounds.max_y = -999999.0
+
+	for i in 0..objects.len {
+		if not objects[i].obj.exists do continue
+
+		off_x := objects[i].obj.tracking_offset.x
+		off_y := objects[i].obj.tracking_offset.y
+		half_x := objects[i].obj.scale.x * 0.5
+		half_y := objects[i].obj.scale.y * 0.5
+
+		bounds.min_x = min(bounds.min_x, off_x - half_x)
+		bounds.min_y = min(bounds.min_y, off_y - half_y)
+		bounds.max_x = max(bounds.max_x, off_x + half_x)
+		bounds.max_y = max(bounds.max_y, off_y + half_y)
+	}
+
+	return bounds
+}
+
+bounds_size :: fun(b: Bounds) -> (x, y: f32) {
+	return b.max_x - b.min_x, b.max_y - b.min_y
+}
+
+bounds_center :: fun(b: Bounds) -> (x, y: f32) {
+	return (b.min_x + b.max_x) * 0.5, (b.min_y + b.max_y) * 0.5
+}
+
+// Calculate offset to apply based on layout anchor.
+// Returns the point in bounds that should align with the element's position.
+bounds_layout_offset :: fun(b: Bounds, layout: UI_Layout) -> (x, y: f32) {
+	if layout == LAYOUT_CENTER {
+		cx, cy := bounds_center(b)
+		return cx, cy
+	elif layout == LAYOUT_FROM_TL
+		return b.min_x, b.max_y
+	elif layout == LAYOUT_FROM_TR
+		return b.max_x, b.max_y
+	elif layout == LAYOUT_FROM_BL
+		return b.min_x, b.min_y
+	elif layout == LAYOUT_FROM_BR
+		return b.max_x, b.min_y
+	}
+	return 0, 0
+}
+
+// Place a UI element so its bounds sit exactly in the top-right corner.
+place_top_right :: fun(
+	obj: ^Object,
+	bounds: Bounds,
+	screen_width: f32, screen_height: f32,
+	fov_y: f32)
+{
+	distance := obj.tracking_offset.z
+
+	// Screen half-extents in world units
+	half_w := pixels_to_world(screen_width / 2, distance, fov_y, screen_height)
+	half_h := pixels_to_world(screen_height / 2, distance, fov_y, screen_height)
+
+	// Position so bounds.max aligns with top-right corner
+	obj.tracking_offset.x = half_w - bounds.max_x
+	obj.tracking_offset.y = half_h - bounds.max_y
+}
+
+// Subtle color palette
+COLOR_WHITE   :: [3]f32{1.0, 1.0, 1.0}
+COLOR_CORAL   :: [3]f32{1.0, 0.5, 0.5}
+COLOR_PEACH   :: [3]f32{1.0, 0.7, 0.5}
+COLOR_SAND    :: [3]f32{1.0, 0.85, 0.6}
+COLOR_CREAM   :: [3]f32{1.0, 0.95, 0.7}
+COLOR_MINT    :: [3]f32{0.6, 1.0, 0.7}
+COLOR_SAGE    :: [3]f32{0.6, 0.85, 0.6}
+COLOR_SKY     :: [3]f32{0.5, 0.75, 1.0}
+COLOR_POWDER  :: [3]f32{0.7, 0.8, 1.0}
+COLOR_LILAC   :: [3]f32{0.8, 0.6, 1.0}
+COLOR_ROSE    :: [3]f32{1.0, 0.6, 0.8}
+COLOR_SLATE   :: [3]f32{0.6, 0.65, 0.7}
+COLOR_SILVER  :: [3]f32{0.8, 0.8, 0.85}
+COLOR_KHAKI   :: [3]f32{0.75, 0.7, 0.5}
+COLOR_CYAN    :: [3]f32{0.5, 0.9, 0.9}
+COLOR_GOLD    :: [3]f32{1.0, 0.8, 0.4}
+
+// Bold color palette
+COLOR_RED     :: [3]f32{0.9, 0.2, 0.2}
+COLOR_ORANGE  :: [3]f32{0.95, 0.5, 0.1}
+COLOR_YELLOW  :: [3]f32{0.95, 0.85, 0.1}
+COLOR_GREEN   :: [3]f32{0.2, 0.75, 0.2}
+COLOR_TEAL    :: [3]f32{0.1, 0.7, 0.7}
+COLOR_BLUE    :: [3]f32{0.2, 0.4, 0.9}
+COLOR_PURPLE  :: [3]f32{0.6, 0.2, 0.8}
+COLOR_MAGENTA :: [3]f32{0.9, 0.2, 0.6}
+
+// Layout anchor. Mara has no `enum` keyword; a small set of i32 constants with
+// a named alias stands in (the values are only ever compared for equality).
+UI_Layout :: type i32
+
+LAYOUT_CENTER  :: 0   // UI element pos is center of text bounding box
+LAYOUT_FROM_TL :: 1   // UI element pos is top-left corner
+LAYOUT_FROM_TR :: 2   // UI element pos is top-right corner
+LAYOUT_FROM_BL :: 3   // UI element pos is bottom-left corner
+LAYOUT_FROM_BR :: 4   // UI element pos is bottom-right corner
+
+UI_Element :: struct {
+	obj: Object
+	start_index: i64    // first glyph slot in the shared glyph array
+	glyph_count: i64    // number of glyph slots owned
+	bounds: Bounds
+	text: [..256]utf8
+	text_h: f32
+	layout: UI_Layout
+	resolved: bool
+}
+
+UI_DEFAULT_DISTANCE :: 5.0
+
+// π/2 as a float literal. A cross-module `math.PI / 2` mis-lowers (the qualified
+// PI constant emits as the integer 3, so the divide becomes an invalid
+// `fdiv float 3, 2.0`), so the quarter-turn angle is spelled out directly here.
+HALF_PI     ::  1.5707963267948966
+NEG_HALF_PI :: -1.5707963267948966
+
+// Convert desired screen pixel size to world-space size.
+pixels_to_world :: fun(pixel_height: f32, distance: f32, fov_y: f32, screen_height: f32) -> f32 {
+	return pixel_height * distance * tan(fov_y / 2) * 2 / screen_height
+}
+
+ui_element_create_pixels :: fun(
+	text: []utf8,
+	x: f32, y: f32,
+	text_height: f32,
+	glyph_array: ^[]Glyph,
+	font_name: []utf8 = "nk57",
+	color: [3]f32 = [1, 1, 1],
+	layout: UI_Layout = LAYOUT_CENTER,
+	assets: ^Assets = void) -> UI_Element
+{
+	elem: UI_Element
+	elem.obj.exists = true
+	elem.obj.tracking_offset = Vec3{x, y, UI_DEFAULT_DISTANCE}
+	elem.text_h = text_height
+	elem.text = text
+	elem.layout = layout
+
+	// Record where our glyphs start, then append one per character.
+	elem.start_index = glyph_array.len
+	elem.glyph_count = text.len
+
+	// Pre-resolve font index if assets available (avoids per-glyph lookup later).
+	font_index : i64 = -1
+	if assets != void {
+		font_index = get_font_index(assets, font_name)
+	}
+
+	for i in 0..text.len {
+		if glyph_array.len >= glyph_array.cap do break
+		glyph: Glyph
+		glyph.obj = Object{}
+		glyph.obj.scale = Vec3{1, 1, 1}  // Placeholder - prevents glyph_resolve setting scale
+		glyph.letter = text[i]
+		glyph.font_index = font_index
+		glyph.visual.font = font_name
+		glyph.visual.mesh.name = "=quad"
+		glyph.visual.color = color
+		glyph.visual.resolve = true
+		glyph_array + glyph
+	}
+
+	return elem
+}
+
+// Destroy a UI element and free its glyphs from the array (mark them gone).
+ui_element_destroy :: fun(element: ^UI_Element, glyph_array: ^[]Glyph) {
+	if not element.obj.exists do return
+
+	// We recorded the start index at creation — no pointer-diff hack needed.
+	if element.glyph_count > 0 {
+		for i in 0..element.glyph_count {
+			idx := element.start_index + i
+			if idx >= 0 and idx < glyph_array.len {
+				glyph_array[idx].obj.exists = false
+			}
+		}
+	}
+
+	element.obj.exists = false
+	element.glyph_count = 0
+	element.resolved = false
+}
+
+// Update text content of an existing UI element in-place. Only works if the new
+// text has the same length as the original. Directly resolves changed glyphs.
+ui_element_set_text :: fun(element: ^UI_Element, text: []utf8, glyph_array: ^[]Glyph, assets: ^Assets) {
+	if not element.obj.exists do return
+	if element.glyph_count == 0 do return
+	if text.len != element.glyph_count do return
+
+	// Use cached font index from first glyph, fall back to string lookup.
+	first := &glyph_array[element.start_index]
+	font : ^Font = void
+	if first.font_index >= 0 and first.font_index < assets.fonts.len {
+		font = &assets.fonts[first.font_index]
+	else
+		font = get_font(assets, first.visual.font)
+		if font == void do return
+	}
+	atlas_size := f32(assets.font_texture_size)
+
+	for i in 0..element.glyph_count {
+		glyph := &glyph_array[element.start_index + i]
+		new_letter := text[i]
+		if glyph.letter != new_letter {
+			glyph.letter = new_letter
+			// Directly update UV for new letter (font and layer stay the same).
+			info := get_glyph(font, new_letter, atlas_size)
+			glyph.visual.texture.uv = info.uv
+		}
+	}
+}
+
+// Resolve UI element layout — repositions glyphs based on actual font metrics.
+// Returns true when layout is complete.
+ui_element_resolve :: fun(element: ^UI_Element, glyph_array: ^[]Glyph, assets: ^Assets, fov_y: f32, screen_height: f32) -> bool {
+	if not element.obj.exists do return true
+	if element.glyph_count == 0 do return true
+	if element.resolved do return true
+
+	// Slice of this element's glyphs in the shared array.
+	glyphs := glyph_array[element.start_index : element.start_index + element.glyph_count]
+
+	// Check if first glyph is resolved (font loaded).
+	first_glyph := &glyphs[0]
+	if first_glyph.visual.resolve do return false  // Still waiting for glyph resolution
+
+	// Get font from first glyph.
+	font := get_font(assets, first_glyph.visual.font)
+	if font == void do return false
+
+	atlas_size := f32(assets.font_texture_size)
+	distance := element.obj.tracking_offset.z
+
+	// Convert element x,y from pixels to world units (stored as pixels at creation).
+	element.obj.tracking_offset.x = pixels_to_world(
+		element.obj.tracking_offset.x, distance, fov_y, screen_height)
+	element.obj.tracking_offset.y = pixels_to_world(
+		element.obj.tracking_offset.y, distance, fov_y, screen_height)
+
+	// First pass: find max height in font pixels.
+	max_height : f32 = 0
+	for i in 0..glyphs.len {
+		if not glyphs[i].obj.exists do continue
+		info := get_glyph(font, glyphs[i].letter, atlas_size)
+		if info.size[1] > max_height do max_height = info.size[1]
+	}
+
+	// Convert desired screen pixels to world units, then calculate scale.
+	target_world_height := pixels_to_world(element.text_h, distance, fov_y, screen_height)
+	scale : f32 = 1.0
+	if max_height > 0 {
+		scale = target_world_height / max_height
+	}
+
+	// Second pass: layout glyphs with scale applied, handling newlines.
+	current_x : f32 = 0
+	current_y : f32 = 0
+	line_height := max_height * 1.2  // 20% line spacing
+
+	// Get space width for tab calculation.
+	space_info := get_glyph(font, ' ', atlas_size)
+	tab_width := space_info.advance * 4  // Tab = 4 spaces
+
+	for i in 0..glyphs.len {
+		glyph := &glyphs[i]
+		if not glyph.obj.exists do continue
+
+		// Handle newline.
+		if glyph.letter == '\n' {
+			current_x = 0
+			current_y -= line_height
+			glyph.obj.exists = false  // Don't render newline glyph
+			continue
+		}
+
+		// Handle tab.
+		if glyph.letter == '\t' {
+			current_x += tab_width
+			glyph.obj.exists = false  // Don't render tab glyph
+			continue
+		}
+
+		info := get_glyph(font, glyph.letter, atlas_size)
+
+		// Apply scale to glyph size.
+		glyph.obj.scale = Vec3{info.size[0] * scale, info.size[1] * scale, scale}
+
+		// Position with scale applied.
+		local_x := current_x + info.advance / 2
+		local_y := current_y - (info.offset[1] + info.size[1] / 2)
+		glyph.obj.tracking_offset = Vec3{local_x * scale, local_y * scale, 0}
+
+		current_x += info.advance
+	}
+
+	// Third pass: calculate bounds and adjust offsets based on layout.
+	bounds := bounds_from_glyphs(glyphs)
+	off_x, off_y := bounds_layout_offset(bounds, element.layout)
+
+	for i in 0..glyphs.len {
+		if glyphs[i].obj.exists {
+			glyphs[i].obj.tracking_offset.x -= off_x
+			glyphs[i].obj.tracking_offset.y -= off_y
+		}
+	}
+
+	// Recalculate bounds after layout adjustment.
+	element.bounds = bounds_from_glyphs(glyphs)
+
+	element.resolved = true
+	return true
+}
+
+// Update UI element to track camera.
+ui_element_update :: fun(element: ^UI_Element, glyph_array: ^[]Glyph, camera_obj: Object) {
+	if not element.obj.exists do return
+
+	// Track element to camera.
+	obj_track_other(&element.obj, camera_obj)
+	element.obj.dir = camera_obj.dir
+
+	// Track each glyph to the element.
+	for i in 0..element.glyph_count {
+		glyph := &glyph_array[element.start_index + i]
+		if glyph.obj.exists {
+			obj_track_other(&glyph.obj, element.obj)
+			glyph.obj.dir = obj_face(camera_obj.dir)
+		}
+	}
+}
+
+// ============================================================================
+// UI_Gizmo - 3D shapes that track the camera like UI elements.
+// Used for coordinate axes indicator in screen corner.
+// ============================================================================
+
+UI_GIZMO_SHAPE_COUNT :: 7  // 1 cube + 3 cylinders + 3 pyramids
+
+UI_Gizmo :: struct {
+	obj: Object
+	start_index: i64    // first shape slot in the shared shape array
+	shape_count: i64
+	bounds: Bounds
+	size_pixels: f32    // desired size in screen pixels
+	resolved: bool
+}
+
+// Create a coordinate axes gizmo at screen position (pixels from center).
+ui_gizmo_create_pixels :: fun(
+	x: f32, y: f32,
+	size_pixels: f32,
+	shape_array: ^[]Shape) -> UI_Gizmo
+{
+	gizmo: UI_Gizmo
+	gizmo.obj.exists = true
+	gizmo.obj.tracking_offset = Vec3{x, y, UI_DEFAULT_DISTANCE}
+	gizmo.size_pixels = size_pixels
+
+	// Record where our shapes start, then append UI_GIZMO_SHAPE_COUNT of them.
+	gizmo.start_index = shape_array.len
+	gizmo.shape_count = UI_GIZMO_SHAPE_COUNT
+
+	// Arrow proportions - all relative to 1.0 total size.
+	shaft_thickness : f32 = 0.12
+	shaft_length    : f32 = 0.7
+	head_size       : f32 = 0.25
+	cube_size       : f32 = 0.2
+
+	shaft_offset : f32 = shaft_length / 2
+	head_offset  : f32 = shaft_length + head_size / 2
+
+	// Shape 0: Dark cube at center.
+	s0: Shape
+	s0.obj = Object{}
+	s0.obj.scale = Vec3{cube_size, cube_size, cube_size}
+	s0.visual = visual_create()
+	s0.visual.mesh.name = "=cube"
+	s0.visual.color = [0.2, 0.2, 0.2]
+	shape_array + s0
+
+	// Shape 1: X axis shaft (red cylinder).
+	s1: Shape
+	s1.obj = Object{}
+	s1.obj.scale = Vec3{shaft_thickness, shaft_thickness, shaft_length}
+	s1.obj.tracking_offset = Vec3{shaft_offset, 0, 0}
+	s1.obj.dir = quat_angle_axis(HALF_PI, Vec3{0, 1, 0})
+	s1.visual = visual_create()
+	s1.visual.mesh.name = "=cylinder"
+	s1.visual.color = [0.8, 0.3, 0.3]
+	shape_array + s1
+
+	// Shape 2: X axis head (red pyramid).
+	s2: Shape
+	s2.obj = Object{}
+	s2.obj.scale = Vec3{head_size, head_size, head_size}
+	s2.obj.tracking_offset = Vec3{head_offset, 0, 0}
+	s2.obj.dir = quat_angle_axis(HALF_PI, Vec3{0, 1, 0})
+	s2.visual = visual_create()
+	s2.visual.mesh.name = "=pyramid"
+	s2.visual.color = [0.8, 0.3, 0.3]
+	shape_array + s2
+
+	// Shape 3: Y axis shaft (green cylinder).
+	s3: Shape
+	s3.obj = Object{}
+	s3.obj.scale = Vec3{shaft_thickness, shaft_thickness, shaft_length}
+	s3.obj.tracking_offset = Vec3{0, shaft_offset, 0}
+	s3.obj.dir = quat_angle_axis(NEG_HALF_PI, Vec3{1, 0, 0})
+	s3.visual = visual_create()
+	s3.visual.mesh.name = "=cylinder"
+	s3.visual.color = [0.3, 0.7, 0.3]
+	shape_array + s3
+
+	// Shape 4: Y axis head (green pyramid).
+	s4: Shape
+	s4.obj = Object{}
+	s4.obj.scale = Vec3{head_size, head_size, head_size}
+	s4.obj.tracking_offset = Vec3{0, head_offset, 0}
+	s4.obj.dir = quat_angle_axis(NEG_HALF_PI, Vec3{1, 0, 0})
+	s4.visual = visual_create()
+	s4.visual.mesh.name = "=pyramid"
+	s4.visual.color = [0.3, 0.7, 0.3]
+	shape_array + s4
+
+	// Shape 5: Z axis shaft (blue cylinder).
+	s5: Shape
+	s5.obj = Object{}
+	s5.obj.scale = Vec3{shaft_thickness, shaft_thickness, shaft_length}
+	s5.obj.tracking_offset = Vec3{0, 0, shaft_offset}
+	s5.visual = visual_create()
+	s5.visual.mesh.name = "=cylinder"
+	s5.visual.color = [0.3, 0.4, 0.8]
+	shape_array + s5
+
+	// Shape 6: Z axis head (blue pyramid).
+	s6: Shape
+	s6.obj = Object{}
+	s6.obj.scale = Vec3{head_size, head_size, head_size}
+	s6.obj.tracking_offset = Vec3{0, 0, head_offset}
+	s6.visual = visual_create()
+	s6.visual.mesh.name = "=pyramid"
+	s6.visual.color = [0.3, 0.4, 0.8]
+	shape_array + s6
+
+	return gizmo
+}
+
+// Resolve gizmo - convert pixel position/size to world units.
+ui_gizmo_resolve :: fun(gizmo: ^UI_Gizmo, shape_array: ^[]Shape, fov_y: f32, screen_height: f32) -> bool {
+	if not gizmo.obj.exists do return true
+	if gizmo.resolved do return true
+
+	distance := gizmo.obj.tracking_offset.z
+
+	// Convert screen pixel offset to world units.
+	gizmo.obj.tracking_offset.x = pixels_to_world(
+		gizmo.obj.tracking_offset.x, distance, fov_y, screen_height)
+	gizmo.obj.tracking_offset.y = pixels_to_world(
+		gizmo.obj.tracking_offset.y, distance, fov_y, screen_height)
+
+	// Convert pixel size to world scale factor.
+	world_size := pixels_to_world(gizmo.size_pixels, distance, fov_y, screen_height)
+
+	// Scale all shapes and their tracking offsets.
+	for i in 0..gizmo.shape_count {
+		shape := &shape_array[gizmo.start_index + i]
+		shape.obj.scale *= world_size
+		shape.obj.tracking_offset *= world_size
+	}
+
+	gizmo.bounds = bounds_from_shapes(
+		shape_array[gizmo.start_index : gizmo.start_index + gizmo.shape_count])
+
+	gizmo.resolved = true
+	return true
+}
+
+// Update gizmo to track camera position (axes stay world-aligned).
+ui_gizmo_update :: fun(gizmo: ^UI_Gizmo, shape_array: ^[]Shape, camera_obj: Object) {
+	if not gizmo.obj.exists do return
+
+	// Track gizmo origin to camera.
+	obj_track_other(&gizmo.obj, camera_obj)
+
+	// Update each shape to track the gizmo origin (keep local orientation).
+	for i in 0..gizmo.shape_count {
+		shape := &shape_array[gizmo.start_index + i]
+		if shape.obj.exists {
+			obj_track_other(&shape.obj, gizmo.obj)
+		}
+	}
+}
+
+// ============================================================================
+// UI_Graph - Bar graph that tracks camera like UI elements.
+// Used for frame time visualization.
+// ============================================================================
+
+UI_GRAPH_SAMPLE_COUNT :: 300
+
+UI_Graph :: struct {
+	obj: Object
+	start_index: i64    // first shape slot in the shared shape array
+	shape_count: i64
+	bounds: Bounds
+	samples: [UI_GRAPH_SAMPLE_COUNT]f32   // circular buffer of values
+	sample_index: i64                     // next write position
+	width_pixels: f32                     // total width in pixels
+	height_pixels: f32                    // max height in pixels
+	max_value: f32                        // value that corresponds to max height
+	resolved: bool
+	// Store resolved world units for update
+	bar_width: f32
+	bar_max_height: f32
+}
+
+// Create a bar graph at screen position (pixels from center).
+ui_graph_create_pixels :: fun(
+	x: f32, y: f32,
+	width_pixels: f32, height_pixels: f32,
+	max_value: f32,
+	shape_array: ^[]Shape,
+	color: [3]f32 = COLOR_GREEN) -> UI_Graph
+{
+	graph: UI_Graph
+	graph.obj.exists = true
+	graph.obj.tracking_offset = Vec3{x, y, UI_DEFAULT_DISTANCE}
+	graph.width_pixels = width_pixels
+	graph.height_pixels = height_pixels
+	graph.max_value = max_value
+
+	// Record where our shapes start, then append UI_GRAPH_SAMPLE_COUNT bars.
+	graph.start_index = shape_array.len
+	graph.shape_count = UI_GRAPH_SAMPLE_COUNT
+
+	// Initialize all bars as quads.
+	bar_width_pixels := width_pixels / f32(UI_GRAPH_SAMPLE_COUNT)
+	for i in 0..UI_GRAPH_SAMPLE_COUNT {
+		if shape_array.len >= shape_array.cap do break
+		bar: Shape
+		bar.obj = Object{}
+		bar.obj.scale = Vec3{1, 1, 1}  // Will be set properly in resolve/update
+		// Position bars left to right, tracking_offset.x is relative to graph center.
+		x_offset := (f32(i) - f32(UI_GRAPH_SAMPLE_COUNT) / 2 + 0.5) * bar_width_pixels
+		bar.obj.tracking_offset = Vec3{x_offset, 0, 0}
+		bar.visual = visual_create()
+		bar.visual.mesh.name = "=quad"
+		bar.visual.color = color
+		shape_array + bar
+	}
+
+	return graph
+}
+
+// Resolve graph - convert pixel dimensions to world units.
+ui_graph_resolve :: fun(graph: ^UI_Graph, shape_array: ^[]Shape, fov_y: f32, screen_height: f32) -> bool {
+	if not graph.obj.exists do return true
+	if graph.resolved do return true
+
+	distance := graph.obj.tracking_offset.z
+
+	// Convert position from pixels to world.
+	graph.obj.tracking_offset.x = pixels_to_world(
+		graph.obj.tracking_offset.x, distance, fov_y, screen_height)
+	graph.obj.tracking_offset.y = pixels_to_world(
+		graph.obj.tracking_offset.y, distance, fov_y, screen_height)
+
+	// Convert dimensions to world units.
+	graph.bar_width = pixels_to_world(
+		graph.width_pixels / f32(UI_GRAPH_SAMPLE_COUNT), distance, fov_y, screen_height)
+	graph.bar_max_height = pixels_to_world(
+		graph.height_pixels, distance, fov_y, screen_height)
+
+	// Update bar tracking offsets to world units.
+	for i in 0..UI_GRAPH_SAMPLE_COUNT {
+		x_offset := (f32(i) - f32(UI_GRAPH_SAMPLE_COUNT) / 2 + 0.5) * graph.bar_width
+		shape_array[graph.start_index + i].obj.tracking_offset.x = x_offset
+	}
+
+	// Graph bounds are fixed based on dimensions (bars grow downward from top).
+	total_width := graph.bar_width * f32(UI_GRAPH_SAMPLE_COUNT)
+	graph.bounds.min_x = -total_width / 2
+	graph.bounds.min_y = -graph.bar_max_height
+	graph.bounds.max_x = total_width / 2
+	graph.bounds.max_y = 0
+
+	graph.resolved = true
+	return true
+}
+
+// Add a new sample to the graph.
+ui_graph_add_sample :: fun(graph: ^UI_Graph, value: f32) {
+	if not graph.obj.exists do return
+
+	graph.samples[graph.sample_index] = value
+	graph.sample_index = (graph.sample_index + 1) % UI_GRAPH_SAMPLE_COUNT
+}
+
+// Update graph to track camera and update bar heights based on samples.
+ui_graph_update :: fun(graph: ^UI_Graph, shape_array: ^[]Shape, camera_obj: Object) {
+	if not graph.obj.exists do return
+	if not graph.resolved do return
+
+	// Track graph origin to camera (face camera like text elements).
+	obj_track_other(&graph.obj, camera_obj)
+	graph.obj.dir = camera_obj.dir
+
+	// Update each bar.
+	for i in 0..UI_GRAPH_SAMPLE_COUNT {
+		shape := &shape_array[graph.start_index + i]
+		if not shape.obj.exists do continue
+
+		// Get sample value (read in order from oldest to newest for display).
+		sample_idx := (graph.sample_index + i) % UI_GRAPH_SAMPLE_COUNT
+		value := graph.samples[sample_idx]
+
+		// Calculate bar height (no limit - show full spike height).
+		bar_height := (value / graph.max_value) * graph.bar_max_height
+		bar_height = max(bar_height, graph.bar_max_height * 0.02)  // minimum 2% of max height
+
+		// Color red if value exceeds max, otherwise use original color.
+		// (A named `[3]f32` constant can't be `=`-stored to a field — codegen has
+		// no path for a const-array RHS — so the palette values are inlined here.)
+		if value > graph.max_value {
+			shape.visual.color = [0.9, 0.2, 0.2]    // COLOR_RED
+		else
+			shape.visual.color = [0.2, 0.75, 0.2]   // COLOR_GREEN
+		}
+
+		// Set scale (width, height, depth for quad).
+		shape.obj.scale = Vec3{graph.bar_width, bar_height, graph.bar_width}
+
+		// Position bar - offset Y so top of bar is at graph origin (bars grow downward).
+		shape.obj.tracking_offset.y = -bar_height / 2
+
+		// Track to graph, then face camera.
+		obj_track_other(&shape.obj, graph.obj)
+		shape.obj.dir = camera_obj.dir
+	}
+}
