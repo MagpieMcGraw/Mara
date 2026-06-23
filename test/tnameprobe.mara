@@ -1,0 +1,11 @@
+module tnameprobe
+// Regression: user locals named t1/t2 used to collide with codegen's %tN
+// temps -> LLVM "multiple definition of local value named 't1'".
+subf :: fun(a: f32, b: f32) -> f32 { return a - b }
+main :: fun() -> i64 {
+	x : f32 = 5.0
+	t1 := subf(x, 2.0) / subf(x, 1.0)
+	t2 := subf(x, 4.0) / subf(x, 0.5)
+	if t1 > t2 do t1, t2 = t2, t1
+	return i64(t1 + t2)
+}

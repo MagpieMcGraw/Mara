@@ -331,8 +331,8 @@ Codegen :: struct {
     module_tasks:        []^Module_Task,
     hoist_allocas: bool,           // true during function body codegen
     emitted_allocas: map[string]string, // track alloca names emitted in current function (name -> IR type for dedup)
-    tmp_counter: int,              // %0, %1, %2 ...
-    tmp_pool:    []string,         // pre-formatted "%tN" names; indexed by tmp_counter
+    tmp_counter: int,              // bumped per fresh_tmp (and a few inline temp names)
+    tmp_pool:    []string,         // pre-formatted "%.tN" names; indexed by tmp_counter
     label_counter: int,            // label numbering
     all_vars:    map[string]Var_Entry,    // unified variable registry (scalars, arrays, structs, unions, slices)
     current_ret_type: string,            // LLVM return type of the current function ("i64", "ptr", etc.)
@@ -446,22 +446,30 @@ fresh_tmp :: proc(g: ^Codegen) -> string {
 }
 
 // Build (or grow) the tmp-name pool so that every counter value up to
-// `min_size - 1` has a pre-formatted `%t<N>` string. Each name is laid out
+// `min_size - 1` has a pre-formatted `%.t<N>` string. Each name is laid out
 // in a single contiguous byte slab so the pool is just a `[]string` of
 // views into that slab.
+//
+// The `.` matters: a Mara identifier can't contain one, but user locals are
+// emitted verbatim as `%<name>`. So a temp (`%.t7`) can never collide with a
+// user variable named `t7` — which previously produced two `%t7` defs and an
+// LLVM "multiple definition" error. (Functions already live in their own
+// `@mara_*` namespace; this gives temps the same guarantee against locals.)
 @(private="file")
 grow_tmp_pool :: proc(g: ^Codegen, min_size: int) {
     new_cap := max(min_size, len(g.tmp_pool) * 2, 16 * 1024)
     new_pool := make([]string, new_cap)
-    // Each name fits in 12 bytes ("%t" + up to 10 digits). Slab in one
+    // Each name fits in 13 bytes ("%.t" + up to 10 digits). Slab in one
     // contiguous block so the pool is friendly to the prefetcher.
-    slab := make([]byte, new_cap * 12)
+    NAME_W :: 13
+    slab := make([]byte, new_cap * NAME_W)
     for i in 0..<new_cap {
-        off := i * 12
+        off := i * NAME_W
         slab[off]   = '%'
-        slab[off+1] = 't'
-        digits := strconv.write_int(slab[off+2:off+12], i64(i), 10)
-        new_pool[i] = string(slab[off : off + 2 + len(digits)])
+        slab[off+1] = '.'
+        slab[off+2] = 't'
+        digits := strconv.write_int(slab[off+3:off+NAME_W], i64(i), 10)
+        new_pool[i] = string(slab[off : off + 3 + len(digits)])
     }
     g.tmp_pool = new_pool
 }
