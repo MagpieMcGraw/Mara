@@ -550,7 +550,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
     case Resolved_Union_Variant:
         return fmt.tprintf("%d", r.tag_value)
     case Resolved_Constant:
-        return fmt.tprintf("%d", r.int_value)
+        return emit_number_literal("", r.value, i128(r.int_value), r.is_float)
     }
     // .tag accessor on a union value: GEP to field 0 + load with the tag IR
     // type. Same load shape match codegen does to drive arm dispatch — see
@@ -823,7 +823,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
     case Resolved_Union_Variant:
         return fmt.tprintf("%d", r.tag_value)
     case Resolved_Constant:
-        return fmt.tprintf("%d", r.int_value)
+        return emit_number_literal("", r.value, i128(r.int_value), r.is_float)
     }
 
     // Array swizzle read: arr.x, arr.xy, arr.rgba, etc.

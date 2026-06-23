@@ -1,0 +1,14 @@
+module const_qualified_float
+use mara.math
+
+// Regression for two cross-module float-constant codegen bugs:
+//   A) double literals printed with `%f` (3 decimals) -> PI became 3.142
+//   B) a QUALIFIED module float const (math.PI) dropped its float value,
+//      emitting integer 3 -> clang "integer constant must have integer type"
+main :: fun() -> i64 {
+	a : f32 = math.PI     // qualified (was bug B: emitted `3`)
+	b := PI               // unqualified f64 (was bug A: truncated to 3.142)
+	assert(a > 3.1414 and a < 3.1416)
+	assert(b > 3.1415926 and b < 3.1415927)
+	return 0
+}

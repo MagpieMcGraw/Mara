@@ -650,7 +650,9 @@ Resolved_Union_Pad :: struct {
 
 Resolved_Constant :: struct {
     name:      string,
-    int_value: int,
+    int_value: int,   // exact integer form (sizes, integer consts)
+    value:     f64,   // float value, for float-typed module constants (math.PI)
+    is_float:  bool,  // emit `value` (float) vs `int_value` at codegen
 }
 
 Resolved_Func :: struct {
@@ -5766,6 +5768,20 @@ extract_constant_value :: proc(expr: Expr) -> (f_val: f64, i_val: i128, ok: bool
         }
     }
     return 0, 0, false
+}
+
+// Whether a constant's value expression is a float literal — drives whether a
+// Resolved_Constant lowers as a float (math.PI) or an integer at codegen.
+const_is_float :: proc(expr: Expr) -> bool {
+    if num, n_ok := expr.(^Expr_Number); n_ok {
+        return num.is_float
+    }
+    if un, u_ok := expr.(^Expr_Unary); u_ok && un.op == .Minus {
+        if num, num_ok := un.operand.(^Expr_Number); num_ok {
+            return num.is_float
+        }
+    }
+    return false
 }
 
 // Check that a constant value fits in the target type's range.
@@ -11806,10 +11822,12 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
             // sites: integer constants get a Resolved_Constant annotation;
             // string and other constants stay as referenced expressions and
             // get their type from the constant's value at codegen time.
-            if _, i_val, is_const := extract_constant_value(const_expr); is_const {
+            if f_val, i_val, is_const := extract_constant_value(const_expr); is_const {
                 e.resolved = Resolved_Constant{
                     name      = e.field,
                     int_value = int(i_val),
+                    value     = f_val,
+                    is_float  = const_is_float(const_expr),
                 }
             }
             // Best-effort type: re-check the constant value's expression.
@@ -11937,11 +11955,13 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
             // Resolve constants for codegen
             flat := make_flat_name(sd.name, e.field)
             if const_expr, ce_ok := c.table.constants[flat]; ce_ok {
-                _, i_val, is_const := extract_constant_value(const_expr)
+                f_val, i_val, is_const := extract_constant_value(const_expr)
                 if is_const {
                     e.resolved = Resolved_Constant{
                         name      = e.field,
                         int_value = int(i_val),
+                        value     = f_val,
+                        is_float  = const_is_float(const_expr),
                     }
                 }
             }

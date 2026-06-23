@@ -8,35 +8,40 @@ import "core:strings"
 // Expression codegen
 // ---------------------------------------------------------------------------
 
+// Lower a numeric literal to an LLVM constant for the given IR target type.
+// Floats use the exact IEEE-754 hex bit-pattern (`0x…`) — a decimal print (`%f`)
+// defaults to 3 fractional digits in Odin and silently truncates the value
+// (3.14159… -> 3.142); hex is exact and is how clang itself writes floats.
+// Integers use the exact i128 form (e.value is f64 and loses precision above
+// 2^53). Shared by Expr_Number and module-constant (Resolved_Constant) access so
+// a qualified `math.PI` lowers identically to a bare `PI`.
+emit_number_literal :: proc(target_type: string, value: f64, int_value: i128, is_float: bool) -> string {
+    tt := target_type
+    if tt == "" {
+        tt = is_float ? "double" : "i64"
+    }
+    switch tt {
+    case "half":
+        // LLVM half literals use the `0xH<4 hex>` form. Cast through f16 first.
+        return fmt.tprintf("0xH%04X", transmute(u16)f16(value))
+    case "float":
+        return fmt.tprintf("0x%016X", transmute(u64)f64(f32(value)))
+    case "double":
+        return fmt.tprintf("0x%016X", transmute(u64)value)
+    case "i8", "i16", "i32", "i64", "i128":
+        return fmt.tprintf("%d", int_value)
+    case:
+        if is_float {
+            return fmt.tprintf("0x%016X", transmute(u64)value)
+        }
+        return fmt.tprintf("%d", int_value)
+    }
+}
+
 gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
     switch e in expr {
     case ^Expr_Number:
-        // Resolve the effective IR type: target_type from context, or default
-        tt := target_type
-        if tt == "" {
-            tt = e.is_float ? "double" : "i64"
-        }
-        // Read int_value (exact i64) for integer targets — e.value is f64
-        // and loses precision above 2^53. e.value is authoritative for
-        // float targets.
-        switch tt {
-        case "half":
-            // LLVM half literals use the `0xH<4 hex>` form. Cast through f16
-            // first to round to half precision.
-            return fmt.tprintf("0xH%04X", transmute(u16)f16(e.value))
-        case "float":
-            return fmt.tprintf("0x%016X", transmute(u64)f64(f32(e.value)))
-        case "double":
-            return fmt.tprintf("%f", e.value)
-        case "i8", "i16", "i32", "i64", "i128":
-            return fmt.tprintf("%d", e.int_value)
-        case:
-            // Unknown target, fall back to literal kind
-            if e.is_float {
-                return fmt.tprintf("%f", e.value)
-            }
-            return fmt.tprintf("%d", e.int_value)
-        }
+        return emit_number_literal(target_type, e.value, e.int_value, e.is_float)
 
     case ^Expr_Skip_Constructor:
         // `---` should never reach gen_expr as a value-producing expression.
@@ -369,6 +374,13 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         }
         codegen_fatal(g, e.span, CODE_STRUCT_LITERAL_UNTYPED_EXPR)
     case ^Expr_Field_Access:
+        // A module-qualified constant (math.PI, asset.MAX_FONTS) or a fixed-array
+        // .len/.cap resolves to a Resolved_Constant. Lower it here, where the IR
+        // target type is known, so floats keep full precision and the right width
+        // — gen_field_access has no target_type and would emit a bare integer.
+        if rc, ok := e.resolved.(Resolved_Constant); ok {
+            return emit_number_literal(target_type, rc.value, i128(rc.int_value), rc.is_float)
+        }
         return gen_field_access(g, e)
     case ^Expr_Size_Of:
         ir_type := llvm_type_from_checker(e.resolved_type)
