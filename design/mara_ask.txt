@@ -55,3 +55,52 @@ struct flow above 	// flow above on all fields of all instances of this struct
 struct flow below	// flow below on all fields of all instances of this struct
 module flow above	// flow above on all instances of everything in the module
 module flow below 	// flow below on all instances of everything in the module
+
+
+========================================================================
+IMPLEMENTATION NOTES (2026-06-23) — spec vs. actual
+========================================================================
+Brought the implementation toward the matrix above this session. What the
+tool actually does today, and where it diverges:
+
+KIND KEYWORDS: types | call | flow   (above/below = the two directions).
+Omitting a kind widens to all that apply; omitting a direction = both.
+
+IMPLEMENTED (matches the matrix):
+  - struct / fun / var  ×  type / call / flow  ×  above / below — all live.
+  - fun type:  above = parameter types,  below = return types (split apart).
+  - fun call:  above = callees,  below = callers (off the materialized call graph).
+  - struct call: below = fns that take it,  above = fns that return it (see below).
+  - struct type below: now ONLY the structs that contain/embed it — fns that
+    take/return it moved to `call`, where the matrix puts them.
+  - var type:  the type graph of the variable's own type.
+  - var call:  above = calls that supply it,  below = calls it supplies.
+  - var / fun / struct flow: as specced.
+
+DEFERRED (not built):
+  - All MODULE-level analysis (module type/call/flow). `mara ask <module>`
+    still shows the module SURFACE (declared types ranked by user-count, plus
+    funs), not the above/below analyses. A kind/dir filter on a module is
+    currently ignored rather than honored.
+
+DIVERGENCES from the matrix:
+  - `var flow above` is the LINEAGE tree (producer tree, following the calls
+    that build the value). This folded in what was a separate `lineage` verb;
+    the `lineage`/`source` keyword is retired. (flow below = forward slice.)
+  - A bare `<var> in <fn>` (no kind) shows FLOW only — a variable's natural
+    view; `types`/`call` on a variable are explicit opt-ins. A bare `<fn>` or
+    `<struct>` still shows all three kinds.
+  - `struct call above` = functions that RETURN the struct by value (factory
+    functions). It does NOT include the auto-generated constructor, and is not
+    yet a true "what builds this value" producer analysis — that (the old
+    `inputs` idea) is still future work.
+  - Variable addressing is `mara ask <var> in <fn>` or `mara ask at <file>:<line>`
+    (note: `at`, not `in`, for the file:line form).
+
+EXTRA (beyond the matrix):
+  - `control` — a FLAG (not a kind) that adds control dependence (the
+    branches/loops a value drives, or that guard what feeds it) to a flow
+    slice. Off by default: it needs the slow post-dominator pass.
+  - `in <module>` / `in <file>` scopes; two `in` scopes compose
+    (`<var> in <fn> in <module>`, any order).
+  - `return in <fn>` — slices what feeds a function's return (the inside view).
