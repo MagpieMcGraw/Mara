@@ -724,7 +724,7 @@ render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, k
     show_above := dir == "" || dir == "above"
     show_below := dir == "" || dir == "below"
     // A variable's natural view is its FLOW slice, so a bare query (no kind) is flow.
-    // `types` (the type graph of its own type) and `call` (the calls around it) are
+    // `types` (the types its flow carries) and `call` (the calls around it) are
     // explicit opt-ins — the broad-but-overlapping variable cells of mara_ask.txt.
     show_types := kind == "types"
     show_call  := kind == "call"
@@ -742,30 +742,186 @@ render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, k
     return strings.to_string(bb)
 }
 
-// var `types` — the type graph of the variable's OWN type (pointer/slice/array
-// layers stripped to the nominal type). above = what that type is built from
-// (deps); below = the structs that contain/embed it (structural users only — fns
-// taking/returning the type are the type's `call` cells, queryable on the type).
+// var `types` — FLOWY (per the mara ask matrix). A variable relates to exactly ONE
+// type for free — its own; every OTHER type it touches, it touches because a value
+// of that type flowed in or out. So `var type` is the variable's flow slice projected
+// onto the type lattice: above = the distinct types whose values SUPPLY it (its
+// backward slice), below = the types whose values it SUPPLIES (its forward slice) —
+// the very slices `var call` projects onto calls, read for the types they carry. The
+// structural "what is this type built from" is a question about the TYPE, not the
+// variable; ask it on the type itself (`mara ask <Type>`).
 @(private="file")
 render_var_type_graph :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, show_above, show_below: bool, depth: int) {
-    if b.type_ == nil {
-        fmt.sbprint(bb, "\n(this variable's type is unknown — no type graph)\n")
+    if show_above { render_var_types_above(bb, checked, b) }
+    if show_below { render_var_types_below(bb, checked, b, depth) }
+}
+
+// var `type above` — the types carried by the variable's BACKWARD slice: every value
+// that flows into it (its producers, transitively up the chain), grouped by nominal
+// type. The SAME backward slice `var call above` reads for the calls it contains. The
+// seed itself is excluded — its own type is the one it gets for free.
+@(private="file")
+render_var_types_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
+    s := Slice{ checked = checked }
+    defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen); delete(s.result); delete(s.ctrl) }
+    for d in checked.defs { if d.binding == b { slice_add_def(&s, d) } }
+    for len(s.work) > 0 {
+        u := pop(&s.work)
+        rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
+        for d in rdefs { slice_add_def(&s, d) }
+    }
+    suppliers: map[^Var_Binding]bool
+    defer delete(suppliers)
+    for d in s.result {
+        if d.binding == nil || d.binding == b { continue }
+        suppliers[d.binding] = true
+    }
+    rows := var_type_rows(suppliers)
+    defer { for r in rows { delete(r.vars) }; delete(rows) }
+    render_var_type_rows(bb, "above", b.name, rows[:])
+}
+
+// var `type below` — the types carried by the variable's FORWARD slice: the values it
+// feeds, intraprocedurally (locals computed from it) and across calls (the callee
+// parameters it lands in, to `depth` hops), grouped by nominal type. The SAME forward
+// reach `var call below` uses.
+@(private="file")
+render_var_types_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int) {
+    flow_analyze_all(checked)   // the interprocedural hop reads callees' param bindings
+    consumers: map[^Var_Binding]bool
+    defer delete(consumers)
+
+    // Intraprocedural: locals in b.fn that b's value reaches (params are inputs, not
+    // things it supplies — skip them, as the forward flow view does).
+    data_succ := slice_build_succ(checked, b.fn, true)
+    defer slice_free_succ(&data_succ)
+    for d in checked.defs {
+        if d.binding == b {
+            r := slice_forward_reach(data_succ, d)
+            for k in r {
+                if k.binding != nil && k.binding != b && k.kind != .Param { consumers[k.binding] = true }
+            }
+            delete(r)
+        }
+    }
+
+    // Interprocedural: the callee parameters the value lands in, across call hops.
+    seeds: map[^Var_Binding]bool
+    defer delete(seeds)
+    seeds[b] = true
+    landings, _, _ := flow_reach(checked, seeds, flow_max_hops(depth))
+    defer delete(landings)
+    for L in landings { if L.param != nil { consumers[L.param] = true } }
+
+    rows := var_type_rows(consumers)
+    defer { for r in rows { delete(r.vars) }; delete(rows) }
+    render_var_type_rows(bb, "below", b.name, rows[:])
+}
+
+// One type in a variable's flow projection: a nominal (or basic) type, plus the
+// distinct variables in the slice that carry it (for a representative sample).
+@(private="file")
+Var_Type_Row :: struct {
+    label: string,
+    sub:   string,            // "struct" / "union" / "error" / "distinct" / "basic"
+    span:  Span,
+    named: bool,              // a queryable named type (vs a basic like i64 / f32 / bool)
+    vars:  [dynamic]string,   // distinct variable names carrying this type, discovery order
+}
+
+// A basic type's printed name, resolving an open inference cell to the width codegen
+// defaults it to (Infer_Int -> i64, Infer_Float -> f64). A local like `n := 10` used
+// only at i64 stays an unpinned Infer_Int cell post-check; codegen emits it as i64, so
+// `ask` shows i64 too — never the internal "infer_int" placeholder — and such locals
+// fold onto the real i64 row instead of splitting into a phantom type.
+@(private="file")
+flow_basic_name :: proc(t: Type) -> string {
+    r := resolve_infer(t)
+    #partial switch _ in r {
+    case Type_Infer_Int:   return "i64"
+    case Type_Infer_Float: return "f64"
+    }
+    return type_name(r)
+}
+
+// Group supplier / consumer bindings by their nominal type — pointer / slice / array
+// layers stripped, distinct kept (so `^Camera`, `[..]Camera`, `Camera` all fold to
+// Camera) — into rows sorted named-first (the meaningful types), then most-carried,
+// then by name. Caller owns the rows' `vars` (frees them).
+@(private="file")
+var_type_rows :: proc(bindings: map[^Var_Binding]bool) -> [dynamic]Var_Type_Row {
+    by_type: map[string]int   // dedup key -> row index
+    defer delete(by_type)
+    rows: [dynamic]Var_Type_Row
+    for vb in bindings {
+        if vb == nil || vb.type_ == nil { continue }
+        base := flow_type_base(vb.type_)
+        key := ask_type_name(base)       // flat (globally-unique) name for named types
+        named := key != ""
+        bname: string
+        if !named {
+            bname = flow_basic_name(base)   // resolve infer cells to i64/f64 (codegen's default)
+            key = bname                     // dedup basics on the normalized printed form
+        }
+        idx, seen := by_type[key]
+        if !seen {
+            row := Var_Type_Row{ named = named }
+            if named { row.label = ask_label(base); row.sub, _ = ask_sub(base); row.span = ask_span(base) }
+            else     { row.label = bname; row.sub = "basic" }
+            idx = len(rows)
+            append(&rows, row)
+            by_type[key] = idx
+        }
+        dup := false
+        for n in rows[idx].vars { if n == vb.name { dup = true; break } }
+        if !dup { append(&rows[idx].vars, vb.name) }
+    }
+    for &r in rows { slice.sort(r.vars[:]) }   // stable sample order — the bindings map iterates nondeterministically
+    slice.sort_by(rows[:], proc(x, y: Var_Type_Row) -> bool {
+        if x.named != y.named         { return x.named }                  // named types first
+        if len(x.vars) != len(y.vars) { return len(x.vars) > len(y.vars) }  // most-carried first
+        return x.label < y.label
+    })
+    return rows
+}
+
+@(private="file")
+render_var_type_rows :: proc(bb: ^strings.Builder, dir, name: string, rows: []Var_Type_Row) {
+    if dir == "above" {
+        fmt.sbprintf(bb, "\nabove (types) — types whose values supply %s  (%s, via flow)\n", name, ask_plural(len(rows), "type"))
+    } else {
+        fmt.sbprintf(bb, "\nbelow (types) — types whose values %s supplies  (%s, via flow)\n", name, ask_plural(len(rows), "type"))
+    }
+    if len(rows) == 0 {
+        if dir == "above" {
+            fmt.sbprintf(bb, "  (nothing of a named or basic type feeds %s — built from literals or operators)\n", name)
+        } else {
+            fmt.sbprintf(bb, "  (%s feeds no further typed value — terminal, or used only in local expressions)\n", name)
+        }
         return
     }
-    base := flow_type_base(b.type_)
-    if _, named := ask_sub(base); !named {
-        fmt.sbprintf(bb, "\n(%s : %s — a basic type, no type graph)\n", b.name, type_name(b.type_))
-        return
+    for r in rows {
+        loc := ask_loc(r.span) if r.named else ""
+        fmt.sbprintf(bb, "  %-8s %-14s %-16s · %s%s\n", r.sub, r.label, loc, ask_plural(len(r.vars), "value"), var_type_sample(r.vars[:]))
     }
-    fmt.sbprintf(bb, "\ntype of %s = %s   (type graph of %s)\n", b.name, type_name(b.type_), ask_label(base))
-    if show_above {
-        res := ask_compute(checked.table, base, "deps", depth, checked.functions)
-        render_ask_deps(bb, &res, depth, "above")
+}
+
+// Up to three carrying-variable names as a parenthetical sample (`  (fwd, right, +2
+// more)`), or "" for none — keeps the row a summary, with `flow` the full listing.
+@(private="file")
+var_type_sample :: proc(vars: []string) -> string {
+    if len(vars) == 0 { return "" }
+    CAP :: 3
+    n := min(CAP, len(vars))
+    sb := strings.builder_make()
+    strings.write_string(&sb, "  (")
+    for i in 0 ..< n {
+        if i > 0 { strings.write_string(&sb, ", ") }
+        strings.write_string(&sb, vars[i])
     }
-    if show_below {
-        res := ask_compute(checked.table, base, "users", depth, checked.functions, users_kinds = {.Contains, .Embeds, .Base})
-        render_ask_users(bb, &res, depth)
-    }
+    if len(vars) > CAP { fmt.sbprintf(&sb, ", +%d more", len(vars) - CAP) }
+    strings.write_string(&sb, ")")
+    return strings.to_string(sb)
 }
 
 // var `call above` — the function calls that SUPPLY this value: the call-valued
