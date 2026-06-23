@@ -560,7 +560,12 @@ ask_build_reverse_index :: proc(table: ^SymbolTable, funcs: map[string]^Type_Sco
 // rings read outward: a depth-1 user references the target itself; a depth-2 user
 // references some depth-1 user; and so on. BFS over the reverse index gives every
 // node its SHORTEST distance (the value the renderer groups on).
-ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type, depth: int, funcs: map[string]^Type_Scope) {
+// `kinds` restricts which reverse-edge kinds are walked. The type-below view passes
+// {.Contains, .Embeds, .Base} so it reports only structural users (structs that
+// contain/embed this type) — function-signature edges (Takes/Returns) are the
+// `call` kind, served separately by render_struct_calls. The default (all kinds) is
+// the broad in-degree used by the module surface's "most-used" ranking.
+ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type, depth: int, funcs: map[string]^Type_Scope, kinds := ASK_ALL_EDGES) {
     rid, _ := ask_intern(res, target)
     res.root = rid
     res.nodes[rid].dist = 0
@@ -580,6 +585,7 @@ ask_users :: proc(table: ^SymbolTable, res: ^Ask_Result, target: Type, depth: in
         if cname == "" { continue }
         refs := rev[cname]   // bind first: ranging a map index of an ABSENT key faults (transient lvalue)
         for ref in refs {
+            if ref.kind not_in kinds { continue }
             uid, is_new := ask_intern(res, ref.container)
             if is_new { res.nodes[uid].dist = d + 1 }
             append(&res.edges, Ask_Edge{ from = uid, to = cur_id, kind = ref.kind, via = ref.via, wrap = ref.wrap })
@@ -643,12 +649,12 @@ ask_filters_str :: proc(kind, dir: string) -> string {
 
 // Compute one direction's graph for an already-resolved subject type, bounded to
 // `depth` hops (depth < 0 = unbounded / full closure).
-ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, funcs: map[string]^Type_Scope, root_filter := ASK_ALL_EDGES) -> Ask_Result {
+ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, funcs: map[string]^Type_Scope, root_filter := ASK_ALL_EDGES, users_kinds := ASK_ALL_EDGES) -> Ask_Result {
     res: Ask_Result
     res.root = -1
     switch verb {
     case "deps":  ask_deps(table, &res, root, depth, root_filter)
-    case "users": ask_users(table, &res, root, depth, funcs)
+    case "users": ask_users(table, &res, root, depth, funcs, users_kinds)
     }
     ask_sort_edges(&res)
     return res
@@ -786,7 +792,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     }
     if show_above && show_call {
         if is_fn { render_fn_callees(&b, checked, ft) }
-        // struct call above (functions that produce this struct) — commit 2
+        else     { render_struct_calls(&b, checked, subject.type_, .Returns, "above") }
     }
     if show_above && show_flow {
         if is_fn { if !fn_uncalled { render_fn_flow_above(&b, checked, ft, subject.label) } }
@@ -802,13 +808,15 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
             res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions, {.Returns})
             render_ask_deps(&b, &res, depth, "below")
         } else {
-            res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
+            // Structural users only — fns that take/return this type are the `call`
+            // kind (render_struct_calls below), not "structs I'm a field of".
+            res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions, users_kinds = {.Contains, .Embeds, .Base})
             render_ask_users(&b, &res, depth)
         }
     }
     if show_below && show_call {
         if is_fn { render_fn_users(&b, checked, ft) }   // callers, from the call graph
-        // struct call below (functions that take this struct) — commit 2
+        else     { render_struct_calls(&b, checked, subject.type_, .Takes, "below") }
     }
     if show_below && show_flow {
         if is_fn { if !fn_uncalled { render_fn_flow_below(&b, checked, ft, subject.label) } }
@@ -1041,6 +1049,53 @@ render_fn_callees :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^T
     for c in callees {
         sub, _ := ask_sub(c)
         fmt.sbprintf(b, "  %-6s %s  %s\n", sub, ask_label(c), ask_loc(ask_span(c)))
+    }
+}
+
+// struct/type `call` — the functions whose SIGNATURE mentions this type, read off
+// the same reverse index as `users` but filtered to the signature edge kinds:
+//   below (.Takes):   functions that TAKE this type as an argument — the rich one
+//                     ("who would I have to update if this type changed shape").
+//   above (.Returns): functions that RETURN (hand back) a value of this type.
+// A one-hop view — a function isn't itself "taken" by another, so there is nothing
+// to recurse. The auto-generated constructor is construction (`T{…}`), not a
+// Returns edge, so it is not listed under `above`; a true "what builds this value"
+// producer query is deferred (design/mara_ask.txt, struct call above).
+render_struct_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, target: Type, want: Ask_Edge_Kind, dir: string) {
+    rev := ask_build_reverse_index(checked.table, checked.functions)
+    name := ask_type_name(target)
+    refs := rev[name]   // bind first — a map index of an absent key is a transient lvalue
+
+    Row :: struct { label, via, wrap: string, span: Span }
+    rows: [dynamic]Row
+    defer delete(rows)
+    seen: map[string]bool
+    defer delete(seen)
+    for ref in refs {
+        if ref.kind != want { continue }
+        cont_fn, ok := ref.container.(^Type_Scope)
+        if !ok || cont_fn.kind != .Fun { continue }   // signature edges only originate in callables
+        key := fmt.tprintf("%s|%s", ask_label(cont_fn), ref.via)
+        if seen[key] { continue }
+        seen[key] = true
+        append(&rows, Row{ label = ask_label(cont_fn), via = ref.via, wrap = ref.wrap, span = ask_span(cont_fn) })
+    }
+    slice.sort_by(rows[:], proc(x, y: Row) -> bool {
+        if x.label != y.label { return x.label < y.label }
+        return x.via < y.via
+    })
+
+    word := ask_edge_word(want)   // "param" / "return"
+    tlabel := ask_label(target)
+    fmt.sbprintf(b, "\n%s (calls)   (%s)\n", dir, ask_plural(len(rows), "function"))
+    if len(rows) == 0 {
+        verb := "take it" if want == .Takes else "return it"
+        fmt.sbprintf(b, "  (no functions %s)\n", verb)
+        return
+    }
+    for r in rows {
+        via := fmt.tprintf(" %s", r.via) if r.via != "" else ""
+        fmt.sbprintf(b, "  fun    %-22s %s   (%s%s : %s%s)\n", r.label, ask_loc(r.span), word, via, r.wrap, tlabel)
     }
 }
 
