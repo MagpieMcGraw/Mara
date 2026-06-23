@@ -2,8 +2,10 @@ Design for the mara ask code analyzer
 
 Basic usage should be:
 mara ask 	// shows info about modules in cwd
-mara ask name	// shows info about a symbol, which must be in some module in cwd
-		// name can be a module, struct, function, variable
+mara ask name
+// shows info about a symbol, which must be in some module in cwd
+// name can be a module, struct, function, variable
+// without args, provides a general overview of name
 
 3 types of analysis: type and call and flow
 2 types of direction: above and below
@@ -20,10 +22,10 @@ For flow analysis:
 above|bfor - the tree of variables that supply me, inlcuding across function calls
 below|aftr - the tree of variables that I supply, including across function calls
 
-Arguments to narrow and specify the results:
+Other arguments:
 mara ask name 1			// number - limit analysis depth, default infinite
 mara ask var in scope 	// query specific variables or struct fields.
-mara ask var in file.mara.line 	// query variable in a file
+mara ask var in file:line 	// query variable in a file
 
 
 Matrix of arg combinations:
@@ -49,7 +51,7 @@ var flow above 	// chain of variables and operations that supply this variable
 var flow below 	// chain of variables and operations that this variable supplies
 fun flow above	// flow above on all callsites of this function
 fun flow below 	// flow below on all callsites of this function
-struct flow above 	// flow above on all instances of this struct
-struct flow below	// flow below on all instances of this struct
+struct flow above 	// flow above on all fields of all instances of this struct
+struct flow below	// flow below on all fields of all instances of this struct
 module flow above	// flow above on all instances of everything in the module
 module flow below 	// flow below on all instances of everything in the module
