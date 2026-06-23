@@ -1,0 +1,12 @@
+module impdefault
+use impdefault_helper
+// Regression (Warlock-port Gap 2): a default param value referencing a BARE
+// IMPORTED const. A signature's defaults resolve in the callee's DEFINING (file)
+// scope — the one that carries its `use` imports — not the module scope, which
+// sits above the imports. Before the fix: "undefined identifier KK".
+// (defscope.mara covers the same-module variant; this covers the imported one.)
+f :: fun(x: i64 = KK) -> i64 { return x }
+
+main :: fun() -> i64 {
+	return f()   // 7
+}

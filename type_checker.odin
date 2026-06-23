@@ -6028,6 +6028,17 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Scope
             }
         }
     }
+    // A module constant accessed as `Module.X` / `Self.X`: resolve via check_expr
+    // to get its type (check_field_access does the constant lookup). Narrowed to
+    // ACTUAL module constants — the flat key exists — so other field accesses keep
+    // their existing lightweight-inference behavior.
+    if fa, ok := value.(^Expr_Field_Access); ok {
+        if qual, q_ok := fa.expr.(^Expr_Ident); q_ok {
+            if _, found := c.table.constants[make_flat_name(qual.name, fa.field)]; found {
+                return check_expr(c, value, env)
+            }
+        }
+    }
     if n, ok := value.(^Expr_Number); ok {
         // Struct field (ft != nil): defer to an inference cell so a later
         // annotated field's default can pin it (e.g. `per_row : i32 = size /
@@ -11244,6 +11255,13 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             }
             return t
         }
+        // Resolved above as a module constant (vis_count == 1) but not present in
+        // this env — an IMPORTED constant referenced from a module scope (e.g. a
+        // default value checked in its callee-module scope, where the env walk
+        // doesn't surface the imported name). Its type is its value's type.
+        if rc, rc_ok := e.resolved.(Resolved_Constant); rc_ok && rc.value_expr != nil {
+            return check_expr(c, rc.value_expr, env)
+        }
         // Not in env â€” check for better error messages
         ident_flat := resolve_type_name(c, e.name, "", env)
         if ident_flat in c.table.funs {
@@ -12775,14 +12793,25 @@ substitute_underscore_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_S
 }
 
 // Fill in default args for a call that has fewer args than params.
+// The scope a callable's signature — including its default-argument values —
+// resolves in: the callable's DEFINING scope (its parent_scope, the file scope
+// where its `use` imports live). The module scope alone is too high — imports sit
+// on the file, a child of the module — so a default referencing an imported
+// constant wouldn't resolve there. Falls back to the module scope.
+callee_def_scope :: proc(fun_type: ^Type_Scope) -> ^Type_Scope {
+    if fun_type == nil { return nil }
+    if fun_type.parent_scope != nil { return fun_type.parent_scope }
+    return module_scope(fun_type)
+}
+
 // Creates fresh intrinsic nodes resolved at the call site.
 fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env: ^Type_Scope) {
     // A default expression belongs to the function's DEFINITION, so its names
-    // resolve in the callee's module scope — not the caller's `env`. Resolving
-    // in `env` lets a default that references a module const bind to whatever
-    // the caller happens to have under that name (wrong const on a name
-    // collision; unresolvable when the caller lacks the name entirely).
-    callee_scope := module_scope(fun_type)
+    // resolve in the callee's defining scope — not the caller's `env`. Resolving
+    // in `env` lets a default that references a module const bind to whatever the
+    // caller happens to have under that name (wrong const on a name collision;
+    // unresolvable when the caller lacks the name entirely).
+    callee_scope := callee_def_scope(fun_type)
     if callee_scope == nil { callee_scope = env }
     for i := len(e.args); i < len(fun_type.params); i += 1 {
         def := fun_type.params[i].default_value
@@ -12847,7 +12876,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             // has under that name (the wrong const on a collision).
             arg_env := env
             if arg == fun_type.params[i].default_value {
-                if ms := module_scope(fun_type); ms != nil { arg_env = ms }
+                if ms := callee_def_scope(fun_type); ms != nil { arg_env = ms }
             }
             arg_type := check_expr(c, arg, arg_env)
             // Byte-buffer reinterpret-read at the call boundary: a param
@@ -13282,10 +13311,10 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     fn_name := matched_fns[0]
     ft := matched_fts[0]
 
-    // Defaults resolve in the callee's module scope, not the caller's `env`
+    // Defaults resolve in the callee's defining scope, not the caller's `env`
     // (see fill_default_args). Intrinsic defaults are the exception — they read
     // call-site info, so they stay on `env`.
-    callee_scope := module_scope(ft)
+    callee_scope := callee_def_scope(ft)
     if callee_scope == nil { callee_scope = env }
 
     // Substitute `_` against the chosen candidate's defaults. Mirrors

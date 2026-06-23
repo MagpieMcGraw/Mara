@@ -61,3 +61,5 @@ Fix mara ask performance issue
 Mara ask, record all queries(instead of graphs), so you can later replay them in the viewer. Render the whole program graph, color the queried parts. That data can be overlaid for a more complete picture. Also distunguish results, a direct ask shows where the AI attention is.
 
 Fix FFI functions for mara ask. Probably some array on type scope was skipped?
+
+🚩 trawl or any mention of type env. We removed the struct, did we get all the remnants?

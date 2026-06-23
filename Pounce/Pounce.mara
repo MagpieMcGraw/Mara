@@ -39,7 +39,8 @@ Player :: struct {
 	x, y: i64
 	size  := 50
 	// Qualified: bare COLOR_RED is ambiguous now that `use ui` also defines it.
-	color : [3]f32 = Pounce.COLOR_RED
+	// Type inferred from the qualified const (no explicit annotation needed).
+	color := Pounce.COLOR_RED
 }
 
 Timers :: struct {

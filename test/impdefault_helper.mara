@@ -1,0 +1,3 @@
+module impdefault_helper
+// Paired with impdefault.mara. Defines the imported const used as a default.
+KK :: 7
