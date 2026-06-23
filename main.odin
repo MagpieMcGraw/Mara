@@ -964,21 +964,23 @@ CLI_Args :: struct {
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [depth] [deps|users|contributors|affects] [in <module|file>]"
-ASK_USAGE :: `Usage: mara ask <name> [types|flow|lineage] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
+ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [depth] [in <scope> | at <file>:<line>]
 
   mara ask analyzes the Mara module in the CURRENT DIRECTORY — run it from a
   folder whose .mara files declare a module. Use 'in <module>' to target a
   different discovered module without changing directories.
 
     (no name)      module map — every module in the project at a glance
-    <name>         everything about a type or function: both graphs, both directions
+    <name>         everything about a type or function: every graph, both directions
     above          only the sources — what <name> is built from / what feeds it
     below          only the consumers — what depends on <name> / what it feeds
-    types          only the type graph (fields, params, returns, embeds)
-    flow           only the data-flow slice (a function's value flow + its callers)
-    lineage        per-variable backward producer TREE (provenance): what builds
-                   this value, following every input into the calls that make it.
-                   Address a variable: <var> in <fn>, or at <file>:<line>
+    types          only the type graph — a struct's fields/embeds; a function's
+                   parameter types (above) and return types (below)
+    call           only the call graph — a function's callees (above) / callers
+                   (below); a type's producers (above) / takers (below)
+    flow           only the data-flow slice. For a variable, 'flow above' is the
+                   LINEAGE producer tree: what builds it, following every input
+                   into the calls that make it (address a var: <var> in <fn>, at F:L)
     control        also show CONTROL dependence — the branches/loops a value drives
                    (or that guard what feeds it). Off by default: it needs the
                    post-dominator pass, the analyzer's one slow step. Data is hot.
@@ -997,7 +999,8 @@ ASK_USAGE :: `Usage: mara ask <name> [types|flow|lineage] [above|below] [control
 
   Filters compose and may appear in any order:
     mara ask Font types above        just Font's type sources
-    mara ask camera_move flow        just the function's value flow + callers
+    mara ask camera_move call        the function's callees and callers
+    mara ask camera_move flow        the function's value flow (args in, results out)
     mara ask pos in world_to_screen  slice the local 'pos' (both directions)
     mara ask game in game_run 2      forward slice, following calls two hops deep
     mara ask at camera.mara:176      slice whatever is defined on that line`
