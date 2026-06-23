@@ -1,0 +1,35 @@
+module constvariant
+
+// Regression: a `::` constant (or `:=` local) bound to a union VARIANT LITERAL
+// must materialize. With no annotation there is no expected-type hint, but the
+// variant name alone identifies its union, so the literal self-types as that
+// union — the same value the annotated form `m: Shape = Circle{...}` builds.
+// Previously the checker silently left the literal untyped and codegen aborted
+// one phase too late with the null-pointer backstop
+// (CODE_STRUCT_LITERAL_UNTYPED_EXPR).
+
+Shape :: union(tag u32) {
+	Circle = 1 { r: i32 = 7 }
+	Rect   = 2 { w: i32  h: i32 }
+}
+
+get :: fun(s: Shape) -> i32 {
+	match s {
+	Circle c
+		return c.r
+	Rect r
+		return r.w * r.h
+	}
+	return 0
+}
+
+main :: fun() {
+	FOO :: Circle{r = 3}        // :: constant bound to a union variant literal
+	assert(get(FOO) == 3)       // field override applied, not the default 7
+	assert(get(FOO) == 3)       // inlined again at a second use site
+
+	bar := Rect{w = 4, h = 5}   // := local infers the union from the variant too
+	assert(get(bar) == 20)
+
+	print("constvariant ok")
+}

@@ -22,23 +22,34 @@ below|aftr - the tree of variables that I supply, including across function call
 
 Arguments to narrow and specify the results:
 mara ask name 1			// number - limit analysis depth, default infinite
-mara ask name ex		// exhaustive connections, default direct
-mara ask var in scope 		// query specific variables or struct fields.
-mara ask var in file.mara.line 	// query variable in a file, with optional line number
+mara ask var in scope 	// query specific variables or struct fields.
+mara ask var in file.mara.line 	// query variable in a file
 
 
 Matrix of arg combinations:
+module type above	// structs this module imports and uses
+module type below 	// structs defined in this module, and imported and used elsewhere
+struct type above	// structs that are fields of this struct
+stryct type below	// structs that this struct is a field of
+fun type above	// the type analysis of this function's arguments
+fun type below 	// the type analysis of this function's return values
+var type above	// run type above on the type of var
+var type below	// run type below on the type of var
+
 module call above	// functions this module imports and calls
 module call below 	// functions defined in this module, imported and called elsewhere
-
 struct call above 	// functions that need to be called to make this struct
 struct call below	// functions that take this struct as an arg
-
 fun call above	// functions called by this function
-fun call below 	// functions that call this function
-
+fun call below 	// functions that call this function, and dispatch blocks
 var call above 	// function calls which supply this variable
 var call below 	// function calls this variable supplies
 
-fun type above	// the type analysis of this function's arguments
-fun type below 	// the type analysis of this function's return values
+var flow above 	// chain of variables and operations that supply this variable
+var flow below 	// chain of variables and operations that this variable supplies
+fun flow above	// flow above on all callsites of this function
+fun flow below 	// flow below on all callsites of this function
+struct flow above 	// flow above on all instances of this struct
+struct flow below	// flow below on all instances of this struct
+module flow above	// flow above on all instances of everything in the module
+module flow below 	// flow below on all instances of everything in the module

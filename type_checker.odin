@@ -9182,6 +9182,25 @@ check_union_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, ut: ^Ty
     }
 }
 
+// Resolve a bare variant name to its owning union, when the name identifies a
+// single union across the whole program. register_enum_variants already
+// collapses a name shared by two enums/unions to the "" sentinel in
+// variant_to_enum, so a non-empty mapping guarantees one owner; we then locate
+// that union by its synthetic <Name>_Tag enum. Returns nil for an unknown or
+// ambiguous name â€” those have no single inferred type, so the caller leaves the
+// literal untyped (a hinted slot resolves it; a hint-less one is left to the
+// existing fallthrough).
+variant_owner_union :: proc(c: ^Checker, variant: string) -> ^Type_Union {
+    owner_enum, mapped := c.table.variant_to_enum[variant]
+    if !mapped || owner_enum == "" { return nil }
+    for _, ut in c.table.unions {
+        if ut.tag_enum != nil && ut.tag_enum.name == owner_enum {
+            return ut
+        }
+    }
+    return nil
+}
+
 // True when an expression needs a type hint from its surrounding context to
 // be type-checked correctly. Today this is only anonymous struct/array
 // literals (`{a, b, c}` with no leading name and no inline `[N]T`) â€” the
@@ -11548,6 +11567,26 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                 if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
                     check_struct_literal_fields(c, e, &st.sd, e.span, env)
                     return ut   // node types as the union; codegen materializes the variant from e.name
+                }
+            }
+        }
+        // Bare variant literal with no matching type hint â€” the inferred-type
+        // binding positions a `::` constant or `:=` local create, e.g.
+        // `FOO :: Circle{r=3}`. When the variant name identifies a single union
+        // (variant_owner_union), self-type the node as that union and validate
+        // its fields, exactly as the union-hint branch above does for a hinted
+        // slot; codegen then materializes the value from e.name. Without this the
+        // literal stays Type_Error and codegen hits the null-pointer backstop
+        // (CODE_STRUCT_LITERAL_UNTYPED_EXPR) â€” the silent-accept-then-late-abort
+        // anti-pattern. This extends "bare variant resolution goes through an
+        // expected type" to the binding positions, where the value's own type IS
+        // the inferred type (mirroring how a struct literal `Foo{...}` self-types).
+        if e.name != "" {
+            if ut := variant_owner_union(c, e.name); ut != nil {
+                if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
+                    check_struct_literal_fields(c, e, &st.sd, e.span, env)
+                    e.type_ = ut
+                    return ut
                 }
             }
         }
