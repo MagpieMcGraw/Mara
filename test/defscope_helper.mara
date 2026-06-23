@@ -1,0 +1,5 @@
+module defscope_helper
+// The default references a const PRIVATE to this module. The caller never
+// defines PRIV, so a caller-scope default-fill couldn't resolve it at all.
+PRIV :: 7
+get_it :: fun(x: i64 = PRIV) -> i64 { return x }

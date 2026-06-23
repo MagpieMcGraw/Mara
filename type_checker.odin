@@ -12719,11 +12719,19 @@ substitute_underscore_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_S
 // Fill in default args for a call that has fewer args than params.
 // Creates fresh intrinsic nodes resolved at the call site.
 fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env: ^Type_Scope) {
+    // A default expression belongs to the function's DEFINITION, so its names
+    // resolve in the callee's module scope — not the caller's `env`. Resolving
+    // in `env` lets a default that references a module const bind to whatever
+    // the caller happens to have under that name (wrong const on a name
+    // collision; unresolvable when the caller lacks the name entirely).
+    callee_scope := module_scope(fun_type)
+    if callee_scope == nil { callee_scope = env }
     for i := len(e.args); i < len(fun_type.params); i += 1 {
         def := fun_type.params[i].default_value
         if def == nil { continue }
-        // Compiler intrinsic defaults (#caller_name / #caller_span) need fresh
-        // nodes whose span resolves at the call site.
+        // Compiler intrinsic defaults (#caller_name / #caller_span) are the one
+        // exception: they resolve to CALL-SITE info, so they get a fresh node
+        // checked in the caller's env.
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
             fresh := new_clone(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
@@ -12733,10 +12741,10 @@ fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env
             append(&e.args, Expr(fresh))
             continue
         }
-        // Regular expression default: type-check at the call site and append.
-        // Sharing the AST node across call sites is fine for literals and
-        // pure expressions; check_expr is idempotent for those.
-        check_expr(c, def, env)
+        // Regular expression default: type-check in the callee's scope and
+        // append. The node is shared across call sites, but now every check
+        // runs in the same (callee) scope, so the resolution is consistent.
+        check_expr(c, def, callee_scope)
         append(&e.args, def)
     }
 }
@@ -12774,7 +12782,16 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             // Hand the parameter type down so bare variant idents like
             // `Init(Video)` can resolve `Video` against `Init_Flags`.
             c.expected_hint = fun_type.params[i].type_
-            arg_type := check_expr(c, arg, env)
+            // A filled-in default arg is the SAME node as the param's default
+            // expression (fill_default_args appends it). It was written in the
+            // callee's module, so resolve it there — resolving in the caller's
+            // `env` would bind a `= COLOR_GREEN` default to whatever the CALLER
+            // has under that name (the wrong const on a collision).
+            arg_env := env
+            if arg == fun_type.params[i].default_value {
+                if ms := module_scope(fun_type); ms != nil { arg_env = ms }
+            }
+            arg_type := check_expr(c, arg, arg_env)
             // Byte-buffer reinterpret-read at the call boundary: a param
             // typed `[N]T` accepts `buf[off]` or `buf[lo:hi]` from a byte
             // buffer â€” same shape as `arr : [N]T = buf[off]` at decl sites.
@@ -13207,6 +13224,12 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     fn_name := matched_fns[0]
     ft := matched_fts[0]
 
+    // Defaults resolve in the callee's module scope, not the caller's `env`
+    // (see fill_default_args). Intrinsic defaults are the exception — they read
+    // call-site info, so they stay on `env`.
+    callee_scope := module_scope(ft)
+    if callee_scope == nil { callee_scope = env }
+
     // Substitute `_` against the chosen candidate's defaults. Mirrors
     // substitute_underscore_args + fill_default_args' span/intrinsic handling.
     // Re-runs check_expr on the substituted node so codegen sees the resolved
@@ -13216,6 +13239,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             if !is_underscore[i] { continue }
             def := ft.params[i].default_value
             new_arg: Expr
+            arg_scope := callee_scope
             if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
                 span := e.span
                 if ident, id_ok := e.args[i].(^Expr_Ident); id_ok {
@@ -13225,10 +13249,11 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
                     kind = intr.kind,
                     span = span,
                 })
+                arg_scope = env
             } else {
                 new_arg = def
             }
-            check_expr(c, new_arg, env)
+            check_expr(c, new_arg, arg_scope)
             e.args[i] = new_arg
         }
     }
@@ -13238,15 +13263,17 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     for i := len(e.args); i < len(ft.params); i += 1 {
         def := ft.params[i].default_value
         new_arg: Expr
+        arg_scope := callee_scope
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
             new_arg = new_clone(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
                 span = e.span,
             })
+            arg_scope = env
         } else {
             new_arg = def
         }
-        check_expr(c, new_arg, env)
+        check_expr(c, new_arg, arg_scope)
         append(&e.args, new_arg)
     }
 

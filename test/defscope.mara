@@ -1,0 +1,7 @@
+module defscope
+use defscope_helper
+// Regression: get_it()'s default (PRIV) must resolve in the CALLEE's scope.
+// Before the fix it was checked in this caller's scope, where PRIV is unknown.
+main :: fun() -> i64 {
+	return get_it()
+}

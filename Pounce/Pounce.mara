@@ -154,9 +154,11 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	// shapes are appended into `game.shapes`, so the scene render loop draws them
 	// once resolved; they track the camera via tracking_offset each frame.
 	game.axes_gizmo  = ui_gizmo_create_pixels(-140, -90, 70, &game.shapes)
-	// Pass color explicitly: the default (COLOR_GREEN) would resolve to Pounce's
-	// Vec3 COLOR_GREEN in this scope, not ui's [3]f32 one.
-	game.frame_graph = ui_graph_create_pixels(120, -90, 200, 70, 33.3, &game.shapes, [0.2, 0.75, 0.2])
+	// Uses ui_graph_create_pixels' default color (ui.COLOR_GREEN). This used to
+	// fail — the default resolved in Pounce's scope and hit Pounce's Vec3
+	// COLOR_GREEN instead of ui's [3]f32 — until defaults were bound in the
+	// callee's scope.
+	game.frame_graph = ui_graph_create_pixels(120, -90, 200, 70, 33.3, &game.shapes)
 
 	game.running = true
 	game.initialized = true
