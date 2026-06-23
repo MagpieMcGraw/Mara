@@ -1,0 +1,5 @@
+module dep
+// A dependency module, imported by ONE file of the `impprv` module (a.mara) but
+// not the other (b.mara). Used to prove `use` imports are file-private.
+DEP_K :: 99
+dep_fn :: fun() -> i64 { return 42 }

@@ -1,0 +1,11 @@
+module impprv
+use dep
+// File A imports `dep`. The import is PRIVATE to this file (it lands on the file
+// scope, not the module scope). A_PUB is a DEFINITION, so it IS module-public
+// (registers on the module scope, visible to sibling files).
+A_PUB :: 5
+
+// A sees its own import — bare DEP_K / dep_fn resolve here. (If file-private
+// imports ever regressed to leaking, this would still pass; the guard for the
+// leak is b.mara.)
+use_in_a :: fun() -> i64 { return DEP_K + dep_fn() }

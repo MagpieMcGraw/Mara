@@ -61,13 +61,27 @@ done
 # Multi-file module fixtures (cross-file resolution) live in opt-in subdirs
 # marked with a .multifile file. The flat per-file loop above can't combine
 # them, and loose multi-file modules collide on discovery in this directory.
-# Each marked test/<dir>/ is built as module <dir>; success = compiles.
+# Each marked test/<dir>/ is built as module <dir>; success = compiles, unless
+# a file in the subdir carries //@ expect-fail[: substr] (same semantics as the
+# flat loop) — used for negative multi-file properties like file-private imports.
 ROOT="$(cd .. && pwd)"
 for d in */; do
   d="${d%/}"
   [ -f "$d/.multifile" ] || continue
+  exp=pass; substr=""
+  if grep -rqE '//@ expect-fail' "$d" 2>/dev/null; then
+    exp=fail
+    substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1)
+  fi
   out=$(cd "$d" && "$ROOT/Mara.exe" build "$d" 2>&1)
-  if echo "$out" | grep -q "Compiled module"; then pass=$((pass+1)); else echo "REGRESSION (multi-file subdir, want pass): $d"; bad=$((bad+1)); fi
+  comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
+  if [ "$exp" = pass ]; then
+    if [ "$comp" = yes ]; then pass=$((pass+1)); else echo "REGRESSION (multi-file subdir, want pass): $d"; bad=$((bad+1)); fi
+  else
+    if [ "$comp" = yes ]; then echo "STALE NEGATIVE (multi-file subdir, want fail): $d"; bad=$((bad+1))
+    elif [ -n "$substr" ] && ! echo "$out" | grep -qF "$substr"; then echo "WRONG ERROR (multi-file subdir): $d (want: $substr)"; bad=$((bad+1))
+    else xfail=$((xfail+1)); fi
+  fi
   rm -f "$d/$d.exe" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
 done
 

@@ -1,0 +1,15 @@
+module impprv
+//@ expect-fail: undefined identifier 'DEP_K'
+// Regression guard: `use` imports are FILE-PRIVATE. File b.mara is part of the
+// same module as a.mara but does NOT `use dep`, so a.mara's import must NOT be
+// visible here. Referencing DEP_K (which only a.mara imported) must fail with
+// "undefined identifier 'DEP_K'" — the same error any file would get for a name
+// it never imported. If imports ever leak across files within a module, this
+// compiles instead and the suite flags a STALE NEGATIVE.
+//
+// The CONTROL is A_PUB on the next line: a DEFINITION in a.mara IS module-public,
+// so it resolves fine here. That `Found 1 type error(s)` (only DEP_K, not A_PUB)
+// is the discriminating evidence — definitions cross files, imports don't.
+b_leak :: fun() -> i64 { return A_PUB + DEP_K }
+
+main :: fun() -> i64 { return use_in_a() + b_leak() }
