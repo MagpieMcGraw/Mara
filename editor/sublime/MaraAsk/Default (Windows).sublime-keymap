@@ -1,0 +1,7 @@
+[
+    // Ask about whatever's under the cursor (the tool picks the natural kind).
+    { "keys": ["ctrl+k", "ctrl+a"], "command": "mara_ask" },
+
+    // Pick a specific cell (types/call/flow × above/below) from a quick panel.
+    { "keys": ["ctrl+k", "ctrl+d"], "command": "mara_ask_pick" }
+]
