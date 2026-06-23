@@ -35,6 +35,13 @@ import "core:path/filepath"
 
 Ask_Edge_Kind :: enum { Contains, Embeds, Takes, Returns, Base }
 
+// The full edge set — the default `root_filter` for `ask_deps`, i.e. follow every
+// kind of outgoing edge from the root. A function's type graph narrows this to
+// `{.Takes}` (above = parameter types) or `{.Returns}` (below = return types) so
+// the two directions split the signature; structs keep the full set (their fields
+// are Contains/Embeds and there is only one direction to walk forward).
+ASK_ALL_EDGES :: bit_set[Ask_Edge_Kind]{ .Contains, .Embeds, .Takes, .Returns, .Base }
+
 Ask_Node :: struct {
     label: string,   // user-facing type / fn name
     sub:   string,   // "struct" / "union" / "error" / "distinct" / "fun" ("enum" only for a union's synthetic tag)
@@ -443,7 +450,7 @@ ask_out_edges :: proc(table: ^SymbolTable, t: Type, out: ^[dynamic]Ask_Out_Edge)
 // node's recorded `dist` is its SHORTEST distance — the value the renderer gates
 // on. Field/param slice order is deterministic, so intern order (hence output)
 // stays stable without sorting nodes.
-ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int) {
+ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int, root_filter := ASK_ALL_EDGES) {
     rid, _ := ask_intern(res, root)
     res.root = rid
     res.nodes[rid].dist = 0
@@ -456,10 +463,15 @@ ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int) 
         if processed[key] { continue }
         processed[key] = true
         from, _ := ask_intern(res, t)
+        is_root := from == rid
         d := res.nodes[from].dist
         edges: [dynamic]Ask_Out_Edge
         ask_out_edges(table, t, &edges)
         for e in edges {
+            // From the root only, honor `root_filter` — a function splits its
+            // Takes (params) from its Returns so above/below show distinct graphs.
+            // Deeper nodes (the param/return types' own fields) always expand fully.
+            if is_root && e.kind not_in root_filter { continue }
             if _, named := ask_sub(e.core); !named {
                 // Primitive / numeric member — it carries no graph node, so without
                 // this it vanishes entirely. Record it as an inline field line so the
@@ -607,6 +619,7 @@ ask_sort_edges :: proc(res: ^Ask_Result) {
 ask_canon_kind :: proc(s: string) -> (canon: string, ok: bool) {
     switch s {
     case "types", "type":       return "types", true
+    case "call", "calls":       return "call", true      // the call graph (callees / callers)
     case "flow":                return "flow", true
     case "lineage", "source":   return "lineage", true   // backward producer tree (per variable)
     }
@@ -630,11 +643,11 @@ ask_filters_str :: proc(kind, dir: string) -> string {
 
 // Compute one direction's graph for an already-resolved subject type, bounded to
 // `depth` hops (depth < 0 = unbounded / full closure).
-ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, funcs: map[string]^Type_Scope) -> Ask_Result {
+ask_compute :: proc(table: ^SymbolTable, root: Type, verb: string, depth: int, funcs: map[string]^Type_Scope, root_filter := ASK_ALL_EDGES) -> Ask_Result {
     res: Ask_Result
     res.root = -1
     switch verb {
-    case "deps":  ask_deps(table, &res, root, depth)
+    case "deps":  ask_deps(table, &res, root, depth, root_filter)
     case "users": ask_users(table, &res, root, depth, funcs)
     }
     ask_sort_edges(&res)
@@ -724,6 +737,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     }
 
     show_types := kind == "" || kind == "types"
+    show_call  := kind == "" || kind == "call"
     show_flow  := kind == "" || kind == "flow"
     show_above := dir  == "" || dir  == "above"
     show_below := dir  == "" || dir  == "below"
@@ -751,44 +765,54 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         }
     }
 
-    // A function with no call sites is an entry point or dead code. The three
-    // call-related views (above flow, below calls, below flow) would each announce
-    // "never called" on their own — consolidate to one line up top and suppress the
-    // per-section repeats. No call sites ⟹ no callers either, so this lone check
-    // covers all three. (call_sites is populated by flow_analyze_all, run just above.)
+    // The CALL graph (callees/callers) reads off the materialized call_graph and is
+    // always available. The FLOW views (args in / results out) need call SITES, which
+    // flow_analyze_all populates; with none, both flow directions are empty — say so
+    // once and suppress their per-section "never called" repeats. (A function with no
+    // callers can still have callees, so this gates flow only, not `call`.)
     fn_uncalled := is_fn && show_flow && len(checked.call_sites[ft]) == 0
-    if fn_uncalled && (show_above || show_below) {
-        fmt.sbprintf(&b, "\n%s has no callers — an entry point or unused (indirect calls via fn-typed params aren't tracked)\n", subject.label)
+    if fn_uncalled {
+        fmt.sbprintf(&b, "\n%s has no call sites — its flow views (arguments in, results out) are empty\n", subject.label)
     }
 
-    // ABOVE — what feeds the subject. Type dependencies (any subject); plus the
-    // backward flow slice — what computes a function's arguments at its call sites,
-    // or what feeds every value of a type.
+    // ABOVE — what feeds / builds the subject.
+    //   types: a struct's field types; a function's PARAMETER types.
+    //   call:  a function's callees.
+    //   flow:  what computes the args at a function's call sites, or what feeds a type's values.
     if show_above && show_types {
-        res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions)
-        render_ask_deps(&b, &res, depth)
+        filter := bit_set[Ask_Edge_Kind]{.Takes} if is_fn else ASK_ALL_EDGES
+        res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions, filter)
+        render_ask_deps(&b, &res, depth, "above")
+    }
+    if show_above && show_call {
+        if is_fn { render_fn_callees(&b, checked, ft) }
+        // struct call above (functions that produce this struct) — commit 2
     }
     if show_above && show_flow {
         if is_fn { if !fn_uncalled { render_fn_flow_above(&b, checked, ft, subject.label) } }
         else     { render_type_flow_above(&b, checked, subject.type_, subject.label) }
     }
 
-    // BELOW — what the subject feeds. Type users (a type); a function's callers;
-    // plus the forward flow slice — where a function's results flow from its call
-    // sites, or what every value of a type feeds.
-    if show_below && show_types && !is_fn {
-        res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
-        render_ask_users(&b, &res, depth)
+    // BELOW — what the subject feeds / who depends on it.
+    //   types: structs that contain/embed this struct; a function's RETURN types.
+    //   call:  a function's callers.
+    //   flow:  where a function's results flow, or what a type's values feed.
+    if show_below && show_types {
+        if is_fn {
+            res := ask_compute(checked.table, subject.type_, "deps", depth, checked.functions, {.Returns})
+            render_ask_deps(&b, &res, depth, "below")
+        } else {
+            res := ask_compute(checked.table, subject.type_, "users", depth, checked.functions)
+            render_ask_users(&b, &res, depth)
+        }
+    }
+    if show_below && show_call {
+        if is_fn { render_fn_users(&b, checked, ft) }   // callers, from the call graph
+        // struct call below (functions that take this struct) — commit 2
     }
     if show_below && show_flow {
-        if is_fn {
-            if !fn_uncalled {
-                render_fn_users(&b, checked, ft)   // callers, from the call graph
-                render_fn_flow_below(&b, checked, ft, subject.label)
-            }
-        } else {
-            render_type_flow_below(&b, checked, subject.type_, subject.label, depth)
-        }
+        if is_fn { if !fn_uncalled { render_fn_flow_below(&b, checked, ft, subject.label) } }
+        else     { render_type_flow_below(&b, checked, subject.type_, subject.label, depth) }
     }
 
     // The chosen filters can name a graph this subject lacks (a type has no data
@@ -903,7 +927,7 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
 // full transitive closure; at depth N the fringe (nodes one hop past the budget)
 // appears only as edge targets, never as its own block — so depth 0 is exactly
 // the root's direct adjacency.
-render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
+render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int, dir := "above") {
     // No NAMED dependencies. The subject still has a shape worth showing — its
     // basic-typed fields (a struct built only from i32/f32, like Glyph) or a fn's
     // basic-typed signature. List those and call it "basic types only"; that
@@ -912,10 +936,10 @@ render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
     if len(res.edges) == 0 {
         root := &res.nodes[res.root]
         if len(root.basics) == 0 {
-            fmt.sbprint(b, "\nabove (types)   (no type dependencies)\n")
+            fmt.sbprintf(b, "\n%s (types)   (no type dependencies)\n", dir)
             return
         }
-        fmt.sbprint(b, "\nabove (types)   (basic types only)\n")
+        fmt.sbprintf(b, "\n%s (types)   (basic types only)\n", dir)
         fmt.sbprintf(b, "\n  %s  %s  %s%s\n", root.label, root.sub, ask_loc(root.span), ask_mark_suffix(root.mark))
         for line in root.basics { fmt.sbprintf(b, "%s\n", line) }
         return
@@ -924,7 +948,7 @@ render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
     // a type and must not inflate the count (a fn's own node sits at index 0).
     types := 0
     for n in res.nodes { if n.sub != "fun" { types += 1 } }
-    fmt.sbprintf(b, "\nabove (types)   (%s, %s, %s)\n", ask_plural(types, "type"), ask_plural(len(res.edges), "edge"), ask_depth_label(depth))
+    fmt.sbprintf(b, "\n%s (types)   (%s, %s, %s)\n", dir, ask_plural(types, "type"), ask_plural(len(res.edges), "edge"), ask_depth_label(depth))
     for node, i in res.nodes {
         if depth >= 0 && node.dist > depth { continue }   // fringe target — interned, not expanded
         fmt.sbprintf(b, "\n  %s  %s  %s%s\n", node.label, node.sub, ask_loc(node.span), ask_mark_suffix(node.mark))
@@ -981,6 +1005,40 @@ render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
         return
     }
     for c in callers {
+        sub, _ := ask_sub(c)
+        fmt.sbprintf(b, "  %-6s %s  %s\n", sub, ask_label(c), ask_loc(ask_span(c)))
+    }
+}
+
+// callees of a function — `fun call above`, the mirror of render_fn_users, read off
+// the materialized call graph's out-edges (resolved direct calls + construction
+// edges this function makes). A constructor edge surfaces as the built struct
+// (sub "struct"); a plain call as `fun`. Indirect calls via fn-typed params aren't
+// edges, so a function that only dispatches dynamically reads as calling nothing.
+render_fn_callees :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope) {
+    cg := &checked.call_graph
+    callees: [dynamic]^Type_Scope
+    defer delete(callees)
+    if nf, ok := cg.index_of[ft]; ok {
+        seen: map[int]bool
+        defer delete(seen)
+        for callee_id in cg.out_edges[nf] {
+            if callee_id == nf || seen[callee_id] { continue }   // skip self-recursion + duplicate call sites
+            seen[callee_id] = true
+            append(&callees, cg.nodes[callee_id])
+        }
+    }
+    slice.sort_by(callees[:], proc(a, b: ^Type_Scope) -> bool {
+        la, lb := ask_label(a), ask_label(b)
+        if la != lb { return la < lb }
+        return a.body_span.line < b.body_span.line
+    })
+    fmt.sbprintf(b, "\nabove (calls)   (%s)\n", ask_plural(len(callees), "callee"))
+    if len(callees) == 0 {
+        fmt.sbprint(b, "  (calls nothing directly; indirect calls via fn-typed params aren't tracked)\n")
+        return
+    }
+    for c in callees {
         sub, _ := ask_sub(c)
         fmt.sbprintf(b, "  %-6s %s  %s\n", sub, ask_label(c), ask_loc(ask_span(c)))
     }
