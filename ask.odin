@@ -711,7 +711,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         } else {
             fmt.sbprintf(&b, "mara ask: no type or function named '%s' in %s\n", target, scope_desc)
         }
-        fmt.sbprint(&b, "  (variables are not queryable yet — coming with variable support.)\n")
+        fmt.sbprint(&b, "  (a local or parameter? address it with `<name> in <fn>` or `at <file>:<line>`.)\n")
         return strings.to_string(b), false
     }
     if len(matches) > 1 {
@@ -947,8 +947,16 @@ render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int, dir :
     }
     // Count TYPE nodes only — the root may be a `fun` (the subject), which is not
     // a type and must not inflate the count (a fn's own node sits at index 0).
+    // Respect the same depth bound the render loop below honors: a fringe node
+    // (dist > depth) is interned as an edge-target label but never gets its own
+    // block, so counting it made the header read one ring deeper than the body
+    // (e.g. "36 types" over a 16-node body at depth 1). Edges need no such guard —
+    // fringe nodes are never expanded, so every edge originates from a shown node.
     types := 0
-    for n in res.nodes { if n.sub != "fun" { types += 1 } }
+    for n in res.nodes {
+        if depth >= 0 && n.dist > depth { continue }
+        if n.sub != "fun" { types += 1 }
+    }
     fmt.sbprintf(b, "\n%s (types)   (%s, %s, %s)\n", dir, ask_plural(types, "type"), ask_plural(len(res.edges), "edge"), ask_depth_label(depth))
     for node, i in res.nodes {
         if depth >= 0 && node.dist > depth { continue }   // fringe target — interned, not expanded

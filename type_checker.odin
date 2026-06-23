@@ -1692,6 +1692,7 @@ Checker :: struct {
     target_web:      bool,                // -web build flag, drives #web / #native intrinsics
     target_shared:   bool,                // -shared build flag â€” package compiles to a DLL/SO; no `main` required
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
+    analysis_only:   bool,                // `mara ask` — read-only static analysis; never emits or runs code, so runtime-shape guards (e.g. the arena/stack-size routing check) that assume an executable with a `main` are skipped
     type_params:     map[string]Type,
     top_env:         ^Type_Scope,
     declared_funs:   map[string]bool,  // bare names of Stmt_Scope declarations (direct calls vs variables)
@@ -6209,6 +6210,11 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Scope
 // Per-scope and top-level only â€” nested if/for/match bodies re-enter check_scope
 // and get their own pass.
 check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
+    // `mara ask` only reads source and walks graphs — it never emits or runs code,
+    // so the arena/stack-size routing guard (a runtime storage concern) doesn't
+    // apply. Skipping it lets analysis re-root at a leaf module that has no `main`
+    // to declare the arena, without a spurious "too large for the stack" abort.
+    if c.analysis_only { return }
     if c.table.has_scope_allocator || c.table.context_expected_at_runtime { return }
     guard :: proc(c: ^Checker, env: ^Type_Scope, name: string, t: Type, span: Span) {
         // Take-bound views alias existing storage â€” they don't allocate, so a
@@ -10682,7 +10688,8 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
 check_program :: proc(programs: map[string]^Program, main_package: string,
                       compiler_dir: string = "", search_dir: string = "", web: bool = false,
                       shared: bool = false,
-                      target_os: Target_OS = .Windows) -> ^Checked_Program {
+                      target_os: Target_OS = .Windows,
+                      analysis_only: bool = false) -> ^Checked_Program {
     table := new(SymbolTable)
     // The main package's durable module scope IS the root env, wired upfront so
     // builtins (std / void / Program / this_program) and every top-level name land
@@ -10710,6 +10717,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // so DLLs can declare it in any top-level fn.
     c.target_shared = shared
     c.target_os     = target_os
+    c.analysis_only = analysis_only
 
     // Resolve comptime `#if` up front: fold the live arm inline, drop the dead
     // one. After this no `#if` reaches the checker â€” the dead arm's platform

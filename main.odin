@@ -1372,7 +1372,8 @@ main :: proc() {
                              search_dir   = args.search_dir,
                              web          = args.web,
                              shared       = pkg_shared,
-                             target_os    = target_os)
+                             target_os    = target_os,
+                             analysis_only = args.ask)
     if checked.errors > 0 {
         perf_timer_end(&perf)
         flush_diagnostics()
