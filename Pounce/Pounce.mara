@@ -89,7 +89,7 @@ Megastruct :: struct {
 
 	// Game entities (Warlock's shapes/glyphs arrays). Resolved lazily over the
 	// first frames, then rendered each frame through the object/text draw states.
-	shapes: [..256]Shape
+	shapes: [..512]Shape          // scene quads (12) + gizmo (7) + frame graph (300); keep >= that sum
 	glyphs: [..512]entity.Glyph   // qualify: mara.font also defines a Glyph
 
 	// World-space UI overlay (shapes/glyphs for these live in the arrays above).

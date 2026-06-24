@@ -601,9 +601,8 @@ ui_graph_create_pixels :: fun(
 	graph.height_pixels = height_pixels
 	graph.max_value = max_value
 
-	// Record where our shapes start, then append UI_GRAPH_SAMPLE_COUNT bars.
+	// Record where our shapes start, then append up to UI_GRAPH_SAMPLE_COUNT bars.
 	graph.start_index = shape_array.len
-	graph.shape_count = UI_GRAPH_SAMPLE_COUNT
 
 	// Initialize all bars as quads.
 	bar_width_pixels := width_pixels / f32(UI_GRAPH_SAMPLE_COUNT)
@@ -620,6 +619,11 @@ ui_graph_create_pixels :: fun(
 		bar.visual.color = color
 		shape_array + bar
 	}
+
+	// Count the bars that actually fit (the loop breaks early if the pool is full).
+	// resolve/update iterate this, never UI_GRAPH_SAMPLE_COUNT, so they can't index
+	// past the appended slots — the same shape_count discipline the gizmo uses.
+	graph.shape_count = shape_array.len - graph.start_index
 
 	return graph
 }
@@ -644,7 +648,7 @@ ui_graph_resolve :: fun(graph: ^UI_Graph, shape_array: ^[]Shape, fov_y: f32, scr
 		graph.height_pixels, distance, fov_y, screen_height)
 
 	// Update bar tracking offsets to world units.
-	for i in 0..UI_GRAPH_SAMPLE_COUNT {
+	for i in 0..graph.shape_count {
 		x_offset := (f32(i) - f32(UI_GRAPH_SAMPLE_COUNT) / 2 + 0.5) * graph.bar_width
 		shape_array[graph.start_index + i].obj.tracking_offset.x = x_offset
 	}
@@ -678,7 +682,7 @@ ui_graph_update :: fun(graph: ^UI_Graph, shape_array: ^[]Shape, camera_obj: Obje
 	graph.obj.dir = camera_obj.dir
 
 	// Update each bar.
-	for i in 0..UI_GRAPH_SAMPLE_COUNT {
+	for i in 0..graph.shape_count {
 		shape := &shape_array[graph.start_index + i]
 		if not shape.obj.exists do continue
 
