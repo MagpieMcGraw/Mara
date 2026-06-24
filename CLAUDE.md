@@ -37,6 +37,7 @@ A graph-based code analyzer that reveals the structure and data flow of Mara
 programs. Call from cwd where you have your module.
 
 MODULES ANALYSIS ONLY RETURNS BASIC OVERVIEWS FOR NOW
+ANALYSIS DEFAULTS TO WHAT'S NATIVE TO THE NAME
 
 mara ask                # info about the modules in cwd
 mara ask name           # info about a module, struct, function, or variable
@@ -57,9 +58,10 @@ above|bfor - the tree of variables that supply me, inlcuding across function cal
 below|aftr - the tree of variables that I supply, including across function calls
 
 Other arguments:
-mara ask name 2				# number - limit analysis depth, default infinite
-mara ask var in scope 		# query specific variables or struct fields.
-mara ask var at file:line 	# query variable in a file
+mara ask name 2					# number - limit analysis depth, default infinite
+mara ask name in scope 			# limit analysis to scope
+mara ask name at scope or file 	# location of name
+UPDATE TOOL TO NEW VERSIONS OF in AND at
 
 
 Argument matrix
