@@ -4,21 +4,31 @@ module askflow
 // Not auto-checked for query output (the harness only gates compile pass/fail),
 // but a stable, predictable target to validate the hop machinery by hand. From a
 // dir whose name is `askflow`:  mara ask n in driver below  yields
-//   n  ->  the return + 2 statements + 1 call
+//   n  ->  the return + 2 statements + 3 calls
 //     decl    m              (consume's computed `x + 1` data-depends on n)
 //     decl    k              (forward returns its first arg -> k traces to n)
-//   into calls — the value lands in (1 parameter)
-//     mutate  (param p : ^i64)        the one bare-call pointer hop
+//   into calls — the value lands in (4 parameters)
+//     consume (param x : i64)         n flows into consume
+//     forward (param a : i64)         n flows into forward's first arg
+//     forward (param b : i64)         n -> m (via consume) -> forward's second arg
+//     mutate  (param p : ^i64)        the bare-call pointer hop
 // What this pins down:
-//   * the bare pointer call mutate(&n) IS followed -> a landing in mutate.p;
-//   * consume/forward bind their result, so they are NOT landings (their flow is
-//     the def->def trace, the cross-call return-DEP summary's job);
-//   * BOTH `m` and `k` are reached: the slice crosses a call by DATA DEPENDENCE
-//     (cg.return_deps, not escape's aliasing cg.return_args), so consume's computed
-//     `x + 1` traces back to n exactly as forward's identity `return a` does;
-//   * yet the summary stays PRECISE, not a blunt "all args": forward returns only
-//     `a`, so `mara ask m in driver below` is empty — m feeds forward's IGNORED
-//     second parameter and so never reaches k.
+//   * a value passed into a callee param IS a landing — whether or not the call's
+//     result is bound, and whether or not the return carries it back. consume and
+//     forward bind their result yet still land, the same rule that makes a glyph's
+//     w/h land in pack_rect, whose return is a skyline slot, not the glyph (see
+//     collect_landings). The bare pointer call mutate(&n) lands the same way;
+//   * landings match the arg's REACHING DEF, not its binding, so a landing names
+//     the value actually flowing into that arg at that site — an earlier or
+//     other-field write to the same binding is not dragged in (slice.odin
+//     flow_targets / arg_reads_targets);
+//   * the STATEMENT trace is a separate data-dependence view (cg.return_deps, not
+//     escape's aliasing cg.return_args): n reaches BOTH m and k, since consume's
+//     computed `x + 1` traces back to n exactly as forward's identity `return a`;
+//   * that return trace stays PRECISE, not a blunt "all args": forward returns
+//     only `a`, so `mara ask m in driver below` shows NO `decl k` — m feeds
+//     forward's IGNORED second param and never reaches k. m's only effect is the
+//     landing in forward.b: it flows in, but nothing comes back.
 
 mutate  :: fun(p: ^i64)          { p^ = 5 }
 consume :: fun(x: i64) -> i64    { return x + 1 }    // computed return: data-depends on x, aliases nothing
