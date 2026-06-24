@@ -962,16 +962,21 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
             ensure_fn_analysis(checked, ft)
         }
     }
-    // Distinct variables with a definition at exactly (file, line).
+    // Distinct variables with a definition at exactly (file, line), remembering the
+    // def found there — flow roots at THAT write, so `at` on a `*=` slices from the
+    // modification (its above = the earlier mods + decl), not the whole variable.
     bindings: [dynamic]^Var_Binding
     defer delete(bindings)
     seen: map[^Var_Binding]bool
     defer delete(seen)
+    root_of: map[^Var_Binding]^Def
+    defer delete(root_of)
     for d in checked.defs {
         if d.binding == nil || seen[d.binding] { continue }
         if d.span.line == line && filepath.base(d.span.file) == file {
             seen[d.binding] = true
             append(&bindings, d.binding)
+            root_of[d.binding] = d
         }
     }
     if len(bindings) == 0 {
@@ -987,7 +992,7 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
         }
         return strings.to_string(sb), false
     }
-    return render_var_slice(checked, bindings[0], ask_label(bindings[0].fn), kind, dir, pkg, depth), true
+    return render_var_slice(checked, bindings[0], ask_label(bindings[0].fn), kind, dir, pkg, depth, root_of[bindings[0]]), true
 }
 
 // --- renderer (text adjacency dump) ----------------------------------------

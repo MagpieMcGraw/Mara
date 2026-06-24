@@ -27,28 +27,49 @@ import "core:strings"
 // builder, under the variable header render_var_slice already printed; the caller
 // has run ensure_fn_analysis. "What builds this value", following every input into
 // the calls that produce it.
-render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: ^Var_Binding, depth: int) {
+render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: ^Var_Binding, depth: int, root_def: ^Def) {
     knd := "param" if b.kind == .Param else "local"
     fn_label := ask_label(b.fn)
     fmt.sbprint(bb, "\nabove (flow) — what builds this value, following every input into the calls that produce it\n\n")
 
-    // The producing defs of the root (a write/decl with a value). A bare parameter
-    // has only its entry def (value nil) — an external input with no local origin.
-    producing: [dynamic]^Def
-    defer delete(producing)
-    for d in checked.defs {
-        if d.binding == b && d.value != nil { append(&producing, d) }
+    // Flow roots at ONE point in the variable's timeline — its declaration by
+    // default, or the write addressed with `at <file>:<line>`. `above` shows what
+    // SUPPLIES that point: the back-walk from the root's inputs. A variable's own
+    // later modifications are forward evolution (they belong to `below`), not
+    // suppliers — so a literal decl like `speed: f32 = 500` has nothing above it.
+    root := root_def
+    if root == nil { root = var_root_def(checked, b) }
+
+    // The root's direct inputs. A value-less decl (`x: T`, zero-init) or a bare
+    // parameter has none; a literal-only value collects no idents. Either way,
+    // nothing inside the function supplies the value — say so and stop.
+    inputs: [dynamic]^Def
+    defer delete(inputs)
+    if root != nil && root.value != nil {
+        idents: [dynamic]^Expr_Ident
+        defer delete(idents)
+        lineage_all_idents(root.value, &idents)
+        seen_in: map[^Def]bool
+        defer delete(seen_in)
+        for u in idents {
+            rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
+            for d2 in rdefs { if !seen_in[d2] { seen_in[d2] = true; append(&inputs, d2) } }
+        }
     }
-    if len(producing) == 0 {
-        fmt.sbprintf(bb, "  %s   (a %s — external input; nothing in %s builds it)\n", b.name, knd, fn_label)
+    if len(inputs) == 0 {
+        if root == nil || root.value == nil {
+            fmt.sbprintf(bb, "  %s   (a %s — external input; nothing in %s builds it)\n", b.name, knd, fn_label)
+        } else {
+            fmt.sbprintf(bb, "  %s   (built from literals; nothing in %s supplies it)\n", b.name, fn_label)
+        }
         return
     }
-    slice.sort_by(producing[:], lineage_def_less)
+    slice.sort_by(inputs[:], lineage_def_less)
 
     budget := depth if depth >= 0 else (1 << 30)
     seen: map[^Def]bool
     defer delete(seen)
-    for d in producing {
+    for d in inputs {
         lineage_node(checked, bb, d, budget, 0, &seen)
     }
 }

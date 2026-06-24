@@ -710,22 +710,42 @@ slice_def_word :: proc(k: Def_Kind) -> string {
     return "?"
 }
 
+// The variable's root def for a flow query — its earliest definition in source
+// order (the declaration, or a parameter's entry). Flow roots here by default;
+// `at <file>:<line>` overrides it with the specific write on that line.
+var_root_def :: proc(checked: ^Checked_Program, b: ^Var_Binding) -> ^Def {
+    best: ^Def
+    for d in checked.defs {
+        if d.binding != b { continue }
+        if best == nil || d.span.line < best.span.line || (d.span.line == best.span.line && d.span.col < best.span.col) {
+            best = d
+        }
+    }
+    return best
+}
+
 // ---------------------------------------------------------------------------
 // Variable slice — `mara ask <var> in <fn>`.
 //
 // The same def-use machinery the function-endpoint slices use, seeded from an
 // arbitrary variable instead of the return / parameters. `above` is the backward
 // slice (what feeds the variable); `below` is the forward slice (what it feeds).
-// A variable has no type graph — its query is data-only.
+// A variable has no type graph — its query is data-only. Flow roots at one point
+// in the variable's timeline (the declaration by default, or `root_def` from
+// `at <file>:<line>`): above = what supplies that point, below = the variable's
+// modifications from there on plus what they feed.
 // ---------------------------------------------------------------------------
 
-render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, kind, dir, pkg: string, depth: int) -> string {
+render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, kind, dir, pkg: string, depth: int, root_def: ^Def = nil) -> string {
     ensure_fn_analysis(checked, b.fn)
     knd := "param" if b.kind == .Param else "local"
     bb := strings.builder_make()
     home_pkg := ask_home_package(b.fn)
     if home_pkg == "" { home_pkg = pkg }
     fmt.sbprintf(&bb, "%s — %s in %s  %s   (module %s)\n", b.name, knd, fn_label, ask_loc(b.span), home_pkg)
+    if root_def != nil && (root_def.span.line != b.span.line || root_def.span.file != b.span.file) {
+        fmt.sbprintf(&bb, "  (flow rooted at the write on %s)\n", ask_loc(root_def.span))
+    }
 
     show_above := dir == "" || dir == "above"
     show_below := dir == "" || dir == "below"
@@ -742,8 +762,8 @@ render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, k
         if show_below { render_var_calls_below(&bb, checked, b, depth) }
     }
     if show_flow {
-        if show_above { render_lineage_body(checked, &bb, b, depth) }   // flow above = the lineage / producer tree
-        if show_below { render_var_affects(&bb, checked, b, depth) }
+        if show_above { render_lineage_body(checked, &bb, b, depth, root_def) }   // flow above = the lineage / producer tree
+        if show_below { render_var_affects(&bb, checked, b, depth, root_def) }
     }
     return strings.to_string(bb)
 }
@@ -990,10 +1010,19 @@ render_var_calls_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
 // report the definitions it reaches (its own + parameters excluded) and whether
 // it reaches the return.
 @(private="file")
-render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int) {
+render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int, root_def: ^Def) {
     flow_analyze_all(checked)   // the interprocedural hop reads callees' param bindings
 
-    // Data reach: pure value flow (no CFG). The hot path.
+    // Flow roots at one point: the addressed write (root_def), else the declaration.
+    // From the root forward, the variable's OWN later modifications are part of what
+    // it affects (its value evolving), so — unlike the backward view — same-binding
+    // defs are KEPT; only the root itself (the subject) and parameters are dropped.
+    root := root_def
+    if root == nil { root = var_root_def(checked, b) }
+
+    // Data reach: pure value flow (no CFG). The hot path. With an explicit root we
+    // reach forward from it alone; by default we union every def of the variable so
+    // an independent reassignment (one not reading the prior value) is still covered.
     data_succ := slice_build_succ(checked, b.fn, true)
     defer slice_free_succ(&data_succ)
     feeders := slice_build_feeders(checked, b.fn)
@@ -1001,11 +1030,17 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
 
     reached: map[^Def]bool
     defer delete(reached)
-    for d in checked.defs {
-        if d.binding == b {
-            r := slice_forward_reach(data_succ, d)
-            for k in r { reached[k] = true }
-            delete(r)
+    if root_def != nil {
+        r := slice_forward_reach(data_succ, root_def)
+        for k in r { reached[k] = true }
+        delete(r)
+    } else {
+        for d in checked.defs {
+            if d.binding == b {
+                r := slice_forward_reach(data_succ, d)
+                for k in r { reached[k] = true }
+                delete(r)
+            }
         }
     }
 
@@ -1014,7 +1049,8 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     ret := false
     for d in reached {
         if feeders[d] { ret = true }
-        if d.binding != b && d.kind != .Param { append(&stmts, d) }
+        if d == root || d.kind == .Param { continue }   // drop the subject + inputs; keep same-binding mods
+        append(&stmts, d)
     }
     slice.sort_by(stmts[:], slice_def_less)
 
@@ -1027,16 +1063,23 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
         defer slice_free_succ(&full_succ)
         full: map[^Def]bool
         defer delete(full)
-        for d in checked.defs {
-            if d.binding == b {
-                r := slice_forward_reach(full_succ, d)
-                for k in r { full[k] = true }
-                delete(r)
+        if root_def != nil {
+            r := slice_forward_reach(full_succ, root_def)
+            for k in r { full[k] = true }
+            delete(r)
+        } else {
+            for d in checked.defs {
+                if d.binding == b {
+                    r := slice_forward_reach(full_succ, d)
+                    for k in r { full[k] = true }
+                    delete(r)
+                }
             }
         }
         for d in full {
             if reached[d] { continue }
-            if d.binding != b && d.kind != .Param { append(&ctrl_stmts, d) }
+            if d == root || d.kind == .Param { continue }
+            append(&ctrl_stmts, d)
         }
         slice.sort_by(ctrl_stmts[:], slice_def_less)
     }
@@ -1050,12 +1093,16 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     fmt.sbprint(bb, "\nbelow (flow) — what this variable affects  (forward slice)\n")
     fmt.sbprintf(bb, "\n  %s  ->  %s\n", b.name, flow_affects_tail(ret, len(stmts), hop1_calls))
     for d in stmts {
-        fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
+        word := slice_def_word(d.kind)
+        if d.binding == b { word = "modify" }   // the variable's own evolution, not a downstream effect
+        fmt.sbprintf(bb, "    %-7s %-14s %s\n", word, d.binding.name, ask_loc(d.span))
     }
     if len(ctrl_stmts) > 0 {
         fmt.sbprintf(bb, "\n  control — runs inside branches/loops it drives (%d)\n", len(ctrl_stmts))
         for d in ctrl_stmts {
-            fmt.sbprintf(bb, "    %-7s %-14s %s\n", slice_def_word(d.kind), d.binding.name, ask_loc(d.span))
+            word := slice_def_word(d.kind)
+            if d.binding == b { word = "modify" }
+            fmt.sbprintf(bb, "    %-7s %-14s %s\n", word, d.binding.name, ask_loc(d.span))
         }
     }
     render_landings(bb, landings[:], unfollowed)
