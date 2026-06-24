@@ -91,6 +91,15 @@ ask_demangle :: proc(name: string, home_package: string) -> string {
     return name
 }
 
+// Module-qualified display name — `gfx.shader.compile`, or the bare name when the
+// type has no home package. Used by the call-tree rows so a name read in isolation
+// still says which module it lives in.
+ask_qualified_label :: proc(t: Type) -> string {
+    home := ask_home_package(t)
+    if home == "" { return ask_label(t) }
+    return fmt.tprintf("%s.%s", home, ask_label(t))
+}
+
 // The node's category, and whether it is a NAMED type worth a node at all
 // (primitives / numerics are leaves — not type dependencies, so not interned).
 ask_sub :: proc(t: Type) -> (sub: string, named: bool) {
@@ -834,7 +843,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         render_ask_deps(&b, &res, depth, "above")
     }
     if show_above && show_call {
-        if is_fn { render_fn_callees(&b, checked, ft) }
+        if is_fn { render_fn_callees(&b, checked, ft, depth) }
         else     { render_struct_calls(&b, checked, subject.type_, .Returns, "above") }
     }
     if show_above && show_flow {
@@ -858,7 +867,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         }
     }
     if show_below && show_call {
-        if is_fn { render_fn_users(&b, checked, ft) }   // callers, from the call graph
+        if is_fn { render_fn_users(&b, checked, ft, depth) }   // callers, from the call graph
         else     { render_struct_calls(&b, checked, subject.type_, .Takes, "below") }
     }
     if show_below && show_flow {
@@ -1034,6 +1043,60 @@ ask_depth_label :: proc(depth: int) -> string {
     return "full closure (depth ∞)" if depth < 0 else fmt.tprintf("depth %d", depth)
 }
 
+// Deduped count of a node's neighbours in `adj` (drops self-recursion and duplicate
+// call sites) — the "direct" count for a call-tree header.
+ask_direct_call_count :: proc(adj: [][dynamic]int, node: int) -> int {
+    local: map[int]bool
+    defer delete(local)
+    n := 0
+    for k in adj[node] {
+        if k == node || local[k] { continue }
+        local[k] = true
+        n += 1
+    }
+    return n
+}
+
+// Print one level of a call tree (node's neighbours in `adj`) indented by `indent`,
+// then recurse into each. `adj` is out-edges for callees / a reverse index for
+// callers. A GLOBAL `seen` expands each function at most once — cycles (recursion)
+// and diamonds collapse to "(shown above)", so the walk always terminates and a
+// utility called everywhere doesn't blow up the output. `remaining` counts the
+// levels left (the depth cap; ~1e9 for the unbounded default).
+ask_walk_calls :: proc(b: ^strings.Builder, cg: ^Call_Graph, adj: [][dynamic]int,
+                       node, indent, remaining: int, seen: ^map[int]bool) {
+    if remaining <= 0 { return }
+
+    Kid :: struct { id: int, label: string }
+    kids: [dynamic]Kid
+    defer delete(kids)
+    local: map[int]bool
+    defer delete(local)
+    for k in adj[node] {
+        if k == node || local[k] { continue }   // skip self-recursion + duplicate call sites
+        local[k] = true
+        append(&kids, Kid{ k, ask_qualified_label(cg.nodes[k]) })
+    }
+    slice.sort_by(kids[:], proc(x, y: Kid) -> bool {
+        if x.label != y.label { return x.label < y.label }
+        return x.id < y.id
+    })
+
+    for kid in kids {
+        for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
+        scope := cg.nodes[kid.id]
+        if seen[kid.id] {
+            fmt.sbprintf(b, "%s  %s  (shown above)\n", kid.label, ask_loc(ask_span(scope)))
+            continue
+        }
+        seen[kid.id] = true
+        sub, _ := ask_sub(scope)
+        tag := "" if sub == "fun" else fmt.tprintf("  (%s)", sub)
+        fmt.sbprintf(b, "%s%s  %s\n", kid.label, tag, ask_loc(ask_span(scope)))
+        ask_walk_calls(b, cg, adj, kid.id, indent + 1, remaining - 1, seen)
+    }
+}
+
 // users: the reverse references, grouped by hop distance from the subject. Header
 // separates distinct users from use-sites so neither count is misread. When the
 // view reaches past one hop, rows are bucketed under "N hops" subheaders and each
@@ -1043,32 +1106,28 @@ ask_depth_label :: proc(depth: int) -> string {
 // (Checked_Program.call_graph — resolved direct calls collected during checking).
 // Indirect calls through fn-typed params are not edges, so a function reached only
 // that way reads as having no callers.
-render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope) {
+render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope, depth: int) {
     cg := &checked.call_graph
-    callers: [dynamic]^Type_Scope
-    defer delete(callers)
-    if nf, ok := cg.index_of[ft]; ok {
-        for callees, c in cg.out_edges {
-            if c == nf { continue }   // a recursive self-call isn't an external user
-            for callee in callees {
-                if callee == nf { append(&callers, cg.nodes[c]); break }
-            }
-        }
+    // Reverse adjacency (callee -> its callers), built once, then walked as a tree
+    // up toward the program's entry points.
+    rev := make([][dynamic]int, len(cg.nodes))
+    defer { for r in rev { delete(r) }; delete(rev) }
+    for callees, c in cg.out_edges {
+        for callee in callees { append(&rev[callee], c) }
     }
-    slice.sort_by(callers[:], proc(a, b: ^Type_Scope) -> bool {
-        la, lb := ask_label(a), ask_label(b)
-        if la != lb { return la < lb }
-        return a.body_span.line < b.body_span.line
-    })
-    fmt.sbprintf(b, "\nbelow (calls)   (%s)\n", ask_plural(len(callers), "caller"))
-    if len(callers) == 0 {
+
+    nf, ok := cg.index_of[ft]
+    direct := ask_direct_call_count(rev, nf) if ok else 0
+    fmt.sbprintf(b, "\nbelow (calls)   (%s, %s)\n", ask_plural(direct, "direct caller"), ask_depth_label(depth))
+    if direct == 0 {
         fmt.sbprint(b, "  (no direct callers; indirect calls via fn-typed params aren't tracked)\n")
         return
     }
-    for c in callers {
-        sub, _ := ask_sub(c)
-        fmt.sbprintf(b, "  %-6s %s  %s\n", sub, ask_label(c), ask_loc(ask_span(c)))
-    }
+    seen: map[int]bool
+    defer delete(seen)
+    seen[nf] = true
+    budget := depth if depth >= 0 else (1 << 30)
+    ask_walk_calls(b, cg, rev, nf, 1, budget, &seen)
 }
 
 // callees of a function — `fun call above`, the mirror of render_fn_users, read off
@@ -1076,33 +1135,20 @@ render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
 // edges this function makes). A constructor edge surfaces as the built struct
 // (sub "struct"); a plain call as `fun`. Indirect calls via fn-typed params aren't
 // edges, so a function that only dispatches dynamically reads as calling nothing.
-render_fn_callees :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope) {
+render_fn_callees :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Type_Scope, depth: int) {
     cg := &checked.call_graph
-    callees: [dynamic]^Type_Scope
-    defer delete(callees)
-    if nf, ok := cg.index_of[ft]; ok {
-        seen: map[int]bool
-        defer delete(seen)
-        for callee_id in cg.out_edges[nf] {
-            if callee_id == nf || seen[callee_id] { continue }   // skip self-recursion + duplicate call sites
-            seen[callee_id] = true
-            append(&callees, cg.nodes[callee_id])
-        }
-    }
-    slice.sort_by(callees[:], proc(a, b: ^Type_Scope) -> bool {
-        la, lb := ask_label(a), ask_label(b)
-        if la != lb { return la < lb }
-        return a.body_span.line < b.body_span.line
-    })
-    fmt.sbprintf(b, "\nabove (calls)   (%s)\n", ask_plural(len(callees), "callee"))
-    if len(callees) == 0 {
+    nf, ok := cg.index_of[ft]
+    direct := ask_direct_call_count(cg.out_edges[:], nf) if ok else 0
+    fmt.sbprintf(b, "\nabove (calls)   (%s, %s)\n", ask_plural(direct, "direct callee"), ask_depth_label(depth))
+    if direct == 0 {
         fmt.sbprint(b, "  (calls nothing directly; indirect calls via fn-typed params aren't tracked)\n")
         return
     }
-    for c in callees {
-        sub, _ := ask_sub(c)
-        fmt.sbprintf(b, "  %-6s %s  %s\n", sub, ask_label(c), ask_loc(ask_span(c)))
-    }
+    seen: map[int]bool
+    defer delete(seen)
+    seen[nf] = true
+    budget := depth if depth >= 0 else (1 << 30)
+    ask_walk_calls(b, cg, cg.out_edges[:], nf, 1, budget, &seen)
 }
 
 // struct/type `call` — the functions whose SIGNATURE mentions this type, read off
