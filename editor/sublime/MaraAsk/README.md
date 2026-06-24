@@ -36,5 +36,12 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
 ## Install
 
 Copy this `MaraAsk/` folder into your Sublime `Packages/` directory
-(`Preferences → Browse Packages…`). Sublime loads it immediately. The canonical
+(`Preferences → Browse Packages…`), then **restart Sublime Text**. The canonical
 source lives in the Mara repo at `editor/sublime/MaraAsk/`.
+
+> The bundled **`.python-version`** (`3.8`) is required: it opts the package into
+> Sublime Text 4's modern plugin host. Without it ST4 loads the package under the
+> legacy Python 3.3 host, where `subprocess.run` / `CREATE_NO_WINDOW` don't exist —
+> the commands then appear in the palette but silently die when run (the error only
+> shows in the ST console, `View → Show Console`). Keep this file when you copy the
+> folder.
