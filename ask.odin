@@ -43,12 +43,22 @@ Ask_Edge_Kind :: enum { Contains, Embeds, Takes, Returns, Base }
 ASK_ALL_EDGES :: bit_set[Ask_Edge_Kind]{ .Contains, .Embeds, .Takes, .Returns, .Base }
 
 Ask_Node :: struct {
-    label: string,   // user-facing type / fn name
+    label: string,        // user-facing type / fn name
+    home_package: string, // owning module, for a qualified display name (math.Vec3)
     sub:   string,   // "struct" / "union" / "error" / "distinct" / "fun" ("enum" only for a union's synthetic tag)
     span:  Span,
     mark:  string,   // "" for ordinary types; e.g. "synthetic" for compiler-generated ones
     dist:  int,      // shortest hop distance from the query root (0 = the root itself)
-    basics: [dynamic]string,  // basic-typed members (primitive fields / params) — shown inline, no graph node
+    basics: [dynamic]Ask_Basic,  // basic-typed members (primitive fields / params) — shown inline, no graph node
+}
+
+// A primitive member that carries no graph node of its own — the field/param name,
+// what kind of member it is, and its rendered type. Stored structured (not a
+// pre-formatted line) so the tree renderer can re-indent it and drop the word.
+Ask_Basic :: struct {
+    via:      string,
+    kind:     Ask_Edge_Kind,
+    type_str: string,
 }
 
 Ask_Edge :: struct {
@@ -222,7 +232,7 @@ ask_intern :: proc(res: ^Ask_Result, t: Type) -> (id: int, is_new: bool) {
     if existing, ok := res.index_of[key]; ok { return existing, false }
     sub, _ := ask_sub(t)
     id = len(res.nodes)
-    append(&res.nodes, Ask_Node{ label = ask_label(t), sub = sub, span = ask_span(t), mark = ask_mark(t) })
+    append(&res.nodes, Ask_Node{ label = ask_label(t), home_package = ask_home_package(t), sub = sub, span = ask_span(t), mark = ask_mark(t) })
     res.index_of[key] = id
     return id, true
 }
@@ -523,10 +533,8 @@ ask_deps :: proc(table: ^SymbolTable, res: ^Ask_Result, root: Type, depth: int, 
                 // Primitive / numeric member — it carries no graph node, so without
                 // this it vanishes entirely. Record it as an inline field line so the
                 // node shows its real shape (a leaf struct like Glyph lists its
-                // x,y,w,h:i32 instead of reading as empty). Spacing mirrors the
-                // typed-edge renderer in render_ask_deps.
-                via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
-                append(&res.nodes[from].basics, fmt.tprintf("    %s%s : %s%s", ask_edge_word(e.kind), via, e.wrap, type_name(e.core)))
+                // x,y,w,h:i32 instead of reading as empty).
+                append(&res.nodes[from].basics, Ask_Basic{ via = e.via, kind = e.kind, type_str = fmt.tprintf("%s%s", e.wrap, type_name(e.core)) })
                 continue
             }
             to, is_new := ask_intern(res, e.core)
@@ -989,51 +997,68 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
 // full transitive closure; at depth N the fringe (nodes one hop past the budget)
 // appears only as edge targets, never as its own block — so depth 0 is exactly
 // the root's direct adjacency.
+// Module-qualified node name for the tree rows (math.Vec3), bare if no package.
+ask_qnode :: proc(n: Ask_Node) -> string {
+    if n.home_package == "" { return n.label }
+    return fmt.tprintf("%s.%s", n.home_package, n.label)
+}
+
+// A member's display name: a struct field is just its name (`obj`); a param / embed
+// keeps its word (`param x`, `embed shape`); an unnamed member — a return, or a
+// distinct's base — is named by its word (`return`, `base`).
+ask_member_name :: proc(via: string, kind: Ask_Edge_Kind) -> string {
+    if via == ""         { return ask_edge_word(kind) }
+    if kind == .Contains { return via }
+    return fmt.tprintf("%s %s", ask_edge_word(kind), via)
+}
+
 render_ask_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int, dir := "above") {
-    // No NAMED dependencies. The subject still has a shape worth showing — its
-    // basic-typed fields (a struct built only from i32/f32, like Glyph) or a fn's
-    // basic-typed signature. List those and call it "basic types only"; that
-    // describes the struct, where the dep-walker's "no type dependencies" only
-    // describes the tool. Truly empty (no members at all) keeps the plain wording.
-    if len(res.edges) == 0 {
-        root := &res.nodes[res.root]
-        if len(root.basics) == 0 {
-            fmt.sbprintf(b, "\n%s (types)   (no type dependencies)\n", dir)
-            return
-        }
-        fmt.sbprintf(b, "\n%s (types)   (basic types only)\n", dir)
-        fmt.sbprintf(b, "\n  %s  %s  %s%s\n", root.label, root.sub, ask_loc(root.span), ask_mark_suffix(root.mark))
-        for line in root.basics { fmt.sbprintf(b, "%s\n", line) }
+    root := &res.nodes[res.root]
+    if len(res.edges) == 0 && len(root.basics) == 0 {
+        fmt.sbprintf(b, "\n%s (types)   (no type dependencies)\n", dir)
         return
     }
-    // Count TYPE nodes only — the root may be a `fun` (the subject), which is not
-    // a type and must not inflate the count (a fn's own node sits at index 0).
-    // Respect the same depth bound the render loop below honors: a fringe node
-    // (dist > depth) is interned as an edge-target label but never gets its own
-    // block, so counting it made the header read one ring deeper than the body
-    // (e.g. "36 types" over a 16-node body at depth 1). Edges need no such guard —
-    // fringe nodes are never expanded, so every edge originates from a shown node.
+    // Count named type nodes within the depth bound — the root may be a `fun` (the
+    // subject), which is not a type and must not inflate the count; a fringe node
+    // (dist > depth) is interned as a leaf label, not a counted block.
     types := 0
     for n in res.nodes {
         if depth >= 0 && n.dist > depth { continue }
         if n.sub != "fun" { types += 1 }
     }
-    fmt.sbprintf(b, "\n%s (types)   (%s, %s, %s)\n", dir, ask_plural(types, "type"), ask_plural(len(res.edges), "edge"), ask_depth_label(depth))
-    for node, i in res.nodes {
-        if depth >= 0 && node.dist > depth { continue }   // fringe target — interned, not expanded
-        fmt.sbprintf(b, "\n  %s  %s  %s%s\n", node.label, node.sub, ask_loc(node.span), ask_mark_suffix(node.mark))
-        any := false
-        for e in res.edges {
-            if e.from != i { continue }
-            any = true
-            tgt := res.nodes[e.to]
-            via := fmt.tprintf(" %s", e.via) if e.via != "" else ""
-            fmt.sbprintf(b, "    %s%s : %s%s\n", ask_edge_word(e.kind), via, e.wrap, tgt.label)
+    count := ask_plural(types, "type")
+    if len(res.edges) == 0 { count = "basic types only" }   // a struct built only from primitives (Glyph)
+    fmt.sbprintf(b, "\n%s (types)   (%s, %s)\n", dir, count, ask_depth_label(depth))
+
+    // Walk the type graph as an indented tree (mirror of the call tree). A GLOBAL
+    // `seen` expands each aggregate once: a struct reached twice shows "(shown
+    // above)" and the walk terminates on cyclic / diamond graphs.
+    seen: map[int]bool
+    defer delete(seen)
+    seen[res.root] = true
+    ask_walk_deps(b, res, res.root, 1, &seen)
+}
+
+// Render node_id's members at `indent` — typed fields (edges) then primitive basics,
+// recursing into struct / union targets. distinct / enum / primitive targets are
+// LEAVES: we don't unwrap a Vec3 to its `[3]f32` base. Names are module-qualified.
+ask_walk_deps :: proc(b: ^strings.Builder, res: ^Ask_Result, node_id, indent: int, seen: ^map[int]bool) {
+    for e in res.edges {
+        if e.from != node_id { continue }
+        tgt := res.nodes[e.to]
+        expandable := tgt.sub == "struct" || tgt.sub == "union"
+        for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
+        fmt.sbprintf(b, "%s : %s%s", ask_member_name(e.via, e.kind), e.wrap, ask_qnode(tgt))
+        if expandable && seen[e.to] { fmt.sbprint(b, "  (shown above)") }
+        fmt.sbprint(b, "\n")
+        if expandable && !seen[e.to] {
+            seen[e.to] = true
+            ask_walk_deps(b, res, e.to, indent + 1, seen)
         }
-        // Basic-typed members carry no edge; show them inline so each node displays
-        // its full shape — typed slots above, primitive ones here, in field order.
-        for line in node.basics { fmt.sbprintf(b, "%s\n", line); any = true }
-        if !any { fmt.sbprint(b, "    (no type dependencies)\n") }
+    }
+    for m in res.nodes[node_id].basics {
+        for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
+        fmt.sbprintf(b, "%s : %s\n", ask_member_name(m.via, m.kind), m.type_str)
     }
 }
 
