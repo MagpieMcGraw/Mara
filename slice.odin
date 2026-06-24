@@ -429,35 +429,41 @@ hop_param_binding :: proc(checked: ^Checked_Program, callee: ^Type_Scope, idx: i
     return nil
 }
 
-// Does an argument expression read one of `targets`? return_deps-filtered through
-// nested calls (slice_collect), exactly like the slices, so the directions agree.
+// Does an argument expression carry one of `targets`? Matched by the use's reaching
+// defs (the same def-level edges the backward graph uses), NOT by binding — so a read
+// of a target binding from a def outside the slice (an earlier one, or one writing a
+// different field) does not count. return_deps-filtered through nested calls
+// (slice_collect), exactly like the slices, so the directions agree.
 @(private="file")
-arg_reads_targets :: proc(checked: ^Checked_Program, arg: Expr, targets: map[^Var_Binding]bool) -> bool {
+arg_reads_targets :: proc(checked: ^Checked_Program, arg: Expr, targets: map[^Def]bool) -> bool {
     uses: map[^Expr_Ident]bool
     defer delete(uses)
     slice_collect(checked, arg, &uses)
     for u in uses {
-        if b := checked.use_def[u]; b != nil && targets[b] { return true }
+        rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
+        for d in rdefs { if targets[d] { return true } }
     }
     return false
 }
 
-// Every binding the seeds reach within `fn` — the seeds plus their forward
-// def->def closure. This is the set of names that carry the traced value, so a
-// call reading ANY of them (a local the value was copied into, a field pointer
-// carved from it) consumes the value, not only a call reading the seed directly.
+// Every DEFINITION the seeds reach within `fn` — the seed defs plus their forward
+// def->def closure. Kept at definition granularity (NOT collapsed to bindings): a
+// call consumes the value only when an argument's reaching def is in this set, so a
+// read of the same binding from a different def — an earlier one, or one writing a
+// different field — does not spuriously count. Collapsing to bindings made `x.f = v`
+// mark all of `x`, so every call reading any field of `x` (even before the write)
+// looked like a landing; that discarded the flow-/order-sensitivity the def graph has.
 @(private="file")
-flow_targets :: proc(checked: ^Checked_Program, fn: ^Type_Scope, seeds: map[^Var_Binding]bool) -> map[^Var_Binding]bool {
-    targets: map[^Var_Binding]bool
+flow_targets :: proc(checked: ^Checked_Program, fn: ^Type_Scope, seeds: map[^Var_Binding]bool) -> map[^Def]bool {
+    targets: map[^Def]bool
     succ := slice_build_succ(checked, fn, true)   // a value "lands in" a call by data flow, not control
     defer slice_free_succ(&succ)
     for b in seeds {
         if b.fn != fn { continue }
-        targets[b] = true
         for d in checked.defs {
             if d.binding == b {
-                r := slice_forward_reach(succ, d)
-                for k in r { if k.binding != nil { targets[k.binding] = true } }
+                r := slice_forward_reach(succ, d)   // includes the seed def d itself
+                for k in r { targets[k] = true }    // keep defs, do not collapse to bindings
                 delete(r)
             }
         }
@@ -473,13 +479,13 @@ flow_targets :: proc(checked: ^Checked_Program, fn: ^Type_Scope, seeds: map[^Var
 // which returns a skyline position, not the glyph — would be invisible.)
 // `unfollowed` counts consuming calls whose callee has no body to follow into.
 @(private="file")
-collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: map[^Var_Binding]bool, out: ^[dynamic]Hop_Landing) -> (unfollowed: int) {
+collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing) -> (unfollowed: int) {
     ld_stmts(checked, fn.body[:], targets, out, &unfollowed)
     return
 }
 
 @(private="file")
-ld_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Var_Binding]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
+ld_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
     for s in stmts {
         #partial switch v in s {
         case Stmt_Call:   ld_call(checked, v.expr, targets, out, unfollowed)
@@ -499,7 +505,7 @@ ld_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Var_Bin
 }
 
 @(private="file")
-ld_call :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Var_Binding]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
+ld_call :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
     call, ok := e.(^Expr_Call)
     if !ok { return }
     callee := hop_callee(call)
