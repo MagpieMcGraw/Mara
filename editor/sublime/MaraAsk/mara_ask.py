@@ -46,8 +46,10 @@ def _run_mara(args, cwd):
     # CREATE_NO_WINDOW keeps a console from flashing on every query (Windows).
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     try:
-        p = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
-                           creationflags=flags)
+        # encoding="utf-8" (not text=True): the analyzer emits UTF-8 (— ∞ ⟵ …); on
+        # Windows text=True would decode as the ANSI codepage and mojibake them.
+        p = subprocess.run(args, cwd=cwd, capture_output=True,
+                           encoding="utf-8", errors="replace", creationflags=flags)
         out = p.stdout if p.stdout.strip() else p.stderr
         return p.returncode, out
     except FileNotFoundError:
