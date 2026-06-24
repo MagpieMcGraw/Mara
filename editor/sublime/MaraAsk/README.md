@@ -21,6 +21,10 @@ appears in an output panel with every `file:line` clickable.
   the next keystroke still reads the word under your cursor. The split is only
   auto-created when the window is a single pane (it won't disturb a layout you set
   up); width is the `split_ratio` setting.
+- **Drill** — the output pane is itself queryable: put the cursor on any name in the
+  results and hit the same key. It reuses the module dir of the query that filled
+  the pane (and the `file:line` on that row for precise addressing), so you walk the
+  graph in place — no tabbing back to your code.
 
 ## Commands & keys
 

@@ -14,6 +14,7 @@
 # var -> flow), so the no-arg command Just Works on whatever's under the cursor.
 
 import os
+import re
 import threading
 import subprocess
 
@@ -41,6 +42,17 @@ def _subject(view):
     if not sel.empty():
         return view.substr(sel).strip()
     return view.substr(view.word(sel.b)).strip()
+
+
+_LOC_RE = re.compile(RESULT_REGEX)
+
+
+def _loc_on_line(view):
+    # The file:line printed on the cursor's row. Output rows carry locations, so
+    # drilling into a name from the output pane can address it precisely via `at`.
+    line = view.substr(view.line(view.sel()[0].b))
+    m = _LOC_RE.search(line)
+    return "%s:%s" % (m.group(1), m.group(2)) if m else None
 
 
 def _run_mara(args, cwd):
@@ -104,6 +116,7 @@ def _show_in_view(window, code_view, cwd, echo, out):
     s.set("scroll_past_end", False)
     s.set("draw_indent_guides", False)
     s.set("draw_white_space", "none")
+    s.set("mara_ask_cwd", cwd or "")   # so a query FROM this pane roots correctly
 
     body = "$ %s\n\n%s" % (echo, out or "(no output)\n")
     view.set_read_only(False)
@@ -128,9 +141,6 @@ class MaraAskCommand(sublime_plugin.TextCommand):
             sublime.status_message("Mara Ask: no word under the cursor")
             return
 
-        fname = view.file_name()
-        cwd = os.path.dirname(fname) if fname else None
-
         filt = [a for a in (kind, direction) if a]
         if depth is None:
             depth = _settings().get("default_depth", 0)
@@ -140,12 +150,23 @@ class MaraAskCommand(sublime_plugin.TextCommand):
         mara = _settings().get("mara_path", "mara")
         name_args = [mara, "ask", word] + filt
 
-        # `at <file>:<line>` addresses the variable declared on the cursor's line —
-        # the fallback when <word> isn't a top-level name (i.e. it's a local/param).
-        at_args = None
-        if fname:
-            row = view.rowcol(view.sel()[0].b)[0] + 1
-            at_args = [mara, "ask", "at", "%s:%d" % (os.path.basename(fname), row)] + filt
+        # Root the query, and pick the `at <file>:<line>` fallback used when <word>
+        # isn't a top-level name (a local/param, or a name drilled in the output).
+        if view.settings().get(VIEW_FLAG):
+            # Drilling from the output pane: it has no file of its own, so reuse the
+            # module dir of the query that filled it, and address the row's printed
+            # location for the `at` fallback.
+            cwd = view.settings().get("mara_ask_cwd") or None
+            loc = _loc_on_line(view)
+            at_args = ([mara, "ask", "at", loc] + filt) if loc else None
+        else:
+            fname = view.file_name()
+            cwd = os.path.dirname(fname) if fname else None
+            at_args = None
+            if fname:
+                row = view.rowcol(view.sel()[0].b)[0] + 1
+                at_args = [mara, "ask", "at",
+                           "%s:%d" % (os.path.basename(fname), row)] + filt
 
         threading.Thread(target=self._work, args=(name_args, at_args, cwd)).start()
 
