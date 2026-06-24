@@ -1119,7 +1119,11 @@ record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) {
     if callee.calling_conv == .C {
         c.effectful_callers[caller] = true
     }
-    c.call_edges[Call_Edge{from = caller, to = callee}] = true
+    edge := Call_Edge{from = caller, to = callee}
+    c.call_edges[edge] = true
+    if cur, ok := c.call_edge_line[edge]; !ok || e.span.line < cur {
+        c.call_edge_line[edge] = e.span.line   // first call site = call order
+    }
 }
 
 // Record a call-graph edge for a struct-LITERAL construction (`Foo{...}` /
@@ -1701,6 +1705,11 @@ Checker :: struct {
     // Checked_Program call graph (build_call_graph). A set, so duplicate call
     // sites between the same pair collapse to one edge.
     call_edges:      map[Call_Edge]bool,
+    // First source line of a call site for each edge (min over duplicate sites), so
+    // the analyzer can order a call tree the way the calls appear in the body.
+    // Recorded in record_call_edge, which sees every call form — including the
+    // name-resolved UFCS/qualified calls that Checked_Program.call_sites omits.
+    call_edge_line:  map[Call_Edge]int,
     // The materialized call graph (set post-check, after build_call_graph) — its
     // bottom-up summaries (return-arg-set) back fun_return_arg_set for the escape
     // pass. Points at checked.call_graph.

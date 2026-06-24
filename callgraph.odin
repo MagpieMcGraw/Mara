@@ -27,6 +27,7 @@ Call_Graph :: struct {
     nodes:     [dynamic]^Type_Scope,   // node id -> the callable scope
     index_of:  map[^Type_Scope]int,    // scope -> node id
     out_edges: [dynamic][dynamic]int,  // node id -> callee node ids
+    edge_line: map[Call_Edge]int,      // (caller,callee) scope edge -> first call-site line (call order)
 
     // Strongly-connected components. scc_of[node] = its component id; sccs[id] =
     // that component's member node ids. Tarjan emits components in REVERSE
@@ -99,6 +100,7 @@ build_call_graph :: proc(c: ^Checker) -> Call_Graph {
     cg_compute_reachability(&g)
     cg_compute_purity(&g, c)
     cg_dump_purity(&g)
+    g.edge_line = c.call_edge_line   // share the call-order index recorded during checking
     return g
 }
 

@@ -1057,17 +1057,18 @@ ask_direct_call_count :: proc(adj: [][dynamic]int, node: int) -> int {
     return n
 }
 
-// Print one level of a call tree (node's neighbours in `adj`) indented by `indent`,
-// then recurse into each. `adj` is out-edges for callees / a reverse index for
-// callers. A GLOBAL `seen` expands each function at most once — cycles (recursion)
-// and diamonds collapse to "(shown above)", so the walk always terminates and a
-// utility called everywhere doesn't blow up the output. `remaining` counts the
-// levels left (the depth cap; ~1e9 for the unbounded default).
+// Print one level of a call tree (node's neighbours in `adj`) in CALL ORDER — by the
+// first call-site line recorded on each edge (cg.edge_line) — then recurse into each.
+// `forward` selects callees (out-edges) vs callers (a reverse index); it only flips
+// which end of the pair is the caller for the order lookup. A GLOBAL `seen` expands
+// each function at most once — cycles (recursion) and diamonds collapse to
+// "(shown above)", so the walk always terminates and a utility called everywhere
+// doesn't blow up the output. `remaining` is the depth cap left (~1e9 unbounded).
 ask_walk_calls :: proc(b: ^strings.Builder, cg: ^Call_Graph, adj: [][dynamic]int,
-                       node, indent, remaining: int, seen: ^map[int]bool) {
+                       node, indent, remaining: int, seen: ^map[int]bool, forward: bool) {
     if remaining <= 0 { return }
 
-    Kid :: struct { id: int, label: string }
+    Kid :: struct { id, key: int, label: string }
     kids: [dynamic]Kid
     defer delete(kids)
     local: map[int]bool
@@ -1075,25 +1076,28 @@ ask_walk_calls :: proc(b: ^strings.Builder, cg: ^Call_Graph, adj: [][dynamic]int
     for k in adj[node] {
         if k == node || local[k] { continue }   // skip self-recursion + duplicate call sites
         local[k] = true
-        append(&kids, Kid{ k, ask_qualified_label(cg.nodes[k]) })
+        caller_s := cg.nodes[node] if forward else cg.nodes[k]
+        callee_s := cg.nodes[k]    if forward else cg.nodes[node]
+        key := cg.edge_line[Call_Edge{ from = caller_s, to = callee_s }] or_else (1 << 30)
+        append(&kids, Kid{ k, key, ask_qualified_label(cg.nodes[k]) })
     }
     slice.sort_by(kids[:], proc(x, y: Kid) -> bool {
+        if x.key   != y.key   { return x.key < y.key }     // call order (first call-site line)
         if x.label != y.label { return x.label < y.label }
         return x.id < y.id
     })
 
     for kid in kids {
         for _ in 0 ..< 2 * indent { strings.write_byte(b, ' ') }
-        scope := cg.nodes[kid.id]
         if seen[kid.id] {
-            fmt.sbprintf(b, "%s  %s  (shown above)\n", kid.label, ask_loc(ask_span(scope)))
+            fmt.sbprintf(b, "%s  (shown above)\n", kid.label)
             continue
         }
         seen[kid.id] = true
-        sub, _ := ask_sub(scope)
+        sub, _ := ask_sub(cg.nodes[kid.id])
         tag := "" if sub == "fun" else fmt.tprintf("  (%s)", sub)
-        fmt.sbprintf(b, "%s%s  %s\n", kid.label, tag, ask_loc(ask_span(scope)))
-        ask_walk_calls(b, cg, adj, kid.id, indent + 1, remaining - 1, seen)
+        fmt.sbprintf(b, "%s%s\n", kid.label, tag)
+        ask_walk_calls(b, cg, adj, kid.id, indent + 1, remaining - 1, seen, forward)
     }
 }
 
@@ -1127,7 +1131,7 @@ render_fn_users :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^Typ
     defer delete(seen)
     seen[nf] = true
     budget := depth if depth >= 0 else (1 << 30)
-    ask_walk_calls(b, cg, rev, nf, 1, budget, &seen)
+    ask_walk_calls(b, cg, rev, nf, 1, budget, &seen, false)
 }
 
 // callees of a function — `fun call above`, the mirror of render_fn_users, read off
@@ -1148,7 +1152,7 @@ render_fn_callees :: proc(b: ^strings.Builder, checked: ^Checked_Program, ft: ^T
     defer delete(seen)
     seen[nf] = true
     budget := depth if depth >= 0 else (1 << 30)
-    ask_walk_calls(b, cg, cg.out_edges[:], nf, 1, budget, &seen)
+    ask_walk_calls(b, cg, cg.out_edges[:], nf, 1, budget, &seen, true)
 }
 
 // struct/type `call` — the functions whose SIGNATURE mentions this type, read off
