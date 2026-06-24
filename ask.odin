@@ -1244,8 +1244,13 @@ render_ask_users :: proc(b: ^strings.Builder, res: ^Ask_Result, depth: int) {
     max_hop := 0
     for e in res.edges {
         u := res.nodes[e.from]
-        if u.dist > max_hop { max_hop = u.dist }
-        append(&rows, Row{ dist = u.dist, sub = u.sub, label = u.label, via = e.via,
+        // Bucket by where THIS reference sits, not the container's shortest path: a
+        // struct that references a type N hops out is N+1 hops out THROUGH THIS edge.
+        // So the same container appears in several rings — Megastruct references
+        // Camera at 2 hops AND Glyph at 3 — instead of collapsing to its nearest one.
+        hop := res.nodes[e.to].dist + 1
+        if hop > max_hop { max_hop = hop }
+        append(&rows, Row{ dist = hop, sub = u.sub, label = u.label, via = e.via,
                            wrap = e.wrap, to = res.nodes[e.to].label, mark = u.mark, kind = e.kind })
     }
     slice.sort_by(rows[:], proc(x, y: Row) -> bool {
