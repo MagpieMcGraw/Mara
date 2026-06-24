@@ -1,5 +1,7 @@
 1 item per line, 1 line space between items.
 
+# Compiler — mara build
+
 Give slices a .hdr field. Make it the only way to reassign the slice header.
 
 casting vec3 to bool causes a codegen error
@@ -26,8 +28,6 @@ Should a param list be parsed as a scope? And then have it's fields extracted? H
 
 Scope literals.
 
-Language features that enable less IR generation. Functional stuff?
-
 When parsing, put defs and decls in two different arrays. Can loop over each without interdependence?
 
 Byte reads might need new syntax. Maybe an = to read without auto-len, and a += to read with auto len. Also figure out what ops should set the len.
@@ -40,26 +40,23 @@ Type checking of unions and distinct is fucked up for some reason.
 
 Maybe it's time to abandon the typed AST idea? Should a stack of type scope be the new typed AST?
 
-Investigate if Megastruct{} is sugar for Megastruct () {}
-
 🚩 parameterized structs. We have regular structs with constructors, and we have generics. Parameterized is not a struct thing.
 
 🚩 (the genuine {}/() merge)
 
 🚩 Why do we track which module is the main module?
 
-🚩 Why do we need 8 different arrays to track the various :: definitions?
-
 🚩 class_scope / fun_scope — == scope for ns-envs (both set to the same ft at 8182/8211). Their marker role ("am I inside a class/fun?") is just "nearest .Struct/.Fun walking up scope.parent_scope." Derivable — even the defs-parent walk at 8200 is a scope-chain walk wearing an env costume.
-
-Pull control flow graph into it's own system. It's currently implicitly used to check that every branch has valid return statements.
-
-Robustify the mara ask interface, decide on sensible defaults for the various options, handle typos, dedupe the output, etc...
-
-Fix mara ask performance issue
-
-Mara ask, record all queries(instead of graphs), so you can later replay them in the viewer. Render the whole program graph, color the queried parts. That data can be overlaid for a more complete picture. Also distunguish results, a direct ask shows where the AI attention is.
 
 Fix FFI functions for mara ask. Probably some array on type scope was skipped?
 
+
 🚩 trawl or any mention of type env. We removed the struct, did we get all the remnants?
+
+# Analyzer — mara ask
+
+Handle constants
+
+Flow analysis doesn't account for arrays and their indexing.
+
+Mara ask, record all queries(instead of graphs), so you can later replay them in the viewer. Render the whole program graph, color the queried parts. That data can be overlaid for a more complete picture. Also distunguish results, a direct ask shows where the AI attention is.
