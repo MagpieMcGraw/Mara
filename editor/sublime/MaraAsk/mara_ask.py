@@ -25,6 +25,11 @@ SETTINGS = "Mara Ask.sublime-settings"
 VIEW_FLAG = "mara_ask_view"          # marks the one reused output view
 VIEW_NAME = "✦ Mara Ask"
 
+# add_regions keys for the in-code flow highlight: the queried variable, and the
+# other variables its flow surfaces. Erased and rewritten on each query.
+HL_SUBJECT = "mara_ask_flow_subject"
+HL_RELATED = "mara_ask_flow_related"
+
 # Locations the analyzer prints — "camera.mara:10" or an absolute stdlib path like
 # "C:\Code\Mara\code\math.mara:3". File in \1, line in \2; relative paths resolve
 # against result_base_dir (the queried module's directory).
@@ -133,6 +138,122 @@ def _show_in_view(window, code_view, cwd, echo, out):
         window.focus_view(code_view)
 
 
+# ---- in-code highlight: mark a flow result's variables in the source -----------
+#
+# A flow result already prints every relevant variable with its def `file:line`.
+# We re-derive each one's name + location, find that name on its source line, and
+# add a region — the subject (queried variable) in one colour, the variables its
+# flow surfaces in another. Rows under "into calls" are callee landings (a call
+# site in another function, not a local), so they're skipped.
+
+# Subject header: "speed — local in camera_move  camera.mara:50   (module …)".
+_HEADER_RE = re.compile(r"^(\w+)\s+—\s+\w+\s+in\s+.*?" + RESULT_REGEX)
+# `at` note: "(flow rooted at the write on camera.mara:80)" — the real root site.
+_ROOT_NOTE_RE = re.compile(r"flow rooted at the write on .*?" + RESULT_REGEX)
+# Leading tags on a `flow below` row; the variable name is the token after them.
+_KIND_WORDS = frozenset(("modify", "decl", "assign", "write", "destr", "loop", "param"))
+_IDENT_RE = re.compile(r"^\w+$")
+
+
+def _flow_highlights(out):
+    # Parse a flow result into (subject, related): the queried variable and the
+    # other variables its flow surfaces, each as (name, file, line).
+    subject = None
+    related = []
+    in_landing = False
+    for line in out.splitlines():
+        if not line.strip() or line.startswith("$ "):
+            continue
+        if line.startswith(("above (flow)", "below (flow)")):
+            in_landing = False
+            continue
+        if "into calls" in line:          # landings follow until the next section
+            in_landing = True
+            continue
+        if subject is None:
+            hm = _HEADER_RE.match(line)
+            if hm:
+                subject = (hm.group(1), hm.group(2), int(hm.group(3)))
+                continue
+        if in_landing:
+            continue
+        locs = _LOC_RE.findall(line)
+        if not locs:
+            continue
+        f, n = locs[-1]
+        toks = line[:line.rfind(f)].split()
+        if not toks:
+            continue
+        name = toks[1] if (toks[0] in _KIND_WORDS and len(toks) > 1) else toks[0]
+        if _IDENT_RE.match(name):
+            related.append((name, f, int(n)))
+    # `at` roots flow at a specific write — mark THAT site as the subject, not the
+    # declaration the header names.
+    if subject is not None:
+        rm = _ROOT_NOTE_RE.search(out)
+        if rm:
+            subject = (subject[0], rm.group(1), int(rm.group(2)))
+        related = [r for r in related if r != subject]   # don't double-mark it
+    return subject, related
+
+
+def _norm(p):
+    return os.path.normcase(os.path.normpath(p))
+
+
+def _resolve(cwd, f):
+    # Output paths are relative to the queried module's dir (cwd) or absolute.
+    return _norm(f if os.path.isabs(f) else os.path.join(cwd or "", f))
+
+
+def _name_region(view, name, line_1):
+    # The first whole-word occurrence of `name` on the given (1-based) source line —
+    # the def is the leftmost, which is what the location points at.
+    row = line_1 - 1
+    if row < 0:
+        return None
+    line_region = view.line(view.text_point(row, 0))
+    m = re.search(r"\b%s\b" % re.escape(name), view.substr(line_region))
+    if not m:
+        return None
+    base = line_region.begin()
+    return sublime.Region(base + m.start(), base + m.end())
+
+
+def _highlight_flow(window, cwd, out):
+    subject, related = _flow_highlights(out)
+    by_file = {}                          # resolved path -> [(name, line, is_subject)]
+    if subject:
+        by_file.setdefault(_resolve(cwd, subject[1]), []).append((subject[0], subject[2], True))
+    for name, f, ln in related:
+        by_file.setdefault(_resolve(cwd, f), []).append((name, ln, False))
+
+    subj_scope = _settings().get("highlight_subject_scope", "region.bluish")
+    rel_scope = _settings().get("highlight_scope", "region.yellowish")
+    for v in window.views():
+        v.erase_regions(HL_SUBJECT)
+        v.erase_regions(HL_RELATED)
+        fn = v.file_name()
+        items = by_file.get(_norm(fn)) if fn else None
+        if not items:
+            continue
+        subj, rel = [], []
+        for name, ln, is_subj in items:
+            r = _name_region(v, name, ln)
+            if r is not None:
+                (subj if is_subj else rel).append(r)
+        if rel:
+            v.add_regions(HL_RELATED, rel, rel_scope, "", sublime.DRAW_NO_OUTLINE)
+        if subj:
+            v.add_regions(HL_SUBJECT, subj, subj_scope, "", sublime.DRAW_NO_OUTLINE)
+
+
+def _clear_flow(window):
+    for v in window.views():
+        v.erase_regions(HL_SUBJECT)
+        v.erase_regions(HL_RELATED)
+
+
 class MaraAskCommand(sublime_plugin.TextCommand):
     def run(self, edit, kind="", direction="", depth=None):
         view = self.view
@@ -188,6 +309,12 @@ class MaraAskCommand(sublime_plugin.TextCommand):
         if window is None:
             return
         _show_in_view(window, self.view, cwd, echo, out)
+        # Mark the result's variables in the code (flow results only — they're the
+        # ones whose printed locations are local def sites).
+        if _settings().get("highlight_flow", True) and "(flow)" in out:
+            _highlight_flow(window, cwd, out)
+        else:
+            _clear_flow(window)
 
 
 # label, hint, kind, direction — the matrix cells offered by mara_ask_pick.
@@ -214,3 +341,11 @@ class MaraAskPickCommand(sublime_plugin.TextCommand):
             view.run_command("mara_ask", {"kind": kind, "direction": direction})
 
         view.window().show_quick_panel(items, on_done)
+
+
+class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
+    # Drop the in-code flow highlight (it's also replaced on the next query).
+    def run(self, edit):
+        window = self.view.window()
+        if window is not None:
+            _clear_flow(window)

@@ -6,5 +6,6 @@
     { "caption": "Mara Ask: call above",  "command": "mara_ask", "args": { "kind": "call",  "direction": "above" } },
     { "caption": "Mara Ask: call below",  "command": "mara_ask", "args": { "kind": "call",  "direction": "below" } },
     { "caption": "Mara Ask: flow above",  "command": "mara_ask", "args": { "kind": "flow",  "direction": "above" } },
-    { "caption": "Mara Ask: flow below",  "command": "mara_ask", "args": { "kind": "flow",  "direction": "below" } }
+    { "caption": "Mara Ask: flow below",  "command": "mara_ask", "args": { "kind": "flow",  "direction": "below" } },
+    { "caption": "Mara Ask: clear flow highlight", "command": "mara_ask_clear_highlights" }
 ]

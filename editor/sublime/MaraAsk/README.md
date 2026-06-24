@@ -26,6 +26,11 @@ appears in an output panel with every `file:line` clickable.
   pane; a type/function resolves by name, and a variable (in `flow` results) falls
   back to the `file:line` on its row (`at` is variable-only). So you walk the graph in
   place — no tabbing back to your code.
+- **Highlight** — a `flow` query also marks its variables right in the code: the
+  queried variable in one colour, the variables its flow surfaces (suppliers for
+  `above`, modifications + uses for `below`) in another, at their def sites in every
+  open file. So `flow above`/`below` is also a visual map, not just a list. Cleared on
+  the next query or with **Ctrl+K Ctrl+C**; turn it off with `"highlight_flow": false`.
 
 ## Commands & keys
 
@@ -33,6 +38,7 @@ appears in an output panel with every `file:line` clickable.
 |---|---|---|
 | `mara_ask` | `Ctrl+K Ctrl+A` | ask about the subject under the cursor (natural kind) |
 | `mara_ask_pick` | `Ctrl+K Ctrl+D` | choose a matrix cell (types/call/flow × above/below) |
+| `mara_ask_clear_highlights` | `Ctrl+K Ctrl+C` | clear the in-code flow highlight |
 
 All cells are also in the command palette (`Mara Ask: …`). Rebind in
 `Default (Windows).sublime-keymap`.
@@ -42,6 +48,10 @@ All cells are also in the command palette (`Mara Ask: …`). Rebind in
 - `mara_path` — path to the compiler exe (default `C:/Code/Mara/Mara.exe`).
 - `default_depth` — `0` uses the tool's default depth; set `1`–`2` to keep large
   subjects from flooding the panel.
+- `highlight_flow` — mark a flow result's variables in the code (default `true`).
+- `highlight_subject_scope` / `highlight_scope` — region colours for the queried
+  variable and the surfaced variables (default `region.bluish` / `region.yellowish`;
+  any scope your color scheme defines).
 
 ## Install
 

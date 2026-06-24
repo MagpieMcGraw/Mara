@@ -14,5 +14,15 @@
     // its right-hand output column (the rest goes to the output pane). Only used
     // when the window is a single pane and Mara Ask creates the split; once the
     // column exists, drag the divider to resize and it's remembered.
-    "split_ratio": 0.6
+    "split_ratio": 0.6,
+
+    // After a FLOW query, mark its variables in the code: the queried variable in
+    // one colour and the variables its flow surfaces in another, at their def
+    // sites. Cleared on the next query or with Ctrl+K Ctrl+C. Set false to disable.
+    "highlight_flow": true,
+
+    // Region colours for the highlight — any scope the color scheme defines. The
+    // "region.*ish" names are the standard themed accents (build 3148+).
+    "highlight_subject_scope": "region.bluish",
+    "highlight_scope": "region.yellowish"
 }

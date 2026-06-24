@@ -3,5 +3,8 @@
     { "keys": ["ctrl+k", "ctrl+a"], "command": "mara_ask" },
 
     // Pick a specific cell (types/call/flow × above/below) from a quick panel.
-    { "keys": ["ctrl+k", "ctrl+d"], "command": "mara_ask_pick" }
+    { "keys": ["ctrl+k", "ctrl+d"], "command": "mara_ask_pick" },
+
+    // Clear the in-code flow highlight (it's also replaced on the next query).
+    { "keys": ["ctrl+k", "ctrl+c"], "command": "mara_ask_clear_highlights" }
 ]
