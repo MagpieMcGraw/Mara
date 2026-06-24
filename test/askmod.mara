@@ -1,0 +1,40 @@
+module askmod
+
+// Fixture for `mara ask` flow ROOTING (lineage.odin + render_var_affects).
+// Not auto-checked for query output (the harness only gates compile pass/fail);
+// a stable hand-validation target for how a variable's flow roots at ONE point
+// in its timeline. From a dir whose name is `askmod`:
+//
+//   mara ask speed in tick flow above
+//     -> "built from literals; nothing supplies it"
+//        speed's declaration is the literal 500; its own `*=` writes are forward
+//        evolution, not suppliers, so nothing feeds the value from outside.
+//
+//   mara ask speed in tick flow below
+//     -> modify speed   (the *= 5.0 write)
+//        modify speed   (the *= 0.2 write)
+//        decl   step    (step := speed * 2.0, the downstream use)
+//        the variable's own modifications ARE shown here (labelled `modify`),
+//        then what they feed.
+//
+//   mara ask at askmod.mara:<the *= 0.2 line> flow above
+//     -> rooted at that write; its inputs are the earlier `*= 5.0` write and the
+//        `speed := 500` declaration (below from there = step only).
+//
+// What this pins down:
+//   * a variable's OWN modifications are forward (below), never backward (above);
+//   * a literal / zero-init root has nothing above it;
+//   * `at <file>:<line>` roots flow at that write, splitting the timeline there —
+//     above = earlier mods + decl, below = later mods + uses.
+
+tick :: fun(fast: bool, slow: bool) -> f32 {
+	speed: f32 = 500
+	if fast { speed *= 5.0 }
+	if slow { speed *= 0.2 }
+	step := speed * 2.0
+	return step
+}
+
+main :: fun() -> i64 {
+	return i64(tick(true, false))
+}
