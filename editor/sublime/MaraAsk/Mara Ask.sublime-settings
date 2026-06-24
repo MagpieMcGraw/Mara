@@ -8,5 +8,11 @@
     // Hops to expand. 0 = the tool's own default (types: full closure; flow: 1
     // call hop). Set to 1 or 2 to keep a god-object's type graph from flooding
     // the panel; raise per-query from the command palette when you want more.
-    "default_depth": 0
+    "default_depth": 0,
+
+    // Fraction of the window width kept for your code when Mara Ask first opens
+    // its right-hand output column (the rest goes to the output pane). Only used
+    // when the window is a single pane and Mara Ask creates the split; once the
+    // column exists, drag the divider to resize and it's remembered.
+    "split_ratio": 0.6
 }

@@ -13,9 +13,14 @@ appears in an output panel with every `file:line` clickable.
   `types`, a function → `call`, a variable → `flow`. Pass an explicit kind/direction
   to override.
 - **cwd** is the current file's directory, so the analyzer roots on that module.
-- **Output** goes to the `mara_ask` output panel, cleared on each query (so entries
-  never run together) with the command echoed on the first line. The panel sets
-  `result_file_regex`, so **F4 / double-click jumps to any printed location**.
+- **Output** goes to a reused scratch view (`✦ Mara Ask`) parked in a **right-hand
+  split column** — a full-height editor pane you can resize (drag the divider),
+  fold, and search. It's cleared on each query (entries never run together) with
+  the command echoed on the first line, and sets `result_file_regex` so **F4 / click
+  jumps to any printed location**. Focus returns to your code after each query, so
+  the next keystroke still reads the word under your cursor. The split is only
+  auto-created when the window is a single pane (it won't disturb a layout you set
+  up); width is the `split_ratio` setting.
 
 ## Commands & keys
 

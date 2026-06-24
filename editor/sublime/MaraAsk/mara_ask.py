@@ -2,9 +2,9 @@
 #
 # The editor already knows the subject: the word under the cursor names a type /
 # function, and the cursor's file:line addresses the variable defined there. So a
-# query is a keystroke, not a typed command. Output lands in a cleared-per-query
-# output panel whose `result_file_regex` makes every `file:line` jump-to-source
-# (F4 / double-click) — the analyzer already prints locations everywhere.
+# query is a keystroke, not a typed command. Output lands in a reused scratch view
+# parked in a right-hand split group — a real editor pane (resize / fold / find),
+# with `result_file_regex` set so every `file:line` is jump-to-source (F4 / click).
 #
 # Commands:
 #   mara_ask        run `mara ask <word>` (kind/direction optional via args)
@@ -21,7 +21,8 @@ import sublime
 import sublime_plugin
 
 SETTINGS = "Mara Ask.sublime-settings"
-PANEL = "mara_ask"
+VIEW_FLAG = "mara_ask_view"          # marks the one reused output view
+VIEW_NAME = "✦ Mara Ask"
 
 # Locations the analyzer prints — "camera.mara:10" or an absolute stdlib path like
 # "C:\Code\Mara\code\math.mara:3". File in \1, line in \2; relative paths resolve
@@ -57,6 +58,66 @@ def _run_mara(args, cwd):
                      "Mara Ask.sublime-settings\n  (tried: %s)\n" % args[0])
     except Exception as e:
         return 1, "mara ask failed: %s\n" % e
+
+
+# ---- output view: one reused scratch view in a right-hand split group ---------
+
+def _ask_view(window):
+    # Reuse the marked view if it's still open; else mint a fresh scratch view.
+    for v in window.views():
+        if v.settings().get(VIEW_FLAG):
+            return v
+    v = window.new_file()
+    v.set_name(VIEW_NAME)
+    v.set_scratch(True)              # never prompts to save
+    v.settings().set(VIEW_FLAG, True)
+    return v
+
+
+def _ensure_right_group(window):
+    # Split into two columns ONLY if the window is a single pane, so we never
+    # stomp a layout the user set up themselves. Returns the rightmost group.
+    if window.num_groups() < 2:
+        ratio = _settings().get("split_ratio", 0.6)
+        window.set_layout({
+            "cols": [0.0, ratio, 1.0],
+            "rows": [0.0, 1.0],
+            "cells": [[0, 0, 1, 1], [1, 0, 2, 1]],
+        })
+    return window.num_groups() - 1
+
+
+def _show_in_view(window, code_view, cwd, echo, out):
+    view = _ask_view(window)
+
+    # Park it in the right-hand group (creating the column if needed).
+    group = _ensure_right_group(window)
+    if window.get_view_index(view)[0] != group:
+        window.set_view_index(view, group, len(window.views_in_group(group)))
+
+    s = view.settings()
+    s.set("result_file_regex", RESULT_REGEX)   # F4 / click jumps to file:line
+    s.set("result_base_dir", cwd or "")
+    s.set("word_wrap", False)
+    s.set("line_numbers", False)
+    s.set("gutter", False)
+    s.set("scroll_past_end", False)
+    s.set("draw_indent_guides", False)
+    s.set("draw_white_space", "none")
+
+    body = "$ %s\n\n%s" % (echo, out or "(no output)\n")
+    view.set_read_only(False)
+    view.run_command("select_all")
+    view.run_command("left_delete")            # each query stands alone
+    view.run_command("append", {"characters": body, "scroll_to_end": False})
+    view.set_read_only(True)
+    view.sel().clear()
+    view.set_viewport_position((0, 0), False)  # back to the top
+
+    # Keep typing in your code: focus returns to the invoking view, so the next
+    # Ctrl+K Ctrl+A reads a word from the code, not from this output pane.
+    if code_view is not None and code_view.is_valid():
+        window.focus_view(code_view)
 
 
 class MaraAskCommand(sublime_plugin.TextCommand):
@@ -98,24 +159,14 @@ class MaraAskCommand(sublime_plugin.TextCommand):
             rc2, out2 = _run_mara(at_args, cwd)
             if rc2 == 0:
                 used, out = at_args, out2
-        sublime.set_timeout(lambda: self._show(used, cwd, out), 0)
+        echo = " ".join(a if " " not in a else '"%s"' % a for a in used)
+        sublime.set_timeout(lambda: self._present(cwd, echo, out), 0)
 
-    def _show(self, args, cwd, out):
+    def _present(self, cwd, echo, out):
         window = self.view.window()
         if window is None:
             return
-        window.destroy_output_panel(PANEL)        # clear: each query stands alone
-        panel = window.create_output_panel(PANEL)
-        s = panel.settings()
-        s.set("result_file_regex", RESULT_REGEX)
-        s.set("result_base_dir", cwd or "")
-        s.set("word_wrap", False)
-        s.set("line_numbers", False)
-        s.set("gutter", False)
-        s.set("scroll_past_end", False)
-        echo = " ".join(a if " " not in a else '"%s"' % a for a in args)
-        panel.run_command("append", {"characters": "$ %s\n\n%s" % (echo, out or "(no output)\n")})
-        window.run_command("show_panel", {"panel": "output." + PANEL})
+        _show_in_view(window, self.view, cwd, echo, out)
 
 
 # label, hint, kind, direction — the matrix cells offered by mara_ask_pick.
