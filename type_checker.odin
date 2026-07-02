@@ -4878,6 +4878,17 @@ compute_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope, mode: Arg_Set_Mo
     // Self` for the walk to find — so `return Font(&local_buf)` would launder a
     // local without this arm.
     if scope.kind == .Struct { return ctor_return_arg_set(c, scope, mode) }
+    // Intrinsic body (`{ @llvm.pow.f32 }`): an empty stmts list, so the walk
+    // below would read as "the return depends on nothing" and sever the slicer's
+    // edge across the call. The result is computed from EVERY argument. Escape
+    // stays empty: a scalar intrinsic result never aliases argument storage.
+    if scope.is_intrinsic {
+        if mode != .Data_Dep { return nil }
+        consensus: [dynamic]int
+        defer delete(consensus)
+        for _, i in scope.typed_params { append_unique(&consensus, i) }
+        return arg_set_freeze(consensus[:])
+    }
     // Flow-sensitive walk: each local carries a SET of parameter indices it could
     // trace back to; branch merges union, sequential writes replace.
     tracking: map[string][dynamic]int
@@ -5032,6 +5043,89 @@ walk_for_return_arg_sets :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Sco
             cleanup_local_pre(pre)
         case ^Stmt_Decl:
             walk_for_return_arg_sets(c, v.checked[:], fn_scope, tracking, consensus, mode)
+        // Everything below is .Data_Dep-only, keeping the .Escape walk
+        // byte-for-byte the original (see Arg_Set_Mode). Skipping these arms
+        // under-approximates: `mat4_transpose` fills its result inside nested
+        // loops, and an empty set there severed the slicer's edge across every
+        // call to it.
+        case ^Stmt_For:
+            if mode != .Data_Dep { continue }
+            one: [1]Stmt
+            if v.init != nil { one[0] = v.init; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus, mode) }
+            pre := clone_arg_set_tracking(tracking^)
+            // The loop variable's value derives from what it iterates over.
+            if v.is_collection_for && v.elem_var != "" {
+                set := eval_expr_arg_set(c, v.collection, fn_scope, tracking, mode)
+                if existing, ok := tracking^[v.elem_var]; ok { delete(existing) }
+                tracking^[v.elem_var] = set
+            }
+            if v.is_range && v.loop_var != "" {
+                set := eval_expr_arg_set(c, v.range_low, fn_scope, tracking, mode)
+                hi := eval_expr_arg_set(c, v.range_high, fn_scope, tracking, mode)
+                for idx in hi { append_unique(&set, idx) }
+                delete(hi)
+                if existing, ok := tracking^[v.loop_var]; ok { delete(existing) }
+                tracking^[v.loop_var] = set
+            }
+            // Two passes = a 2-iteration unroll, catching one level of
+            // cross-iteration chaining (`x = y` before `y = param`).
+            for _ in 0 ..< 2 {
+                walk_for_return_arg_sets(c, v.body[:], fn_scope, tracking, consensus, mode)
+                if v.post != nil { one[0] = v.post; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus, mode) }
+            }
+            // Merge with the pre-loop state — the 0-iteration path.
+            body_state := move_arg_set_tracking(tracking)
+            tracking^ = clone_arg_set_tracking(pre)
+            merge_arg_set_branches(tracking, &body_state, pre)
+            cleanup_arg_set_tracking(&body_state)
+            cleanup_local_pre(pre)
+        case ^Stmt_Match:
+            if mode != .Data_Dep { continue }
+            // Each arm folds in like an if-with-empty-else: facts union across
+            // arms and never shrink (a later arm's overwrite can't erase an
+            // earlier arm's trace).
+            for arm in v.arms {
+                pre := clone_arg_set_tracking(tracking^)
+                walk_for_return_arg_sets(c, arm.body[:], fn_scope, tracking, consensus, mode)
+                arm_state := move_arg_set_tracking(tracking)
+                tracking^ = clone_arg_set_tracking(pre)
+                merge_arg_set_branches(tracking, &arm_state, pre)
+                cleanup_arg_set_tracking(&arm_state)
+                cleanup_local_pre(pre)
+            }
+        case ^Stmt_Multi_Assign:
+            if mode != .Data_Dep { continue }
+            one: [1]Stmt
+            for a in v.assigns { one[0] = a; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus, mode) }
+        case ^Stmt_Multi_Return_Assign:
+            if mode != .Data_Dep { continue }
+            if len(v.checked) > 0 {   // broadcast: the desugared per-target assigns
+                walk_for_return_arg_sets(c, v.checked[:], fn_scope, tracking, consensus, mode)
+                continue
+            }
+            // Destructure (`val, err := f(x)`): every bound name traces to the
+            // union of the RHS values' sets — a tuple isn't split per position
+            // here, matching Stmt_Return's union over every returned value.
+            set: [dynamic]int
+            defer delete(set)
+            for val in v.values {
+                s2 := eval_expr_arg_set(c, val, fn_scope, tracking, mode)
+                for idx in s2 { append_unique(&set, idx) }
+                delete(s2)
+            }
+            for name, i in v.names {
+                if i < len(v.targets) && v.targets[i] != nil {
+                    // Field/index item: union into its base, like the complex-assign arm.
+                    base := lvalue_base_name(v.targets[i])
+                    if base != "" { arg_set_union_into_tracking(tracking, base, set[:]) }
+                    continue
+                }
+                if name == "" { continue }
+                cloned: [dynamic]int
+                for idx in set { append(&cloned, idx) }
+                if existing, ok := tracking^[name]; ok { delete(existing) }
+                tracking^[name] = cloned
+            }
         }
     }
 }

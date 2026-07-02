@@ -1,0 +1,77 @@
+module askedges
+
+use mara.math
+
+// Fixture for `mara ask` forward-slice edges that used to VANISH (slice.odin
+// ld_expr + type_checker.odin compute_return_arg_set). Compile-gated only, like
+// askflow.mara, but a stable target to validate the edges by hand. From a dir
+// whose name is `askedges` (ask binds to the module matching the cwd name):
+//
+//   mara ask c in main flow below      c lands in double (param x) — a call arg
+//     on the RHS of a compound `*=`. The old landing walk matched only a
+//     TOP-LEVEL Expr_Call statement value, and `r *= double(c)` desugars to
+//     `r = r * double(c)` (an Expr_Binary), so the landing never fired. ld_expr
+//     now finds calls anywhere in a statement's expressions: compound-assign
+//     RHS (c, f), field-path targets (f), conditions, nested call args.
+//
+//   mara ask k6 in bump6 flow below    k6 -> the return + decl w + lands in
+//     pow_f32 (param exp). pow_f32's body is `@llvm.pow.f32` — an intrinsic
+//     body parses as an EMPTY stmts list, so the return-deps walk found no
+//     `return` and concluded "the return depends on no argument", severing the
+//     def->def edge k6 -> w in every caller. An intrinsic's result is computed
+//     from EVERY argument (compute_return_arg_set's is_intrinsic arm; escape
+//     stays empty — a scalar intrinsic never aliases argument storage).
+//
+//   mara ask k7 in bump7 flow below    k7 -> decl out — transpose_ish fills its
+//     result INSIDE a for loop (`r[i] = m[..]` in a loop body, the
+//     mat4_transpose shape). walk_for_return_arg_sets skipped Stmt_For (and
+//     Stmt_Match / destructuring multi-assign) bodies entirely, so the
+//     function's return_deps came out empty and the caller's decl edge dropped.
+//     Loop bodies now walk twice (a 2-iteration unroll, catching one level of
+//     cross-iteration chaining) then merge with the pre-loop state (the
+//     0-iteration path), the same union the If arms use.
+
+Holder :: struct {
+	val: f32
+}
+
+double :: fun(x: f32) -> f32 {
+	return x * 2
+}
+
+bump :: fun(hp: ^Holder, k: f32) {
+	hp.val *= double(k)   // compound assign to a field path via pointer param
+}
+
+bump6 :: fun(k6: f32) -> f32 {
+	w := math.pow_f32(2.0, k6)   // intrinsic-bodied callee in a := decl
+	return w
+}
+
+// The mat4_transpose shape: the returned local is written only inside a loop.
+transpose_ish :: fun(m: [4]f32) -> [4]f32 {
+	r : [4]f32
+	for i in 0..4 {
+		r[i] = m[3 - i]
+	}
+	return r
+}
+
+bump7 :: fun(k7: f32) -> f32 {
+	arr : [4]f32 = all k7
+	out := transpose_ish(arr)
+	return out[0]
+}
+
+main :: fun() {
+	c: f32 = 7
+	r: f32 = 1
+	r *= double(c)        // call arg in a compound assign, scalar target
+
+	f: f32 = 13
+	h := Holder{}
+	h.val = 1
+	bump(&h, f)
+
+	print(r + h.val + bump6(3) + bump7(2))
+}

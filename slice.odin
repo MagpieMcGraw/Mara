@@ -486,28 +486,82 @@ collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: ma
 
 @(private="file")
 ld_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
-    for s in stmts {
-        #partial switch v in s {
-        case Stmt_Call:   ld_call(checked, v.expr, targets, out, unfollowed)
-        case ^Stmt_If:    ld_call(checked, v.condition, targets, out, unfollowed); ld_stmts(checked, v.body[:], targets, out, unfollowed); ld_stmts(checked, v.else_body[:], targets, out, unfollowed)
-        case ^Stmt_For:   ld_call(checked, v.condition, targets, out, unfollowed); ld_stmts(checked, v.body[:], targets, out, unfollowed)
-        case ^Stmt_Match: ld_call(checked, v.subject, targets, out, unfollowed); for arm in v.arms { ld_stmts(checked, arm.body[:], targets, out, unfollowed) }
-        case ^Stmt_Defer: ld_stmts(checked, v.body[:], targets, out, unfollowed)
-        // Result-binding calls: the value lands in the callee's params even when the
-        // callee's return doesn't carry it back. `px,py := pack_rect(sky,w,h)` — w/h
-        // (glyph-derived) land in pack_rect; its result is a skyline slot, not the
-        // glyph, so the def->def graph alone never shows the glyph reaching pack_rect.
-        case ^Stmt_Decl:   ld_stmts(checked, v.checked[:], targets, out, unfollowed)
-        case ^Stmt_Assign: ld_call(checked, v.value, targets, out, unfollowed)
-        case ^Stmt_Multi_Return_Assign: if len(v.values) > 0 { ld_call(checked, v.values[0], targets, out, unfollowed) }
+    for s in stmts { ld_stmt(checked, s, targets, out, unfollowed) }
+}
+
+// One statement's landings: its expressions walked for calls (ld_expr), its child
+// statements recursed. A nested Stmt_Scope (a nested fun) is deliberately NOT
+// entered — that body is a separate slice, same as slice_seed.
+@(private="file")
+ld_stmt :: proc(checked: ^Checked_Program, s: Stmt, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
+    #partial switch v in s {
+    case Stmt_Call:   ld_expr(checked, v.expr, targets, out, unfollowed)
+    case ^Stmt_If:    ld_expr(checked, v.condition, targets, out, unfollowed); ld_stmts(checked, v.body[:], targets, out, unfollowed); ld_stmts(checked, v.else_body[:], targets, out, unfollowed)
+    case ^Stmt_For:
+        ld_stmt(checked, v.init, targets, out, unfollowed)
+        ld_expr(checked, v.condition, targets, out, unfollowed)
+        ld_stmt(checked, v.post, targets, out, unfollowed)
+        ld_expr(checked, v.range_low, targets, out, unfollowed)
+        ld_expr(checked, v.range_high, targets, out, unfollowed)
+        ld_expr(checked, v.collection, targets, out, unfollowed)
+        ld_expr(checked, v.collection_len, targets, out, unfollowed)
+        ld_stmts(checked, v.body[:], targets, out, unfollowed)
+    case ^Stmt_Match: ld_expr(checked, v.subject, targets, out, unfollowed); for arm in v.arms { ld_stmts(checked, arm.body[:], targets, out, unfollowed) }
+    case ^Stmt_Defer: ld_stmts(checked, v.body[:], targets, out, unfollowed)
+    // Result-binding calls: the value lands in the callee's params even when the
+    // callee's return doesn't carry it back. `px,py := pack_rect(sky,w,h)` — w/h
+    // (glyph-derived) land in pack_rect; its result is a skyline slot, not the
+    // glyph, so the def->def graph alone never shows the glyph reaching pack_rect.
+    case ^Stmt_Decl:   ld_stmts(checked, v.checked[:], targets, out, unfollowed)
+    case ^Stmt_Assign:
+        // A compound `lhs op= rhs` desugars to `lhs = lhs op rhs` REUSING the
+        // target node as the binary's left, so walking `value` covers the
+        // target's calls too — walking both would land the same call twice.
+        if !v.is_compound { ld_expr(checked, v.target, targets, out, unfollowed) }
+        ld_expr(checked, v.value, targets, out, unfollowed)
+    case ^Stmt_Multi_Assign: for a in v.assigns { ld_stmt(checked, a, targets, out, unfollowed) }
+    case ^Stmt_Multi_Return_Assign:
+        if len(v.checked) > 0 {   // broadcast: the desugared per-target assigns ARE the statement
+            ld_stmts(checked, v.checked[:], targets, out, unfollowed)
+        } else {
+            for t in v.targets { ld_expr(checked, t, targets, out, unfollowed) }
+            for e in v.values  { ld_expr(checked, e, targets, out, unfollowed) }
         }
+    case Stmt_Return: for e in v.values { ld_expr(checked, e, targets, out, unfollowed) }
+    }
+}
+
+// Find every call in an expression, wherever it sits: an assignment's RHS
+// (including the binary a compound `op=` desugars into), a condition/subject
+// operand, an index, another call's argument. The old walk matched only a
+// TOP-LEVEL Expr_Call, so `x *= f(y)` and `if f(y) > 0` never landed y in f.
+// Mirrors slice_value's traversal.
+@(private="file")
+ld_expr :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
+    if e == nil { return }
+    #partial switch v in e {
+    case ^Expr_Call:
+        ld_call(checked, v, targets, out, unfollowed)
+        for a in v.args { ld_expr(checked, a, targets, out, unfollowed) }
+        if v.overrides != nil { ld_expr(checked, v.overrides, targets, out, unfollowed) }
+    case ^Expr_Unary:        ld_expr(checked, v.operand, targets, out, unfollowed)
+    case ^Expr_Binary:       ld_expr(checked, v.left, targets, out, unfollowed); ld_expr(checked, v.right, targets, out, unfollowed)
+    case ^Expr_Index:        ld_expr(checked, v.expr, targets, out, unfollowed); ld_expr(checked, v.index, targets, out, unfollowed)
+    case ^Expr_Slice:        ld_expr(checked, v.expr, targets, out, unfollowed); ld_expr(checked, v.low, targets, out, unfollowed); ld_expr(checked, v.high, targets, out, unfollowed)
+    case ^Expr_Field_Access: ld_expr(checked, v.expr, targets, out, unfollowed)
+    case ^Expr_Struct_Literal:
+        for f in v.fields { ld_expr(checked, f.value, targets, out, unfollowed) }
+        for a in v.array_values { ld_expr(checked, a, targets, out, unfollowed) }
+        ld_expr(checked, v.broadcast_value, targets, out, unfollowed)
+    case ^Expr_Take:         ld_expr(checked, v.storage, targets, out, unfollowed); ld_expr(checked, v.count_expr, targets, out, unfollowed)
+    case ^Expr_Try:          ld_expr(checked, v.inner, targets, out, unfollowed)
+    case ^Expr_If:           ld_expr(checked, v.condition, targets, out, unfollowed); ld_expr(checked, v.then_expr, targets, out, unfollowed); ld_expr(checked, v.else_expr, targets, out, unfollowed)
+    case ^Expr_Array:        for el in v.elements { ld_expr(checked, el, targets, out, unfollowed) }
     }
 }
 
 @(private="file")
-ld_call :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
-    call, ok := e.(^Expr_Call)
-    if !ok { return }
+ld_call :: proc(checked: ^Checked_Program, call: ^Expr_Call, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
     callee := hop_callee(call)
     followable := callee != nil && callee.ast != nil
     consuming, landed := false, false
