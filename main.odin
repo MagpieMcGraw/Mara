@@ -1098,6 +1098,27 @@ parse_args :: proc() -> CLI_Args {
     if subcmd == "ask" {
         rest := positional[2:]   // tokens after the `ask` subcommand
 
+        // A shell-quoted whole query (`mara ask "v in fn flow below"`) arrives as
+        // ONE token — split every token on whitespace so both forms parse
+        // identically. The value after a standalone `at` is kept intact: a quoted
+        // path may legitimately contain spaces (`at "C:\My Code\f.mara:12"`).
+        {
+            flat: [dynamic]string
+            i := 0
+            for i < len(rest) {
+                tok := rest[i]
+                if tok == "at" && i + 1 < len(rest) {
+                    append(&flat, tok)
+                    append(&flat, rest[i + 1])
+                    i += 2
+                    continue
+                }
+                for piece in strings.fields(tok) { append(&flat, piece) }
+                i += 1
+            }
+            rest = flat[:]
+        }
+
         // An explicit help request prints usage rather than being looked up as a
         // name — `mara ask --help` must not 404 on a type called "--help". Help is
         // a successful terminal action, so exit 0 directly (the `return args`
