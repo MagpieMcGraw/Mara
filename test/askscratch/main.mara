@@ -1,0 +1,67 @@
+module askscratch
+
+use mara.math
+
+Holder :: struct {
+	val: f32
+}
+
+double :: fun(x: f32) -> f32 {
+	return x * 2
+}
+
+Outer :: struct {
+	inner: Holder
+}
+
+bump :: fun(op: ^Outer, k: f32) {
+	op.inner.val *= double(k)   // compound assign to nested path via pointer param
+}
+
+powish :: fun(base: f32, exp: f32) -> f32 {
+	return base * exp
+}
+
+bump2 :: fun(op: ^Outer, k2: f32) {
+	op.inner.val *= powish(2.0, k2)   // two-arg call, second arg carries the flow
+}
+
+bump3 :: fun(op: ^Outer, k3: f32) {
+	op.inner.val *= math.pow(2.0, k3)   // cross-module dispatch call, like Pounce camera_update
+}
+
+bump4 :: fun(op: ^Outer, k4: f32) {
+	op.inner.val *= math.to_radians(k4)   // cross-module direct call, real body
+}
+
+bump5 :: fun(op: ^Outer, k5: f32) {
+	op.inner.val *= math.pow_f32(2.0, k5)   // cross-module direct call, intrinsic body
+}
+
+bump6 :: fun(k6: f32) -> f32 {
+	w := math.pow_f32(2.0, k6)   // intrinsic callee in a := decl
+	return w
+}
+
+main :: fun() {
+	a: f32 = 3
+	b: f32 = 5
+	c: f32 = 7
+	d: f32 = 9
+
+	p := double(a)      // call arg in := decl
+	q: f32 = 0
+	q = double(b)       // call arg in plain = assign
+	r: f32 = 1
+	r *= double(c)      // call arg in compound *= assign
+	s: f32 = 1
+	s *= d              // plain read in compound *= assign
+
+	e: f32 = 11
+	f: f32 = 13
+	h := Holder{}
+	h.val = double(e)   // call arg in plain = to field path
+	h.val *= double(f)  // call arg in compound *= to field path
+
+	print(p + q + r + s + h.val)
+}

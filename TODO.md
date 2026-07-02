@@ -60,3 +60,5 @@ Handle constants
 Flow analysis doesn't account for arrays and their indexing.
 
 Mara ask, record all queries(instead of graphs), so you can later replay them in the viewer. Render the whole program graph, color the queried parts. That data can be overlaid for a more complete picture. Also distunguish results, a direct ask shows where the AI attention is.
+
+Make flow analysis show up as text highlights in sublime
