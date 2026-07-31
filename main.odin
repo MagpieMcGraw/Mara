@@ -666,8 +666,8 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
 Compile_Task :: struct {
     ll_path:   string,
     o_path:    string,
-    err_path:  string,  // per-task stderr capture file
-    clang_cmd: string,  // full quoted command for libc.system (redirects stderr to err_path)
+    err_path:  string,   // per-task stderr capture file
+    clang_cmd: cstring,  // full quoted command for libc.system (redirects stderr to err_path)
     exit_code: i32,
 }
 
@@ -693,12 +693,16 @@ ll_to_o_path :: proc(ll_path: string) -> string {
 // Compile one .ll to its corresponding .o. Invoked from the thread pool;
 // each worker thread runs one of these via libc.system (which blocks the
 // worker but the other workers run in parallel).
+//
+// This body MUST NOT ALLOCATE. Compilation runs out of one growing
+// virtual.Arena (see main), which is a bump allocator with no locking, and
+// core:thread hands every task `context.allocator` — so an allocation here is
+// N workers racing on one arena offset. The command line is therefore built as
+// a cstring on the main thread and merely read here.
 @(private="file")
 compile_task_proc :: proc(t: thread.Task) {
     data := cast(^Compile_Task)t.data
-    cmd_cstr := strings.clone_to_cstring(data.clang_cmd)
-    defer delete(cmd_cstr)
-    data.exit_code = libc.system(cmd_cstr)
+    data.exit_code = libc.system(data.clang_cmd)
 }
 
 // Crash-journal runtime (runtime/mara_crash.c) — every native build links it
@@ -783,11 +787,15 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         // compile-level options (we exclude .obj/.lib paths which only
         // matter at link). For now: skip extra_inputs entirely on the
         // -c step; they're added only to the link command below.
+        cmd: string
         when ODIN_OS == .Windows {
-            t.clang_cmd = strings.concatenate({`"`, strings.to_string(cb), `"`})
+            cmd = strings.concatenate({`"`, strings.to_string(cb), `"`})
         } else {
-            t.clang_cmd = strings.to_string(cb)
+            cmd = strings.to_string(cb)
         }
+        // Convert here, on the main thread — compile_task_proc must not
+        // allocate (the shared arena isn't thread-safe).
+        t.clang_cmd = strings.clone_to_cstring(cmd)
         append(&tasks, t)
     }
 
