@@ -34,6 +34,36 @@ CLANG_BIN :: "clang.exe" when ODIN_OS == .Windows else "clang"
 STATIC_LIB_EXT :: ".lib" when ODIN_OS == .Windows else ".a"
 
 // ---------------------------------------------------------------------------
+// Compiler layout — where bundled things live
+// ---------------------------------------------------------------------------
+
+// Every directory the compiler searches for bundled artifacts, in priority
+// order: `code/` itself first, then each of its immediate subdirectories
+// (SDL/, Open_GL/, ...). Both .mara sources and foreign libs/objects live in
+// this same two-level layout, so discovery and linking search the identical
+// list — which is the point. Five callers used to open + read_dir + filter for
+// themselves, each carrying its own copy of the ordering rule.
+//
+// Element 0 is always `code/`, even when that directory doesn't exist, so
+// callers that want only the binding subdirs can slice off the head.
+code_search_dirs :: proc(compiler_dir: string) -> []string {
+    dirs: [dynamic]string
+    code_base, _ := filepath.join({compiler_dir, "code"})
+    append(&dirs, code_base)
+
+    dh, err := os.open(code_base)
+    if err != nil { return dirs[:] }
+    defer os.close(dh)
+    entries, _ := os.read_dir(dh, -1, context.allocator)
+    for entry in entries {
+        if entry.type != .Directory { continue }
+        sub, _ := filepath.join({code_base, entry.name})
+        append(&dirs, sub)
+    }
+    return dirs[:]
+}
+
+// ---------------------------------------------------------------------------
 // Stage 1: discovery — find every .mara file the compiler can see, then walk
 // the use-closure starting from the target to filter down to the files we
 // actually need to lex + parse.
@@ -196,17 +226,7 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string) -> map[stri
     }
 
     if compiler_dir != "" {
-        code_dir, _ := filepath.join({compiler_dir, "code"})
-        scan_dir(code_dir, &result)
-        if dh, err := os.open(code_dir); err == nil {
-            defer os.close(dh)
-            entries, _ := os.read_dir(dh, -1, context.allocator)
-            for entry in entries {
-                if entry.type != .Directory { continue }
-                sub, _ := filepath.join({code_dir, entry.name})
-                scan_dir(sub, &result)
-            }
-        }
+        for dir in code_search_dirs(compiler_dir) { scan_dir(dir, &result) }
     }
 
     // User project files shadow stdlib bare names on conflict.
@@ -424,19 +444,11 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     compiler_dir := get_compiler_dir()
 
     resolve_foreign_file :: proc(name: string, compiler_dir: string) -> string {
-        code_base, _  := filepath.join({compiler_dir, "code"})
-        loose_path, _ := filepath.join({code_base, name})
-        if os.exists(loose_path) { return loose_path }
-        ldh, lerr := os.open(code_base)
-        if lerr == nil {
-            defer os.close(ldh)
-            lentries, _ := os.read_dir(ldh, -1, context.allocator)
-            for lentry in lentries {
-                if lentry.type != .Directory { continue }
-                sub_path, _ := filepath.join({code_base, lentry.name, name})
-                if os.exists(sub_path) { return sub_path }
-            }
+        for dir in code_search_dirs(compiler_dir) {
+            path, _ := filepath.join({dir, name})
+            if os.exists(path) { return path }
         }
+        code_base, _ := filepath.join({compiler_dir, "code"})
         fmt.printf(BUILD_FOREIGN_FILE_NOT_FOUND, name, code_base)
         os.exit(1)
     }
@@ -455,7 +467,6 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
         // Caller already checked the `.c` suffix; strip it for the lib name.
         base := c_name[:len(c_name) - 2]
         lib_name := strings.concatenate({base, STATIC_LIB_EXT})
-        code_base, _ := filepath.join({compiler_dir, "code"})
 
         compile_in :: proc(dir, c_file, lib_name, compiler_dir: string) -> (string, bool) {
             c_path, _ := filepath.join({dir, c_file})
@@ -468,17 +479,8 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
             return lib_path, true
         }
 
-        if path, ok := compile_in(code_base, c_name, lib_name, compiler_dir); ok {
-            return path, true
-        }
-        ldh, lerr := os.open(code_base)
-        if lerr != nil { return "", false }
-        defer os.close(ldh)
-        entries, _ := os.read_dir(ldh, -1, context.allocator)
-        for entry in entries {
-            if entry.type != .Directory { continue }
-            sub, _ := filepath.join({code_base, entry.name})
-            if path, ok := compile_in(sub, c_name, lib_name, compiler_dir); ok {
+        for dir in code_search_dirs(compiler_dir) {
+            if path, ok := compile_in(dir, c_name, lib_name, compiler_dir); ok {
                 return path, true
             }
         }
@@ -497,7 +499,6 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     try_resolve_bundled_lib :: proc(name: string, compiler_dir: string) -> (string, bool) {
         lib_name := strings.concatenate({name, STATIC_LIB_EXT})
         c_name   := strings.concatenate({name, ".c"})
-        code_base, _ := filepath.join({compiler_dir, "code"})
 
         // Per-directory check: returns the static-lib path if a `.lib`/`.a`
         // is present, OR if a `.c` exists that can be compiled into one.
@@ -517,21 +518,11 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
             return "", false
         }
 
-        // Check code/ root first (stdlib bundled libs)
-        if path, ok := check(code_base, lib_name, c_name, compiler_dir); ok {
-            return path, true
-        }
-        // Then each subfolder of code/ (one level deep, e.g. code/SDL/)
-        ldh, lerr := os.open(code_base)
-        if lerr == nil {
-            defer os.close(ldh)
-            entries, _ := os.read_dir(ldh, -1, context.allocator)
-            for entry in entries {
-                if entry.type != .Directory { continue }
-                sub, _ := filepath.join({code_base, entry.name})
-                if path, ok := check(sub, lib_name, c_name, compiler_dir); ok {
-                    return path, true
-                }
+        // Check code/ root first (stdlib bundled libs), then each subfolder of
+        // code/ (one level deep, e.g. code/SDL/).
+        for dir in code_search_dirs(compiler_dir) {
+            if path, ok := check(dir, lib_name, c_name, compiler_dir); ok {
+                return path, true
             }
         }
         // Finally, the user's current working directory — project-local C
@@ -539,6 +530,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
         // to the .mara that consumes them instead of needing a slot under
         // code/. Skip if cwd already happens to be code_base.
         cwd, _ := os.get_working_directory(context.allocator)
+        code_base, _ := filepath.join({compiler_dir, "code"})
         if cwd != code_base {
             if path, ok := check(cwd, lib_name, c_name, compiler_dir); ok {
                 return path, true
@@ -627,17 +619,11 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     // Every foreign lib is static_lib now — hand them all to the linker.
     collect(checked.foreign_libs, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir)
 
-    code_base, _ := filepath.join({compiler_dir, "code"})
-    ldh, lerr := os.open(code_base)
-    if lerr == nil {
-        defer os.close(ldh)
-        lentries, _ := os.read_dir(ldh, -1, context.allocator)
-        for lentry in lentries {
-            if lentry.type != .Directory { continue }
-            sub, _ := filepath.join({code_base, lentry.name})
-            append(&native_search, sub)
-        }
-    }
+    // -L every bundled binding dir so `-l<name>` can find libs we didn't
+    // resolve to an explicit path. Skip element 0 (code/ itself): anything
+    // loose in there was already resolved to a full path above.
+    code_dirs := code_search_dirs(compiler_dir)
+    for dir in code_dirs[1:] { append(&native_search, dir) }
 
     return Link_Flags{
         lib_flags     = strings.to_string(lib_flags_b),
