@@ -4,6 +4,7 @@ module core
 // everything is a scope
 // program graph analyzer
 // the graph has to map back to source code to change it
+// Everything the compiler knows is reachable from the graph, and every graph node knows its source spans. An analysis result that dies with its pass is a bug.
 
 // SMALL IDEAS
 // checked generics
