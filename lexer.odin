@@ -117,6 +117,8 @@ Token :: struct {
     text: string, // slice into the source buffer; only escaped string/char literals own a copy
     line: int,
     col:  int,
+    idx:  int,    // this token's position in the lex_all array — lets token_span record
+                  // an extent (Span.tok) without threading indices through 87 call sites
 }
 
 Lexer :: struct {
@@ -528,6 +530,7 @@ lex_all :: proc(source: string, file: string = "") -> ^[dynamic]Token {
     tokens := new([dynamic]Token)
     for {
         tok := next_token(&l)
+        tok.idx = len(tokens)   // stamp before append: index is the current length
         append(tokens, tok)
         if tok.kind == .EOF {
             break
