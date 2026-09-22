@@ -1429,6 +1429,15 @@ main :: proc() {
             fmt.print(ask_module_map(checked, programs, all_files, args.compiler_dir, args.pkg_name))
             return
         }
+        // `at <file>:<line>:<col>` with no name — the position query. A point in
+        // the source names exactly one node, so unlike `at <file>:<line>` (which
+        // disambiguates a NAMED variable) this form needs no target at all.
+        if args.ask_target == "" && strings.count(args.ask_at, ":") == 2 {
+            out, found := ask_at_point(programs, all_files, args.ask_at)
+            fmt.print(out)
+            if !found { os.exit(1) }
+            return
+        }
         checked.want_control_deps = args.ask_control   // gate the post-dominator pass (off = the fast data-only default)
         out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.ask_at, args.pkg_name, ask_scope_file, ask_scope_module, args.ask_depth)
         fmt.print(out)
