@@ -501,6 +501,49 @@ Expr_Try :: struct {
     type_: Type,    // filled by type checker — inner type minus the trailing err
 }
 
+// The span of any expression, without knowing which variant it is. Returned by
+// pointer so callers can write as well as read: a position→node hit test reads
+// spans uniformly across the union, and recording token extents at parse time
+// needs to update them in place.
+//
+// A nil Expr yields nil. That is a legitimate input, not an error — optional
+// sub-expressions are genuinely absent (`arr[:n]` leaves Expr_Slice.low nil),
+// and callers that walk children would otherwise have to pre-filter every slot.
+//
+// The switch is exhaustive on purpose. A new Expr variant fails to compile here
+// until it is handled, rather than silently reporting "no location" — the same
+// reason the checker and codegen switches are exhaustive.
+expr_span :: proc(e: Expr) -> ^Span {
+    switch v in e {
+    case nil:                        return nil
+    case ^Expr_Number:               return &v.span
+    case ^Expr_String:               return &v.span
+    case ^Expr_Char:                 return &v.span
+    case ^Expr_Ident:                return &v.span
+    case ^Expr_Bool:                 return &v.span
+    case ^Expr_Skip_Constructor:     return &v.span
+    case ^Expr_Unary:                return &v.span
+    case ^Expr_Binary:               return &v.span
+    case ^Expr_Call:                 return &v.span
+    case ^Expr_Array:                return &v.span
+    case ^Expr_Index:                return &v.span
+    case ^Expr_Slice:                return &v.span
+    case ^Expr_Struct_Literal:       return &v.span
+    case ^Expr_Field_Access:         return &v.span
+    case ^Expr_Size_Of:              return &v.span
+    case ^Expr_Assert:               return &v.span
+    case ^Expr_Take:                 return &v.span
+    case ^Expr_If:                   return &v.span
+    case ^Expr_Compiler_Intrinsic:   return &v.span
+    case ^Expr_Include:              return &v.span
+    case ^Expr_Type_Name:            return &v.span
+    case ^Expr_Tuple_Default:        return &v.span
+    case ^Expr_Self:                 return &v.span
+    case ^Expr_Try:                  return &v.span
+    }
+    return nil
+}
+
 // Statements
 
 Stmt :: union {
