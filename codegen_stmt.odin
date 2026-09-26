@@ -221,52 +221,29 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             }
         }
 
-        // Check if value is a slice expression (inferred type)
-        if _, ok := s.value.(^Expr_Slice); ok {
-            gen_slice_assign_inferred(g, s.name, s.value, var_type)
-            return
-        }
-
-        // Top-level partial-array copy into an EXISTING var (`a = b`, both
-        // [..N]T — incl. distinct-over-partial-array like `str`). The
-        // existing-slice reassign path below does a header-only memcpy, which
-        // leaves dst.ptr aliasing src's inline elements — the two silently
-        // share storage. Route through partial_array_copy, which re-anchors
-        // dst.ptr to its own backing, matching the decl path's semantics
-        // (`c : [..N]T = b`). Only genuine copy sources (ident / field access
-        // reading existing storage) need this; the `{all expr}` broadcast and
-        // slice-returning calls construct in place and stay in
-        // gen_slice_assign_inferred. Decls (var not yet bound) fall through to
-        // the partial-array decl path, which already uses the same helper.
-        if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok {
-            // Init-value into an EXISTING partial-array var — a prebound struct
-            // field (constructor body) or a genuine `a = b` reassign. Two source
-            // shapes need the partial-array semantics rather than the slice
-            // header-only memcpy in gen_slice_assign_inferred below:
-            //   - a string literal: memcpy bytes + set len. Without
-            //     this the field/var kept len = 0 (a struct string-field default
-            //     read back empty / garbage).
-            //   - another partial array (ident / field access): deep copy that
-            //     re-anchors dst.ptr, else the two silently share storage.
-            // Broadcast `{all expr}` and slice-returning calls construct in place
-            // and stay in gen_slice_assign_inferred.
-            init_value := false
-            #partial switch _ in s.value {
-            case ^Expr_String:
-                init_value = true
-            case ^Expr_Ident, ^Expr_Field_Access:
-                if _, src_pa := distinct_base(expr_type(s.value)).(^Type_Partial_Array); src_pa {
-                    init_value = true
-                }
-            }
-            if init_value {
-                if existing, ex_ok := get_slice(g, s.name); ex_ok {
-                    elem_t := llvm_type_from_checker(pa.elem)
-                    elem_bytes := elem_byte_size(elem_t, g.checked)
-                    gen_partial_array_init_value(g, existing.alloca, s.value, elem_t, elem_bytes, pa.size, pa, s.span, s.name)
+        // A partial array OWNS its elements inline, so a value assigned to an
+        // EXISTING one (`a = b`, a prebound struct field or named return — incl.
+        // distinct-over-partial-array like `str`) is copied into those
+        // elements. The slice paths below repoint the header instead, which
+        // left `a` aliasing the source — or dangling into a call's temp, and
+        // out of the function when `a` was returned. Only the `{all expr}`
+        // broadcast still goes there (it constructs in place). Decls (var not
+        // yet bound) go to the partial-array decl path below, which already
+        // copies.
+        _, pa_dest := var_type.(^Type_Partial_Array)
+        if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok && s.value != nil {
+            if existing, ex_ok := get_slice(g, s.name); ex_ok {
+                if _, broadcast := s.value.(^Expr_Struct_Literal); !broadcast {
+                    gen_store_partial_array_into(g, existing.alloca, pa, s.value, s.span, s.name, dest_fresh = s.is_decl)
                     return
                 }
             }
+        }
+
+        // Check if value is a slice expression (inferred type)
+        if _, ok := s.value.(^Expr_Slice); ok && !pa_dest {
+            gen_slice_assign_inferred(g, s.name, s.value, var_type)
+            return
         }
 
         // Check if reassigning to an existing slice variable
@@ -1455,7 +1432,7 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
-            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, arr_lit.span)
+            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, arr_lit.span, slot_fresh = true)
         }
     } else if call, call_ok := arr_ret_val.(^Expr_Call); call_ok {
         // Case C: returning result of another array-returning call
@@ -1483,7 +1460,7 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
             if elem == nil { continue }   // nil slot — leave as zero
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
-            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, sl.span)
+            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, sl.span, slot_fresh = true)
         }
     }
     if !handled {

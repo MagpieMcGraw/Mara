@@ -9363,6 +9363,12 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         elem = pa.elem
     }
     if is_slice_or_partial {
+        // A slice / partial-array param's header is read-only too: it's the
+        // caller's header (passed by address), so `s.len = n` shortened the
+        // caller's. A param that should move its cursor takes `^[]T`.
+        if pname, immut := write_root_immutable_param(s.target, env); immut {
+            check_error(c, s.span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, fa_expr.field, pname)
+        }
         switch fa_expr.field {
         case "len", "cap": field_type = slice_header_width_type
         case "ptr":

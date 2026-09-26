@@ -1,0 +1,13 @@
+module partial_param_header_neg
+//@ expect-fail: cannot write to field 'len' of immutable parameter 'pa'
+
+// A partial-array param's header is the caller's too: `pa.len += 1` grew the
+// caller's array. Copy it (`r := pa`) and return r, or take ^[..N]T.
+
+grow :: fun(pa: [..4]i64) { pa.len += 1 }
+
+main :: fun() {
+	pa : [..4]i64
+	grow(pa)
+	print(pa.len)
+}

@@ -1,0 +1,138 @@
+module partial_array_assign
+
+//@ expect-output: call=7 8 2
+//@ expect-output: callarg=101 2 2
+//@ expect-output: self=101 2 2
+//@ expect-output: element=1 2 2
+//@ expect-output: deref=1 2 2
+//@ expect-output: ternary=1 2 2
+//@ expect-output: slicexpr=1 2 2
+//@ expect-output: slicevar=1 2 2
+//@ expect-output: declslice=1 2 2
+//@ expect-output: built=1 2 2
+//@ expect-output: elemparam=11 11 6
+//@ expect-output: elemdecl=5 2
+//@ expect-output: elemcopy=99 2
+//@ expect-output: elemcall=199 2
+//@ expect-output: elemself=199 2
+//@ expect-output: sliceelem=205 199
+
+// A partial array OWNS its elements inline, so a value assigned to one is
+// copied into them. Assigning to an EXISTING one from anything but a plain
+// name or field used to repoint its header instead: at the source (`p^`, a
+// ternary, `src[0:2]`, a slice — later writes to the source showed through),
+// or into a call's temp — dangling once returned (`buf = push(buf, 1); return
+// buf` came back as garbage). And an element of an array of partial arrays was
+// loaded as a VALUE where its address belongs: as an argument, invalid IR.
+// Each case below returns its result out of a function, then reads it.
+
+H :: struct { f: [..4]i64 }
+
+mk :: fun() -> [..4]i64 {
+	r : [..4]i64
+	r[0] = 7
+	r[1] = 8
+	r.len = 2
+	return r
+}
+bump :: fun(pa: [..4]i64) -> [..4]i64 {
+	r := pa
+	r[0] += 100
+	return r
+}
+push :: fun(pa: [..4]i64, x: i64) -> [..4]i64 {
+	r := pa
+	r[r.len] = x
+	r.len += 1
+	return r
+}
+sum :: fun(pa: [..4]i64) -> i64 {
+	s := 0
+	for x in pa { s += x }
+	return s
+}
+ends :: fun(s: []i64) -> i64 { return s[0] + s[s.len - 1] }
+
+// kind picks the source shape; the result is mutated at the source afterwards
+// (where there is one) and returned — so an alias or a dangling header shows.
+pick :: fun(kind: i64) -> [..4]i64 {
+	src : [..4]i64
+	src[0] = 1
+	src[1] = 2
+	src.len = 2
+	sl : []i64 = src[:]
+	h := H{}
+	h.f = src
+	p := &src
+	yes := kind > 0
+	buf : [..4]i64
+	bufs : [2][..4]i64
+	bufs[1] = src
+	if kind == 0 {
+		buf = mk()
+	elif kind == 1
+		buf = bump(src)
+	elif kind == 2
+		buf = src
+		buf = bump(buf)
+	elif kind == 3
+		buf = bufs[1]
+	elif kind == 4
+		buf = p^
+	elif kind == 5
+		buf = if yes do src else h.f
+	elif kind == 6
+		buf = src[0:2]
+	elif kind == 7
+		buf = sl
+	}
+	src[0] = 99
+	return buf
+}
+decl_slice :: fun() -> [..4]i64 {
+	src : [..4]i64
+	src[0] = 1
+	src[1] = 2
+	src.len = 2
+	buf : [..4]i64 = src[0:2]
+	src[0] = 99
+	return buf
+}
+built :: fun() -> [..4]i64 {
+	buf : [..4]i64
+	buf = push(buf, 1)
+	buf = push(buf, 2)
+	return buf
+}
+show :: fun(label: []utf8, b: [..4]i64) { print("%=% % %", label, b[0], b[1], b.len) }
+
+main :: fun() {
+	show("call", pick(0))
+	show("callarg", pick(1))
+	show("self", pick(2))
+	show("element", pick(3))
+	show("deref", pick(4))
+	show("ternary", pick(5))
+	show("slicexpr", pick(6))
+	show("slicevar", pick(7))
+	show("declslice", decl_slice())
+	show("built", built())
+
+	bufs : [3][..4]i64
+	bufs[1][0] = 5
+	bufs[1][1] = 6
+	bufs[1].len = 2
+	print("elemparam=% % %", sum(bufs[1]), ends(bufs[1]), bufs[1][1])
+	x := bufs[1]
+	bufs[1][0] = 99
+	print("elemdecl=% %", x[0], x.len)
+	bufs[0] = bufs[1]
+	bufs[1][0] = 7
+	print("elemcopy=% %", bufs[0][0], bufs[0].len)
+	bufs[2] = bump(bufs[0])
+	print("elemcall=% %", bufs[2][0], bufs[2].len)
+	bufs[0] = bump(bufs[0])
+	print("elemself=% %", bufs[0][0], bufs[0].len)
+	list : [][..4]i64 = bufs[:]
+	print("sliceelem=% %", sum(list[2]), list[2][0])
+}

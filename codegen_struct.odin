@@ -1065,7 +1065,7 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
-            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span)
+            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span, slot_fresh = true)
         }
         return
     }
@@ -1080,7 +1080,7 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
             if elem == nil { continue }
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
-            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span)
+            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true)
         }
         return
     }

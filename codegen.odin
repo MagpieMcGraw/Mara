@@ -2429,7 +2429,10 @@ get_string_literal :: proc(g: ^Codegen, s: string) -> (global_name: string, byte
     } else {
         name = fmt.tprintf("@.%sstr.%d", g.string_name_prefix, g.string_counter)
     }
-    g.string_literals[s] = name
+    // The table owns its key: callers pass transient views (print's format
+    // pieces live in a reused buffer), and a borrowed key changes under the
+    // map — `" "` then matched a stale `"="` entry.
+    g.string_literals[strings.clone(s)] = name
 
     // Escape the string for LLVM IR
     escaped := llvm_escape_string(s)

@@ -167,18 +167,10 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
         emit_slice_gep(g, len_gep, pa_ptr, SLICE.len)
         emit_typed_store_len(g, fmt.tprintf("%d", len(str_bytes)), len_gep)
     } else if _, src_pa_ok := distinct_base(expr_type(value)).(^Type_Partial_Array); src_pa_ok {
-        // partial_array_copy needs the source's ADDRESS. An ident PA resolves to
-        // its alloca via gen_expr, and a PA-returning call yields a pointer to
-        // the temp the callee built into — but an array-element source must be
-        // addressed explicitly: gen_expr would LOAD the {len,cap,ptr,[N]} value
-        // rather than point at it (`memcpy` then runs from a value, not a ptr).
-        src_ptr: string
-        if idx, idx_ok := value.(^Expr_Index); idx_ok {
-            src_ptr = gen_index_address(g, idx)
-        } else {
-            src_ptr = gen_expr(g, value)
-        }
-        partial_array_copy(g, pa_ptr, src_ptr, elem_t, alloc_cap)
+        // partial_array_copy needs the source's ADDRESS — what gen_expr yields
+        // for any partial-array value (a variable, field, element, pointee,
+        // ternary, or the temp a partial-array-returning call built into).
+        partial_array_copy(g, pa_ptr, gen_expr(g, value), elem_t, alloc_cap)
     } else if _, src_sl_ok := distinct_base(expr_type(value)).(^Type_Slice); src_sl_ok {
         // Copy a runtime slice's elements into the inline storage, bounded by
         // cap. The header is already stamped (ptr -> inline, cap = N); fill the
@@ -206,6 +198,22 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
     }
 }
 
+// Store a value into an existing partial array at `pa_ptr` (header stamped):
+// always a copy into its own inline elements. A partial-array-returning call
+// builds straight into it (through a temp when an argument might alias it —
+// see gen_call_into_struct); every other value — a string, another partial
+// array, a slice — is copied by gen_partial_array_init_value.
+gen_store_partial_array_into :: proc(g: ^Codegen, pa_ptr: string, pa: ^Type_Partial_Array, value: Expr, span: Span, name: string, dest_fresh: bool) {
+    if call, is_call := value.(^Expr_Call); is_call {
+        if info, ok := call_fun_info(g, call); ok && info.ret_partial_cap > 0 {
+            gen_call_into_struct(g, call, pa_ptr, &info, dest_fresh)
+            return
+        }
+    }
+    elem_t := llvm_type_from_checker(pa.elem)
+    gen_partial_array_init_value(g, pa_ptr, value, elem_t, elem_byte_size(elem_t, g.checked), pa.size, pa, span, name)
+}
+
 // The element type an array literal's slots hold: the destination's when the
 // caller knows it, else the literal's own checker-stamped type.
 literal_elem_type :: proc(lit: Expr, known: Type = nil) -> Type {
@@ -223,7 +231,12 @@ literal_elem_type :: proc(lit: Expr, known: Type = nil) -> Type {
 // stamped, inline zeroed, value copied — so a string literal lands as its
 // bytes, not its rodata pointer. `elem_ir` is the slot's IR type, for scalars
 // whose checker type is still an inference placeholder.
-gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span) {
+//
+// `slot_fresh`: the slot is being built (an array literal's), vs an existing
+// element being assigned (`arr[i] = v`). An existing partial-array slot is
+// copied into as-is — resetting it first would clobber a value that reads it
+// (`arr[i] = f(arr[i])`).
+gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span, slot_fresh: bool) {
     base := distinct_base(elem_type)
     if sd := as_struct_body(base); sd != nil {
         gen_store_struct_into(g, gep, sd, elem)
@@ -245,6 +258,10 @@ gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type
     if !is_pa {
         val := gen_expr_coerced(g, elem, elem_ir)
         emit_store(g, elem_ir, val, gep)
+        return
+    }
+    if !slot_fresh {
+        gen_store_partial_array_into(g, gep, pa, elem, span, "array element", dest_fresh = false)
         return
     }
     et := llvm_type_from_checker(pa.elem)
@@ -401,7 +418,7 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, av.alloca, i)
-            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span)
+            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span, slot_fresh = true)
         }
     } else if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         // Distinct-fixed-array struct literal (Quat{...}). Zero-init the slab
@@ -414,7 +431,7 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
             if elem == nil { continue }
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, av.alloca, i)
-            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span)
+            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true)
         }
     } else {
         // Value is an expression — copy from another array
@@ -530,7 +547,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         if chain.final_kind == .Struct {
             gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value)
         } else {
-            gen_store_elem_into(g, elem_ptr, chain.final_type, index_elem_type(expr_type(ix.expr)), s.value, s.span)
+            gen_store_elem_into(g, elem_ptr, chain.final_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false)
         }
         return
     }
@@ -566,7 +583,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             elem_struct := sv.elem_type[len("%class."):]
             gen_struct_store_at(g, elem_ptr, elem_struct, s.value)
         } else {
-            gen_store_elem_into(g, elem_ptr, sv.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span)
+            gen_store_elem_into(g, elem_ptr, sv.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false)
         }
         return
     }
@@ -592,7 +609,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         elem_struct := av.elem_type[len("%class."):]
         gen_struct_store_at(g, gep, elem_struct, s.value)
     } else {
-        gen_store_elem_into(g, gep, av.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span)
+        gen_store_elem_into(g, gep, av.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false)
     }
 }
 
@@ -807,34 +824,34 @@ gen_checked_index :: proc(g: ^Codegen, idx_expr: Expr, len_val: string, name: st
     return idx
 }
 
+// An array / slice element at `ptr`, as gen_expr yields it: a scalar is loaded;
+// a pointer-valued element (struct, union, fixed array, slice or partial-array
+// header) IS its address — never loaded as a value — published for the
+// claim-based consumers the way a field of that kind is.
+elem_at :: proc(g: ^Codegen, ptr: string, elem_ir: string, t: Type) -> string {
+    base := distinct_base(t)
+    if sd := as_struct_body(base); sd != nil {
+        set_field_result(g, Struct_Var{alloca = ptr, struct_name = struct_key(sd)})
+        return ptr
+    }
+    #partial switch v in base {
+    case ^Type_Union:
+        set_field_result(g, Union_Var{alloca = ptr, union_name = union_key(v)})
+        return ptr
+    case ^Type_Fixed_Array:
+        set_field_result(g, Array_Var{alloca = ptr, capacity = v.size, elem_type = llvm_type_from_checker(v.elem)})
+        return ptr
+    case ^Type_Slice, ^Type_Partial_Array:
+        return ptr
+    }
+    return emit_load(g, elem_ir, ptr)
+}
+
 gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
     // Try unified address chain for chained access (obj.items[i], a[i][j], etc.)
     if chain, chain_ok := build_address_chain(g, e); chain_ok {
         addr := emit_address_chain(g, &chain)
-        // A union element is an aggregate: yield its address (union values are
-        // pointer-valued, as gen_field_access does for a union field).
-        if strings.has_prefix(chain.final_type, "%union.") {
-            set_field_result(g, Union_Var{alloca = addr, union_name = chain.final_type[len("%union."):]})
-            return addr
-        }
-        // A slice element is a header in place — and slice values are
-        // pointer-valued (gen_expr on any slice expression yields a pointer to
-        // its header), so yield its address rather than loading the header.
-        if _, is_slice := distinct_base(index_elem_type(expr_type(e.expr))).(^Type_Slice); is_slice {
-            return addr
-        }
-        if chain.final_kind == .Scalar {
-            return emit_load(g, chain.final_type, addr)
-        }
-        if chain.final_kind == .Struct {
-            set_field_result(g, Struct_Var{alloca = addr, struct_name = chain.struct_name})
-            return addr
-        }
-        if chain.final_kind == .Array {
-            set_field_result(g, Array_Var{alloca = addr, capacity = chain.array_cap, elem_type = chain.array_elem})
-            return addr
-        }
-        return emit_load(g, chain.final_type, addr)
+        return elem_at(g, addr, chain.final_type, index_elem_type(expr_type(e.expr)))
     }
 
     // The expr should be an identifier naming an array or slice
@@ -849,9 +866,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
                 arr_type := array_var_type(&av)
                 gep := fresh_tmp(g)
                 emit_array_gep_var(g, gep, arr_type, av.alloca, idx, slice_layout.len_ir)
-                val := fresh_tmp(g)
-                emit_load_into(g, val, av.elem_type, gep)
-                return val
+                return elem_at(g, gep, av.elem_type, index_elem_type(expr_type(e.expr)))
             }
             // Slice field: `s.field[i]` where `field` is a `[]T`. Route the
             // claimed Slice_Var through gen_slice_index for the same bounds-
@@ -871,9 +886,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
                 idx := gen_checked_index(g, e.index, arr_len, "array", e.span)
                 gep := fresh_tmp(g)
                 emit_array_gep_var(g, gep, inner_arr_type, inner_ptr, idx, slice_layout.len_ir)
-                val := fresh_tmp(g)
-                emit_load_into(g, val, inner_elem, gep)
-                return val
+                return elem_at(g, gep, inner_elem, inner_fa.elem)
             }
         }
         codegen_fatal(g, e.span, CODE_INDEX_TARGET_VARIABLE)
@@ -923,9 +936,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
         arr_type := array_var_type(&av)
         emit_array_gep_var(g, gep, arr_type, av.alloca, idx, slice_layout.len_ir)
     }
-    val := fresh_tmp(g)
-    emit_load_into(g, val, av.elem_type, gep)
-    return val
+    return elem_at(g, gep, av.elem_type, index_elem_type(expr_type(e.expr)))
 }
 
 // Address-of array element: &arr[i] — emit GEP to element, return pointer (no load).
@@ -1243,28 +1254,7 @@ gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {
     // GEP to element — idx is at slice header width per the conversion above.
     elem_ptr := fresh_tmp(g)
     emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx, slice_layout.len_ir)
-    // Struct element: don't load. Hand back the address and tag it as a
-    // struct-result so the caller (memcpy on assign, field-access, etc.)
-    // works against the slot in place — same idiom as the field-access
-    // path. Loading would force the struct into a register and break the
-    // memcpy on the next assignment site.
-    if strings.has_prefix(sv.elem_type, "%class.") {
-        struct_name := sv.elem_type[len("%class."):]
-        set_field_result(g, Struct_Var{alloca = elem_ptr, struct_name = struct_name})
-        return elem_ptr
-    }
-    // The other pointer-valued element kinds — a slice header, a union — hand
-    // back the address too, as the address-chain path does.
-    #partial switch et in distinct_base(index_elem_type(expr_type(e.expr))) {
-    case ^Type_Slice:
-        return elem_ptr
-    case ^Type_Union:
-        set_field_result(g, Union_Var{alloca = elem_ptr, union_name = union_key(et)})
-        return elem_ptr
-    }
-    val := fresh_tmp(g)
-    emit_load_into(g, val, sv.elem_type, elem_ptr)
-    return val
+    return elem_at(g, elem_ptr, sv.elem_type, index_elem_type(expr_type(e.expr)))
 }
 
 // Create a slice from an array or another slice: arr[low:high]

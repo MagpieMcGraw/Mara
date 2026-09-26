@@ -1,0 +1,14 @@
+module slice_param_header_neg
+//@ expect-fail: cannot write to field 'len' of immutable parameter 's'
+
+// A slice param's header is the caller's (passed by address): writing it
+// shortened the caller's slice. Read-only; take ^[]T to move a cursor.
+
+trim :: fun(s: []i64) { s.len = 1 }
+
+main :: fun() {
+	a : [3]i64 = [1, 2, 3]
+	s : []i64 = a[:]
+	trim(s)
+	print(s.len)
+}
