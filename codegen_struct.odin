@@ -101,7 +101,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         // which handles literals (with constructor / defaults / overrides),
         // ident-to-ident copies, field-access copies, struct-returning call
         // NRVO, pure-struct constructor calls, and overloaded binary ops.
-        gen_store_struct_into(g, sv.alloca, st, value, dest_fresh = needs_alloca, dest_expr = var_ref(name))
+        gen_store_struct_into(g, sv.alloca, st, value, dest_fresh = needs_alloca, dest_expr = var_ref(name, sd_type_scope(st)))
         // After literal/copy paths have written their fields, lay down backing
         // storage and slice-header init for any sized-slice fields. The literal
         // path zero-memsets first and may call the init function, both of which
@@ -136,7 +136,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
 // (invalid IR) and never set len. Returns true if it handled the field; false
 // means the caller does its normal scalar/aggregate store. The enclosing struct
 // should be memset-zeroed first (the stamp sets ptr/cap; the copy sets len).
-gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr, span: Span, dest_expr: Expr = nil) -> bool {
+gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr, span: Span, dest_expr: Expr = nil, dest_fresh := false) -> bool {
     pa, pa_ok := distinct_base(field.type_).(^Type_Partial_Array)
     if !pa_ok { return false }
     // A whole partial-array value (a call's result, another partial array)
@@ -144,7 +144,7 @@ gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, ge
     // would reset `len` under a value that reads this very field
     // (`h.f = push(h.f, x)`).
     if writes_whole_partial_array(g, value) {
-        gen_store_partial_array_into(g, gep, pa, value, span, field.name, dest_fresh = false, dest_expr = dest_expr)
+        gen_store_partial_array_into(g, gep, pa, value, span, field.name, dest_fresh = dest_fresh, dest_expr = dest_expr)
         return true
     }
     elem_t := llvm_type_from_checker(pa.elem)
@@ -177,7 +177,7 @@ gen_positional_ctor_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, 
 // scalar fields, embedded (`using`) struct fields, fixed-array fields, and
 // aggregate (slice) fields. Unknown field names are silently skipped — the
 // type checker has already reported them.
-apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: ^Scope_Body, llvm_name: string, base_ptr: string) {
+apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: ^Scope_Body, llvm_name: string, base_ptr: string, fields_fresh := false) {
     // Multi-return spread: `Foo{call()}` where call returns a tuple matching
     // Foo's fields. Emit the call (results land in g.tuple_result_ptrs as
     // sret-filled temps), then materialize each struct field from the
@@ -278,7 +278,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         if acap > 0 {
             data_gep := fresh_tmp(g)
             emit_field_gep_into(g, data_gep, llvm_name, base_ptr, idx)
-            gen_array_field_store(g, data_gep, acap, field_array_elem(f), field.value)
+            gen_array_field_store(g, data_gep, acap, field_array_elem(f), field.value, dest_fresh = fields_fresh)
             continue
         }
         // Partial-array field (str64, etc.). Its IR also starts with "{ ", but
@@ -289,7 +289,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         if _, is_pa := distinct_base(f.type_).(^Type_Partial_Array); is_pa {
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
-            gen_partial_array_field_store(g, f, gep, field.value, lit.span)
+            gen_partial_array_field_store(g, f, gep, field.value, lit.span, dest_fresh = fields_fresh)
             continue
         }
         // Aggregate field (e.g. []byte = { ptr, i64, i64 }): memcpy from source.
@@ -328,7 +328,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         if ut, ok := distinct_base(f.type_).(^Type_Union); ok {
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
-            gen_store_union_into(g, gep, ut, field.value)
+            gen_store_union_into(g, gep, ut, field.value, dest_fresh = true)
             continue
         }
         // Scalar field.
@@ -995,8 +995,8 @@ parse_array_ir_type :: proc(ir_type: string) -> (cap: int, elem: string, ok: boo
 //
 // Thin wrapper over the unified gen_store_array_into. Kept for callers that
 // already have raw capacity + elem_type rather than checker metadata.
-gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, array_elem: string, value: Expr, dest_expr: Expr = nil) {
-    gen_store_array_into(g, data_ptr, array_cap, array_elem, value, dest_expr = dest_expr)
+gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, array_elem: string, value: Expr, dest_expr: Expr = nil, dest_fresh := false) {
+    gen_store_array_into(g, data_ptr, array_cap, array_elem, value, dest_fresh = dest_fresh, dest_expr = dest_expr)
 }
 
 
@@ -1061,6 +1061,18 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
         emit_string_gep(g, src_ptr, byte_len, global_name)
         emit_memset_zero(g, dst_ptr, total_bytes)
         emit_memcpy(g, dst_ptr, src_ptr, byte_len)
+        return
+    }
+
+    // An array literal is written slot by slot (after a zero-fill for the
+    // `T{…}` spelling): one that reads the destination (`a = [a[1], a[0]]`)
+    // is built in a temp and copied over (see value_reads_dest).
+    if is_array_literal(value) && value_reads_dest(g, value, dest_fresh, dest_expr) {
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, arr_type)
+        gen_store_array_into(g, tmp, capacity, elem_type, value, is_utf8, dest_fresh = true)
+        emit_memcpy(g, dst_ptr, tmp, total_bytes)
+        reanchor_partial_arrays(g, expr_type(value), dst_ptr)
         return
     }
 
@@ -1263,6 +1275,22 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
     llvm_name := struct_llvm_name(struct_key(st))
     total := struct_byte_size(st, g.checked)
 
+    // A literal (or `Ctor(){…}`) built in place zeroes / defaults the
+    // destination before it evaluates its fields: one that reads the
+    // destination gets a temp instead (see value_reads_dest).
+    in_place_build := false
+    #partial switch v in value {
+    case ^Expr_Struct_Literal: in_place_build = true
+    case ^Expr_Call:           in_place_build = v.overrides != nil
+    }
+    if in_place_build && value_reads_dest(g, value, dest_fresh, dest_expr) {
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, llvm_name)
+        gen_store_struct_into(g, tmp, st, value, dest_fresh = true)
+        emit_value_copy(g, sd_type_scope(st), dst_ptr, tmp)
+        return
+    }
+
     if lit, ok := value.(^Expr_Struct_Literal); ok {
         // Zero-init first, run the struct's init function to apply defaults
         // (and any imperative body), then layer the literal's explicit field
@@ -1288,7 +1316,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
                 apply_struct_field_defaults(g, st, llvm_name, dst_ptr, lit)
             }
         }
-        apply_struct_literal_fields(g, lit, st, llvm_name, dst_ptr)
+        apply_struct_literal_fields(g, lit, st, llvm_name, dst_ptr, fields_fresh = true)
         return
     }
 
@@ -1345,7 +1373,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             if info, info_ok := call_fun_info(g, call); info_ok && info.ret_struct != "" {
                 gen_call_into_struct(g, call, dst_ptr, &info, dest_fresh, dest_expr)
                 if call.overrides != nil {
-                    apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
+                    apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true)
                 }
                 return
             }
@@ -1355,7 +1383,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         if is_pure_struct && len(call.args) == 0 && has_init {
             emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
             if call.overrides != nil {
-                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
+                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true)
             }
             return
         }
@@ -1384,7 +1412,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
                 }
             }
             if call.overrides != nil {
-                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
+                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true)
             }
             return
         }
@@ -1812,7 +1840,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         if ut, ut_ok := f.type_.(^Type_Union); ut_ok {
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
-            gen_store_union_into(g, gep, ut, s.value)
+            gen_store_union_into(g, gep, ut, s.value, dest_expr = s.target)
             return
         }
         // Struct field — delegate to the unified struct store primitive.
@@ -1893,7 +1921,7 @@ gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         gen_store_slice_into(g, ptr_val, s.value)
         return
     case ^Type_Union:
-        gen_store_union_into(g, ptr_val, t, s.value)
+        gen_store_union_into(g, ptr_val, t, s.value, dest_expr = s.target)
         return
     }
 
@@ -2029,7 +2057,8 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
     llvm_name := union_llvm_name(ukey)
 
     // Alloca if variable doesn't exist yet
-    if _, already_exists := get_union(g, name); !already_exists {
+    _, already_exists := get_union(g, name)
+    if !already_exists {
         alloca_name := fmt.tprintf("%%%s", name)
         emit_alloca(g, alloca_name, llvm_name)
         g.all_vars[name] = Union_Var{
@@ -2039,7 +2068,7 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
     }
 
     uv, _ := get_union(g, name)
-    gen_store_union_into(g, uv.alloca, ut, value)
+    gen_store_union_into(g, uv.alloca, ut, value, dest_fresh = !already_exists, dest_expr = var_ref(name, ut))
 }
 
 // Single point of truth for "store a union value into a destination pointer" —
@@ -2048,8 +2077,18 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
 // built in place; any other union value (a local, a param, a call result, a
 // field, an element) is pointer-valued, so it's copied by the union's true size
 // (checker_type_byte_size reports a placeholder for unions).
-gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, value: Expr) {
+gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, value: Expr, dest_fresh: bool = false, dest_expr: Expr = nil) {
     if lit, ok := value.(^Expr_Struct_Literal); ok && lit.name != "" {
+        // A variant literal that reads the union it's replacing — typically
+        // through a match payload (`match s { One o => s = Two{a = o.m} }`) —
+        // is built in a temp: in place, the payload is zeroed first.
+        if value_reads_dest(g, value, dest_fresh, dest_expr) {
+            tmp := fresh_tmp(g)
+            emit_alloca(g, tmp, union_llvm_name(union_key(ut)))
+            emit_union_literal_store(g, ut, value, tmp)
+            emit_memcpy(g, dst_ptr, tmp, union_byte_size(g, ut))
+            return
+        }
         emit_union_literal_store(g, ut, value, dst_ptr)
         return
     }
@@ -2103,5 +2142,5 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
     variant_struct_name := ut.variant_structs[lit.name]
     vst, vst_ok := lookup_struct(g, variant_struct_name)
     if !vst_ok { return }
-    gen_store_struct_into(g, union_ptr, vst, value)
+    gen_store_struct_into(g, union_ptr, vst, value, dest_fresh = true) // gen_store_union_into decided
 }

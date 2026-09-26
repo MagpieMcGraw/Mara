@@ -377,6 +377,18 @@ Codegen :: struct {
     // consumed_param_of): its opening `r := pk`, and pk's name.
     consume_stmt:     ^Stmt_Assign,
     consume_src:      string,
+    // Names in the current function bound to storage that belongs to some
+    // other variable — a match arm's payload (the union's own bytes), a
+    // take/let view, the compound-assign stand-in for its LHS. Storage reached
+    // through one can't be told apart by name (see storage_root).
+    alias_vars:       map[string]bool,
+    // Names in the current function whose storage belongs to the CALLER, so
+    // (unlike a local's own allocation) it can sit inside some other value —
+    // see storage_read_hits. result_vars live in the result slot (NRVO local,
+    // named returns, a constructor's fields); param_vars are params passed by
+    // address, or pointers, reaching the caller's storage.
+    result_vars:      map[string]bool,
+    param_vars:       map[string]bool,
     // Single partial-array return via sret: cap (>0 marks it) and elem IR type.
     // The callee builds into %sret — NRVO when the returned local is the
     // candidate, a copy-into-%sret otherwise. The partial-array decl path and

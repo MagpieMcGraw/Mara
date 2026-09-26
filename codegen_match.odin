@@ -102,6 +102,7 @@ gen_niche_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, unio
             if struct_name == "" {
                 struct_name = ut.variant_structs[some_arm.variant_name] or_else some_arm.variant_name
             }
+            g.alias_vars[some_arm.binding_name] = true // the union's own bytes
             g.all_vars[some_arm.binding_name] = Struct_Var{
                 alloca      = union_ptr,
                 struct_name = struct_name,
@@ -180,6 +181,7 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
                 // The variant struct carries the tag header and overlays the
                 // union at offset 0, so bind it at the union pointer — its
                 // user fields sit at the same absolute offsets as before.
+                g.alias_vars[arm.binding_name] = true // the union's own bytes
                 g.all_vars[arm.binding_name] = Struct_Var{
                     alloca = union_ptr,
                     struct_name = struct_name,

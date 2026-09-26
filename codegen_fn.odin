@@ -321,6 +321,7 @@ fixup_partial_array_fields :: proc(g: ^Codegen, base_ptr: string, sd: ^Scope_Bod
 // struct constructor's fields to GEPs into %sret so the body's references
 // route through the caller's slot directly.
 prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
+    g.result_vars[name] = true // a field of the caller's slot
     t := distinct_base(ft)
     #partial switch v in t {
     case ^Type_Fixed_Array:
@@ -497,12 +498,14 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
 
     // Save and reset codegen state for this function
     old_all_vars := g.all_vars
+    old_alias_vars, old_result_vars, old_param_vars := g.alias_vars, g.result_vars, g.param_vars
     old_tmp := g.tmp_counter
     old_scope_stack := g.scope_stack
     old_nrvo_var := g.nrvo_var
     old_emitted_allocas := g.emitted_allocas
     old_ctor_self := g.ctor_has_self_sret
     g.all_vars = {}
+    g.alias_vars, g.result_vars, g.param_vars = {}, {}, {}
     g.tmp_counter = 0
     g.scope_stack = {}
     g.emitted_allocas = {}
@@ -622,6 +625,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     // the caller's slot. gen_return_tuple detects the self-copy at return and skips it.
     if ret_types != nil && len(cf.return_binding_names) > 0 {
         for rb_name, i in cf.return_binding_names {
+            g.result_vars[rb_name] = true
             if i >= len(ret_types) { break }
             rb_type := distinct_base(ret_types[i])
             sret_slot := fmt.tprintf("%%sret.%d", i)
@@ -710,7 +714,10 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     }
 
     // Alloca for each parameter
+    if g.nrvo_var != "" { g.result_vars[g.nrvo_var] = true } // lives in the caller's result slot
     for p in cf.cg_params {
+        // Passed by address (an aggregate) or a pointer: reaches the caller's storage.
+        if _, is_ptr := distinct_base(p.type_).(^Type_Ptr); is_ptr || is_pointer_valued_type(p.type_) { g.param_vars[p.name] = true }
         if sd := as_struct_body(p.type_); sd != nil {
             // Struct param: arg is already a ptr to the struct, no alloca needed
             g.all_vars[p.name] = Struct_Var{
@@ -831,6 +838,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
 
     // Restore state
     g.all_vars = old_all_vars
+    g.alias_vars, g.result_vars, g.param_vars = old_alias_vars, old_result_vars, old_param_vars
     g.tmp_counter = old_tmp
     g.scope_stack = old_scope_stack
     g.current_ret_type = old_ret_type

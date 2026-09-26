@@ -255,20 +255,20 @@ literal_elem_type :: proc(lit: Expr, known: Type = nil) -> Type {
 gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span, slot_fresh: bool, dest_expr: Expr = nil) {
     base := distinct_base(elem_type)
     if sd := as_struct_body(base); sd != nil {
-        gen_store_struct_into(g, gep, sd, elem, dest_expr = dest_expr)
+        gen_store_struct_into(g, gep, sd, elem, dest_fresh = slot_fresh, dest_expr = dest_expr)
         return
     }
     pa, is_pa := base.(^Type_Partial_Array)
     #partial switch t in base {
     case ^Type_Union:
-        gen_store_union_into(g, gep, t, elem)
+        gen_store_union_into(g, gep, t, elem, dest_fresh = slot_fresh, dest_expr = dest_expr)
         return
     case ^Type_Slice:
         gen_store_slice_into(g, gep, elem)
         return
     case ^Type_Fixed_Array:
         _, is_utf8 := distinct_base(t.elem).(Type_Utf8)
-        gen_store_array_into(g, gep, t.size, llvm_type_from_checker(t.elem), elem, is_utf8, dest_expr = dest_expr)
+        gen_store_array_into(g, gep, t.size, llvm_type_from_checker(t.elem), elem, is_utf8, dest_fresh = slot_fresh, dest_expr = dest_expr)
         return
     }
     if !is_pa {
@@ -358,6 +358,7 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
     }
     alloc_cap := capacity
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
+    fresh := !is_array(g, name)
 
     // If variable doesn't exist yet, allocate data
     if !is_array(g, name) {
@@ -420,6 +421,18 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
         total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
         emit_memset_zero(g, av.alloca, total_bytes)
         emit_memcpy(g, av.alloca, src_ptr, byte_len)
+        return
+    }
+
+    // A literal that reads the array it's reassigning (`a = [a[1], a[0]]`):
+    // built in a temp, since slot-by-slot in place would read slots it
+    // already overwrote (see value_reads_dest).
+    if is_array_literal(value) && value_reads_dest(g, value, fresh, var_ref(name, expr_type(value))) {
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, arr_type)
+        gen_store_array_into(g, tmp, alloc_cap, elem_type, value, is_utf8, dest_fresh = true)
+        emit_memcpy(g, av.alloca, tmp, alloc_cap * elem_byte_size(elem_type, g.checked))
+        reanchor_partial_arrays(g, expr_type(value), av.alloca)
         return
     }
 

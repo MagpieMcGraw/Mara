@@ -1,0 +1,151 @@
+module literal_self_reference
+
+//@ expect-output: array=2 1
+//@ expect-output: typed=2 1
+//@ expect-output: struct=2 1
+//@ expect-output: partial=0 1
+//@ expect-output: field=4 3
+//@ expect-output: elem=6 5
+//@ expect-output: deref=8 7
+//@ expect-output: viaptr=10 9
+//@ expect-output: nested=12 11
+//@ expect-output: arrayfield=14 13
+//@ expect-output: arrayelem=16 15
+//@ expect-output: ctor=17 18
+//@ expect-output: overrides=20 19
+//@ expect-output: match=22 21
+//@ expect-output: matchfield=24 23
+//@ expect-output: other=3 1
+//@ expect-output: paraminside=1 2 3 n=4
+//@ expect-output: twoptrs=26 25
+
+// A literal assigned to EXISTING storage is built in place — zeroed, defaults
+// applied, then filled — so a literal that reads that storage read what it was
+// overwriting: `p = P{x = p.y, y = p.x}` gave 0 0, `a = [a[1], a[0]]` gave
+// 2 2, and `s = Two{a = o.m}` (o bound to s's payload by `match`) read zeros.
+// Such a literal is built in a temp and copied over. Every shape of
+// destination and literal is covered; the last case reads another variable
+// and stays in place.
+
+V :: distinct [2]i64
+P :: struct { x: i64, y: i64 }
+H :: struct { p: P, arr: [2]i64 }
+Cam :: struct(seed: V) {
+	pos: V = V{seed[1], seed[0]}
+}
+Pick :: union(tag u8) { One = 1 { n: i64, m: i64 } Two = 2 { a: i64, b: i64 } }
+Holder :: struct { s: Pick }
+W :: distinct [3]i64
+C :: struct { pos: W, n: i64 }
+
+// `p` is the caller's storage — here, the destination's own `pos` field.
+fill :: fun(out: ^[2]C, p: W) {
+	out[0] = C{pos = p, n = p[0] + p[2]}
+}
+
+main :: fun() {
+	a : [2]i64 = [1, 2]
+	a = [a[1], a[0]]
+	print("array=% %", a[0], a[1])
+
+	v := V{1, 2}
+	v = V{v[1], v[0]}
+	print("typed=% %", v[0], v[1])
+
+	p := P{x = 1, y = 2}
+	p = P{x = p.y, y = p.x}
+	print("struct=% %", p.x, p.y)
+
+	q := P{x = 1, y = 2}
+	q = P{y = q.x}
+	print("partial=% %", q.x, q.y)
+
+	h := H{}
+	h.p = P{x = 3, y = 4}
+	h.p = P{x = h.p.y, y = h.p.x}
+	print("field=% %", h.p.x, h.p.y)
+
+	ps : [2]P
+	ps[1] = P{x = 5, y = 6}
+	ps[1] = P{x = ps[1].y, y = ps[1].x}
+	print("elem=% %", ps[1].x, ps[1].y)
+
+	r := P{x = 7, y = 8}
+	rp := &r
+	rp^ = P{x = r.y, y = r.x}
+	print("deref=% %", r.x, r.y)
+
+	h2 := H{}
+	h2.p = P{x = 9, y = 10}
+	hp := &h2
+	hp.p = P{x = h2.p.y, y = h2.p.x}
+	print("viaptr=% %", h2.p.x, h2.p.y)
+
+	h3 := H{}
+	h3.p = P{x = 11, y = 12}
+	h3 = H{p = P{x = h3.p.y, y = h3.p.x}}
+	print("nested=% %", h3.p.x, h3.p.y)
+
+	h4 := H{}
+	h4.arr = [13, 14]
+	h4.arr = [h4.arr[1], h4.arr[0]]
+	print("arrayfield=% %", h4.arr[0], h4.arr[1])
+
+	grid : [2][2]i64
+	grid[1] = [15, 16]
+	grid[1] = [grid[1][1], grid[1][0]]
+	print("arrayelem=% %", grid[1][0], grid[1][1])
+
+	cam := Cam(V{17, 18})
+	cam = Cam(cam.pos)
+	print("ctor=% %", cam.pos[0], cam.pos[1])
+
+	o := P{x = 19, y = 20}
+	o = P(){x = o.y, y = o.x}
+	print("overrides=% %", o.x, o.y)
+
+	s : Pick = One{n = 21, m = 22}
+	match s {
+	One one
+		s = Two{a = one.m, b = one.n}
+	Two two
+		print("unreachable")
+	}
+	match s {
+	Two two
+		print("match=% %", two.a, two.b)
+	One one
+		print("still one")
+	}
+
+	hs := Holder{}
+	hs.s = One{n = 23, m = 24}
+	match hs.s {
+	One one
+		hs.s = Two{a = one.m, b = one.n}
+	Two two
+		print("unreachable")
+	}
+	match hs.s {
+	Two two
+		print("matchfield=% %", two.a, two.b)
+	One one
+		print("still one")
+	}
+
+	w := P{x = 1, y = 2}
+	t := P{x = 3, y = 4}
+	w = P{x = t.x, y = t.y - 3}
+	print("other=% %", w.x, w.y)
+
+	cs : [2]C
+	cs[0] = C{pos = W{1, 2, 3}, n = 0}
+	fill(&cs, cs[0].pos)
+	print("paraminside=% % % n=%", cs[0].pos[0], cs[0].pos[1], cs[0].pos[2], cs[0].n)
+
+	pair := P{x = 25, y = 26}
+	p1 := &pair
+	p2 := &pair
+	p1^ = P{x = p2.y, y = p2.x}
+	print("twoptrs=% %", pair.x, pair.y)
+}

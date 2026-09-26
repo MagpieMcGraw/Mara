@@ -103,7 +103,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 if info_ok && info.ret_array_cap > 0 {
                     if existing, ex_ok := get_array(g, s.name); ex_ok {
                         // NRVO alias: call directly into pre-registered buffer
-                        gen_call_into_array(g, call, &existing, &info, s.is_decl, var_ref(s.name))
+                        gen_call_into_array(g, call, &existing, &info, s.is_decl, var_ref(s.name, s.var_type))
                     } else {
                         gen_array_assign(g, s.name, fa.size, elem_t, nil, utf8, loc)
                         existing, _ := get_array(g, s.name)
@@ -238,7 +238,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok && s.value != nil {
             if existing, ex_ok := get_slice(g, s.name); ex_ok {
                 if _, broadcast := s.value.(^Expr_Struct_Literal); !broadcast {
-                    gen_store_partial_array_into(g, existing.alloca, pa, s.value, s.span, s.name, dest_fresh = s.is_decl, dest_expr = var_ref(s.name))
+                    gen_store_partial_array_into(g, existing.alloca, pa, s.value, s.span, s.name, dest_fresh = s.is_decl, dest_expr = var_ref(s.name, s.var_type))
                     return
                 }
             }
@@ -578,7 +578,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             }
             if info, info_ok := call_fun_info(g, call); info_ok && info.ret_array_cap > 0 {
                 if existing, ex_ok := get_array(g, s.name); ex_ok {
-                    gen_call_into_array(g, call, &existing, &info, s.is_decl, var_ref(s.name))
+                    gen_call_into_array(g, call, &existing, &info, s.is_decl, var_ref(s.name, s.var_type))
                 } else {
                     gen_call(g, call)
                     if cr, cr_ok := claim_call_result(g); cr_ok {
@@ -846,6 +846,7 @@ codegen_const_eval_int :: proc(g: ^Codegen, e: Expr) -> (int, bool) {
 // advances storage's cursor and returns a typed pointer; we bind `name` so
 // that subsequent reads/writes go directly through that pointer (no copy).
 gen_take_decl :: proc(g: ^Codegen, name: string, e: ^Expr_Take) {
+    g.alias_vars[name] = true // a typed view of `storage`'s bytes
     // If `name` is already bound to a slice slot (e.g. NRVO pre-aliased
     // it to %sret), let the runtime-counted take write its slice header
     // straight into that slot. Saves one alloca + one 16-byte memcpy at
@@ -1275,7 +1276,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
         // Union slot: a variant literal is built in place; any other union
         // value is pointer-valued and copied by the union's true size.
         if ut, ut_ok := resolved_type.(^Type_Union); ut_ok {
-            gen_store_union_into(g, sret_ptr, ut, val)
+            gen_store_union_into(g, sret_ptr, ut, val, dest_fresh = true)
             continue
         }
         // Struct returns: field-wise copy from src alloca to sret (can't use
@@ -1287,7 +1288,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
                 // the init function for defaults, then layer the literal's fields
                 // — `Foo{...}` returned in a tuple slot behaves identically to a
                 // `Foo{...}` decl (and to `Foo(){...}`), no separate fill loop.
-                gen_store_struct_into(g, sret_ptr, sd, lit)
+                gen_store_struct_into(g, sret_ptr, sd, lit, dest_fresh = true)
                 continue
             }
             if ident, id_ok := val.(^Expr_Ident); id_ok {
@@ -1362,7 +1363,7 @@ gen_return_struct :: proc(g: ^Codegen, s: Stmt_Return, sret_sv: Struct_Var) {
         // Case A: returning a struct literal. Route through the unified store
         // primitive so positional literals, slice fields (auto-coerced from
         // local fixed arrays), and embedded structs all behave correctly.
-        gen_store_struct_into(g, sret_ptr, sret_st, lit)
+        gen_store_struct_into(g, sret_ptr, sret_st, lit, dest_fresh = true)
     } else if ident, id_ok := ret_val.(^Expr_Ident); id_ok {
         // Case B: returning a struct variable. Skip the self-copy when the
         // local is NRVO-aliased to sret (already constructed in place).
@@ -1672,6 +1673,7 @@ apply_compound_load_substitute :: proc(g: ^Codegen, s: ^Stmt_Assign, addr: strin
     g.tmp_counter += 1
     name := fmt.tprintf("$compound_val.%d", g.tmp_counter)
     lhs_t := distinct_base(expr_type(bin.left))
+    if is_pointer_valued_type(lhs_t) { g.alias_vars[name] = true } // IS the LHS's storage
     if fa, is_fa := lhs_t.(^Type_Fixed_Array); is_fa {
         _, utf8 := fa.elem.(Type_Utf8)
         g.all_vars[name] = Array_Var{alloca = addr, capacity = fa.size, elem_type = llvm_type_from_checker(fa.elem), is_utf8 = utf8}

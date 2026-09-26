@@ -340,7 +340,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if sd := as_struct_body(e.type_); sd != nil {
             tmp := fresh_tmp(g)
             emit_alloca(g, tmp, struct_llvm_name(struct_key(sd)))
-            gen_store_struct_into(g, tmp, sd, e)
+            gen_store_struct_into(g, tmp, sd, e, dest_fresh = true)
             return tmp
         }
         codegen_fatal(g, e.span, CODE_STRUCT_LITERAL_UNTYPED_EXPR)
@@ -664,7 +664,7 @@ gen_array_literal_value :: proc(g: ^Codegen, lit: Expr, fa: ^Type_Fixed_Array, e
     if is_pointer_valued_type(fa.elem) {
         tmp := fresh_tmp(g)
         emit_alloca(g, tmp, arr_ir)
-        gen_store_array_into(g, tmp, fa.size, elem_t, lit)
+        gen_store_array_into(g, tmp, fa.size, elem_t, lit, dest_fresh = true)
         loaded := fresh_tmp(g)
         emit_load_into(g, loaded, arr_ir, tmp)
         return loaded
@@ -713,7 +713,7 @@ gen_value_address :: proc(g: ^Codegen, e: Expr, t: Type, target_type: string) ->
             tmp := fresh_tmp(g)
             emit_alloca(g, tmp, fmt.tprintf("[%d x %s]", v.size, elem_ir))
             _, is_utf8 := distinct_base(v.elem).(Type_Utf8)
-            gen_store_array_into(g, tmp, v.size, elem_ir, lit, is_utf8)
+            gen_store_array_into(g, tmp, v.size, elem_ir, lit, is_utf8, dest_fresh = true)
             return tmp
         }
     }
@@ -1270,7 +1270,7 @@ gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
             elem_ir := llvm_type_from_checker(fa.elem)
             arr_alloca := fresh_tmp(g)
             emit_alloca(g, arr_alloca, fmt.tprintf("[%d x %s]", fa.size, elem_ir))
-            gen_store_array_into(g, arr_alloca, fa.size, elem_ir, arg)
+            gen_store_array_into(g, arr_alloca, fa.size, elem_ir, arg, dest_fresh = true)
             size_str := fmt.tprintf("%d", fa.size)
             return emit_build_temp_slice(g, arr_alloca, size_str, size_str)
         }
@@ -1418,7 +1418,7 @@ gen_array_address :: proc(g: ^Codegen, e: Expr, fa: ^Type_Fixed_Array) -> string
         tmp := fresh_tmp(g)
         emit_alloca(g, tmp, arr_ir)
         _, is_utf8 := distinct_base(fa.elem).(Type_Utf8)
-        gen_store_array_into(g, tmp, fa.size, elem_ir, value, is_utf8)
+        gen_store_array_into(g, tmp, fa.size, elem_ir, value, is_utf8, dest_fresh = true)
         return tmp
     case ^Expr_Call:
         // A distinct conversion or desugared builtin is the value it wraps.
@@ -2077,7 +2077,7 @@ call_consumes_dest :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, dest_fre
     k, consumes := info.consumed_param.?
     if dest_fresh || !consumes || dest == nil || k >= len(e.args) { return -1, false }
     if !same_storage(dest, e.args[k]) { return -1, false }
-    root, via_ptr, rooted := storage_root(dest)
+    root, via_ptr, rooted := storage_root(g, dest)
     if !rooted { return -1, false }
     for a, i in e.args {
         if i != k && !arg_cannot_reach(g, a, root, via_ptr) { return -1, false }
@@ -2085,11 +2085,13 @@ call_consumes_dest :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, dest_fre
     return k, true
 }
 
-// An Expr naming local variable `name` — the destination of `name = …`, for
-// the in-place call check (same_storage).
-var_ref :: proc(name: string) -> Expr {
+// An Expr naming variable `name` (of type `t`) — the destination of
+// `name = …`, for the in-place and self-reading checks (same_storage,
+// value_reads_dest).
+var_ref :: proc(name: string, t: Type) -> Expr {
     id := new(Expr_Ident)
     id.name = name
+    id.type_ = t
     return id
 }
 
@@ -2125,14 +2127,16 @@ same_storage :: proc(a, b: Expr) -> bool {
 }
 
 // The variable an lvalue's storage lives in, and whether the path to it
-// crosses a pointer (a deref, an auto-deref'd field/index, a slice's data) —
-// past which it could be anywhere.
-storage_root :: proc(e: Expr) -> (root: string, via_ptr: bool, ok: bool) {
+// crosses a pointer (a deref, an auto-deref'd field/index, a slice's data) or
+// an alias (a match payload, a take/let view — g.alias_vars) — past which it
+// could be anywhere.
+storage_root :: proc(g: ^Codegen, e: Expr) -> (root: string, via_ptr: bool, ok: bool) {
     cur := e
     for {
         #partial switch v in cur {
         case ^Expr_Ident:
             if _, is_ptr := distinct_base(v.type_).(^Type_Ptr); is_ptr { via_ptr = true }
+            if g.alias_vars[v.name] { via_ptr = true }
             return v.name, via_ptr, true
         case ^Expr_Field_Access:
             if _, is_ptr := distinct_base(expr_type(v.expr)).(^Type_Ptr); is_ptr { via_ptr = true }
@@ -2164,7 +2168,7 @@ arg_cannot_reach :: proc(g: ^Codegen, a: Expr, root: string, dest_via_ptr: bool)
     #partial switch v in a {
     case ^Expr_Ident, ^Expr_Field_Access, ^Expr_Index, ^Expr_Unary:
         if u, is_unary := v.(^Expr_Unary); is_unary && u.op != .Caret { return true }
-        r, arg_via_ptr, ok := storage_root(a)
+        r, arg_via_ptr, ok := storage_root(g, a)
         return ok && !dest_via_ptr && !arg_via_ptr && r != root
     case ^Expr_Call:
         if inner, passthrough := call_passthrough_value(g, v); passthrough {
@@ -2172,6 +2176,229 @@ arg_cannot_reach :: proc(g: ^Codegen, a: Expr, root: string, dest_via_ptr: bool)
         }
         return true
     case ^Expr_Array, ^Expr_Struct_Literal, ^Expr_String, ^Expr_Binary, ^Expr_Compiler_Intrinsic:
+        return true
+    }
+    return false
+}
+
+// A value built in place in EXISTING storage — a literal: zeroed, defaults
+// applied, then filled field by field; or a constructor call with `{...}`
+// overrides — reads that storage mid-construction if it mentions it:
+// `p = P{x = p.y}` read p.y after the zeroing, `a = [a[1], a[0]]` read a[0]
+// after slot 0 was written, `s = Two{a = o.m}` (o: s's match payload) read the
+// union it was overwriting. Such a value has to be built in a temp and copied
+// over. `dest` names the destination (nil: unknown — it could be anywhere).
+value_reads_dest :: proc(g: ^Codegen, value: Expr, dest_fresh: bool, dest: Expr) -> bool {
+    if dest_fresh { return false }
+    d := Dest_Info{via_ptr = true}
+    if dest != nil {
+        if root, via_ptr, ok := storage_root(g, dest); ok {
+            d.root, d.via_ptr = root, via_ptr
+            if via_ptr {
+                d.root = ""
+                d.region, _ = pointee_region(g, dest)
+            } else {
+                d.region = lvalue_root_type(dest)
+            }
+        }
+    }
+    return may_read_dest(g, value, d)
+}
+
+// The type of the variable an lvalue path is rooted at (nil if unknown).
+lvalue_root_type :: proc(e: Expr) -> Type {
+    cur := e
+    for {
+        #partial switch v in cur {
+        case ^Expr_Ident:        return v.type_
+        case ^Expr_Field_Access: cur = v.expr
+        case ^Expr_Index:        cur = v.expr
+        case:                    return nil
+        }
+    }
+}
+
+// For an lvalue whose path crosses a pointer: the type of the object the LAST
+// crossing lands in — a pointer's pointee, a slice's element — which is all
+// that's known about where the storage lives. An alias (match payload, take
+// view) has no such type: ok = false.
+pointee_region :: proc(g: ^Codegen, e: Expr) -> (Type, bool) {
+    cur := e
+    for {
+        #partial switch v in cur {
+        case ^Expr_Ident:
+            if g.alias_vars[v.name] { return nil, false }
+            if p, is_ptr := distinct_base(v.type_).(^Type_Ptr); is_ptr { return p.elem, true }
+            return nil, false
+        case ^Expr_Field_Access:
+            if p, is_ptr := distinct_base(expr_type(v.expr)).(^Type_Ptr); is_ptr { return p.elem, true }
+            cur = v.expr
+        case ^Expr_Index:
+            #partial switch bt in distinct_base(expr_type(v.expr)) {
+            case ^Type_Ptr:   return bt.elem, true
+            case ^Type_Slice: return bt.elem, true
+            }
+            cur = v.expr
+        case ^Expr_Unary:
+            if v.op != .Caret { return nil, false }
+            if p, is_ptr := distinct_base(expr_type(v.operand)).(^Type_Ptr); is_ptr { return p.elem, true }
+            return nil, false
+        case:
+            return nil, false
+        }
+    }
+}
+
+// Whether evaluating `e` might read storage of the destination rooted at
+// variable `root` (`dest_via_ptr`: reached through a pointer or alias, so it
+// could be anywhere). Conservative — every read that isn't provably of some
+// other variable's own storage counts. Exhaustive like expr_mentions, since a
+// missed read is a silently wrong result.
+may_read_dest :: proc(g: ^Codegen, e: Expr, d: Dest_Info) -> bool {
+    switch v in e {
+    case ^Expr_Ident:
+        return storage_read_hits(g, v, d)
+    case ^Expr_Field_Access:
+        if _, is_const := v.resolved.(Resolved_Constant); is_const { return false }
+        return storage_read_hits(g, v, d) || path_reads_dest(g, v.expr, d)
+    case ^Expr_Index:
+        return storage_read_hits(g, v, d) || may_read_dest(g, v.index, d) || path_reads_dest(g, v.expr, d)
+    case ^Expr_Slice:
+        return may_read_dest(g, v.expr, d) ||
+               may_read_dest(g, v.low, d) || may_read_dest(g, v.high, d)
+    case ^Expr_Unary:
+        if v.op == .Caret { return true } // a pointee could be anything
+        return may_read_dest(g, v.operand, d)
+    case ^Expr_Binary:
+        return may_read_dest(g, v.left, d) || may_read_dest(g, v.right, d)
+    case ^Expr_Call:
+        // The qualifier is a namespace (`math.sin`) — the call passes only args.
+        if may_read_dest(g, v.desugared, d) { return true }
+        for a in v.args { if may_read_dest(g, a, d) { return true } }
+        if v.overrides != nil { return may_read_dest(g, v.overrides, d) }
+    case ^Expr_Array:
+        for x in v.elements { if may_read_dest(g, x, d) { return true } }
+    case ^Expr_Struct_Literal:
+        if may_read_dest(g, v.broadcast_value, d) { return true }
+        for f in v.fields { if may_read_dest(g, f.value, d) { return true } }
+        for x in v.array_values { if may_read_dest(g, x, d) { return true } }
+    case ^Expr_Assert:
+        return may_read_dest(g, v.cond, d)
+    case ^Expr_Take:
+        return may_read_dest(g, v.storage, d) || may_read_dest(g, v.count_expr, d)
+    case ^Expr_If:
+        return may_read_dest(g, v.condition, d) ||
+               may_read_dest(g, v.then_expr, d) || may_read_dest(g, v.else_expr, d)
+    case ^Expr_Tuple_Default:
+        return may_read_dest(g, v.source, d)
+    case ^Expr_Try:
+        return may_read_dest(g, v.inner, d)
+    case ^Expr_Self:
+        return true
+    case ^Expr_Number, ^Expr_String, ^Expr_Char, ^Expr_Bool, ^Expr_Skip_Constructor, ^Expr_Size_Of,
+         ^Expr_Compiler_Intrinsic, ^Expr_Include, ^Expr_Type_Name:
+    case nil:
+    }
+    return false
+}
+
+// The base of a field/index read is an lvalue PATH, not a value that's read —
+// storage_read_hits already judged the whole path. What's left to check on
+// it: index expressions along the way, and any non-lvalue base (a call's
+// arguments).
+path_reads_dest :: proc(g: ^Codegen, e: Expr, d: Dest_Info) -> bool {
+    #partial switch v in e {
+    case ^Expr_Ident:
+        return false
+    case ^Expr_Field_Access:
+        return path_reads_dest(g, v.expr, d)
+    case ^Expr_Index:
+        return may_read_dest(g, v.index, d) || path_reads_dest(g, v.expr, d)
+    case ^Expr_Unary:
+        if v.op == .Caret { return path_reads_dest(g, v.operand, d) }
+    }
+    return may_read_dest(g, e, d)
+}
+
+// Where a destination lives, for may_read_dest: the variable its storage is
+// rooted at, whether the path there crosses a pointer or alias (then `root`
+// is "" and it could be anywhere an object of `region` lives), and `region` —
+// the type of the object holding it: the root variable's type, or what the
+// last pointer crossing points at (nil when unknown: an alias).
+Dest_Info :: struct {
+    root:    string,
+    via_ptr: bool,
+    region:  Type,
+}
+
+// Whether reading the storage lvalue `e` names can observe the destination.
+// Conservative: yes if it's the destination's own variable, if what it yields
+// holds pointers (a slice a callee could read through), or if an alias is in
+// the way. Otherwise it comes down to WHERE each side can live:
+//   - a variable's own storage (no pointer on the path) is an object of the
+//     variable's type; through a pointer, an object of the pointee's type.
+//   - two locations can overlap only if one of those object types can hold the
+//     other (type_can_contain; a byte buffer can hold anything). A local's own
+//     allocation is never inside another object, but storage owned by the
+//     caller (a param, the result slot) can be (`fill(&cs, cs[0].pos)`).
+// And a function's result slot never overlaps anything its params reach: a
+// caller hands over a fresh slot or a temp whenever an argument carries
+// storage (gen_call_into_*), so a read through a param can't see a
+// destination that lives in the result slot.
+storage_read_hits :: proc(g: ^Codegen, e: Expr, d: Dest_Info) -> bool {
+    r, via_ptr, ok := storage_root(g, e)
+    if !ok { return true }
+    if g.result_vars[d.root] && g.param_vars[r] && !g.alias_vars[r] { return false }
+    if !via_ptr && r == d.root { return true }
+    if !is_plain_data(expr_type(e)) { return true }
+    if !via_ptr && !d.via_ptr { return false } // two different variables' own storage
+
+    // The object each side lives in, and whether it's a whole allocation of
+    // this function (then nothing else can contain it).
+    read_region: Type
+    read_own_alloc := false
+    if via_ptr {
+        rr, rr_ok := pointee_region(g, e)
+        if !rr_ok { return true }
+        read_region = rr
+    } else {
+        read_region = lvalue_root_type(e)
+        read_own_alloc = !g.result_vars[r] && !g.param_vars[r]
+    }
+    dest_own_alloc := !d.via_ptr && !g.result_vars[d.root]
+    if read_region == nil || d.region == nil { return true }
+    // Overlap: the read's object sits in (or is) the destination's, or the
+    // other way round — each only possible when the inner one isn't a whole
+    // local allocation of this function.
+    return (!read_own_alloc && type_can_contain(d.region, read_region)) ||
+           (!dest_own_alloc && type_can_contain(read_region, d.region))
+}
+
+// A `byte` element — what makes an array a byte buffer (is_byte_buffer), the
+// only storage take/let and typed `&buf[off]` pointers reinterpret.
+is_byte_elem :: proc(t: Type) -> bool {
+    _, is_byte := distinct_base(t).(Type_Byte)
+    return is_byte
+}
+
+// Whether storage of type `t` could hold a value of type `d` somewhere inside
+// it — so a pointer to a `d` could point into it. Byte buffers can hold
+// anything: take/let reinterpret their bytes as any type.
+type_can_contain :: proc(t: Type, d: Type) -> bool {
+    bt, bd := distinct_base(t), distinct_base(d)
+    if types_equal(bt, bd) { return true }
+    if sd := as_struct_body(bt); sd != nil {
+        for &f in sd.fields {
+            if type_can_contain(f.type_, d) { return true }
+        }
+        return false
+    }
+    #partial switch v in bt {
+    case ^Type_Fixed_Array:
+        return is_byte_elem(v.elem) || type_can_contain(v.elem, d)
+    case ^Type_Partial_Array:
+        return is_byte_elem(v.elem) || type_can_contain(v.elem, d)
+    case ^Type_Union:
         return true
     }
     return false
