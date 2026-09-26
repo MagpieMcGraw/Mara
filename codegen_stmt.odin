@@ -383,22 +383,40 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             // Initialise header: ptr → elements, len → 0, cap → N.
             elements_ptr := fresh_tmp(g)
             emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-            // Zero-init policy: element backing starts zeroed — covers both
-            // stack allocas and arena regions (dirty after a reset), and
-            // makes the cstring terminator check deterministic for strings
-            // assembled by element writes or byte fills. `= void` opts out.
-            if _, zinit_skip := s.value.(^Expr_Skip_Constructor); !zinit_skip {
-                emit_memset_zero(g, elements_ptr, total_bytes)
+            // A value that writes the WHOLE partial array — another partial
+            // array (copied header and all, then re-anchored) or a
+            // partial-array-returning call (built in place) — makes the header
+            // stamp and the zero-fill below dead stores (`r := pa` zeroed r's
+            // elements just to overwrite them). A string or slice fills only a
+            // prefix, so those keep both.
+            whole := false
+            if s.value != nil {
+                val := s.value
+                if cv, ok := codegen_const_value(g, val); ok { val = cv }
+                #partial switch _ in val {
+                case ^Expr_String, ^Expr_Compiler_Intrinsic, ^Expr_Skip_Constructor:
+                case:
+                    _, whole = distinct_base(expr_type(val)).(^Type_Partial_Array)
+                }
             }
-            ptr_gep := fresh_tmp(g)
-            emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
-            emit_store(g, "ptr", elements_ptr, ptr_gep)
-            len_gep := fresh_tmp(g)
-            emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
-            emit_typed_store_len(g, "0", len_gep)
-            cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
-            emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
+            if !whole {
+                // Zero-init policy: element backing starts zeroed — covers both
+                // stack allocas and arena regions (dirty after a reset), and
+                // makes the cstring terminator check deterministic for strings
+                // assembled by element writes or byte fills. `= void` opts out.
+                if _, zinit_skip := s.value.(^Expr_Skip_Constructor); !zinit_skip {
+                    emit_memset_zero(g, elements_ptr, total_bytes)
+                }
+                ptr_gep := fresh_tmp(g)
+                emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
+                emit_store(g, "ptr", elements_ptr, ptr_gep)
+                len_gep := fresh_tmp(g)
+                emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
+                emit_typed_store_len(g, "0", len_gep)
+                cap_gep := fresh_tmp(g)
+                emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
+                emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
+            }
             g.all_vars[s.name] = Slice_Var{
                 alloca    = alloca_name,
                 elem_type = elem_t,
