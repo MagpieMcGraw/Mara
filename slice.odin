@@ -15,7 +15,7 @@ import "core:strings"
 //
 // Calls are crossed by SUMMARY, not by inlining: a call contributes only the
 // arguments its return value is computed from — the call graph's `return_deps`
-// set (the DATA-dependence twin of escape's narrower aliasing `return_args`) — so
+// set (DATA dependence, wider than escape's aliasing summary) — so
 // `pick_first(x, y)` returning its first parameter pulls in `x` and NOT `y`, and
 // `len_of(x)` returning a count computed from `x` still pulls in `x`. Unknown
 // callees (foreign / indirect / no summary) fall back to all arguments (sound).
@@ -100,8 +100,8 @@ slice_value :: proc(s: ^Slice, e: Expr) {
 
 // The callee's return-DEP set (which parameter indices its return value is
 // computed from), read off the materialized call graph. This is the data-
-// dependence summary (cg.return_deps), NOT escape's narrower aliasing set
-// (cg.return_args): a value computed from a param — `obj_get_directions(dir)`
+// dependence summary (cg.return_deps), NOT escape's narrower aliasing summary
+// (cg.esc): a value computed from a param — `obj_get_directions(dir)`
 // returning a column of `mat4_from_quat(dir)` — depends on `dir` even though it
 // doesn't alias its storage, and the slice must cross the call on that. ok=false
 // for foreign / indirect / no-summary calls — the caller then conservatively

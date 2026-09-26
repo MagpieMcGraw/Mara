@@ -14,7 +14,7 @@ import "core:slice"
 //
 // The SCCs are the prize, not the skeleton: they are the shared cycle/recursion
 // structure every interprocedural summary pass would otherwise hand-roll.
-// fun_return_arg_set's pending-set + `-1` return IS exactly one such ad-hoc SCC
+// The old lazy return-arg-set's pending-set + `-1` return WAS exactly one such ad-hoc SCC
 // check; with this materialized, that becomes "the SCC this node is in".
 //
 // First cut: skeleton + SCCs, over the resolved/monomorphized edge flavor (the
@@ -47,21 +47,14 @@ Call_Graph :: struct {
     // interprocedural summary computed via the bottom-up framework below.
     pure:      [dynamic]bool,
 
-    // Return-arg-set summary (cg_compute_return_args): return_args[n] = the sorted
-    // set of parameter indices node n's return value can trace back to (Self-field
-    // indices for a ctor). Backs the escape pass's laundering check. stmt_to_node
-    // bridges the AST key fun_return_arg_set is queried with (^Stmt_Scope) to the
-    // graph's node id (a node's Type_Scope.ast IS that Stmt_Scope).
-    return_args:  [dynamic][]int,
-
     // Return-DEP summary (cg_compute_return_deps): return_deps[n] = the sorted set
-    // of parameter indices node n's return value DATA-depends on (vs return_args,
-    // which is the narrower ALIASING relation escape needs). A value computed from
-    // a param — `obj_get_directions(dir)` returning `mat4_from_quat(dir)[2].xyz` —
-    // is in return_deps but NOT return_args (it doesn't alias `dir`'s storage).
-    // The `ask` slicer crosses calls with THIS set so a call contributes the args
-    // its result is computed from, not just the ones it aliases. Same node ids and
-    // stmt_to_node bridge as return_args.
+    // of parameter indices node n's return value DATA-depends on (vs the escape
+    // summary's narrower ALIASING relation). A value computed from a param —
+    // `obj_get_directions(dir)` returning `mat4_from_quat(dir)[2].xyz` — depends on
+    // `dir` without pointing into it. The `ask` slicer crosses calls with THIS set
+    // so a call contributes the args its result is computed from. stmt_to_node
+    // bridges the AST key fun_return_dep_set is queried with (^Stmt_Scope) to the
+    // graph's node id (a node's Type_Scope.ast IS that Stmt_Scope).
     return_deps:  [dynamic][]int,
     stmt_to_node: map[^Stmt_Scope]int,
 
@@ -156,7 +149,7 @@ cg_is_recursive :: proc(g: ^Call_Graph, n: int) -> bool {
 // SCCs are visited callees-first (reverse-topo order Tarjan already produced),
 // so a node's callees are final before it's reached; a non-trivial SCC iterates
 // to a fixpoint. Each analysis supplies a state array on the Call_Graph and a
-// monotone transfer — the recursion/cycle handling that fun_return_arg_set
+// monotone transfer — the recursion/cycle handling the old lazy return-arg-set
 // hand-rolled with its `-1` guard lives here, once.
 
 cg_bottom_up :: proc(g: ^Call_Graph, transfer: proc(g: ^Call_Graph, node: int) -> bool) {
@@ -196,38 +189,13 @@ cg_purity_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
     return false
 }
 
-// Return-arg-set: which parameter indices each function's return can trace back
-// to. The second interprocedural summary on the bottom-up framework. A function's
-// set is recomputed from its body (compute_return_arg_set, which reads callees'
-// sets via fun_return_arg_set → this graph); cg_bottom_up visits callees-first
-// and iterates each SCC to a fixpoint — so a recursive/mutually-recursive
-// function gets the precise transitive answer the lazy `pending → nil` guard
-// only approximated (conservatively empty). c.cg must already point at `g`.
+// Return-dep set: which parameter indices each function's return value is
+// COMPUTED from. A summary on the bottom-up framework: a function's set is
+// recomputed from its body (compute_return_arg_set, which reads callees' sets via
+// fun_return_dep_set → this graph); cg_bottom_up visits callees-first and
+// iterates each SCC to a fixpoint. c.cg must already point at `g`.
 @(private="file") g_cg_c: ^Checker
 
-cg_compute_return_args :: proc(g: ^Call_Graph, c: ^Checker) {
-    g_cg_c = c
-    for ts, i in g.nodes {
-        if ts != nil && ts.ast != nil { g.stmt_to_node[ts.ast] = i } // node.ast IS the Stmt_Scope key
-    }
-    resize(&g.return_args, len(g.nodes))
-    cg_bottom_up(g, cg_return_args_transfer)
-}
-
-@(private="file")
-cg_return_args_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
-    ts := g.nodes[n]
-    if ts == nil || ts.ast == nil { return false } // foreign/no body — empty set
-    new_set := compute_return_arg_set(g_cg_c, ts.ast, .Escape)
-    if slice.equal(g.return_args[n], new_set) { return false }
-    g.return_args[n] = new_set // monotone: the set only grows toward its fixpoint
-    return true
-}
-
-// Data-dependence twin of cg_compute_return_args: which parameter indices each
-// function's return value is COMPUTED from. Same bottom-up framework, same body
-// walk, but in .Data_Dep mode (traverses arithmetic / field reads / index reads
-// and credits field-writes into named returns) — see compute_return_arg_set.
 cg_compute_return_deps :: proc(g: ^Call_Graph, c: ^Checker) {
     g_cg_c = c
     for ts, i in g.nodes {
@@ -241,7 +209,7 @@ cg_compute_return_deps :: proc(g: ^Call_Graph, c: ^Checker) {
 cg_return_deps_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
     ts := g.nodes[n]
     if ts == nil || ts.ast == nil { return false } // foreign/no body — empty set
-    new_set := compute_return_arg_set(g_cg_c, ts.ast, .Data_Dep)
+    new_set := compute_return_arg_set(g_cg_c, ts.ast)
     if slice.equal(g.return_deps[n], new_set) { return false }
     g.return_deps[n] = new_set // monotone: the set only grows toward its fixpoint
     return true

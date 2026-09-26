@@ -1603,11 +1603,6 @@ SymbolTable :: struct {
     fun_asts:       map[string]^Stmt_Scope,         // bare name -> AST for auto-monomorphization
     fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
 
-    // (return-arg-set provenance summary moved to the call graph —
-    //  Call_Graph.return_args via cg_compute_return_args, queried by
-    //  fun_return_arg_set; the lazy cache + pending cycle-guard are gone, the SCC
-    //  fixpoint handles recursion.)
-
     // Config
     has_scope_allocator: bool,
     scope_allocator_name: string,        // bare name from source ("Arena_Basic")
@@ -1653,8 +1648,8 @@ Checker :: struct {
     // name-resolved UFCS/qualified calls that Checked_Program.call_sites omits.
     call_edge_line:  map[Call_Edge]int,
     // The materialized call graph (set post-check, after build_call_graph) — its
-    // bottom-up summaries (return-arg-set) back fun_return_arg_set for the escape
-    // pass. Points at checked.call_graph.
+    // bottom-up summaries back the escape pass and the `ask` slicer. Points at
+    // checked.call_graph.
     cg:              ^Call_Graph,
     // Call-graph effect seed: callable scopes whose body has a DIRECT effect —
     // an IO built-in (`print`) or a foreign (.C) call. The bottom-up purity pass
@@ -4708,63 +4703,29 @@ write_root_immutable_param :: proc(e: Expr, env: ^Type_Scope) -> (name: string, 
     }
 }
 
-// For a function returning a ref-typed value, find the parameter index
-// whose provenance the return value follows. Returns -1 if the return
-// doesn't track a single parameter (constant, multiple sources, an opaque
-// callee, etc.). Result cached on the SymbolTable; cycles get -1.
-//
-// Catches the otherwise-laundered case where a stack-allocated buffer is
-// passed through one or more functions before being viewed:
-//   outer { storage : [..N]byte; return helper(&storage) }
-// Without this, helper's call result would land at depth 0 (global-like)
-// and outer's return would silently pass the static checker.
-// QUERY: which parameter indices a function's return value can trace back to —
-// read off the call graph's bottom-up summary (cg_compute_return_args). Used by
-// the escape pass (expr_provenance) to track whether a call result is rooted in
-// caller-owned storage (safe) or a local (escapes). Empty/nil = no tracked source.
-fun_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
-    if scope == nil || c.cg == nil { return nil }
-    if n, ok := c.cg.stmt_to_node[scope]; ok { return c.cg.return_args[n] }
-    return nil
-}
-
-// The data-dependence twin: which parameters a function's return value is COMPUTED
-// from (cg.return_deps). Backs the `ask` slicer's cross-call edges. See Arg_Set_Mode.
+// Which parameters a function's return value is COMPUTED from (cg.return_deps):
+// the `ask` slicer's cross-call edges. A sound over-approximation of data
+// dependence — through arithmetic, field/index reads, and field-writes into a
+// named return — so a slice gains extra edges but never misses one. (Aliasing —
+// which params a result may POINT into — is escape's own summary, Esc_Summary.)
 fun_return_dep_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     if scope == nil || c.cg == nil { return nil }
     if n, ok := c.cg.stmt_to_node[scope]; ok { return c.cg.return_deps[n] }
     return nil
 }
 
-// The two readings of "which params does the return trace to", computed by the
-// SAME body walk (compute_return_arg_set) under a mode:
-//   .Escape   — ALIASING: the return IS (a slice/take/field-of) a param, or embeds
-//               one by reference. Narrow by design — escape soundness depends on it
-//               (a local-backed slice whose bytes were written from a param must
-//               NOT look caller-rooted). Skips computed values and field-writes.
-//   .Data_Dep — DATA DEPENDENCE: the return's VALUE is computed from a param, via
-//               arithmetic, field/index reads, or field-writes into a named return.
-//               A sound over-approximation for the slicer (extra edges, never missed).
-// Every .Data_Dep behavior below is gated so the .Escape path is byte-for-byte the
-// original.
-Arg_Set_Mode :: enum { Escape, Data_Dep }
-
-// COMPUTATION: recompute one function's return-arg-set from its body. Called by
+// COMPUTATION: recompute one function's return-dep set from its body. Called by
 // the cg_bottom_up transfer (callees-first), reading callees' already-computed
-// summaries via fun_return_arg_set. NO cache / pending guard — cg_bottom_up's SCC
-// fixpoint replaces the hand-rolled `-1`/pending cycle handling.
-compute_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope, mode: Arg_Set_Mode) -> []int {
+// sets via fun_return_dep_set; cg_bottom_up's SCC fixpoint handles recursion.
+compute_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     if scope == nil { return nil }
     // Constructor: the returned value is Self, and a ctor body has no `return
-    // Self` for the walk to find — so `return Font(&local_buf)` would launder a
-    // local without this arm.
-    if scope.kind == .Struct { return ctor_return_arg_set(c, scope, mode) }
+    // Self` for the walk to find.
+    if scope.kind == .Struct { return ctor_return_arg_set(c, scope) }
     // Intrinsic body (`{ @llvm.pow.f32 }`): an empty stmts list, so the walk
     // below would read as "the return depends on nothing" and sever the slicer's
-    // edge across the call. The result is computed from EVERY argument. Escape
-    // stays empty: a scalar intrinsic result never aliases argument storage.
+    // edge across the call. The result is computed from EVERY argument.
     if scope.is_intrinsic {
-        if mode != .Data_Dep { return nil }
         consensus: [dynamic]int
         defer delete(consensus)
         for _, i in scope.typed_params { append_unique(&consensus, i) }
@@ -4776,83 +4737,24 @@ compute_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope, mode: Arg_Set_Mo
     defer cleanup_arg_set_tracking(&tracking)
     consensus: [dynamic]int
     defer delete(consensus)
-    walk_for_return_arg_sets(c, scope.body[:], scope, &tracking, &consensus, mode)
+    walk_for_return_arg_sets(c, scope.body[:], scope, &tracking, &consensus)
     return arg_set_freeze(consensus[:])
 }
 
-// Which constructor-arg indices can the constructed Self reference?
-// Pure-data structs (no ctor params): positional args ARE the fields, so the
-// set is every ref-carrying field's index. Parameterized ctors: walk the
-// top-level field bindings in body order (top-level ctor decls ARE fields of
-// Self) and union each binding's traced sources, threading `tracking` so a
-// later field chains through an earlier one (`wrap := Wrap{data = view}`
-// traces through `view := bytes[2:5]` back to the `bytes` param).
-ctor_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope, mode: Arg_Set_Mode) -> []int {
+// Which constructor-arg indices the constructed Self depends on: every one (sound;
+// ctors use all their args in practice). A pure-data struct's positional args ARE
+// its fields.
+ctor_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     consensus: [dynamic]int
     defer delete(consensus)
     if len(scope.typed_params) == 0 {
-        st := lookup_struct_type_scope(c, scope.name)
-        if st != nil {
-            for &f, i in st.fields {
-                // Data dependence: every positional arg IS a field, so the result
-                // depends on all of them. Escape: only ref-carrying fields can
-                // launder caller storage.
-                if mode == .Data_Dep || type_carries_ref(f.type_) { append_unique(&consensus, i) }
-            }
+        if st := lookup_struct_type_scope(c, scope.name); st != nil {
+            for _, i in st.fields { append_unique(&consensus, i) }
         }
-        return arg_set_freeze(consensus[:])
-    }
-    // Data dependence: the constructed value may depend on any constructor arg —
-    // every index (sound; ctors use all their args in practice). Escape keeps the
-    // precise per-field ref-laundering walk below.
-    if mode == .Data_Dep {
+    } else {
         for _, i in scope.typed_params { append_unique(&consensus, i) }
-        return arg_set_freeze(consensus[:])
-    }
-    tracking: map[string][dynamic]int
-    defer cleanup_arg_set_tracking(&tracking)
-    for s in scope.body {
-        #partial switch v in s {
-        case ^Stmt_Assign:
-            ctor_track_field_binding(c, v.name, v.value, v.target, scope, &tracking, &consensus)
-        case ^Stmt_Decl:
-            // Prefer the desugared Stmt_Assign list; fall back to the raw
-            // names/init_values pairing when the ctor body hasn't been
-            // checked yet (a fn ABOVE the struct can trigger this analysis
-            // before the struct's full body pass).
-            if len(v.checked) > 0 {
-                for cs in v.checked {
-                    if a, a_ok := cs.(^Stmt_Assign); a_ok {
-                        ctor_track_field_binding(c, a.name, a.value, a.target, scope, &tracking, &consensus)
-                    }
-                }
-            } else {
-                for name, i in v.names {
-                    init: Expr
-                    if i < len(v.init_values) {
-                        init = v.init_values[i]
-                    } else if len(v.init_values) == 1 {
-                        init = v.init_values[0]
-                    }
-                    ctor_track_field_binding(c, name, init, nil, scope, &tracking, &consensus)
-                }
-            }
-        }
     }
     return arg_set_freeze(consensus[:])
-}
-
-// Track one ctor-body binding: union its traced sources into consensus
-// (every top-level binding is a field of Self) and record them under the
-// name so later bindings chain through it.
-ctor_track_field_binding :: proc(c: ^Checker, name: string, value: Expr, target: Expr,
-    scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int, consensus: ^[dynamic]int)
-{
-    if value == nil || name == "" || target != nil { return }
-    new_set := eval_expr_arg_set(c, value, scope, tracking, .Escape)   // ctor body walk is escape-only
-    for idx in new_set { append_unique(consensus, idx) }
-    if existing, had := tracking^[name]; had { delete(existing) }
-    tracking^[name] = new_set
 }
 
 // Resolve a struct's Type_Scope from its AST name, trying the bare name and
@@ -4877,72 +4779,66 @@ cleanup_arg_set_tracking :: proc(t: ^map[string][dynamic]int) {
 // Walk `stmts` in program order. `tracking[name]` is the current set of
 // param indices that `name` could trace back to. At each return, the
 // return expression's set is unioned into `consensus`.
-walk_for_return_arg_sets :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int, consensus: ^[dynamic]int, mode: Arg_Set_Mode) {
+walk_for_return_arg_sets :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int, consensus: ^[dynamic]int) {
     for s in stmts {
         #partial switch v in s {
         case ^Stmt_Assign:
             if v.value == nil { continue }
             if v.target != nil {
-                // Field/index write (`fwd.xyz = rot[2].xyz`). Escape skips it — a
-                // partial write can't make the whole value alias a param. Data
-                // dependence credits the base variable: it now also traces to
-                // whatever the RHS does (UNION, since other fields keep theirs).
-                if mode != .Data_Dep { continue }
+                // Field/index write (`fwd.xyz = rot[2].xyz`): the base variable
+                // now also traces to whatever the RHS does (UNION, since other
+                // fields keep theirs).
                 base := lvalue_base_name(v.target)
                 if base == "" { continue }
-                add := eval_expr_arg_set(c, v.value, fn_scope, tracking, mode)
+                add := eval_expr_arg_set(c, v.value, fn_scope, tracking)
                 arg_set_union_into_tracking(tracking, base, add[:])
                 delete(add)
                 continue
             }
             if v.name == "" { continue }
-            new_set := eval_expr_arg_set(c, v.value, fn_scope, tracking, mode)
+            new_set := eval_expr_arg_set(c, v.value, fn_scope, tracking)
             // Sequential write: replace (shadows previous value at this name).
             if existing, ok := tracking^[v.name]; ok { delete(existing) }
             tracking^[v.name] = new_set
         case Stmt_Return:
             if len(v.values) == 0 { continue }
-            // Escape inspects the primary return; data dependence unions over EVERY
-            // returned value — `return fwd, up, right` feeds every destructured
-            // binding, so an arg feeding any one of them is a real dependency.
-            n := len(v.values) if mode == .Data_Dep else 1
-            for i in 0 ..< n {
-                set := eval_expr_arg_set(c, v.values[i], fn_scope, tracking, mode)
+            // Union over EVERY returned value — `return fwd, up, right` feeds every
+            // destructured binding, so an arg feeding any one of them is a real
+            // dependency.
+            for val in v.values {
+                set := eval_expr_arg_set(c, val, fn_scope, tracking)
                 for idx in set { append_unique(consensus, idx) }
                 delete(set)
             }
         case ^Stmt_If:
             pre := clone_arg_set_tracking(tracking^)
-            walk_for_return_arg_sets(c, v.body[:], fn_scope, tracking, consensus, mode)
+            walk_for_return_arg_sets(c, v.body[:], fn_scope, tracking, consensus)
             then_state := move_arg_set_tracking(tracking)
             // Reset to pre for else branch
             tracking^ = clone_arg_set_tracking(pre)
-            walk_for_return_arg_sets(c, v.else_body[:], fn_scope, tracking, consensus, mode)
+            walk_for_return_arg_sets(c, v.else_body[:], fn_scope, tracking, consensus)
             // tracking now holds the else state; merge then into it.
             merge_arg_set_branches(tracking, &then_state, pre)
             cleanup_arg_set_tracking(&then_state)
             cleanup_local_pre(pre)
         case ^Stmt_Decl:
-            walk_for_return_arg_sets(c, v.checked[:], fn_scope, tracking, consensus, mode)
-        // Everything below is .Data_Dep-only, keeping the .Escape walk
-        // byte-for-byte the original (see Arg_Set_Mode). Skipping these arms
-        // under-approximates: `mat4_transpose` fills its result inside nested
-        // loops, and an empty set there severed the slicer's edge across every
-        // call to it.
+            walk_for_return_arg_sets(c, v.checked[:], fn_scope, tracking, consensus)
+        // Loops, matches and multi-assigns matter: `mat4_transpose` fills its
+        // result inside nested loops, and skipping them severed the slicer's edge
+        // across every call to it.
         case ^Stmt_For:
-            if mode != .Data_Dep { continue }
             one: [1]Stmt
-            if v.init != nil { one[0] = v.init; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus, mode) }
+            if v.init != nil { one[0] = v.init; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus) }
             pre := clone_arg_set_tracking(tracking^)
             // The loop variable's value derives from what it iterates over.
             if v.is_collection_for && v.elem_var != "" {
-                set := eval_expr_arg_set(c, v.collection, fn_scope, tracking, mode)
+                set := eval_expr_arg_set(c, v.collection, fn_scope, tracking)
                 if existing, ok := tracking^[v.elem_var]; ok { delete(existing) }
                 tracking^[v.elem_var] = set
             }
             if v.is_range && v.loop_var != "" {
-                set := eval_expr_arg_set(c, v.range_low, fn_scope, tracking, mode)
-                hi := eval_expr_arg_set(c, v.range_high, fn_scope, tracking, mode)
+                set := eval_expr_arg_set(c, v.range_low, fn_scope, tracking)
+                hi := eval_expr_arg_set(c, v.range_high, fn_scope, tracking)
                 for idx in hi { append_unique(&set, idx) }
                 delete(hi)
                 if existing, ok := tracking^[v.loop_var]; ok { delete(existing) }
@@ -4951,8 +4847,8 @@ walk_for_return_arg_sets :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Sco
             // Two passes = a 2-iteration unroll, catching one level of
             // cross-iteration chaining (`x = y` before `y = param`).
             for _ in 0 ..< 2 {
-                walk_for_return_arg_sets(c, v.body[:], fn_scope, tracking, consensus, mode)
-                if v.post != nil { one[0] = v.post; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus, mode) }
+                walk_for_return_arg_sets(c, v.body[:], fn_scope, tracking, consensus)
+                if v.post != nil { one[0] = v.post; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus) }
             }
             // Merge with the pre-loop state — the 0-iteration path.
             body_state := move_arg_set_tracking(tracking)
@@ -4961,13 +4857,12 @@ walk_for_return_arg_sets :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Sco
             cleanup_arg_set_tracking(&body_state)
             cleanup_local_pre(pre)
         case ^Stmt_Match:
-            if mode != .Data_Dep { continue }
             // Each arm folds in like an if-with-empty-else: facts union across
             // arms and never shrink (a later arm's overwrite can't erase an
             // earlier arm's trace).
             for arm in v.arms {
                 pre := clone_arg_set_tracking(tracking^)
-                walk_for_return_arg_sets(c, arm.body[:], fn_scope, tracking, consensus, mode)
+                walk_for_return_arg_sets(c, arm.body[:], fn_scope, tracking, consensus)
                 arm_state := move_arg_set_tracking(tracking)
                 tracking^ = clone_arg_set_tracking(pre)
                 merge_arg_set_branches(tracking, &arm_state, pre)
@@ -4975,13 +4870,11 @@ walk_for_return_arg_sets :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Sco
                 cleanup_local_pre(pre)
             }
         case ^Stmt_Multi_Assign:
-            if mode != .Data_Dep { continue }
             one: [1]Stmt
-            for a in v.assigns { one[0] = a; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus, mode) }
+            for a in v.assigns { one[0] = a; walk_for_return_arg_sets(c, one[:], fn_scope, tracking, consensus) }
         case ^Stmt_Multi_Return_Assign:
-            if mode != .Data_Dep { continue }
             if len(v.checked) > 0 {   // broadcast: the desugared per-target assigns
-                walk_for_return_arg_sets(c, v.checked[:], fn_scope, tracking, consensus, mode)
+                walk_for_return_arg_sets(c, v.checked[:], fn_scope, tracking, consensus)
                 continue
             }
             // Destructure (`val, err := f(x)`): every bound name traces to the
@@ -4990,7 +4883,7 @@ walk_for_return_arg_sets :: proc(c: ^Checker, stmts: []Stmt, fn_scope: ^Stmt_Sco
             set: [dynamic]int
             defer delete(set)
             for val in v.values {
-                s2 := eval_expr_arg_set(c, val, fn_scope, tracking, mode)
+                s2 := eval_expr_arg_set(c, val, fn_scope, tracking)
                 for idx in s2 { append_unique(&set, idx) }
                 delete(s2)
             }
@@ -5109,7 +5002,7 @@ arg_set_freeze :: proc(set: []int) -> []int {
 }
 
 // Evaluate an expression's source arg-set in the current tracking context.
-eval_expr_arg_set :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int, mode: Arg_Set_Mode) -> [dynamic]int {
+eval_expr_arg_set :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int) -> [dynamic]int {
     out: [dynamic]int
     if e == nil { return out }
     if ident, ok := e.(^Expr_Ident); ok {
@@ -5123,84 +5016,55 @@ eval_expr_arg_set :: proc(c: ^Checker, e: Expr, fn_scope: ^Stmt_Scope, tracking:
     }
     if t, ok := e.(^Expr_Take); ok {
         delete(out)
-        return eval_expr_arg_set(c, t.storage, fn_scope, tracking, mode)
+        return eval_expr_arg_set(c, t.storage, fn_scope, tracking)
     }
     if sl, ok := e.(^Expr_Slice); ok {
-        if mode == .Data_Dep {
-            // The sliced value's data comes from the base and (its length) the bounds.
-            eval_union_into(c, &out, sl.expr, fn_scope, tracking, mode)
-            eval_union_into(c, &out, sl.low,  fn_scope, tracking, mode)
-            eval_union_into(c, &out, sl.high, fn_scope, tracking, mode)
-            return out
-        }
-        delete(out)
-        return eval_expr_arg_set(c, sl.expr, fn_scope, tracking, mode)
+        // The sliced value's data comes from the base and (its length) the bounds.
+        eval_union_into(c, &out, sl.expr, fn_scope, tracking)
+        eval_union_into(c, &out, sl.low,  fn_scope, tracking)
+        eval_union_into(c, &out, sl.high, fn_scope, tracking)
+        return out
     }
     if lit, ok := e.(^Expr_Struct_Literal); ok {
-        // Escape: union over ref-carrying fields only (deep: a struct-valued field
-        // whose nested fields hold refs propagates too). An unresolvable field type
-        // — e.g. a literal of a NESTED struct type, whose bare name isn't in the
-        // global tables — is treated as ref-carrying rather than skipped: missing it
-        // is how `Wrap{data = bytes[lo:hi]}` escaped. Data dependence: every field
-        // (and array element / broadcast) feeds the constructed value.
-        for field, i in lit.fields {
-            if mode != .Data_Dep {
-                ft := struct_lit_field_type(c, lit, i)
-                if ft != nil && !type_carries_ref(ft) { continue }
-            }
-            field_set := eval_expr_arg_set(c, field.value, fn_scope, tracking, mode)
-            for idx in field_set { append_unique(&out, idx) }
-            delete(field_set)
-        }
-        if mode == .Data_Dep {
-            for a in lit.array_values { eval_union_into(c, &out, a, fn_scope, tracking, mode) }
-            eval_union_into(c, &out, lit.broadcast_value, fn_scope, tracking, mode)
-        }
+        // Every field (and array element / broadcast) feeds the constructed value.
+        for field in lit.fields { eval_union_into(c, &out, field.value, fn_scope, tracking) }
+        for a in lit.array_values { eval_union_into(c, &out, a, fn_scope, tracking) }
+        eval_union_into(c, &out, lit.broadcast_value, fn_scope, tracking)
         return out
     }
     if call, ok := e.(^Expr_Call); ok {
         callee := lookup_callee_scope(c, call)
         if callee == nil {
-            // Unknown callee (foreign / indirect / unresolved). Escape: no tracked
-            // alias. Data dependence: the result may depend on ANY argument, so fold
-            // them all — keeps the summary sound across opaque calls.
-            if mode == .Data_Dep {
-                for a in call.args { eval_union_into(c, &out, a, fn_scope, tracking, mode) }
-            }
+            // Unknown callee (foreign / indirect / unresolved): the result may
+            // depend on ANY argument, so fold them all — keeps the summary sound
+            // across opaque calls.
+            for a in call.args { eval_union_into(c, &out, a, fn_scope, tracking) }
             return out
         }
-        // Cross the call by the callee's own summary in the matching mode (its
-        // aliased args for escape, its data-dep args for the slicer), recursing into
-        // the call argument at each index.
-        callee_set := fun_return_arg_set(c, callee) if mode != .Data_Dep else fun_return_dep_set(c, callee)
-        for ci in callee_set {
+        // Cross the call by the callee's own summary, recursing into the call
+        // argument at each index.
+        for ci in fun_return_dep_set(c, callee) {
             if ci < 0 || ci >= len(call.args) { continue }
-            arg_set := eval_expr_arg_set(c, call.args[ci], fn_scope, tracking, mode)
-            for idx in arg_set { append_unique(&out, idx) }
-            delete(arg_set)
+            eval_union_into(c, &out, call.args[ci], fn_scope, tracking)
         }
         return out
     }
-    // Data dependence traverses the remaining value-carrying shapes; escape never
-    // needed them (a computed scalar / field read can't alias caller storage).
-    if mode == .Data_Dep {
-        #partial switch v in e {
-        case ^Expr_Field_Access: eval_union_into(c, &out, v.expr, fn_scope, tracking, mode)
-        case ^Expr_Index:        eval_union_into(c, &out, v.expr, fn_scope, tracking, mode); eval_union_into(c, &out, v.index, fn_scope, tracking, mode)
-        case ^Expr_Binary:       eval_union_into(c, &out, v.left, fn_scope, tracking, mode); eval_union_into(c, &out, v.right, fn_scope, tracking, mode)
-        case ^Expr_Unary:        eval_union_into(c, &out, v.operand, fn_scope, tracking, mode)
-        case ^Expr_If:           eval_union_into(c, &out, v.condition, fn_scope, tracking, mode); eval_union_into(c, &out, v.then_expr, fn_scope, tracking, mode); eval_union_into(c, &out, v.else_expr, fn_scope, tracking, mode)
-        case ^Expr_Array:        for el in v.elements { eval_union_into(c, &out, el, fn_scope, tracking, mode) }
-        }
+    #partial switch v in e {
+    case ^Expr_Field_Access: eval_union_into(c, &out, v.expr, fn_scope, tracking)
+    case ^Expr_Index:        eval_union_into(c, &out, v.expr, fn_scope, tracking); eval_union_into(c, &out, v.index, fn_scope, tracking)
+    case ^Expr_Binary:       eval_union_into(c, &out, v.left, fn_scope, tracking); eval_union_into(c, &out, v.right, fn_scope, tracking)
+    case ^Expr_Unary:        eval_union_into(c, &out, v.operand, fn_scope, tracking)
+    case ^Expr_If:           eval_union_into(c, &out, v.condition, fn_scope, tracking); eval_union_into(c, &out, v.then_expr, fn_scope, tracking); eval_union_into(c, &out, v.else_expr, fn_scope, tracking)
+    case ^Expr_Array:        for el in v.elements { eval_union_into(c, &out, el, fn_scope, tracking) }
     }
     return out
 }
 
 // eval_expr_arg_set into an accumulator (union, dedup), freeing the temporary.
 // Keeps the data-dependence recursion in eval_expr_arg_set terse.
-eval_union_into :: proc(c: ^Checker, out: ^[dynamic]int, e: Expr, fn_scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int, mode: Arg_Set_Mode) {
+eval_union_into :: proc(c: ^Checker, out: ^[dynamic]int, e: Expr, fn_scope: ^Stmt_Scope, tracking: ^map[string][dynamic]int) {
     if e == nil { return }
-    s := eval_expr_arg_set(c, e, fn_scope, tracking, mode)
+    s := eval_expr_arg_set(c, e, fn_scope, tracking)
     for idx in s { append_unique(out, idx) }
     delete(s)
 }
@@ -5222,40 +5086,10 @@ struct_lit_field_type :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, lit_idx: i
     return nil
 }
 
-is_ref_type :: proc(t: Type) -> bool {
-    bt := distinct_base(t)
-    if _, ok := bt.(^Type_Ptr);   ok { return true }
-    if _, ok := bt.(^Type_Slice); ok { return true }
-    return false
-}
-
-// True when the struct carries a ref-typed field (ptr/slice) at any VALUE
-// depth — nested struct fields and array/partial-array elements included.
-// TTF is the motivating case: its only ref is glyf.data, one struct down,
-// so a shallow scan called it ref-free and returning one escaped the
-// checker. Value nesting is acyclic and ptr fields return true without
-// recursing, so this terminates.
-struct_has_ref_field :: proc(sd: ^Scope_Body) -> bool {
-    for &f in sd.fields {
-        if type_carries_ref(f.type_) { return true }
-    }
-    return false
-}
-
-type_carries_ref :: proc(t: Type) -> bool {
-    if is_ref_type(t) { return true }
-    bt := distinct_base(t)
-    if fa, ok := bt.(^Type_Fixed_Array); ok { return type_carries_ref(fa.elem) }
-    if pa, ok := bt.(^Type_Partial_Array); ok { return type_carries_ref(pa.elem) }
-    if inner := as_struct_body(bt); inner != nil { return struct_has_ref_field(inner) }
-    return false
-}
-
 // Resolve a call to the callee's source AST. Pointer-first: a directly resolved
 // call carries its callee signature (Resolved_Func.callee), which links straight
 // to the body via Type_Scope.ast — exact by construction, no name re-keying.
-// Monomorphizations link their template AST (the structural escape check is
-// clone-invariant). The name-keyed lookups below remain as a safety net for
+// Monomorphizations link their template AST. The name-keyed lookups below remain as a safety net for
 // calls the checker didn't annotate with a callee (resolved_func left nil).
 lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
     if rf, rf_ok := call.resolved_func.?; rf_ok && rf.callee != nil && rf.callee.ast != nil {
@@ -10676,11 +10510,10 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
 
     checked.call_graph = build_call_graph(&c)
     c.cg = &checked.call_graph
-    cg_compute_return_args(c.cg, &c) // return-arg-set summary — backs fun_return_arg_set (escape)
     cg_compute_return_deps(c.cg, &c) // return-dep summary — backs fun_return_dep_set (ask slicer)
     build_cfgs(checked)               // per-function control-flow graphs (cheap; for return-check)
     flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
-    escape_analyze_program(&c, checked) // post-check intraproc escape
+    escape_analyze_program(&c, checked) // post-check escape: the lifetime rule + its call summaries
     // NOTE: the slice analysis (def-use graph + control dependence) is built lazily
     // per function on the first `mara ask … contributors/affects` — ensure_fn_analysis.
     checked.errors = c.errors
