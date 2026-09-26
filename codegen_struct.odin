@@ -1777,6 +1777,16 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
                 gen_slice_field_store(g, slice_hdr_ptr, fa_expr.field, s.value, s.span)
                 return
             }
+            // Swizzle write into an array element: pts[i].x = v, pts[i].xy = [a, b].
+            if fa, is_fa := idx_type.(^Type_Fixed_Array); is_fa && is_swizzle_field(fa_expr.field, fa.size) {
+                ar := Array_Var{alloca = gen_index_address(g, idx_expr), capacity = fa.size, elem_type = llvm_type_from_checker(fa.elem)}
+                if len(fa_expr.field) == 1 {
+                    gen_swizzle_write_single(g, &ar, fa_expr.field, s.value)
+                } else {
+                    gen_swizzle_write_multi(g, &ar, fa_expr.field, s.value)
+                }
+                return
+            }
         }
         // Chained field access: obj.inner.field = value
         st, base_ptr, found = resolve_lhs_struct(g, fa_expr.expr)

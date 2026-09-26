@@ -1,0 +1,55 @@
+module vec_elements
+
+//@ expect-output: store=3 1 2 0 2 4 0
+//@ expect-output: append=2 1 2 3
+//@ expect-output: swizzle=9 5 6 / 1 7 8
+//@ expect-output: quat=0 0 0 1
+//@ expect-output: color=0.9 0.2 0.2
+
+// Distinct arrays (Vec3, Quat) as elements and constants, which used to need
+// workarounds in Pounce: a Vec3 slice element couldn't be stored or
+// swizzle-written (Pounce wrapped points in a one-field struct), and a named
+// array constant couldn't be `=`-assigned to a field (`obj.dir =
+// QUAT_IDENTITY`, `color = COLOR_RED` — Pounce inlined the literals).
+
+use mara.core
+use mara.math
+
+RED :: [3]f32{0.9, 0.2, 0.2}
+Obj :: struct { dir: Quat, pos: Vec3 }
+Vis :: struct { color: [3]f32 }
+Shp :: struct { obj: Obj, visual: Vis }
+
+fill :: fun(out: ^[]Vec3, n: i64) {
+	out.len = 0
+	for i in 0..(n) {
+		x := f32(i)
+		out[i] = Vec3{x, x * 2, 0}
+		out.len = i + 1
+	}
+}
+push_pt :: fun(arr: ^[]Vec3, v: Vec3) {
+	arr + v
+}
+
+main :: fun() {
+	pts : [..4]Vec3
+	fill(&pts, 3)
+	print("store=% % % % % % %", pts.len, pts[1][0], pts[1][1], pts[1][2], pts[2][0], pts[2][1], pts[2][2])
+
+	more : [..4]Vec3
+	push_pt(&more, Vec3{1, 2, 3})
+	push_pt(&more, Vec3{4, 5, 6})
+	print("append=% % % %", more.len, more[0].x, more[0].y, more[0].z)
+
+	more[1].x = 9
+	i := 0
+	more[i].yz = [7, 8]
+	print("swizzle=% % % / % % %", more[1].x, more[1].y, more[1].z, more[0].x, more[0].y, more[0].z)
+
+	s := Shp{}
+	s.obj.dir = QUAT_IDENTITY
+	s.visual.color = RED
+	print("quat=% % % %", s.obj.dir[0], s.obj.dir[1], s.obj.dir[2], s.obj.dir[3])
+	print("color=% % %", s.visual.color[0], s.visual.color[1], s.visual.color[2])
+}
