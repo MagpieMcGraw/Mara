@@ -763,6 +763,12 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
             set_field_result(g, Union_Var{alloca = addr, union_name = chain.final_type[len("%union."):]})
             return addr
         }
+        // A slice element is a header in place — and slice values are
+        // pointer-valued (gen_expr on any slice expression yields a pointer to
+        // its header), so yield its address rather than loading the header.
+        if _, is_slice := distinct_base(index_elem_type(expr_type(e.expr))).(^Type_Slice); is_slice {
+            return addr
+        }
         if chain.final_kind == .Scalar {
             return emit_load(g, chain.final_type, addr)
         }
@@ -1191,6 +1197,15 @@ gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {
     if strings.has_prefix(sv.elem_type, "%class.") {
         struct_name := sv.elem_type[len("%class."):]
         set_field_result(g, Struct_Var{alloca = elem_ptr, struct_name = struct_name})
+        return elem_ptr
+    }
+    // The other pointer-valued element kinds — a slice header, a union — hand
+    // back the address too, as the address-chain path does.
+    #partial switch et in distinct_base(index_elem_type(expr_type(e.expr))) {
+    case ^Type_Slice:
+        return elem_ptr
+    case ^Type_Union:
+        set_field_result(g, Union_Var{alloca = elem_ptr, union_name = union_key(et)})
         return elem_ptr
     }
     val := fresh_tmp(g)

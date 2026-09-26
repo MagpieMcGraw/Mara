@@ -10339,7 +10339,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         // Element type: []utf8 slice — argv strings are strlen-scanned into
         // plain {len, cap, ptr} headers by the @main prologue.
         arg_slice := new(Type_Slice)
-        arg_slice.elem = Type_Byte{}
+        arg_slice.elem = Type_Utf8{}   // text, as mara.core declares it (was Type_Byte: an inferred `a := this_program.args[i]` printed as numbers)
 
         // Args is a partial array: [..64][]utf8 — header {len,cap,ptr}
         // followed by inline [64 x slice] storage.

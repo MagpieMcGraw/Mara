@@ -3525,12 +3525,23 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         args_ptr := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", args_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
 
-        // Compute effective len = min(argc, 64). argc is already i32 from
-        // the main signature; slice header len is i32 too.
-        argc_cmp := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argc_cmp, " = icmp slt i32 %argc, ", ARGS_CAP}))
-        argc_min := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argc_min, " = select i1 ", argc_cmp, ", i32 %argc, i32 ", ARGS_CAP}))
+        // More arguments than the args array holds is an error, not a silent
+        // truncation — a program handed a long file list must not quietly
+        // miss the tail. (Raise ARGS_CAP if 64 ever proves too few.)
+        argc_over := fresh_tmp(&g)
+        emit_raw(&g, strings.concatenate({"  ", argc_over, " = icmp sgt i32 %argc, ", ARGS_CAP}))
+        args_err_lbl := fmt.tprintf("args_too_many_%d", g.label_counter)
+        args_ok_lbl := fmt.tprintf("args_ok_%d", g.label_counter)
+        emit_raw(&g, strings.concatenate({"  br i1 ", argc_over, ", label %", args_err_lbl, ", label %", args_ok_lbl}))
+        emit_raw(&g, strings.concatenate({args_err_lbl, ":"}))
+        args_err_name, args_err_len := get_string_literal(&g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n")
+        args_err_ptr := fresh_tmp(&g)
+        emit_string_gep(&g, args_err_ptr, args_err_len, args_err_name)
+        emit_raw(&g, strings.concatenate({"  call i32 (ptr, ...) @printf(ptr ", args_err_ptr, ", i32 %argc)"}))
+        emit_raw(&g, "  call void @exit(i32 1)")
+        emit_raw(&g, "  unreachable")
+        emit_raw(&g, strings.concatenate({args_ok_lbl, ":"}))
+        argc_min := "%argc" // every argument fits from here on
 
         // Store len at field 0. The header len is at slice_layout.len_ir;
         // argc_min is i32 (matches argc + the i32 loop counter below), so widen
@@ -3601,15 +3612,19 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
                 emit_raw(&g, strings.concatenate({"  ", str_len, " = trunc i64 ", str_len_64, " to ", slice_layout.len_ir}))
             }
         }
-        // elements[i] is a slice — write len, cap, ptr.
+        // elements[i] is a slice — write len, cap, ptr. cap counts argv's
+        // terminating 0 (as a string literal's does), so cstring(arg) finds it
+        // at [len] — passing an argument to a file open or any C call works.
         elem_ptr := fresh_tmp(&g)
         emit_raw(&g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i32 0, i32 ", cur_i}))
         slen_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, slen_ptr, elem_ptr, SLICE.len)
         emit_typed_store_len(&g, str_len, slen_ptr)
+        str_cap := fresh_tmp(&g)
+        emit_raw(&g, strings.concatenate({"  ", str_cap, " = add ", slice_layout.cap_ir, " ", str_len, ", 1"}))
         scap_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, scap_ptr, elem_ptr, SLICE.cap)
-        emit_typed_store_cap(&g, str_len, scap_ptr)
+        emit_typed_store_cap(&g, str_cap, scap_ptr)
         data_ptr := fresh_tmp(&g)
         emit_slice_gep(&g, data_ptr, elem_ptr, SLICE.ptr)
         emit_raw(&g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))

@@ -1,0 +1,69 @@
+module args_value
+
+use mara.core
+use mara.memory
+use mara.os
+
+// Command-line arguments as ordinary values: `this_program.args[i]` declared,
+// passed and handed to C. args[0] (the program's own path) is always present,
+// so this runs without extra arguments.
+//   - A slice ELEMENT used as a value (decl / argument / return) loaded its
+//     header instead of handing over its address — invalid IR.
+//   - Each argument's cap now counts argv's terminating 0, so cstring(arg)
+//     finds it: opening the file an argument names works.
+//   - args are text ([]utf8, as mara.core declares) — the synthesized Program
+//     had []byte, so an inferred local printed as a list of numbers.
+// (More than 64 arguments is a startup error; the suite can't pass arguments,
+// so that one is checked by hand.)
+
+Bag :: struct { items: [..4][]i64 }
+
+total :: fun(s: []i64) -> i64 {
+	t : i64 = 0
+	for x in s { t += x }
+	return t
+}
+
+first_of :: fun(b: ^Bag) -> []i64 { return b.items[0] }
+
+name_len :: fun(s: []utf8) -> i64 { return s.len }
+
+main :: fun() -> i64 {
+	this_program = Program(Arena_Debug(16 * MB))
+
+	self_path := this_program.args[0]
+	assert(self_path.len > 0)
+	assert(name_len(this_program.args[0]) == self_path.len)
+
+	// open this program's own executable through an argument
+	id, err := file_open_read(this_program.args[0])
+	assert(err == .Ok)
+	size, size_err := file_size(id)
+	assert(size_err == .Ok)
+	assert(size > 0)
+	file_close(id)
+
+	// slice elements of fixed / partial / field arrays, as values
+	data : [3]i64
+	data[0] = 1
+	data[1] = 2
+	data[2] = 3
+	fixed : [2][]i64
+	fixed[0] = data[:]
+	pa : [..4][]i64
+	pa[0] = data[:]
+	pa.len = 1
+	b : Bag
+	b.items[0] = data[:]
+	b.items.len = 1
+	a := fixed[0]
+	c := pa[0]
+	d := b.items[0]
+	sum := total(a) + total(c) + total(d)
+	sum += total(fixed[0]) + total(pa[0]) + total(b.items[0])
+	sum += total(first_of(&b))
+	assert(sum == 42)
+
+	print("args_value ok", sum)
+	return 0
+}
