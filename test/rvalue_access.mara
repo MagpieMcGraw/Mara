@@ -1,0 +1,76 @@
+module rvalue_access
+
+use mara.core
+
+// Index / field access on values that aren't named variables — a call result,
+// an overloaded operator's result, a slice held in an array — and indexing
+// through a pointer to a fixed array. Each used to be a codegen error ("index
+// target must be a variable" / "field access target must be a variable" /
+// "'out' is not an array"). A call used as the base runs exactly once.
+
+Holder :: struct { p: ^i64, n: i64 }
+Node :: struct { v: i64 }
+
+arr4 :: fun(calls: ^i64) -> [4]i64 {
+	calls^ += 1
+	r : [4]i64
+	r[2] = 30
+	return r
+}
+
+view :: fun(storage: ^[]i64, calls: ^i64) -> []i64 {
+	calls^ += 1
+	return storage[1:4]
+}
+
+wrap :: fun(q: ^i64, calls: ^i64) -> Holder {
+	calls^ += 1
+	return Holder{p = q, n = 7}
+}
+
+node_of :: fun(n: ^Node) -> ^Node { return n }
+
+fill :: fun(out: ^[4]i64) {
+	out[0] = 5
+	out[3] = out[0] + 1
+}
+
+main :: fun() {
+	calls : i64 = 0
+	sum : i64 = 0
+
+	sum += arr4(&calls)[2]                    // 30   fixed array returned by value
+
+	buf : [..8]i64
+	buf.len = 8
+	buf[2] = 100
+	sum += view(&buf, &calls)[1]              // 130  slice returned
+
+	z : i64 = 1000
+	sum += wrap(&z, &calls).p^                // 1130 struct returned: field, then deref
+	sum += wrap(&z, &calls).n                 // 1137
+
+	nd := Node{v = 4}
+	sum += node_of(&nd).v                     // 1141 pointer returned: auto-deref
+
+	a : [4]i64
+	a[1] = 9
+	list : [..4][]i64                         // a partial array of slices
+	list[0] = a[:]
+	list.len = 1
+	sum += list[0][1]                         // 1150
+	list[0][2] = 50
+	sum += a[2]                               // 1200 (written through the element)
+
+	grid : [2][]i64                           // a fixed array of slices
+	grid[1] = a[:]
+	sum += grid[1][1]                         // 1209
+
+	fixed : [4]i64
+	fill(&fixed)                              // indexing through ^[4]T
+	sum += fixed[0] + fixed[3]                // 1220
+
+	assert(calls == 4)                        // each call base ran once
+	assert(sum == 1220)
+	print("rvalue_access", sum, calls)
+}

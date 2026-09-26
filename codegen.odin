@@ -210,6 +210,10 @@ Chain_Result :: enum { Scalar, Struct, Array, Slice }
 Address_Chain :: struct {
     base_ptr:    string,             // alloca or loaded ptr
     base_type:   string,             // LLVM type at base
+    // An rvalue root (`f()[i]`, `f().x`, `(a * b).y`): evaluated in
+    // emit_address_chain, only once the whole chain has been built — building is
+    // speculative, and a failed build must not have run the call.
+    root_value:  Expr,
     steps:       [dynamic]Chain_Step,
     final_type:  string,             // LLVM IR type of the final element
     final_kind:  Chain_Result,
@@ -643,27 +647,41 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             chain.array_cap = 0              // unused; cap is dynamic
             return true
         }
-        // Pointer-to-struct: auto-deref. Pointer value may live in a
-        // Scalar_Var alloca (mutable local) or directly as an SSA value
+        // Pointer to a struct or fixed array: auto-deref. The pointer value may
+        // live in a Scalar_Var alloca (mutable local) or directly as an SSA value
         // (immutable param — no alloca emitted, no load needed).
         if pt, pt_ok := e.type_.(^Type_Ptr); pt_ok {
-            if sd := as_struct_body(pt.elem); sd != nil {
-                ptr_val: string
-                entry, entry_ok := g.all_vars[e.name]
-                if !entry_ok { return false }
-                #partial switch v in entry {
-                case SSA_Var:    ptr_val = v.ssa
-                case Scalar_Var: ptr_val = emit_load(g, "ptr", v.alloca)
-                case:            return false
-                }
-                chain.base_ptr = ptr_val
+            sd := as_struct_body(pt.elem)
+            fa, is_fa := distinct_base(pt.elem).(^Type_Fixed_Array)
+            if sd == nil && !is_fa { return false }
+            ptr_val: string
+            entry, entry_ok := g.all_vars[e.name]
+            if !entry_ok { return false }
+            #partial switch v in entry {
+            case SSA_Var:    ptr_val = v.ssa
+            case Scalar_Var: ptr_val = emit_load(g, "ptr", v.alloca)
+            case:            return false
+            }
+            chain.base_ptr = ptr_val
+            if sd != nil {
                 chain.base_type = struct_llvm_name(sd.name)
                 chain.final_type = chain.base_type
                 chain.final_kind = .Struct
                 chain.struct_name = sd.name
-                return true
+            } else {
+                chain_root_fixed_array(chain, fa)
             }
+            return true
         }
+        return false
+
+    case ^Expr_Call:
+        return chain_rvalue_root(expr, chain)
+    case ^Expr_Binary:
+        if _, overloaded := e.overload_fn.?; overloaded { return chain_rvalue_root(expr, chain) }
+        return false
+    case ^Expr_Unary:
+        if _, overloaded := e.overload_fn.?; overloaded { return chain_rvalue_root(expr, chain) }
         return false
 
     case ^Expr_Field_Access:
@@ -827,27 +845,7 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
                 name_hint  = name_hint,
                 span       = e.span,
             })
-            // Determine post-index kind from elem type (mirrors the array path).
-            if strings.has_prefix(elem_ir, "%class.") {
-                inner_name := elem_ir[len("%class."):]
-                chain.final_type = elem_ir
-                chain.final_kind = .Struct
-                chain.struct_name = inner_name
-                chain.array_cap = 0
-                chain.array_elem = ""
-            } else if inner_cap, inner_elem, is_nested := parse_array_ir_type(elem_ir); is_nested {
-                chain.final_type = elem_ir
-                chain.final_kind = .Array
-                chain.array_cap = inner_cap
-                chain.array_elem = inner_elem
-                chain.struct_name = ""
-            } else {
-                chain.final_type = elem_ir
-                chain.final_kind = .Scalar
-                chain.struct_name = ""
-                chain.array_cap = 0
-                chain.array_elem = ""
-            }
+            chain_after_index(chain, e, elem_ir)
             return true
         }
 
@@ -865,38 +863,125 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             span       = e.span,
         })
 
-        // After indexing, determine the element type
-        elem_ir := chain.array_elem
-        if strings.has_prefix(elem_ir, "%class.") {
-            inner_name := elem_ir[len("%class."):]
-            chain.final_type = elem_ir
-            chain.final_kind = .Struct
-            chain.struct_name = inner_name
-            chain.array_cap = 0
-            chain.array_elem = ""
-        } else if inner_cap, inner_elem, is_nested := parse_array_ir_type(elem_ir); is_nested {
-            chain.final_type = elem_ir
-            chain.final_kind = .Array
-            chain.array_cap = inner_cap
-            chain.array_elem = inner_elem
-            chain.struct_name = ""
-        } else {
-            chain.final_type = elem_ir
-            chain.final_kind = .Scalar
-            chain.struct_name = ""
-            chain.array_cap = 0
-            chain.array_elem = ""
-        }
+        chain_after_index(chain, e, chain.array_elem)
         return true
     }
 
     return false
 }
 
+// What an index step lands on, from the element's IR type — and, for a slice or
+// partial-array element (a `{ ptr, len, cap, ... }` header the IR type alone
+// can't tell from a scalar aggregate), from its checker type, so a further
+// index (`list[i][j]`) steps through the element's header.
+chain_after_index :: proc(chain: ^Address_Chain, e: ^Expr_Index, elem_ir: string) {
+    chain.final_type = elem_ir
+    chain.struct_name = ""
+    chain.array_cap = 0
+    chain.array_elem = ""
+    #partial switch et in distinct_base(index_elem_type(expr_type(e.expr))) {
+    case ^Type_Slice:
+        chain.final_kind = .Slice
+        chain.array_elem = llvm_type_from_checker(et.elem)
+        return
+    case ^Type_Partial_Array:
+        chain.final_kind = .Slice
+        chain.array_elem = llvm_type_from_checker(et.elem)
+        return
+    }
+    if strings.has_prefix(elem_ir, "%class.") {
+        chain.final_kind = .Struct
+        chain.struct_name = elem_ir[len("%class."):]
+    } else if inner_cap, inner_elem, is_nested := parse_array_ir_type(elem_ir); is_nested {
+        chain.final_kind = .Array
+        chain.array_cap = inner_cap
+        chain.array_elem = inner_elem
+    } else {
+        chain.final_kind = .Scalar
+    }
+}
+
+// The element type indexing a value of type `t` yields — through one pointer, as
+// indexing auto-derefs. (Read it off the indexed BASE: the checker doesn't type
+// an assignment target's index node.) nil when `t` isn't indexable.
+index_elem_type :: proc(t: Type) -> Type {
+    bt := distinct_base(t)
+    if p, ok := bt.(^Type_Ptr); ok { bt = distinct_base(p.elem) }
+    #partial switch v in bt {
+    case ^Type_Slice:         return v.elem
+    case ^Type_Fixed_Array:   return v.elem
+    case ^Type_Partial_Array: return v.elem
+    }
+    return nil
+}
+
+// Point a chain at fixed-array storage (the caller sets base_ptr).
+chain_root_fixed_array :: proc(chain: ^Address_Chain, fa: ^Type_Fixed_Array) {
+    elem_ir := llvm_type_from_checker(fa.elem)
+    _, is_utf8 := distinct_base(fa.elem).(Type_Utf8)
+    chain.base_type = fmt.tprintf("[%d x %s]", fa.size, elem_ir)
+    chain.final_type = elem_ir
+    chain.final_kind = .Array
+    chain.array_cap = fa.size
+    chain.array_elem = elem_ir
+    chain.array_source = Chain_Array_Root{is_utf8 = is_utf8}
+}
+
+// An rvalue chain root — a call or an overloaded operator. Only its shape is
+// recorded here; emit_address_chain evaluates it (see Address_Chain.root_value).
+chain_rvalue_root :: proc(x: Expr, chain: ^Address_Chain) -> bool {
+    t := distinct_base(expr_type(x))
+    #partial switch v in t {
+    case ^Type_Slice:
+        chain.final_kind = .Slice
+        chain.array_elem = llvm_type_from_checker(v.elem)
+    case ^Type_Partial_Array: // shares the slice header prefix
+        chain.final_kind = .Slice
+        chain.array_elem = llvm_type_from_checker(v.elem)
+    case ^Type_Fixed_Array:
+        chain_root_fixed_array(chain, v)
+    case ^Type_Ptr: // auto-deref, as for a pointer variable
+        if sd := as_struct_body(v.elem); sd != nil {
+            chain.base_type = struct_llvm_name(struct_key(sd))
+            chain.final_type = chain.base_type
+            chain.final_kind = .Struct
+            chain.struct_name = struct_key(sd)
+        } else if fa, ok := distinct_base(v.elem).(^Type_Fixed_Array); ok {
+            chain_root_fixed_array(chain, fa)
+        } else {
+            return false
+        }
+    case:
+        sd := as_struct_body(t)
+        if sd == nil { return false }
+        chain.base_type = struct_llvm_name(struct_key(sd))
+        chain.final_type = chain.base_type
+        chain.final_kind = .Struct
+        chain.struct_name = struct_key(sd)
+    }
+    chain.root_value = x
+    return true
+}
+
+// Evaluate an rvalue chain root to the address of its value. An aggregate-
+// returning call already yields a pointer to its result temp (and an array one
+// also parks it in the call-result slot — consume that); a pointer-returning
+// call yields the pointer itself.
+chain_eval_root :: proc(g: ^Codegen, x: Expr) -> string {
+    #partial switch _ in distinct_base(expr_type(x)) {
+    case ^Type_Slice, ^Type_Partial_Array:
+        return gen_slice_value_ptr(g, x) // the address of its header
+    }
+    ptr := gen_expr(g, x)
+    claim_call_result(g)
+    return ptr
+}
+
 // Emit GEP(s) from the chain. Returns pointer to the final element.
 // Consecutive offset steps are merged into a single multi-index GEP.
 // Deref steps flush the current GEP, load the pointer, and start fresh.
 emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
+    if chain.root_value != nil { chain.base_ptr = chain_eval_root(g, chain.root_value) }
     current_ptr := chain.base_ptr
     current_type := chain.base_type
 

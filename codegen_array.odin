@@ -461,8 +461,11 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if chain, chain_ok := build_address_chain(g, ix); chain_ok {
         elem_ptr := emit_address_chain(g, &chain)
         apply_compound_load_substitute(g, s, elem_ptr, chain.final_type)
+        _, slice_elem := distinct_base(index_elem_type(expr_type(ix.expr))).(^Type_Slice)
         if chain.final_kind == .Struct {
             gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value)
+        } else if slice_elem {
+            gen_store_slice_into(g, elem_ptr, s.value) // a slice element: copy the header
         } else {
             val := gen_expr_coerced(g, s.value, chain.final_type)
             emit_store(g, chain.final_type, val, elem_ptr)
@@ -1475,7 +1478,10 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
         emit_store(g, "ptr", elem_ptr, ptr_gep)
         return
     }
-    src := gen_expr(g, value)
+    // gen_slice_value_ptr also synthesizes a header for the sources that decay to
+    // a slice (fixed array, string literal, constant) — gen_expr would hand back
+    // their DATA pointer, and the memcpy would read elements as a header.
+    src := gen_slice_value_ptr(g, value)
     emit_memcpy(g, dst_ptr, src, slice_header_bytes)
 }
 
