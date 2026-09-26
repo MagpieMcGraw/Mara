@@ -1,0 +1,66 @@
+module const_reads
+
+//@ expect-output: index=0.2 0.9 0.2
+//@ expect-output: swizzle=0.9 0.2 / 1
+//@ expect-output: table=60 30
+//@ expect-output: nested=3 4 / 2
+//@ expect-output: literal=2 4 0 / 7 1 / -3 5 / 4 1 / 1 1
+//@ expect-output: default=0 0 0 1
+//@ expect-output: values=7 4 9 0.9
+//@ expect-output: fields=6 5 / 7 3
+
+// Reads straight off aggregate constants: an element, a runtime index, a
+// swizzle, a nested field. These used to fail codegen (Pounce had to copy
+// the constant into a local, or inline its literal). Also positional
+// literals whose first value starts with a type keyword (`V{f32(i), ...}`),
+// which the parser used to take for a block. And indexing an array value
+// with no name of its own: a swizzle, call result, literal or ternary.
+
+use mara.core
+use mara.math
+
+RED   :: [3]f32{0.9, 0.2, 0.2}
+PRIME :: [4]i64{10, 20, 30, 0}
+V     :: struct { x: f32, y: f32, z: f32 }
+Pair  :: struct { a: [2]i64, b: i64 }
+Quad  :: struct { lo: Pair, hi: Pair }
+TABLE :: Quad{{{1, 2}, 2}, {{3, 4}, 5}}
+Pose  :: struct { dir := QUAT_IDENTITY, pos: Vec3 }
+
+mk :: fun(n: f32) -> [3]f32 {
+	return [3]f32{n, n + 1, n + 2}
+}
+
+sum_table :: fun(n: i64) -> i64 {
+	s := 0
+	for i in 0..n {
+		s = s + PRIME[i]
+	}
+	return s
+}
+
+main :: fun() {
+	j := 2
+	print("index=% % %", RED[1], RED[0], RED[j])
+	print("swizzle=% % / %", RED.xy[0], RED.xy[1], QUAT_IDENTITY.w)
+	print("table=% %", sum_table(3), PRIME[j])
+	print("nested=% % / %", TABLE.hi.a[0], TABLE.hi.a[1], TABLE.lo.b)
+
+	i := 2
+	c := false
+	k := 4
+	v := V{f32(i), f32(i * 2), 0}
+	w := [2]i64{if c do 5 else 7, i64(i) - 1}
+	u := [2]i64{~k + 2, i64(5)}
+	b := [2]u8{u8(k), 1}
+	o := [2]f64{f64(k) / 4, 1}
+	print("literal=% % % / % % / % % / % % / % %", v.x, v.y, v.z, w[0], w[1], u[0], u[1], b[0], b[1], o[0], o[1])
+
+	p := Pose{}
+	print("default=% % % %", p.dir[0], p.dir[1], p.dir[2], p.dir[3])
+
+	print("values=% % % %", mk(5)[2], mk(f32(i))[i], [3]i64{7, 8, 9}[i], (if c do [3]f32{} else RED).x)
+	pa := Pair{{1, 2}, 3}
+	pb := Pair{{4, 5}, 6}
+	print("fields=% % / % %", (if c do pa else pb).b, (if c do pa else pb).a[1], mk(5).z, mk(1).zy[0])
+}

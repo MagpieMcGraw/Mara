@@ -1,5 +1,10 @@
 module constlit
 
+//@ expect-output: fields=1 0 7 0
+//@ expect-output: loop=4
+//@ expect-output: constlit ok
+
+use mara.core
 use mara.string
 
 // Struct-typed compile-time constants (`::` with a struct literal), declared
@@ -9,13 +14,13 @@ DEFAULT_MESH :: Mesh{"=quad", 0}
 DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 7}
 
 Texture :: struct {
-	name:  str,
+	name:  str64,
 	uv:    [4]f32,
 	layer: u32,
 }
 
 Mesh :: struct {
-	name:  str,
+	name:  str64,
 	index: i32,
 }
 
@@ -39,6 +44,17 @@ main :: fun() -> i64 {
 	layer := eat(ATLAS_TEXTURE)
 	assert(layer == 0)
 	assert(eat(DEFAULT_TEXTURE) == 7)
+
+	// read a field of a constant directly, no local copy
+	print("fields=% % % %", ATLAS_TEXTURE.uv[0], ATLAS_TEXTURE.uv[2], DEFAULT_TEXTURE.layer, DEFAULT_MESH.index)
+
+	// ...inside a loop, and stored into a field
+	acc : f32 = 0
+	for i in 0..4 {
+		t.uv = ATLAS_TEXTURE.uv
+		acc = acc + t.uv[1]
+	}
+	print("loop=%", acc)
 
 	print("constlit ok")
 	return 0

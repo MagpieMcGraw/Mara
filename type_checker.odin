@@ -4745,6 +4745,38 @@ write_root_immutable_param :: proc(e: Expr, env: ^Type_Scope) -> (name: string, 
     }
 }
 
+// The constant a write target or `&` operand is rooted at: `K.a`, `K.b[i]`,
+// `mod.K.a`. A constant is a value — codegen reads its fields from storage it
+// builds per function, and a write would silently change what later reads
+// see. Runs after the path is checked (the resolver stamps constants on it).
+// Crossing a pointer ends the search: what it points at isn't the constant.
+// A function-local constant isn't stamped; it's known by name (no variable
+// may shadow a constant, so the name is unambiguous).
+write_root_constant :: proc(c: ^Checker, e: Expr) -> (name: string, ok: bool) {
+    cur := e
+    for {
+        inner: Expr
+        #partial switch v in cur {
+        case ^Expr_Field_Access:
+            if rc, is_const := v.resolved.(Resolved_Constant); is_const && rc.value_expr != nil {
+                return v.field, true
+            }
+            inner = v.expr
+        case ^Expr_Index: inner = v.expr
+        case ^Expr_Slice: inner = v.expr
+        case ^Expr_Ident:
+            if rc, is_const := v.resolved.(Resolved_Constant); is_const && rc.value_expr != nil {
+                return v.name, true
+            }
+            return v.name, v.name in c.table.constants
+        case:
+            return "", false
+        }
+        if _, is_ptr := distinct_base(expr_type(inner)).(^Type_Ptr); is_ptr { return "", false }
+        cur = inner
+    }
+}
+
 // Which parameters a function's return value is COMPUTED from (cg.return_deps):
 // the `ask` slicer's cross-call edges. A sound over-approximation of data
 // dependence — through arithmetic, field/index reads, and field-writes into a
@@ -7653,6 +7685,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                     type_env_set(env, name, resolved_type)
                                 } else if i < len(s.targets) && s.targets[i] != nil {
                                     target_type := check_expr(c, s.targets[i], env)
+                                    if cname, is_const := write_root_constant(c, s.targets[i]); is_const {
+                                        check_error(c, s.span, TYPE_CANNOT_WRITE_CONSTANT, cname)
+                                    }
                                     if !is_any(target_type) && !is_any(resolved_type) {
                                         if !types_equal(target_type, resolved_type) {
                                             check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
@@ -7690,6 +7725,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
                                     }
                                     target_type := check_expr(c, s.targets[i], env)
+                                    if cname, is_const := write_root_constant(c, s.targets[i]); is_const {
+                                        check_error(c, s.span, TYPE_CANNOT_WRITE_CONSTANT, cname)
+                                    }
                                     if !is_any(target_type) && !is_any(resolved_type) {
                                         if !types_equal(target_type, resolved_type) {
                                             check_error(c, s.span, TYPE_CANNOT_ASSIGN_MULTI_RETURN,
@@ -8469,6 +8507,9 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
                     }
                 case:
                     check_error(c, s.span, TYPE_INVALID_ASSIGNMENT_TARGET)
+                }
+                if name, is_const := write_root_constant(c, s.target); is_const {
+                    check_error(c, s.span, TYPE_CANNOT_WRITE_CONSTANT, name)
                 }
                 continue
             }
@@ -10928,6 +10969,9 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                     TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER,
                     pname)
             }
+            if name, is_const := write_root_constant(c, e.operand); is_const {
+                check_error(c, e.span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, name)
+            }
             // A string literal's bytes live in read-only rodata. `&` is the
             // mutation gate, so an addressed literal (append destination,
             // `^[]utf8` argument) would aim writes at a read-only page.
@@ -11105,11 +11149,16 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             }
             // Struct-typed context (call argument, mainly — assignments,
             // decls and returns have their own special-cased paths): give a
-            // bare literal the same field-matching treatment those get.
-            if sd := as_scope_body(distinct_base(hint)); sd != nil && len(sd.fields) > 0 {
-                check_struct_literal_fields(c, e, sd, e.span, env)
-                e.type_ = hint
-                return hint
+            // bare literal the same field-matching treatment those get. The
+            // hinted struct's fields resolve on demand: nested in a constant
+            // (`Quad{{{1, 2}, 2}, ...}`) nothing else has asked for them yet.
+            if sd := as_scope_body(distinct_base(hint)); sd != nil {
+                ensure_struct_signature(c, sd)
+                if len(sd.fields) > 0 {
+                    check_struct_literal_fields(c, e, sd, e.span, env)
+                    e.type_ = hint
+                    return hint
+                }
             }
             // Union-typed context: a variant literal `A{...}` in a return slot,
             // argument, or nested field. Validate the variant's fields and type

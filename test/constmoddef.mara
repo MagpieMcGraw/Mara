@@ -1,17 +1,18 @@
 module constmoddef
 
+use mara.core
 use mara.string
 
 DEF_MESH :: CM_Mesh{"=quad", 0}
 DEF_TEXTURE :: CM_Texture{"DEFAULT", {0, 0, 0, 0}, 0}
 
 CM_Texture :: struct {
-	name:  str,
+	name:  str64,
 	uv:    [4]f32,
 	layer: u32,
 }
 
 CM_Mesh :: struct {
-	name:  str,
+	name:  str64,
 	index: i32,
 }

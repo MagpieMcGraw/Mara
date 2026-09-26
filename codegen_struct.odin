@@ -343,6 +343,8 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
 
 // Handle: &obj.field — return pointer to field (GEP without load)
 gen_field_address :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
+    prepare_const_root(g, e)
+    if addr, ok := qualified_const_storage(g, e); ok { clear_field_result(g); return addr }
     // Try unified address chain first
     if chain, chain_ok := build_address_chain(g, e); chain_ok {
         return emit_address_chain(g, &chain)
@@ -541,6 +543,8 @@ load_slice_header_field :: proc(g: ^Codegen, hdr: string, field: string) -> stri
 }
 
 gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
+    prepare_const_root(g, e)
+    if addr, ok := qualified_const_storage(g, e); ok { return addr }
     // Function reference: game.test_print → @mara_Mega_test_print
     if rf, rf_ok := e.resolved.(Resolved_Func); rf_ok {
         ir_name := mara_fn_name(g, rf.name)
@@ -832,6 +836,12 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                 }
             }
             codegen_fatal(g, e.span, CODE_FIELD_ACCESS_INDEXED_ELEMENT_UNKNOWN, e.field)
+        }
+        // Swizzle of any other array value — a call result, ternary or literal.
+        if fa, fa_ok := distinct_base(expr_type(e.expr)).(^Type_Fixed_Array); fa_ok && is_swizzle_field(e.field, fa.size) {
+            ar := Array_Var{alloca = gen_array_address(g, e.expr, fa), capacity = fa.size, elem_type = llvm_type_from_checker(fa.elem)}
+            if len(e.field) == 1 { return gen_swizzle_read_single(g, &ar, e.field) }
+            return gen_swizzle_read_multi(g, &ar, e.field)
         }
         codegen_fatal(g, e.span, CODE_FIELD_ACCESS_TARGET_VARIABLE)
     }

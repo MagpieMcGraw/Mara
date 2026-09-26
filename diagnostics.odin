@@ -555,6 +555,8 @@ TYPE_CANNOT_NEGATE_UNSIGNED :: "cannot negate unsigned %s — no representable r
 TYPE_CANNOT_APPLY :: "cannot apply 'not' to %s"
 TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE :: "cannot apply '~' to %s, requires integer type"
 TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER :: "cannot take address of immutable parameter '%s' (declare it with ^ to allow mutation)"
+TYPE_CANNOT_WRITE_CONSTANT :: "cannot write into constant '%s' — copy it into a variable to change it"
+TYPE_CANNOT_TAKE_ADDRESS_CONSTANT :: "cannot take address of constant '%s' — copy it into a variable to get storage"
 TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE :: "cannot dereference non-pointer type %s"
 TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED :: "typed array literal: type %s is not a fixed-size array"
 TYPE_SIZE_UNKNOWN_TYPE :: "size_of: unknown type"

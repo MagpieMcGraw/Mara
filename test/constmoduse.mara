@@ -1,5 +1,8 @@
 module constmoduse
 
+//@ expect-output: imported=0 0
+//@ expect-output: constmoduse ok
+
 use constmoddef
 use constmodmid
 
@@ -11,6 +14,10 @@ main :: fun() -> i64 {
 	v.mesh = DEF_MESH
 	v.texture = DEF_TEXTURE
 	assert(v.texture.uv[2] == 0)
+
+	// fields of another module's constant (Pounce: `ATLAS_TEXTURE.uv`)
+	v.texture.uv = DEF_TEXTURE.uv
+	print("imported=% %", DEF_TEXTURE.uv[3], DEF_MESH.index)
 
 	print("constmoduse ok")
 	return 0

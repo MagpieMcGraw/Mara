@@ -26,7 +26,7 @@ MARA=../Mara.exe
 LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg inferconflict widenneg"
 # name:reason — stale/pre-existing-broken fixtures that DO have a main (so they
 # won't auto-skip). Clean these up and the entries go away.
-LEGACY_SKIP="font_test:stale-calls-removed-load_glyphs constlit:stale-uses-removed-str constmoduse:stale-multimodule-uses-removed-str leak_consumer:stale-multimodule-uses-removed-Arena_Basic mandelbrot_bench_simd:preexisting-not-applied-to-err"
+LEGACY_SKIP="font_test:stale-calls-removed-load_glyphs leak_consumer:stale-multimodule-uses-removed-Arena_Basic mandelbrot_bench_simd:preexisting-not-applied-to-err"
 
 in_list() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
 skip_reason() { for kv in $LEGACY_SKIP; do case "$kv" in "$1:"*) echo "${kv#*:}"; return ;; esac; done; }

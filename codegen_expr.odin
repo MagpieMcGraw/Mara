@@ -166,6 +166,13 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                     return "@__mara_program_storage"
                 }
             }
+            // A field or element of a ternary or literal: those are values, not
+            // storage. Their address is a temp's, or (a ternary's) one of the
+            // operands' — a write through it would reach that operand.
+            #partial switch _ in access_root(e.operand) {
+            case ^Expr_If, ^Expr_Array, ^Expr_Struct_Literal:
+                codegen_fatal(g, e.span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
+            }
             // Address-of a field: emit GEP but don't load
             if fa, ok := e.operand.(^Expr_Field_Access); ok {
                 return gen_field_address(g, fa)

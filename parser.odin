@@ -3834,7 +3834,11 @@ is_struct_literal :: proc(p: ^Parser) -> bool {
     // block-as-expression syntax.
     #partial switch next_kind {
     case .Number, .String, .Char, .True, .False, .Identifier,
-         .Left_Bracket, .Left_Paren, .Minus, .Ampersand, .Caret, .Bang:
+         .Left_Bracket, .Left_Paren, .Left_Brace, .Minus, .Ampersand, .Caret, .Bang, .Tilde,
+         .If, .Hash,
+         // A type keyword starts a conversion: `Vec3{f32(i), 0, 0}`.
+         .Int, .F64, .Bool_Type, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64,
+         .F32, .Utf8, .Byte:
         return true
     }
     return false

@@ -1,0 +1,17 @@
+module temp_address_neg
+//@ expect-fail: `&` needs a named variable
+
+// A ternary of aggregates yields one operand's storage; a field of it can be
+// read, but `&` into it would hand out a pointer that writes through to `x`.
+
+P :: struct { a: i64, b: [2]i64 }
+
+main :: fun() {
+	c := true
+	x := P{1, {2, 3}}
+	y := P{4, {5, 6}}
+	print((if c do x else y).a)
+	p := &(if c do x else y).a
+	p^ = 9
+	print(x.a)
+}

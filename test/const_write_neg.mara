@@ -1,0 +1,13 @@
+module const_write_neg
+//@ expect-fail: cannot write into constant 'K'
+
+// A constant is a value. Its fields can be read in place (`K.b[1]`), but a
+// write would change what later reads of it see.
+
+P :: struct { a: i64, b: [2]i64 }
+K :: P{7, {8, 9}}
+
+main :: fun() {
+	K.b[1] = 5
+	print(K.b[1])
+}

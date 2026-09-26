@@ -429,6 +429,78 @@ codegen_const_value :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
     return nil, false
 }
 
+// Reading part of an aggregate constant — `ATLAS.uv`, `RED[i]`,
+// `QUAT_IDENTITY.w` — needs it to live somewhere: the field / index / swizzle
+// paths all start from a variable's storage. So when such a path is rooted at
+// a constant, the constant is built once in the function's entry block (after
+// the hoisted allocas, before the body — dominating every use; its field
+// defaults applied like any construction) and its name bound to that storage.
+// A loop reading a constant table indexes it; it isn't rebuilt per read.
+prepare_const_root :: proc(g: ^Codegen, e: Expr) {
+    if !g.hoist_allocas { return } // no function body to put a prologue in
+    ident, is_ident := access_root(e).(^Expr_Ident)
+    if !is_ident { return }
+    if _, bound := g.all_vars[ident.name]; bound { return }
+    value, is_const := codegen_const_value(g, ident)
+    if !is_const { return }
+    t := ident.type_
+    if t == nil { t = expr_type(value) }
+    if storage, ok := const_storage_for(g, ident.name, value, t); ok {
+        g.all_vars[ident.name] = storage
+    }
+}
+
+// The entry-block storage for aggregate constant `key` (value `value`, type
+// `t`) in the current function — built on first use (see prepare_const_root).
+// ok = false outside a function body, or for a non-aggregate constant.
+const_storage_for :: proc(g: ^Codegen, key: string, value: Expr, t: Type) -> (Var_Entry, bool) {
+    if !g.hoist_allocas { return nil, false }
+    if storage, built := g.const_storage[key]; built { return storage, true }
+    base := distinct_base(t)
+    storage: Var_Entry
+    // Build it with the regular construction code, redirected from the body
+    // into the prologue (allocas still go to the hoisted alloca block).
+    saved_body := g.body_buf
+    g.body_buf = strings.builder_make()
+    if sd := as_struct_body(base); sd != nil {
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, struct_llvm_name(struct_key(sd)))
+        gen_store_struct_into(g, tmp, sd, value, dest_fresh = true)
+        storage = Struct_Var{alloca = tmp, struct_name = struct_key(sd)}
+    } else if fa, is_fa := base.(^Type_Fixed_Array); is_fa {
+        elem_ir := llvm_type_from_checker(fa.elem)
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, fmt.tprintf("[%d x %s]", fa.size, elem_ir))
+        _, utf8 := distinct_base(fa.elem).(Type_Utf8)
+        gen_store_array_into(g, tmp, fa.size, elem_ir, value, utf8, dest_fresh = true)
+        storage = Array_Var{alloca = tmp, capacity = fa.size, elem_type = elem_ir, is_utf8 = utf8}
+    }
+    strings.write_string(&g.const_prologue, strings.to_string(g.body_buf))
+    g.body_buf = saved_body
+    if storage == nil { return nil, false }
+    g.const_storage[key] = storage
+    return storage, true
+}
+
+// A module-qualified aggregate constant (`defs.ATLAS`) as the base of a read:
+// its entry-block storage, published like a variable's field (set_field_result)
+// so the enclosing field / index / swizzle read continues from it.
+qualified_const_storage :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> (string, bool) {
+    rc, is_const := e.resolved.(Resolved_Constant)
+    if !is_const || rc.value_expr == nil { return "", false }
+    t := e.type_
+    if t == nil { t = expr_type(rc.value_expr) }
+    key := fmt.tprintf("%p", rc.value_expr) // the constant's own value node: one per constant
+    storage, ok := const_storage_for(g, key, rc.value_expr, t)
+    if !ok { return "", false }
+    set_field_result(g, storage)
+    #partial switch v in storage {
+    case Struct_Var: return v.alloca, true
+    case Array_Var:  return v.alloca, true
+    }
+    return "", false
+}
+
 gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, loc: string = "<unknown>", elem_mara: Type = nil) {
     // `= void` (skip marker) on a fixed array — same as no initializer:
     // allocate, register, and stop — under the zero-init policy, `= void`
@@ -975,7 +1047,17 @@ elem_at :: proc(g: ^Codegen, ptr: string, elem_ir: string, t: Type) -> string {
     return emit_load(g, elem_ir, ptr)
 }
 
+// Element `e.index` of the fixed array `fa` stored at `base`, bounds-checked.
+index_fixed_array_at :: proc(g: ^Codegen, base: string, fa: ^Type_Fixed_Array, e: ^Expr_Index) -> string {
+    elem_ir := llvm_type_from_checker(fa.elem)
+    idx := gen_checked_index(g, e.index, fmt.tprintf("%d", fa.size), "array", e.span)
+    gep := fresh_tmp(g)
+    emit_array_gep_var(g, gep, fmt.tprintf("[%d x %s]", fa.size, elem_ir), base, idx, slice_layout.len_ir)
+    return elem_at(g, gep, elem_ir, fa.elem)
+}
+
 gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
+    prepare_const_root(g, e)
     // Try unified address chain for chained access (obj.items[i], a[i][j], etc.)
     if chain, chain_ok := build_address_chain(g, e); chain_ok {
         addr := emit_address_chain(g, &chain)
@@ -988,7 +1070,10 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
         // Handle field access targets: input.keyboard.pressed[scancode]
         if fa, fa_ok := e.expr.(^Expr_Field_Access); fa_ok {
             gen_field_access(g, fa)
-            if av, av_ok := claim_field_array(g); av_ok {
+            // A fixed-array field, or a swizzle (`v.xy[i]`) built in a temp.
+            av, av_ok := claim_field_array(g)
+            if !av_ok { av, av_ok = claim_swizzle_result(g) }
+            if av_ok {
                 arr_len := fmt.tprintf("%d", usable_cap(&av))
                 idx := gen_checked_index(g, e.index, arr_len, fa.field, e.span)
                 arr_type := array_var_type(&av)
@@ -1006,15 +1091,8 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
         // Handle nested index: a[i][j] for multi-dimensional arrays
         if inner_idx, idx_ok := e.expr.(^Expr_Index); idx_ok {
             inner_ptr := gen_index_address(g, inner_idx)
-            inner_type := expr_type(e.expr)
-            if inner_fa, fa_ok := inner_type.(^Type_Fixed_Array); fa_ok {
-                inner_elem := llvm_type_from_checker(inner_fa.elem)
-                inner_arr_type := fmt.tprintf("[%d x %s]", inner_fa.size, inner_elem)
-                arr_len := fmt.tprintf("%d", inner_fa.size)
-                idx := gen_checked_index(g, e.index, arr_len, "array", e.span)
-                gep := fresh_tmp(g)
-                emit_array_gep_var(g, gep, inner_arr_type, inner_ptr, idx, slice_layout.len_ir)
-                return elem_at(g, gep, inner_elem, inner_fa.elem)
+            if fa, fa_ok := distinct_base(expr_type(e.expr)).(^Type_Fixed_Array); fa_ok {
+                return index_fixed_array_at(g, inner_ptr, fa, e)
             }
         }
         codegen_fatal(g, e.span, CODE_INDEX_TARGET_VARIABLE)
@@ -1069,6 +1147,7 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
 
 // Address-of array element: &arr[i] — emit GEP to element, return pointer (no load).
 gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
+    prepare_const_root(g, e)
     // Chain handles ident-rooted fixed-array and `obj.<fixed_arr>[i]` shapes.
     if chain, chain_ok := build_address_chain(g, e); chain_ok {
         return emit_address_chain(g, &chain)

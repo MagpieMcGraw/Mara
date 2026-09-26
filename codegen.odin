@@ -307,6 +307,11 @@ Codegen :: struct {
     out:         strings.Builder,  // current per-module IR buffer (swapped in from module_outs)
     alloca_buf:  strings.Builder,  // hoisted allocas (entry block)
     body_buf:    strings.Builder,  // temporary buffer for function body during alloca hoisting
+    // Aggregate constants read by field / index / swizzle get storage built
+    // once per function, in the entry block after the allocas (see
+    // prepare_const_root): the construction code, and name -> storage.
+    const_prologue: strings.Builder,
+    const_storage:  map[string]Var_Entry,
 
     // Per-module IR buffers. Each function's IR lands in the buffer keyed by
     // its home_package; g.out is swapped to the right buffer before
@@ -616,6 +621,7 @@ emit_multi_gep :: proc(g: ^Codegen, base_type: string, base_ptr: string, indices
 // expression contains patterns the chain cannot handle (swizzle, slice index,
 // VLA, function references, etc.) — caller should fall back to existing code.
 build_address_chain :: proc(g: ^Codegen, expr: Expr) -> (Address_Chain, bool) {
+    prepare_const_root(g, expr)
     chain: Address_Chain
 
     // Walk the expression bottom-up, building the chain in reverse
@@ -700,7 +706,7 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
         }
         return false
 
-    case ^Expr_Call:
+    case ^Expr_Call, ^Expr_If, ^Expr_Array, ^Expr_Struct_Literal:
         return chain_rvalue_root(expr, chain)
     case ^Expr_Binary:
         if _, overloaded := e.overload_fn.?; overloaded { return chain_rvalue_root(expr, chain) }
@@ -1022,14 +1028,30 @@ chain_rvalue_root :: proc(x: Expr, chain: ^Address_Chain) -> bool {
     return true
 }
 
-// Evaluate an rvalue chain root to the address of its value. An aggregate-
-// returning call already yields a pointer to its result temp (and an array one
-// also parks it in the call-result slot — consume that); a pointer-returning
+// The expression an access path (`x.f[i].g`) is rooted at.
+access_root :: proc(e: Expr) -> Expr {
+    cur := e
+    for {
+        #partial switch v in cur {
+        case ^Expr_Field_Access: cur = v.expr
+        case ^Expr_Index:        cur = v.expr
+        case:                    return cur
+        }
+    }
+}
+
+// Evaluate an rvalue chain root — a call or operator result, a ternary, a
+// literal — to the address of its value. A fixed array goes through
+// gen_array_address (a literal is built in a temp; a call or ternary result is
+// claimed where it sits). An aggregate-returning call already yields a pointer
+// to its result temp, as does a struct ternary or literal; a pointer-returning
 // call yields the pointer itself.
 chain_eval_root :: proc(g: ^Codegen, x: Expr) -> string {
-    #partial switch _ in distinct_base(expr_type(x)) {
+    #partial switch v in distinct_base(expr_type(x)) {
     case ^Type_Slice, ^Type_Partial_Array:
         return gen_slice_value_ptr(g, x) // the address of its header
+    case ^Type_Fixed_Array:
+        return gen_array_address(g, x, v)
     }
     ptr := gen_expr(g, x)
     claim_call_result(g)
@@ -1968,16 +1990,20 @@ module_build_worker :: proc(t: thread.Task) {
 begin_alloca_hoist :: proc(g: ^Codegen) {
     strings.builder_reset(&g.alloca_buf)
     strings.builder_reset(&g.body_buf)
+    strings.builder_reset(&g.const_prologue)
+    clear(&g.const_storage)
     g.hoist_allocas = true
 }
 
-// End alloca hoisting: flush hoisted allocas first, then body code, into g.out.
+// End alloca hoisting: flush hoisted allocas first, then the constants the body
+// reads from (built once, dominating every use), then body code, into g.out.
 end_alloca_hoist :: proc(g: ^Codegen) {
     g.hoist_allocas = false
     alloca_str := strings.to_string(g.alloca_buf)
     if len(alloca_str) > 0 {
         strings.write_string(&g.out, alloca_str)
     }
+    strings.write_string(&g.out, strings.to_string(g.const_prologue))
     body_str := strings.to_string(g.body_buf)
     if len(body_str) > 0 {
         strings.write_string(&g.out, body_str)
