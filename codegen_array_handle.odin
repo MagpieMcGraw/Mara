@@ -100,6 +100,13 @@ resolve_array_handle :: proc(g: ^Codegen, expr: Expr) -> (Array_Handle, bool) {
             return Array_Handle{header_ptr = gen_index_address(g, idx), elem_type = llvm_type_from_checker(t.elem), is_utf8 = utf8}, true
         }
     }
+    // Any other slice-valued expression — a sub-slice `a[lo:hi]`, a call
+    // returning a slice — is pointer-valued: gen_slice_value_ptr yields the
+    // address of its header.
+    if sl, ok := distinct_base(expr_type(expr)).(^Type_Slice); ok {
+        _, utf8 := sl.elem.(Type_Utf8)
+        return Array_Handle{header_ptr = gen_slice_value_ptr(g, expr), elem_type = llvm_type_from_checker(sl.elem), is_utf8 = utf8}, true
+    }
     return {}, false
 }
 

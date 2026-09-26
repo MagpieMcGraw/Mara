@@ -1371,7 +1371,7 @@ gen_slice_decl_runtime_cap :: proc(g: ^Codegen, s: ^Stmt_Assign, sl: ^Type_Slice
 }
 
 // Assign a slice expression to an inferred-type variable: x := arr[1:3]
-gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
+gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_type: Type = nil) {
     // Pre-bound slice with no body initializer (e.g. `name: String` as a struct
     // field where prebind_field_var already wired the header) — there's
     // nothing to do here. Falling through would `gen_expr(nil) = "0"` and
@@ -1455,6 +1455,13 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr) {
                 _, utf8 = fa_t.elem.(Type_Utf8)
             }
         }
+    }
+
+    // A declaration's own type decides what the new variable is: `text : []utf8
+    // = bytes[:]` is text, though its source is a byte buffer.
+    if sl, ok := distinct_base(decl_type).(^Type_Slice); ok {
+        elem_t = llvm_type_from_checker(sl.elem)
+        _, utf8 = sl.elem.(Type_Utf8)
     }
 
     src := gen_expr(g, value)

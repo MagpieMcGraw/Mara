@@ -2239,9 +2239,15 @@ emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr, call_span: Span) {
         // shared printer instead of branching by source-noun. Replaces four
         // near-identical hand-rolled branches that drifted out of sync.
         if is_utf8_array_expr(g, arg_expr) {
-            if h, ok := resolve_array_handle(g, arg_expr); ok && h.is_utf8 {
-                emit_array_print(g, &h)
+            // The type already says text; print it as text. (The handle's cached
+            // is_utf8 flag can lag the type — gating on it printed NOTHING for a
+            // `[]utf8` view declared over a byte buffer.) An argument that can't
+            // be resolved is an error, never a silent no-op.
+            h, ok := resolve_array_handle(g, arg_expr)
+            if !ok {
+                codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
             }
+            emit_array_print(g, &h)
         } else if is_array_expr(g, arg_expr) {
             // Check if the expression is a non-utf8 array variable
             gen_print_array(g, arg_expr)

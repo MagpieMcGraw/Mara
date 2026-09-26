@@ -1,0 +1,37 @@
+module text_view_print
+
+//@ expect-output: view=hello
+//@ expect-output: field=hello
+//@ expect-output: sub=ell
+//@ expect-output: call=ell
+
+// A `[]utf8` view declared over a BYTE buffer (the read-a-file idiom) is text:
+// its declared type decides, not the buffer it views. It printed an empty line
+// (its length was right) — the variable was registered with the source's
+// "not text" flag, and print, gating on that flag, silently emitted nothing.
+// The same silent path swallowed a printed sub-slice or call result (Pounce's
+// shader-error log, `print(log[:log_len])`, never printed): those now print,
+// and a text value print can't handle is a compile error, not an empty line.
+
+Doc :: struct { raw: [..16]byte }
+
+middle :: fun(s: []utf8) -> []utf8 { return s[1:4] }
+
+main :: fun() {
+	src := "hello"
+	bytes : [..16]byte
+	for c, i in src { bytes[i] = u8(c) }
+	bytes.len = src.len
+
+	view : []utf8 = bytes[:]
+	print("view=%", view)
+
+	d : Doc
+	for c, i in src { d.raw[i] = u8(c) }
+	d.raw.len = src.len
+	field : []utf8 = d.raw[:]
+	print("field=%", field)
+
+	print("sub=%", view[1:4])
+	print("call=%", middle(view))
+}

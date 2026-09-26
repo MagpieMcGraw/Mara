@@ -12,6 +12,10 @@
 #                                    (a library or one piece of a multi-file test).
 #   5. default                     — must compile.
 #
+# A compiling fixture may also carry `//@ expect-output: text` lines (any
+# number): it is then RUN, and must exit 0 with each text in its output. That's
+# how a miscompile that still compiles — printing nothing, say — gets caught.
+#
 # New fixtures should use the //@ annotations; the lists are a migration shim.
 # (test/failures/*.mara have no main and can't build standalone — out of scope
 #  until `mara` grows a check-only mode.)
@@ -50,7 +54,18 @@ for f in *.mara; do
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
 
   if [ "$exp" = pass ]; then
-    if [ "$comp" = yes ]; then pass=$((pass+1)); else echo "REGRESSION (want pass, failed): $name"; bad=$((bad+1)); fi
+    if [ "$comp" != yes ]; then echo "REGRESSION (want pass, failed): $name"; bad=$((bad+1)); continue; fi
+    if grep -qE '//@ expect-output:' "$f"; then
+      run=$(timeout 10 "./$name.exe" 2>&1); rc=$?
+      missing=""
+      while IFS= read -r want; do
+        echo "$run" | grep -qF -- "$want" || missing="$want"
+      done < <(sed -nE 's#.*//@ expect-output:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
+      if [ $rc -ne 0 ] || [ -n "$missing" ]; then
+        echo "WRONG OUTPUT: $name (exit $rc${missing:+, missing: \"$missing\"})"; bad=$((bad+1)); continue
+      fi
+    fi
+    pass=$((pass+1))
   else
     if [ "$comp" = yes ]; then echo "STALE NEGATIVE (want fail, compiled): $name"; bad=$((bad+1))
     elif [ -n "$substr" ] && ! echo "$out" | grep -qF "$substr"; then echo "WRONG ERROR: $name (want substring: $substr)"; bad=$((bad+1))

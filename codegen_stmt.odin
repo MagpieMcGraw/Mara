@@ -223,7 +223,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
 
         // Check if value is a slice expression (inferred type)
         if _, ok := s.value.(^Expr_Slice); ok {
-            gen_slice_assign_inferred(g, s.name, s.value)
+            gen_slice_assign_inferred(g, s.name, s.value, var_type)
             return
         }
 
