@@ -1,0 +1,133 @@
+module partial_array_copies
+
+//@ expect-output: local=abc
+//@ expect-output: swap=elf Zrc orc
+//@ expect-output: swapremove=imp zzz
+//@ expect-output: field=imp
+//@ expect-output: wholearray=elf Wlf
+//@ expect-output: arrayfield=elf Zrc
+//@ expect-output: nested=elf imp
+//@ expect-output: loopvar=elf
+//@ expect-output: multiret=two 7
+//@ expect-output: ret=bb
+//@ expect-output: union=uni
+//@ expect-output: bigarray=big Big
+//@ expect-output: pa=l0 L0
+//@ expect-output: range=s0 s1
+
+// A partial array's header points at its own inline elements, so a copy of
+// one — or of anything holding one: a struct with a string field, an array of
+// them, a union variant — must re-point the copy's header at the copy's own
+// elements. Every copy path now does (reanchor_partial_arrays). Before, some
+// didn't: `ents[1] = ents[2]` (swap-remove) left ents[1] reading ents[2]'s
+// bytes, a union copy shared its payload's string, and `b := a` was simply
+// rejected ("cannot copy by value") as a stopgap. Each case below copies, then
+// changes the SOURCE, and prints the copy — which must be unaffected.
+
+Named :: struct { name: [..8]utf8, n: i64 }
+Team :: struct { lead: Named, crew: [2]Named }
+Tagged :: union(tag u8) { Named1 = 1 { who: Named } Num = 2 { n: i64 } }
+two :: fun(src: Named) -> (Named, i64) {
+	r := src
+	return r, 7
+}
+pick :: fun(a: Named, b: Named, first: bool) -> Named {
+	if first { return a }
+	return b
+}
+wrap :: fun(x: Named) -> Tagged { return Named1{who = x} }
+mk :: fun(s: []utf8) -> Named {
+	n : Named
+	n.name = s
+	return n
+}
+main :: fun() {
+	a := mk("abc")
+	b := a
+	a.name[0] = 'X'
+	print("local=%", b.name)
+
+	ents : [3]Named
+	ents[0] = mk("orc")
+	ents[1] = mk("elf")
+	ents[2] = mk("imp")
+	tmp := ents[0]
+	ents[0] = ents[1]
+	ents[1] = tmp
+	ents[1].name[0] = 'Z'
+	print("swap=% % %", ents[0].name, ents[1].name, tmp.name)
+
+	sr : [3]Named
+	sr[0] = mk("orc")
+	sr[1] = mk("elf")
+	sr[2] = mk("imp")
+	sr[1] = sr[2]
+	sr[2].name = "zzz"
+	print("swapremove=% %", sr[1].name, sr[2].name)
+
+	t := Team{}
+	t.lead = ents[2]
+	ents[2].name[0] = 'Q'
+	print("field=%", t.lead.name)
+
+	arr2 := ents
+	ents[0].name[0] = 'W'
+	print("wholearray=% %", arr2[0].name, ents[0].name)
+
+	t.crew[0] = arr2[0]
+	t.crew[1] = arr2[1]
+	print("arrayfield=% %", t.crew[0].name, t.crew[1].name)
+
+	t2 := t
+	t.crew[0].name[0] = 'V'
+	t.lead.name[0] = 'U'
+	print("nested=% %", t2.crew[0].name, t2.lead.name)
+
+	for e in arr2 {
+		arr2[0].name[0] = 'Y'
+		print("loopvar=%", e.name)
+		break
+	}
+
+	r, k := two(mk("two"))
+	print("multiret=% %", r.name, k)
+
+	p := pick(mk("aa"), mk("bb"), false)
+	print("ret=%", p.name)
+
+	u := wrap(mk("uni"))
+	u2 := u
+	match u {
+	Named1 x
+		x.who.name[0] = 'Y'
+	Num y
+		print("num")
+	}
+	match u2 {
+	Named1 x
+		print("union=%", x.who.name)
+	Num y
+		print("num")
+	}
+
+	big : [8]Named
+	for i in 0..8 { big[i] = mk("big") }
+	big2 := big
+	big[7].name[0] = 'B'
+	print("bigarray=% %", big2[7].name, big[7].name)
+
+	list : [..4]Named
+	list[0] = mk("l0")
+	list.len = 1
+	list2 := list
+	list[0].name[0] = 'L'
+	print("pa=% %", list2[0].name, list[0].name)
+
+	dst : [4]Named
+	src : [2]Named
+	src[0] = mk("s0")
+	src[1] = mk("s1")
+	dst[1:3] = src
+	src[0].name[0] = 'S'
+	print("range=% %", dst[1].name, dst[2].name)
+}

@@ -1754,6 +1754,8 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                 slot := fresh_tmp(g)
                 emit_alloca(g, slot, info.ret_type)
                 emit_store(g, info.ret_type, tmp, slot)
+                // Its partial arrays still point into the callee's frame.
+                reanchor_partial_arrays(g, call_result_type(g, e), slot)
                 return slot
             }
             return tmp

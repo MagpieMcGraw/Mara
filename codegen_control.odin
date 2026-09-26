@@ -401,6 +401,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             if st_def, st_ok := lookup_struct(g, struct_name); st_ok {
                 sz := struct_byte_size(st_def, g.checked)
                 emit_memcpy(g, elem_alloca, elem_ptr, sz)
+                reanchor_partial_arrays(g, sd_type_scope(st_def), elem_alloca)
             }
             g.all_vars[s.elem_var] = Struct_Var{elem_alloca, struct_name}
         } else if is_slice_elem {

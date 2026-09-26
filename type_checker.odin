@@ -3738,45 +3738,6 @@ distinct_base :: proc(t: Type) -> Type {
     return distinct_base(dt.base_type)
 }
 
-// True when `t` transitively contains a `Type_Partial_Array` somewhere in
-// its layout. Used to reject struct-copy assignments that would silently
-// break the inner partial array's self-referential ptr field. The top-level
-// partial-array case is NOT flagged here — direct partial-to-partial copy
-// has a dedicated codegen helper (`partial_array_copy`) that re-anchors ptr.
-type_contains_partial_array :: proc(t: Type) -> bool {
-    if t == nil { return false }
-    #partial switch v in t {
-    case ^Type_Partial_Array:
-        return true
-    case ^Type_Distinct:
-        return type_contains_partial_array(v.base_type)
-    case ^Type_Scope:
-        if v.kind == .Struct {
-            for &f in v.fields {
-                if type_contains_partial_array(f.type_) { return true }
-            }
-        }
-    case ^Type_Fixed_Array:
-        return type_contains_partial_array(v.elem)
-    }
-    return false
-}
-
-// True when `t` is a struct (or distinct-of-struct) that holds a partial
-// array somewhere inside. A top-level `Type_Partial_Array` returns false —
-// only wrapped occurrences matter, since the direct case has its own copy
-// path.
-struct_contains_partial_array :: proc(t: Type) -> bool {
-    base := distinct_base(t)
-    if _, is_pa := base.(^Type_Partial_Array); is_pa { return false }
-    sd := as_scope_body(base)
-    if sd == nil { return false }
-    for &f in sd.fields {
-        if type_contains_partial_array(f.type_) { return true }
-    }
-    return false
-}
-
 // Unwrap transparent type aliases (`Name :: type(T)`) — recursively — to
 // reveal the underlying type. Distinct types (with is_alias=false) are
 // preserved so their nominal identity is kept intact for type-equality
@@ -7326,29 +7287,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     continue
                 }
             }
-            // Reject copies of structs whose layout transitively contains a
-            // partial-array field. A byte-for-byte copy of such a struct would
-            // leave the inner partial array's `ptr` still aliasing the source's
-            // elements — subsequent reads/writes through the copy would silently
-            // hit (and clobber) the source. Only flag when the RHS is reading
-            // from existing storage (ident or field access); literals and calls
-            // construct in place and are fine.
-            is_copy_source := false
-            if _, ok := s.value.(^Expr_Ident); ok { is_copy_source = true }
-            if _, ok := s.value.(^Expr_Field_Access); ok { is_copy_source = true }
-            // A `::` constant ident is NOT a copy: codegen inline-substitutes
-            // the constant's literal expression (gen_expr Expr_Ident, constant
-            // branch), so the decl constructs in place — no source to alias.
-            if ident, ok := s.value.(^Expr_Ident); ok {
-                if _, is_const := c.table.constants[ident.name]; is_const {
-                    is_copy_source = false
-                }
-            }
-            if is_copy_source && struct_contains_partial_array(val_type) {
-                check_error(c, s.span,
-                    TYPE_CANNOT_COPY_VALUE_CONTAINS_PARTIAL,
-                    type_name(val_type))
-            }
             if !is_any(ann_type) {
                 // If ann_type is distinct and val_type is NOT a literal (array/struct),
                 // skip structural checks — use nominal comparison directly.
@@ -9262,24 +9200,6 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     }
     val_type := check_expr(c, s.value, env)
     c.expected_hint = nil
-
-    // Same partial-array-aliasing rejection as the simple-target path: a
-    // memcpy of a struct containing a `Type_Partial_Array` field would leave
-    // the field's `ptr` aliasing the source's elements.
-    is_copy_source := false
-    if _, ok := s.value.(^Expr_Ident); ok { is_copy_source = true }
-    if _, ok := s.value.(^Expr_Field_Access); ok { is_copy_source = true }
-    // `::` constant idents construct in place via codegen inline substitution.
-    if ident, ok := s.value.(^Expr_Ident); ok {
-        if _, is_const := c.table.constants[ident.name]; is_const {
-            is_copy_source = false
-        }
-    }
-    if is_copy_source && struct_contains_partial_array(val_type) {
-        check_error(c, s.span,
-            TYPE_CANNOT_COPY_VALUE_CONTAINS_PARTIAL,
-            type_name(val_type))
-    }
 
     // Auto-deref: if obj is ^Struct, check field on the inner struct
     st: ^Scope_Body = pre_st

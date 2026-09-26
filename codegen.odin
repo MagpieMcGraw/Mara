@@ -593,6 +593,7 @@ emit_struct_copy :: proc(g: ^Codegen, sd: ^Scope_Body, llvm_type: string, src_pt
             emit_field_store(g, llvm_type, dst_ptr, fi, ft, val)
         }
     }
+    reanchor_partial_arrays(g, sd_type_scope(sd), dst_ptr)
 }
 
 // ---------------------------------------------------------------------------

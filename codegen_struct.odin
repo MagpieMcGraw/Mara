@@ -220,6 +220,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             // Direct copy: same shape on both sides.
             size := checker_type_byte_size(sf.type_)
             emit_memcpy(g, dst_field_gep, src_ptr, size)
+            reanchor_partial_arrays(g, sf.type_, dst_field_gep)
         }
         clear(&g.tuple_result_ptrs)
         clear(&g.tuple_result_types)
@@ -322,6 +323,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
             size := checker_type_byte_size(f.type_)
             emit_memcpy(g, gep, src_ptr, size)
+            reanchor_partial_arrays(g, f.type_, gep)
             continue
         }
         // Union field (`%union.X`).
@@ -1013,6 +1015,14 @@ gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, arr
 //   - array-returning function call       → NRVO via gen_call_into_array
 //   - fallback expression                 → gen_expr + memcpy from claim_call_result
 gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, dest_fresh: bool = false, dest_expr: Expr = nil) {
+    store_array_value(g, dst_ptr, capacity, elem_type, value, is_utf8, dest_fresh, dest_expr)
+    // Whatever path copied the value in (bytes, elements, a call's result),
+    // partial arrays inside the elements are re-pointed at dst. Paths that
+    // built it in place already have them right; re-pointing is idempotent.
+    reanchor_partial_arrays(g, expr_type(value), dst_ptr)
+}
+
+store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, dest_fresh: bool = false, dest_expr: Expr = nil) {
     alloc_cap := capacity
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
     ebs := elem_byte_size(elem_type, g.checked)
@@ -1072,7 +1082,6 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
         emit_alloca(g, tmp, arr_type)
         gen_store_array_into(g, tmp, capacity, elem_type, value, is_utf8, dest_fresh = true)
         emit_memcpy(g, dst_ptr, tmp, total_bytes)
-        reanchor_partial_arrays(g, expr_type(value), dst_ptr)
         return
     }
 
@@ -1253,6 +1262,15 @@ apply_struct_field_defaults :: proc(g: ^Codegen, st: ^Scope_Body, llvm_name: str
 }
 
 
+// Copy a whole struct value into `dst`: the bytes, then any partial arrays
+// inside re-pointed at dst's own elements (reanchor_partial_arrays) — so a
+// struct holding strings copies like any other value. A self-copy is skipped.
+copy_struct_value :: proc(g: ^Codegen, st: ^Scope_Body, dst: string, src: string, total: int) {
+    if src == dst { return }
+    emit_memcpy(g, dst, src, total)
+    reanchor_partial_arrays(g, sd_type_scope(st), dst)
+}
+
 // Single point of truth for "store a struct-typed value into a destination
 // pointer". Replaces the duplicated dispatch logic that used to live in
 // gen_struct_assign (local var), gen_field_assign (obj.f = ...),
@@ -1322,7 +1340,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
 
     if ident, ok := value.(^Expr_Ident); ok {
         if src_sv, sv_ok := get_struct(g, ident.name); sv_ok {
-            emit_memcpy(g, dst_ptr, src_sv.alloca, total)
+            copy_struct_value(g, st, dst_ptr, src_sv.alloca, total)
             return
         }
     }
@@ -1330,7 +1348,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
     if fa, ok := value.(^Expr_Field_Access); ok {
         src_ptr := gen_field_address(g, fa)
         if src_ptr != "null" {
-            emit_memcpy(g, dst_ptr, src_ptr, total)
+            copy_struct_value(g, st, dst_ptr, src_ptr, total)
             return
         }
     }
@@ -1347,7 +1365,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             if _, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
                 result_ptr := gen_call(g, call)
                 if result_ptr != "0" {
-                    emit_memcpy(g, dst_ptr, result_ptr, total)
+                    copy_struct_value(g, st, dst_ptr, result_ptr, total)
                 }
                 return
             }
@@ -1421,14 +1439,14 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
     if bin, ok := value.(^Expr_Binary); ok {
         if _, rf_ok := bin.overload_fn.?; rf_ok {
             result_ptr := gen_binary(g, bin)
-            emit_memcpy(g, dst_ptr, result_ptr, total)
+            copy_struct_value(g, st, dst_ptr, result_ptr, total)
             return
         }
     }
 
     // Fallback: evaluate the expression and expect a pointer back, then memcpy.
     src_ptr := gen_expr(g, value, llvm_name)
-    emit_memcpy(g, dst_ptr, src_ptr, total)
+    copy_struct_value(g, st, dst_ptr, src_ptr, total)
 }
 
 // Thin wrapper over gen_store_struct_into for callers that have a struct name
@@ -2087,6 +2105,7 @@ gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, valu
             emit_alloca(g, tmp, union_llvm_name(union_key(ut)))
             emit_union_literal_store(g, ut, value, tmp)
             emit_memcpy(g, dst_ptr, tmp, union_byte_size(g, ut))
+            reanchor_partial_arrays(g, ut, dst_ptr)
             return
         }
         emit_union_literal_store(g, ut, value, dst_ptr)
@@ -2095,6 +2114,7 @@ gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, valu
     src := gen_expr(g, value, union_llvm_name(union_key(ut)))
     if src != dst_ptr {
         emit_memcpy(g, dst_ptr, src, union_byte_size(g, ut))
+        reanchor_partial_arrays(g, ut, dst_ptr)
     }
 }
 

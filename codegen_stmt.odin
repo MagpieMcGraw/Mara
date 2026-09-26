@@ -1031,15 +1031,13 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                     if !addr_ok {
                         codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
                     }
-                    total_bytes := fa.size * elem_byte_size(arr_elem_t, g.checked)
-                    emit_memcpy(g, addr, src_ptr, total_bytes)
+                    emit_value_copy(g, ret_types[i], addr, src_ptr)
                     continue
                 }
                 if existing, exists := get_array(g, name); exists {
                     // Pre-bound storage (ctor field, named return slot):
                     // copy into it so the store reaches the caller's buffer.
-                    total_bytes := fa.size * elem_byte_size(arr_elem_t, g.checked)
-                    emit_memcpy(g, existing.alloca, src_ptr, total_bytes)
+                    emit_value_copy(g, ret_types[i], existing.alloca, src_ptr)
                     continue
                 }
                 // Fresh binding: claim the call's slot buffer directly — it
@@ -1067,11 +1065,11 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                     if !addr_ok {
                         codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
                     }
-                    partial_array_copy(g, addr, src_ptr, pa_elem_t, pa.size)
+                    partial_array_copy(g, addr, src_ptr, pa_elem_t, pa.size, pa.elem)
                     continue
                 }
                 if existing, exists := get_slice(g, name); exists {
-                    partial_array_copy(g, existing.alloca, src_ptr, pa_elem_t, pa.size)
+                    partial_array_copy(g, existing.alloca, src_ptr, pa_elem_t, pa.size, pa.elem)
                     continue
                 }
                 g.all_vars[name] = Slice_Var{
@@ -1118,17 +1116,16 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
             // copy would get the union loaded as a VALUE where every union
             // consumer expects its address.
             if ut, ut_ok := distinct_base(ret_types[i]).(^Type_Union); ut_ok {
-                size := union_byte_size(g, ut)
                 if name == "" {
                     addr, addr_ok := gen_multi_return_target_addr(g, s, i)
                     if !addr_ok {
                         codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
                     }
-                    emit_memcpy(g, addr, src_ptr, size)
+                    emit_value_copy(g, ret_types[i], addr, src_ptr)
                     continue
                 }
                 if existing, exists := get_union(g, name); exists {
-                    emit_memcpy(g, existing.alloca, src_ptr, size)
+                    emit_value_copy(g, ret_types[i], existing.alloca, src_ptr)
                     continue
                 }
                 g.all_vars[name] = Union_Var{alloca = src_ptr, union_name = union_key(ut)}
@@ -1258,8 +1255,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
             if ident, id_ok := val.(^Expr_Ident); id_ok {
                 if av, av_ok := get_array(g, ident.name); av_ok {
                     if av.alloca == sret_ptr { continue }
-                    arr_size := fa.size * checker_type_byte_size(fa.elem)
-                    emit_memcpy(g, sret_ptr, av.alloca, arr_size)
+                    emit_value_copy(g, g.ret_types[slot], sret_ptr, av.alloca)
                     continue
                 }
             }
@@ -1335,7 +1331,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
         if pa, pa_ok := resolved_type.(^Type_Partial_Array); pa_ok {
             src := gen_expr(g, val, elem_type)
             if src == sret_ptr { continue }
-            partial_array_copy(g, sret_ptr, src, llvm_type_from_checker(pa.elem), pa.size)
+            partial_array_copy(g, sret_ptr, src, llvm_type_from_checker(pa.elem), pa.size, pa.elem)
             continue
         }
         v := gen_expr_coerced(g, val, elem_type)
@@ -1437,6 +1433,7 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
             emit_br(g, cond_label)
 
             emit_label(g, end_label)
+            reanchor_partial_arrays(g, expr_type(arr_ret_val), sret_av.alloca)
         }
     } else if arr_lit, lit_ok := arr_ret_val.(^Expr_Array); lit_ok {
         // Case B: returning an array literal
@@ -1525,7 +1522,8 @@ gen_return_partial_array :: proc(g: ^Codegen, s: Stmt_Return) {
     if len(s.values) > 0 {
         src := gen_expr(g, s.values[0])
         if src != "%sret" {
-            partial_array_copy(g, "%sret", src, g.ret_partial_elem, g.ret_partial_cap)
+            pa, _ := distinct_base(expr_type(s.values[0])).(^Type_Partial_Array)
+            partial_array_copy(g, "%sret", src, g.ret_partial_elem, g.ret_partial_cap, pa.elem if pa != nil else nil)
         }
     }
     emit_ret_void(g)

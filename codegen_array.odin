@@ -74,8 +74,9 @@ slice_arg_str :: proc(val: string) -> string {
 // the byte-for-byte memcpy lands the destination's `ptr` field still aliased
 // to the source's elements — re-anchor it to `&dst.elements` so reads through
 // the copy hit its own storage. Without that re-store, dst silently observes
-// and clobbers src.
-partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_ir: string, alloc_cap: int) {
+// and clobbers src. `elem` (the Mara element type, when known) re-anchors
+// partial arrays inside the elements too (`[..N]Named`).
+partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_ir: string, alloc_cap: int, elem: Type = nil) {
     elem_bytes := elem_byte_size(elem_ir, g.checked)
     total_bytes := slice_header_bytes + alloc_cap * elem_bytes
     emit_memcpy(g, dst_ptr, src_ptr, total_bytes)
@@ -85,6 +86,9 @@ partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_i
     ptr_gep := fresh_tmp(g)
     emit_slice_gep(g, ptr_gep, dst_ptr, SLICE.ptr)
     emit_store(g, "ptr", elements_ptr, ptr_gep)
+    if elem != nil && value_has_partial_array(g, elem) {
+        reanchor_slots(g, elem, fmt.tprintf("[%d x %s]", alloc_cap, elem_ir), elements_ptr, fmt.tprintf("%d", alloc_cap))
+    }
 }
 
 // Copy a whole value of type `t` from src to dst (both point at storage): a raw
@@ -101,15 +105,18 @@ emit_value_copy :: proc(g: ^Codegen, t: Type, dst_ptr: string, src_ptr: string) 
 }
 
 // After a raw copy of a `t` value to `ptr`, point every partial array inside it
-// (directly, in a struct field, in an array slot) back at its own inline
-// elements — the copied header still aims at the source's.
+// — directly, in a struct field, in an array or partial-array slot, in a
+// union's live variant — back at its own inline elements: the copied header
+// still aims at the SOURCE's. Every copy of such a value goes through here (or
+// emit_value_copy / emit_struct_copy / partial_array_copy, which call it), so
+// structs holding strings copy like any other value.
 reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
-    if !type_contains_partial_array(t) { return }
+    if !value_has_partial_array(g, t) { return }
     base := distinct_base(t)
     if sd := as_struct_body(base); sd != nil {
         llvm_name := struct_llvm_name(struct_key(sd))
         for &f, i in sd.fields {
-            if !type_contains_partial_array(f.type_) { continue }
+            if !value_has_partial_array(g, f.type_) { continue }
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, ptr, i)
             reanchor_partial_arrays(g, f.type_, gep)
@@ -118,20 +125,102 @@ reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
     }
     #partial switch v in base {
     case ^Type_Partial_Array:
-        ir_type := partial_array_ir_type(llvm_type_from_checker(v.elem), v.size)
+        elem_ir := llvm_type_from_checker(v.elem)
+        ir_type := partial_array_ir_type(elem_ir, v.size)
         elements_ptr := fresh_tmp(g)
         emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
         ptr_gep := fresh_tmp(g)
         emit_slice_gep(g, ptr_gep, ptr, SLICE.ptr)
         emit_store(g, "ptr", elements_ptr, ptr_gep)
+        if value_has_partial_array(g, v.elem) {
+            reanchor_slots(g, v.elem, fmt.tprintf("[%d x %s]", v.size, elem_ir), elements_ptr, fmt.tprintf("%d", v.size))
+        }
     case ^Type_Fixed_Array:
         arr_ir := fmt.tprintf("[%d x %s]", v.size, llvm_type_from_checker(v.elem))
-        for i in 0..<v.size {
-            gep := fresh_tmp(g)
-            emit_array_gep_const(g, gep, arr_ir, ptr, i)
-            reanchor_partial_arrays(g, v.elem, gep)
+        if v.size <= 4 {
+            for i in 0..<v.size {
+                gep := fresh_tmp(g)
+                emit_array_gep_const(g, gep, arr_ir, ptr, i)
+                reanchor_partial_arrays(g, v.elem, gep)
+            }
+        } else {
+            reanchor_slots(g, v.elem, arr_ir, ptr, fmt.tprintf("%d", v.size))
+        }
+    case ^Type_Union:
+        // Only the live variant's fields exist: dispatch on the tag.
+        ukey := union_key(v)
+        tag_ir := union_tag_ir_type(v)
+        tag_ptr := fresh_tmp(g)
+        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, union_llvm_name(ukey), ptr)
+        tag := fresh_tmp(g)
+        emit_load_into(g, tag, tag_ir, tag_ptr)
+        for name in v.variants {
+            vst, ok := lookup_struct(g, v.variant_structs[name] or_else name)
+            if !ok || !value_has_partial_array(g, sd_type_scope(vst)) { continue }
+            is_it := fresh_tmp(g)
+            emit(g, "  %s = icmp eq %s %s, %d", is_it, tag_ir, tag, v.tag_map[name])
+            fix_label := fresh_label(g, "reanchor.variant")
+            next_label := fresh_label(g, "reanchor.next")
+            emit_cond_br(g, is_it, fix_label, next_label)
+            emit_label(g, fix_label)
+            reanchor_partial_arrays(g, sd_type_scope(vst), ptr) // the variant overlays the union at offset 0
+            emit_br(g, next_label)
+            emit_label(g, next_label)
         }
     }
+}
+
+// reanchor_partial_arrays over `count` consecutive `elem` slots of array type
+// `arr_ir` at `base` — a runtime loop, so a big array doesn't unroll.
+reanchor_slots :: proc(g: ^Codegen, elem: Type, arr_ir: string, base: string, count: string) {
+    w := slice_layout.len_ir
+    idx_ptr := fresh_tmp(g)
+    emit_alloca(g, idx_ptr, w)
+    emit_store(g, w, "0", idx_ptr)
+    cond_label := fresh_label(g, "reanchor.cond")
+    body_label := fresh_label(g, "reanchor.body")
+    end_label := fresh_label(g, "reanchor.end")
+    emit_br(g, cond_label)
+    emit_label(g, cond_label)
+    i := fresh_tmp(g)
+    emit_load_into(g, i, w, idx_ptr)
+    more := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %s", more, w, i, count)
+    emit_cond_br(g, more, body_label, end_label)
+    emit_label(g, body_label)
+    gep := fresh_tmp(g)
+    emit_array_gep_var(g, gep, arr_ir, base, i, w)
+    reanchor_partial_arrays(g, elem, gep)
+    next := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, 1", next, w, i)
+    emit_store(g, w, next, idx_ptr)
+    emit_br(g, cond_label)
+    emit_label(g, end_label)
+}
+
+// Whether a value of type `t` holds a partial array anywhere inside it —
+// directly, in a struct field, an array slot, or a union variant.
+value_has_partial_array :: proc(g: ^Codegen, t: Type) -> bool {
+    base := distinct_base(t)
+    if sd := as_struct_body(base); sd != nil {
+        for &f in sd.fields {
+            if value_has_partial_array(g, f.type_) { return true }
+        }
+        return false
+    }
+    #partial switch v in base {
+    case ^Type_Partial_Array:
+        return true
+    case ^Type_Fixed_Array:
+        return value_has_partial_array(g, v.elem)
+    case ^Type_Union:
+        for name in v.variants {
+            if vst, ok := lookup_struct(g, v.variant_structs[name] or_else name); ok && value_has_partial_array(g, sd_type_scope(vst)) {
+                return true
+            }
+        }
+    }
+    return false
 }
 
 // Write an initial value into an already-allocated, header-stamped partial
@@ -170,7 +259,7 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
         // partial_array_copy needs the source's ADDRESS — what gen_expr yields
         // for any partial-array value (a variable, field, element, pointee,
         // ternary, or the temp a partial-array-returning call built into).
-        partial_array_copy(g, pa_ptr, gen_expr(g, value), elem_t, alloc_cap)
+        partial_array_copy(g, pa_ptr, gen_expr(g, value), elem_t, alloc_cap, pa.elem)
     } else if _, src_sl_ok := distinct_base(expr_type(value)).(^Type_Slice); src_sl_ok {
         // Copy a runtime slice's elements into the inline storage, bounded by
         // cap. The header is already stamped (ptr -> inline, cap = N); fill the
@@ -470,6 +559,15 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
 
 // Copy an array expression result into a named array variable.
 gen_array_copy_expr :: proc(g: ^Codegen, name: string, value: Expr) {
+    copy_array_expr(g, name, value)
+    // Every path copies raw bytes or elements: partial arrays inside the
+    // elements are re-pointed at the copy's own storage.
+    if dst, ok := get_array(g, name); ok {
+        reanchor_partial_arrays(g, expr_type(value), dst.alloca)
+    }
+}
+
+copy_array_expr :: proc(g: ^Codegen, name: string, value: Expr) {
     // (A constant RHS was already substituted for its value in gen_array_assign,
     // so `value` here is never a constant — only a real array expression.)
     // For an identifier (copying one array to another)
@@ -791,6 +889,7 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     dst_gep := fresh_tmp(g)
     emit_array_gep_var(g, dst_gep, dst_arr_type, dst_data_ptr, dst_idx, w)
     emit_store(g, dst_elem_type, src_val, dst_gep)
+    reanchor_partial_arrays(g, index_elem_type(expr_type(sl.expr)), dst_gep)
 
     // i++
     i_next := fresh_tmp(g)

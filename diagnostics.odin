@@ -449,7 +449,6 @@ TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE :: "declaration without initi
 TYPE_VALUE_TOO_LARGE_STACK_BYTES :: "value '%s' is too large for the stack (%d bytes). Route big values through a scope arena — add `include mara.memory`, then at the top of main:\n\n    this_program = Program(Arena_Basic(64 * MB))"
 TYPE_SIZE_EXPRESSION_INTEGER :: "size expression must be an integer, got %s"
 TYPE_SLICE_CAPACITY_INTEGER :: "slice capacity must be an integer, got %s"
-TYPE_CANNOT_COPY_VALUE_CONTAINS_PARTIAL :: "cannot copy '%s' by value — it contains a partial-array field whose `ptr` would still alias the source's elements after the copy; construct in place or assign individual fields"
 TYPE_BYTE_BUFFER_READ_BYTES_SLICE :: "byte buffer read: %s is %d bytes, but slice span is %d bytes"
 TYPE_BYTE_READ_REFERENCE :: "cannot read a `%s` out of bytes: %s — a slice header taken from bytes has a garbage length and pointer, which bounds checks would then trust"
 TYPE_BYTE_READ_SLICE_BY_INDEX :: "cannot read a `%s` out of bytes: a slice is a (len, cap, ptr) header, not data — to view the bytes, slice them: bytes[lo:hi]"
