@@ -1765,11 +1765,16 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
             }
         }
         if ut, ok := hint.(^Type_Union); ok {
-            if _, v_ok := ut.tag_map[e.name]; v_ok {
-                // Data-union variant — return the union type. Codegen for
-                // a bare/dot variant value isn't fully meaningful (no payload
-                // fields), but match arms / payload-free uses can still
-                // reference the variant by name.
+            if tag_val, v_ok := ut.tag_map[e.name]; v_ok {
+                // Data-union variant: the union value holding that variant
+                // with its defaults (`.Rect` == `Rect{}`), as `Shape.Rect`
+                // resolves in check_field_access.
+                e.resolved = Resolved_Union_Variant{
+                    union_name  = ut.name,
+                    variant     = e.name,
+                    tag_value   = tag_val,
+                    struct_name = ut.variant_structs[e.name] or_else e.name,
+                }
                 return ut, true
             }
         }

@@ -1,0 +1,66 @@
+module bare_variant_values
+
+//@ expect-output: locals=203 203 203 / assign=203
+//@ expect-output: args=203 7 / ternary=203 / array=203 7
+//@ expect-output: fields=203 7 203 / return=203 / const=203
+//@ expect-output: maybe=false true false false
+
+// A bare variant name used as a union value — `Shape.Rect`, `.Rect` — is that
+// variant with its defaults, the same value as `Rect{}`. It used to produce
+// invalid IR (the tag number used as a pointer) or "undefined variable".
+
+use mara.core
+use mara.maybe
+
+Shape :: union(tag u32) {
+	Circle = 1 { r: i32 = 7 }
+	Rect   = 2 { w: i32 = 2  h: i32 = 3 }
+}
+
+H :: struct { a := Shape.Rect, b: Shape = .Circle, c: Shape = Shape.Rect }
+K :: Shape.Rect
+
+mk :: fun() -> Shape {
+	return .Rect
+}
+
+get :: fun(s: Shape) -> i32 {
+	match s {
+	Circle c
+		return c.r
+	Rect r
+		return r.w * 100 + r.h
+	}
+	return -1
+}
+
+is_some :: fun(m: Maybe(^i64)) -> bool {
+	match m {
+	Some s
+		return true
+	None
+		return false
+	}
+	return false
+}
+
+main :: fun() {
+	a : Shape = Shape.Rect
+	b := Shape.Rect
+	c : Shape = .Rect
+	d : Shape = Circle{1}
+	d = .Rect
+	print("locals=% % % / assign=%", get(a), get(b), get(c), get(d))
+	flag := false
+	arr := [2]Shape{Shape.Rect, Circle{}}
+	print("args=% % / ternary=% / array=% %", get(Shape.Rect), get(.Circle), get(if flag do Shape.Circle else Shape.Rect), get(arr[0]), get(arr[1]))
+	h := H{}
+	print("fields=% % % / return=% / const=%", get(h.a), get(h.b), get(h.c), get(mk()), get(K))
+	x := 5
+	m : Maybe(^i64) = .None
+	n : Maybe(^i64) = Some{&x}
+	s1 := is_some(m)
+	s2 := is_some(n)
+	n = .None
+	print("maybe=% % % %", s1, s2, is_some(n), is_some(.None))
+}

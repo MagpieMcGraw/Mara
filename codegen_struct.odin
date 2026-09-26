@@ -553,6 +553,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
     case Resolved_Enum_Variant:
         return fmt.tprintf("%d", r.value)
     case Resolved_Union_Variant:
+        if lit, is_bare := bare_variant_literal(e); is_bare { return gen_expr(g, lit) }
         return fmt.tprintf("%d", r.tag_value)
     case Resolved_Constant:
         if r.value_expr != nil { return gen_expr(g, r.value_expr, "") }
@@ -844,6 +845,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
     case Resolved_Enum_Variant:
         return fmt.tprintf("%d", r.value)
     case Resolved_Union_Variant:
+        if lit, is_bare := bare_variant_literal(e); is_bare { return gen_expr(g, lit) }
         return fmt.tprintf("%d", r.tag_value)
     case Resolved_Constant:
         if r.value_expr != nil { return gen_expr(g, r.value_expr, "") }
@@ -2109,6 +2111,8 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
 // field, an element) is pointer-valued, so it's copied by the union's true size
 // (checker_type_byte_size reports a placeholder for unions).
 gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, value: Expr, dest_fresh: bool = false, dest_expr: Expr = nil) {
+    value := value
+    if lit, is_bare := bare_variant_literal(value); is_bare { value = lit }
     if lit, ok := value.(^Expr_Struct_Literal); ok && lit.name != "" {
         // A variant literal that reads the union it's replacing — typically
         // through a match payload (`match s { One o => s = Two{a = o.m} }`) —
@@ -2129,6 +2133,29 @@ gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, valu
         emit_memcpy(g, dst_ptr, src, union_byte_size(g, ut))
         reanchor_partial_arrays(g, ut, dst_ptr)
     }
+}
+
+// A bare variant name used as a union value (`Shape.Rect`, `.Rect`) is that
+// variant with its defaults — the same value as the empty literal `Rect{}`,
+// which it lowers to. (Only a union-typed reference: an enum's variant is its
+// number.)
+bare_variant_literal :: proc(e: Expr) -> (^Expr_Struct_Literal, bool) {
+    variant: string
+    #partial switch v in e {
+    case ^Expr_Ident:
+        rv, ok := v.resolved.(Resolved_Union_Variant)
+        if !ok { return nil, false }
+        variant = rv.variant
+    case ^Expr_Field_Access:
+        rv, ok := v.resolved.(Resolved_Union_Variant)
+        if !ok { return nil, false }
+        variant = rv.variant
+    case:
+        return nil, false
+    }
+    ut, is_union := expr_type(e).(^Type_Union)
+    if !is_union { return nil, false }
+    return new_clone(Expr_Struct_Literal{name = variant, span = expr_span(e)^, type_ = ut}), true
 }
 
 // Store a union literal at `union_ptr`. The variant struct carries the tag

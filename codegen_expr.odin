@@ -77,6 +77,9 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if ev, ev_ok := e.resolved.(Resolved_Enum_Variant); ev_ok {
             return fmt.tprintf("%d", ev.value)
         }
+        if lit, is_bare := bare_variant_literal(expr); is_bare {
+            return gen_expr(g, lit, target_type)
+        }
         // A constant reference inlines its value expression — the checker already
         // resolved which constant (module const via annotation, scope-local via
         // its unique name). Codegen never interprets a module qualifier.
