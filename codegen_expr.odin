@@ -2013,8 +2013,18 @@ emit_c_aggregate_direct_arg :: proc(g: ^Codegen, arg_expr: Expr, parts: []string
 // enclosing function's own sret, which by this same rule never aliases its
 // arguments. Otherwise, when any argument carries caller storage, the result
 // is built in a temp and copied over (what `x = f(x)` means).
-gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info: ^Fun_Info, dest_fresh: bool) {
+//
+// Except the functional update `x = f(x, …)`: when f consumes that argument
+// (builds its result from it and nothing else — consumed_param_of) and nothing
+// else the call receives can reach x, x is passed as BOTH the argument and the
+// result slot. f's opening copy is then a no-op it skips, and the update runs
+// in place. `dest_expr` names the destination (nil when the caller can't).
+gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info: ^Fun_Info, dest_fresh: bool, dest_expr: Expr = nil) {
     ret_t := call_result_type(g, e)
+    if k, in_place := call_consumes_dest(g, e, info, dest_fresh, dest_expr); in_place {
+        emit_call_with_sret(g, e, info, dest_ptr, self_arg = k)
+        return
+    }
     if !dest_fresh && call_passes_storage(info, len(e.args)) {
         tmp := fresh_tmp(g)
         emit_alloca(g, tmp, llvm_type_from_checker(ret_t))
@@ -2027,7 +2037,11 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
 
 // Emit an array-returning call whose sret is the destination Array_Var's
 // storage — see gen_call_into_struct for when that has to go through a temp.
-gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: ^Fun_Info, dest_fresh: bool) {
+gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: ^Fun_Info, dest_fresh: bool, dest_expr: Expr = nil) {
+    if k, in_place := call_consumes_dest(g, e, info, dest_fresh, dest_expr); in_place {
+        emit_call_with_sret(g, e, info, dest.alloca, self_arg = k)
+        return
+    }
     if !dest_fresh && call_passes_storage(info, len(e.args)) {
         ret_t := call_result_type(g, e)
         tmp := fresh_tmp(g)
@@ -2040,14 +2054,151 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
 }
 
 // `call void @f(<args>, ptr <sret>)` for a single-sret-return Mara call.
-emit_call_with_sret :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, sret: string) {
+// `self_arg`: the argument that IS the sret storage (an in-place update) —
+// passed as that pointer rather than evaluated again.
+emit_call_with_sret :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, sret: string, self_arg := -1) {
     ir_name := call_callee(g, e)
     arg_strs: [dynamic]string
     for arg, i in e.args {
+        if i == self_arg {
+            append(&arg_strs, fmt.tprintf("ptr %s", sret))
+            continue
+        }
         append(&arg_strs, gen_mara_call_arg(g, arg, i, info))
     }
     append(&arg_strs, fmt.tprintf("ptr %s", sret))
     emit(g, "  call void %s(%s)", ir_name, strings.join(arg_strs[:], ", "))
+}
+
+// The argument an existing destination can stand in for (see
+// gen_call_into_struct): the one the callee consumes, when it's the destination
+// itself — and every other argument provably can't reach the destination.
+call_consumes_dest :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, dest_fresh: bool, dest: Expr) -> (int, bool) {
+    k, consumes := info.consumed_param.?
+    if dest_fresh || !consumes || dest == nil || k >= len(e.args) { return -1, false }
+    if !same_storage(dest, e.args[k]) { return -1, false }
+    root, via_ptr, rooted := storage_root(dest)
+    if !rooted { return -1, false }
+    for a, i in e.args {
+        if i != k && !arg_cannot_reach(g, a, root, via_ptr) { return -1, false }
+    }
+    return k, true
+}
+
+// An Expr naming local variable `name` — the destination of `name = …`, for
+// the in-place call check (same_storage).
+var_ref :: proc(name: string) -> Expr {
+    id := new(Expr_Ident)
+    id.name = name
+    return id
+}
+
+// Whether two lvalues name the same storage, syntactically: the same variable,
+// the same field of the same storage, the same element (by the same constant
+// or variable index) of the same storage, or the same pointee. (Mara has no
+// shadowing, and a call can't reassign the caller's locals, so equal
+// spellings are the same storage for the duration of the call.)
+same_storage :: proc(a, b: Expr) -> bool {
+    #partial switch x in a {
+    case ^Expr_Ident:
+        y, ok := b.(^Expr_Ident)
+        return ok && x.name == y.name
+    case ^Expr_Field_Access:
+        y, ok := b.(^Expr_Field_Access)
+        return ok && x.field == y.field && same_storage(x.expr, y.expr)
+    case ^Expr_Index:
+        y, ok := b.(^Expr_Index)
+        if !ok || !same_storage(x.expr, y.expr) { return false }
+        #partial switch xi in x.index {
+        case ^Expr_Number:
+            yi, yok := y.index.(^Expr_Number)
+            return yok && !xi.is_float && !yi.is_float && xi.int_value == yi.int_value
+        case ^Expr_Ident:
+            yi, yok := y.index.(^Expr_Ident)
+            return yok && xi.name == yi.name
+        }
+    case ^Expr_Unary:
+        y, ok := b.(^Expr_Unary)
+        return ok && x.op == .Caret && y.op == .Caret && same_storage(x.operand, y.operand)
+    }
+    return false
+}
+
+// The variable an lvalue's storage lives in, and whether the path to it
+// crosses a pointer (a deref, an auto-deref'd field/index, a slice's data) —
+// past which it could be anywhere.
+storage_root :: proc(e: Expr) -> (root: string, via_ptr: bool, ok: bool) {
+    cur := e
+    for {
+        #partial switch v in cur {
+        case ^Expr_Ident:
+            if _, is_ptr := distinct_base(v.type_).(^Type_Ptr); is_ptr { via_ptr = true }
+            return v.name, via_ptr, true
+        case ^Expr_Field_Access:
+            if _, is_ptr := distinct_base(expr_type(v.expr)).(^Type_Ptr); is_ptr { via_ptr = true }
+            cur = v.expr
+        case ^Expr_Index:
+            #partial switch _ in distinct_base(expr_type(v.expr)) {
+            case ^Type_Ptr, ^Type_Slice: via_ptr = true
+            }
+            cur = v.expr
+        case ^Expr_Unary:
+            if v.op != .Caret { return "", false, false }
+            via_ptr = true
+            cur = v.operand
+        case:
+            return "", false, false
+        }
+    }
+}
+
+// Whether argument `a` can't reach the destination's storage (rooted at
+// variable `root`; `dest_via_ptr` if its path crosses a pointer) while the
+// callee runs. It must hold no pointers at all, and then either be a value
+// passed as such (a scalar), live in its own temporary (a literal, a call's
+// or operator's result), or be rooted at a different variable with no pointer
+// on either path.
+arg_cannot_reach :: proc(g: ^Codegen, a: Expr, root: string, dest_via_ptr: bool) -> bool {
+    if !is_plain_data(expr_type(a)) { return false }
+    if !is_pointer_valued_type(expr_type(a)) { return true }
+    #partial switch v in a {
+    case ^Expr_Ident, ^Expr_Field_Access, ^Expr_Index, ^Expr_Unary:
+        if u, is_unary := v.(^Expr_Unary); is_unary && u.op != .Caret { return true }
+        r, arg_via_ptr, ok := storage_root(a)
+        return ok && !dest_via_ptr && !arg_via_ptr && r != root
+    case ^Expr_Call:
+        if inner, passthrough := call_passthrough_value(g, v); passthrough {
+            return arg_cannot_reach(g, inner, root, dest_via_ptr)
+        }
+        return true
+    case ^Expr_Array, ^Expr_Struct_Literal, ^Expr_String, ^Expr_Binary, ^Expr_Compiler_Intrinsic:
+        return true
+    }
+    return false
+}
+
+// A type whose values hold no pointers, so nothing in one can refer to other
+// storage. (A partial array's header pointer only ever points at its own
+// elements.) Unions, slices, pointers, cstrings and function values don't
+// qualify.
+is_plain_data :: proc(t: Type) -> bool {
+    base := distinct_base(t)
+    if sd := as_struct_body(base); sd != nil {
+        for &f in sd.fields {
+            if !is_plain_data(f.type_) { return false }
+        }
+        return true
+    }
+    #partial switch v in base {
+    case Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool, Type_Utf8, Type_Byte,
+         Type_Numeric, ^Type_Enum, Type_Err:
+        return true
+    case ^Type_Fixed_Array:
+        return is_plain_data(v.elem)
+    case ^Type_Partial_Array:
+        return is_plain_data(v.elem)
+    }
+    return false
 }
 
 // Whether a call hands the callee caller storage by address: an aggregate

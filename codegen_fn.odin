@@ -37,6 +37,148 @@ partial_through_distinct_and_ptr :: proc(t: Type) -> (^Type_Partial_Array, bool)
 // the same named variable, return that name. Otherwise return "".
 Nrvo_Scan :: struct { name: string, found: bool, blocked: bool }
 
+// A function that CONSUMES a param into its result: its first statement copies
+// param k into the local it returns (`r := pk`, r NRVO'd into the result slot),
+// and pk is never mentioned again. Such a function reads pk only while making
+// that copy, so a caller doing `x = f(x, …)` can hand it x as BOTH pk and the
+// result slot: `r := pk` is then a copy onto itself (skipped at runtime), and
+// every write to r lands in x — no temp, no copy back. Returns k, or nil.
+// The functional-update shape: `push :: fun(pa: [..N]T, x: T) -> [..N]T
+// { r := pa; r[r.len] = x; r.len += 1; return r }`, `state = update(state)`.
+consumed_param_of :: proc(cf: ^Type_Scope) -> Maybe(int) {
+    if cf.kind != .Fun || len(cf.body) == 0 || len(cf.cg_returns) != 1 { return nil }
+    ret := distinct_base(cf.cg_returns[0])
+    // Only results built in a caller-supplied slot (sret).
+    by_slot := as_struct_body(ret) != nil
+    #partial switch _ in ret {
+    case ^Type_Fixed_Array, ^Type_Partial_Array: by_slot = true
+    }
+    if !by_slot { return nil }
+    first := opening_decl(cf)
+    if first == nil || first.target != nil { return nil }
+    src, is_ident := first.value.(^Expr_Ident)
+    if !is_ident { return nil }
+    k := -1
+    for p, i in cf.cg_params {
+        if p.name == src.name { k = i; break }
+    }
+    if k < 0 || !types_equal(distinct_base(cf.cg_params[k].type_), ret) { return nil }
+    if find_nrvo_candidate(cf.body[:]) != first.name { return nil }
+    if stmts_mention(cf.body[1:], src.name) { return nil }
+    return k
+}
+
+// The single-name declaration a function body opens with (`r := pk` — the
+// parser's Stmt_Decl, whose checked form is one Stmt_Assign), or nil.
+opening_decl :: proc(cf: ^Type_Scope) -> ^Stmt_Assign {
+    if len(cf.body) == 0 { return nil }
+    #partial switch v in cf.body[0] {
+    case ^Stmt_Assign:
+        if v.is_decl { return v }
+    case ^Stmt_Decl:
+        if len(v.names) == 1 && len(v.checked) == 1 {
+            if a, ok := v.checked[0].(^Stmt_Assign); ok && a.is_decl { return a }
+        }
+    }
+    return nil
+}
+
+// Whether `name` appears anywhere in these statements — as a read, a write
+// target, or inside a defer. Exhaustive switches on purpose (like expr_span):
+// consumed_param_of's soundness rests on never missing a mention, so a new
+// Stmt/Expr variant must fail to compile here until it's handled. Nested
+// function scopes are skipped: without closures they can't see this frame.
+stmts_mention :: proc(stmts: []Stmt, name: string) -> bool {
+    for s in stmts {
+        if stmt_mentions(s, name) { return true }
+    }
+    return false
+}
+
+stmt_mentions :: proc(s: Stmt, name: string) -> bool {
+    switch v in s {
+    case ^Stmt_Assign:
+        return v.name == name || expr_mentions(v.value, name) || expr_mentions(v.target, name) ||
+               expr_mentions(v.slice_cap_expr, name)
+    case ^Stmt_Multi_Assign:
+        for a in v.assigns { if stmt_mentions(a, name) { return true } }
+    case ^Stmt_Multi_Return_Assign:
+        for n in v.names { if n == name { return true } }
+        for t in v.targets { if expr_mentions(t, name) { return true } }
+        for x in v.values { if expr_mentions(x, name) { return true } }
+        return stmts_mention(v.checked[:], name)
+    case ^Stmt_Decl:
+        for n in v.names { if n == name { return true } }
+        for x in v.init_values { if expr_mentions(x, name) { return true } }
+        return expr_mentions(v.slice_cap_expr, name) || stmts_mention(v.checked[:], name)
+    case ^Stmt_Define:
+        return expr_mentions(v.value, name)
+    case Stmt_Call:
+        return expr_mentions(v.expr, name)
+    case ^Stmt_If:
+        return expr_mentions(v.condition, name) || stmts_mention(v.body[:], name) || stmts_mention(v.else_body[:], name)
+    case ^Stmt_For:
+        return stmt_mentions(v.init, name) || expr_mentions(v.condition, name) || stmt_mentions(v.post, name) ||
+               expr_mentions(v.range_low, name) || expr_mentions(v.range_high, name) ||
+               expr_mentions(v.collection, name) || expr_mentions(v.collection_len, name) ||
+               stmts_mention(v.body[:], name)
+    case Stmt_Return:
+        for x in v.values { if expr_mentions(x, name) { return true } }
+    case ^Stmt_Defer:
+        return stmts_mention(v.body[:], name)
+    case ^Stmt_Match:
+        if expr_mentions(v.subject, name) { return true }
+        for &arm in v.arms {
+            if expr_mentions(arm.value, name) || stmts_mention(arm.body[:], name) { return true }
+        }
+    case ^Stmt_Scope, ^Stmt_Foreign, ^Stmt_Union_Def, ^Stmt_Distinct_Def, ^Stmt_Dispatch_Def,
+         Stmt_Overload, Stmt_Module, Stmt_Break, Stmt_Continue:
+    case nil:
+    }
+    return false
+}
+
+expr_mentions :: proc(e: Expr, name: string) -> bool {
+    switch v in e {
+    case ^Expr_Ident:
+        return v.name == name
+    case ^Expr_Unary:
+        return expr_mentions(v.operand, name)
+    case ^Expr_Binary:
+        return expr_mentions(v.left, name) || expr_mentions(v.right, name)
+    case ^Expr_Call:
+        if expr_mentions(v.qualifier, name) || expr_mentions(v.desugared, name) { return true }
+        for a in v.args { if expr_mentions(a, name) { return true } }
+        if v.overrides != nil { return expr_mentions(v.overrides, name) }
+    case ^Expr_Array:
+        for x in v.elements { if expr_mentions(x, name) { return true } }
+    case ^Expr_Index:
+        return expr_mentions(v.expr, name) || expr_mentions(v.index, name)
+    case ^Expr_Slice:
+        return expr_mentions(v.expr, name) || expr_mentions(v.low, name) || expr_mentions(v.high, name)
+    case ^Expr_Struct_Literal:
+        if v.override_target == name || expr_mentions(v.broadcast_value, name) { return true }
+        for f in v.fields { if expr_mentions(f.value, name) { return true } }
+        for x in v.array_values { if expr_mentions(x, name) { return true } }
+    case ^Expr_Field_Access:
+        return expr_mentions(v.expr, name)
+    case ^Expr_Assert:
+        return expr_mentions(v.cond, name)
+    case ^Expr_Take:
+        return expr_mentions(v.storage, name) || expr_mentions(v.count_expr, name)
+    case ^Expr_If:
+        return expr_mentions(v.condition, name) || expr_mentions(v.then_expr, name) || expr_mentions(v.else_expr, name)
+    case ^Expr_Tuple_Default:
+        return expr_mentions(v.source, name)
+    case ^Expr_Try:
+        return expr_mentions(v.inner, name)
+    case ^Expr_Number, ^Expr_String, ^Expr_Char, ^Expr_Bool, ^Expr_Skip_Constructor, ^Expr_Size_Of,
+         ^Expr_Compiler_Intrinsic, ^Expr_Include, ^Expr_Type_Name, ^Expr_Self:
+    case nil:
+    }
+    return false
+}
+
 // Recursively gather the NRVO candidate from a function body. Returns the
 // identifier that EVERY `return` yields, or "" when any return yields no value,
 // a non-ident (literal/call), or a different name — or when there are no
@@ -557,6 +699,16 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
         }
     }
 
+    // A function that consumes a param into its result: its opening `r := pk`
+    // is emitted by gen_consume_init (a copy skipped when the caller passed the
+    // same storage as pk and the result slot).
+    old_consume_stmt, old_consume_src := g.consume_stmt, g.consume_src
+    g.consume_stmt, g.consume_src = nil, ""
+    if k, ok := consumed_param_of(cf).?; ok {
+        g.consume_stmt = opening_decl(cf)
+        g.consume_src = cf.cg_params[k].name
+    }
+
     // Alloca for each parameter
     for p in cf.cg_params {
         if sd := as_struct_body(p.type_); sd != nil {
@@ -683,6 +835,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     g.scope_stack = old_scope_stack
     g.current_ret_type = old_ret_type
     g.nrvo_var = old_nrvo_var
+    g.consume_stmt, g.consume_src = old_consume_stmt, old_consume_src
     g.ret_types = old_ret_types
     g.emitted_allocas = old_emitted_allocas
     g.ctor_has_self_sret = old_ctor_self

@@ -1,0 +1,167 @@
+module in_place_update
+
+//@ expect-output: var=5 6 0 0 len=2
+//@ expect-output: built=1 2 0 0 len=2
+//@ expect-output: field=7 8 0 0 len=2
+//@ expect-output: elem=9 10 0 0 len=2
+//@ expect-output: viaptr=7 8 11 0 len=3
+//@ expect-output: otherarg=3 0 0 0 len=1
+//@ expect-output: struct=16 16
+//@ expect-output: array=3 2 3
+//@ expect-output: fresh=5 6 7 0 len=3
+//@ expect-output: orig=5 6 0 0 len=2
+//@ expect-output: readsafter=2 1 0 0 len=2
+//@ expect-output: selfarg=1 1 0 0 len=2
+//@ expect-output: slicearg=4 4 0 0 len=2
+//@ expect-output: defer sees 3
+//@ expect-output: deferred=50
+//@ expect-output: branchy=60
+//@ expect-output: fnvalue=0 7 0 0 len=2
+
+// The functional update `x = f(x, …)` runs IN PLACE when f consumes that
+// argument — its first statement copies it into the local it returns
+// (`r := pa`) and never touches it again. Then x is passed as both the argument
+// and the result slot: f's opening copy is a copy onto itself (skipped), and
+// the update writes straight into x — no temp, no copy back. It needs every
+// other argument to be unable to reach x.
+//
+// The second half are calls that must NOT run in place — f reads its argument
+// after writing the result, or another argument can reach x, or f is called
+// through a function value — and still compute the right thing.
+
+H :: struct { f: [..4]i64, n: i64 }
+S :: struct { x: i64, y: i64, big: [16]i64 }
+V :: distinct [3]i64
+
+push :: fun(pa: [..4]i64, x: i64) -> [..4]i64 {
+	r := pa
+	r[r.len] = x
+	r.len += 1
+	return r
+}
+step :: fun(s: S, dt: i64) -> S {
+	r := s
+	r.x += dt
+	r.big[3] = r.x
+	return r
+}
+bumpv :: fun(v: V) -> V {
+	r := v
+	r[0] += 1
+	return r
+}
+append2 :: fun(pa: [..4]i64, other: [..4]i64) -> [..4]i64 {
+	r := pa
+	for x in other {
+		r[r.len] = x
+		r.len += 1
+	}
+	return r
+}
+appends :: fun(pa: [..4]i64, other: []i64) -> [..4]i64 {
+	r := pa
+	for x in other {
+		r[r.len] = x
+		r.len += 1
+	}
+	return r
+}
+built :: fun() -> [..4]i64 {
+	buf : [..4]i64
+	buf = push(buf, 1)
+	buf = push(buf, 2)
+	return buf
+}
+
+// Reads pa after writing r: not a consumer.
+swap01 :: fun(pa: [..4]i64) -> [..4]i64 {
+	r := pa
+	r[0] = pa[1]
+	r[1] = pa[0]
+	return r
+}
+// A defer reads pa after r is written: not a consumer.
+deferred :: fun(pa: [..4]i64) -> [..4]i64 {
+	r := pa
+	defer print("defer sees %", pa[0])
+	r[0] = 50
+	return r
+}
+// r isn't the only thing returned: not a consumer.
+branchy :: fun(pa: [..4]i64, c: bool) -> [..4]i64 {
+	r := pa
+	r[0] = 60
+	if c { return r }
+	other : [..4]i64
+	return other
+}
+// A call through a function value can't rely on the callee's body.
+via :: fun(f: fn push, x: i64) -> [..4]i64 {
+	r : [..4]i64
+	r = push(r, 0)
+	r = f(r, x)
+	return r
+}
+
+show :: fun(label: []utf8, b: [..4]i64) {
+	print("%=% % % % len=%", label, b[0], b[1], b[2], b[3], b.len)
+}
+
+main :: fun() {
+	buf : [..4]i64
+	buf = push(buf, 5)
+	buf = push(buf, 6)
+	show("var", buf)
+	show("built", built())
+	h := H{}
+	h.f = push(h.f, 7)
+	h.f = push(h.f, 8)
+	show("field", h.f)
+	bufs : [2][..4]i64
+	i := 1
+	bufs[i] = push(bufs[i], 9)
+	bufs[i] = push(bufs[i], 10)
+	show("elem", bufs[1])
+	ph := &h
+	ph.f = push(ph.f, 11)
+	show("viaptr", h.f)
+	o : [..4]i64
+	o = push(o, 3)
+	a3 : [..4]i64
+	a3 = append2(a3, o)
+	show("otherarg", a3)
+	s := S{x = 1}
+	s = step(s, 10)
+	s = step(s, 5)
+	print("struct=% %", s.x, s.big[3])
+	v := V{1, 2, 3}
+	v = bumpv(v)
+	v = bumpv(v)
+	print("array=% % %", v[0], v[1], v[2])
+	b2 := push(buf, 7)
+	show("fresh", b2)
+	show("orig", buf)
+
+	sw : [..4]i64
+	sw = push(sw, 1)
+	sw = push(sw, 2)
+	sw = swap01(sw)
+	show("readsafter", sw)
+	a2 : [..4]i64
+	a2 = push(a2, 1)
+	a2 = append2(a2, a2)
+	show("selfarg", a2)
+	a4 : [..4]i64
+	a4 = push(a4, 4)
+	a4 = appends(a4, a4[:])
+	show("slicearg", a4)
+	d : [..4]i64
+	d = push(d, 3)
+	d = deferred(d)
+	print("deferred=%", d[0])
+	e : [..4]i64
+	e = push(e, 4)
+	e = branchy(e, true)
+	print("branchy=%", e[0])
+	show("fnvalue", via(push, 7))
+}

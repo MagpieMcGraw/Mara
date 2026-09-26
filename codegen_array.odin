@@ -198,15 +198,31 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
     }
 }
 
+// Whether storing `value` into a partial array writes ALL of it, header
+// included: another partial array (copied whole, then re-anchored) or a
+// partial-array-returning call (built in place). A string or slice fills only
+// a prefix, so the destination's header must already be stamped.
+writes_whole_partial_array :: proc(g: ^Codegen, value: Expr) -> bool {
+    if value == nil { return false }
+    val := value
+    if cv, ok := codegen_const_value(g, val); ok { val = cv }
+    #partial switch _ in val {
+    case ^Expr_String, ^Expr_Compiler_Intrinsic, ^Expr_Skip_Constructor:
+        return false
+    }
+    _, whole := distinct_base(expr_type(val)).(^Type_Partial_Array)
+    return whole
+}
+
 // Store a value into an existing partial array at `pa_ptr` (header stamped):
 // always a copy into its own inline elements. A partial-array-returning call
 // builds straight into it (through a temp when an argument might alias it —
 // see gen_call_into_struct); every other value — a string, another partial
 // array, a slice — is copied by gen_partial_array_init_value.
-gen_store_partial_array_into :: proc(g: ^Codegen, pa_ptr: string, pa: ^Type_Partial_Array, value: Expr, span: Span, name: string, dest_fresh: bool) {
+gen_store_partial_array_into :: proc(g: ^Codegen, pa_ptr: string, pa: ^Type_Partial_Array, value: Expr, span: Span, name: string, dest_fresh: bool, dest_expr: Expr = nil) {
     if call, is_call := value.(^Expr_Call); is_call {
         if info, ok := call_fun_info(g, call); ok && info.ret_partial_cap > 0 {
-            gen_call_into_struct(g, call, pa_ptr, &info, dest_fresh)
+            gen_call_into_struct(g, call, pa_ptr, &info, dest_fresh, dest_expr)
             return
         }
     }
@@ -236,10 +252,10 @@ literal_elem_type :: proc(lit: Expr, known: Type = nil) -> Type {
 // element being assigned (`arr[i] = v`). An existing partial-array slot is
 // copied into as-is — resetting it first would clobber a value that reads it
 // (`arr[i] = f(arr[i])`).
-gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span, slot_fresh: bool) {
+gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span, slot_fresh: bool, dest_expr: Expr = nil) {
     base := distinct_base(elem_type)
     if sd := as_struct_body(base); sd != nil {
-        gen_store_struct_into(g, gep, sd, elem)
+        gen_store_struct_into(g, gep, sd, elem, dest_expr = dest_expr)
         return
     }
     pa, is_pa := base.(^Type_Partial_Array)
@@ -252,7 +268,7 @@ gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type
         return
     case ^Type_Fixed_Array:
         _, is_utf8 := distinct_base(t.elem).(Type_Utf8)
-        gen_store_array_into(g, gep, t.size, llvm_type_from_checker(t.elem), elem, is_utf8)
+        gen_store_array_into(g, gep, t.size, llvm_type_from_checker(t.elem), elem, is_utf8, dest_expr = dest_expr)
         return
     }
     if !is_pa {
@@ -261,7 +277,7 @@ gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type
         return
     }
     if !slot_fresh {
-        gen_store_partial_array_into(g, gep, pa, elem, span, "array element", dest_fresh = false)
+        gen_store_partial_array_into(g, gep, pa, elem, span, "array element", dest_fresh = false, dest_expr = dest_expr)
         return
     }
     et := llvm_type_from_checker(pa.elem)
@@ -545,9 +561,9 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         elem_ptr := emit_address_chain(g, &chain)
         apply_compound_load_substitute(g, s, elem_ptr, chain.final_type)
         if chain.final_kind == .Struct {
-            gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value)
+            gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value, dest_expr = s.target)
         } else {
-            gen_store_elem_into(g, elem_ptr, chain.final_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false)
+            gen_store_elem_into(g, elem_ptr, chain.final_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false, dest_expr = s.target)
         }
         return
     }
@@ -581,9 +597,9 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx, slice_layout.len_ir)
         if strings.has_prefix(sv.elem_type, "%class.") {
             elem_struct := sv.elem_type[len("%class."):]
-            gen_struct_store_at(g, elem_ptr, elem_struct, s.value)
+            gen_struct_store_at(g, elem_ptr, elem_struct, s.value, dest_expr = s.target)
         } else {
-            gen_store_elem_into(g, elem_ptr, sv.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false)
+            gen_store_elem_into(g, elem_ptr, sv.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false, dest_expr = s.target)
         }
         return
     }
@@ -607,9 +623,9 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     }
     if strings.has_prefix(av.elem_type, "%class.") {
         elem_struct := av.elem_type[len("%class."):]
-        gen_struct_store_at(g, gep, elem_struct, s.value)
+        gen_struct_store_at(g, gep, elem_struct, s.value, dest_expr = s.target)
     } else {
-        gen_store_elem_into(g, gep, av.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false)
+        gen_store_elem_into(g, gep, av.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span, slot_fresh = false, dest_expr = s.target)
     }
 }
 

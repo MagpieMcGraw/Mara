@@ -101,7 +101,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         // which handles literals (with constructor / defaults / overrides),
         // ident-to-ident copies, field-access copies, struct-returning call
         // NRVO, pure-struct constructor calls, and overloaded binary ops.
-        gen_store_struct_into(g, sv.alloca, st, value, dest_fresh = needs_alloca)
+        gen_store_struct_into(g, sv.alloca, st, value, dest_fresh = needs_alloca, dest_expr = var_ref(name))
         // After literal/copy paths have written their fields, lay down backing
         // storage and slice-header init for any sized-slice fields. The literal
         // path zero-memsets first and may call the init function, both of which
@@ -136,9 +136,17 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
 // (invalid IR) and never set len. Returns true if it handled the field; false
 // means the caller does its normal scalar/aggregate store. The enclosing struct
 // should be memset-zeroed first (the stamp sets ptr/cap; the copy sets len).
-gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr, span: Span) -> bool {
+gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr, span: Span, dest_expr: Expr = nil) -> bool {
     pa, pa_ok := distinct_base(field.type_).(^Type_Partial_Array)
     if !pa_ok { return false }
+    // A whole partial-array value (a call's result, another partial array)
+    // writes the header too, so there's nothing to stamp — and stamping first
+    // would reset `len` under a value that reads this very field
+    // (`h.f = push(h.f, x)`).
+    if writes_whole_partial_array(g, value) {
+        gen_store_partial_array_into(g, gep, pa, value, span, field.name, dest_fresh = false, dest_expr = dest_expr)
+        return true
+    }
     elem_t := llvm_type_from_checker(pa.elem)
     alloc_cap := pa.size
     elem_bytes := elem_byte_size(elem_t, g.checked)
@@ -987,8 +995,8 @@ parse_array_ir_type :: proc(ir_type: string) -> (cap: int, elem: string, ok: boo
 //
 // Thin wrapper over the unified gen_store_array_into. Kept for callers that
 // already have raw capacity + elem_type rather than checker metadata.
-gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, array_elem: string, value: Expr) {
-    gen_store_array_into(g, data_ptr, array_cap, array_elem, value)
+gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, array_elem: string, value: Expr, dest_expr: Expr = nil) {
+    gen_store_array_into(g, data_ptr, array_cap, array_elem, value, dest_expr = dest_expr)
 }
 
 
@@ -1004,7 +1012,7 @@ gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, arr
 //   - swizzle field access (a.xy → temp)  → per-element copy from swizzle result
 //   - array-returning function call       → NRVO via gen_call_into_array
 //   - fallback expression                 → gen_expr + memcpy from claim_call_result
-gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, dest_fresh: bool = false) {
+gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, dest_fresh: bool = false, dest_expr: Expr = nil) {
     alloc_cap := capacity
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
     ebs := elem_byte_size(elem_type, g.checked)
@@ -1157,7 +1165,7 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
             // Build an Array_Var pointing at dst_ptr and route through the
             // existing array NRVO path.
             dst := Array_Var{alloca = dst_ptr, capacity = info.ret_array_cap, elem_type = info.ret_array_elem}
-            gen_call_into_array(g, call, &dst, &info, dest_fresh)
+            gen_call_into_array(g, call, &dst, &info, dest_fresh, dest_expr)
             return
         }
     }
@@ -1179,7 +1187,7 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
                 call.type_ = bin.type_
                 call.resolved_func = rf
                 dst := Array_Var{alloca = dst_ptr, capacity = info.ret_array_cap, elem_type = info.ret_array_elem}
-                gen_call_into_array(g, call, &dst, &info, dest_fresh)
+                gen_call_into_array(g, call, &dst, &info, dest_fresh, dest_expr)
                 return
             }
         }
@@ -1251,7 +1259,7 @@ apply_struct_field_defaults :: proc(g: ^Codegen, st: ^Scope_Body, llvm_name: str
 // Call.overrides (the `{...}` block after a constructor call) are applied last
 // for every call shape, matching the rule "{} always happens after the
 // constructor".
-gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, value: Expr, dest_fresh: bool = false) {
+gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, value: Expr, dest_fresh: bool = false, dest_expr: Expr = nil) {
     llvm_name := struct_llvm_name(struct_key(st))
     total := struct_byte_size(st, g.checked)
 
@@ -1335,7 +1343,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         // from the destination struct's name: NRVO still applies there.
         if !is_pure_self_ctor {
             if info, info_ok := call_fun_info(g, call); info_ok && info.ret_struct != "" {
-                gen_call_into_struct(g, call, dst_ptr, &info, dest_fresh)
+                gen_call_into_struct(g, call, dst_ptr, &info, dest_fresh, dest_expr)
                 if call.overrides != nil {
                     apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
                 }
@@ -1398,7 +1406,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
 // Thin wrapper over gen_store_struct_into for callers that have a struct name
 // rather than a Scope_Body. Kept as the migration target for callers that
 // still use the old name.
-gen_struct_store_at :: proc(g: ^Codegen, dst_ptr: string, struct_name: string, value: Expr) {
+gen_struct_store_at :: proc(g: ^Codegen, dst_ptr: string, struct_name: string, value: Expr, dest_expr: Expr = nil) {
     st, st_ok := lookup_struct(g, struct_name)
     if !st_ok {
         codegen_fatal(g, {}, CODE_GEN_STRUCT_STORE_UNKNOWN_STRUCT, struct_name)
@@ -1409,7 +1417,7 @@ gen_struct_store_at :: proc(g: ^Codegen, dst_ptr: string, struct_name: string, v
         emit_memset_zero(g, dst_ptr, total)
         return
     }
-    gen_store_struct_into(g, dst_ptr, st, value)
+    gen_store_struct_into(g, dst_ptr, st, value, dest_expr = dest_expr)
 }
 
 // If `t` is a sized-slice type (distinct alias wrapping a slice with a default
@@ -1772,7 +1780,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             // including into a fresh array slot whose header isn't stamped yet.
             pa_field_ptr := fresh_tmp(g)
             emit_field_gep_into(g, pa_field_ptr, st_llvm, base_ptr, idx)
-            if gen_partial_array_field_store(g, f, pa_field_ptr, s.value, s.span) {
+            if gen_partial_array_field_store(g, f, pa_field_ptr, s.value, s.span, dest_expr = s.target) {
                 return
             }
         }
@@ -1796,7 +1804,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             data_gep := fresh_tmp(g)
             emit_field_gep_into(g, data_gep, st_llvm, base_ptr, idx)
             apply_compound_load_substitute(g, s, data_gep, ft)
-            gen_array_field_store(g, data_gep, acap, field_array_elem(f), s.value)
+            gen_array_field_store(g, data_gep, acap, field_array_elem(f), s.value, dest_expr = s.target)
             return
         }
         // Union field — a variant literal is built in the field; any other
@@ -1815,7 +1823,7 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
                 gep := fresh_tmp(g)
                 emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
                 apply_compound_load_substitute(g, s, gep, struct_llvm_name(field_sd.name))
-                gen_store_struct_into(g, gep, checked_field_st, s.value)
+                gen_store_struct_into(g, gep, checked_field_st, s.value, dest_expr = s.target)
                 return
             }
         }
@@ -1874,7 +1882,7 @@ gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if sd := as_struct_body(s.target_type); sd != nil {
         if checked_st, cs_ok := lookup_struct(g, sd.name); cs_ok {
             apply_compound_load_substitute(g, s, ptr_val, store_type)
-            gen_store_struct_into(g, ptr_val, checked_st, s.value)
+            gen_store_struct_into(g, ptr_val, checked_st, s.value, dest_expr = s.target)
             return
         }
     }

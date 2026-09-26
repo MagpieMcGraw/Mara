@@ -10,6 +10,10 @@ import "core:strings"
 gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
     switch s in stmt {
     case ^Stmt_Assign:
+        if s == g.consume_stmt {
+            gen_consume_init(g, s)
+            return
+        }
         // Compound assign (`lhs op= rhs`) was desugared by the parser into
         // `lhs = lhs op rhs`, with the LHS AST node shared between `s.target`
         // and the binary's `left`. To evaluate the LHS once — matching the
@@ -99,7 +103,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 if info_ok && info.ret_array_cap > 0 {
                     if existing, ex_ok := get_array(g, s.name); ex_ok {
                         // NRVO alias: call directly into pre-registered buffer
-                        gen_call_into_array(g, call, &existing, &info, s.is_decl)
+                        gen_call_into_array(g, call, &existing, &info, s.is_decl, var_ref(s.name))
                     } else {
                         gen_array_assign(g, s.name, fa.size, elem_t, nil, utf8, loc)
                         existing, _ := get_array(g, s.name)
@@ -234,7 +238,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok && s.value != nil {
             if existing, ex_ok := get_slice(g, s.name); ex_ok {
                 if _, broadcast := s.value.(^Expr_Struct_Literal); !broadcast {
-                    gen_store_partial_array_into(g, existing.alloca, pa, s.value, s.span, s.name, dest_fresh = s.is_decl)
+                    gen_store_partial_array_into(g, existing.alloca, pa, s.value, s.span, s.name, dest_fresh = s.is_decl, dest_expr = var_ref(s.name))
                     return
                 }
             }
@@ -389,17 +393,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             // stamp and the zero-fill below dead stores (`r := pa` zeroed r's
             // elements just to overwrite them). A string or slice fills only a
             // prefix, so those keep both.
-            whole := false
-            if s.value != nil {
-                val := s.value
-                if cv, ok := codegen_const_value(g, val); ok { val = cv }
-                #partial switch _ in val {
-                case ^Expr_String, ^Expr_Compiler_Intrinsic, ^Expr_Skip_Constructor:
-                case:
-                    _, whole = distinct_base(expr_type(val)).(^Type_Partial_Array)
-                }
-            }
-            if !whole {
+            if !writes_whole_partial_array(g, s.value) {
                 // Zero-init policy: element backing starts zeroed — covers both
                 // stack allocas and arena regions (dirty after a reset), and
                 // makes the cstring terminator check deterministic for strings
@@ -584,7 +578,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             }
             if info, info_ok := call_fun_info(g, call); info_ok && info.ret_array_cap > 0 {
                 if existing, ex_ok := get_array(g, s.name); ex_ok {
-                    gen_call_into_array(g, call, &existing, &info, s.is_decl)
+                    gen_call_into_array(g, call, &existing, &info, s.is_decl, var_ref(s.name))
                 } else {
                     gen_call(g, call)
                     if cr, cr_ok := claim_call_result(g); cr_ok {
@@ -1692,4 +1686,36 @@ apply_compound_load_substitute :: proc(g: ^Codegen, s: ^Stmt_Assign, addr: strin
     id.name = name
     id.type_ = expr_type(bin.left)
     bin.left = id
+}
+
+// `r := pk` opening a function that consumes pk into its result (see
+// consumed_param_of): r IS the result slot. A caller doing `x = f(x, …)`
+// passes x as both pk and the slot, and then the copy would be x onto itself —
+// so it's skipped when the two pointers are equal, and is the ordinary copy
+// into the slot otherwise.
+gen_consume_init :: proc(g: ^Codegen, s: ^Stmt_Assign) {
+    src := ""
+    #partial switch v in g.all_vars[g.consume_src] {
+    case Struct_Var: src = v.alloca
+    case Array_Var:  src = v.alloca
+    case Slice_Var:  src = v.alloca
+    }
+    if src == "" {
+        codegen_fatal(g, s.span, CODE_CALL_UNKNOWN_FUNCTION_FUN_INFO, g.consume_src)
+    }
+    same := fresh_tmp(g)
+    emit(g, "  %s = icmp eq ptr %%sret, %s", same, src)
+    copy_label := fresh_label(g, "consume.copy")
+    done_label := fresh_label(g, "consume.done")
+    emit_cond_br(g, same, done_label, copy_label)
+    emit_label(g, copy_label)
+    emit_value_copy(g, s.var_type, "%sret", src)
+    emit_br(g, done_label)
+    emit_label(g, done_label)
+    // Struct and fixed-array NRVO locals were bound to %sret at function
+    // entry; a partial-array one binds at its declaration — here.
+    if pa, is_pa := distinct_base(s.var_type).(^Type_Partial_Array); is_pa {
+        _, utf8 := pa.elem.(Type_Utf8)
+        g.all_vars[s.name] = Slice_Var{alloca = "%sret", elem_type = llvm_type_from_checker(pa.elem), is_utf8 = utf8}
+    }
 }

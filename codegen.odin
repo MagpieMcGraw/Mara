@@ -267,6 +267,9 @@ Fun_Info :: struct {
     param_types:       [dynamic]string,   // per-param IR types ("i64", "ptr", etc.)
     param_structs:     [dynamic]string,   // "" or struct name per param
     param_arrays:      [dynamic]^Type_Fixed_Array, // non-nil: fixed array, passed by immutable pointer
+    // The param the result is built from and nothing else (consumed_param_of):
+    // `x = f(x, …)` may pass x as both that argument and the result slot.
+    consumed_param:    Maybe(int),
     // True for struct-returning fns whose body has find_nrvo_candidate hit:
     // the callee constructs directly into %sret, so any caller-side
     // sized-slice header re-init after the call would be a redundant
@@ -370,6 +373,10 @@ Codegen :: struct {
     ctx_alloca:       string,                     // LLVM tmp for Context alloca in @main
     // NRVO: name of variable aliased to sret (skipped in scope_has_big_values)
     nrvo_var:         string,
+    // The current function consumes a param into its result (see
+    // consumed_param_of): its opening `r := pk`, and pk's name.
+    consume_stmt:     ^Stmt_Assign,
+    consume_src:      string,
     // Single partial-array return via sret: cap (>0 marks it) and elem IR type.
     // The callee builds into %sret — NRVO when the returned local is the
     // candidate, a copy-into-%sret otherwise. The partial-array decl path and
@@ -1126,6 +1133,10 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
     cf, found := g.checked.functions[fn_name]
     if !found { return {}, false }
     info := fun_info_of(g, cf)
+    // Only a DIRECT call knows which body runs, so only it may use the
+    // consumed-param summary: a function value of this signature could hold
+    // any function of that type (call_fun_info leaves it unset for those).
+    info.consumed_param = consumed_param_of(cf)
     g.fun_info_cache[fn_name] = info
     return info, true
 }
