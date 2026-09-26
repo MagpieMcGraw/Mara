@@ -87,6 +87,53 @@ partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_i
     emit_store(g, "ptr", elements_ptr, ptr_gep)
 }
 
+// Copy a whole value of type `t` from src to dst (both point at storage): a raw
+// memcpy, then every partial array inside re-anchored to dst's own elements.
+emit_value_copy :: proc(g: ^Codegen, t: Type, dst_ptr: string, src_ptr: string) {
+    size: int
+    if ut, is_union := distinct_base(t).(^Type_Union); is_union {
+        size = union_byte_size(g, ut)
+    } else {
+        size = elem_byte_size(llvm_type_from_checker(t), g.checked)
+    }
+    emit_memcpy(g, dst_ptr, src_ptr, size)
+    reanchor_partial_arrays(g, t, dst_ptr)
+}
+
+// After a raw copy of a `t` value to `ptr`, point every partial array inside it
+// (directly, in a struct field, in an array slot) back at its own inline
+// elements — the copied header still aims at the source's.
+reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
+    if !type_contains_partial_array(t) { return }
+    base := distinct_base(t)
+    if sd := as_struct_body(base); sd != nil {
+        llvm_name := struct_llvm_name(struct_key(sd))
+        for &f, i in sd.fields {
+            if !type_contains_partial_array(f.type_) { continue }
+            gep := fresh_tmp(g)
+            emit_field_gep_into(g, gep, llvm_name, ptr, i)
+            reanchor_partial_arrays(g, f.type_, gep)
+        }
+        return
+    }
+    #partial switch v in base {
+    case ^Type_Partial_Array:
+        ir_type := partial_array_ir_type(llvm_type_from_checker(v.elem), v.size)
+        elements_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+        ptr_gep := fresh_tmp(g)
+        emit_slice_gep(g, ptr_gep, ptr, SLICE.ptr)
+        emit_store(g, "ptr", elements_ptr, ptr_gep)
+    case ^Type_Fixed_Array:
+        arr_ir := fmt.tprintf("[%d x %s]", v.size, llvm_type_from_checker(v.elem))
+        for i in 0..<v.size {
+            gep := fresh_tmp(g)
+            emit_array_gep_const(g, gep, arr_ir, ptr, i)
+            reanchor_partial_arrays(g, v.elem, gep)
+        }
+    }
+}
+
 // Write an initial value into an already-allocated, header-stamped partial
 // array at `pa_ptr` (pointer to a `{len, cap, ptr, [N x T]}` structure):
 //   - string literal into a byte/utf8 array: memcpy the bytes and set len.
@@ -1424,8 +1471,9 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_t
     // NRVO: if value is a slice-returning Mara call, route its sret
     // straight to our dest's alloca. Same trick as gen_slice_from_expr.
     if call, call_ok := value.(^Expr_Call); call_ok {
-        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_slice_elem != "" {
-            if _, slice_exists := get_slice(g, name); !slice_exists {
+        if info, info_ok := call_fun_info(g, call); info_ok && info.ret_slice_elem != "" {
+            _, slice_exists := get_slice(g, name)
+            if !slice_exists {
                 alloca_name := fmt.tprintf("%%%s.slice", name)
                 emit_slice_alloca(g, alloca_name)
                 g.all_vars[name] = Slice_Var{
@@ -1434,7 +1482,7 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_t
                 }
             }
             sv, _ := get_slice(g, name)
-            gen_call_into_struct(g, call, sv.alloca, &info)
+            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists)
             return
         }
     }
@@ -1564,8 +1612,9 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
     // per assignment, and propagates through chains where each level
     // modifies the result before returning.
     if call, call_ok := value.(^Expr_Call); call_ok {
-        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_slice_elem != "" {
-            if _, slice_exists := get_slice(g, name); !slice_exists {
+        if info, info_ok := call_fun_info(g, call); info_ok && info.ret_slice_elem != "" {
+            _, slice_exists := get_slice(g, name)
+            if !slice_exists {
                 alloca_name := fmt.tprintf("%%%s.slice", name)
                 emit_slice_alloca(g, alloca_name)
                 g.all_vars[name] = Slice_Var{
@@ -1575,7 +1624,7 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
                 }
             }
             sv, _ := get_slice(g, name)
-            gen_call_into_struct(g, call, sv.alloca, &info)
+            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists)
             return
         }
     }
@@ -2130,12 +2179,12 @@ is_swappable_integer :: proc(t: Type) -> bool {
     return false
 }
 
-// Reinterpret-read a byte-buffer source into a fresh [N x T] SSA value at a
+// Reinterpret-read a byte-buffer source into a fresh [N x T] temporary at a
 // call site: `f(buf[off])` or `f(buf[lo:hi])` where the param expects a fixed
-// array. Allocates a temporary, memcpys the bytes in, loads as [N x T], and
-// returns the loaded SSA name. Bounds-checked via emit_byte_offset_ptr.
-// `arr_ty` is the Mara fixed-array type; consulted when `is_big_endian` is
-// set so we can byte-swap each element after the memcpy.
+// array. Allocates the temporary, memcpys the bytes in, and returns its
+// address (fixed arrays are passed by pointer). Bounds-checked via
+// emit_byte_offset_ptr. `pt` is the array's IR type; `arr_ty` the Mara type,
+// consulted when `is_big_endian` is set to byte-swap each element.
 emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, pt: string, span: Span, arr_ty: Type, is_big_endian: bool) -> string {
     arr_cap, arr_elem, _ := parse_array_ir_type(pt)
     size_bytes := arr_cap * elem_byte_size(arr_elem, g.checked)
@@ -2149,9 +2198,7 @@ emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Ex
     if is_big_endian && arr_ty != nil {
         emit_bswap_in_place(g, arr_alloca, pt, arr_ty)
     }
-    loaded := fresh_tmp(g)
-    emit_load_into(g, loaded, pt, arr_alloca)
-    return loaded
+    return arr_alloca
 }
 
 // Byte-buffer reinterpret read into a struct field: obj.field = buf[lo:hi] or obj.field = buf[off].
@@ -2273,12 +2320,21 @@ emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: string) {
     init_fn, has_init := g.checked.functions[st_name]
     if !has_init { return }
     if init_fn != nil && len(init_fn.cg_params) > 0 {
+        info, _ := lookup_fun_info(g, st_name)
         arg_strs: [dynamic]string
-        for &param in init_fn.cg_params {
-            pt := llvm_type_from_checker(param.type_)
+        for &param, i in init_fn.cg_params {
             if param.default_value != nil {
-                val := gen_expr(g, param.default_value, pt)
-                append(&arg_strs, fmt.tprintf("%s %s", pt, val))
+                // Lowered like any argument (aggregates by address).
+                append(&arg_strs, gen_mara_call_arg(g, param.default_value, i, &info))
+            } else if _, is_ptr := distinct_base(param.type_).(^Type_Ptr); is_ptr {
+                append(&arg_strs, "ptr null")
+            } else if pt := info.param_types[i]; pt == "ptr" || pt == SLICE_IR_TYPE {
+                // No default for a by-address aggregate: a zeroed temp.
+                tmp := fresh_tmp(g)
+                ir := llvm_type_from_checker(param.type_)
+                emit_alloca(g, tmp, ir)
+                emit_memset_zero(g, tmp, elem_byte_size(ir, g.checked))
+                append(&arg_strs, fmt.tprintf("ptr %s", tmp))
             } else {
                 append(&arg_strs, fmt.tprintf("%s zeroinitializer", pt))
             }

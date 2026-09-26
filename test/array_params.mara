@@ -1,0 +1,100 @@
+module array_params
+
+//@ expect-output: named=1 2 3
+//@ expect-output: literal=4 5 6
+//@ expect-output: runtime=7 8 7
+//@ expect-output: elem=1 2 3
+//@ expect-output: field=9 8 7
+//@ expect-output: deref=1 2 3
+//@ expect-output: ternary=4 5 6
+//@ expect-output: call=2 3 1
+//@ expect-output: overload=5 7 9
+//@ expect-output: distinct=1 2 3
+//@ expect-output: bytes=1 2 3
+//@ expect-output: big=99 4950
+//@ expect-output: nested=1 6
+//@ expect-output: fnvalue=3 abc 3
+//@ expect-output: fnret=2 3 1 / 2 1
+//@ expect-output: compound=5 7 9 / 5 7 9 / 5 7 9
+
+// A fixed-array parameter is an immutable pointer to the caller's storage, like
+// a struct: the caller passes the address of whatever holds the value (a named
+// array, an element, a field, a pointee, a ternary's pick), or a temp in its
+// own frame for a value with no storage (a literal, a byte-buffer read), or the
+// sret slot a call returned into. It used to be passed as a first-class LLVM
+// aggregate — each element a separate argument, so a [100]i64 was 100 of them,
+// copied through the stack and stored again in the callee.
+// Calls through a function value lower exactly like direct calls, from the
+// value's signature (they used to type each argument from the argument itself,
+// passing structs and strings by value).
+
+V3 :: distinct [3]i64
+Holder :: struct { v: V3 }
+P :: struct { x: i64, y: i64 }
+
+show :: fun(label: []utf8, v: V3) { print("%=% % %", label, v[0], v[1], v[2]) }
+rot :: fun(v: V3) -> V3 { return V3{v[1], v[2], v[0]} }
+vadd :: fun(a: V3, b: V3) -> V3 { return V3{a[0] + b[0], a[1] + b[1], a[2] + b[2]} }
+overload + plus
+plus :: dispatch { vadd }
+swap :: fun(p: P) -> P { return P{x = p.y, y = p.x} }
+show_raw :: fun(label: []utf8, v: [3]i64) { print("%=% % %", label, v[0], v[1], v[2]) }
+big_sum :: fun(a: [100]i64) -> (i64, i64) {
+	s := 0
+	for x in a { s += x }
+	return a[99], s
+}
+corner :: fun(m: [2][3]i64) -> (i64, i64) { return m[0][0], m[1][2] }
+sum3 :: fun(v: V3, s: []utf8, p: P) -> i64 { return v[0] + v[1] + v[2] - s.len - p.x - p.y + 3 }
+via :: fun(f: fn sum3, v: V3, p: P) -> i64 { return f(v, "abc", p) }
+via_rot :: fun(f: fn rot, v: V3) -> V3 { return f(v) }
+via_swap :: fun(f: fn swap, p: P) -> P { return f(p) }
+
+main :: fun() {
+	v := V3{1, 2, 3}
+	show("named", v)
+	show("literal", V3{4, 5, 6})
+	k := 7
+	show("runtime", V3{k, 8, k})
+	m : [2]V3
+	m[1] = v
+	show("elem", m[1])
+	h := Holder{v = V3{9, 8, 7}}
+	show("field", h.v)
+	p := &v
+	show("deref", p^)
+	show("ternary", if k > 1 do V3{4, 5, 6} else v)
+	show("call", rot(v))
+	show("overload", v + V3{4, 5, 6})
+	raw : [3]i64 = [1, 2, 3]
+	show("distinct", V3(raw))
+
+	bytes : [..32]byte
+	bytes.len = 32
+	bytes[0] = u64(1)
+	bytes[8] = u64(2)
+	bytes[16] = u64(3)
+	show_raw("bytes", bytes[0:24])
+
+	a : [100]i64
+	for i in 0..100 { a[i] = i }
+	last, total := big_sum(a)
+	print("big=% %", last, total)
+	grid := [2][3]i64{[1, 2, 3], [4, 5, 6]}
+	c0, c1 := corner(grid)
+	print("nested=% %", c0, c1)
+
+	pp := P{x = 1, y = 2}
+	print("fnvalue=% abc %", via(sum3, v, pp), 3)
+	r := via_rot(rot, v)
+	q := via_swap(swap, pp)
+	print("fnret=% % % / % %", r[0], r[1], r[2], q.x, q.y)
+
+	w := V3{1, 2, 3}
+	w += V3{4, 5, 6}
+	h.v = V3{1, 2, 3}
+	h.v += V3{4, 5, 6}
+	m[0] = V3{1, 2, 3}
+	m[0] += V3{4, 5, 6}
+	print("compound=% % % / % % % / % % %", w[0], w[1], w[2], h.v[0], h.v[1], h.v[2], m[0][0], m[0][1], m[0][2])
+}

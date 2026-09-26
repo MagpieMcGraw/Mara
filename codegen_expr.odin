@@ -561,7 +561,7 @@ gen_tuple_default :: proc(g: ^Codegen, e: ^Expr_Tuple_Default) -> string {
     call, is_call := e.source.(^Expr_Call)
     is_multi := false
     if is_call {
-        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok {
+        if info, info_ok := call_fun_info(g, call); info_ok {
             is_multi = info.ret_types != nil
         }
     }
@@ -1299,70 +1299,6 @@ gen_slice_param_arg :: proc(g: ^Codegen, arg: Expr) -> string {
     return slice_arg_str(gen_slice_value_ptr(g, arg))
 }
 
-// Load an array value for passing by value to a [N x T] parameter.
-// `val` is the result of `gen_expr(g, arg, pt)` and usually already points at the array data;
-// this helper returns the loaded SSA value if a load is needed, or the original `val` otherwise.
-gen_array_param_arg :: proc(g: ^Codegen, arg: Expr, pt: string, val: string) -> string {
-    // String literal / intrinsic passed to array param: alloca + memset + memcpy + load.
-    string_like_src := ""
-    if str_lit, str_ok := arg.(^Expr_String); str_ok {
-        string_like_src = str_lit.value
-    } else if intrinsic, intr_ok := arg.(^Expr_Compiler_Intrinsic); intr_ok {
-        string_like_src = intrinsic.resolved_value
-    }
-    if string_like_src != "" {
-        global_name, byte_len := get_string_literal(g, string_like_src)
-        src_ptr := fresh_tmp(g)
-        emit_string_gep(g, src_ptr, byte_len, global_name)
-        arr_alloca := fresh_tmp(g)
-        emit_alloca(g, arr_alloca, pt)
-        arr_cap, arr_elem, _ := parse_array_ir_type(pt)
-        param_bytes := arr_cap * elem_byte_size(arr_elem, g.checked)
-        emit_memset_zero(g, arr_alloca, param_bytes)
-        emit_memcpy(g, arr_alloca, src_ptr, byte_len)
-        loaded := fresh_tmp(g)
-        emit_load_into(g, loaded, pt, arr_alloca)
-        return loaded
-    }
-    // Ident / field access / call returning an array: `val` is a ptr to the data; load it.
-    needs_load := false
-    #partial switch a in arg {
-    case ^Expr_Ident:
-        _, needs_load = get_array(g, a.name)
-    case ^Expr_Field_Access, ^Expr_Index, ^Expr_If:
-        // A field, an element (`m[i]`) or a ternary publish the array's
-        // storage (set_field_result); `val` is its address.
-        _, needs_load = claim_field_array(g)
-    case ^Expr_Call:
-        _, needs_load = claim_call_result(g)
-    case ^Expr_Binary:
-        // Operator overload: gen_binary wraps the expression into an Expr_Call
-        // and routes through gen_call, which set_call_results an Array_Var
-        // for array-returning callees. We need to claim that result so the
-        // ptr-to-array gets loaded into the array value the param expects.
-        // Without this, `a * (b * c)` for a Mat4-returning `*` passes the
-        // inner sret pointer where an `[N x T]` value is expected.
-        if _, has_overload := a.overload_fn.?; has_overload {
-            _, needs_load = claim_call_result(g)
-        }
-    case ^Expr_Unary:
-        // Same situation for unary `-`: `-v3` resolved to vec3_negate gets
-        // wrapped into a 1-arg Expr_Call. The ptr-to-array result needs the
-        // same load so it can flow into a `[N x T]` param.
-        if _, has_overload := a.overload_fn.?; has_overload {
-            _, needs_load = claim_call_result(g)
-        } else if a.op == .Caret {
-            _, needs_load = claim_field_array(g) // `p^`: the pointee's address
-        }
-    }
-    if needs_load {
-        loaded := fresh_tmp(g)
-        emit_load_into(g, loaded, pt, val)
-        return loaded
-    }
-    return val
-}
-
 // Attempt to emit a call to an intrinsic function. Returns (value, true) on success.
 // Returns ("", false) if the function isn't a recognised intrinsic (caller falls back to normal call path).
 //
@@ -1381,6 +1317,14 @@ emit_intrinsic_call :: proc(g: ^Codegen, lookup_name: string, e: ^Expr_Call) -> 
 
     arg_strs: [dynamic]string
     for arg, i in e.args {
+        if i < len(info.param_arrays) && info.param_arrays[i] != nil {
+            // An LLVM intrinsic takes an array by value: load it from storage.
+            fa := info.param_arrays[i]
+            arr_ir := fmt.tprintf("[%d x %s]", fa.size, llvm_type_from_checker(fa.elem))
+            loaded := emit_load(g, arr_ir, gen_array_address(g, arg, fa))
+            append(&arg_strs, fmt.tprintf("%s %s", arr_ir, loaded))
+            continue
+        }
         pt := "i64"
         if i < len(info.param_types) { pt = info.param_types[i] }
         val := gen_expr_coerced(g, arg, pt)
@@ -1420,7 +1364,11 @@ gen_call :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
 // already diverged twice (the SLICE_IR_TYPE and byte-buffer materialization
 // branches were each missing from a subset). Every branch produces exactly one
 // arg string, so a single return value suffices.
-gen_mara_call_arg :: proc(g: ^Codegen, arg: Expr, i: int, info: ^Fun_Info, cs_resolved: ^Type_Scope, has_cs: bool) -> string {
+gen_mara_call_arg :: proc(g: ^Codegen, arg: Expr, i: int, info: ^Fun_Info) -> string {
+    if i < len(info.param_arrays) && info.param_arrays[i] != nil {
+        // Fixed array: an immutable pointer to its storage.
+        return fmt.tprintf("ptr %s", gen_array_address(g, arg, info.param_arrays[i]))
+    }
     if i < len(info.param_structs) && info.param_structs[i] != "" {
         // Struct arg: pass as ptr (no target_type needed)
         val := gen_expr(g, arg)
@@ -1438,29 +1386,62 @@ gen_mara_call_arg :: proc(g: ^Codegen, arg: Expr, i: int, info: ^Fun_Info, cs_re
     if pt == SLICE_IR_TYPE {
         return gen_slice_param_arg(g, arg)
     }
-    // Byte-buffer source → fixed-array param: reinterpret-read sizeof(pt) bytes
-    // from `buf[offset:]` / `buf[offset]` into a freshly-allocated `[N x T]` and
-    // load it. Mirrors the same pattern that fires at declaration sites
-    // (`arr : [N]T = buf[off]`). gen_expr would produce a slice header for
-    // `bytes[lo:hi]` — the wrong shape — so we short-circuit before calling it.
-    if strings.has_prefix(pt, "[") {
-        materialized := ""
-        param_ty: Type
-        if has_cs && i < len(cs_resolved.cg_params) { param_ty = cs_resolved.cg_params[i].type_ }
-        if sl_expr, sl_ok := arg.(^Expr_Slice); sl_ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
-            materialized = emit_array_from_byte_buffer(g, sl_expr.expr, sl_expr.low, pt, sl_expr.span, param_ty, sl_expr.is_big_endian)
-        } else if idx_expr, idx_ok := arg.(^Expr_Index); idx_ok && codegen_is_byte_buffer_source(g, idx_expr.expr) {
-            materialized = emit_array_from_byte_buffer(g, idx_expr.expr, idx_expr.index, pt, idx_expr.span, param_ty, idx_expr.is_big_endian)
-        }
-        if materialized != "" {
-            return fmt.tprintf("%s %s", pt, materialized)
-        }
-    }
     val := gen_expr_coerced(g, arg, pt)
-    if strings.has_prefix(pt, "[") {
-        val = gen_array_param_arg(g, arg, pt, val)
-    }
     return fmt.tprintf("%s %s", pt, val)
+}
+
+// The address of a fixed-array value's storage — how a fixed array goes to a
+// Mara function (an immutable pointer, like a struct). A named array, element,
+// field, pointee or ternary already lives somewhere: that address is passed,
+// no copy. A value with no storage of its own — a literal (in either
+// spelling), a string, a byte-buffer read — is built in a temp in the caller's
+// frame, which outlives the call. A call or operator result already sits in
+// the call's sret slot.
+gen_array_address :: proc(g: ^Codegen, e: Expr, fa: ^Type_Fixed_Array) -> string {
+    elem_ir := llvm_type_from_checker(fa.elem)
+    arr_ir := fmt.tprintf("[%d x %s]", fa.size, elem_ir)
+    value := e
+    if cv, ok := codegen_const_value(g, e); ok { value = cv }
+
+    // Byte-buffer reinterpret read: `f(buf[off])` / `f(buf[lo:hi])` reads
+    // sizeof([N]T) bytes into a temp. gen_expr would yield a slice header.
+    if sl, ok := value.(^Expr_Slice); ok && codegen_is_byte_buffer_source(g, sl.expr) {
+        return emit_array_from_byte_buffer(g, sl.expr, sl.low, arr_ir, sl.span, fa, sl.is_big_endian)
+    }
+    if ix, ok := value.(^Expr_Index); ok && codegen_is_byte_buffer_source(g, ix.expr) {
+        return emit_array_from_byte_buffer(g, ix.expr, ix.index, arr_ir, ix.span, fa, ix.is_big_endian)
+    }
+
+    // No storage of its own: build it in a temp.
+    #partial switch v in value {
+    case ^Expr_Array, ^Expr_Struct_Literal, ^Expr_String, ^Expr_Compiler_Intrinsic:
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, arr_ir)
+        _, is_utf8 := distinct_base(fa.elem).(Type_Utf8)
+        gen_store_array_into(g, tmp, fa.size, elem_ir, value, is_utf8)
+        return tmp
+    case ^Expr_Call:
+        // A distinct conversion or desugared builtin is the value it wraps.
+        if inner, ok := call_passthrough_value(g, v); ok { return gen_array_address(g, inner, fa) }
+    }
+
+    // Everything else is evaluated once and publishes where it lives.
+    gen_expr(g, value)
+    #partial switch v in value {
+    case ^Expr_Ident:
+        if av, ok := get_array(g, v.name); ok { return av.alloca }
+    case ^Expr_Call, ^Expr_Binary, ^Expr_Unary:
+        // A call, or an operator overload lowered to one: the result is in the
+        // call's sret slot. (`p^` publishes the pointee's storage instead.)
+        if cr, ok := claim_call_result(g); ok { return cr.alloca }
+        if av, ok := claim_field_array(g); ok { return av.alloca }
+    case ^Expr_Field_Access:
+        if sr, ok := claim_swizzle_result(g); ok { return sr.alloca }
+        if av, ok := claim_field_array(g); ok { return av.alloca }
+    case ^Expr_Index, ^Expr_If:
+        if av, ok := claim_field_array(g); ok { return av.alloca }
+    }
+    codegen_fatal(g, expr_span(e)^, CODE_GEN_STORE_ARRAY_UNHANDLED_RHS)
 }
 
 gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
@@ -1641,43 +1622,31 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         }
     }
 
-    // Foreign function call — apply .C ABI lowering per platform.
-    foreign_lookup := call_resolved_name(e)
-    if cs, ok := g.checked.functions[foreign_lookup]; ok {
-        if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
-            return gen_c_call(g, e, cs, fo.link_name, foreign_lookup)
-        }
-    }
-
     // User-defined function call (or qualified call: pkg.func)
     // Use the resolved (flat) name throughout — e.name is the source-level name which
     // may not match the flat key in checked.functions (e.g. "arena_new" vs "arena_arena_new").
     lookup_name := call_resolved_name(e)
 
-    // Intrinsic function: emit an @llvm.* call directly at this site, no user-function body exists.
-    if intr_result, intr_ok := emit_intrinsic_call(g, lookup_name, e); intr_ok {
-        return intr_result
-    }
-
-    ir_name: string
-    if fir, fir_ok := foreign_ir_name(g, lookup_name); fir_ok {
-        ir_name = fir
-    } else {
-        ir_name = mara_fn_name(g, lookup_name)
-    }
-    if info, info_ok := lookup_fun_info(g, lookup_name); info_ok {
-        arg_strs: [dynamic]string
-        // Pull the resolved Checked_Scope for param checker types — needed for
-        // shape-sensitive conversions (cstr → cstring, etc.) that the IR type
-        // string alone can't disambiguate.
-        cs_resolved: ^Type_Scope
-        has_cs := false
-        if cs_val, cs_ok := g.checked.functions[lookup_name]; cs_ok {
-            cs_resolved = cs_val
-            has_cs = true
+    // An indirect call through a function value is lowered exactly like a
+    // direct call to a function of that signature (same argument ABI, same
+    // return slots) — only the callee operand is the loaded pointer.
+    if !is_indirect_call(e) {
+        // Foreign function call — apply .C ABI lowering per platform.
+        if cs, ok := g.checked.functions[lookup_name]; ok {
+            if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
+                return gen_c_call(g, e, cs, fo.link_name, lookup_name)
+            }
         }
+        // Intrinsic function: emit an @llvm.* call directly at this site, no user-function body exists.
+        if intr_result, intr_ok := emit_intrinsic_call(g, lookup_name, e); intr_ok {
+            return intr_result
+        }
+    }
+    if info, info_ok := call_fun_info(g, e); info_ok {
+        ir_name := call_callee(g, e)
+        arg_strs: [dynamic]string
         for arg, i in e.args {
-            append(&arg_strs, gen_mara_call_arg(g, arg, i, &info, cs_resolved, has_cs))
+            append(&arg_strs, gen_mara_call_arg(g, arg, i, &info))
         }
 
         if info.ret_struct != "" {
@@ -1791,49 +1760,23 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         }
     }
 
-    // Indirect call: callee is a function pointer held in a variable — either
-    // an alloca-backed scalar (load the ptr) or an SSA-direct binding (use it
-    // as-is). A fn-typed parameter (`cb: fn foo`) takes the SSA path: params
-    // bind straight to their `ptr` arg value, so there's no alloca to load.
-    fn_ptr := ""
-    callee_is_fnptr := false
-    if alloca, alloca_ok := get_scalar(g, lookup_name); alloca_ok {
-        callee_is_fnptr = true
-        fn_ptr = fresh_tmp(g)
-        emit_load_into(g, fn_ptr, "ptr", alloca)
-    } else if entry, entry_ok := g.all_vars[lookup_name]; entry_ok {
-        if sv, sv_ok := entry.(SSA_Var); sv_ok && sv.ir_type == "ptr" {
-            callee_is_fnptr = true
-            fn_ptr = sv.ssa
-        }
-    }
-    if callee_is_fnptr {
-        // Build typed arg list from each arg's checker type
-        arg_strs: [dynamic]string
-        for arg in e.args {
-            at := expr_type(arg)
-            pt := "i64"
-            if at != nil && !is_untyped(at) {
-                pt = llvm_type_from_checker(at)
-            }
-            val := gen_expr_coerced(g, arg, pt)
-            append(&arg_strs, fmt.tprintf("%s %s", pt, val))
-        }
-        args_joined := strings.join(arg_strs[:], ", ")
-        ret := "i64"
-        if e.type_ != nil && !is_untyped(e.type_) {
-            ret = llvm_type_from_checker(e.type_)
-        }
-        if ret == "void" {
-            emit(g, "  call void %s(%s)", fn_ptr, args_joined)
-            return "0"
-        }
-        tmp := fresh_tmp(g)
-        emit(g, "  %s = call %s %s(%s)", tmp, ret, fn_ptr, args_joined)
-        return tmp
-    }
-
     codegen_fatal(g, e.span, CODE_CALL_UNKNOWN_FUNCTION_FUN_INFO, lookup_name)
+}
+
+// The callee pointer of an indirect call: the function value held in `name` —
+// an alloca-backed local (load it) or an SSA-direct binding (use it as-is). A
+// fn-typed parameter (`cb: fn foo`) is the SSA case: params bind straight to
+// their `ptr` arg value, so there's no alloca to load.
+gen_fn_value_ptr :: proc(g: ^Codegen, name: string, span: Span) -> string {
+    if alloca, ok := get_scalar(g, name); ok {
+        fn_ptr := fresh_tmp(g)
+        emit_load_into(g, fn_ptr, "ptr", alloca)
+        return fn_ptr
+    }
+    if entry, ok := g.all_vars[name]; ok {
+        if sv, sv_ok := entry.(SSA_Var); sv_ok && sv.ir_type == "ptr" { return sv.ssa }
+    }
+    codegen_fatal(g, span, CODE_CALL_UNKNOWN_FUNCTION_FUN_INFO, name)
 }
 
 // Emit a foreign (.C convention) function call. Applies platform ABI lowering
@@ -2060,64 +2003,107 @@ emit_c_aggregate_direct_arg :: proc(g: ^Codegen, arg_expr: Expr, parts: []string
     }
 }
 
-// Emit a struct-returning call, writing directly into a caller-supplied
-// destination pointer (NRVO) instead of allocating a temp sret slot. Same
-// shape as gen_call_into_array but the destination is just a raw pointer.
-gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info: ^Fun_Info) {
-    cn := call_resolved_name(e)
-
-    ir_name: string
-    if fir, fir_ok := foreign_ir_name(g, cn); fir_ok {
-        ir_name = fir
-    } else {
-        ir_name = mara_fn_name(g, cn)
+// Emit a struct / slice / partial-array returning call whose sret is the
+// caller-supplied destination (NRVO) instead of a temp slot.
+//
+// Aggregate arguments are passed by address, so a callee can still be READING
+// an argument while it WRITES its result: `p = swap(p)` handed it `p` as both,
+// and the result clobbered the argument mid-computation. Building straight into
+// the destination is only safe when it's fresh storage — a declaration, or the
+// enclosing function's own sret, which by this same rule never aliases its
+// arguments. Otherwise, when any argument carries caller storage, the result
+// is built in a temp and copied over (what `x = f(x)` means).
+gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info: ^Fun_Info, dest_fresh: bool) {
+    ret_t := call_result_type(g, e)
+    if !dest_fresh && call_passes_storage(info, len(e.args)) {
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, llvm_type_from_checker(ret_t))
+        emit_call_with_sret(g, e, info, tmp)
+        emit_value_copy(g, ret_t, dest_ptr, tmp)
+        return
     }
-
-    cs_resolved: ^Type_Scope
-    has_cs := false
-    if cs_val, cs_ok := g.checked.functions[cn]; cs_ok {
-        cs_resolved = cs_val
-        has_cs = true
-    }
-    arg_strs: [dynamic]string
-    for arg, i in e.args {
-        append(&arg_strs, gen_mara_call_arg(g, arg, i, info, cs_resolved, has_cs))
-    }
-
-    append(&arg_strs, fmt.tprintf("ptr %s", dest_ptr))
-    args_joined := strings.join(arg_strs[:], ", ")
-    emit(g, "  call void %s(%s)", ir_name, args_joined)
+    emit_call_with_sret(g, e, info, dest_ptr)
 }
 
-// Emit an array-returning call, writing directly into a pre-existing Array_Var
-// (e.g. an NRVO-aliased variable) instead of allocating temp buffers.
-gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: ^Fun_Info) {
-    cn := call_resolved_name(e)
-
-    ir_name: string
-    if fir, fir_ok := foreign_ir_name(g, cn); fir_ok {
-        ir_name = fir
-    } else {
-        ir_name = mara_fn_name(g, cn)
+// Emit an array-returning call whose sret is the destination Array_Var's
+// storage — see gen_call_into_struct for when that has to go through a temp.
+gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: ^Fun_Info, dest_fresh: bool) {
+    if !dest_fresh && call_passes_storage(info, len(e.args)) {
+        ret_t := call_result_type(g, e)
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, llvm_type_from_checker(ret_t))
+        emit_call_with_sret(g, e, info, tmp)
+        emit_value_copy(g, ret_t, dest.alloca, tmp)
+        return
     }
+    emit_call_with_sret(g, e, info, dest.alloca)
+}
 
-    cs_resolved: ^Type_Scope
-    has_cs := false
-    if cs_val, cs_ok := g.checked.functions[cn]; cs_ok {
-        cs_resolved = cs_val
-        has_cs = true
-    }
-    // Build normal arguments
+// `call void @f(<args>, ptr <sret>)` for a single-sret-return Mara call.
+emit_call_with_sret :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, sret: string) {
+    ir_name := call_callee(g, e)
     arg_strs: [dynamic]string
     for arg, i in e.args {
-        append(&arg_strs, gen_mara_call_arg(g, arg, i, info, cs_resolved, has_cs))
+        append(&arg_strs, gen_mara_call_arg(g, arg, i, info))
     }
+    append(&arg_strs, fmt.tprintf("ptr %s", sret))
+    emit(g, "  call void %s(%s)", ir_name, strings.join(arg_strs[:], ", "))
+}
 
-    // Append the destination's data pointer as sret arg
-    append(&arg_strs, fmt.tprintf("ptr %s", dest.alloca))
+// Whether a call hands the callee caller storage by address: an aggregate
+// argument (struct, union, fixed array, slice, partial array) or a pointer.
+call_passes_storage :: proc(info: ^Fun_Info, nargs: int) -> bool {
+    for i in 0..<min(nargs, len(info.param_types)) {
+        pt := info.param_types[i]
+        if pt == "ptr" || pt == SLICE_IR_TYPE { return true }
+    }
+    return false
+}
 
-    args_joined := strings.join(arg_strs[:], ", ")
-    emit(g, "  call void %s(%s)", ir_name, args_joined)
+// The Mara type a single-return call produces (its callee's declared return).
+call_result_type :: proc(g: ^Codegen, e: ^Expr_Call) -> Type {
+    if cf := call_signature(g, e); cf != nil && len(cf.cg_returns) == 1 {
+        return cf.cg_returns[0]
+    }
+    codegen_fatal(g, e.span, CODE_CALL_UNKNOWN_FUNCTION_FUN_INFO, call_resolved_name(e))
+}
+
+// The signature a call is made against: the declared function it resolved to,
+// or — for an indirect call through a function value — that value's fn type.
+call_signature :: proc(g: ^Codegen, e: ^Expr_Call) -> ^Type_Scope {
+    if is_indirect_call(e) { return e.fn_value }
+    return g.checked.functions[call_resolved_name(e)] or_else nil
+}
+
+is_indirect_call :: proc(e: ^Expr_Call) -> bool {
+    _, resolved := e.resolved_func.?
+    return !resolved && e.fn_value != nil
+}
+
+// A call that is just another value in disguise: a builtin the checker
+// desugared, or a distinct conversion `Vec3(a)` (a no-op at IR level — see the
+// distinct-construction case in gen_call_inner).
+call_passthrough_value :: proc(g: ^Codegen, e: ^Expr_Call) -> (Expr, bool) {
+    if e.desugared != nil { return e.desugared, true }
+    if _, is_distinct := g.checked.table.distinct_types[call_resolved_name(e)]; is_distinct && len(e.args) == 1 {
+        return e.args[0], true
+    }
+    return nil, false
+}
+
+// A call's ABI (see fun_info_of), for direct and indirect calls alike.
+call_fun_info :: proc(g: ^Codegen, e: ^Expr_Call) -> (Fun_Info, bool) {
+    if is_indirect_call(e) { return fun_info_of(g, e.fn_value), true }
+    return lookup_fun_info(g, call_resolved_name(e))
+}
+
+// A call's callee operand: the declared function's symbol, or the loaded
+// function value for an indirect call.
+call_callee :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
+    if is_indirect_call(e) { return gen_fn_value_ptr(g, call_resolved_name(e), e.span) }
+    name := call_resolved_name(e)
+    if fir, ok := foreign_ir_name(g, name); ok { return fir }
+    return mara_fn_name(g, name)
 }
 
 // ---------------------------------------------------------------------------

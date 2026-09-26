@@ -1,0 +1,13 @@
+module array_param_swizzle_neg
+//@ expect-fail: cannot write to field 'x' of immutable parameter 'v'
+
+// A swizzle write is an element write: rejected on an immutable array param.
+
+Vec3 :: distinct [3]f32
+f :: fun(v: Vec3) { v.x = 5 }
+
+main :: fun() {
+	v := Vec3{1, 2, 3}
+	f(v)
+	print(v[0])
+}

@@ -1,0 +1,14 @@
+module param_reassign_neg
+//@ expect-fail: cannot assign to immutable parameter 'p'
+
+// Reassigning a by-address param (struct, union, array, slice, partial array)
+// overwrote the CALLER's value — `p = P{x = 7}` changed the caller's p.
+
+P :: struct { x: i64 }
+f :: fun(p: P) { p = P{x = 7} }
+
+main :: fun() {
+	p := P{x = 1}
+	f(p)
+	print(p.x)
+}

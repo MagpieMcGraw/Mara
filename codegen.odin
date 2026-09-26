@@ -266,6 +266,7 @@ Fun_Info :: struct {
     ret_partial_cap:   int,              // partial-array capacity (sret convention)
     param_types:       [dynamic]string,   // per-param IR types ("i64", "ptr", etc.)
     param_structs:     [dynamic]string,   // "" or struct name per param
+    param_arrays:      [dynamic]^Type_Fixed_Array, // non-nil: fixed array, passed by immutable pointer
     // True for struct-returning fns whose body has find_nrvo_candidate hit:
     // the callee constructs directly into %sret, so any caller-side
     // sized-slice header re-init after the call would be a redundant
@@ -1124,7 +1125,21 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
     // All functions are in checked.functions with flat keys (flattened during type-checking)
     cf, found := g.checked.functions[fn_name]
     if !found { return {}, false }
+    info := fun_info_of(g, cf)
+    g.fun_info_cache[fn_name] = info
+    return info, true
+}
 
+// The call ABI of a function signature: how its params and returns cross the
+// call boundary. Shared by direct calls (via lookup_fun_info) and indirect
+// calls through a function value, whose type is a signature with no body.
+fun_info_of :: proc(g: ^Codegen, cf: ^Type_Scope) -> Fun_Info {
+    // A structural fn type (`fn(a: T -> R)`) never went through a declaration's
+    // signature pass; fill the same lowered cache from its params/returns.
+    if (len(cf.cg_params) == 0 && len(cf.params) > 0) ||
+       (len(cf.cg_returns) == 0 && len(cf.return_types) > 0) {
+        populate_cg_signature(cf)
+    }
     info := Fun_Info{}
 
     // Return type: struct/array/multi-return/slice returns use void + sret convention
@@ -1158,7 +1173,14 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
 
     // Parameter types
     for p in cf.cg_params {
-        if sd := as_struct_body(p.type_); sd != nil {
+        fa, is_fa := distinct_base(p.type_).(^Type_Fixed_Array)
+        append(&info.param_arrays, is_fa ? fa : nil)
+        if is_fa {
+            // Fixed array: by immutable pointer, like a struct — the caller
+            // passes its storage (or a temp for a literal), never a copy.
+            append(&info.param_types, "ptr")
+            append(&info.param_structs, "")
+        } else if sd := as_struct_body(p.type_); sd != nil {
             append(&info.param_types, "ptr")
             append(&info.param_structs, sd.name)
         } else if ut, ut_ok := p.type_.(^Type_Union); ut_ok {
@@ -1181,9 +1203,7 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
         info.uses_struct_nrvo = find_nrvo_candidate(cf.body[:]) != ""
     }
 
-    // Cache and return
-    g.fun_info_cache[fn_name] = info
-    return info, true
+    return info
 }
 
 // Format a span as "[file:line:col]" or "[line:col]" prefix for error messages

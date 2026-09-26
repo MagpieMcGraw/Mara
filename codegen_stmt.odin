@@ -95,15 +95,15 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             }
             // Array-returning call: use sret convention
             if call, call_ok := s.value.(^Expr_Call); call_ok {
-                info, info_ok := lookup_fun_info(g, call_resolved_name(call))
+                info, info_ok := call_fun_info(g, call)
                 if info_ok && info.ret_array_cap > 0 {
                     if existing, ex_ok := get_array(g, s.name); ex_ok {
                         // NRVO alias: call directly into pre-registered buffer
-                        gen_call_into_array(g, call, &existing, &info)
+                        gen_call_into_array(g, call, &existing, &info, s.is_decl)
                     } else {
                         gen_array_assign(g, s.name, fa.size, elem_t, nil, utf8, loc)
                         existing, _ := get_array(g, s.name)
-                        gen_call_into_array(g, call, &existing, &info)
+                        gen_call_into_array(g, call, &existing, &info, true)
                     }
                     return
                 }
@@ -444,8 +444,8 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 // %sret, the inner call's result lands straight in the outer
                 // caller's return slot. Mirrors gen_slice_from_expr.
                 if call, call_ok := s.value.(^Expr_Call); call_ok {
-                    if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_partial_cap > 0 {
-                        gen_call_into_struct(g, call, alloca_name, &info)
+                    if info, info_ok := call_fun_info(g, call); info_ok && info.ret_partial_cap > 0 {
+                        gen_call_into_struct(g, call, alloca_name, &info, true)
                         return
                     }
                 }
@@ -579,8 +579,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
 
         // Check if value is a call to a struct-returning or array-returning function
         if call, call_ok := s.value.(^Expr_Call); call_ok {
-            resolved := call_resolved_name(call)
-            if info, info_ok := lookup_fun_info(g, resolved); info_ok && info.ret_struct != "" {
+            if info, info_ok := call_fun_info(g, call); info_ok && info.ret_struct != "" {
                 result_ptr := gen_call(g, call)
                 g.all_vars[s.name] = Struct_Var{
                     alloca = result_ptr,
@@ -588,9 +587,9 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 }
                 return
             }
-            if info, info_ok := lookup_fun_info(g, resolved); info_ok && info.ret_array_cap > 0 {
+            if info, info_ok := call_fun_info(g, call); info_ok && info.ret_array_cap > 0 {
                 if existing, ex_ok := get_array(g, s.name); ex_ok {
-                    gen_call_into_array(g, call, &existing, &info)
+                    gen_call_into_array(g, call, &existing, &info, s.is_decl)
                 } else {
                     gen_call(g, call)
                     if cr, cr_ok := claim_call_result(g); cr_ok {
@@ -938,7 +937,7 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
 
     // Look up the function's multi-return list BEFORE calling gen_call
     ret_types: []Type
-    if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok {
+    if info, info_ok := call_fun_info(g, call); info_ok {
         ret_types = info.ret_types
     }
 
@@ -1281,7 +1280,7 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
             // scalar fallback below would store the array's ADDRESS (or an
             // aggregate constant holding SSA values) — invalid IR.
             _, is_utf8 := distinct_base(fa.elem).(Type_Utf8)
-            gen_store_array_into(g, sret_ptr, fa.size, llvm_type_from_checker(fa.elem), val, is_utf8)
+            gen_store_array_into(g, sret_ptr, fa.size, llvm_type_from_checker(fa.elem), val, is_utf8, dest_fresh = true)
             continue
         }
         // Union slot: a variant literal is built in place; any other union
@@ -1386,9 +1385,8 @@ gen_return_struct :: proc(g: ^Codegen, s: Stmt_Return, sret_sv: Struct_Var) {
         // forward our own sret directly — no intermediate alloca, no copy.
         // Falls back to alloca+copy for foreign calls or anything else the
         // Fun_Info path can't see.
-        cn := call_resolved_name(call)
-        if info, info_ok := lookup_fun_info(g, cn); info_ok && info.ret_struct != "" {
-            gen_call_into_struct(g, call, sret_ptr, &info)
+        if info, info_ok := call_fun_info(g, call); info_ok && info.ret_struct != "" {
+            gen_call_into_struct(g, call, sret_ptr, &info, true)
         } else {
             result_ptr := gen_call(g, call)
             emit_struct_copy(g, sret_st, sret_llvm, result_ptr, sret_ptr)
@@ -1463,10 +1461,12 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         // Case C: returning result of another array-returning call
         // Pass sret pointers directly to the inner call — no intermediate copy
         handled = true
-        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_array_cap > 0 {
-            gen_call_into_array(g, call, &sret_av, &info)
+        if info, info_ok := call_fun_info(g, call); info_ok && info.ret_array_cap > 0 {
+            gen_call_into_array(g, call, &sret_av, &info, true)
         } else {
-            gen_call(g, call)
+            // Not an array-returning function (a distinct conversion, ...):
+            // the array store copies whatever value it stands for, or errors.
+            gen_store_array_into(g, sret_av.alloca, sret_av.capacity, sret_av.elem_type, call, dest_fresh = true)
         }
     } else if sl, sl_ok := arr_ret_val.(^Expr_Struct_Literal); sl_ok {
         // Case D: returning a distinct-fixed-array literal like
@@ -1501,9 +1501,8 @@ gen_return_slice :: proc(g: ^Codegen, s: Stmt_Return, sret_slv: Slice_Var) {
     // works as-is — the trailing `ptr %sret` arg lands in the callee's
     // sret slot. Skips one alloca + one memcpy per chain layer.
     if call, call_ok := ret_val.(^Expr_Call); call_ok {
-        cn := call_resolved_name(call)
-        if info, info_ok := lookup_fun_info(g, cn); info_ok && info.ret_slice_elem != "" {
-            gen_call_into_struct(g, call, sret_slv.alloca, &info)
+        if info, info_ok := call_fun_info(g, call); info_ok && info.ret_slice_elem != "" {
+            gen_call_into_struct(g, call, sret_slv.alloca, &info, true)
             emit_ret_void(g)
             return
         }
@@ -1673,15 +1672,27 @@ hoist_lhs_subexpr :: proc(g: ^Codegen, e: Expr) -> Expr {
 // name, and substitutes that name for `bin.left`. The binary's right operand
 // and final store then run normally — but the value-side address chain
 // (including any null/bounds checks it carried) is gone.
+//
+// A pointer-valued LHS (fixed array, struct — an operator overload's operand,
+// `pos += vel`) isn't loaded: the synthetic name is bound to its storage, the
+// way every other value of those types is represented.
 apply_compound_load_substitute :: proc(g: ^Codegen, s: ^Stmt_Assign, addr: string, ir_type: string) {
     if !s.is_compound { return }
     bin, ok := s.value.(^Expr_Binary)
     if !ok { return }
-    cur := fresh_tmp(g)
-    emit_load_into(g, cur, ir_type, addr)
     g.tmp_counter += 1
     name := fmt.tprintf("$compound_val.%d", g.tmp_counter)
-    g.all_vars[name] = SSA_Var{ssa = cur, ir_type = ir_type}
+    lhs_t := distinct_base(expr_type(bin.left))
+    if fa, is_fa := lhs_t.(^Type_Fixed_Array); is_fa {
+        _, utf8 := fa.elem.(Type_Utf8)
+        g.all_vars[name] = Array_Var{alloca = addr, capacity = fa.size, elem_type = llvm_type_from_checker(fa.elem), is_utf8 = utf8}
+    } else if sd := as_struct_body(lhs_t); sd != nil {
+        g.all_vars[name] = Struct_Var{alloca = addr, struct_name = struct_key(sd)}
+    } else {
+        cur := fresh_tmp(g)
+        emit_load_into(g, cur, ir_type, addr)
+        g.all_vars[name] = SSA_Var{ssa = cur, ir_type = ir_type}
+    }
     id := new(Expr_Ident)
     id.name = name
     id.type_ = expr_type(bin.left)

@@ -291,10 +291,13 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
         }
     }
 
-    // Build parameter list — struct params passed as ptr, slices as { ptr, i64 }
+    // Build parameter list — struct, union, fixed-array, slice and partial-array
+    // params are passed as ptr (by-value params are immutable pointers).
     param_strs: [dynamic]string
     for p in cf.cg_params {
-        if sd := as_struct_body(p.type_); sd != nil {
+        if _, is_fa := distinct_base(p.type_).(^Type_Fixed_Array); is_fa {
+            append(&param_strs, fmt.tprintf("ptr %%%s.arg", p.name))
+        } else if sd := as_struct_body(p.type_); sd != nil {
             append(&param_strs, fmt.tprintf("ptr %%%s.arg", p.name))
         } else if _, ut_ok := p.type_.(^Type_Union); ut_ok {
             append(&param_strs, fmt.tprintf("ptr %%%s.arg", p.name))
@@ -601,19 +604,15 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
             // use `%<name>.arg` directly.
             ssa := fmt.tprintf("%%%s.arg", p.name)
             g.all_vars[p.name] = SSA_Var{ssa = ssa, ir_type = "ptr"}
-        } else if fa, fa_ok := p.type_.(^Type_Fixed_Array); fa_ok {
-            // Array param (including distinct arrays like Vec3 :: distinct [3]f32)
-            elem_t := llvm_type_from_checker(fa.elem)
-            arr_type := fmt.tprintf("[%d x %s]", fa.size, elem_t)
-            data_name := fmt.tprintf("%%%s.data", p.name)
-            emit_alloca(g, data_name, arr_type)
-            emit(g, "  store %s %%%s.arg, ptr %s", arr_type, p.name, data_name)
-            utf8 := false
-            if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
+        } else if fa, fa_ok := distinct_base(p.type_).(^Type_Fixed_Array); fa_ok {
+            // Array param (including distinct arrays like Vec3 :: distinct [3]f32):
+            // an immutable pointer to the caller's storage — bind it directly,
+            // no local copy.
+            _, utf8 := fa.elem.(Type_Utf8)
             g.all_vars[p.name] = Array_Var{
-                alloca    = data_name,
+                alloca    = fmt.tprintf("%%%s.arg", p.name),
                 capacity  = fa.size,
-                elem_type = elem_t,
+                elem_type = llvm_type_from_checker(fa.elem),
                 is_utf8   = utf8,
             }
         } else {

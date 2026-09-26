@@ -1,0 +1,81 @@
+module param_result_alias
+
+//@ expect-output: struct=2 1
+//@ expect-output: array=2 3 1
+//@ expect-output: field=2 3 1
+//@ expect-output: elem=2 3 1
+//@ expect-output: ctor=0 9
+//@ expect-output: strings=p q 2
+//@ expect-output: fresh=2 1
+
+// Aggregate arguments go by address, and a struct / array result is built
+// straight into the caller's destination (sret). When that destination is an
+// ARGUMENT too — `p = swap(p)` — the callee read the argument while writing
+// the result over it: `p = swap(p)` came back as 2 2, not 2 1. An assignment
+// into existing storage now gets its result in a temp and copied over (a copy
+// that re-anchors any partial arrays inside); a declaration still builds in
+// place, since fresh storage can't be an argument.
+
+P :: struct { x: i64, y: i64 }
+V3 :: distinct [3]i64
+Holder :: struct { v: V3 }
+Named :: struct { name: [..8]utf8, n: i64 }
+Cam :: struct(seed: V3) {
+	pos: V3 = V3{seed[2], seed[1], 0}
+}
+
+swap :: fun(p: P) -> P {
+	r : P
+	r.x = p.y
+	r.y = p.x
+	return r
+}
+rot :: fun(v: V3) -> V3 {
+	r : V3
+	r[0] = v[1]
+	r[1] = v[2]
+	r[2] = v[0]
+	return r
+}
+tag :: fun(old: Named, c: utf8) -> Named {
+	r : Named
+	r.name = "x"
+	r.name[0] = c
+	r.n = old.n + 1
+	return r
+}
+
+main :: fun() {
+	p := P{x = 1, y = 2}
+	p = swap(p)
+	print("struct=% %", p.x, p.y)
+
+	v := V3{1, 2, 3}
+	v = rot(v)
+	print("array=% % %", v[0], v[1], v[2])
+
+	h := Holder{v = V3{1, 2, 3}}
+	h.v = rot(h.v)
+	print("field=% % %", h.v[0], h.v[1], h.v[2])
+
+	m : [2]V3
+	m[1] = V3{1, 2, 3}
+	m[1] = rot(m[1])
+	print("elem=% % %", m[1][0], m[1][1], m[1][2])
+
+	cam := Cam(V3{0, 0, 5})
+	cam.pos[1] = 9
+	cam = Cam(cam.pos)
+	print("ctor=% %", cam.pos[0], cam.pos[1])
+
+	// Each slot's partial array must point at its OWN bytes after the copy,
+	// not at the call's temp (which the next iteration overwrites).
+	names : [2]Named
+	letters := "pq"
+	for i in 0..2 { names[i] = tag(names[i], letters[i]) }
+	print("strings=% % %", names[0].name, names[1].name, names[0].n + names[1].n)
+
+	q := P{x = 1, y = 2}
+	q2 := swap(q)
+	print("fresh=% %", q2.x, q2.y)
+}

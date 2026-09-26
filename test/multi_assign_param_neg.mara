@@ -1,0 +1,15 @@
+module multi_assign_param_neg
+//@ expect-fail: cannot assign to immutable parameter 'work'
+
+// A multi-return target that is a by-address param's field wrote into the
+// caller's struct — the single-target form was already rejected.
+
+Timer :: struct { seconds: f64 }
+two :: fun() -> (f64, i64) { return 1.5, 2 }
+f :: fun(work: Timer) { work.seconds, _ = two() }
+
+main :: fun() {
+	t : Timer
+	f(t)
+	print(t.seconds)
+}

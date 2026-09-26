@@ -263,6 +263,9 @@ Expr_Call :: struct {
     type_:     Type,                      // return type, filled by type checker
     resolved_func: Maybe(Resolved_Func),  // filled by type checker (UFCS, package resolution)
     desugared: Expr,                      // if set, codegen evaluates this instead of the call
+    // Callee is a function VALUE (a fn-typed local or param), not a declared
+    // function: its signature, so the indirect call lowers like a direct one.
+    fn_value:  ^Type_Scope,
 }
 
 Expr_Array :: struct {

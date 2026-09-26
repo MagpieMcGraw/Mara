@@ -101,7 +101,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         // which handles literals (with constructor / defaults / overrides),
         // ident-to-ident copies, field-access copies, struct-returning call
         // NRVO, pure-struct constructor calls, and overloaded binary ops.
-        gen_store_struct_into(g, sv.alloca, st, value)
+        gen_store_struct_into(g, sv.alloca, st, value, dest_fresh = needs_alloca)
         // After literal/copy paths have written their fields, lay down backing
         // storage and slice-header init for any sized-slice fields. The literal
         // path zero-memsets first and may call the init function, both of which
@@ -120,25 +120,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     // Structs without an emitted init function (hardcoded Context, Args,
     // any foreign types) stay zero-initialized from the alloca-time memset
     // above. By construction they have no field defaults to apply.
-    if init_fn, has_init := g.checked.functions[st.name]; has_init {
-        if init_fn != nil && len(init_fn.cg_params) > 0 {
-            arg_strs: [dynamic]string
-            for &param in init_fn.cg_params {
-                pt := llvm_type_from_checker(param.type_)
-                if param.default_value != nil {
-                    val := gen_expr(g, param.default_value, pt)
-                    append(&arg_strs, fmt.tprintf("%s %s", pt, val))
-                } else {
-                    append(&arg_strs, fmt.tprintf("%s zeroinitializer", pt))
-                }
-            }
-            append(&arg_strs, fmt.tprintf("ptr %s", sv.alloca))
-            args_joined := strings.join(arg_strs[:], ", ")
-            emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(", args_joined, ")"}))
-        } else {
-            emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", sv.alloca, ")"}))
-        }
-    }
+    emit_struct_init_call(g, st.name, sv.alloca)
     // Init sized-slice fields AFTER the struct init function has run — the
     // init function memcpys zeros over field positions (including slice
     // headers), so this has to land last to win.
@@ -198,7 +180,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         if !call_ok {
             codegen_fatal(g, lit.span, CODE_SPREAD_SET_LIT_FIELDS_CALL)
         }
-        info, info_ok := lookup_fun_info(g, call_resolved_name(call))
+        info, info_ok := call_fun_info(g, call)
         if !info_ok || info.ret_types == nil {
             codegen_fatal(g, lit.span, CODE_SPREAD_CALL_TUPLE_RETURN_INFO)
         }
@@ -1022,16 +1004,25 @@ gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, arr
 //   - swizzle field access (a.xy → temp)  → per-element copy from swizzle result
 //   - array-returning function call       → NRVO via gen_call_into_array
 //   - fallback expression                 → gen_expr + memcpy from claim_call_result
-gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false) {
+gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, dest_fresh: bool = false) {
     alloc_cap := capacity
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
     ebs := elem_byte_size(elem_type, g.checked)
     total_bytes := alloc_cap * ebs
 
-    // A constant RHS inlines its value expression (as gen_array_assign does).
+    // A constant RHS inlines its value expression (as gen_array_assign does),
+    // and a pass-through call (distinct conversion, desugared builtin) is the
+    // value it wraps.
     value := value
     if vexpr, vok := codegen_const_value(g, value); vok {
         value = vexpr
+    }
+    for {
+        call, is_call := value.(^Expr_Call)
+        if !is_call { break }
+        inner, ok := call_passthrough_value(g, call)
+        if !ok { break }
+        value = inner
     }
 
     if value == nil {
@@ -1162,11 +1153,11 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
 
     // Array-returning function call: NRVO directly into dst_ptr.
     if call, ok := value.(^Expr_Call); ok {
-        if info, info_ok := lookup_fun_info(g, call_resolved_name(call)); info_ok && info.ret_array_cap > 0 {
+        if info, info_ok := call_fun_info(g, call); info_ok && info.ret_array_cap > 0 {
             // Build an Array_Var pointing at dst_ptr and route through the
             // existing array NRVO path.
             dst := Array_Var{alloca = dst_ptr, capacity = info.ret_array_cap, elem_type = info.ret_array_elem}
-            gen_call_into_array(g, call, &dst, &info)
+            gen_call_into_array(g, call, &dst, &info, dest_fresh)
             return
         }
     }
@@ -1188,7 +1179,7 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
                 call.type_ = bin.type_
                 call.resolved_func = rf
                 dst := Array_Var{alloca = dst_ptr, capacity = info.ret_array_cap, elem_type = info.ret_array_elem}
-                gen_call_into_array(g, call, &dst, &info)
+                gen_call_into_array(g, call, &dst, &info, dest_fresh)
                 return
             }
         }
@@ -1260,7 +1251,7 @@ apply_struct_field_defaults :: proc(g: ^Codegen, st: ^Scope_Body, llvm_name: str
 // Call.overrides (the `{...}` block after a constructor call) are applied last
 // for every call shape, matching the rule "{} always happens after the
 // constructor".
-gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, value: Expr) {
+gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, value: Expr, dest_fresh: bool = false) {
     llvm_name := struct_llvm_name(struct_key(st))
     total := struct_byte_size(st, g.checked)
 
@@ -1343,8 +1334,8 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         // calls like `o.inner = make_inner()` where the function name differs
         // from the destination struct's name: NRVO still applies there.
         if !is_pure_self_ctor {
-            if info, info_ok := lookup_fun_info(g, resolved_name); info_ok && info.ret_struct != "" {
-                gen_call_into_struct(g, call, dst_ptr, &info)
+            if info, info_ok := call_fun_info(g, call); info_ok && info.ret_struct != "" {
+                gen_call_into_struct(g, call, dst_ptr, &info, dest_fresh)
                 if call.overrides != nil {
                     apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr)
                 }
@@ -1441,7 +1432,7 @@ sized_slice_info :: proc(g: ^Codegen, t: Type) -> (int, ^Type_Slice, bool) {
 value_is_nrvo_call :: proc(g: ^Codegen, value: Expr) -> bool {
     call, ok := value.(^Expr_Call)
     if !ok { return false }
-    info, info_ok := lookup_fun_info(g, call_resolved_name(call))
+    info, info_ok := call_fun_info(g, call)
     if !info_ok { return false }
     return info.uses_struct_nrvo
 }

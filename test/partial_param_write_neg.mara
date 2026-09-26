@@ -1,0 +1,14 @@
+module partial_param_write_neg
+//@ expect-fail: cannot write to element of immutable parameter 'pa'
+
+// A partial-array param is passed as a pointer to the caller's header, so an
+// element write changed the caller's array. Immutable like a slice param.
+
+f :: fun(pa: [..4]i64) { pa[0] = 5 }
+
+main :: fun() {
+	pa : [..4]i64
+	pa.len = 1
+	f(pa)
+	print(pa[0])
+}

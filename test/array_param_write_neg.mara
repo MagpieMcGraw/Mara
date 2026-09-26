@@ -1,0 +1,13 @@
+module array_param_write_neg
+//@ expect-fail: cannot write to element of immutable parameter 'a'
+
+// A fixed-array param is an immutable pointer to the caller's array (like a
+// struct): a write through it would land in the caller's value.
+
+f :: fun(a: [3]i64) { a[0] = 5 }
+
+main :: fun() {
+	a : [3]i64 = [1, 2, 3]
+	f(a)
+	print(a[0])
+}

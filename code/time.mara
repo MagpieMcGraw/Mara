@@ -38,8 +38,8 @@ tally_up :: fun(frame : ^Timer, fixed: ^Fixed_Timer) {
 }
 
 sleep :: fun(work: Timer, fps: f64) {
-	work.seconds, _ = time_since(work.counter)
-	sleep_time := 1.0 / fps - work.seconds
+	work_seconds, _ := time_since(work.counter)
+	sleep_time := 1.0 / fps - work_seconds
 	if sleep_time > 0 do delay_ns(seconds_to_ns(sleep_time))
 }
 

@@ -4741,9 +4741,13 @@ is_immutable_param :: proc(env: ^Type_Scope, name: string) -> bool {
     if !ok { return false }
     base := distinct_base(t)
     if _, is_ptr := base.(^Type_Ptr); is_ptr { return false }
+    // Passed by address (an immutable pointer to the caller's storage), so a
+    // write would land in the caller's value.
     if sd := as_scope_body(base); sd != nil && len(sd.fields) > 0 { return true }
-    if _, is_union := base.(^Type_Union); is_union { return true }
-    if _, is_slice := base.(^Type_Slice); is_slice { return true }
+    #partial switch _ in base {
+    case ^Type_Union, ^Type_Slice, ^Type_Fixed_Array, ^Type_Partial_Array:
+        return true
+    }
     return false
 }
 
@@ -7138,6 +7142,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 type_env_set(env, s.name, Type_Error{})
                 continue
             }
+            // Reassigning a by-address param would overwrite the caller's value.
+            if !s.is_decl && is_immutable_param(env, s.name) {
+                check_error(c, s.span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, s.name)
+            }
 
             // Register variable with its declared or inferred type.
             // We check the value expression here because variable initializers
@@ -7735,9 +7743,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 if name != "" {
                                     if is_undeclared_reassign(c, env, name, s.is_decl) {
                                         check_error(c, s.span, TYPE_ASSIGN_UNDECLARED_VARIABLE, name)
+                                    } else if !s.is_decl && is_immutable_param(env, name) {
+                                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name)
                                     }
                                     type_env_set(env, name, resolved_type)
                                 } else if i < len(s.targets) && s.targets[i] != nil {
+                                    if pname, immut := write_root_immutable_param(s.targets[i], env); immut {
+                                        check_error(c, s.span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
+                                    }
                                     target_type := check_expr(c, s.targets[i], env)
                                     if !is_any(target_type) && !is_any(resolved_type) {
                                         if !types_equal(target_type, resolved_type) {
@@ -9376,6 +9389,11 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     // Array swizzle assignment: arr.x = val, arr.xy = [a, b]
     if fa, fa_ok := obj_type.(^Type_Fixed_Array); fa_ok {
         if is_swizzle_field(fa_expr.field, fa.size) {
+            if pname, immut := write_root_immutable_param(s.target, env); immut {
+                check_error(c, s.span,
+                    TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER,
+                    fa_expr.field, pname)
+            }
             if len(fa_expr.field) == 1 {
                 // Single-component write: value must match element type
                 if types_incompatible(fa.elem, val_type) && !is_infer(val_type) {
@@ -13252,6 +13270,8 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     if res, res_ok := resolution.?; res_ok {
         res.callee = fun_type
         e.resolved_func = res
+    } else {
+        e.fn_value = fun_type // an indirect call through a function value
     }
 
     // Pure data struct construction: args map directly to fields.
