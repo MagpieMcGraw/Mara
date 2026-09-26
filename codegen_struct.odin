@@ -311,19 +311,12 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             emit_memcpy(g, gep, src_ptr, size)
             continue
         }
-        // Named-struct field (`%class.X`): the RHS is either a constructor
-        // call (gen_expr returns a ptr to its sret alloca) or another struct
-        // pointer (ident, field access, etc.). Either way the layout already
-        // lives at the source pointer, so memcpy by size into the field slot.
-        // Without this, the fallthrough scalar-store path would emit `store
-        // %class.X %ptr, ptr %dst` which LLVM rejects (struct value vs ptr).
-        if strings.has_prefix(ft, "%class.") {
-            src_ptr := gen_expr(g, field.value, ft)
+        // Named-struct field (`%class.X`): the one struct store — a nested
+        // literal (`{}` included) is built in place, a call or value copied.
+        if sd := as_struct_body(f.type_); sd != nil {
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
-            size := checker_type_byte_size(f.type_)
-            emit_memcpy(g, gep, src_ptr, size)
-            reanchor_partial_arrays(g, f.type_, gep)
+            gen_store_struct_into(g, gep, sd, field.value, dest_fresh = fields_fresh)
             continue
         }
         // Union field (`%union.X`).
