@@ -1204,7 +1204,13 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
     Slice_Source :: union { Array_Var, Slice_Var }
     source: Slice_Source
 
-    if ident, ok := e.expr.(^Expr_Ident); ok {
+    if view, ok := pointee_view(g, e.expr); ok {
+        // Slicing through a ^[]T / ^[N]T: slice what it points at.
+        switch v in view {
+        case Slice_Var: source = v
+        case Array_Var: source = v
+        }
+    } else if ident, ok := e.expr.(^Expr_Ident); ok {
         if av, av_ok := get_array(g, ident.name); av_ok {
             source = av
         } else if sv, sv_ok := get_slice(g, ident.name); sv_ok {
@@ -1630,6 +1636,16 @@ resolve_byte_target :: proc(g: ^Codegen, expr: Expr, span: Span) -> (data_ptr: s
         }
         if av, av_ok := get_array(g, ident.name); av_ok && av.elem_type == "i8" {
             d, c := resolve_array(g, av)
+            return d, c, true
+        }
+    }
+    if view, ok := pointee_view(g, expr); ok {
+        switch v in view {
+        case Slice_Var:
+            d, c := resolve_slice(g, v)
+            return d, c, true
+        case Array_Var:
+            d, c := resolve_array(g, v)
             return d, c, true
         }
     }

@@ -1,0 +1,112 @@
+module ptr_slice
+
+use mara.core
+
+// `^[]T` is a pointer to a slice header — as a local, a field or a parameter
+// alike. Indexing, slicing, .len/.cap and byte access go through it one level
+// (the way field access goes through a ^Struct); writes through it land in the
+// pointee; `p^ = other` replaces the slice it points at. Mutability is the
+// pointer's. Parameters always worked (a slice parameter is passed as a pointer
+// to the caller's header anyway); locals and fields were codegen aborts, and
+// `.len` on a field emitted invalid IR.
+
+Holder :: struct { s: ^[]i64 }
+Grid   :: struct { cells: ^[4]i64 }
+Ctx    :: struct { out: ^[]utf8 }
+
+// read, write, address-of, .len/.cap, slicing — through a LOCAL ^[]i64
+through_local :: fun(p: ^[]i64) -> i64 {
+	s := p
+	s[1] = 5
+	q := &s[2]
+	q^ = 6
+	v := s[0:3]
+	return s[1] + s[2] + v.len + s.len + s.cap        // 5+6+3+4+4 = 22
+}
+
+// the same through a FIELD, reached via a pointer to the struct
+through_field :: fun(h: ^Holder) -> i64 {
+	h.s[1] = 7
+	q := &h.s[3]
+	q^ = 8
+	v := h.s[1:4]
+	return h.s[1] + h.s[3] + v.len + h.s.len          // 7+8+3+4 = 22
+}
+
+// and through a field of a by-value struct: the struct is read-only, but its
+// pointer field still points at mutable memory
+through_value_field :: fun(h: Holder) -> i64 {
+	h.s[0] = 1
+	return h.s[0] + h.s.cap                           // 1+4 = 5
+}
+
+// header writes through the pointer: .len, and replacing the whole slice
+header_writes :: fun(p: ^[]i64, other: []i64) -> i64 {
+	s := p
+	s.len = 2
+	n := s.len
+	s^ = other
+	return n + s.len                                  // 2+3 = 5
+}
+
+// a pointer to a fixed array in a field: indexing derefs to the array
+through_array_field :: fun(g: ^Grid) -> i64 {
+	g.cells[2] = 9
+	return g.cells[2] + g.cells[0]                    // 9+0 = 9
+}
+
+// byte-buffer access through a local ^[]byte: reinterpret write + read
+bytes_via_local :: fun(buf: ^[]byte) -> u32 {
+	pb := buf
+	pb[4] = u32(0x01020304)
+	x : u32 = pb[4]
+	return x
+}
+
+// appending through a pointer field, then reading its length
+emit :: fun(c: ^Ctx, text: []utf8) -> i64 {
+	utf8_add(c.out, text)
+	return c.out.len
+}
+
+main :: fun() {
+	sum : i64 = 0
+
+	a : [..4]i64
+	a.len = 4
+	sum += through_local(&a)                          // 22
+
+	b : [..4]i64
+	b.len = 4
+	h := Holder{s = &b}
+	sum += through_field(&h)                          // 44
+	sum += through_value_field(h)                     // 49
+
+	c : [..4]i64
+	c.len = 4
+	three : [3]i64
+	sum += header_writes(&c, three[:])                // 54
+
+	cells : [4]i64
+	g := Grid{cells = &cells}
+	sum += through_array_field(&g)                    // 63
+
+	bytes : [..16]byte
+	bytes.len = 16
+	if bytes_via_local(&bytes) == u32(0x01020304) do sum += 100   // 163
+
+	out : [..32]utf8
+	ctx := Ctx{out = &out}
+	_ = emit(&ctx, "ab")
+	sum += emit(&ctx, "cde")                          // 168
+
+	// the whole pointee read through the pointer: a slice view, a partial-array copy
+	q : ^[]i64 = &c
+	view : []i64 = q^
+	pa := &a
+	whole := pa^
+	sum += view.len + whole[1] + whole.len            // 168 + 3 + 5 + 4 = 180
+
+	assert(sum == 180)
+	print("ptr_slice", sum)
+}

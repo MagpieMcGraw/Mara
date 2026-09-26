@@ -192,11 +192,15 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
             deref_type := "i64"
             operand_type := expr_type(e.operand)
             if pt, pt_ok := operand_type.(^Type_Ptr); pt_ok {
-                _, is_union := distinct_base(pt.elem).(^Type_Union)
-                if as_struct_body(pt.elem) != nil || is_union {
-                    // Dereferencing a ^Struct / ^Union — return the pointer
-                    // itself, since struct and union values are represented
-                    // as pointers
+                pointer_valued := as_struct_body(pt.elem) != nil
+                #partial switch _ in distinct_base(pt.elem) {
+                case ^Type_Union, ^Type_Slice, ^Type_Partial_Array:
+                    pointer_valued = true
+                }
+                if pointer_valued {
+                    // Dereferencing a ^Struct / ^Union / ^[]T / ^[..N]T —
+                    // return the pointer itself: those values are represented
+                    // as pointers (to the struct, the union, the header)
                     return ptr_val
                 }
                 if !is_untyped(pt.elem) {

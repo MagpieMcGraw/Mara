@@ -54,6 +54,12 @@ resolve_array_handle :: proc(g: ^Codegen, expr: Expr) -> (Array_Handle, bool) {
             return array_handle_from_slice_var(&sv), true
         }
     }
+    if view, ok := pointee_view(g, expr); ok {
+        switch &v in view {
+        case Slice_Var: return array_handle_from_slice_var(&v), true
+        case Array_Var: return array_handle_from_array_var(&v), true
+        }
+    }
     if fa, ok := expr.(^Expr_Field_Access); ok {
         gen_field_access(g, fa)
         if av, av_ok := claim_field_array(g); av_ok {
@@ -95,6 +101,36 @@ resolve_array_handle :: proc(g: ^Codegen, expr: Expr) -> (Array_Handle, bool) {
         }
     }
     return {}, false
+}
+
+// A view of what a `^[]T` / `^[..N]T` / `^[N]T` value points at. Indexing,
+// slicing, .len and byte access go through such a pointer one level — the way
+// field access goes through a ^Struct — so every array-shaped resolver asks this
+// after its by-name lookup: a local or a field holding the pointer evaluates to
+// the address of the header (slice / partial array: same header prefix) or of
+// the array storage. A pointer-to-slice PARAMETER never gets here: every slice
+// parameter is passed as a pointer to the caller's header, so it is bound as the
+// slice itself and resolves by name first.
+Pointee_View :: union { Slice_Var, Array_Var }
+
+pointee_view :: proc(g: ^Codegen, e: Expr) -> (Pointee_View, bool) {
+    pt, is_ptr := distinct_base(expr_type(e)).(^Type_Ptr)
+    if !is_ptr { return nil, false }
+    if ident, ok := e.(^Expr_Ident); ok {
+        if sv, sv_ok := get_slice(g, ident.name); sv_ok { return sv, true } // a parameter: already the view
+    }
+    #partial switch p in distinct_base(pt.elem) {
+    case ^Type_Slice:
+        _, utf8 := p.elem.(Type_Utf8)
+        return Slice_Var{alloca = gen_expr(g, e), elem_type = llvm_type_from_checker(p.elem), is_utf8 = utf8}, true
+    case ^Type_Partial_Array:
+        _, utf8 := p.elem.(Type_Utf8)
+        return Slice_Var{alloca = gen_expr(g, e), elem_type = llvm_type_from_checker(p.elem), is_utf8 = utf8}, true
+    case ^Type_Fixed_Array:
+        _, utf8 := p.elem.(Type_Utf8)
+        return Array_Var{alloca = gen_expr(g, e), capacity = p.size, elem_type = llvm_type_from_checker(p.elem), is_utf8 = utf8}, true
+    }
+    return nil, false
 }
 
 array_handle_from_array_var :: proc(av: ^Array_Var) -> Array_Handle {

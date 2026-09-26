@@ -688,6 +688,7 @@ CODE_ADDRESS_CHAIN_ENDED_SLICE_LAST_2 :: "address chain ended at .Slice but last
 CODE_FIELD_ARRAY_ELEMENT_VALID_SWIZZLE :: "field '.%s' on array element is not a valid swizzle and not a struct field"
 CODE_FIELD_ACCESS_INDEXED_ELEMENT_UNKNOWN :: "field access '.%s' on indexed element of unknown shape"
 CODE_FIELD_ACCESS_TARGET_VARIABLE :: "field access target must be a variable"
+CODE_FIELD_ACCESS_UNRESOLVED :: "field access '.%s' has no codegen for this value's shape"
 CODE_STRUCT_POINTER_STRUCT :: "'%s' is not a struct or pointer to struct"
 CODE_CLASS_FIELD :: "class '%s' has no field '%s'"
 CODE_GEN_STRUCT_STORE_UNKNOWN_STRUCT :: "gen_struct_store_at: unknown struct '%s'"

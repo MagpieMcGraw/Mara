@@ -652,8 +652,12 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
         // (immutable param — no alloca emitted, no load needed).
         if pt, pt_ok := e.type_.(^Type_Ptr); pt_ok {
             sd := as_struct_body(pt.elem)
-            fa, is_fa := distinct_base(pt.elem).(^Type_Fixed_Array)
-            if sd == nil && !is_fa { return false }
+            pointee := distinct_base(pt.elem)
+            #partial switch _ in pointee {
+            case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array:
+            case:
+                if sd == nil { return false }
+            }
             ptr_val: string
             entry, entry_ok := g.all_vars[e.name]
             if !entry_ok { return false }
@@ -669,7 +673,7 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
                 chain.final_kind = .Struct
                 chain.struct_name = sd.name
             } else {
-                chain_root_fixed_array(chain, fa)
+                chain.base_type = chain_through_pointer(chain, pointee)
             }
             return true
         }
@@ -834,6 +838,20 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
         // Recurse on inner expression
         if !build_chain_walk(g, e.expr, chain) { return false }
 
+        // Indexing goes through one pointer: a `^[]T` / `^[..N]T` / `^[N]T`
+        // link (e.g. a pointer field) steps to what it points at first.
+        if chain.final_kind == .Scalar {
+            if pt, pt_ok := distinct_base(expr_type(e.expr)).(^Type_Ptr); pt_ok {
+                pointee := distinct_base(pt.elem)
+                #partial switch _ in pointee {
+                case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array:
+                    deref := Step_Deref{span = e.span}
+                    deref.result_type = chain_through_pointer(chain, pointee)
+                    append(&chain.steps, deref)
+                }
+            }
+        }
+
         // Slice index: chain.array_elem holds the slice elem type; cap is runtime.
         if chain.final_kind == .Slice {
             elem_ir := chain.array_elem
@@ -915,16 +933,36 @@ index_elem_type :: proc(t: Type) -> Type {
     return nil
 }
 
+// The chain now stands at what a pointer points to: a fixed array's storage, or
+// a slice / partial-array header (a Step_Slice_Index loads data + cap from it).
+// Returns that pointee's IR type — the chain's base type when the pointer is
+// the root, the Step_Deref's result type when it's a link.
+chain_through_pointer :: proc(chain: ^Address_Chain, pointee: Type) -> string {
+    chain.struct_name = ""
+    #partial switch p in pointee {
+    case ^Type_Fixed_Array:
+        elem_ir := llvm_type_from_checker(p.elem)
+        _, is_utf8 := distinct_base(p.elem).(Type_Utf8)
+        chain.final_type = fmt.tprintf("[%d x %s]", p.size, elem_ir)
+        chain.final_kind = .Array
+        chain.array_cap = p.size
+        chain.array_elem = elem_ir
+        chain.array_source = Chain_Array_Root{is_utf8 = is_utf8}
+        return chain.final_type
+    case ^Type_Slice:
+        chain.array_elem = llvm_type_from_checker(p.elem)
+    case ^Type_Partial_Array:
+        chain.array_elem = llvm_type_from_checker(p.elem)
+    }
+    chain.final_type = SLICE_IR_TYPE
+    chain.final_kind = .Slice
+    chain.array_cap = 0
+    return SLICE_IR_TYPE
+}
+
 // Point a chain at fixed-array storage (the caller sets base_ptr).
 chain_root_fixed_array :: proc(chain: ^Address_Chain, fa: ^Type_Fixed_Array) {
-    elem_ir := llvm_type_from_checker(fa.elem)
-    _, is_utf8 := distinct_base(fa.elem).(Type_Utf8)
-    chain.base_type = fmt.tprintf("[%d x %s]", fa.size, elem_ir)
-    chain.final_type = elem_ir
-    chain.final_kind = .Array
-    chain.array_cap = fa.size
-    chain.array_elem = elem_ir
-    chain.array_source = Chain_Array_Root{is_utf8 = is_utf8}
+    chain.base_type = chain_through_pointer(chain, fa)
 }
 
 // An rvalue chain root — a call or an overloaded operator. Only its shape is

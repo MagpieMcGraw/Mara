@@ -602,6 +602,22 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
         emit_load_into(g, pad_val, pad_ir, pad_ptr)
         return pad_val
     }
+    // .len / .cap / .ptr through a ^[]T / ^[..N]T local or field: read the
+    // header it points at. (A pointer-to-slice parameter is bound as the slice
+    // itself and takes the by-name path below.)
+    if is_slice_header_field(e.field) {
+        is_slice_param := false
+        if id, is_id := e.expr.(^Expr_Ident); is_id {
+            _, is_slice_param = get_slice(g, id.name)
+        }
+        if !is_slice_param {
+            if view, ok := pointee_view(g, e.expr); ok {
+                if sv, is_slice := view.(Slice_Var); is_slice {
+                    return load_slice_header_field(g, sv.alloca, e.field)
+                }
+            }
+        }
+    }
     // Try unified address chain first — handles chained access efficiently
     if chain, chain_ok := build_address_chain(g, e); chain_ok {
         addr := emit_address_chain(g, &chain)
@@ -735,7 +751,11 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                     }
                 }
             }
-            return inner_val
+            // Nothing above resolved `.field` on the inner value. Handing the
+            // inner value back as the result was a silent miscompile (it's how
+            // `.len` through a pointer field emitted invalid IR).
+            _ = inner_val
+            codegen_fatal(g, e.span, CODE_FIELD_ACCESS_UNRESOLVED, e.field)
         }
         // .len / .cap / .ptr of a slice-valued rvalue — a call result, or an
         // element of an array of slices — read straight off its header.
@@ -1615,6 +1635,18 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     st: ^Scope_Body
     base_ptr: string
     found: bool
+
+    // .len / .cap / .ptr through a ^[]T / ^[..N]T (a local, a field — or a
+    // parameter, which is bound as the slice itself): write the header it
+    // points at.
+    if is_slice_header_field(fa_expr.field) {
+        if view, ok := pointee_view(g, fa_expr.expr); ok {
+            if sv, is_slice := view.(Slice_Var); is_slice {
+                gen_slice_field_store(g, sv.alloca, fa_expr.field, s.value, s.span)
+                return
+            }
+        }
+    }
 
     ident, ident_ok := fa_expr.expr.(^Expr_Ident)
     if ident_ok {

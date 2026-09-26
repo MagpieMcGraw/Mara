@@ -1,0 +1,10 @@
+module ptr_slice_uninit_neg
+//@ expect-fail: before being assigned
+
+// A `^[]T` local is a real pointer: declared without a value it's void, and
+// using it before assignment is an error (not a silent null deref).
+
+main :: fun() {
+	s : ^[]i64
+	print(s[0])
+}
