@@ -563,6 +563,14 @@ finalize_union_variant_headers :: proc(c: ^Checker, ut: ^Type_Union) {
     }
 }
 
+// Index of a struct's first user field — past a union variant's `__tag` (and
+// `__pad`) header. A positional literal's values map to fields from here.
+first_user_field :: proc(sd: ^Scope_Body) -> int {
+    if !sd.is_union_variant { return 0 }
+    if len(sd.fields) > 1 && sd.fields[1].name == "__pad" { return 2 }
+    return 1
+}
+
 // Byte size of a union's tag_pad field. Returns 0 when no pad was declared.
 union_tag_pad_bytes :: proc(ut: ^Type_Union) -> int {
     if ut.tag_pad == nil { return 0 }
@@ -8690,13 +8698,14 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
             // Fall through to the regular positional path so the user gets a
             // useful error if the call's return list doesn't match the struct.
         }
-        if len(lit.fields) > len(st.fields) {
+        user_fields := st.fields[first_user_field(st):]
+        if len(lit.fields) > len(user_fields) {
             check_error(c, span, TYPE_CLASS_FIELDS_POSITIONAL_VALUES,
-                st.name, len(st.fields), len(lit.fields))
+                st.name, len(user_fields), len(lit.fields))
         }
         for field, i in lit.fields {
-            if i >= len(st.fields) { break }
-            sf := st.fields[i]
+            if i >= len(user_fields) { break }
+            sf := user_fields[i]
             // Only set the hint for anonymous nested literals — these need
             // the field type to determine their shape. Other expression
             // shapes (idents, calls, field-accesses, arithmetic) self-type

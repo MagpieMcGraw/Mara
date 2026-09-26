@@ -1,0 +1,49 @@
+module variant_positional
+
+//@ expect-output: plain=3 405
+//@ expect-output: padded=405 9
+
+// Positional values of a union variant literal map to the variant's own
+// fields, past the hidden tag (and pad) header. They used to start at the
+// header, so `Rect{4, 5}` wrote 4 over the tag and no arm matched.
+
+use mara.core
+
+Shape :: union(tag u32) {
+	Circle = 1 { r: i32 = 7 }
+	Rect   = 2 { w: i32  h: i32 }
+}
+
+Packet :: union(tag u32, pad u32) {
+	Data = 1 { a: i64  b: i64 }
+	Ping = 2 { t: i64 = 9 }
+}
+
+shape_val :: fun(s: Shape) -> i32 {
+	match s {
+	Circle c
+		return c.r
+	Rect r
+		return r.w * 100 + r.h
+	}
+	return -1
+}
+
+packet_val :: fun(p: Packet) -> i64 {
+	match p {
+	Data d
+		return d.a * 100 + d.b
+	Ping q
+		return q.t
+	}
+	return -1
+}
+
+main :: fun() {
+	c : Shape = Circle{3}
+	r : Shape = Rect{4, 5}
+	print("plain=% %", shape_val(c), shape_val(r))
+	d : Packet = Data{4, 5}
+	p : Packet = Ping{}
+	print("padded=% %", packet_val(d), packet_val(p))
+}

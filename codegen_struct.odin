@@ -231,8 +231,8 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         // each entry to the struct field at the same index.
         idx: int
         if lit.positional {
-            if pos >= len(st.fields) { break }
-            idx = pos
+            idx = first_user_field(st) + pos
+            if idx >= len(st.fields) { break }
         } else {
             idx = struct_field_index(st, field.name)
             if idx < 0 { continue }
