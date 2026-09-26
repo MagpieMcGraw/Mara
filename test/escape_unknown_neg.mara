@@ -1,0 +1,8 @@
+module escape_unknown_neg
+//@ expect-fail: unknown escape '\x'
+
+// An unknown escape is an error, not a silently dropped backslash ("x41").
+
+main :: fun() {
+	print("\x41")
+}

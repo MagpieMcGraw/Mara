@@ -373,6 +373,7 @@ PARSE_HEX_OVERFLOWS_U64           :: "hex literal '%s' overflows u64 (max 0xFFFF
 PARSE_DECIMAL_OVERFLOWS_U64       :: "integer literal '%s' overflows u64 (max 18446744073709551615) — Mara's integer-literal precision tops out at 64 bits"
 PARSE_BINARY_OVERFLOWS_U64        :: "binary literal '%s' overflows u64 (more than 64 bits) — Mara's integer-literal precision tops out at 64 bits"
 PARSE_INVALID_NUMBER              :: "invalid number '%s'"
+LEX_UNKNOWN_ESCAPE                :: `unknown escape '\%c' — the escapes are \n \t \r \0 \\ \' \"  (for a literal backslash, write \\)`
 PARSE_EXPECTED_VARIANT_NAME       :: "expected variant name after '.'"
 PARSE_UNEXPECTED_LBRACE_IN_EXPR   :: "unexpected '{' in expression"
 PARSE_EXPECTED_HASH_NAME          :: "expected intrinsic name after '#'"

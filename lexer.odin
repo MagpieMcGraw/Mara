@@ -127,6 +127,27 @@ Lexer :: struct {
     line:   int,
     col:    int,
     file:   string,
+    errors: int,    // lexical errors reported (counted with the file's parse errors)
+}
+
+// The byte a backslash escape stands for — one table for char and string
+// literals alike. `l.pos` is on the character after the backslash; the escape's
+// own position is passed in for the diagnostic. An unknown escape is an error:
+// it used to drop the backslash silently, so "\x41" read as "x41".
+lex_escape :: proc(l: ^Lexer, esc_line, esc_col: int) -> u8 {
+    c := l.source[l.pos]
+    switch c {
+    case 'n':  return '\n'
+    case 't':  return '\t'
+    case 'r':  return '\r'
+    case '0':  return 0
+    case '\\': return '\\'
+    case '\'': return '\''
+    case '"':  return '"'
+    }
+    emit_diagnostic(.Parse_Error, format_location(l.file, esc_line, esc_col), LEX_UNKNOWN_ESCAPE, rune(c))
+    l.errors += 1
+    return c
 }
 
 // Keyword lookup — maps identifier text to Token_Kind.
@@ -293,17 +314,10 @@ next_token :: proc(l: ^Lexer) -> Token {
         lexer_advance(l) // skip opening quote
         char_val: u8
         if l.pos < len(l.source) && l.source[l.pos] == '\\' {
+            esc_line, esc_col := l.line, l.col
             lexer_advance(l) // skip backslash
             if l.pos < len(l.source) {
-                switch l.source[l.pos] {
-                case 'n':  char_val = '\n'
-                case 't':  char_val = '\t'
-                case 'r':  char_val = '\r'
-                case '\\': char_val = '\\'
-                case '\'': char_val = '\''
-                case '0':  char_val = 0
-                case:      char_val = l.source[l.pos]
-                }
+                char_val = lex_escape(l, esc_line, esc_col)
                 lexer_advance(l)
             }
         } else if l.pos < len(l.source) {
@@ -340,19 +354,10 @@ next_token :: proc(l: ^Lexer) -> Token {
         saw_newline := false
         for l.pos < len(l.source) && l.source[l.pos] != '"' {
             if l.source[l.pos] == '\\' {
+                esc_line, esc_col := l.line, l.col
                 lexer_advance(l) // skip the backslash
                 if l.pos < len(l.source) {
-                    esc := l.source[l.pos]
-                    switch esc {
-                    case 'n':  append(&buf, '\n')
-                    case 't':  append(&buf, '\t')
-                    case 'r':  append(&buf, '\r')
-                    case '\\': append(&buf, '\\')
-                    case '"':  append(&buf, '"')
-                    case:
-                        // Unknown escape — drop the backslash (matches char literal behavior)
-                        append(&buf, esc)
-                    }
+                    append(&buf, lex_escape(l, esc_line, esc_col))
                     lexer_advance(l)
                 }
             } else if l.source[l.pos] == '\r' {
@@ -525,9 +530,9 @@ next_token :: proc(l: ^Lexer) -> Token {
 // Tokenize the entire source into a heap-allocated token array. Returns a
 // pointer so the array lives in the arena (callable from FFI, no by-value
 // dynamic-array return crossing the boundary).
-lex_all :: proc(source: string, file: string = "") -> ^[dynamic]Token {
+lex_all :: proc(source: string, file: string = "") -> (tokens: ^[dynamic]Token, errors: int) {
     l := lexer_init(source, file)
-    tokens := new([dynamic]Token)
+    tokens = new([dynamic]Token)
     for {
         tok := next_token(&l)
         tok.idx = len(tokens)   // stamp before append: index is the current length
@@ -536,7 +541,7 @@ lex_all :: proc(source: string, file: string = "") -> ^[dynamic]Token {
             break
         }
     }
-    return tokens
+    return tokens, l.errors
 }
 
 // Helper: is this an ASCII digit?

@@ -1,0 +1,28 @@
+module escapes
+
+// Char and string literals share one escape table: \n \t \r \0 \\ \' \"
+// (strings used to lack \0 and \', chars lacked \"). An unknown escape is a
+// compile error (see escape_unknown_neg); it used to drop the backslash.
+
+main :: fun() {
+	s := "a\\b|\0|\'|\"|\n\t\r"
+	assert(s.len == 13)
+	assert(s[1] == '\\')
+	assert(u8(s[4]) == 0)
+	assert(s[6] == '\'')
+	assert(s[8] == '"')
+	assert(s[10] == '\n')
+	assert(s[11] == '\t')
+	assert(s[12] == '\r')
+
+	c0 := '\0'
+	cq := '\"'
+	assert(u8(c0) == 0)
+	assert(cq == '"')
+
+	// what an LLVM-IR-emitting compiler writes: a backslash-hex escape, kept verbatim
+	ir := "c\"%lld\\0A\\00\""
+	assert(ir.len == 13)
+	assert(ir[6] == '\\')
+	print("escapes", s.len, ir.len)
+}
