@@ -1,0 +1,33 @@
+module field_default_types
+
+//@ expect-output: runtime k=true dir3=1 v=3 q=3
+//@ expect-output: table k=true dir3=1 v=3 q=3 / override=true
+//@ expect-output: override dir0=9 k=true
+
+// A struct field's type is inferred from its default for an enum variant
+// (`Kind.Big`) and a typed literal (`[4]f32{...}`, nested ones too). Those
+// used to leave the field untyped and crash codegen; a default that can't be
+// typed is now an "annotate it" error (field_default_infer_neg.mara).
+
+use mara.core
+use mara.math
+
+Kind :: union { Small, Big }
+
+N :: struct {
+	k   := Kind.Big
+	dir := [4]f32{0, 0, 0, 1}
+	v   := Vec3{1, 2, 3}
+	q   := [2][2]i64{{1, 2}, {3, 4}}
+}
+
+KN :: N{}
+KO :: N{k = .Small}
+
+main :: fun() {
+	n := N{}
+	print("runtime k=% dir3=% v=% q=%", n.k == .Big, n.dir[3], n.v.z, n.q[1][0])
+	print("table k=% dir3=% v=% q=% / override=%", KN.k == .Big, KN.dir[3], KN.v.z, KN.q[1][0], KO.k == .Small)
+	m := N{dir = [4]f32{9, 9, 9, 9}}
+	print("override dir0=% k=%", m.dir[0], m.k == .Big)
+}

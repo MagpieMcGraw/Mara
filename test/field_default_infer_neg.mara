@@ -1,0 +1,16 @@
+module field_default_infer_neg
+//@ expect-fail: the type of field 'k' can't be inferred from its default
+
+// `.Big` names a variant without saying which enum: nothing to infer the
+// field's type from. Annotate it: `k : Kind = .Big`.
+
+Kind :: union { Small, Big }
+
+N :: struct {
+	k := .Big
+}
+
+main :: fun() {
+	n := N{}
+	print(n.k == .Big)
+}

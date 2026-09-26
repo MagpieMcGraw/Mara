@@ -5611,7 +5611,24 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Scope
             if _, found := c.table.constants[make_flat_name(qual.name, fa.field)]; found {
                 return check_expr(c, value, env)
             }
+            // `Kind.Big` — a variant of a named enum / union: the field is that
+            // type (what check_field_access gives it).
+            t, t_ok := type_env_get(env, qual.name)
+            if !t_ok && c.current_package != "" {
+                t, t_ok = type_env_get(env, make_flat_name(c.current_package, qual.name))
+            }
+            if t_ok {
+                #partial switch v in t {
+                case ^Type_Enum:  if fa.field in v.variants { return v }
+                case ^Type_Union: if fa.field in v.tag_map { return v }
+                }
+            }
         }
+    }
+    // A typed literal (`[4]f32{0, 0, 0, 1}`) is its written type; the body
+    // pass checks the values against it.
+    if sl, ok := value.(^Expr_Struct_Literal); ok && sl.type_expr != nil {
+        return resolve_type_expr(sl.type_expr, c, sl.span, env = env)
     }
     if n, ok := value.(^Expr_Number); ok {
         // Struct field (ft != nil): defer to an inference cell so a later
@@ -8066,6 +8083,13 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
                 field_type = Type_Error{}
             } else {
                 field_type = infer_field_type_from_default(c, field.default_value, child, ft)
+                // A struct field's type is its layout: one the default doesn't
+                // determine (`k := .Big`, a form inference doesn't cover) needs
+                // an annotation — never an untyped field reaching codegen.
+                if s.kind == .Struct && is_any(field_type) {
+                    check_error(c, expr_span(field.default_value)^, TYPE_FIELD_TYPE_NOT_INFERRED, field.name, field.name)
+                    field_type = Type_Error{}
+                }
             }
         } else {
             field_type = Type_Any{}
