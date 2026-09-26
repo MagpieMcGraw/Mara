@@ -56,21 +56,68 @@ render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
             for d2 in rdefs { if !seen_in[d2] { seen_in[d2] = true; append(&inputs, d2) } }
         }
     }
+    // Rooted at the declaration by default: if the variable is written again later,
+    // the declaration isn't the whole story — say so, and list those writes.
+    later: [dynamic]^Def
+    defer delete(later)
+    if root_def == nil && root != nil {
+        for d in checked.defs {
+            if d.binding == b && d != root { append(&later, d) }
+        }
+        slice.sort_by(later[:], lineage_def_less)
+    }
     if len(inputs) == 0 {
-        if root == nil || root.value == nil {
+        switch {
+        case len(later) > 0 && (root == nil || root.value == nil):
+            fmt.sbprintf(bb, "  %s   (declared without a value — but written again below)\n", b.name)
+        case len(later) > 0:
+            fmt.sbprintf(bb, "  %s   (declared from literals — but written again below)\n", b.name)
+        case root == nil || root.value == nil:
             fmt.sbprintf(bb, "  %s   (a %s — external input; nothing in %s builds it)\n", b.name, knd, fn_label)
-        } else {
+        case:
             fmt.sbprintf(bb, "  %s   (built from literals; nothing in %s supplies it)\n", b.name, fn_label)
         }
-        return
+    } else {
+        slice.sort_by(inputs[:], lineage_def_less)
+        budget := depth if depth >= 0 else (1 << 30)
+        seen: map[^Def]bool
+        defer delete(seen)
+        for d in inputs {
+            lineage_node(checked, bb, d, budget, 0, &seen)
+        }
     }
-    slice.sort_by(inputs[:], lineage_def_less)
+    if len(later) > 0 { render_later_writes(bb, b, later[:]) }
+}
 
-    budget := depth if depth >= 0 else (1 << 30)
-    seen: map[^Def]bool
-    defer delete(seen)
-    for d in inputs {
-        lineage_node(checked, bb, d, budget, 0, &seen)
+// The writes after a variable's declaration, each with what it's built from — so
+// a declaration-rooted `above` can't pass for the variable's whole history.
+@(private="file")
+render_later_writes :: proc(bb: ^strings.Builder, b: ^Var_Binding, later: []^Def) {
+    fmt.sbprintf(bb, "\n  %s is written again — trace a write with `mara ask at <file>:<line> flow above`:\n", b.name)
+    for d in later {
+        fmt.sbprintf(bb, "    %s   ", ask_loc(d.span))
+        if d.kind == .Complex { fmt.sbprint(bb, "(part of it) ") }
+        if label, is_call := lineage_call_label(d.value); is_call {
+            fmt.sbprintf(bb, "⟵ %s() ", label)
+        }
+        idents: [dynamic]^Expr_Ident
+        defer delete(idents)
+        lineage_all_idents(d.value, &idents)
+        names: [dynamic]string
+        defer delete(names)
+        for u in idents {
+            if !slice.contains(names[:], u.name) { append(&names, u.name) }
+        }
+        if len(names) == 0 {
+            fmt.sbprint(bb, "from literals\n")
+            continue
+        }
+        fmt.sbprint(bb, "from ")
+        for n, i in names {
+            if i > 0 { fmt.sbprint(bb, ", ") }
+            fmt.sbprint(bb, n)
+        }
+        fmt.sbprint(bb, "\n")
     }
 }
 
