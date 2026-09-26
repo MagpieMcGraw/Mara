@@ -1,0 +1,46 @@
+module struct_return_shapes
+
+//@ expect-output: elem=bb 2 local=bb 2
+//@ expect-output: field=in tern=y ptr=pt
+
+// A returned struct is written to the result slot whatever its shape. Only
+// literals, variables and calls used to be handled; an element, field,
+// ternary or pointee returned without writing it (the caller saw zeroes).
+
+use mara.core
+use mara.string
+
+Named  :: struct { name: str64, n: i64 }
+Holder :: struct { inner: Named }
+NAMES  :: [2]Named{{"a", 1}, {"bb", 2}}
+
+give :: fun() -> Named {
+	return NAMES[1]
+}
+give_local :: fun() -> Named {
+	arr := [2]Named{{"a", 1}, {"bb", 2}}
+	return arr[1]
+}
+give_field :: fun(h: Holder) -> Named {
+	return h.inner
+}
+give_tern :: fun(c: bool) -> Named {
+	x := Named{"x", 1}
+	y := Named{"y", 2}
+	return if c do x else y
+}
+give_ptr :: fun(p: ^Named) -> Named {
+	return p^
+}
+
+main :: fun() {
+	v := give()
+	w := give_local()
+	print("elem=% % local=% %", v.name, v.n, w.name, w.n)
+	h := Holder{Named{"in", 3}}
+	n := Named{"pt", 4}
+	a := give_field(h)
+	b := give_tern(false)
+	c := give_ptr(&n)
+	print("field=% tern=% ptr=%", a.name, b.name, c.name)
+}

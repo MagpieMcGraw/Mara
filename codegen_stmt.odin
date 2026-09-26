@@ -1351,32 +1351,21 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
 // Struct return: copy value into %sret.
 gen_return_struct :: proc(g: ^Codegen, s: Stmt_Return, sret_sv: Struct_Var) {
     sret_st, _ := lookup_struct(g, sret_sv.struct_name)
-    sret_llvm := struct_llvm_name(sret_sv.struct_name)
     sret_ptr := sret_sv.alloca
     ret_val := len(s.values) > 0 ? s.values[0] : nil
 
-    if lit, lit_ok := ret_val.(^Expr_Struct_Literal); lit_ok {
-        // Case A: returning a struct literal. Route through the unified store
-        // primitive so positional literals, slice fields (auto-coerced from
-        // local fixed arrays), and embedded structs all behave correctly.
-        gen_store_struct_into(g, sret_ptr, sret_st, lit, dest_fresh = true)
-    } else if ident, id_ok := ret_val.(^Expr_Ident); id_ok {
-        // Case B: returning a struct variable. Skip the self-copy when the
-        // local is NRVO-aliased to sret (already constructed in place).
-        if src_sv, sv_ok := get_struct(g, ident.name); sv_ok && src_sv.alloca != sret_ptr {
-            emit_struct_copy(g, sret_st, sret_llvm, src_sv.alloca, sret_ptr)
-        }
-    } else if call, call_ok := ret_val.(^Expr_Call); call_ok {
-        // Case C: chained struct return. If the callee has a struct sret,
-        // forward our own sret directly — no intermediate alloca, no copy.
-        // Falls back to alloca+copy for foreign calls or anything else the
-        // Fun_Info path can't see.
-        if info, info_ok := call_fun_info(g, call); info_ok && info.ret_struct != "" {
-            gen_call_into_struct(g, call, sret_ptr, &info, true)
-        } else {
-            result_ptr := gen_call(g, call)
-            emit_struct_copy(g, sret_st, sret_llvm, result_ptr, sret_ptr)
-        }
+    // A local NRVO-aliased to sret was constructed in place: nothing to copy.
+    nrvo := false
+    if ident, id_ok := ret_val.(^Expr_Ident); id_ok {
+        src_sv, sv_ok := get_struct(g, ident.name)
+        nrvo = sv_ok && src_sv.alloca == sret_ptr
+    }
+    // Anything else goes through the one struct store: a literal is built in
+    // place, a call forwards our sret (NRVO), a variable, constant, element,
+    // field, ternary or pointee is copied. (Only literals, idents and calls
+    // were handled here once — any other shape returned without writing sret.)
+    if ret_val != nil && !nrvo {
+        gen_store_struct_into(g, sret_ptr, sret_st, ret_val, dest_fresh = true)
     }
     emit_ret_void(g)
 }
