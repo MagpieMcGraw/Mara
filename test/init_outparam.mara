@@ -1,0 +1,37 @@
+module init_outparam
+
+// Handing a variable's address to a call is an out-parameter: the callee may
+// assign through it, so the variable counts as assigned afterwards. These used
+// to read as "field 'p' of 'h' is used before being assigned a value".
+// (A LOCAL alias's writes are still tracked: see aliasprobe / init_alias_neg.)
+
+Holder :: struct { p: ^i64, sl: []i64 }
+
+init :: fun(h: ^Holder, target: ^i64) { h.p = target }
+set_ptr :: fun(pp: ^^i64, target: ^i64) { pp^ = target }
+set_slice :: fun(s: ^[]i64, src: []i64) { s^ = src }
+
+main :: fun() {
+	y : i64 = 5
+	buf : [4]i64
+	buf[1] = 7
+
+	h : Holder
+	init(&h, &y)                 // &h: the whole struct
+	a := h.p^
+
+	h2 : Holder
+	set_slice(&h2.sl, buf[:])    // &h2.sl: just that field
+	b := h2.sl[1]
+
+	p : ^i64
+	set_ptr(&p, &y)              // a pointer variable, assigned through ^^
+	c := p^
+
+	h3 : Holder
+	hp := &h3
+	init(hp, &y)                 // a pointer known to alias h3
+	d := h3.p^
+
+	print("init_outparam", a + b + c + d)   // 22
+}

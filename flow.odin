@@ -531,16 +531,32 @@ flow_init_reads :: proc(c: ^Checker, e: Expr, uninit: ^map[string]bool, out: ^[d
     case ^Expr_Ident:
         if v.name in uninit^ { append(out, Flow_Uninit_Read{span = v.span, name = v.name}) }
     case ^Expr_Unary:
+        // `&x` / `&x.f` takes an address; it doesn't read the value there. (For
+        // `&x.f` the base IS read when it's a pointer — auto-deref — so check it.)
+        if v.op == .Ampersand {
+            #partial switch o in v.operand {
+            case ^Expr_Ident:
+                return
+            case ^Expr_Field_Access:
+                flow_init_reads(c, o.expr, uninit, out)
+                return
+            }
+        }
         flow_init_reads(c, v.operand, uninit, out)
     case ^Expr_Binary:
         flow_init_reads(c, v.left, uninit, out)
         flow_init_reads(c, v.right, uninit, out)
+        if _, overloaded := v.overload_fn.?; overloaded { // a call in operator form
+            flow_init_out_param(uninit, v.left)
+            flow_init_out_param(uninit, v.right)
+        }
     case ^Expr_Call:
         flow_init_reads(c, v.qualifier, uninit, out)
         for a in v.args { flow_init_reads(c, a, uninit, out) }
         if v.overrides != nil {
             for f in v.overrides.fields { flow_init_reads(c, f.value, uninit, out) }
         }
+        for a in v.args { flow_init_out_param(uninit, a) }
     case ^Expr_Index:
         flow_init_reads(c, v.expr, uninit, out)
         flow_init_reads(c, v.index, uninit, out)
@@ -580,6 +596,35 @@ flow_init_reads :: proc(c: ^Checker, e: Expr, uninit: ^map[string]bool, out: ^[d
         flow_init_reads(c, v.storage, uninit, out)
         flow_init_reads(c, v.count_expr, uninit, out)
     }
+}
+
+// A call argument that hands the callee a variable's address — `init(&h)`,
+// `load(&h.buf)`, or a pointer known to alias it (`p = &h; init(p)`) — is an
+// out-parameter: the callee may assign through it, so the variable (or that
+// field) counts as assigned from here. A local alias's own writes stay visible
+// to this pass and are tracked as usual (see g_flow_alias).
+flow_init_out_param :: proc(uninit: ^map[string]bool, arg: Expr) {
+    target := ""
+    field := ""
+    if un, ok := arg.(^Expr_Unary); ok && un.op == .Ampersand {
+        #partial switch o in un.operand {
+        case ^Expr_Ident:
+            target = o.name
+        case ^Expr_Field_Access:
+            if id, idok := o.expr.(^Expr_Ident); idok { target, field = id.name, o.field }
+        }
+    } else if id, idok := arg.(^Expr_Ident); idok {
+        target = g_flow_alias[id.name] // "" unless id = &target
+    }
+    if target == "" { return }
+    if field != "" {
+        key := strings.concatenate({target, ".", field})
+        delete_key(uninit, key)
+        delete(key)
+        return
+    }
+    delete_key(uninit, target)
+    flow_clear_fields(uninit, target)
 }
 
 // Recurse the control-flow tree, counting coverage. Descends if/for/defer/match

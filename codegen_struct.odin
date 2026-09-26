@@ -1845,6 +1845,12 @@ gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             return
         }
     }
+    // Slice deref-assign (`s^ = src` through a ^[]T): copy the header, the same
+    // single store path every slice slot takes.
+    if _, is_slice := distinct_base(s.target_type).(^Type_Slice); is_slice {
+        gen_store_slice_into(g, ptr_val, s.value)
+        return
+    }
 
     apply_compound_load_substitute(g, s, ptr_val, store_type)
     // Type checker enforces value type matches store_type; pass the target

@@ -1,0 +1,13 @@
+module init_alias_neg
+//@ expect-fail: before being assigned
+
+// Taking an address is not an assignment: only handing it to a call is (see
+// init_outparam). Here the pointer is used locally and h.p is read unassigned.
+
+Holder :: struct { p: ^i64 }
+
+main :: fun() {
+	h : Holder
+	hp := &h
+	print(hp.p^)
+}
