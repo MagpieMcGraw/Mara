@@ -334,17 +334,11 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
             emit_memcpy(g, gep, src_ptr, size)
             continue
         }
-        // Union field (`%union.X`): the RHS is a variant literal (materialized
-        // into a union temp) or another union value — pointer-valued either
-        // way, so memcpy by the union's true size. checker_type_byte_size
-        // reports a placeholder 8 for unions, so size from union_byte_size.
-        if strings.has_prefix(ft, "%union.") {
-            src_ptr := gen_expr(g, field.value, ft)
+        // Union field (`%union.X`).
+        if ut, ok := distinct_base(f.type_).(^Type_Union); ok {
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
-            size := 8
-            if ut, ok := distinct_base(f.type_).(^Type_Union); ok { size = union_byte_size(g, ut) }
-            emit_memcpy(g, gep, src_ptr, size)
+            gen_store_union_into(g, gep, ut, field.value)
             continue
         }
         // Scalar field.
@@ -1780,11 +1774,12 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             gen_array_field_store(g, data_gep, acap, field_array_elem(f), s.value)
             return
         }
-        // Union field — emit tag + payload stores directly into the field GEP
+        // Union field — a variant literal is built in the field; any other
+        // union value is copied into it.
         if ut, ut_ok := f.type_.(^Type_Union); ut_ok {
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
-            emit_union_literal_store(g, ut, s.value, gep)
+            gen_store_union_into(g, gep, ut, s.value)
             return
         }
         // Struct field — delegate to the unified struct store primitive.
@@ -1858,10 +1853,14 @@ gen_deref_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             return
         }
     }
-    // Slice deref-assign (`s^ = src` through a ^[]T): copy the header, the same
-    // single store path every slice slot takes.
-    if _, is_slice := distinct_base(s.target_type).(^Type_Slice); is_slice {
+    // Slice / union deref-assign (`s^ = src`, `p^ = variant`): the same single
+    // store path every slice / union slot takes.
+    #partial switch t in distinct_base(s.target_type) {
+    case ^Type_Slice:
         gen_store_slice_into(g, ptr_val, s.value)
+        return
+    case ^Type_Union:
+        gen_store_union_into(g, ptr_val, t, s.value)
         return
     }
 
@@ -2007,15 +2006,23 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
     }
 
     uv, _ := get_union(g, name)
+    gen_store_union_into(g, uv.alloca, ut, value)
+}
+
+// Single point of truth for "store a union value into a destination pointer" —
+// the union sibling of gen_store_struct_into / gen_store_slice_into, used for
+// variables, fields, elements and deref targets alike. A variant literal is
+// built in place; any other union value (a local, a param, a call result, a
+// field, an element) is pointer-valued, so it's copied by the union's true size
+// (checker_type_byte_size reports a placeholder for unions).
+gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, value: Expr) {
     if lit, ok := value.(^Expr_Struct_Literal); ok && lit.name != "" {
-        emit_union_literal_store(g, ut, value, uv.alloca)
-    } else {
-        // Any other union-valued RHS — a union-returning call, a union local,
-        // a field access — is pointer-valued; copy it into the slot.
-        src := gen_expr(g, value, llvm_name)
-        if src != uv.alloca {
-            emit_memcpy(g, uv.alloca, src, union_byte_size(g, ut))
-        }
+        emit_union_literal_store(g, ut, value, dst_ptr)
+        return
+    }
+    src := gen_expr(g, value, union_llvm_name(union_key(ut)))
+    if src != dst_ptr {
+        emit_memcpy(g, dst_ptr, src, union_byte_size(g, ut))
     }
 }
 

@@ -37,17 +37,14 @@ union_subject_ptr :: proc(g: ^Codegen, expr: Expr, ut: ^Type_Union) -> (string, 
         if addr != "" && addr != "null" {
             return addr, true
         }
+    case ^Expr_Index:
+        return gen_index_address(g, e), true
     }
-    // Rvalue fallback: spill to a stack alloca.
-    llvm_name := union_llvm_name(ut.name)
-    tmp := fresh_tmp(g)
-    emit_alloca(g, tmp, llvm_name)
-    val := gen_expr(g, expr)
-    if val != "" && val != "0" {
-        emit_store(g, llvm_name, val, tmp)
-        return tmp, true
-    }
-    return "", false
+    // Any other union value — a call result, a variant literal, a deref — is
+    // pointer-valued: gen_expr already materializes it and yields its address.
+    ptr := gen_expr(g, expr, union_llvm_name(ut.name))
+    if ptr == "" { return "", false }
+    return ptr, true
 }
 
 // Niche-laid-out union: union storage is `ptr`. Dispatch on null instead of

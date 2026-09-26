@@ -461,11 +461,15 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if chain, chain_ok := build_address_chain(g, ix); chain_ok {
         elem_ptr := emit_address_chain(g, &chain)
         apply_compound_load_substitute(g, s, elem_ptr, chain.final_type)
-        _, slice_elem := distinct_base(index_elem_type(expr_type(ix.expr))).(^Type_Slice)
+        elem_t := distinct_base(index_elem_type(expr_type(ix.expr)))
+        _, slice_elem := elem_t.(^Type_Slice)
+        union_elem, is_union_elem := elem_t.(^Type_Union)
         if chain.final_kind == .Struct {
             gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value)
         } else if slice_elem {
             gen_store_slice_into(g, elem_ptr, s.value) // a slice element: copy the header
+        } else if is_union_elem {
+            gen_store_union_into(g, elem_ptr, union_elem, s.value)
         } else {
             val := gen_expr_coerced(g, s.value, chain.final_type)
             emit_store(g, chain.final_type, val, elem_ptr)
@@ -503,6 +507,8 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         if strings.has_prefix(sv.elem_type, "%class.") {
             elem_struct := sv.elem_type[len("%class."):]
             gen_struct_store_at(g, elem_ptr, elem_struct, s.value)
+        } else if ut, is_union := distinct_base(index_elem_type(expr_type(ix.expr))).(^Type_Union); is_union {
+            gen_store_union_into(g, elem_ptr, ut, s.value)
         } else {
             val := gen_expr_coerced(g, s.value, sv.elem_type)
             emit_store(g, sv.elem_type, val, elem_ptr)
@@ -751,6 +757,12 @@ gen_index_expr :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
     // Try unified address chain for chained access (obj.items[i], a[i][j], etc.)
     if chain, chain_ok := build_address_chain(g, e); chain_ok {
         addr := emit_address_chain(g, &chain)
+        // A union element is an aggregate: yield its address (union values are
+        // pointer-valued, as gen_field_access does for a union field).
+        if strings.has_prefix(chain.final_type, "%union.") {
+            set_field_result(g, Union_Var{alloca = addr, union_name = chain.final_type[len("%union."):]})
+            return addr
+        }
         if chain.final_kind == .Scalar {
             return emit_load(g, chain.final_type, addr)
         }

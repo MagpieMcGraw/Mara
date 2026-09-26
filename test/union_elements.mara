@@ -1,0 +1,108 @@
+module union_elements
+
+use mara.core
+
+// Union values stored into and read out of memory other than a named local:
+// array/partial-array elements, slots behind a ^[]T (incl. the generic
+// slice_add_item), struct fields assigned from a union VALUE, and deref
+// stores. A syntax tree is exactly this shape — union nodes in a pool, linked
+// by pointers — and every one of these used to emit invalid IR (the union
+// stored as if it were a scalar) or abort in codegen.
+
+Node :: union(tag u8) {
+	Lit = 1 { v: i64 }
+	Neg = 2 { x: ^Node }
+	Add = 3 { l: ^Node, r: ^Node }
+}
+
+Holder :: struct { n: Node }
+
+eval :: fun(n: ^Node) -> i64 {
+	match n^ {
+	Lit lit
+		return lit.v
+	Neg neg
+		return -eval(neg.x)
+	Add add
+		return eval(add.l) + eval(add.r)
+	}
+	return 0
+}
+
+value_of :: fun(n: Node) -> i64 {
+	match n {
+	Lit lit
+		return lit.v
+	Neg neg
+		return -1
+	Add add
+		return -2
+	}
+	return 0
+}
+
+push :: fun(pool: ^[]Node, n: Node) -> ^Node {
+	slice_add_item(pool, n)
+	return &pool[pool.len - 1]
+}
+
+make_lit :: fun(v: i64) -> Node { return Lit{v = v} }
+
+main :: fun() {
+	sum : i64 = 0
+
+	// A tree built in a pool: (1 + 2) + -(4)
+	pool : [..16]Node
+	one  := push(&pool, Lit{v = 1})
+	two  := push(&pool, Lit{v = 2})
+	four := push(&pool, Lit{v = 4})
+	left := push(&pool, Add{l = one, r = two})
+	neg  := push(&pool, Neg{x = four})
+	root := push(&pool, Add{l = left, r = neg})
+	sum += eval(root)                          // -1
+
+	// Direct element stores: a literal, a local, a call result.
+	arr : [4]Node
+	arr[0] = Lit{v = 10}
+	local : Node = Lit{v = 20}
+	arr[1] = local
+	arr[2] = make_lit(30)
+	sum += value_of(arr[0]) + value_of(arr[1]) + value_of(arr[2])   // 59
+
+	// Read an element back out into a local, and match on an element.
+	copy := arr[1]
+	sum += value_of(copy)                      // 79
+	match arr[2] {
+	Lit lit
+		sum += lit.v                           // 109
+	Neg n
+		sum += 0
+	Add a
+		sum += 0
+	}
+
+	// A struct field assigned from a union value (not a literal).
+	h : Holder
+	h.n = local
+	sum += value_of(h.n)                       // 129
+
+	// A store through a pointer, and reads back through it.
+	p := &arr[3]
+	p^ = local
+	sum += value_of(arr[3])                    // 149
+	back := p^
+	sum += value_of(back) + value_of(p^)       // 189
+
+	// Match on a union-returning call.
+	match make_lit(11) {
+	Lit lit
+		sum += lit.v                           // 200
+	Neg n
+		sum += 0
+	Add a
+		sum += 0
+	}
+
+	assert(sum == 200)
+	print("union_elements", sum)
+}
