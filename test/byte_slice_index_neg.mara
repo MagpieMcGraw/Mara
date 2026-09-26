@@ -1,0 +1,14 @@
+module byte_slice_index_neg
+//@ expect-fail: to view the bytes, slice them
+
+// Indexing reads sizeof(T) bytes — for a slice that is its header. A view is
+// spelled with a range: bytes[lo:hi].
+
+main :: fun() {
+	src := "hello world, and more"
+	bytes : [..32]byte
+	for c, i in src { bytes[i] = u8(c) }
+	bytes.len = src.len
+	x : []utf8 = bytes[2]
+	print(x.len)
+}

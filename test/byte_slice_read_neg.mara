@@ -1,0 +1,15 @@
+module byte_slice_read_neg
+//@ expect-fail: `s` is a slice
+
+// A struct holding a slice cannot be read out of bytes: its header would be
+// taken from the raw bytes (garbage len/ptr that bounds checks then trust).
+Holder :: struct { s: []utf8 }
+
+main :: fun() {
+	src := "hello world, and more"
+	bytes : [..32]byte
+	for c, i in src { bytes[i] = u8(c) }
+	bytes.len = src.len
+	h : Holder = bytes[0]
+	print(h.s.len)
+}

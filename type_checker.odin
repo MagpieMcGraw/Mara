@@ -4212,6 +4212,83 @@ is_byte_buffer_index_read :: proc(e: Expr) -> bool {
     return is_byte_buffer(expr_type(idx.expr))
 }
 
+// --- byte reinterpretation: no slice headers --------------------------------
+// Reading a value out of a byte buffer (`h : Head = bytes[off]`) or writing one
+// into it (`bytes[off] = v`) reinterprets raw bytes. A SLICE header can't take
+// part: its len/cap are exactly what bounds checks trust, so one taken from
+// bytes (a file's, typically) silently defeats them — the recurring bug of this
+// family (ba666db, 72dbe81, 870972a, 471f615, 470f3c0 each patched one shape).
+// A partial array is fine when its elements are: its header is stamped by the
+// compiler after the copy, never taken from bytes. Pointers are deliberately
+// allowed: in-process memory legitimately holds them (Arena_Debug keeps its
+// AllocHeader's name/span pointers in the arena's own bytes), and a raw pointer
+// is raw territory either way. Every assignment-like site asks check_byte_flow /
+// check_byte_write, so the rule lives here once.
+
+// Why `t` can't be reinterpreted from/to bytes — the first slice in its layout —
+// or "" when it can.
+byte_slice_reason :: proc(c: ^Checker, t: Type, path: string = "") -> string {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Slice:
+        if path == "" { return "a slice is a (len, cap, ptr) header, not data" }
+        return fmt.tprintf("`%s` is a slice", path)
+    case ^Type_Fixed_Array:
+        return byte_slice_reason(c, v.elem, fmt.tprintf("%s[i]", path))
+    case ^Type_Partial_Array:
+        return byte_slice_reason(c, v.elem, fmt.tprintf("%s[i]", path))
+    case ^Type_Union:
+        for vname, sname in v.variant_structs {
+            if st, ok := c.table.structs[sname]; ok {
+                if r := byte_slice_reason(c, st, path == "" ? vname : fmt.tprintf("%s.%s", path, vname)); r != "" { return r }
+            }
+        }
+    case ^Type_Scope:
+        sd := as_struct_body(v)
+        if sd == nil { return "" }
+        for &f in sd.fields {
+            if f.name == "__tag" || f.name == "__pad" { continue }
+            if r := byte_slice_reason(c, f.type_, path == "" ? f.name : fmt.tprintf("%s.%s", path, f.name)); r != "" { return r }
+        }
+    }
+    return ""
+}
+
+Byte_Flow :: enum { None, View, Read }
+
+// The one rule for a byte buffer — or a range or element of one — flowing into
+// a destination of type `dest`:
+//   - a RANGE into a slice is a VIEW of those bytes, so its elements must be of
+//     the byte family — byte / utf8 / u8 / i8 (a view as any other element type
+//     is spelled `slice([:n]T, &bytes[lo])`);
+//   - anything else is a READ of sizeof(dest) bytes, which can't hold a slice header.
+// Reports its own errors. Callers apply their byte-read size rules for .Read
+// and treat .View / .None as an ordinary assignment.
+check_byte_flow :: proc(c: ^Checker, dest: Type, value: Expr, val_type: Type, span: Span) -> Byte_Flow {
+    index_read := is_byte_buffer_index_read(value)
+    if !index_read && !is_byte_buffer(val_type) { return .None }
+    if sl, to_slice := distinct_base(dest).(^Type_Slice); to_slice && !index_read {
+        if !is_byte_sized_memory_type(sl.elem) {
+            en := type_name(sl.elem)
+            check_error(c, span, TYPE_BYTE_VIEW_WIDE_ELEM, type_name(dest), en, en)
+        }
+        return .View
+    }
+    if _, to_slice := distinct_base(dest).(^Type_Slice); to_slice {
+        check_error(c, span, TYPE_BYTE_READ_SLICE_BY_INDEX, type_name(dest)) // `s : []T = bytes[i]`
+    } else if why := byte_slice_reason(c, dest); why != "" {
+        check_error(c, span, TYPE_BYTE_READ_REFERENCE, type_name(dest), why)
+    }
+    return .Read
+}
+
+// A value written into a byte buffer (`bytes[off] = v`, `bytes[lo:hi] = v`) is
+// stored as its raw bytes, so it can't hold a slice header.
+check_byte_write :: proc(c: ^Checker, val_type: Type, span: Span) {
+    if why := byte_slice_reason(c, val_type); why != "" {
+        check_error(c, span, TYPE_BYTE_WRITE_REFERENCE, type_name(val_type), why)
+    }
+}
+
 // True when `e` is a `#big_endian` decorated byte-buffer read.
 expr_is_big_endian :: proc(e: Expr) -> bool {
     #partial switch v in e {
@@ -7276,12 +7353,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 _, val_is_array := s.value.(^Expr_Array)
                 _, val_is_struct_lit := s.value.(^Expr_Struct_Literal)
                 val_carries_matching_distinct := ann_is_distinct && types_equal(ann_type, val_type)
+                byte_flow := check_byte_flow(c, ann_type, s.value, val_type, s.span)
+                byte_read := byte_flow == .Read
                 if ann_is_distinct && (!val_is_array && !val_is_struct_lit || val_carries_matching_distinct) {
                     // Byte-buffer reinterpret read overrides the nominal type
-                    // match — `win : sdl.Window = mem[0]` reads sizeof(Window)
-                    // bytes regardless of the distinct wrapper.
-                    is_byte_read := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
-                    if is_byte_read {
+                    // match — `t : Tag = mem[0]` reads sizeof(Tag) bytes
+                    // regardless of the distinct wrapper (no slice headers).
+                    if byte_read {
                         if sl, ok := s.value.(^Expr_Slice); ok {
                             if low_num, low_ok := const_eval_int(sl.low); low_ok {
                                 if high_num, high_ok := const_eval_int(sl.high); high_ok {
@@ -7313,14 +7391,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // (call, variable, field) must fall through to the general nominal
                 // compatibility check — the literal helpers no-op on non-literals, so
                 // without this gate `p : Point = Color()` slipped through unchecked.
-                value_needs_literal_handling := val_is_struct_lit || is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
+                value_needs_literal_handling := val_is_struct_lit || byte_read
                 // Validate assignment compatibility (same as in check_assign)
                 if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 && value_needs_literal_handling {
                     check_struct_literal_assign(c, s.span, s.value, sd, env)
                     // Byte-buffer reinterpret read into a struct (slice form): a
                     // span shorter than the struct is a partial fill (tail zero);
                     // only a span LARGER than the struct overruns it -> error.
-                    if sl, sl_ok := s.value.(^Expr_Slice); sl_ok && (is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)) {
+                    if sl, sl_ok := s.value.(^Expr_Slice); sl_ok && byte_read {
                         if low_num, low_ok := const_eval_int(sl.low); low_ok {
                             if high_num, high_ok := const_eval_int(sl.high); high_ok {
                                 span_size := high_num - low_num
@@ -7351,8 +7429,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // from `bytes` at offset 0. Same shape as the scalar
                     // reinterpret-read paths below, generalized: destination
                     // type drives read size, fixed-array fits the pattern.
-                    is_byte_reinterpret := is_byte_buffer_index_read(s.value) || is_byte_buffer(val_type)
-                    if is_byte_reinterpret {
+                    if byte_read {
                         if sl, sl_ok := s.value.(^Expr_Slice); sl_ok {
                             ann_size := checker_type_byte_size(check_ann)
                             if low_num, low_ok := const_eval_int(sl.low); low_ok {
@@ -7373,7 +7450,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                     // (Large-value stack/arena routing handled uniformly in
                     // check_storage_sizes — Pass 4 of check_scope.)
-                } else if pa, ok := check_ann.(^Type_Partial_Array); ok && is_byte_buffer(val_type) {
+                } else if pa, ok := check_ann.(^Type_Partial_Array); ok && byte_read && is_byte_buffer(val_type) {
                     // Partial-array byte-buffer reinterpret read:
                     //   arr : [..N]T = bytes[lo:hi]
                     // Source bytes must divide evenly by sizeof(T) and yield
@@ -7397,7 +7474,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             }
                         }
                     }
-                } else if is_byte_buffer(val_type) {
+                } else if byte_read && is_byte_buffer(val_type) {
                     // Byte buffer reinterpret read: x : i64 = mem[0:8]
                     // Works for []byte, [N]byte, and Array(byte, N) (post-desugar source)
                     ann_size := checker_type_byte_size(check_ann)
@@ -7413,9 +7490,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             }
                         }
                     }
-                } else if is_byte_buffer_index_read(s.value) {
+                } else if byte_read {
                     // Byte buffer reinterpret read via index: x : int = mem[0]
                     // Size comes from the annotation type; bounds checked at runtime
+                } else if byte_flow == .View {
+                    // A range of bytes viewed as a 1-byte-element slice
+                    // (check_byte_flow vetted the element width): the byte
+                    // family is mutually compatible, nothing more to check.
                 } else if !coerce_deferred(c, val_type, ann_type, s.span) && types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
                     emit_assign_var_error(c, s.span, val_type, s.name, ann_type, s.value)
                 }
@@ -7565,8 +7646,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // is recognized here too — same as the decl-init and field-assign
                     // paths: the read size comes from the target type, not the byte
                     // value. Without this the RHS types as a bare `byte` and fails.
-                    is_byte_reinterpret := is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
-                    if !is_byte_reinterpret && !coerce_deferred(c, val_type, existing_type, s.span) && !coerce_deferred(c, existing_type, val_type, s.span) && types_incompatible(existing_type, val_type) && !value_preserving_widen(val_type, existing_type) {
+                    is_byte_flow := check_byte_flow(c, existing_type, s.value, val_type, s.span) != .None
+                    if !is_byte_flow && !coerce_deferred(c, val_type, existing_type, s.span) && !coerce_deferred(c, existing_type, val_type, s.span) && types_incompatible(existing_type, val_type) && !value_preserving_widen(val_type, existing_type) {
                         emit_assign_var_error(c, s.span, val_type, s.name, existing_type, s.value)
                     }
                     maybe_stamp_byte_view(c, existing_type, s.value)
@@ -8951,6 +9032,11 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         }
     }
 
+    // A reinterpret write stores the value's raw bytes: plain data only.
+    if is_byte_slice(target_type) || is_byte_partial_array(target_type) || is_byte_fixed_array(target_type) {
+        check_byte_write(c, val_type, s.span)
+    }
+
     // Byte slice reinterpret write: mem[offset] = value
     if is_byte_slice(target_type) {
         solid_val_type := solidify_type(val_type)
@@ -9039,6 +9125,12 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         check_error(c, s.span,
             TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE,
             pname)
+    }
+
+    // A reinterpret span write stores the value's raw bytes: plain data only.
+    // (An array-shaped RHS is an element copy, not a reinterpret — see below.)
+    if (is_byte_slice(target_type) || is_byte_partial_array(target_type) || is_byte_fixed_array(target_type)) && !is_array_shaped(val_type) {
+        check_byte_write(c, val_type, s.span)
     }
 
     // Byte slice reinterpret write: mem[off:off+N] = value.
@@ -9191,7 +9283,10 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
             // `obj.view = "lit"` — a slice-typed field would alias rodata.
             check_no_literal_slice_binding(c, ft, s.value, s.span)
             // (Field-init clearing for definite-assignment now in the flow pass.)
-            if is_byte_buffer(val_type) {
+            byte_flow := check_byte_flow(c, ft, s.value, val_type, s.span)
+            if byte_flow == .View {
+                // A range of bytes viewed as a byte-family slice field.
+            } else if byte_flow == .Read && is_byte_buffer(val_type) {
                 // Byte buffer reinterpret read via slice: obj.field = mem[lo:hi]
                 field_size := checker_type_byte_size(ft)
                 if sl, ok := s.value.(^Expr_Slice); ok {
@@ -9206,7 +9301,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
                         }
                     }
                 }
-            } else if is_byte_buffer_index_read(s.value) {
+            } else if byte_flow == .Read {
                 // Byte buffer reinterpret read via index: obj.field = mem[off]
                 // Size comes from field type; bounds checked at runtime
             } else if !coerce_deferred(c, val_type, ft, s.span) && types_incompatible(ft, val_type) && !value_preserving_widen(val_type, ft) {
@@ -12488,9 +12583,9 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             // fixed-array value via alloca + memcpy + load.
             is_byte_reinterpret := false
             if _, fa_ok := fun_type.params[i].type_.(^Type_Fixed_Array); fa_ok {
-                if is_byte_buffer_index_read(arg) { is_byte_reinterpret = true }
-                if _, sl_ok := arg.(^Expr_Slice); sl_ok && is_byte_buffer(arg_type) {
-                    is_byte_reinterpret = true
+                _, sl_ok := arg.(^Expr_Slice)
+                if is_byte_buffer_index_read(arg) || sl_ok && is_byte_buffer(arg_type) {
+                    is_byte_reinterpret = check_byte_flow(c, fun_type.params[i].type_, arg, arg_type, span) == .Read
                 }
             }
             // `cstring` params take literals free (rodata carries the \0)

@@ -1,0 +1,43 @@
+module byte_views
+
+//@ expect-output: decl=ell
+//@ expect-output: runtime=ell
+//@ expect-output: reassign=ell
+//@ expect-output: field=ell
+//@ expect-output: arg=ell
+//@ expect-output: return=ell
+
+// A range of a byte buffer flowing into a byte-family slice ([]byte / []utf8 /
+// []u8 / []i8) is a VIEW of those bytes — in every context. It used to be read
+// as a slice HEADER out of the bytes in some of them: a constant-bounds decl or
+// field assign was rejected as "[]utf8 is 24 bytes, but slice span is 3", and a
+// field assign with runtime bounds memcpy'd the raw bytes over the header.
+// (Reading a slice header out of bytes is an error — see byte_slice_*_neg.)
+
+Holder :: struct { s: []utf8 }
+
+show :: fun(label: []utf8, s: []utf8) { print("%=%", label, s) }
+mid :: fun(bs: []byte) -> []utf8 { return bs[1:4] }
+
+main :: fun() {
+	src := "hello"
+	bytes : [..16]byte
+	for c, i in src { bytes[i] = u8(c) }
+	bytes.len = src.len
+	a := 1
+	b := 4
+
+	x : []utf8 = bytes[1:4]
+	print("decl=%", x)
+	y : []utf8 = bytes[a:b]
+	print("runtime=%", y)
+	z : []utf8 = bytes[:]
+	z = bytes[1:4]
+	print("reassign=%", z)
+	h : Holder
+	h.s = bytes[a:b]
+	print("field=%", h.s)
+	show("arg", bytes[1:4])
+	r := mid(bytes[:])
+	print("return=%", r)
+}

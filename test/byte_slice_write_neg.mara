@@ -1,0 +1,15 @@
+module byte_slice_write_neg
+//@ expect-fail: cannot write a `[]utf8` into bytes
+
+// Writing a slice into a byte buffer would store its header (a pointer and
+// lengths), not the text it views.
+
+main :: fun() {
+	src := "hello world, and more"
+	bytes : [..32]byte
+	for c, i in src { bytes[i] = u8(c) }
+	bytes.len = src.len
+	v : []utf8 = bytes[0:5]
+	bytes[8] = v
+	print(bytes[8])
+}

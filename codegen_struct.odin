@@ -1788,8 +1788,12 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
             }
         }
         // Byte-buffer reinterpret read: obj.field = mem[lo:hi] or obj.field = mem[off].
-        // Memcpys field-sized bytes from the source into the field GEP.
-        if sl_expr, ok := s.value.(^Expr_Slice); ok && codegen_is_byte_buffer_source(g, sl_expr.expr) {
+        // Memcpys field-sized bytes from the source into the field GEP. Not for
+        // a slice field: a range of bytes into a slice is a VIEW (the checker's
+        // check_byte_flow), stored below like any slice value — memcpy'ing the
+        // bytes would put raw data where the (len, cap, ptr) header goes.
+        _, field_is_slice := distinct_base(f.type_).(^Type_Slice)
+        if sl_expr, ok := s.value.(^Expr_Slice); ok && !field_is_slice && codegen_is_byte_buffer_source(g, sl_expr.expr) {
             gen_byte_target_field_read(g, st_llvm, base_ptr, idx, f, sl_expr.expr, sl_expr.low, s.span, sl_expr.is_big_endian)
             return
         }

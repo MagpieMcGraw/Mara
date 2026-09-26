@@ -1,0 +1,14 @@
+module byte_view_wide_neg
+//@ expect-fail: slice([:n]i64
+
+// A range of bytes is viewed only as byte-family elements; any other element
+// type is the explicit positional carve.
+
+main :: fun() {
+	src := "hello world, and more"
+	bytes : [..32]byte
+	for c, i in src { bytes[i] = u8(c) }
+	bytes.len = src.len
+	x : []i64 = bytes[0:16]
+	print(x.len)
+}
