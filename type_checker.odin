@@ -8865,6 +8865,9 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
             return
         }
         for field, i in lit.fields {
+            // An anonymous nested literal (`{{1, 2}, {3, 4}}`) takes its shape
+            // from the element type, as a struct field's does.
+            if needs_field_type_hint(field.value) { c.expected_hint = fa.elem }
             val_type := check_expr(c, field.value, env)
             if types_incompatible(fa.elem, val_type) {
                 check_error(c, lit.span, TYPE_ELEMENT_TYPE_EXPECTED,
@@ -8890,6 +8893,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
             check_error(c, lit.span, TYPE_FIELD_SET_MORE_THAN_ONCE, lit.name, field.name)
             continue
         }
+        if needs_field_type_hint(field.value) { c.expected_hint = fa.elem }
         val_type := check_expr(c, field.value, env)
         if types_incompatible(fa.elem, val_type) {
             check_error(c, lit.span, TYPE_FIELD_TYPE_EXPECTED,

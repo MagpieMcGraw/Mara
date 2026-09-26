@@ -1,0 +1,22 @@
+module nested_array_literals
+
+//@ expect-output: grid=3 4 / 3
+//@ expect-output: vecs=4 6 / pts=3 9
+
+// An anonymous nested literal inside an array literal takes its shape from
+// the element type, as one inside a struct literal does: `{{1, 2}, {3, 4}}`
+// for a [2][2]i64. It used to fail (a type error, or no codegen path).
+
+use mara.core
+use mara.math
+
+Pt :: struct { x: i64, y := 9 }
+
+main :: fun() {
+	a := [2][2]i64{{1, 2}, {3, 4}}
+	b : [2][2]i64 = {{1, 2}, {3, 4}}
+	print("grid=% % / %", a[1][0], a[1][1], b[1][0])
+	v : [2]Vec3 = {{1, 2, 3}, {4, 5, 6}}
+	p := [2]Pt{{1, 2}, {x = 3}}
+	print("vecs=% % / pts=% %", v[1][0], v[1][2], p[1].x, p[1].y)
+}
