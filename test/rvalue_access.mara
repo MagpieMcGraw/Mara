@@ -70,7 +70,10 @@ main :: fun() {
 	fill(&fixed)                              // indexing through ^[4]T
 	sum += fixed[0] + fixed[3]                // 1220
 
-	assert(calls == 4)                        // each call base ran once
-	assert(sum == 1220)
+	sum += view(&buf, &calls).len            // 1223 .len of a returned slice
+	sum += list[0].cap                        // 1227 .cap of a slice element
+
+	assert(calls == 5)                        // each call base ran once
+	assert(sum == 1227)
 	print("rvalue_access", sum, calls)
 }

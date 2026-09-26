@@ -532,6 +532,28 @@ resolve_struct_for_field :: proc(g: ^Codegen, ident_name: string, ident_type: Ty
 }
 
 // Handle: obj.field (read)
+// Load .len / .cap / .ptr off the slice (or partial-array — same header prefix)
+// header at `hdr`.
+load_slice_header_field :: proc(g: ^Codegen, hdr: string, field: string) -> string {
+    gep := fresh_tmp(g)
+    switch field {
+    case "len":
+        emit_slice_gep(g, gep, hdr, SLICE.len)
+        val := fresh_tmp(g)
+        emit_typed_load_len(g, val, gep)
+        return val
+    case "cap":
+        emit_slice_gep(g, gep, hdr, SLICE.cap)
+        val := fresh_tmp(g)
+        emit_typed_load_cap(g, val, gep)
+        return val
+    }
+    emit_slice_gep(g, gep, hdr, SLICE.ptr)
+    val := fresh_tmp(g)
+    emit_load_into(g, val, "ptr", gep)
+    return val
+}
+
 gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
     // Function reference: game.test_print → @mara_Mega_test_print
     if rf, rf_ok := e.resolved.(Resolved_Func); rf_ok {
@@ -673,28 +695,8 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                 }
             }
             // Check if inner access produced a slice result (e.g. a.base.ptr)
-            if sv, sv_ok := claim_field_slice(g); sv_ok {
-                if e.field == "ptr" {
-                    ptr_gep := fresh_tmp(g)
-                    emit_slice_gep(g, ptr_gep, sv.alloca, SLICE.ptr)
-                    ptr_val := fresh_tmp(g)
-                    emit_load_into(g, ptr_val, "ptr", ptr_gep)
-                    return ptr_val
-                }
-                if e.field == "len" {
-                    len_gep := fresh_tmp(g)
-                    emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
-                    len_val := fresh_tmp(g)
-                    emit_typed_load_len(g, len_val, len_gep)
-                    return len_val
-                }
-                if e.field == "cap" {
-                    cap_gep := fresh_tmp(g)
-                    emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
-                    cap_val := fresh_tmp(g)
-                    emit_typed_load_cap(g, cap_val, cap_gep)
-                    return cap_val
-                }
+            if sv, sv_ok := claim_field_slice(g); sv_ok && is_slice_header_field(e.field) {
+                return load_slice_header_field(g, sv.alloca, e.field)
             }
             // Check if inner access produced a struct result
             if fr, fr_ok := claim_field_struct(g); fr_ok {
@@ -740,6 +742,17 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
                 }
             }
             return inner_val
+        }
+        // .len / .cap / .ptr of a slice-valued rvalue — a call result, or an
+        // element of an array of slices — read straight off its header.
+        if is_slice_header_field(e.field) {
+            #partial switch _ in distinct_base(expr_type(e.expr)) {
+            case ^Type_Slice, ^Type_Partial_Array:
+                #partial switch b in e.expr {
+                case ^Expr_Call:  return load_slice_header_field(g, gen_slice_value_ptr(g, b), e.field)
+                case ^Expr_Index: return load_slice_header_field(g, gen_index_address(g, b), e.field)
+                }
+            }
         }
         // Handle indexed expression: rot_mx[2].xyz → index into array, then swizzle
         if idx_expr, idx_ok := e.expr.(^Expr_Index); idx_ok {
