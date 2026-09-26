@@ -1,0 +1,70 @@
+module ternary_values
+
+//@ expect-output: slice=defgh
+//@ expect-output: slicearg=abc
+//@ expect-output: typed=defgh
+//@ expect-output: struct=2
+//@ expect-output: union=two 2
+//@ expect-output: array=4 5 6
+//@ expect-output: arrayarg=1 2 3
+//@ expect-output: arraylit=7 8
+//@ expect-output: bounds=42
+//@ expect-output: overflow=10
+
+// A ternary over values that codegen represents by a pointer to their storage
+// (slice header, struct, union, fixed array) must merge those POINTERS. It used
+// to phi them as aggregate values — invalid IR ("defined with type 'ptr' but
+// expected '{ i64, i64, ptr }'"). And a branch that opens blocks of its own (a
+// bounds check, an overflow-checked `+`) used to name the wrong phi
+// predecessor — invalid IR even for a plain i64.
+
+Holder :: struct { s: []utf8, n: i64 }
+Pick :: union(tag u8) { One = 1 { n: i64 } Two = 2 { m: i64 } }
+Vec3 :: distinct [3]f32
+
+show :: fun(label: []utf8, s: []utf8) { print("%=%", label, s) }
+showv :: fun(label: []utf8, v: Vec3) { print("%=% % %", label, v[0], v[1], v[2]) }
+
+main :: fun() {
+	w1 := "abc"
+	w2 := "defgh"
+	s1 : []utf8 = w1
+	s2 : []utf8 = w2
+	k := 2
+	c := k > 1
+
+	x := if c do s2 else s1
+	show("slice", x)
+	show("slicearg", if c do s1 else s2)
+	y : []utf8 = if c do s2 else s1
+	show("typed", y)
+
+	h1 := Holder{n = 1}
+	h2 := Holder{n = 2}
+	h := if c do h2 else h1
+	print("struct=%", h.n)
+
+	p1 : Pick = One{n = 1}
+	p2 : Pick = Two{m = 2}
+	p := if c do p2 else p1
+	match p {
+	One o
+		print("union=one %", o.n)
+	Two t
+		print("union=two %", t.m)
+	}
+
+	m : [2]Vec3
+	m[1] = Vec3{1, 2, 3}
+	b := Vec3{4, 5, 6}
+	d := if c do b else m[1]
+	showv("array", d)
+	showv("arrayarg", if c do m[1] else b)
+	e := if c do [2]i64{k * 3 + 1, 8} else [2]i64{0, 0}
+	print("arraylit=% %", e[0], e[1])
+
+	arr : [4]i64
+	arr[2] = 42
+	print("bounds=%", if c do arr[k] else 0)
+	print("overflow=%", if c do k + 8 else 0)
+}

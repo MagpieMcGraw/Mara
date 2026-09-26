@@ -1,0 +1,63 @@
+module array_value_sources
+
+//@ expect-output: elem=1 2 3
+//@ expect-output: elemarg=1 2 3
+//@ expect-output: deref=4 5 6
+//@ expect-output: derefarg=4 5 6
+//@ expect-output: viaptr=9 8 7
+//@ expect-output: field=1 2 3
+//@ expect-output: fieldderef=4 5 6
+//@ expect-output: elemderef=4 5 6
+//@ expect-output: elemelem=1 2 3
+//@ expect-output: nested=4 6
+
+// A fixed-array value read from an element (`m[i]`), a pointee (`p^`) or a
+// field reached through a pointer (`cam.obj.pos`) is represented by the address
+// of its storage. `a := m[1]` / `c := p^` / `x := cam.obj.pos` used to compile
+// and leave the local UNINITIALIZED — the decl only copied call results
+// (Pounce's `ray_origin := cam.obj.pos` was garbage). Passing `m[1]` by value,
+// or storing `m[1]` / `p^` into a field or element, was invalid IR or a codegen
+// error.
+
+Vec3 :: distinct [3]f32
+Obj :: struct { pos: Vec3 }
+Cam :: struct { obj: Obj }
+H :: struct { v: Vec3 }
+
+sv :: fun(label: []utf8, v: Vec3) { print("%=% % %", label, v[0], v[1], v[2]) }
+
+main :: fun() {
+	m : [2]Vec3
+	m[1] = Vec3{1, 2, 3}
+	b := Vec3{4, 5, 6}
+	p := &b
+
+	a := m[1]
+	sv("elem", a)
+	sv("elemarg", m[1])
+	c := p^
+	sv("deref", c)
+	sv("derefarg", p^)
+
+	camera := Cam{}
+	camera.obj.pos = Vec3{9, 8, 7}
+	cam := &camera
+	x := cam.obj.pos
+	sv("viaptr", x)
+
+	h : H
+	h.v = m[1]
+	sv("field", h.v)
+	h.v = p^
+	sv("fieldderef", h.v)
+	m[0] = p^
+	sv("elemderef", m[0])
+	m[0] = m[1]
+	sv("elemelem", m[0])
+
+	row : [3]i64 = [1, 2, 3]
+	grid : [2][3]i64
+	grid[1] = [4, 5, 6]
+	grid[0] = row
+	print("nested=% %", grid[1][0], grid[1][2])
+}

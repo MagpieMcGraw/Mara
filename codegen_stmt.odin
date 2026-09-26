@@ -1124,6 +1124,27 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                 }
                 continue
             }
+            // Union element: claim/copy the slot as a Union_Var. The scalar
+            // fallback below would bind it Scalar_Var, so a later `match` or
+            // copy would get the union loaded as a VALUE where every union
+            // consumer expects its address.
+            if ut, ut_ok := distinct_base(ret_types[i]).(^Type_Union); ut_ok {
+                size := union_byte_size(g, ut)
+                if name == "" {
+                    addr, addr_ok := gen_multi_return_target_addr(g, s, i)
+                    if !addr_ok {
+                        codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
+                    }
+                    emit_memcpy(g, addr, src_ptr, size)
+                    continue
+                }
+                if existing, exists := get_union(g, name); exists {
+                    emit_memcpy(g, existing.alloca, src_ptr, size)
+                    continue
+                }
+                g.all_vars[name] = Union_Var{alloca = src_ptr, union_name = union_key(ut)}
+                continue
+            }
         }
 
         val := fresh_tmp(g)
@@ -1253,21 +1274,21 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
                     continue
                 }
             }
-            // Array literal -> build directly into the sret slot (RVO), element
-            // by element. Partial-array elements (e.g. a [3]str64 of string
-            // literals) are constructed in place; a constant aggregate of their
-            // values would be invalid IR (SSA values in a constant) and the
-            // wrong representation (a rodata pointer where a str64 belongs).
-            if arr_lit, lit_ok := val.(^Expr_Array); lit_ok {
-                elem_ir := llvm_type_from_checker(fa.elem)
-                arr_ty := fmt.tprintf("[%d x %s]", fa.size, elem_ir)
-                for elem, idx in arr_lit.elements {
-                    gep := fresh_tmp(g)
-                    emit_array_gep_const(g, gep, arr_ty, sret_ptr, idx)
-                    store_array_literal_elem(g, gep, elem_ir, fa.elem, elem, s.span)
-                }
-                continue
-            }
+            // Anything else (a literal in either spelling, a call, a field) is
+            // built or copied straight into the sret slot by the array store —
+            // literal slots element by element, so a [3]str64 of string
+            // literals or a [2]Pick of variants is constructed in place. The
+            // scalar fallback below would store the array's ADDRESS (or an
+            // aggregate constant holding SSA values) — invalid IR.
+            _, is_utf8 := distinct_base(fa.elem).(Type_Utf8)
+            gen_store_array_into(g, sret_ptr, fa.size, llvm_type_from_checker(fa.elem), val, is_utf8)
+            continue
+        }
+        // Union slot: a variant literal is built in place; any other union
+        // value is pointer-valued and copied by the union's true size.
+        if ut, ut_ok := resolved_type.(^Type_Union); ut_ok {
+            gen_store_union_into(g, sret_ptr, ut, val)
+            continue
         }
         // Struct returns: field-wise copy from src alloca to sret (can't use
         // `store %struct %ptr` — the value operand must be a struct, not a ptr).
@@ -1307,7 +1328,10 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
                 }
             }
             if src == "" {
-                src = gen_expr(g, val, elem_type)
+                // Not gen_expr: a fixed array or string literal decaying to the
+                // slice yields its DATA pointer there, which the memcpy would
+                // read as a header.
+                src = gen_slice_value_ptr(g, val)
             }
             if src == sret_ptr { continue }
             emit_memcpy(g, sret_ptr, src, slice_header_bytes)
@@ -1429,11 +1453,11 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
     } else if arr_lit, lit_ok := arr_ret_val.(^Expr_Array); lit_ok {
         // Case B: returning an array literal
         handled = true
+        et := literal_elem_type(arr_lit)
         for elem, i in arr_lit.elements {
-            val := gen_expr(g, elem, sret_av.elem_type)
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
-            emit_store(g, sret_av.elem_type, val, gep)
+            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, arr_lit.span)
         }
     } else if call, call_ok := arr_ret_val.(^Expr_Call); call_ok {
         // Case C: returning result of another array-returning call
@@ -1452,21 +1476,14 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         // just a GEP+store into sret. Without this case the return was
         // silently emitting `ret void` with no writes — every distinct-
         // array literal return produced uninitialized output. A
-        // `[N]Struct = all S()` broadcast return lands here too; its slots are
-        // struct constructions, so route those through the in-place ctor
-        // instead of the scalar gen_expr+store (which would store a ptr).
+        // `[N]T = all x` broadcast return lands here too.
         handled = true
-        elem_sd := broadcast_array_elem_struct(sl.type_)
+        et := literal_elem_type(sl)
         for elem, i in sl.array_values {
             if elem == nil { continue }   // nil slot — leave as zero
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
-            if elem_sd != nil {
-                gen_store_struct_into(g, gep, elem_sd, elem)
-            } else {
-                val := gen_expr(g, elem, sret_av.elem_type)
-                emit_store(g, sret_av.elem_type, val, gep)
-            }
+            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, sl.span)
         }
     }
     if !handled {

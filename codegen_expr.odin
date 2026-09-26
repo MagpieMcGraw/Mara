@@ -203,6 +203,14 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                     // as pointers (to the struct, the union, the header)
                     return ptr_val
                 }
+                if fa, is_fa := distinct_base(pt.elem).(^Type_Fixed_Array); is_fa {
+                    // ^[N]T: the array's storage, published the way an array
+                    // element or field is (claim_field_array) — loading the
+                    // whole array as a value is what a by-value param wants,
+                    // and that consumer loads on claim.
+                    set_field_result(g, Array_Var{alloca = ptr_val, capacity = fa.size, elem_type = llvm_type_from_checker(fa.elem)})
+                    return ptr_val
+                }
                 if !is_untyped(pt.elem) {
                     deref_type = llvm_type_from_checker(pt.elem)
                 }
@@ -266,13 +274,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         return gen_call(g, e)
 
     case ^Expr_Array:
-        // Try to emit as an LLVM inline constant (works for literals)
-        fa_type := e.type_
-        // Unwrap distinct type to get the underlying fixed array
-        if dt, dt_ok := fa_type.(^Type_Distinct); dt_ok {
-            fa_type = dt.base_type
-        }
-        if fa, fa_ok := fa_type.(^Type_Fixed_Array); fa_ok {
+        if fa, fa_ok := distinct_base(e.type_).(^Type_Fixed_Array); fa_ok {
             elem_t := llvm_type_from_checker(fa.elem)
             // If element type is inferred and we have a target type, extract element type from it
             // e.g. target_type="[4 x float]" → elem_t="float"
@@ -284,16 +286,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                     }
                 }
             }
-            parts: [dynamic]string
-            for elem in e.elements {
-                val := gen_expr(g, elem, elem_t)
-                append(&parts, fmt.tprintf("%s %s", elem_t, val))
-            }
-            // Pad remaining elements with zeroinitializer
-            for _ in len(e.elements)..<fa.size {
-                append(&parts, fmt.tprintf("%s 0", elem_t))
-            }
-            return fmt.tprintf("[%s]", strings.join(parts[:], ", "))
+            return gen_array_literal_value(g, e, fa, elem_t, e.elements[:])
         }
         return "zeroinitializer"
     case ^Expr_Index:
@@ -313,41 +306,11 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
             }
             return "0"
         }
-        // Distinct-fixed-array literal (Quat{...} / Vec3{...}): emit as an inline
-        // LLVM array constant, with nil slots rendered as `elem 0`.
+        // Distinct-fixed-array literal (Quat{...} / Vec3{...}); nil slots are
+        // zero-fill.
         if e.array_values != nil {
-            fa_type := e.type_
-            if dt, dt_ok := fa_type.(^Type_Distinct); dt_ok {
-                fa_type = dt.base_type
-            }
-            if fa, fa_ok := fa_type.(^Type_Fixed_Array); fa_ok {
-                // Struct elements (`all Cell()` in value position, e.g. a call
-                // argument) can't be an inline array constant — each slot needs
-                // its ctor. Materialize into a temp, construct per slot through
-                // the unified store, then load the aggregate as a by-value value
-                // (matching how a [N]Struct parameter is passed).
-                if sd := as_struct_body(fa.elem); sd != nil {
-                    elem_ir := struct_llvm_name(struct_key(sd))
-                    arr_ir := fmt.tprintf("[%d x %s]", fa.size, elem_ir)
-                    tmp := fresh_tmp(g)
-                    emit_alloca(g, tmp, arr_ir)
-                    gen_store_array_into(g, tmp, fa.size, elem_ir, e)
-                    loaded := fresh_tmp(g)
-                    emit_load_into(g, loaded, arr_ir, tmp)
-                    return loaded
-                }
-                elem_t := llvm_type_from_checker(fa.elem)
-                zero_lit := elem_t == "float" || elem_t == "double" ? "0.0" : "0"
-                parts: [dynamic]string
-                for elem in e.array_values {
-                    if elem == nil {
-                        append(&parts, fmt.tprintf("%s %s", elem_t, zero_lit))
-                    } else {
-                        val := gen_expr(g, elem, elem_t)
-                        append(&parts, fmt.tprintf("%s %s", elem_t, val))
-                    }
-                }
-                return fmt.tprintf("[%s]", strings.join(parts[:], ", "))
+            if fa, fa_ok := distinct_base(e.type_).(^Type_Fixed_Array); fa_ok {
+                return gen_array_literal_value(g, e, fa, llvm_type_from_checker(fa.elem), e.array_values[:])
             }
         }
         // Empty struct/array literal or {0} used as zero-initializer (e.g. obj.field = {})
@@ -648,20 +611,136 @@ gen_if_expr :: proc(g: ^Codegen, e: ^Expr_If, target_type: string = "") -> strin
 
     emit_cond_br(g, cond_val, then_label, else_label)
 
+    // A struct, union, slice / partial-array header or fixed array is
+    // represented by a pointer to its storage, so the branches yield pointers:
+    // merge those, not aggregate values.
+    by_address := is_pointer_valued_type(e.type_)
+    branch :: proc(g: ^Codegen, x: Expr, t: Type, target_type: string, by_address: bool) -> string {
+        if by_address { return gen_value_address(g, x, t, target_type) }
+        return gen_expr(g, x, target_type)
+    }
+
+    // Each branch ends in its own exit block, and THAT is the phi's
+    // predecessor: a branch expression can open blocks of its own (a bounds
+    // check, an overflow-checked `+`), so its value doesn't necessarily arrive
+    // from the block it started in — naming then/else_label made an invalid phi.
     emit_raw(g, fmt.tprintf("%s:", then_label))
-    then_val := gen_expr(g, e.then_expr, target_type)
+    then_val := branch(g, e.then_expr, e.type_, target_type, by_address)
+    then_exit := fresh_label(g, "ifx.then.exit")
+    emit_br(g, then_exit)
+    emit_raw(g, fmt.tprintf("%s:", then_exit))
     emit_br(g, end_label)
 
     emit_raw(g, fmt.tprintf("%s:", else_label))
-    else_val := gen_expr(g, e.else_expr, target_type)
+    else_val := branch(g, e.else_expr, e.type_, target_type, by_address)
+    else_exit := fresh_label(g, "ifx.else.exit")
+    emit_br(g, else_exit)
+    emit_raw(g, fmt.tprintf("%s:", else_exit))
     emit_br(g, end_label)
 
     emit_raw(g, fmt.tprintf("%s:", end_label))
     result := fresh_tmp(g)
     result_type := target_type != "" ? target_type : expr_ir_type(g, e.then_expr)
+    if by_address { result_type = "ptr" }
     emit(g, "  %s = phi %s [ %s, %%%s ], [ %s, %%%s ]",
-        result, result_type, then_val, then_label, else_val, else_label)
+        result, result_type, then_val, then_exit, else_val, else_exit)
+    if fa, is_fa := distinct_base(e.type_).(^Type_Fixed_Array); is_fa {
+        // Publish the merged array's storage like an array element / field
+        // (claim_field_array), replacing whatever a branch left pending.
+        set_field_result(g, Array_Var{alloca = result, capacity = fa.size, elem_type = llvm_type_from_checker(fa.elem)})
+    }
     return result
+}
+
+// An array literal as a by-value `[N x T]` IR value — the fixed-array param
+// ABI, and an inline constant when every slot is constant. `values` are the
+// slots (nil = zero), zero-padded to the array's size. Slots of a
+// pointer-valued type (struct, union, slice, partial array, nested fixed
+// array) are built in a temp through the element store and loaded: gen_expr on
+// them yields an address, not a value. A runtime scalar can't sit inside an
+// LLVM constant, so such slots are folded in with insertvalue.
+gen_array_literal_value :: proc(g: ^Codegen, lit: Expr, fa: ^Type_Fixed_Array, elem_t: string, values: []Expr) -> string {
+    arr_ir := fmt.tprintf("[%d x %s]", fa.size, elem_t)
+    if is_pointer_valued_type(fa.elem) {
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, arr_ir)
+        gen_store_array_into(g, tmp, fa.size, elem_t, lit)
+        loaded := fresh_tmp(g)
+        emit_load_into(g, loaded, arr_ir, tmp)
+        return loaded
+    }
+    zero := "0"
+    if elem_t == "float" || elem_t == "double" { zero = "0.0" } else if elem_t == "ptr" { zero = "null" }
+    vals := make([]string, fa.size, context.temp_allocator)
+    runtime := false
+    for i in 0..<fa.size {
+        vals[i] = zero
+        if i < len(values) && values[i] != nil {
+            vals[i] = gen_expr_coerced(g, values[i], elem_t)
+            if strings.has_prefix(vals[i], "%") { runtime = true }
+        }
+    }
+    if !runtime {
+        parts := make([]string, fa.size, context.temp_allocator)
+        for v, i in vals { parts[i] = fmt.tprintf("%s %s", elem_t, v) }
+        return fmt.tprintf("[%s]", strings.join(parts, ", "))
+    }
+    agg := "zeroinitializer"
+    for v, i in vals {
+        if v == zero { continue }
+        t := fresh_tmp(g)
+        emit(g, "  %s = insertvalue %s %s, %s %s, %d", t, arr_ir, agg, elem_t, v, i)
+        agg = t
+    }
+    return agg
+}
+
+// `e` (of pointer-valued type `t`) as the ADDRESS of its storage — for merge
+// points like a ternary's phi, where every incoming value must be one. gen_expr
+// already yields an address for these types except where a value decays or is
+// spelled literally: a slice source (string literal, fixed array) yields its
+// DATA pointer, and an array literal yields its by-value aggregate. Those get a
+// header / a temp.
+gen_value_address :: proc(g: ^Codegen, e: Expr, t: Type, target_type: string) -> string {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Slice:
+        return gen_slice_value_ptr(g, e)
+    case ^Type_Fixed_Array:
+        lit := e
+        if cv, ok := codegen_const_value(g, e); ok { lit = cv }
+        if is_array_literal(lit) {
+            elem_ir := llvm_type_from_checker(v.elem)
+            tmp := fresh_tmp(g)
+            emit_alloca(g, tmp, fmt.tprintf("[%d x %s]", v.size, elem_ir))
+            _, is_utf8 := distinct_base(v.elem).(Type_Utf8)
+            gen_store_array_into(g, tmp, v.size, elem_ir, lit, is_utf8)
+            return tmp
+        }
+    }
+    return gen_expr(g, e, target_type)
+}
+
+// A fixed-array literal in either spelling: `[a, b]` or `T{a, b}` (a struct
+// literal the checker resolved to per-slot array_values).
+is_array_literal :: proc(e: Expr) -> bool {
+    #partial switch v in e {
+    case ^Expr_Array:          return true
+    case ^Expr_Struct_Literal: return v.array_values != nil
+    }
+    return false
+}
+
+// Values of these kinds are represented in codegen by a pointer to their
+// storage — gen_expr yields that pointer, not an aggregate value. (An array
+// LITERAL is the exception: gen_expr yields it by value, see
+// gen_array_literal_value; gen_value_address spills it.)
+is_pointer_valued_type :: proc(t: Type) -> bool {
+    if as_struct_body(distinct_base(t)) != nil { return true }
+    #partial switch _ in distinct_base(t) {
+    case ^Type_Union, ^Type_Slice, ^Type_Partial_Array, ^Type_Fixed_Array:
+        return true
+    }
+    return false
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,20 +1263,14 @@ gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
         return emit_build_temp_slice(g, data_ptr, size_str, cap_str)
     }
     if fa, fa_ok := distinct_base(arg_checker_type).(^Type_Fixed_Array); fa_ok {
-        // Array literal: materialize on stack, then build slice
-        if al, al_ok := arg.(^Expr_Array); al_ok {
+        // Array literal (either spelling): materialize on the stack, then build
+        // the slice over it — gen_expr would yield the literal's by-value
+        // aggregate, not a data pointer.
+        if is_array_literal(arg) {
             elem_ir := llvm_type_from_checker(fa.elem)
-            arr_type := fmt.tprintf("[%d x %s]", fa.size, elem_ir)
             arr_alloca := fresh_tmp(g)
-            emit_alloca(g, arr_alloca, arr_type)
-            total_bytes := fa.size * elem_byte_size(elem_ir, g.checked)
-            emit_memset_zero(g, arr_alloca, total_bytes)
-            for elem, ei in al.elements {
-                val := gen_expr(g, elem, elem_ir)
-                gep := fresh_tmp(g)
-                emit_array_gep_const(g, gep, arr_type, arr_alloca, ei)
-                emit_store(g, elem_ir, val, gep)
-            }
+            emit_alloca(g, arr_alloca, fmt.tprintf("[%d x %s]", fa.size, elem_ir))
+            gen_store_array_into(g, arr_alloca, fa.size, elem_ir, arg)
             size_str := fmt.tprintf("%d", fa.size)
             return emit_build_temp_slice(g, arr_alloca, size_str, size_str)
         }
@@ -1256,7 +1329,9 @@ gen_array_param_arg :: proc(g: ^Codegen, arg: Expr, pt: string, val: string) -> 
     #partial switch a in arg {
     case ^Expr_Ident:
         _, needs_load = get_array(g, a.name)
-    case ^Expr_Field_Access:
+    case ^Expr_Field_Access, ^Expr_Index, ^Expr_If:
+        // A field, an element (`m[i]`) or a ternary publish the array's
+        // storage (set_field_result); `val` is its address.
         _, needs_load = claim_field_array(g)
     case ^Expr_Call:
         _, needs_load = claim_call_result(g)
@@ -1276,6 +1351,8 @@ gen_array_param_arg :: proc(g: ^Codegen, arg: Expr, pt: string, val: string) -> 
         // same load so it can flow into a `[N x T]` param.
         if _, has_overload := a.overload_fn.?; has_overload {
             _, needs_load = claim_call_result(g)
+        } else if a.op == .Caret {
+            _, needs_load = claim_field_array(g) // `p^`: the pointee's address
         }
     }
     if needs_load {

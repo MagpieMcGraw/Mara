@@ -159,15 +159,44 @@ gen_partial_array_init_value :: proc(g: ^Codegen, pa_ptr: string, value: Expr, e
     }
 }
 
-// Store one array-literal element into slot `gep`. Scalars store directly; a
-// partial-array element type (str64, etc.) is built IN PLACE — header stamped,
-// inline zeroed, value copied — because a typed store would dump a pointer or a
-// bare {len,cap,ptr,[N]} where a properly-anchored partial array must live (a
-// string literal would land as its rodata pointer, not its bytes).
-store_array_literal_elem :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span) {
-    pa, is_pa := distinct_base(elem_type).(^Type_Partial_Array)
+// The element type an array literal's slots hold: the destination's when the
+// caller knows it, else the literal's own checker-stamped type.
+literal_elem_type :: proc(lit: Expr, known: Type = nil) -> Type {
+    if known != nil { return known }
+    return index_elem_type(expr_type(lit))
+}
+
+// Store one element of type `elem_type` into slot `gep` — the single dispatch
+// every array-literal / broadcast slot fill goes through. Structs, unions,
+// slices, partial arrays and fixed arrays are POINTER-valued (gen_expr yields
+// the address of their storage), so a typed store of gen_expr's result would
+// write an address where the value belongs — or be invalid IR. Each is built
+// or copied in place by its own store primitive; only scalars are generated
+// and stored. A partial-array element (str64, etc.) is built IN PLACE — header
+// stamped, inline zeroed, value copied — so a string literal lands as its
+// bytes, not its rodata pointer. `elem_ir` is the slot's IR type, for scalars
+// whose checker type is still an inference placeholder.
+gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span) {
+    base := distinct_base(elem_type)
+    if sd := as_struct_body(base); sd != nil {
+        gen_store_struct_into(g, gep, sd, elem)
+        return
+    }
+    pa, is_pa := base.(^Type_Partial_Array)
+    #partial switch t in base {
+    case ^Type_Union:
+        gen_store_union_into(g, gep, t, elem)
+        return
+    case ^Type_Slice:
+        gen_store_slice_into(g, gep, elem)
+        return
+    case ^Type_Fixed_Array:
+        _, is_utf8 := distinct_base(t.elem).(Type_Utf8)
+        gen_store_array_into(g, gep, t.size, llvm_type_from_checker(t.elem), elem, is_utf8)
+        return
+    }
     if !is_pa {
-        val := gen_expr(g, elem, elem_ir)
+        val := gen_expr_coerced(g, elem, elem_ir)
         emit_store(g, elem_ir, val, gep)
         return
     }
@@ -321,31 +350,24 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
             total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
             emit_memset_zero(g, av.alloca, total_bytes)
         }
+        et := literal_elem_type(arr_lit, elem_mara)
         for elem, i in arr_lit.elements {
-            val := gen_expr(g, elem, elem_type)
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, av.alloca, i)
-            emit_store(g, elem_type, val, gep)
+            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span)
         }
     } else if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         // Distinct-fixed-array struct literal (Quat{...}). Zero-init the slab
         // then store each non-nil slot; nil entries were checker-marked as
-        // zero-fill. A `[N]Struct = all S()` broadcast lands here too — its
-        // slots are struct constructions, so route those through the in-place
-        // ctor (gen_store_struct_into) rather than the scalar gen_expr+store.
+        // zero-fill. A `[N]T = all x` broadcast lands here too.
         total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
         emit_memset_zero(g, av.alloca, total_bytes)
-        elem_sd := broadcast_array_elem_struct(sl.type_)
+        et := literal_elem_type(sl, elem_mara)
         for elem, i in sl.array_values {
             if elem == nil { continue }
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, av.alloca, i)
-            if elem_sd != nil {
-                gen_store_struct_into(g, gep, elem_sd, elem)
-            } else {
-                val := gen_expr(g, elem, elem_type)
-                emit_store(g, elem_type, val, gep)
-            }
+            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span)
         }
     } else {
         // Value is an expression — copy from another array
@@ -407,39 +429,36 @@ gen_array_copy_expr :: proc(g: ^Codegen, name: string, value: Expr) {
         return
     }
 
-    // Field access (multi-component swizzle): arr.xy → temp array
-    if fa, fa_ok := value.(^Expr_Field_Access); fa_ok {
-        gen_field_access(g, fa)  // triggers gen_swizzle_read_multi → sets temp_swizzle_result
-        if sr, sr_ok := claim_swizzle_result(g); sr_ok {
-            dst, _ := get_array(g, name)
-            src_arr_type := array_var_type(&sr)
-            dst_arr_type := array_var_type(&dst)
-            count := sr.capacity
-            for i := 0; i < count; i += 1 {
-                src_gep := fresh_tmp(g)
-                emit_array_gep_const(g, src_gep, src_arr_type, sr.alloca, i)
-                val := fresh_tmp(g)
-                emit_load_into(g, val, dst.elem_type, src_gep)
-                dst_gep := fresh_tmp(g)
-                emit_array_gep_const(g, dst_gep, dst_arr_type, dst.alloca, i)
-                emit_store(g, dst.elem_type, val, dst_gep)
-            }
-            return
-        }
-    }
-
-    // Fallback: evaluate expression (e.g. function call returning array)
+    // Any other expression: evaluate it ONCE and copy the array it published —
+    // a multi-component swizzle's temp (arr.xy), a call's result, or the
+    // storage of a field / element / pointee / ternary. Anything else would
+    // silently leave the destination unwritten.
+    dst, _ := get_array(g, name)
+    total_bytes := dst.capacity * elem_byte_size(dst.elem_type)
     gen_expr(g, value)
-
-    // If the expression produced a call result array, copy it into the destination
-    if cr, cr_ok := claim_call_result(g); cr_ok {
-        dst, dst_ok := get_array(g, name)
-        if dst_ok {
-            total_bytes := dst.capacity * elem_byte_size(dst.elem_type)
-            emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)",
-                dst.alloca, cr.alloca, total_bytes)
+    if sr, sr_ok := claim_swizzle_result(g); sr_ok {
+        src_arr_type := array_var_type(&sr)
+        dst_arr_type := array_var_type(&dst)
+        for i := 0; i < sr.capacity; i += 1 {
+            src_gep := fresh_tmp(g)
+            emit_array_gep_const(g, src_gep, src_arr_type, sr.alloca, i)
+            val := fresh_tmp(g)
+            emit_load_into(g, val, dst.elem_type, src_gep)
+            dst_gep := fresh_tmp(g)
+            emit_array_gep_const(g, dst_gep, dst_arr_type, dst.alloca, i)
+            emit_store(g, dst.elem_type, val, dst_gep)
         }
+        return
     }
+    if cr, cr_ok := claim_call_result(g); cr_ok {
+        emit_memcpy(g, dst.alloca, cr.alloca, total_bytes)
+        return
+    }
+    if src, src_ok := claim_field_array(g); src_ok {
+        emit_memcpy(g, dst.alloca, src.alloca, total_bytes)
+        return
+    }
+    codegen_fatal(g, expr_span(value)^, CODE_GEN_STORE_ARRAY_UNHANDLED_RHS)
 }
 
 // Handle: arr[idx] = value
@@ -461,18 +480,10 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if chain, chain_ok := build_address_chain(g, ix); chain_ok {
         elem_ptr := emit_address_chain(g, &chain)
         apply_compound_load_substitute(g, s, elem_ptr, chain.final_type)
-        elem_t := distinct_base(index_elem_type(expr_type(ix.expr)))
-        _, slice_elem := elem_t.(^Type_Slice)
-        union_elem, is_union_elem := elem_t.(^Type_Union)
         if chain.final_kind == .Struct {
             gen_struct_store_at(g, elem_ptr, chain.struct_name, s.value)
-        } else if slice_elem {
-            gen_store_slice_into(g, elem_ptr, s.value) // a slice element: copy the header
-        } else if is_union_elem {
-            gen_store_union_into(g, elem_ptr, union_elem, s.value)
         } else {
-            val := gen_expr_coerced(g, s.value, chain.final_type)
-            emit_store(g, chain.final_type, val, elem_ptr)
+            gen_store_elem_into(g, elem_ptr, chain.final_type, index_elem_type(expr_type(ix.expr)), s.value, s.span)
         }
         return
     }
@@ -507,11 +518,8 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         if strings.has_prefix(sv.elem_type, "%class.") {
             elem_struct := sv.elem_type[len("%class."):]
             gen_struct_store_at(g, elem_ptr, elem_struct, s.value)
-        } else if ut, is_union := distinct_base(index_elem_type(expr_type(ix.expr))).(^Type_Union); is_union {
-            gen_store_union_into(g, elem_ptr, ut, s.value)
         } else {
-            val := gen_expr_coerced(g, s.value, sv.elem_type)
-            emit_store(g, sv.elem_type, val, elem_ptr)
+            gen_store_elem_into(g, elem_ptr, sv.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span)
         }
         return
     }
@@ -537,8 +545,7 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         elem_struct := av.elem_type[len("%class."):]
         gen_struct_store_at(g, gep, elem_struct, s.value)
     } else {
-        val := gen_expr_coerced(g, s.value, av.elem_type)
-        emit_store(g, av.elem_type, val, gep)
+        gen_store_elem_into(g, gep, av.elem_type, index_elem_type(expr_type(ix.expr)), s.value, s.span)
     }
 }
 

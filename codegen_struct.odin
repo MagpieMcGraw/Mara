@@ -1009,18 +1009,6 @@ gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, arr
     gen_store_array_into(g, data_ptr, array_cap, array_elem, value)
 }
 
-// For a broadcast/distinct fixed-array literal, return the element's struct
-// body when the element type is a struct/class — so each slot is constructed
-// in place (e.g. `[4]Cell = all Cell()` runs Cell()'s ctor per slot). Returns
-// nil for scalar elements (Quat-style f32 slots) and when the literal carries
-// no type, leaving the plain gen_expr+store path in charge.
-broadcast_array_elem_struct :: proc(lit_type: Type) -> ^Scope_Body {
-    if lit_type == nil { return nil }
-    if fa, ok := distinct_base(lit_type).(^Type_Fixed_Array); ok {
-        return as_struct_body(fa.elem)
-    }
-    return nil
-}
 
 // Single point of truth for "store an array value into a destination pointer".
 // Handles every RHS shape that can produce a fixed-array value:
@@ -1039,6 +1027,12 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
     ebs := elem_byte_size(elem_type, g.checked)
     total_bytes := alloc_cap * ebs
+
+    // A constant RHS inlines its value expression (as gen_array_assign does).
+    value := value
+    if vexpr, vok := codegen_const_value(g, value); vok {
+        value = vexpr
+    }
 
     if value == nil {
         emit_memset_zero(g, dst_ptr, total_bytes)
@@ -1076,33 +1070,26 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
         if len(arr_lit.elements) < alloc_cap {
             emit_memset_zero(g, dst_ptr, total_bytes)
         }
+        et := literal_elem_type(arr_lit)
         for elem, i in arr_lit.elements {
-            val := gen_expr(g, elem, elem_type)
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
-            emit_store(g, elem_type, val, gep)
+            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span)
         }
         return
     }
 
     // Distinct-fixed-array struct literal (Quat{...} etc.) — array_values has
-    // per-slot exprs, nil meaning zero-fill. A `[N]Struct = all S()` broadcast
-    // also lands here; its slots are struct constructions, so route those
-    // through gen_store_struct_into (in-place ctor) instead of the scalar
-    // gen_expr+store, which would store a ptr where a struct value is expected.
+    // per-slot exprs, nil meaning zero-fill. A `[N]T = all x` broadcast also
+    // lands here.
     if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         emit_memset_zero(g, dst_ptr, total_bytes)
-        elem_sd := broadcast_array_elem_struct(sl.type_)
+        et := literal_elem_type(sl)
         for elem, i in sl.array_values {
             if elem == nil { continue }
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
-            if elem_sd != nil {
-                gen_store_struct_into(g, gep, elem_sd, elem)
-            } else {
-                val := gen_expr(g, elem, elem_type)
-                emit_store(g, elem_type, val, gep)
-            }
+            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span)
         }
         return
     }
@@ -1207,12 +1194,23 @@ gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_t
         }
     }
 
+    // An element (`m[i]`), a pointee (`p^`) or a ternary publishes the array's
+    // storage (set_field_result): copy from it.
+    #partial switch _ in value {
+    case ^Expr_Index, ^Expr_Unary, ^Expr_If:
+        gen_expr(g, value)
+        if src, src_ok := claim_field_array(g); src_ok {
+            if src.alloca != dst_ptr { emit_memcpy(g, dst_ptr, src.alloca, total_bytes) }
+            return
+        }
+    }
+
     // Every supported RHS shape was checked above. Falling through here means
     // a new expression kind is reaching the array-store path without a
     // handler; emit a hard error rather than silently zeroing the destination
     // (which is exactly the kind of dropped-computation bug that motivated
     // CLAUDE.md's "errors over fallbacks" rule).
-    codegen_fatal(g, {}, CODE_GEN_STORE_ARRAY_UNHANDLED_RHS)
+    codegen_fatal(g, expr_span(value)^, CODE_GEN_STORE_ARRAY_UNHANDLED_RHS)
 }
 
 
