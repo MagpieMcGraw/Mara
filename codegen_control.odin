@@ -377,39 +377,31 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             emit_elem_gep(g, elem_ptr, elem_ir, data_ptr, body_idx, w)
         }
 
-        // Check element kind: struct, slice, or scalar
-        is_struct_elem := false
-        struct_name := ""
-        if sd := as_struct_body(s.elem_type_); sd != nil {
-            is_struct_elem = true
-            struct_name = sd.name
-        }
-        is_slice_elem := false
-        is_utf8_slice := false
-        if sl, sl_ok := s.elem_type_.(^Type_Slice); sl_ok {
-            is_slice_elem = true
-            _, is_byte := sl.elem.(Type_Byte)
-            _, is_utf8 := sl.elem.(Type_Utf8)
-            is_utf8_slice = is_byte || is_utf8
-        }
-
-        if is_struct_elem {
-            // Struct element: alloca + memcpy
+        // The loop variable is a copy of the element. An aggregate one (struct,
+        // union, fixed array, slice header, partial array) is copied into its
+        // own slot — partial arrays inside re-pointed — and bound by kind;
+        // a scalar is loaded and stored.
+        elem_base := distinct_base(s.elem_type_)
+        if is_pointer_valued_type(elem_base) {
             elem_alloca := fmt.tprintf("%%%s", s.elem_var)
-            st_llvm_name := struct_llvm_name(struct_name)
-            emit_alloca(g, elem_alloca, st_llvm_name)
-            if st_def, st_ok := lookup_struct(g, struct_name); st_ok {
-                sz := struct_byte_size(st_def, g.checked)
-                emit_memcpy(g, elem_alloca, elem_ptr, sz)
-                reanchor_partial_arrays(g, sd_type_scope(st_def), elem_alloca)
+            emit_alloca(g, elem_alloca, elem_ir)
+            emit_value_copy(g, s.elem_type_, elem_alloca, elem_ptr)
+            if sd := as_struct_body(elem_base); sd != nil {
+                g.all_vars[s.elem_var] = Struct_Var{elem_alloca, sd.name}
             }
-            g.all_vars[s.elem_var] = Struct_Var{elem_alloca, struct_name}
-        } else if is_slice_elem {
-            // Slice element: alloca slice header + memcpy
-            elem_alloca := fmt.tprintf("%%%s", s.elem_var)
-            emit_slice_alloca(g, elem_alloca)
-            emit_memcpy(g, elem_alloca, elem_ptr, slice_header_bytes)
-            g.all_vars[s.elem_var] = Slice_Var{alloca = elem_alloca, elem_type = "i8", is_utf8 = is_utf8_slice}
+            #partial switch et in elem_base {
+            case ^Type_Union:
+                g.all_vars[s.elem_var] = Union_Var{alloca = elem_alloca, union_name = union_key(et)}
+            case ^Type_Fixed_Array:
+                _, utf8 := et.elem.(Type_Utf8)
+                g.all_vars[s.elem_var] = Array_Var{alloca = elem_alloca, capacity = et.size, elem_type = llvm_type_from_checker(et.elem), is_utf8 = utf8}
+            case ^Type_Slice:
+                _, utf8 := et.elem.(Type_Utf8)
+                g.all_vars[s.elem_var] = Slice_Var{alloca = elem_alloca, elem_type = llvm_type_from_checker(et.elem), is_utf8 = utf8}
+            case ^Type_Partial_Array:
+                _, utf8 := et.elem.(Type_Utf8)
+                g.all_vars[s.elem_var] = Slice_Var{alloca = elem_alloca, elem_type = llvm_type_from_checker(et.elem), is_utf8 = utf8}
+            }
         } else {
             // Scalar element: alloca + load + store
             elem_alloca := fmt.tprintf("%%%s", s.elem_var)

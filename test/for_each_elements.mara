@@ -1,0 +1,57 @@
+module for_each_elements
+
+//@ expect-output: vec=1 2 3
+//@ expect-output: pa=orc 3
+//@ expect-output: pa=Xlf 3
+//@ expect-output: one 4
+//@ expect-output: two 9
+//@ expect-output: slice=5 6
+//@ expect-output: slice=7 8
+//@ expect-output: struct=imp
+
+// `for x in coll` binds x to a COPY of each element, by the element's kind. It
+// knew structs, slices and scalars only: a fixed-array element (Vec3) became a
+// scalar ('v' is not an array or slice), a partial-array or union element was
+// loaded as a value, and a slice element got a hardcoded byte element type
+// (`for s in list` over [][]i64 indexed bytes). The copy re-points partial
+// arrays inside it, so it's independent of later writes to the collection.
+
+V3 :: distinct [3]f32
+Pick :: union(tag u8) { One = 1 { n: i64 } Two = 2 { m: i64 } }
+Named :: struct { name: [..8]utf8, n: i64 }
+main :: fun() {
+	vs : [3]V3
+	vs[1] = V3{1, 2, 3}
+	for v in vs { print("vec=% % %", v[0], v[1], v[2]) }
+	names : [2][..8]utf8
+	names[0] = "orc"
+	names[1] = "elf"
+	for n in names {
+		names[1][0] = 'X'
+		print("pa=% %", n, n.len)
+	}
+	ps : [2]Pick
+	ps[0] = One{n = 4}
+	ps[1] = Two{m = 9}
+	for p in ps {
+		match p {
+		One o
+			print("one %", o.n)
+		Two t
+			print("two %", t.m)
+		}
+	}
+	a : [2]i64 = [5, 6]
+	b : [2]i64 = [7, 8]
+	ls : [2][]i64
+	ls[0] = a[:]
+	ls[1] = b[:]
+	for s in ls { print("slice=% %", s[0], s[1]) }
+	es : [2]Named
+	es[0].name = "imp"
+	for e in es {
+		es[0].name[0] = 'Q'
+		print("struct=%", e.name)
+		break
+	}
+}
