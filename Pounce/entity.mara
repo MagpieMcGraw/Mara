@@ -67,7 +67,7 @@ game_create_shapes_line :: fun(arr: ^[]Shape, start_x: f32, size: f32, spacing: 
 		shape.obj.dir            = QUAT_IDENTITY
 		shape.visual.texture.layer = u32(i)
 		shape.visual.texture.name  = ""
-		shape.visual.texture.uv    = [1, 1, 0, 0]   // ATLAS_TEXTURE.uv
+		shape.visual.texture.uv    = ATLAS_TEXTURE.uv
 		arr + shape
 	}
 }
@@ -87,7 +87,7 @@ game_create_shapes_half_circle :: fun(
 		fwd := shape.obj.pos - camera.obj.pos
 		shape.obj.dir             = quat_from_fwd_and_up(fwd, world_up)
 		shape.visual.texture.name  = ""
-		shape.visual.texture.uv    = [1, 1, 0, 0]   // ATLAS_TEXTURE.uv
+		shape.visual.texture.uv    = ATLAS_TEXTURE.uv
 		shape.visual.texture.layer = u32(i)
 		arr + shape
 	}
@@ -121,7 +121,7 @@ game_create_font_atlas_display :: fun(
 		shape.obj.dir              = QUAT_IDENTITY
 		shape.visual.texture.layer = u32(i)
 		shape.visual.texture.name  = ""
-		shape.visual.texture.uv    = [1, 1, 0, 0]   // full atlas
+		shape.visual.texture.uv    = ATLAS_TEXTURE.uv
 		shape.visual.resolve       = false
 		arr + shape
 	}
