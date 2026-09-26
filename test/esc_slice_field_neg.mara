@@ -1,0 +1,19 @@
+module esc_slice_field_neg
+//@ expect-fail: cannot return local reference
+
+// A slice FIELD read back out of a local struct carries what was stored in it.
+
+Holder :: struct { sl: []i64 }
+
+leak :: fun() -> []i64 {
+	arr : [4]i64
+	arr[0] = 7
+	h : Holder
+	h.sl = arr[:]
+	return h.sl
+}
+
+main :: fun() {
+	s := leak()
+	print(s[0])
+}

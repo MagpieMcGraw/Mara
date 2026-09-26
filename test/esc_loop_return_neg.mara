@@ -1,0 +1,22 @@
+module esc_loop_return_neg
+//@ expect-fail: its return may reference local memory
+
+// A return inside a loop is still a return: `first` hands back `a` only from
+// inside the loop, so passing it a local and returning the result dangles.
+
+first :: fun(a: ^i64, b: ^i64, n: i64) -> ^i64 {
+	for i in 0..n {
+		if i == 0 do return a
+	}
+	return b
+}
+
+leak :: fun(q: ^i64) -> ^i64 {
+	x : i64 = 3
+	return first(&x, q, 4)
+}
+
+main :: fun() {
+	y : i64 = 1
+	print(leak(&y)^)
+}

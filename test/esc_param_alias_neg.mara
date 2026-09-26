@@ -1,0 +1,20 @@
+module esc_param_alias_neg
+//@ expect-fail: would escape
+
+// Copying a param pointer into a local doesn't launder the store target:
+// `alias` still points at the caller's Holder.
+
+Holder :: struct { p: ^i64 }
+
+stash :: fun(h: ^Holder) {
+	x : i64 = 5
+	alias := h
+	alias.p = &x
+}
+
+main :: fun() {
+	y : i64 = 1
+	h := Holder{p = &y}
+	stash(&h)
+	print(h.p^)
+}

@@ -1,0 +1,16 @@
+module esc_index_param_neg
+//@ expect-fail: would escape
+
+// An INDEXED store through a param is a store into caller memory too.
+
+stash :: fun(out: ^[..4]^i64) {
+	x : i64 = 5
+	out[0] = &x
+	out.len = 1
+}
+
+main :: fun() {
+	list : [..4]^i64
+	stash(&list)
+	print(list[0]^)
+}

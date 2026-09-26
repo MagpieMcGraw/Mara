@@ -1,0 +1,18 @@
+module esc_nested_field_neg
+//@ expect-fail: would escape
+
+// A store through a param reaches caller memory however deep the field path is.
+
+Inner :: struct { p: ^i64 }
+Outer :: struct { inner: Inner }
+
+stash :: fun(o: ^Outer) {
+	x : i64 = 5
+	o.inner.p = &x
+}
+
+main :: fun() {
+	o := Outer{}
+	stash(&o)
+	print(o.inner.p^)
+}

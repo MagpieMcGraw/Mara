@@ -682,64 +682,6 @@ Call_Edge :: struct {
 // Type environment (scope chain)
 // ---------------------------------------------------------------------------
 
-// Where a pointer/slice's backing data lives, tracked as a stack-depth
-// integer. Lower depth = lives in an outer scope = outlives more inner
-// scopes. The return-from-function check is:
-//
-//     reject iff value.depth >= env.scope_depth
-//
-// i.e. data that lives in our frame (or any inner scope of it) can't
-// outlive us. Param refs are conventionally one shallower than our frame
-// (caller-owned). Globals / literals / external returns are depth 0,
-// outliving everything in the program.
-//
-// Encoded as a struct to leave headroom: a future sibling-region story
-// (multiple arenas at the same depth) can drop a region id alongside
-// `depth` without changing the rest of the analysis.
-Provenance :: struct {
-    depth: int,
-}
-
-PROV_GLOBAL  :: Provenance{depth = 0}                                    // outlives everything
-
-// Escape frame depth = the number of enclosing .Fun scopes (a ctor/class body
-// is just a namespace, not a frame). Derived from the durable scope graph rather
-// than carried per-env: the escape check is relative (a value is rejected iff it
-// lives at OUR frame depth or deeper), so the absolute count only has to be
-// self-consistent within a function — which counting .Fun up parent_scope is.
-enclosing_fun_depth :: proc(env: ^Type_Scope) -> int {
-    d := 0
-    for s := (env if env != nil else nil); s != nil; s = s.parent_scope {
-        if s.kind == .Fun { d += 1 }
-    }
-    return d
-}
-
-prov_local :: proc(env: ^Type_Scope) -> Provenance { return Provenance{depth = enclosing_fun_depth(env)} }
-prov_param :: proc(env: ^Type_Scope) -> Provenance { return Provenance{depth = enclosing_fun_depth(env) - 1} }
-
-// One lexical block's escape state for the POST-CHECK escape pass (escape.odin):
-// the per-name facts (provenance / take-bound / locally-slice-backed) the
-// during-check analysis used to keep on Type_Env.bindings. The pass pushes/pops
-// these as it walks the control-flow tree, so name lookups resolve to the nearest
-// enclosing decl — exactly the env.parent block-scoping it replaced. The shared
-// escape helpers (expr_provenance / is_local_ref / ...) read this stack via the
-// provenance accessors; a package global rather than threading a context through
-// every accessor, since the pass is single-shot.
-Escape_Frame :: struct {
-    prov:         map[string]Provenance,
-    is_let:       map[string]bool,
-    slice_backed: map[string]bool,
-}
-g_esc: [dynamic]^Escape_Frame
-
-// Walk the escape frame stack innermost-first for `name`'s provenance.
-esc_get_prov :: proc(name: string) -> (Provenance, bool) {
-    #reverse for f in g_esc { if p, ok := f.prov[name]; ok { return p, true } }
-    return PROV_GLOBAL, false
-}
-esc_top :: proc() -> ^Escape_Frame { return g_esc[len(g_esc) - 1] if len(g_esc) > 0 else nil }
-
 // Type_Env is GONE. It was a transient per-scope handle carrying resolution state
 // during checking; over the teardown every field it held moved onto the durable
 // graph or out to a post-check pass (types -> the scope graph; parent -> the
@@ -4711,13 +4653,6 @@ is_param :: proc(env: ^Type_Scope, name: string) -> bool {
     return false
 }
 
-// Check if a variable was declared with `name : let T = src` — i.e. its storage
-// aliases an existing source pointer rather than being a fresh allocation.
-is_let_name :: proc(env: ^Type_Scope, name: string) -> bool {
-    #reverse for f in g_esc { if v, ok := f.is_let[name]; ok { return v } }
-    return false
-}
-
 // True if `name` is a parameter of a reference-type (aggregate or slice)
 // without `^`. These params are passed as pointers under the hood for
 // performance, but the missing `^` is the read-only contract — writes through
@@ -4771,60 +4706,6 @@ write_root_immutable_param :: proc(e: Expr, env: ^Type_Scope) -> (name: string, 
             return "", false
         }
     }
-}
-
-// Provenance / let-ness / local-slice-backed of a name — read off the escape
-// pass's block-scoped frame stack. (The `env` param is vestigial: kept so the
-// shared helpers can pass it, but escape state no longer lives on the env.)
-get_provenance :: proc(env: ^Type_Scope, name: string) -> Provenance {
-    p, _ := esc_get_prov(name)
-    return p
-}
-
-get_local_slice_backed :: proc(env: ^Type_Scope, name: string) -> bool {
-    #reverse for f in g_esc { if v, ok := f.slice_backed[name]; ok { return v } }
-    return false
-}
-
-set_local_slice_backed :: proc(env: ^Type_Scope, name: string) {
-    if f := esc_top(); f != nil { f.slice_backed[name] = true }
-}
-
-// Mark `name` if `value` would leave it holding slice fields pointing at
-// frame-local memory. The two paths that produce this today are calls to
-// functions with escape locals (sibling/pool storage in the caller frame)
-// and struct literals whose slice-field sources are themselves local-
-// slice-backed. Anything else: leave the flag unset (assume safe).
-mark_local_slice_backed_if_needed :: proc(c: ^Checker, env: ^Type_Scope, name: string, value: Expr) {
-    if name == "" || value == nil { return }
-    if call, ok := value.(^Expr_Call); ok {
-        if call_has_local_escape(c, call) {
-            set_local_slice_backed(env, name)
-        }
-        return
-    }
-    if lit, ok := value.(^Expr_Struct_Literal); ok {
-        for field in lit.fields {
-            if ident, id_ok := field.value.(^Expr_Ident); id_ok {
-                if get_local_slice_backed(env, ident.name) {
-                    set_local_slice_backed(env, name)
-                    return
-                }
-            }
-        }
-        return
-    }
-    if ident, ok := value.(^Expr_Ident); ok {
-        if get_local_slice_backed(env, ident.name) {
-            set_local_slice_backed(env, name)
-        }
-        return
-    }
-}
-
-// Set provenance for a name in the top escape frame.
-set_provenance :: proc(env: ^Type_Scope, name: string, p: Provenance) {
-    if f := esc_top(); f != nil { f.prov[name] = p }
 }
 
 // For a function returning a ref-typed value, find the parameter index
@@ -5391,333 +5272,6 @@ lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
         }
     }
     return nil
-}
-
-// Determine the provenance of an expression as a stack-depth integer.
-// Lower depth = lives in an outer scope = outlives more.
-//   depth = 0           — global / literal / external (outlives the program)
-//   depth = N (0 < N)   — backing data lives in a scope at depth N
-// The return-from-function check is `depth >= env.scope_depth`. Within a
-// function body, locals are at env.scope_depth and refs from params are
-// (conservatively) at env.scope_depth - 1.
-expr_provenance :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> Provenance {
-    // &x — address-of always points to the local copy, even for params.
-    // Parameters are passed by value, so &param is a pointer to stack memory.
-    if unary, ok := e.(^Expr_Unary); ok && unary.op == .Ampersand {
-        // &slice[i] / &arr[i] — the address points into the indexed thing's
-        // storage, so provenance follows the source. For a param slice the
-        // data pointer lives in the caller's memory (safe to return); for a
-        // local array it's still local (and rightly flagged on return).
-        if idx, idx_ok := unary.operand.(^Expr_Index); idx_ok {
-            return expr_provenance(c, idx.expr, env)
-        }
-        if ident, id_ok := unary.operand.(^Expr_Ident); id_ok {
-            if is_global_var(c, ident.name) { return PROV_GLOBAL }
-            // `name : let T = src` aliases src's storage; &name returns src,
-            // so the resulting pointer inherits src's provenance.
-            if is_let_name(env, ident.name) { return get_provenance(env, ident.name) }
-            // &slice_param / &ptr_param: slice and ptr params are reference
-            // types — their header lives in the caller's frame, so the
-            // address-of is a caller-owned pointer, not stack-local.
-            if is_param(env, ident.name) {
-                t := expr_type(unary.operand)
-                if _, ok := t.(^Type_Slice); ok { return prov_param(env) }
-                if _, ok := t.(^Type_Ptr);   ok { return prov_param(env) }
-            }
-            return prov_local(env) // &local and &value_param are both at our depth
-        }
-        if fa, fa_ok := unary.operand.(^Expr_Field_Access); fa_ok {
-            if ident, id_ok := fa.expr.(^Expr_Ident); id_ok {
-                if is_global_var(c, ident.name) { return PROV_GLOBAL }
-                if is_let_name(env, ident.name) { return get_provenance(env, ident.name) }
-                return prov_local(env) // &param.field and &local.field are both at our depth
-            }
-        }
-        return prov_local(env)
-    }
-    // arr[low:high] — slice of an array/slice. The resulting slice's data pointer
-    // points into the source's memory, so inherit provenance from the source.
-    if sl, ok := e.(^Expr_Slice); ok {
-        return expr_provenance(c, sl.expr, env)
-    }
-    // Variable reference — look up its tracked provenance
-    if ident, ok := e.(^Expr_Ident); ok {
-        if is_param(env, ident.name) {
-            // Reference-type params (ptr, slice): data lives in caller's frame.
-            // Value-type params (int, struct, array): local copy at our depth.
-            t := expr_type(e)
-            if _, ok := t.(^Type_Ptr); ok { return prov_param(env) }
-            if _, ok := t.(^Type_Slice); ok { return prov_param(env) }
-            return prov_local(env)
-        }
-        if is_global_var(c, ident.name) { return PROV_GLOBAL }
-        return get_provenance(env, ident.name)
-    }
-    // Field access on a struct — the slice/ptr field's data could point anywhere.
-    // We can't determine the backing memory from the field access alone.
-    // Exception: if the root variable has known provenance, inherit it for ptr fields.
-    if fa, ok := e.(^Expr_Field_Access); ok {
-        t := expr_type(e)
-        // A pointer field inherits from the root variable
-        if _, pt_ok := t.(^Type_Ptr); pt_ok {
-            return expr_provenance(c, fa.expr, env)
-        }
-        // A slice field's data pointer is independent of the struct's location.
-        // e.g., arena.base — the struct is on the stack but the slice data is from vm_reserve.
-        // We can't trace through the slice data pointer statically, so global.
-        return PROV_GLOBAL
-    }
-    // Literals (array, number, string) — backing memory at our depth.
-    if _, ok := e.(^Expr_Array); ok { return prov_local(env) }
-    if _, ok := e.(^Expr_Number); ok { return prov_local(env) }
-    if _, ok := e.(^Expr_String); ok { return prov_local(env) }
-    // Struct literal — for structs with ref fields, the value's effective
-    // depth is the max over the EXPLICITLY-ASSIGNED ref fields (those are
-    // what would dangle; the struct's bytes are sret-copied at return).
-    // Ref fields with no explicit value zero-init to null/empty — safe.
-    // So a `Megastruct{}` zero-init literal returns PROV_GLOBAL even if
-    // the type has slice fields.
-    if lit, ok := e.(^Expr_Struct_Literal); ok {
-        max_depth := -1
-        for field, i in lit.fields {
-            ft := struct_lit_field_type(c, lit, i)
-            if ft == nil || !is_ref_type(ft) { continue }
-            d := expr_provenance(c, field.value, env).depth
-            if d > max_depth { max_depth = d }
-        }
-        if max_depth >= 0 { return Provenance{depth = max_depth} }
-        return PROV_GLOBAL
-    }
-    // Function call — the callee's return value depth bounds by the max
-    // depth of the arguments at the indices the callee can return from.
-    // Set encoding handles both straight-line (single tracked index) and
-    // conditional reassignment (union across branches). Empty set →
-    // PROV_GLOBAL (the function's return is rooted in literals/globals
-    // / external sources, none of which can dangle from the caller).
-    if call, ok := e.(^Expr_Call); ok {
-        if callee := lookup_callee_scope(c, call); callee != nil {
-            arg_set := fun_return_arg_set(c, callee)
-            max_d := 0
-            for ci in arg_set {
-                if ci < 0 || ci >= len(call.args) { continue }
-                d := expr_provenance(c, call.args[ci], env).depth
-                if d > max_d { max_d = d }
-            }
-            return Provenance{depth = max_d}
-        }
-        return PROV_GLOBAL
-    }
-    return PROV_GLOBAL
-}
-
-// Emit the type error for a `return value` where `value` would dangle.
-// For calls, look up the callee's tracked arg-set and name the specific
-// parameter(s) bound to local data — turns a generic message into one
-// that points at exactly which argument is the problem.
-report_return_escape :: proc(c: ^Checker, val: Expr, span: Span, env: ^Type_Scope) {
-    if call, ok := val.(^Expr_Call); ok {
-        callee := lookup_callee_scope(c, call)
-        arg_set := fun_return_arg_set(c, callee) if callee != nil else nil
-        if callee != nil && len(arg_set) > 0 {
-            // Find which tracked args are local at the call site.
-            sb: strings.Builder
-            strings.builder_init(&sb)
-            defer strings.builder_destroy(&sb)
-            unsafe_count := 0
-            for ci in arg_set {
-                if ci < 0 || ci >= len(call.args) { continue }
-                if expr_provenance(c, call.args[ci], env).depth < enclosing_fun_depth(env) { continue }
-                if unsafe_count > 0 { strings.write_string(&sb, ", ") }
-                if ci < len(callee.typed_params) {
-                    fmt.sbprintf(&sb, "parameter `%s`", callee.typed_params[ci].name)
-                } else if st := lookup_struct_type_scope(c, callee.name); st != nil && ci < len(st.fields) {
-                    // Pure-data ctor: positional args are fields, name the field.
-                    fmt.sbprintf(&sb, "field `%s`", st.fields[ci].name)
-                } else {
-                    strings.write_string(&sb, "parameter `?`")
-                }
-                unsafe_count += 1
-            }
-            if unsafe_count > 0 {
-                noun := "argument" if unsafe_count == 1 else "arguments"
-                check_error(c, span,
-                    TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
-                    call.name, strings.to_string(sb), noun)
-                return
-            }
-        }
-    }
-    check_error(c, span,
-        TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY)
-}
-
-// Walk a function's body looking for a `return Foo{a, b}` where Foo has slice
-// fields filled by local fixed-array idents. Same shape that codegen detects
-// to drive escape-local sibling/pool allocation; here we use it to decide
-// whether the call's result has caller-local backing. True ⇒ the returned
-// struct's slice fields point into the caller's frame, so returning the
-// result further would dangle.
-function_has_local_escape :: proc(scope: ^Stmt_Scope) -> bool {
-    if scope == nil { return false }
-    return scope_has_escape_return(scope.body[:])
-}
-
-scope_has_escape_return :: proc(stmts: []Stmt) -> bool {
-    // Index local typed declarations by name for return-site lookup.
-    local_decls := make(map[string]^Stmt_Assign)
-    defer delete(local_decls)
-    collect_typed_local_decls(stmts, &local_decls)
-    for s in stmts {
-        if ret, ok := s.(Stmt_Return); ok {
-            if len(ret.values) == 0 { continue }
-            lit, lit_ok := ret.values[0].(^Expr_Struct_Literal)
-            if !lit_ok { continue }
-            for field in lit.fields {
-                ident, id_ok := field.value.(^Expr_Ident)
-                if !id_ok { continue }
-                decl, has_decl := local_decls[ident.name]
-                if !has_decl { continue }
-                if _, is_fa := decl.var_type.(^Type_Fixed_Array); !is_fa { continue }
-                // Distinguish a TRUE local array decl (`verts : [4]Vertex`,
-                // s.value == nil) from a take-bound view (`verts := take(...)`)
-                // — the latter's storage is caller-provided and the returned
-                // slice is safe to escape through.
-                if decl.value == nil {
-                    return true
-                }
-            }
-        }
-        if decl, ok := s.(^Stmt_Decl); ok {
-            if scope_has_escape_return(decl.checked[:]) { return true }
-        }
-        if if_stmt, ok := s.(^Stmt_If); ok {
-            if scope_has_escape_return(if_stmt.body[:]) { return true }
-            if scope_has_escape_return(if_stmt.else_body[:]) { return true }
-        }
-    }
-    return false
-}
-
-collect_typed_local_decls :: proc(stmts: []Stmt, out: ^map[string]^Stmt_Assign) {
-    for s in stmts {
-        if decl, ok := s.(^Stmt_Decl); ok {
-            collect_typed_local_decls(decl.checked[:], out)
-            continue
-        }
-        if assign, ok := s.(^Stmt_Assign); ok {
-            if assign.name != "" && assign.var_type != nil {
-                out[assign.name] = assign
-            }
-        }
-    }
-}
-
-// True if a call's result lives in the caller's frame because the callee
-// allocates its escape backing through the calling convention's hidden
-// trailing args. Walks the callee's AST through c.table.fun_asts. The
-// table uses both flat (`gfx_primitive_quad2`) and bare (`primitive_quad2`)
-// keys depending on the registration path, so we try the resolved name,
-// the source-level name, and a stripped-suffix fallback in turn.
-call_has_local_escape :: proc(c: ^Checker, call: ^Expr_Call) -> bool {
-    // Same callee resolution as lookup_callee_scope (pointer-first, name-keyed
-    // fallback) — delegate instead of duplicating the dance.
-    scope := lookup_callee_scope(c, call)
-    return scope != nil && function_has_local_escape(scope)
-}
-
-// Check if an expression is a pointer/slice to local stack memory that won't
-// survive the current function return. Only applies to ref types (ptr, slice) —
-// returning a struct by value is safe (copied via sret).
-is_local_ref :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> bool {
-    t := expr_type(e)
-    is_ref := false
-    if _, ok := t.(^Type_Ptr); ok { is_ref = true }
-    if _, ok := t.(^Type_Slice); ok { is_ref = true }
-    // Struct values with ref fields: the struct's bytes are sret-copied at
-    // return, but the ref-content can still dangle. Treat as ref-like for
-    // the depth check — EXCEPT when the value is a struct literal directly
-    // at the return site. Codegen's escape mechanism relocates the local
-    // backing storage of `return Foo{verts_uninit_local}` to the caller's
-    // sret region; static rejection here would block that legitimate
-    // pattern. Indirected forms (`t := Foo{verts}; return t`, or a call
-    // result) still go through the depth check.
-    if !is_ref {
-        if sd := as_struct_body(distinct_base(t)); sd != nil && struct_has_ref_field(sd) {
-            if _, lit_ok := e.(^Expr_Struct_Literal); lit_ok { return false }
-            is_ref = true
-        }
-    }
-    if !is_ref { return false }
-    return expr_provenance(c, e, env).depth >= enclosing_fun_depth(env)
-}
-
-// Check if returning `e` would leak slice fields whose backing is in our
-// frame. The escape mechanism handles direct `return StructLit{local_arr,..}`
-// (the compiler relocates the storage to the caller's sret region), but the
-// passthrough form `data := call_with_escape(); return data` doesn't — data
-// holds slice headers pointing at our locally-allocated sibling/pool buffers.
-// Same for `return call_with_escape()` when the result isn't bound: the
-// returned struct's slice fields would dangle past our frame.
-returns_locally_backed_struct :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> bool {
-    if e == nil { return false }
-    t := expr_type(e)
-    sd := as_struct_body(distinct_base(t))
-    if sd == nil { return false }
-    has_slice := false
-    for &f in sd.fields {
-        if _, sl_ok := f.type_.(^Type_Slice); sl_ok { has_slice = true; break }
-    }
-    if !has_slice { return false }
-    // Direct call result: callee returned a struct whose slice fields
-    // point into our frame because its own escape mechanism relocated
-    // them here. Re-returning that further would dangle. The depth-based
-    // laundering check is handled by is_local_ref (which treats structs
-    // with ref fields as ref-like, except for direct struct literals).
-    if call, call_ok := e.(^Expr_Call); call_ok {
-        return call_has_local_escape(c, call)
-    }
-    // Identifier: see if it was tagged as locally-slice-backed at its binding.
-    if ident, id_ok := e.(^Expr_Ident); id_ok {
-        return get_local_slice_backed(env, ident.name)
-    }
-    return false
-}
-
-// The rule: a returned slice/ptr (or a returned struct's slice/ptr FIELD) may
-// never point at this frame's local memory. You pass storage DOWN (a `^[]byte` /
-// `^[]T` param) and return a view of it UP; you never return a view of a local.
-// This flags any explicitly-assigned ref field of a returned struct literal
-// whose backing is in our frame. Caller-passed storage (a pointer param) and
-// globals are fine; locals, by-value array params, call temps, and `arr[:]` of a
-// local are not. (No relocation exception — that machinery is gone; the
-// pass-down pattern, e.g. Mesh_Data over a `storage` param, is the way.)
-returned_struct_literal_dangles :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Scope) -> bool {
-    for field, i in lit.fields {
-        ft := struct_lit_field_type(c, lit, i)
-        if ft == nil || !is_ref_type(ft) { continue }
-        v := field.value
-        d: int
-        if _, fa := expr_type(v).(^Type_Fixed_Array); fa {
-            // Field is a slice; the value is a fixed array being decayed, so the
-            // backing is the array's own STORAGE — which lives in THIS frame (a
-            // local decl, a `:=`-from-value local, a by-value param copy, a call
-            // temp, an array literal) unless it's a global. We decide that
-            // structurally: expr_provenance tracks where a slice's *data* points,
-            // but a fixed array's value provenance (e.g. make_arr()) reflects
-            // where its initializer came from, not where its bytes now live.
-            d = enclosing_fun_depth(env)
-            #partial switch vv in v {
-            case ^Expr_Ident:        if is_global_var(c, vv.name) { d = 0 }
-            case ^Expr_Field_Access: d = expr_provenance(c, vv.expr, env).depth
-            }
-        } else {
-            // Slice/ptr value (e.g. `r[:]`, `&local`, a slice var): its data
-            // pointer's provenance already tells us where the backing lives.
-            d = expr_provenance(c, v, env).depth
-        }
-        if d >= enclosing_fun_depth(env) { return true }
-    }
-    return false
 }
 
 // Solidify inferred types to their defaults (for := variable declarations)
@@ -6319,23 +5873,21 @@ check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope)
     // to declare the arena, without a spurious "too large for the stack" abort.
     if c.analysis_only { return }
     if c.table.has_scope_allocator || c.table.context_expected_at_runtime { return }
-    guard :: proc(c: ^Checker, env: ^Type_Scope, name: string, t: Type, span: Span) {
+    guard :: proc(c: ^Checker, a: ^Stmt_Assign) {
         // Take-bound views alias existing storage — they don't allocate, so a
         // big viewed type isn't a stack cost.
-        if is_let_name(env, name) { return }
-        if routes_to_arena(t) {
-            check_error(c, span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, name, checker_type_byte_size(t))
+        if _, is_view := a.value.(^Expr_Take); is_view { return }
+        if routes_to_arena(a.var_type) {
+            check_error(c, a.span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, a.name, checker_type_byte_size(a.var_type))
         }
     }
     for stmt in stmts {
         #partial switch s in stmt {
         case ^Stmt_Assign:
-            if s.is_decl { guard(c, env, s.name, s.var_type, s.span) }
+            if s.is_decl { guard(c, s) }
         case ^Stmt_Decl:
             for inner in s.checked {
-                if a, ok := inner.(^Stmt_Assign); ok && a.is_decl {
-                    guard(c, env, a.name, a.var_type, a.span)
-                }
+                if a, ok := inner.(^Stmt_Assign); ok && a.is_decl { guard(c, a) }
             }
         }
     }
@@ -8498,8 +8050,6 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     // scope_local_lookup walk reaches every local of the current function and
     // stops at ft (the no-closures boundary).
     child := type_env_block_child(parent_env)
-    // (Escape frame depth — a .Fun body opens a new frame, a class/ctor body does
-    //  not — is derived from the durable scope graph now; see enclosing_fun_depth.)
 
     // Pre-register struct params in the field-resolution scope so that
     // field defaults / field types can reference them (e.g.
@@ -11903,13 +11453,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             check_error(c, e.span,
                 TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM,
                 type_name(src_type))
-        }
-        // Lifetime: storage must not point into our own frame (or deeper) —
-        // a slice carved from it would dangle after this function returns.
-        src_prov := expr_provenance(c, e.storage, env)
-        if src_prov.depth >= enclosing_fun_depth(env) {
-            check_error(c, e.span,
-                TYPE_TAKE_STORAGE_POINTS_INTO_LOCAL)
         }
         e.type_ = resolved
         return resolved

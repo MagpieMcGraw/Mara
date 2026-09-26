@@ -1,0 +1,22 @@
+module esc_decay_neg
+//@ expect-fail: cannot return local reference
+
+// A fixed array decaying to a slice is a view of the ARRAY'S storage — here a
+// local — no matter where its contents came from.
+
+make_arr :: fun() -> [4]i64 {
+	r : [4]i64
+	r[0] = 7
+	return r
+}
+
+leak :: fun() -> []i64 {
+	arr := make_arr()
+	s : []i64 = arr
+	return s
+}
+
+main :: fun() {
+	s := leak()
+	print(s[0])
+}

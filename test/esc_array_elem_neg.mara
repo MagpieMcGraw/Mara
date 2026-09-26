@@ -1,0 +1,13 @@
+module esc_array_elem_neg
+//@ expect-fail: cannot return local reference
+
+// An array ELEMENT read back out carries what was stored in the array.
+
+leak :: fun() -> ^i64 {
+	x : i64 = 3
+	arr : [4]^i64
+	arr[0] = &x
+	return arr[0]
+}
+
+main :: fun() { print(leak()^) }

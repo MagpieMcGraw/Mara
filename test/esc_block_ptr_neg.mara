@@ -1,0 +1,15 @@
+module esc_block_ptr_neg
+//@ expect-fail: would escape
+
+// Same rule for a plain stack local: the language says a local lives until the
+// end of its scope, whatever the backend happens to do with the slot.
+
+main :: fun() {
+	y : i64 = 1
+	p := &y
+	if y == 1 {
+		x : i64 = 5
+		p = &x
+	}
+	print(p^)
+}

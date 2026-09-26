@@ -1,0 +1,20 @@
+module esc_block_neg
+//@ expect-fail: would escape
+
+// A block-local dies at the end of ITS block, not the function: the scope
+// allocator resets there, so a view of `big` read after the `if` is a
+// use-after-free (it read back 0 instead of 77 before this was an error).
+
+use mara.memory
+
+main :: fun() {
+	this_program = Program(Arena_Debug(1 * MB))
+	small : [4]i64
+	s : []i64 = small[:]
+	if s.len == 4 {
+		big : [512]i64
+		big[0] = 77
+		s = big[:]
+	}
+	print(s[0])
+}

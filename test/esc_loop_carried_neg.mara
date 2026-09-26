@@ -1,0 +1,20 @@
+module esc_loop_carried_neg
+//@ expect-fail: cannot return local reference
+
+// A value assigned late in a loop body reaches an EARLIER statement on the next
+// iteration: `p` is caller-rooted on the first pass, local-rooted on the second.
+
+leak :: fun(q: ^i64, n: i64) -> ^i64 {
+	x : i64 = 3
+	p := q
+	for i in 0..n {
+		if i == 1 do return p
+		p = &x
+	}
+	return q
+}
+
+main :: fun() {
+	y : i64 = 1
+	print(leak(&y, 4)^)
+}

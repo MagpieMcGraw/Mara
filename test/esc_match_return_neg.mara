@@ -1,0 +1,31 @@
+module esc_match_return_neg
+//@ expect-fail: its return may reference local memory
+
+// A return inside a match arm is still a return: `choose` hands back `b` only
+// from the Right arm.
+
+Pick :: union(tag u8) {
+	Left = 1 { n: i32 }
+	Right = 2 { n: i32 }
+}
+
+choose :: fun(which: Pick, a: ^i64, b: ^i64) -> ^i64 {
+	match which {
+	Left l
+		return a
+	Right r
+		return b
+	}
+	return a
+}
+
+leak :: fun(q: ^i64) -> ^i64 {
+	x : i64 = 3
+	w : Pick = Right{n = 1}
+	return choose(w, q, &x)
+}
+
+main :: fun() {
+	y : i64 = 1
+	print(leak(&y)^)
+}

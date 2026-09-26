@@ -1,0 +1,17 @@
+module esc_reassign_neg
+//@ expect-fail: cannot return local reference
+
+// A local's provenance must follow REASSIGNMENT, not just its declaration:
+// `p` starts caller-rooted, then is re-pointed at a local and returned.
+
+leak :: fun(q: ^i64) -> ^i64 {
+	x : i64 = 3
+	p := q
+	p = &x
+	return p
+}
+
+main :: fun() {
+	y : i64 = 1
+	print(leak(&y)^)
+}

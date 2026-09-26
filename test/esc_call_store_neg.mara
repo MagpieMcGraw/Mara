@@ -1,0 +1,24 @@
+module esc_call_store_neg
+//@ expect-fail: would escape
+
+// `store` is fine on its own — both params are caller memory. The CALLER breaks
+// the rule by handing it a local to store into a longer-lived Holder. Needs the
+// callee's store summary (param 1 is stored into param 0's memory).
+
+Holder :: struct { p: ^i64 }
+
+store :: fun(h: ^Holder, p: ^i64) {
+	h.p = p
+}
+
+stash :: fun(h: ^Holder) {
+	x : i64 = 5
+	store(h, &x)
+}
+
+main :: fun() {
+	y : i64 = 1
+	h := Holder{p = &y}
+	stash(&h)
+	print(h.p^)
+}

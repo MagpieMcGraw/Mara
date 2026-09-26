@@ -1,0 +1,130 @@
+module esc_ok
+
+use mara.core
+
+// POSITIVE: legitimate reference patterns the escape rule must keep accepting.
+// The rule: a value's roots must outlive the place it's stored (a return stores
+// into the caller). Each case below respects it; main prints a checksum line.
+
+Holder :: struct { p: ^i64 }
+SHolder :: struct { sl: []i64 }
+Big :: struct { a: i64, b: i64 }
+
+// pass storage DOWN, return a view UP
+view_of :: fun(storage: ^[]byte) -> SHolder {
+	return SHolder{slice([:3]i64, storage)}
+}
+
+// param-to-param store: both caller-rooted, so the callee is fine
+store :: fun(h: ^Holder, p: ^i64) {
+	h.p = p
+}
+
+// a local struct built from caller refs may be returned by value
+wrap :: fun(q: ^i64) -> Holder {
+	h := Holder{p = q}
+	return h
+}
+
+wrap_fieldwise :: fun(q: ^i64) -> Holder {
+	h : Holder
+	h.p = q
+	return h
+}
+
+// choosing between params, by branch or by expression
+choose :: fun(c: bool, a: ^i64, b: ^i64) -> ^i64 {
+	p := a
+	if c { p = b }
+	return p
+}
+
+choose_expr :: fun(c: bool, a: ^i64, b: ^i64) -> ^i64 {
+	return if c do a else b
+}
+
+// returning a view of a slice param, from inside a loop
+first_positive :: fun(s: []i64) -> []i64 {
+	for i in 0..s.len {
+		if s[i] > 0 do return s[i:s.len]
+	}
+	return s[0:0]
+}
+
+// forwarding a store through another call with caller-rooted args
+forward_store :: fun(h: ^Holder, q: ^i64) {
+	store(h, q)
+}
+
+// let-bound view over caller memory
+set_big :: fun(memory: ^[]byte) {
+	big := let(Big, &memory[0])
+	big.a = 40
+	big.b = 2
+}
+
+main :: fun() {
+	sum : i64 = 0
+
+	buf : [..64]byte
+	v := view_of(&buf)
+	v.sl[0] = 5
+	sum += v.sl[0]                       // 5
+
+	y : i64 = 10
+	h := Holder{}
+	store(&h, &y)
+	sum += h.p^                          // 15
+
+	z : i64 = 20
+	w1 := wrap(&z)
+	sum += w1.p^                         // 35
+	w2 := wrap_fieldwise(&z)
+	sum += w2.p^                         // 55
+	c1 := choose(true, &y, &z)
+	sum += c1^                           // 75
+	c2 := choose_expr(false, &y, &z)
+	sum += c2^                           // 95
+
+	arr : [4]i64
+	arr[1] = 3
+	arr[2] = 4
+	tail := first_positive(arr[:])
+	sum += tail.len                      // 98
+
+	// outer pointer re-pointed at another OUTER local inside a block: same depth
+	a : i64 = 100
+	b : i64 = 200
+	p := &a
+	if sum > 0 {
+		p = &b
+	}
+	sum += p^                            // 298
+
+	// a block-local pointer into an outer array is fine to keep in an outer var
+	best := &arr[0]
+	for i in 0..4 {
+		cur := &arr[i]
+		if cur^ > best^ do best = cur
+	}
+	sum += best^                         // 302
+
+	// a local struct holding a local ref, used locally
+	x : i64 = 8
+	lh := Holder{}
+	lh.p = &x
+	sum += lh.p^                         // 310
+
+	fh := Holder{}
+	forward_store(&fh, &z)
+	sum += fh.p^                         // 330
+
+	mem : [..64]byte
+	mem.len = 64
+	set_big(&mem)
+	big := let(Big, &mem[0])
+	sum += big.a + big.b                 // 372
+
+	assert(sum == 372)
+	print("esc_ok", sum)
+}

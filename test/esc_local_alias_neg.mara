@@ -1,0 +1,19 @@
+module esc_local_alias_neg
+//@ expect-fail: cannot return local reference
+
+// A store through a pointer to a LOCAL struct changes what that struct holds.
+
+Holder :: struct { p: ^i64 }
+
+leak :: fun(q: ^i64) -> Holder {
+	x : i64 = 3
+	h := Holder{p = q}
+	hp := &h
+	hp.p = &x
+	return h
+}
+
+main :: fun() {
+	y : i64 = 1
+	print(leak(&y).p^)
+}

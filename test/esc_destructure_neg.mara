@@ -1,0 +1,17 @@
+module esc_destructure_neg
+//@ expect-fail: cannot return local reference
+
+// A destructured call result carries the call's provenance.
+
+pair :: fun(a: ^i64) -> (i64, ^i64) {
+	return a^, a
+}
+
+leak :: fun() -> ^i64 {
+	x : i64 = 3
+	n, p := pair(&x)
+	_ = n
+	return p
+}
+
+main :: fun() { print(leak()^) }

@@ -64,6 +64,10 @@ Call_Graph :: struct {
     // stmt_to_node bridge as return_args.
     return_deps:  [dynamic][]int,
     stmt_to_node: map[^Stmt_Scope]int,
+
+    // Escape summary (escape.odin): which parameters node n's result may point
+    // into, and which parameter's memory each parameter may be stored into.
+    esc:          [dynamic]Esc_Summary,
 }
 
 // Intern a scope as a node, returning its id (stable for the graph's lifetime).
