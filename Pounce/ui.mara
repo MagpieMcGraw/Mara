@@ -695,12 +695,10 @@ ui_graph_update :: fun(graph: ^UI_Graph, shape_array: ^[]Shape, camera_obj: Obje
 		bar_height = max(bar_height, graph.bar_max_height * 0.02)  // minimum 2% of max height
 
 		// Color red if value exceeds max, otherwise use original color.
-		// (A named `[3]f32` constant can't be `=`-stored to a field — codegen has
-		// no path for a const-array RHS — so the palette values are inlined here.)
 		if value > graph.max_value {
-			shape.visual.color = [0.9, 0.2, 0.2]    // COLOR_RED
+			shape.visual.color = COLOR_RED
 		else
-			shape.visual.color = [0.2, 0.75, 0.2]   // COLOR_GREEN
+			shape.visual.color = COLOR_GREEN
 		}
 
 		// Set scale (width, height, depth for quad).

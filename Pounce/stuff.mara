@@ -156,15 +156,10 @@ random_string :: fun(out: ^[]utf8, length: i64) {
 	}
 }
 
-// A bare Vec3 can't be a slice element (distinct-array elements mis-codegen on
-// store), so half-circle points come back wrapped in a one-field struct — which
-// stores fine, like any struct-with-Vec3-field does.
-Circle_Point :: struct { pos: Vec3 }
-
 // === Points arranged in a half circle (180°) → fills caller buffer `out` ===
 // Distributed evenly, right side to left. The half circle lies in the plane
 // perpendicular to the quaternion's forward direction.
-place_half_circle :: fun(out: ^[]Circle_Point, count: i64, center: Vec3, dir: Quat, radius: f32) {
+place_half_circle :: fun(out: ^[]Vec3, count: i64, center: Vec3, dir: Quat, radius: f32) {
 	out.len = 0
 	_, up, right := obj_get_directions(dir)
 
@@ -178,7 +173,7 @@ place_half_circle :: fun(out: ^[]Circle_Point, count: i64, center: Vec3, dir: Qu
 		angle := t * PI
 
 		p := center + right * (cos(angle) * radius) + up * (sin(angle) * radius)
-		out[i] = Circle_Point{pos = p}
+		out[i] = p
 		out.len = i + 1
 	}
 }

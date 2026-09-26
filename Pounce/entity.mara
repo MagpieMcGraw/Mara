@@ -64,7 +64,7 @@ game_create_shapes_line :: fun(arr: ^[]Shape, start_x: f32, size: f32, spacing: 
 	for i in 0..16 {
 		x := start_x + f32(i) * spacing
 		shape := game_shape_create(x, 0, 0, size)
-		shape.obj.dir            = Quat{w = 1.0}   // QUAT_IDENTITY const can't be `=`-stored to a field
+		shape.obj.dir            = QUAT_IDENTITY
 		shape.visual.texture.layer = u32(i)
 		shape.visual.texture.name  = ""
 		shape.visual.texture.uv    = [1, 1, 0, 0]   // ATLAS_TEXTURE.uv
@@ -76,12 +76,12 @@ game_create_shapes_line :: fun(arr: ^[]Shape, start_x: f32, size: f32, spacing: 
 game_create_shapes_half_circle :: fun(
 	arr: ^[]Shape, camera: ^Camera, count: i64, distance: f32, size: f32)
 {
-	points : [..64]Circle_Point
+	points : [..64]Vec3
 	place_half_circle(&points, count, camera.obj.pos, camera.obj.dir, distance)
 
 	world_up := Vec3{0, 0, -1}   // HACK (matches Warlock)
 	for i in 0..points.len {
-		pos := points[i].pos
+		pos := points[i]
 		shape := game_shape_create(pos.x, pos.y, pos.z, size)
 
 		fwd := shape.obj.pos - camera.obj.pos
@@ -118,7 +118,7 @@ game_create_font_atlas_display :: fun(
 	for i in 0..count {
 		x := start_x + f32(i) * spacing
 		shape := game_shape_create(x, y, 10, size, "=quad")
-		shape.obj.dir              = Quat{w = 1.0}   // QUAT_IDENTITY const can't be `=`-stored to a field
+		shape.obj.dir              = QUAT_IDENTITY
 		shape.visual.texture.layer = u32(i)
 		shape.visual.texture.name  = ""
 		shape.visual.texture.uv    = [1, 1, 0, 0]   // full atlas

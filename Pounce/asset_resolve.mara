@@ -12,23 +12,11 @@ use entity
 
 // === Convenience setters for Visual ===
 
-// Texture/Mesh carry a str64 (partial array), so they can't be copied by value
-// (the copy would alias the source). Copy field-by-field through these helpers.
-texture_assign :: fun(dst: ^Texture, src: ^Texture) {
-	dst.name  = src.name
-	dst.uv    = src.uv
-	dst.layer = src.layer
-}
-mesh_assign :: fun(dst: ^Mesh, src: ^Mesh) {
-	dst.name  = src.name
-	dst.index = src.index
-}
-
 // Assign a texture by query now if found, else stash the name for later resolve.
 set_texture :: fun(a: ^Assets, v: ^Visual, query: []utf8) {
 	tx, ok := get_texture(a, query)
 	if ok {
-		texture_assign(&v.texture, &tx)
+		v.texture = tx
 	else
 		v.texture.name = query
 	}
@@ -37,7 +25,7 @@ set_texture :: fun(a: ^Assets, v: ^Visual, query: []utf8) {
 set_mesh :: fun(a: ^Assets, v: ^Visual, query: []utf8) {
 	m, ok := get_mesh(a, query)
 	if ok {
-		mesh_assign(&v.mesh, &m)
+		v.mesh = m
 	else
 		v.mesh.name = query
 	}
@@ -117,7 +105,7 @@ glyph_resolve :: fun(a: ^Assets, g: ^Glyph) -> bool {
 	if not mesh_resolved {
 		m, ok := get_mesh(a, g.visual.mesh.name)
 		if ok {
-			mesh_assign(&g.visual.mesh, &m)
+			g.visual.mesh = m
 			mesh_resolved = true
 		}
 	}
@@ -139,14 +127,14 @@ visual_resolve :: fun(a: ^Assets, v: ^Visual) -> bool {
 	if not mesh_resolved {
 		m, ok := get_mesh(a, v.mesh.name)
 		if ok {
-			mesh_assign(&v.mesh, &m)
+			v.mesh = m
 			mesh_resolved = true
 		}
 	}
 	if not texture_resolved {
 		tx, ok := get_texture(a, v.texture.name)
 		if ok {
-			texture_assign(&v.texture, &tx)
+			v.texture = tx
 			texture_resolved = true
 		}
 	}
