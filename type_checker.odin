@@ -9856,8 +9856,11 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     // per-file pipeline (see check_package_files for the phase map). mod_struct
     // owns the top-level decls; mod_env is the module scope names register into.
     // Lookup chain inside a body: body -> file_env -> mod_env -> STOP
-    // (mod_env is_module_scope=true). Modules skip the 1.5 constant pass —
-    // extract_module_into_checked registers an imported module's constants.
+    // (mod_env is_module_scope=true). Modules skip the 1.5 constant pass;
+    // their constants are registered here, before the bodies are checked, so
+    // the module's own functions resolve them (unregistered, a bare reference
+    // fell through to whichever module registered the name first).
+    register_module_constants(c, mod_program, module_name)
     files_by_src, file_order, file_envs := partition_package_files(mod_program, mod_env)
     check_package_files(c, files_by_src, file_order, file_envs, mod_struct, mod_env)
 
@@ -10027,40 +10030,51 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
         // Stmt_Union_Def owner attachment is handled by register_and_check_declarations.
         }
 
-        // Handle top-level variable/constant declarations.
-        // Module variables are effectively compile-time values — store in constants
-        // so codegen can resolve them cross-function (g.all_vars is per-function).
-        if assign, ok := stmt.(^Stmt_Assign); ok {
-            if _, is_include := assign.value.(^Expr_Include); !is_include && assign.value != nil {
-                register_module_constant(c, module_name, assign.name, assign.value)
+        register_module_constant_stmt(c, stmt, module_name)
+    }
+}
+
+// Register a module's top-level constants (run before its bodies are checked,
+// so its own functions resolve them, and again after, when `Stmt_Decl`s have
+// their desugared entries). Registration is idempotent per module.
+register_module_constants :: proc(c: ^Checker, stmts: [dynamic]Stmt, module_name: string) {
+    for stmt in stmts { register_module_constant_stmt(c, stmt, module_name) }
+}
+
+register_module_constant_stmt :: proc(c: ^Checker, stmt: Stmt, module_name: string) {
+    // Handle top-level variable/constant declarations.
+    // Module variables are effectively compile-time values — store in constants
+    // so codegen can resolve them cross-function (g.all_vars is per-function).
+    if assign, ok := stmt.(^Stmt_Assign); ok {
+        if _, is_include := assign.value.(^Expr_Include); !is_include && assign.value != nil {
+            register_module_constant(c, module_name, assign.name, assign.value)
+        }
+    }
+    // Multi-assign: flatten each inner assign
+    if multi, ok := stmt.(^Stmt_Multi_Assign); ok {
+        for a in multi.assigns {
+            if a.value != nil {
+                register_module_constant(c, module_name, a.name, a.value)
             }
         }
-        // Multi-assign: flatten each inner assign
-        if multi, ok := stmt.(^Stmt_Multi_Assign); ok {
-            for a in multi.assigns {
-                if a.value != nil {
+    }
+    // Stmt_Decl: iterate the desugared entries (same shape as Stmt_Assign / Stmt_Multi_Assign cases above).
+    if decl, ok := stmt.(^Stmt_Decl); ok {
+        for inner in decl.checked {
+            if a, aok := inner.(^Stmt_Assign); aok {
+                if _, is_include := a.value.(^Expr_Include); !is_include && a.value != nil {
                     register_module_constant(c, module_name, a.name, a.value)
                 }
             }
         }
-        // Stmt_Decl: iterate the desugared entries (same shape as Stmt_Assign / Stmt_Multi_Assign cases above).
-        if decl, ok := stmt.(^Stmt_Decl); ok {
-            for inner in decl.checked {
-                if a, aok := inner.(^Stmt_Assign); aok {
-                    if _, is_include := a.value.(^Expr_Include); !is_include && a.value != nil {
-                        register_module_constant(c, module_name, a.name, a.value)
-                    }
-                }
-            }
-        }
-        // Stmt_Define: `name :: value` or `name : Type : value` — always a compile-time constant.
-        // Skip include forms (`name :: include path`) — those are handled by the
-        // include-processing path in register_and_check_declarations, same as
-        // `name := include path`.
-        if def, ok := stmt.(^Stmt_Define); ok {
-            if _, is_include := def.value.(^Expr_Include); !is_include && def.value != nil {
-                register_module_constant(c, module_name, def.name, def.value)
-            }
+    }
+    // Stmt_Define: `name :: value` or `name : Type : value` — always a compile-time constant.
+    // Skip include forms (`name :: include path`) — those are handled by the
+    // include-processing path in register_and_check_declarations, same as
+    // `name := include path`.
+    if def, ok := stmt.(^Stmt_Define); ok {
+        if _, is_include := def.value.(^Expr_Include); !is_include && def.value != nil {
+            register_module_constant(c, module_name, def.name, def.value)
         }
     }
 }

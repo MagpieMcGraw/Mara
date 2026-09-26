@@ -1,0 +1,17 @@
+module constowner_use
+
+//@ expect-output: painted=7 color=7 scale=7
+//@ expect-output: own=1 1
+
+use mara.core
+use constowner
+
+COLOR :: [3]f32{1, 1, 1}
+SCALE :: 1
+
+main :: fun() {
+	v : Vis
+	paint(&v)
+	print("painted=% color=% scale=%", v.color[0], owner_color(), owner_scale())
+	print("own=% %", constowner_use.COLOR[0], constowner_use.SCALE)
+}

@@ -15,8 +15,6 @@ use mara.string
 use camera
 use object
 
-PI :: TAU * 0.5
-
 // === Tiny PRNG — stands in for core:math/rand ===
 // A 32-bit LCG kept in a u64 so the multiply can't overflow-trap: the widest
 // intermediate is (2^32-1) * 1103515245 ≈ 4.7e18, comfortably under u64's

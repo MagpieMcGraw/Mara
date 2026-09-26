@@ -1,0 +1,26 @@
+module constowner
+
+// A library module's own constants resolve to ITS values inside its own
+// functions, even when the main module defines constants of the same names
+// (see constowner_use.mara). They used to be registered only after the
+// module's bodies were checked, so a bare reference fell through to whichever
+// module registered the name first.
+
+use mara.core
+
+COLOR :: [3]f32{7, 7, 7}
+SCALE :: 7
+
+Vis :: struct { color: [3]f32 }
+
+paint :: fun(v: ^Vis) {
+	v.color = COLOR
+}
+
+owner_color :: fun() -> f32 {
+	return COLOR[0]
+}
+
+owner_scale :: fun() -> i64 {
+	return SCALE
+}
