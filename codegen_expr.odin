@@ -356,6 +356,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         // its value expression — inline it for any type; a fixed-array .len/.cap
         // carries a computed int. Codegen never re-resolves the qualifier.
         if rc, ok := e.resolved.(Resolved_Constant); ok {
+            if addr, is_table := qualified_const_storage(g, e); is_table { return addr }
             if rc.value_expr != nil {
                 return gen_expr(g, rc.value_expr, target_type)
             }

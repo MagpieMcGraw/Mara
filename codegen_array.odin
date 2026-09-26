@@ -421,7 +421,7 @@ resolved_const_value :: proc(expr: Expr) -> (Expr, bool) {
 // body `::`) — which the checker doesn't annotate (it's not a module constant),
 // so it's still found by its unique name. Module constants always go through the
 // annotation; the table is only consulted for an un-annotated local ident.
-codegen_const_value :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
+const_value_of :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
     if v, ok := resolved_const_value(expr); ok { return v, true }
     if ident, ok := expr.(^Expr_Ident); ok {
         if v, ok := g.checked.table.constants[ident.name]; ok { return v, true }
@@ -429,74 +429,45 @@ codegen_const_value :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
     return nil, false
 }
 
-// Reading part of an aggregate constant — `ATLAS.uv`, `RED[i]`,
-// `QUAT_IDENTITY.w` — needs it to live somewhere: the field / index / swizzle
-// paths all start from a variable's storage. So when such a path is rooted at
-// a constant, the constant is built once in the function's entry block (after
-// the hoisted allocas, before the body — dominating every use; its field
-// defaults applied like any construction) and its name bound to that storage.
-// A loop reading a constant table indexes it; it isn't rebuilt per read.
+// The value a constant reference inlines to — for a scalar or string constant.
+// An aggregate constant isn't inlined: it lives in a read-only table
+// (codegen_const.odin), and a bare reference to it is bound here as a
+// variable whose storage is that table, so the caller's variable path takes
+// it from there (reads, copies, passing by pointer). A qualified one
+// (`mod.K`) reaches its table through qualified_const_storage.
+codegen_const_value :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
+    value, ok := const_value_of(g, expr)
+    if !ok { return nil, false }
+    if table, is_table := const_table_ref(g, expr); is_table {
+        if ident, is_ident := expr.(^Expr_Ident); is_ident {
+            g.all_vars[ident.name] = table
+        }
+        return nil, false
+    }
+    return value, true
+}
+
+// Bind the aggregate constant an access path (`ATLAS.uv`, `RED[i]`) is rooted
+// at to its table, so the path reads from it like from a variable.
 prepare_const_root :: proc(g: ^Codegen, e: Expr) {
-    if !g.hoist_allocas { return } // no function body to put a prologue in
     ident, is_ident := access_root(e).(^Expr_Ident)
     if !is_ident { return }
     if _, bound := g.all_vars[ident.name]; bound { return }
-    value, is_const := codegen_const_value(g, ident)
-    if !is_const { return }
-    t := ident.type_
-    if t == nil { t = expr_type(value) }
-    if storage, ok := const_storage_for(g, ident.name, value, t); ok {
-        g.all_vars[ident.name] = storage
-    }
+    codegen_const_value(g, ident)
 }
 
-// The entry-block storage for aggregate constant `key` (value `value`, type
-// `t`) in the current function — built on first use (see prepare_const_root).
-// ok = false outside a function body, or for a non-aggregate constant.
-const_storage_for :: proc(g: ^Codegen, key: string, value: Expr, t: Type) -> (Var_Entry, bool) {
-    if !g.hoist_allocas { return nil, false }
-    if storage, built := g.const_storage[key]; built { return storage, true }
-    base := distinct_base(t)
-    storage: Var_Entry
-    // Build it with the regular construction code, redirected from the body
-    // into the prologue (allocas still go to the hoisted alloca block).
-    saved_body := g.body_buf
-    g.body_buf = strings.builder_make()
-    if sd := as_struct_body(base); sd != nil {
-        tmp := fresh_tmp(g)
-        emit_alloca(g, tmp, struct_llvm_name(struct_key(sd)))
-        gen_store_struct_into(g, tmp, sd, value, dest_fresh = true)
-        storage = Struct_Var{alloca = tmp, struct_name = struct_key(sd)}
-    } else if fa, is_fa := base.(^Type_Fixed_Array); is_fa {
-        elem_ir := llvm_type_from_checker(fa.elem)
-        tmp := fresh_tmp(g)
-        emit_alloca(g, tmp, fmt.tprintf("[%d x %s]", fa.size, elem_ir))
-        _, utf8 := distinct_base(fa.elem).(Type_Utf8)
-        gen_store_array_into(g, tmp, fa.size, elem_ir, value, utf8, dest_fresh = true)
-        storage = Array_Var{alloca = tmp, capacity = fa.size, elem_type = elem_ir, is_utf8 = utf8}
-    }
-    strings.write_string(&g.const_prologue, strings.to_string(g.body_buf))
-    g.body_buf = saved_body
-    if storage == nil { return nil, false }
-    g.const_storage[key] = storage
-    return storage, true
-}
-
-// A module-qualified aggregate constant (`defs.ATLAS`) as the base of a read:
-// its entry-block storage, published like a variable's field (set_field_result)
-// so the enclosing field / index / swizzle read continues from it.
+// A module-qualified aggregate constant (`defs.ATLAS`): its table, published
+// like a variable's field (set_field_result) so an enclosing field / index /
+// swizzle read continues from it, or a copy / argument takes its address.
 qualified_const_storage :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> (string, bool) {
-    rc, is_const := e.resolved.(Resolved_Constant)
-    if !is_const || rc.value_expr == nil { return "", false }
-    t := e.type_
-    if t == nil { t = expr_type(rc.value_expr) }
-    key := fmt.tprintf("%p", rc.value_expr) // the constant's own value node: one per constant
-    storage, ok := const_storage_for(g, key, rc.value_expr, t)
+    if _, is_const := e.resolved.(Resolved_Constant); !is_const { return "", false }
+    table, ok := const_table_ref(g, e)
     if !ok { return "", false }
-    set_field_result(g, storage)
-    #partial switch v in storage {
+    set_field_result(g, table)
+    #partial switch v in table {
     case Struct_Var: return v.alloca, true
     case Array_Var:  return v.alloca, true
+    case Union_Var:  return v.alloca, true
     }
     return "", false
 }

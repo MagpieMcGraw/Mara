@@ -1,0 +1,70 @@
+module const_tables
+
+//@ expect-output: names=a bb 0 / true true true x
+//@ expect-output: pair=a 64
+//@ expect-output: spot=1.5 3.5 mask=16 -1
+//@ expect-output: msg=hello 5 5
+//@ expect-output: tab=13 5 sum=41
+//@ expect-output: copy=changed bb
+//@ expect-output: pass=a ret=bb
+//@ expect-output: foreach=41
+//@ expect-output: tau=true
+
+// Aggregate constants are read-only tables built at compile time: strings in
+// an array of structs (each header pointing at its own bytes in the table),
+// a constant built from part of another (`NAMES[0]`), folded float and bit
+// arithmetic, enum and bool and char fields, a slice field viewing a string,
+// runtime indexing, slicing into a read-only parameter, copies (re-anchored),
+// passing by pointer and returning.
+
+use mara.core
+use mara.math
+use mara.string
+
+Kind  :: union { Small, Big }
+Named :: struct { name: str64, kind: Kind = .Big, on: bool = true, ch: utf8 = 'x' }
+Pair  :: struct { a: Named, b: Named }
+Msg   :: struct { text: []utf8, n: i64 }
+
+HALF   :: 0.5
+TWO_PI :: PI * 2
+NAMES  :: [3]Named{{"a"}, {"bb", .Small}, {}}
+PAIR   :: Pair{b = NAMES[0]}
+SPOT   :: [2]f32{HALF * 3, f32(7) / 2}
+MASK   :: [2]i64{1 << 4, ~0}
+MSG    :: Msg{"hello", 5}
+TAB    :: [6]i64{2, 3, 5, 7, 11, 13}
+
+id :: fun(n: Named) -> Named {
+	return n
+}
+give :: fun() -> Named {
+	return NAMES[1]
+}
+sum :: fun(s: []i64) -> i64 {
+	t := 0
+	for x in s { t = t + x }
+	return t
+}
+say :: fun(s: []utf8) -> i64 {
+	return s.len
+}
+
+main :: fun() {
+	print("names=% % % / % % % %", NAMES[0].name, NAMES[1].name, NAMES[2].name.len, NAMES[1].kind == .Small, NAMES[2].kind == .Big, NAMES[0].on, NAMES[0].ch)
+	print("pair=% %", PAIR.b.name, PAIR.a.name.cap)
+	print("spot=% % mask=% %", SPOT[0], SPOT[1], MASK[0], MASK[1])
+	print("msg=% % %", MSG.text, MSG.n, say(MSG.text))
+	i := 5
+	print("tab=% % sum=%", TAB[i], TAB[i - 3], sum(TAB[:]))
+	t := NAMES[1]
+	t.name = "changed"
+	print("copy=% %", t.name, NAMES[1].name)
+	u := id(NAMES[0])
+	v := give()
+	print("pass=% ret=%", u.name, v.name)
+	acc := 0
+	for x in TAB { acc = acc + x }
+	print("foreach=%", acc)
+	print("tau=%", TWO_PI > 6.28)
+}

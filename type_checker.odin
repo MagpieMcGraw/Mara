@@ -7298,7 +7298,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // `x : []utf8 = "lit"` — writable view over rodata; sized slices
             // (`[:N]utf8`, cap_expr set) copy into owned backing and pass.
             if s.slice_cap_expr == nil {
-                check_no_literal_slice_binding(c, ann_type, s.value, s.span)
+                // Unannotated (`s := RED[:]`): the value's own type is the slot's.
+                check_no_literal_slice_binding(c, val_type if is_untyped(ann_type) else ann_type, s.value, s.span)
             }
             // `#big_endian buf[off]` / `#big_endian buf[lo:hi]` — the flag has
             // no meaning unless the source is a byte buffer. Codegen would
@@ -8908,11 +8909,18 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
 // Parameter position stays legal (by-value params are immutable, so the free
 // view is safe). Sized-slice decls (`[:N]utf8 = "lit"`) copy into owned
 // backing and are exempt — callers gate on slice_cap_expr.
+// A slice variable or field is a writable view, so it can't be bound to
+// read-only bytes: a string literal, or a constant (`RED`, `RED[1:]`, `K.b`),
+// which lives in the program's read-only data. (A slice PARAMETER is
+// read-only, so passing either to one is fine.)
 check_no_literal_slice_binding :: proc(c: ^Checker, target: Type, value: Expr, span: Span) {
     if value == nil { return }
-    if _, is_lit := value.(^Expr_String); !is_lit { return }
     if _, is_slice := distinct_base(target).(^Type_Slice); !is_slice { return }
-    check_error(c, span, TYPE_SLICE_CANNOT_BIND_STRING_LITERAL)
+    if _, is_lit := value.(^Expr_String); is_lit {
+        check_error(c, span, TYPE_SLICE_CANNOT_BIND_STRING_LITERAL)
+    } else if name, is_const := write_root_constant(c, value); is_const {
+        check_error(c, span, TYPE_SLICE_CANNOT_BIND_CONSTANT, name, name)
+    }
 }
 
 check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixed_Array, val_type: Type, value: Expr = nil) {

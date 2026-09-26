@@ -307,11 +307,11 @@ Codegen :: struct {
     out:         strings.Builder,  // current per-module IR buffer (swapped in from module_outs)
     alloca_buf:  strings.Builder,  // hoisted allocas (entry block)
     body_buf:    strings.Builder,  // temporary buffer for function body during alloca hoisting
-    // Aggregate constants read by field / index / swizzle get storage built
-    // once per function, in the entry block after the allocas (see
-    // prepare_const_root): the construction code, and name -> storage.
-    const_prologue: strings.Builder,
-    const_storage:  map[string]Var_Entry,
+    // Aggregate constants live in read-only tables (codegen_const.odin): each
+    // constant's table name (built once, shared read-only with workers), and
+    // the tables this Codegen's functions referenced (symbol -> table).
+    const_names:  map[rawptr]string,
+    const_tables: map[string]Const_Table,
 
     // Per-module IR buffers. Each function's IR lands in the buffer keyed by
     // its home_package; g.out is swapped to the right buffer before
@@ -1660,6 +1660,7 @@ Module_Task :: struct {
     overflow_intrinsics: map[string]bool,
     bswap_intrinsics:    map[int]bool,
     imports:             map[string]bool,
+    const_tables:        map[string]Const_Table,
 }
 
 // Worker entry point. Sets up an isolated arena allocator, builds a local
@@ -1702,6 +1703,7 @@ module_codegen_worker :: proc(t: thread.Task) {
     task.string_counter      = local.string_counter
     task.overflow_intrinsics = local.overflow_intrinsics
     task.bswap_intrinsics    = local.bswap_intrinsics
+    task.const_tables        = local.const_tables
 }
 
 // Build a Codegen suitable for one worker. Read-only fields (checked,
@@ -1721,6 +1723,7 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.arena_reset_name   = task.main_g.arena_reset_name
     g.arena_new_name     = task.main_g.arena_new_name
     g.arena_alloc_has_debug = task.main_g.arena_alloc_has_debug
+    g.const_names        = task.main_g.const_names
 
     // Per-worker string-name prefix so this task's `@.str.N` references
     // can never collide with the main thread's (used by @main emission)
@@ -1990,20 +1993,16 @@ module_build_worker :: proc(t: thread.Task) {
 begin_alloca_hoist :: proc(g: ^Codegen) {
     strings.builder_reset(&g.alloca_buf)
     strings.builder_reset(&g.body_buf)
-    strings.builder_reset(&g.const_prologue)
-    clear(&g.const_storage)
     g.hoist_allocas = true
 }
 
-// End alloca hoisting: flush hoisted allocas first, then the constants the body
-// reads from (built once, dominating every use), then body code, into g.out.
+// End alloca hoisting: flush hoisted allocas first, then body code, into g.out.
 end_alloca_hoist :: proc(g: ^Codegen) {
     g.hoist_allocas = false
     alloca_str := strings.to_string(g.alloca_buf)
     if len(alloca_str) > 0 {
         strings.write_string(&g.out, alloca_str)
     }
-    strings.write_string(&g.out, strings.to_string(g.const_prologue))
     body_str := strings.to_string(g.body_buf)
     if len(body_str) > 0 {
         strings.write_string(&g.out, body_str)
@@ -3498,6 +3497,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     for k in fns_by_module { append(&module_names, k) }
     slice.sort(module_names[:])
 
+    build_const_names(&g, checked) // read-only from here on; workers share it
+
     tasks: [dynamic]^Module_Task
     defer delete(tasks)
     for module_name in module_names {
@@ -3534,6 +3535,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     for t in tasks {
         g.module_outs[t.module_name] = t.out
         append(&g.module_order, t.module_name)
+        // Constant tables any worker referenced; the main TU defines them all.
+        for name, table in t.const_tables { g.const_tables[name] = table }
     }
     g.module_tasks = tasks[:]
 
@@ -3919,12 +3922,17 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "\"\n\n")
     }
 
+    // Constant tables: all of them defined here in the main TU, extern-declared
+    // wherever else they're read.
+    const_ir := module_const_ir(g, module_name, is_main_tu)
+
     // Struct/union type definitions — TU-local LLVM type namespace means we
     // only need the types this module actually references (plus the transitive
     // closure of their field types). Collect from the module's own IR + the
-    // main TU's @main / fail-helper IR.
+    // main TU's @main / fail-helper IR, and the constant tables' types.
     {
         used := collect_used_types(g.module_outs[module_name], struct_decl_by_name)
+        collect_used_types_into(const_ir, struct_decl_by_name, &used)
         if is_main_tu {
             collect_used_types_into(main_builder_str, struct_decl_by_name, &used)
             collect_used_types_into(fail_helpers_ir, struct_decl_by_name, &used)
@@ -3983,6 +3991,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "@__mara_program = external global ptr\n")
         strings.write_string(&b, strings.concatenate({"@__mara_program_storage = external global ", program_ir_name(checked), "\n\n"}))
     }
+    strings.write_string(&b, const_ir)
 
     // libc + intrinsic + foreign declares — every TU declares regardless.
     // Intrinsics are per-module (only what this TU actually uses);

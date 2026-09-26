@@ -1,0 +1,14 @@
+module const_slice_neg
+//@ expect-fail: writable view of constant 'RED'
+
+// A constant lives in read-only data. A slice variable is a writable view, so
+// it can't be bound to one (a write through it would fault); passing a
+// constant to a slice PARAMETER is fine, since parameters are read-only.
+
+RED :: [3]f32{0.9, 0.2, 0.2}
+
+main :: fun() {
+	s := RED[:]
+	s[0] = 5
+	print(s[0])
+}

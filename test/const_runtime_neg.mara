@@ -1,0 +1,17 @@
+module const_runtime_neg
+//@ expect-fail: constant 'BAD': its value must be known at compile time
+
+// An aggregate constant is built at compile time; a value that needs code to
+// run (here a call) can't be.
+
+P :: struct { a: i64, b: i64 }
+
+mk :: fun() -> i64 {
+	return 4
+}
+
+BAD :: P{mk(), 2}
+
+main :: fun() {
+	print(BAD.a)
+}
