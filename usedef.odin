@@ -328,8 +328,8 @@ ud_stmt :: proc(u: ^UD, s: Stmt, st: ^Reach) {
             as := reach_clone(st)
             ud_push(u)
             ud_expr(u, arm.value, &as)
-            if arm.is_union_arm && arm.binding_name != "" {
-                ud_declare(u, arm.binding_name, v.span, nil, .Destructure, v.subject, &as)  // payload from the subject
+            if arm.is_union_arm && arm.bound_name != "" {
+                ud_declare(u, arm.bound_name, v.span, nil, .Destructure, v.subject, &as)  // payload from the subject
             }
             for s2 in arm.body { ud_stmt(u, s2, &as) }
             ud_pop(u)

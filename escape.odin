@@ -482,9 +482,9 @@ esc_stmt :: proc(e: ^Esc, s: Stmt) {
         for arm in v.arms {
             esc_push(e, false)
             esc_calls(e, arm.value)
-            if arm.is_union_arm && arm.binding_name != "" {
+            if arm.is_union_arm && arm.bound_name != "" {
                 // The payload binding views the subject's storage.
-                if b := esc_declare(e, arm.binding_name, v.span, nil); b != nil { b.loc = esc_loc(e, v.subject) }
+                if b := esc_declare(e, arm.bound_name, v.span, nil); b != nil { b.loc = esc_loc(e, v.subject) }
             }
             for s2 in arm.body { esc_stmt(e, s2) }
             esc_pop(e)

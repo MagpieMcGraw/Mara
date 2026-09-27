@@ -97,13 +97,13 @@ gen_niche_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, unio
     // pointer field is at offset 0, same as the niche slot).
     emit_label(g, some_label)
     if some_arm != nil {
-        if some_arm.binding_name != "" {
+        if some_arm.bound_name != "" {
             struct_name := some_arm.resolved_struct
             if struct_name == "" {
                 struct_name = ut.variant_structs[some_arm.variant_name] or_else some_arm.variant_name
             }
-            g.alias_vars[some_arm.binding_name] = true // the union's own bytes
-            g.all_vars[some_arm.binding_name] = Struct_Var{
+            g.alias_vars[some_arm.bound_name] = true // the union's own bytes
+            g.all_vars[some_arm.bound_name] = Struct_Var{
                 alloca      = union_ptr,
                 struct_name = struct_name,
             }
@@ -155,7 +155,7 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
     sw: strings.Builder
     strings.write_string(&sw, fmt.tprintf("  switch %s %s, label %%%s [\n", switch_type, tag_val, default_label))
     for arm, i in s.arms {
-        if arm.is_union_arm || arm.dot_shorthand != "" {
+        if arm.variant != "" {
             // Use resolved tag from type checker
             strings.write_string(&sw, fmt.tprintf("    %s %d, label %%%s\n", switch_type, arm.resolved_tag, arm_labels[i]))
         }
@@ -170,9 +170,9 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
     for arm, i in s.arms {
         emit_label(g, arm_labels[i])
 
-        if arm.is_union_arm || arm.dot_shorthand != "" {
+        if arm.variant != "" {
             // Register the binding variable as a struct var pointing at the payload
-            if arm.is_union_arm && arm.binding_name != "" {
+            if arm.is_union_arm && arm.bound_name != "" {
                 // Use resolved struct name from type checker
                 struct_name := arm.resolved_struct
                 if struct_name == "" {
@@ -181,8 +181,8 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
                 // The variant struct carries the tag header and overlays the
                 // union at offset 0, so bind it at the union pointer — its
                 // user fields sit at the same absolute offsets as before.
-                g.alias_vars[arm.binding_name] = true // the union's own bytes
-                g.all_vars[arm.binding_name] = Struct_Var{
+                g.alias_vars[arm.bound_name] = true // the union's own bytes
+                g.all_vars[arm.bound_name] = Struct_Var{
                     alloca = union_ptr,
                     struct_name = struct_name,
                 }
@@ -253,8 +253,8 @@ gen_value_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
     // Emit comparison chain for real arms
     for i in 0..<real_arm_count {
         arm := s.arms[i]
-        // Dot-shorthand arms have their tag value resolved by the type checker
-        arm_val := arm.dot_shorthand != "" ? fmt.tprintf("%d", arm.resolved_tag) : gen_expr(g, arm.value)
+        // Variant arms have their tag value resolved by the type checker
+        arm_val := arm.variant != "" ? fmt.tprintf("%d", arm.resolved_tag) : gen_expr(g, arm.value)
         cmp := fresh_tmp(g)
         emit(g, "  %s = icmp eq %s %s, %s", cmp, subj_type, subj_val, arm_val)
         emit_cond_br(g, cmp, arm_body_labels[i], arm_next_labels[i])

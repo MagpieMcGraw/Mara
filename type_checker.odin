@@ -9487,6 +9487,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     for &arm in s.arms {
         if arm.dot_shorthand != "" {
             // Dot shorthand arm: .Variant — resolve against subject's enum or union type
+            arm.variant = arm.dot_shorthand
             if is_enum_match {
                 if tag_val, v_ok := et.variants[arm.dot_shorthand]; v_ok {
                     arm.resolved_tag = tag_val
@@ -9512,6 +9513,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
             check_scope(c, arm.body, child)
         } else if arm.is_union_arm {
             // Union pattern arm: VariantName [bindingName] { body }
+            arm.variant = arm.variant_name
             if is_union_match {
                 if tag_val, tv_ok := ut.tag_map[arm.variant_name]; tv_ok {
                     arm.resolved_tag = tag_val
@@ -9527,9 +9529,10 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
             // when the subject is a simple identifier — non-ident subjects
             // have no name to rebind, so the user falls back to the explicit
             // binding form.
-            if arm.binding_name == "" {
+            arm.bound_name = arm.binding_name
+            if arm.bound_name == "" {
                 if subj_ident, sok := s.subject.(^Expr_Ident); sok {
-                    arm.binding_name = subj_ident.name
+                    arm.bound_name = subj_ident.name
                 }
             }
             child := type_env_block_child(env)
@@ -9543,13 +9546,13 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
             // Store flat name for codegen and bind payload variable
             if st, st_ok := c.table.structs[struct_name]; st_ok {
                 arm.resolved_struct = st.name
-                if arm.binding_name != "" {
-                    type_env_set(child, arm.binding_name, st)
+                if arm.bound_name != "" {
+                    type_env_set(child, arm.bound_name, st)
                 }
             } else if st, st_ok := c.table.funs[struct_name]; st_ok {
                 arm.resolved_struct = st.name
-                if arm.binding_name != "" {
-                    type_env_set(child, arm.binding_name, st)
+                if arm.bound_name != "" {
+                    type_env_set(child, arm.bound_name, st)
                 }
             }
             check_scope(c, arm.body, child)
@@ -9562,8 +9565,8 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
             if ident, ident_ok := arm.value.(^Expr_Ident); ident_ok {
                 if is_enum_match {
                     if tag_val, v_ok := et.variants[ident.name]; v_ok {
-                        // Promote bare ident to dot_shorthand arm
-                        arm.dot_shorthand = ident.name
+                        // A bare variant name matches like `.Variant`
+                        arm.variant = ident.name
                         arm.resolved_tag = tag_val
                         child := type_env_block_child(env)
                         check_scope(c, arm.body, child)
@@ -9571,8 +9574,8 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
                     }
                 } else if is_union_match {
                     if tag_val, v_ok := ut.tag_map[ident.name]; v_ok {
-                        // Promote bare ident to dot_shorthand arm
-                        arm.dot_shorthand = ident.name
+                        // A bare variant name matches like `.Variant`
+                        arm.variant = ident.name
                         arm.resolved_tag = tag_val
                         ds_struct := ut.variant_structs[ident.name] or_else ident.name
                         if arm_st, arm_st_ok := c.table.structs[ds_struct]; arm_st_ok {
@@ -9611,10 +9614,8 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
         // Collect covered variant names from match arms
         covered: map[string]bool
         for arm in s.arms {
-            if arm.dot_shorthand != "" {
-                covered[arm.dot_shorthand] = true
-            } else if arm.is_union_arm {
-                covered[arm.variant_name] = true
+            if arm.variant != "" {
+                covered[arm.variant] = true
             } else if fa, fa_ok := arm.value.(^Expr_Field_Access); fa_ok {
                 covered[fa.field] = true
             }

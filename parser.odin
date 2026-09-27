@@ -803,6 +803,11 @@ Match_Arm :: struct {
     is_else:         bool,       // true for wildcard else arm
     body:            [dynamic]Stmt,
     // Populated by type checker — codegen reads these directly
+    variant:         string,     // the variant this arm matches, however written: `.Red`,
+                                 // `Circle c`, or a bare variant name in a value arm; ""
+                                 // for a value or else arm
+    bound_name:      string,     // the name the body sees the payload as: `binding_name`, or
+                                 // the subject's own name when a union arm wrote none
     resolved_tag:    int,        // tag value for enum/union variant arms
     resolved_struct: string,     // variant struct name for union binding arms
 }
