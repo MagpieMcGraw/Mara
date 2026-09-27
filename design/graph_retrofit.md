@@ -85,8 +85,9 @@ the check for phase 3.
       `test/ask_queries.txt` (32 queries over Pounce and `test/operator_calls.mara`, the whole
       argument matrix) against `test/ask_expected.txt`; `-u` re-records. Recording them found
       output following map order (defs sharing a span, lineage children); now sorted totally
-- [ ] Found: nested broadcast `g : [2][3]i64 = {all {all x}}` fails to type-check (the inner
-      literal is checked against the outer's types)
+- [x] Found: nested broadcast `g : [2][3]i64 = {all {all x}}` fails to type-check (the inner
+      literal is checked against the outer's types). An anonymous broadcast value now takes the
+      element type as its hint (`test/nested_broadcast.mara`)
 - [x] Found: a fn-type parameter followed by another parameter doesn't parse — in
       `fun(op: fun(i64) -> i64, x: i64)` the return list swallows `, x`. An unwrapped return list
       now ends at a named group, and a fn type's returns are positional only

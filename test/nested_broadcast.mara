@@ -1,0 +1,32 @@
+module nested_broadcast
+
+//@ expect-output: nested 11
+//@ expect-output: distinct 3
+//@ expect-output: field 4
+//@ expect-output: cube 7
+
+// A broadcast whose value is itself an anonymous literal (`{all {all x}}`):
+// the inner literal fills element slots, so it takes the element type as its
+// shape. It used to inherit the outer target (`[2][3]i64`) and fail to check.
+
+V3 :: distinct [3]i64
+
+Grid :: struct {
+	cells: [2][3]i64 = {all {all 4}}
+}
+
+corner :: fun(x: i64) -> i64 {
+	g : [2][3]i64 = {all {all x}}
+	g[1][2] += 1
+	return g[1][2] + g[0][0]
+}
+
+main :: fun() {
+	print("nested", corner(5))
+	vs : [2]V3 = {all {all 3}}
+	print("distinct", vs[1][2])
+	gr := Grid{}
+	print("field", gr.cells[1][1])
+	cube : [2][2][2]i64 = {all {all {all 7}}}
+	print("cube", cube[1][1][1])
+}

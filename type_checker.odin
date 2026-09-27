@@ -7859,7 +7859,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
 // re-checked here — without this a constructing broadcast (`all Cell()`) would
 // reach codegen with an unresolved call ("unknown function"). The caller must
 // have already type-checked lit.broadcast_value against the element type.
-fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size: int, env: ^Type_Scope) {
+fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size: int, elem: Type, env: ^Type_Scope) {
     clear(&lit.array_values)
     resize(&lit.array_values, size)
     for i in 0..<size {
@@ -7867,6 +7867,7 @@ fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size:
             lit.array_values[0] = lit.broadcast_value
         } else {
             cloned := clone_expr(lit.broadcast_value)
+            if is_anonymous_literal(cloned) { c.expected_hint = elem }
             check_expr(c, cloned, env)
             lit.array_values[i] = cloned
         }
@@ -7892,6 +7893,7 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
             field_name, type_name(field_type))
         return
     }
+    if is_anonymous_literal(lit.broadcast_value) { c.expected_hint = elem_type }
     val_type := check_expr(c, lit.broadcast_value, env)
     if !is_any(val_type) && types_incompatible(elem_type, val_type) {
         check_error(c, span,
@@ -7902,7 +7904,7 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
     if is_infer(val_type) {
         check_literal_overflow(c, lit.broadcast_value, elem_type, span)
     }
-    fill_broadcast_array_slots(c, lit, size, env)
+    fill_broadcast_array_slots(c, lit, size, elem_type, env)
     lit.type_ = field_type
 }
 
@@ -8866,6 +8868,14 @@ needs_field_type_hint :: proc(e: Expr) -> bool {
     return lit.name == "" && lit.type_expr == nil && !lit.is_broadcast
 }
 
+// An anonymous literal (`{...}` or `{all x}`) takes its shape from the slot it
+// fills. A broadcast's value fills element slots, so a nested one
+// (`{all {all x}}`) needs the element type as its hint, not the outer target.
+is_anonymous_literal :: proc(e: Expr) -> bool {
+    lit, ok := e.(^Expr_Struct_Literal)
+    return ok && lit.name == "" && lit.type_expr == nil
+}
+
 // A NAMED variant literal (`Rect{...}`) in a union-typed field or argument
 // needs the union as its hint so check_expr's union-context branch can resolve
 // it. Unlike needs_field_type_hint this fires for named literals — the name
@@ -8895,6 +8905,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
     // element type, then fill every slot with a clone so codegen emits
     // independent stores per element.
     if lit.is_broadcast {
+        if is_anonymous_literal(lit.broadcast_value) { c.expected_hint = fa.elem }
         val_type := check_expr(c, lit.broadcast_value, env)
         if types_incompatible(fa.elem, val_type) {
             check_error(c, lit.span, TYPE_BROADCAST_VALUE_TYPE_EXPECTED,
@@ -8907,7 +8918,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
         // Re-check each clone (shared with the field-default path) so a
         // constructing broadcast like `all Cell()` keeps its resolved_func per
         // slot; codegen then constructs the element in place per slot.
-        fill_broadcast_array_slots(c, lit, fa.size, env)
+        fill_broadcast_array_slots(c, lit, fa.size, fa.elem, env)
         return
     }
 
