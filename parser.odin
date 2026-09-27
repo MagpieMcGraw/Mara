@@ -209,6 +209,11 @@ Expr_Ident :: struct {
     type_:    Type,
     resolved: Resolved_Name,  // filled by type checker (enum variants, constants)
     is_dot:   bool,           // .Variant shorthand: resolve via expected type or visible-variant search
+    // Filled by type checker: what a dot-ref stands for when it is not a
+    // variant — `.len` / `.cap` in a subscript is the base's own field
+    // (`a.fonts[.len]` → `a.fonts.len`). Checked and emitted in the ident's
+    // place; the ident itself stays as written.
+    lowered:  Expr,
 }
 
 Expr_Unary :: struct {
@@ -4807,6 +4812,7 @@ clone_expr :: proc(e: Expr) -> Expr {
         c := new_clone(v^)
         c.type_ = nil
         c.resolved = nil
+        c.lowered = nil
         return c
     case ^Expr_Bool:
         c := new_clone(v^)

@@ -68,6 +68,9 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         return fmt.tprintf("%d", int(e.value))
 
     case ^Expr_Ident:
+        // A dot-ref the checker lowered (`.len` in a subscript → the base's
+        // `.len`) emits as its lowering.
+        if e.lowered != nil { return gen_expr(g, e.lowered, target_type) }
         // Null pointer literal — the only legal way to spell a null pointer
         // in Mara source. Lowers to LLVM's `null` keyword unchanged.
         if e.name == "void" {
