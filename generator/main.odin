@@ -7,7 +7,8 @@ package generator
 // feature mix (operator overloads, edge-case sprinkles). Same seed + same
 // knobs → byte-identical output.
 //
-// Usage:
+// Usage (from the repo root — `-out` is also main's module name, so it must be
+// a bare directory name; then `mara build` inside that directory):
 //   generator -out test_1M
 //   generator -out test_100k -files 30 -lines 3333 -isolated 15 -short 9 -long 6
 //   generator -out gen_opover -files 50 -opover 30
@@ -19,27 +20,29 @@ import "core:strconv"
 import "core:strings"
 
 Config :: struct {
-    out_dir:    string,
-    seed:       u64,
-    files:      int,
-    lines:      int, // target lines per file
-    isolated:   int,
-    short:      int,
-    long:       int,
-    opover_pct: int, // 0..100
-    edge_pct:   int, // 0..100
+    out_dir:        string,
+    seed:           u64,
+    files:          int,
+    lines:          int, // target lines per file
+    isolated:       int,
+    short:          int,
+    long:           int,
+    opover_pct:     int, // 0..100
+    edge_pct:       int, // 0..100
+    slice_loop_pct: int, // 0..100 — slice+for-loop+Vec3 overload pattern
 }
 
 default_config :: proc() -> Config {
     return Config{
-        seed       = 42,
-        files      = 100,
-        lines      = 10000,
-        isolated   = 50,
-        short      = 30,
-        long       = 20,
-        opover_pct = 5,
-        edge_pct   = 10,
+        seed           = 42,
+        files          = 100,
+        lines          = 10000,
+        isolated       = 50,
+        short          = 30,
+        long           = 20,
+        opover_pct     = 5,
+        edge_pct       = 10,
+        slice_loop_pct = 20,
     }
 }
 
@@ -53,6 +56,7 @@ print_usage :: proc() {
     fmt.eprintln("  -long N         long-chain (depth 5-7) count (default 20)")
     fmt.eprintln("  -opover PCT     operator-overload frequency 0..100 (default 5)")
     fmt.eprintln("  -edge-bias PCT  edge-case sprinkle frequency 0..100 (default 10)")
+    fmt.eprintln("  -slice-loop PCT slice+Vec3 loop frequency 0..100 (default 20)")
 }
 
 // Pop the next arg as a string value for the named flag, or report and bail.
@@ -119,6 +123,10 @@ parse_args :: proc() -> (cfg: Config, ok: bool) {
             v, vok := expect_value(args, i, "-edge-bias"); if !vok { return cfg, false }
             cfg.edge_pct = parse_int_or(v, cfg.edge_pct)
             i += 2
+        case "-slice-loop":
+            v, vok := expect_value(args, i, "-slice-loop"); if !vok { return cfg, false }
+            cfg.slice_loop_pct = parse_int_or(v, cfg.slice_loop_pct)
+            i += 2
         case "-h", "--help":
             print_usage()
             return cfg, false
@@ -159,7 +167,8 @@ main :: proc() {
     fmt.printfln("  files: %d (%d isolated + %d short + %d long)",
         cfg.files, cfg.isolated, cfg.short, cfg.long)
     fmt.printfln("  target lines/file: %d", cfg.lines)
-    fmt.printfln("  opover frequency: %d%%   edge bias: %d%%", cfg.opover_pct, cfg.edge_pct)
+    fmt.printfln("  opover frequency: %d%%   edge bias: %d%%   slice-loop: %d%%",
+        cfg.opover_pct, cfg.edge_pct, cfg.slice_loop_pct)
     fmt.printfln("  seed: %d", cfg.seed)
 
     generate(&cfg)
@@ -289,10 +298,15 @@ emit_dep_file :: proc(cfg: ^Config, name: string, deps: []File_Info, _all_files:
 
     b := strings.builder_make()
     w(&b, "module ", name, "\n\n")
+    // Every dep file imports mara.math so the slice-loop pattern can lean
+    // on Vec3 + overloaded +/-/* dispatch. Files that don't end up using
+    // Vec3 still pay the (small) import cost — that's deliberate for
+    // compile-time measurement.
+    w(&b, "use mara.math\n")
     for d in deps {
         w(&b, "use ", d.module_name, "\n")
     }
-    if len(deps) > 0 { w(&b, "\n") }
+    w(&b, "\n")
 
     // Build the extern pool from all deps' specs.
     externs: [dynamic]Fn_Spec
@@ -319,15 +333,24 @@ emit_dep_file :: proc(cfg: ^Config, name: string, deps: []File_Info, _all_files:
         }
     }
 
+    // Subset of file-scope structs that carry at least one Vec3 field —
+    // candidates for the slice-loop pattern.
+    vec3_structs := filter_vec3_structs(structs[:])
+    defer delete(vec3_structs)
+
     specs: [dynamic]Fn_Spec
     line_count := count_lines(strings.to_string(b))
     for line_count < cfg.lines {
         fn := pick_fn_name()
         before := strings.builder_len(b)
         spec: Fn_Spec
-        if rand.int_max(100) < 30 && len(structs) > 0 {
+        roll := rand.int_max(100)
+        switch {
+        case roll < cfg.slice_loop_pct && len(vec3_structs) > 0:
+            spec = gen_slice_loop_fn(&b, fn, vec3_structs[:])
+        case roll < cfg.slice_loop_pct + 30 && len(structs) > 0:
             spec = gen_struct_consumer_fn(&b, fn, structs[:])
-        } else {
+        case:
             spec = gen_arith_fn(&b, fn, externs[:])
         }
         append(&specs, spec)
@@ -353,44 +376,27 @@ emit_main :: proc(cfg: ^Config, files: []File_Info, all_specs: []Fn_Spec) {
     path := strings.concatenate({cfg.out_dir, "/main.mara"})
     b := strings.builder_make()
     w(&b, "module ", cfg.out_dir, "\n\n")
+    // Pulled in so struct args whose default ctors reference Vec3 can
+    // resolve the type from main's scope.
+    w(&b, "use mara.math\n")
+    // Slice-loop fns build `[..N]Struct` partial arrays past the stack
+    // threshold, so the program declares a scope arena for them to route to.
+    w(&b, "include mara.memory\n")
     for f in files {
         w(&b, "use ", f.module_name, "\n")
     }
     w(&b, "\nmain :: fun() -> i64 {\n")
+    w(&b, "\tthis_program = Program(Arena_Basic(64 * MB))\n")
+    // Every generated fn returns a value, and Mara rejects a silently
+    // discarded return — main only calls for the side of compiling them.
+    // Struct params take a `StructName{}` literal in place.
     sample_count := min(len(all_specs), 1000)
-
-    // Pre-sample so we know which structs we need locals for. Mara's codegen
-    // currently rejects `StructName{}` as a call-arg literal (lowers to
-    // `ptr 0` in IR), so we declare a zero-init local for each unique
-    // struct type and pass it by name from the call sites below.
-    sampled: [dynamic]Fn_Spec
-    defer delete(sampled)
-    struct_locals: map[string]string
-    defer delete(struct_locals)
-    for i in 0..<sample_count {
+    for _ in 0..<sample_count {
         spec := all_specs[rand.int_max(len(all_specs))]
-        append(&sampled, spec)
-        for p in spec.params {
-            if p.struct_name != "" {
-                if _, exists := struct_locals[p.struct_name]; !exists {
-                    local := fmt.aprintf("__sarg_%d", len(struct_locals))
-                    struct_locals[p.struct_name] = local
-                }
-            }
-        }
-    }
-    for sname, local in struct_locals {
-        w(&b, "\t", local, " : ", sname, "\n")
-    }
-    for spec in sampled {
-        w(&b, "\t", spec.name, "(")
+        w(&b, "\t_ = ", spec.name, "(")
         for p, j in spec.params {
             if j > 0 { w(&b, ", ") }
-            if p.struct_name != "" {
-                w(&b, struct_locals[p.struct_name])
-            } else {
-                w(&b, literal_for(p.kind))
-            }
+            w(&b, literal_for_param(p))
         }
         w(&b, ")\n")
     }

@@ -59,6 +59,30 @@ is_signed_kind :: proc(k: Type_Kind) -> bool {
     return false
 }
 
+kind_bits :: proc(k: Type_Kind) -> int {
+    switch k {
+    case .I8, .U8:          return 8
+    case .I16, .U16:        return 16
+    case .I32, .U32, .F32:  return 32
+    case .I64, .U64, .F64:  return 64
+    }
+    return 64
+}
+
+// Whether every value of `from` survives a cast to `to`. Ints widen within
+// their signedness, or unsigned into a strictly wider signed; any int goes
+// to a float (the generator's magnitudes are tiny); floats only widen.
+cast_keeps_value :: proc(from, to: Type_Kind) -> bool {
+    if !is_int_kind(to) {
+        return is_int_kind(from) || kind_bits(from) <= kind_bits(to)
+    }
+    if !is_int_kind(from) { return false }
+    if is_signed_kind(from) == is_signed_kind(to) {
+        return kind_bits(from) <= kind_bits(to)
+    }
+    return !is_signed_kind(from) && kind_bits(from) < kind_bits(to)
+}
+
 // Tiny bounded literal. Mara traps on integer overflow at runtime, and
 // values compound across statements (each `+` roughly doubles the range
 // of plausible magnitudes). To keep ~30 chained arithmetic ops inside the
@@ -124,10 +148,12 @@ expr_of :: proc(s: ^Fn_State, kind: Type_Kind) -> string {
         if l, ok := pick_local(s, kind); ok {
             return l.name
         }
-        // Try casting from another kind.
+        // Try casting from another kind — widening only. A narrowing or
+        // sign-changing cast can land anywhere in the target's range
+        // (`u32(-4)`, `i8(300)`), and the next `+` traps on overflow.
         for try := 0; try < 4; try += 1 {
             other := Type_Kind(rand.int_max(int(Type_Kind.F64) + 1))
-            if other == kind { continue }
+            if other == kind || !cast_keeps_value(other, kind) { continue }
             if l, ok := pick_local(s, other); ok {
                 return strings.concatenate({type_str(kind), "(", l.name, ")"})
             }
@@ -226,17 +252,32 @@ literal_for_param :: proc(p: Param_Spec) -> string {
     return literal_for(p.kind)
 }
 
-// Field of a generated struct.
+// Field of a generated struct. When `is_vec3` is set, the field is a Vec3
+// from mara.math and `kind` is ignored — scalar codepaths must skip these.
 Field :: struct {
-    name: string,
-    kind: Type_Kind,
+    name:    string,
+    kind:    Type_Kind,
+    is_vec3: bool,
 }
 
 // File-scope struct declaration. Tracked so consumer functions in the
 // same file can take it as a parameter and read/write its fields.
+// `has_vec3` lets the slice-loop pattern filter for structs whose fields
+// it can sum through overloaded `+`/`-`/`*`.
 Struct_Spec :: struct {
-    name:   string,
-    fields: [dynamic]Field,
+    name:     string,
+    fields:   [dynamic]Field,
+    has_vec3: bool,
+}
+
+// Filter to structs that contain at least one Vec3 field. Returns a fresh
+// slice into a caller-owned dyn array; caller must `delete` it.
+filter_vec3_structs :: proc(pool: []Struct_Spec) -> [dynamic]Struct_Spec {
+    out: [dynamic]Struct_Spec
+    for s in pool {
+        if s.has_vec3 { append(&out, s) }
+    }
+    return out
 }
 
 FIELD_NOUNS := []string{
@@ -263,21 +304,57 @@ pick_struct_name :: proc() -> string {
     return fmt.aprintf("%s_%s_%d", adj, noun, id)
 }
 
-// Emit a struct definition at file scope and return its spec.
-gen_struct_def :: proc(b: ^strings.Builder) -> Struct_Spec {
+// Random Vec3 literal: `Vec3{0.5, -1.0, 2.0}` with bounded components so
+// repeated adds don't overflow finite f32 range across a long loop.
+vec3_literal :: proc() -> string {
+    x := rand.float64() * 2 - 1
+    y := rand.float64() * 2 - 1
+    z := rand.float64() * 2 - 1
+    return fmt.aprintf("Vec3{{%.3f, %.3f, %.3f}}", x, y, z)
+}
+
+// Emit a struct definition at file scope and return its spec. When
+// `vec3_chance_pct` > 0, the struct may include 1-2 Vec3 fields whose
+// arithmetic later flows through mara.math's overloaded +/-/* dispatch.
+gen_struct_def :: proc(b: ^strings.Builder, vec3_chance_pct: int = 50) -> Struct_Spec {
     spec := Struct_Spec{name = pick_struct_name()}
     n_fields := 3 + rand.int_max(6)
     // Track field names used to avoid duplicates within one struct.
     used: map[string]bool
     defer delete(used)
+
+    // Decide up-front how many Vec3 fields this struct gets so they're
+    // sprinkled among scalar fields rather than always at the end.
+    n_vec3 := 0
+    if rand.int_max(100) < vec3_chance_pct {
+        n_vec3 = 1 + rand.int_max(2) // 1 or 2
+    }
+    vec3_remaining := n_vec3
+
     for len(spec.fields) < n_fields {
         fname := FIELD_NOUNS[rand.int_max(len(FIELD_NOUNS))]
         if used[fname] { continue }
         used[fname] = true
-        append(&spec.fields, Field{name = fname, kind = pick_numeric_kind()})
+        // Roll a Vec3 field if we still owe any. Otherwise scalar.
+        slots_left := n_fields - len(spec.fields)
+        if vec3_remaining > 0 && rand.int_max(slots_left) < vec3_remaining {
+            append(&spec.fields, Field{name = fname, is_vec3 = true})
+            vec3_remaining -= 1
+            spec.has_vec3 = true
+        } else {
+            append(&spec.fields, Field{name = fname, kind = pick_numeric_kind()})
+        }
     }
     w(b, spec.name, " :: struct {\n")
     for f in spec.fields {
+        if f.is_vec3 {
+            // Vec3 fields always carry a literal default so per-element
+            // construction in `items : [..N]StructName` picks up real data
+            // (not just zero-initialized Vec3s) and downstream sums see
+            // varied input through the overloaded `+`/`-`/`*` dispatch.
+            w(b, "\t", f.name, ": Vec3 = ", vec3_literal(), "\n")
+            continue
+        }
         // Half the time give the field a default; rest stays zero-init.
         if rand.int_max(2) == 0 {
             w(b, "\t", f.name, ": ", type_str(f.kind), " = ", literal_for(f.kind), "\n")
@@ -331,6 +408,16 @@ gen_overload_set :: proc(b: ^strings.Builder, sd: Struct_Spec) {
     w(b, "\tresult : ", sd.name, "\n")
     for f in sd.fields {
         eff_op := op
+        if f.is_vec3 {
+            // Vec3 ± / * scalar dispatches to vec3_{add,sub}_scalar / vec3_scale
+            // in mara.math — the scalar must be f32. Cast when needed.
+            if scalar_kind == .F32 {
+                w(b, "\tresult.", f.name, " = a.", f.name, " ", eff_op, " s\n")
+            } else {
+                w(b, "\tresult.", f.name, " = a.", f.name, " ", eff_op, " f32(s)\n")
+            }
+            continue
+        }
         if op == "-" && !is_signed_kind(f.kind) { eff_op = "+" }
         // Cast the scalar to the field's kind so the arithmetic is well-typed.
         if f.kind == scalar_kind {
@@ -371,10 +458,11 @@ gen_struct_consumer_fn :: proc(b: ^strings.Builder, name: string, structs: []Str
     }
     w(b, ") -> ", type_str(ret_kind), " {\n")
 
-    // Read every field into a local so subsequent arith can use it. This
-    // also exercises field-access codegen for each field type in the
-    // struct.
+    // Read every scalar field into a local so subsequent arith can use it.
+    // Vec3 fields are skipped — the slice-loop pattern is what exercises
+    // vector arithmetic; this pattern stays in the scalar domain.
     for f in chosen.fields {
+        if f.is_vec3 { continue }
         local := fresh_local(&s)
         w(b, "\t", local, " : ", type_str(f.kind), " = ", struct_param, ".", f.name, "\n")
         add_local(&s, local, f.kind)
@@ -394,7 +482,11 @@ gen_struct_consumer_fn :: proc(b: ^strings.Builder, name: string, structs: []Str
         n_writes := 1 + rand.int_max(min(3, len(chosen.fields)))
         for i in 0..<n_writes {
             f := chosen.fields[i]
-            w(b, "\t", sl, ".", f.name, " = ", literal_for(f.kind), "\n")
+            if f.is_vec3 {
+                w(b, "\t", sl, ".", f.name, " = ", vec3_literal(), "\n")
+            } else {
+                w(b, "\t", sl, ".", f.name, " = ", literal_for(f.kind), "\n")
+            }
         }
     }
 
@@ -404,6 +496,63 @@ gen_struct_consumer_fn :: proc(b: ^strings.Builder, name: string, structs: []Str
     }
     ret_local, _ := pick_local(&s, ret_kind)
     w(b, "\treturn ", ret_local.name, "\n")
+    w(b, "}\n\n")
+    return spec
+}
+
+// Emit a function that builds a partial array of structs containing Vec3
+// fields, slices over it, runs a `for i in 0..slc.len` loop, and
+// accumulates a Vec3 via mara.math's overloaded +/-/* dispatch. This is
+// the cross-cutting pattern: partial array allocation, slice header,
+// indexed loop, overload resolution per iteration. Returns the call-site
+// spec (no params, f32 return).
+gen_slice_loop_fn :: proc(b: ^strings.Builder, name: string, vec3_structs: []Struct_Spec) -> Fn_Spec {
+    chosen := vec3_structs[rand.int_max(len(vec3_structs))]
+
+    vec3_names: [dynamic]string
+    defer delete(vec3_names)
+    for f in chosen.fields {
+        if f.is_vec3 { append(&vec3_names, f.name) }
+    }
+
+    n := 8 + rand.int_max(25) // 8..32 elements
+    n_str := fmt.tprintf("%d", n)
+
+    spec := Fn_Spec{name = name, ret = .F32}
+
+    w(b, name, " :: fun() -> f32 {\n")
+    // Partial-array decl runs the struct's default constructor per slot,
+    // so Vec3 fields pick up their literal defaults — no explicit init
+    // expression needed.
+    w(b, "\titems : [..", n_str, "]", chosen.name, "\n")
+    // Slice header over the full backing capacity. Mara's `[start:end]`
+    // on a partial array doesn't depend on `.len` (which is 0 here).
+    w(b, "\tslc : []", chosen.name, " = items[0:", n_str, "]\n")
+    w(b, "\tacc : Vec3\n")
+    w(b, "\tfor i in 0..slc.len {\n")
+
+    n_ops := 2 + rand.int_max(4) // 2..5 ops per iteration
+    for k in 0..<n_ops {
+        field := vec3_names[rand.int_max(len(vec3_names))]
+        roll := rand.int_max(100)
+        switch {
+        case roll < 30:
+            // Vec3 * f32 — overloaded mul → vec3_scale.
+            scalar := rand.float64() * 0.4 + 0.6
+            w(b, "\t\tacc = acc * ", fmt.tprintf("%.3f", scalar), "\n")
+        case roll < 50:
+            // Vec3 ± f32 — overloaded add/sub → vec3_{add,sub}_scalar.
+            op := rand.int_max(2) == 0 ? "+" : "-"
+            scalar := rand.float64() * 0.5
+            w(b, "\t\tacc = acc ", op, " ", fmt.tprintf("%.3f", scalar), "\n")
+        case:
+            // Vec3 ± Vec3 — overloaded add/sub → vec3_add/vec3_sub.
+            op := rand.int_max(2) == 0 ? "+" : "-"
+            w(b, "\t\tacc = acc ", op, " slc[i].", field, "\n")
+        }
+    }
+    w(b, "\t}\n")
+    w(b, "\treturn acc.x\n")
     w(b, "}\n\n")
     return spec
 }
