@@ -181,6 +181,88 @@ Why not an array stored on each node: it would need two arrays per node (one per
 
 **Operations: in order, in runs.** Each function's operations are stored in execution order, cut into straight runs (`start`, `check`, `body`, `done` above). A run stores its `then` edges: one, or two after a branch. An operation lists its inputs directly, which are its incoming flows at the finest zoom. The named-level flow edges in the table above are those chains zoomed out, kept as an index.
 
+## Operations
+
+Operations are at Mara's level: one for each thing the language does, whether the text writes it or the language does it for you. Each kind has one fixed LLVM template, so code generation is transcription and never looks at an operation's surroundings. That gives the test for the set: if an operation's LLVM can't be written from the operation and its types alone, the missing context must be an operation too. So implicit work is in the graph — defers at every exit, zero-init, construction, arena resets — built once and seen by every analysis, instead of each consumer deriving it again.
+
+- An operation takes other operations' outputs as inputs and has zero or one output; a call has one per return value.
+- Variables are slots. Operations reach one through a **place**: `var`, then `field`, `index` or `deref` steps; `read` and `write` go through a place. LLVM turns slots into registers, so the graph is never in SSA form.
+- Structs, arrays and unions are built in place: `construct`, `fill`, and calls that return them write straight into a destination place. That is return-value optimization by construction.
+- Control flow is runs joined by `then`, and four operations end a run. A value that depends on a branch (`a and b`, an `if` expression) goes through a synthetic slot, so there is no merge operation.
+- Checks that only stop the program — bounds, overflow, division by zero — are part of their operation's template, not operations.
+- An operation the text doesn't write carries the Implied or Synthetic mark (see Identity and editing) and points at the syntax that caused it.
+
+About thirty kinds in all.
+
+**Places**
+
+| Operation | Written as | LLVM |
+| --- | --- | --- |
+| `var` | `x` | the variable's slot; no instruction |
+| `global` | `COLORS` (a constant table), `"hi"` | `@name`, `@.str.<hash>` |
+| `field` | `p.x` | `getelementptr` to the field |
+| `index` | `a[i]` | bounds check and `getelementptr`; a slice loads its pointer first |
+| `deref` | `p^`; implied in `p.x` when `p: ^T` | `load ptr` |
+| `variant` | the bound payload in a `match` arm | `getelementptr` past the tag |
+| `swizzle` | `v.xy` | element addresses or `shufflevector` |
+
+**Memory**
+
+| Operation | Written as | LLVM |
+| --- | --- | --- |
+| `read` | a place used as a value | `load`, or the address itself for a struct |
+| `write` | `x = v`, `p.x += 1` | `store`, or `memcpy` for a struct |
+| `address` | `&x` | the place itself; no instruction |
+| `zero` | synthetic, from `x : T` | `store zeroinitializer` or `memset` |
+| `construct` | `Foo(a)`, `Foo{…}`; synthetic from `x : Foo` | `memset`, then a call to Foo's init into the place |
+| `fill` | `{all x}` | a store per slot, a loop when large |
+| `carve` | `let(T, mem)`, `slice([:n]T, mem)` | align the cursor, `getelementptr`, bump `mem.len` |
+| `byte read` | `x : T = bytes[off]`, `#big_endian` | bounds check and `memcpy`, plus `bswap` |
+| `arena alloc` | synthetic, for a local too big for the stack | `call arena_alloc` |
+
+**Values**
+
+| Operation | Written as | LLVM |
+| --- | --- | --- |
+| `const` | `42`, `2.5`, `true`, `'a'`, `.Ok`, `size_of(T)` | an immediate |
+| `arith` | `+ - * / %`, shifts, bit operations | `add`, `fadd` and so on, with overflow and division-by-zero traps |
+| `compare` | `== != < <= > >=` | `icmp`, `fcmp` |
+| `unary` | `-x`, `not x` | `sub 0`, `xor` |
+| `cast` | `f32(x)`, `Meters(x)` | `sext`, `trunc`, `sitofp` and so on, or nothing |
+
+**Calls**
+
+| Operation | Written as | LLVM |
+| --- | --- | --- |
+| `call` | `f(a)`, `a.f()`, a dispatch or generic call, `a + b` through `overload`, `op(x)` through a function value, a foreign function | `call`: direct, through a pointer, or with the C ABI; struct and multiple returns go into destination places |
+| `print` | `print(a, b)` | one operation; a formatting call per argument, chosen by its type |
+| `assert` | `assert(c)` | a branch to a failure that prints the source text |
+| `crash` | `crash(msg)` | print, then `exit` |
+
+**Ending a run**
+
+| Operation | Written as | LLVM |
+| --- | --- | --- |
+| `jump` | the end of a block, `break`, `continue`, a loop's back edge | `br label` |
+| `branch` | `if`, `elif`, a loop's condition, `and` / `or`, `if` expressions, `?` | `br i1` |
+| `switch` | `match` | load the tag, `switch` |
+| `return` | `return a, b`; implied by `?` on an error | store the return slots, `ret` |
+| `run defers` | synthetic, at every exit of a scope that has `defer` | the scope's defer run, emitted inline |
+| `arena mark`, `arena reset` | synthetic, at entry to and every exit of a scope holding big values | `call` |
+
+**Braces are a block of writes.** `{…}` after a value runs its writes against that value, as a scope body runs against its scope. The forms differ only in the step before the writes:
+
+| Form | First | Then |
+| --- | --- | --- |
+| `Foo{a = 1}` | `construct` Foo into the destination | `write` `.a = 1` |
+| `{1, 2, 3}` | `zero` the destination | `write` slots 0, 1 and 2 |
+| `v{a = 1}`, in place | nothing: the destination is `v` | `write` `.a = 1` |
+| `y := v{a = 1}`, a copy | `write` `y = v` | `write` `.a = 1` |
+
+This is today's meaning: a field's default runs, then the override replaces it. The copy form is rejected today because variables and types share one namespace; that is language work, and the graph already has its shape.
+
+**Not operations.** A loop is runs and a back edge: `for i in 0..n` adds a synthetic counter with its compare and add, and `for it in items` a synthetic index and `it = items[i]`. `defer { … }` stores its block on the scope, and `run defers` executes it, so a defer is stored once however many exits the scope has. `break` and `continue` are jumps. Constants and `#if` are resolved before the graph is built.
+
 ## Queries
 
 Every `mara ask` question is one rule: pick a kind of connection, a direction and a scope; the answer is the connections of that kind that cross the scope's boundary in that direction. Because a scope's subtree is one run of ids, "crosses the boundary" is one end inside the range and the other outside.
@@ -222,8 +304,7 @@ First target: parameter narrowing from `design/mara_ask.md` §10. `camera_turn_w
 
 ## Open questions
 
-1. **Access paths as nodes?** Store only declarations (`Item.price`) and let queries follow paths, or also store paths (`cart.price`) as nodes. Declarations keep the graph small; stored paths make per-copy questions cheap.
+1. **Access paths as nodes?** Decided: declarations only. At the finest zoom an access path is already a chain of place operations (`var cart`, `index i`, `field price`; see Operations), so per-copy questions follow those chains.
 2. **Generics.** One node for a generic function's template, one per instance, or both linked. The instances are what runs; the template is what is written and edited.
-3. **The graph's operations.** Decided: the graph is the IR, built from the syntax tree by lowering. Next to design: which operations it has (call, load, store, compare, branch and so on), how code generation expands each into LLVM IR, and which zoomed-out views are worth keeping as indexes.
-4. **Partial results while code is broken.** Today one type error anywhere aborts the build. A live graph needs a broken function confined to itself, with the rest of the program still producing its graph.
-5. **Position-independent compilation.** Two tiers: show the matching slice of a whole-program compile (needs every LLVM instruction tagged with its origin), and compile a fragment on its own (its above-set becomes parameters and external declarations).
+3. **Partial results while code is broken.** Today one type error anywhere aborts the build. A live graph needs a broken function confined to itself, with the rest of the program still producing its graph.
+4. **Position-independent compilation.** Two tiers: show the matching slice of a whole-program compile (needs every LLVM instruction tagged with its origin), and compile a fragment on its own (its above-set becomes parameters and external declarations).
