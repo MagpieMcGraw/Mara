@@ -1180,11 +1180,12 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
 // call boundary. Shared by direct calls (via lookup_fun_info) and indirect
 // calls through a function value, whose type is a signature with no body.
 fun_info_of :: proc(g: ^Codegen, cf: ^Type_Scope) -> Fun_Info {
-    // A structural fn type (`fn(a: T -> R)`) never went through a declaration's
-    // signature pass; fill the same lowered cache from its params/returns.
+    // The checker fills every signature's lowered caches: declarations in the
+    // signature pass, structural fn types (`fn(a: T -> R)`) where they resolve.
+    // Filling one here would write a shared Type_Scope from parallel workers.
     if (len(cf.cg_params) == 0 && len(cf.params) > 0) ||
        (len(cf.cg_returns) == 0 && len(cf.return_types) > 0) {
-        populate_cg_signature(cf)
+        codegen_fatal(g, cf.body_span, "internal: signature '%s' reached codegen without its lowered params/returns", cf.name)
     }
     info := Fun_Info{}
 

@@ -2627,6 +2627,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
         for rte in t.return_types {
             append(&ft.return_types, resolve_type_expr(rte, c, span, env = env))
         }
+        populate_cg_signature(ft)
         return ft
     case Type_Of_Name:
         // `fn name` — resolves to the nominal function type of a named function
@@ -2861,6 +2862,7 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
         for rte in t.return_types {
             append(&ft.return_types, resolve_type_expr_with_subst(rte, c, span, subst))
         }
+        populate_cg_signature(ft)
         return ft
     case Type_Of_Name:
         // `fn name` inside a generic: substitutions don't affect it — the name

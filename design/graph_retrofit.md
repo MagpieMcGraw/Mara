@@ -58,8 +58,9 @@ what each becomes in LLVM).
       alongside: loops never dropped their bindings, so a local declared again after a loop skipped
       its zero-init, and runtime-sized or arena-backed locals defined one IR name twice
       (`test/sibling_locals.mara`)
-- [ ] `populate_cg_signature` runs lazily inside the parallel codegen workers — a possible race
-      (`codegen.odin` ~1185)
+- [x] `populate_cg_signature` runs lazily inside the parallel codegen workers — a possible race
+      (`codegen.odin` ~1185). Structural fn types now fill it where they resolve; a signature
+      reaching codegen without it is a hard error (`test/fn_type_values.mara`)
 - [ ] Operator-overload calls are never recorded as call-graph edges (purity, escape and
       `mara ask` miss them)
 - [ ] `take([]T(n), …)` rewrites a source `Type_Slice_Expr` in place; no fixture covers it
