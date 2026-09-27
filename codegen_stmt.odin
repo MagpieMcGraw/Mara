@@ -14,36 +14,9 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             gen_consume_init(g, s)
             return
         }
-        // Compound assign (`lhs op= rhs`) was desugared by the parser into
-        // `lhs = lhs op rhs`, with the LHS AST node shared between `s.target`
-        // and the binary's `left`. To evaluate the LHS once — matching the
-        // semantics of every other language with compound assignment — pre-
-        // evaluate any side-effectful sub-expressions inside the LHS into
-        // temps. The in-place mutation propagates to the binary's left
-        // operand since both refer to the same node.
-        if s.is_compound && s.target != nil {
-            hoist_compound_lhs(g, s.target)
-        }
         // Complex LHS: dispatch by target kind.
         if s.target != nil {
-            #partial switch t in s.target {
-            case ^Expr_Field_Access: gen_field_assign(g, s)
-            case ^Expr_Index:        gen_index_assign(g, s)
-            case ^Expr_Slice:
-                // Byte-buffer reinterpret write: buf[lo:hi] = value
-                // `assign_value_type` is set by the checker only on the reinterpret
-                // path, so its presence distinguishes a scalar/struct reinterpret
-                // from an array-to-array copy between byte buffers.
-                if (is_byte_slice(s.target_type) || is_byte_fixed_array(s.target_type) ||
-                    is_byte_partial_array(s.target_type)) &&
-                   s.assign_value_type != nil {
-                    gen_byte_target_write(g, s, t.expr, t.low)
-                } else {
-                    gen_slice_range_assign(g, s)
-                }
-            case ^Expr_Unary:
-                if t.op == .Caret { gen_deref_assign(g, s) }
-            }
+            gen_target_assign(g, s)
             return
         }
         // Skip include statements — desugared into imports before codegen
@@ -1592,6 +1565,71 @@ gen_return :: proc(g: ^Codegen, s: Stmt_Return) {
     case:
         emit(g, "  ret %s 0", g.current_ret_type)
     }
+}
+
+// An assignment through a field, index, slice or deref target.
+//
+// Compound assign (`lhs op= rhs`) was desugared by the parser into
+// `lhs = lhs op rhs`, with the LHS AST node shared between `s.target` and the
+// binary's `left`. To evaluate the LHS once — matching the semantics of every
+// other language with compound assignment — pre-evaluate any side-effectful
+// sub-expressions inside the LHS into temps, and later load the LHS through its
+// store address instead of re-emitting it (apply_compound_load_substitute).
+// Both rewrite the statement, so they run on a scratch copy of it: the AST is
+// the source of truth for everything after codegen, and a deferred compound
+// assign is emitted once per scope exit — each emission starts from the source.
+gen_target_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
+    s := s
+    if s.is_compound {
+        s = compound_scratch(s)
+        hoist_compound_lhs(g, s.target)
+    }
+    #partial switch t in s.target {
+    case ^Expr_Field_Access: gen_field_assign(g, s)
+    case ^Expr_Index:        gen_index_assign(g, s)
+    case ^Expr_Slice:
+        // Byte-buffer reinterpret write: buf[lo:hi] = value
+        // `assign_value_type` is set by the checker only on the reinterpret
+        // path, so its presence distinguishes a scalar/struct reinterpret
+        // from an array-to-array copy between byte buffers.
+        if (is_byte_slice(s.target_type) || is_byte_fixed_array(s.target_type) ||
+            is_byte_partial_array(s.target_type)) &&
+           s.assign_value_type != nil {
+            gen_byte_target_write(g, s, t.expr, t.low)
+        } else {
+            gen_slice_range_assign(g, s)
+        }
+    case ^Expr_Unary:
+        if t.op == .Caret { gen_deref_assign(g, s) }
+    }
+}
+
+// A copy of a compound assignment that codegen may rewrite: the statement, the
+// LHS spine hoisting descends (field access, index, deref), and the binary
+// whose left operand the load substitute replaces. The copy's binary keeps
+// pointing at the copy's target, as the source's does. Every other node —
+// index expressions, the right operand — stays shared and is only read.
+@(private="file")
+compound_scratch :: proc(s: ^Stmt_Assign) -> ^Stmt_Assign {
+    spine :: proc(e: Expr) -> Expr {
+        #partial switch n in e {
+        case ^Expr_Field_Access:
+            c := new_clone(n^); c.expr = spine(n.expr); return c
+        case ^Expr_Index:
+            c := new_clone(n^); c.expr = spine(n.expr); return c
+        case ^Expr_Unary:
+            if n.op == .Caret { c := new_clone(n^); c.operand = spine(n.operand); return c }
+        }
+        return e
+    }
+    c := new_clone(s^)
+    c.target = spine(s.target)
+    if bin, ok := s.value.(^Expr_Binary); ok {
+        b := new_clone(bin^)
+        if bin.left == s.target { b.left = c.target }
+        c.value = b
+    }
+    return c
 }
 
 // Walk a compound-assignment LHS and hoist every index sub-expression into a
