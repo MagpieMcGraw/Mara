@@ -9681,12 +9681,10 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Scope, table: ^SymbolTa
         }
     }
     if ft == nil { return nil, false }
-    // Skip funs that have no callable signature (pure parameterless data funs without parens)
-    // Exception: struct-kind scopes (struct/class) always get an init function emitted so
-    // every construction path (including bare declaration `x: Foo`) can go through it.
-    if len(ft.params) == 0 && len(ft.return_types) == 0 && !s.has_parens && ft.kind != .Struct {
-        return nil, false
-    }
+    // Every declared scope is extracted. A `fun` is callable however it was
+    // written — `fun { }` is a function with no params and no returns, its
+    // parens omitted — and a struct/class always gets an init function so every
+    // construction path (including bare declaration `x: Foo`) can go through it.
 
     ft.origin = Origin_Source{}
     if s.is_intrinsic {

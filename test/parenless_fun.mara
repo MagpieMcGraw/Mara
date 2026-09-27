@@ -1,0 +1,24 @@
+module parenless_fun
+
+//@ expect-output: greet ran
+//@ expect-output: nested ran
+//@ expect-output: parenless ok 2
+
+// `fun { }` is a function with no params and no returns — the parens are
+// simply omitted. That holds for `main` too. It used to be read as a data
+// scope and never emitted: a paren-less `main` produced an @main with no
+// body and no `ret`, which clang rejected.
+
+greet :: fun {
+	print("greet ran")
+}
+
+main :: fun {
+	greet()
+	nested :: fun {
+		print("nested ran")
+	}
+	nested()
+	calls := 2
+	print("parenless ok", calls)
+}
