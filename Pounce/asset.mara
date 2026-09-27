@@ -432,12 +432,6 @@ get_font_index :: fun(a: ^Assets, query: []utf8) -> i64 {
     return best_idx
 }
 
-get_font :: fun(a: ^Assets, query: []utf8) -> ^Font {
-    idx := get_font_index(a, query)
-    if idx >= 0 do return &a.fonts[idx]
-    return void
-}
-
 texture_loaded :: fun(a: ^Assets, query: []utf8) -> bool { return get_texture_index(a, query) >= 0 }
 font_loaded    :: fun(a: ^Assets, query: []utf8) -> bool { return get_font_index(a, query) >= 0 }
 

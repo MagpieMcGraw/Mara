@@ -126,67 +126,11 @@ get_or_create_batch :: fun(state: ^DrawState, mesh_id: i64) -> ^Mesh_Batch {
     return batch
 }
 
-draw_state_append :: fun(
-	state: ^DrawState,
-	objects: []Object,
-	visuals: []Visual,
-	camera: Camera,
-	highlight_state: ^DrawState = void)
-{
-	if objects.len == 0 do return
-	if visuals.len == 0 do return
-
-	for i in 0..objects.len {
-		if not objects[i].exists do continue
-
-		// FOR NOW ASSUMING DIRECT MAPPING FROM OBJ TO VIS
-		obj := objects[i]
-		vis := visuals[i]
-		mesh_id := visuals[i].mesh.index
-
-		// Get or create batch for this mesh
-		batch := get_or_create_batch(state, mesh_id)
-
-		mvp := opengl_create_mvp_matrix(
-			obj.pos,
-			obj.dir,
-			obj.scale,
-			camera.view, camera.proj,
-		)
-		instance := Instance{
-			mvp_matrix = mvp,
-			tex_coords = vis.texture.uv,
-			color = vis.color,
-			layer = vis.texture.layer,
-		}
-		&batch.instances + instance
-
-		if highlight_state != void and obj.highlighted {
-			highlight_batch := get_or_create_batch(highlight_state, mesh_id)
-			// Fixed offset gives consistent outline thickness
-			highlight_scale := obj.scale + 0.3
-			highlight_mvp := opengl_create_mvp_matrix(
-				obj.pos,
-				obj.dir,
-				highlight_scale,
-				camera.view, camera.proj
-			)
-			&highlight_batch.instances + Instance{
-				mvp_matrix = highlight_mvp,
-				tex_coords = vis.texture.uv,
-				color = {0, 1, 0},  // bright green
-				layer = vis.texture.layer,
-			}
-		}
-	}
-}
-
 append_one :: fun(
 	state: ^DrawState,
 	obj: Object,
 	vis: Visual,
-	camera: Camera,
-	highlight_state: ^DrawState = void)
+	camera: Camera)
 {
 	if not obj.exists do return
 
@@ -209,24 +153,36 @@ append_one :: fun(
 		layer = vis.texture.layer,
 	}
 	&batch.instances + instance
+}
 
-	// print(highlight_state.command_buffer)
-	if highlight_state != void and obj.highlighted {
-		highlight_batch := get_or_create_batch(highlight_state, mesh_id)
-		// Fixed offset gives consistent outline thickness
-		highlight_scale := obj.scale + 0.3
-		highlight_mvp := opengl_create_mvp_matrix(
-			obj.pos,
-			obj.dir,
-			highlight_scale,
-			camera.view, camera.proj
-		)
-		&highlight_batch.instances + Instance{
-			mvp_matrix = highlight_mvp,
-			tex_coords = vis.texture.uv,
-			color = {0, 1, 0},  // bright green
-			layer = vis.texture.layer,
-		}
+// A highlighted object's outline: the object's own quad, grown by
+// HIGHLIGHT_GROW world units in each dimension (a fixed offset, so the rim is
+// the same thickness on every object) and tinted HIGHLIGHT_COLOR. Render the
+// highlight state BEFORE the objects — depth testing is off, so the objects
+// paint over it and only the rim around each stays visible.
+HIGHLIGHT_GROW  :: 6.0
+HIGHLIGHT_COLOR :: [3]f32{0, 1, 0}
+
+append_highlight :: fun(
+	state: ^DrawState,
+	obj: Object,
+	vis: Visual,
+	camera: Camera)
+{
+	if not obj.exists do return
+
+	batch := get_or_create_batch(state, vis.mesh.index)
+	mvp := opengl_create_mvp_matrix(
+		obj.pos,
+		obj.dir,
+		obj.scale + HIGHLIGHT_GROW,
+		camera.view, camera.proj,
+	)
+	&batch.instances + Instance{
+		mvp_matrix = mvp,
+		tex_coords = vis.texture.uv,
+		color = HIGHLIGHT_COLOR,
+		layer = vis.texture.layer,
 	}
 }
 

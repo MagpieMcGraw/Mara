@@ -53,7 +53,6 @@ tex_uv_eq :: fun(a: [4]f32, b: [4]f32) -> bool {
 // pixel rect (x,y,w,h) + metrics; turn that into the shader's [scale, offset]
 // UV convention (scale negative to match its UV flip, like Warlock's stbtt path).
 get_glyph :: fun(font: ^Font, char: utf8, atlas_size: f32) -> Glyph_Info {
-	if font == void do return Glyph_Info{}
 	idx := i64(char)
 	if idx < 0 or idx >= font.glyphs.len do return Glyph_Info{}
 
@@ -78,14 +77,13 @@ glyph_resolve :: fun(a: ^Assets, g: ^Glyph) -> bool {
 	if not g.visual.resolve do return true
 	if g.visual.font.len == 0 do return true
 
-	font : ^Font = void
-	if g.font_index >= 0 and g.font_index < a.fonts.len {
-		font = &a.fonts[g.font_index]
-	else
+	// Find the font by index first — cached on the glyph, else looked up by name
+	// — and only then take its address, so `font` points at a loaded font.
+	if g.font_index < 0 or g.font_index >= a.fonts.len {
 		g.font_index = get_font_index(a, g.visual.font)
 		if g.font_index < 0 do return false   // font not loaded yet
-		font = &a.fonts[g.font_index]
 	}
+	font := &a.fonts[g.font_index]
 
 	info := get_glyph(font, g.letter, f32(a.font_texture_size))
 	if info.size[0] == 0 and info.size[1] == 0 do return false   // invalid glyph
