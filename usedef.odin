@@ -60,6 +60,17 @@ Def :: struct {
     span:    Span,
     value:   Expr,
     guards:  []Guard,
+    order:   int,            // creation order: source order among defs sharing a span
+}
+
+// Source order, total: defs that share a span (`w, h: f32` params, `a, b := f()`)
+// fall back to creation order, which follows the source within a statement.
+// Views sort with this so their output never follows map iteration.
+def_less :: proc(a, b: ^Def) -> bool {
+    if a.span.file != b.span.file { return a.span.file < b.span.file }
+    if a.span.line != b.span.line { return a.span.line < b.span.line }
+    if a.span.col != b.span.col { return a.span.col < b.span.col }
+    return a.order < b.order
 }
 
 // A control structure (if / for / match) that guards a statement: the statement
@@ -175,7 +186,7 @@ ud_new :: proc(u: ^UD, name: string, span: Span, kind: Binding_Kind, decl: ^Stmt
 @(private="file")
 ud_def :: proc(u: ^UD, b: ^Var_Binding, kind: Def_Kind, span: Span, value: Expr) -> ^Def {
     d := new(Def)
-    d^ = Def{ binding = b, kind = kind, span = span, value = value, guards = u.checked.control_deps[span] }
+    d^ = Def{ binding = b, kind = kind, span = span, value = value, guards = u.checked.control_deps[span], order = len(u.checked.defs) }
     append(&u.checked.defs, d)
     return d
 }

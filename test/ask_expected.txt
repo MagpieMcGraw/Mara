@@ -1,0 +1,645 @@
+=== Pounce | 
+Pounce — module map   (run `mara ask <module>` to look inside one)
+
+  your code
+    Pounce         3 types   · 9 funs   · main
+    asset          8 types   · 9 funs
+    asset_resolve  1 type    · 8 funs
+    cache          6 types   · 11 funs
+    camera         1 type    · 9 funs
+    collision      0 types   · 2 funs
+    entity         2 types   · 7 funs
+    event          4 types   · 1 fun
+    gfx            8 types   · 15 funs
+    gfx.shader     1 type    · 2 funs
+    object         5 types   · 3 funs
+    perf           1 type    · 3 funs
+    stuff          0 types   · 12 funs
+    test_draw      1 type    · 2 funs
+    ui             3 types   · 12 funs
+
+  stdlib
+    mara.core      4 types   · 2 funs
+    mara.endian    0 types   · 9 funs
+    mara.font      29 types  · 6 funs
+    mara.math      4 types   · 51 funs
+    mara.memory    3 types   · 0 funs
+    mara.open_gl   19 types  · 61 funs
+    mara.os        3 types   · 33 funs
+    mara.sdl       14 types  · 49 funs
+    mara.skyline   2 types   · 6 funs
+    mara.string    0 types   · 3 funs
+    mara.time      2 types   · 7 funs
+=== Pounce | camera
+camera — module   (1 type, 9 funs)
+
+  types        (most-used first)
+    struct   Camera  camera.mara:10   ·  15 users
+
+  funs         (source order)
+    fun      camera_look_down  camera.mara:39
+    fun      camera_align_with_gravity  camera.mara:44
+    fun      camera_move  camera.mara:48
+    fun      camera_turn_flying  camera.mara:87
+    fun      camera_turn_walking  camera.mara:117
+    fun      camera_update  camera.mara:140
+    fun      camera_update_size  camera.mara:153
+    fun      world_to_screen  camera.mara:174
+    fun      mouse_ray  camera.mara:196
+=== Pounce | camera type above
+camera — module   (1 type, 9 funs)
+
+  types        (most-used first)
+    struct   Camera  camera.mara:10   ·  15 users
+
+  funs         (source order)
+    fun      camera_look_down  camera.mara:39
+    fun      camera_align_with_gravity  camera.mara:44
+    fun      camera_move  camera.mara:48
+    fun      camera_turn_flying  camera.mara:87
+    fun      camera_turn_walking  camera.mara:117
+    fun      camera_update  camera.mara:140
+    fun      camera_update_size  camera.mara:153
+    fun      world_to_screen  camera.mara:174
+    fun      mouse_ray  camera.mara:196
+=== Pounce | camera type below
+camera — module   (1 type, 9 funs)
+
+  types        (most-used first)
+    struct   Camera  camera.mara:10   ·  15 users
+
+  funs         (source order)
+    fun      camera_look_down  camera.mara:39
+    fun      camera_align_with_gravity  camera.mara:44
+    fun      camera_move  camera.mara:48
+    fun      camera_turn_flying  camera.mara:87
+    fun      camera_turn_walking  camera.mara:117
+    fun      camera_update  camera.mara:140
+    fun      camera_update_size  camera.mara:153
+    fun      world_to_screen  camera.mara:174
+    fun      mouse_ray  camera.mara:196
+=== Pounce | camera call above
+camera — module   (1 type, 9 funs)
+
+  types        (most-used first)
+    struct   Camera  camera.mara:10   ·  15 users
+
+  funs         (source order)
+    fun      camera_look_down  camera.mara:39
+    fun      camera_align_with_gravity  camera.mara:44
+    fun      camera_move  camera.mara:48
+    fun      camera_turn_flying  camera.mara:87
+    fun      camera_turn_walking  camera.mara:117
+    fun      camera_update  camera.mara:140
+    fun      camera_update_size  camera.mara:153
+    fun      world_to_screen  camera.mara:174
+    fun      mouse_ray  camera.mara:196
+=== Pounce | camera call below
+camera — module   (1 type, 9 funs)
+
+  types        (most-used first)
+    struct   Camera  camera.mara:10   ·  15 users
+
+  funs         (source order)
+    fun      camera_look_down  camera.mara:39
+    fun      camera_align_with_gravity  camera.mara:44
+    fun      camera_move  camera.mara:48
+    fun      camera_turn_flying  camera.mara:87
+    fun      camera_turn_walking  camera.mara:117
+    fun      camera_update  camera.mara:140
+    fun      camera_update_size  camera.mara:153
+    fun      world_to_screen  camera.mara:174
+    fun      mouse_ray  camera.mara:196
+=== Pounce | camera flow above
+camera — module   (1 type, 9 funs)
+
+  types        (most-used first)
+    struct   Camera  camera.mara:10   ·  15 users
+
+  funs         (source order)
+    fun      camera_look_down  camera.mara:39
+    fun      camera_align_with_gravity  camera.mara:44
+    fun      camera_move  camera.mara:48
+    fun      camera_turn_flying  camera.mara:87
+    fun      camera_turn_walking  camera.mara:117
+    fun      camera_update  camera.mara:140
+    fun      camera_update_size  camera.mara:153
+    fun      world_to_screen  camera.mara:174
+    fun      mouse_ray  camera.mara:196
+=== Pounce | Camera
+Camera — struct  camera.mara:10   (module camera)
+
+above (types)   (5 types, full closure (depth ∞))
+  obj : object.Object
+    accel : mara.math.Vec3
+    dir : mara.math.Quat
+    pos : mara.math.Vec3
+    scale : mara.math.Vec3
+    tracking_offset : mara.math.Vec3
+    speed : f32
+    turn_speed : f32
+    exists : bool
+    highlighted : bool
+  ortho : mara.math.Mat4
+  proj : mara.math.Mat4
+  view : mara.math.Mat4
+  w_width : f32
+  w_height : f32
+  fov_y : f32
+  fov_x : f32
+  near_plane : f32
+  far_plane : f32
+
+below (types)   (1 user, 2 use-sites, full closure (depth ∞))
+  struct Megastruct  (field camera : Camera)
+  struct Megastruct  (field cameras : [..]Camera)
+=== Pounce | Camera type above
+Camera — struct  camera.mara:10   (module camera)
+
+above (types)   (5 types, full closure (depth ∞))
+  obj : object.Object
+    accel : mara.math.Vec3
+    dir : mara.math.Quat
+    pos : mara.math.Vec3
+    scale : mara.math.Vec3
+    tracking_offset : mara.math.Vec3
+    speed : f32
+    turn_speed : f32
+    exists : bool
+    highlighted : bool
+  ortho : mara.math.Mat4
+  proj : mara.math.Mat4
+  view : mara.math.Mat4
+  w_width : f32
+  w_height : f32
+  fov_y : f32
+  fov_x : f32
+  near_plane : f32
+  far_plane : f32
+=== Pounce | Camera type below
+Camera — struct  camera.mara:10   (module camera)
+
+below (types)   (1 user, 2 use-sites, full closure (depth ∞))
+  struct Megastruct  (field camera : Camera)
+  struct Megastruct  (field cameras : [..]Camera)
+=== Pounce | Camera call above
+Camera — struct  camera.mara:10   (module camera)
+
+above (calls)   (0 functions)
+  (no functions return it)
+=== Pounce | Camera call below
+Camera — struct  camera.mara:10   (module camera)
+
+below (calls)   (14 functions)
+  fun    append_highlight       gfx_draw_state.mara:166   (param camera : Camera)
+  fun    append_one             gfx_draw_state.mara:129   (param camera : Camera)
+  fun    camera_align_with_gravity camera.mara:44   (param camera : ^Camera)
+  fun    camera_look_down       camera.mara:39   (param camera : ^Camera)
+  fun    camera_move            camera.mara:48   (param camera : ^Camera)
+  fun    camera_turn_flying     camera.mara:87   (param camera : ^Camera)
+  fun    camera_turn_walking    camera.mara:117   (param camera : ^Camera)
+  fun    camera_update          camera.mara:140   (param camera : ^Camera)
+  fun    camera_update_size     camera.mara:153   (param camera : ^Camera)
+  fun    draw_marker            Pounce.mara:258   (param camera : Camera)
+  fun    game_create_shapes_half_circle entity.mara:76   (param camera : ^Camera)
+  fun    game_screen_to_local_offset stuff.mara:132   (param camera : ^Camera)
+  fun    mouse_ray              camera.mara:196   (param camera : ^Camera)
+  fun    world_to_screen        camera.mara:174   (param camera : ^Camera)
+=== Pounce | Camera flow above 2
+Camera — struct  camera.mara:10   (module camera)
+
+above (flow) — what feeds values of type Camera  (16 values, backward slice)
+
+  parameters (7)
+    game           Pounce.mara:179  (in pick_shape)
+    loop_time      camera.mara:48  (in camera_move)
+    mouse          camera.mara:87  (in camera_turn_flying)
+    mouse          camera.mara:117  (in camera_turn_walking)
+    loop_time      camera.mara:140  (in camera_update)
+    w_width        camera.mara:153  (in camera_update_size)
+    w_height       camera.mara:153  (in camera_update_size)
+
+  statements (40)
+    decl    direction      camera.mara:49  (in camera_move)
+    decl    speed          camera.mara:50  (in camera_move)
+    destr   fwd            camera.mara:52  (in camera_move)
+    destr   up             camera.mara:52  (in camera_move)
+    destr   right          camera.mara:52  (in camera_move)
+    assign  direction      camera.mara:57  (in camera_move)
+    assign  direction      camera.mara:60  (in camera_move)
+    assign  direction      camera.mara:63  (in camera_move)
+    assign  direction      camera.mara:66  (in camera_move)
+    assign  direction      camera.mara:69  (in camera_move)
+    assign  direction      camera.mara:72  (in camera_move)
+    assign  speed          camera.mara:76  (in camera_move)
+    assign  speed          camera.mara:80  (in camera_move)
+    decl    move_this_frame camera.mara:83  (in camera_move)
+    decl    sensitivity    camera.mara:88  (in camera_turn_flying)
+    decl    turn_speed     camera.mara:89  (in camera_turn_flying)
+    decl    x_rot          camera.mara:90  (in camera_turn_flying)
+    decl    y_rot          camera.mara:91  (in camera_turn_flying)
+    decl    z_rot          camera.mara:92  (in camera_turn_flying)
+    destr   camera_up      camera.mara:95  (in camera_turn_flying)
+    decl    yaw_quat       camera.mara:98  (in camera_turn_flying)
+    destr   camera_right   camera.mara:102  (in camera_turn_flying)
+    decl    pitch_quat     camera.mara:104  (in camera_turn_flying)
+    destr   camera_fwd     camera.mara:109  (in camera_turn_flying)
+    decl    roll_quat      camera.mara:110  (in camera_turn_flying)
+    decl    sensitivity    camera.mara:118  (in camera_turn_walking)
+    decl    x_rot          camera.mara:119  (in camera_turn_walking)
+    decl    y_rot          camera.mara:120  (in camera_turn_walking)
+    decl    world_up       camera.mara:123  (in camera_turn_walking)
+    decl    yaw_quat       camera.mara:127  (in camera_turn_walking)
+    destr   camera_right   camera.mara:134  (in camera_turn_walking)
+    decl    pitch_quat     camera.mara:135  (in camera_turn_walking)
+    decl    physics_resolution camera.mara:141  (in camera_update)
+    decl    physics_this_frame camera.mara:142  (in camera_update)
+    decl    damping_factor camera.mara:144  (in camera_update)
+    decl    translation_mx camera.mara:148  (in camera_update)
+    decl    rotation_mx    camera.mara:149  (in camera_update)
+    decl    aspect_ratio   camera.mara:161  (in camera_update_size)
+    decl    half_w         camera.mara:167  (in camera_update_size)
+    decl    half_h         camera.mara:168  (in camera_update_size)
+=== Pounce | Megastruct type above 2
+Megastruct — struct  Pounce.mara:53   (module Pounce)
+
+above (types)   (36 types, depth 2)
+  assets : asset.Assets
+    font_stream : asset.Font_Stream
+      font_files : [64]mara.core.str64
+      current : i64
+      initialized : bool
+    fonts : [..]asset.Font
+      glyphs : [..]mara.font.Glyph
+      metrics : mara.font.Line_Metrics
+      name : mara.core.str64
+      size : i32
+      layer : u32
+      offset_x : i32
+      offset_y : i32
+    mesh_stream : asset.Mesh_Stream
+      file_handle : mara.os.File_Id
+      cache_index : i64
+      file_open : bool
+    meshes : [..]object.Mesh
+      name : mara.core.str64
+      index : i64
+    on_disk : asset.Disk
+      audio : [..]mara.core.str64
+      fonts : [..]mara.core.str64
+      models : [..]mara.core.str64
+      textures : [..]mara.core.str64
+    state : asset.Stream_State
+    tex_stream : asset.Tex_Stream
+      file_handle : mara.os.File_Id
+      packer : mara.skyline.Skyline
+      cache_index : i64
+      current_layer : u32
+      file_open : bool
+    textures : [..]object.Texture
+      name : mara.core.str64
+      uv : [4]f32
+      layer : u32
+    vao : ^gfx.VAO_State
+      meshes : [512]gfx.VAO_Mesh
+        first_index : u32
+        index_count : u32
+        base_vertex : i32
+      vao : u32
+      vertex_vbo : u32
+      ebo : u32
+      instance_vbo : u32
+      vertex_offset : i64
+      index_offset : i64
+      max_vertices : i64
+      max_indices : i64
+      max_instances : i64
+      mesh_count : i32
+    texture_id : u32
+    texture_size : i32
+    font_texture_id : u32
+    font_texture_size : i32
+    needs_resolve : bool
+  axes_gizmo : ui.UI_Gizmo
+    bounds : ui.Bounds
+      min_x : f32
+      min_y : f32
+      max_x : f32
+      max_y : f32
+    obj : object.Object
+      accel : mara.math.Vec3
+      dir : mara.math.Quat
+      pos : mara.math.Vec3
+      scale : mara.math.Vec3
+      tracking_offset : mara.math.Vec3
+      speed : f32
+      turn_speed : f32
+      exists : bool
+      highlighted : bool
+    start_index : i64
+    shape_count : i64
+    size_pixels : f32
+    resolved : bool
+  cameras : [..]camera.Camera
+    obj : object.Object  (shown above)
+    ortho : mara.math.Mat4
+    proj : mara.math.Mat4
+    view : mara.math.Mat4
+    w_width : f32
+    w_height : f32
+    fov_y : f32
+    fov_x : f32
+    near_plane : f32
+    far_plane : f32
+  camera : camera.Camera  (shown above)
+  draw_state_highlight : gfx.DrawState
+    batches : [..]gfx.Mesh_Batch
+      instances : [..]gfx.Instance
+      mesh_id : i64
+    commands : [..]gfx.DrawCommand
+      index_count : u32
+      instance_count : u32
+      first_index : u32
+      base_vertex : i32
+      base_instance : u32
+    vao_state : ^gfx.VAO_State  (shown above)
+    shader : u32
+    texture : u32
+    command_buffer : u32
+    batch_count : i32
+    instance_capacity : i64
+    command_count : i32
+  draw_state_object : gfx.DrawState  (shown above)
+  draw_state_text : gfx.DrawState  (shown above)
+  frame_graph : ui.UI_Graph
+    bounds : ui.Bounds  (shown above)
+    obj : object.Object  (shown above)
+    start_index : i64
+    shape_count : i64
+    samples : [300]f32
+    sample_index : i64
+    width_pixels : f32
+    height_pixels : f32
+    max_value : f32
+    resolved : bool
+    bar_width : f32
+    bar_max_height : f32
+  gl_context : mara.sdl.GLContext
+  glyphs : [..]entity.Glyph
+    embed shape : entity.Shape
+      obj : object.Object  (shown above)
+      visual : object.Visual
+        mesh : object.Mesh  (shown above)
+        texture : object.Texture  (shown above)
+        texture_index : u32
+        color : [3]f32
+        font : [..]utf8
+        resolve : bool
+    letter : utf8
+    font_index : i64
+  playa : object.Playa
+    obj : object.Object  (shown above)
+    visual : object.Visual  (shown above)
+  player : Pounce.Player
+    x : i64
+    y : i64
+    size : i64
+    color : [3]f32
+  quad : test_draw.Quad_Renderer
+    program : u32
+    vao : u32
+    vbo : u32
+    u_pos : i32
+    u_size : i32
+    u_screen : i32
+    u_color : i32
+  shapes : [..]entity.Shape  (shown above)
+  timers : Pounce.Timers
+    fixed : mara.time.Fixed_Timer
+      tally : f64
+      step : f64
+      limit : f64
+    frame : mara.time.Timer
+      counter : u64
+      seconds : f64
+    work : mara.time.Timer  (shown above)
+  vao : gfx.VAO_State  (shown above)
+  window : mara.sdl.Window
+  embed events : event.Event_State
+    dropfile : event.Dropfile
+      was_dropped : bool
+      name : [..]utf8
+    keyboard : event.Keyboard
+      pressed : [512]bool
+      held : [512]bool
+    mouse : event.Mouse
+      pressed : [6]bool
+      held : [6]bool
+      x : f32
+      y : f32
+      xrel : f32
+      yrel : f32
+      wheel : f32
+    quit : bool
+    window_in_focus : bool
+  initialized : bool
+  running : bool
+  fps : f64
+  frame_counter : i64
+  mouse_look : bool
+=== Pounce | camera_update
+camera_update — fun  camera.mara:140   (module camera)
+
+above (calls)   (8 direct callees, full closure (depth ∞))
+  mara.math.pow_f32
+  mara.math.vec3_scale
+  mara.math.vec3_add
+  mara.math.mat4_translate
+    mara.math.mat4_identity
+  mara.math.vec3_negate
+  mara.math.mat4_from_quat
+    mara.math.mat4_identity  (shown above)
+  mara.math.mat4_transpose
+  mara.math.mat4_mul
+
+below (calls)   (1 direct caller, full closure (depth ∞))
+  Pounce.game_update
+    Pounce.game_run
+      Pounce.main
+=== Pounce | camera_update type above
+camera_update — fun  camera.mara:140   (module camera)
+
+above (types)   (5 types, full closure (depth ∞))
+  param camera : ^camera.Camera
+    obj : object.Object
+      accel : mara.math.Vec3
+      dir : mara.math.Quat
+      pos : mara.math.Vec3
+      scale : mara.math.Vec3
+      tracking_offset : mara.math.Vec3
+      speed : f32
+      turn_speed : f32
+      exists : bool
+      highlighted : bool
+    ortho : mara.math.Mat4
+    proj : mara.math.Mat4
+    view : mara.math.Mat4
+    w_width : f32
+    w_height : f32
+    fov_y : f32
+    fov_x : f32
+    near_plane : f32
+    far_plane : f32
+  param loop_time : f32
+=== Pounce | camera_update type below
+camera_update — fun  camera.mara:140   (module camera)
+
+below (types)   (no type dependencies)
+=== Pounce | camera_update call above
+camera_update — fun  camera.mara:140   (module camera)
+
+above (calls)   (8 direct callees, full closure (depth ∞))
+  mara.math.pow_f32
+  mara.math.vec3_scale
+  mara.math.vec3_add
+  mara.math.mat4_translate
+    mara.math.mat4_identity
+  mara.math.vec3_negate
+  mara.math.mat4_from_quat
+    mara.math.mat4_identity  (shown above)
+  mara.math.mat4_transpose
+  mara.math.mat4_mul
+=== Pounce | camera_update call below
+camera_update — fun  camera.mara:140   (module camera)
+
+below (calls)   (1 direct caller, full closure (depth ∞))
+  Pounce.game_update
+    Pounce.game_run
+      Pounce.main
+=== Pounce | camera_update flow above
+camera_update — fun  camera.mara:140   (module camera)
+
+above (flow) — what feeds the arguments at its 1 call site  (backward slice)
+
+  parameters (1)
+    game           Pounce.mara:233  (in game_update)
+=== Pounce | camera_update flow below
+camera_update — fun  camera.mara:140   (module camera)
+
+below (flow) — camera_update returns no value  (1 call site)
+=== Pounce | physics_this_frame in camera_update
+physics_this_frame — local in camera_update  camera.mara:142   (module camera)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+loop_time   (param / external input)   camera.mara:140
+physics_resolution   camera.mara:141
+
+below (flow) — what this variable affects  (forward slice)
+
+  physics_this_frame  ->  5 statements + 4 calls
+    write   camera         camera.mara:145
+    write   camera         camera.mara:146
+    decl    translation_mx camera.mara:148
+    decl    rotation_mx    camera.mara:149
+    write   camera         camera.mara:150
+
+  into calls — the value lands in  (4 parameters)
+    mat4_from_quat         (param q : distinct Quat)  camera.mara:149
+    mat4_translate         (param pos : distinct Vec3)  camera.mara:148
+    mat4_transpose         (param m : distinct Mat4)  camera.mara:149
+    pow_f32                (param exp : f32)  camera.mara:145
+=== Pounce | physics_this_frame in camera_update flow above
+physics_this_frame — local in camera_update  camera.mara:142   (module camera)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+loop_time   (param / external input)   camera.mara:140
+physics_resolution   camera.mara:141
+=== Pounce | physics_this_frame in camera_update flow below
+physics_this_frame — local in camera_update  camera.mara:142   (module camera)
+
+below (flow) — what this variable affects  (forward slice)
+
+  physics_this_frame  ->  5 statements + 4 calls
+    write   camera         camera.mara:145
+    write   camera         camera.mara:146
+    decl    translation_mx camera.mara:148
+    decl    rotation_mx    camera.mara:149
+    write   camera         camera.mara:150
+
+  into calls — the value lands in  (4 parameters)
+    mat4_from_quat         (param q : distinct Quat)  camera.mara:149
+    mat4_translate         (param pos : distinct Vec3)  camera.mara:148
+    mat4_transpose         (param m : distinct Mat4)  camera.mara:149
+    pow_f32                (param exp : f32)  camera.mara:145
+=== Pounce | physics_this_frame in camera_update call below
+physics_this_frame — local in camera_update  camera.mara:142   (module camera)
+
+below (calls) — calls physics_this_frame supplies
+
+  into calls — the value lands in  (4 parameters)
+    mat4_from_quat         (param q : distinct Quat)  camera.mara:149
+    mat4_translate         (param pos : distinct Vec3)  camera.mara:148
+    mat4_transpose         (param m : distinct Mat4)  camera.mara:149
+    pow_f32                (param exp : f32)  camera.mara:145
+=== Pounce | translation_mx in camera_update call above
+translation_mx — local in camera_update  camera.mara:148   (module camera)
+
+above (calls) — calls that supply translation_mx  (1 call)
+  mat4_translate()       ->  translation_mx camera.mara:148
+=== Pounce | translation_mx in camera_update type above
+translation_mx — local in camera_update  camera.mara:148   (module camera)
+
+above (types) — types whose values supply translation_mx  (3 types, via flow)
+  struct   Camera         camera.mara:10   · 1 value  (camera)
+  basic    f32                             · 2 values  (loop_time, physics_this_frame)
+  basic    f64                             · 2 values  (damping_factor, physics_resolution)
+=== Pounce | at camera.mara:148
+translation_mx — local in camera_update  camera.mara:148   (module camera)
+
+above (flow) — what builds this value, following every input into the calls that produce it
+
+camera   (param / external input)   camera.mara:140
+camera   camera.mara:145
+    camera   (param / external input)   camera.mara:140
+    damping_factor   camera.mara:144
+    physics_this_frame   camera.mara:142
+        loop_time   (param / external input)   camera.mara:140
+        physics_resolution   camera.mara:141
+camera   camera.mara:146
+    camera   (param / external input)   camera.mara:140
+    camera   (shown above)
+    loop_time   (param / external input)   camera.mara:140
+
+below (flow) — what this variable affects  (forward slice)
+
+  translation_mx  ->  1 statement
+    write   camera         camera.mara:150
+=== test/operator_calls.mara | sum
+sum — fun  operator_calls.mara:26   (module operator_calls)
+
+above (calls)   (1 direct callee, full closure (depth ∞))
+  operator_calls.v2_add
+    operator_calls.V2  (struct)
+
+below (calls)   (1 direct caller, full closure (depth ∞))
+  operator_calls.main
+=== test/operator_calls.mara | sum call above
+sum — fun  operator_calls.mara:26   (module operator_calls)
+
+above (calls)   (1 direct callee, full closure (depth ∞))
+  operator_calls.v2_add
+    operator_calls.V2  (struct)
+=== test/operator_calls.mara | v2_add call below
+v2_add — fun  operator_calls.mara:15   (module operator_calls)
+
+below (calls)   (1 direct caller, full closure (depth ∞))
+  operator_calls.sum
+    operator_calls.main
+=== test/operator_calls.mara | flip call above
+flip — fun  operator_calls.mara:30   (module operator_calls)
+
+above (calls)   (1 direct callee, full closure (depth ∞))
+  operator_calls.v2_neg
+    operator_calls.V2  (struct)

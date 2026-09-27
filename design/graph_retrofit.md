@@ -81,7 +81,10 @@ the check for phase 3.
 - [x] Codegen numbers labels and strings module-wide; restart per function so IR compares per
       function. Labels restart per function; string globals are named by a hash of their contents
       (`@.str.<16 hex>`), so no name depends on what was emitted before it
-- [ ] `mara ask` output: record goldens before phase 2 (none exist today)
+- [x] `mara ask` output: record goldens before phase 2 (none exist today). `test/ask.sh` runs
+      `test/ask_queries.txt` (32 queries over Pounce and `test/operator_calls.mara`, the whole
+      argument matrix) against `test/ask_expected.txt`; `-u` re-records. Recording them found
+      output following map order (defs sharing a span, lineage children); now sorted totally
 - [ ] Found: nested broadcast `g : [2][3]i64 = {all {all x}}` fails to type-check (the inner
       literal is checked against the outer's types)
 - [ ] Found: a fn-type parameter followed by another parameter doesn't parse — in

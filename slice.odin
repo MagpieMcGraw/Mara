@@ -210,8 +210,8 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
     for d in defs {
         if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
     }
-    slice.sort_by(params[:], slice_def_less)
-    slice.sort_by(stmts[:],  slice_def_less)
+    slice.sort_by(params[:], def_less)
+    slice.sort_by(stmts[:],  def_less)
     slice.sort_by(ctrl[:],   guard_span_less)
 
     b := strings.builder_make()
@@ -744,13 +744,6 @@ flow_affects_tail :: proc(ret: bool, n_stmts, n_calls: int) -> string {
 }
 
 @(private="file")
-slice_def_less :: proc(a, b: ^Def) -> bool {
-    if a.span.file != b.span.file { return a.span.file < b.span.file }
-    if a.span.line != b.span.line { return a.span.line < b.span.line }
-    return a.span.col < b.span.col
-}
-
-@(private="file")
 slice_def_word :: proc(k: Def_Kind) -> string {
     switch k {
     case .Param:       return "param"
@@ -1105,7 +1098,7 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
         if d == root || d.kind == .Param { continue }   // drop the subject + inputs; keep same-binding mods
         append(&stmts, d)
     }
-    slice.sort_by(stmts[:], slice_def_less)
+    slice.sort_by(stmts[:], def_less)
 
     // Control reach (opt-in `control`): statements that run inside a branch/loop
     // this value drives but aren't computed from its data — full reach minus data.
@@ -1134,7 +1127,7 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
             if d == root || d.kind == .Param { continue }
             append(&ctrl_stmts, d)
         }
-        slice.sort_by(ctrl_stmts[:], slice_def_less)
+        slice.sort_by(ctrl_stmts[:], def_less)
     }
 
     seeds: map[^Var_Binding]bool
@@ -1254,8 +1247,8 @@ render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         if d.binding != nil && seeds[d.binding] { continue }   // the T-typed values themselves aren't feeders
         if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
     }
-    slice.sort_by(params[:], slice_def_less)
-    slice.sort_by(stmts[:],  slice_def_less)
+    slice.sort_by(params[:], def_less)
+    slice.sort_by(stmts[:],  def_less)
     slice.sort_by(s.ctrl[:], guard_span_less)
 
     fmt.sbprintf(bb, "\nabove (flow) — what feeds values of type %s  (%s, backward slice)\n", label, ask_plural(len(seeds), "value"))
@@ -1323,7 +1316,7 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         if d.binding != nil && seeds[d.binding] { continue }
         if d.kind != .Param { append(&stmts, d) }
     }
-    slice.sort_by(stmts[:], slice_def_less)
+    slice.sort_by(stmts[:], def_less)
 
     // Control-only = reachable through guards but not through data (and not a seed).
     ctrl_stmts: [dynamic]^Def
@@ -1333,7 +1326,7 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         if d.binding != nil && seeds[d.binding] { continue }
         if d.kind != .Param { append(&ctrl_stmts, d) }
     }
-    slice.sort_by(ctrl_stmts[:], slice_def_less)
+    slice.sort_by(ctrl_stmts[:], def_less)
 
     // The calls these values feed, followed into the callee parameters they land
     // in (flow_reach spans every seed-holding function, up to the hop budget).
@@ -1392,8 +1385,8 @@ render_fn_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
     for d in s.result {
         if d.kind == .Param { append(&params, d) } else { append(&stmts, d) }
     }
-    slice.sort_by(params[:], slice_def_less)
-    slice.sort_by(stmts[:],  slice_def_less)
+    slice.sort_by(params[:], def_less)
+    slice.sort_by(stmts[:],  def_less)
     slice.sort_by(s.ctrl[:], guard_span_less)
 
     fmt.sbprintf(bb, "\nabove (flow) — what feeds the arguments at its %s  (backward slice)\n", ask_plural(len(sites), "call site"))
@@ -1455,7 +1448,7 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
         if result_defs[d] { continue }   // the result variables themselves
         if d.kind != .Param { append(&stmts, d) }
     }
-    slice.sort_by(stmts[:], slice_def_less)
+    slice.sort_by(stmts[:], def_less)
 
     fmt.sbprintf(bb, "\nbelow (flow) — where its results flow, across %s  (forward slice)\n", ask_plural(len(sites), "call site"))
     if len(stmts) > 0 {

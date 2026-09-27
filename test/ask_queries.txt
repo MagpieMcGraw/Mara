@@ -1,0 +1,39 @@
+# `mara ask` golden queries — run by test/ask.sh. `<target> | <args>`.
+# Covers the argument matrix: module / struct / fun / var × type / call / flow
+# × above / below, the default analysis for each kind, depth limits, and the
+# `in` / `at` forms.
+
+Pounce |
+Pounce | camera
+Pounce | camera type above
+Pounce | camera type below
+Pounce | camera call above
+Pounce | camera call below
+Pounce | camera flow above
+Pounce | Camera
+Pounce | Camera type above
+Pounce | Camera type below
+Pounce | Camera call above
+Pounce | Camera call below
+Pounce | Camera flow above 2
+Pounce | Megastruct type above 2
+Pounce | camera_update
+Pounce | camera_update type above
+Pounce | camera_update type below
+Pounce | camera_update call above
+Pounce | camera_update call below
+Pounce | camera_update flow above
+Pounce | camera_update flow below
+Pounce | physics_this_frame in camera_update
+Pounce | physics_this_frame in camera_update flow above
+Pounce | physics_this_frame in camera_update flow below
+Pounce | physics_this_frame in camera_update call below
+Pounce | translation_mx in camera_update call above
+Pounce | translation_mx in camera_update type above
+Pounce | at camera.mara:148
+
+# Calls in operator form are call-graph edges.
+test/operator_calls.mara | sum
+test/operator_calls.mara | sum call above
+test/operator_calls.mara | v2_add call below
+test/operator_calls.mara | flip call above

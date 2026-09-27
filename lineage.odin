@@ -64,7 +64,7 @@ render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
         for d in checked.defs {
             if d.binding == b && d != root { append(&later, d) }
         }
-        slice.sort_by(later[:], lineage_def_less)
+        slice.sort_by(later[:], def_less)
     }
     if len(inputs) == 0 {
         switch {
@@ -78,7 +78,7 @@ render_lineage_body :: proc(checked: ^Checked_Program, bb: ^strings.Builder, b: 
             fmt.sbprintf(bb, "  %s   (built from literals; nothing in %s supplies it)\n", b.name, fn_label)
         }
     } else {
-        slice.sort_by(inputs[:], lineage_def_less)
+        slice.sort_by(inputs[:], def_less)
         budget := depth if depth >= 0 else (1 << 30)
         seen: map[^Def]bool
         defer delete(seen)
@@ -152,24 +152,22 @@ lineage_node :: proc(checked: ^Checked_Program, bb: ^strings.Builder, d: ^Def, b
     defer delete(idents)
     lineage_all_idents(d.value, &idents)
 
+    // Per use, its reaching defs in source order (the set is a map).
     child_seen: map[^Def]bool
     defer delete(child_seen)
+    kids: [dynamic]^Def
+    defer delete(kids)
     for u in idents {
+        clear(&kids)
         rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
         for d2 in rdefs {
             if child_seen[d2] { continue }
             child_seen[d2] = true
-            lineage_node(checked, bb, d2, budget - 1, indent + 1, seen)
+            append(&kids, d2)
         }
+        slice.sort_by(kids[:], def_less)
+        for d2 in kids { lineage_node(checked, bb, d2, budget - 1, indent + 1, seen) }
     }
-}
-
-// Source order (by span), so the root's producing writes read top-to-bottom.
-@(private="file")
-lineage_def_less :: proc(a, b: ^Def) -> bool {
-    if a.span.file != b.span.file { return a.span.file < b.span.file }
-    if a.span.line != b.span.line { return a.span.line < b.span.line }
-    return a.span.col < b.span.col
 }
 
 @(private="file")
