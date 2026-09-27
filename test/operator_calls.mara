@@ -1,0 +1,38 @@
+module operator_calls
+
+//@ expect-output: adding
+//@ expect-output: -1 -2
+
+// A call in operator form (`a + b`, `-a` resolved through `overload`) is a
+// call-graph edge like any other: `mara ask sum call above` lists v2_add, and
+// sum is impure because v2_add prints.
+
+V2 :: struct {
+	x: f64
+	y: f64
+}
+
+v2_add :: fun(a: V2, b: V2) -> V2 {
+	print("adding")
+	return V2{x = a.x + b.x, y = a.y + b.y}
+}
+v2_neg :: fun(a: V2) -> V2 { return V2{x = -a.x, y = -a.y} }
+
+overload + add
+add :: dispatch{ v2_add }
+overload - neg
+neg :: dispatch{ v2_neg }
+
+sum :: fun(a: V2, b: V2) -> V2 {
+	return a + b
+}
+
+flip :: fun(a: V2) -> V2 {
+	return -a
+}
+
+main :: fun() {
+	s := sum(V2{x = 1}, V2{y = 2})
+	f := flip(s)
+	print(f.x, f.y)
+}

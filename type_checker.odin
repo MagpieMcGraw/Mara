@@ -1063,6 +1063,20 @@ record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) {
     }
     rf, ok := e.resolved_func.?
     if !ok { return }
+    record_resolved_edge(c, caller, rf, e.span.line)
+}
+
+// Record the edge for a call in operator form (`a + b` resolved to an
+// `overload +` function). It is a call like any other: purity, escape and
+// `mara ask` need to see it.
+record_operator_edge :: proc(c: ^Checker, rf: Resolved_Func, env: ^Type_Scope, line: int) {
+    caller := enclosing_callable_scope(env)
+    if caller == nil { return }
+    record_resolved_edge(c, caller, rf, line)
+}
+
+// The edge (caller -> resolved callee), with its first call-site line.
+record_resolved_edge :: proc(c: ^Checker, caller: ^Type_Scope, rf: Resolved_Func, line: int) {
     callee := rf.callee
     if callee == nil && rf.name != "" {
         // Resolved by NAME (module-qualified / UFCS / dispatch) without a callee
@@ -1078,8 +1092,8 @@ record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) {
     }
     edge := Call_Edge{from = caller, to = callee}
     c.call_edges[edge] = true
-    if cur, ok := c.call_edge_line[edge]; !ok || e.span.line < cur {
-        c.call_edge_line[edge] = e.span.line   // first call site = call order
+    if cur, ok := c.call_edge_line[edge]; !ok || line < cur {
+        c.call_edge_line[edge] = line   // first call site = call order
     }
 }
 
@@ -11018,6 +11032,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                     }
                     if best_score > 0 {
                         e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
+                        record_operator_edge(c, e.overload_fn.?, env, e.span.line)
                         return best_ret
                     }
                 }
@@ -12316,6 +12331,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
             // Use best match if found
             if best_score > 0 {
                 e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
+                record_operator_edge(c, e.overload_fn.?, env, e.span.line)
                 return best_ret
             }
         }

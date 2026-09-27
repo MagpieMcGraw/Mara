@@ -61,8 +61,9 @@ what each becomes in LLVM).
 - [x] `populate_cg_signature` runs lazily inside the parallel codegen workers — a possible race
       (`codegen.odin` ~1185). Structural fn types now fill it where they resolve; a signature
       reaching codegen without it is a hard error (`test/fn_type_values.mara`)
-- [ ] Operator-overload calls are never recorded as call-graph edges (purity, escape and
-      `mara ask` miss them)
+- [x] Operator-overload calls are never recorded as call-graph edges (purity, escape and
+      `mara ask` miss them). Both overload resolutions now record the edge
+      (`test/operator_calls.mara`; its `mara ask` edges go in the goldens)
 - [ ] `take([]T(n), …)` rewrites a source `Type_Slice_Expr` in place; no fixture covers it
 - [ ] `clone_expr` shares a `{all x}` literal's `array_values` buffer between clones
 - [ ] Codegen numbers labels and strings module-wide; restart per function so IR compares per
