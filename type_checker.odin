@@ -1546,6 +1546,10 @@ Checked_Program :: struct {
     // See callgraph.odin / design/mara_ask.md §12.
     call_graph:     Call_Graph,
 
+    // The program graph (graph.odin) — built after checking; nothing reads it
+    // yet (design/graph_retrofit.md, phase 1).
+    graph:          Program_Graph,
+
     // Compile-time constants: name -> resolved integer value (derived from table.constants)
     constant_values: map[string]int,
 

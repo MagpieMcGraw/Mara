@@ -96,6 +96,24 @@ the check for phase 3.
 Later, not phase 0: `mara ask` refuses to run with any type error anywhere (partial results are a
 phase 2–4 concern).
 
+## Phase 1 checklist
+
+The graph is built in `graph.odin` after checking (the `graph` stage of the perf timer).
+`MARA_GRAPH=<name>` prints the subtree of every node with that name, `MARA_GRAPH=all` the whole
+graph. Debug builds check that every checked scope and type is exactly one node.
+
+- [x] Storage and declarations: modules, structs, unions, enums, funs and blocks, with their
+      fields, params, results, locals, constants, imports, variants, type definitions and dispatch
+      groups; contains (the parent column, depth-first) and has type. A generic's instances are
+      nodes, the template is syntax only. test_1M: 720k nodes, 378 ms (3.4% of type check), peak
+      memory +0.1 GB
+- [ ] Calls: one edge per call site, checked against `callgraph.odin` on every build
+- [ ] Operations in runs joined by `then`: straight-line code, then branches, loops and `match`,
+      then the synthetic operations (zero-init, construction, defers at each exit, arena mark and
+      reset)
+- [ ] Flows: each operation's inputs, and refers-to on `var` operations, checked against
+      `usedef.odin`
+
 ## Baselines
 
 Recorded at 3c9bbc5, before any change, with the debug compiler (`odin build . -debug`). Peak memory

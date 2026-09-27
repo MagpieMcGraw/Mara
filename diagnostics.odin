@@ -20,6 +20,7 @@ Diagnostic_Kind :: enum {
     Type_Error,
     Warning,
     Codegen_Error,
+    Graph_Error,     // building the program graph (graph.odin) — a compiler bug
 }
 
 Diagnostic :: struct {
@@ -49,6 +50,7 @@ flush_diagnostics :: proc() {
         case .Type_Error:    label = "Type error"
         case .Warning:       label = "Warning"
         case .Codegen_Error: label = "Codegen error"
+        case .Graph_Error:   label = "Graph error"
         }
         if d.location != "" {
             fmt.printf("[%s] %s: %s\n", d.location, label, d.message)

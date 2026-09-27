@@ -1422,6 +1422,9 @@ main :: proc() {
     }
     ast_shape_check(programs, "check")
 
+    perf_timer_mark(&perf, "graph")
+    checked.graph = build_program_graph(checked, programs)
+
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {
         flush_diagnostics()

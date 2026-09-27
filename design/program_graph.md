@@ -305,6 +305,6 @@ First target: parameter narrowing from `design/mara_ask.md` §10. `camera_turn_w
 ## Open questions
 
 1. **Access paths as nodes?** Decided: declarations only. At the finest zoom an access path is already a chain of place operations (`var cart`, `index i`, `field price`; see Operations), so per-copy questions follow those chains.
-2. **Generics.** One node for a generic function's template, one per instance, or both linked. The instances are what runs; the template is what is written and edited.
+2. **Generics.** Decided: one node per instance, since the instances are what runs and what code generation needs; the template is syntax only, and every instance points at it as its origin.
 3. **Partial results while code is broken.** Today one type error anywhere aborts the build. A live graph needs a broken function confined to itself, with the rest of the program still producing its graph.
 4. **Position-independent compilation.** Two tiers: show the matching slice of a whole-program compile (needs every LLVM instruction tagged with its origin), and compile a fragment on its own (its above-set becomes parameters and external declarations).
