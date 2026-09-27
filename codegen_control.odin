@@ -114,6 +114,12 @@ gen_if :: proc(g: ^Codegen, s: ^Stmt_If) {
 // ---------------------------------------------------------------------------
 
 gen_for :: proc(g: ^Codegen, s: ^Stmt_For) {
+    // The loop's variables and its body's declarations end with the loop.
+    // Left bound, a later same-named declaration mistakes the old binding for
+    // its own and skips its zero-init.
+    snap := save_var_scope(g)
+    defer restore_var_scope(g, &snap)
+
     if s.is_collection_for {
         gen_for_collection(g, s)
         return
@@ -188,8 +194,7 @@ gen_for_range :: proc(g: ^Codegen, s: ^Stmt_For) {
     // Alloca + init loop variable. Skip the pre-store-0 step that previously
     // shadowed the low_val store — LLVM still emits both as separate
     // instructions, and the first one is always dead.
-    alloca_name := fmt.tprintf("%%%s", s.loop_var)
-    emit_alloca(g, alloca_name, ir_type)
+    alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.loop_var), ir_type)
     emit_store(g, ir_type, low_val, alloca_name)
     g.all_vars[s.loop_var] = Scalar_Var{alloca_name}
 
@@ -379,8 +384,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         // a scalar is loaded and stored.
         elem_base := distinct_base(s.elem_type_)
         if is_pointer_valued_type(elem_base) {
-            elem_alloca := fmt.tprintf("%%%s", s.elem_var)
-            emit_alloca(g, elem_alloca, elem_ir)
+            elem_alloca := emit_local_alloca(g, fmt.tprintf("%%%s", s.elem_var), elem_ir)
             emit_value_copy(g, s.elem_type_, elem_alloca, elem_ptr)
             if sd := as_struct_body(elem_base); sd != nil {
                 g.all_vars[s.elem_var] = Struct_Var{elem_alloca, sd.name}
@@ -400,8 +404,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             }
         } else {
             // Scalar element: alloca + load + store
-            elem_alloca := fmt.tprintf("%%%s", s.elem_var)
-            emit_alloca(g, elem_alloca, elem_ir)
+            elem_alloca := emit_local_alloca(g, fmt.tprintf("%%%s", s.elem_var), elem_ir)
             elem_val := fresh_tmp(g)
             emit_load_into(g, elem_val, elem_ir, elem_ptr)
             emit_store(g, elem_ir, elem_val, elem_alloca)

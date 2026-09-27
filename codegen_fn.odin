@@ -646,8 +646,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
                 }
             } else {
                 ir_t := llvm_type_from_checker(rb_type)
-                alloca_name := fmt.tprintf("%%%s", rb_name)
-                emit_alloca(g, alloca_name, ir_t)
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", rb_name), ir_t)
                 // LLVM rejects `store float 0` — float and double slots need
                 // a float literal, not the integer 0.
                 zero_lit := ir_t == "float" || ir_t == "double" ? "0.0" : "0"

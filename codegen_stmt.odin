@@ -166,8 +166,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     if existing, ex_ok := get_slice(g, s.name); ex_ok {
                         alloca_name = existing.alloca
                     } else {
-                        alloca_name = fmt.tprintf("%%%s", s.name)
-                        emit_slice_alloca(g, alloca_name)
+                        alloca_name = emit_local_alloca(g, fmt.tprintf("%%%s", s.name), SLICE_IR_TYPE)
                     }
                     ptr_gep := fresh_tmp(g)
                     emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
@@ -267,15 +266,15 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 if g.context_enabled && total_bytes >= 1024 {
                     data_name = emit_arena_bump(g, total_bytes, s.name, loc)
                 } else {
-                    data_name = fmt.tprintf("%%%s.data", s.name)
+                    data_want := fmt.tprintf("%%%s.data", s.name)
                     // Byte buffers default to align 1, but `take(T, storage)` carves
                     // typed regions out of them and needs the data ptr to satisfy
                     // T's alignment. Over-align to 16 (covers every scalar type and
                     // SSE vectors); take's per-call padding handles the cursor side.
                     if elem_t == "i8" {
-                        emit(g, "  %s = alloca [%d x i8], align 16", data_name, alloc_cap)
+                        data_name = emit_local_alloca(g, data_want, fmt.tprintf("[%d x i8], align 16", alloc_cap))
                     } else {
-                        emit(g, "  %s = alloca [%d x %s]", data_name, alloc_cap, elem_t)
+                        data_name = emit_local_alloca(g, data_want, fmt.tprintf("[%d x %s]", alloc_cap, elem_t))
                     }
                 }
                 // Zero-init policy: backing storage starts zeroed — covers
@@ -284,8 +283,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 if _, zinit_skip := s.value.(^Expr_Skip_Constructor); !zinit_skip {
                     emit_memset_zero(g, data_name, total_bytes)
                 }
-                alloca_name := fmt.tprintf("%%%s", s.name)
-                emit_slice_alloca(g, alloca_name)
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), SLICE_IR_TYPE)
                 ptr_gep := fresh_tmp(g)
                 emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
                 emit_store(g, "ptr", data_name, ptr_gep)
@@ -323,8 +321,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             }
             if s.value == nil {
                 // Uninitialized slice: alloca + zero all three fields.
-                alloca_name := fmt.tprintf("%%%s", s.name)
-                emit_slice_alloca(g, alloca_name)
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), SLICE_IR_TYPE)
                 ptr_gep := fresh_tmp(g)
                 emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
                 emit_store(g, "ptr", "null", ptr_gep)
@@ -364,7 +361,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             if is_nrvo {
                 alloca_name = "%sret"
             } else {
-                emit_partial_array_storage(g, alloca_name, pa, s.name, s.span)
+                alloca_name = emit_partial_array_storage(g, alloca_name, pa, s.name, s.span)
             }
             // Initialise header: ptr → elements, len → 0, cap → N.
             elements_ptr := fresh_tmp(g)
@@ -429,16 +426,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if tf, ok := var_type.(^Type_Scope); ok && tf.kind == .Fun {
             if s.value == nil {
                 // Uninitialized function pointer: alloca + null
-                alloca_name := fmt.tprintf("%%%s", s.name)
-                emit_alloca(g, alloca_name, "ptr")
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), "ptr")
                 emit_store(g, "ptr", "null", alloca_name)
                 g.all_vars[s.name] = Scalar_Var{alloca_name}
                 return
             }
             val := gen_expr(g, s.value)
             if !is_scalar(g, s.name) {
-                alloca_name := fmt.tprintf("%%%s", s.name)
-                emit_alloca(g, alloca_name, "ptr")
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), "ptr")
                 emit_store(g, "ptr", "null", alloca_name)
                 g.all_vars[s.name] = Scalar_Var{alloca_name}
             }
@@ -451,16 +446,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if _, ok := var_type.(^Type_Ptr); ok {
             if s.value == nil {
                 // Uninitialized pointer: alloca + null
-                alloca_name := fmt.tprintf("%%%s", s.name)
-                emit_alloca(g, alloca_name, "ptr")
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), "ptr")
                 emit_store(g, "ptr", "null", alloca_name)
                 g.all_vars[s.name] = Scalar_Var{alloca_name}
                 return
             }
             val := gen_expr(g, s.value)
             if !is_scalar(g, s.name) {
-                alloca_name := fmt.tprintf("%%%s", s.name)
-                emit_alloca(g, alloca_name, "ptr")
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), "ptr")
                 emit_store(g, "ptr", "null", alloca_name)  // zero-init
                 g.all_vars[s.name] = Scalar_Var{alloca_name}
             }
@@ -475,8 +468,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             ukey := union_key(ut)
             if s.value == nil {
                 // Uninitialized union: alloca only (e.g. for foreign code to fill)
-                alloca_name := fmt.tprintf("%%%s", s.name)
-                emit_alloca(g, alloca_name, union_llvm_name(ukey))
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), union_llvm_name(ukey))
                 g.all_vars[s.name] = Union_Var{
                     alloca = alloca_name,
                     union_name  = ukey,
@@ -594,9 +586,10 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Determine the IR type for this variable.
         // Priority: checker type > existing alloca > expression type
         ir_type := "i64"
+        existing_slot, has_slot := get_scalar(g, s.name)
         if var_type != nil && !is_untyped(var_type) {
             ir_type = llvm_type_from_checker(var_type)
-        } else if at, at_ok := g.emitted_allocas[fmt.tprintf("%%%s", s.name)]; at_ok {
+        } else if at, at_ok := g.emitted_allocas[existing_slot]; has_slot && at_ok {
             ir_type = at
         } else {
             ir_type = expr_ir_type(g, s.value)
@@ -617,8 +610,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
             if _, already := g.all_vars[s.name]; already {
                 return
             }
-            alloca_name := fmt.tprintf("%%%s", s.name)
-            emit_alloca(g, alloca_name, ir_type)
+            alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), ir_type)
             if ir_type == "ptr" {
                 emit_store(g, "ptr", "null", alloca_name)
             } else if ir_type == "double" {
@@ -654,8 +646,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
 
         // If variable doesn't exist yet, alloca it with zero initialization
         if !is_scalar(g, s.name) {
-            alloca_name := fmt.tprintf("%%%s", s.name)
-            emit_alloca(g, alloca_name, ir_type)
+            alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), ir_type)
             // Zero-initialize to prevent undefined values
             if ir_type == "ptr" {
                 emit_store(g, "ptr", "null", alloca_name)
@@ -976,8 +967,7 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                 if existing, ok := get_struct(g, name); ok {
                     alloca_name = existing.alloca
                 } else {
-                    alloca_name = fmt.tprintf("%%%s", name)
-                    emit_alloca(g, alloca_name, elem_type)
+                    alloca_name = emit_local_alloca(g, fmt.tprintf("%%%s", name), elem_type)
                     g.all_vars[name] = Struct_Var{
                         alloca      = alloca_name,
                         struct_name = sd.name,
@@ -1134,8 +1124,7 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
         if target_ptr != "" {
             emit_store(g, elem_type, val, target_ptr)
         } else {
-            alloca_name := fmt.tprintf("%%%s", name)
-            emit_alloca(g, alloca_name, elem_type)
+            alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", name), elem_type)
             emit_store(g, elem_type, val, alloca_name)
             g.all_vars[name] = Scalar_Var{alloca_name}
         }

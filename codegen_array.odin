@@ -502,8 +502,7 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
             data_name = emit_arena_bump(g, total_bytes, name, loc)
         } else {
             // Small array: stack alloca as usual
-            data_name = fmt.tprintf("%%%s.data", name)
-            emit_alloca(g, data_name, arr_type)
+            data_name = emit_local_alloca(g, fmt.tprintf("%%%s.data", name), arr_type)
         }
 
         g.all_vars[name] = Array_Var{
@@ -1556,11 +1555,11 @@ gen_slice_decl_runtime_cap :: proc(g: ^Codegen, s: ^Stmt_Assign, sl: ^Type_Slice
     // friendly alignment policy. Goes through emit_alloca_runtime so the
     // alloca stays at the point of use — the count SSA isn't visible from
     // the entry block where static allocas live.
-    data_name := fmt.tprintf("%%%s.data", s.name)
+    data_name: string
     if elem_t == "i8" {
-        emit_alloca_runtime(g, data_name, "i8", w, cap_user, 16)
+        data_name = emit_local_alloca_runtime(g, fmt.tprintf("%%%s.data", s.name), "i8", w, cap_user, 16)
     } else {
-        emit_alloca_runtime(g, data_name, elem_t, w, cap_user, 0)
+        data_name = emit_local_alloca_runtime(g, fmt.tprintf("%%%s.data", s.name), elem_t, w, cap_user, 0)
     }
     // Zero-init policy: runtime-sized backing zeroes too (`= void` opts
     // out). Size is an SSA value, so emit the memset intrinsic directly.
@@ -1574,8 +1573,7 @@ gen_slice_decl_runtime_cap :: proc(g: ^Codegen, s: ^Stmt_Assign, sl: ^Type_Slice
         emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %s, i1 false)", data_name, size_ssa)
     }
     // Build the slice header.
-    alloca_name := fmt.tprintf("%%%s", s.name)
-    emit_slice_alloca(g, alloca_name)
+    alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), SLICE_IR_TYPE)
     ptr_gep := fresh_tmp(g)
     emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
     emit_store(g, "ptr", data_name, ptr_gep)
@@ -1642,8 +1640,7 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_t
         if info, info_ok := call_fun_info(g, call); info_ok && info.ret_slice_elem != "" {
             _, slice_exists := get_slice(g, name)
             if !slice_exists {
-                alloca_name := fmt.tprintf("%%%s.slice", name)
-                emit_slice_alloca(g, alloca_name)
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s.slice", name), SLICE_IR_TYPE)
                 g.all_vars[name] = Slice_Var{
                     alloca    = alloca_name,
                     elem_type = info.ret_slice_elem,
@@ -1690,8 +1687,7 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_t
     src := gen_expr(g, value)
 
     if _, slice_exists := get_slice(g, name); !slice_exists {
-        alloca_name := fmt.tprintf("%%%s.slice", name)
-        emit_slice_alloca(g, alloca_name)
+        alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s.slice", name), SLICE_IR_TYPE)
         g.all_vars[name] = Slice_Var{
             alloca    = alloca_name,
             elem_type = elem_t,
@@ -1783,8 +1779,7 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
         if info, info_ok := call_fun_info(g, call); info_ok && info.ret_slice_elem != "" {
             _, slice_exists := get_slice(g, name)
             if !slice_exists {
-                alloca_name := fmt.tprintf("%%%s.slice", name)
-                emit_slice_alloca(g, alloca_name)
+                alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s.slice", name), SLICE_IR_TYPE)
                 g.all_vars[name] = Slice_Var{
                     alloca    = alloca_name,
                     elem_type = elem_type,
@@ -1805,8 +1800,7 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
     src := gen_slice_value_ptr(g, value)
 
     if _, slice_exists := get_slice(g, name); !slice_exists {
-        alloca_name := fmt.tprintf("%%%s.slice", name)
-        emit_slice_alloca(g, alloca_name)
+        alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s.slice", name), SLICE_IR_TYPE)
         g.all_vars[name] = Slice_Var{
             alloca    = alloca_name,
             elem_type = elem_type,
@@ -2092,7 +2086,7 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         if ex_ok {
             alloca_name = existing.alloca
         } else {
-            emit_alloca(g, alloca_name, target_ir_type)
+            alloca_name = emit_local_alloca(g, alloca_name, target_ir_type)
         }
         emit_memcpy(g, alloca_name, elem_ptr, target_size)
         if is_big_endian {
@@ -2117,8 +2111,7 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         if g.context_enabled && target_size >= 1024 {
             data_name = emit_arena_bump(g, target_size, name, loc)
         } else {
-            data_name = fmt.tprintf("%%%s.data", name)
-            emit_alloca(g, data_name, target_ir_type)
+            data_name = emit_local_alloca(g, fmt.tprintf("%%%s.data", name), target_ir_type)
         }
         emit_memcpy(g, data_name, elem_ptr, target_size)
         if is_big_endian {
@@ -2148,7 +2141,7 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
                 val = swapped
             }
         }
-        emit_alloca(g, alloca_name, target_ir_type)
+        alloca_name = emit_local_alloca(g, alloca_name, target_ir_type)
         emit_store(g, target_ir_type, val, alloca_name)
         g.all_vars[name] = Scalar_Var{alloca_name}
     }
@@ -2233,7 +2226,7 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
         if existing, ex_ok := get_struct(g, name); ex_ok {
             alloca_name = existing.alloca
         } else {
-            emit_alloca(g, alloca_name, target_ir_type)
+            alloca_name = emit_local_alloca(g, alloca_name, target_ir_type)
         }
         emit_memset_zero(g, alloca_name, target_size)
         emit_memcpy_runtime(g, alloca_name, src_off_ptr, span_ssa)
@@ -2247,8 +2240,7 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
         }
         g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
     } else if fa, fa_ok := target_type.(^Type_Fixed_Array); fa_ok {
-        data_name := fmt.tprintf("%%%s.data", name)
-        emit_alloca(g, data_name, target_ir_type)
+        data_name := emit_local_alloca(g, fmt.tprintf("%%%s.data", name), target_ir_type)
         emit_memset_zero(g, data_name, target_size)
         emit_memcpy_runtime(g, data_name, src_off_ptr, span_ssa)
         if is_big_endian {
@@ -2597,20 +2589,20 @@ gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, co
 // backstop, instead of silently putting a big buffer on the stack. Small PAs
 // get a stack alloca; i8 backings are over-aligned to 16 to match the
 // take()/byte-fill alignment policy.
-emit_partial_array_storage :: proc(g: ^Codegen, dst: string, pa: ^Type_Partial_Array, name: string, span: Span) {
+emit_partial_array_storage :: proc(g: ^Codegen, want: string, pa: ^Type_Partial_Array, name: string, span: Span) -> string {
     elem_t := llvm_type_from_checker(pa.elem)
     if routes_to_arena(pa) {
         loc := format_location(span.file, span.line, span.col)
         data := emit_arena_bump(g, checker_type_byte_size(pa), name, loc)
+        dst := unique_local_name(g, want)
         emit(g, "  %s = bitcast ptr %s to ptr", dst, data)
-        return
+        return dst
     }
     ir_type := partial_array_ir_type(elem_t, pa.size)
     if elem_t == "i8" {
-        emit_raw(g, strings.concatenate({"  ", dst, " = alloca ", ir_type, ", align 16"}))
-    } else {
-        emit_raw(g, strings.concatenate({"  ", dst, " = alloca ", ir_type}))
+        return emit_local_alloca(g, want, strings.concatenate({ir_type, ", align 16"}))
     }
+    return emit_local_alloca(g, want, ir_type)
 }
 
 // Allocate a fresh partial-array's backing storage and register it as a
@@ -2629,9 +2621,7 @@ gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Typ
     elem_t := llvm_type_from_checker(pa.elem)
     _, pa_utf8 := pa.elem.(Type_Utf8)
     ir_type := partial_array_ir_type(elem_t, pa.size)
-    alloca_name := fmt.tprintf("%%%s", name)
-
-    emit_partial_array_storage(g, alloca_name, pa, name, span)
+    alloca_name := emit_partial_array_storage(g, fmt.tprintf("%%%s", name), pa, name, span)
     // Zero-init policy: the byte-fill that follows is dest-bounded and may
     // leave a tail — zeroed elements make that tail (and any later
     // cstring terminator check) deterministic.

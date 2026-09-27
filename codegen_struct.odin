@@ -67,12 +67,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
             loc := format_location(span.file, span.line, span.col)
             alloca_name = emit_arena_bump(g, total, name, loc)
         } else {
-            alloca_name = fmt.tprintf("%%%s", name)
-            if already_exists && existing_sv.struct_name != skey {
-                // Re-declaration with different struct type — fresh alloca name
-                alloca_name = fresh_tmp(g)
-            }
-            emit_alloca(g, alloca_name, llvm_name)
+            alloca_name = emit_local_alloca(g, fmt.tprintf("%%%s", name), llvm_name)
         }
         g.all_vars[name] = Struct_Var{
             alloca = alloca_name,
@@ -2086,8 +2081,7 @@ gen_union_assign :: proc(g: ^Codegen, name: string, ut: ^Type_Union, value: Expr
     // Alloca if variable doesn't exist yet
     _, already_exists := get_union(g, name)
     if !already_exists {
-        alloca_name := fmt.tprintf("%%%s", name)
-        emit_alloca(g, alloca_name, llvm_name)
+        alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", name), llvm_name)
         g.all_vars[name] = Union_Var{
             alloca = alloca_name,
             union_name  = ukey,

@@ -1280,7 +1280,7 @@ emit_line :: proc(g: ^Codegen, line: string) {
         if strings.contains(line, "= alloca ") {
             // Skip duplicate allocas (e.g., same var declared in both if and else branches)
             name := extract_alloca_name(line)
-            if name != "" && name in g.emitted_allocas {
+            if name != "" && alloca_exists(g, name, extract_alloca_type(line)) {
                 return  // duplicate — already emitted
             }
             if name != "" { g.emitted_allocas[name] = extract_alloca_type(line) }
@@ -1438,7 +1438,7 @@ emit_elem_gep :: proc(g: ^Codegen, dst, elem_type, base, idx, idx_ir: string) {
 emit_alloca :: proc(g: ^Codegen, dst, ir_type: string) {
     if g.hoist_allocas {
         // Dedup: same alloca name in multiple branches collapses to one.
-        if dst in g.emitted_allocas { return }
+        if alloca_exists(g, dst, ir_type) { return }
         g.emitted_allocas[dst] = ir_type
         b := &g.alloca_buf
         strings.write_string(b, "  ")
@@ -1454,6 +1454,57 @@ emit_alloca :: proc(g: ^Codegen, dst, ir_type: string) {
     strings.write_string(b, " = alloca ")
     strings.write_string(b, ir_type)
     strings.write_byte(b, '\n')
+}
+
+// Whether `name` is already allocated in this function. Reusing a slot is
+// only sound at the same type; a different type means two values would share
+// storage sized for one, so it is a compiler bug. Named locals avoid it by
+// going through emit_local_alloca.
+@(private="file")
+alloca_exists :: proc(g: ^Codegen, name, ir_type: string) -> bool {
+    have, ok := g.emitted_allocas[name]
+    if !ok { return false }
+    if have != ir_type {
+        codegen_fatal(g, {}, "internal: alloca %s reused as %s (first allocated as %s)", name, ir_type, have)
+    }
+    return true
+}
+
+// The slot for a named local. Locals are keyed by source name, so same-named
+// locals in sibling scopes (if/else branches, consecutive loops) arrive here
+// with the same `want`. They share one slot when the IR types match; a
+// different type takes the next free `want.2`, `want.3`, ... so a `[64]i64`
+// never lands in a `[2]i64` slot. Returns the name actually allocated.
+emit_local_alloca :: proc(g: ^Codegen, want, ir_type: string) -> string {
+    name := want
+    if g.hoist_allocas {
+        for n := 2; ; n += 1 {
+            have, taken := g.emitted_allocas[name]
+            if !taken || have == ir_type { break }
+            name = fmt.tprintf("%s.%d", want, n)
+        }
+    }
+    emit_alloca(g, name, ir_type)
+    return name
+}
+
+// A name for a local defined at its point of use (a runtime-sized alloca, an
+// arena pointer) rather than hoisted. Those are never shared, so this takes a
+// name nothing in the function has used, and reserves it.
+unique_local_name :: proc(g: ^Codegen, want: string) -> string {
+    name := want
+    for n := 2; (name in g.emitted_allocas); n += 1 {
+        name = fmt.tprintf("%s.%d", want, n)
+    }
+    g.emitted_allocas[name] = "<point of use>"
+    return name
+}
+
+// Runtime-sized form of emit_local_alloca.
+emit_local_alloca_runtime :: proc(g: ^Codegen, want, elem_ir, count_ir, count_ssa: string, align: int) -> string {
+    name := unique_local_name(g, want)
+    emit_alloca_runtime(g, name, elem_ir, count_ir, count_ssa, align)
+    return name
 }
 
 // Emit an `alloca T, <w> %count` form where the count is a runtime SSA. This

@@ -52,8 +52,12 @@ what each becomes in LLVM).
       (unused), `Stmt_Scope.fields` (never written by the parser)
 - [x] `?` early return skips defers and arena resets (`codegen_expr.odin` ~1955,
       `codegen_stmt.odin` ~938)
-- [ ] Allocas are de-duplicated by name, blind to type: same-named locals in sibling scopes share
-      one slot (`codegen.odin` ~1283, ~1441)
+- [x] Allocas are de-duplicated by name, blind to type: same-named locals in sibling scopes share
+      one slot (`codegen.odin` ~1283, ~1441). Now a named local takes `name.2` when the type
+      differs (`emit_local_alloca`), and reusing a name at another type is a hard error. Found
+      alongside: loops never dropped their bindings, so a local declared again after a loop skipped
+      its zero-init, and runtime-sized or arena-backed locals defined one IR name twice
+      (`test/sibling_locals.mara`)
 - [ ] `populate_cg_signature` runs lazily inside the parallel codegen workers — a possible race
       (`codegen.odin` ~1185)
 - [ ] Operator-overload calls are never recorded as call-graph edges (purity, escape and

@@ -1,0 +1,118 @@
+module sibling_locals
+include mara.memory
+
+//@ expect-output: small 1
+//@ expect-output: big 7
+//@ expect-output: guard 12345
+//@ expect-output: i32 5
+//@ expect-output: f64 2.5
+//@ expect-output: struct 0 1
+//@ expect-output: struct 9 9
+//@ expect-output: fresh 0 0 0
+//@ expect-output: fresh 0 0 0
+//@ expect-output: runtime 3 5
+//@ expect-output: arena 1 2
+
+// Same-named locals in sibling scopes each get storage of their own type.
+// They used to share one stack slot sized for whichever came first, so the
+// `[64]i64` below wrote past a `[2]i64` slot and the f64 into an i32 slot.
+// A local declared again after a loop used to find the loop's binding still
+// live and skip its zero-init; runtime-sized and arena-backed locals used to
+// define the same IR name twice.
+
+Small :: struct {
+	a: i64
+}
+
+Big :: struct {
+	a: [32]i64
+	b: i64
+}
+
+arrays :: fun(which: bool) -> i64 {
+	guard := 12345
+	if which {
+		a : [2]i64
+		a[0] = 1
+		print("small", a[0])
+	else
+		a : [64]i64
+		for i in 0..64 { a[i] = 7 }
+		print("big", a[63])
+	}
+	return guard
+}
+
+scalars :: fun(which: bool) {
+	if which {
+		x : i32 = 5
+		print("i32", x)
+	else
+		x : f64 = 2.5
+		print("f64", x)
+	}
+}
+
+structs :: fun() {
+	for k in 0..2 {
+		v := Small{a = k}
+		if k == 1 do print("struct", 0, v.a)
+	}
+	for k in 0..2 {
+		v := Big{b = 9}
+		v.a[31] = 9
+		if k == 1 do print("struct", v.a[31], v.b)
+	}
+}
+
+redeclared :: fun() {
+	for k in 0..2 {
+		v : Small
+		v.a += 5
+		n : i64
+		n += 3
+		arr : [4]i64
+		arr[1] += 2
+	}
+	for k in 0..2 {
+		v : Small
+		n : i64
+		arr : [4]i64
+		print("fresh", v.a, n, arr[1])
+	}
+}
+
+runtime_sized :: fun(which: bool, n: i64) -> i64 {
+	if which {
+		a : [:n]i64
+		return a.cap()
+	else
+		a : [:n]i64
+		return a.cap()
+	}
+}
+
+arena_backed :: fun(which: bool) -> i64 {
+	if which {
+		p : [..4000]u8
+		p.len = 1
+		return p.len
+	else
+		p : [..4000]u8
+		p.len = 2
+		return p.len
+	}
+}
+
+main :: fun() {
+	this_program = Program(Arena_Basic(16 * MB))
+	_ = arrays(true)
+	guard := arrays(false)
+	print("guard", guard)
+	scalars(true)
+	scalars(false)
+	structs()
+	redeclared()
+	print("runtime", runtime_sized(true, 3), runtime_sized(false, 5))
+	print("arena", arena_backed(true), arena_backed(false))
+}
