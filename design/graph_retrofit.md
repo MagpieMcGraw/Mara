@@ -47,7 +47,7 @@ what each becomes in LLVM).
 
 ## Phase 0 checklist
 
-- [ ] Dead fields: `Expr_Call.desugared` (read, never written), `Stmt_For.collection_len` (read,
+- [x] Dead fields: `Expr_Call.desugared` (read, never written), `Stmt_For.collection_len` (read,
       never written), `Stmt_For.collection_type` (written, never read), `Stmt_Assign.checked`
       (unused), `Stmt_Scope.fields` (never written by the parser)
 - [ ] `?` early return skips defers and arena resets (`codegen_expr.odin` ~1955,

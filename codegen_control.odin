@@ -306,10 +306,6 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             use_array_gep = true
             arr_type_str = llvm_type_from_checker(fa_type)
         }
-        // Length from collection_len (set by checker desugaring)
-        if s.collection_len != nil {
-            length_val = gen_expr(g, s.collection_len)
-        }
     } else if av, av_ok := get_array(g, coll_name); av_ok {
         // Fixed array: iterate 0 to capacity
         data_ptr = av.alloca

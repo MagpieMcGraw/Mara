@@ -267,7 +267,6 @@ Expr_Call :: struct {
     span:      Span,
     type_:     Type,                      // return type, filled by type checker
     resolved_func: Maybe(Resolved_Func),  // filled by type checker (UFCS, package resolution)
-    desugared: Expr,                      // if set, codegen evaluates this instead of the call
     // Callee is a function VALUE (a fn-typed local or param), not a declared
     // function: its signature, so the indirect call lowers like a direct one.
     fn_value:  ^Type_Scope,
@@ -653,7 +652,6 @@ Stmt_Assign :: struct {
     // the same variable). Codegen uses this flag to hoist side-effectful
     // sub-expressions of the LHS into temps so the LHS is evaluated once.
     is_compound:   bool,
-    checked:       [dynamic]Stmt,
 }
 
 // Runtime binding. Always mutable. Covers single- and multi-name declarations
@@ -761,7 +759,6 @@ Stmt_Scope :: struct {
     kind:           Scope_Kind,
     generic_params: [dynamic]Generic_Param, // empty for non-generic funs
     typed_params:    [dynamic]Scope_Binding, // callable params (in parens) — empty for data-type funs
-    fields:          [dynamic]Scope_Binding, // data fields — non-empty means this is a data-type (struct-like) fun
     return_types:    [dynamic]Type_Expr,     // function return types: void = empty, single = 1 elem, multi-return = 2+
     return_bindings: [dynamic]Scope_Binding, // named return values: fun() -> (x, y: int)
     body:           [dynamic]Stmt,
@@ -866,9 +863,7 @@ Stmt_For :: struct {
     elem_var:          string,    // element variable name ("" if `_`)
     index_var:         string,    // index variable name ("" if not provided or `_`)
     collection:        Expr,
-    collection_len:    Expr,      // if set, use as loop bound instead of compile-time capacity
     elem_type_:        Type,      // resolved element type, filled by type checker
-    collection_type:   Type,      // resolved collection type, filled by type checker
 }
 
 Match_Arm :: struct {
@@ -4999,7 +4994,6 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         c := new_clone(v^)
         c.value = clone_expr(v.value)
         c.target = clone_expr(v.target)
-        c.checked = {}
         c.var_type = nil
         c.env_type = nil
         c.target_type = nil

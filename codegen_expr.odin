@@ -1459,11 +1459,6 @@ gen_array_address :: proc(g: ^Codegen, e: Expr, fa: ^Type_Fixed_Array) -> string
 }
 
 gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
-    // Desugared builtin: type checker rewrote this call to a simpler expression
-    if e.desugared != nil {
-        return gen_expr(g, e.desugared)
-    }
-
     // Built-in: print
     if call_name(e) == "print" {
         gen_print(g, e)
@@ -2289,7 +2284,6 @@ may_read_dest :: proc(g: ^Codegen, e: Expr, d: Dest_Info) -> bool {
         return may_read_dest(g, v.left, d) || may_read_dest(g, v.right, d)
     case ^Expr_Call:
         // The qualifier is a namespace (`math.sin`) — the call passes only args.
-        if may_read_dest(g, v.desugared, d) { return true }
         for a in call_args(v) { if may_read_dest(g, a, d) { return true } }
         if v.overrides != nil { return may_read_dest(g, v.overrides, d) }
     case ^Expr_Array:
@@ -2474,11 +2468,9 @@ is_indirect_call :: proc(e: ^Expr_Call) -> bool {
     return !resolved && e.fn_value != nil
 }
 
-// A call that is just another value in disguise: a builtin the checker
-// desugared, or a distinct conversion `Vec3(a)` (a no-op at IR level — see the
+// A call that is just another value in disguise: a distinct conversion `Vec3(a)` (a no-op at IR level — see the
 // distinct-construction case in gen_call_inner).
 call_passthrough_value :: proc(g: ^Codegen, e: ^Expr_Call) -> (Expr, bool) {
-    if e.desugared != nil { return e.desugared, true }
     if _, is_distinct := g.checked.table.distinct_types[call_resolved_name(e)]; is_distinct && len(call_args(e)) == 1 {
         return call_args(e)[0], true
     }

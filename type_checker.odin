@@ -2916,7 +2916,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
         append(&st.generic_args, arg)
     }
 
-    tmpl_fields := tmpl.ast.fields if len(tmpl.ast.fields) > 0 else extract_fields_from_body(tmpl.ast.body)
+    tmpl_fields := extract_fields_from_body(tmpl.ast.body)
     for field in tmpl_fields {
         ft := resolve_type_expr_with_subst(field.type_expr, c, span, &subst)
         // Substitute generic value params in default values: a field default
@@ -4533,10 +4533,7 @@ desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
         if !ce_ok { continue }
         call, call_ok := ce.expr.(^Expr_Call)
         if !call_ok { continue }
-        tmpl_fields := tmpl.ast.fields
-        if len(tmpl_fields) == 0 {
-            tmpl_fields = extract_fields_from_body(tmpl.ast.body)
-        }
+        tmpl_fields := extract_fields_from_body(tmpl.ast.body)
         bound_any := false
         for f in tmpl_fields {
             tn, tn_ok := f.type_expr.(Type_Name)
@@ -8063,7 +8060,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     // Phase 2: resolve data fields (Phase 1 may have already registered
     // nested types as pseudo-fields, so append per-field rather than
     // gated on empty .fields).
-    data_fields := s.fields if len(s.fields) > 0 else extract_fields_from_body(s.body)
+    data_fields := extract_fields_from_body(s.body)
     added_any_field := false
     // Register-pass flag: `fn <name>` annotations may reference later locals
     // that haven't been added to env yet. Suppress errors during this scan;
@@ -8293,7 +8290,6 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         }
 
         s.elem_type_ = distinct_base(elem_type)
-        s.collection_type = coll_type
 
         check_scope(c, s.body, child)
     } else if s.is_range {

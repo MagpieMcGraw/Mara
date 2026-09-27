@@ -120,7 +120,7 @@ stmt_mentions :: proc(s: Stmt, name: string) -> bool {
     case ^Stmt_For:
         return stmt_mentions(v.init, name) || expr_mentions(v.condition, name) || stmt_mentions(v.post, name) ||
                expr_mentions(v.range_low, name) || expr_mentions(v.range_high, name) ||
-               expr_mentions(v.collection, name) || expr_mentions(v.collection_len, name) ||
+               expr_mentions(v.collection, name) ||
                stmts_mention(v.body[:], name)
     case Stmt_Return:
         for x in v.values { if expr_mentions(x, name) { return true } }
@@ -147,7 +147,7 @@ expr_mentions :: proc(e: Expr, name: string) -> bool {
     case ^Expr_Binary:
         return expr_mentions(v.left, name) || expr_mentions(v.right, name)
     case ^Expr_Call:
-        if expr_mentions(call_qualifier(v), name) || expr_mentions(v.desugared, name) { return true }
+        if expr_mentions(call_qualifier(v), name) { return true }
         for a in call_args(v) { if expr_mentions(a, name) { return true } }
         if v.overrides != nil { return expr_mentions(v.overrides, name) }
     case ^Expr_Array:

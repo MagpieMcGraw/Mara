@@ -442,7 +442,7 @@ esc_stmt :: proc(e: ^Esc, s: Stmt) {
         for val in v.values {
             esc_calls(e, val)
             call, is_call := val.(^Expr_Call)
-            if is_call && call.desugared == nil {
+            if is_call {
                 esc_join(&src, esc_call_result(e, esc_callee(e, call), call_args(call)[:]))
             } else {
                 esc_join(&src, esc_prov(e, val))
@@ -504,7 +504,6 @@ esc_for :: proc(e: ^Esc, v: ^Stmt_For) {
     esc_calls(e, v.range_low)
     esc_calls(e, v.range_high)
     esc_calls(e, v.collection)
-    esc_calls(e, v.collection_len)
     if v.loop_var  != "" { esc_declare(e, v.loop_var, v.span, v.var_type) }
     if v.index_var != "" { esc_declare(e, v.index_var, v.span, nil) }
     elem: ^Esc_Var
@@ -680,7 +679,6 @@ esc_prov :: proc(e: ^Esc, x: Expr) -> Esc_Roots {
     case ^Expr_Array:
         for el in v.elements { esc_join(&r, esc_prov(e, el)) }
     case ^Expr_Call:
-        if v.desugared != nil { return esc_prov(e, v.desugared) }
         r = esc_call_result(e, esc_callee(e, v), call_args(v)[:])
         if v.overrides != nil { esc_join(&r, esc_prov(e, v.overrides)) }
     case ^Expr_Take:
@@ -827,7 +825,6 @@ esc_calls :: proc(e: ^Esc, x: Expr) {
     if x == nil { return }
     #partial switch v in x {
     case ^Expr_Call:
-        if v.desugared != nil { esc_calls(e, v.desugared); return }
         esc_calls(e, call_qualifier(v))
         for a in call_args(v) { esc_calls(e, a) }
         if v.overrides != nil { esc_calls(e, v.overrides) }

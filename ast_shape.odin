@@ -451,7 +451,7 @@ shape_stmt :: proc(s: ^Snap, st: Stmt) -> ^Shape {
         kid(n, "else_body", shape_list(s, v.else_body[:]))
         return n
     case ^Stmt_For:
-        // Not var_type / elem_type_ / collection_type / collection_len.
+        // Not var_type / elem_type_.
         n := mk("Stmt_For", v.span, fmt.aprintf("range=%v %q collection=%v %q %q",
             v.is_range, v.loop_var, v.is_collection_for, v.elem_var, v.index_var))
         kid(n, "init", shape_stmt(s, v.init))
@@ -468,7 +468,6 @@ shape_stmt :: proc(s: ^Snap, st: Stmt) -> ^Shape {
             v.name, v.kind, v.has_parens, v.is_intrinsic, v.intrinsic_name, v.is_exposed, v.is_packed))
         kid(n, "generic_params", shape_generic_params(s, v.generic_params[:]))
         kid(n, "typed_params", shape_bindings(s, v.typed_params[:]))
-        kid(n, "fields", shape_bindings(s, v.fields[:]))
         kid(n, "return_types", shape_types(s, v.return_types[:]))
         kid(n, "return_bindings", shape_bindings(s, v.return_bindings[:]))
         kid(n, "defs", shape_list(s, v.defs[:]))

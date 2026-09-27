@@ -166,7 +166,6 @@ flow_unused_stmt :: proc(c: ^Checker, stack: ^[dynamic]^Flow_Frame, s: Stmt) {
         flow_expr_reads(stack, v.range_low)
         flow_expr_reads(stack, v.range_high)
         flow_expr_reads(stack, v.collection)
-        flow_expr_reads(stack, v.collection_len)
         flow_unused_block(c, stack, v.body[:])
         if v.post != nil { flow_unused_stmt(c, stack, v.post) }
     case ^Stmt_Match:
@@ -421,7 +420,6 @@ flow_init_stmt :: proc(c: ^Checker, s: Stmt, uninit: ^map[string]bool, local: ^[
         flow_init_reads(c, v.range_low, uninit, out)
         flow_init_reads(c, v.range_high, uninit, out)
         flow_init_reads(c, v.collection, uninit, out)
-        flow_init_reads(c, v.collection_len, uninit, out)
         // The body may run zero times, so its inits don't promote — walk a clone
         // for the read-checks inside, then discard.
         bc := flow_clone_set(uninit^)

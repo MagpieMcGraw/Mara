@@ -504,7 +504,6 @@ ld_stmt :: proc(checked: ^Checked_Program, s: Stmt, targets: map[^Def]bool, out:
         ld_expr(checked, v.range_low, targets, out, unfollowed)
         ld_expr(checked, v.range_high, targets, out, unfollowed)
         ld_expr(checked, v.collection, targets, out, unfollowed)
-        ld_expr(checked, v.collection_len, targets, out, unfollowed)
         ld_stmts(checked, v.body[:], targets, out, unfollowed)
     case ^Stmt_Match: ld_expr(checked, v.subject, targets, out, unfollowed); for arm in v.arms { ld_stmts(checked, arm.body[:], targets, out, unfollowed) }
     case ^Stmt_Defer: ld_stmts(checked, v.body[:], targets, out, unfollowed)

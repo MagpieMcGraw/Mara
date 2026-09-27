@@ -20,8 +20,7 @@ import "core:path/filepath"
 // That is why this works in token indices rather than (line, col) pairs:
 // containment is an integer compare, and token indices carry no text encoding.
 //
-// NOT walked: `Stmt_Decl.checked`, `Stmt_Multi_Return_Assign.checked` and
-// `Expr_Call.desugared`. Those hold checker-synthesized replacement nodes, not
+// NOT walked: `Stmt_Decl.checked` and `Stmt_Multi_Return_Assign.checked`. Those hold checker-synthesized replacement nodes, not
 // source the user can point at — the cursor lands on the original, which is
 // what it was aimed at. Some resolved information lives on the desugared node,
 // so a renderer may need to follow those links even though the walk does not.
@@ -171,11 +170,10 @@ hit_stmt :: proc(s: Stmt, i: int, out: ^[dynamic]Hit) {
         hit_stmt(v.init, i, out); hit_stmt(v.post, i, out)
         hit_expr(v.condition, i, out)
         hit_expr(v.range_low, i, out); hit_expr(v.range_high, i, out)
-        hit_expr(v.collection, i, out); hit_expr(v.collection_len, i, out)
+        hit_expr(v.collection, i, out)
         for b in v.body { hit_stmt(b, i, out) }
     case ^Stmt_Scope:
         for b in v.typed_params { hit_expr(b.default_value, i, out) }
-        for f in v.fields       { hit_expr(f.default_value, i, out) }
         for b in v.body { hit_stmt(b, i, out) }
         for d in v.defs { hit_stmt(d, i, out) }   // may overlap body; deduped at output
     case Stmt_Return:

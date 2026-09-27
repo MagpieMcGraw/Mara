@@ -292,7 +292,6 @@ cfg_conds_for :: proc(v: ^Stmt_For) -> []Expr {
     if v.range_low      != nil { append(&c, v.range_low) }
     if v.range_high     != nil { append(&c, v.range_high) }
     if v.collection     != nil { append(&c, v.collection) }
-    if v.collection_len != nil { append(&c, v.collection_len) }
     return c[:]
 }
 

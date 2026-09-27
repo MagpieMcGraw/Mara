@@ -302,7 +302,7 @@ ud_stmt :: proc(u: ^UD, s: Stmt, st: ^Reach) {
         if v.init != nil { ud_stmt(u, v.init, st) }
         ud_expr(u, v.condition, st)
         ud_expr(u, v.range_low, st);  ud_expr(u, v.range_high, st)
-        ud_expr(u, v.collection, st); ud_expr(u, v.collection_len, st)
+        ud_expr(u, v.collection, st)
         // A range loop var's DATA source is the START (range_low) — `for i in a..b`
         // makes i take a, a+1, …; i never equals the bound b, so b is the loop's
         // CONTROL input (iteration count via the CFG condition), NOT i's data. Using
