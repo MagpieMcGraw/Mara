@@ -1,0 +1,15 @@
+module void_scalar_deinit_neg
+
+//@ expect-fail: used before being assigned
+
+// `= void` leaves a scalar unset: a reassignment de-initializes it, and a
+// `x : T = void` declaration doesn't even zero it. Reading it before a write
+// is an error. Both used to compile and read whatever was there.
+
+main :: fun() {
+	x := 5
+	x = void
+	print(x)
+	y : i64 = void
+	print(y)
+}

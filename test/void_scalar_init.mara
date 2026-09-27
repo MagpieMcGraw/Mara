@@ -1,0 +1,23 @@
+module void_scalar_init
+
+//@ expect-output: branches 1 out 7 zeroed 0 reinit 10
+
+// The ways a scalar left unset by `= void` legally becomes readable: every
+// branch writes it, a call writes it through its address, or it is written
+// again after a de-init. A declaration with no value at all is zeroed, so it
+// was never unset.
+
+set :: fun(p: ^i64) { p^ = 7 }
+
+main :: fun() {
+	c := true
+	x : i64 = void
+	if c { x = 1 else x = 2 }
+	y : i64 = void
+	set(&y)
+	z : i64
+	d := 9
+	d = void
+	d = 10
+	print("branches", x, "out", y, "zeroed", z, "reinit", d)
+}

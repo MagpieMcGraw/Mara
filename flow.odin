@@ -440,17 +440,37 @@ flow_init_stmt :: proc(c: ^Checker, s: Stmt, uninit: ^map[string]bool, local: ^[
     }
 }
 
-// Apply a declaration's effect on the uninit set. A pointer/slice declared
-// without a usable value (no initializer, or `= void`) becomes uninit; anything
-// else is initialized. (Struct fields are Phase B.)
+// A value with nothing inside to track: numbers (enums and unpinned literals
+// included), bools, characters, bytes, cstrings, error values.
+flow_is_scalar :: proc(t: Type) -> bool {
+    #partial switch _ in t {
+    case Type_Error:                                           return false
+    case Type_Bool, Type_Utf8, Type_Byte, Type_CString, Type_Err: return true
+    }
+    return is_numeric(t)
+}
+
+// Apply a declaration's (or a `= void` reassignment's) effect on the uninit set.
+// A pointer/slice declared without a usable value (no initializer, or `= void`)
+// becomes uninit. A scalar is zero-initialized when declared without a value, so
+// only an explicit `= void` — kept on a reassignment, lowered to the skip
+// constructor on a declaration — leaves it unset. Anything else is initialized.
+// (Struct fields are Phase B.)
 flow_apply_decl :: proc(uninit: ^map[string]bool, local: ^[dynamic]string, name: string, t: Type, value: Expr, has_slice_cap: bool, annotated: bool) {
     if name == "_" || name == "" { return }
     base := distinct_base(t)
-    no_value := value == nil
-    if !no_value {
-        if _, skip := value.(^Expr_Skip_Constructor); skip { no_value = true }
-    }
+    _, skipped := value.(^Expr_Skip_Constructor)
+    no_value := value == nil || skipped
     is_void := value != nil && is_void_literal(value)
+    if flow_is_scalar(base) {
+        if skipped || is_void {
+            uninit^[name] = true
+            append(local, name)
+        } else {
+            delete_key(uninit, name)
+        }
+        return
+    }
     if _, is_ptr := base.(^Type_Ptr); is_ptr {
         if no_value || is_void {
             uninit^[name] = true
