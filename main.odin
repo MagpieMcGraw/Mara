@@ -1420,6 +1420,7 @@ main :: proc() {
         fmt.printf(BUILD_TYPE_ERRORS_ABORT, checked.errors)
         os.exit(1)
     }
+    ast_shape_check(programs, "check")
 
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {
@@ -1453,6 +1454,7 @@ main :: proc() {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         os.exit(1)
     }
+    ast_shape_check(programs, "codegen")
 
     // Output extension: .html for web, .dll/.so for shared, native exe otherwise.
     out_ext: string

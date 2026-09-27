@@ -23,6 +23,15 @@
 cd "$(dirname "$0")" || exit 2
 MARA=../Mara.exe
 
+# The AST-shape invariant (ast_shape.odin): after parsing, passes may annotate
+# the tree but not reshape it. Every build reports each reshape it finds; the
+# distinct ones across all fixtures go to ast_shape.log and the tally into the
+# summary. NOT a mismatch yet — the count is a to-do list being worked down.
+# Once it reaches zero, count every reshape as a mismatch.
+export MARA_AST_SHAPE=1
+SHAPE_RAW=$(mktemp)
+collect_shape() { echo "$1" | grep -E '^ast-shape\[' | grep -vE '^ast-shape\[[a-z]+\] total ' >> "$SHAPE_RAW"; }
+
 LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg inferconflict widenneg"
 # name:reason — stale/pre-existing-broken fixtures that DO have a main (so they
 # won't auto-skip). Clean these up and the entries go away.
@@ -50,6 +59,7 @@ for f in *.mara; do
   [ "$exp" = skip ] && { skip=$((skip+1)); continue; }
 
   out=$("$MARA" build "$name" 2>&1)
+  collect_shape "$out"
   if echo "$out" | grep -qE "has no .main|no files found"; then skip=$((skip+1)); continue; fi
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
 
@@ -89,6 +99,7 @@ for d in */; do
     substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1)
   fi
   out=$(cd "$d" && "$ROOT/Mara.exe" build "$d" 2>&1)
+  collect_shape "$out"
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
   if [ "$exp" = pass ]; then
     if [ "$comp" = yes ]; then pass=$((pass+1)); else echo "REGRESSION (multi-file subdir, want pass): $d"; bad=$((bad+1)); fi
@@ -101,5 +112,11 @@ for d in */; do
 done
 
 echo "----"
+# A stdlib reshape repeats in every fixture that uses it — count it once.
+sort -u "$SHAPE_RAW" > ast_shape.log; rm -f "$SHAPE_RAW"
+shape_n=$(wc -l < ast_shape.log)
+shape_chk=$(grep -c '^ast-shape\[check\]' ast_shape.log)
+shape_cg=$(grep -c '^ast-shape\[codegen\]' ast_shape.log)
+echo "ast-shape: $shape_n distinct reshapes (check $shape_chk, codegen $shape_cg) — test/ast_shape.log"
 echo "pass=$pass  xfail=$xfail  skip=$skip  mismatches=$bad"
 [ $bad -eq 0 ] && { echo "OK — all fixtures matched expectations"; exit 0; } || exit 1

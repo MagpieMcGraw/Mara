@@ -10356,6 +10356,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     for _, prog in c.programs {
         fold_comptime_ifs(&c, prog)
     }
+    ast_shape_begin(c.programs)   // the baseline: parse + fold, before any pass writes
 
     main_prog, prog_ok := programs[main_package]
     if !prog_ok {

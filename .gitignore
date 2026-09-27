@@ -37,6 +37,9 @@ Pounce/Warlock.odin
 # never goes upstream.
 .git.backup-history/
 
+# AST-shape reshape list, rewritten by every test/run.sh
+test/ast_shape.log
+
 # Generated stress-test projects (regenerated from generator/, never committed)
 test_*/
 
