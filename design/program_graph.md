@@ -188,7 +188,7 @@ Operations are at Mara's level: one for each thing the language does, whether th
 - An operation takes other operations' outputs as inputs and has zero or one output; a call has one per return value.
 - Variables are slots. Operations reach one through a **place**: `var`, then `field`, `index` or `deref` steps; `read` and `write` go through a place. LLVM turns slots into registers, so the graph is never in SSA form.
 - Structs, arrays and unions are built in place: `construct`, `fill`, and calls that return them write straight into a destination place. That is return-value optimization by construction.
-- Control flow is runs joined by `then`, and four operations end a run. A value that depends on a branch (`a and b`, an `if` expression) goes through a synthetic slot, so there is no merge operation.
+- Control flow is runs joined by `then`, and four operations end a run. A value that depends on a branch (`a and b`, an `if` expression) goes through a synthetic slot, so there is no merge operation. An operand dominates its use: it comes earlier in the same run, or in a run every path to the use passes through.
 - Checks that only stop the program — bounds, overflow, division by zero — are part of their operation's template, not operations.
 - An operation the text doesn't write carries the Implied or Synthetic mark (see Identity and editing) and points at the syntax that caused it.
 
@@ -205,6 +205,7 @@ About thirty kinds in all.
 | `deref` | `p^`; implied in `p.x` when `p: ^T` | `load ptr` |
 | `variant` | the bound payload in a `match` arm | `getelementptr` past the tag |
 | `swizzle` | `v.xy` | element addresses or `shufflevector` |
+| `slice` | `a[lo:hi]`, `slice_from_ptr(p, n)` | a slice header: pointer, length, capacity |
 
 **Memory**
 
@@ -247,7 +248,7 @@ About thirty kinds in all.
 | `branch` | `if`, `elif`, a loop's condition, `and` / `or`, `if` expressions, `?` | `br i1` |
 | `switch` | `match` | load the tag, `switch` |
 | `return` | `return a, b`; implied by `?` on an error | store the return slots, `ret` |
-| `run defers` | synthetic, at every exit of a scope that has `defer` | the scope's defer run, emitted inline |
+| `run defer` | synthetic, at every exit of a scope, once per defer registered so far, the last first | the defer's block, emitted inline |
 | `arena mark`, `arena reset` | synthetic, at entry to and every exit of a scope holding big values | `call` |
 
 **Braces are a block of writes.** `{…}` after a value runs its writes against that value, as a scope body runs against its scope. The forms differ only in the step before the writes:
@@ -261,7 +262,7 @@ About thirty kinds in all.
 
 This is today's meaning: a field's default runs, then the override replaces it. The copy form is rejected today because variables and types share one namespace; that is language work, and the graph already has its shape.
 
-**Not operations.** A loop is runs and a back edge: `for i in 0..n` adds a synthetic counter with its compare and add, and `for it in items` a synthetic index and `it = items[i]`. `defer { … }` stores its block on the scope, and `run defers` executes it, so a defer is stored once however many exits the scope has. `break` and `continue` are jumps. Constants and `#if` are resolved before the graph is built.
+**Not operations.** A loop is runs and a back edge: `for i in 0..n` adds a synthetic counter with its compare and add, and `for it in items` a synthetic index and `it = items[i]`. `defer { … }` stores its block on the scope, and `run defer` executes it, so a defer is stored once however many exits the scope has. The block's code is a fun's in miniature: a run entered from the block, ending in a `return` back to the `run defer`. `break` and `continue` are jumps. Constants and `#if` are resolved before the graph is built.
 
 ## Queries
 

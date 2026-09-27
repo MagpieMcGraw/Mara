@@ -4292,20 +4292,30 @@ Byte_Flow :: enum { None, View, Read }
 // Reports its own errors. Callers apply their byte-read size rules for .Read
 // and treat .View / .None as an ordinary assignment.
 check_byte_flow :: proc(c: ^Checker, dest: Type, value: Expr, val_type: Type, span: Span) -> Byte_Flow {
-    index_read := is_byte_buffer_index_read(value)
-    if !index_read && !is_byte_buffer(val_type) { return .None }
-    if sl, to_slice := distinct_base(dest).(^Type_Slice); to_slice && !index_read {
+    flow := byte_flow(dest, value, val_type)
+    #partial switch flow {
+    case .View:
+        sl := distinct_base(dest).(^Type_Slice)
         if !is_byte_sized_memory_type(sl.elem) {
             en := type_name(sl.elem)
             check_error(c, span, TYPE_BYTE_VIEW_WIDE_ELEM, type_name(dest), en, en)
         }
-        return .View
+    case .Read:
+        if _, to_slice := distinct_base(dest).(^Type_Slice); to_slice {
+            check_error(c, span, TYPE_BYTE_READ_SLICE_BY_INDEX, type_name(dest)) // `s : []T = bytes[i]`
+        } else if why := byte_slice_reason(c, dest); why != "" {
+            check_error(c, span, TYPE_BYTE_READ_REFERENCE, type_name(dest), why)
+        }
     }
-    if _, to_slice := distinct_base(dest).(^Type_Slice); to_slice {
-        check_error(c, span, TYPE_BYTE_READ_SLICE_BY_INDEX, type_name(dest)) // `s : []T = bytes[i]`
-    } else if why := byte_slice_reason(c, dest); why != "" {
-        check_error(c, span, TYPE_BYTE_READ_REFERENCE, type_name(dest), why)
-    }
+    return flow
+}
+
+// The rule above without its diagnostics: which flow `value` makes into
+// `dest`. Shared with the program graph (a Read is its `byte read` operation).
+byte_flow :: proc(dest: Type, value: Expr, val_type: Type) -> Byte_Flow {
+    index_read := is_byte_buffer_index_read(value)
+    if !index_read && !is_byte_buffer(val_type) { return .None }
+    if _, to_slice := distinct_base(dest).(^Type_Slice); to_slice && !index_read { return .View }
     return .Read
 }
 

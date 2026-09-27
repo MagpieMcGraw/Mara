@@ -116,11 +116,25 @@ graph. Debug builds check that every checked scope and type is exactly one node.
       argument run in the caller but the checker checks a default once in the callee's scope, so
       those are Implied edges the check skips; phase 2 closes that gap. test_1M: 775k nodes,
       585 ms with both debug checks (5.4% of type check)
-- [ ] Operations in runs joined by `then`: straight-line code, then branches, loops and `match`,
-      then the synthetic operations (zero-init, construction, defers at each exit, arena mark and
-      reset)
-- [ ] Flows: each operation's inputs, and refers-to on `var` operations, checked against
-      `usedef.odin`
+- [x] Operations in runs joined by `then`: every expression and statement lowered to the
+      operation set (design/program_graph.md § Operations, plus `slice`), with their operands.
+      Runs are a list apart from the tree; a Then edge joins a run's terminator to each next run's
+      first operation. Synthetic operations: zero or construct for bare declarations, arena alloc
+      / mark / reset, a `run defer` per registered defer at every exit (end of scope, `return`,
+      `break`, `continue`, `?`), loop counters, and locals for values that outlive a run (`and` /
+      `or`, `if` expressions, a range's end, a collection or match subject that is no plain place).
+      A store's destination is emitted after its value. Debug builds check the runs: each ends in
+      its only terminator, and every operand dominates its use. test_1M: 5.7M nodes, 113k runs;
+      2.0 s in the debug build with the checks (18% of type check), 0.97 s optimized (17%, about
+      codegen's cost); peak memory 6.3 → 7.0 GB. Worth a profiling pass before phase 2
+- [ ] Refers-to: each `var` operation → the declaration it names (the scope stack), checked
+      against `usedef.odin`; the declaration-level flow index
+
+Left for phase 3, where codegen reads the graph: a `const` operation carries no value yet; calls
+produce values, and passing a destination to a call that returns an aggregate (sret, NRVO) is
+codegen's; the graph's arena rule is `routes_to_arena` (≥ 1024 bytes), while codegen's
+`scope_has_big_values` tests structs with `> 1024` and bumps partial arrays without a scope mark;
+the checker types a collection loop's index as `i32` against `i64` lengths.
 
 ## Baselines
 
