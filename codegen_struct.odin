@@ -564,16 +564,10 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
     // gen_union_match in codegen_match.odin.
     if r, r_ok := e.resolved.(Resolved_Union_Tag); r_ok {
         ut, ut_ok := g.checked.table.unions[r.union_name]
-        if !ut_ok { return "0" }
+        if !ut_ok { codegen_fatal(g, e.span, "`.tag` on unknown union '%s'", r.union_name) }
         union_ptr, ptr_ok := union_subject_ptr(g, e.expr, ut)
-        if !ptr_ok { return "0" }
-        tag_ir := union_tag_ir_type(ut)
-        llvm_name := union_llvm_name(r.union_name)
-        tag_ptr := fresh_tmp(g)
-        emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, llvm_name, union_ptr)
-        tag_val := fresh_tmp(g)
-        emit_load_into(g, tag_val, tag_ir, tag_ptr)
-        return tag_val
+        if !ptr_ok { codegen_fatal(g, e.span, "`.tag`: cannot address the union value") }
+        return load_union_tag(g, ut, union_ptr)
     }
     // .pad accessor: read the typed padding between tag and payload. The pad
     // sits at byte offset tag_bytes within the union's first IR field (the
@@ -2121,7 +2115,7 @@ gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, valu
             tmp := fresh_tmp(g)
             emit_alloca(g, tmp, union_llvm_name(union_key(ut)))
             emit_union_literal_store(g, ut, value, tmp)
-            emit_memcpy(g, dst_ptr, tmp, union_byte_size(g, ut))
+            emit_memcpy(g, dst_ptr, tmp, union_byte_size(g.checked, ut))
             reanchor_partial_arrays(g, ut, dst_ptr)
             return
         }
@@ -2130,7 +2124,7 @@ gen_store_union_into :: proc(g: ^Codegen, dst_ptr: string, ut: ^Type_Union, valu
     }
     src := gen_expr(g, value, union_llvm_name(union_key(ut)))
     if src != dst_ptr {
-        emit_memcpy(g, dst_ptr, src, union_byte_size(g, ut))
+        emit_memcpy(g, dst_ptr, src, union_byte_size(g.checked, ut))
         reanchor_partial_arrays(g, ut, dst_ptr)
     }
 }

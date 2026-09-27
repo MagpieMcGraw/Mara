@@ -510,32 +510,37 @@ Type_Union :: struct {
     tag_map:         map[string]int,     // variant name -> tag value
     variant_structs: map[string]string,  // variant name -> struct name
     tag_enum:        ^Type_Enum,         // the <Name>_Tag enum; type of each variant struct's prepended tag field
+    // Set by the checker when the union is niche-laid-out: the variant whose
+    // single pointer IS the union's storage — null means the other, fieldless
+    // variant, so no tag is stored. "" for a tagged union. See union_niche_variant.
+    niche_some:      string,
 }
 
-// Checker-side niche-shape test, matching codegen's is_niche_layout: exactly
-// two variants, one fieldless (None), one holding a single pointer (Some).
-// Runs on the resolved, pre-header variant structs to decide whether to fold
-// in the tag header — niche unions store no tag, so they stay untouched.
-union_is_niche_shape :: proc(c: ^Checker, ut: ^Type_Union) -> bool {
-    if len(ut.variants) != 2 { return false }
-    has_empty, has_ptr := false, false
+// The niche layout: a union of exactly two variants, one fieldless (None) and
+// one holding a single pointer (Some), is stored as that pointer alone —
+// `^T` is never null, so null is free to mean None. Returns the Some variant,
+// or "" when the union is tagged. A union that spells out its layout — a tag
+// type, padding, a minimum size — keeps it: that is how a union mirrors a C
+// layout. Runs on the resolved, pre-header variant structs; the one place the
+// decision is made (codegen reads ut.niche_some).
+union_niche_variant :: proc(c: ^Checker, ut: ^Type_Union) -> string {
+    if len(ut.variants) != 2 { return "" }
+    if ut.tag_type != "" || ut.tag_pad != nil || ut.min_size > 0 { return "" }
+    some, has_empty := "", false
     for vname in ut.variants {
         vst, ok := c.table.structs[ut.variant_structs[vname]]
-        if !ok { return false }
+        if !ok { return "" }
         switch len(vst.fields) {
         case 0:
             has_empty = true
         case 1:
-            if _, is_ptr := vst.fields[0].type_.(^Type_Ptr); is_ptr {
-                has_ptr = true
-            } else {
-                return false
-            }
+            if _, is_ptr := vst.fields[0].type_.(^Type_Ptr); !is_ptr { return "" }
+            some = vname
         case:
-            return false
+            return ""
         }
     }
-    return has_empty && has_ptr
+    return some if has_empty else ""
 }
 
 // Once a union's variant structs have their user fields resolved, fold the tag
@@ -547,7 +552,8 @@ union_is_niche_shape :: proc(c: ^Checker, ut: ^Type_Union) -> bool {
 // layout and are skipped — their `is_union_variant` stays false, which is how
 // codegen tells the two representations apart.
 finalize_union_variant_headers :: proc(c: ^Checker, ut: ^Type_Union) {
-    if union_is_niche_shape(c, ut) { return }
+    ut.niche_some = union_niche_variant(c, ut)
+    if ut.niche_some != "" { return }
     for vname in ut.variants {
         vst, ok := c.table.structs[ut.variant_structs[vname]]
         if !ok || vst.is_union_variant { continue }   // idempotent

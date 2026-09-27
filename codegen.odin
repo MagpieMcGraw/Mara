@@ -2239,10 +2239,14 @@ program_ir_name :: proc(checked: ^Checked_Program) -> string {
 
 // Look up a struct from checked data (returns the Scope_Body from either the structs or funs table).
 lookup_struct :: proc(g: ^Codegen, name: string) -> (^Scope_Body, bool) {
-    if ss, ss_ok := g.checked.table.structs[name]; ss_ok {
+    return checked_struct(g.checked, name)
+}
+
+checked_struct :: proc(checked: ^Checked_Program, name: string) -> (^Scope_Body, bool) {
+    if ss, ss_ok := checked.table.structs[name]; ss_ok {
         return &ss.sd, true
     }
-    if sf, sf_ok := g.checked.table.funs[name]; sf_ok {
+    if sf, sf_ok := checked.table.funs[name]; sf_ok {
         return &sf.sd, true
     }
     return nil, false
@@ -2308,6 +2312,19 @@ union_llvm_name :: proc(ukey: string) -> string {
     return fmt.tprintf("%%union.%s", ukey)
 }
 
+// The union a `%union.X` IR type names, for the size/alignment tables. A
+// `%union.` type the checked program doesn't know is a compiler bug, not a
+// pointer-sized value.
+ir_union :: proc(ir_type: string, checked: ^Checked_Program) -> (^Type_Union, bool) {
+    if !strings.has_prefix(ir_type, "%union.") { return nil, false }
+    if checked == nil {
+        fmt.panicf("sizing %s needs the checked program", ir_type)
+    }
+    ut, ok := checked.table.unions[ir_type[len("%union."):]]
+    if !ok { fmt.panicf("sizing %s: no such union", ir_type) }
+    return ut, true
+}
+
 // Get the IR type for a union's tag field
 union_tag_ir_type :: proc(ut: ^Type_Union) -> string {
     if ut.tag_type != "" {
@@ -2316,55 +2333,20 @@ union_tag_ir_type :: proc(ut: ^Type_Union) -> string {
     return "i64"
 }
 
-// True when the union qualifies for niche layout: exactly two variants,
-// one with no fields (the "None" case) and one with a single pointer field
-// (the "Some" case). For such unions, the in-memory representation is just
-// a pointer — null for None, the live pointer for Some — instead of the
-// generic tag+payload form. The shape detection is structural, so any
-// user-defined union matching it gets the optimization too, not just
-// stdlib Maybe.
+// Niche-laid-out unions (see union_niche_variant — the checker decides) are
+// stored as their Some variant's pointer alone: null for None, the live pointer
+// for Some. The layout differs; everything else (matching, `.tag`) reads the
+// tag through load_union_tag like any other union.
 is_niche_layout :: proc(g: ^Codegen, ut: ^Type_Union) -> bool {
-    if len(ut.variants) != 2 { return false }
-    has_empty := false
-    has_ptr   := false
-    for vname in ut.variants {
-        vst_name, ok := ut.variant_structs[vname]
-        if !ok { return false }
-        sd, sd_ok := lookup_struct(g, vst_name)
-        if !sd_ok { return false }
-        // Non-niche unions fold the tag into their variant structs; that flag
-        // distinguishes them from the bare-pointer niche form, whose variants
-        // stay header-free.
-        if sd.is_union_variant { return false }
-        switch len(sd.fields) {
-        case 0:
-            has_empty = true
-        case 1:
-            if _, is_ptr := sd.fields[0].type_.(^Type_Ptr); is_ptr {
-                has_ptr = true
-            } else {
-                return false
-            }
-        case:
-            return false
-        }
-    }
-    return has_empty && has_ptr
+    return ut.niche_some != ""
 }
 
-// For a niche-laid-out union, returns the variant name carrying the pointer
-// field (the "Some" case) and the empty-payload variant (the "None" case).
-// Caller must have already verified is_niche_layout.
+// For a niche-laid-out union, the variant carrying the pointer (Some) and the
+// fieldless one (None).
 niche_variants :: proc(g: ^Codegen, ut: ^Type_Union) -> (some_name: string, none_name: string) {
+    some_name = ut.niche_some
     for vname in ut.variants {
-        vst_name := ut.variant_structs[vname]
-        if sd, ok := lookup_struct(g, vst_name); ok {
-            if len(sd.fields) == 1 {
-                some_name = vname
-            } else if len(sd.fields) == 0 {
-                none_name = vname
-            }
-        }
+        if vname != some_name { none_name = vname }
     }
     return
 }
@@ -2898,6 +2880,14 @@ elem_byte_size :: proc(elem_type: string, checked: ^Checked_Program = nil) -> in
             }
         }
     }
+    // A union value: tag area plus its largest payload, rounded up to the
+    // union's alignment the way LLVM sizes its `%union.X` type. This used to
+    // fall through to the pointer default — every union 8 bytes — undersizing
+    // `size_of` and any struct that holds a union.
+    if ut, ok := ir_union(elem_type, checked); ok {
+        size, align := union_byte_size(checked, ut), elem_alignment(elem_type, checked)
+        return (size + align - 1) / align * align
+    }
     // Handle array types like [512 x i1]
     if strings.has_prefix(elem_type, "[") {
         cap, elem, arr_ok := parse_array_ir_type(elem_type)
@@ -2964,6 +2954,14 @@ elem_alignment :: proc(elem_type: string, checked: ^Checked_Program = nil) -> in
                 return max_a
             }
         }
+    }
+    // A union aligns like the LLVM type register_union_type emits for it:
+    // `{ tag, [N x i8] }` as its tag, `{ [k x i8], [N x i8] }` (declared
+    // padding) as bytes, a niche union's `{ ptr }` as a pointer.
+    if ut, ok := ir_union(elem_type, checked); ok {
+        if ut.niche_some != ""          { return ptr_align }
+        if union_tag_pad_bytes(ut) > 0 { return 1 }
+        return elem_alignment(union_tag_ir_type(ut))
     }
     // Handle array types like [512 x i1] — alignment is element alignment
     if strings.has_prefix(elem_type, "[") {
@@ -3251,12 +3249,12 @@ register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
 // size minus the tag+pad area each variant struct now carries, floored by the
 // declared min_size. Shared by register_union_type (type emission) and
 // union_byte_size so the two can't drift.
-union_payload_bytes :: proc(g: ^Codegen, ut: ^Type_Union) -> int {
+union_payload_bytes :: proc(checked: ^Checked_Program, ut: ^Type_Union) -> int {
     tag_area := elem_byte_size(union_tag_ir_type(ut)) + union_tag_pad_bytes(ut)
     max_bytes := 0
     for _, sname in ut.variant_structs {
-        if st, ok := lookup_struct(g, sname); ok {
-            size := struct_byte_size_sd(st, g.checked) - tag_area
+        if st, ok := checked_struct(checked, sname); ok {
+            size := struct_byte_size_sd(st, checked) - tag_area
             if size > max_bytes { max_bytes = size }
         }
     }
@@ -3269,10 +3267,10 @@ union_payload_bytes :: proc(g: ^Codegen, ut: ^Type_Union) -> int {
 // Total in-memory size of a union value (tag area + payload). Niche unions are
 // just a bare pointer. Used to size the union temp the materialize path allocas
 // so a union value is safe to copy/load at any boundary.
-union_byte_size :: proc(g: ^Codegen, ut: ^Type_Union) -> int {
-    if is_niche_layout(g, ut) { return 8 }
+union_byte_size :: proc(checked: ^Checked_Program, ut: ^Type_Union) -> int {
+    if ut.niche_some != "" { return 8 }
     tag_area := elem_byte_size(union_tag_ir_type(ut)) + union_tag_pad_bytes(ut)
-    return tag_area + union_payload_bytes(g, ut)
+    return tag_area + union_payload_bytes(checked, ut)
 }
 
 // Register a union's LLVM type declaration and compute its payload size.
@@ -3302,7 +3300,7 @@ register_union_type :: proc(g: ^Codegen, ukey: string, ut: ^Type_Union) {
     pad_bytes := union_tag_pad_bytes(ut)
     tag_area_bytes := tag_bytes + pad_bytes
 
-    max_bytes := union_payload_bytes(g, ut)
+    max_bytes := union_payload_bytes(g.checked, ut)
     payload_str := fmt.tprintf("[%d x i8]", max_bytes)
     tag_field: string
     if pad_bytes > 0 {

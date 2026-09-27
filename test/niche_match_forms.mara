@@ -1,0 +1,52 @@
+module niche_match_forms
+
+//@ expect-output: dot 0 1
+//@ expect-output: named -1 5
+//@ expect-output: else 9 5
+//@ expect-output: tag true true
+//@ expect-output: niche 8 tagged 16
+
+// A niche union (two variants: one fieldless, one holding a single pointer) is
+// stored as that pointer alone, but it matches like any other union: `.None`
+// dot arms, named arms with a binding, `else`, and `.tag` all read the tag the
+// pointer's nullness implies. Dot arms used to compile to nothing — both arms
+// silently dropped. A union that spells out a tag type keeps it (a C layout).
+
+use mara.maybe
+
+Tagged :: union(tag u32) {
+	Empty
+	Ref { p: ^i64 }
+}
+
+dot :: fun(m: Maybe(^i64)) -> i64 {
+	match m {
+	.None  return 0
+	.Some  return 1
+	}
+}
+
+named :: fun(m: Maybe(^i64)) -> i64 {
+	match m {
+	None    return -1
+	Some s  return s.value^
+	}
+}
+
+with_else :: fun(m: Maybe(^i64)) -> i64 {
+	match m {
+	Some s  return s.value^
+	else    return 9
+	}
+}
+
+main :: fun() {
+	x := 5
+	a : Maybe(^i64) = None{}
+	b : Maybe(^i64) = Some{value = &x}
+	print("dot", dot(a), dot(b))
+	print("named", named(a), named(b))
+	print("else", with_else(a), with_else(b))
+	print("tag", a.tag == 0, b.tag == 1)
+	print("niche", size_of(Maybe(^i64)), "tagged", size_of(Tagged))
+}

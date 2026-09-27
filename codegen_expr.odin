@@ -345,7 +345,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
             tmp := fresh_tmp(g)
             emit_alloca(g, tmp, union_llvm_name(union_key(ut)))
             if !is_niche_layout(g, ut) {
-                emit_memset_zero(g, tmp, union_byte_size(g, ut))
+                emit_memset_zero(g, tmp, union_byte_size(g.checked, ut))
             }
             emit_union_literal_store(g, ut, e, tmp)
             return tmp

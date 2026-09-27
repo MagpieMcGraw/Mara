@@ -47,91 +47,32 @@ union_subject_ptr :: proc(g: ^Codegen, expr: Expr, ut: ^Type_Union) -> (string, 
     return ptr, true
 }
 
-// Niche-laid-out union: union storage is `ptr`. Dispatch on null instead of
-// reading a tag. The Some-variant payload binding aliases the union storage
-// directly — Some's single pointer field sits at offset 0, same as the niche
-// pointer slot, so existing field-access codegen reads it correctly with no
-// extra GEP.
-gen_niche_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr: string) {
-    some_name, none_name := niche_variants(g, ut)
-
-    // Load the pointer value
-    ptr_val := fresh_tmp(g)
-    emit_load_into(g, ptr_val, "ptr", union_ptr)
-    is_null := fresh_tmp(g)
-    emit(g, "  %s = icmp eq ptr %s, null", is_null, ptr_val)
-
-    end_label  := fresh_label(g, "match.end")
-    none_label := fresh_label(g, "match.none")
-    some_label := fresh_label(g, "match.some")
-    emit_cond_br(g, is_null, none_label, some_label)
-
-    match_snap := save_var_scope(g)
-
-    // Find which arm covers which case; honour an `else` arm as a catch-all.
-    some_arm: ^Match_Arm
-    none_arm: ^Match_Arm
-    else_arm: ^Match_Arm
-    for &arm in s.arms {
-        if arm.is_else {
-            else_arm = &arm
-        } else if arm.variant_name == some_name {
-            some_arm = &arm
-        } else if arm.variant_name == none_name {
-            none_arm = &arm
-        }
+// A union value's tag, read from its storage. A tagged union keeps it in field
+// 0. A niche union stores none — its storage is the Some variant's pointer — so
+// its tag is whichever variant the pointer's nullness says it holds.
+load_union_tag :: proc(g: ^Codegen, ut: ^Type_Union, union_ptr: string) -> string {
+    tag_ir := union_tag_ir_type(ut)
+    if is_niche_layout(g, ut) {
+        some, none := niche_variants(g, ut)
+        ptr := fresh_tmp(g)
+        emit_load_into(g, ptr, "ptr", union_ptr)
+        live := fresh_tmp(g)
+        emit(g, "  %s = icmp ne ptr %s, null", live, ptr)
+        tag := fresh_tmp(g)
+        emit(g, "  %s = select i1 %s, %s %d, %s %d", tag, live,
+             tag_ir, ut.tag_map[some], tag_ir, ut.tag_map[none])
+        return tag
     }
-    if some_arm == nil { some_arm = else_arm }
-    if none_arm == nil { none_arm = else_arm }
-
-    // None arm — just the body, no payload binding.
-    emit_label(g, none_label)
-    if none_arm != nil {
-        gen_body_block(g, none_arm.body[:], .Match_Arm, end_label)
-    } else {
-        emit_br(g, end_label)
-    }
-    restore_var_scope(g, &match_snap)
-
-    // Some arm — bind the payload to the union storage (Some struct's single
-    // pointer field is at offset 0, same as the niche slot).
-    emit_label(g, some_label)
-    if some_arm != nil {
-        if some_arm.bound_name != "" {
-            struct_name := some_arm.resolved_struct
-            if struct_name == "" {
-                struct_name = ut.variant_structs[some_arm.variant_name] or_else some_arm.variant_name
-            }
-            g.alias_vars[some_arm.bound_name] = true // the union's own bytes
-            g.all_vars[some_arm.bound_name] = Struct_Var{
-                alloca      = union_ptr,
-                struct_name = struct_name,
-            }
-        }
-        gen_body_block(g, some_arm.body[:], .Match_Arm, end_label)
-    } else {
-        emit_br(g, end_label)
-    }
-    restore_var_scope(g, &match_snap)
-
-    emit_label(g, end_label)
+    tag_ptr := fresh_tmp(g)
+    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, union_llvm_name(ut.name), union_ptr)
+    tag_val := fresh_tmp(g)
+    emit_load_into(g, tag_val, tag_ir, tag_ptr)
+    return tag_val
 }
 
 gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr: string) {
-    if is_niche_layout(g, ut) {
-        gen_niche_union_match(g, s, ut, union_ptr)
-        return
-    }
-
-    llvm_name := union_llvm_name(ut.name)
-    tag_type := union_tag_ir_type(ut)
-
-    // Load tag from field 0 using the union's tag type
-    tag_ptr := fresh_tmp(g)
-    emit(g, "  %s = getelementptr %s, ptr %s, i32 0, i32 0", tag_ptr, llvm_name, union_ptr)
-    tag_val := fresh_tmp(g)
-    emit_load_into(g, tag_val, tag_type, tag_ptr)
-    switch_type := tag_type
+    tag_val := load_union_tag(g, ut, union_ptr)
+    switch_type := union_tag_ir_type(ut)
 
     // Generate labels
     end_label := fresh_label(g, "match.end")
@@ -180,7 +121,8 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
                 }
                 // The variant struct carries the tag header and overlays the
                 // union at offset 0, so bind it at the union pointer — its
-                // user fields sit at the same absolute offsets as before.
+                // user fields sit at the same absolute offsets as before. A
+                // niche union's Some variant is its storage outright.
                 g.alias_vars[arm.bound_name] = true // the union's own bytes
                 g.all_vars[arm.bound_name] = Struct_Var{
                     alloca = union_ptr,

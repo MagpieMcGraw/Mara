@@ -6,7 +6,8 @@ module nicheexpr
 
 use mara.maybe
 
-Opt :: union(tag u8) {
+// No tag type: `union(tag u8)` would state a layout and opt out of the niche.
+Opt :: union {
 	Nope
 	Yep { p: ^i64 }
 }

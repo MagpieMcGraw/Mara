@@ -5,8 +5,9 @@ use mara.maybe
 // User-defined niche-shaped union: two variants, one fieldless, one holding a
 // single pointer. The compiler collapses it to a bare nullable pointer (no
 // tag), so its variant structs must stay header-free — this is the case the
-// flat-variant rework has to leave alone.
-Opt :: union(tag u8) {
+// flat-variant rework has to leave alone. (Spelling a tag type, `union(tag u8)`,
+// would opt out: a union that states its layout keeps it.)
+Opt :: union {
 	Nope
 	Yep {
 		p: ^i64

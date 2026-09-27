@@ -96,7 +96,7 @@ partial_array_copy :: proc(g: ^Codegen, dst_ptr: string, src_ptr: string, elem_i
 emit_value_copy :: proc(g: ^Codegen, t: Type, dst_ptr: string, src_ptr: string) {
     size: int
     if ut, is_union := distinct_base(t).(^Type_Union); is_union {
-        size = union_byte_size(g, ut)
+        size = union_byte_size(g.checked, ut)
     } else {
         size = elem_byte_size(llvm_type_from_checker(t), g.checked)
     }

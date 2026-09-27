@@ -485,7 +485,7 @@ const_union_table :: proc(cx: ^Const_Ctx, ut: ^Type_Union, e: Expr) -> (gtype: s
     vsd, ok := lookup_struct(g, ut.variant_structs[variant])
     if !ok { const_fail(cx, e) }
     vname := struct_llvm_name(struct_key(vsd))
-    tail := union_byte_size(g, ut) - struct_byte_size_sd(vsd, g.checked)
+    tail := union_byte_size(g.checked, ut) - struct_byte_size_sd(vsd, g.checked)
     lit: Expr // a payload-less `.None`-style variant has no literal: defaults only
     if _, is_lit := e.(^Expr_Struct_Literal); is_lit { lit = e }
     if tail <= 0 {
