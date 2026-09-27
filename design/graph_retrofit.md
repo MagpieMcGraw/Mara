@@ -107,7 +107,15 @@ graph. Debug builds check that every checked scope and type is exactly one node.
       groups; contains (the parent column, depth-first) and has type. A generic's instances are
       nodes, the template is syntax only. test_1M: 720k nodes, 378 ms (3.4% of type check), peak
       memory +0.1 GB
-- [ ] Calls: one edge per call site, checked against `callgraph.odin` on every build
+- [x] Calls: one edge per call site, checked against `callgraph.odin` on every build. `call` and
+      `construct` operations (the first operations) each carry a Calls edge; the edge table has
+      outgoing and incoming indexes. The check found the call graph missing real calls, now
+      recorded by the checker: a bare `x : Foo` (and arrays of structs) constructs Foo, an
+      anonymous `h : Foo = {…}` constructs Foo, and a generic struct instance's bare fields
+      construct theirs. Struct instances now carry their template's span. Calls in a default
+      argument run in the caller but the checker checks a default once in the callee's scope, so
+      those are Implied edges the check skips; phase 2 closes that gap. test_1M: 775k nodes,
+      585 ms with both debug checks (5.4% of type check)
 - [ ] Operations in runs joined by `then`: straight-line code, then branches, loops and `match`,
       then the synthetic operations (zero-init, construction, defers at each exit, arena mark and
       reset)

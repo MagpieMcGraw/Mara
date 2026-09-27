@@ -37,3 +37,7 @@ test/operator_calls.mara | sum
 test/operator_calls.mara | sum call above
 test/operator_calls.mara | v2_add call below
 test/operator_calls.mara | flip call above
+
+# Constructions are calls: a bare `v : Small` and an anonymous `h : Cache_Header = {…}`.
+test/sibling_locals.mara | redeclared call above
+Pounce | cache_put_header call above

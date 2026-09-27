@@ -11,9 +11,10 @@ import "core:strings"
 // the checked syntax tree. Phase 1 of design/graph_retrofit.md — built beside
 // the pipeline after checking; nothing reads it yet.
 //
-// Nodes are scopes and the names they declare (operations come next). Each
-// fact is a column indexed by Node_Id. Ids are handed out depth-first in
-// written order, so a scope's subtree is one run of ids: [id, last[id]].
+// Nodes are scopes, the names they declare, and operations (so far the calls
+// and constructions, each with a Calls edge to what it runs). Each fact is a
+// column indexed by Node_Id. Ids are handed out depth-first in written order,
+// so a scope's subtree is one run of ids: [id, last[id]].
 //
 // A generic's instances are nodes (they are what runs); the template is only
 // syntax. Every instance points at the template as its origin.
@@ -27,10 +28,23 @@ Node_Kind :: enum u8 {
     Module, Struct, Union, Enum, Fun, Block,
     // Names declared in a scope
     Field, Param, Result, Local, Const, Import, Variant, Type_Def, Dispatch,
+    // Operations
+    Call, Construct,
 }
 
-// How a node is written (design/program_graph.md, Identity and editing).
+// How a node or edge is written (design/program_graph.md, Identity and editing).
 Written :: enum u8 { Explicit, Implied, Synthetic }
+
+Edge_Kind :: enum u8 { Calls }
+
+// A many-to-many connection. A Calls edge runs from the call or construct
+// operation to the function or struct it runs, so the operation is its site.
+Edge :: struct {
+    from:    Node_Id,
+    to:      Node_Id,
+    kind:    Edge_Kind,
+    written: Written,
+}
 
 Program_Graph :: struct {
     kind:    [dynamic]Node_Kind,
@@ -40,6 +54,22 @@ Program_Graph :: struct {
     name:    [dynamic]string,
     type_:   [dynamic]Type,     // has type; nil when the node has none
     origin:  [dynamic]Span,     // where it is written, or what caused a synthetic node
+
+    // One edge table, sorted by `from`. A node's outgoing edges are
+    // edges[out_first[id] : out_first[id+1]]; its incoming ones are the edge
+    // numbers in_edges[in_first[id] : in_first[id+1]].
+    edges:     [dynamic]Edge,
+    out_first: [dynamic]i32,
+    in_edges:  [dynamic]i32,
+    in_first:  [dynamic]i32,
+}
+
+graph_out :: proc(g: ^Program_Graph, id: Node_Id) -> []Edge {
+    return g.edges[g.out_first[id]:g.out_first[id + 1]]
+}
+
+graph_in :: proc(g: ^Program_Graph, id: Node_Id) -> []i32 {
+    return g.in_edges[g.in_first[id]:g.in_first[id + 1]]
 }
 
 @(private="file")
@@ -49,6 +79,16 @@ Graph_Builder :: struct {
     // Checked types by the span of the statement declaring them. A generic's
     // instances share their template's span, so one span can hold several.
     by_span: map[Span][dynamic]Type,
+    // Each checked fun and struct's node, and the calls waiting for theirs: a
+    // call can come before its callee in written order.
+    scope_node: map[^Type_Scope]Node_Id,
+    calls:      [dynamic]Pending_Call,
+}
+
+@(private="file")
+Pending_Call :: struct {
+    op:     Node_Id,
+    callee: ^Type_Scope,
 }
 
 // What a plain declaration becomes where it is written, and the struct whose
@@ -65,6 +105,8 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
     defer {
         for _, list in b.by_span { delete(list) }
         delete(b.by_span)
+        delete(b.scope_node)
+        delete(b.calls)
     }
     graph_index(&b)
 
@@ -76,7 +118,12 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
         for s in programs[name]^ { graph_stmt(&b, s, m, {kind = .Const}) }
         graph_close(&b, m)
     }
-    when ODIN_DEBUG { graph_check_coverage(&b) }
+    graph_link_calls(&b)
+    graph_index_edges(&g)
+    when ODIN_DEBUG {
+        graph_check_coverage(&b)
+        graph_check_calls(&b)
+    }
     graph_dump(&g)
     return g
 }
@@ -151,7 +198,9 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
     switch v in s {
     case ^Stmt_Decl:
         if site.kind == .Field {
-            for name in v.names { graph_decl(b, site, parent, name, nil, v.span) }
+            init := decl_init(v)
+            for name in v.names { graph_decl(b, site, parent, name, nil, v.span, bare = len(init) == 0) }
+            for e in init { graph_expr(b, e, parent) }
         } else if len(v.checked) > 0 {
             for inner in v.checked { graph_stmt(b, inner, parent, site) }
         } else {
@@ -161,32 +210,50 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
         if _, is_import := v.value.(^Expr_Include); is_import {
             graph_node(b, .Import, .Explicit, parent, v.name, v.env_type if v.env_type != nil else v.var_type, v.span)
         } else if v.is_decl && v.target == nil {
-            graph_decl(b, site, parent, v.name, v.env_type if v.env_type != nil else v.var_type, v.span)
+            graph_decl(b, site, parent, v.name, v.env_type if v.env_type != nil else v.var_type, v.span, bare = v.value == nil)
+            graph_expr(b, v.value, parent)
+        } else {
+            graph_expr(b, v.value, parent)
+            graph_expr(b, v.target, parent)
         }
     case ^Stmt_Multi_Assign:
         for a in v.assigns { graph_stmt(b, a, parent, site) }
     case ^Stmt_Multi_Return_Assign:
         if len(v.checked) > 0 {
             for inner in v.checked { graph_stmt(b, inner, parent, site) }
-        } else if v.is_decl {
-            for name, i in v.names {
-                if name == "" || name == "_" { continue }
-                if i < len(v.targets) && v.targets[i] != nil { continue }   // an lvalue stores
-                t: Type = v.var_types[i] if i < len(v.var_types) else nil
-                graph_decl(b, site, parent, name, t, v.span)
+        } else {
+            if v.is_decl {
+                for name, i in v.names {
+                    if name == "" || name == "_" { continue }
+                    if i < len(v.targets) && v.targets[i] != nil { continue }   // an lvalue stores
+                    t: Type = v.var_types[i] if i < len(v.var_types) else nil
+                    graph_decl(b, site, parent, name, t, v.span)
+                }
             }
+            for e in v.values  { graph_expr(b, e, parent) }
+            for e in v.targets { graph_expr(b, e, parent) }
         }
     case ^Stmt_Define:
+        // A constant's value is resolved before the graph: no operations.
         t := v.env_type if v.env_type != nil else v.var_type
         kind: Node_Kind = .Const
         if _, is_import := v.value.(^Expr_Include); is_import { kind = .Import }   // `core :: include mara.core`
         graph_node(b, kind, .Explicit, parent, v.name, t, v.span)
-    case Stmt_Call, Stmt_Return, Stmt_Break, Stmt_Continue, Stmt_Overload, Stmt_Module:
-        // Nothing declared: these are operations (the next step) or rules.
+    case Stmt_Call:
+        graph_expr(b, v.expr, parent)
+    case Stmt_Return:
+        for e in v.values { graph_expr(b, e, parent) }
+    case Stmt_Break, Stmt_Continue, Stmt_Overload, Stmt_Module:
+        // No declarations and no calls.
     case ^Stmt_If:
+        graph_expr(b, v.condition, parent)
         graph_block(b, "if", v.body[:], parent, v.span)
         if len(v.else_body) > 0 { graph_block(b, "else", v.else_body[:], parent, v.span) }
     case ^Stmt_For:
+        // A range's bounds and a collection are evaluated once, before the loop.
+        graph_expr(b, v.range_low, parent)
+        graph_expr(b, v.range_high, parent)
+        graph_expr(b, v.collection, parent)
         f := graph_node(b, .Block, .Explicit, parent, "for", nil, v.span)
         if v.init != nil       { graph_stmt(b, v.init, f, {kind = .Local}) }
         if v.loop_var != ""    { graph_node(b, .Local, .Explicit, f, v.loop_var, v.var_type, v.span) }
@@ -195,6 +262,7 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
             // As the checker binds it (type_checker.odin, collection loops).
             graph_node(b, .Local, .Explicit, f, v.index_var, Type_Numeric{kind = .Signed, bits = 32}, v.span)
         }
+        graph_expr(b, v.condition, f)
         for s2 in v.body { graph_stmt(b, s2, f, {kind = .Local}) }
         if v.post != nil { graph_stmt(b, v.post, f, {kind = .Local}) }
         graph_close(b, f)
@@ -203,12 +271,14 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
     case ^Stmt_Defer:
         graph_block(b, "defer", v.body[:], parent, v.span)
     case ^Stmt_Match:
+        graph_expr(b, v.subject, parent)
         for &arm in v.arms {
             label := "else" if arm.is_else else fmt.aprintf("arm %s", arm.variant)
             a := graph_node(b, .Block, .Explicit, parent, label, nil, v.span)
             if arm.is_union_arm && arm.bound_name != "" {
                 graph_node(b, .Local, .Explicit, a, arm.bound_name, graph_arm_type(b, &arm, v.span), v.span)
             }
+            graph_expr(b, arm.value, a)
             for s2 in arm.body { graph_stmt(b, s2, a, {kind = .Local}) }
             graph_close(b, a)
         }
@@ -225,8 +295,10 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
 }
 
 // A plain declaration, as a field of the owning struct or a local / constant.
+// A bare one (`x : Foo`, no value) constructs its struct: a synthetic
+// construct operation.
 @(private="file")
-graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: string, t: Type, span: Span) {
+graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: string, t: Type, span: Span, bare := false) {
     t := t
     if site.kind == .Field {
         // Signatures resolve on demand, so a struct nothing uses has no typed
@@ -238,6 +310,167 @@ graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: st
         }
     }
     graph_node(b, site.kind, .Explicit, parent, name, t, span)
+    if bare { graph_construct_bare(b, t, parent, span) }
+}
+
+// The struct a bare declaration of `t` constructs: `t` itself, or the
+// element of an array of structs (each element runs its constructor).
+@(private="file")
+graph_construct_bare :: proc(b: ^Graph_Builder, t: Type, parent: Node_Id, span: Span) {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Scope:
+        if v.kind == .Struct && !v.is_module { graph_call_op(b, .Construct, .Synthetic, parent, v, t, span) }
+    case ^Type_Fixed_Array:   graph_construct_bare(b, v.elem, parent, span)
+    case ^Type_Partial_Array: graph_construct_bare(b, v.elem, parent, span)
+    }
+}
+
+// --- operations ----------------------------------------------------------
+
+// The calls and constructions in an expression, in the order they run (an
+// argument before the call it is passed to).
+@(private="file")
+graph_expr :: proc(b: ^Graph_Builder, e: Expr, parent: Node_Id, w := Written.Explicit) {
+    if e == nil { return }
+    switch v in e {
+    case ^Expr_Number, ^Expr_String, ^Expr_Char, ^Expr_Ident, ^Expr_Bool, ^Expr_Skip_Constructor,
+         ^Expr_Compiler_Intrinsic, ^Expr_Include, ^Expr_Type_Name, ^Expr_Self, ^Expr_Size_Of:
+        // No calls inside.
+    case ^Expr_Unary:
+        graph_expr(b, v.operand, parent, w)
+        if rf, ok := v.overload_fn.?; ok { graph_resolved_op(b, rf, parent, v.type_, v.span, w) }
+    case ^Expr_Binary:
+        graph_expr(b, v.left, parent, w)
+        graph_expr(b, v.right, parent, w)
+        if rf, ok := v.overload_fn.?; ok { graph_resolved_op(b, rf, parent, v.type_, v.span, w) }
+    case ^Expr_Call:
+        // A method's receiver is its first argument; a module qualifier is no value.
+        args := call_args(v)
+        if q := call_qualifier(v); q != nil && !slice.contains(args[:], q) { graph_expr(b, q, parent, w) }
+        rf, resolved := v.resolved_func.?
+        callee := graph_callee(b, rf) if resolved else nil
+        for a, i in args {
+            // A default argument runs at the call site, which doesn't write it.
+            aw := w
+            if callee != nil && i < len(callee.params) && a == callee.params[i].default_value { aw = .Implied }
+            graph_expr(b, a, parent, aw)
+        }
+        if callee != nil {
+            graph_call_op(b, .Construct if callee.kind == .Struct else .Call, w, parent, callee, v.type_, v.span)
+        } else if !resolved && v.fn_value != nil {
+            graph_node(b, .Call, w, parent, call_name(v), v.type_, v.span)   // through a function value
+        }
+        // `Foo(){ a = x }`: writes into the constructed value.
+        if v.overrides != nil { for f in v.overrides.fields { graph_expr(b, f.value, parent, w) } }
+    case ^Expr_Struct_Literal:
+        // Braces are a block of writes after a construction — unless they
+        // write into an existing value (`v{ a = x }`).
+        if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module && v.override_target == "" {
+            graph_call_op(b, .Construct, w, parent, ts, v.type_, v.span)
+        }
+        if v.is_broadcast {
+            graph_expr(b, v.broadcast_value, parent, w)   // one value, filled into every slot
+        } else {
+            for f in v.fields { graph_expr(b, f.value, parent, w) }
+        }
+    case ^Expr_Array:
+        for el in v.elements { graph_expr(b, el, parent, w) }
+    case ^Expr_Index:
+        graph_expr(b, v.expr, parent, w)
+        graph_expr(b, v.index, parent, w)
+    case ^Expr_Slice:
+        graph_expr(b, v.expr, parent, w)
+        graph_expr(b, v.low, parent, w)
+        graph_expr(b, v.high, parent, w)
+    case ^Expr_Field_Access:
+        graph_expr(b, v.expr, parent, w)
+    case ^Expr_Assert:
+        graph_expr(b, v.cond, parent, w)
+    case ^Expr_Take:
+        graph_expr(b, v.storage, parent, w)
+        graph_expr(b, take_count(v), parent, w)
+    case ^Expr_If:
+        graph_expr(b, v.condition, parent, w)
+        graph_expr(b, v.then_expr, parent, w)
+        graph_expr(b, v.else_expr, parent, w)
+    case ^Expr_Tuple_Default:
+        // The slots of one default share its source call: it runs once.
+        if v.index == 0 { graph_expr(b, v.source, parent, w) }
+    case ^Expr_Try:
+        graph_expr(b, v.inner, parent, w)
+    }
+}
+
+// A resolved call in operator form: a construction when it runs a struct, a
+// call otherwise.
+@(private="file")
+graph_resolved_op :: proc(b: ^Graph_Builder, rf: Resolved_Func, parent: Node_Id, t: Type, span: Span, w: Written) {
+    if callee := graph_callee(b, rf); callee != nil {
+        graph_call_op(b, .Construct if callee.kind == .Struct else .Call, w, parent, callee, t, span)
+    }
+}
+
+// The fun or struct a resolved call runs. Casts and distinct conversions
+// resolve to none: they are no call.
+@(private="file")
+graph_callee :: proc(b: ^Graph_Builder, rf: Resolved_Func) -> ^Type_Scope {
+    if rf.callee != nil || rf.name == "" { return rf.callee }
+    // Resolved by name only (qualified, UFCS, dispatch): the checker's
+    // record_resolved_edge recovers the scope the same way.
+    if ft, ok := b.checked.table.funs[rf.name]; ok    { return ft }
+    if st, ok := b.checked.table.structs[rf.name]; ok { return st }
+    return nil
+}
+
+@(private="file")
+graph_call_op :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent: Node_Id,
+                      callee: ^Type_Scope, t: Type, span: Span) {
+    name := callee.source_name if callee.source_name != "" else ask_demangle(callee.name, callee.home_package)
+    op := graph_node(b, kind, written, parent, name, t, span)
+    append(&b.calls, Pending_Call{op = op, callee = callee})
+}
+
+// Every call's edge, once all the funs and structs have nodes.
+@(private="file")
+graph_link_calls :: proc(b: ^Graph_Builder) {
+    for c in b.calls {
+        to, ok := b.scope_node[c.callee]
+        if !ok { graph_fatal(b.g.origin[c.op], "'%s' calls '%s', which has no node", b.g.name[c.op], c.callee.name) }
+        append(&b.g.edges, Edge{from = c.op, to = to, kind = .Calls, written = b.g.written[c.op]})
+    }
+}
+
+// Sort the edge table by `from` and index both directions (counting sorts:
+// one pass each).
+@(private="file")
+graph_index_edges :: proc(g: ^Program_Graph) {
+    n := len(g.kind)
+    resize(&g.out_first, n + 1)
+    resize(&g.in_first, n + 1)
+    slice.zero(g.out_first[:])
+    slice.zero(g.in_first[:])
+    for e in g.edges {
+        g.out_first[e.from + 1] += 1
+        g.in_first[e.to + 1] += 1
+    }
+    for i in 1 ..= n {
+        g.out_first[i] += g.out_first[i - 1]
+        g.in_first[i] += g.in_first[i - 1]
+    }
+    sorted := make([dynamic]Edge, len(g.edges))
+    next := slice.clone(g.out_first[:n], context.temp_allocator)
+    for e in g.edges {
+        sorted[next[e.from]] = e
+        next[e.from] += 1
+    }
+    delete(g.edges)
+    g.edges = sorted
+    resize(&g.in_edges, len(g.edges))
+    next_in := slice.clone(g.in_first[:n], context.temp_allocator)
+    for e, i in g.edges {
+        g.in_edges[next_in[e.to]] = i32(i)
+        next_in[e.to] += 1
+    }
 }
 
 @(private="file")
@@ -281,6 +514,7 @@ graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, par
     kind: Node_Kind = .Fun if ts.kind == .Fun else .Struct
     name := s.name if written == .Explicit else ask_demangle(ts.name, ts.home_package)
     n := graph_node(b, kind, written, parent, name, ts, s.span)
+    b.scope_node[ts] = n
     for p in ts.params { graph_node(b, .Param, .Explicit, n, p.name, p.type_, s.span) }
     graph_results(b, ts, n, s.span)
     // An instance's body is its own checked copy; a struct's is the template's,
@@ -331,6 +565,7 @@ graph_foreign :: proc(b: ^Graph_Builder, f: ^Foreign_Fun, parent: Node_Id) {
     ts, ok := graph_one(b, f.span, f.name).(^Type_Scope)
     if !ok { graph_fatal(f.span, "foreign '%s' is not a function", f.name) }
     n := graph_node(b, .Fun, .Explicit, parent, f.name, ts, f.span)
+    b.scope_node[ts] = n
     for p in ts.params { graph_node(b, .Param, .Explicit, n, p.name, p.type_, f.span) }
     graph_results(b, ts, n, f.span)
     graph_close(b, n)
@@ -352,6 +587,7 @@ graph_union :: proc(b: ^Graph_Builder, v: ^Stmt_Union_Def, parent: Node_Id) {
                 st, st_ok := b.checked.table.structs[u.variant_structs[variant]]
                 if !st_ok { graph_fatal(v.span, "variant '%s' of '%s' has no struct", variant, v.name) }
                 vn := graph_node(b, .Struct, .Explicit, n, variant, st, st.body_span)
+                b.scope_node[st] = vn
                 for f in st.fields {
                     fw: Written = .Synthetic if strings.has_prefix(f.name, "__") else .Explicit   // the tag, its padding
                     graph_node(b, .Field, fw, vn, f.name, f.type_, st.body_span)
@@ -390,7 +626,6 @@ graph_check_coverage :: proc(b: ^Graph_Builder) {
     }
     bad := 0
     check :: proc(count: ^map[rawptr]int, bad: ^int, t: Type, span: Span) {
-        if span == {} { return }
         if n := count[graph_type_ptr(t)]; n != 1 {
             loc := format_location(span.file, span.line, span.col)
             emit_diagnostic(.Graph_Error, loc, "'%s' is %d nodes of the graph, not 1", ask_type_name(t), n)
@@ -407,6 +642,60 @@ graph_check_coverage :: proc(b: ^Graph_Builder) {
         flush_diagnostics()
         os.exit(1)
     }
+}
+
+// The graph's calls agree with the call graph the checker collects
+// (callgraph.odin): the same caller → callee pairs, where the caller is the
+// nearest fun or struct around the call.
+@(private="file")
+graph_check_calls :: proc(b: ^Graph_Builder) {
+    Pair :: struct { caller, callee: ^Type_Scope }
+    g := b.g
+    ours: map[Pair]Node_Id   // each pair's first call operation
+    defer delete(ours)
+    for e in g.edges {
+        // A default argument's calls run in the caller, but the checker checks a
+        // default once, in the callee's defining scope, so the call graph has no
+        // caller for them. Phase 2 derives the call graph from these edges.
+        if e.kind != .Calls || e.written == .Implied { continue }
+        caller := graph_caller(g, e.from)
+        if caller == nil { continue }   // outside any function
+        p := Pair{caller, g.type_[e.to].(^Type_Scope)}
+        if p not_in ours { ours[p] = e.from }
+    }
+    theirs: map[Pair]bool
+    defer delete(theirs)
+    cg := &b.checked.call_graph
+    for outs, i in cg.out_edges {
+        for j in outs { theirs[Pair{cg.nodes[i], cg.nodes[j]}] = true }
+    }
+    bad := 0
+    for p, op in ours {
+        if p in theirs { continue }
+        loc := format_location(g.origin[op].file, g.origin[op].line, g.origin[op].col)
+        emit_diagnostic(.Graph_Error, loc, "the graph has a call %s → %s that the call graph lacks", p.caller.name, p.callee.name)
+        bad += 1
+    }
+    for p in theirs {
+        if p in ours { continue }
+        emit_diagnostic(.Graph_Error, "", "the call graph has a call %s → %s that the graph lacks", p.caller.name, p.callee.name)
+        bad += 1
+    }
+    if bad > 0 {
+        flush_diagnostics()
+        os.exit(1)
+    }
+}
+
+// The fun or struct an operation runs in: its nearest callable ancestor.
+@(private="file")
+graph_caller :: proc(g: ^Program_Graph, id: Node_Id) -> ^Type_Scope {
+    for p := g.parent[id]; p != NO_NODE; p = g.parent[p] {
+        #partial switch g.kind[p] {
+        case .Fun, .Struct: return g.type_[p].(^Type_Scope)
+        }
+    }
+    return nil
 }
 
 // --- dump -------------------------------------------------------------------
@@ -446,6 +735,7 @@ graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
             fmt.sbprintf(&b, " : %s", type_name(t))
         }
     }
+    for e in graph_out(g, id) { fmt.sbprintf(&b, " → %d", e.to) }
     if o := g.origin[id]; o.file != "" { fmt.sbprintf(&b, "   %s:%d", filepath.base(o.file), o.line) }
     if g.written[id] == .Synthetic { strings.write_string(&b, "   (synthetic)") }
     fmt.println(strings.to_string(b))
@@ -469,6 +759,8 @@ graph_kind_word :: proc(k: Node_Kind) -> string {
     case .Variant:  return "variant"
     case .Type_Def: return "type"
     case .Dispatch: return "dispatch"
+    case .Call:      return "call"
+    case .Construct: return "construct"
     }
     return "?"
 }

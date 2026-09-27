@@ -643,3 +643,13 @@ flip — fun  operator_calls.mara:30   (module operator_calls)
 above (calls)   (1 direct callee, full closure (depth ∞))
   operator_calls.v2_neg
     operator_calls.V2  (struct)
+=== test/sibling_locals.mara | redeclared call above
+redeclared — fun  sibling_locals.mara:68   (module sibling_locals)
+
+above (calls)   (1 direct callee, full closure (depth ∞))
+  sibling_locals.Small  (struct)
+=== Pounce | cache_put_header call above
+cache_put_header — fun  cache.mara:105   (module cache)
+
+above (calls)   (1 direct callee, full closure (depth ∞))
+  cache.Cache_Header  (struct)

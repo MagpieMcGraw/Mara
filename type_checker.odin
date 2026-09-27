@@ -1110,6 +1110,29 @@ record_construction_edge :: proc(c: ^Checker, st: ^Type_Scope, env: ^Type_Scope)
     c.call_edges[Call_Edge{from = caller, to = st}] = true
 }
 
+// A struct literal constructs its struct — unless it writes into an existing
+// value (`v{ a = x }`). Named or typed by its slot, the edge is the same.
+// Mirrors the program graph's construct operations (graph_expr).
+record_literal_construction :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Scope) {
+    if lit.override_target != "" { return }
+    if ts, ok := lit.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module {
+        record_construction_edge(c, ts, env)
+    }
+}
+
+// A declaration with no value (`x : Foo`) constructs its struct — for an
+// array of structs, each element — and codegen runs the struct's init for
+// it, so it is an edge like `Foo{}`. The program graph has the same rule
+// (graph_construct_bare); phase 2 derives this call graph from it.
+record_bare_construction :: proc(c: ^Checker, t: Type, env: ^Type_Scope) {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Scope:
+        if v.kind == .Struct && !v.is_module { record_construction_edge(c, v, env) }
+    case ^Type_Fixed_Array:   record_bare_construction(c, v.elem, env)
+    case ^Type_Partial_Array: record_bare_construction(c, v.elem, env)
+    }
+}
+
 
 
 
@@ -2931,6 +2954,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
     st.home_package = tmpl.home_package
     st.kind = .Struct
     st.ast = tmpl.ast
+    st.body_span = tmpl.ast.span   // an instance is declared where its template is
     st.generic_base = tmpl.name
     for arg in type_args {
         append(&st.generic_args, arg)
@@ -2961,6 +2985,9 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
             default_value = dv,
             is_using = field.is_using,
         })
+        // The instance's fields are substituted, not checked, so a bare one's
+        // construction is recorded here (`inner: S` with S = Box constructs a Box).
+        if dv == nil { record_bare_construction(c, ft, st) }
     }
 
     // Cache and register
@@ -3418,7 +3445,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
                 st.body = tmpl.ast.body
                 st.ast = tmpl.ast
                 st.origin = Origin_Source{}
-                st.body_span = e.span
+                st.body_span = tmpl.ast.span
                 populate_cg_signature(st)   // Self prepended for .Struct
                 c.checked.functions[st.name] = st
                 append(&c.checked.function_order, st.name)
@@ -7275,6 +7302,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_any(ann_type) {
                     check_error(c, s.span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE)
                 }
+                record_bare_construction(c, ann_type, env)
                 // (Large-value stack/arena routing is handled uniformly for
                 // every value kind in check_storage_sizes — Pass 4 of check_scope.)
                 // Function type from named source: auto-initialize to the function itself.
@@ -11119,6 +11147,9 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     case ^Expr_Slice:
         return check_slice(c, e, env)
     case ^Expr_Struct_Literal:
+        // A literal constructs its struct, named (`Foo{…}`) or typed by its slot
+        // (`h : Foo = {…}`): a call-graph edge at every exit, once e.type_ is set.
+        defer record_literal_construction(c, e, env)
         // Broadcast literal `{all <expr>}`: expand_broadcast_array_literal
         // has already validated and populated array_values, and set e.type_
         // to the surrounding field/decl type. Don't re-check (which would
@@ -11202,7 +11233,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             flat := resolve_type_name(c, e.name, "", env)
             if st, ok := c.table.structs[flat]; ok {
                 e.type_ = st
-                record_construction_edge(c, st, env)
                 if !defer_literal_validation(c, e, &st.sd, env) {
                     check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 }
@@ -11210,7 +11240,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             }
             if st, ok := c.table.funs[flat]; ok {
                 e.type_ = st
-                record_construction_edge(c, st, env)
                 if !defer_literal_validation(c, e, &st.sd, env) {
                     check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 }
@@ -11231,7 +11260,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                         strings.has_suffix(ts.name, strings.concatenate({"_", e.name}))
                     if names_type {
                         e.type_ = ts
-                        record_construction_edge(c, ts, env)
                         if !defer_literal_validation(c, e, &ts.sd, env) {
                             check_struct_literal_fields(c, e, &ts.sd, e.span, env)
                         }
