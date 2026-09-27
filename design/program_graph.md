@@ -4,34 +4,46 @@
 
 ## Purpose
 
-The program graph is one structure holding every connection between the parts of a Mara program, rebuilt from the text on every compile. It serves three uses:
+The program graph is a complete description of a Mara program: everything that exists, everything that happens, and in what order. It is rebuilt from the text on every compile and it is the compiler's IR. Beyond compiling, it serves three uses:
 
 - **`mara ask`**: see what anything is connected to, at any zoom level, in both directions.
 - **Editing through the graph**: change a connection and have the change written back into the text.
 - **Position-independent compilation**: point the cursor at code and see its LLVM IR or assembly, live.
 
-Today those connections live in separate pieces with their own node types and keys: the call graph (`callgraph.odin`), use-def (`usedef.odin`), type dependencies (`ask.odin`) and flow slices (`slice.odin`, `lineage.odin`). The program graph replaces them with one model.
+Today that description is scattered: annotations and lowered forms on the syntax tree (`type_`, `lowered_args`, `.checked`), plus separate pieces with their own node types and keys — the call graph (`callgraph.odin`), use-def (`usedef.odin`), type dependencies (`ask.odin`) and flow slices (`slice.odin`, `lineage.odin`). The program graph gathers them into one structure with one shape.
 
-## Layers
+## Two structures
 
 ```
-source text + tokens    the truth; comments are the gaps between tokens      ◄──────────┐
-        │                                                                              │
-syntax tree             flat, immutable, exactly as written; numbered ids              │
-        │                                                                              │
-semantic tables         per node id: its type, what a name refers to                   │
-        │                                                                     edits become
-IR                      explicit operations, one copy per generic instance    text patches
-        │                                                                              │
-        ├──► LLVM IR / assembly   each instruction knows its IR node                   │
-        └──► program graph        named things + connections, both directions ─────────┘
+source text + tokens      what you wrote; comments are the gaps between tokens
+        │
+        ▼
+syntax tree               the text's shape: where each thing is written
+        │                   ▲ every graph node points back to its origin here
+        ▼
+program graph (the IR)    the program's shape: what exists and what happens,
+        │                 in order, with every connection
+        ├──► views                  mara ask: the graph zoomed out
+        └──► LLVM IR / assembly     the graph translated
+
+edits made through a view become text patches; both structures are rebuilt
 ```
 
-Going down, each layer is computed from the one above. Going up, every node records its origin, so any piece of assembly, IR or graph maps back to a range of text; a reverse index answers the other way ("what came from this text?"). The IR feeds both code generation and the program graph. An edit never changes a layer in memory: it becomes a text patch, and every layer is rebuilt.
+Mara has two structures. The syntax tree keeps the text's shape, so it knows where each thing is written. The program graph has the program's shape: everything that exists and everything that happens, in order. The program graph is the IR: walking it from `main` is running the program.
+
+Every graph node points back to the syntax it came from. Nodes the text never spells out — a loop's counter, a default argument at a call, a generic function's copy for one type — point to the text that caused them.
+
+Everything else is computed from the graph and never edited: `mara ask` views (the graph zoomed out), LLVM IR (the graph translated), and indexes such as reverse edges or the call graph's summaries. Indexes are rebuilt on every build, like the index of a book; they are never a second description of the program. An edit never changes a structure in memory: it becomes a text patch, and both are rebuilt.
 
 ## Nodes
 
-A node is either a **scope** (module, struct, function, block) or a **name declared in a scope** (field, parameter, local, constant, a function's result). At the finest zoom the operations inside a function are nodes too; that level belongs to the IR.
+Nodes come in three kinds:
+
+- **Scopes**: module, struct, function, block.
+- **Names declared in a scope**: field, parameter, local, constant, a function's result.
+- **Operations**: the things that happen — a call, an add, a comparison, a store. They live inside functions and blocks, in order.
+
+Some nodes are **synthetic**: the program has them but the text never spells them out. A loop's counter, a default argument at each call, and one copy of a generic function per type it is used with are all synthetic; each points to the text that caused it.
 
 The running example for the rest of this doc:
 
@@ -70,7 +82,7 @@ That is the fun/struct unification and split in one line: the same kind of node,
 
 ## Connections
 
-Five kinds of connection, each found by a different stage of the compiler. The containment tree is the backbone; the other connections cut across it.
+Six kinds of connection, each found by a different stage of the compiler. The containment tree is the backbone; the other connections cut across it. The picture shows the graph zoomed out to named things.
 
 ```
 shop (module)
@@ -93,13 +105,28 @@ flows:     cart → items → it → sum → result → t
 
 Refers-to isn't shown: it joins every use of a name to its declaration, so it is everywhere.
 
-| Connection | Meaning | Found by | `mara ask` analysis |
+Zoomed in, `total` is operations joined by **then** — what happens next. Inside a straight run, order is just list order; a branch has two `then` edges, a loop has one pointing back:
+
+```
+total
+  start:  sum = 0,  i = 0                            then → check
+  check:  i < items.len ?          yes: then → body     no: then → done
+  body:   it = items[i]
+          sum = sum + it.price
+          i = i + 1                                  then → check
+  done:   return sum
+```
+
+Walking start → check → body → check → … → done is running `total`; following a call operation into another function's graph is running the call. The counter `i` is synthetic: the loop needs it, the text never wrote it.
+
+| Connection | Meaning | Found by | Used for |
 | --- | --- | --- | --- |
-| contains | a scope holds a declaration or another scope | the parser: how the text is nested | the zoom level (module, struct, fun, var) |
-| refers to | a use of a name → its declaration | name resolution (the scope stack) | underlies all three |
-| has type | a declaration → its type | the type checker | type |
-| calls | a function → a function it calls | lowering, where hidden calls become explicit | call |
-| flows | a value moves from one place to another | lowering, where defaults and method receivers become explicit | flow |
+| contains | a scope holds a declaration, an operation or another scope | the parser: how the text is nested | the zoom level (module, struct, fun, var) |
+| refers to | a use of a name → its declaration | name resolution (the scope stack) | underlies everything |
+| has type | a declaration or operation → its type | the type checker | `mara ask` type |
+| calls | a call operation → the function it calls | building the graph, where hidden calls become explicit | `mara ask` call |
+| flows | a value moves from one place to another | building the graph, where defaults and method receivers become explicit | `mara ask` flow |
+| then | an operation → the one that runs next | building the graph, where loops and branches become explicit | execution order; code generation walks it |
 
 ## Storage
 
@@ -150,7 +177,9 @@ Edge :: struct {
 
 The table is sorted by `from`, with two indexes beside it: *outgoing* (for each node, where its run of edges starts) and *incoming* (edge numbers sorted by `to`). A node's list of connections is its slice of the table, one slice per direction.
 
-Why not an array stored on each node: it would need two arrays per node (one per direction), copy each edge's data onto both ends, and mean thousands of small allocations rebuilt on every keystroke. One table built in a single pass is simpler and faster. Inside the IR the picture differs: an instruction lists its inputs directly, and the graph's flow edges are summarized from those chains.
+Why not an array stored on each node: it would need two arrays per node (one per direction), copy each edge's data onto both ends, and mean thousands of small allocations rebuilt on every keystroke. One table built in a single pass is simpler and faster.
+
+**Operations: in order, in runs.** Each function's operations are stored in execution order, cut into straight runs (`start`, `check`, `body`, `done` above). A run stores its `then` edges: one, or two after a branch. An operation lists its inputs directly, which are its incoming flows at the finest zoom. The named-level flow edges in the table above are those chains zoomed out, kept as an index.
 
 ## Queries
 
@@ -158,7 +187,7 @@ Every `mara ask` question is one rule: pick a kind of connection, a direction an
 
 - **Above** = what the thing depends on; **below** = what depends on it. For calls and types that follows the edge (a caller depends on its callee, a declaration on its type); for flows it runs against the edge (a value depends on where it came from).
 - **Depth** limits how many steps to follow. **`in <scope>`** keeps only edges with both ends inside that scope's range.
-- **Zoom**: results roll up to a chosen scope level, so the same edges can be read as locals, as functions or as modules. That is the module / struct / fun / var rows of the ask matrix.
+- **Zoom** is a view, not a structure. Zoomed out, operations merge into the named things they read and write and `then` edges are hidden; results roll up to a chosen scope level (the module / struct / fun / var rows of the ask matrix). Zoomed all the way in, the same rule walks operations and `then` edges.
 
 | Query | Walk | Answer in the example |
 | --- | --- | --- |
@@ -195,6 +224,6 @@ First target: parameter narrowing from `design/mara_ask.md` §10. `camera_turn_w
 
 1. **Access paths as nodes?** Store only declarations (`Item.price`) and let queries follow paths, or also store paths (`cart.price`) as nodes. Declarations keep the graph small; stored paths make per-copy questions cheap.
 2. **Generics.** One node for a generic function's template, one per instance, or both linked. The instances are what runs; the template is what is written and edited.
-3. **What produces the call and flow edges.** Today that is lowering. Whether a separate IR sits beneath the graph, or codegen can read the graph directly, is undecided.
+3. **The graph's operations.** Decided: the graph is the IR, built from the syntax tree by lowering. Next to design: which operations it has (call, load, store, compare, branch and so on), how code generation expands each into LLVM IR, and which zoomed-out views are worth keeping as indexes.
 4. **Partial results while code is broken.** Today one type error anywhere aborts the build. A live graph needs a broken function confined to itself, with the rest of the program still producing its graph.
 5. **Position-independent compilation.** Two tiers: show the matching slice of a whole-program compile (needs every LLVM instruction tagged with its origin), and compile a fragment on its own (its above-set becomes parameters and external declarations).
