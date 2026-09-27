@@ -1633,7 +1633,24 @@ parse_optional_return_types :: proc(p: ^Parser, out: ^[dynamic]Type_Expr) {
     p.pos = saved
 }
 
-parse_return_type_clause :: proc(p: ^Parser, out: ^[dynamic]Type_Expr) {
+// Whether the tokens from `offset` on start a named group — `name:` or
+// `name, name, ... :` — rather than a type. Walks the whole identifier-comma
+// run: `Mat4, Mat4, Mat4` and `a, b, c : T` share their leading shape, so a
+// fixed-depth peek can't tell them apart. Leading newlines are skipped (a
+// parameter list may continue on the next line).
+named_group_at :: proc(p: ^Parser, offset: int) -> bool {
+    i := offset
+    for peek_kind(p, i) == .Newline { i += 1 }
+    for {
+        if peek_kind(p, i) != .Identifier { return false }
+        i += 1
+        if peek_kind(p, i) == .Colon { return true }
+        if peek_kind(p, i) != .Comma { return false }
+        i += 1
+    }
+}
+
+parse_return_type_clause :: proc(p: ^Parser, out: ^[dynamic]Type_Expr, fn_type := false) {
     // Cosmetic outer parens: `-> (T, U)` and `-> T, U` are equivalent.
     // Parens are pure decoration — they do not produce a tuple type.
     wrapped := false
@@ -1648,21 +1665,9 @@ parse_return_type_clause :: proc(p: ^Parser, out: ^[dynamic]Type_Expr) {
     // else (positional). Necessary because `Mat4, Mat4, Mat4` and
     // `a, b, c : T` share the leading `Ident, Ident, Ident, ...` shape — a
     // fixed-depth peek can't tell them apart once you go past two names.
-    is_named := false
-    if current_kind(p) == .Identifier {
-        if peek_kind(p, 1) == .Colon {
-            is_named = true
-        } else if peek_kind(p, 1) == .Comma {
-            i := 2
-            for {
-                if peek_kind(p, i) != .Identifier { break }      // positional
-                i += 1
-                if peek_kind(p, i) == .Colon { is_named = true; break }
-                if peek_kind(p, i) != .Comma { break }           // positional
-                i += 1
-            }
-        }
-    }
+    // A fn type binds no names, so its returns are always positional: in
+    // `fun(op: fun(Pair) -> Pair, p: Pair)`, `Pair, p: Pair` is not a group.
+    is_named := !fn_type && named_group_at(p, 0)
 
     if is_named {
         clear(&p.return_bindings)
@@ -1675,7 +1680,9 @@ parse_return_type_clause :: proc(p: ^Parser, out: ^[dynamic]Type_Expr) {
     } else {
         // Positional: parse first type, then optional commas for multi-return
         append(out, parse_type_expr(p))
-        for current_kind(p) == .Comma {
+        // Unwrapped, a named group after a comma is the next parameter, not a
+        // type: in `fun(op: fun(i64) -> i64, x: i64)` the list ends before `x`.
+        for current_kind(p) == .Comma && (wrapped || !named_group_at(p, 1)) {
             advance(p)
             skip_newlines(p)
             append(out, parse_type_expr(p))
@@ -3548,7 +3555,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
             }
             if current_kind(p) == .Arrow {
                 advance(p) // consume '->'
-                parse_return_type_clause(p, &return_types)
+                parse_return_type_clause(p, &return_types, fn_type = true)
             }
             expect(p, .Right_Paren)
             fe := new(Type_Func_Expr)
@@ -3586,7 +3593,7 @@ parse_type_expr :: proc(p: ^Parser) -> Type_Expr {
         return_types: [dynamic]Type_Expr
         if current_kind(p) == .Arrow {
             advance(p) // consume '->'
-            parse_return_type_clause(p, &return_types)
+            parse_return_type_clause(p, &return_types, fn_type = true)
         }
         fe := new(Type_Func_Expr)
         fe.params = params

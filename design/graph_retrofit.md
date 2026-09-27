@@ -87,8 +87,10 @@ the check for phase 3.
       output following map order (defs sharing a span, lineage children); now sorted totally
 - [ ] Found: nested broadcast `g : [2][3]i64 = {all {all x}}` fails to type-check (the inner
       literal is checked against the outer's types)
-- [ ] Found: a fn-type parameter followed by another parameter doesn't parse — in
-      `fun(op: fun(i64) -> i64, x: i64)` the return list swallows `, x`
+- [x] Found: a fn-type parameter followed by another parameter doesn't parse — in
+      `fun(op: fun(i64) -> i64, x: i64)` the return list swallows `, x`. An unwrapped return list
+      now ends at a named group, and a fn type's returns are positional only
+      (`test/fn_type_values.mara`)
 
 Later, not phase 0: `mara ask` refuses to run with any type error anywhere (partial results are a
 phase 2–4 concern).

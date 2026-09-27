@@ -4,10 +4,14 @@ module fn_type_values
 //@ expect-output: param 10
 //@ expect-output: struct 2 1
 //@ expect-output: multi 4 7
+//@ expect-output: split 11
+//@ expect-output: lines 6
 
 // Calls through structural fn types (`fun(T) -> R` written in place). The
 // checker fills their lowered signature when the type resolves; codegen used
 // to fill it lazily, writing a shared Type_Scope from the parallel workers.
+// A fn-typed parameter can be followed by more parameters: the return list
+// ends at a named group (`x: i64`), which used to be read as another type.
 
 Pair :: struct {
 	a: i64
@@ -18,16 +22,26 @@ double :: fun(x: i64) -> i64 { return x * 2 }
 swap :: fun(p: Pair) -> Pair { return Pair{a = p.b, b = p.a} }
 split :: fun(x: i64) -> i64, i64 { return x / 10, x % 10 }
 
-apply :: fun(x: i64, op: fun(i64) -> i64) -> i64 { return op(x) }
-apply_pair :: fun(p: Pair, op: fun(Pair) -> Pair) -> Pair { return op(p) }
+apply :: fun(op: fun(i64) -> i64, x: i64) -> i64 { return op(x) }
+apply_pair :: fun(op: fun(Pair) -> Pair, p: Pair) -> Pair { return op(p) }
+apply_split :: fun(op: fun(i64) -> i64, i64, x: i64) -> i64 {
+	a, b := op(x)
+	return a + b
+}
+apply_lines :: fun(op: fun(i64) -> i64,
+		lo, hi: i64) -> i64 {
+	return op(lo) + op(hi)
+}
 
 main :: fun() {
 	f : fun(i64) -> i64 = double
 	print("local", f(21))
-	print("param", apply(5, double))
-	q := apply_pair(Pair{a = 1, b = 2}, swap)
+	print("param", apply(double, 5))
+	q := apply_pair(swap, Pair{a = 1, b = 2})
 	print("struct", q.a, q.b)
 	s : fun(i64) -> i64, i64 = split
 	hi, lo := s(47)
 	print("multi", hi, lo)
+	print("split", apply_split(split, 47))
+	print("lines", apply_lines(double, 1, 2))
 }
