@@ -1,0 +1,29 @@
+module void_ptr_store_neg
+
+//@ expect-fail: cannot store `void` in
+
+// A pointer always points at something that exists in the program. `void`
+// only de-initializes a variable (see void_ptr_deinit_neg) or passes a C
+// function a null. Stored anywhere else a pointer goes, it would be a null
+// pointer by another name — each of these is an error.
+
+H :: struct {
+	n: i64
+	p: ^i64
+}
+
+find :: fun(q: ^i64, want: bool) -> ^i64 {
+	if want do return q
+	return void                      // a return value
+}
+
+use_p :: fun(p: ^i64) -> i64 { return p^ }
+
+main :: fun() {
+	x := 5
+	h := H{n = 1, p = void}          // a literal field
+	h.p = void                       // a field store
+	arr : [2]^i64 = {&x, void}       // an array element
+	print(use_p(void))               // an argument
+	print(find(&x, true)^, h.n, arr[0]^)
+}

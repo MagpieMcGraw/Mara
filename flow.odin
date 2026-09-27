@@ -48,6 +48,8 @@ Flow_Stats :: struct {
 // durable Checked_Program.
 flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     stats: Flow_Stats
+    void_seen: map[Span]bool   // generic instances share their template's spans
+    defer delete(void_seen)
     for _, ft in checked.functions {
         if ft == nil { continue }
         // Source bodies only: intrinsics/foreigns have no Mara statements to walk.
@@ -63,6 +65,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         }
         flow_check_unused(c, ft)
         flow_check_init(c, ft)
+        flow_check_void(c, ft, &void_seen)
     }
     flow_dump_stats(stats)
 }
@@ -684,4 +687,232 @@ flow_dump_stats :: proc(stats: Flow_Stats) {
     )
     fmt.eprintf("[flow] missing-return flagged: %d %v\n",
         len(stats.missing_return), stats.missing_return)
+}
+
+// --- void into pointers ------------------------------------------------------
+// A pointer always points at something that exists in the program. `void` is no
+// pointer value: it DE-INITIALIZES a variable — `p = void`, `p : ^T = void`, and
+// reading p is then an error (flow_check_init) — or passes a C function a null
+// for a nullable parameter; it can be compared against (`p == void`). Anywhere
+// else a void headed for a pointer — a return, an argument, a field, an element,
+// a store through a field/index/deref, an if-branch, a default — is an error.
+
+@(private="file")
+Void_Walk :: struct {
+    c:    ^Checker,
+    ft:   ^Type_Scope,
+    seen: ^map[Span]bool,
+}
+
+flow_check_void :: proc(c: ^Checker, ft: ^Type_Scope, seen: ^map[Span]bool) {
+    w := Void_Walk{c = c, ft = ft, seen = seen}
+    // A parameter's default: every call that leaves the argument off would pass it.
+    if ft.ast != nil {
+        for p, i in ft.ast.typed_params {
+            if i < len(ft.params) {
+                void_store(&w, p.default_value, ft.params[i].type_,
+                    fmt.tprintf("the default of parameter '%s'", p.name))
+            }
+        }
+    }
+    // A struct body's top-level declarations are its fields, not variables.
+    void_stmts(&w, ft.body[:], ft.kind == .Struct)
+}
+
+// A pointer, or a value that is one underneath (a cstring, a function).
+@(private="file")
+void_is_pointer :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Ptr, Type_CString: return true
+    case ^Type_Scope:             return v.kind == .Fun
+    }
+    return false
+}
+
+// `e` is stored where a `dest` goes: an error when it is void and dest a pointer.
+@(private="file")
+void_store :: proc(w: ^Void_Walk, e: Expr, dest: Type, where_: string) {
+    if !is_void_literal(e) || !void_is_pointer(dest) { return }
+    sp := expr_span(e)^
+    if w.seen[sp] { return }
+    w.seen[sp] = true
+    check_error(w.c, sp, TYPE_VOID_INTO_POINTER, where_, type_name(dest))
+}
+
+@(private="file")
+void_stmts :: proc(w: ^Void_Walk, stmts: []Stmt, fields: bool) {
+    for s in stmts { void_stmt(w, s, fields) }
+}
+
+@(private="file")
+void_stmt :: proc(w: ^Void_Walk, s: Stmt, fields: bool) {
+    #partial switch v in s {
+    case ^Stmt_Decl:
+        void_stmts(w, v.checked[:], fields)
+    case ^Stmt_Assign:
+        if v.target != nil {
+            // target_type is the field's or pointee's type — for an index, the
+            // container's, whose element is what the store writes.
+            dest, where_ := v.target_type, "a dereferenced pointer"
+            #partial switch t in v.target {
+            case ^Expr_Field_Access:
+                where_ = fmt.tprintf("field '%s'", t.field)
+            case ^Expr_Index:
+                where_ = "an array element"
+                #partial switch c in distinct_base(v.target_type) {
+                case ^Type_Fixed_Array:   dest = c.elem
+                case ^Type_Slice:         dest = c.elem
+                case ^Type_Partial_Array: dest = c.elem
+                }
+            }
+            void_store(w, v.value, dest, where_)
+            void_expr(w, v.target)
+        } else if fields {
+            void_store(w, v.value, v.var_type, fmt.tprintf("field '%s'", v.name))
+        }
+        // A whole variable's value may be void: that is the de-init.
+        if !is_void_literal(v.value) { void_expr(w, v.value) }
+    case ^Stmt_Multi_Assign:
+        for a in v.assigns { void_stmt(w, a, fields) }
+    case ^Stmt_Multi_Return_Assign:
+        if len(v.checked) > 0 {
+            void_stmts(w, v.checked[:], fields)
+        } else {
+            for e in v.values  { void_expr(w, e) }
+            for e in v.targets { void_expr(w, e) }
+        }
+    case Stmt_Call:
+        void_expr(w, v.expr)
+    case Stmt_Return:
+        for e, i in v.values {
+            if i < len(w.ft.return_types) {
+                void_store(w, e, w.ft.return_types[i], "a return value")
+            }
+            void_expr(w, e)
+        }
+    case ^Stmt_If:
+        void_expr(w, v.condition)
+        void_stmts(w, v.body[:], false)
+        void_stmts(w, v.else_body[:], false)
+    case ^Stmt_For:
+        if v.init != nil { void_stmt(w, v.init, false) }
+        if v.post != nil { void_stmt(w, v.post, false) }
+        void_expr(w, v.condition)
+        void_expr(w, v.range_low)
+        void_expr(w, v.range_high)
+        void_expr(w, v.collection)
+        void_stmts(w, v.body[:], false)
+    case ^Stmt_Defer:
+        void_stmts(w, v.body[:], false)
+    case ^Stmt_Match:
+        void_expr(w, v.subject)
+        for arm in v.arms {
+            void_expr(w, arm.value)
+            void_stmts(w, arm.body[:], false)
+        }
+    }
+    // Nested Stmt_Scope defs are functions of their own, walked separately.
+}
+
+// Every store position inside an expression. A void anywhere else inside one is
+// already a type error or a comparison.
+@(private="file")
+void_expr :: proc(w: ^Void_Walk, e: Expr) {
+    if e == nil { return }
+    #partial switch v in e {
+    case ^Expr_Unary:
+        void_expr(w, v.operand)
+    case ^Expr_Binary:
+        void_expr(w, v.left)
+        void_expr(w, v.right)
+    case ^Expr_Call:
+        void_expr(w, call_qualifier(v))
+        callee := v.fn_value
+        if rf, ok := v.resolved_func.?; ok && rf.callee != nil { callee = rf.callee }
+        is_c := callee != nil && callee.calling_conv == .C
+        for a, i in call_args(v) {
+            // Defaults spliced in from the signature are reported there, once.
+            written := false
+            for s in v.args { if s == a { written = true; break } }
+            if written && !is_c && callee != nil && i < len(callee.params) {
+                void_store(w, a, callee.params[i].type_,
+                    fmt.tprintf("argument %d of '%s'", i + 1, call_name(v)))
+            }
+            void_expr(w, a)
+        }
+    case ^Expr_Struct_Literal:
+        // `{a, b}` building a fixed array: every value is an element.
+        if fa, is_arr := distinct_base(v.type_).(^Type_Fixed_Array); is_arr {
+            for f in v.fields {
+                void_store(w, f.value, fa.elem, "an array element")
+                void_expr(w, f.value)
+            }
+            void_store(w, v.broadcast_value, fa.elem, "an array element")
+            void_expr(w, v.broadcast_value)
+            return
+        }
+        sd := void_literal_struct(w, v)
+        for f, i in v.fields {
+            if sd != nil {
+                if ft, ok := void_literal_field(sd, f.name, i); ok {
+                    void_store(w, f.value, ft, fmt.tprintf("field '%s'", f.name if f.name != "" else fmt.tprintf("#%d", i)))
+                }
+            }
+            void_expr(w, f.value)
+        }
+        void_expr(w, v.broadcast_value)
+    case ^Expr_Array:
+        elem: Type
+        if fa, ok := distinct_base(v.type_).(^Type_Fixed_Array); ok { elem = fa.elem }
+        for el in v.elements {
+            void_store(w, el, elem, "an array element")
+            void_expr(w, el)
+        }
+    case ^Expr_Index:
+        void_expr(w, v.expr)
+        void_expr(w, v.index)
+    case ^Expr_Slice:
+        void_expr(w, v.expr)
+        void_expr(w, v.low)
+        void_expr(w, v.high)
+    case ^Expr_Field_Access:
+        void_expr(w, v.expr)
+    case ^Expr_If:
+        void_expr(w, v.condition)
+        void_store(w, v.then_expr, v.type_, "a branch of an if-expression")
+        void_store(w, v.else_expr, v.type_, "a branch of an if-expression")
+        void_expr(w, v.then_expr)
+        void_expr(w, v.else_expr)
+    case ^Expr_Try:
+        void_expr(w, v.inner)
+    case ^Expr_Take:
+        void_expr(w, v.storage)
+        void_expr(w, v.count_expr)
+    }
+}
+
+// The struct a literal builds: its own type, or — for a variant literal typed as
+// its union (`Some{value = p}`) — the variant's struct.
+@(private="file")
+void_literal_struct :: proc(w: ^Void_Walk, v: ^Expr_Struct_Literal) -> ^Scope_Body {
+    #partial switch t in distinct_base(v.type_) {
+    case ^Type_Scope:
+        return as_struct_body(t)
+    case ^Type_Union:
+        if st, ok := w.c.table.structs[t.variant_structs[v.name]]; ok { return &st.sd }
+    }
+    return nil
+}
+
+// A literal field's type: by name, or by position among the user fields (a
+// union variant's leading __tag / __pad header is not written positionally).
+@(private="file")
+void_literal_field :: proc(sd: ^Scope_Body, name: string, pos: int) -> (Type, bool) {
+    user := 0
+    for f in sd.fields {
+        if f.name == "__tag" || f.name == "__pad" { continue }
+        if (name != "" && f.name == name) || (name == "" && user == pos) { return f.type_, true }
+        user += 1
+    }
+    return nil, false
 }

@@ -1,0 +1,20 @@
+module void_ptr_legal
+
+//@ expect-output: reassigned 7 null-compare false c-null ok
+
+// The places `void` may meet a pointer: de-initializing a variable (it must be
+// written again before a read), comparing against it, and handing a C function
+// a null for a nullable parameter.
+
+use mara.core
+use mara.os
+
+main :: fun() {
+	x := 7
+	p := &x
+	p = void                         // de-init: p is unset until written
+	p = &x
+	print("reassigned", p^, "null-compare", p == void, "c-null", "ok")
+	base := vm_reserve(4096)         // vm_reserve passes VirtualAlloc/mmap a void address
+	_ = base
+}
