@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:hash"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
@@ -353,11 +354,10 @@ Codegen :: struct {
     checked:     ^Checked_Program,       // resolved type info from type checker
     // String literal table: value -> global name
     string_literals: map[string]string,
-    string_counter:  int,
-    // Per-Codegen prefix for `@.str.N` names. Empty for the main thread
-    // (preserves existing IR layout); set to a module-specific tag by
-    // parallel codegen workers so each TU's strings live in its own
-    // namespace.
+    string_names:    map[string]bool,   // names handed out, to catch a hash collision
+    // Per-Codegen prefix for `@.str.<hash>` names. Empty for the main thread;
+    // set to a module-specific tag by parallel codegen workers so each TU's
+    // strings live in its own namespace.
     string_name_prefix: string,
     // Track all string globals to emit at top of module
     string_decls: [dynamic]string,
@@ -1708,7 +1708,6 @@ Module_Task :: struct {
     out:                 strings.Builder,
     string_literals:     map[string]string,
     string_decls:        [dynamic]string,
-    string_counter:      int,
     overflow_intrinsics: map[string]bool,
     bswap_intrinsics:    map[int]bool,
     imports:             map[string]bool,
@@ -1752,7 +1751,6 @@ module_codegen_worker :: proc(t: thread.Task) {
     }
     task.string_literals     = local.string_literals
     task.string_decls        = local.string_decls
-    task.string_counter      = local.string_counter
     task.overflow_intrinsics = local.overflow_intrinsics
     task.bswap_intrinsics    = local.bswap_intrinsics
     task.const_tables        = local.const_tables
@@ -2501,17 +2499,15 @@ get_string_literal :: proc(g: ^Codegen, s: string) -> (global_name: string, byte
     if name, ok := g.string_literals[s]; ok {
         return name, len(s) + 1 // +1 for null terminator
     }
-    g.string_counter += 1
-    // Per-worker string-name prefix lets each parallel codegen invent its
-    // own @.str.<N> namespace without coordinating with the others. The
-    // main thread uses an empty prefix so existing behaviour and tests
-    // see `@.str.N` unchanged.
-    name: string
-    if g.string_name_prefix == "" {
-        name = fmt.tprintf("@.str.%d", g.string_counter)
-    } else {
-        name = fmt.tprintf("@.%sstr.%d", g.string_name_prefix, g.string_counter)
+    // Named by content, not by order: a string's name doesn't depend on the
+    // strings emitted before it, so one function's IR stays the same when
+    // another changes. The per-worker prefix keeps the parallel codegens'
+    // namespaces apart (empty on the main thread: `@.str.<hash>`).
+    name := fmt.tprintf("@.%sstr.%016x", g.string_name_prefix, hash.fnv64a(transmute([]byte)s))
+    if name in g.string_names {
+        codegen_fatal(g, {}, "internal: two string literals hash to %s", name)
     }
+    g.string_names[name] = true
     // The table owns its key: callers pass transient views (print's format
     // pieces live in a reused buffer), and a borrowed key changes under the
     // map — `" "` then matched a stale `"="` entry.
@@ -3601,6 +3597,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     g.out = main_builder
     g.tmp_counter = 0
+    g.label_counter = 0
     g.all_vars = {}
     g.emitted_allocas = {}
     // On web (wasm32), the C entry point's `int` is i32, not i64. We keep

@@ -500,6 +500,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     old_all_vars := g.all_vars
     old_alias_vars, old_result_vars, old_param_vars := g.alias_vars, g.result_vars, g.param_vars
     old_tmp := g.tmp_counter
+    old_label := g.label_counter
     old_scope_stack := g.scope_stack
     old_nrvo_var := g.nrvo_var
     old_emitted_allocas := g.emitted_allocas
@@ -507,6 +508,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     g.all_vars = {}
     g.alias_vars, g.result_vars, g.param_vars = {}, {}, {}
     g.tmp_counter = 0
+    g.label_counter = 0
     g.scope_stack = {}
     g.emitted_allocas = {}
     // Pending producer/consumer temp results are per-expression state that must
@@ -839,6 +841,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     g.all_vars = old_all_vars
     g.alias_vars, g.result_vars, g.param_vars = old_alias_vars, old_result_vars, old_param_vars
     g.tmp_counter = old_tmp
+    g.label_counter = old_label
     g.scope_stack = old_scope_stack
     g.current_ret_type = old_ret_type
     g.nrvo_var = old_nrvo_var

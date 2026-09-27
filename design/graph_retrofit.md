@@ -45,6 +45,12 @@ lines while old and new codegen coexist; the end state should be smaller than to
 Before phase 1: design the graph's operations on paper (the op set, how each is written in text,
 what each becomes in LLVM).
 
+The IR differential is `test/irdiff.sh`: it builds every fixture with a main, the multifile
+fixtures, Pounce and `design/all` with `Mara_base_tmp.exe` (the baseline) and `Mara.exe`, and
+requires identical IR and build output. `-n` compares modulo naming instead (`test/irnorm.pl`
+renames locals and labels by first use and replaces string globals by their contents), which is
+the check for phase 3.
+
 ## Phase 0 checklist
 
 - [x] Dead fields: `Expr_Call.desugared` (read, never written), `Stmt_For.collection_len` (read,
@@ -72,8 +78,9 @@ what each becomes in LLVM).
       `broadcast_value` too, so generic instances annotated one node; and a re-checked clone of a
       generic call kept only its instance name, which no lookup resolved (`{all ident(p)}` failed
       in codegen). Fixed both (`test/broadcast_clones.mara`)
-- [ ] Codegen numbers labels and strings module-wide; restart per function so IR compares per
-      function
+- [x] Codegen numbers labels and strings module-wide; restart per function so IR compares per
+      function. Labels restart per function; string globals are named by a hash of their contents
+      (`@.str.<16 hex>`), so no name depends on what was emitted before it
 - [ ] `mara ask` output: record goldens before phase 2 (none exist today)
 - [ ] Found: nested broadcast `g : [2][3]i64 = {all {all x}}` fails to type-check (the inner
       literal is checked against the outer's types)
