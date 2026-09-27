@@ -11373,14 +11373,15 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         //                         every call" pattern (game state, etc.).
         // The type arg comes in three shapes:
         //   take([N]T, ...)     — fixed-size array; resolves to [N]T.
-        //   take([]T(n), ...)   — runtime-counted slice; n is lifted out into
-        //                         count_expr, type_expr is rewritten to a bare
-        //                         []T, and the result is a slice with len=cap=n.
+        //   take([]T(n), ...)   — runtime-counted slice; lowered to type []T,
+        //                         count n, and the result is a slice with
+        //                         len=cap=n.
         //   take(T, ...)        — any other type; the byte size is sizeof(T).
         // Detect the slice form before resolution: `[]Vertex(n)` parses as
         // Type_Slice_Expr{elem = Type_Generic_Instance{Vertex, [n]}}. When the
         // elem name is not a generic template and there's exactly one type-arg,
-        // we treat the arg as a runtime count and rewrite to bare []Vertex.
+        // the arg is a runtime count. The source stays as written; the lowered
+        // form goes to e.lowered_type / e.lowered_count.
         if e.count_expr == nil {
             if ts, ts_ok := e.type_expr.(^Type_Slice_Expr); ts_ok {
                 if gi, gi_ok := ts.elem.(^Type_Generic_Instance); gi_ok && len(gi.type_args) == 1 {
@@ -11389,19 +11390,23 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                         //   Type_Const_Value  — number literal: take([]T(4), ...)
                         //   Type_Name         — bare identifier:  take([]T(n), ...)
                         //   Type_Const_Expr   — anything else:    take([]T(n*2), ...), take([]T(f(x)), ...)
+                        count: Expr
                         if cv, cv_ok := gi.type_args[0].(Type_Const_Value); cv_ok {
                             num := new(Expr_Number)
                             num.int_value = i128(cv.value)
                             num.value = f64(cv.value)
                             num.span = cv.span
-                            e.count_expr = num
+                            count = num
                         } else if tn, tn_ok := gi.type_args[0].(Type_Name); tn_ok {
-                            e.count_expr = new_clone(Expr_Ident{name = tn.name, span = tn.span})
+                            count = new_clone(Expr_Ident{name = tn.name, span = tn.span})
                         } else if ce, ce_ok := gi.type_args[0].(Type_Const_Expr); ce_ok {
-                            e.count_expr = ce.expr
+                            count = ce.expr
                         }
-                        if e.count_expr != nil {
-                            ts.elem = Type_Name{name = gi.name, span = gi.span}
+                        if count != nil {
+                            bare := new_clone(ts^)
+                            bare.elem = Type_Name{name = gi.name, span = gi.span}
+                            e.lowered_type = bare
+                            e.lowered_count = count
                         }
                     }
                 }
@@ -11425,7 +11430,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                 resolved = Type_Error{}
             }
         } else {
-            resolved = resolve_type_expr(e.type_expr, c, e.span, env=env)
+            resolved = resolve_type_expr(take_type(e), c, e.span, env=env)
             if _, is_err := resolved.(Type_Error); is_err {
                 check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
             }
@@ -11433,8 +11438,8 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         // Runtime-counted form: validate count is integer at slice header
         // width, resolved is a slice. Codegen does NOT emit an implicit
         // narrow/widen on the count.
-        if e.count_expr != nil {
-            count_type := check_expr(c, e.count_expr, env)
+        if count := take_count(e); count != nil {
+            count_type := check_expr(c, count, env)
             if !is_any(count_type) && !is_numeric(count_type) {
                 check_error(c, e.span,
                     TYPE_TAKE_COUNT_INTEGER, type_name(count_type))

@@ -64,7 +64,10 @@ what each becomes in LLVM).
 - [x] Operator-overload calls are never recorded as call-graph edges (purity, escape and
       `mara ask` miss them). Both overload resolutions now record the edge
       (`test/operator_calls.mara`; its `mara ask` edges go in the goldens)
-- [ ] `take([]T(n), …)` rewrites a source `Type_Slice_Expr` in place; no fixture covers it
+- [x] `take([]T(n), …)` rewrites a source `Type_Slice_Expr` in place; no fixture covers it. Now
+      lowered into `Expr_Take.lowered_type` / `lowered_count` (read through `take_type` /
+      `take_count`). The rewrite also broke generics: instances share the type expression, so the
+      second lost its count (`test/slice_count_carve.mara`)
 - [ ] `clone_expr` shares a `{all x}` literal's `array_values` buffer between clones
 - [ ] Codegen numbers labels and strings module-wide; restart per function so IR compares per
       function

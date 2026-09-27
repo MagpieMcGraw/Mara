@@ -91,7 +91,7 @@ slice_value :: proc(s: ^Slice, e: Expr) {
         for f in v.fields { slice_value(s, f.value) }
         for a in v.array_values { slice_value(s, a) }
         slice_value(s, v.broadcast_value)
-    case ^Expr_Take:         slice_value(s, v.storage); slice_value(s, v.count_expr)
+    case ^Expr_Take:         slice_value(s, v.storage); slice_value(s, take_count(v))
     case ^Expr_Try:          slice_value(s, v.inner)
     case ^Expr_If:           slice_value(s, v.condition); slice_value(s, v.then_expr); slice_value(s, v.else_expr)
     case ^Expr_Array:        for el in v.elements { slice_value(s, el) }
@@ -140,7 +140,7 @@ slice_collect :: proc(checked: ^Checked_Program, e: Expr, out: ^map[^Expr_Ident]
         for f in v.fields { slice_collect(checked, f.value, out) }
         for a in v.array_values { slice_collect(checked, a, out) }
         slice_collect(checked, v.broadcast_value, out)
-    case ^Expr_Take:         slice_collect(checked, v.storage, out); slice_collect(checked, v.count_expr, out)
+    case ^Expr_Take:         slice_collect(checked, v.storage, out); slice_collect(checked, take_count(v), out)
     case ^Expr_Try:          slice_collect(checked, v.inner, out)
     case ^Expr_If:           slice_collect(checked, v.condition, out); slice_collect(checked, v.then_expr, out); slice_collect(checked, v.else_expr, out)
     case ^Expr_Array:        for el in v.elements { slice_collect(checked, el, out) }
@@ -552,7 +552,7 @@ ld_expr :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Def]bool, out:
         for f in v.fields { ld_expr(checked, f.value, targets, out, unfollowed) }
         for a in v.array_values { ld_expr(checked, a, targets, out, unfollowed) }
         ld_expr(checked, v.broadcast_value, targets, out, unfollowed)
-    case ^Expr_Take:         ld_expr(checked, v.storage, targets, out, unfollowed); ld_expr(checked, v.count_expr, targets, out, unfollowed)
+    case ^Expr_Take:         ld_expr(checked, v.storage, targets, out, unfollowed); ld_expr(checked, take_count(v), targets, out, unfollowed)
     case ^Expr_Try:          ld_expr(checked, v.inner, targets, out, unfollowed)
     case ^Expr_If:           ld_expr(checked, v.condition, targets, out, unfollowed); ld_expr(checked, v.then_expr, targets, out, unfollowed); ld_expr(checked, v.else_expr, targets, out, unfollowed)
     case ^Expr_Array:        for el in v.elements { ld_expr(checked, el, targets, out, unfollowed) }

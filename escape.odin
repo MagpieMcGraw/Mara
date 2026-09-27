@@ -845,7 +845,7 @@ esc_calls :: proc(e: ^Esc, x: Expr) {
     case ^Expr_Index:        esc_calls(e, v.expr); esc_calls(e, v.index)
     case ^Expr_Slice:        esc_calls(e, v.expr); esc_calls(e, v.low); esc_calls(e, v.high)
     case ^Expr_Field_Access: esc_calls(e, v.expr)
-    case ^Expr_Take:         esc_calls(e, v.storage); esc_calls(e, v.count_expr)
+    case ^Expr_Take:         esc_calls(e, v.storage); esc_calls(e, take_count(v))
     case ^Expr_Try:          esc_calls(e, v.inner)
     case ^Expr_Assert:       esc_calls(e, v.cond)
     case ^Expr_If:           esc_calls(e, v.condition); esc_calls(e, v.then_expr); esc_calls(e, v.else_expr)

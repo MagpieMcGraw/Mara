@@ -213,7 +213,7 @@ lineage_all_idents :: proc(e: Expr, out: ^[dynamic]^Expr_Ident) {
         for f in v.fields { lineage_all_idents(f.value, out) }
         for a in v.array_values { lineage_all_idents(a, out) }
         lineage_all_idents(v.broadcast_value, out)
-    case ^Expr_Take:         lineage_all_idents(v.storage, out); lineage_all_idents(v.count_expr, out)
+    case ^Expr_Take:         lineage_all_idents(v.storage, out); lineage_all_idents(take_count(v), out)
     case ^Expr_Try:          lineage_all_idents(v.inner, out)
     case ^Expr_If:           lineage_all_idents(v.condition, out); lineage_all_idents(v.then_expr, out); lineage_all_idents(v.else_expr, out)
     case ^Expr_Array:        for el in v.elements { lineage_all_idents(el, out) }

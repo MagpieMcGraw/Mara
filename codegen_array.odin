@@ -1213,12 +1213,12 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
             bytes_str := fmt.tprintf("%d", t_size)
             count_runtime := ""
             elem_size := t_size
-            if e.count_expr != nil {
+            if take_count(e) != nil {
                 // Slice form: compute count * sizeof(elem) at runtime.
                 sl, _ := distinct_base(e.resolved_type).(^Type_Slice)
                 elem_ir := llvm_type_from_checker(sl.elem)
                 elem_size = elem_byte_size(elem_ir, g.checked)
-                count_runtime = gen_int_at_slice_width(g, e.count_expr)
+                count_runtime = gen_int_at_slice_width(g, take_count(e))
                 bytes_tmp := fresh_tmp(g)
                 emit(g, "  %s = mul %s %s, %d", bytes_tmp, w, count_runtime, elem_size)
                 bytes_str = bytes_tmp
@@ -1227,13 +1227,13 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
                 if idx, idx_ok := un.operand.(^Expr_Index); idx_ok {
                     elem_ptr := ""
                     ok2 := false
-                    if e.count_expr != nil {
+                    if take_count(e) != nil {
                         elem_ptr, ok2 = emit_byte_offset_ptr_runtime(g, idx.expr, idx.index, bytes_str, "slice", idx.span)
                     } else {
                         elem_ptr, ok2 = emit_byte_offset_ptr(g, idx.expr, idx.index, t_size, "let", idx.span)
                     }
                     if ok2 {
-                        if e.count_expr != nil {
+                        if take_count(e) != nil {
                             // Build a fresh slice header pointing at elem_ptr
                             // with len = cap = count. Header lives in writable
                             // local memory (or NRVO'd into dest_hdr). Mirrors
@@ -1318,13 +1318,13 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     // aligned_cursor / new_len / cap_val all live at the storage slice's
     // natural width. No widen/trunc dance.
     w := slice_layout.len_ir
-    if e.count_expr != nil {
+    if take_count(e) != nil {
         // Runtime-counted slice: resolved_type is []T; elem is T.
         sl, _ := distinct_base(e.resolved_type).(^Type_Slice)
         elem_ir := llvm_type_from_checker(sl.elem)
         elem_size = elem_byte_size(elem_ir, g.checked)
         type_align = elem_alignment(elem_ir, g.checked)
-        count_runtime = gen_int_at_slice_width(g, e.count_expr)
+        count_runtime = gen_int_at_slice_width(g, take_count(e))
         advance_amount = fresh_tmp(g)
         emit(g, "  %s = mul %s %s, %d", advance_amount, w, count_runtime, elem_size)
     } else {
@@ -1382,7 +1382,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     // allocate a fresh `take.hdr.N`. The header is the caller-visible value;
     // typed_ptr is the data it views into the caller's storage. gen_take_decl
     // sees Type_Slice and binds a Slice_Var to whichever header we returned.
-    if e.count_expr != nil {
+    if take_count(e) != nil {
         hdr := dest_hdr
         if hdr == "" {
             hdr = fmt.tprintf("%%take.hdr.%d", g.tmp_counter)
@@ -1730,7 +1730,7 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
     // `.cap` and `.len`). We just rewrite `.ptr` to aim at the new source;
     // len/cap stay as the user already set them.
     if take, take_ok := value.(^Expr_Take); take_ok &&
-       take.keyword == "slice" && take.type_expr == nil && take.count_expr == nil {
+       take.keyword == "slice" && take.type_expr == nil && take_count(take) == nil {
         elem_ptr := gen_slice_one_arg_source_ptr(g, take.storage, take.span)
         ptr_gep := fresh_tmp(g)
         emit_slice_gep(g, ptr_gep, dst_ptr, SLICE.ptr)

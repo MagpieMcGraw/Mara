@@ -2303,7 +2303,7 @@ may_read_dest :: proc(g: ^Codegen, e: Expr, d: Dest_Info) -> bool {
     case ^Expr_Assert:
         return may_read_dest(g, v.cond, d)
     case ^Expr_Take:
-        return may_read_dest(g, v.storage, d) || may_read_dest(g, v.count_expr, d)
+        return may_read_dest(g, v.storage, d) || may_read_dest(g, take_count(v), d)
     case ^Expr_If:
         return may_read_dest(g, v.condition, d) ||
                may_read_dest(g, v.then_expr, d) || may_read_dest(g, v.else_expr, d)

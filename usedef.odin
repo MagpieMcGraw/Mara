@@ -426,7 +426,7 @@ ud_expr :: proc(u: ^UD, e: Expr, st: ^Reach) {
         for a in v.array_values { ud_expr(u, a, st) }
         ud_expr(u, v.broadcast_value, st)
         // override_target (`var{…}` in-place update) is a string, not a node — deferred.
-    case ^Expr_Take:         ud_expr(u, v.storage, st); ud_expr(u, v.count_expr, st)
+    case ^Expr_Take:         ud_expr(u, v.storage, st); ud_expr(u, take_count(v), st)
     case ^Expr_Try:          ud_expr(u, v.inner, st)
     case ^Expr_If:           ud_expr(u, v.condition, st); ud_expr(u, v.then_expr, st); ud_expr(u, v.else_expr, st)
     case ^Expr_Array:        for el in v.elements { ud_expr(u, el, st) }

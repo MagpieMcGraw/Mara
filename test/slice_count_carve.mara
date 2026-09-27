@@ -1,0 +1,43 @@
+module slice_count_carve
+
+//@ expect-output: len 3 24
+//@ expect-output: twice 23 64
+//@ expect-output: generic 4 5 176
+
+// `slice([]T(n), storage)` carves a runtime count of T. The checker reads
+// `[]T(n)` as type []T, count n, and records that beside the source instead of
+// rewriting it: the rewrite changed the syntax tree, and generic instances
+// share it, so the second instance of carve_generic lost its count (0).
+
+Cell :: struct {
+	v: i64
+}
+
+Wide :: struct {
+	a: i64
+	b: i64
+}
+
+carve :: fun(memory: ^[]byte, n: i64) -> i64 {
+	xs : []Cell = slice([]Cell(n), memory)
+	xs[n - 1].v = 9
+	return xs.len
+}
+
+carve_twice :: fun(memory: ^[]byte) -> i64 {
+	a : []Cell = slice([]Cell(2), memory)
+	b : []Cell = slice([]Cell(2 + 1), memory)
+	return a.len * 10 + b.len
+}
+
+carve_generic :: fun($T: type, proto: T, memory: ^[]byte, n: i64) -> i64 {
+	xs : []T = slice([]T(n), memory)
+	return xs.len
+}
+
+main :: fun() {
+	buf : [..512]byte
+	print("len", carve(&buf, 3), buf.len)
+	print("twice", carve_twice(&buf), buf.len)
+	print("generic", carve_generic(Cell{}, &buf, 4), carve_generic(Wide{}, &buf, 5), buf.len)
+}

@@ -246,7 +246,7 @@ flow_expr_reads :: proc(stack: ^[dynamic]^Flow_Frame, e: Expr) {
         flow_expr_reads(stack, v.cond)
     case ^Expr_Take:
         flow_expr_reads(stack, v.storage)
-        flow_expr_reads(stack, v.count_expr)
+        flow_expr_reads(stack, take_count(v))
     }
 }
 
@@ -615,7 +615,7 @@ flow_init_reads :: proc(c: ^Checker, e: Expr, uninit: ^map[string]bool, out: ^[d
         flow_init_reads(c, v.cond, uninit, out)
     case ^Expr_Take:
         flow_init_reads(c, v.storage, uninit, out)
-        flow_init_reads(c, v.count_expr, uninit, out)
+        flow_init_reads(c, take_count(v), uninit, out)
     }
 }
 
@@ -885,7 +885,7 @@ void_expr :: proc(w: ^Void_Walk, e: Expr) {
         void_expr(w, v.inner)
     case ^Expr_Take:
         void_expr(w, v.storage)
-        void_expr(w, v.count_expr)
+        void_expr(w, take_count(v))
     }
 }
 

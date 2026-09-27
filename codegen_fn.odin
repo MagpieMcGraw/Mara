@@ -165,7 +165,7 @@ expr_mentions :: proc(e: Expr, name: string) -> bool {
     case ^Expr_Assert:
         return expr_mentions(v.cond, name)
     case ^Expr_Take:
-        return expr_mentions(v.storage, name) || expr_mentions(v.count_expr, name)
+        return expr_mentions(v.storage, name) || expr_mentions(take_count(v), name)
     case ^Expr_If:
         return expr_mentions(v.condition, name) || expr_mentions(v.then_expr, name) || expr_mentions(v.else_expr, name)
     case ^Expr_Tuple_Default:
