@@ -170,7 +170,7 @@ const_init :: proc(cx: ^Const_Ctx, e: Expr, t: Type) -> string {
     // A distinct conversion (`Vec3(v)`) is the value it wraps.
     if call, is_call := e.(^Expr_Call); is_call {
         if inner, ok := call_passthrough_value(cx.g, call); ok {
-            if _, _, _, is_num := cast_target_ir_type(call.name); !is_num {
+            if _, _, _, is_num := cast_target_ir_type(call_name(call)); !is_num {
                 return const_init(cx, inner, t)
             }
         }
@@ -311,7 +311,7 @@ const_struct :: proc(cx: ^Const_Ctx, sd: ^Scope_Body, e: Expr, with_defaults: bo
         case ^Expr_Call:
             // `T(a, b)` / `T(){...}` of a plain struct: positional args, then overrides.
             if call_resolved_name(v) != sd.name || v.fn_value != nil { const_fail(cx, e) }
-            for arg, i in v.args {
+            for arg, i in call_args(v) {
                 if i >= len(values) { const_fail(cx, arg) }
                 values[i] = arg
             }
@@ -559,8 +559,8 @@ const_num :: proc(g: ^Codegen, e: Expr) -> (n: Const_Num, ok: bool) {
         }
     case ^Expr_Call:
         // A numeric conversion (`f32(x)`, `u8(5)`) of a constant.
-        if ir, is_float, is_ptr, ok := cast_target_ir_type(v.name); ok && !is_ptr && v.qualifier == nil && len(v.args) == 1 {
-            x := const_num(g, v.args[0]) or_return
+        if ir, is_float, is_ptr, ok := cast_target_ir_type(call_name(v)); ok && !is_ptr && call_qualifier(v) == nil && len(call_args(v)) == 1 {
+            x := const_num(g, call_args(v)[0]) or_return
             if is_float { return {num_f(x), 0, true}, true }
             i := i128(x.f) if x.is_float else x.i
             if ir == "i1" { i = 1 if i != 0 else 0 }

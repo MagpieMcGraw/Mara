@@ -415,8 +415,8 @@ ud_expr :: proc(u: ^UD, e: Expr, st: ^Reach) {
             append(&sites, Fn_Call_Site{ caller = u.fn, call = v })
             u.checked.call_sites[rf.callee] = sites
         }
-        ud_expr(u, v.qualifier, st)
-        for a in v.args { ud_expr(u, a, st) }
+        ud_expr(u, call_qualifier(v), st)
+        for a in call_args(v) { ud_expr(u, a, st) }
         if v.overrides != nil { ud_expr(u, v.overrides, st) }
     case ^Expr_Index:        ud_expr(u, v.expr, st); ud_expr(u, v.index, st)
     case ^Expr_Slice:        ud_expr(u, v.expr, st); ud_expr(u, v.low, st); ud_expr(u, v.high, st)

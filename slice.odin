@@ -77,9 +77,9 @@ slice_value :: proc(s: ^Slice, e: Expr) {
     case ^Expr_Ident: slice_use(s, v)
     case ^Expr_Call:
         if ra, ok := slice_return_deps(s.checked, v); ok {
-            for i in ra { if i >= 0 && i < len(v.args) { slice_value(s, v.args[i]) } }
+            for i in ra { if i >= 0 && i < len(call_args(v)) { slice_value(s, call_args(v)[i]) } }
         } else {
-            for a in v.args { slice_value(s, a) }
+            for a in call_args(v) { slice_value(s, a) }
         }
         if v.overrides != nil { slice_value(s, v.overrides) }
     case ^Expr_Unary:        slice_value(s, v.operand)
@@ -126,9 +126,9 @@ slice_collect :: proc(checked: ^Checked_Program, e: Expr, out: ^map[^Expr_Ident]
     case ^Expr_Ident: out[v] = true
     case ^Expr_Call:
         if ra, ok := slice_return_deps(checked, v); ok {
-            for i in ra { if i >= 0 && i < len(v.args) { slice_collect(checked, v.args[i], out) } }
+            for i in ra { if i >= 0 && i < len(call_args(v)) { slice_collect(checked, call_args(v)[i], out) } }
         } else {
-            for a in v.args { slice_collect(checked, a, out) }
+            for a in call_args(v) { slice_collect(checked, a, out) }
         }
         if v.overrides != nil { slice_collect(checked, v.overrides, out) }
     case ^Expr_Unary:        slice_collect(checked, v.operand, out)
@@ -542,7 +542,7 @@ ld_expr :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Def]bool, out:
     #partial switch v in e {
     case ^Expr_Call:
         ld_call(checked, v, targets, out, unfollowed)
-        for a in v.args { ld_expr(checked, a, targets, out, unfollowed) }
+        for a in call_args(v) { ld_expr(checked, a, targets, out, unfollowed) }
         if v.overrides != nil { ld_expr(checked, v.overrides, targets, out, unfollowed) }
     case ^Expr_Unary:        ld_expr(checked, v.operand, targets, out, unfollowed)
     case ^Expr_Binary:       ld_expr(checked, v.left, targets, out, unfollowed); ld_expr(checked, v.right, targets, out, unfollowed)
@@ -565,7 +565,7 @@ ld_call :: proc(checked: ^Checked_Program, call: ^Expr_Call, targets: map[^Def]b
     callee := hop_callee(call)
     followable := callee != nil && callee.ast != nil
     consuming, landed := false, false
-    for arg, i in call.args {
+    for arg, i in call_args(call) {
         if !arg_reads_targets(checked, arg, targets) { continue }
         consuming = true
         if !followable { continue }
@@ -1380,7 +1380,7 @@ render_fn_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
 
     s := Slice{ checked = checked }
     defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen); delete(s.result); delete(s.ctrl) }
-    for site in sites { for arg in site.call.args { slice_value(&s, arg) } }
+    for site in sites { for arg in call_args(site.call) { slice_value(&s, arg) } }
     for len(s.work) > 0 {
         u := pop(&s.work)
         rdefs := checked.reaching[u]

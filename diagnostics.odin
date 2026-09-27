@@ -233,12 +233,12 @@ dump_parse_expr :: proc(b: ^strings.Builder, expr: Expr) {
         fmt.sbprintf(b, ")")
 
     case ^Expr_Call:
-        if e.qualifier != nil {
-            dump_parse_expr(b, e.qualifier)
+        if call_qualifier(e) != nil {
+            dump_parse_expr(b, call_qualifier(e))
             fmt.sbprintf(b, ".")
         }
-        fmt.sbprintf(b, "%s(", e.name)
-        for arg, i in e.args {
+        fmt.sbprintf(b, "%s(", call_name(e))
+        for arg, i in call_args(e) {
             if i > 0 { fmt.sbprintf(b, ", ") }
             dump_parse_expr(b, arg)
         }

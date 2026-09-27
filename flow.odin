@@ -216,8 +216,8 @@ flow_expr_reads :: proc(stack: ^[dynamic]^Flow_Frame, e: Expr) {
         flow_expr_reads(stack, v.left)
         flow_expr_reads(stack, v.right)
     case ^Expr_Call:
-        flow_expr_reads(stack, v.qualifier)
-        for a in v.args { flow_expr_reads(stack, a) }
+        flow_expr_reads(stack, call_qualifier(v))
+        for a in call_args(v) { flow_expr_reads(stack, a) }
         if v.overrides != nil {
             for f in v.overrides.fields { flow_expr_reads(stack, f.value) }
         }
@@ -551,12 +551,12 @@ flow_init_reads :: proc(c: ^Checker, e: Expr, uninit: ^map[string]bool, out: ^[d
             flow_init_out_param(uninit, v.right)
         }
     case ^Expr_Call:
-        flow_init_reads(c, v.qualifier, uninit, out)
-        for a in v.args { flow_init_reads(c, a, uninit, out) }
+        flow_init_reads(c, call_qualifier(v), uninit, out)
+        for a in call_args(v) { flow_init_reads(c, a, uninit, out) }
         if v.overrides != nil {
             for f in v.overrides.fields { flow_init_reads(c, f.value, uninit, out) }
         }
-        for a in v.args { flow_init_out_param(uninit, a) }
+        for a in call_args(v) { flow_init_out_param(uninit, a) }
     case ^Expr_Index:
         flow_init_reads(c, v.expr, uninit, out)
         flow_init_reads(c, v.index, uninit, out)

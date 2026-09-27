@@ -443,7 +443,7 @@ esc_stmt :: proc(e: ^Esc, s: Stmt) {
             esc_calls(e, val)
             call, is_call := val.(^Expr_Call)
             if is_call && call.desugared == nil {
-                esc_join(&src, esc_call_result(e, esc_callee(e, call), call.args[:]))
+                esc_join(&src, esc_call_result(e, esc_callee(e, call), call_args(call)[:]))
             } else {
                 esc_join(&src, esc_prov(e, val))
             }
@@ -681,7 +681,7 @@ esc_prov :: proc(e: ^Esc, x: Expr) -> Esc_Roots {
         for el in v.elements { esc_join(&r, esc_prov(e, el)) }
     case ^Expr_Call:
         if v.desugared != nil { return esc_prov(e, v.desugared) }
-        r = esc_call_result(e, esc_callee(e, v), v.args[:])
+        r = esc_call_result(e, esc_callee(e, v), call_args(v)[:])
         if v.overrides != nil { esc_join(&r, esc_prov(e, v.overrides)) }
     case ^Expr_Take:
         // let(T, s) reads a T out of s's memory; slice(..., s) views it.
@@ -828,10 +828,10 @@ esc_calls :: proc(e: ^Esc, x: Expr) {
     #partial switch v in x {
     case ^Expr_Call:
         if v.desugared != nil { esc_calls(e, v.desugared); return }
-        esc_calls(e, v.qualifier)
-        for a in v.args { esc_calls(e, a) }
+        esc_calls(e, call_qualifier(v))
+        for a in call_args(v) { esc_calls(e, a) }
         if v.overrides != nil { esc_calls(e, v.overrides) }
-        esc_call_stores(e, v, esc_callee(e, v), v.args[:], v.span)
+        esc_call_stores(e, v, esc_callee(e, v), call_args(v)[:], v.span)
     case ^Expr_Unary:
         esc_calls(e, v.operand)
         if rf, ok := v.overload_fn.?; ok {
@@ -952,7 +952,7 @@ esc_report_store :: proc(e: ^Esc, val: Esc_Roots, site: Esc_Site, span: Span) {
     if !esc_reporting(e) { return }
     what := esc_describe(val)
     if site.call != nil || site.callee != nil {
-        name := site.call.name if site.call != nil else site.callee.source_name
+        name := call_name(site.call) if site.call != nil else site.callee.source_name
         src := esc_param_name(site.callee, site.st.src)
         if site.st.dst == ESC_STORE_GLOBAL {
             check_error(e.c, span, TYPE_ESCAPE_CALL_STORE_GLOBAL, name, src, what)
@@ -980,11 +980,11 @@ esc_report_call_return :: proc(e: ^Esc, call: ^Expr_Call, span: Span) -> bool {
     if sum == nil { return false }
     sb := strings.builder_make(context.temp_allocator)
     n := 0
-    for i in 0 ..< len(call.args) {
+    for i in 0 ..< len(call_args(call)) {
         if i >= ESC_MAX_PARAMS { break }
         local := false
-        if i in sum.ret      && esc_deepest_local(esc_arg(e, callee, call.args[:], i, false)) > ESC_CALLER { local = true }
-        if i in sum.ret_deep && esc_deepest_local(esc_arg(e, callee, call.args[:], i, true))  > ESC_CALLER { local = true }
+        if i in sum.ret      && esc_deepest_local(esc_arg(e, callee, call_args(call)[:], i, false)) > ESC_CALLER { local = true }
+        if i in sum.ret_deep && esc_deepest_local(esc_arg(e, callee, call_args(call)[:], i, true))  > ESC_CALLER { local = true }
         if !local { continue }
         if n > 0 { strings.write_string(&sb, ", ") }
         fmt.sbprintf(&sb, "parameter `%s`", esc_param_name(callee, i))
@@ -992,7 +992,7 @@ esc_report_call_return :: proc(e: ^Esc, call: ^Expr_Call, span: Span) -> bool {
     }
     if n == 0 { return false }
     check_error(e.c, span, TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
-        call.name, strings.to_string(sb), "argument" if n == 1 else "arguments")
+        call_name(call), strings.to_string(sb), "argument" if n == 1 else "arguments")
     return true
 }
 

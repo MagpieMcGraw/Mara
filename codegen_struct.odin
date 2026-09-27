@@ -1206,9 +1206,9 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
         if rf, rf_ok := bin.overload_fn.?; rf_ok {
             if info, info_ok := lookup_fun_info(g, rf.name); info_ok && info.ret_array_cap > 0 {
                 call := new(Expr_Call)
-                call.name = rf.name
-                append(&call.args, bin.left)
-                append(&call.args, bin.right)
+                call.lowered_name = rf.name
+                append(call_args_mut(call), bin.left)
+                append(call_args_mut(call), bin.right)
                 call.span = bin.span
                 call.type_ = bin.type_
                 call.resolved_func = rf
@@ -1403,7 +1403,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         }
 
         // Pure-struct zero-arg constructor `Foo()`: route through init function.
-        if is_pure_struct && len(call.args) == 0 && has_init {
+        if is_pure_struct && len(call_args(call)) == 0 && has_init {
             emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
             if call.overrides != nil {
                 apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true)
@@ -1413,9 +1413,9 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
 
         // Pure-struct positional constructor `Foo(a, b, c)`: inline field stores
         // by position + defaults for unprovided trailing fields.
-        if is_pure_self_ctor && len(call.args) > 0 {
+        if is_pure_self_ctor && len(call_args(call)) > 0 {
             emit_memset_zero(g, dst_ptr, total)
-            for arg, i in call.args {
+            for arg, i in call_args(call) {
                 if i >= len(st.fields) { break }
                 field := &st.fields[i]
                 gep := fresh_tmp(g)
@@ -1424,7 +1424,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
                     gen_positional_ctor_field_store(g, field, gep, arg)
                 }
             }
-            for fi := len(call.args); fi < len(st.fields); fi += 1 {
+            for fi := len(call_args(call)); fi < len(st.fields); fi += 1 {
                 field := &st.fields[fi]
                 if field.default_value != nil {
                     gep := fresh_tmp(g)

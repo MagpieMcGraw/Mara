@@ -271,6 +271,42 @@ Expr_Call :: struct {
     // Callee is a function VALUE (a fn-typed local or param), not a declared
     // function: its signature, so the indirect call lowers like a direct one.
     fn_value:  ^Type_Scope,
+    // The call as the checker resolved it — filled by type checker, read through
+    // call_name / call_args / call_qualifier, which fall back to the source
+    // fields above until a lowering is written. The source stays as written.
+    //   lowered_name:     the target after resolution (dispatch pick, generic
+    //                     instance, module-flattened or method name)
+    //   lowered_args:     the arguments as the callee receives them — a method's
+    //                     receiver first, `_` and missing trailing args filled
+    //                     with defaults; valid when args_lowered
+    //   qualifier_folded: the qualifier was folded into the name or the args
+    lowered_name:     string,
+    lowered_args:     [dynamic]Expr,
+    args_lowered:     bool,
+    qualifier_folded: bool,
+}
+
+call_name :: proc(e: ^Expr_Call) -> string {
+    return e.lowered_name if e.lowered_name != "" else e.name
+}
+
+call_args :: proc(e: ^Expr_Call) -> [dynamic]Expr {
+    return e.lowered_args if e.args_lowered else e.args
+}
+
+call_qualifier :: proc(e: ^Expr_Call) -> Expr {
+    return nil if e.qualifier_folded else e.qualifier
+}
+
+// The lowered argument list, for a pass that rewrites it: a copy of the source
+// arguments on first use, so the source list is never touched.
+call_args_mut :: proc(e: ^Expr_Call) -> ^[dynamic]Expr {
+    if !e.args_lowered {
+        e.lowered_args = make([dynamic]Expr, 0, len(e.args) + 1)
+        append(&e.lowered_args, ..e.args[:])
+        e.args_lowered = true
+    }
+    return &e.lowered_args
 }
 
 Expr_Array :: struct {
@@ -4857,6 +4893,19 @@ clone_expr :: proc(e: Expr) -> Expr {
         c := new_clone(v^)
         c.qualifier = clone_expr(v.qualifier)
         c.args = clone_exprs(v.args)
+        // A clone carries the lowering it was taken with (a checked body is
+        // re-checked from its lowered form). Its lowered args reuse the clone's
+        // own copies of the source args and qualifier, keeping the sharing the
+        // original has; spliced-in nodes (defaults) are cloned afresh.
+        if v.args_lowered {
+            c.lowered_args = {}
+            for x in v.lowered_args {
+                y := Expr(nil)
+                if x == v.qualifier { y = c.qualifier }
+                for a, i in v.args { if x == a { y = c.args[i]; break } }
+                append(&c.lowered_args, y if y != nil else clone_expr(x))
+            }
+        }
         c.type_ = nil
         c.resolved_func = nil
         return c

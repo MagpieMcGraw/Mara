@@ -188,9 +188,9 @@ lineage_call_label :: proc(value: Expr) -> (name: string, ok: bool) {
     case ^Expr_Tuple_Default: if c, c_ok := v.source.(^Expr_Call); c_ok { call = c }
     }
     if call == nil { return "", false }
-    if _, is_cast := cast_result_type(call.name); is_cast { return "", false }
+    if _, is_cast := cast_result_type(call_name(call)); is_cast { return "", false }
     if rf, rf_ok := call.resolved_func.?; rf_ok && rf.callee != nil { return ask_label(rf.callee), true }
-    return call.name, true
+    return call_name(call), true
 }
 
 // Every variable use in an expression — ALL of them, including every call argument
@@ -202,7 +202,7 @@ lineage_all_idents :: proc(e: Expr, out: ^[dynamic]^Expr_Ident) {
     #partial switch v in e {
     case ^Expr_Ident:        append(out, v)
     case ^Expr_Call:
-        for a in v.args { lineage_all_idents(a, out) }
+        for a in call_args(v) { lineage_all_idents(a, out) }
         if v.overrides != nil { lineage_all_idents(v.overrides, out) }   // typed ptr: a nil one wraps to a non-nil union
     case ^Expr_Unary:        lineage_all_idents(v.operand, out)
     case ^Expr_Binary:       lineage_all_idents(v.left, out); lineage_all_idents(v.right, out)

@@ -147,8 +147,8 @@ expr_mentions :: proc(e: Expr, name: string) -> bool {
     case ^Expr_Binary:
         return expr_mentions(v.left, name) || expr_mentions(v.right, name)
     case ^Expr_Call:
-        if expr_mentions(v.qualifier, name) || expr_mentions(v.desugared, name) { return true }
-        for a in v.args { if expr_mentions(a, name) { return true } }
+        if expr_mentions(call_qualifier(v), name) || expr_mentions(v.desugared, name) { return true }
+        for a in call_args(v) { if expr_mentions(a, name) { return true } }
         if v.overrides != nil { return expr_mentions(v.overrides, name) }
     case ^Expr_Array:
         for x in v.elements { if expr_mentions(x, name) { return true } }

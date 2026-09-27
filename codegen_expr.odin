@@ -236,8 +236,8 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
             // the resolved function. Same shape as gen_binary's overload path.
             if rf, rf_ok := e.overload_fn.?; rf_ok {
                 call := new(Expr_Call)
-                call.name = rf.name
-                append(&call.args, e.operand)
+                call.lowered_name = rf.name
+                append(call_args_mut(call), e.operand)
                 call.span = e.span
                 call.type_ = e.type_
                 call.resolved_func = rf
@@ -867,9 +867,9 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
     // Overloaded operator: delegate to function call
     if rf, rf_ok := e.overload_fn.?; rf_ok {
         call := new(Expr_Call)
-        call.name = rf.name
-        append(&call.args, e.left)
-        append(&call.args, e.right)
+        call.lowered_name = rf.name
+        append(call_args_mut(call), e.left)
+        append(call_args_mut(call), e.right)
         call.span = e.span
         call.type_ = e.type_
         call.resolved_func = rf
@@ -1103,16 +1103,16 @@ is_unsigned_cast :: proc(name: string) -> bool {
 }
 
 gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
-    target, target_is_float, target_is_ptr, ok := cast_target_ir_type(e.name)
+    target, target_is_float, target_is_ptr, ok := cast_target_ir_type(call_name(e))
     if !ok { return "", false }
-    if len(e.args) != 1 { return "0", true }
+    if len(call_args(e)) != 1 { return "0", true }
 
-    src_type := expr_ir_type(g, e.args[0])
+    src_type := expr_ir_type(g, call_args(e)[0])
     src_is_float := is_ir_float(src_type)
     src_is_ptr := src_type == "ptr"
 
     // Evaluate the source expression in its native type
-    val := gen_expr(g, e.args[0], src_type)
+    val := gen_expr(g, call_args(e)[0], src_type)
 
     // Same type → no-op
     if src_type == target {
@@ -1143,7 +1143,7 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
 
     // float → int
     if src_is_float && !target_is_float {
-        if is_unsigned_cast(e.name) {
+        if is_unsigned_cast(call_name(e)) {
             emit(g, "  %s = fptoui %s %s to %s", tmp, src_type, val, target)
         } else {
             emit(g, "  %s = fptosi %s %s to %s", tmp, src_type, val, target)
@@ -1158,7 +1158,7 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
         // non-negative and must uitofp — f32(some_byte) holding 200 is 200.0,
         // not -56.0. bool/byte/char are unsigned.
         src_unsigned := src_type == "i1"
-        #partial switch t in distinct_base(expr_type(e.args[0])) {
+        #partial switch t in distinct_base(expr_type(call_args(e)[0])) {
         case Type_Numeric:
             src_unsigned = t.kind == .Unsigned
         case Type_Byte, Type_Utf8, Type_Bool:
@@ -1184,7 +1184,7 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
         // non-negative and must zero-extend even into a signed target
         // (`i32(some_u16)` must NOT sign-extend). bool/byte/char are unsigned.
         src_unsigned := src_type == "i1"
-        #partial switch t in distinct_base(expr_type(e.args[0])) {
+        #partial switch t in distinct_base(expr_type(call_args(e)[0])) {
         case Type_Numeric:
             src_unsigned = t.kind == .Unsigned
         case Type_Byte, Type_Utf8, Type_Bool:
@@ -1330,7 +1330,7 @@ emit_intrinsic_call :: proc(g: ^Codegen, lookup_name: string, e: ^Expr_Call) -> 
     if !info_ok { return "", false }
 
     arg_strs: [dynamic]string
-    for arg, i in e.args {
+    for arg, i in call_args(e) {
         if i < len(info.param_arrays) && info.param_arrays[i] != nil {
             // An LLVM intrinsic takes an array by value: load it from storage.
             fa := info.param_arrays[i]
@@ -1465,20 +1465,20 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     }
 
     // Built-in: print
-    if e.name == "print" {
+    if call_name(e) == "print" {
         gen_print(g, e)
         return "0"
     }
 
     // Built-in: crash(msg?) — print message (if given) and exit(1)
-    if e.name == "crash" && len(e.args) <= 1 {
+    if call_name(e) == "crash" && len(call_args(e)) <= 1 {
         gen_crash(g, e)
         return "0"
     }
 
     // Built-in: print_cstr(ptr) — print a null-terminated C string (no newline)
-    if e.name == "print_cstr" && len(e.args) == 1 {
-        val := gen_expr(g, e.args[0])
+    if call_name(e) == "print_cstr" && len(call_args(e)) == 1 {
+        val := gen_expr(g, call_args(e)[0])
         fmt_name, fmt_len := get_string_literal(g, "%s")
         fmt_ptr := fresh_tmp(g)
         emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
@@ -1487,8 +1487,8 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     }
 
     // Built-in: print_int(val) — print an integer (no newline)
-    if e.name == "print_int" && len(e.args) == 1 {
-        val := gen_expr(g, e.args[0])
+    if call_name(e) == "print_int" && len(call_args(e)) == 1 {
+        val := gen_expr(g, call_args(e)[0])
         fmt_name, fmt_len := get_string_literal(g, "%lld")
         fmt_ptr := fresh_tmp(g)
         emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
@@ -1497,8 +1497,8 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     }
 
     // Built-in: print_float(val) — print a float (no newline)
-    if e.name == "print_float" && len(e.args) == 1 {
-        val := gen_expr(g, e.args[0])
+    if call_name(e) == "print_float" && len(call_args(e)) == 1 {
+        val := gen_expr(g, call_args(e)[0])
         fmt_name, fmt_len := get_string_literal(g, "%g")
         fmt_ptr := fresh_tmp(g)
         emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
@@ -1509,16 +1509,16 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     // Built-in: len(arr) — capacity for fixed arrays (no separate len), runtime
     // len for slices and partial arrays. Array class len() is desugared to a
     // buf.len field access by the type checker, so it doesn't land here.
-    if e.name == "len" && len(e.args) == 1 {
-        if h, ok := resolve_array_handle(g, e.args[0]); ok {
+    if call_name(e) == "len" && len(call_args(e)) == 1 {
+        if h, ok := resolve_array_handle(g, call_args(e)[0]); ok {
             return emit_array_len(g, &h)
         }
     }
 
     // Built-in: cap(arr) — user-facing capacity.
     // Array class cap() likewise gets desugared upstream.
-    if e.name == "cap" && len(e.args) == 1 {
-        if h, ok := resolve_array_handle(g, e.args[0]); ok {
+    if call_name(e) == "cap" && len(call_args(e)) == 1 {
+        if h, ok := resolve_array_handle(g, call_args(e)[0]); ok {
             return emit_array_cap_user(g, &h)
         }
     }
@@ -1533,8 +1533,8 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     // inside the slice's capacity. No terminator → loud crash with the
     // location. No copies, no allocation, no arena.
     // Literal arg: free pointer to the deduped rodata global (trailing \0).
-    if e.name == "cstring" && len(e.args) == 1 {
-        if lit, lit_ok := e.args[0].(^Expr_String); lit_ok {
+    if call_name(e) == "cstring" && len(call_args(e)) == 1 {
+        if lit, lit_ok := call_args(e)[0].(^Expr_String); lit_ok {
             global, _ := get_string_literal(g, lit.value)
             out := fresh_tmp(g)
             emit_string_gep(g, out, len(lit.value)+1, global)
@@ -1542,14 +1542,14 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         }
         w := slice_layout.len_ir
         len_val, cap_val, src_ptr: string
-        if h, h_ok := resolve_array_handle(g, e.args[0]); h_ok {
+        if h, h_ok := resolve_array_handle(g, call_args(e)[0]); h_ok {
             len_val = emit_array_len(g, &h)
             cap_val = emit_array_raw_cap(g, &h)
             src_ptr = emit_array_data(g, &h)
         } else {
             // General expression (sub-slice, call result): gen_expr yields a
             // pointer to a {len, cap, ptr} header.
-            hdr := gen_expr(g, e.args[0])
+            hdr := gen_expr(g, call_args(e)[0])
             len_gep := fresh_tmp(g)
             emit_slice_gep(g, len_gep, hdr, SLICE.len)
             len_val = fresh_tmp(g)
@@ -1612,9 +1612,9 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     // Built-in: slice_from_ptr(ptr, cap) -> []byte — wraps a raw pointer + capacity into a byte slice.
     // Type checker enforces cap's width matches slice_layout.cap_ir; codegen
     // does not narrow/widen — pass straight through.
-    if e.name == "slice_from_ptr" && len(e.args) == 2 {
-        ptr_val := gen_expr(g, e.args[0])
-        cap_val := gen_expr(g, e.args[1], slice_layout.cap_ir)
+    if call_name(e) == "slice_from_ptr" && len(call_args(e)) == 2 {
+        ptr_val := gen_expr(g, call_args(e)[0])
+        cap_val := gen_expr(g, call_args(e)[1], slice_layout.cap_ir)
         return emit_build_temp_slice(g, ptr_val, cap_val, cap_val)
     }
 
@@ -1630,9 +1630,9 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     // llvm_type_from_checker), so construction is a no-op pass-through —
     // just evaluate the arg in the underlying's IR type and return it.
     if dt, found := g.checked.table.distinct_types[call_resolved_name(e)]; found {
-        if len(e.args) == 1 {
+        if len(call_args(e)) == 1 {
             base_ir := llvm_type_from_checker(dt.base_type)
-            return gen_expr(g, e.args[0], base_ir)
+            return gen_expr(g, call_args(e)[0], base_ir)
         }
     }
 
@@ -1659,7 +1659,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     if info, info_ok := call_fun_info(g, e); info_ok {
         ir_name := call_callee(g, e)
         arg_strs: [dynamic]string
-        for arg, i in e.args {
+        for arg, i in call_args(e) {
             append(&arg_strs, gen_mara_call_arg(g, arg, i, &info))
         }
 
@@ -1834,7 +1834,7 @@ gen_c_call :: proc(g: ^Codegen, e: ^Expr_Call, cs: ^Type_Scope, link_name, forei
     }
 
     // Each user arg.
-    for arg_expr, i in e.args {
+    for arg_expr, i in call_args(e) {
         if i >= len(cs.cg_params) {
             // Variadic excess (not yet supported beyond best-effort scalar pass-through).
             val := gen_expr(g, arg_expr)
@@ -2041,7 +2041,7 @@ gen_call_into_struct :: proc(g: ^Codegen, e: ^Expr_Call, dest_ptr: string, info:
         emit_call_with_sret(g, e, info, dest_ptr, self_arg = k)
         return
     }
-    if !dest_fresh && call_passes_storage(info, len(e.args)) {
+    if !dest_fresh && call_passes_storage(info, len(call_args(e))) {
         tmp := fresh_tmp(g)
         emit_alloca(g, tmp, llvm_type_from_checker(ret_t))
         emit_call_with_sret(g, e, info, tmp)
@@ -2058,7 +2058,7 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
         emit_call_with_sret(g, e, info, dest.alloca, self_arg = k)
         return
     }
-    if !dest_fresh && call_passes_storage(info, len(e.args)) {
+    if !dest_fresh && call_passes_storage(info, len(call_args(e))) {
         ret_t := call_result_type(g, e)
         tmp := fresh_tmp(g)
         emit_alloca(g, tmp, llvm_type_from_checker(ret_t))
@@ -2075,7 +2075,7 @@ gen_call_into_array :: proc(g: ^Codegen, e: ^Expr_Call, dest: ^Array_Var, info: 
 emit_call_with_sret :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, sret: string, self_arg := -1) {
     ir_name := call_callee(g, e)
     arg_strs: [dynamic]string
-    for arg, i in e.args {
+    for arg, i in call_args(e) {
         if i == self_arg {
             append(&arg_strs, fmt.tprintf("ptr %s", sret))
             continue
@@ -2091,11 +2091,11 @@ emit_call_with_sret :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, sret: s
 // itself — and every other argument provably can't reach the destination.
 call_consumes_dest :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, dest_fresh: bool, dest: Expr) -> (int, bool) {
     k, consumes := info.consumed_param.?
-    if dest_fresh || !consumes || dest == nil || k >= len(e.args) { return -1, false }
-    if !same_storage(dest, e.args[k]) { return -1, false }
+    if dest_fresh || !consumes || dest == nil || k >= len(call_args(e)) { return -1, false }
+    if !same_storage(dest, call_args(e)[k]) { return -1, false }
     root, via_ptr, rooted := storage_root(g, dest)
     if !rooted { return -1, false }
-    for a, i in e.args {
+    for a, i in call_args(e) {
         if i != k && !arg_cannot_reach(g, a, root, via_ptr) { return -1, false }
     }
     return k, true
@@ -2290,7 +2290,7 @@ may_read_dest :: proc(g: ^Codegen, e: Expr, d: Dest_Info) -> bool {
     case ^Expr_Call:
         // The qualifier is a namespace (`math.sin`) — the call passes only args.
         if may_read_dest(g, v.desugared, d) { return true }
-        for a in v.args { if may_read_dest(g, a, d) { return true } }
+        for a in call_args(v) { if may_read_dest(g, a, d) { return true } }
         if v.overrides != nil { return may_read_dest(g, v.overrides, d) }
     case ^Expr_Array:
         for x in v.elements { if may_read_dest(g, x, d) { return true } }
@@ -2479,8 +2479,8 @@ is_indirect_call :: proc(e: ^Expr_Call) -> bool {
 // distinct-construction case in gen_call_inner).
 call_passthrough_value :: proc(g: ^Codegen, e: ^Expr_Call) -> (Expr, bool) {
     if e.desugared != nil { return e.desugared, true }
-    if _, is_distinct := g.checked.table.distinct_types[call_resolved_name(e)]; is_distinct && len(e.args) == 1 {
-        return e.args[0], true
+    if _, is_distinct := g.checked.table.distinct_types[call_resolved_name(e)]; is_distinct && len(call_args(e)) == 1 {
+        return call_args(e)[0], true
     }
     return nil, false
 }
@@ -2509,9 +2509,9 @@ gen_crash :: proc(g: ^Codegen, e: ^Expr_Call) {
     // ordinary user code and must not have its own prints teed.
     val := ""
     arg_type: Type
-    if len(e.args) == 1 {
-        val = gen_expr(g, e.args[0])
-        arg_type = expr_type(e.args[0])
+    if len(call_args(e)) == 1 {
+        val = gen_expr(g, call_args(e)[0])
+        arg_type = expr_type(call_args(e)[0])
     }
 
     emit_crash_journal_begin(g)
@@ -2522,7 +2522,7 @@ gen_crash :: proc(g: ^Codegen, e: ^Expr_Call) {
     loc_global, _ := get_string_literal(g, strings.concatenate({"Crashed at ", esc_loc, "\n"}))
     emit(g, "  call i32 (ptr, ...) %s(ptr %s)", printf_sym(g), loc_global)
 
-    if len(e.args) == 1 {
+    if len(call_args(e)) == 1 {
         // Print the message (string literal or runtime string)
         if fa, ok := arg_type.(^Type_Fixed_Array); ok {
             if _, is_utf8 := fa.elem.(Type_Utf8); is_utf8 {
@@ -2566,10 +2566,10 @@ gen_print :: proc(g: ^Codegen, e: ^Expr_Call) {
     // string literals as well as `name :: "..."` constants — those parse as
     // an Expr_Ident at the call site, but the constants table holds the
     // underlying Expr_String.
-    if len(e.args) > 0 {
-        if fmt_str, ok := resolve_format_string_value(g, e.args[0]); ok {
+    if len(call_args(e)) > 0 {
+        if fmt_str, ok := resolve_format_string_value(g, call_args(e)[0]); ok {
             if string_has_format_pct(fmt_str) {
-                gen_print_format(g, fmt_str, e.args[1:], e.span)
+                gen_print_format(g, fmt_str, call_args(e)[1:], e.span)
                 emit_print_newline(g)
                 return
             }
@@ -2577,7 +2577,7 @@ gen_print :: proc(g: ^Codegen, e: ^Expr_Call) {
     }
 
     // Variadic mode: print each arg, space-separated, type-dispatched.
-    for arg_expr, i in e.args {
+    for arg_expr, i in call_args(e) {
         if i > 0 {
             // Print a space between arguments
             emit_print_literal(g, " ")

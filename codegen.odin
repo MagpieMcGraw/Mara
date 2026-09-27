@@ -1153,7 +1153,7 @@ call_resolved_name :: proc(e: ^Expr_Call) -> string {
     if rf, rf_ok := e.resolved_func.?; rf_ok {
         return rf.name
     }
-    return e.name
+    return call_name(e)
 }
 
 // Derive Fun_Info from a checked ^Type_Scope, with caching.
