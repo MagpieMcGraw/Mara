@@ -24,10 +24,9 @@ cd "$(dirname "$0")" || exit 2
 MARA=../Mara.exe
 
 # The AST-shape invariant (ast_shape.odin): after parsing, passes may annotate
-# the tree but not reshape it. Every build reports each reshape it finds; the
-# distinct ones across all fixtures go to ast_shape.log and the tally into the
-# summary. NOT a mismatch yet — the count is a to-do list being worked down.
-# Once it reaches zero, count every reshape as a mismatch.
+# the tree but not reshape it. Every build reports each reshape it finds; each
+# distinct one across all fixtures is a mismatch (a stdlib reshape repeats in
+# every fixture that uses it, so it counts once). Full list: ast_shape.log.
 export MARA_AST_SHAPE=1
 SHAPE_RAW=$(mktemp)
 collect_shape() { echo "$1" | grep -E '^ast-shape\[' | grep -vE '^ast-shape\[[a-z]+\] total ' >> "$SHAPE_RAW"; }
@@ -112,11 +111,10 @@ for d in */; do
 done
 
 echo "----"
-# A stdlib reshape repeats in every fixture that uses it — count it once.
+# Reshapes: each distinct one is a mismatch.
 sort -u "$SHAPE_RAW" > ast_shape.log; rm -f "$SHAPE_RAW"
 shape_n=$(wc -l < ast_shape.log)
-shape_chk=$(grep -c '^ast-shape\[check\]' ast_shape.log)
-shape_cg=$(grep -c '^ast-shape\[codegen\]' ast_shape.log)
-echo "ast-shape: $shape_n distinct reshapes (check $shape_chk, codegen $shape_cg) — test/ast_shape.log"
+while IFS= read -r r; do echo "RESHAPE: ${r#ast-shape}"; done < ast_shape.log
+bad=$((bad + shape_n))
 echo "pass=$pass  xfail=$xfail  skip=$skip  mismatches=$bad"
 [ $bad -eq 0 ] && { echo "OK — all fixtures matched expectations"; exit 0; } || exit 1
