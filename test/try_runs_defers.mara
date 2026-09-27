@@ -1,0 +1,42 @@
+module try_runs_defers
+
+//@ expect-output: cleanup ok
+//@ expect-output: result 8 false
+//@ expect-output: cleanup err
+//@ expect-output: result 0 true
+//@ expect-output: cleanup stmt-err
+//@ expect-output: stmt result true
+
+// `?` returning an error is a return like any other: the deferred blocks (and
+// arena resets) of every open scope run first. The error path used to return
+// straight away, skipping them — in both the `x := f()?` and `f()?` forms.
+
+Probe_Err :: error {
+	Bad
+}
+
+fail :: fun(bad: bool) -> i64, err {
+	if bad do return 0, Bad
+	return 7
+}
+
+step :: fun(tag: []utf8, bad: bool) -> i64, err {
+	defer print("cleanup", tag)
+	x := fail(bad)?
+	return x + 1
+}
+
+step_stmt :: fun(tag: []utf8, bad: bool) -> err {
+	defer print("cleanup", tag)
+	fail(bad)?
+	return .Ok
+}
+
+main :: fun() {
+	a, ea := step("ok", false)
+	print("result", a, bool(ea))
+	b, eb := step("err", true)
+	print("result", b, bool(eb))
+	e2 := step_stmt("stmt-err", true)
+	print("stmt result", bool(e2))
+}

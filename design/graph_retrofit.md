@@ -50,7 +50,7 @@ what each becomes in LLVM).
 - [x] Dead fields: `Expr_Call.desugared` (read, never written), `Stmt_For.collection_len` (read,
       never written), `Stmt_For.collection_type` (written, never read), `Stmt_Assign.checked`
       (unused), `Stmt_Scope.fields` (never written by the parser)
-- [ ] `?` early return skips defers and arena resets (`codegen_expr.odin` ~1955,
+- [x] `?` early return skips defers and arena resets (`codegen_expr.odin` ~1955,
       `codegen_stmt.odin` ~938)
 - [ ] Allocas are de-duplicated by name, blind to type: same-named locals in sibling scopes share
       one slot (`codegen.odin` ~1283, ~1441)

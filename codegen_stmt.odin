@@ -936,17 +936,7 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
         emit_cond_br(g, cmp, prop_lbl, cont_lbl)
 
         emit_label(g, prop_lbl)
-        if g.ret_types != nil {
-            n_ret := len(g.ret_types)
-            for i in 0..<n_ret - 1 {
-                ir_t := llvm_type_from_checker(g.ret_types[i])
-                emit(g, "  store %s zeroinitializer, ptr %%sret.%d", ir_t, i)
-            }
-            emit(g, "  store i32 %s, ptr %%sret.%d", err_val, n_ret - 1)
-            emit(g, "  ret void")
-        } else {
-            emit(g, "  ret i32 %s", err_val)
-        }
+        emit_err_propagate(g, err_val)
         emit_label(g, cont_lbl)
 
         // The err slot has been peeled off; downstream bind loop should see

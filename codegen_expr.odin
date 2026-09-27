@@ -1948,25 +1948,33 @@ gen_try :: proc(g: ^Codegen, e: ^Expr_Try, target_type: string) -> string {
     emit_cond_br(g, cmp, prop_lbl, cont_lbl)
 
     emit_label(g, prop_lbl)
+    emit_err_propagate(g, err_val)
+
+    emit_label(g, cont_lbl)
+    return success_val
+}
+
+// `?` found an error: return it from the enclosing function. Like any other
+// return, it first runs the deferred blocks and arena resets of every open scope
+// (emit_return_resets) — the error path used to `ret` straight away and skip
+// them. A multi-return function zeroes its other result slots and writes the
+// err into the trailing one; zeroinitializer is the universal "default value"
+// (primitives, structs, arrays, slices, ptrs alike). A single-return err
+// function just returns the err.
+emit_err_propagate :: proc(g: ^Codegen, err_val: string) {
     if g.ret_types != nil {
-        // Multi-return enclosing function: zero the non-err slots, write err
-        // into the trailing slot, ret void. zeroinitializer is the universal
-        // "default value" — works for primitives, structs, arrays, slices,
-        // ptrs alike, so we don't have to fan out by type.
         n_ret := len(g.ret_types)
         for i in 0..<n_ret - 1 {
             ir_t := llvm_type_from_checker(g.ret_types[i])
             emit(g, "  store %s zeroinitializer, ptr %%sret.%d", ir_t, i)
         }
         emit(g, "  store i32 %s, ptr %%sret.%d", err_val, n_ret - 1)
+        emit_return_resets(g)
         emit(g, "  ret void")
     } else {
-        // Single-return err function — just return the err value.
+        emit_return_resets(g)
         emit(g, "  ret i32 %s", err_val)
     }
-
-    emit_label(g, cont_lbl)
-    return success_val
 }
 
 // (Terminate-in-place cstring conversion used to live here. It's gone: the
