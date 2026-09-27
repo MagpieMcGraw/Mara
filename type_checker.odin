@@ -418,7 +418,7 @@ is_struct_type :: proc(t: Type) -> bool {
 // Check if a fun's return type is its own name (self-returning data fun pattern).
 is_self_return :: proc(s: ^Stmt_Scope) -> bool {
     if len(s.return_types) != 1 { return false }
-    if tn, ok := s.return_types[0].(Type_Name); ok && tn.name == s.name { return true }
+    if tn, ok := s.return_types[0].(Type_Name); ok && tn.name == scope_name(s) { return true }
     return false
 }
 
@@ -4908,7 +4908,7 @@ ctor_return_arg_set :: proc(c: ^Checker, scope: ^Stmt_Scope) -> []int {
     consensus: [dynamic]int
     defer delete(consensus)
     if len(scope.typed_params) == 0 {
-        if st := lookup_struct_type_scope(c, scope.name); st != nil {
+        if st := lookup_struct_type_scope(c, scope_name(scope)); st != nil {
             for _, i in st.fields { append_unique(&consensus, i) }
         }
     } else {
@@ -6004,7 +6004,7 @@ pre_register_nested_struct_types :: proc(c: ^Checker, parent: ^Type_Scope, body:
         s, is_scope := def.(^Stmt_Scope)
         if !is_scope { continue }
         if s.kind != .Struct { continue }
-        nested := register_nested_struct_scope(c, parent, s.name, s)
+        nested := register_nested_struct_scope(c, parent, scope_name(s), s)
         pre_register_nested_struct_types(c, nested, s.defs)
     }
 }
@@ -6024,9 +6024,9 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
     for def in defs {
         #partial switch s in def {
         case ^Stmt_Scope:
-            bare_name := s.name
+            bare_name := scope_name(s)
             mangled := fmt.aprintf("%s_%s", st.name, bare_name)
-            s.name = mangled
+            s.mangled_name = mangled
             // Data/layout vs callable is now determined by the AST kind tag
             // set by the parser from the declaration keyword:
             //   struct / class  → .Struct (data layout)
@@ -6112,9 +6112,9 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
                 }
             }
         case ^Stmt_Define:
-            bare_name := s.name
+            bare_name := define_name(s)
             mangled := fmt.aprintf("%s_%s", st.name, bare_name)
-            s.name = mangled
+            s.mangled_name = mangled
             // Constants don't have a Type_Scope to point at — track them in a
             // dedicated map so the body-check pass can materialize bare-name
             // aliases (see check_callable_body's consts loop).
@@ -6504,19 +6504,19 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
             // here would prepend the package prefix a second time, creating
             // duplicate empty entries. Mirrors the matching guard in
             // register_and_check_declarations.
-            if s.name in c.table.fun_asts && c.table.fun_asts[s.name] == s {
+            if scope_name(s) in c.table.fun_asts && c.table.fun_asts[scope_name(s)] == s {
                 continue
             }
             // Generic templates store the AST — no resolution to defer.
             if len(s.generic_params) > 0 {
-                if _, exists := c.table.generic_templates[s.name]; exists { continue }
-                c.table.generic_templates[s.name] = Generic_Template{
-                    name           = s.name,
+                if _, exists := c.table.generic_templates[scope_name(s)]; exists { continue }
+                c.table.generic_templates[scope_name(s)] = Generic_Template{
+                    name           = scope_name(s),
                     generic_params = s.generic_params,
                     ast            = s,
                     home_package   = c.current_package,
                 }
-                if len(s.typed_params) > 0 { c.declared_funs[s.name] = true }
+                if len(s.typed_params) > 0 { c.declared_funs[scope_name(s)] = true }
                 c.pre_registered_stmts[rawptr(s)] = true
                 continue
             }
@@ -6526,9 +6526,9 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 continue
             }
             if is_struct_type && len(s.typed_params) == 0 {
-                flat := make_flat_name(c.current_package, s.name)
+                flat := make_flat_name(c.current_package, scope_name(s))
                 if flat in c.table.structs || flat in c.table.funs {
-                    check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
+                    check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, scope_name(s))
                     continue
                 }
                 struct_type := new(Type_Scope)
@@ -6537,25 +6537,25 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 struct_type.kind = .Struct
                 struct_type.is_packed = s.is_packed
                 struct_type.ast = s
-                struct_type.source_name = s.name
+                struct_type.source_name = scope_name(s)
                 struct_type.decl_env = env
                 c.table.structs[flat] = struct_type
                 // Body fields deferred to Pass 1b (register_scope_defs).
-                type_env_set(pub, s.name, struct_type)
-                c.table.fun_asts[s.name] = s
-                c.table.fun_homes[s.name] = c.current_package
+                type_env_set(pub, scope_name(s), struct_type)
+                c.table.fun_asts[scope_name(s)] = s
+                c.table.fun_homes[scope_name(s)] = c.current_package
                 if owner != nil {
                     struct_type.parent_scope = env if env != nil else owner // file/enclosing scope -> module
                     if owner.types == nil { owner.types = make(map[string]Type) }
-                    owner.types[s.name] = struct_type
+                    owner.types[scope_name(s)] = struct_type
                 }
                 pre_register_nested_struct_types(c, struct_type, s.defs)
                 c.pre_registered_stmts[rawptr(s)] = true
             } else {
-                flat_name := make_flat_name(c.current_package, s.name)
+                flat_name := make_flat_name(c.current_package, scope_name(s))
                 if is_struct_type {
                     if flat_name in c.table.funs || flat_name in c.table.structs {
-                        check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
+                        check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, scope_name(s))
                         continue
                     }
                 } else {
@@ -6570,7 +6570,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 fun_type.name = flat_name
                 fun_type.home_package = c.current_package
                 fun_type.ast = s
-                fun_type.source_name = s.name
+                fun_type.source_name = scope_name(s)
                 fun_type.decl_env = env   // parameterized structs resolve fields on demand from here
                 if is_struct_type {
                     fun_type.kind = .Struct
@@ -6579,20 +6579,20 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 }
                 c.table.funs[flat_name] = fun_type
                 // params and return_type deferred to Pass 1b.
-                type_env_set(pub, s.name, fun_type)
-                c.table.fun_asts[s.name] = s
-                c.table.fun_homes[s.name] = c.current_package
+                type_env_set(pub, scope_name(s), fun_type)
+                c.table.fun_asts[scope_name(s)] = s
+                c.table.fun_homes[scope_name(s)] = c.current_package
                 is_callable := !is_struct_type || len(s.typed_params) > 0
-                if is_callable { c.declared_funs[s.name] = true }
+                if is_callable { c.declared_funs[scope_name(s)] = true }
                 if owner != nil {
                     fun_type.parent_scope = env if env != nil else owner // file/enclosing scope -> module
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
-                        owner.types[s.name] = fun_type
+                        owner.types[scope_name(s)] = fun_type
                     }
                     if is_callable {
                         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
-                        owner.functions[s.name] = fun_type
+                        owner.functions[scope_name(s)] = fun_type
                     }
                 }
                 if is_struct_type { pre_register_nested_struct_types(c, fun_type, s.defs) }
@@ -6821,7 +6821,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 delete_key(&c.pre_registered_stmts, rawptr(s))
                 if len(s.generic_params) > 0 { continue }  // generic — nothing more to do
                 is_struct := s.kind == .Struct
-                flat := make_flat_name(c.current_package, s.name)
+                flat := make_flat_name(c.current_package, scope_name(s))
                 if is_struct && len(s.typed_params) == 0 {
                     if struct_type, ok := c.table.structs[flat]; ok {
                         register_scope_defs(c, struct_type, &struct_type.sd, s.defs)
@@ -6855,24 +6855,24 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             }
             // Generic template — store and continue
             if len(s.generic_params) > 0 {
-                c.table.generic_templates[s.name] = Generic_Template{
-                    name           = s.name,
+                c.table.generic_templates[scope_name(s)] = Generic_Template{
+                    name           = scope_name(s),
                     generic_params = s.generic_params,
                     ast            = s,
                     home_package   = c.current_package,
                 }
-                if len(s.typed_params) > 0 { c.declared_funs[s.name] = true }
+                if len(s.typed_params) > 0 { c.declared_funs[scope_name(s)] = true }
                 continue
             }
             // Already registered by a parent's register_scope_defs pass — skip.
             // That pass resolves params and return type as well.
-            if s.name in c.table.fun_asts && c.table.fun_asts[s.name] == s {
+            if scope_name(s) in c.table.fun_asts && c.table.fun_asts[scope_name(s)] == s {
                 continue
             }
-            existing_fn, existing_fn_found := type_env_get(env, s.name)
+            existing_fn, existing_fn_found := type_env_get(env, scope_name(s))
             if existing_fn_found {
                 if tf, is_fn := existing_fn.(^Type_Scope); is_fn && len(tf.params) > 0 && len(s.typed_params) > 0 {
-                    check_error(c, s.span, TYPE_FUNCTION_ALREADY_DEFINED, s.name)
+                    check_error(c, s.span, TYPE_FUNCTION_ALREADY_DEFINED, scope_name(s))
                     continue
                 }
             }
@@ -6883,40 +6883,40 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // Parameterized constructors may declare returns (trailing err);
             // pure-data structs (no params) may not.
             if is_struct_type && len(s.return_types) > 0 && len(s.typed_params) == 0 {
-                check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, s.name)
+                check_error(c, s.span, TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN, scope_name(s))
                 clear(&s.return_types)  // suppress cascading return-path errors
             }
             if is_struct_type && len(s.typed_params) == 0 {
                 // Pure data struct — create Type_Scope with kind=.Struct, no params
                 struct_type := new(Type_Scope)
-                struct_type.name = make_flat_name(c.current_package, s.name)
+                struct_type.name = make_flat_name(c.current_package, scope_name(s))
                 struct_type.home_package = c.current_package
                 struct_type.kind = .Struct
                 struct_type.is_packed = s.is_packed
                 struct_type.ast = s
-                struct_type.source_name = s.name
+                struct_type.source_name = scope_name(s)
                 struct_type.decl_env = env
                 if struct_type.name in c.table.structs || struct_type.name in c.table.funs {
-                    check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
+                    check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, scope_name(s))
                     continue
                 }
                 c.table.structs[struct_type.name] = struct_type
                 register_scope_defs(c, struct_type, &struct_type.sd, s.defs)
-                type_env_set(pub, s.name, struct_type)
-                c.table.fun_asts[s.name] = s
-                c.table.fun_homes[s.name] = c.current_package
+                type_env_set(pub, scope_name(s), struct_type)
+                c.table.fun_asts[scope_name(s)] = s
+                c.table.fun_homes[scope_name(s)] = c.current_package
                 // Attach as a member of the enclosing module struct (if any).
                 // Mirrors the work extract_module_into_checked used to do post-hoc.
                 if owner != nil {
                     if owner.types == nil { owner.types = make(map[string]Type) }
-                    owner.types[s.name] = struct_type
+                    owner.types[scope_name(s)] = struct_type
                 }
             } else {
                 // Function or struct constructor (has params)
                 if is_struct_type {
-                    flat_name := make_flat_name(c.current_package, s.name)
+                    flat_name := make_flat_name(c.current_package, scope_name(s))
                     if flat_name in c.table.funs || flat_name in c.table.structs {
-                        check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, s.name)
+                        check_error(c, s.span, TYPE_TYPE_ALREADY_DEFINED, scope_name(s))
                         continue
                     }
                 }
@@ -6927,10 +6927,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 // names are distinct — honors `fn name` identity). Only struct
                 // kinds are added to c.table.funs (the map is used by codegen
                 // to emit LLVM struct types; funs are emitted separately).
-                fun_type.name = make_flat_name(c.current_package, s.name)
+                fun_type.name = make_flat_name(c.current_package, scope_name(s))
                 fun_type.home_package = c.current_package
                 fun_type.ast = s
-                fun_type.source_name = s.name
+                fun_type.source_name = scope_name(s)
                 fun_type.decl_env = env   // parameterized structs resolve fields on demand from here
                 if is_struct_type {
                     fun_type.kind = .Struct
@@ -6956,21 +6956,21 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 }
                 is_callable := !is_struct_type || len(s.typed_params) > 0
                 // Register name in scope
-                type_env_set(pub, s.name, fun_type)
-                c.table.fun_asts[s.name] = s
-                c.table.fun_homes[s.name] = c.current_package
-                if is_callable { c.declared_funs[s.name] = true }
+                type_env_set(pub, scope_name(s), fun_type)
+                c.table.fun_asts[scope_name(s)] = s
+                c.table.fun_homes[scope_name(s)] = c.current_package
+                if is_callable { c.declared_funs[scope_name(s)] = true }
                 // Attach as a member of the enclosing module struct (if any).
                 // Mirrors the work extract_module_into_checked used to do post-hoc.
                 if owner != nil {
                     fun_type.parent_scope = env if env != nil else owner // file/enclosing scope -> module
                     if is_struct_type {
                         if owner.types == nil { owner.types = make(map[string]Type) }
-                        owner.types[s.name] = fun_type
+                        owner.types[scope_name(s)] = fun_type
                     }
                     if is_callable {
                         if owner.functions == nil { owner.functions = make(map[string]^Type_Scope) }
-                        owner.functions[s.name] = fun_type
+                        owner.functions[scope_name(s)] = fun_type
                     }
                 }
             }
@@ -7051,7 +7051,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     if sub_name == inc.path { main_mod = m }
                 }
                 if main_mod != nil {
-                    type_env_set(env, s.name, main_mod)
+                    type_env_set(env, define_name(s), main_mod)
                     s.var_type = main_mod
                     s.env_type = main_mod
                     inc.type_ = main_mod
@@ -7891,7 +7891,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
         // Body is compiler-generated. Validate the declared signature against
         // the LLVM intrinsic's expected shape (arity + element types).
         if !signature_only {
-            fun_type_raw, _ := type_env_get(env, s.name)
+            fun_type_raw, _ := type_env_get(env, scope_name(s))
             if ft, ft_ok := fun_type_raw.(^Type_Scope); ft_ok {
                 check_llvm_intrinsic_signature(c, ft, s.intrinsic_name, s.span)
             }
@@ -7904,7 +7904,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     // entry (Init_Flags.Timer). Without owned-first, the bare lookup would
     // return Init_Flags, ft_ok would fail, and the function would silently
     // bail — leaving the struct's fields uninitialized.
-    fun_type_raw, _ := type_env_get_owned_first(env, s.name)
+    fun_type_raw, _ := type_env_get_owned_first(env, scope_name(s))
 
     ft, ft_ok := fun_type_raw.(^Type_Scope)
     if !ft_ok { return }
@@ -8021,15 +8021,15 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
             c.expected_hint = ann if !is_any(ann) else nil
             val_type := check_expr(c, def.value, child)
             def.var_type = val_type
-            c.table.constants[def.name] = def.value
+            c.table.constants[define_name(def)] = def.value
             c.table.constants[bare] = def.value
-            type_env_set(child, def.name, val_type)
+            type_env_set(child, define_name(def), val_type)
             type_env_set(child, bare, val_type)
             // Mirror onto the defs layer (ft) whenever there is one — structs and
             // funs (methods included) — so sibling methods / nested funs reach the
             // const by bare name.
             if parent_env == ft {
-                type_env_set(ft, def.name, val_type)
+                type_env_set(ft, define_name(def), val_type)
                 type_env_set(ft, bare, val_type)
             }
         }
@@ -8602,7 +8602,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
     // is the module env (so siblings see it); otherwise it's env (back-compat).
     pub := public_env if public_env != nil else env
     // Skip if already pre-registered (parent's body scan)
-    _, pre_registered := scope_defines(pub, s.name)
+    _, pre_registered := scope_defines(pub, define_name(s))
     if pre_registered {
         return
     }
@@ -8616,7 +8616,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
     // codegen can inline-substitute every use site. Module-level constants
     // are pre-registered by register_module_constant; this covers function-
     // body and nested-scope `::` declarations regardless of value type.
-    c.table.constants[s.name] = s.value
+    c.table.constants[define_name(s)] = s.value
 
     ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
     // Feed the annotation to the value as an expected-type hint, mirroring the
@@ -8641,14 +8641,14 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
         if ann_is_distinct && !val_is_array && !val_is_struct_lit {
             if types_incompatible(ann_type, val_type) {
                 check_error(c, s.span, TYPE_CANNOT_ASSIGN_CONSTANT_TYPE,
-                    type_name(val_type), s.name, type_name(ann_type))
+                    type_name(val_type), define_name(s), type_name(ann_type))
             }
             if is_infer(val_type) {
                 check_literal_overflow(c, s.value, ann_type, s.span)
             }
             s.var_type = distinct_base(ann_type)
             s.env_type = ann_type
-            type_env_set(pub, s.name, ann_type)
+            type_env_set(pub, define_name(s), ann_type)
             return
         }
 
@@ -8662,41 +8662,41 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
             check_struct_literal_assign(c, s.span, s.value, sd, env)
             s.var_type = distinct_base(ann_type)
             s.env_type = ann_type
-            type_env_set(pub, s.name, ann_type)
+            type_env_set(pub, define_name(s), ann_type)
             return
         }
         if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
             check_union_literal_assign(c, s.span, s.value, ut, env)
             s.var_type = distinct_base(ann_type)
             s.env_type = ann_type
-            type_env_set(pub, s.name, ann_type)
+            type_env_set(pub, define_name(s), ann_type)
             return
         }
         if fa, ok := check_ann.(^Type_Fixed_Array); ok {
-            check_array_assign(c, s.span, s.name, fa, val_type, s.value)
+            check_array_assign(c, s.span, define_name(s), fa, val_type, s.value)
             s.var_type = distinct_base(ann_type)
             s.env_type = ann_type
-            type_env_set(pub, s.name, ann_type)
+            type_env_set(pub, define_name(s), ann_type)
             return
         }
 
         // Fallback: simple structural compatibility
         if types_incompatible(ann_type, val_type) {
             check_error(c, s.span, TYPE_CANNOT_ASSIGN_CONSTANT_TYPE,
-                type_name(val_type), s.name, type_name(ann_type))
+                type_name(val_type), define_name(s), type_name(ann_type))
         }
         if is_infer(val_type) {
             check_literal_overflow(c, s.value, ann_type, s.span)
         }
         s.var_type = distinct_base(ann_type)
         s.env_type = ann_type
-        type_env_set(pub, s.name, ann_type)
+        type_env_set(pub, define_name(s), ann_type)
         return
     }
 
     s.var_type = distinct_base(val_type)
     s.env_type = val_type
-    type_env_set(pub, s.name, val_type)
+    type_env_set(pub, define_name(s), val_type)
 }
 
 // Validate that a struct literal's fields match a struct definition:
@@ -9653,7 +9653,7 @@ extract_scope_fun_defs :: proc(checked: ^Checked_Program, defs: [dynamic]Stmt, e
             // Extract callable funs as Checked_Scope
             cf, cf_ok := extract_checked_scope(s, env, checked.table)
             if cf_ok {
-                fn_key := s.name
+                fn_key := scope_name(s)
                 // Prefix check uses the flat (underscored) form so dotted
                 // module names like "mara.memory" match against already-flat
                 // nested names like "mara_memory_Arena_Basic_mark".
@@ -9671,15 +9671,15 @@ extract_scope_fun_defs :: proc(checked: ^Checked_Program, defs: [dynamic]Stmt, e
 
 extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Scope, table: ^SymbolTable = nil) -> (^Type_Scope, bool) {
     ft: ^Type_Scope
-    if fun_type_raw, found := type_env_get(env, s.name); found {
+    if fun_type_raw, found := type_env_get(env, scope_name(s)); found {
         if v, ok := fun_type_raw.(^Type_Scope); ok { ft = v }
     }
     // Nested funs register their Type_Scope in body envs that aren't reachable
     // from the extract-time env. Fall back to the global table, looked up by
     // flat name (package + bare).
     if ft == nil && table != nil {
-        if home, hok := table.fun_homes[s.name]; hok {
-            ft = table.funs[make_flat_name(home, s.name)]
+        if home, hok := table.fun_homes[scope_name(s)]; hok {
+            ft = table.funs[make_flat_name(home, scope_name(s))]
         }
     }
     if ft == nil { return nil, false }
@@ -10015,7 +10015,7 @@ extract_nested_foreigns_into_checked :: proc(c: ^Checker, body: [dynamic]Stmt, m
             }
         case ^Stmt_Scope:
             if s.kind == .Struct {
-                inner_flat := make_flat_name(struct_flat_name, s.name)
+                inner_flat := make_flat_name(struct_flat_name, scope_name(s))
                 extract_nested_foreigns_into_checked(c, s.body, mod_env, inner_flat)
             }
         }
@@ -10039,7 +10039,7 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
             // that here for the codegen side so foreign_funs is keyed under
             // the nested flat name that call_resolved_name produces.
             if s.kind == .Struct {
-                struct_flat := make_flat_name(module_name, s.name)
+                struct_flat := make_flat_name(module_name, scope_name(s))
                 extract_nested_foreigns_into_checked(c, s.body, mod_env, struct_flat)
             }
             // mod_struct.types / functions attachments are handled by
@@ -10053,8 +10053,8 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
             // when extracted via extract_main_program_stmts (which registers it
             // under the bare key "main", consumed by the @main codegen wrapper).
             // Skip it when walked as a regular module here.
-            if cf_ok && s.name != "main" {
-                flat_key := make_flat_name(module_name, s.name)
+            if cf_ok && scope_name(s) != "main" {
+                flat_key := make_flat_name(module_name, scope_name(s))
                 // Dedup: a main package can also be imported as a module by
                 // another main package, in which case the same function gets
                 // walked twice — once here, once via extract_main_program_stmts.
@@ -10124,7 +10124,7 @@ register_module_constant_stmt :: proc(c: ^Checker, stmt: Stmt, module_name: stri
     // `name := include path`.
     if def, ok := stmt.(^Stmt_Define); ok {
         if _, is_include := def.value.(^Expr_Include); !is_include && def.value != nil {
-            register_module_constant(c, module_name, def.name, def.value)
+            register_module_constant(c, module_name, define_name(def), def.value)
         }
     }
 }
@@ -10210,9 +10210,9 @@ extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts
             extract_scope_fun_defs(checked, s.defs, env, main_package)
             cf, cf_ok := extract_checked_scope(s, env, c.table)
             if cf_ok {
-                fn_key := s.name
-                if s.name != "main" && main_package != "" {
-                    fn_key = make_flat_name(main_package, s.name)
+                fn_key := scope_name(s)
+                if scope_name(s) != "main" && main_package != "" {
+                    fn_key = make_flat_name(main_package, scope_name(s))
                 }
                 // Dedup: if this main package was also walked as an imported
                 // module (when another main package's `use` brought it in),
@@ -10242,10 +10242,10 @@ extract_main_program_stmts :: proc(c: ^Checker, checked: ^Checked_Program, stmts
         if def, ok := stmt.(^Stmt_Define); ok {
             if _, is_include := def.value.(^Expr_Include); !is_include && def.value != nil {
                 if main_package != "" {
-                    flat := make_flat_name(main_package, def.name)
+                    flat := make_flat_name(main_package, define_name(def))
                     checked.table.constants[flat] = def.value
                 }
-                checked.table.constants[def.name] = def.value
+                checked.table.constants[define_name(def)] = def.value
             }
         }
     }
@@ -10258,7 +10258,7 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
     for stmt in stmts {
         #partial switch s in stmt {
         case ^Stmt_Scope:
-            if s.name == "main" {
+            if scope_name(s) == "main" {
                 found_main^ = true
                 is_void := len(s.return_types) == 0
                 is_int := false
@@ -10297,7 +10297,7 @@ validate_top_level_stmts :: proc(c: ^Checker, stmts: [dynamic]Stmt, found_main: 
                     }
                 }
                 if !ok {
-                    check_error(c, s.span, TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER, s.name)
+                    check_error(c, s.span, TYPE_EXPOSE_FUNCTION_TAKE_FIRST_PARAMETER, scope_name(s))
                 }
             }
         case ^Stmt_If:
@@ -10452,7 +10452,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         if !ok { continue }
         for stmt in prog^ {
             if fn_stmt, ok := stmt.(^Stmt_Scope); ok {
-                if fn_stmt.name != "main" && !c.target_shared { continue }
+                if scope_name(fn_stmt) != "main" && !c.target_shared { continue }
                 for body_stmt in fn_stmt.body {
                     if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target == nil && !a.is_decl {
                         // Bare-name reassignment: synthesise an Expr_Ident for
@@ -10570,7 +10570,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
                 }
                 if def, ok := stmt.(^Stmt_Define); ok {
                     if _, is_inc := def.value.(^Expr_Include); !is_inc && def.value != nil {
-                        register_module_constant(&c, main_package, def.name, def.value)
+                        register_module_constant(&c, main_package, define_name(def), def.value)
                     }
                 }
             }
