@@ -7174,6 +7174,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 type_env_set(env, s.name, Type_Error{})
                 continue
             }
+            // `_ = e` is a discard: `e` is checked for its own sake and nothing
+            // is bound. `_` never enters scope, so one discard can't type the
+            // next — `_ = f()` then `_ = g()` with different returns is fine.
+            if s.name == "_" && !s.is_decl {
+                c.expected_hint = nil
+                s.var_type = distinct_base(solidify_type(check_expr(c, s.value, env)))
+                continue
+            }
             // Reassigning a by-address param would overwrite the caller's value.
             if !s.is_decl && is_immutable_param(env, s.name) {
                 check_error(c, s.span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, s.name)

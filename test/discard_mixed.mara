@@ -1,0 +1,29 @@
+module discard_mixed
+
+// `_ = e` is a discard, not a binding: `_` never enters scope, so successive
+// discards of different types don't collide on a phantom `_` local (the first
+// one used to type it, and every later one had to match). `e` still runs.
+
+//@ expect-output: ran int_ret
+//@ expect-output: ran float_ret
+//@ expect-output: ran big_ret
+//@ expect-output: x=5
+
+Big :: struct {
+	a: [64]i64
+	n: i64 = 3
+}
+
+int_ret :: fun() -> i64 { print("ran int_ret"); return 1 }
+float_ret :: fun() -> f32 { print("ran float_ret"); return 2.0 }
+big_ret :: fun() -> Big { print("ran big_ret"); return Big{} }
+
+main :: fun() {
+	x := 5
+	_ = int_ret()
+	_ = float_ret()
+	_ = big_ret()
+	_ = x
+	_ = int_ret()
+	print("x=%", x)
+}

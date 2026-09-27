@@ -28,6 +28,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // assignment itself.
         if s.name == "this_program" && !s.is_decl { return }
 
+        // `_ = e` is a discard (the checker binds nothing): evaluate `e` for
+        // its effects and drop the value, exactly like a bare call statement.
+        if s.name == "_" && !s.is_decl {
+            gen_expr(g, s.value)
+            clear_temp_results(g)
+            return
+        }
+
         // Reassignment with the uninitialized marker (`x = void` on a
         // non-pointer, or `#skip_constructor`): de-init is flow-side
         // read-tracking only — nothing to emit. Pointer `p = void` stores
