@@ -13257,8 +13257,12 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             return check_dispatch_call(c, e, fn_names, check_args[:], env)
         }
 
-        // Generic function instantiation
-        if gtmpl, gtmpl_ok := &c.table.generic_templates[call_name(e)]; gtmpl_ok {
+        // Generic function instantiation. A clone of a checked call (a
+        // broadcast's slots) carries the instance name as its lowered name,
+        // which is no declared function: find the template by the source name.
+        gtmpl, gtmpl_ok := &c.table.generic_templates[call_name(e)]
+        if !gtmpl_ok { gtmpl, gtmpl_ok = &c.table.generic_templates[e.name] }
+        if gtmpl_ok {
             return check_generic_call(c, e, gtmpl, check_args[:], env)
         }
     }

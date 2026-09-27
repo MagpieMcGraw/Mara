@@ -68,10 +68,17 @@ what each becomes in LLVM).
       lowered into `Expr_Take.lowered_type` / `lowered_count` (read through `take_type` /
       `take_count`). The rewrite also broke generics: instances share the type expression, so the
       second lost its count (`test/slice_count_carve.mara`)
-- [ ] `clone_expr` shares a `{all x}` literal's `array_values` buffer between clones
+- [x] `clone_expr` shares a `{all x}` literal's `array_values` buffer between clones. It shared
+      `broadcast_value` too, so generic instances annotated one node; and a re-checked clone of a
+      generic call kept only its instance name, which no lookup resolved (`{all ident(p)}` failed
+      in codegen). Fixed both (`test/broadcast_clones.mara`)
 - [ ] Codegen numbers labels and strings module-wide; restart per function so IR compares per
       function
 - [ ] `mara ask` output: record goldens before phase 2 (none exist today)
+- [ ] Found: nested broadcast `g : [2][3]i64 = {all {all x}}` fails to type-check (the inner
+      literal is checked against the outer's types)
+- [ ] Found: a fn-type parameter followed by another parameter doesn't parse — in
+      `fun(op: fun(i64) -> i64, x: i64)` the return list swallows `, x`
 
 Later, not phase 0: `mara ask` refuses to run with any type error anywhere (partial results are a
 phase 2–4 concern).

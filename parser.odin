@@ -4940,6 +4940,12 @@ clone_expr :: proc(e: Expr) -> Expr {
         for f in v.fields {
             append(&c.fields, Struct_Field{name = f.name, value = clone_expr(f.value)})
         }
+        c.broadcast_value = clone_expr(v.broadcast_value)
+        // Checker-derived: each clone derives its own. A shared array_values
+        // buffer let one clone's expansion overwrite another's slots.
+        c.array_values = {}
+        c.is_spread = false
+        c.override_target = ""
         c.type_ = nil
         return c
     case ^Expr_Field_Access:

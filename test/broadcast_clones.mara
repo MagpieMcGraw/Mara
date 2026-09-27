@@ -1,0 +1,43 @@
+module broadcast_clones
+
+//@ expect-output: generic 7 2.5 4
+//@ expect-output: plain 4 4
+//@ expect-output: vecs 20 2 3
+//@ expect-output: named 5 0 7
+
+// `{all x}` checks x once and fills the other slots with checked clones.
+// Clones used to share the literal's broadcast value and array_values buffer,
+// so generic instances annotated one node (the f64 and Cell instances of
+// first_of saw ident already resolved for i64), and a re-checked clone of a
+// generic call kept only its instance name, which no lookup resolved
+// ("unknown function 'ident__Cell'").
+
+Cell :: struct {
+	v: i64
+}
+
+V3 :: distinct [3]i64
+
+ident :: fun($T: type, x: T) -> T { return x }
+
+first_of :: fun($T: type, proto: T) -> T {
+	arr : [3]T = {all ident(proto)}
+	return arr[2]
+}
+
+main :: fun() {
+	a := first_of(i64(7))
+	b := first_of(f64(2.5))
+	c := first_of(Cell{v = 4})
+	print("generic", a, b, c.v)
+
+	p := Cell{v = 4}
+	cells : [3]Cell = {all ident(p)}
+	print("plain", cells[0].v, cells[2].v)
+
+	vs : [4]V3 = {all V3{1, 2, 3}}
+	vs[0][1] = 20
+	print("vecs", vs[0][1], vs[3][1], vs[3][2])
+	ws : [2]V3 = {all V3{x = 5, z = 7}}
+	print("named", ws[1][0], ws[1][1], ws[1][2])
+}
