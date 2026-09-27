@@ -1,0 +1,14 @@
+module void_ptr_deinit_neg
+
+//@ expect-fail: used before being assigned
+
+// `p = void` de-initializes a pointer: it stores null and p re-enters the
+// read-before-write pool, so reading it again is an error. It used to be
+// compiled as "do nothing" — p kept pointing at x, and the read went unflagged.
+
+main :: fun() {
+	x := 5
+	p := &x
+	p = void
+	print(p == void)
+}

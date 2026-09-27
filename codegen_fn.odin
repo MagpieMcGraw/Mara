@@ -109,8 +109,8 @@ stmt_mentions :: proc(s: Stmt, name: string) -> bool {
         return stmts_mention(v.checked[:], name)
     case ^Stmt_Decl:
         for n in v.names { if n == name { return true } }
-        for x in v.init_values { if expr_mentions(x, name) { return true } }
-        return expr_mentions(v.slice_cap_expr, name) || stmts_mention(v.checked[:], name)
+        for x in decl_init(v) { if expr_mentions(x, name) { return true } }
+        return expr_mentions(decl_cap(v), name) || stmts_mention(v.checked[:], name)
     case ^Stmt_Define:
         return expr_mentions(v.value, name)
     case Stmt_Call:

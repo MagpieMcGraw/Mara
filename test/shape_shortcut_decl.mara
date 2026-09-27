@@ -1,0 +1,34 @@
+module shape_shortcut_decl
+
+//@ expect-output: local holds 5
+//@ expect-output: field holds 7
+
+// The shape shortcut: a declaration whose type passes a constructor CALL to a
+// `~T`-constrained slot — `h : Holder(Box(5))` — means `h : Holder(Box)` with
+// the slot's field initialised from that call, `{ inner = Box(5) }`. It works
+// for locals and for struct fields alike.
+
+Shape :: struct {
+	n: i64
+	get :: fun(b: ^Self) -> i64 { return 0 }
+}
+
+Box :: struct(start: i64) {
+	n: i64 = start
+	get :: fun(b: ^Self) -> i64 { return b.n }
+}
+
+Holder :: struct(S: ~Shape = void) {
+	inner: S
+}
+
+Outer :: struct {
+	h : Holder(Box(7))
+}
+
+main :: fun() {
+	h : Holder(Box(5))
+	print("local holds", h.inner.n)
+	o : Outer
+	print("field holds", o.h.inner.n)
+}

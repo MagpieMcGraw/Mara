@@ -460,21 +460,22 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
             // each binding gets an Expr_Tuple_Default so infer_field_type_from_default
             // unwraps the i-th slot of the call's tuple return type. Same wrapper
             // shape that stmt_decl_to_bindings produces for params/named returns.
-            is_tuple_destructure := len(s.init_values) == 1 && len(s.names) > 1
+            inits := decl_init(s)
+            is_tuple_destructure := len(inits) == 1 && len(s.names) > 1
             for name, i in s.names {
                 val: Expr = nil
                 if is_tuple_destructure {
                     val = new_clone(Expr_Tuple_Default{
-                        source = s.init_values[0],
+                        source = inits[0],
                         index  = i,
                         span   = s.span,
                     })
-                } else if i < len(s.init_values) {
-                    val = s.init_values[i]
+                } else if i < len(inits) {
+                    val = inits[i]
                 }
                 append(&fields, Scope_Binding{
                     name          = name,
-                    type_expr     = s.type_expr,
+                    type_expr     = decl_type(s),
                     default_value = val,
                     is_using      = s.is_using,
                 })
@@ -2046,9 +2047,9 @@ check_early_self_decls :: proc(c: ^Checker, body: [dynamic]Stmt) {
     for stmt, i in body {
         decl, is_decl := stmt.(^Stmt_Decl)
         if !is_decl { continue }
-        if len(decl.init_values) == 0 { continue }
+        if len(decl_init(decl)) == 0 { continue }
         if !has_decl_after[i] { continue }
-        for init in decl.init_values {
+        for init in decl_init(decl) {
             if call_name, ok := find_self_call_name(init); ok {
                 check_warning(c, decl.span,
                     TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS,
@@ -4433,24 +4434,90 @@ types_incompatible :: proc(a: Type, b: Type) -> bool {
     return !types_equal(a, b)
 }
 
-// Shape shortcut: `p : Foo(Bar(args))` desugars to `p : Foo(Bar)` plus a
-// synthetic `{ field = Bar(args) }` struct literal pinned to s.init_values.
-// Fires only when:
+// Sized-slice declarations, lowered into s.lowered_type / s.lowered_cap. The
+// parser reads `Name(args)` greedily as a generic instantiation, so when Name
+// is not a generic, the single argument is a capacity:
+//   `name : String2(N)` on a distinct slice alias → type String2, cap N
+//   `name : []Mesh_Data(12)`                       → type []Mesh_Data, cap 12
+// and a bare distinct slice alias with a default cap, `s : String` where
+// `String :: distinct [,0]utf8(128)`, picks up that default. Idempotent: each
+// case reads the lowered form, which no longer matches once lowered.
+lower_sized_slice :: proc(c: ^Checker, s: ^Stmt_Decl, env: ^Type_Scope) {
+    // The capacity a single generic-style argument stands for, if it is one.
+    arg_cap :: proc(arg: Type_Expr) -> Expr {
+        #partial switch a in arg {
+        case Type_Const_Value:
+            num := new(Expr_Number)
+            num.int_value = i128(a.value)
+            num.value = f64(a.value)
+            num.span = a.span
+            return num
+        case Type_Const_Expr:
+            return a.expr
+        }
+        return nil
+    }
+    distinct_slice :: proc(c: ^Checker, name: string, env: ^Type_Scope) -> (^Type_Distinct, bool) {
+        // Resolve the bare name through includes / aliases to the flat key
+        // used in distinct_types (e.g. "String2" -> "test_string_String2").
+        flat := resolve_type_name(c, name, "", env)
+        if flat == "" { flat = name }
+        dt, found := c.table.distinct_types[flat]
+        if !found { return nil, false }
+        _, is_slice := dt.base_type.(^Type_Slice)
+        return dt, is_slice
+    }
+
+    if decl_cap(s) != nil { return }
+    #partial switch t in decl_type(s) {
+    case ^Type_Generic_Instance:
+        if len(t.type_args) != 1 { return }
+        if _, is_generic := c.table.generic_templates[t.name]; is_generic { return }
+        if _, ok := distinct_slice(c, t.name, env); !ok { return }
+        if cap := arg_cap(t.type_args[0]); cap != nil {
+            s.lowered_type = Type_Name{name = t.name, span = t.span}
+            s.lowered_cap = cap
+        }
+    case ^Type_Slice_Expr:
+        gi, gi_ok := t.elem.(^Type_Generic_Instance)
+        if !gi_ok || len(gi.type_args) != 1 { return }
+        if _, is_generic := c.table.generic_templates[gi.name]; is_generic { return }
+        if cap := arg_cap(gi.type_args[0]); cap != nil {
+            lowered := new_clone(t^)
+            lowered.elem = Type_Name{name = gi.name, span = gi.span}
+            s.lowered_type = lowered
+            s.lowered_cap = cap
+        }
+    }
+    // A distinct slice alias, bare or just lowered, without a capacity yet.
+    if tn, ok := decl_type(s).(Type_Name); ok && decl_cap(s) == nil {
+        if dt, is_slice := distinct_slice(c, tn.name, env); is_slice && dt.default_cap_expr != nil {
+            s.lowered_cap = dt.default_cap_expr
+        }
+    }
+}
+
+// Shape shortcut: `p : Foo(Bar(args))` lowers to `p : Foo(Bar)` plus a
+// synthetic `{ field = Bar(args) }` struct literal — s.lowered_type and
+// s.lowered_init; the source declaration is untouched. Fires only when:
 //   - The Stmt_Decl's type annotation is a Type_Generic_Instance.
 //   - The template is a known generic struct.
 //   - At a slot with a `~T` shape constraint, the type-arg is a
 //     Type_Const_Expr wrapping an Expr_Call.
 //   - The user hasn't supplied an init.
-// Idempotent — after the first run the args are Type_Name, so re-running
-// is a no-op. Multiple shape-constrained slots stack their bindings into
-// one literal.
+// Idempotent — once lowered, re-running is a no-op. Multiple
+// shape-constrained slots stack their bindings into one literal. The literal
+// holds a copy of each call: the source call stays where it was written, and
+// a cloned declaration lowers into nodes of its own.
 desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
     if c == nil { return }
+    if s.lowered_type != nil { return }
     if len(s.init_values) != 0 { return }
     gi, gi_ok := s.type_expr.(^Type_Generic_Instance)
     if !gi_ok { return }
     tmpl, tmpl_ok := c.table.generic_templates[gi.name]
     if !tmpl_ok { return }
+    lowered: ^Type_Generic_Instance   // gi with each bound slot's call replaced by its type
     lit: ^Expr_Struct_Literal
     for arg_i in 0..<len(gi.type_args) {
         if arg_i >= len(tmpl.generic_params) { break }
@@ -4472,15 +4539,21 @@ desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
                 lit = new(Expr_Struct_Literal)
                 lit.span = s.span
             }
-            append(&lit.fields, Struct_Field{name = f.name, value = call})
+            append(&lit.fields, Struct_Field{name = f.name, value = clone_expr(call)})
             bound_any = true
         }
         if bound_any {
-            gi.type_args[arg_i] = Type_Name{name = call.name, span = ce.span}
+            if lowered == nil {
+                lowered = new_clone(gi^)
+                lowered.type_args = {}
+                for a in gi.type_args { append(&lowered.type_args, a) }
+            }
+            lowered.type_args[arg_i] = Type_Name{name = call.name, span = ce.span}
         }
     }
     if lit != nil {
-        append(&s.init_values, lit)
+        s.lowered_type = lowered
+        append(&s.lowered_init, lit)
     }
 }
 
@@ -6990,83 +7063,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             }
             check_define(c, s, env, public_env = public_env)
         case ^Stmt_Decl:
-            // Sized-slice on a distinct slice alias: `name : String2(N)` parses
-            // as `Type_Generic_Instance{name=String2, args=[N]}` (the parser
-            // greedily reads `Name(args)` as a generic instantiation). When
-            // the name resolves to a distinct slice alias and there's a single
-            // numeric arg, rewrite to the sized-slice decl form before normal
-            // type resolution: type_expr becomes just `Type_Name{String2}`,
-            // slice_cap_expr captures the cap.
-            if gi, gi_ok := s.type_expr.(^Type_Generic_Instance); gi_ok && len(gi.type_args) == 1 && s.slice_cap_expr == nil {
-                if _, is_generic := c.table.generic_templates[gi.name]; !is_generic {
-                    // Resolve the bare name through includes / aliases to the
-                    // flat key used in distinct_types (e.g. "String2" ->
-                    // "test_string_String2").
-                    flat := resolve_type_name(c, gi.name, "", env)
-                    if flat == "" { flat = gi.name }
-                    if dt, found := c.table.distinct_types[flat]; found {
-                        if _, is_slice := dt.base_type.(^Type_Slice); is_slice {
-                            cap_expr: Expr
-                            if cv, cv_ok := gi.type_args[0].(Type_Const_Value); cv_ok {
-                                num := new(Expr_Number)
-                                num.int_value = i128(cv.value)
-                                num.value = f64(cv.value)
-                                num.span = cv.span
-                                cap_expr = num
-                            } else if ce, ce_ok := gi.type_args[0].(Type_Const_Expr); ce_ok {
-                                cap_expr = ce.expr
-                            }
-                            if cap_expr != nil {
-                                s.type_expr = Type_Name{name = gi.name, span = gi.span}
-                                s.slice_cap_expr = cap_expr
-                            }
-                        }
-                    }
-                }
-            }
-            // Bare distinct slice alias with a default cap: `s : String` where
-            // `String :: distinct [,0]utf8(128)` — pick up the default.
-            if tn, tn_ok := s.type_expr.(Type_Name); tn_ok && s.slice_cap_expr == nil {
-                flat := resolve_type_name(c, tn.name, "", env)
-                if flat == "" { flat = tn.name }
-                if dt, found := c.table.distinct_types[flat]; found {
-                    if _, is_slice := dt.base_type.(^Type_Slice); is_slice && dt.default_cap_expr != nil {
-                        s.slice_cap_expr = dt.default_cap_expr
-                    }
-                }
-            }
-            // Sized slice on a non-generic element type: `name : []Mesh_Data(12)`
-            // parses as `[]Type_Generic_Instance{Mesh_Data, [12]}` because the
-            // parser is greedy about `Name(args)`. When the elem name doesn't
-            // resolve as generic and there's exactly one numeric arg, lift the
-            // arg into slice_cap_expr and replace the elem with the bare name.
-            if ts, ts_ok := s.type_expr.(^Type_Slice_Expr); ts_ok && s.slice_cap_expr == nil {
-                if gi, gi_ok := ts.elem.(^Type_Generic_Instance); gi_ok && len(gi.type_args) == 1 {
-                    if _, is_generic := c.table.generic_templates[gi.name]; !is_generic {
-                        cap_expr: Expr
-                        if cv, cv_ok := gi.type_args[0].(Type_Const_Value); cv_ok {
-                            num := new(Expr_Number)
-                            num.int_value = i128(cv.value)
-                            num.value = f64(cv.value)
-                            num.span = cv.span
-                            cap_expr = num
-                        } else if ce, ce_ok := gi.type_args[0].(Type_Const_Expr); ce_ok {
-                            cap_expr = ce.expr
-                        }
-                        if cap_expr != nil {
-                            ts.elem = Type_Name{name = gi.name, span = gi.span}
-                            s.slice_cap_expr = cap_expr
-                        }
-                    }
-                }
-            }
-
-            // Shape-shortcut: `p : Foo(Bar(args))` desugars in place to
-            // `p : Foo(Bar) = { field = Bar(args) }`. The actual work lives
-            // in desugar_shape_shortcut so the same transform fires from
-            // check_scope_body's early field-resolution pre-pass (which sees
-            // the decl before this branch runs). Idempotent: subsequent
-            // invocations see Type_Name and bail.
+            // Sized slices and the shape shortcut lower into s.lowered_*; the
+            // source declaration stays as written. See lower_sized_slice and
+            // desugar_shape_shortcut — the shortcut also fires from
+            // check_scope_body's early field-resolution pre-pass, which sees
+            // the decl before this branch runs. Both are idempotent.
+            lower_sized_slice(c, s, env)
             desugar_shape_shortcut(c, s)
 
             // Synth-and-delegate: expand Stmt_Decl into equivalent
@@ -7080,14 +7082,15 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // already populated — the prior run did it and the desugared
             // statements still apply.
             if len(s.checked) == 0 {
-                if len(s.init_values) == 1 && len(s.names) > 1 {
+                inits := decl_init(s)
+                if len(inits) == 1 && len(s.names) > 1 {
                     // Multi-return destructure: x, y := call()
                     mra := new(Stmt_Multi_Return_Assign)
                     mra.span = s.span
-                    mra.type_expr = s.type_expr
+                    mra.type_expr = decl_type(s)
                     mra.is_decl = true   // derived from a Stmt_Decl — bare names are declared
                     for n in s.names { append(&mra.names, n) }
-                    for v in s.init_values { append(&mra.values, v) }
+                    for v in inits { append(&mra.values, v) }
                     append(&s.checked, Stmt(mra))
                 } else {
                     // Parallel or single-name: one Stmt_Assign per name
@@ -7095,11 +7098,11 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                         a := new(Stmt_Assign)
                         a.name = name
                         a.span = s.span
-                        a.type_expr = s.type_expr
+                        a.type_expr = decl_type(s)
                         a.is_using = s.is_using
                         a.is_decl = true
-                        a.slice_cap_expr = s.slice_cap_expr
-                        if i < len(s.init_values) { a.value = s.init_values[i] }
+                        a.slice_cap_expr = decl_cap(s)
+                        if i < len(inits) { a.value = inits[i] }
                         append(&s.checked, Stmt(a))
                     }
                 }
@@ -7296,8 +7299,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // (Read-before-write tracking for aggregates waits for the
             // zero-init stage — today's invalid_refs machinery flags
             // element WRITES as uses, which would forbid filling the
-            // storage `= void` exists to leave fillable.)
-            if is_void_literal(s.value) {
+            // storage `= void` exists to leave fillable.) Declarations only:
+            // this statement is then a Stmt_Decl's lowering, not source. A
+            // reassignment `x = void` keeps its void (see check_bodies).
+            if s.is_decl && is_void_literal(s.value) {
                 if _, t_is_ptr := distinct_base(ann_type).(^Type_Ptr); !t_is_ptr {
                     s.value = new_clone(Expr_Skip_Constructor{span = s.span})
                 }
@@ -7636,13 +7641,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     // existing tracking handles whole-name reads/writes);
                     // aggregates skip the marking for now — element writes
                     // would be flagged as uses by today's machinery. For
-                    // non-pointers codegen emits nothing (skip desugar);
+                    // non-pointers codegen emits nothing (see gen_stmt);
                     // pointer `p = void` keeps its null store.
                     if is_void_literal(s.value) {
-                        base_t := distinct_base(existing_type)
-                        if _, ok := base_t.(^Type_Ptr); !ok {
-                            s.value = new_clone(Expr_Skip_Constructor{span = s.span})
-                        }
                         s.var_type = distinct_base(existing_type)
                         s.env_type = existing_type
                         continue

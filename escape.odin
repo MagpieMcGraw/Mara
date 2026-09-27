@@ -400,8 +400,9 @@ esc_stmt :: proc(e: ^Esc, s: Stmt) {
         }
         for name, i in v.names {
             val: Expr
-            if i < len(v.init_values)       { val = v.init_values[i] }
-            else if len(v.init_values) == 1 { val = v.init_values[0] }
+            inits := decl_init(v)
+            if i < len(inits)       { val = inits[i] }
+            else if len(inits) == 1 { val = inits[0] }
             esc_calls(e, val)
             esc_decl_value(e, name, val, nil, v.span)
         }

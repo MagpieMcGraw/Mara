@@ -29,13 +29,14 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if s.name == "this_program" && !s.is_decl { return }
 
         // Reassignment with the uninitialized marker (`x = void` on a
-        // non-pointer, desugared to skip by the checker): de-init is
-        // checker-side read-tracking only — nothing to emit. Pointer
-        // `p = void` keeps its void IDENT value and stores null through
-        // the normal scalar path. Decls fall through: their per-shape
-        // paths allocate storage and recognize the skip themselves.
-        if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip && !s.is_decl {
-            return
+        // non-pointer, or `#skip_constructor`): de-init is flow-side
+        // read-tracking only — nothing to emit. Pointer `p = void` stores
+        // null through the normal scalar path. Decls fall through: their
+        // per-shape paths allocate storage and recognize the skip themselves.
+        if !s.is_decl {
+            _, is_skip := s.value.(^Expr_Skip_Constructor)
+            _, is_ptr := s.var_type.(^Type_Ptr)
+            if is_skip || (is_void_literal(s.value) && !is_ptr) { return }
         }
 
         // take(T, storage) decl — let-style binding into storage's bytes. The

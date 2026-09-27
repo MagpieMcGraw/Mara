@@ -250,7 +250,7 @@ ud_stmt :: proc(u: ^UD, s: Stmt, st: ^Reach) {
         if len(v.checked) > 0 {
             for inner in v.checked { ud_stmt(u, inner, st) }
         } else {
-            for e in v.init_values { ud_expr(u, e, st) }
+            for e in decl_init(v) { ud_expr(u, e, st) }
             for name in v.names { ud_declare(u, name, v.span, nil, .Decl, nil, st) }
         }
     case ^Stmt_Assign:

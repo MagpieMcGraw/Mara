@@ -124,8 +124,8 @@ flow_unused_block :: proc(c: ^Checker, stack: ^[dynamic]^Flow_Frame, stmts: []St
 flow_unused_stmt :: proc(c: ^Checker, stack: ^[dynamic]^Flow_Frame, s: Stmt) {
     #partial switch v in s {
     case ^Stmt_Decl:
-        for e in v.init_values { flow_expr_reads(stack, e) }
-        flow_expr_reads(stack, v.slice_cap_expr)
+        for e in decl_init(v) { flow_expr_reads(stack, e) }
+        flow_expr_reads(stack, decl_cap(v))
         // The desugared `.checked` carries the per-name resolved types; the span
         // stays the Stmt_Decl's, matching the inline flag_unused_local location.
         for inner in v.checked {
@@ -359,8 +359,8 @@ flow_init_merge :: proc(c: ^Checker, uninit: ^map[string]bool, out: ^[dynamic]Fl
 flow_init_stmt :: proc(c: ^Checker, s: Stmt, uninit: ^map[string]bool, local: ^[dynamic]string, out: ^[dynamic]Flow_Uninit_Read) {
     #partial switch v in s {
     case ^Stmt_Decl:
-        for e in v.init_values { flow_init_reads(c, e, uninit, out) }
-        flow_init_reads(c, v.slice_cap_expr, uninit, out)
+        for e in decl_init(v) { flow_init_reads(c, e, uninit, out) }
+        flow_init_reads(c, decl_cap(v), uninit, out)
         for inner in v.checked {
             #partial switch a in inner {
             case ^Stmt_Assign:
