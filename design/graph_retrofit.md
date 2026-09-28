@@ -209,7 +209,12 @@ program that checked clean, since the graph is built from checked types.
       literal are no supplying call, as before. test_1M: graph 2.57 → 2.68 s, peak memory 4.39 →
       4.46 GB (the statement column); the post-check analyses take 4.7 s there, as long as type
       checking
-- [ ] Must-use `err` onto the graph
+- [x] Must-use `err` onto the graph: one pass over the whole graph. An err local declared by a
+      statement is read where a var operation names it, except where a whole write lands
+      (`e = f()`); refers-to has resolved shadowing, so the old per-block scope stack is gone.
+      Diagnostics identical to the old walk on every shape tried, spans included
+      (`test/erruse_shapes_neg.mara`: destructured, declared, typed, written again, a sibling
+      block, a loop body, and a read only in a defer)
 - [ ] The return-dependency summary from the graph
 - [ ] Definite assignment onto the graph
 - [ ] Escape onto the graph

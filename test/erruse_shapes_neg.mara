@@ -1,0 +1,62 @@
+module erruse_shapes_neg
+//@ expect-fail: error value 'e' is unused
+
+// Six err locals nothing reads, each an error: destructured, declared, typed,
+// written again but never read, a sibling of a read one, in a loop body. One
+// read only in a defer is fine.
+
+use mara.core
+
+Oops :: error { Bad }
+
+might_fail :: fun(x: i64) -> i64, err {
+	if x < 0 { return 0, Bad }
+	return x
+}
+
+just_err :: fun(x: i64) -> err {
+	if x < 0 { return Bad }
+	return Ok
+}
+
+multi :: fun() {
+	v, e := might_fail(5)          // unused: destructured
+	print(v)
+}
+
+single :: fun() {
+	e := just_err(1)               // unused: declared
+}
+
+typed :: fun() {
+	e : err = just_err(1)          // unused: typed declaration
+}
+
+rewritten :: fun() {
+	e := just_err(1)               // unused: written again, never read
+	e = just_err(2)
+}
+
+siblings :: fun(c: bool) {
+	if c {
+		e := just_err(1)
+		if bool(e) do print("read")
+	else
+		e := just_err(2)           // unused: a sibling of a read one
+	}
+}
+
+in_defer :: fun() {
+	e := just_err(1)               // read in a defer: fine
+	defer if bool(e) do print("d")
+}
+
+in_loop :: fun() {
+	for i in 0..3 {
+		e := just_err(i)           // unused, in a loop body
+	}
+}
+
+main :: fun() {
+	multi(); single(); typed(); rewritten(); siblings(true); in_defer(); in_loop()
+}

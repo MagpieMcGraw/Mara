@@ -4,31 +4,15 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 
-// flow.odin — post-check intraprocedural flow analysis.
+// flow.odin — post-check intraprocedural flow analysis: the diagnostics about
+// how a function's code runs and what it reads.
 //
-// This pass walks each function body over the DURABLE graph (ft.body — the exact
-// statements codegen emits) AFTER checking, to re-derive the correctness
-// analyses that today run INLINE on the during-check Type_Env traversal:
-// definite assignment (no read-before-init of a pointer/slice), must-use-err,
-// and all-paths-return. Lifting them here is "step 3" of the Type_Env teardown:
-// once the point-sensitive flow state is computed by a self-contained post-check
-// pass over the scope graph, Type_Env sheds it and shrinks to (eventually
-// disappears as) the lookup mirror that the durable graph already replaced.
-//
-// Why a post-check pass and not an env relocation: the flow state is genuinely
-// point-sensitive (it forks at branches, merges at joins), so it can't live on
-// the durable Type_Scope. A pass that OWNS its own transient frame and walks the
-// graph in control-flow order is the clean home — and it composes with the
-// interprocedural call-graph summaries (purity, fallibility) that already live
-// post-check (see callgraph.odin / project_call_graph).
-//
-// STATUS: the traversal scaffold visits every source function and recurses the
-// control-flow tree (if/for/defer/match bodies — the .Block scopes), not nested
-// Stmt_Scope (separate functions). It OWNS its first analysis: all-paths-return
-// (the inline check at check_scope_body has been removed; this pass raises
-// TYPE_FUNCTION_MISSING_RETURN_ALL_CODE). Still to port: must-use-err, then
-// definite-assignment (branch-merge). MARA_DUMP_FLOW=1 dumps coverage + what was
-// flagged.
+// On the program graph (a clean check builds it; design/graph_retrofit.md,
+// phase 2): all-paths-return (a fun whose runs reach the end of its body),
+// unreachable code (a statement right after a return, break or continue) and
+// must-use err (an err local nothing reads). Still over each function's body:
+// definite assignment (no read-before-init of a pointer or slice) and the void
+// checks. MARA_DUMP_FLOW=1 dumps coverage and what was flagged.
 
 Flow_Stats :: struct {
     functions:  int, // source functions walked
@@ -55,7 +39,10 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     starts: map[Node_Id]i32
     if graphed { starts = graph_run_starts(&checked.graph) }
     defer delete(starts)
-    if graphed { flow_check_unreachable(c, checked) }
+    if graphed {
+        flow_check_unreachable(c, checked)
+        flow_check_unused(c, checked)
+    }
     for _, ft in checked.functions {
         if ft == nil { continue }
         // Source bodies only: intrinsics/foreigns have no Mara statements to walk.
@@ -69,7 +56,6 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
             check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
             append(&stats.missing_return, name)
         }
-        flow_check_unused(c, ft)
         flow_check_init(c, ft)
         flow_check_void(c, ft, &void_seen)
     }
@@ -104,168 +90,41 @@ flow_check_unreachable :: proc(c: ^Checker, checked: ^Checked_Program) {
 // --- must-use-err ---------------------------------------------------------
 // An err-typed local that is declared but never read — not checked, not
 // propagated with `?` (which leaves no binding), not discarded with `_` — is an
-// error. This reproduces the inline check_unused_locals/flag_unused_local over
-// the durable body: a per-block scope close over that block's own err-decls,
-// with a read ANYWHERE in the block or a descendant clearing it. Shadowing is
-// respected via the frame stack (a read binds the nearest enclosing decl).
-//
-// The pass OWNS this diagnostic: the inline check_unused_locals/flag_unused_local
-// and the whole read-flag machinery (Binding.read, mark_read) are gone.
-
-Flow_Err_Local :: struct {
-    span: Span,
-    read: bool,
-}
-
-// One lexical block's err-typed locals (name -> declared/read). Empty for the
-// vast majority of blocks, so the map is allocated lazily on first err-decl.
-Flow_Frame :: struct {
-    errs: map[string]Flow_Err_Local,
-}
-
-flow_check_unused :: proc(c: ^Checker, ft: ^Type_Scope) {
-    stack: [dynamic]^Flow_Frame
-    defer delete(stack)
-    flow_unused_block(c, &stack, ft.body[:])
-}
-
-// Walk one block: push a frame, process its statements (recording err-decls and
-// marking reads on the stack), then at close emit TYPE_UNUSED_ERR for every
-// err-decl left unread.
-flow_unused_block :: proc(c: ^Checker, stack: ^[dynamic]^Flow_Frame, stmts: []Stmt) {
-    frame: Flow_Frame
-    append(stack, &frame)
-    for s in stmts { flow_unused_stmt(c, stack, s) }
-    for name, loc in frame.errs {
-        if !loc.read { check_error(c, loc.span, TYPE_UNUSED_ERR, name) }
-    }
-    delete(frame.errs)
-    pop(stack)
-}
-
-flow_unused_stmt :: proc(c: ^Checker, stack: ^[dynamic]^Flow_Frame, s: Stmt) {
-    #partial switch v in s {
-    case ^Stmt_Decl:
-        for e in decl_init(v) { flow_expr_reads(stack, e) }
-        flow_expr_reads(stack, decl_cap(v))
-        // The desugared `.checked` carries the per-name resolved types; the span
-        // stays the Stmt_Decl's, matching the inline flag_unused_local location.
-        for inner in v.checked {
-            #partial switch a in inner {
-            case ^Stmt_Assign:
-                if a.is_decl { flow_record_err_decl(stack, a.name, a.var_type, v.span) }
-            case ^Stmt_Multi_Return_Assign:
-                if a.is_decl {
-                    for n, i in a.names {
-                        if i < len(a.var_types) { flow_record_err_decl(stack, n, a.var_types[i], v.span) }
-                    }
-                }
+// error. On the graph a declaration is read where a var operation names it,
+// except where a whole write lands (`e = f()` writes e, it reads nothing);
+// refers-to has resolved shadowing, and a read in a nested block or a defer's
+// block is a read like any other.
+flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
+    g := &checked.graph
+    dest := make([]bool, len(g.kind))   // where a whole write lands
+    defer delete(dest)
+    read := make([]bool, len(g.kind))
+    defer delete(read)
+    for k, id in g.kind {
+        if k != .Op { continue }
+        #partial switch g.op[id] {
+        case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Arena_Alloc:
+            ops := graph_operands(g, Node_Id(id))
+            if len(ops) > 0 && ops[0].op != NO_NODE && g.kind[ops[0].op] == .Op && g.op[ops[0].op] == .Var {
+                dest[ops[0].op] = true
             }
         }
-    case ^Stmt_Assign:
-        flow_expr_reads(stack, v.value)
-        flow_expr_reads(stack, v.target)
-        if v.is_decl { flow_record_err_decl(stack, v.name, v.var_type, v.span) }
-    case ^Stmt_Multi_Assign:
-        for a in v.assigns { flow_unused_stmt(c, stack, a) }
-    case ^Stmt_Multi_Return_Assign:
-        for e in v.values { flow_expr_reads(stack, e) }
-        for e in v.targets { flow_expr_reads(stack, e) }
-    case Stmt_Call:
-        flow_expr_reads(stack, v.expr)
-    case Stmt_Return:
-        for e in v.values { flow_expr_reads(stack, e) }
-    case ^Stmt_If:
-        flow_expr_reads(stack, v.condition)
-        flow_unused_block(c, stack, v.body[:])
-        flow_unused_block(c, stack, v.else_body[:])
-    case ^Stmt_For:
-        if v.init != nil { flow_unused_stmt(c, stack, v.init) }
-        flow_expr_reads(stack, v.condition)
-        flow_expr_reads(stack, v.range_low)
-        flow_expr_reads(stack, v.range_high)
-        flow_expr_reads(stack, v.collection)
-        flow_unused_block(c, stack, v.body[:])
-        if v.post != nil { flow_unused_stmt(c, stack, v.post) }
-    case ^Stmt_Match:
-        flow_expr_reads(stack, v.subject)
-        for arm in v.arms {
-            flow_expr_reads(stack, arm.value)
-            flow_unused_block(c, stack, arm.body[:])
-        }
-    case ^Stmt_Defer:
-        flow_unused_block(c, stack, v.body[:])
     }
-}
-
-// Record an err-typed declared name into the innermost frame. Skips `_` and
-// non-err types — exactly what flag_unused_local actions today.
-flow_record_err_decl :: proc(stack: ^[dynamic]^Flow_Frame, name: string, t: Type, span: Span) {
-    if name == "_" || name == "" { return }
-    if !is_err_type(t) { return }
-    top := stack[len(stack) - 1]
-    if top.errs == nil { top.errs = make(map[string]Flow_Err_Local) }
-    top.errs[name] = Flow_Err_Local{span = span, read = false}
-}
-
-// Mark a name read in the NEAREST enclosing frame that declared it as an err —
-// the shadowing-correct equivalent of the inline read flag reaching the binding's
-// declaring env via the chain.
-flow_mark_read :: proc(stack: ^[dynamic]^Flow_Frame, name: string) {
-    #reverse for frame in stack^ {
-        if loc, ok := frame.errs[name]; ok {
-            loc.read = true
-            frame.errs[name] = loc
-            return
-        }
+    for k, id in g.kind {
+        if k == .Op && g.op[id] == .Var && !dest[id] && g.refers[id] != NO_NODE { read[g.refers[id]] = true }
     }
-}
-
-// Recursively mark every identifier read in an expression. A bare Expr_Ident is
-// the read; everything else just recurses into sub-expressions. Leaves
-// (literals, Self, size_of, type names) contain no local reads. Call names are
-// NOT reads — the inline checker marks reads at Expr_Ident sites only, and a
-// call's callee is a name string, not an ident.
-flow_expr_reads :: proc(stack: ^[dynamic]^Flow_Frame, e: Expr) {
-    if e == nil { return }
-    #partial switch v in e {
-    case ^Expr_Ident:
-        flow_mark_read(stack, v.name)
-    case ^Expr_Unary:
-        flow_expr_reads(stack, v.operand)
-    case ^Expr_Binary:
-        flow_expr_reads(stack, v.left)
-        flow_expr_reads(stack, v.right)
-    case ^Expr_Call:
-        flow_expr_reads(stack, call_qualifier(v))
-        for a in call_args(v) { flow_expr_reads(stack, a) }
-        if v.overrides != nil {
-            for f in v.overrides.fields { flow_expr_reads(stack, f.value) }
-        }
-    case ^Expr_Index:
-        flow_expr_reads(stack, v.expr)
-        flow_expr_reads(stack, v.index)
-    case ^Expr_Slice:
-        flow_expr_reads(stack, v.expr)
-        flow_expr_reads(stack, v.low)
-        flow_expr_reads(stack, v.high)
-    case ^Expr_Field_Access:
-        flow_expr_reads(stack, v.expr)
-    case ^Expr_Array:
-        for el in v.elements { flow_expr_reads(stack, el) }
-    case ^Expr_Struct_Literal:
-        for f in v.fields { flow_expr_reads(stack, f.value) }
-    case ^Expr_Try:
-        flow_expr_reads(stack, v.inner)
-    case ^Expr_If:
-        flow_expr_reads(stack, v.condition)
-        flow_expr_reads(stack, v.then_expr)
-        flow_expr_reads(stack, v.else_expr)
-    case ^Expr_Assert:
-        flow_expr_reads(stack, v.cond)
-    case ^Expr_Take:
-        flow_expr_reads(stack, v.storage)
-        flow_expr_reads(stack, take_count(v))
+    seen: map[Span]bool   // generic instances share their template's spans
+    defer delete(seen)
+    for k, id in g.kind {
+        if k != .Local || g.written[id] != .Explicit || read[id] || !is_err_type(g.type_[id]) { continue }
+        // Declared by a statement, as `e := f()` or `v, e := f()`: not a loop's
+        // variable or a match arm's binding.
+        s := g.stmt[id]
+        if s < 0 || (g.stmts[s].kind != .Decl && g.stmts[s].kind != .Destructure) { continue }
+        span := g.origin[id]
+        if span in seen { continue }
+        seen[span] = true
+        check_error(c, span, TYPE_UNUSED_ERR, g.name[id])
     }
 }
 
@@ -563,8 +422,8 @@ flow_clear_fields :: proc(uninit: ^map[string]bool, var_name: string) {
 }
 
 // Read-check walk: at each Expr_Ident or `ident.field` access, if the key is in
-// the uninit set, collect a flagged read. Recurses sub-expressions exactly like
-// flow_expr_reads. (Field keys are Phase B; the base ident is still checked.)
+// the uninit set, collect a flagged read, through every sub-expression. (Field
+// keys are Phase B; the base ident is still checked.)
 flow_init_reads :: proc(c: ^Checker, e: Expr, uninit: ^map[string]bool, out: ^[dynamic]Flow_Uninit_Read) {
     if e == nil { return }
     #partial switch v in e {
