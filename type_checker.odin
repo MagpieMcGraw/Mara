@@ -4251,8 +4251,9 @@ maybe_stamp_byte_view :: proc(c: ^Checker, expected: Type, value: Expr) {
     idx, idx_ok := addr.operand.(^Expr_Index)
     if !idx_ok { return }
     src_type := expr_type(idx.expr)
-    if !is_byte_slice(src_type) && !is_byte_fixed_array(src_type) { return }
+    if !is_byte_buffer(src_type) { return }
     addr.byte_view_size = checker_type_byte_size(pt.elem)
+    addr.byte_view_type = pt.elem
 }
 
 // Compute struct byte size with alignment padding (matches LLVM/C layout).

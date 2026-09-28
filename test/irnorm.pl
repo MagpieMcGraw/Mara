@@ -134,7 +134,7 @@ sub order_allocas {
     my (@at, %first);
     for my $i (0 .. $#lines) {
         last if $i > 0 && $lines[$i] =~ /^[-\w.\$]+:/;   # the entry block only
-        push @at, $i if $lines[$i] =~ /^\s+%[-\w.\$]+ = alloca [^%]*$/;
+        push @at, $i if $lines[$i] =~ /^\s+%[-\w.\$]+ = alloca / && $lines[$i] !~ /, i\d+ %/;
     }
     return @lines if @at < 2;
     for my $i (0 .. $#lines) {

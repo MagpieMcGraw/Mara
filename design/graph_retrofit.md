@@ -418,8 +418,28 @@ evaluates its destination and value); how instructions are chosen stays in the e
       builds the result by a construction or a copy); a struct declaration no longer
       re-stamps its partial-array fields afterwards — that covered `{0}`, which now stamps
       them itself
-- [ ] Sized slices, `take` / `slice` carves, byte reads and writes and views, `#big_endian`,
-      `a[lo:hi] = b`, `slice_from_ptr`
+- [x] Bytes and carves: a new place, `view` (decided 2026-09-28): bytes at an offset seen as
+      a `T` — read (`x : T = bytes[off]`, and at an argument), written (every index write
+      into a byte buffer, and `bytes[lo:hi] = v` for a non-array `v`, at `lo`) and addressed
+      (`&bytes[off]` as a `^T`) — checked `off + size_of(T) <= cap`, `align 1` through it,
+      `#big_endian` its flag (a struct read swaps as it's copied). The checker now stamps
+      the viewed type on `&bytes[off]`, and for byte partial arrays too (they got a one-byte
+      index check). `byte read` stays for fills: a partial array from bytes (a new one is
+      zeroed first) and a value from a span. `take`: its storage is the header's place
+      (`&s` is s, a `^[]byte` what it points at); positional `let(T, &bytes[i])` is the view
+      there; a declared `let` local is the carved memory (never the result slot — the first
+      try put it there, so its writes missed the storage). A sized slice `s : []T(n)`:
+      zeroed storage (runtime-sized for a runtime n) and the header over it.
+      `dst[lo:hi] = src` is a write through a slice that reads the slice's bounds, not its
+      header: an open hi runs for src's length (as a value, `a[lo:]` runs to a's len).
+      `slice_from_ptr(p, n)` is a header over p. Old emitter, to the graph's shape: offsets
+      and bounds before the buffers they index (views, fills, span reads, element copies)
+      and a take's count before its storage's header; every byte-view failure says "view"
+      (it said read, write, view or let); a bare slice header zeroes with one memset; a new
+      partial array filled from bytes is a zero value first. Normalizer: an alloca's order
+      also for types naming other types. Still declined: positional `slice([:n]T,
+      &bytes[i])`, a sized slice from bytes or from a string (the graph drops its count),
+      a slice's elements into a partial array, big (arena) storage
 - [ ] Strings, `print`, `assert`, `crash`
 - [ ] Unions and `match`: tags, variants, niche layouts
 - [ ] Scope work: defers, the arena's mark, reset and big locals; `main` and the program's

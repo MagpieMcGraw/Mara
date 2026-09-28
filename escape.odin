@@ -440,7 +440,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
     case .Variant:
         esc_join(r, esc_at(e, ops[0]))
         if k := esc_var(e, g.refers[op]); k >= 0 { esc_copy(&state[e.vars[k].slot], r^) }
-    case .Index:
+    case .Index, .View:
         esc_mem(e, r, ops[0], state)
     case .Slice:
         if g.name[op] == "slice_from_ptr" {   // may view any argument

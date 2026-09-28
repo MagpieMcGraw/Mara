@@ -43,6 +43,7 @@ Llvm :: struct {
     used:    map[string]bool,
     in_place: map[Node_Id]Node_Id,  // a temporary → the place it is built in (llvm_in_place)
     hdr:     map[Node_Id]Llvm_Header,   // a view held as its header's values (llvm_holds_header)
+    carved:  map[Node_Id]Node_Id,       // a local declared from a `let` take → that take (it is the memory)
     why:     Node_Id,             // where it declined (for MARA_GRAPH_CG=log)
 }
 
@@ -134,6 +135,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
 
     llvm_users(e)
     if !llvm_variables(e) { return false }
+    llvm_carved(e)
     if e.sret != nil { llvm_result_slot(e) }
     llvm_in_place(e)
     for r, i in e.runs {
@@ -219,6 +221,7 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
         e.value[d - e.node] = llvm_place(e, at)
         return e.value[d - e.node]
     }
+    if c, ok := e.carved[d]; ok { return e.value[c - e.node] }   // the carved memory
     ir := llvm_type_from_checker(pg.type_[d])
     explicit := pg.written[d] == .Explicit
     key := fmt.tprintf("%s %s", pg.name[d], ir)
@@ -289,6 +292,7 @@ llvm_result_slot :: proc(e: ^Llvm) {
                 place := graph_operands(pg, ops[0].op)[0].op
                 if pg.op[place] == .Var && pg.kind[pg.refers[place]] == .Local { v = pg.refers[place] }
             }
+            if v in e.carved { v, every = NO_NODE, false }   // the carved memory: copied out
             if v != NO_NODE && pg.written[v] == .Synthetic {
                 if llvm_reads(e, v) == 1 { e.value[v - e.node] = "%sret" }
                 v = NO_NODE   // a temporary is no named local
@@ -325,6 +329,23 @@ llvm_in_place :: proc(e: ^Llvm) {
             if t <= e.node || t > pg.last[e.node] || pg.kind[t] != .Local || pg.written[t] != .Synthetic { continue }
             if e.value[t - e.node] != "" || llvm_reads(e, t) != 1 { continue }
             if llvm_builds_alone(e, ops[:at], t, x) { e.in_place[t] = x }
+        }
+    }
+}
+
+// Which locals are declared from a `let` take: such a local is the carved
+// memory itself — its declaration binds it, copying nothing.
+@(private="file")
+llvm_carved :: proc(e: ^Llvm) {
+    pg := e.pg
+    for r in e.runs {
+        for w in graph_run(pg, int(r)) {
+            if pg.op[w] != .Write { continue }
+            ops := graph_operands(pg, w)
+            c, dest := ops[1].op, ops[0].op
+            if c == NO_NODE || pg.op[c] != .Carve || pg.name[c] != "let" || pg.op[dest] != .Var { continue }
+            s := pg.stmt[w]
+            if d := pg.refers[dest]; pg.kind[d] == .Local && s >= 0 && pg.stmts[s].kind == .Decl { e.carved[d] = c }
         }
     }
 }
@@ -584,11 +605,22 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // An aggregate is read as where it is; a register value is loaded.
         place := ops[0].op
         t := pg.type_[op]
+        big := pg.op[place] == .View && pg.name[place] == "#big_endian"
         switch {
         case llvm_direct(e, place):
             e.value[op - e.node] = llvm_direct_value(e, place)
         case llvm_aggregate(t):
+            // A big-endian view's bytes are swapped as they're copied: only
+            // a write of them can.
+            if u := e.user[op - e.node]; big && (u < 0 || pg.op[u] != .Write || graph_operands(pg, u)[1].op != op) {
+                return false
+            }
             e.value[op - e.node] = e.value[place - e.node]
+        case llvm_scalar(t) && pg.op[place] == .View:
+            // From bytes at any address: align 1; big-endian, swapped.
+            tmp := fresh_tmp(g)
+            emit(g, "  %s = load %s, ptr %s, align 1", tmp, llvm_type_from_checker(t), e.value[place - e.node])
+            e.value[op - e.node] = emit_bswap_value(g, tmp, t) if big else tmp
         case llvm_scalar(t):
             tmp := fresh_tmp(g)
             emit_load_into(g, tmp, llvm_type_from_checker(t), e.value[place - e.node])
@@ -598,17 +630,28 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
     case .Write:
         place := ops[0].op
-        if pg.op[place] == .Slice { return false }   // into the elements a slice views (later)
+        if pg.op[place] == .Slice { return llvm_copy_into(e, ops, span) }
         t := pg.type_[place]
         // Another type's value into bytes is a write through a view of them (later).
         if ops[1].op != NO_NODE && llvm_is_byte(t) != llvm_is_byte(pg.type_[ops[1].op]) { return false }
         val, ok := llvm_operand(e, ops[1], t)
         if !ok { return false }
         if pg.op[place] == .Var && pg.refers[place] in e.hdr { return true }   // held at its slice
+        if pg.op[place] == .Var && e.carved[pg.refers[place]] == ops[1].op && ops[1].op != NO_NODE {
+            return true   // a `let` declaration: the name is the carved memory
+        }
+        if pg.op[place] == .View && pg.name[place] != "" { return false }   // a big-endian write (none yet)
         if llvm_aggregate(t) {
-            // An aggregate is copied into the place, unless a call built it there.
+            // An aggregate is copied into the place, unless a call built it
+            // there; from a big-endian view, its integers are swapped in the copy.
             if llvm_direct(e, place) { return false }
             if val != e.value[place - e.node] { llvm_copy(e, e.value[place - e.node], val, t) }
+            if r := ops[1].op; pg.op[r] == .Read {
+                from := graph_operands(pg, r)[0].op
+                if pg.op[from] == .View && pg.name[from] == "#big_endian" {
+                    emit_bswap_in_place(g, e.value[place - e.node], llvm_type_from_checker(t), t)
+                }
+            }
             return true
         }
         if !llvm_scalar(t) { return false }
@@ -622,6 +665,10 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if pg.op[place] == .Field && pg.name[place] == "len" {
             hdr := graph_operands(pg, place)[0].op
             if llvm_header_elem(pg.type_[hdr]) != nil { emit_slice_len_check(g, e.value[hdr - e.node], val, span) }
+        }
+        if pg.op[place] == .View {   // into bytes at any address
+            emit(g, "  store %s %s, ptr %s, align 1", llvm_type_from_checker(t), val, e.value[place - e.node])
+            return true
         }
         emit_store(g, llvm_type_from_checker(t), val, e.value[place - e.node])
     case .Deref:
@@ -672,6 +719,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // A bare declaration, or the start of a literal: zero.
         place := ops[0].op
         t := pg.type_[place]
+        if len(ops) == 2 { return llvm_sized_slice(e, op, ops) }
         if len(ops) != 1 || llvm_direct(e, place) { return false }
         if llvm_zeroed(e, place) && pg.written[op] == .Synthetic { return true }
         switch {
@@ -777,8 +825,14 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         emit_range_check(g, c, span)
     case .Slice:
         return llvm_slice_op(e, op, ops)
+    case .View:
+        return llvm_view(e, op, ops, span)
+    case .Carve:
+        return llvm_carve(e, op, ops, span)
+    case .Byte_Read:
+        return llvm_byte_read(e, op, ops, span)
     case .Global, .Variant,
-         .Carve, .Byte_Read, .Arena_Alloc,
+         .Arena_Alloc,
          .Print, .Crash, .Switch, .Run_Defer, .Arena_Mark, .Arena_Reset:
         return false
     }
@@ -1102,7 +1156,17 @@ llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, elem: Type, span
 @(private="file")
 llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     g, pg := e.g, e.pg
-    if pg.name[op] != "" { return false }   // slice_from_ptr (later)
+    if pg.name[op] == "slice_from_ptr" {
+        // Over raw memory: its pointer, len = cap = the count given.
+        if len(ops) != 2 || ops[0].op == NO_NODE { return false }
+        if _, is_ptr := distinct_base(pg.type_[ops[0].op]).(^Type_Ptr); !is_ptr { return false }
+        n := llvm_operand(e, ops[1], slice_header_width_type) or_return
+        e.value[op - e.node] = emit_build_temp_slice(g, e.value[ops[0].op - e.node], n, n)
+        return true
+    }
+    if pg.name[op] != "" { return false }
+    // Written to, it's the run of elements a write fills (llvm_copy_into).
+    if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[0].op == op { return true }
     base := ops[0].op
     if base == NO_NODE || llvm_direct(e, base) { return false }
     lo, hi: string
@@ -1150,6 +1214,399 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         }
     }
     e.value[op - e.node] = emit_build_temp_slice(g, data, n, n)
+    return true
+}
+
+// Bytes at an offset seen as a T: the buffer's data and its bound — a byte
+// slice's or partial array's pointer and cap, a byte array's own address and
+// size — the offset checked (offset + the size of T within the bound), then
+// the byte's address. What's read or written there is a T at any alignment.
+@(private="file")
+llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    base := ops[0].op
+    t := pg.type_[op]
+    if llvm_direct(e, base) || (!llvm_scalar(t) && !llvm_aggregate(t)) || value_has_partial_array(g, t) { return false }
+    off := llvm_operand(e, ops[1], slice_header_width_type) or_return
+    data, bound := llvm_bytes(e, base) or_return
+    emit_byte_size_bounds_check(g, bound, off, checker_type_byte_size(t), "view")
+    tmp := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", tmp, data, slice_layout.len_ir, off)
+    e.value[op - e.node] = tmp
+    return true
+}
+
+// `dst[lo:hi] = src`: src's elements copied into dst from lo on — hi - lo of
+// them, or, hi open, all of src's — with lo within dst's cap and hi no
+// further than it; each copied element's partial arrays re-pointed.
+@(private="file")
+llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    run := ops[0].op
+    rops := graph_operands(pg, run)
+    base, src := rops[0].op, ops[1].op
+    if pg.name[run] != "" || len(rops) < 2 || rops[1].op == NO_NODE || src == NO_NODE || llvm_direct(e, base) { return false }
+    lo := llvm_operand(e, rops[1], slice_header_width_type) or_return
+    hi := ""
+    if len(rops) > 2 && rops[2].op != NO_NODE { hi = llvm_operand(e, rops[2], slice_header_width_type) or_return }
+    // Each side's data and extent: a fixed array's own, else its header's.
+    Side :: struct { data, bound: string, fixed: int, elem: Type }
+    side :: proc(e: ^Llvm, at: Node_Id, bound_field: int) -> (s: Side, ok: bool) {
+        g, pg := e.g, e.pg
+        t := pg.type_[at]
+        addr := e.value[at - e.node]
+        if fa := llvm_array(t); fa != nil { return {addr, fmt.tprintf("%d", fa.size), fa.size, fa.elem}, true }
+        s.elem = llvm_header_elem(t)
+        if s.elem == nil { return }
+        data_gep := fresh_tmp(g)
+        emit_slice_gep(g, data_gep, addr, SLICE.ptr)
+        s.data = fresh_tmp(g)
+        emit_load_into(g, s.data, "ptr", data_gep)
+        if bound_field >= 0 {
+            b_gep := fresh_tmp(g)
+            emit_slice_gep(g, b_gep, addr, bound_field)
+            s.bound = fresh_tmp(g)
+            emit_load_into(g, s.bound, slice_layout.len_ir, b_gep)
+        }
+        return s, true
+    }
+    dst := side(e, base, SLICE.cap) or_return
+    from := side(e, src, -1) or_return
+    if !llvm_same_type(dst.elem, from.elem) { return false }
+    w := slice_layout.len_ir
+    if hi == "" {
+        n := fmt.tprintf("%d", from.fixed)
+        if from.fixed == 0 {
+            len_gep := fresh_tmp(g)
+            emit_slice_gep(g, len_gep, e.value[src - e.node], SLICE.len)
+            n = fresh_tmp(g)
+            emit_typed_load_len(g, n, len_gep)
+        }
+        hi = fresh_tmp(g)
+        emit(g, "  %s = add %s %s, %s", hi, w, lo, n)
+    }
+    name := ""
+    #partial switch pg.op[base] {
+    case .Var, .Field: name = pg.name[base]
+    case .Deref:       name = pg.name[graph_operands(pg, base)[0].op]
+    }
+    emit_bounds_check(g, lo, dst.bound, name, span)
+    hi_ok, hi_err := fresh_label(g, "slice.high.ok"), fresh_label(g, "slice.high.err")
+    hi_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp sgt %s %s, %s", hi_cmp, w, hi, dst.bound)
+    emit_cond_br(g, hi_cmp, hi_err, hi_ok)
+    emit_label(g, hi_err)
+    msg_global, msg_len := get_string_literal(g, fmt.tprintf("runtime error: slice assignment out of bounds: high %%d > capacity %%d for '%s'\n", name))
+    msg := fresh_tmp(g)
+    emit_string_gep(g, msg, msg_len, msg_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", msg, w, hi, w, dst.bound)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, hi_ok)
+    loop, body, done := fresh_label(g, "slice.loop"), fresh_label(g, "slice.body"), fresh_label(g, "slice.end")
+    i_slot := fresh_tmp(g)
+    emit_alloca(g, i_slot, w)
+    emit_store(g, w, "0", i_slot)
+    count := fresh_tmp(g)
+    emit(g, "  %s = sub %s %s, %s", count, w, hi, lo)
+    emit_br(g, loop)
+    emit_label(g, loop)
+    i := fresh_tmp(g)
+    emit_load_into(g, i, w, i_slot)
+    more := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %s", more, w, i, count)
+    emit_cond_br(g, more, body, done)
+    emit_label(g, body)
+    elem_ir := llvm_type_from_checker(dst.elem)
+    src_gep := fresh_tmp(g)
+    emit_elem_gep(g, src_gep, llvm_type_from_checker(from.elem), from.data, i, w)
+    v := fresh_tmp(g)
+    emit_load_into(g, v, elem_ir, src_gep)
+    at := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, %s", at, w, lo, i)
+    dst_gep := fresh_tmp(g)
+    emit_array_gep_var(g, dst_gep, fmt.tprintf("[%d x %s]", dst.fixed, elem_ir), dst.data, at, w)
+    emit_store(g, elem_ir, v, dst_gep)
+    reanchor_partial_arrays(g, dst.elem, dst_gep)
+    next := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, 1", next, w, i)
+    emit_store(g, w, next, i_slot)
+    emit_br(g, loop)
+    emit_label(g, done)
+    return true
+}
+
+// A byte buffer's data and its bound: a byte slice's or partial array's
+// pointer and cap, a byte array's own address and size.
+@(private="file")
+llvm_bytes :: proc(e: ^Llvm, base: Node_Id) -> (data, bound: string, ok: bool) {
+    g, pg := e.g, e.pg
+    if llvm_direct(e, base) { return }
+    bt := pg.type_[base]
+    at := e.value[base - e.node]
+    if fa := llvm_array(bt); fa != nil && llvm_is_byte(fa.elem) {
+        return at, fmt.tprintf("%d", fa.size), true
+    }
+    elem := llvm_header_elem(bt)
+    if elem == nil || !llvm_is_byte(elem) { return }
+    data_gep := fresh_tmp(g)
+    emit_slice_gep(g, data_gep, at, SLICE.ptr)
+    data = fresh_tmp(g)
+    emit_load_into(g, data, "ptr", data_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, at, SLICE.cap)
+    bound = fresh_tmp(g)
+    emit_typed_load_cap(g, bound, cap_gep)
+    return data, bound, true
+}
+
+// Bytes read into a partial array: its header stamped, the span's elements
+// copied in (whole elements, no more than its cap; `#big_endian` swapped),
+// its len their count. The index form `bytes[off]` spans a full cap's worth
+// (a span `bytes[lo:hi]`: the source's cap when hi is open; lo <= hi).
+// (Into a struct or an array: later.)
+@(private="file")
+llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    dest := ops[0].op
+    if llvm_direct(e, dest) || len(ops) < 3 { return false }
+    pa := llvm_partial(pg.type_[dest])
+    if pa == nil { return llvm_sized_read(e, op, ops, span) }
+    lo := "0"
+    if ops[2].op != NO_NODE { lo = llvm_operand(e, ops[2], slice_header_width_type) or_return }
+    spanned := len(ops) > 3
+    hi := ""
+    if spanned && ops[3].op != NO_NODE { hi = llvm_operand(e, ops[3], slice_header_width_type) or_return }
+    data, bound := llvm_bytes(e, ops[1].op) or_return
+    bytes := fmt.tprintf("%d", pa.size * elem_byte_size(llvm_type_from_checker(pa.elem), g.checked))
+    if spanned {
+        if hi == "" { hi = bound }
+        w := slice_layout.len_ir
+        inv_ok, inv_err := fresh_label(g, "pa.inv.ok"), fresh_label(g, "pa.inv.err")
+        inv_cmp := fresh_tmp(g)
+        emit(g, "  %s = icmp slt %s %s, %s", inv_cmp, w, hi, lo)
+        emit_cond_br(g, inv_cmp, inv_err, inv_ok)
+        emit_label(g, inv_err)
+        inv_global, inv_len := get_string_literal(g, "runtime error: partial-array byte read slice bounds inverted (low=%d, high=%d) for partial-array byte read\n")
+        inv_ptr := fresh_tmp(g)
+        emit_string_gep(g, inv_ptr, inv_len, inv_global)
+        emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", inv_ptr, w, lo, w, hi)
+        emit(g, "  call void @exit(i32 1)")
+        emit(g, "  unreachable")
+        emit_label(g, inv_ok)
+        bytes = fresh_tmp(g)
+        emit(g, "  %s = sub %s %s, %s", bytes, w, hi, lo)
+    }
+    gen_partial_array_byte_fill_at_core(g, e.value[dest - e.node], pa, data, lo, bytes, pg.name[op] == "#big_endian", span)
+    return true
+}
+
+// Bytes `bytes[lo:hi]` read into a struct or an array: the span within the
+// source (lo + span <= its cap) and within the value (span <= its size), the
+// value zeroed, the span copied in — the rest stays zero — the partial arrays
+// in it made valid, and `#big_endian`, its integers swapped.
+@(private="file")
+llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    dest := ops[0].op
+    t := pg.type_[dest]
+    sd := llvm_struct(t)
+    if len(ops) < 4 || (sd == nil && llvm_array(t) == nil) { return false }
+    lo := "0"
+    if ops[2].op != NO_NODE { lo = llvm_operand(e, ops[2], slice_header_width_type) or_return }
+    hi := ""
+    if ops[3].op != NO_NODE { hi = llvm_operand(e, ops[3], slice_header_width_type) or_return }
+    data, bound := llvm_bytes(e, ops[1].op) or_return
+    if hi == "" { hi = bound }
+    w := slice_layout.len_ir
+    loc := format_location(span.file, span.line, span.col)
+    size := checker_type_byte_size(t)
+    n := fresh_tmp(g)
+    emit(g, "  %s = sub %s %s, %s", n, w, hi, lo)
+    end := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, %s", end, w, lo, n)
+    src_ok, src_err := fresh_label(g, "span.src.ok"), fresh_label(g, "span.src.err")
+    src_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp ugt %s %s, %s", src_cmp, w, end, bound)
+    emit_cond_br(g, src_cmp, src_err, src_ok)
+    emit_label(g, src_err)
+    src_global, src_len := get_string_literal(g, fmt.tprintf("<%s> runtime error: sized read runs past the source buffer\n", loc))
+    src_msg := fresh_tmp(g)
+    emit_string_gep(g, src_msg, src_len, src_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", src_msg)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, src_ok)
+    dst_ok, dst_err := fresh_label(g, "span.dst.ok"), fresh_label(g, "span.dst.err")
+    dst_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp ugt %s %s, %d", dst_cmp, w, n, size)
+    emit_cond_br(g, dst_cmp, dst_err, dst_ok)
+    emit_label(g, dst_err)
+    dst_global, dst_len := get_string_literal(g, fmt.tprintf("<%s> runtime error: sized read of %%d bytes exceeds destination (%d bytes)\n", loc, size))
+    dst_msg := fresh_tmp(g)
+    emit_string_gep(g, dst_msg, dst_len, dst_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s)", dst_msg, w, n)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, dst_ok)
+    src := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", src, data, w, lo)
+    at := e.value[dest - e.node]
+    emit_memset_zero(g, at, size)
+    emit_memcpy_runtime(g, at, src, n)
+    if sd != nil { fixup_partial_array_fields(g, at, sd) }
+    if pg.name[op] == "#big_endian" { emit_bswap_in_place(g, at, llvm_type_from_checker(t), t) }
+    return true
+}
+
+// A sized slice, `s : []T(n)`: storage for n elements on the stack (bytes
+// 16-aligned, for what's taken from them), zeroed, and s's header over it —
+// len 0, cap n. (A big one, on the arena: later.)
+@(private="file")
+llvm_sized_slice :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
+    g, pg := e.g, e.pg
+    dest := ops[0].op
+    sl := llvm_slice(pg.type_[dest])
+    if sl == nil || pg.op[dest] != .Var || llvm_direct(e, dest) { return false }
+    n := llvm_operand(e, ops[1], slice_header_width_type) or_return
+    w := slice_layout.len_ir
+    elem_ir := llvm_type_from_checker(sl.elem)
+    size := elem_byte_size(elem_ir, g.checked)
+    name := fmt.tprintf("%%%s.data", pg.name[pg.refers[dest]])
+    for k := 2; e.used[name]; k += 1 { name = fmt.tprintf("%%%s.data.%d", pg.name[pg.refers[dest]], k) }
+    e.used[name] = true
+    if c, is_const := pg.consts[ops[1].op]; is_const {
+        total := int(c.int) * size
+        if total >= 1024 { return false }
+        emit_alloca(g, name, fmt.tprintf("[%d x %s]%s", c.int, elem_ir, ", align 16" if elem_ir == "i8" else ""))
+        emit_memset_zero(g, name, total)
+    } else {
+        emit_alloca_runtime(g, name, elem_ir, w, n, 16 if elem_ir == "i8" else 0)
+        bytes := n
+        if size != 1 {
+            bytes = fresh_tmp(g)
+            emit(g, "  %s = mul %s %s, %d", bytes, w, n, size)
+        }
+        emit(g, "  call void @llvm.memset.p0.i64(ptr %s, i8 0, i64 %s, i1 false)", name, bytes)
+    }
+    hdr := e.value[dest - e.node]
+    ptr_gep := fresh_tmp(g)
+    emit_slice_gep(g, ptr_gep, hdr, SLICE.ptr)
+    emit_store(g, "ptr", name, ptr_gep)
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, hdr, SLICE.len)
+    emit_typed_store_len(g, "0", len_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
+    emit_typed_store_cap(g, n, cap_gep)
+    return true
+}
+
+// A take from storage's cursor: storage's pointer and len (the cursor), the
+// cursor aligned for what's taken, that address, the cursor moved past it —
+// checked against storage's cap — and stored as its len. `let(T, s)` is that
+// memory; `slice([:n]T, s)` a header over n of them (len = cap = n), built
+// where it goes when that's fresh, as a call's result is. Positional (a view
+// of bytes for storage): `let` is the view (`slice`: later).
+@(private="file")
+llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    storage := ops[0].op
+    if storage == NO_NODE || llvm_direct(e, storage) { return false }
+    let := pg.name[op] == "let"
+    if pg.op[storage] == .View {
+        if !let { return false }
+        e.value[op - e.node] = e.value[storage - e.node]
+        return true
+    }
+    if llvm_header_elem(pg.type_[storage]) == nil { return false }
+    // A `let` is only a declaration's (it names the memory); anything else later.
+    if u := e.user[op - e.node]; let && (u < 0 || pg.op[u] != .Write || pg.refers[graph_operands(pg, u)[0].op] not_in e.carved) {
+        return false
+    }
+    t := pg.type_[op]
+    elem := t
+    count := ""
+    if !let {
+        sl := llvm_slice(t)
+        if sl == nil || len(ops) < 2 { return false }
+        elem = sl.elem
+        count = llvm_operand(e, ops[1], slice_header_width_type) or_return
+    }
+    w := slice_layout.len_ir
+    elem_ir := llvm_type_from_checker(elem)
+    size, align := elem_byte_size(elem_ir, g.checked), elem_alignment(elem_ir, g.checked)
+    hdr := e.value[storage - e.node]
+    data_gep := fresh_tmp(g)
+    emit_slice_gep(g, data_gep, hdr, SLICE.ptr)
+    data := fresh_tmp(g)
+    emit_load_into(g, data, "ptr", data_gep)
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, hdr, SLICE.len)
+    cursor := fresh_tmp(g)
+    emit_typed_load_len(g, cursor, len_gep)
+    advance := fmt.tprintf("%d", size)
+    if !let {
+        advance = fresh_tmp(g)
+        emit(g, "  %s = mul %s %s, %d", advance, w, count, size)
+    }
+    if align > 1 {
+        bumped := fresh_tmp(g)
+        emit(g, "  %s = add %s %s, %d", bumped, w, cursor, align - 1)
+        cursor = fresh_tmp(g)
+        emit(g, "  %s = and %s %s, %d", cursor, w, bumped, -align)
+    }
+    at := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", at, data, w, cursor)
+    moved := fresh_tmp(g)
+    emit(g, "  %s = add %s %s, %s", moved, w, cursor, advance)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
+    cap_val := fresh_tmp(g)
+    emit_typed_load_cap(g, cap_val, cap_gep)
+    over := fresh_tmp(g)
+    emit(g, "  %s = icmp sgt %s %s, %s", over, w, moved, cap_val)
+    fail, ok := fresh_label(g, "take.fail"), fresh_label(g, "take.ok")
+    emit_cond_br(g, over, fail, ok)
+    emit_label(g, fail)
+    loc := format_location(span.file, span.line, span.col)
+    name := graph_place_name(pg, ops[0])
+    msg := fmt.tprintf("%s runtime error: take overflows storage: advance to %%d exceeds cap %%d for '%s'\n", loc, name)
+    msg_global, msg_len := get_string_literal(g, msg)
+    msg_ptr := fresh_tmp(g)
+    emit_string_gep(g, msg_ptr, msg_len, msg_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", msg_ptr, w, moved, w, cap_val)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, ok)
+    emit_typed_store_len(g, moved, len_gep)
+    if let {
+        e.value[op - e.node] = at
+        return true
+    }
+    // The header: in a fresh declaration's (or the result's) slot, else a temporary.
+    out := ""
+    if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write {
+        dest := graph_operands(pg, u)[0].op
+        if pg.op[dest] == .Var {
+            s := pg.stmt[u]
+            if (s >= 0 && pg.stmts[s].kind == .Decl) || llvm_place(e, dest) == "%sret" { out = llvm_place(e, dest) }
+        }
+    }
+    if out == "" {
+        out = fresh_tmp(g)
+        emit_alloca(g, out, SLICE_IR_TYPE)
+    }
+    ptr_gep := fresh_tmp(g)
+    emit_slice_gep(g, ptr_gep, out, SLICE.ptr)
+    emit_store(g, "ptr", at, ptr_gep)
+    n_gep := fresh_tmp(g)
+    emit_slice_gep(g, n_gep, out, SLICE.len)
+    emit_typed_store_len(g, count, n_gep)
+    c_gep := fresh_tmp(g)
+    emit_slice_gep(g, c_gep, out, SLICE.cap)
+    emit_typed_store_cap(g, count, c_gep)
+    e.value[op - e.node] = out
     return true
 }
 

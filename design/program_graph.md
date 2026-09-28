@@ -202,10 +202,11 @@ About thirty kinds in all.
 | `global` | `COLORS` (a constant table), `"hi"` | `@name`, `@.str.<hash>` |
 | `field` | `p.x` | `getelementptr` to the field |
 | `index` | `a[i]` | bounds check and `getelementptr`; a slice loads its pointer first |
+| `view` | bytes at an offset seen as a `T`: `x : T = bytes[off]`, `bytes[off] = x`, `&bytes[off]` taken as a `^T`; `#big_endian` | check `off + size_of(T) <= cap`, then `getelementptr` to the byte; what goes through it is `align 1`, and a big-endian view's integers are swapped |
 | `deref` | `p^`; implied in `p.x` when `p: ^T` | `load ptr` |
 | `variant` | the bound payload in a `match` arm | `getelementptr` past the tag |
 | `swizzle` | `v.xy` | element addresses or `shufflevector` |
-| `slice` | `a[lo:hi]`, `slice_from_ptr(p, n)`; written to, `a[lo:hi] = b` | a slice header: pointer, length, capacity; written to, the elements it views: `memcpy` |
+| `slice` | `a[lo:hi]`, `slice_from_ptr(p, n)`; written to, `a[lo:hi] = b` | a slice header: pointer, length, capacity; written to, b's elements copied in from lo — as many as b has when hi is open — with lo and hi checked against the capacity |
 
 **Memory**
 
@@ -214,11 +215,11 @@ About thirty kinds in all.
 | `read` | a place used as a value | `load`, or the address itself for a struct |
 | `write` | `x = v`, `p.x += 1`; `x = void` writes the `void` constant | `store`, or `memcpy` for a struct; `void` stores nothing, or a pointer's null |
 | `address` | `&x` | the place itself; no instruction |
-| `zero` | synthetic, from `x : T`; `s : []T(n)` takes `n` | `store zeroinitializer` or `memset`; for `n`, storage for n elements and the slice header over it |
+| `zero` | synthetic, from `x : T`; `Foo{0}`; `s : []T(n)` takes `n` | `store zeroinitializer` or `memset`; for `n`, storage for n elements and the slice header over it |
 | `construct` | `Foo(a)`, `Foo{…}`; synthetic from `x : Foo` | `memset`, then a call to Foo's init into the place |
 | `fill` | `{all x}` | a store per slot, a loop when large |
-| `carve` | `let(T, mem)`, `slice([:n]T, mem)` | align the cursor, `getelementptr`, bump `mem.len` |
-| `byte read` | `x : T = bytes[off]`, `#big_endian` | bounds check and `memcpy`, plus `bswap` |
+| `carve` | `let(T, mem)`, `slice([:n]T, mem)`; positional, `let(T, &bytes[i])` | align the cursor, `getelementptr`, bump `mem.len`; positional, the view of the bytes there |
+| `byte read` | a partial array filled from bytes (`pa = bytes[off]`, `pa = bytes[lo:hi]`), a value from a span (`x : T = bytes[lo:hi]`); `#big_endian` | checks, `memcpy`, `bswap`; a fill sets `len` |
 | `arena alloc` | synthetic, for a local too big for the stack | `call arena_alloc` |
 
 **Values**

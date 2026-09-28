@@ -386,7 +386,7 @@ du_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool, 
             case .Var:
                 if g.refers[p] == NO_NODE { return }
                 return g.refers[p], whole, true
-            case .Field, .Index, .Deref, .Swizzle, .Variant, .Slice:
+            case .Field, .Index, .View, .Deref, .Swizzle, .Variant, .Slice:
                 whole = false
                 p = graph_operands(g, p)[0].op
                 if p == NO_NODE || g.kind[p] != .Op { return }
@@ -402,7 +402,7 @@ du_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool, 
 du_is_place :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
     if op == NO_NODE || g.kind[op] != .Op { return false }
     #partial switch g.op[op] {
-    case .Var, .Field, .Index, .Deref, .Swizzle, .Variant, .Slice, .Global: return true
+    case .Var, .Field, .Index, .View, .Deref, .Swizzle, .Variant, .Slice, .Global: return true
     }
     return false
 }
@@ -499,7 +499,7 @@ du_walk_value :: proc(w: ^Du_Walk, o: Operand) {
         du_walk_use(w, o.op)
     case .Read, .Address, .Field, .Deref, .Swizzle, .Variant:
         du_walk_value(w, ops[0])
-    case .Index:
+    case .Index, .View:
         du_walk_value(w, ops[0])
         // A loop's element read is the collection's data; its position is not.
         if g.written[o.op] != .Synthetic { du_walk_value(w, ops[1]) }

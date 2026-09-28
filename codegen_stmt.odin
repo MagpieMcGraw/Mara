@@ -325,17 +325,9 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 return
             }
             if s.value == nil {
-                // Uninitialized slice: alloca + zero all three fields.
+                // Uninitialized slice: its header zero (null, 0, 0).
                 alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), SLICE_IR_TYPE)
-                ptr_gep := fresh_tmp(g)
-                emit_slice_gep(g, ptr_gep, alloca_name, SLICE.ptr)
-                emit_store(g, "ptr", "null", ptr_gep)
-                len_gep := fresh_tmp(g)
-                emit_slice_gep(g, len_gep, alloca_name, SLICE.len)
-                emit_typed_store_len(g, "0", len_gep)
-                cap_gep := fresh_tmp(g)
-                emit_slice_gep(g, cap_gep, alloca_name, SLICE.cap)
-                emit_typed_store_cap(g, "0", cap_gep)
+                emit_memset_zero(g, alloca_name, slice_header_bytes)
                 g.all_vars[s.name] = Slice_Var{alloca = alloca_name, elem_type = elem_t, is_utf8 = sl_utf8}
                 return
             }

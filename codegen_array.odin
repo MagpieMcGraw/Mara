@@ -789,18 +789,8 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         codegen_fatal(g, s.span, CODE_SLICE_ASSIGNMENT_TARGET_VARIABLE)
     }
 
-    dst_data_ptr   := emit_array_data(g, &h)
     dst_elem_type  := h.elem_type
     dst_is_utf8    := h.is_utf8
-    dst_capacity:  int     // compile-time fixed cap, 0 = runtime
-    dst_cap_str:   string  // SSA value of the bounds-check upper limit
-    if handle_is_fixed(&h) {
-        dst_capacity = h.static_cap
-        dst_cap_str  = h.static_cap_str != "" ? h.static_cap_str : fmt.tprintf("%d", h.static_cap)
-    } else {
-        dst_capacity = 0
-        dst_cap_str  = emit_array_raw_cap(g, &h)
-    }
     dst_name := ""
     if ident, ok := sl.expr.(^Expr_Ident); ok {
         dst_name = ident.name
@@ -808,9 +798,13 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         dst_name = fa.field
     }
 
-    // Compute low at the slice header's natural width (widening a narrower
-    // bound) so the bounds check and arithmetic below stay homogeneous.
+    // The bounds first, then the value, then the headers (as the program
+    // graph orders them). Low and high at the slice header's natural width
+    // (widening a narrower bound) so the checks and arithmetic below stay
+    // homogeneous.
     low := gen_int_at_slice_width(g, sl.low)
+    high := ""
+    if sl.high != nil { high = gen_int_at_slice_width(g, sl.high) }
 
     // Resolve the RHS into an Array_Handle — the same unified resolver the
     // destination uses. Covers bare idents (array / slice / partial array),
@@ -838,6 +832,18 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         codegen_fatal(g, s.span, CODE_SLICE_RHS_NAMED_ARRAY_SLICE)
     }
 
+    // The destination's data and bound: fixed, or its header's pointer and cap.
+    dst_data_ptr := emit_array_data(g, &h)
+    dst_capacity:  int     // compile-time fixed cap, 0 = runtime
+    dst_cap_str:   string  // SSA value of the bounds-check upper limit
+    if handle_is_fixed(&h) {
+        dst_capacity = h.static_cap
+        dst_cap_str  = h.static_cap_str != "" ? h.static_cap_str : fmt.tprintf("%d", h.static_cap)
+    } else {
+        dst_capacity = 0
+        dst_cap_str  = emit_array_raw_cap(g, &h)
+    }
+
     // Data pointer to the RHS's first element (loaded once). For fixed arrays
     // this is the alloca; for slices / partial arrays it is header.ptr.
     rhs_data := emit_array_data(g, &rhs_h)
@@ -847,12 +853,9 @@ gen_slice_range_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     // the bounds checks are all w-typed. No widening/truncating dance.
     w := slice_layout.len_ir
 
-    // Compute high — explicit, or derived from the RHS length for open-ended
-    // [low:] (works for fixed arrays — len == cap — and slices / partial arrays).
-    high: string
-    if sl.high != nil {
-        high = gen_int_at_slice_width(g, sl.high)
-    } else {
+    // An open-ended [low:] runs for the RHS's length (works for fixed arrays
+    // — len == cap — and slices / partial arrays).
+    if high == "" {
         rhs_len := emit_array_len(g, &rhs_h)
         high = fresh_tmp(g)
         emit(g, "  %s = add %s %s, %s", high, w, low, rhs_len)
@@ -1234,7 +1237,7 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
                     if take_count(e) != nil {
                         elem_ptr, ok2 = emit_byte_offset_ptr_runtime(g, idx.expr, idx.index, bytes_str, "slice", idx.span)
                     } else {
-                        elem_ptr, ok2 = emit_byte_offset_ptr(g, idx.expr, idx.index, t_size, "let", idx.span)
+                        elem_ptr, ok2 = emit_byte_offset_ptr(g, idx.expr, idx.index, t_size, "view", idx.span)
                     }
                     if ok2 {
                         if take_count(e) != nil {
@@ -1295,6 +1298,10 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
         codegen_fatal(g, e.span, CODE_TAKE_SLICE_VARIABLE, name)
     }
 
+    // The count first (a runtime-counted slice), then storage's header.
+    count_runtime: string
+    if take_count(e) != nil { count_runtime = gen_int_at_slice_width(g, take_count(e)) }
+
     // Load storage's data pointer (field 0).
     data_gep := fresh_tmp(g)
     emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
@@ -1315,7 +1322,6 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     // contract is "take advances len; you don't get to address the gap."
     // Skip the math when type_align <= 1 (byte takes need no padding).
     advance_amount: string
-    count_runtime: string
     elem_size: int
     type_align: int
     // Everything below operates at slice_layout.len_ir — cursor / advance /
@@ -1328,7 +1334,6 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
         elem_ir := llvm_type_from_checker(sl.elem)
         elem_size = elem_byte_size(elem_ir, g.checked)
         type_align = elem_alignment(elem_ir, g.checked)
-        count_runtime = gen_int_at_slice_width(g, take_count(e))
         advance_amount = fresh_tmp(g)
         emit(g, "  %s = mul %s %s, %d", advance_amount, w, count_runtime, elem_size)
     } else {
@@ -1945,9 +1950,7 @@ gen_int_at_slice_width :: proc(g: ^Codegen, expr: Expr) -> string {
 // width post-migration). Conversion is explicit at the indexing primitive,
 // not a hidden widen elsewhere.
 emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, size: int, label: string, span: Span) -> (elem_ptr: string, ok: bool) {
-    data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span)
-    if !resolved { return "", false }
-
+    // The offset first, then the buffer's header, as for an index.
     offset := "0"
     if offset_expr != nil {
         // Normalise the offset to slice-header width: a narrower integer (e.g. an
@@ -1955,6 +1958,8 @@ emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, siz
         // index reconciliation in gen_checked_index.
         offset = gen_int_at_slice_width(g, offset_expr)
     }
+    data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span)
+    if !resolved { return "", false }
     emit_byte_size_bounds_check(g, cap_val, offset, size, label)
 
     elem_ptr = fresh_tmp(g)
@@ -2049,7 +2054,7 @@ gen_byte_target_write :: proc(g: ^Codegen, s: ^Stmt_Assign, buf_expr: Expr, offs
     val_ir_type := llvm_type_from_checker(val_type)
     val_size := checker_type_byte_size(val_type)
 
-    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, val_size, "write", s.span)
+    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, val_size, "view", s.span)
     if !ok {
         codegen_fatal(g, s.span, CODE_BYTE_BUFFER_WRITE_TARGET_BYTE)
     }
@@ -2076,7 +2081,7 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
     target_ir_type := llvm_type_from_checker(target_type)
     target_size := checker_type_byte_size(target_type)
 
-    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, target_size, "read", span)
+    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, target_size, "view", span)
     if !ok {
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
@@ -2136,16 +2141,7 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
         // `align 1` on the byte-buffer load (offset user-chosen); the store
         // into the local alloca stays natural since the alloca is aligned.
         emit(g, "  %s = load %s, ptr %s, align 1", val, target_ir_type, elem_ptr)
-        if is_big_endian && is_swappable_integer(target_type) {
-            bits := checker_type_byte_size(target_type) * 8
-            if bits >= 16 {
-                intrinsic := fmt.tprintf("llvm.bswap.i%d", bits)
-                g.bswap_intrinsics[bits] = true
-                swapped := fresh_tmp(g)
-                emit(g, "  %s = call i%d @%s(i%d %s)", swapped, bits, intrinsic, bits, val)
-                val = swapped
-            }
-        }
+        if is_big_endian { val = emit_bswap_value(g, val, target_type) }
         alloca_name = emit_local_alloca(g, alloca_name, target_ir_type)
         emit_store(g, target_ir_type, val, alloca_name)
         g.all_vars[name] = Scalar_Var{alloca_name}
@@ -2166,15 +2162,16 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
     w := slice_layout.len_ir
     loc := format_location(span_loc.file, span_loc.line, span_loc.col)
 
+    // The bounds first, then the buffer (an open high is its cap).
+    low := "0"
+    if low_expr != nil { low = gen_int_at_slice_width(g, low_expr) }
+    high := ""
+    if high_expr != nil { high = gen_int_at_slice_width(g, high_expr) }
     data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span_loc)
     if !resolved {
         codegen_fatal(g, span_loc, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
-
-    low := "0"
-    if low_expr != nil { low = gen_int_at_slice_width(g, low_expr) }
-    high := cap_val
-    if high_expr != nil { high = gen_int_at_slice_width(g, high_expr) }
+    if high == "" { high = cap_val }
 
     // span = high - low
     span_ssa := fresh_tmp(g)
@@ -2265,6 +2262,18 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
     }
 }
 
+// A big-endian integer's value in the machine's order: its bytes swapped
+// (an integer of 16 bits or more; anything else is itself).
+emit_bswap_value :: proc(g: ^Codegen, val: string, t: Type) -> string {
+    if !is_swappable_integer(t) { return val }
+    bits := checker_type_byte_size(t) * 8
+    if bits < 16 { return val }
+    g.bswap_intrinsics[bits] = true
+    swapped := fresh_tmp(g)
+    emit(g, "  %s = call i%d @llvm.bswap.i%d(i%d %s)", swapped, bits, bits, bits, val)
+    return swapped
+}
+
 // Big-endian byte-swap in place: walks `ty` rooted at `base_ptr` and emits
 // llvm.bswap on every multi-byte integer leaf. Used by `#big_endian` byte-
 // buffer reads after the load/memcpy.
@@ -2353,7 +2362,7 @@ is_swappable_integer :: proc(t: Type) -> bool {
 emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, pt: string, span: Span, arr_ty: Type, is_big_endian: bool) -> string {
     arr_cap, arr_elem, _ := parse_array_ir_type(pt)
     size_bytes := arr_cap * elem_byte_size(arr_elem, g.checked)
-    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, size_bytes, "read", span)
+    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, size_bytes, "view", span)
     if !ok {
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
@@ -2374,7 +2383,7 @@ emit_array_from_byte_buffer :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Ex
 gen_byte_target_field_read :: proc(g: ^Codegen, st_llvm: string, base_ptr: string, idx: int, f: ^Struct_Type_Field, buf_expr: Expr, offset_expr: Expr, span: Span, is_big_endian: bool) {
     ft := field_ir_type(f)
     field_size := checker_type_byte_size(f.type_)
-    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, field_size, "read", span)
+    elem_ptr, ok := emit_byte_offset_ptr(g, buf_expr, offset_expr, field_size, "view", span)
     if !ok {
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
@@ -2661,14 +2670,11 @@ gen_partial_array_alloc_and_register :: proc(g: ^Codegen, name: string, pa: ^Typ
     }
     elem_t := llvm_type_from_checker(pa.elem)
     _, pa_utf8 := pa.elem.(Type_Utf8)
-    ir_type := partial_array_ir_type(elem_t, pa.size)
     alloca_name := emit_partial_array_storage(g, fmt.tprintf("%%%s", name), pa, name, span)
     // Zero-init policy: the byte-fill that follows is dest-bounded and may
     // leave a tail — zeroed elements make that tail (and any later
-    // cstring terminator check) deterministic.
-    elements_ptr := fresh_tmp(g)
-    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", alloca_name, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-    emit_memset_zero(g, elements_ptr, pa.size * elem_byte_size(elem_t, g.checked))
+    // cstring terminator check) deterministic. It starts as a zero value.
+    emit_partial_array_zero(g, alloca_name, pa)
     g.all_vars[name] = Slice_Var{
         alloca    = alloca_name,
         elem_type = elem_t,
@@ -2691,14 +2697,16 @@ gen_partial_array_byte_read_index :: proc(g: ^Codegen, name: string, pa: ^Type_P
 // span from sl_expr.low/sl_expr.high and forwards to the core helper.
 gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array, sl_expr: ^Expr_Slice, span: Span) {
     w := slice_layout.len_ir
+    // The bounds first, then the buffer (an open high is its cap).
+    src_low := "0"
+    if sl_expr.low != nil { src_low = gen_int_at_slice_width(g, sl_expr.low) }
+    src_high := ""
+    if sl_expr.high != nil { src_high = gen_int_at_slice_width(g, sl_expr.high) }
     src_data_ptr, src_cap, resolved := resolve_byte_target(g, sl_expr.expr, span)
     if !resolved {
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
-    src_low := "0"
-    if sl_expr.low != nil { src_low = gen_int_at_slice_width(g, sl_expr.low) }
-    src_high := src_cap
-    if sl_expr.high != nil { src_high = gen_int_at_slice_width(g, sl_expr.high) }
+    if src_high == "" { src_high = src_cap }
 
     // Runtime check 0: high >= low (slice form only — Expr_Index path skips
     // this since byte_count comes from a static cap × elem_size product
@@ -2731,12 +2739,13 @@ gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_
 // without needing to compute an explicit end offset.
 gen_partial_array_byte_fill_at_from_index :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array, idx_expr: ^Expr_Index, span: Span) {
     w := slice_layout.len_ir
+    // The offset first, then the buffer.
+    src_low := "0"
+    if idx_expr.index != nil { src_low = gen_int_at_slice_width(g, idx_expr.index) }
     src_data_ptr, _, resolved := resolve_byte_target(g, idx_expr.expr, span)
     if !resolved {
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
-    src_low := "0"
-    if idx_expr.index != nil { src_low = gen_int_at_slice_width(g, idx_expr.index) }
     elem_bytes := elem_byte_size(llvm_type_from_checker(pa.elem), g.checked)
     src_bytes := fmt.tprintf("%d", pa.size * elem_bytes)
     gen_partial_array_byte_fill_at_core(g, slot_ptr, pa, src_data_ptr, src_low, src_bytes, idx_expr.is_big_endian, span)

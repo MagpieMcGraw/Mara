@@ -41,7 +41,7 @@ Node_Kind :: enum u8 {
 
 Op_Kind :: enum u8 {
     // Places
-    Var, Global, Field, Index, Deref, Variant, Swizzle, Slice,
+    Var, Global, Field, Index, View, Deref, Variant, Swizzle, Slice,
     // Memory
     Read, Write, Address, Zero, Construct, Fill, Carve, Byte_Read, Arena_Alloc,
     // Values
@@ -542,7 +542,16 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
             // reads through that same place. A slice (`dst[lo:hi] = src`) is
             // the run of elements the value's are copied into.
             _, is_slice := v.target.(^Expr_Slice)
-            p := graph_value(b, v.target) if is_slice else graph_place(b, v.target, v.span)
+            p: Operand
+            if ix, is_ix := v.target.(^Expr_Index); is_ix && is_byte_buffer(expr_type(ix.expr)) && v.assign_value_type != nil {
+                p = graph_view_place(b, ix, v.assign_value_type, v.span)   // bytes written as the value's type
+            } else if sl, is_sl := v.target.(^Expr_Slice); is_sl && is_byte_buffer(expr_type(sl.expr)) && v.assign_value_type != nil {
+                // `bytes[lo:hi] = v`, v no array: its bytes, written at lo.
+                p = graph_view_at(b, sl.expr, sl.low, v.assign_value_type, sl.is_big_endian, v.span)
+                is_slice = false
+            } else {
+                p = graph_value(b, v.target) if is_slice else graph_place(b, v.target, v.span)
+            }
             if _, is_void := v.value.(^Expr_Skip_Constructor); is_void || is_void_literal(v.value) {
                 graph_op(b, .Write, .Explicit, v.span, nil, "", p, graph_void(b, dest_t, v.span))
                 break
@@ -677,7 +686,7 @@ graph_init :: proc(b: ^Graph_Builder, d: Node_Id, value: Expr, span: Span, cap: 
     }
     if value == nil {
         if cap != nil {   // `s : []T(n)`: the slice, with storage for n
-            n := graph_value(b, cap)
+            n := graph_widen(b, graph_value(b, cap), slice_header_width_type, span)
             graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span), n)
             return
         }
@@ -782,15 +791,35 @@ graph_store :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
     if d.type_ != nil && byte_flow(d.type_, value, expr_type(value)) == .Read {
         #partial switch v in value {
         case ^Expr_Index:
-            buf := graph_place(b, v.expr, span)
-            off := graph_value(b, v.index)
-            graph_op(b, .Byte_Read, .Explicit, span, d.type_, "", graph_dest_place(b, d, span), buf, off)
+            t := graph_dest_type(b, d)
+            // A slice pointed at bytes (`s : []T(n) = bytes[off]`) is no view
+            // of one value. (Its count isn't carried here yet.)
+            if _, into_slice := distinct_base(t).(^Type_Slice); into_slice {
+                buf := graph_base_place(b, v.expr, span)
+                off := graph_value(b, v.index)
+                graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if v.is_big_endian else "", graph_dest_place(b, d, span), buf, off)
+                return
+            }
+            if _, into_partial := distinct_base(t).(^Type_Partial_Array); into_partial {
+                // A partial array filled from bytes: elements, then its len;
+                // a new one is zero first (past the fill, its elements stay so).
+                if d.kind == .Var && d.decl != NO_NODE { graph_op(b, .Zero, .Synthetic, span, t, "", graph_dest_place(b, d, span)) }
+                buf := graph_base_place(b, v.expr, span)
+                off := graph_value(b, v.index)
+                graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if v.is_big_endian else "", graph_dest_place(b, d, span), buf, off)
+                return
+            }
+            val := graph_read(b, graph_view_place(b, v, t, span), t, span)
+            graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
             return
         case ^Expr_Slice:
-            buf := graph_place(b, v.expr, span)
+            if _, into_partial := distinct_base(graph_dest_type(b, d)).(^Type_Partial_Array); into_partial && d.kind == .Var && d.decl != NO_NODE {
+                graph_op(b, .Zero, .Synthetic, span, graph_dest_type(b, d), "", graph_dest_place(b, d, span))
+            }
+            buf := graph_base_place(b, v.expr, span)
             lo := graph_value(b, v.low) if v.low != nil else NO_VALUE
             hi := graph_value(b, v.high) if v.high != nil else NO_VALUE
-            graph_op(b, .Byte_Read, .Explicit, span, d.type_, "", graph_dest_place(b, d, span), buf, lo, hi)
+            graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if v.is_big_endian else "", graph_dest_place(b, d, span), buf, lo, hi)
             return
         }
     }
@@ -1018,6 +1047,41 @@ graph_header_of :: proc(t: Type) -> bool {
     if pt, ok := distinct_base(t).(^Type_Ptr); ok { t = pt.elem }
     _, is_slice := distinct_base(t).(^Type_Slice)
     return is_slice
+}
+
+// Bytes at an offset seen as a `t` — read (`x : T = bytes[off]`), written
+// (`bytes[off] = x`) or addressed (`&bytes[off]` as a `^T`); `#big_endian`
+// names the view whose integers are stored most significant byte first.
+@(private="file")
+graph_view_place :: proc(b: ^Graph_Builder, ix: ^Expr_Index, t: Type, span: Span) -> Operand {
+    return graph_view_at(b, ix.expr, ix.index, t, ix.is_big_endian, span)
+}
+
+// The view of `bytes` at offset `off` (0 when nil).
+@(private="file")
+graph_view_at :: proc(b: ^Graph_Builder, bytes, off: Expr, t: Type, big: bool, span: Span) -> Operand {
+    base := graph_base_place(b, bytes, span)
+    at: Operand
+    if off != nil {
+        at = graph_widen(b, graph_value(b, off), slice_header_width_type, span)
+    } else {
+        at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
+    }
+    return graph_op_value(b, .View, .Explicit, span, t, "#big_endian" if big else "", base, at)
+}
+
+// What a take carves from: the storage's header — `&s` is s's, a `^[]byte`
+// what it points at — or, positional (`&bytes[i]`), the view of the bytes
+// there as what's taken.
+@(private="file")
+graph_carve_storage :: proc(b: ^Graph_Builder, v: ^Expr_Take) -> Operand {
+    if u, is_addr := v.storage.(^Expr_Unary); is_addr && u.op == .Ampersand {
+        if ix, is_ix := u.operand.(^Expr_Index); is_ix && is_byte_buffer(expr_type(ix.expr)) {
+            return graph_view_place(b, ix, v.type_, v.span)
+        }
+        return graph_place(b, u.operand, v.span)
+    }
+    return graph_base_place(b, v.storage, v.span)
 }
 
 // A partial array, or a pointer to one.
@@ -1510,7 +1574,14 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         }
         #partial switch v.op {
         case .Caret:     return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
-        case .Ampersand: return graph_op_value(b, .Address, w, v.span, v.type_, "", graph_place(b, v.operand, v.span))
+        case .Ampersand:
+            // `&bytes[off]` taken as a `^T`: the address of a view of them.
+            if ix, is_ix := v.operand.(^Expr_Index); is_ix && v.byte_view_type != nil {
+                pt := new(Type_Ptr)
+                pt.elem = v.byte_view_type
+                return graph_op_value(b, .Address, w, v.span, pt, "", graph_view_place(b, ix, v.byte_view_type, v.span))
+            }
+            return graph_op_value(b, .Address, w, v.span, v.type_, "", graph_place(b, v.operand, v.span))
         }
         op := "-%" if v.op == .Minus && v.wrapping else graph_token_text(v.op)   // `-%x` wraps
         return graph_op_value(b, .Unary, w, v.span, v.type_, op, graph_value(b, v.operand, w))
@@ -1545,8 +1616,9 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         graph_op(b, .Assert, w, v.span, nil, v.cond_text, graph_value(b, v.cond, w))
         return NO_VALUE
     case ^Expr_Take:
-        count := graph_value(b, take_count(v), w) if take_count(v) != nil else NO_VALUE
-        return graph_op_value(b, .Carve, w, v.span, v.type_, v.keyword, graph_place(b, v.storage, v.span), count)
+        count := NO_VALUE
+        if take_count(v) != nil { count = graph_widen(b, graph_value(b, take_count(v), w), slice_header_width_type, v.span) }
+        return graph_op_value(b, .Carve, w, v.span, v.type_, v.keyword, graph_carve_storage(b, v), count)
     case ^Expr_If:
         return graph_if_value(b, v, w)
     case ^Expr_Tuple_Default:
@@ -1598,6 +1670,10 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
             return graph_op_value(b, .Field, .Explicit, v.span, v.type_, v.field, base)
         }
     case ^Expr_Index:
+        // Bytes indexed as another type (a byte read at an argument): a view.
+        if _, of_byte := distinct_base(v.type_).(Type_Byte); !of_byte && v.type_ != nil && !is_infer(v.type_) && is_byte_buffer(expr_type(v.expr)) {
+            return graph_view_place(b, v, v.type_, v.span)
+        }
         base := graph_base_place(b, v.expr, v.span)
         at := graph_widen(b, graph_value(b, v.index), slice_header_width_type, v.span)
         return graph_op_value(b, .Index, .Explicit, v.span, v.type_, "", base, at)
@@ -2135,7 +2211,7 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
         rts := ts.return_types[:]
         if len(ops) == 1 && len(rts) > 1 { return rts[len(rts) - 1] }   // `?` returns the err
         if k < len(rts) { return rts[k] }
-    case .Index, .Slice, .Zero, .Carve:
+    case .Index, .View, .Slice, .Zero, .Carve:
         if k > 0 { return slice_header_width_type }
     case .Byte_Read:
         if k > 1 { return slice_header_width_type }
@@ -2307,7 +2383,7 @@ graph_root :: proc(g: ^Program_Graph, p: Operand) -> Node_Id {
         #partial switch g.op[id] {
         case .Var:
             return g.refers[id]
-        case .Field, .Index, .Swizzle, .Variant, .Slice, .Deref:
+        case .Field, .Index, .View, .Swizzle, .Variant, .Slice, .Deref:
             id = graph_operands(g, id)[0].op
         case:
             return NO_NODE
@@ -2331,6 +2407,8 @@ graph_place_name :: proc(g: ^Program_Graph, p: Operand) -> string {
         return fmt.tprintf("%s.%s", base, g.name[p.op])
     case .Deref:
         if g.written[p.op] == .Implied { return graph_place_name(g, ops[0]) }
+    case .View:
+        return graph_place_name(g, ops[0])   // the bytes it views
     case .Index:
         base := graph_place_name(g, ops[0])
         if base == "" { return "" }
@@ -2890,6 +2968,7 @@ graph_op_word :: proc(k: Op_Kind) -> string {
     case .Global:      return "global"
     case .Field:       return "field"
     case .Index:       return "index"
+    case .View:        return "view"
     case .Deref:       return "deref"
     case .Variant:     return "variant"
     case .Swizzle:     return "swizzle"
