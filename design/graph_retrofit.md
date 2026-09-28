@@ -383,8 +383,30 @@ evaluates its destination and value); how instructions are chosen stays in the e
       block's allocas, the bounds failure's name. `MARA_GRAPH_CG=log` also says where each
       declined fun stopped. Still declined: swizzles of several letters, constant tables, a
       broadcast of aggregates, arrays on the arena
-- [ ] Slices and partial arrays: headers, slicing, `len`/`cap`, slice params and results,
-      sized slices, `let` / `slice` carves, byte reads and writes, `#big_endian`
+- [x] Slices: a slice's header, `{len, cap, ptr}`, is an aggregate handled by its address
+      (params, locals, fields, results); `.len` and `.cap` are its fields, and a write to
+      `.len` checks `0 <= len <= cap`; an element is the header's pointer, the index checked
+      against `cap` (one old path checked `len`; it now checks `cap` like the rest);
+      `a[lo:hi]` of an array or a slice is a new header, `len = cap = hi - lo` (no bounds
+      checks, as before). The graph now says: a fixed array where a slice is taken (an
+      argument, a store, a field) is an implied `slice` of its place — of a temporary for a
+      literal; a collection loop over a slice walks a view of it taken as the loop begins
+      (the old emitter read the header once, the graph read the place each time), which the
+      emitter holds as the header's values (no storage); a store widens its value to its
+      place's type (for `a[i] = x` it took the whole array's, so a narrower `x` wasn't
+      widened). An index is evaluated before the slice header it indexes is read, and a
+      slice's bounds before its source's header: the old emitter read the header first (it
+      now doesn't). The result slot counts
+      as fresh for a call writing into it (no argument can reach it), and a constructor's
+      field declaration is fresh (the old emitter took both as existing storage). Byte
+      views — an address of bytes taken as a `^T`, another type's value written into bytes
+      — are declined (below). Normalizer: a constant's width change, a store overwritten
+      after address arithmetic, a getelementptr copied to each of its uses, the order of
+      string constants
+- [ ] Partial arrays: the header over inline storage, stamped when zeroed and re-pointed
+      when copied; passed where a slice is taken
+- [ ] Sized slices, `take` / `slice` carves, byte reads and writes and views, `#big_endian`,
+      `a[lo:hi] = b`, `slice_from_ptr`
 - [ ] Strings, `print`, `assert`, `crash`
 - [ ] Unions and `match`: tags, variants, niche layouts
 - [ ] Scope work: defers, the arena's mark, reset and big locals; `main` and the program's

@@ -700,17 +700,17 @@ gen_index_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
     if sv, sv_ok := get_slice(g, ident.name); sv_ok {
         // Bound the index by .cap (the physical buffer size). Bounding by .len
         // would forbid append-at-len, which is exactly what `dst[dst.len] = src`
-        // does. Cap is the storage extent.
-        cap_gep := fresh_tmp(g)
-        emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
-        cap_val := fresh_tmp(g)
-        emit_typed_load_cap(g, cap_val, cap_gep)
-        idx := gen_checked_index(g, ix.index, cap_val, ident.name, s.span)
-        // Load data pointer + GEP
+        // does. Cap is the storage extent. The index first, then the header.
+        iv := gen_index_value(g, ix.index)
         data_gep := fresh_tmp(g)
         emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
         data_ptr := fresh_tmp(g)
         emit_load_into(g, data_ptr, "ptr", data_gep)
+        cap_gep := fresh_tmp(g)
+        emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
+        cap_val := fresh_tmp(g)
+        emit_typed_load_cap(g, cap_val, cap_gep)
+        idx := check_index_value(g, iv, cap_val, ident.name, s.span)
         elem_ptr := fresh_tmp(g)
         emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx, slice_layout.len_ir)
         if strings.has_prefix(sv.elem_type, "%class.") {
@@ -930,33 +930,49 @@ index_is_signed :: proc(t: Type) -> bool {
 //     would wrap into a valid-looking i32 traps; the in-range result provably
 //     fits i32 (0 <= idx < len < 2^31), so the trunc is lossless.
 gen_checked_index :: proc(g: ^Codegen, idx_expr: Expr, len_val: string, name: string, span: Span) -> string {
+    return check_index_value(g, gen_index_value(g, idx_expr), len_val, name, span)
+}
+
+// An index's value, before its check (check_index_value): a slice's header is
+// read after the index is evaluated, between the two. `wide_ir`: the index is
+// wider than the slice header and is checked at its own width.
+Index_Value :: struct {
+    value:   string,
+    wide_ir: string,
+}
+
+gen_index_value :: proc(g: ^Codegen, idx_expr: Expr) -> Index_Value {
     t := distinct_base(expr_type(idx_expr))
     ibits, _, iok := numeric_info(t)
-    wbits := slice_layout.len_size * 8
-    if iok && ibits > wbits {
-        // Index WIDER than the slice header (e.g. an i64 index, i32 header):
-        // bounds-check at the index's own width BEFORE narrowing, so an
-        // out-of-range value traps instead of wrapping, then trunc to header.
-        ir := llvm_type_from_checker(t)
-        idx := gen_expr(g, idx_expr)
-        wide_len := len_val
-        if len(len_val) > 0 && len_val[0] == '%' {
-            w := fresh_tmp(g)
-            emit(g, "  %s = sext %s %s to %s", w, slice_layout.len_ir, len_val, ir)
-            wide_len = w
-        }
-        emit_bounds_check(g, idx, wide_len, name, span, ir)
-        narrowed := fresh_tmp(g)
-        emit(g, "  %s = trunc %s %s to %s", narrowed, ir, idx, slice_layout.len_ir)
-        return narrowed
+    if iok && ibits > slice_layout.len_size * 8 {
+        return {gen_expr(g, idx_expr), llvm_type_from_checker(t)}
     }
     // Equal width, a narrower integer (i8/i16/i32/u32/byte/enum tag), or an
     // infer/literal index: coerce to the slice-header width — a lossless widen —
     // so the bounds check runs at that width. gen_int_at_slice_width centralises
     // it (it's the same primitive the byte-buffer offset paths use).
-    idx := gen_int_at_slice_width(g, idx_expr)
-    emit_bounds_check(g, idx, len_val, name, span)
-    return idx
+    return {gen_int_at_slice_width(g, idx_expr), ""}
+}
+
+check_index_value :: proc(g: ^Codegen, iv: Index_Value, len_val: string, name: string, span: Span) -> string {
+    if iv.wide_ir == "" {
+        emit_bounds_check(g, iv.value, len_val, name, span)
+        return iv.value
+    }
+    // Index WIDER than the slice header: bounds-check at the index's own width
+    // BEFORE narrowing, so an out-of-range value traps instead of wrapping,
+    // then trunc to header.
+    ir := iv.wide_ir
+    wide_len := len_val
+    if len(len_val) > 0 && len_val[0] == '%' {
+        w := fresh_tmp(g)
+        emit(g, "  %s = sext %s %s to %s", w, slice_layout.len_ir, len_val, ir)
+        wide_len = w
+    }
+    emit_bounds_check(g, iv.value, wide_len, name, span, ir)
+    narrowed := fresh_tmp(g)
+    emit(g, "  %s = trunc %s %s to %s", narrowed, ir, iv.value, slice_layout.len_ir)
+    return narrowed
 }
 
 // An array / slice element at `ptr`, as gen_expr yields it: a scalar is loaded;
@@ -1094,16 +1110,16 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
     // anywhere in the underlying storage — not just within the populated region.
     if ident, ok := e.expr.(^Expr_Ident); ok {
         if sv, sv_ok := get_slice(g, ident.name); sv_ok {
-            cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
-            slice_cap := fresh_tmp(g)
-            emit_typed_load_cap(g, slice_cap, cap_gep)
-            idx := gen_checked_index(g, e.index, slice_cap, ident.name, e.span)
-
+            iv := gen_index_value(g, e.index)
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
             data_ptr := fresh_tmp(g)
             emit_load_into(g, data_ptr, "ptr", data_gep)
+            cap_gep := fresh_tmp(g)
+            emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
+            slice_cap := fresh_tmp(g)
+            emit_typed_load_cap(g, slice_cap, cap_gep)
+            idx := check_index_value(g, iv, slice_cap, ident.name, e.span)
 
             elem_ptr := fresh_tmp(g)
             emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx, slice_layout.len_ir)
@@ -1116,16 +1132,16 @@ gen_index_address :: proc(g: ^Codegen, e: ^Expr_Index) -> string {
     if fa, fa_ok := e.expr.(^Expr_Field_Access); fa_ok {
         gen_field_access(g, fa)
         if sv, sv_ok := claim_field_slice(g); sv_ok {
-            cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
-            slice_cap := fresh_tmp(g)
-            emit_typed_load_cap(g, slice_cap, cap_gep)
-            idx := gen_checked_index(g, e.index, slice_cap, fa.field, e.span)
-
+            iv := gen_index_value(g, e.index)
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
             data_ptr := fresh_tmp(g)
             emit_load_into(g, data_ptr, "ptr", data_gep)
+            cap_gep := fresh_tmp(g)
+            emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
+            slice_cap := fresh_tmp(g)
+            emit_typed_load_cap(g, slice_cap, cap_gep)
+            idx := check_index_value(g, iv, slice_cap, fa.field, e.span)
 
             elem_ptr := fresh_tmp(g)
             emit_elem_gep(g, elem_ptr, sv.elem_type, data_ptr, idx, slice_layout.len_ir)
@@ -1370,28 +1386,24 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
 }
 
 // Load the total capacity from a slice variable.
-// Index into a slice: slice[idx] (value read).
-// Bounded by len (valid-data cursor) — you can only read what's been written.
+// Index into a slice: slice[idx] (value read). Bounded by cap, like every
+// index of a slice (the storage extent); the index first, then the header.
 gen_slice_index :: proc(g: ^Codegen, sv: ^Slice_Var, e: ^Expr_Index) -> string {
-    // Type checker guarantees e.index is at slice header width — no convert.
-    // Load len from slice for bounds check (natural width)
-    len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, sv.alloca, SLICE.len)
-    slice_len := fresh_tmp(g)
-    emit_typed_load_len(g, slice_len, len_gep)
-
     // Get variable name for error message
     slice_name := "slice"
     if ident, ok := e.expr.(^Expr_Ident); ok {
         slice_name = ident.name
     }
-    idx := gen_checked_index(g, e.index, slice_len, slice_name, e.span)
-
-    // Load data pointer from slice
+    iv := gen_index_value(g, e.index)
     data_gep := fresh_tmp(g)
     emit_slice_gep(g, data_gep, sv.alloca, SLICE.ptr)
     data_ptr := fresh_tmp(g)
     emit_load_into(g, data_ptr, "ptr", data_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
+    slice_cap := fresh_tmp(g)
+    emit_typed_load_cap(g, slice_cap, cap_gep)
+    idx := check_index_value(g, iv, slice_cap, slice_name, e.span)
 
     // GEP to element — idx is at slice header width per the conversion above.
     elem_ptr := fresh_tmp(g)
@@ -1455,6 +1467,10 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
             end = fmt.tprintf("%d", src.capacity)
         }
 
+        // Sub-slice gives len=cap=(end-start): no preserved growth room
+        // beyond the carved range. With no low bound it starts where the
+        // array does.
+        if e.low == nil { return emit_build_temp_slice(g, src.alloca, end, end) }
         slice_cap := fresh_tmp(g)
         emit(g, "  %s = sub %s %s, %s", slice_cap, w, end, start)
 
@@ -1462,20 +1478,18 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
         arr_type := array_var_type(&av)
         data_ptr := fresh_tmp(g)
         emit_array_gep_var(g, data_ptr, arr_type, src.alloca, start, w)
-        // Sub-slice gives len=cap=(end-start): no preserved growth room beyond the carved range.
         return emit_build_temp_slice(g, data_ptr, slice_cap, slice_cap)
 
     case Slice_Var:
-        // Re-slicing a slice
+        // Re-slicing a slice: its bounds first, then its header (the
+        // pointer, then the len an open end takes).
+        end: string
+        if e.high != nil { end = gen_int_at_slice_width(g, e.high) }
         data_gep := fresh_tmp(g)
         emit_slice_gep(g, data_gep, src.alloca, SLICE.ptr)
         orig_data := fresh_tmp(g)
         emit_load_into(g, orig_data, "ptr", data_gep)
-
-        end: string
-        if e.high != nil {
-            end = gen_int_at_slice_width(g, e.high)
-        } else {
+        if e.high == nil {
             // Open-ended `s[a:]` defaults end to the source's LEN — the
             // active-data extent. For partial arrays this is the count
             // tracked by .len (bytes filled by file_read, push, etc.); for
@@ -1489,12 +1503,13 @@ gen_slice_expr :: proc(g: ^Codegen, e: ^Expr_Slice) -> string {
             emit_typed_load_len(g, end, len_gep)
         }
 
+        // Sub-slice gives len=cap=(end-start).
+        if e.low == nil { return emit_build_temp_slice(g, orig_data, end, end) }
         new_cap := fresh_tmp(g)
         emit(g, "  %s = sub %s %s, %s", new_cap, w, end, start)
 
         new_data := fresh_tmp(g)
         emit_elem_gep(g, new_data, src.elem_type, orig_data, start, w)
-        // Sub-slice gives len=cap=(end-start).
         return emit_build_temp_slice(g, new_data, new_cap, new_cap)
     }
 
@@ -1612,7 +1627,8 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_t
                 }
             }
             sv, _ := get_slice(g, name)
-            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists)
+            // The result slot is as good as fresh: no argument can reach it.
+            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists || sv.alloca == "%sret")
             return
         }
     }
@@ -1752,7 +1768,8 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
                 }
             }
             sv, _ := get_slice(g, name)
-            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists)
+            // The result slot is as good as fresh: no argument can reach it.
+            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists || sv.alloca == "%sret")
             return
         }
     }

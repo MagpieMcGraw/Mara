@@ -1094,7 +1094,9 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             if len(indices) > 1 {
                 current_ptr = emit_multi_gep(g, current_type, current_ptr, indices[:])
             }
-            // current_ptr: { ptr, i64 len, i64 cap }*
+            // current_ptr: { ptr, i64 len, i64 cap }*. The index first, then
+            // the header it indexes.
+            iv := gen_index_value(g, s.index_expr)
             data_gep := fresh_tmp(g)
             emit_slice_gep(g, data_gep, current_ptr, SLICE.ptr)
             data_ptr := fresh_tmp(g)
@@ -1103,7 +1105,7 @@ emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
             emit_slice_gep(g, cap_gep, current_ptr, SLICE.cap)
             cap_val := fresh_tmp(g)
             emit_typed_load_cap(g, cap_val, cap_gep)
-            idx := gen_checked_index(g, s.index_expr, cap_val, s.name_hint, s.span)
+            idx := check_index_value(g, iv, cap_val, s.name_hint, s.span)
             elem_ptr := fresh_tmp(g)
             emit_elem_gep(g, elem_ptr, s.elem_type, data_ptr, idx, slice_layout.len_ir)
             current_ptr = elem_ptr

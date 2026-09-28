@@ -285,17 +285,18 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
             is_pa_or_sl = true
         }
         if is_pa_or_sl {
+            // Its pointer, then its len (as for a slice variable).
             hdr_ptr := gen_field_address(g, coll_fa)
-            len_gep := fresh_tmp(g)
-            emit_field_gep_into(g, len_gep, ir_type, hdr_ptr, SLICE.len)
-            len_val := fresh_tmp(g)
-            emit_typed_load_len(g, len_val, len_gep)
-            length_val = len_val
             ptr_gep := fresh_tmp(g)
             emit_field_gep_into(g, ptr_gep, ir_type, hdr_ptr, SLICE.ptr)
             data_val := fresh_tmp(g)
             emit_load_into(g, data_val, "ptr", ptr_gep)
             data_ptr = data_val
+            len_gep := fresh_tmp(g)
+            emit_field_gep_into(g, len_gep, ir_type, hdr_ptr, SLICE.len)
+            len_val := fresh_tmp(g)
+            emit_typed_load_len(g, len_val, len_gep)
+            length_val = len_val
             elem_ir = llvm_type_from_checker(elem_t)
             resolved = true
         }

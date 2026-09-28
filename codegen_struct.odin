@@ -51,7 +51,9 @@ resolve_using_field :: proc(g: ^Codegen, st: ^Scope_Body, field_name: string) ->
 // Handle VLA struct allocation: the entire struct is bump-allocated on the scope arena
 // as one contiguous block (fixed header + variable-length array data).
 // Handle: name : ClassName = { field: value, ... }
-gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Expr, span: Span = {}) {
+// `decl`: the statement declares `name` — its storage is fresh even when it
+// was bound before (a constructor's field, prebound to the caller's slot).
+gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Expr, span: Span = {}, decl := false) {
     skey := struct_key(st)
     llvm_name := struct_llvm_name(skey)
 
@@ -97,7 +99,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         // which handles literals (with constructor / defaults / overrides),
         // ident-to-ident copies, field-access copies, struct-returning call
         // NRVO, pure-struct constructor calls, and overloaded binary ops.
-        gen_store_struct_into(g, sv.alloca, st, value, dest_fresh = needs_alloca, dest_expr = var_ref(name, sd_type_scope(st)))
+        gen_store_struct_into(g, sv.alloca, st, value, dest_fresh = needs_alloca || decl, dest_expr = var_ref(name, sd_type_scope(st)))
         // After literal/copy paths have written their fields, lay down backing
         // storage and slice-header init for any sized-slice fields. The literal
         // path zero-memsets first and may call the init function, both of which
@@ -1642,38 +1644,42 @@ gen_slice_field_store :: proc(g: ^Codegen, slice_hdr_ptr: string, field: string,
     // bookkeeping could lie about the populated extent, and subsequent
     // indexing would honor the lie. Compile-time elision applies when both
     // new_len and cap are integer literals at codegen time.
-    if field == "len" {
-        cap_gep := fresh_tmp(g)
-        emit_slice_gep(g, cap_gep, slice_hdr_ptr, SLICE.cap)
-        cap_val := fresh_tmp(g)
-        emit_typed_load_cap(g, cap_val, cap_gep)
-
-        w := slice_layout.len_ir
-        ok_label   := fresh_label(g, "slice_len.ok")
-        fail_label := fresh_label(g, "slice_len.fail")
-
-        neg_cmp := fresh_tmp(g)
-        emit(g, "  %s = icmp slt %s %s, 0", neg_cmp, w, val)
-        upper_cmp := fresh_tmp(g)
-        emit(g, "  %s = icmp sgt %s %s, %s", upper_cmp, w, val, cap_val)
-        combined := fresh_tmp(g)
-        emit(g, "  %s = or i1 %s, %s", combined, neg_cmp, upper_cmp)
-        emit_cond_br(g, combined, fail_label, ok_label)
-
-        emit_label(g, fail_label)
-        loc := format_location(span.file, span.line, span.col)
-        loc_global,  _ := get_string_literal(g, loc)
-        name_global, _ := get_string_literal(g, "slice")
-        emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
-            __MARA_SLICE_LEN_FAIL, loc_global, w, val, w, cap_val, name_global)
-        emit(g, "  unreachable")
-
-        emit_label(g, ok_label)
-    }
+    if field == "len" { emit_slice_len_check(g, slice_hdr_ptr, val, span) }
 
     gep := fresh_tmp(g)
     emit_slice_gep(g, gep, slice_hdr_ptr, field_idx)
     emit_store(g, field_ir, val, gep)
+}
+
+// A new `.len` for the slice header at `hdr` is within 0 ..= its cap, or the
+// program stops.
+emit_slice_len_check :: proc(g: ^Codegen, hdr, val: string, span: Span) {
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
+    cap_val := fresh_tmp(g)
+    emit_typed_load_cap(g, cap_val, cap_gep)
+
+    w := slice_layout.len_ir
+    ok_label   := fresh_label(g, "slice_len.ok")
+    fail_label := fresh_label(g, "slice_len.fail")
+
+    neg_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, 0", neg_cmp, w, val)
+    upper_cmp := fresh_tmp(g)
+    emit(g, "  %s = icmp sgt %s %s, %s", upper_cmp, w, val, cap_val)
+    combined := fresh_tmp(g)
+    emit(g, "  %s = or i1 %s, %s", combined, neg_cmp, upper_cmp)
+    emit_cond_br(g, combined, fail_label, ok_label)
+
+    emit_label(g, fail_label)
+    loc := format_location(span.file, span.line, span.col)
+    loc_global,  _ := get_string_literal(g, loc)
+    name_global, _ := get_string_literal(g, "slice")
+    emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",
+        __MARA_SLICE_LEN_FAIL, loc_global, w, val, w, cap_val, name_global)
+    emit(g, "  unreachable")
+
+    emit_label(g, ok_label)
 }
 
 gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {

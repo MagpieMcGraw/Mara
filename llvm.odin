@@ -42,6 +42,7 @@ Llvm :: struct {
     shared:  map[string]string,
     used:    map[string]bool,
     in_place: map[Node_Id]Node_Id,  // a temporary → the place it is built in (llvm_in_place)
+    hdr:     map[Node_Id]Llvm_Header,   // a view held as its header's values (llvm_holds_header)
     why:     Node_Id,             // where it declined (for MARA_GRAPH_CG=log)
 }
 
@@ -131,8 +132,8 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     llvm_sort_runs(e.runs[1:])
     for r in e.runs[1:] { e.label[r] = fmt.tprintf("run%d", r) }
 
-    if !llvm_variables(e) { return false }
     llvm_users(e)
+    if !llvm_variables(e) { return false }
     if e.sret != nil { llvm_result_slot(e) }
     llvm_in_place(e)
     for r, i in e.runs {
@@ -182,6 +183,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             if !llvm_scalar(t) && !llvm_aggregate(t) { return false }
             if routes_to_arena(t) { return false }   // on the arena (later)
             if pg.written[id] == .Synthetic && llvm_scalar(t) && llvm_holds(e, id) { e.held[id - e.node] = true }
+            if pg.written[id] == .Synthetic && llvm_slice(t) != nil && llvm_holds_header(e, id) { e.hdr[id] = {} }
         case .Field:
             // A constructor's field: its place in Self, first thing in the entry.
             t := pg.type_[id]
@@ -434,6 +436,33 @@ llvm_reads :: proc(e: ^Llvm, v: Node_Id) -> int {
 // it is that value, and needs no storage.
 @(private="file")
 llvm_holds :: proc(e: ^Llvm, v: Node_Id) -> bool {
+    return llvm_once_before(e, v, false)
+}
+
+// Whether a synthetic slice local — a view — is its header's values: written
+// once, from a slice, before every use, and used only through its len or cap
+// (read) and its elements. Then its header is read once, where the slice is
+// taken, into registers (a collection loop's view of its collection).
+@(private="file")
+llvm_holds_header :: proc(e: ^Llvm, v: Node_Id) -> bool {
+    if !llvm_once_before(e, v, true) { return false }
+    pg := e.pg
+    for r in e.runs {
+        for op in graph_run(pg, int(r)) {
+            if pg.op[op] != .Write { continue }
+            ops := graph_operands(pg, op)
+            if pg.op[ops[0].op] != .Var || pg.refers[ops[0].op] != v { continue }
+            s := ops[1].op
+            return s != NO_NODE && pg.op[s] == .Slice && e.user[s - e.node] == op
+        }
+    }
+    return false
+}
+
+// Whether a variable is written once, before each of its uses: reads — or, a
+// view (`header`), reads of its len or cap and its elements.
+@(private="file")
+llvm_once_before :: proc(e: ^Llvm, v: Node_Id, header: bool) -> bool {
     pg := e.pg
     write_run, write_at := -1, -1
     Read :: struct { run, at: int }
@@ -443,11 +472,15 @@ llvm_holds :: proc(e: ^Llvm, v: Node_Id) -> bool {
             ops := graph_operands(pg, op)
             for o, k in ops {
                 if o.op == NO_NODE || pg.op[o.op] != .Var || pg.refers[o.op] != v { continue }
+                u := e.user[op - e.node]
                 switch {
                 case pg.op[op] == .Write && k == 0:
                     if write_run >= 0 { return false }
                     write_run, write_at = ri, at
-                case pg.op[op] == .Read:
+                case pg.op[op] == .Read && !header:
+                    append(&reads, Read{ri, at})
+                case header && pg.op[op] == .Field && llvm_header_field(pg.name[op]) >= 0 && u >= 0 && pg.op[u] == .Read,
+                     header && pg.op[op] == .Index && k == 0:
                     append(&reads, Read{ri, at})
                 case:
                     return false   // addressed, or a place of something larger
@@ -510,6 +543,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return true
         }
         if d <= e.node || d > pg.last[e.node] { return false }   // not this fun's
+        if d in e.hdr { return true }   // a view held as values: no storage
         switch {
         case pg.kind[d] == .Param || pg.kind[d] == .Field: e.value[op - e.node] = e.value[d - e.node]
         case !e.held[d - e.node]:                          e.value[op - e.node] = llvm_storage(e, d)
@@ -536,9 +570,13 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
     case .Write:
         place := ops[0].op
+        if pg.op[place] == .Slice { return false }   // into the elements a slice views (later)
         t := pg.type_[place]
+        // Another type's value into bytes is a write through a view of them (later).
+        if ops[1].op != NO_NODE && llvm_is_byte(t) != llvm_is_byte(pg.type_[ops[1].op]) { return false }
         val, ok := llvm_operand(e, ops[1], t)
         if !ok { return false }
+        if pg.op[place] == .Var && pg.refers[place] in e.hdr { return true }   // held at its slice
         if llvm_aggregate(t) {
             // An aggregate is copied into the place, unless a call built it there.
             if llvm_direct(e, place) { return false }
@@ -551,6 +589,11 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             if !e.held[d - e.node] { return false }   // a param is read-only
             e.value[d - e.node] = val
             return true
+        }
+        // A slice's len stays within 0 ..= its cap.
+        if pg.op[place] == .Field && pg.name[place] == "len" {
+            hdr := graph_operands(pg, place)[0].op
+            if llvm_slice(pg.type_[hdr]) != nil { emit_slice_len_check(g, e.value[hdr - e.node], val, span) }
         }
         emit_store(g, llvm_type_from_checker(t), val, e.value[place - e.node])
     case .Deref:
@@ -565,6 +608,21 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
     case .Field:
         base := ops[0].op
+        if llvm_slice(pg.type_[base]) != nil {
+            // A slice header's len or cap; a held view's is its value.
+            i := llvm_header_field(pg.name[op])
+            if i < 0 { return false }
+            if h, held := llvm_held_header(e, base); held {
+                e.value[op - e.node] = h.len if i == SLICE.len else h.cap
+                e.held[op - e.node] = true
+                return true
+            }
+            if llvm_direct(e, base) { return false }
+            tmp := fresh_tmp(g)
+            emit_slice_gep(g, tmp, e.value[base - e.node], i)
+            e.value[op - e.node] = tmp
+            return true
+        }
         sd := llvm_struct(pg.type_[base])
         if sd == nil || llvm_direct(e, base) { return false }   // slice / union headers (later)
         i := struct_field_index(sd, pg.name[op])
@@ -575,6 +633,10 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Address:
         place := ops[0].op
         if llvm_direct(e, place) { return false }
+        // A pointer to a place read as another type — a view of bytes: later.
+        if pt, is_ptr := distinct_base(pg.type_[op]).(^Type_Ptr); is_ptr && !llvm_same_type(pt.elem, pg.type_[place]) {
+            return false
+        }
         e.value[op - e.node] = e.value[place - e.node]
     case .Construct:
         return llvm_construct(e, op, ops)
@@ -590,10 +652,11 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         case:                   return false
         }
     case .Index:
-        // An array's element: the index checked against its length — unless
-        // the graph built it in range (a loop's element) — then its address.
         base := ops[0].op
         at := pg.type_[base]
+        if sl := llvm_slice(at); sl != nil { return llvm_slice_index(e, op, ops, sl, span) }
+        // An array's element: the index checked against its length — unless
+        // the graph built it in range (a loop's element) — then its address.
         fa := llvm_array(at)
         if fa == nil || llvm_direct(e, base) { return false }   // slices, partial arrays (later)
         i := llvm_operand(e, ops[1], slice_header_width_type) or_return
@@ -676,7 +739,9 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         c, ok := llvm_operand(e, ops[0], Type_Bool{})
         if !ok { return false }
         emit_range_check(g, c, span)
-    case .Global, .Variant, .Slice,
+    case .Slice:
+        return llvm_slice_op(e, op, ops)
+    case .Global, .Variant,
          .Carve, .Byte_Read, .Arena_Alloc,
          .Print, .Crash, .Switch, .Run_Defer, .Arena_Mark, .Arena_Reset:
         return false
@@ -703,7 +768,7 @@ llvm_place :: proc(e: ^Llvm, place: Node_Id) -> string {
 @(private="file")
 llvm_direct :: proc(e: ^Llvm, place: Node_Id) -> bool {
     pg := e.pg
-    if pg.op[place] != .Var { return false }
+    if pg.op[place] != .Var { return e.held[place - e.node] }   // a held view's len or cap
     d := pg.refers[place]
     if pg.kind[d] == .Param { return llvm_scalar(pg.type_[d]) }
     return e.held[d - e.node]
@@ -711,6 +776,7 @@ llvm_direct :: proc(e: ^Llvm, place: Node_Id) -> bool {
 
 @(private="file")
 llvm_direct_value :: proc(e: ^Llvm, place: Node_Id) -> string {
+    if e.pg.op[place] != .Var { return e.value[place - e.node] }
     return e.value[e.pg.refers[place] - e.node]
 }
 
@@ -952,6 +1018,110 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     return true
 }
 
+// A slice's element: the header's pointer, and — unless the graph built the
+// index in range (a loop's element) — its cap, the index checked against it;
+// then the element's address.
+@(private="file")
+llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, sl: ^Type_Slice, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    base := ops[0].op
+    if llvm_direct(e, base) { return false }
+    i := llvm_operand(e, ops[1], slice_header_width_type) or_return
+    h, held := llvm_held_header(e, base)
+    hdr := e.value[base - e.node]
+    data := h.data
+    if !held {
+        data_gep := fresh_tmp(g)
+        emit_slice_gep(g, data_gep, hdr, SLICE.ptr)
+        data = fresh_tmp(g)
+        emit_load_into(g, data, "ptr", data_gep)
+    }
+    if pg.written[op] != .Synthetic {
+        cap_val := h.cap
+        if !held {
+            cap_gep := fresh_tmp(g)
+            emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
+            cap_val = fresh_tmp(g)
+            emit_typed_load_cap(g, cap_val, cap_gep)
+        }
+        name := graph_place_name(pg, ops[0])
+        emit_bounds_check(g, i, cap_val, name if name != "" else "slice", span)
+    }
+    tmp := fresh_tmp(g)
+    emit_elem_gep(g, tmp, llvm_type_from_checker(sl.elem), data, i, slice_layout.len_ir)
+    e.value[op - e.node] = tmp
+    return true
+}
+
+// A slice of an array or a slice: the elements from lo up to hi — lo 0 and
+// hi the array's size or the slice's len when not given — as a new header,
+// len = cap = hi - lo.
+@(private="file")
+llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
+    g, pg := e.g, e.pg
+    if pg.name[op] != "" { return false }   // slice_from_ptr (later)
+    base := ops[0].op
+    if base == NO_NODE || llvm_direct(e, base) { return false }
+    lo, hi: string
+    if len(ops) > 1 && ops[1].op != NO_NODE { lo = llvm_operand(e, ops[1], slice_header_width_type) or_return }
+    if len(ops) > 2 && ops[2].op != NO_NODE { hi = llvm_operand(e, ops[2], slice_header_width_type) or_return }
+    bt := pg.type_[base]
+    at := e.value[base - e.node]
+    data: string
+    if fa := llvm_array(bt); fa != nil {
+        data = at
+        if hi == "" { hi = fmt.tprintf("%d", fa.size) }
+        if lo != "" {
+            data = fresh_tmp(g)
+            emit_array_gep_var(g, data, llvm_type_from_checker(bt), at, lo, slice_layout.len_ir)
+        }
+    } else if sl := llvm_slice(bt); sl != nil {
+        data_gep := fresh_tmp(g)
+        emit_slice_gep(g, data_gep, at, SLICE.ptr)
+        data = fresh_tmp(g)
+        emit_load_into(g, data, "ptr", data_gep)
+        if hi == "" {
+            len_gep := fresh_tmp(g)
+            emit_slice_gep(g, len_gep, at, SLICE.len)
+            hi = fresh_tmp(g)
+            emit_typed_load_len(g, hi, len_gep)
+        }
+        if lo != "" {
+            from := data
+            data = fresh_tmp(g)
+            emit_elem_gep(g, data, llvm_type_from_checker(sl.elem), from, lo, slice_layout.len_ir)
+        }
+    } else {
+        return false   // a partial array (later)
+    }
+    n := hi
+    if lo != "" {
+        n = fresh_tmp(g)
+        emit(g, "  %s = sub %s %s, %s", n, slice_layout.len_ir, hi, lo)
+    }
+    // Written to a held view: its values, no header in memory.
+    if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write {
+        if d := graph_operands(pg, u)[0].op; pg.op[d] == .Var && pg.refers[d] in e.hdr {
+            e.hdr[pg.refers[d]] = {data, n, n}
+            return true
+        }
+    }
+    e.value[op - e.node] = emit_build_temp_slice(g, data, n, n)
+    return true
+}
+
+// A view held as its header's values (llvm_holds_header).
+@(private="file")
+Llvm_Header :: struct {
+    data, len, cap: string,
+}
+
+@(private="file")
+llvm_held_header :: proc(e: ^Llvm, place: Node_Id) -> (Llvm_Header, bool) {
+    if e.pg.op[place] != .Var { return {}, false }
+    return e.hdr[e.pg.refers[place]]
+}
+
 @(private="file")
 llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     g := e.g
@@ -1018,7 +1188,9 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
                     s := pg.stmt[u]
                     fresh = pg.written[d] == .Synthetic || (s >= 0 && pg.stmts[s].kind == .Decl)
                 }
-                if fresh { return llvm_place(e, dest), true }
+                // The result slot is as good as fresh: no argument can reach
+                // it (a caller hands over a fresh slot when one carries storage).
+                if fresh || llvm_place(e, dest) == "%sret" { return llvm_place(e, dest), true }
                 // An update `x = f(x, …)` built in place: later.
                 if _, consumes := consumed_param_of(callee).?; consumes { return "", false }
                 if !llvm_passes_storage(callee) { return llvm_place(e, dest), true }
@@ -1058,7 +1230,26 @@ llvm_scalar :: proc(t: Type) -> bool {
 // slice's backing storage: later.)
 @(private="file")
 llvm_aggregate :: proc(t: Type) -> bool {
-    return llvm_struct(t) != nil || llvm_array(t) != nil
+    return llvm_struct(t) != nil || llvm_array(t) != nil || llvm_slice(t) != nil
+}
+
+// A slice: its header, {len, cap, ptr}, is the aggregate.
+@(private="file")
+llvm_slice :: proc(t: Type) -> ^Type_Slice {
+    if t == nil || is_infer(t) { return nil }
+    sl, ok := distinct_base(t).(^Type_Slice)
+    if !ok || sl.elem == nil || is_infer(sl.elem) { return nil }
+    return sl
+}
+
+// A slice header's field by name; -1 for none.
+@(private="file")
+llvm_header_field :: proc(name: string) -> int {
+    switch name {
+    case "len": return SLICE.len
+    case "cap": return SLICE.cap
+    }
+    return -1
 }
 
 @(private="file")
@@ -1097,6 +1288,11 @@ llvm_points_into_itself :: proc(t: Type) -> bool {
 @(private="file")
 llvm_same_type :: proc(a, b: Type) -> bool {
     if a == nil || b == nil || is_infer(a) || is_infer(b) { return false }
+    // Pointers lower alike; what they point to must match too (a byte
+    // address taken as a pointer to T is a view of bytes: later).
+    pa, a_ptr := distinct_base(a).(^Type_Ptr)
+    pb, b_ptr := distinct_base(b).(^Type_Ptr)
+    if a_ptr && b_ptr { return llvm_same_type(pa.elem, pb.elem) }
     return llvm_type_from_checker(a) == llvm_type_from_checker(b)
 }
 
@@ -1123,6 +1319,12 @@ llvm_param_type :: proc(t: Type) -> (string, bool) {
     if llvm_scalar(t) { return llvm_type_from_checker(t), true }
     if llvm_aggregate(t) { return "ptr", true }
     return "", false
+}
+
+@(private="file")
+llvm_is_byte :: proc(t: Type) -> bool {
+    _, is_byte := distinct_base(t).(Type_Byte)
+    return is_byte
 }
 
 // Unsigned: unsigned ints, bytes, chars and bools.

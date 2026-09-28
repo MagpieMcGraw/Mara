@@ -499,7 +499,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     }
                 }
                 // gen_struct_assign arena-allocates large structs internally.
-                gen_struct_assign(g, s.name, checked_st, s.value, s.span)
+                gen_struct_assign(g, s.name, checked_st, s.value, s.span, s.is_decl)
                 return
             }
         }
@@ -508,7 +508,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         if _, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok {
             if sd := as_struct_body(expr_type(s.value)); sd != nil {
                 if checked_st, cs_ok := lookup_struct(g, sd.name); cs_ok {
-                    gen_struct_assign(g, s.name, checked_st, s.value)
+                    gen_struct_assign(g, s.name, checked_st, s.value, s.span, s.is_decl)
                     return
                 }
             }
@@ -540,7 +540,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // Check if reassigning to an existing struct variable
         if sv, ok := get_struct(g, s.name); ok {
             if checked_st, cs_ok := lookup_struct(g, sv.struct_name); cs_ok {
-                gen_struct_assign(g, s.name, checked_st, s.value, s.span)
+                gen_struct_assign(g, s.name, checked_st, s.value, s.span, s.is_decl)
                 return
             }
         }

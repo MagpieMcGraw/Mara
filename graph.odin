@@ -774,6 +774,10 @@ graph_elem_struct :: proc(t: Type) -> ^Type_Scope {
 // write otherwise. The value comes first, then the place.
 @(private="file")
 graph_store :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
+    if v, is_view := graph_view(b, value, graph_dest_type(b, d), span); is_view {
+        graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), v)
+        return
+    }
     if graph_into(b, value, d, span) { return }
     if d.type_ != nil && byte_flow(d.type_, value, expr_type(value)) == .Read {
         #partial switch v in value {
@@ -790,7 +794,7 @@ graph_store :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
             return
         }
     }
-    val := graph_widen(b, graph_value(b, value), d.type_, span)
+    val := graph_widen(b, graph_value(b, value), graph_dest_type(b, d), span)
     graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
 }
 
@@ -857,7 +861,13 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
         graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.loop_var, counter, ct, span), lo)
     } else if v.is_collection_for {
         coll = v.collection
-        if !graph_pure_place(v.collection) {
+        if view := graph_loop_view(v.collection); view != nil {
+            // A slice's elements as they are when the loop begins: its
+            // header — pointer and len — read once, into a view.
+            coll_slot = graph_slot(b, "items", view, span)
+            val := graph_op_value(b, .Slice, .Implied, span, view, "", graph_base_place(b, v.collection, span))
+            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, "items", coll_slot, view, span), val)
+        } else if !graph_pure_place(v.collection) {
             coll_slot = graph_slot(b, "items", expr_type(v.collection), span)
             graph_store(b, graph_dest_var("items", coll_slot, expr_type(v.collection)), v.collection, span)
         }
@@ -966,10 +976,31 @@ graph_widen :: proc(b: ^Graph_Builder, v: Operand, to: Type, span: Span) -> Oper
 // narrower number widens.
 @(private="file")
 graph_value_as :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span, w := Written.Explicit) -> Operand {
+    if v, is_view := graph_view(b, e, t, span); is_view { return v }
     if arr, is_arr := e.(^Expr_Array); is_arr && t != nil && graph_aggregate(t) {
         return graph_temp_into(b, e, t, arr.span)
     }
     return graph_widen(b, graph_value(b, e, w), t, span)
+}
+
+// A fixed array where a slice is taken is viewed whole, implied: a slice over
+// its own storage — a literal's in a temporary, at the slice's element type —
+// with len = cap = its size.
+@(private="file")
+graph_view :: proc(b: ^Graph_Builder, e: Expr, to: Type, span: Span) -> (Operand, bool) {
+    if to == nil || e == nil { return NO_VALUE, false }
+    sl, to_slice := distinct_base(to).(^Type_Slice)
+    _, from_array := distinct_base(expr_type(e)).(^Type_Fixed_Array)
+    if !to_slice || !from_array { return NO_VALUE, false }
+    place: Operand
+    if arr, is_literal := e.(^Expr_Array); is_literal {
+        at := new(Type_Fixed_Array)
+        at.elem, at.size = sl.elem, len(arr.elements)
+        place = graph_temp_place(b, e, at, span)
+    } else {
+        place = graph_place(b, e, span)
+    }
+    return graph_op_value(b, .Slice, .Implied, span, to, "", place), true
 }
 
 // The type a binary operation works in: its own for arithmetic, else the
@@ -1012,6 +1043,16 @@ graph_range_bound :: proc(b: ^Graph_Builder, e: Expr, counter: Type, span: Span)
 graph_coll_place :: proc(b: ^Graph_Builder, coll: Expr, slot: Node_Id, span: Span) -> Operand {
     if slot != NO_NODE { return graph_var(b, b.g.name[slot], slot, b.g.type_[slot], span) }
     return graph_base_place(b, coll, span)
+}
+
+// The view a collection loop walks, when the collection has a header — a
+// slice, or a pointer to one: a slice of the same elements.
+@(private="file")
+graph_loop_view :: proc(coll: Expr) -> Type {
+    t := expr_type(coll)
+    if pt, ok := distinct_base(t).(^Type_Ptr); ok { t = pt.elem }
+    if _, is_slice := distinct_base(t).(^Type_Slice); is_slice { return distinct_base(t) }
+    return nil
 }
 
 // A collection's length: known for a fixed array, its header's `len` otherwise.
@@ -1587,10 +1628,20 @@ graph_assign :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
         graph_store(b, d, value, span)
         return
     }
-    t := b.g.type_[d.at.op] if d.kind == .At else d.type_   // the place's own type
+    t := graph_dest_type(b, d)
     if t == nil || is_infer(t) { t = expr_type(value) }
     val := graph_temp_into(b, value, t, span)
     graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
+}
+
+// The type a destination holds: an existing place's own (a target's type as
+// the checker records it can be the whole variable's: `a[i] = x`).
+@(private="file")
+graph_dest_type :: proc(b: ^Graph_Builder, d: Dest) -> Type {
+    if d.kind == .At && d.at.op != NO_NODE {
+        if t := b.g.type_[d.at.op]; t != nil { return t }
+    }
+    return d.type_
 }
 
 // Whether graph_into builds `e` in place.
@@ -1621,11 +1672,17 @@ graph_builds_into :: proc(b: ^Graph_Builder, e: Expr) -> bool {
 // Build an aggregate into a fresh synthetic local and read it.
 @(private="file")
 graph_temp_into :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> Operand {
+    return graph_read(b, graph_temp_place(b, e, t, span), t, span)
+}
+
+// Build an aggregate into a fresh synthetic local: its place.
+@(private="file")
+graph_temp_place :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> Operand {
     slot := graph_slot(b, "temp", t, span)
     if !graph_into(b, e, graph_dest_var("temp", slot, t), span) {
         graph_fatal(span, "an aggregate value the graph cannot build in place")
     }
-    return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
+    return graph_var(b, "temp", slot, t, span)
 }
 
 // Build an aggregate straight into `d`: a literal (braces are writes after a
