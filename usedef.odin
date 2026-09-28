@@ -101,13 +101,13 @@ UD :: struct {
 
 // Build a function's slice analysis on demand — only when a `contributors` /
 // `affects` query needs it, scoped to that function and cached. This keeps the
-// costly control-dependence (post-dominator) computation OFF the compile path;
-// the CFG itself is already built eagerly for return-checking.
+// costly control-dependence (post-dominator) computation OFF the compile path,
+// along with the CFG it runs on.
 ensure_fn_analysis :: proc(checked: ^Checked_Program, ft: ^Type_Scope) {
     if ft == nil || checked.analyzed[ft] { return }
     checked.analyzed[ft] = true
     if checked.want_control_deps {
-        if cfg, ok := checked.cfgs[ft]; ok { cfg_build_control_deps(checked, cfg) }
+        if cfg := cfg_of(checked, ft); cfg != nil { cfg_build_control_deps(checked, cfg) }
     }
     ud_fn(checked, ft)
     ud_dump(checked)

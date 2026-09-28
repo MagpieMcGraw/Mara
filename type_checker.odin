@@ -1545,8 +1545,8 @@ Checked_Program :: struct {
     defs:           [dynamic]^Def,
     reaching:       map[^Expr_Ident][]^Def,
 
-    // Per-function control-flow graphs (cfg.odin). Shared by missing-return
-    // checking and the analyzer's control dependence. `control_deps` maps a
+    // Per-function control-flow graphs (cfg.odin), built on demand for the
+    // analyzer's control dependence (cfg_of). `control_deps` maps a
     // statement's span to the branches/loops it is control-dependent on (computed
     // from CFG post-dominators) — the analyzer's guard source.
     cfgs:           map[^Type_Scope]^CFG,
@@ -10638,11 +10638,11 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     } else if perf != nil {
         perf_timer_mark(perf, "analysis")
     }
-    build_cfgs(checked)               // per-function control-flow graphs (cheap; for return-check)
-    flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
+    flow_analyze_program(&c, checked) // post-check intraproc flow (missing return, err use, init)
     escape_analyze_program(&c, checked) // post-check escape: the lifetime rule + its call summaries
-    // NOTE: the slice analysis (def-use graph + control dependence) is built lazily
-    // per function on the first `mara ask … contributors/affects` — ensure_fn_analysis.
+    // NOTE: the slice analysis (def-use graph + control dependence, on its CFG) is
+    // built lazily per function on the first `mara ask … contributors/affects` —
+    // ensure_fn_analysis.
     checked.errors = c.errors
     return checked
 }

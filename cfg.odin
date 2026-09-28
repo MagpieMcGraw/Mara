@@ -4,21 +4,18 @@ import "core:fmt"
 import "core:os"
 
 // ---------------------------------------------------------------------------
-// Control-flow graph — a real one, shared by return-checking and the analyzer.
+// Control-flow graph for the analyzer's control dependence.
 //
-// One statement-level CFG per source function, built post-check from the durable
-// body. Nodes are statements (plus a synthetic Entry and Exit); edges are the
-// possible transfers of control. `if`/`for`/`match` are branch nodes (multiple
+// One statement-level CFG per source function, built on demand from the durable
+// body for a `mara ask` slice (missing-return reads the program graph's runs
+// instead; phase 2 of design/graph_retrofit.md moves this onto them too). Nodes
+// are statements (plus a synthetic Entry and Exit); edges are the possible
+// transfers of control. `if`/`for`/`match` are branch nodes (multiple
 // successors); `return` goes to Exit and stops; `break`/`continue` go to the
 // innermost loop's exit / header; a loop's body has a back-edge to its header.
 //
-// Two consumers replace ad-hoc structural walks with this graph:
-//   * missing-return: the function can "fall off the end" iff a fall-through path
-//     reaches Exit — `fall_off` is non-empty (handles loops, early returns,
-//     break/continue, unreachable tails uniformly — what always_returns couldn't).
-//   * control dependence (analyzer): post-dominators over this graph give each
-//     statement the branches that guard it, INCLUDING early-return guard clauses
-//     the lexical approximation missed.
+// Post-dominators over this graph give each statement the branches that guard
+// it, INCLUDING early-return guard clauses a lexical approximation misses.
 // ---------------------------------------------------------------------------
 
 CFG_Kind :: enum { Entry, Exit, Simple, Branch, Return, Break, Continue }
@@ -37,35 +34,21 @@ CFG :: struct {
     nodes:     [dynamic]CFG_Node,
     entry:     int,
     exit:      int,
-    fall_off:  [dynamic]int,   // fall-through preds at the function end — empty ⟺ every path returns
     span_node: map[Span]int,   // statement span -> node id (maps a def/return back to its CFG node)
 }
 
 // --- construction ----------------------------------------------------------
 
-build_cfgs :: proc(checked: ^Checked_Program) {
-    // Every source function, templates included — control flow is type-independent,
-    // so the missing-return check is uniform (the analyzer only queries concretes).
-    // Control dependence (post-dominators) is NOT computed here: it's expensive and
-    // only the slice queries need it, so it is built lazily per function
-    // (ensure_fn_analysis) to keep the compile path cheap.
-    for _, ft in checked.functions {
-        if ft == nil { continue }
-        if _, src := ft.origin.(Origin_Source); !src { continue }
-        cfg := new(CFG)
-        cfg_construct(cfg, ft)
-        checked.cfgs[ft] = cfg
-    }
-    cfg_dump(checked)
-}
-
-// Can control reach the function's end without a `return`? (A fall-through path
-// to Exit.) The missing-return verdict, handling loops / early returns / break /
-// continue uniformly — what the structural always_returns could not.
-cfg_falls_off :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool {
-    cfg, ok := checked.cfgs[ft]
-    if !ok || cfg == nil { return false }
-    return len(cfg.fall_off) > 0
+// A source function's CFG, built the first time it is asked for.
+cfg_of :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> ^CFG {
+    if ft == nil { return nil }
+    if _, src := ft.origin.(Origin_Source); !src { return nil }
+    if cfg, ok := checked.cfgs[ft]; ok { return cfg }
+    cfg := new(CFG)
+    cfg_construct(cfg, ft)
+    checked.cfgs[ft] = cfg
+    cfg_dump(ft, cfg)
+    return cfg
 }
 
 // --- post-dominators -> control dependence ---------------------------------
@@ -146,7 +129,7 @@ cfg_construct :: proc(c: ^CFG, ft: ^Type_Scope) {
     c.exit  = cfg_new(c, .Exit,  Span{})
     fall := cfg_seq(c, ft.body[:], {c.entry}, -1, -1)
     for p in fall { cfg_edge(c, p, c.exit) }   // fall-off paths reach Exit (single sink for post-doms)
-    c.fall_off = fall
+    delete(fall)
 }
 
 @(private="file")
@@ -311,20 +294,18 @@ cfg_stmt_span :: proc(s: Stmt) -> Span {
 // --- diagnostic: MARA_DUMP_CFG=1 -------------------------------------------
 
 @(private="file")
-cfg_dump :: proc(checked: ^Checked_Program) {
+cfg_dump :: proc(ft: ^Type_Scope, cfg: ^CFG) {
     buf: [8]u8
     if os.get_env_buf(buf[:], "MARA_DUMP_CFG") == "" { return }
-    for ft, cfg in checked.cfgs {
-        name := ft.source_name if ft.source_name != "" else ft.name
-        fmt.eprintf("--- CFG: %s  (%d nodes, fall_off=%d) ---\n", name, len(cfg.nodes), len(cfg.fall_off))
-        for node, i in cfg.nodes {
-            loc := span_loc(node.span) if node.span.file != "" else ""
-            tag := fmt.tprintf("%v", node.kind)
-            if node.kind == .Branch { tag = fmt.tprintf("branch:%v", node.bkind) }
-            id := fmt.tprintf("n%d", i)
-            fmt.eprintf("  %-4s %-12s %-22s ->", id, tag, loc)
-            for sx in node.succ { fmt.eprintf(" n%d", sx) }
-            fmt.eprintln()
-        }
+    name := ft.source_name if ft.source_name != "" else ft.name
+    fmt.eprintf("--- CFG: %s  (%d nodes) ---\n", name, len(cfg.nodes))
+    for node, i in cfg.nodes {
+        loc := span_loc(node.span) if node.span.file != "" else ""
+        tag := fmt.tprintf("%v", node.kind)
+        if node.kind == .Branch { tag = fmt.tprintf("branch:%v", node.bkind) }
+        id := fmt.tprintf("n%d", i)
+        fmt.eprintf("  %-4s %-12s %-22s ->", id, tag, loc)
+        for sx in node.succ { fmt.eprintf(" n%d", sx) }
+        fmt.eprintln()
     }
 }

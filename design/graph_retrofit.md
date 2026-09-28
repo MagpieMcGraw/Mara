@@ -170,7 +170,19 @@ program that checked clean, since the graph is built from checked types.
       Printing is the `print` operation, so a user fun named `print_…` no longer counts as one.
       The call graph, return deps and escape now run only on a clean check (no fixture's
       diagnostics changed)
-- [ ] Runs replace `cfg.odin`: all-paths-return and control dependence from the runs
+- [x] All-paths-return from the runs (`graph_falls_off`): a fun falls off when a run its entry
+      reaches ends in the synthetic return that closes its body. Compared with the CFG's verdict
+      on every function of every fixture first: they agreed. Writing fixtures for more shapes
+      found the CFG counted dead code after a `return` as falling off, so a non-void fun ending
+      in dead code was a "missing return", and dead code anywhere else went on to invalid IR (a
+      pre-existing crash: codegen wrote it after the terminator). Now a statement right after a
+      `return`, `break` or `continue` is an error, "unreachable code" (the builder records the
+      first of each stretch; definitions after a return are no code). Dead code after an `if` or
+      `match` whose every branch returns compiles, as it did in a void fun; in a non-void fun it
+      was a misleading "missing return" (`test/retshapes.mara`, `test/retmiss_shapes.mara`,
+      `test/unreachable_neg.mara`). The CFGs are now built on demand, for `mara ask`'s control
+      dependence only
+- [ ] Control dependence from the runs, then `cfg.odin` goes (with slicing)
 - [ ] Reaching definitions over the runs replace `usedef.odin`
 - [ ] Must-use `err` onto the graph
 - [ ] Slicing, lineage and `mara ask` read the graph

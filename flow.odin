@@ -50,6 +50,12 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     stats: Flow_Stats
     void_seen: map[Span]bool   // generic instances share their template's spans
     defer delete(void_seen)
+    // Missing-return reads the program graph's runs, built from a clean check.
+    graphed := len(checked.graph.kind) > 0
+    starts: map[Node_Id]i32
+    if graphed { starts = graph_run_starts(&checked.graph) }
+    defer delete(starts)
+    if graphed { flow_check_unreachable(c, checked) }
     for _, ft in checked.functions {
         if ft == nil { continue }
         // Source bodies only: intrinsics/foreigns have no Mara statements to walk.
@@ -57,7 +63,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         if len(ft.body) == 0 { continue }
         stats.functions += 1
         flow_walk_stmts(&stats, ft.body[:], 1)
-        if flow_missing_return(checked, ft) {
+        if graphed && flow_missing_return(checked, starts, ft) {
             name := ft.source_name if ft.source_name != "" else ft.name
             // Same message + span the inline check used (ft.body_span == s.span).
             check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
@@ -71,15 +77,28 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
 }
 
 // Missing-return: a non-void function whose first return isn't `any` and whose
-// returns aren't all-err must return on every path. The all-paths verdict now
-// comes from the control-flow graph (cfg_falls_off) instead of the structural
-// always_returns tail-walk — so loops, early returns, and break/continue are all
-// handled correctly, not just a returning tail.
-flow_missing_return :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool {
+// returns aren't all-err must return on every path: no path through its runs
+// reaches the synthetic return that ends its body (graph_falls_off).
+flow_missing_return :: proc(checked: ^Checked_Program, starts: map[Node_Id]i32, ft: ^Type_Scope) -> bool {
     if len(ft.return_types) == 0 { return false }       // void
     if is_any(ft.return_types[0]) { return false }      // unresolved generic return
     if all_err_returns(ft.return_types) { return false } // all-err can fall off (.Ok fill)
-    return cfg_falls_off(checked, ft)
+    n, ok := checked.graph.scope_node[ft]
+    if !ok { fmt.panicf("missing return: '%s' has no node in the program graph", ft.name) }
+    return graph_falls_off(&checked.graph, starts, n)
+}
+
+// Unreachable code: a statement right after a return, break or continue (the
+// graph records the first of each stretch). Codegen would put it after the
+// terminator.
+flow_check_unreachable :: proc(c: ^Checker, checked: ^Checked_Program) {
+    seen: map[Span]bool   // generic instances share their template's spans
+    defer delete(seen)
+    for span in checked.graph.unreachable {
+        if span in seen { continue }
+        seen[span] = true
+        check_error(c, span, TYPE_UNREACHABLE_CODE)
+    }
 }
 
 // --- must-use-err ---------------------------------------------------------

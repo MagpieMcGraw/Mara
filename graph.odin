@@ -107,6 +107,14 @@ Program_Graph :: struct {
     out_first: [dynamic]i32,
     in_edges:  [dynamic]i32,
     in_first:  [dynamic]i32,
+
+    // Each checked fun and struct's node: the bridge while analyses still key
+    // on scopes.
+    scope_node: map[^Type_Scope]Node_Id,
+
+    // Statements right after a return, break or continue: the first of each
+    // stretch.
+    unreachable: [dynamic]Span,
 }
 
 graph_out :: proc(g: ^Program_Graph, id: Node_Id) -> []Edge {
@@ -125,6 +133,35 @@ graph_run :: proc(g: ^Program_Graph, r: int) -> []Node_Id {
     return g.run_ops[g.run_first[r]:g.run_first[r + 1]]
 }
 
+// Each run's first operation → the run: where a Then edge lands.
+graph_run_starts :: proc(g: ^Program_Graph) -> map[Node_Id]i32 {
+    starts := make(map[Node_Id]i32, len(g.run_first))
+    for r in 0 ..< len(g.run_first) - 1 {
+        if ops := graph_run(g, r); len(ops) > 0 { starts[ops[0]] = i32(r) }
+    }
+    return starts
+}
+
+// Whether a fun or struct's code can reach its end without a return: the
+// synthetic return that ends its body, in a run its entry reaches.
+graph_falls_off :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id) -> bool {
+    seen: map[i32]bool
+    defer delete(seen)
+    todo: [dynamic]i32
+    defer delete(todo)
+    for e in graph_out(g, scope) { if e.kind == .Then { append(&todo, starts[e.to]) } }
+    for len(todo) > 0 {
+        r := pop(&todo)
+        if r in seen { continue }
+        seen[r] = true
+        ops := graph_run(g, int(r))
+        last := ops[len(ops) - 1]
+        if g.op[last] == .Return && g.written[last] == .Synthetic { return true }
+        for e in graph_out(g, last) { if e.kind == .Then { append(&todo, starts[e.to]) } }
+    }
+    return false
+}
+
 graph_is_terminator :: proc(k: Op_Kind) -> bool {
     #partial switch k {
     case .Jump, .Branch, .Switch, .Return: return true
@@ -141,9 +178,8 @@ Graph_Builder :: struct {
     // Checked types by the span of the statement declaring them. A generic's
     // instances share their template's span, so one span can hold several.
     by_span: map[Span][dynamic]Type,
-    // Each checked fun and struct's node, and the calls waiting for theirs: a
-    // call can come before its callee in written order.
-    scope_node: map[^Type_Scope]Node_Id,
+    // The calls waiting for their callee's node: a call can come before its
+    // callee in written order.
     calls:      [dynamic]Pending_Call,
     arena:      bool,    // the program has a scope arena: big values live on it
     runs:       [dynamic]^Run,   // every run made, freed at the end
@@ -249,7 +285,6 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
     defer {
         for _, list in b.by_span { delete(list) }
         delete(b.by_span)
-        delete(b.scope_node)
         delete(b.calls)
         for r in b.runs {
             delete(r.ops)
@@ -492,6 +527,30 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
     case ^Stmt_Dispatch_Def:
         graph_node(b, .Dispatch, .Explicit, parent, v.name, nil, v.span)
     }
+}
+
+// A statement of a body. One right after a return, break or continue (the run
+// it ended is closed, and nothing follows it) is recorded as unreachable; the
+// statements after it are in its run, so only the first of each stretch is.
+@(private="file")
+graph_body_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site) {
+    if b.code.active && b.code.run == nil && graph_runs_code(s) {
+        append(&b.g.unreachable, stmt_span(s))
+    }
+    graph_stmt(b, s, parent, site)
+}
+
+// Whether a statement is code, not a definition.
+@(private="file")
+graph_runs_code :: proc(s: Stmt) -> bool {
+    #partial switch v in s {
+    case ^Stmt_Scope:
+        return v.kind == .Block
+    case ^Stmt_Define, ^Stmt_Union_Def, ^Stmt_Distinct_Def, ^Stmt_Dispatch_Def,
+         Stmt_Overload, Stmt_Module, ^Stmt_Foreign:
+        return false
+    }
+    return true
 }
 
 // A plain declaration, as a field of the owning struct or a local / constant.
@@ -737,7 +796,7 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
         graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.elem_var, elem, v.elem_type_, span),
                  graph_read(b, slot, v.elem_type_, span))
     }
-    for s in v.body { graph_stmt(b, s, f, {kind = .Local}) }
+    for s in v.body { graph_body_stmt(b, s, f, {kind = .Local}) }
     graph_scope_close(b, span)
     pop(&b.code.loops)
     if graph_reachable(b) { graph_jump(b, cont, .Synthetic, span) }
@@ -842,7 +901,7 @@ graph_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, parent: Node_Id) {
             b.g.refers[payload] = bound
             graph_bind(b, arm.bound_name, bound)   // after the subject's place: it may reuse the name
         }
-        for s in arm.body { graph_stmt(b, s, a, {kind = .Local}) }
+        for s in arm.body { graph_body_stmt(b, s, a, {kind = .Local}) }
         graph_scope_close(b, span)
         graph_close(b, a)
         b.code.block = saved
@@ -872,7 +931,7 @@ graph_code_block :: proc(b: ^Graph_Builder, label: string, body: []Stmt, parent:
     saved := b.code.block
     b.code.block = n
     graph_scope_open(b, n, body, span)
-    for s in body { graph_stmt(b, s, n, {kind = .Local}) }
+    for s in body { graph_body_stmt(b, s, n, {kind = .Local}) }
     graph_scope_close(b, span)
     b.code.block = saved
     graph_close(b, n)
@@ -949,7 +1008,7 @@ graph_code_begin :: proc(b: ^Graph_Builder, owner: Node_Id, nrvo: string) -> Cod
 @(private="file")
 graph_code_body :: proc(b: ^Graph_Builder, owner: Node_Id, body: []Stmt, span: Span) {
     graph_scope_open(b, owner, body, span)
-    for s in body { graph_stmt(b, s, owner, {kind = .Local}) }
+    for s in body { graph_body_stmt(b, s, owner, {kind = .Local}) }
     graph_code_finish(b, span)
 }
 
@@ -1642,7 +1701,7 @@ graph_token_text :: proc(op: Token_Kind) -> string {
 @(private="file")
 graph_link_calls :: proc(b: ^Graph_Builder) {
     for c in b.calls {
-        to, ok := b.scope_node[c.callee]
+        to, ok := b.g.scope_node[c.callee]
         if !ok { graph_fatal(b.g.origin[c.op], "'%s' calls '%s', which has no node", b.g.name[c.op], c.callee.name) }
         append(&b.g.edges, Edge{from = c.op, to = to, kind = .Calls, written = b.g.written[c.op], site = c.op})
     }
@@ -1712,7 +1771,7 @@ graph_link_flows :: proc(b: ^Graph_Builder) {
         if p not_in list { list[p] = {} }
         append(&list[p], Node_Id(id))
     }
-    for c in b.calls { callee[c.op] = b.scope_node[c.callee] }
+    for c in b.calls { callee[c.op] = b.g.scope_node[c.callee] }
 
     srcs: [dynamic]Node_Id
     defer delete(srcs)
@@ -1895,7 +1954,7 @@ graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, par
     kind: Node_Kind = .Fun if ts.kind == .Fun else .Struct
     name := s.name if written == .Explicit else ask_demangle(ts.name, ts.home_package)
     n := graph_node(b, kind, written, parent, name, ts, s.span)
-    b.scope_node[ts] = n
+    b.g.scope_node[ts] = n
     // A fresh set of names: its params, named results and locals.
     saved_base, saved_len, saved_self := b.fn_base, len(b.names), b.self
     b.fn_base = saved_len
@@ -1953,7 +2012,7 @@ graph_scope_stmts :: proc(b: ^Graph_Builder, defs, body: []Stmt, parent: Node_Id
             graph_stmt(b, defs[i], parent, site)
             i += 1
         } else {
-            graph_stmt(b, body[j], parent, site)
+            graph_body_stmt(b, body[j], parent, site)
             j += 1
         }
     }
@@ -1979,7 +2038,7 @@ graph_foreign :: proc(b: ^Graph_Builder, f: ^Foreign_Fun, parent: Node_Id) {
     ts, ok := graph_one(b, f.span, f.name).(^Type_Scope)
     if !ok { graph_fatal(f.span, "foreign '%s' is not a function", f.name) }
     n := graph_node(b, .Fun, .Explicit, parent, f.name, ts, f.span)
-    b.scope_node[ts] = n
+    b.g.scope_node[ts] = n
     for p in ts.params { graph_node(b, .Param, .Explicit, n, p.name, p.type_, f.span) }
     graph_results(b, ts, n, f.span)
     graph_close(b, n)
@@ -2001,7 +2060,7 @@ graph_union :: proc(b: ^Graph_Builder, v: ^Stmt_Union_Def, parent: Node_Id) {
                 st, st_ok := b.checked.table.structs[u.variant_structs[variant]]
                 if !st_ok { graph_fatal(v.span, "variant '%s' of '%s' has no struct", variant, v.name) }
                 vn := graph_node(b, .Struct, .Explicit, n, variant, st, st.body_span)
-                b.scope_node[st] = vn
+                b.g.scope_node[st] = vn
                 for f in st.fields {
                     fw: Written = .Synthetic if strings.has_prefix(f.name, "__") else .Explicit   // the tag, its padding
                     graph_node(b, .Field, fw, vn, f.name, f.type_, st.body_span)

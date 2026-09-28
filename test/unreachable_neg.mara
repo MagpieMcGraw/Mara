@@ -1,0 +1,28 @@
+module unreachable_neg
+//@ expect-fail: unreachable code
+
+// A statement right after a return, a break or a continue can never run: an
+// error.
+
+after_return :: fun(x: i64) {
+	print(x)
+	return
+	print("dead")
+}
+
+in_loop :: fun(n: i64) -> i64 {
+	for i in 0..n {
+		if i > 2 {
+			break
+			print("dead after break")
+		}
+		return i
+		print("dead in loop")
+	}
+	return 0
+}
+
+main :: fun() {
+	after_return(1)
+	print(in_loop(3))
+}

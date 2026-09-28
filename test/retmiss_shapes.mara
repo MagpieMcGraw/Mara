@@ -1,0 +1,33 @@
+module retmiss_shapes
+//@ expect-fail: missing return
+
+// Each fun here can reach its end without a return, so each is an error.
+
+Pick :: union(tag u8) { One = 1 { n: i64 } Two = 2 { m: i64 } }
+
+looped :: fun(n: i64) -> i64 {       // the loop can finish
+	for i in 0..n {
+		if i == 3 { return i }
+	}
+}
+
+broken :: fun(x: i64) -> i64 {       // `for true` can finish, and break leaves it
+	for true {
+		if x > 3 { break }
+		if x < 0 { return 1 }
+	}
+}
+
+one_arm :: fun(p: Pick) -> i64 {     // an arm without a return
+	match p {
+	One o
+		return o.n
+	Two t
+		print(t.m)
+	}
+}
+
+main :: fun() {
+	p : Pick = One{n = 1}
+	print(looped(5), broken(1), one_arm(p))
+}

@@ -1199,8 +1199,8 @@ type_flow_seeds :: proc(checked: ^Checked_Program, T: Type) -> map[^Var_Binding]
 @(private="file")
 flow_build_guards :: proc(checked: ^Checked_Program, fns: map[^Type_Scope]bool) {
     for ft in fns {
-        cfg, ok := checked.cfgs[ft]
-        if !ok { continue }
+        cfg := cfg_of(checked, ft)
+        if cfg == nil { continue }
         cfg_build_control_deps(checked, cfg)
         for d in checked.defs {
             if d.binding != nil && d.binding.fn == ft { d.guards = checked.control_deps[d.span] }

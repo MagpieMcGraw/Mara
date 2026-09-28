@@ -1,0 +1,40 @@
+module retshapes
+//@ expect-output: 2 7 0 5
+
+// Every path of each fun returns, though no return ends its body.
+
+Pick :: union(tag u8) { One = 1 { n: i64 } Two = 2 { m: i64 } }
+
+both :: fun(x: i64) -> i64 {         // both branches return
+	if x > 0 {
+		return 2
+	else
+		return 1
+	}
+}
+
+arms :: fun(p: Pick) -> i64 {        // every arm returns
+	match p {
+	One o
+		return o.n
+	Two t
+		return t.m
+	}
+}
+
+first :: fun(n: i64) -> i64 {        // the body returns, so the step never
+	for i := 0; i < n; i += 1 {      // runs: no code of the fun is dead
+		return i
+	}
+	return -1
+}
+
+helper :: fun(x: i64) -> i64 {       // a definition after the return is no code
+	return twice(x) + 1
+	twice :: fun(y: i64) -> i64 { return y * 2 }
+}
+
+main :: fun() {
+	p : Pick = One{n = 7}
+	print("% % % %", both(1), arms(p), first(4), helper(2))
+}
