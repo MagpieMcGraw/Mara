@@ -1,0 +1,27 @@
+module esc_recursive_neg
+//@ expect-fail: stores its `p` argument into its `h` argument
+
+// A recursive function's summary comes from its SCC's fixpoint: `store_rec`
+// stores `p` into `h` only at the bottom of the recursion.
+
+Holder :: struct { p: ^i64 }
+
+store_rec :: fun(h: ^Holder, p: ^i64, n: i32) {
+	if n == 0 {
+		h.p = p
+	else
+		store_rec(h, p, n - 1)
+	}
+}
+
+g :: fun(h: ^Holder) {
+	x : i64 = 1
+	store_rec(h, &x, 3)
+}
+
+main :: fun() {
+	y : i64 = 1
+	h := Holder{p = &y}
+	g(&h)
+	print(h.p^)
+}

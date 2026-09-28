@@ -1,0 +1,20 @@
+module esc_defer_neg
+//@ expect-fail: would escape
+
+// A defer's block runs at the function's exit, but it is still the function's
+// code: storing a local's address into caller memory from it escapes.
+
+Holder :: struct { p: ^i64 }
+
+f :: fun(h: ^Holder) {
+	x : i64 = 5
+	defer { h.p = &x }
+	print(x)
+}
+
+main :: fun() {
+	y : i64 = 1
+	h := Holder{p = &y}
+	f(&h)
+	print(h.p^)
+}

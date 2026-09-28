@@ -146,7 +146,7 @@ Scope_Body :: struct {
     // statement). Set at registration alongside the fun_asts entry. nil for
     // types with no single source statement (foreign decls, the synthetic
     // Program global, etc.). Lets a resolved call reach the callee's body by
-    // pointer (lookup_callee_scope) instead of re-keying fun_asts by name.
+    // pointer instead of re-keying fun_asts by name.
     ast:            ^Stmt_Scope,
 
     // Signature (field) resolution state — memoizes check_scope_body's
@@ -676,10 +676,9 @@ Resolved_Func :: struct {
     // Resolved callee signature (pointer identity). Set for direct function /
     // constructor calls AND operator-overload edges so consumers use the pointer
     // instead of re-deriving from `name`: codegen reads the symbol off
-    // `callee.name`, lookup_callee_scope reaches the body via `callee.ast`, and
-    // the (future) call graph keys edges on it. nil only for non-function
-    // resolutions (distinct-type casts) and un-annotated / foreign calls with no
-    // callee Type_Scope (no body to reach — lookup falls through to nil, correctly).
+    // `callee.name`, and the program graph links the call to its callee's node
+    // with it. nil only for non-function resolutions (distinct-type casts) and
+    // un-annotated / foreign calls with no callee Type_Scope.
     callee:       ^Type_Scope,
 }
 
@@ -4825,45 +4824,6 @@ write_root_constant :: proc(c: ^Checker, e: Expr) -> (name: string, ok: bool) {
     }
 }
 
-// Resolve a struct literal's i-th literal field to its declared field type.
-// For positional literals, that's the i-th struct field; for named, lookup
-// by name. Returns nil when the type isn't a known struct shape.
-struct_lit_field_type :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, lit_idx: int) -> Type {
-    sd := as_struct_body(distinct_base(lit.type_))
-    if sd == nil { return nil }
-    if lit.positional {
-        if lit_idx >= 0 && lit_idx < len(sd.fields) { return sd.fields[lit_idx].type_ }
-        return nil
-    }
-    name := lit.fields[lit_idx].name
-    for &f in sd.fields {
-        if f.name == name { return f.type_ }
-    }
-    return nil
-}
-
-// Resolve a call to the callee's source AST. Pointer-first: a directly resolved
-// call carries its callee signature (Resolved_Func.callee), which links straight
-// to the body via Type_Scope.ast — exact by construction, no name re-keying.
-// Monomorphizations link their template AST. The name-keyed lookups below remain as a safety net for
-// calls the checker didn't annotate with a callee (resolved_func left nil).
-lookup_callee_scope :: proc(c: ^Checker, call: ^Expr_Call) -> ^Stmt_Scope {
-    if rf, rf_ok := call.resolved_func.?; rf_ok && rf.callee != nil && rf.callee.ast != nil {
-        return rf.callee.ast
-    }
-    if scope, ok := c.table.fun_asts[call_resolved_name(call)]; ok { return scope }
-    if scope, ok := c.table.fun_asts[call_name(call)]; ok { return scope }
-    if rf, rf_ok := call.resolved_func.?; rf_ok {
-        if scope, ok := c.table.fun_asts[rf.name]; ok { return scope }
-        // Strip the longest `prefix_` and retry as a bare name.
-        n := rf.name
-        if idx := strings.last_index_byte(n, '_'); idx >= 0 {
-            if scope, ok := c.table.fun_asts[n[idx+1:]]; ok { return scope }
-        }
-    }
-    return nil
-}
-
 // Solidify inferred types to their defaults (for := variable declarations)
 solidify_type :: proc(t: Type) -> Type {
     rt := resolve_infer(t)
@@ -8146,12 +8106,16 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
             // through to the env-update path below.
             if s.target != nil {
                 #partial switch t in s.target {
-                case ^Expr_Field_Access: check_field_assign(c, s, env)
+                case ^Expr_Field_Access:
+                    check_field_assign(c, s, env)
+                    // The target's own type, for the program graph's place.
+                    if t.type_ == nil { t.type_ = s.target_type }
                 case ^Expr_Index:        check_index_assign(c, s, env)
                 case ^Expr_Slice:        check_slice_assign(c, s, env)
                 case ^Expr_Unary:
                     if t.op == .Caret {
                         check_deref_assign(c, s, env)
+                        if t.type_ == nil { t.type_ = s.target_type }
                     } else {
                         check_error(c, s.span, TYPE_INVALID_ASSIGNMENT_TARGET)
                     }
@@ -8647,6 +8611,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     }
     target_type := distinct_base(check_expr(c, ix.expr, env))
     s.target_type = target_type
+    ix.type_ = index_elem_type(target_type)   // the target names one element
     if fa, ok := target_type.(^Type_Fixed_Array); ok && fa.index_type != nil {
         c.expected_hint = fa.index_type
     }
@@ -8764,6 +8729,11 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     lower_subscript_dots(sl.expr, sl.high)
     target_type := check_expr(c, sl.expr, env)
     s.target_type = target_type
+    if elem := index_elem_type(target_type); elem != nil {   // the target names a run of elements
+        t := new(Type_Slice)
+        t.elem = elem
+        sl.type_ = t
+    }
     low_type    := check_expr(c, sl.low,  env)
     high_type: Type
     if sl.high != nil {
@@ -9033,6 +9003,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
                     fa_expr.field, pname)
             }
             if len(fa_expr.field) == 1 {
+                fa_expr.type_ = fa.elem   // the target names one element
                 // Single-component write: value must match element type
                 if types_incompatible(fa.elem, val_type) && !is_infer(val_type) {
                     check_error(c, s.span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPE,

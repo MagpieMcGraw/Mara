@@ -527,9 +527,12 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
                 graph_store(b, Dest{kind = .Place, expr = v.target, type_ = dest_t}, v.value, v.span)
             case:
                 // A target that runs something (`a[f()] = v`): the value
-                // first, then the target, once.
+                // first, then the target, once. A slice (`dst[lo:hi] = src`)
+                // is the run of elements the value's are copied into.
                 val := graph_value(b, v.value)
-                graph_op(b, .Write, .Explicit, v.span, nil, "", graph_place(b, v.target, v.span), val)
+                _, is_slice := v.target.(^Expr_Slice)
+                dest := graph_value(b, v.target) if is_slice else graph_place(b, v.target, v.span)
+                graph_op(b, .Write, .Explicit, v.span, nil, "", dest, val)
             }
         }
     case ^Stmt_Multi_Assign:
@@ -880,7 +883,11 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
     cont := post if has_post else check
     b.code.run = body
     append(&b.code.loops, Loop{cont = cont, done = done, scope = len(b.code.scopes)})
-    graph_scope_open(b, f, v.body[:], span)
+    // The body is a block of its own: what it declares lives one iteration,
+    // the loop's variables all of them.
+    body_block := graph_node(b, .Block, .Explicit, f, "body", nil, span)
+    b.code.block = body_block
+    graph_scope_open(b, body_block, v.body[:], span)
     if elem != NO_NODE {
         ct := b.g.type_[counter]
         at := graph_read(b, graph_var(b, b.g.name[counter], counter, ct, span), ct, span)
@@ -888,8 +895,10 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
         graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.elem_var, elem, v.elem_type_, span),
                  graph_read(b, slot, v.elem_type_, span))
     }
-    for s in v.body { graph_body_stmt(b, s, f, {kind = .Local}) }
+    for s in v.body { graph_body_stmt(b, s, body_block, {kind = .Local}) }
     graph_scope_close(b, span)
+    graph_close(b, body_block)
+    b.code.block = f
     pop(&b.code.loops)
     if graph_reachable(b) { graph_jump(b, cont, .Synthetic, span) }
 

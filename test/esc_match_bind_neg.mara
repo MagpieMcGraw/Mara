@@ -1,0 +1,27 @@
+module esc_match_bind_neg
+//@ expect-fail: would escape
+
+// A match arm's binding is the payload's place, not a copy: writing through
+// `a` writes the caller's union.
+
+U :: union(tag u8) {
+	A = 1 { p: ^i64 }
+	B = 2 { n: i32 }
+}
+
+f :: fun(u: ^U) {
+	x : i64 = 1
+	match u^ {
+	A a
+		a.p = &x
+	B b
+		print(b.n)
+	}
+}
+
+main :: fun() {
+	y : i64 = 1
+	u : U = A{p = &y}
+	f(&u)
+	print(2)
+}

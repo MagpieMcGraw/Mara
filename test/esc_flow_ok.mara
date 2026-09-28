@@ -1,0 +1,51 @@
+module esc_flow_ok
+//@ expect-output: 7
+
+// POSITIVE: what a variable holds follows the code. `p` points at the local
+// `x` only between two writes inside the `if`; by the return it holds `a`
+// again. Stores through parameters and element copies of caller memory stay
+// legal.
+
+Holder :: struct { p: ^i64, s: []i64 }
+
+back_to_param :: fun(a: ^i64, c: bool) -> ^i64 {
+	x : i64 = 1
+	p := a
+	if c {
+		p = &x
+		print(p^)
+		p = a
+	}
+	return p
+}
+
+keep :: fun(h: ^Holder, a: ^i64, s: []i64) {
+	h.p = a
+	h.s = s
+}
+
+pick :: fun(c: bool, a: ^i64, b: ^i64) -> ^i64 {
+	p := a
+	for i in 0..2 {
+		if c { p = b }
+	}
+	defer { print(0) }
+	return p
+}
+
+copy_in :: fun(dst: ^[]i64, src: []i64) {
+	dst[0:src.len] = src
+}
+
+main :: fun() {
+	y : i64 = 1
+	z : i64 = 2
+	arr : [4]i64
+	arr[0] = 3
+	h : Holder
+	keep(&h, &y, arr[:])
+	buf : [..8]i64
+	buf.len = 4
+	copy_in(&buf, arr[:])
+	print(back_to_param(&y, true)^ + pick(true, &y, &z)^ + h.p^ + buf[0])
+}

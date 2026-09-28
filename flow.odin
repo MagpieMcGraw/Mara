@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strings"
 
 // flow.odin — post-check intraprocedural flow analysis: the diagnostics about
@@ -44,7 +45,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         flow_check_unused(c, checked)
         flow_check_init(c, checked, starts)
     }
-    for _, ft in checked.functions {
+    for ft in flow_functions(checked) {
         if ft == nil { continue }
         // Source bodies only: intrinsics/foreigns have no Mara statements to walk.
         if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
@@ -163,7 +164,7 @@ flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program, starts: map[Node
     g := &checked.graph
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
-    for _, ft in checked.functions {
+    for ft in flow_functions(checked) {
         if ft == nil { continue }
         if _, src := ft.origin.(Origin_Source); !src { continue }
         node, ok := g.scope_node[ft]
@@ -734,4 +735,16 @@ void_literal_field :: proc(sd: ^Scope_Body, name: string, pos: int) -> (Type, bo
         user += 1
     }
     return nil, false
+}
+
+// The checked functions in name order: a map's order changes from run to run,
+// and the diagnostics would follow it.
+@(private="file")
+flow_functions :: proc(checked: ^Checked_Program) -> []^Type_Scope {
+    names := make([dynamic]string, 0, len(checked.functions), context.temp_allocator)
+    for name in checked.functions { append(&names, name) }
+    slice.sort(names[:])
+    out := make([]^Type_Scope, len(names), context.temp_allocator)
+    for name, i in names { out[i] = checked.functions[name] }
+    return out
 }

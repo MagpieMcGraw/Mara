@@ -244,7 +244,41 @@ program that checked clean, since the graph is built from checked types.
       body, read at its start); and a struct built from braces has only the fields it is given
       even when its type is inferred (`n := Node{val = 1}` then `n.next`) — the old walk
       tracked fields only for annotated declarations (`test/init_shapes.mara`)
-- [ ] Escape onto the graph
+- [x] Escape onto the graph: `escape.odin` walks each fun's (and struct's) code as runs. An
+      operation's roots come from its operands' — a place's are the storage it names, a read's
+      what that storage holds, an address's the place — and what each variable holds is
+      dataflow over the runs: a whole write replaces it, a partial one adds, joins union, loops
+      iterate to their fixpoint, and a defer's block starts from every exit that runs it and
+      joins back in there. A variable's depth is the blocks between it and its fun, so a for
+      loop's body became a block of its own (its locals live one iteration, the loop's
+      variables all of them). Summaries as before, bottom-up; a fun outside recursion reports in
+      its one walk. The syntax-tree bridges escape needed are gone (`stmt_to_node`,
+      `lookup_callee_scope`, `struct_lit_field_type`). Two changes under it: `dst[lo:hi] = src`
+      is a write into the slice operation (the elements it views) instead of into a synthetic
+      local holding the slice, so def-use's view special case is gone too; and assignment
+      targets carry their types (field, element, pointee, swizzle, slice). Untyped, the graph's
+      places hid a local array decaying into `h.s = arr`, and made a byte copy look like it
+      could store pointers (`utf8_add`, `init` in Pounce). Diagnostics are identical on every
+      fixture, the 17 escape negatives included, but for two deliberate changes: a pointer set
+      to a local inside a branch and set back before the return is no longer an error (the old
+      walk joined every write made in a nested block); and a runtime-sized slice (`s : [:n]T`)
+      views storage that dies with it, so returning it is now an error — it was a
+      use-after-free both walks missed: the next call reused the storage
+      (`test/esc_sized_slice_neg.mara`). New fixtures for what the graph
+      handles itself: defers, `let` views, match bindings, slice copies, decay into fields and
+      elements, recursion (`test/esc_*_neg.mara`, `test/esc_flow_ok.mara`). Escape's
+      diagnostics are sorted by position, and flow's no longer follow a map's order (they
+      changed from run to run). `MARA_DUMP_ESC=1` prints the summaries. test_1M: the analysis
+      phase 5.7 → 5.0 s (escape 1.7 s of it), peak memory unchanged; Pounce's `mara ask`
+      corpus (7,824 queries) is identical
+
+Phase 2 is complete: every analysis reads the program graph (flow's `void` checks, which were
+never on the plan, still walk the syntax tree).
+
+Left for phase 3, found here: the graph lowers `x := let(T, s)` as a write of a carve into `x`,
+while `x` has no storage of its own (escape treats it as a view); and codegen gave a
+runtime-sized slice no storage when it was the local a fun builds in its caller's return slot
+(its `cap()` read 0) — returning such a slice is now an escape error, so no program reaches it.
 
 ## Baselines
 

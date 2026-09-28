@@ -1,0 +1,19 @@
+module esc_let_view_neg
+//@ expect-fail: would escape
+
+// `big := let(Big, &memory[0])` has no storage of its own: it names the
+// caller's buffer, so storing a local's address through it escapes.
+
+Big :: struct { p: ^i64, b: i64 }
+
+set :: fun(memory: ^[]byte) {
+	x : i64 = 2
+	big := let(Big, &memory[0])
+	big.p = &x
+}
+
+main :: fun() {
+	buf : [..64]byte
+	set(&buf)
+	print(1)
+}

@@ -1,0 +1,22 @@
+module esc_sized_slice_neg
+//@ expect-fail: cannot return local reference
+
+// `s : [:n]i64` views storage that dies with `s` (the scope allocator resets
+// when make_it returns): the second call reused it, and `t[0]` read back 9.
+
+use mara.memory
+
+make_it :: fun(n: i64) -> []i64 {
+	s : [:n]i64
+	s.len = 4
+	s[0] = 7
+	return s[0:4]
+}
+
+main :: fun() {
+	this_program = Program(Arena_Debug(1 * MB))
+	t := make_it(4)
+	u := make_it(4)
+	u[0] = 9
+	print(t[0])
+}

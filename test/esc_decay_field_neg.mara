@@ -1,0 +1,18 @@
+module esc_decay_field_neg
+//@ expect-fail: would escape
+
+// A local array stored into a slice field decays to a view of the array: the
+// field then points into f's frame.
+
+Holder :: struct { s: []i64 }
+
+f :: fun(h: ^Holder) {
+	arr : [4]i64
+	h.s = arr
+}
+
+main :: fun() {
+	h : Holder
+	f(&h)
+	print(h.s.len)
+}

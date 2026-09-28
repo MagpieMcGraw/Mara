@@ -177,23 +177,6 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     // Its runs: its code's, then each defer block's, entered by a run defer.
     f.main = graph_code_runs(g, du.starts, node, &f.runs)
 
-    // Views: a synthetic local set to a slice of a variable (`dst[lo:] = src`
-    // writes through one). What is written through it writes that variable.
-    views: map[Node_Id]Node_Id
-    defer delete(views)
-    for r in f.runs {
-        for op in graph_run(g, int(r)) {
-            if g.op[op] != .Write { continue }
-            t, whole, ok := du_written(g, op)
-            if !ok || !whole || t not_in tracked || t in du.bindings { continue }
-            val := graph_operands(g, op)[1].op
-            if val == NO_NODE || g.op[val] != .Slice { continue }
-            if v, vok := du_place_root(g, graph_operands(g, val)[0].op); vok && v in du.bindings {
-                views[t] = v
-            }
-        }
-    }
-
     // Its definitions: a param's entry, then each statement's writes.
     def_of: map[[2]i32]^Def   // (variable, statement) → its definition
     defer delete(def_of)
@@ -204,7 +187,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         for op in graph_run(g, int(r)) {
             #partial switch g.op[op] {
             case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Variant:
-                v, _, is_def := du_target(g, views, op)
+                v, _, is_def := du_written(g, op)
                 if !is_def || v not_in tracked { break }
                 s := g.stmt[op]
                 d := du_def(checked, f, &def_of, v, s, g.stmts[s].span if s >= 0 else g.origin[op])
@@ -224,7 +207,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
             }
         }
     }
-    for d in f.defs { du_classify(g, views, d) }
+    for d in f.defs { du_classify(g, d) }
 
     // Reaching definitions: states are bit sets over the fun's definitions.
     words := (len(f.defs) + 63) / 64
@@ -257,11 +240,11 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     defer delete(state)
     Transfer :: struct {
         g: ^Program_Graph, f: ^Du_Fn, def_of: ^map[[2]i32]^Def, tracked: ^map[Node_Id]int,
-        kill: [][]u64, index_of: ^map[^Def]int, views: ^map[Node_Id]Node_Id,
+        kill: [][]u64, index_of: ^map[^Def]int,
     }
-    t := Transfer{g, f, &def_of, &tracked, kill, &index_of, &views}
+    t := Transfer{g, f, &def_of, &tracked, kill, &index_of}
     apply :: proc(t: ^Transfer, op: Node_Id, state: []u64) {
-        v, whole, is_def := du_target(t.g, t.views^, op)
+        v, whole, is_def := du_written(t.g, op)
         if !is_def { return }
         k, tracked := t.tracked[v]
         if !tracked { return }
@@ -415,37 +398,6 @@ du_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool, 
     return
 }
 
-// What an operation writes, through a view: a write into a synthetic local
-// holding a slice of a variable writes part of that variable (all but the
-// write that sets the view).
-@(private="file")
-du_target :: proc(g: ^Program_Graph, views: map[Node_Id]Node_Id, op: Node_Id) -> (v: Node_Id, whole: bool, ok: bool) {
-    v, whole, ok = du_written(g, op)
-    if !ok { return }
-    if target, is_view := views[v]; is_view {
-        sets_view := g.op[op] == .Write && g.op[graph_operands(g, op)[1].op] == .Slice
-        if !sets_view { return target, false, true }
-    }
-    return
-}
-
-// The variable a place is rooted at, through fields, elements and derefs.
-@(private="file")
-du_place_root :: proc(g: ^Program_Graph, op: Node_Id) -> (Node_Id, bool) {
-    p := op
-    for p != NO_NODE && g.kind[p] == .Op {
-        #partial switch g.op[p] {
-        case .Var:
-            return g.refers[p], g.refers[p] != NO_NODE
-        case .Field, .Index, .Deref, .Swizzle, .Variant, .Slice:
-            p = graph_operands(g, p)[0].op
-        case:
-            return NO_NODE, false
-        }
-    }
-    return NO_NODE, false
-}
-
 @(private="file")
 du_is_place :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
     if op == NO_NODE || g.kind[op] != .Op { return false }
@@ -481,12 +433,12 @@ du_write_valued :: proc(g: ^Program_Graph, op: Node_Id) -> bool {
 // A definition's kind: its statement's, with a match arm's binding a
 // destructure and an assignment that writes only part of a value a write.
 @(private="file")
-du_classify :: proc(g: ^Program_Graph, views: map[Node_Id]Node_Id, d: ^Def) {
+du_classify :: proc(g: ^Program_Graph, d: ^Def) {
     if d.binding == nil || d.stmt < 0 { return }
     whole := false
     for op in d.writes {
         if g.op[op] == .Variant { d.kind = .Destructure; return }
-        if _, w, _ := du_target(g, views, op); w { whole = true }
+        if _, w, _ := du_written(g, op); w { whole = true }
     }
     kind := g.stmts[d.stmt].kind if d.stmt >= 0 else Stmt_Kind.Other
     switch kind {

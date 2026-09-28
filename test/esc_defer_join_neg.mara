@@ -1,0 +1,20 @@
+module esc_defer_join_neg
+//@ expect-fail: cannot return local reference
+
+// What a defer's block writes joins back in where it runs: `p` leaves the `if`
+// holding `&x`, so returning it returns a local.
+
+g :: fun(a: ^i64, c: bool) -> ^i64 {
+	p : ^i64 = a
+	x : i64 = 3
+	if c {
+		defer { p = &x }
+		print(1)
+	}
+	return p
+}
+
+main :: fun() {
+	y : i64 = 1
+	print(g(&y, true)^)
+}

@@ -205,7 +205,7 @@ About thirty kinds in all.
 | `deref` | `p^`; implied in `p.x` when `p: ^T` | `load ptr` |
 | `variant` | the bound payload in a `match` arm | `getelementptr` past the tag |
 | `swizzle` | `v.xy` | element addresses or `shufflevector` |
-| `slice` | `a[lo:hi]`, `slice_from_ptr(p, n)` | a slice header: pointer, length, capacity |
+| `slice` | `a[lo:hi]`, `slice_from_ptr(p, n)`; written to, `a[lo:hi] = b` | a slice header: pointer, length, capacity; written to, the elements it views: `memcpy` |
 
 **Memory**
 

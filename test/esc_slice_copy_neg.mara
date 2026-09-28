@@ -1,0 +1,21 @@
+module esc_slice_copy_neg
+//@ expect-fail: would escape
+
+// `dst[0:1] = tmp[:]` copies tmp's elements into the caller's: the pointer to
+// the local `x` they hold escapes with them.
+
+f :: fun(dst: ^[]^i64) {
+	x : i64 = 1
+	tmp : [1]^i64
+	tmp[0] = &x
+	dst[0:1] = tmp[:]
+}
+
+main :: fun() {
+	y : i64 = 1
+	arr : [..4]^i64
+	arr.len = 1
+	arr[0] = &y
+	f(&arr)
+	print(arr[0]^)
+}

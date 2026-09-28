@@ -63,9 +63,6 @@ Call_Graph :: struct {
     // time a slice crosses a call (deps_ready).
     return_deps:  [dynamic][]int,
     deps_ready:   bool,
-    // A fun's body (Type_Scope.ast) → its node: escape.odin still finds callees
-    // from the syntax tree.
-    stmt_to_node: map[^Stmt_Scope]int,
 
     // Escape summary (escape.odin): which parameters node n's result may point
     // into, and which parameter's memory each parameter may be stored into.
@@ -119,9 +116,6 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
         if _, is_source := cs.origin.(Origin_Source); is_source && cs != nil {
             cg_node(&g, cs)
         }
-    }
-    for ts, i in g.nodes {
-        if ts != nil && ts.ast != nil { g.stmt_to_node[ts.ast] = i }
     }
     cg_compute_sccs(&g)
     cg_compute_reachability(&g)

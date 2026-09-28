@@ -1,48 +1,59 @@
 package mara
 
 import "core:fmt"
+import "core:os"
 import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Escape analysis — Mara's lifetime rule, checked post-check over durable bodies.
+// Escape analysis — Mara's lifetime rule, checked over the program graph
+// (design/graph_retrofit.md, phase 2).
 //
 // DEPTHS. All memory has a lifetime depth: global memory is 0, the caller's
-// memory 1, and each lexical block of the function being checked one more (its
-// body block is 2). A deeper block dies first — and in Mara it really does die:
-// the scope allocator resets when the block ends.
+// memory 1, and each block of the function being checked one more (its body
+// is 2, a loop's variables 3, the loop's body 4). A deeper block dies first —
+// and in Mara it really does die: the scope allocator resets when the block
+// ends. A variable lives at its declaration's depth; a struct's fields are
+// its caller's.
 //
 // ROOTS. A reference value carries the set of memory it may point into
-// (Esc_Roots): global memory, a parameter's caller memory (by index), a local
-// variable's own storage (by variable), and anonymous temporaries (literals, call
-// results viewed in place) at the block that holds them.
+// (Esc_Roots): global memory, a parameter's caller memory (by index), a
+// variable's own storage (a synthetic local — an expression's temporary —
+// included), and a value's own storage when an array decays to a slice of it
+// in place.
 //
 // THE RULE. A store is legal only when everything the value may point into
 // outlives everything the destination may be:
 //
 //     deepest(value roots) <= shallowest(destination roots)
 //
-// `return v` is a store into the caller. Storing into a local's storage adds to
-// what that local holds, so reading it back — directly, through a field or an
-// index, or through a pointer to it — carries those roots onward. That one check
-// is the whole analysis: returns, writes through parameters at any field/index
-// depth, writes through aliases of parameters, reassigned locals, and values
-// outliving an inner block all fall out of it.
+// A return is a store into the caller. Every operation computes its roots
+// from its operands': a place's are the storage it names, a read's what that
+// storage holds, an address's the place itself. Storing into a variable's
+// storage adds to what it holds, so reading it back — directly, through a
+// field or an element, or through a pointer to it — carries those roots
+// onward. That one check is the whole analysis: returns, writes through
+// parameters at any field/element depth, writes through aliases of
+// parameters, reassigned locals, and values outliving an inner block all
+// fall out of it.
 //
-// FLOW. A write in the block that declares a variable replaces its roots; a
-// write from a nested block (which may not run) joins them. Loop bodies are
-// walked quietly to a fixpoint before the reporting walk, so a value stored late
-// in a body reaches the statements before it on the next iteration.
+// FLOW. What each variable holds is dataflow over the runs: a write of the
+// whole variable replaces it, a write of part of it (or through a pointer)
+// adds to it, a join unions, and a loop iterates to its fixpoint. A defer's
+// block starts from the state at every exit that runs it, and what it leaves
+// joins back in there. A `let` view and a match arm's binding have no storage
+// of their own: they name the storage they view.
 //
-// SUMMARIES. Inside a callee all caller memory is depth 1, so a callee can't tell
-// a long-lived argument from a short-lived one. Instead each function's summary
-// records which parameters its result may point into, and which parameter's
-// memory each parameter may be stored into. Summaries are computed callees-first
-// over the call graph's SCCs (cg_bottom_up iterates recursion to a fixpoint) and
-// applied at every call site with the caller's real depths. A summary keeps two
-// levels per parameter — the memory the argument points at, and anything deeper
-// — so storing into `h.p` isn't confused with storing into `h.p^`. Foreign and
-// indirect calls are the honest seam: assumed not to retain their arguments.
+// SUMMARIES. Inside a callee all caller memory is depth 1, so a callee can't
+// tell a long-lived argument from a short-lived one. Instead each function's
+// summary records which parameters its result may point into, and which
+// parameter's memory each parameter may be stored into. Summaries are
+// computed callees-first over the call graph's SCCs (cg_bottom_up iterates
+// recursion to a fixpoint) and applied at every call and construction with
+// the caller's real depths. A summary keeps two levels per parameter — the
+// memory the argument points at, and anything deeper — so storing into `h.p`
+// isn't confused with storing into `h.p^`. Foreign and indirect calls are the
+// honest seam: assumed not to retain their arguments.
 // ---------------------------------------------------------------------------
 
 ESC_GLOBAL       :: 0
@@ -55,21 +66,11 @@ Esc_Param_Set :: bit_set[0 ..< ESC_MAX_PARAMS; u128]
 
 // The memory a reference value may point into.
 Esc_Roots :: struct {
-    params: Esc_Param_Set,     // the caller memory these parameters point at
-    deep:   Esc_Param_Set,     // caller memory reachable further through them
+    params: Esc_Param_Set,   // the caller memory these parameters point at
+    deep:   Esc_Param_Set,   // caller memory reachable further through them
     global: bool,
-    temp:   int,               // deepest block holding a temporary it views; 0 = none
-    vars:   [dynamic]^Esc_Var, // local variables' own storage
-}
-
-Esc_Var :: struct {
-    name:     string,
-    depth:    int,       // lifetime depth of the variable's storage
-    frame:    int,       // declaring frame (a write there replaces, elsewhere joins)
-    type_:    Type,
-    is_param: bool,
-    loc:      Esc_Roots, // its storage: itself, or for a `let` view the storage it views
-    contents: Esc_Roots, // what the references it holds may point into
+    temp:   int,             // deepest block holding a value it views in place; 0 = none
+    vars:   [dynamic]i32,    // variables' own storage, by index in the fun's
 }
 
 // A parameter's memory stored into another's (a function-summary edge): memory
@@ -87,62 +88,121 @@ Esc_Summary :: struct {
     stores:   [dynamic]Esc_Store,
 }
 
+// A variable of the fun or struct being checked: a param, a named result, a
+// local (synthetic ones too), or — in a struct's code — a field.
 @(private="file")
-Esc_Frame :: struct {
-    vars:        map[string]^Esc_Var,
-    loop_header: bool, // a loop's init/post scope: its `post` runs every iteration
+Esc_Var :: struct {
+    node:  Node_Id,
+    name:  string,
+    type_: Type,
+    depth: int,
+    param: int,       // its position when a param; -1 otherwise
+    slot:  int,       // its entry in a state; -1 when it can hold no reference
+    view:  bool,      // a `let` view or a match arm's binding: its slot holds
+                      // the storage it names, not what it holds
+    init:  Node_Id,   // a `let` view: the write declaring it
 }
 
-// Where a store lands, for the diagnostic.
+// Where a store lands, for its diagnostic.
 @(private="file")
 Esc_Site :: struct {
-    target:      Expr,
-    target_name: string,
-    call:        ^Expr_Call,   // a summarized store at a call site
-    callee:      ^Type_Scope,
-    st:          Esc_Store,
+    op:     Node_Id,      // the write, or the call whose summary stores
+    place:  Operand,      // a write's destination
+    callee: ^Type_Scope,  // a call's
+    st:     Esc_Store,
 }
 
 @(private="file")
-Esc_Decl_Key :: struct {
-    name: string,
+Esc_Diag :: struct {
     span: Span,
+    msg:  string,
 }
 
+// One walk of one fun's or struct's code.
 @(private="file")
 Esc :: struct {
     c:      ^Checker,
-    g:      ^Call_Graph,
+    cg:     ^Call_Graph,
+    g:      ^Program_Graph,
     ft:     ^Type_Scope,
-    ctor:   bool,  // a constructor: its top-level declarations are fields of Self
-    report: bool,  // the reporting walk (vs. a summary walk)
-    quiet:  int,   // > 0 inside a loop's fixpoint passes
-    frames: [dynamic]Esc_Frame,
-    decls:  map[Esc_Decl_Key]^Esc_Var, // one variable per declaration across loop re-walks
+    node:   Node_Id,
+    ctor:   bool,                // a struct's code: `Self` is its fields
+    vars:   [dynamic]Esc_Var,
+    var_of: []i32,               // a declaration → its variable, by id - node; -1 for none
+    run_of: []i32,               // an operation → its run's position in `runs`, by id - node
+    slots:  int,
+    runs:   [dynamic]i32,        // its code's runs, then its defer blocks'
+    main:   int,                 // how many of `runs` are its code's own
+    run_at: map[i32]int,
+    memo:   []Esc_Roots,         // each operation's roots, by id - node
+
+    // The fixpoint.
+    in_state:    [][]Esc_Roots,
+    entered:     []bool,
+    queued:      []bool,
+    todo:        [dynamic]int,
+    uses:        map[Node_Id][dynamic]int,    // an operation → the other runs using its value
+    used_across: []bool,                      // ... whether it has any, by id - node
+    defer_exit:  map[Node_Id][]Esc_Roots,     // a defer block → the state it leaves
+    defer_users: map[Node_Id][dynamic]int,    // ... and the runs that run it
+
+    // The last pass, over the fixpoint: summary and diagnostics.
+    final:  bool,
+    report: bool,
     sum:    Esc_Summary,
+    diags:  [dynamic]Esc_Diag,
 }
 
-@(private="file") g_esc_checker: ^Checker
+@(private="file")
+Esc_Pass :: struct {
+    c:        ^Checker,
+    graph:    ^Program_Graph,
+    starts:   map[Node_Id]i32,
+    reported: []bool,
+    diags:    [dynamic]Esc_Diag,
+}
 
-// Entry point, after build_call_graph: summaries bottom-up, then one reporting
-// walk per function against the final summaries.
+@(private="file") g_esc: Esc_Pass
+
+// Entry point, after build_call_graph: summaries bottom-up, each fun's
+// diagnostics against its callees' final summaries. A fun outside recursion
+// reports in its summary walk; a recursive one walks again once its SCC is
+// done, with the summaries final.
 escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
-    g := c.cg
-    if g == nil { return }
-    resize(&g.esc, len(g.nodes))
-    g_esc_checker = c
-    cg_bottom_up(g, esc_summary_transfer)
-    for ft in g.nodes {
-        if esc_walkable(ft) { esc_walk(c, g, ft, true) }
+    cg := c.cg
+    if cg == nil { return }
+    resize(&cg.esc, len(cg.nodes))
+    g_esc = Esc_Pass{
+        c        = c,
+        graph    = &checked.graph,
+        starts   = graph_run_starts(&checked.graph),
+        reported = make([]bool, len(cg.nodes)),
+    }
+    cg_bottom_up(cg, esc_summary_transfer)
+    esc_dump(cg)
+    for _, n in cg.nodes {
+        if !g_esc.reported[n] { esc_walk(cg, n, true) }
+    }
+    // In source order, once each (a generic's instances share their spans).
+    slice.sort_by(g_esc.diags[:], proc(a, b: Esc_Diag) -> bool {
+        if a.span.file != b.span.file { return a.span.file < b.span.file }
+        if a.span.line != b.span.line { return a.span.line < b.span.line }
+        if a.span.col != b.span.col { return a.span.col < b.span.col }
+        return a.msg < b.msg
+    })
+    for d, i in g_esc.diags {
+        if i > 0 && g_esc.diags[i - 1] == d { continue }
+        check_error(c, d.span, "%s", d.msg)
     }
 }
 
 @(private="file")
-esc_summary_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
-    ft := g.nodes[n]
-    if !esc_walkable(ft) { return false }
-    s := esc_walk(g_esc_checker, g, ft, false)
-    cur := &g.esc[n]
+esc_summary_transfer :: proc(cg: ^Call_Graph, n: int) -> bool {
+    report := !cg_is_recursive(cg, n)
+    s, ok := esc_walk(cg, n, report)
+    if report || !ok { g_esc.reported[n] = true }
+    if !ok { return false }
+    cur := &cg.esc[n]
     changed := false
     if !(s.ret <= cur.ret)           { cur.ret += s.ret; changed = true }
     if !(s.ret_deep <= cur.ret_deep) { cur.ret_deep += s.ret_deep; changed = true }
@@ -152,197 +212,419 @@ esc_summary_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
     return changed // monotone: summaries only grow toward the fixpoint
 }
 
+// Walk call-graph node n's code: the fixpoint, then the last pass. False when
+// it has no code (foreign, intrinsic).
 @(private="file")
-esc_walkable :: proc(ft: ^Type_Scope) -> bool {
-    if ft == nil { return false }
-    if _, src := ft.origin.(Origin_Source); !src { return false } // foreign / intrinsic: no body
-    // An uninstantiated generic template's body is unresolved; each instantiation
-    // is walked through its own cloned, typed body.
-    if ft.ast != nil && len(ft.ast.generic_params) > 0 && raw_data(ft.body) == raw_data(ft.ast.body) { return false }
-    return true
-}
-
-@(private="file")
-esc_walk :: proc(c: ^Checker, g: ^Call_Graph, ft: ^Type_Scope, report: bool) -> Esc_Summary {
+esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
+    ft := cg.nodes[n]
+    g := g_esc.graph
+    node, has := g.scope_node[ft]
+    if !has { return {}, false }
+    e := Esc{c = g_esc.c, cg = cg, g = g, ft = ft, node = node, ctor = g.kind[node] == .Struct, report = report}
+    e.main = graph_code_runs(g, g_esc.starts, node, &e.runs)
+    if len(e.runs) == 0 { return {}, false }
     if len(ft.params) > ESC_MAX_PARAMS {
         fmt.panicf("escape analysis: %s has %d parameters (max %d)", ft.name, len(ft.params), ESC_MAX_PARAMS)
     }
-    e := Esc{c = c, g = g, ft = ft, ctor = ft.kind == .Struct, report = report}
-    esc_push(&e, false)
-    for p, i in ft.params {
-        if v := esc_declare(&e, p.name, ft.body_span, p.type_, true); v != nil && esc_has_refs(c, p.type_) {
-            v.contents.params = {i}
+    size := int(g.last[node] - node) + 1
+    e.memo = make([]Esc_Roots, size)
+    e.var_of = make([]i32, size)
+    e.run_of = make([]i32, size)
+    e.used_across = make([]bool, size)
+    slice.fill(e.var_of, -1)
+    slice.fill(e.run_of, -1)
+    esc_vars(&e)
+    esc_scan(&e)
+    esc_fixpoint(&e)
+
+    e.final = true
+    state := make([]Esc_Roots, e.slots)
+    for ri in 0 ..< len(e.runs) {
+        if !e.entered[ri] { continue }
+        esc_state_copy(state, e.in_state[ri])
+        esc_run(&e, ri, state)
+    }
+    if report { append(&g_esc.diags, ..e.diags[:]) }
+    return e.sum, true
+}
+
+// The variables: its own subtree's params, results, locals and (a struct's)
+// fields, less the subtrees of what it defines.
+@(private="file")
+esc_vars :: proc(e: ^Esc) {
+    g := e.g
+    params := 0
+    for id := e.node + 1; id <= g.last[e.node]; id += 1 {
+        #partial switch g.kind[id] {
+        case .Fun, .Struct, .Union, .Enum:
+            id = g.last[id]
+        case .Param, .Result, .Local, .Field:
+            v := Esc_Var{node = id, name = g.name[id], type_ = g.type_[id], depth = esc_depth(e, id),
+                         param = -1, slot = -1, init = NO_NODE}
+            #partial switch g.kind[id] {
+            case .Param:
+                v.param = params
+                params += 1
+            case .Field:
+                v.depth = ESC_CALLER   // a field of the value under construction: the caller's
+            }
+            e.var_of[id - e.node] = i32(len(e.vars))
+            append(&e.vars, v)
         }
     }
-    for name, i in ft.return_binding_names {
-        esc_declare(&e, name, ft.body_span, ft.return_types[i] if i < len(ft.return_types) else nil)
+}
+
+// Before the walk: which variables are views, which values cross runs, and
+// each variable's slot.
+@(private="file")
+esc_scan :: proc(e: ^Esc) {
+    g := e.g
+    for r, ri in e.runs {
+        e.run_at[r] = ri
+        for op in graph_run(g, int(r)) { e.run_of[op - e.node] = i32(ri) }
     }
-    for s in ft.body { esc_stmt(&e, s) }
-    esc_pop(&e)
-    return e.sum
-}
-
-// --- frames ------------------------------------------------------------------
-
-@(private="file")
-esc_push :: proc(e: ^Esc, loop_header: bool) {
-    append(&e.frames, Esc_Frame{vars = make(map[string]^Esc_Var), loop_header = loop_header})
-}
-
-@(private="file")
-esc_pop :: proc(e: ^Esc) {
-    f := pop(&e.frames)
-    delete(f.vars)
-}
-
-// Lifetime depth of the innermost open block.
-@(private="file")
-esc_depth :: proc(e: ^Esc) -> int { return ESC_BODY + len(e.frames) - 1 }
-
-@(private="file")
-esc_declare :: proc(e: ^Esc, name: string, span: Span, t: Type, is_param := false) -> ^Esc_Var {
-    if name == "" || name == "_" { return nil }
-    key := Esc_Decl_Key{name, span}
-    v := e.decls[key]
-    if v == nil {
-        v = new(Esc_Var)
-        e.decls[key] = v
+    for r, ri in e.runs {
+        for op in graph_run(g, int(r)) {
+            ops := graph_operands(g, op)
+            for o in ops {
+                if o.op == NO_NODE { continue }
+                if from := e.run_of[o.op - e.node]; from != i32(ri) {
+                    e.used_across[o.op - e.node] = true
+                    if o.op not_in e.uses { e.uses[o.op] = {} }
+                    list := &e.uses[o.op]
+                    if !slice.contains(list[:], ri) { append(list, ri) }
+                }
+            }
+            #partial switch g.op[op] {
+            case .Write:
+                k := esc_var_named(e, ops[0])
+                val := ops[1].op
+                if k < 0 || val == NO_NODE { break }
+                v := &e.vars[k]
+                s := g.stmt[op]
+                if g.op[val] == .Carve && g.name[val] == "let" && s >= 0 && g.stmts[s].kind == .Decl {
+                    v.view = true   // `x := let(T, s)`: x IS the storage it views
+                    v.init = op
+                }
+            case .Variant:
+                // A match arm's binding is the payload's place, not a copy.
+                if k := esc_var(e, g.refers[op]); k >= 0 { e.vars[k].view = true }
+            }
+        }
     }
-    frame := len(e.frames) - 1
-    depth := esc_depth(e)
-    // A constructor's top-level declarations are fields of Self, which the
-    // caller owns.
-    if e.ctor && frame == 0 && !is_param { depth = ESC_CALLER }
-    v^ = Esc_Var{name = name, depth = depth, frame = frame, type_ = t, is_param = is_param}
-    append(&v.loc.vars, v)
-    e.frames[frame].vars[name] = v
-    return v
-}
-
-@(private="file")
-esc_lookup :: proc(e: ^Esc, name: string) -> ^Esc_Var {
-    #reverse for &f in e.frames {
-        if v, ok := f.vars[name]; ok { return v }
-    }
-    return nil
-}
-
-// A plain variable (not a `let` view): its storage is its own slot.
-@(private="file")
-esc_is_own_slot :: proc(v: ^Esc_Var) -> bool {
-    r := v.loc
-    return len(r.vars) == 1 && r.vars[0] == v && r.params == {} && r.deep == {} && !r.global && r.temp == 0
-}
-
-// --- roots ---------------------------------------------------------------------
-
-@(private="file")
-esc_add_var :: proc(r: ^Esc_Roots, v: ^Esc_Var) {
-    for w in r.vars { if w == v { return } }
-    append(&r.vars, v)
-}
-
-@(private="file")
-esc_join :: proc(dst: ^Esc_Roots, src: Esc_Roots) {
-    dst.params += src.params
-    dst.deep += src.deep
-    if src.global { dst.global = true }
-    dst.temp = max(dst.temp, src.temp)
-    for v in src.vars { esc_add_var(dst, v) }
-}
-
-@(private="file")
-esc_clone :: proc(r: Esc_Roots) -> Esc_Roots {
-    out: Esc_Roots
-    esc_join(&out, r)
-    return out
-}
-
-@(private="file")
-esc_equal :: proc(a, b: Esc_Roots) -> bool {
-    if a.params != b.params || a.deep != b.deep || a.global != b.global || a.temp != b.temp { return false }
-    if len(a.vars) != len(b.vars) { return false }
-    for v in a.vars { if !slice.contains(b.vars[:], v) { return false } }
-    return true
-}
-
-@(private="file")
-esc_global_roots :: proc() -> Esc_Roots {
-    r: Esc_Roots
-    r.global = true
-    return r
-}
-
-// Deepest root other than caller memory reached through a parameter; -1 if none.
-@(private="file")
-esc_deepest_local :: proc(r: Esc_Roots) -> int {
-    d := -1
-    if r.global { d = ESC_GLOBAL }
-    d = max(d, r.temp if r.temp > 0 else -1)
-    for v in r.vars { d = max(d, v.depth) }
-    return d
-}
-
-// Shallowest root, parameters' memory counting as the caller's; max(int) if none.
-@(private="file")
-esc_shallowest :: proc(r: Esc_Roots) -> int {
-    d := max(int)
-    if r.global { d = ESC_GLOBAL }
-    if r.params != {} || r.deep != {} { d = min(d, ESC_CALLER) }
-    if r.temp > 0 { d = min(d, r.temp) }
-    for v in r.vars { d = min(d, v.depth) }
-    return d
-}
-
-// What the memory at `r` may hold: one level of indirection further. Memory
-// never holds references to anything shorter-lived than itself (that's the
-// rule), so a temporary or global holds nothing deeper than itself, and a
-// parameter's memory holds more of the caller's memory.
-@(private="file")
-esc_deref :: proc(r: Esc_Roots) -> Esc_Roots {
-    out: Esc_Roots
-    out.deep = r.params + r.deep
-    out.global = r.global
-    out.temp = r.temp
-    for v in r.vars { esc_join(&out, v.contents) }
-    return out
-}
-
-// The data a slice header at `r` points into. A partial array's header points
-// into its own inline elements, so it is (also) its own data.
-@(private="file")
-esc_slice_data :: proc(r: Esc_Roots) -> Esc_Roots {
-    out := esc_deref(r)
-    for v in r.vars { if esc_self_pointing(v.type_) { esc_add_var(&out, v) } }
-    return out
-}
-
-// Everything reachable from `r`, at any depth of indirection (r included).
-@(private="file")
-esc_reach :: proc(r: Esc_Roots) -> Esc_Roots {
-    out := esc_clone(r)
-    for {
-        before := esc_clone(out)
-        esc_join(&out, esc_slice_data(out))
-        if esc_equal(before, out) { return out }
+    for &v in e.vars {
+        if v.view || esc_has_refs(e.c, v.type_) {
+            v.slot = e.slots
+            e.slots += 1
+        }
     }
 }
 
-// --- the rule ------------------------------------------------------------------
+// --- the fixpoint --------------------------------------------------------------
 
-// Store `val` into memory at `dst`: check the rule, then record that any local
-// variable in `dst` now (may) hold what `val` points into.
 @(private="file")
-esc_store :: proc(e: ^Esc, dst, val: Esc_Roots, site: Esc_Site, span: Span) {
-    esc_check(e, dst, val, site, span)
-    for v in dst.vars { esc_join(&v.contents, val) }
+esc_fixpoint :: proc(e: ^Esc) {
+    n := len(e.runs)
+    e.in_state = make([][]Esc_Roots, n)
+    e.entered = make([]bool, n)
+    e.queued = make([]bool, n)
+    // The entry: each param holds the caller memory it points at.
+    entry := make([]Esc_Roots, e.slots)
+    for v in e.vars {
+        if v.param >= 0 && v.slot >= 0 && !v.view { entry[v.slot].params = {v.param} }
+    }
+    e.in_state[0] = entry
+    e.entered[0] = true
+    esc_queue(e, 0)
+    state := make([]Esc_Roots, e.slots)
+    visits := 0
+    for len(e.todo) > 0 {
+        ri := pop(&e.todo)
+        e.queued[ri] = false
+        esc_state_copy(state, e.in_state[ri])
+        esc_run(e, ri, state)
+        visits += 1
+        if visits > 10_000_000 { fmt.panicf("escape analysis: %s did not converge", e.ft.name) }
+    }
+}
+
+@(private="file")
+esc_queue :: proc(e: ^Esc, ri: int) {
+    if e.queued[ri] { return }
+    e.queued[ri] = true
+    append(&e.todo, ri)
+}
+
+// Join a state into run si's.
+@(private="file")
+esc_flow :: proc(e: ^Esc, si: int, state: []Esc_Roots) {
+    if !e.entered[si] {
+        e.entered[si] = true
+        e.in_state[si] = make([]Esc_Roots, e.slots)
+        esc_state_copy(e.in_state[si], state)
+        esc_queue(e, si)
+        return
+    }
+    if esc_merge(e.in_state[si], state) { esc_queue(e, si) }
+}
+
+@(private="file")
+esc_run :: proc(e: ^Esc, ri: int, state: []Esc_Roots) {
+    g := e.g
+    ops := graph_run(g, int(e.runs[ri]))
+    for op in ops { esc_op(e, ri, op, state) }
+    if e.final { return }
+    last := ops[len(ops) - 1]
+    for edge in graph_out(g, last) {
+        if edge.kind != .Then { continue }
+        if si, ok := e.run_at[g_esc.starts[edge.to]]; ok { esc_flow(e, si, state) }
+    }
+    // The end of a defer's block: what it leaves joins back in where it ran.
+    if g.op[last] == .Return && ri >= e.main {
+        d := esc_defer_block(g, last)
+        if d not_in e.defer_exit { e.defer_exit[d] = make([]Esc_Roots, e.slots) }
+        if esc_merge(e.defer_exit[d], state) {
+            for u in e.defer_users[d] { esc_queue(e, u) }
+        }
+    }
+}
+
+// The defer block whose code an operation ends: the scope its code is entered from.
+@(private="file")
+esc_defer_block :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
+    for p := g.parent[op]; p != NO_NODE; p = g.parent[p] {
+        for edge in graph_out(g, p) { if edge.kind == .Then { return p } }
+    }
+    return NO_NODE
+}
+
+@(private="file")
+esc_run_defer :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
+    g := e.g
+    for edge in graph_out(g, op) {
+        if edge.kind != .Runs { continue }
+        d := edge.to
+        if !e.final {
+            if d not_in e.defer_users { e.defer_users[d] = {} }
+            users := &e.defer_users[d]
+            if !slice.contains(users[:], ri) { append(users, ri) }
+            for entry in graph_out(g, d) {
+                if entry.kind != .Then { continue }
+                if si, ok := e.run_at[g_esc.starts[entry.to]]; ok { esc_flow(e, si, state) }
+            }
+        }
+        if exit, ok := e.defer_exit[d]; ok { esc_merge(state, exit) }
+    }
+}
+
+// --- operations ----------------------------------------------------------------
+
+// Run one operation: its roots into the memo, its effects on the state.
+@(private="file")
+esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
+    g := e.g
+    ops := graph_operands(g, op)
+    // A value another run uses: when it grows, that run goes again.
+    watched := !e.final && e.used_across[op - e.node]
+    old: Esc_Roots
+    if watched { esc_join(&old, e.memo[op - e.node]) }
+    r := &e.memo[op - e.node]
+    esc_clear(r)
+    #partial switch g.op[op] {
+    case .Var:
+        esc_var_roots(e, r, op, state)
+    case .Global:
+        r.global = true
+    case .Field, .Swizzle:
+        esc_join(r, esc_at(e, ops[0]))
+    case .Variant:
+        esc_join(r, esc_at(e, ops[0]))
+        if k := esc_var(e, g.refers[op]); k >= 0 { esc_copy(&state[e.vars[k].slot], r^) }
+    case .Index:
+        esc_mem(e, r, ops[0], state)
+    case .Slice:
+        if g.name[op] == "slice_from_ptr" {   // may view any argument
+            for o in ops { esc_join(r, esc_at(e, o)) }
+        } else {
+            esc_mem(e, r, ops[0], state)
+        }
+    case .Deref:
+        esc_deref(e, r, esc_at(e, ops[0]), state)
+    case .Read:
+        if esc_has_refs(e.c, g.type_[op]) { esc_deref(e, r, esc_at(e, ops[0]), state) }
+    case .Address:
+        esc_join(r, esc_at(e, ops[0]))
+    case .Arith, .Compare, .Unary, .Cast:
+        if esc_has_refs(e.c, g.type_[op]) {
+            for o in ops { esc_join(r, esc_at(e, o)) }
+        }
+    case .Carve:
+        // let(T, s) reads a T out of s's memory; slice(..., s) views it.
+        mem: Esc_Roots
+        esc_mem(e, &mem, ops[0], state)
+        if g.name[op] != "let" {
+            esc_join(r, mem)
+        } else if esc_has_refs(e.c, g.type_[op]) {
+            esc_deref(e, r, mem, state)
+        }
+    case .Call:
+        if callee := esc_callee(e, op); callee != nil {
+            esc_call(e, r, op, callee, ops, state)
+        } else {
+            // Through a function value (the first operand): may view any argument.
+            for o in ops[1:] { esc_join(r, esc_at(e, o)) }
+        }
+    case .Construct:
+        // Into its destination (the first operand); a union variant has no
+        // constructor and holds nothing yet.
+        val: Esc_Roots
+        if callee := esc_callee(e, op); callee != nil { esc_call(e, &val, op, callee, ops[1:], state) }
+        esc_write(e, op, ops[0], val, state)
+    case .Zero:
+        // `s : [:n]T` (a capacity): s views storage that lives as long as s
+        // does, so for its lifetime, s's own.
+        val: Esc_Roots
+        if len(ops) > 1 {
+            if k := esc_var_named(e, ops[0]); k >= 0 { append(&val.vars, i32(k)) }
+        }
+        esc_write(e, op, ops[0], val, state)
+    case .Fill:
+        val: Esc_Roots
+        if esc_has_refs(e.c, g.type_[ops[0].op]) { esc_join(&val, esc_at(e, ops[1])) }
+        esc_write(e, op, ops[0], val, state)
+    case .Write:
+        esc_write_op(e, op, ops, state)
+    case .Byte_Read:
+        // A value read out of a byte buffer holds what the buffer's memory does.
+        val: Esc_Roots
+        if esc_has_refs(e.c, g.type_[ops[0].op]) {
+            mem: Esc_Roots
+            esc_mem(e, &mem, ops[1], state)
+            esc_deref(e, &val, mem, state)
+        }
+        esc_write(e, op, ops[0], val, state)
+    case .Return:
+        if e.final && ri < e.main { esc_return_op(e, ri, op, ops, state) }
+    case .Run_Defer:
+        esc_run_defer(e, ri, op, state)
+    }
+    if watched && !esc_equal(old, r^) {
+        for u in e.uses[op] { esc_queue(e, u) }
+    }
+}
+
+// A variable's storage. A view names the storage it views; `Self` in a
+// struct's code is its fields; anything else is global.
+@(private="file")
+esc_var_roots :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, state: []Esc_Roots) {
+    d := e.g.refers[op]
+    if k := esc_var(e, d); k >= 0 {
+        v := e.vars[k]
+        if v.view {
+            esc_join(r, state[v.slot])
+        } else {
+            append(&r.vars, i32(k))
+        }
+        return
+    }
+    if e.ctor && d == e.node {
+        for v, k in e.vars { if e.g.kind[v.node] == .Field { append(&r.vars, i32(k)) } }
+        return
+    }
+    r.global = true   // a constant, a function, the program's globals
+}
+
+// The variable a declaration is, or -1: its own subtree's only.
+@(private="file")
+esc_var :: proc(e: ^Esc, d: Node_Id) -> int {
+    if d <= e.node || d > e.g.last[e.node] { return -1 }
+    return int(e.var_of[d - e.node])
+}
+
+// The variable a place operand names directly, or -1.
+@(private="file")
+esc_var_named :: proc(e: ^Esc, o: Operand) -> int {
+    if o.op == NO_NODE || e.g.op[o.op] != .Var { return -1 }
+    return esc_var(e, e.g.refers[o.op])
+}
+
+@(private="file")
+esc_at :: proc(e: ^Esc, o: Operand) -> Esc_Roots {
+    if o.op == NO_NODE { return {} }
+    return e.memo[o.op - e.node]
+}
+
+// The memory holding a place's elements: through a pointer, what it points
+// at; through a slice, the data it views; otherwise the place's own storage.
+@(private="file")
+esc_mem :: proc(e: ^Esc, dst: ^Esc_Roots, place: Operand, state: []Esc_Roots) {
+    m := esc_at(e, place)
+    #partial switch bt in distinct_base(e.g.type_[place.op]) {
+    case ^Type_Ptr:
+        pointee: Esc_Roots
+        esc_deref(e, &pointee, m, state)
+        if _, to_slice := distinct_base(bt.elem).(^Type_Slice); to_slice {
+            esc_slice_data(e, dst, pointee, state)
+        } else {
+            esc_join(dst, pointee)
+        }
+    case ^Type_Slice:
+        esc_slice_data(e, dst, m, state)
+    case:
+        esc_join(dst, m)
+    }
+}
+
+// --- stores --------------------------------------------------------------------
+
+@(private="file")
+esc_write_op :: proc(e: ^Esc, op: Node_Id, ops: []Operand, state: []Esc_Roots) {
+    dest, val := ops[0], ops[1]
+    if k := esc_var_named(e, dest); k >= 0 && e.vars[k].view && e.vars[k].init == op {
+        // `x := let(T, s)`: x names s's memory.
+        at: Esc_Roots
+        esc_mem(e, &at, graph_operands(e.g, val.op)[0], state)
+        esc_copy(&state[e.vars[k].slot], at)
+        return
+    }
+    if e.g.op[dest.op] == .Slice {
+        // `dst[lo:hi] = src`: src's elements copied into the ones the slice views.
+        elems := esc_elems(e, val, index_elem_type(e.g.type_[dest.op]), state)
+        esc_store(e, Esc_Site{op = op, place = dest}, esc_at(e, dest), elems, state)
+        return
+    }
+    esc_write(e, op, dest, esc_into(e, val, e.g.type_[dest.op], state), state)
+}
+
+// Store `val` into the place `dest`. A write of a whole variable replaces
+// what it holds; anything else adds to what the storage holds.
+@(private="file")
+esc_write :: proc(e: ^Esc, op: Node_Id, dest: Operand, val: Esc_Roots, state: []Esc_Roots) {
+    dst := esc_at(e, dest)
+    if k := esc_var_named(e, dest); k >= 0 && !e.vars[k].view {
+        esc_check(e, Esc_Site{op = op, place = dest}, dst, val)
+        if s := e.vars[k].slot; s >= 0 { esc_copy(&state[s], val) }
+        return
+    }
+    esc_store(e, Esc_Site{op = op, place = dest}, dst, val, state)
+}
+
+// Check the rule, then record that the variables in `dst` may now hold what
+// `val` points into.
+@(private="file")
+esc_store :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots, state: []Esc_Roots) {
+    esc_check(e, site, dst, val)
+    for k in dst.vars {
+        if s := e.vars[k].slot; s >= 0 && !e.vars[k].view { esc_join(&state[s], val) }
+    }
 }
 
 // THE RULE: everything `val` may point into must outlive everything `dst` may be.
 @(private="file")
-esc_check :: proc(e: ^Esc, dst, val: Esc_Roots, site: Esc_Site, span: Span) {
-    if esc_deepest_local(val) > esc_shallowest(dst) {
-        esc_report_store(e, val, site, span)
+esc_check :: proc(e: ^Esc, site: Esc_Site, dst, val: Esc_Roots) {
+    if !e.final { return }
+    if esc_deepest_local(e, val) > esc_shallowest(e, dst) && e.report {
+        esc_report_store(e, site, val)
     }
     if val.params == {} && val.deep == {} { return }
     // Caller memory into caller memory can't be judged in here — every parameter
@@ -350,9 +632,9 @@ esc_check :: proc(e: ^Esc, dst, val: Esc_Roots, site: Esc_Site, span: Span) {
     for i in dst.params { esc_record_stores(e, i, false, val) }
     for i in dst.deep   { esc_record_stores(e, i, true, val) }
     if dst.global       { esc_record_stores(e, ESC_STORE_GLOBAL, false, val) }
-    // A constructor field is part of the constructed result.
-    for v in dst.vars {
-        if v.depth == ESC_CALLER {
+    // A constructor's field is part of the constructed result.
+    for k in dst.vars {
+        if e.vars[k].depth == ESC_CALLER {
             e.sum.ret += val.params
             e.sum.ret_deep += val.deep
         }
@@ -370,500 +652,248 @@ esc_record :: proc(e: ^Esc, st: Esc_Store) {
     if !slice.contains(e.sum.stores[:], st) { append(&e.sum.stores, st) }
 }
 
-// `return v`: a store into the caller.
+// A return: each value a store into the caller (`?`'s hands back only the err).
 @(private="file")
-esc_return :: proc(e: ^Esc, val: Esc_Roots, x: Expr, span: Span) {
+esc_return_op :: proc(e: ^Esc, ri: int, op: Node_Id, ops: []Operand, state: []Esc_Roots) {
+    rts := e.ft.return_types
+    for o, i in ops {
+        k := len(rts) - 1 if len(ops) == 1 && len(rts) > 1 else i
+        rt: Type = rts[k] if k < len(rts) else nil
+        esc_return(e, ri, op, esc_into(e, o, rt, state), o, state)
+    }
+}
+
+@(private="file")
+esc_return :: proc(e: ^Esc, ri: int, op: Node_Id, val: Esc_Roots, o: Operand, state: []Esc_Roots) {
     e.sum.ret += val.params
     e.sum.ret_deep += val.deep
-    if esc_deepest_local(val) <= ESC_CALLER { return }
-    if !esc_reporting(e) { return }
-    if call, ok := x.(^Expr_Call); ok && esc_report_call_return(e, call, span) { return }
-    check_error(e.c, span, TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY)
+    if esc_deepest_local(e, val) <= ESC_CALLER || !e.report { return }
+    if o.op != NO_NODE && esc_report_call_return(e, ri, op, o, state) { return }
+    esc_diag(e, e.g.origin[op], TYPE_CANNOT_RETURN_LOCAL_REFERENCE_MEMORY)
 }
 
-// --- statements ----------------------------------------------------------------
+// --- values --------------------------------------------------------------------
 
+// A value headed into a destination of type `dest` — the destination decides
+// what is actually stored. A fixed or partial array decaying to a slice
+// becomes a view of the array's own storage; a slice copied into an array
+// copies its elements, not the view; and a destination that can't hold a
+// reference stores none, whatever the source.
 @(private="file")
-esc_block :: proc(e: ^Esc, stmts: []Stmt) {
-    esc_push(e, false)
-    for s in stmts { esc_stmt(e, s) }
-    esc_pop(e)
-}
-
-@(private="file")
-esc_stmt :: proc(e: ^Esc, s: Stmt) {
-    #partial switch v in s {
-    case ^Stmt_Decl:
-        if len(v.checked) > 0 {
-            for inner in v.checked { esc_stmt(e, inner) }
-            return
-        }
-        for name, i in v.names {
-            val: Expr
-            inits := decl_init(v)
-            if i < len(inits)       { val = inits[i] }
-            else if len(inits) == 1 { val = inits[0] }
-            esc_calls(e, val)
-            esc_decl_value(e, name, val, nil, v.span)
-        }
-    case ^Stmt_Assign:
-        esc_calls(e, v.value)
-        esc_calls(e, v.target)
-        switch {
-        case v.is_decl:
-            esc_decl_value(e, v.name, v.value, v.var_type, v.span)
-        case v.target != nil:
-            val: Esc_Roots
-            if sl, range_copy := v.target.(^Expr_Slice); range_copy {
-                // `dst[a:b] = src` copies src's elements into dst's.
-                val = esc_elems(e, v.value, esc_elem_type(expr_type(sl.expr)))
-            } else if ix, indexed := v.target.(^Expr_Index); indexed {
-                // (target_type is the container here; the slot holds an element.)
-                val = esc_val(e, v.value, esc_elem_type(expr_type(ix.expr)))
-            } else {
-                val = esc_val(e, v.value, v.target_type)
-            }
-            esc_store(e, esc_loc(e, v.target), val, Esc_Site{target = v.target}, v.span)
-        case:
-            b := esc_lookup(e, v.name)
-            esc_assign_var(e, v.name, esc_val(e, v.value, b.type_ if b != nil else nil), v.span)
-        }
-    case ^Stmt_Multi_Assign:
-        for a in v.assigns { esc_stmt(e, a) }
-    case ^Stmt_Multi_Return_Assign:
-        if len(v.checked) > 0 { // broadcast: the desugared per-target assigns
-            for inner in v.checked { esc_stmt(e, inner) }
-            return
-        }
-        // Destructure: every bound name may hold what any returned value does.
-        // (Straight to the call result: a tuple call's expression type is only
-        // its first slot, which would hide references in the others.)
-        src: Esc_Roots
-        for val in v.values {
-            esc_calls(e, val)
-            call, is_call := val.(^Expr_Call)
-            if is_call {
-                esc_join(&src, esc_call_result(e, esc_callee(e, call), call_args(call)[:]))
-            } else {
-                esc_join(&src, esc_prov(e, val))
-            }
-        }
-        for t in v.targets { esc_calls(e, t) }
-        for name, i in v.names {
-            if i < len(v.targets) && v.targets[i] != nil {
-                esc_store(e, esc_loc(e, v.targets[i]), src, Esc_Site{target = v.targets[i]}, v.span)
-            } else if v.is_decl {
-                esc_bind(e, name, src, v.var_types[i] if i < len(v.var_types) else nil, v.span)
-            } else {
-                esc_assign_var(e, name, src, v.span)
-            }
-        }
-    case Stmt_Call:
-        esc_calls(e, v.expr)
-    case Stmt_Return:
-        if len(v.values) == 0 {
-            // Named returns: a bare `return` hands back the named locals.
-            for name in e.ft.return_binding_names {
-                if b := esc_lookup(e, name); b != nil { esc_return(e, esc_deref(b.loc), nil, v.span) }
-            }
-        }
-        for val, i in v.values {
-            esc_calls(e, val)
-            rt: Type = e.ft.return_types[i] if i < len(e.ft.return_types) else nil
-            esc_return(e, esc_val(e, val, rt), val, v.span)
-        }
-    case ^Stmt_If:
-        esc_calls(e, v.condition)
-        esc_block(e, v.body[:])
-        esc_block(e, v.else_body[:])
-    case ^Stmt_For:
-        esc_for(e, v)
-    case ^Stmt_Match:
-        esc_calls(e, v.subject)
-        for arm in v.arms {
-            esc_push(e, false)
-            esc_calls(e, arm.value)
-            if arm.is_union_arm && arm.bound_name != "" {
-                // The payload binding views the subject's storage.
-                if b := esc_declare(e, arm.bound_name, v.span, nil); b != nil { b.loc = esc_loc(e, v.subject) }
-            }
-            for s2 in arm.body { esc_stmt(e, s2) }
-            esc_pop(e)
-        }
-    case ^Stmt_Defer:
-        esc_block(e, v.body[:])
-    // A nested ^Stmt_Scope (fun/struct) is its own call-graph node.
-    }
-}
-
-@(private="file")
-esc_for :: proc(e: ^Esc, v: ^Stmt_For) {
-    esc_push(e, true)
-    if v.init != nil { esc_stmt(e, v.init) }
-    esc_calls(e, v.condition)
-    esc_calls(e, v.range_low)
-    esc_calls(e, v.range_high)
-    esc_calls(e, v.collection)
-    if v.loop_var  != "" { esc_declare(e, v.loop_var, v.span, v.var_type) }
-    if v.index_var != "" { esc_declare(e, v.index_var, v.span, nil) }
-    elem: ^Esc_Var
-    if v.elem_var != "" { elem = esc_declare(e, v.elem_var, v.span, v.elem_type_) }
-    // Walk the body quietly until what it stores into enclosing variables stops
-    // growing, then once more for real. Every write that reaches an enclosing
-    // variable from in here joins, so the passes only grow — and they're bounded
-    // by the function's declarations.
-    for pass := 0; ; pass += 1 {
-        before := esc_snapshot(e)
-        e.quiet += 1
-        esc_for_pass(e, v, elem)
-        e.quiet -= 1
-        if esc_snapshot_same(before) { break }
-        if pass > 10_000 { fmt.panicf("escape analysis: loop at %s did not converge", span_loc(v.span)) }
-    }
-    esc_for_pass(e, v, elem)
-    esc_pop(e)
-}
-
-@(private="file")
-esc_for_pass :: proc(e: ^Esc, v: ^Stmt_For, elem: ^Esc_Var) {
-    // The element variable holds a copy of each element.
-    if elem != nil && v.collection != nil { elem.contents = esc_deref(esc_mem(e, v.collection)) }
-    esc_block(e, v.body[:])
-    if v.post != nil { esc_stmt(e, v.post) }
-}
-
-@(private="file")
-Esc_Snap :: struct {
-    v:        ^Esc_Var,
-    contents: Esc_Roots,
-}
-
-@(private="file")
-esc_snapshot :: proc(e: ^Esc) -> [dynamic]Esc_Snap {
-    out: [dynamic]Esc_Snap
-    for &f in e.frames {
-        for _, v in f.vars { append(&out, Esc_Snap{v, esc_clone(v.contents)}) }
-    }
-    return out
-}
-
-@(private="file")
-esc_snapshot_same :: proc(snap: [dynamic]Esc_Snap) -> bool {
-    for s in snap { if !esc_equal(s.v.contents, s.contents) { return false } }
-    return true
-}
-
-// `name := value` / `name : T = value`.
-@(private="file")
-esc_decl_value :: proc(e: ^Esc, name: string, value: Expr, t: Type, span: Span) {
-    dt := t
-    if dt == nil && value != nil { dt = expr_type(value) }
-    if tk, ok := value.(^Expr_Take); ok && tk.keyword == "let" {
-        // `x := let(T, storage)`: x IS the storage it views — no slot of its own.
-        view := esc_mem(e, tk.storage)
-        if v := esc_declare(e, name, span, dt); v != nil { v.loc = view }
-        return
-    }
-    val: Esc_Roots
-    if value != nil { val = esc_val(e, value, dt) }
-    esc_bind(e, name, val, dt, span)
-}
-
-@(private="file")
-esc_bind :: proc(e: ^Esc, name: string, val: Esc_Roots, t: Type, span: Span) {
-    v := esc_declare(e, name, span, t)
-    if v == nil { return }
-    // A value can't point deeper than the block declaring it — except into a
-    // constructor field, which outlives the constructor's own locals.
-    esc_check(e, v.loc, val, Esc_Site{target_name = name}, span)
-    v.contents = esc_clone(val)
-}
-
-// `name = value`: a write of the whole variable.
-@(private="file")
-esc_assign_var :: proc(e: ^Esc, name: string, val: Esc_Roots, span: Span) {
-    if name == "" || name == "_" { return }
-    site := Esc_Site{target_name = name}
-    v := esc_lookup(e, name)
-    if v == nil { // a global variable
-        esc_check(e, esc_global_roots(), val, site, span)
-        return
-    }
-    if !esc_is_own_slot(v) { // a `let` view: writing it writes the storage it views
-        esc_store(e, esc_clone(v.loc), val, site, span)
-        return
-    }
-    esc_check(e, v.loc, val, site, span)
-    top := len(e.frames) - 1
-    if v.frame == top && !e.frames[top].loop_header {
-        v.contents = esc_clone(val)   // a write in the declaring block replaces
-    } else {
-        esc_join(&v.contents, val)    // a nested block's write may not run: join
-    }
-}
-
-// --- expressions ---------------------------------------------------------------
-
-// `x` as a value headed into a destination of type `dest` — the destination
-// decides what is actually stored. A fixed or partial array decaying to a slice
-// becomes a view of the array's own storage; a slice copied into an array copies
-// its elements, not the view; and a destination that can't hold a reference
-// stores none, whatever the source.
-@(private="file")
-esc_val :: proc(e: ^Esc, x: Expr, dest: Type) -> Esc_Roots {
-    if x == nil { return {} }
-    if dest != nil && !esc_has_refs(e.c, dest) { return {} }
+esc_into :: proc(e: ^Esc, o: Operand, dest: Type, state: []Esc_Roots) -> Esc_Roots {
+    r: Esc_Roots
+    if o.op == NO_NODE { return r }
+    if dest != nil && !esc_has_refs(e.c, dest) { return r }
     #partial switch db in distinct_base(dest) {
     case ^Type_Slice:
-        #partial switch _ in distinct_base(expr_type(x)) {
+        #partial switch _ in distinct_base(esc_value_type(e, o)) {
         case ^Type_Fixed_Array, ^Type_Partial_Array:
-            return esc_loc(e, x)
+            esc_value_storage(e, &r, o)
+            return r
         }
     case ^Type_Fixed_Array:
-        return esc_elems(e, x, db.elem)
+        return esc_elems(e, o, db.elem, state)
     case ^Type_Partial_Array:
-        return esc_elems(e, x, db.elem)
+        return esc_elems(e, o, db.elem, state)
     }
-    return esc_prov(e, x)
+    esc_join(&r, esc_at(e, o))
+    return r
 }
 
-// What copying `x`'s elements (into elements of type `elem`) stores.
+// What copying a value's elements (into elements of type `elem`) stores.
 @(private="file")
-esc_elems :: proc(e: ^Esc, x: Expr, elem: Type) -> Esc_Roots {
-    if !esc_has_refs(e.c, elem) { return {} }
-    #partial switch _ in distinct_base(expr_type(x)) {
+esc_elems :: proc(e: ^Esc, o: Operand, elem: Type, state: []Esc_Roots) -> Esc_Roots {
+    r: Esc_Roots
+    if !esc_has_refs(e.c, elem) { return r }
+    #partial switch _ in distinct_base(esc_value_type(e, o)) {
     case ^Type_Slice, ^Type_Ptr:
-        return esc_deref(esc_mem(e, x)) // the elements live where the view points
+        esc_deref(e, &r, esc_at(e, o), state)   // the elements live where the view points
+        return r
     }
-    return esc_prov(e, x) // an array value: its contents are its elements'
-}
-
-// What a value may point into. A value whose type holds no references has none.
-@(private="file")
-esc_prov :: proc(e: ^Esc, x: Expr) -> Esc_Roots {
-    r: Esc_Roots
-    if x == nil { return r }
-    if t := expr_type(x); t != nil && !esc_has_refs(e.c, t) { return r }
-    #partial switch v in x {
-    case ^Expr_Ident:
-        if b := esc_lookup(e, v.name); b != nil { return esc_deref(b.loc) }
-        r.global = true // a global, constant or function
-    case ^Expr_Unary:
-        #partial switch v.op {
-        case .Ampersand: return esc_loc(e, v.operand)
-        case .Caret:     return esc_deref(esc_prov(e, v.operand))
-        }
-        if rf, ok := v.overload_fn.?; ok {
-            args := [1]Expr{v.operand}
-            return esc_call_result(e, esc_callee_of(e, rf), args[:])
-        }
-        return esc_prov(e, v.operand)
-    case ^Expr_Binary:
-        if rf, ok := v.overload_fn.?; ok {
-            args := [2]Expr{v.left, v.right}
-            return esc_call_result(e, esc_callee_of(e, rf), args[:])
-        }
-        r = esc_prov(e, v.left)
-        esc_join(&r, esc_prov(e, v.right))
-    case ^Expr_Field_Access:
-        if v.resolved != nil { r.global = true; return r } // enum variant / constant
-        return esc_deref(esc_mem(e, v.expr))
-    case ^Expr_Index:
-        return esc_deref(esc_mem(e, v.expr))
-    case ^Expr_Slice:
-        return esc_mem(e, v.expr)
-    case ^Expr_Struct_Literal:
-        for f, i in v.fields { esc_join(&r, esc_val(e, f.value, struct_lit_field_type(e.c, v, i))) }
-        for a in v.array_values { esc_join(&r, esc_prov(e, a)) }
-        esc_join(&r, esc_prov(e, v.broadcast_value))
-    case ^Expr_Array:
-        for el in v.elements { esc_join(&r, esc_prov(e, el)) }
-    case ^Expr_Call:
-        r = esc_call_result(e, esc_callee(e, v), call_args(v)[:])
-        if v.overrides != nil { esc_join(&r, esc_prov(e, v.overrides)) }
-    case ^Expr_Take:
-        // let(T, s) reads a T out of s's memory; slice(..., s) views it.
-        view := esc_mem(e, v.storage)
-        return esc_deref(view) if v.keyword == "let" else view
-    case ^Expr_If:
-        r = esc_prov(e, v.then_expr)
-        esc_join(&r, esc_prov(e, v.else_expr))
-    case ^Expr_Try:
-        return esc_prov(e, v.inner)
-    case ^Expr_Self:
-        // The value under construction: what its fields hold.
-        for b in esc_ctor_fields(e) { esc_join(&r, b.contents) }
-    }
+    esc_join(&r, esc_at(e, o))   // an array value: its contents are its elements'
     return r
 }
 
-// The storage an lvalue designates. An rvalue gets a temporary in the current
-// block.
+// A value's type; a call's later outputs have none recorded.
 @(private="file")
-esc_loc :: proc(e: ^Esc, x: Expr) -> Esc_Roots {
-    r: Esc_Roots
-    #partial switch v in x {
-    case ^Expr_Ident:
-        if b := esc_lookup(e, v.name); b != nil { return esc_clone(b.loc) }
-        r.global = true
-        return r
-    case ^Expr_Field_Access:
-        if v.resolved != nil { r.global = true; return r }
-        return esc_mem(e, v.expr)
-    case ^Expr_Index:
-        return esc_mem(e, v.expr)
-    case ^Expr_Slice:
-        return esc_mem(e, v.expr)
-    case ^Expr_Unary:
-        if v.op == .Caret { return esc_prov(e, v.operand) }
-    case ^Expr_Take:
-        return esc_mem(e, v.storage)
-    case ^Expr_Self:
-        for b in esc_ctor_fields(e) { esc_add_var(&r, b) }
-        return r
-    }
-    r.temp = esc_depth(e)
-    return r
+esc_value_type :: proc(e: ^Esc, o: Operand) -> Type {
+    return e.g.type_[o.op] if o.out == 0 else nil
 }
 
-// The memory holding `x`'s fields or elements: through a pointer (Mara
-// auto-derefs one level) or a slice, what it points at; otherwise its own
-// inline storage.
+// Where a value sits: a read's place, or else a temporary of the block
+// computing it.
 @(private="file")
-esc_mem :: proc(e: ^Esc, x: Expr) -> Esc_Roots {
-    #partial switch bt in distinct_base(expr_type(x)) {
-    case ^Type_Ptr:
-        if _, to_slice := distinct_base(bt.elem).(^Type_Slice); to_slice {
-            return esc_slice_data(esc_prov(e, x)) // ^[]T: the data its header points at
-        }
-        return esc_prov(e, x)
-    case ^Type_Slice:
-        return esc_prov(e, x)
+esc_value_storage :: proc(e: ^Esc, r: ^Esc_Roots, o: Operand) {
+    if e.g.op[o.op] == .Read {
+        esc_join(r, esc_at(e, graph_operands(e.g, o.op)[0]))
+    } else {
+        r.temp = max(r.temp, esc_depth(e, o.op))
     }
-    return esc_loc(e, x)
-}
-
-@(private="file")
-esc_ctor_fields :: proc(e: ^Esc) -> [dynamic]^Esc_Var {
-    out: [dynamic]^Esc_Var
-    if !e.ctor || len(e.frames) == 0 { return out }
-    for _, b in e.frames[0].vars { if !b.is_param { append(&out, b) } }
-    return out
 }
 
 // --- calls ---------------------------------------------------------------------
 
 @(private="file")
-esc_callee :: proc(e: ^Esc, call: ^Expr_Call) -> ^Type_Scope {
-    if rf, ok := call.resolved_func.?; ok {
-        if ts := esc_callee_of(e, rf); ts != nil { return ts }
+esc_callee :: proc(e: ^Esc, op: Node_Id) -> ^Type_Scope {
+    for edge in graph_out(e.g, op) {
+        if edge.kind == .Calls { return e.g.type_[edge.to].(^Type_Scope) }
     }
-    if s := lookup_callee_scope(e.c, call); s != nil {
-        if n, ok := e.g.stmt_to_node[s]; ok { return e.g.nodes[n] }
-    }
-    return nil
-}
-
-@(private="file")
-esc_callee_of :: proc(e: ^Esc, rf: Resolved_Func) -> ^Type_Scope {
-    if rf.callee != nil { return rf.callee }
-    if ts, ok := e.c.table.funs[rf.name]; ok { return ts }
     return nil
 }
 
 @(private="file")
 esc_summary_of :: proc(e: ^Esc, callee: ^Type_Scope) -> ^Esc_Summary {
     if callee == nil || callee.calling_conv == .C { return nil }
-    if n, ok := e.g.index_of[callee]; ok && n < len(e.g.esc) { return &e.g.esc[n] }
+    if n, ok := e.cg.index_of[callee]; ok && n < len(e.cg.esc) { return &e.cg.esc[n] }
     return nil
+}
+
+// A call's result, and its summarized stores applied with this caller's depths.
+@(private="file")
+esc_call :: proc(e: ^Esc, r: ^Esc_Roots, op: Node_Id, callee: ^Type_Scope, args: []Operand, state: []Esc_Roots) {
+    if callee.calling_conv == .C {
+        r.global = true // foreign memory
+        return
+    }
+    sum := esc_summary_of(e, callee)
+    if sum == nil {
+        for a in args { esc_join(r, esc_at(e, a)) }   // unknown: the result may view any argument
+        return
+    }
+    for i in sum.ret      { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, false, state)) } }
+    for i in sum.ret_deep { if i < len(args) { esc_join(r, esc_arg(e, callee, args, i, true, state)) } }
+    for st in sum.stores {
+        if st.src >= len(args) || st.dst >= len(args) { continue }
+        val := esc_arg(e, callee, args, st.src, st.src_deep, state)
+        dst: Esc_Roots
+        if st.dst == ESC_STORE_GLOBAL {
+            dst.global = true
+        } else {
+            dst = esc_arg(e, callee, args, st.dst, st.dst_deep, state)
+        }
+        esc_store(e, Esc_Site{op = op, callee = callee, st = st}, dst, val, state)
+    }
 }
 
 // Argument `i` as the callee's parameter `i` sees it (decay included).
 @(private="file")
-esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Expr, i: int, deep: bool) -> Esc_Roots {
-    pt: Type = callee.params[i].type_ if callee != nil && i < len(callee.params) else nil
-    r := esc_val(e, args[i], pt)
-    return esc_reach(r) if deep else r
+esc_arg :: proc(e: ^Esc, callee: ^Type_Scope, args: []Operand, i: int, deep: bool, state: []Esc_Roots) -> Esc_Roots {
+    pt: Type = callee.params[i].type_ if i < len(callee.params) else nil
+    r := esc_into(e, args[i], pt, state)
+    return esc_reach(e, r, state) if deep else r
+}
+
+// --- roots ---------------------------------------------------------------------
+
+@(private="file")
+esc_clear :: proc(r: ^Esc_Roots) {
+    r.params, r.deep, r.global, r.temp = {}, {}, false, 0
+    clear(&r.vars)
 }
 
 @(private="file")
-esc_call_result :: proc(e: ^Esc, callee: ^Type_Scope, args: []Expr) -> Esc_Roots {
-    r: Esc_Roots
-    if callee != nil && callee.calling_conv == .C {
-        r.global = true // foreign memory
-        return r
+esc_join :: proc(dst: ^Esc_Roots, src: Esc_Roots) -> (changed: bool) {
+    if !(src.params <= dst.params) { dst.params += src.params; changed = true }
+    if !(src.deep <= dst.deep)     { dst.deep += src.deep; changed = true }
+    if src.global && !dst.global   { dst.global = true; changed = true }
+    if src.temp > dst.temp         { dst.temp = src.temp; changed = true }
+    for k in src.vars {
+        if !slice.contains(dst.vars[:], k) { append(&dst.vars, k); changed = true }
     }
-    sum := esc_summary_of(e, callee)
-    if sum == nil {
-        // A conversion, built-in or indirect call: the result may view any argument.
-        for a in args { esc_join(&r, esc_prov(e, a)) }
-        return r
-    }
-    for i in sum.ret      { if i < len(args) { esc_join(&r, esc_arg(e, callee, args, i, false)) } }
-    for i in sum.ret_deep { if i < len(args) { esc_join(&r, esc_arg(e, callee, args, i, true)) } }
-    return r
+    return
 }
 
-// Apply the callee's summarized stores at this call site, with the caller's
-// real depths.
 @(private="file")
-esc_call_stores :: proc(e: ^Esc, call: ^Expr_Call, callee: ^Type_Scope, args: []Expr, span: Span) {
-    sum := esc_summary_of(e, callee)
-    if sum == nil { return }
-    for st in sum.stores {
-        if st.src >= len(args) || st.dst >= len(args) { continue }
-        val := esc_arg(e, callee, args, st.src, st.src_deep)
-        dst := esc_global_roots() if st.dst == ESC_STORE_GLOBAL else esc_arg(e, callee, args, st.dst, st.dst_deep)
-        esc_store(e, dst, val, Esc_Site{call = call, callee = callee, st = st}, span)
+esc_copy :: proc(dst: ^Esc_Roots, src: Esc_Roots) {
+    esc_clear(dst)
+    esc_join(dst, src)
+}
+
+@(private="file")
+esc_equal :: proc(a, b: Esc_Roots) -> bool {
+    if a.params != b.params || a.deep != b.deep || a.global != b.global || a.temp != b.temp { return false }
+    if len(a.vars) != len(b.vars) { return false }
+    for k in a.vars { if !slice.contains(b.vars[:], k) { return false } }
+    return true
+}
+
+@(private="file")
+esc_state_copy :: proc(dst, src: []Esc_Roots) {
+    for &r, i in dst { esc_copy(&r, src[i]) }
+}
+
+@(private="file")
+esc_merge :: proc(dst, src: []Esc_Roots) -> (changed: bool) {
+    for &r, i in dst { if esc_join(&r, src[i]) { changed = true } }
+    return
+}
+
+// What the memory at `r` may hold: one level of indirection further. Memory
+// never holds references to anything shorter-lived than itself (that's the
+// rule), so a temporary or global holds nothing deeper than itself, and a
+// parameter's memory holds more of the caller's memory.
+@(private="file")
+esc_deref :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
+    dst.deep += r.params + r.deep
+    if r.global { dst.global = true }
+    dst.temp = max(dst.temp, r.temp)
+    for k in r.vars {
+        if s := e.vars[k].slot; s >= 0 && !e.vars[k].view { esc_join(dst, state[s]) }
     }
 }
 
-// Visit every call (and in-place struct update) inside an expression once, for
-// its effects.
+// The data a slice header at `r` points into. A partial array's header points
+// into its own inline elements, so it is (also) its own data.
 @(private="file")
-esc_calls :: proc(e: ^Esc, x: Expr) {
-    if x == nil { return }
-    #partial switch v in x {
-    case ^Expr_Call:
-        esc_calls(e, call_qualifier(v))
-        for a in call_args(v) { esc_calls(e, a) }
-        if v.overrides != nil { esc_calls(e, v.overrides) }
-        esc_call_stores(e, v, esc_callee(e, v), call_args(v)[:], v.span)
-    case ^Expr_Unary:
-        esc_calls(e, v.operand)
-        if rf, ok := v.overload_fn.?; ok {
-            args := [1]Expr{v.operand}
-            esc_call_stores(e, nil, esc_callee_of(e, rf), args[:], v.span)
-        }
-    case ^Expr_Binary:
-        esc_calls(e, v.left)
-        esc_calls(e, v.right)
-        if rf, ok := v.overload_fn.?; ok {
-            args := [2]Expr{v.left, v.right}
-            esc_call_stores(e, nil, esc_callee_of(e, rf), args[:], v.span)
-        }
-    case ^Expr_Index:        esc_calls(e, v.expr); esc_calls(e, v.index)
-    case ^Expr_Slice:        esc_calls(e, v.expr); esc_calls(e, v.low); esc_calls(e, v.high)
-    case ^Expr_Field_Access: esc_calls(e, v.expr)
-    case ^Expr_Take:         esc_calls(e, v.storage); esc_calls(e, take_count(v))
-    case ^Expr_Try:          esc_calls(e, v.inner)
-    case ^Expr_Assert:       esc_calls(e, v.cond)
-    case ^Expr_If:           esc_calls(e, v.condition); esc_calls(e, v.then_expr); esc_calls(e, v.else_expr)
-    case ^Expr_Array:        for el in v.elements { esc_calls(e, el) }
-    case ^Expr_Struct_Literal:
-        for f in v.fields { esc_calls(e, f.value) }
-        for a in v.array_values { esc_calls(e, a) }
-        esc_calls(e, v.broadcast_value)
-        // `var{ a = x }`: an in-place update of var's fields.
-        if v.override_target != "" {
-            if b := esc_lookup(e, v.override_target); b != nil {
-                for f, i in v.fields {
-                    val := esc_val(e, f.value, struct_lit_field_type(e.c, v, i))
-                    esc_store(e, esc_clone(b.loc), val, Esc_Site{target_name = v.override_target}, v.span)
-                }
-            }
-        }
+esc_slice_data :: proc(e: ^Esc, dst: ^Esc_Roots, r: Esc_Roots, state: []Esc_Roots) {
+    esc_deref(e, dst, r, state)
+    for k in r.vars {
+        if esc_self_pointing(e.vars[k].type_) && !slice.contains(dst.vars[:], k) { append(&dst.vars, k) }
     }
+}
+
+// Everything reachable from `r`, at any depth of indirection (r included).
+@(private="file")
+esc_reach :: proc(e: ^Esc, r: Esc_Roots, state: []Esc_Roots) -> Esc_Roots {
+    out: Esc_Roots
+    esc_join(&out, r)
+    for {
+        more: Esc_Roots
+        esc_slice_data(e, &more, out, state)
+        if !esc_join(&out, more) { return out }
+    }
+}
+
+// Deepest root other than caller memory reached through a parameter; -1 if none.
+@(private="file")
+esc_deepest_local :: proc(e: ^Esc, r: Esc_Roots) -> int {
+    d := -1
+    if r.global { d = ESC_GLOBAL }
+    if r.temp > 0 { d = max(d, r.temp) }
+    for k in r.vars { d = max(d, e.vars[k].depth) }
+    return d
+}
+
+// Shallowest root, parameters' memory counting as the caller's; max(int) if none.
+@(private="file")
+esc_shallowest :: proc(e: ^Esc, r: Esc_Roots) -> int {
+    d := max(int)
+    if r.global { d = ESC_GLOBAL }
+    if r.params != {} || r.deep != {} { d = min(d, ESC_CALLER) }
+    if r.temp > 0 { d = min(d, r.temp) }
+    for k in r.vars { d = min(d, e.vars[k].depth) }
+    return d
+}
+
+// The lifetime depth of what sits where `id` does: one more than the body for
+// each block around it.
+@(private="file")
+esc_depth :: proc(e: ^Esc, id: Node_Id) -> int {
+    d := ESC_BODY
+    for p := e.g.parent[id]; p != e.node && p != NO_NODE; p = e.g.parent[p] {
+        if e.g.kind[p] == .Block { d += 1 }
+    }
+    return d
 }
 
 // --- types ---------------------------------------------------------------------
@@ -900,20 +930,6 @@ esc_has_refs :: proc(c: ^Checker, t: Type) -> bool {
     return false
 }
 
-// The element type of an array, slice or partial array — through one pointer,
-// as indexing auto-derefs. nil when `t` isn't indexable.
-@(private="file")
-esc_elem_type :: proc(t: Type) -> Type {
-    bt := distinct_base(t)
-    if p, ok := bt.(^Type_Ptr); ok { bt = distinct_base(p.elem) }
-    #partial switch v in bt {
-    case ^Type_Slice:         return v.elem
-    case ^Type_Fixed_Array:   return v.elem
-    case ^Type_Partial_Array: return v.elem
-    }
-    return nil
-}
-
 // Does a value of this type hold a partial array inline (whose header points
 // back into the value itself)?
 @(private="file")
@@ -942,55 +958,77 @@ esc_self_pointing :: proc(t: Type) -> bool {
 // --- diagnostics ---------------------------------------------------------------
 
 @(private="file")
-esc_reporting :: proc(e: ^Esc) -> bool { return e.report && e.quiet == 0 }
+esc_diag :: proc(e: ^Esc, span: Span, msg: string, args: ..any) {
+    append(&e.diags, Esc_Diag{span = span, msg = fmt.aprintf(msg, ..args)})
+}
 
 @(private="file")
-esc_report_store :: proc(e: ^Esc, val: Esc_Roots, site: Esc_Site, span: Span) {
-    if !esc_reporting(e) { return }
-    what := esc_describe(val)
-    if site.call != nil || site.callee != nil {
-        name := call_name(site.call) if site.call != nil else site.callee.source_name
+esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
+    g := e.g
+    what := esc_describe(e, val)
+    if site.callee != nil {
+        name := g.name[site.op]
         src := esc_param_name(site.callee, site.st.src)
         if site.st.dst == ESC_STORE_GLOBAL {
-            check_error(e.c, span, TYPE_ESCAPE_CALL_STORE_GLOBAL, name, src, what)
+            esc_diag(e, g.origin[site.op], TYPE_ESCAPE_CALL_STORE_GLOBAL, name, src, what)
         } else {
-            check_error(e.c, span, TYPE_ESCAPE_CALL_STORE, name, src, esc_param_name(site.callee, site.st.dst), what)
+            esc_diag(e, g.origin[site.op], TYPE_ESCAPE_CALL_STORE, name, src, esc_param_name(site.callee, site.st.dst), what)
         }
         return
     }
-    into := site.target_name
-    if site.target != nil {
-        if n := expr_diag_name(site.target); n != "" { into = n }
-    }
-    if into != "" {
-        check_error(e.c, span, TYPE_ESCAPE_STORE, what, into)
+    span := g.stmts[g.stmt[site.op]].span if g.stmt[site.op] >= 0 else g.origin[site.op]
+    if into := esc_place_name(g, site.place); into != "" {
+        esc_diag(e, span, TYPE_ESCAPE_STORE, what, into)
     } else {
-        check_error(e.c, span, TYPE_ESCAPE_STORE_ANON, what)
+        esc_diag(e, span, TYPE_ESCAPE_STORE_ANON, what)
     }
 }
 
 // Name the argument(s) that bring local memory into a returned call result.
+// A construction's result is read out of the temporary it builds.
 @(private="file")
-esc_report_call_return :: proc(e: ^Esc, call: ^Expr_Call, span: Span) -> bool {
+esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state: []Esc_Roots) -> bool {
+    g := e.g
+    call := o.op
+    if g.op[call] == .Read { call = esc_built_by(e, ri, ret, call) }
+    if call == NO_NODE || (g.op[call] != .Call && g.op[call] != .Construct) { return false }
     callee := esc_callee(e, call)
     sum := esc_summary_of(e, callee)
     if sum == nil { return false }
+    args := graph_operands(g, call)
+    if g.op[call] == .Construct { args = args[1:] }
     sb := strings.builder_make(context.temp_allocator)
     n := 0
-    for i in 0 ..< len(call_args(call)) {
-        if i >= ESC_MAX_PARAMS { break }
+    for i in 0 ..< min(len(args), ESC_MAX_PARAMS) {
         local := false
-        if i in sum.ret      && esc_deepest_local(esc_arg(e, callee, call_args(call)[:], i, false)) > ESC_CALLER { local = true }
-        if i in sum.ret_deep && esc_deepest_local(esc_arg(e, callee, call_args(call)[:], i, true))  > ESC_CALLER { local = true }
+        if i in sum.ret      && esc_deepest_local(e, esc_arg(e, callee, args, i, false, state)) > ESC_CALLER { local = true }
+        if i in sum.ret_deep && esc_deepest_local(e, esc_arg(e, callee, args, i, true, state))  > ESC_CALLER { local = true }
         if !local { continue }
         if n > 0 { strings.write_string(&sb, ", ") }
         fmt.sbprintf(&sb, "parameter `%s`", esc_param_name(callee, i))
         n += 1
     }
     if n == 0 { return false }
-    check_error(e.c, span, TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
-        call_name(call), strings.to_string(sb), "argument" if n == 1 else "arguments")
+    esc_diag(e, g.origin[ret], TYPE_CANNOT_RETURN_RESULT_RETURN_REFERENCE,
+        g.name[call], strings.to_string(sb), "argument" if n == 1 else "arguments")
     return true
+}
+
+// The construction whose temporary a read reads, earlier in the return's run.
+@(private="file")
+esc_built_by :: proc(e: ^Esc, ri: int, ret: Node_Id, read: Node_Id) -> Node_Id {
+    g := e.g
+    place := graph_operands(g, read)[0].op
+    if g.op[place] != .Var || g.refers[place] == NO_NODE || g.written[g.refers[place]] != .Synthetic { return NO_NODE }
+    temp := g.refers[place]
+    ops := graph_run(g, int(e.runs[ri]))
+    for i := len(ops) - 1; i >= 0; i -= 1 {
+        op := ops[i]
+        if g.op[op] != .Construct { continue }
+        dest := graph_operands(g, op)[0].op
+        if g.op[dest] == .Var && g.refers[dest] == temp { return op }
+    }
+    return NO_NODE
 }
 
 @(private="file")
@@ -999,20 +1037,68 @@ esc_param_name :: proc(callee: ^Type_Scope, i: int) -> string {
     return "?"
 }
 
+// A place as the source writes it: `o.inner.p`, `a[i]`. A temporary, or a
+// place reached through an explicit dereference, has no name.
+@(private="file")
+esc_place_name :: proc(g: ^Program_Graph, p: Operand) -> string {
+    if p.op == NO_NODE { return "" }
+    ops := graph_operands(g, p.op)
+    #partial switch g.op[p.op] {
+    case .Var:
+        if g.written[p.op] == .Synthetic { return "" }
+        return g.name[p.op]
+    case .Field, .Swizzle:
+        base := esc_place_name(g, ops[0])
+        if base == "" { return g.name[p.op] }
+        return fmt.tprintf("%s.%s", base, g.name[p.op])
+    case .Deref:
+        if g.written[p.op] == .Implied { return esc_place_name(g, ops[0]) }
+    case .Index:
+        base := esc_place_name(g, ops[0])
+        if base == "" { return "" }
+        idx := ""
+        if i := ops[1].op; i != NO_NODE && g.op[i] == .Read { idx = esc_place_name(g, graph_operands(g, i)[0]) }
+        if idx == "" { return base }
+        return fmt.tprintf("%s[%s]", base, idx)
+    }
+    return ""
+}
+
 // The shortest-lived thing a value may point into, for a diagnostic.
 @(private="file")
-esc_describe :: proc(r: Esc_Roots) -> string {
-    worst: ^Esc_Var
-    for v in r.vars {
-        if worst == nil || v.depth > worst.depth { worst = v }
+esc_describe :: proc(e: ^Esc, r: Esc_Roots) -> string {
+    g := e.g
+    worst := -1
+    for k in r.vars {
+        v := e.vars[k]
+        if worst < 0 { worst = int(k); continue }
+        w := e.vars[worst]
+        // The deepest; between equals, one the source names.
+        if v.depth > w.depth || (v.depth == w.depth && g.written[w.node] == .Synthetic && g.written[v.node] != .Synthetic) {
+            worst = int(k)
+        }
     }
-    if worst != nil && worst.depth >= r.temp {
+    if worst >= 0 && e.vars[worst].depth >= r.temp {
+        v := e.vars[worst]
         switch {
-        case worst.is_param:        return fmt.tprintf("the local copy of parameter `%s`", worst.name)
-        case worst.depth > ESC_BODY: return fmt.tprintf("block-local `%s`", worst.name)
-        case:                       return fmt.tprintf("local `%s`", worst.name)
+        case g.written[v.node] == .Synthetic: return "a temporary"
+        case v.param >= 0:                    return fmt.tprintf("the local copy of parameter `%s`", v.name)
+        case v.depth > ESC_BODY:              return fmt.tprintf("block-local `%s`", v.name)
+        case:                                 return fmt.tprintf("local `%s`", v.name)
         }
     }
     if r.temp > 0 { return "a temporary" }
     return "local memory"
+}
+
+// MARA_DUMP_ESC=1: each function's summary, after the bottom-up pass.
+@(private="file")
+esc_dump :: proc(cg: ^Call_Graph) {
+    env_buf: [8]u8
+    if os.get_env_buf(env_buf[:], "MARA_DUMP_ESC") == "" { return }
+    for s, i in cg.nodes {
+        sum := cg.esc[i]
+        if sum.ret == {} && sum.ret_deep == {} && len(sum.stores) == 0 { continue }
+        fmt.eprintf("  %-40s ret %v deep %v stores %v\n", s.name, sum.ret, sum.ret_deep, sum.stores[:])
+    }
 }
