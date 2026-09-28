@@ -429,6 +429,11 @@ Codegen :: struct {
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
     release: bool,   // -release build mode — -O3; asserts stay ON
     no_assert: bool, // -no assert — compile asserts out entirely
+    // Phase 3 (design/graph_retrofit.md): emit a function from the program graph
+    // when llvm.odin handles every operation in it. MARA_GRAPH_CG=0 turns it
+    // off, to compare with the syntax-tree emitter.
+    graph_cg:    bool,
+    run_starts:  map[Node_Id]i32,   // the graph's runs by first operation, read-only
     // Inside an assert/crash fail block (native builds): print-shaped
     // emissions route through __mara_tee_printf, which mirrors the message
     // into crash.txt (runtime/mara_crash.c). Off everywhere else.
@@ -1740,7 +1745,7 @@ module_codegen_worker :: proc(t: thread.Task) {
     for fn_name in task.fn_names {
         cf, cf_ok := task.checked.functions[fn_name]
         if !cf_ok { continue }
-        gen_scope_def(&local, cf)
+        if !(local.graph_cg && llvm_function(&local, cf)) { gen_scope_def(&local, cf) }
     }
     flush_current_module(&local)
 
@@ -1767,6 +1772,8 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.shared             = task.shared_mode
     g.release            = task.main_g.release
     g.no_assert          = task.main_g.no_assert
+    g.graph_cg           = task.main_g.graph_cg
+    g.run_starts         = task.main_g.run_starts
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
     g.arena_mark_name    = task.main_g.arena_mark_name
@@ -3378,6 +3385,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.shared = shared
     g.release = release
     g.no_assert = no_assert
+    g.graph_cg = os.get_env("MARA_GRAPH_CG", context.temp_allocator) != "0"
+    if g.graph_cg { g.run_starts = graph_run_starts(&checked.graph) }
     word_size_is_32 = web
     init_slice_layout()
 

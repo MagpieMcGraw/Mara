@@ -2462,6 +2462,7 @@ graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
             strings.write_string(&b, ")")
         }
         if r := g.refers[id]; r != NO_NODE { fmt.sbprintf(&b, " = %d", r) }
+        if t := g.type_[id]; t != nil { fmt.sbprintf(&b, " : %s", type_name(t)) }
         for e in graph_out(g, id) {
             if e.kind != .Then { fmt.sbprintf(&b, " → %d", e.to) }
         }

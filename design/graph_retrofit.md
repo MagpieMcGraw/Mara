@@ -280,6 +280,46 @@ while `x` has no storage of its own (escape treats it as a view); and codegen ga
 runtime-sized slice no storage when it was the local a fun builds in its caller's return slot
 (its `cap()` read 0) — returning such a slice is now an escape error, so no program reaches it.
 
+## Phase 3 checklist
+
+On the `graph-codegen` branch. Codegen moves onto the graph one function at a time: `llvm.odin`
+emits a function from the graph when it handles every operation in it, and the syntax-tree
+emitter does the rest, until it does nothing and is deleted.
+
+The new emitter lowers each operation cleanly, as the operations table in
+`design/program_graph.md` says; it does not copy the old emitter's habits. The proof (decided
+2026-09-28) is two checks, run on every step:
+
+- **IR, modulo naming and harmless habits.** `test/irdiff.sh -n` also normalizes away what
+  can't change behavior — an unreachable block, a store overwritten before anything reads it,
+  and each further rule justified once where it is added. What differs after that is traced,
+  as in phase 2.
+- **Runtime differential.** Every fixture built by both emitters runs, and its output and exit
+  code match (runtime errors included).
+
+What the program does moves into the graph (a range loop's `lo <= hi` check, the order a write
+evaluates its destination and value); how instructions are chosen stays in the emitter.
+
+- [x] The harness: `llvm.odin`, the per-function switch in the worker loop (`MARA_GRAPH_CG=0`
+      forces the old emitter), the normalizer's first rules (unreachable blocks, a store the
+      next instruction overwrites), and the runtime differential, `test/irdiff.sh -r`: 169
+      programs, output deterministic run to run
+- [ ] Scalars: locals, checked arithmetic and division, compares, casts, `if`, loops, `break`
+      and `continue`, scalar calls and returns; `const` operations carry their values
+- [ ] Pointers and structs: address, deref, fields, struct params and locals, constructions,
+      overrides, results built in the caller's slot (sret, NRVO)
+- [ ] Arrays: bounds checks, `fill`, `zero`, element construction, array params and results,
+      swizzles
+- [ ] Slices and partial arrays: headers, slicing, `len`/`cap`, slice params and results,
+      sized slices, `let` / `slice` carves, byte reads and writes, `#big_endian`
+- [ ] Strings, `print`, `assert`, `crash`
+- [ ] Unions and `match`: tags, variants, niche layouts
+- [ ] Scope work: defers, the arena's mark, reset and big locals; `main` and the program's
+      setup; `#expose`
+- [ ] Calls: foreign ABI, function values, default and tuple-default arguments, multi-return,
+      `?`, fallible constructors
+- [ ] Switch over: every function from the graph; the syntax-tree emitter deleted
+
 ## Baselines
 
 Recorded at 3c9bbc5, before any change, with the debug compiler (`odin build . -debug`). Peak memory
