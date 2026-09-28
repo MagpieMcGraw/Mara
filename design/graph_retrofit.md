@@ -403,8 +403,21 @@ evaluates its destination and value); how instructions are chosen stays in the e
       — are declined (below). Normalizer: a constant's width change, a store overwritten
       after address arithmetic, a getelementptr copied to each of its uses, the order of
       string constants
-- [ ] Partial arrays: the header over inline storage, stamped when zeroed and re-pointed
-      when copied; passed where a slice is taken
+- [x] Partial arrays: `[..N]T` is an aggregate, a slice header over its own inline
+      elements, so `len`, `cap`, indexing, slicing and loops are a slice's; its zero is its
+      elements zeroed and its header stamped (`ptr` at them, `len` 0, `cap` N); a copy of
+      anything holding one (the array itself, a struct, an array of either) re-points each
+      at the copy's own elements; a constructor stamps its partial-array fields on entry;
+      byte arrays are 16-aligned. The graph now says: a partial array (or a pointer to one)
+      where a slice (or a pointer to one) is taken is an implied cast — its header is a
+      slice's, no instruction; a collection loop over one walks a view, like a slice; and
+      `Foo{0}` is a `zero`, not a construction (the language skips the constructor there:
+      the graph ran it, so defaults would have applied). A struct's zero stamps the partial
+      arrays in it. Old emitter, to the graph's shape: only a named result re-stamps the
+      result slot's partial arrays on entry (every struct-returning fun did; anything else
+      builds the result by a construction or a copy); a struct declaration no longer
+      re-stamps its partial-array fields afterwards — that covered `{0}`, which now stamps
+      them itself
 - [ ] Sized slices, `take` / `slice` carves, byte reads and writes and views, `#big_endian`,
       `a[lo:hi] = b`, `slice_from_ptr`
 - [ ] Strings, `print`, `assert`, `crash`

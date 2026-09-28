@@ -110,6 +110,29 @@ emit_value_copy :: proc(g: ^Codegen, t: Type, dst_ptr: string, src_ptr: string) 
 // still aims at the SOURCE's. Every copy of such a value goes through here (or
 // emit_value_copy / emit_struct_copy / partial_array_copy, which call it), so
 // structs holding strings copy like any other value.
+// A zeroed value of type `t` at `ptr` made a valid zero value: each partial
+// array in it — through struct fields — gets its header (ptr → its elements,
+// cap N), since a partial array's zero is not all zeros.
+stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: string, t: Type) {
+    base := distinct_base(t)
+    if pa, is_pa := base.(^Type_Partial_Array); is_pa {
+        stamp_partial_array_header(g, ptr, pa)
+        return
+    }
+    sd := as_struct_body(base)
+    if sd == nil { return }
+    llvm_name := struct_llvm_name(struct_key(sd))
+    for &f, i in sd.fields {
+        if !value_has_partial_array(g, f.type_) { continue }
+        #partial switch _ in distinct_base(f.type_) {
+        case ^Type_Partial_Array, ^Type_Scope:
+            gep := fresh_tmp(g)
+            emit_field_gep_into(g, gep, llvm_name, ptr, i)
+            stamp_zero_partial_arrays(g, gep, f.type_)
+        }
+    }
+}
+
 reanchor_partial_arrays :: proc(g: ^Codegen, t: Type, ptr: string) {
     if !value_has_partial_array(g, t) { return }
     base := distinct_base(t)
@@ -2585,6 +2608,28 @@ gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, co
 // backstop, instead of silently putting a big buffer on the stack. Small PAs
 // get a stack alloca; i8 backings are over-aligned to 16 to match the
 // take()/byte-fill alignment policy.
+// A partial array's zero value at `addr`: its elements zeroed (`zero`), and
+// its header over them (`stamp`) — ptr → the elements, len 0, cap N. Returns
+// the elements' address.
+emit_partial_array_zero :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Array, stamp := true, zero := true) -> string {
+    elem_t := llvm_type_from_checker(pa.elem)
+    ir_type := partial_array_ir_type(elem_t, pa.size)
+    elements_ptr := fresh_tmp(g)
+    emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
+    if !stamp { return elements_ptr }
+    if zero { emit_memset_zero(g, elements_ptr, pa.size * elem_byte_size(elem_t, g.checked)) }
+    ptr_gep := fresh_tmp(g)
+    emit_slice_gep(g, ptr_gep, addr, SLICE.ptr)
+    emit_store(g, "ptr", elements_ptr, ptr_gep)
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, addr, SLICE.len)
+    emit_typed_store_len(g, "0", len_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, addr, SLICE.cap)
+    emit_typed_store_cap(g, fmt.tprintf("%d", pa.size), cap_gep)
+    return elements_ptr
+}
+
 emit_partial_array_storage :: proc(g: ^Codegen, want: string, pa: ^Type_Partial_Array, name: string, span: Span) -> string {
     elem_t := llvm_type_from_checker(pa.elem)
     if routes_to_arena(pa) {

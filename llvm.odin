@@ -193,6 +193,14 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             at := fresh_tmp(e.g)
             fmt.sbprintf(&e.fields, "  %s = getelementptr %s, ptr %%sret, i32 0, i32 %d\n", at, llvm_type_from_checker(e.sret), i)
             e.value[id - e.node] = at
+            // A partial array: its header stamped over its elements, and those
+            // constructed, right after its address (its zero is not all zeros).
+            if pa := llvm_partial(t); pa != nil {
+                llvm_into_fields(e, true)
+                stamp_partial_array_header(e.g, at, pa)
+                gen_construct_partial_array_elements(e.g, at, pa)
+                llvm_into_fields(e, false)
+            }
         case .Result, .Block, .Const, .Import, .Type_Def, .Dispatch, .Op:
         case:
             return false
@@ -223,8 +231,28 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
     e.used[name] = true
     if explicit { e.shared[key] = name }
     e.value[d - e.node] = name
+    // Bytes held inline are aligned for any value viewed in them.
+    if pa := llvm_partial(pg.type_[d]); pa != nil && llvm_type_from_checker(pa.elem) == "i8" {
+        ir = strings.concatenate({ir, ", align 16"})
+    }
     emit_alloca(e.g, name, ir)
     return name
+}
+
+// Point the emit helpers' output at a constructor's entry prefix (e.fields),
+// where its fields' addresses go, or back.
+@(private="file")
+llvm_into_fields :: proc(e: ^Llvm, on: bool) {
+    e.fields, e.g.out = e.g.out, e.fields
+    e.g.hoist_allocas = !on
+}
+
+// A value copied: its bytes, then the partial arrays in it re-pointed at the
+// copy's own elements.
+@(private="file")
+llvm_copy :: proc(e: ^Llvm, dest, src: string, t: Type) {
+    emit_memcpy(e.g, dest, src, llvm_size(e, t))
+    reanchor_partial_arrays(e.g, t, dest)
 }
 
 // Each operation's user, when it has exactly one (-1 for none, -2 for several).
@@ -580,7 +608,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if llvm_aggregate(t) {
             // An aggregate is copied into the place, unless a call built it there.
             if llvm_direct(e, place) { return false }
-            if val != e.value[place - e.node] { emit_memcpy(g, e.value[place - e.node], val, llvm_size(e, t)) }
+            if val != e.value[place - e.node] { llvm_copy(e, e.value[place - e.node], val, t) }
             return true
         }
         if !llvm_scalar(t) { return false }
@@ -593,7 +621,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // A slice's len stays within 0 ..= its cap.
         if pg.op[place] == .Field && pg.name[place] == "len" {
             hdr := graph_operands(pg, place)[0].op
-            if llvm_slice(pg.type_[hdr]) != nil { emit_slice_len_check(g, e.value[hdr - e.node], val, span) }
+            if llvm_header_elem(pg.type_[hdr]) != nil { emit_slice_len_check(g, e.value[hdr - e.node], val, span) }
         }
         emit_store(g, llvm_type_from_checker(t), val, e.value[place - e.node])
     case .Deref:
@@ -608,7 +636,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
     case .Field:
         base := ops[0].op
-        if llvm_slice(pg.type_[base]) != nil {
+        if llvm_header_elem(pg.type_[base]) != nil {
             // A slice header's len or cap; a held view's is its value.
             i := llvm_header_field(pg.name[op])
             if i < 0 { return false }
@@ -648,13 +676,16 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if llvm_zeroed(e, place) && pg.written[op] == .Synthetic { return true }
         switch {
         case llvm_scalar(t):    emit_store(g, llvm_type_from_checker(t), llvm_zero(t), e.value[place - e.node])
-        case llvm_aggregate(t): emit_memset_zero(g, e.value[place - e.node], llvm_size(e, t))
+        case llvm_partial(t) != nil: emit_partial_array_zero(g, e.value[place - e.node], llvm_partial(t))
+        case llvm_aggregate(t):
+            emit_memset_zero(g, e.value[place - e.node], llvm_size(e, t))
+            stamp_zero_partial_arrays(g, e.value[place - e.node], t)
         case:                   return false
         }
     case .Index:
         base := ops[0].op
         at := pg.type_[base]
-        if sl := llvm_slice(at); sl != nil { return llvm_slice_index(e, op, ops, sl, span) }
+        if elem := llvm_header_elem(at); elem != nil { return llvm_slice_index(e, op, ops, elem, span) }
         // An array's element: the index checked against its length — unless
         // the graph built it in range (a loop's element) — then its address.
         fa := llvm_array(at)
@@ -701,6 +732,11 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Cast:
         x := ops[0].op
         from, to := pg.type_[x], pg.type_[op]
+        // A partial array taken as a slice is its own header: no instruction.
+        if llvm_partial(from) != nil && llvm_slice(to) != nil {
+            e.value[op - e.node] = e.value[x - e.node]
+            return true
+        }
         if !llvm_scalar(from) || !llvm_scalar(to) { return false }
         e.value[op - e.node] = llvm_convert(e, e.value[x - e.node], from, to)
     case .Call:
@@ -721,7 +757,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // Into the caller's slot, unless it was built there.
             if len(ops) != 1 { return false }
             v := llvm_operand(e, ops[0], e.sret) or_return
-            if v != "%sret" { emit_memcpy(g, "%sret", v, llvm_size(e, e.sret)) }
+            if v != "%sret" { llvm_copy(e, "%sret", v, e.sret) }
             emit(g, "  ret void")
             return true
         }
@@ -997,6 +1033,13 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         gen_construct_elements(g, e.value[dest - e.node], fa.elem, fa.size)
         return true
     }
+    if pa := llvm_partial(pg.type_[dest]); pa != nil && llvm_same_type(pa.elem, t) {
+        if len(ops) != 1 || llvm_direct(e, dest) { return false }
+        if llvm_zeroed(e, dest) { return true }   // a constructor's field: at its entry
+        elements := emit_partial_array_zero(g, e.value[dest - e.node], pa, stamp = false)
+        gen_construct_elements(g, elements, pa.elem, pa.size)
+        return true
+    }
     callee := llvm_callee(e, op)
     if callee == nil || callee.kind != .Struct || llvm_struct(t) == nil || llvm_direct(e, dest) { return false }
     if !llvm_same_type(pg.type_[dest], t) { return false }   // an array's elements (later)
@@ -1022,7 +1065,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
 // index in range (a loop's element) — its cap, the index checked against it;
 // then the element's address.
 @(private="file")
-llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, sl: ^Type_Slice, span: Span) -> bool {
+llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, elem: Type, span: Span) -> bool {
     g, pg := e.g, e.pg
     base := ops[0].op
     if llvm_direct(e, base) { return false }
@@ -1048,7 +1091,7 @@ llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, sl: ^Type_Slice,
         emit_bounds_check(g, i, cap_val, name if name != "" else "slice", span)
     }
     tmp := fresh_tmp(g)
-    emit_elem_gep(g, tmp, llvm_type_from_checker(sl.elem), data, i, slice_layout.len_ir)
+    emit_elem_gep(g, tmp, llvm_type_from_checker(elem), data, i, slice_layout.len_ir)
     e.value[op - e.node] = tmp
     return true
 }
@@ -1075,7 +1118,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
             data = fresh_tmp(g)
             emit_array_gep_var(g, data, llvm_type_from_checker(bt), at, lo, slice_layout.len_ir)
         }
-    } else if sl := llvm_slice(bt); sl != nil {
+    } else if elem := llvm_header_elem(bt); elem != nil {
         data_gep := fresh_tmp(g)
         emit_slice_gep(g, data_gep, at, SLICE.ptr)
         data = fresh_tmp(g)
@@ -1089,7 +1132,7 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if lo != "" {
             from := data
             data = fresh_tmp(g)
-            emit_elem_gep(g, data, llvm_type_from_checker(sl.elem), from, lo, slice_layout.len_ir)
+            emit_elem_gep(g, data, llvm_type_from_checker(elem), from, lo, slice_layout.len_ir)
         }
     } else {
         return false   // a partial array (later)
@@ -1224,13 +1267,32 @@ llvm_scalar :: proc(t: Type) -> bool {
     return false
 }
 
-// An aggregate — a struct or a fixed array — is a value handled by its
-// address: a param is a pointer to the caller's, and reading one yields where
-// it is. (One holding a partial array, re-pointed when copied, or a sized
-// slice's backing storage: later.)
+// An aggregate — a struct, a fixed array, a slice's header, a partial array —
+// is a value handled by its address: a param is a pointer to the caller's,
+// and reading one yields where it is; a copy re-points the partial arrays in
+// it at its own elements. (One holding a sized slice's backing: later.)
 @(private="file")
 llvm_aggregate :: proc(t: Type) -> bool {
-    return llvm_struct(t) != nil || llvm_array(t) != nil || llvm_slice(t) != nil
+    return llvm_struct(t) != nil || llvm_array(t) != nil || llvm_slice(t) != nil || llvm_partial(t) != nil
+}
+
+// A partial array: a slice header over its own inline elements, `ptr`
+// pointing at them.
+@(private="file")
+llvm_partial :: proc(t: Type) -> ^Type_Partial_Array {
+    if t == nil || is_infer(t) { return nil }
+    pa, ok := distinct_base(t).(^Type_Partial_Array)
+    if !ok || pa.elem == nil || is_infer(pa.elem) || llvm_has_backing(pa.elem) { return nil }
+    return pa
+}
+
+// The element type of what a slice header describes — a slice's or a
+// partial array's; nil for anything else.
+@(private="file")
+llvm_header_elem :: proc(t: Type) -> Type {
+    if sl := llvm_slice(t); sl != nil { return sl.elem }
+    if pa := llvm_partial(t); pa != nil { return pa.elem }
+    return nil
 }
 
 // A slice: its header, {len, cap, ptr}, is the aggregate.
@@ -1256,7 +1318,7 @@ llvm_header_field :: proc(name: string) -> int {
 llvm_struct :: proc(t: Type) -> ^Scope_Body {
     if t == nil { return nil }
     sd := as_struct_body(t)
-    if sd == nil || llvm_points_into_itself(t) { return nil }
+    if sd == nil || llvm_has_backing(t) { return nil }
     return sd
 }
 
@@ -1265,20 +1327,21 @@ llvm_struct :: proc(t: Type) -> ^Scope_Body {
 llvm_array :: proc(t: Type) -> ^Type_Fixed_Array {
     if t == nil || is_infer(t) { return nil }
     fa, ok := distinct_base(t).(^Type_Fixed_Array)
-    if !ok || llvm_points_into_itself(t) || (!llvm_scalar(fa.elem) && !llvm_aggregate(fa.elem)) { return nil }
+    if !ok || llvm_has_backing(t) || (!llvm_scalar(fa.elem) && !llvm_aggregate(fa.elem)) { return nil }
     return fa
 }
 
+// Whether a value holds a sized slice's backing storage (later).
 @(private="file")
-llvm_points_into_itself :: proc(t: Type) -> bool {
+llvm_has_backing :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(t) {
-    case ^Type_Partial_Array: return true
-    case ^Type_Fixed_Array:   return llvm_points_into_itself(v.elem)
+    case ^Type_Partial_Array: return llvm_has_backing(v.elem)
+    case ^Type_Fixed_Array:   return llvm_has_backing(v.elem)
     case ^Type_Scope:
         sd := as_struct_body(v)
         if sd == nil { return false }
         if sd.backing_bytes > 0 { return true }
-        for &f in sd.fields { if llvm_points_into_itself(f.type_) { return true } }
+        for &f in sd.fields { if llvm_has_backing(f.type_) { return true } }
     }
     return false
 }

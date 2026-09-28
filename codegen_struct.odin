@@ -1297,6 +1297,8 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             tag_ir := field_ir_type(&st.fields[0])
             emit_store(g, tag_ir, fmt.tprintf("%d", st.union_variant_tag), tag_gep)
         }
+        // The zero value's partial arrays still get their headers.
+        if lit.zero_init { stamp_zero_partial_arrays(g, dst_ptr, sd_type_scope(st)) }
         if !lit.zero_init {
             if _, has_init := g.checked.functions[st.name]; has_init {
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
@@ -1572,29 +1574,8 @@ emit_nested_sized_slice_init :: proc(g: ^Codegen, base_ptr: string, st: ^Scope_B
                 continue
             }
         }
-        if pa, pa_ok := distinct_base(f.type_).(^Type_Partial_Array); pa_ok {
-            // Partial-array field: header lives at the field's start, inline
-            // storage at field 3 of the partial-array shape. The shared
-            // memset zeroed both already; here we anchor ptr → &elements and
-            // write the cap. Mirrors the local partial-array decl in
-            // codegen_stmt.odin's Type_Partial_Array branch. Without this,
-            // `Holder{0}` left h.name.cap = 0 and the first append hit a
-            // 0-cap bounds failure.
-            alloc_cap := pa.size
-            elem_t := llvm_type_from_checker(pa.elem)
-            ir_type := partial_array_ir_type(elem_t, alloc_cap)
-            hdr_ptr := fresh_tmp(g)
-            emit_field_gep_into(g, hdr_ptr, st_llvm, base_ptr, fi)
-            elements_ptr := fresh_tmp(g)
-            emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr inbounds ", ir_type, ", ptr ", hdr_ptr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-            ptr_gep := fresh_tmp(g)
-            emit_slice_gep(g, ptr_gep, hdr_ptr, SLICE.ptr)
-            emit_store(g, "ptr", elements_ptr, ptr_gep)
-            cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, hdr_ptr, SLICE.cap)
-            emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
-            continue
-        }
+        // (A partial-array field is stamped by the struct's construction —
+        // its constructor stamps it on entry — so there's nothing to do here.)
         if inner_sd := as_struct_body(f.type_); inner_sd != nil {
             inner_checked, ic_ok := lookup_struct(g, inner_sd.name)
             if !ic_ok { continue }

@@ -555,11 +555,13 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
                     prebind_field_var(g, f.name, addr, f.type_)
                 }
             }
-        } else {
-            // Regular function with a struct return (not a struct constructor):
-            // the caller-provided %sret is zero-filled, so partial-array fields
-            // come up cap=0 / ptr=null. Stamp valid headers so the body can
-            // populate them — e.g. `-> loca: Loca` where Loca has a [..N] field.
+        } else if len(cf.return_binding_names) > 0 {
+            // A named struct result (not a struct constructor) starts as the
+            // caller-provided %sret, zero-filled, so partial-array fields come
+            // up cap=0 / ptr=null. Stamp valid headers so the body can
+            // populate them — e.g. `-> loca: Loca` where Loca has a [..N]
+            // field. (Any other result is built by a construction or a copy,
+            // which stamp it.)
             if ret_st, rs_ok := lookup_struct(g, ret_struct_name); rs_ok {
                 fixup_partial_array_fields(g, "%sret", ret_st)
             }

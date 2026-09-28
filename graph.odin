@@ -986,9 +986,17 @@ graph_value_as :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span, w := Wri
 // A fixed array where a slice is taken is viewed whole, implied: a slice over
 // its own storage — a literal's in a temporary, at the slice's element type —
 // with len = cap = its size.
+//
+// A partial array, or a pointer to one, where a slice or a pointer to one is
+// taken is itself, implied: its header is a slice's.
 @(private="file")
 graph_view :: proc(b: ^Graph_Builder, e: Expr, to: Type, span: Span) -> (Operand, bool) {
     if to == nil || e == nil { return NO_VALUE, false }
+    _, to_ptr := distinct_base(to).(^Type_Ptr)
+    _, from_ptr := distinct_base(expr_type(e)).(^Type_Ptr)
+    if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(expr_type(e)) {
+        return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), graph_value(b, e)), true
+    }
     sl, to_slice := distinct_base(to).(^Type_Slice)
     _, from_array := distinct_base(expr_type(e)).(^Type_Fixed_Array)
     if !to_slice || !from_array { return NO_VALUE, false }
@@ -1001,6 +1009,24 @@ graph_view :: proc(b: ^Graph_Builder, e: Expr, to: Type, span: Span) -> (Operand
         place = graph_place(b, e, span)
     }
     return graph_op_value(b, .Slice, .Implied, span, to, "", place), true
+}
+
+// A slice, or a pointer to one.
+@(private="file")
+graph_header_of :: proc(t: Type) -> bool {
+    t := t
+    if pt, ok := distinct_base(t).(^Type_Ptr); ok { t = pt.elem }
+    _, is_slice := distinct_base(t).(^Type_Slice)
+    return is_slice
+}
+
+// A partial array, or a pointer to one.
+@(private="file")
+graph_partial_of :: proc(t: Type) -> bool {
+    t := t
+    if pt, ok := distinct_base(t).(^Type_Ptr); ok { t = pt.elem }
+    _, is_partial := distinct_base(t).(^Type_Partial_Array)
+    return is_partial
 }
 
 // The type a binary operation works in: its own for arithmetic, else the
@@ -1046,12 +1072,19 @@ graph_coll_place :: proc(b: ^Graph_Builder, coll: Expr, slot: Node_Id, span: Spa
 }
 
 // The view a collection loop walks, when the collection has a header — a
-// slice, or a pointer to one: a slice of the same elements.
+// slice or a partial array, or a pointer to one: a slice of the same elements.
 @(private="file")
 graph_loop_view :: proc(coll: Expr) -> Type {
     t := expr_type(coll)
     if pt, ok := distinct_base(t).(^Type_Ptr); ok { t = pt.elem }
-    if _, is_slice := distinct_base(t).(^Type_Slice); is_slice { return distinct_base(t) }
+    #partial switch v in distinct_base(t) {
+    case ^Type_Slice:
+        return v
+    case ^Type_Partial_Array:
+        view := new(Type_Slice)
+        view.elem = v.elem
+        return view
+    }
     return nil
 }
 
@@ -1698,7 +1731,10 @@ graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
             graph_op(b, .Fill, .Explicit, v.span, v.type_, "", graph_dest_place(b, d, v.span), val)
             return true
         }
-        if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module {
+        if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module && v.zero_init {
+            // `Foo{0}`: the zero value — no constructor, no defaults.
+            graph_op(b, .Zero, .Explicit, v.span, v.type_, "{0}", graph_dest_place(b, d, v.span))
+        } else if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module {
             op := graph_call_op(b, .Construct, .Explicit, v.span, ts, v.type_, graph_dest_place(b, d, v.span))
             b.g.name[op] = strings.concatenate({b.g.name[op], "{}"})   // as written: braces, no call
         } else if graph_aggregate(v.type_) {
