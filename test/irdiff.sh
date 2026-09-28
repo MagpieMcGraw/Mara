@@ -10,6 +10,12 @@
 #                       behavior (unreachable blocks, overwritten stores)
 #   test/irdiff.sh -r   also run every fixture both builds made, and compare
 #                       output and exit code (the runtime differential)
+#   test/irdiff.sh -g   compare the working compiler's two emitters instead of
+#                       two compilers: Mara.exe with MARA_GRAPH_CG=0 (the
+#                       syntax-tree emitter) against Mara.exe (the graph's,
+#                       for every fun it lowers)
+#   test/irdiff.sh -o   run the working compiler with the graph emitter off
+#                       (MARA_GRAPH_CG=0): what changed in the old one
 #
 # Build output (diagnostics, minus timings) must match either way. Both sides
 # are kept under $OUT for inspection.
@@ -17,13 +23,19 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-${TMP:-/tmp}/mara_irdiff}
 NORMALIZE=0
 RUN=0
+GRAPH=0
+OLD_ONLY=0
 for a in "$@"; do
   case $a in
     -n) NORMALIZE=1 ;;
     -r) RUN=1 ;;
+    -g) GRAPH=1 ;;
+    -o) OLD_ONLY=1 ;;
   esac
 done
-[ -f "$ROOT/Mara_base_tmp.exe" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }
+OLD=$ROOT/Mara_base_tmp.exe OLD_CG=1
+[ $GRAPH = 1 ] && OLD=$ROOT/Mara.exe OLD_CG=0
+[ -f "$OLD" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }
 rm -rf "$OUT"; mkdir -p "$OUT/old" "$OUT/new" "$OUT/run/old" "$OUT/run/new"
 RUNS=()   # "dir module" of each program to run
 unset MARA_AST_SHAPE
@@ -31,9 +43,9 @@ unset MARA_AST_SHAPE
 build_both() {  # dir module
   local dir=$1 mod=$2
   for side in old new; do
-    local exe=$ROOT/Mara_base_tmp.exe
-    [ $side = new ] && exe=$ROOT/Mara.exe
-    ( cd "$dir" && rm -rf "${mod}_build" "$mod.exe" && "$exe" build "$mod" 2>&1 ) \
+    local exe=$OLD cg=$OLD_CG
+    [ $side = new ] && exe=$ROOT/Mara.exe cg=$((1 - OLD_ONLY))
+    ( cd "$dir" && rm -rf "${mod}_build" "$mod.exe" && MARA_GRAPH_CG=$cg "$exe" build "$mod" 2>&1 ) \
       | grep -vE '[0-9]+(\.[0-9]+)?ms|Purity quotient|is ambiguous \(defined in' \
       | sort > "$OUT/$side/$mod.out"   # diagnostics order follows map iteration
     if [ -d "$dir/${mod}_build" ]; then

@@ -304,8 +304,21 @@ evaluates its destination and value); how instructions are chosen stays in the e
       forces the old emitter), the normalizer's first rules (unreachable blocks, a store the
       next instruction overwrites), and the runtime differential, `test/irdiff.sh -r`: 169
       programs, output deterministic run to run
-- [ ] Scalars: locals, checked arithmetic and division, compares, casts, `if`, loops, `break`
-      and `continue`, scalar calls and returns; `const` operations carry their values
+- [x] Scalars: locals, checked arithmetic and division, compares, casts, `if`, loops, `break`
+      and `continue`, scalar calls and returns. The graph now says what the old emitter
+      decided on its own: a constant carries its value (`consts`); a literal has the type its
+      use takes (the checker leaves infer_int / infer_float); a narrower number widens by an
+      implied cast right after it (operands, stores, arguments, returns); a range loop
+      evaluates both bounds and checks `lo <= hi` before its counter's first write; its step is
+      a wrapping add (it can't overflow); `-%x` keeps its `%`. Three old-emitter changes to the
+      graph's shape, proved against `main` (`irdiff.sh -o`: IR changed only there, every
+      program runs the same): a range check tests `lo <= hi` and branches to its ok block
+      first; `and` / `or` store the left side once it is computed, not a constant before it;
+      a scalar `if` expression goes through a slot like them (the phi stays for aggregates).
+      Allocas come in the order code first needs them, as before; a synthetic scalar written
+      once before every read (a range's end) is that value. Normalizer: string constants
+      nothing references. Coverage: 4 of Pounce's 243 funs, 17 of `test.mara`'s 251, every one
+      identical modulo naming; `mara ask` goldens and the Pounce corpus unchanged
 - [ ] Pointers and structs: address, deref, fields, struct params and locals, constructions,
       overrides, results built in the caller's slot (sret, NRVO)
 - [ ] Arrays: bounds checks, `fill`, `zero`, element construction, array params and results,

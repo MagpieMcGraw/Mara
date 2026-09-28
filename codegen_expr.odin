@@ -618,17 +618,38 @@ gen_tuple_default :: proc(g: ^Codegen, e: ^Expr_Tuple_Default) -> string {
 // ---------------------------------------------------------------------------
 
 gen_if_expr :: proc(g: ^Codegen, e: ^Expr_If, target_type: string = "") -> string {
+    // A struct, union, slice / partial-array header or fixed array is
+    // represented by a pointer to its storage, so the branches yield pointers:
+    // merge those, not aggregate values. A scalar goes through a slot each
+    // branch stores (as `and` / `or` do).
+    by_address := is_pointer_valued_type(e.type_)
+    if !by_address {
+        result_type := target_type != "" ? target_type : expr_ir_type(g, e.then_expr)
+        slot := fresh_tmp(g)
+        emit_alloca(g, slot, result_type)
+        cond := gen_expr(g, e.condition)
+        then_label := fresh_label(g, "ifx.then")
+        else_label := fresh_label(g, "ifx.else")
+        end_label  := fresh_label(g, "ifx.end")
+        emit_cond_br(g, cond, then_label, else_label)
+        emit_label(g, then_label)
+        emit_store(g, result_type, gen_expr(g, e.then_expr, result_type), slot)
+        emit_br(g, end_label)
+        emit_label(g, else_label)
+        emit_store(g, result_type, gen_expr(g, e.else_expr, result_type), slot)
+        emit_br(g, end_label)
+        emit_label(g, end_label)
+        result := fresh_tmp(g)
+        emit_load_into(g, result, result_type, slot)
+        return result
+    }
+
     cond_val := gen_expr(g, e.condition)
     then_label := fresh_label(g, "ifx.then")
     else_label := fresh_label(g, "ifx.else")
     end_label  := fresh_label(g, "ifx.end")
 
     emit_cond_br(g, cond_val, then_label, else_label)
-
-    // A struct, union, slice / partial-array header or fixed array is
-    // represented by a pointer to its storage, so the branches yield pointers:
-    // merge those, not aggregate values.
-    by_address := is_pointer_valued_type(e.type_)
     branch :: proc(g: ^Codegen, x: Expr, t: Type, target_type: string, by_address: bool) -> string {
         if by_address { return gen_value_address(g, x, t, target_type) }
         return gen_expr(g, x, target_type)
@@ -983,12 +1004,13 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
 }
 
 gen_short_circuit_and :: proc(g: ^Codegen, e: ^Expr_Binary) -> string {
-    // Use alloca+store pattern to avoid PHI predecessor tracking issues
+    // Use alloca+store pattern to avoid PHI predecessor tracking issues. The
+    // result is the left side unless the right one runs.
     result_ptr := fresh_tmp(g)
     emit_alloca(g, result_ptr, "i1")
-    emit(g, "  store i1 false, ptr %s", result_ptr)
 
     left := gen_expr(g, e.left)
+    emit_store(g, "i1", left, result_ptr)
 
     rhs_label := fresh_label(g, "and.rhs")
     end_label := fresh_label(g, "and.end")
@@ -1007,12 +1029,13 @@ gen_short_circuit_and :: proc(g: ^Codegen, e: ^Expr_Binary) -> string {
 }
 
 gen_short_circuit_or :: proc(g: ^Codegen, e: ^Expr_Binary) -> string {
-    // Use alloca+store pattern to avoid PHI predecessor tracking issues
+    // Use alloca+store pattern to avoid PHI predecessor tracking issues. The
+    // result is the left side unless the right one runs.
     result_ptr := fresh_tmp(g)
     emit_alloca(g, result_ptr, "i1")
-    emit(g, "  store i1 true, ptr %s", result_ptr)
 
     left := gen_expr(g, e.left)
+    emit_store(g, "i1", left, result_ptr)
 
     rhs_label := fresh_label(g, "or.rhs")
     end_label := fresh_label(g, "or.end")

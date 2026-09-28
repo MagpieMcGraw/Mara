@@ -431,8 +431,10 @@ Codegen :: struct {
     no_assert: bool, // -no assert — compile asserts out entirely
     // Phase 3 (design/graph_retrofit.md): emit a function from the program graph
     // when llvm.odin handles every operation in it. MARA_GRAPH_CG=0 turns it
-    // off, to compare with the syntax-tree emitter.
-    graph_cg:    bool,
+    // off, to compare with the syntax-tree emitter; MARA_GRAPH_CG=log lists
+    // each fun it lowers.
+    graph_cg:     bool,
+    graph_cg_log: bool,
     run_starts:  map[Node_Id]i32,   // the graph's runs by first operation, read-only
     // Inside an assert/crash fail block (native builds): print-shaped
     // emissions route through __mara_tee_printf, which mirrors the message
@@ -1745,7 +1747,11 @@ module_codegen_worker :: proc(t: thread.Task) {
     for fn_name in task.fn_names {
         cf, cf_ok := task.checked.functions[fn_name]
         if !cf_ok { continue }
-        if !(local.graph_cg && llvm_function(&local, cf)) { gen_scope_def(&local, cf) }
+        if local.graph_cg && llvm_function(&local, cf) {
+            if local.graph_cg_log { fmt.eprintln("graph-cg:", fn_name) }
+        } else {
+            gen_scope_def(&local, cf)
+        }
     }
     flush_current_module(&local)
 
@@ -1773,6 +1779,7 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.release            = task.main_g.release
     g.no_assert          = task.main_g.no_assert
     g.graph_cg           = task.main_g.graph_cg
+    g.graph_cg_log       = task.main_g.graph_cg_log
     g.run_starts         = task.main_g.run_starts
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
@@ -2803,12 +2810,16 @@ emit_range_guard :: proc(g: ^Codegen, low_val: string, high_val: string, ir_type
         return
     }
 
+    up := fresh_tmp(g)
+    emit(g, "  %s = icmp %s %s %s, %s", up, is_unsigned ? "ule" : "sle", ir_type, low_val, high_val)
+    emit_range_check(g, up, span)
+}
+
+// The check that a range counts up: crash, located, when `up` is false.
+emit_range_check :: proc(g: ^Codegen, up: string, span: Span) {
     ok_label  := fresh_label(g, "range.ok")
     bad_label := fresh_label(g, "range.bad")
-    cmp := fresh_tmp(g)
-    gt := is_unsigned ? "ugt" : "sgt"
-    emit(g, "  %s = icmp %s %s %s, %s", cmp, gt, ir_type, low_val, high_val)
-    emit_cond_br(g, cmp, bad_label, ok_label)
+    emit_cond_br(g, up, ok_label, bad_label)
 
     emit_label(g, bad_label)
     emit_crash_journal_begin(g)
@@ -3385,7 +3396,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.shared = shared
     g.release = release
     g.no_assert = no_assert
-    g.graph_cg = os.get_env("MARA_GRAPH_CG", context.temp_allocator) != "0"
+    graph_cg := os.get_env("MARA_GRAPH_CG", context.temp_allocator)
+    g.graph_cg, g.graph_cg_log = graph_cg != "0", graph_cg == "log"
     if g.graph_cg { g.run_starts = graph_run_starts(&checked.graph) }
     word_size_is_32 = web
     init_slice_layout()

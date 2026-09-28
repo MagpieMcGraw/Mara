@@ -7,7 +7,8 @@
 # Before renaming, each function drops what can't change what it does (phase 3
 # compares two emitters, design/graph_retrofit.md), one rule each:
 #   - a block no branch reaches from the entry;
-#   - a store the next instruction overwrites: same type, same pointer.
+#   - a store the next instruction overwrites: same type, same pointer;
+#   - then, a string constant nothing references.
 # Usage: irnorm.pl file.ll > file.norm
 use strict; use warnings;
 my @lines = <>;
@@ -27,6 +28,15 @@ for (@lines) {
     push @out, $_;
     $in_body = 1 if /^define /;
 }
+
+# A string constant nothing references any more (its only use was in a block
+# dropped above) is no part of what the module does.
+my %ref;
+for (@out) {
+    next if /^@\.[\w.]*str\.[\w]+ = private unnamed_addr constant/;
+    $ref{$1} = 1 while /(@\.[\w.]*str\.[\w]+)/g;
+}
+@out = grep { !(/^(@\.[\w.]*str\.[\w]+) = private unnamed_addr constant/ && !$ref{$1}) } @out;
 
 my ($in_fn, %map, $n) = (0);
 for (@out) {
