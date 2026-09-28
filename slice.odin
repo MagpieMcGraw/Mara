@@ -15,10 +15,11 @@ import "core:strings"
 //
 // Calls are crossed by SUMMARY, not by inlining: a call contributes only the
 // arguments its return value is computed from — the call graph's `return_deps`
-// set (DATA dependence, wider than escape's aliasing summary) — so
-// `pick_first(x, y)` returning its first parameter pulls in `x` and NOT `y`, and
-// `len_of(x)` returning a count computed from `x` still pulls in `x`. Unknown
-// callees (foreign / indirect / no summary) fall back to all arguments (sound).
+// set (its data and the branches that decide it; wider than escape's aliasing
+// summary) — so `pick_first(x, y)` returning its first parameter pulls in `x`
+// and NOT `y`, `len_of(x)` returning a count computed from `x` still pulls in
+// `x`, and `starts_with(s, p)` pulls in both. Unknown callees (foreign /
+// indirect / no summary) fall back to all arguments (sound).
 //
 // With `control`, the branches guarding each contributing statement are
 // contributors too (control dependence), and so are the values they branch on.
@@ -100,7 +101,7 @@ slice_seed :: proc(s: ^Slice, f: ^Du_Fn) {
     g := &s.checked.graph
     for ret in f.returns {
         for o in graph_operands(g, ret) { slice_value(s, o) }
-        slice_guards(s, du_return_guards(f, ret))
+        if s.checked.du.want_control { slice_guards(s, du_return_guards(f, ret)) }
     }
     for d in f.defs {
         if d.binding != nil && g.kind[d.binding.node] == .Result { slice_add_def(s, d) }

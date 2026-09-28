@@ -95,7 +95,8 @@ Du_Fn :: struct {
     ret_run: map[Node_Id]i32,
     calls:   [dynamic]Node_Id,     // its calls, constructions and prints
     guards:  map[i32][dynamic]Guard,  // a run → the statements guarding it (on `control`)
-    guarded: bool,
+    guarded: bool,                 // guards computed
+    stamped: bool,                 // ... and on its definitions
 }
 
 Def_Use :: struct {
@@ -124,7 +125,13 @@ du_fn :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> ^Du_Fn {
         du_build(checked, f)
         du_dump(checked, f)
     }
-    if du.want_control && !f.guarded { du_guards(checked, f) }
+    // `control`: each definition carries its guards. (A return-dependency
+    // summary reads the guards per run, without stamping them.)
+    if du.want_control && !f.stamped {
+        if !f.guarded { du_guards(checked, f) }
+        for d in f.defs { if d.run >= 0 { d.guards = f.guards[d.run][:] } }
+        f.stamped = true
+    }
     return f
 }
 
@@ -600,6 +607,7 @@ du_walk_call :: proc(w: ^Du_Walk, op: Node_Id) {
     callee := du_callee(g, op)
     if w.filtered && callee != nil && callee.ast != nil {
         cg := &w.checked.call_graph
+        if !cg.deps_ready { cg_compute_return_deps(cg, w.checked) }
         if n, ok := cg.index_of[callee]; ok && n < len(cg.return_deps) {
             for i in cg.return_deps[n] { if i >= 0 && i < len(args) { du_walk_value(w, args[i]) } }
             return
@@ -680,6 +688,69 @@ du_call_sites :: proc(checked: ^Checked_Program, F: ^Type_Scope) -> [dynamic]Fn_
         append(&sites, Fn_Call_Site{caller = graph_caller(g, e.from), op = e.from})
     }
     return sites
+}
+
+// --- the return-dependency summary ------------------------------------------------
+
+// Which params a fun's result is computed from: a backward slice from its
+// returns and its named results' definitions, keeping the params it reaches.
+// It follows the branches that decide the result too (control dependence):
+// what `find` returns is the position where haystack matched needle, though
+// only `start` flows into it as data. Calls are crossed by their callees'
+// summaries, as the slices cross them, so the call graph computes these
+// bottom-up (cg_compute_return_deps).
+du_return_deps :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> []int {
+    if len(ft.return_types) == 0 { return nil }   // no result to be computed
+    want := checked.du.want_control
+    checked.du.want_control = false
+    f := du_fn(checked, ft)
+    checked.du.want_control = want
+    if f == nil { return nil }
+    if !f.guarded { du_guards(checked, f) }
+    guard_uses :: proc(checked: ^Checked_Program, guards: []Guard, out: ^[dynamic]Node_Id) {
+        for gd in guards { for c in gd.conds { du_value_uses(checked, c, true, out) } }
+    }
+    g := &checked.graph
+    seen_use: map[Node_Id]bool
+    seen_def: map[^Def]bool
+    work: [dynamic]Node_Id
+    defer { delete(seen_use); delete(seen_def); delete(work) }
+    add_uses :: proc(uses: []Node_Id, seen: ^map[Node_Id]bool, work: ^[dynamic]Node_Id) {
+        for u in uses { if !seen[u] { seen[u] = true; append(work, u) } }
+    }
+    uses: [dynamic]Node_Id
+    defer delete(uses)
+    for ret in f.returns {
+        for o in graph_operands(g, ret) { du_value_uses(checked, o, true, &uses) }
+        guard_uses(checked, du_return_guards(f, ret), &uses)
+    }
+    for d in f.defs {
+        if d.binding == nil || g.kind[d.binding.node] != .Result { continue }
+        seen_def[d] = true
+        du_def_uses(checked, d, true, &uses)
+        if d.run >= 0 { guard_uses(checked, f.guards[d.run][:], &uses) }
+    }
+    add_uses(uses[:], &seen_use, &work)
+    params: [dynamic]int
+    defer delete(params)
+    for len(work) > 0 {
+        u := pop(&work)
+        for d in checked.du.reaching[u] {
+            if d in seen_def { continue }
+            seen_def[d] = true
+            if d.kind == .Param { append(&params, d.binding.param_index); continue }
+            clear(&uses)
+            du_def_uses(checked, d, true, &uses)
+            if d.run >= 0 { guard_uses(checked, f.guards[d.run][:], &uses) }
+            add_uses(uses[:], &seen_use, &work)
+        }
+    }
+    if len(params) == 0 { return nil }
+    slice.sort(params[:])
+    out := make([]int, len(params))
+    n := 0
+    for p in params { if n == 0 || out[n - 1] != p { out[n] = p; n += 1 } }
+    return out[:n]
 }
 
 // --- guards ---------------------------------------------------------------------
@@ -767,7 +838,6 @@ du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
             }
         }
     }
-    for d in f.defs { if d.run >= 0 { d.guards = f.guards[d.run][:] } }
 }
 
 // The guards of a fun's explicit return.

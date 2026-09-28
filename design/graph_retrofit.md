@@ -215,7 +215,21 @@ program that checked clean, since the graph is built from checked types.
       Diagnostics identical to the old walk on every shape tried, spans included
       (`test/erruse_shapes_neg.mara`: destructured, declared, typed, written again, a sibling
       block, a loop body, and a read only in a defer)
-- [ ] The return-dependency summary from the graph
+- [x] The return-dependency summary from the graph (`du_return_deps`): a backward slice from a
+      fun's returns and named results, keeping the params it reaches, and following the
+      branches that decide the result (control dependence) as well as its data; the call graph
+      still folds it bottom-up. The checker's ~370-line AST walk is gone, and so is the summary
+      from the compile path: only `mara ask` reads it, so it is built the first time a slice
+      crosses a call. `MARA_DUMP_RETURN_DEPS=1` prints it. Differences from the old walk, each
+      traced: a data struct's construction is computed from its arguments (the old rule looked
+      the struct up by name and found none, so every set was empty); writes into a param's
+      memory count (`verts[v] = vert` puts `scratch`'s bytes in the result); `?`, match
+      bindings and named results are seen; and a result decided by branches depends on what
+      they test: `starts_with`, `find_byte`, a call's `err` read `[]` before. Data alone lost
+      `find`'s haystack (the old walk kept it by counting a loop's bound as its variable's data),
+      which is what settled it. Goldens unchanged; the ask corpus changed in 111 Pounce and 47
+      fixture queries, all through these summaries (`pack_rect`'s slot now traces to the
+      glyph's size). test_1M: the analysis phase 4.8 → 3.5 s
 - [ ] Definite assignment onto the graph
 - [ ] Escape onto the graph
 

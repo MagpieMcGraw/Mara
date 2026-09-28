@@ -54,14 +54,17 @@ Call_Graph :: struct {
     pure:      [dynamic]bool,
 
     // Return-DEP summary (cg_compute_return_deps): return_deps[n] = the sorted set
-    // of parameter indices node n's return value DATA-depends on (vs the escape
-    // summary's narrower ALIASING relation). A value computed from a param —
+    // of parameter indices node n's return value is computed from: its data and
+    // the branches that decide it (vs the escape summary's narrower ALIASING
+    // relation). A value computed from a param —
     // `obj_get_directions(dir)` returning `mat4_from_quat(dir)[2].xyz` — depends on
     // `dir` without pointing into it. The `ask` slicer crosses calls with THIS set
-    // so a call contributes the args its result is computed from. stmt_to_node
-    // bridges the AST key fun_return_dep_set is queried with (^Stmt_Scope) to the
-    // graph's node id (a node's Type_Scope.ast IS that Stmt_Scope).
+    // so a call contributes the args its result is computed from. Built the first
+    // time a slice crosses a call (deps_ready).
     return_deps:  [dynamic][]int,
+    deps_ready:   bool,
+    // A fun's body (Type_Scope.ast) → its node: escape.odin still finds callees
+    // from the syntax tree.
     stmt_to_node: map[^Stmt_Scope]int,
 
     // Escape summary (escape.odin): which parameters node n's result may point
@@ -116,6 +119,9 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
         if _, is_source := cs.origin.(Origin_Source); is_source && cs != nil {
             cg_node(&g, cs)
         }
+    }
+    for ts, i in g.nodes {
+        if ts != nil && ts.ast != nil { g.stmt_to_node[ts.ast] = i }
     }
     cg_compute_sccs(&g)
     cg_compute_reachability(&g)
@@ -212,29 +218,40 @@ cg_purity_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
     return false
 }
 
-// Return-dep set: which parameter indices each function's return value is
-// COMPUTED from. A summary on the bottom-up framework: a function's set is
-// recomputed from its body (compute_return_arg_set, which reads callees' sets via
-// fun_return_dep_set → this graph); cg_bottom_up visits callees-first and
-// iterates each SCC to a fixpoint. c.cg must already point at `g`.
-@(private="file") g_cg_c: ^Checker
+@(private="file") g_cg_checked: ^Checked_Program
 
-cg_compute_return_deps :: proc(g: ^Call_Graph, c: ^Checker) {
-    g_cg_c = c
-    for ts, i in g.nodes {
-        if ts != nil && ts.ast != nil { g.stmt_to_node[ts.ast] = i }
-    }
+// Return-dep set: which parameter indices each function's result is computed
+// from (du_return_deps, a data slice over the program graph from its returns).
+// A construction's Self is computed from every argument, an intrinsic's result
+// too; a fun with no body in the program (foreign) has none, and its callers
+// take every argument. A summary on the bottom-up framework: callees first,
+// each SCC to a fixpoint. Only `mara ask` reads it, so it is built the first
+// time a slice crosses a call.
+cg_compute_return_deps :: proc(g: ^Call_Graph, checked: ^Checked_Program) {
+    g.deps_ready = true   // the fixpoint below reads the sets it is building
+    g_cg_checked = checked
     resize(&g.return_deps, len(g.nodes))
     cg_bottom_up(g, cg_return_deps_transfer)
+    cg_dump_return_deps(g)
 }
 
 @(private="file")
 cg_return_deps_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
     ts := g.nodes[n]
-    if ts == nil || ts.ast == nil { return false } // foreign/no body — empty set
-    new_set := compute_return_arg_set(g_cg_c, ts.ast)
+    if ts == nil || ts.ast == nil { return false }
+    new_set: []int
+    if ts.kind == .Struct || ts.ast.is_intrinsic {
+        count := len(ts.params)
+        if ts.kind == .Struct && count == 0 { count = len(ts.fields) }   // positional args are its fields
+        if count > 0 {
+            new_set = make([]int, count)
+            for &x, i in new_set { x = i }
+        }
+    } else {
+        new_set = du_return_deps(g_cg_checked, ts)
+    }
     if slice.equal(g.return_deps[n], new_set) { return false }
-    g.return_deps[n] = new_set // monotone: the set only grows toward its fixpoint
+    g.return_deps[n] = new_set   // monotone: the set only grows toward its fixpoint
     return true
 }
 
@@ -322,5 +339,16 @@ cg_strongconnect :: proc(t: ^Tarjan, v: int) {
             if w == v { break }
         }
         append(&t.g.sccs, comp)
+    }
+}
+
+// Diagnostic: `MARA_DUMP_RETURN_DEPS=1` prints each function's return-dependency
+// summary, once a slice has built it.
+cg_dump_return_deps :: proc(g: ^Call_Graph) {
+    env_buf: [8]u8
+    if os.get_env_buf(env_buf[:], "MARA_DUMP_RETURN_DEPS") == "" { return }
+    for s, i in g.nodes {
+        if s == nil { continue }
+        fmt.eprintf("  %-40s %v\n", s.name, g.return_deps[i])
     }
 }
