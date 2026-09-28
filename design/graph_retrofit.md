@@ -100,7 +100,9 @@ phase 2–4 concern).
 
 The graph is built in `graph.odin` after checking (the `graph` stage of the perf timer).
 `MARA_GRAPH=<name>` prints the subtree of every node with that name, `MARA_GRAPH=all` the whole
-graph. Debug builds check that every checked scope and type is exactly one node.
+graph. Debug builds check that every checked scope and type is exactly one node, that the calls
+agree with `callgraph.odin` and that the runs are well formed; with `MARA_GRAPH_CHECK=1` (the
+suite sets it) they also check refers-to against `usedef.odin`.
 
 - [x] Storage and declarations: modules, structs, unions, enums, funs and blocks, with their
       fields, params, results, locals, constants, imports, variants, type definitions and dispatch
@@ -127,8 +129,15 @@ graph. Debug builds check that every checked scope and type is exactly one node.
       its only terminator, and every operand dominates its use. test_1M: 5.7M nodes, 113k runs;
       2.0 s in the debug build with the checks (18% of type check), 0.97 s optimized (17%, about
       codegen's cost); peak memory 6.3 → 7.0 GB. Worth a profiling pass before phase 2
-- [ ] Refers-to: each `var` operation → the declaration it names (the scope stack), checked
-      against `usedef.odin`; the declaration-level flow index
+- [x] Refers-to: each `var` operation → the declaration it names, checked against `usedef.odin`
+      (every one of test_1M's 894k uses agrees). Locals resolve through a scope stack as the walk
+      goes; definitions (constants, functions, types, a module's variables) by the nearest
+      enclosing scope once all are built, since they can be used before they are written; the
+      compiler's own `this_program` and `context` are fields of a synthetic `program` scope. The
+      flow index: a Flows edge per declaration a value is read from, at each write, call argument,
+      return and match binding (field-insensitive). test_1M: graph 2.6 s in the debug build
+
+Phase 1 is complete: the graph is built on every compile and checked, and nothing reads it yet.
 
 Left for phase 3, where codegen reads the graph: a `const` operation carries no value yet; calls
 produce values, and passing a destination to a call that returns an aggregate (sret, NRVO) is

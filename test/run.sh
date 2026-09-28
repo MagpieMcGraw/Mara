@@ -28,6 +28,10 @@ MARA=../Mara.exe
 # distinct one across all fixtures is a mismatch (a stdlib reshape repeats in
 # every fixture that uses it, so it counts once). Full list: ast_shape.log.
 export MARA_AST_SHAPE=1
+
+# The program graph's refers-to agrees with usedef.odin (graph.odin,
+# graph_check_refers): too slow for every debug build, so the suite asks for it.
+export MARA_GRAPH_CHECK=1
 SHAPE_RAW=$(mktemp)
 collect_shape() { echo "$1" | grep -E '^ast-shape\[' | grep -vE '^ast-shape\[[a-z]+\] total ' >> "$SHAPE_RAW"; }
 

@@ -61,6 +61,7 @@ Edge_Kind :: enum u8 {
     Calls,  // a call or construct operation → the fun or struct it runs
     Runs,   // a run-defer operation → the defer block it runs
     Then,   // a run's last operation, or a scope for its entry → a run's first operation
+    Flows,  // a declaration → one its value moves into (the index of the operations' flows)
 }
 
 Edge :: struct {
@@ -68,6 +69,7 @@ Edge :: struct {
     to:      Node_Id,
     kind:    Edge_Kind,
     written: Written,
+    site:    Node_Id,   // the operation where it happens: for a flow, the write, call or return
 }
 
 // An operation's input: another operation's output. A call has one output per
@@ -147,6 +149,48 @@ Graph_Builder :: struct {
     runs:       [dynamic]^Run,   // every run made, freed at the end
     nodes:      int,             // how many nodes exist; the columns run ahead
     code:       Code,
+    // Refers-to: the names in scope, innermost last. A fun's lookups stop at
+    // fn_base (a nested fun sees none of its outer fun's locals); a defer's
+    // block shares its fun's. frames holds where each open scope's names start.
+    names:      [dynamic]Name_Binding,
+    frames:     [dynamic]int,
+    fn_base:    int,
+    self:       Node_Id,         // what `Self` names in a struct's code
+    program:    Node_Id,         // the synthetic scope of the compiler's globals (this_program)
+    check_refers: bool,          // MARA_GRAPH_CHECK: compare refers-to with usedef.odin
+    ident_op:   map[^Expr_Ident]Node_Id,   // debug: each use's var operation, for the use-def check
+}
+
+@(private="file")
+Name_Binding :: struct {
+    name: string,
+    decl: Node_Id,
+}
+
+@(private="file")
+graph_bind :: proc(b: ^Graph_Builder, name: string, decl: Node_Id) {
+    if name == "" || name == "_" { return }
+    append(&b.names, Name_Binding{name, decl})
+}
+
+// The declaration a name refers to here: the innermost binding of it in the
+// current fun.
+@(private="file")
+graph_lookup :: proc(b: ^Graph_Builder, name: string) -> Node_Id {
+    for i := len(b.names) - 1; i >= b.fn_base; i -= 1 {
+        if b.names[i].name == name { return b.names[i].decl }
+    }
+    return NO_NODE
+}
+
+@(private="file")
+graph_frame_push :: proc(b: ^Graph_Builder) {
+    append(&b.frames, len(b.names))
+}
+
+@(private="file")
+graph_frame_pop :: proc(b: ^Graph_Builder) {
+    resize(&b.names, pop(&b.frames))
 }
 
 @(private="file")
@@ -213,26 +257,44 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
             free(r)
         }
         delete(b.runs)
+        delete(b.names)
+        delete(b.frames)
+        delete(b.ident_op)
     }
+    when ODIN_DEBUG { b.check_refers = os.get_env("MARA_GRAPH_CHECK", context.temp_allocator) != "" }
     graph_index(&b)
+
+    // The compiler's own globals, which code names but never declares.
+    b.program = graph_node(&b, .Module, .Synthetic, NO_NODE, "program", nil, {})
+    for name in ([]string{"this_program", "context"}) {
+        t: Type
+        if root := checked.table.root_env; root != nil { t, _ = scope_defines(root, name) }
+        graph_node(&b, .Field, .Synthetic, b.program, name, t, {})
+    }
+    graph_close(&b, b.program)
 
     modules := make([dynamic]string, 0, len(programs), context.temp_allocator)
     for name in programs { append(&modules, name) }
     slice.sort(modules[:])
     for name in modules {
         m := graph_node(&b, .Module, .Explicit, NO_NODE, name, nil, {})
-        for s in programs[name]^ { graph_stmt(&b, s, m, {kind = .Const}) }
+        // A module's variables are its fields: one copy.
+        for s in programs[name]^ { graph_stmt(&b, s, m, {kind = .Field}) }
         graph_close(&b, m)
     }
     graph_resize(&g, b.nodes)
     append(&g.operand_first, i32(len(g.operands)))
     append(&g.run_first, i32(len(g.run_ops)))
     graph_link_calls(&b)
+    graph_resolve_defs(&b)
+    graph_link_flows(&b)
     graph_index_edges(&g)
     when ODIN_DEBUG {
         graph_check_coverage(&b)
         graph_check_calls(&b)
         graph_check_runs(&b)
+        // It reruns the use-def analysis on every function: the suite's check.
+        if b.check_refers { graph_check_refers(&b) }
     }
     graph_dump(&g)
     return g
@@ -436,7 +498,7 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
 @(private="file")
 graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: string, t: Type, span: Span) -> Node_Id {
     t := t
-    if site.kind == .Field {
+    if site.kind == .Field && site.owner != nil {
         // Signatures resolve on demand, so a struct nothing uses has no typed
         // fields yet: the field exists, its type is unknown.
         if i, ok := site.owner.field_map[name]; ok {
@@ -445,7 +507,9 @@ graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: st
             graph_fatal(span, "field '%s' is missing from struct '%s'", name, site.owner.name)
         }
     }
-    return graph_node(b, site.kind, .Explicit, parent, name, t, span)
+    d := graph_node(b, site.kind, .Explicit, parent, name, t, span)
+    if site.kind != .Const { graph_bind(b, name, d) }
+    return d
 }
 
 // A declaration's initial value: its initializer, or — bare — zero or its
@@ -591,6 +655,8 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
     saved := b.code.block
     b.code.block = f
     defer b.code.block = saved
+    graph_frame_push(b)   // the loop's variables, before its body's scope
+    defer graph_frame_pop(b)
 
     counter: Node_Id = NO_NODE      // the variable the loop steps
     end_value: Expr                 // what it steps up to (range) …
@@ -601,6 +667,7 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
     if v.init != nil { graph_stmt(b, v.init, f, {kind = .Local}) }
     if v.is_range {
         counter = graph_node(b, .Local, .Explicit, f, v.loop_var, v.var_type, span)
+        graph_bind(b, v.loop_var, counter)
         lo := graph_value(b, v.range_low)
         graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.loop_var, counter, v.var_type, span), lo)
         if _, is_lit := v.range_high.(^Expr_Number); is_lit {
@@ -616,10 +683,14 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
             coll_slot = graph_slot(b, "items", expr_type(v.collection), span)
             graph_store(b, graph_dest_var("items", coll_slot, expr_type(v.collection)), v.collection, span)
         }
-        if v.elem_var != "" { elem = graph_node(b, .Local, .Explicit, f, v.elem_var, v.elem_type_, span) }
+        if v.elem_var != "" {
+            elem = graph_node(b, .Local, .Explicit, f, v.elem_var, v.elem_type_, span)
+            graph_bind(b, v.elem_var, elem)
+        }
         index_t := Type(Type_Numeric{kind = .Signed, bits = 32})   // as the checker binds it
         if v.index_var != "" {
             counter = graph_node(b, .Local, .Explicit, f, v.index_var, index_t, span)
+            graph_bind(b, v.index_var, counter)
         } else {
             counter = graph_slot(b, "index", index_t, span)
         }
@@ -751,7 +822,8 @@ graph_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, parent: Node_Id) {
     arms := make([]^Run, len(v.arms), context.temp_allocator)
     for &arm, i in v.arms {
         arms[i] = graph_run_new(b)
-        if !arm.is_else && !arm.is_union_arm && arm.value != nil { append(&ops, graph_value(b, arm.value)) }
+        // A union arm names a variant (`.None`, `None`): the switch picks it by tag.
+        if !is_union && !arm.is_else && arm.value != nil { append(&ops, graph_value(b, arm.value)) }
     }
     graph_switch(b, ops[:], arms, span)
     join := graph_run_new(b)
@@ -768,6 +840,7 @@ graph_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, parent: Node_Id) {
             // The binding is the payload's place, not a copy.
             payload := graph_op(b, .Variant, .Explicit, span, t, arm.bound_name, subject_place(b, v, slot))
             b.g.refers[payload] = bound
+            graph_bind(b, arm.bound_name, bound)   // after the subject's place: it may reuse the name
         }
         for s in arm.body { graph_stmt(b, s, a, {kind = .Local}) }
         graph_scope_close(b, span)
@@ -808,6 +881,7 @@ graph_code_block :: proc(b: ^Graph_Builder, label: string, body: []Stmt, parent:
 // Enter a scope: an arena mark when it holds a big value.
 @(private="file")
 graph_scope_open :: proc(b: ^Graph_Builder, block: Node_Id, body: []Stmt, span: Span) {
+    graph_frame_push(b)
     mark := b.arena && graph_has_big_values(b, body)
     append(&b.code.scopes, Code_Scope{block = block, mark = mark})
     if mark { graph_op(b, .Arena_Mark, .Synthetic, span) }
@@ -819,6 +893,7 @@ graph_scope_close :: proc(b: ^Graph_Builder, span: Span) {
     if graph_reachable(b) { graph_exit_scopes(b, len(b.code.scopes) - 1, span) }
     s := pop(&b.code.scopes)
     delete(s.defers)
+    graph_frame_pop(b)
 }
 
 // What leaving scopes[from:] runs, innermost first: each scope's defers, the
@@ -829,7 +904,7 @@ graph_exit_scopes :: proc(b: ^Graph_Builder, from: int, span: Span) {
         s := &b.code.scopes[i]
         for j := len(s.defers) - 1; j >= 0; j -= 1 {
             op := graph_op(b, .Run_Defer, .Synthetic, span)
-            append(&b.g.edges, Edge{from = op, to = s.defers[j], kind = .Runs, written = .Synthetic})
+            append(&b.g.edges, Edge{from = op, to = s.defers[j], kind = .Runs, written = .Synthetic, site = op})
         }
         if s.mark { graph_op(b, .Arena_Reset, .Synthetic, span) }
     }
@@ -910,7 +985,7 @@ graph_run_new :: proc(b: ^Graph_Builder) -> ^Run {
 @(private="file")
 graph_then :: proc(b: ^Graph_Builder, from: Node_Id, to: ^Run, written: Written) {
     if len(to.ops) > 0 {
-        append(&b.g.edges, Edge{from = from, to = to.ops[0], kind = .Then, written = written})
+        append(&b.g.edges, Edge{from = from, to = to.ops[0], kind = .Then, written = written, site = from})
     } else {
         append(&to.waiting, from)
     }
@@ -932,7 +1007,7 @@ graph_emit :: proc(b: ^Graph_Builder, id: Node_Id) {
     r := b.code.run
     if len(r.ops) == 0 {
         for w in r.waiting {
-            append(&b.g.edges, Edge{from = w, to = id, kind = .Then, written = b.g.written[id]})
+            append(&b.g.edges, Edge{from = w, to = id, kind = .Then, written = b.g.written[id], site = w})
         }
         clear(&r.waiting)
     }
@@ -990,6 +1065,8 @@ graph_op_value :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span,
 // resolved with refers-to, next step).
 @(private="file")
 graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span: Span) -> Operand {
+    decl := decl
+    if decl == NO_NODE { decl = graph_lookup(b, name) }
     op := graph_op(b, .Var, .Explicit if decl == NO_NODE else b.g.written[decl], span, t, name)
     b.g.refers[op] = decl
     return Operand{op, 0}
@@ -1070,6 +1147,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
     case ^Expr_String:            return graph_op_value(b, .Global, w, v.span, v.type_)
     case ^Expr_Ident:
         if v.lowered != nil { return graph_value(b, v.lowered, w) }
+        if is_void_literal(e) { return graph_op_value(b, .Const, w, v.span, v.type_, "void") }   // an uninitialized value, a null pointer
         #partial switch r in v.resolved {
         case Resolved_Enum_Variant, Resolved_Constant:
             if graph_aggregate(v.type_) { return graph_read(b, graph_op_value(b, .Global, w, v.span, v.type_, v.name), v.type_, v.span) }
@@ -1166,12 +1244,16 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
     #partial switch v in e {
     case ^Expr_Ident:
         if v.lowered != nil { return graph_place(b, v.lowered, span) }
-        if v.resolved == nil { return graph_var(b, v.name, NO_NODE, v.type_, v.span) }
+        if v.resolved == nil {
+            p := graph_var(b, v.name, NO_NODE, v.type_, v.span)
+            if b.check_refers { b.ident_op[v] = p.op }
+            return p
+        }
         if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(v.type_) {
             return graph_op_value(b, .Global, .Explicit, v.span, v.type_, v.name)   // a constant table
         }
     case ^Expr_Self:
-        return graph_var(b, "Self", NO_NODE, v.type_, v.span)
+        return graph_var(b, "Self", b.self, v.type_, v.span)
     case ^Expr_String:
         return graph_op_value(b, .Global, .Explicit, v.span, v.type_)
     case ^Expr_Field_Access:
@@ -1563,8 +1645,177 @@ graph_link_calls :: proc(b: ^Graph_Builder) {
     for c in b.calls {
         to, ok := b.scope_node[c.callee]
         if !ok { graph_fatal(b.g.origin[c.op], "'%s' calls '%s', which has no node", b.g.name[c.op], c.callee.name) }
-        append(&b.g.edges, Edge{from = c.op, to = to, kind = .Calls, written = b.g.written[c.op]})
+        append(&b.g.edges, Edge{from = c.op, to = to, kind = .Calls, written = b.g.written[c.op], site = c.op})
     }
+}
+
+// A name no local binds names a definition: a constant, a function, a type,
+// a module's variable. Definitions are visible wherever their scope is,
+// before or after the line that writes them, so these resolve once every
+// scope is built: the definition of that name in the nearest enclosing scope.
+@(private="file")
+graph_resolve_defs :: proc(b: ^Graph_Builder) {
+    g := b.g
+    Key :: struct { scope: Node_Id, name: string }
+    defs: map[Key]Node_Id
+    defer delete(defs)
+    for k, id in g.kind {
+        p := g.parent[id]
+        if p == NO_NODE { continue }
+        #partial switch k {
+        case .Const, .Import, .Fun, .Struct, .Union, .Enum, .Type_Def, .Dispatch:
+            if g.kind[p] == .Union { continue }   // a variant's struct is named through its union
+        case .Field:
+            if g.kind[p] != .Module { continue }  // a struct's fields are locals of its code
+        case:
+            continue
+        }
+        key := Key{p, g.name[id]}
+        if key not_in defs { defs[key] = Node_Id(id) }
+    }
+    for k, id in g.kind {
+        if k != .Op || g.op[id] != .Var || g.refers[id] != NO_NODE { continue }
+        for p := g.parent[id]; p != NO_NODE; p = g.parent[p] {
+            if d, ok := defs[Key{p, g.name[id]}]; ok {
+                g.refers[id] = d
+                break
+            }
+        }
+        if g.refers[id] == NO_NODE {
+            if d, ok := defs[Key{b.program, g.name[id]}]; ok { g.refers[id] = d }
+        }
+    }
+}
+
+// The flow index: a Flows edge from each declaration a value is read from to
+// the declaration it moves into, at the operation that moves it — a write
+// (or fill, byte read), a call's arguments into its callee's params, a return
+// into its fun's results, a match arm's binding. Field-insensitive: `p.x = v`
+// flows into p.
+@(private="file")
+graph_link_flows :: proc(b: ^Graph_Builder) {
+    g := b.g
+    // Each fun's and struct's params and results, in order, and each call's callee.
+    params, results: map[Node_Id][dynamic]Node_Id
+    callee: map[Node_Id]Node_Id
+    defer {
+        for _, l in params { delete(l) }
+        for _, l in results { delete(l) }
+        delete(params)
+        delete(results)
+        delete(callee)
+    }
+    for k, id in g.kind {
+        if k != .Param && k != .Result { continue }
+        list := &params if k == .Param else &results
+        p := g.parent[id]
+        if p not_in list { list[p] = {} }
+        append(&list[p], Node_Id(id))
+    }
+    for c in b.calls { callee[c.op] = b.scope_node[c.callee] }
+
+    srcs: [dynamic]Node_Id
+    defer delete(srcs)
+    flow :: proc(g: ^Program_Graph, srcs: []Node_Id, to: Node_Id, site: Node_Id) {
+        if to == NO_NODE { return }
+        for s in srcs { append(&g.edges, Edge{from = s, to = to, kind = .Flows, written = g.written[site], site = site}) }
+    }
+    for id in 0 ..< b.nodes {
+        if g.kind[id] != .Op { continue }
+        op := Node_Id(id)
+        ops := graph_operands(g, op)
+        #partial switch g.op[id] {
+        case .Write, .Fill, .Byte_Read:
+            clear(&srcs)
+            for o in ops[1:] { graph_sources(g, callee, results, o, &srcs) }
+            flow(g, srcs[:], graph_root(g, ops[0]), op)
+        case .Call, .Construct:
+            to, ok := callee[op]
+            if !ok { continue }
+            ps := params[to]
+            args := ops[1:] if g.op[id] == .Construct else ops   // a construction's first operand is its destination
+            for a, i in args {
+                if i >= len(ps) { break }
+                clear(&srcs)
+                graph_sources(g, callee, results, a, &srcs)
+                flow(g, srcs[:], ps[i], op)
+            }
+        case .Return:
+            fun := graph_code_owner(g, op)
+            rs := results[fun]
+            if len(ops) == 1 && len(rs) > 1 {
+                // `?`'s return carries only the err: the last result.
+                clear(&srcs)
+                graph_sources(g, callee, results, ops[0], &srcs)
+                flow(g, srcs[:], rs[len(rs) - 1], op)
+                continue
+            }
+            for o, i in ops {
+                if i >= len(rs) { break }
+                clear(&srcs)
+                graph_sources(g, callee, results, o, &srcs)
+                flow(g, srcs[:], rs[i], op)
+            }
+        case .Variant:
+            if bound := g.refers[id]; bound != NO_NODE {
+                clear(&srcs)
+                if s := graph_root(g, ops[0]); s != NO_NODE { append(&srcs, s) }
+                flow(g, srcs[:], bound, op)
+            }
+        }
+    }
+}
+
+// The declarations a value is read from: each variable in it (a place's own
+// operands included, so `a[i]` reads a and i), and a call's result for a
+// call's output. Constants and globals name no declaration.
+@(private="file")
+graph_sources :: proc(g: ^Program_Graph, callee: map[Node_Id]Node_Id, results: map[Node_Id][dynamic]Node_Id,
+                      o: Operand, out: ^[dynamic]Node_Id) {
+    if o.op == NO_NODE { return }
+    #partial switch g.op[o.op] {
+    case .Var:
+        if r := g.refers[o.op]; r != NO_NODE && !slice.contains(out[:], r) { append(out, r) }
+    case .Call, .Construct:
+        // A call's value is its callee's result; its arguments flow into the
+        // callee's params, not into this value.
+        if c, ok := callee[o.op]; ok {
+            if rs, has := results[c]; has && int(o.out) < len(rs) && !slice.contains(out[:], rs[o.out]) {
+                append(out, rs[o.out])
+            }
+        }
+    case .Const, .Global:
+    case:
+        for x in graph_operands(g, o.op) { graph_sources(g, callee, results, x, out) }
+    }
+}
+
+// The declaration a place belongs to: its variable, through fields,
+// elements and one pointer (field-insensitive).
+@(private="file")
+graph_root :: proc(g: ^Program_Graph, p: Operand) -> Node_Id {
+    for id := p.op; id != NO_NODE; {
+        #partial switch g.op[id] {
+        case .Var:
+            return g.refers[id]
+        case .Field, .Index, .Swizzle, .Variant, .Slice, .Deref:
+            id = graph_operands(g, id)[0].op
+        case:
+            return NO_NODE
+        }
+    }
+    return NO_NODE
+}
+
+// The fun or struct whose code an operation is in.
+@(private="file")
+graph_code_owner :: proc(g: ^Program_Graph, id: Node_Id) -> Node_Id {
+    for p := g.parent[id]; p != NO_NODE; p = g.parent[p] {
+        #partial switch g.kind[p] {
+        case .Fun, .Struct: return p
+        }
+    }
+    return NO_NODE
 }
 
 // Sort the edge table by `from` and index both directions (counting sorts:
@@ -1645,7 +1896,15 @@ graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, par
     name := s.name if written == .Explicit else ask_demangle(ts.name, ts.home_package)
     n := graph_node(b, kind, written, parent, name, ts, s.span)
     b.scope_node[ts] = n
-    for p in ts.params { graph_node(b, .Param, .Explicit, n, p.name, p.type_, s.span) }
+    // A fresh set of names: its params, named results and locals.
+    saved_base, saved_len, saved_self := b.fn_base, len(b.names), b.self
+    b.fn_base = saved_len
+    b.self = n if kind == .Struct else NO_NODE
+    defer {
+        resize(&b.names, saved_len)
+        b.fn_base, b.self = saved_base, saved_self
+    }
+    for p in ts.params { graph_bind(b, p.name, graph_node(b, .Param, .Explicit, n, p.name, p.type_, s.span)) }
     graph_results(b, ts, n, s.span)
     // An instance's body is its own checked copy; a struct's is the template's,
     // with each field typed by the instance.
@@ -1710,7 +1969,8 @@ graph_results :: proc(b: ^Graph_Builder, ts: ^Type_Scope, parent: Node_Id, span:
         } else if len(ts.return_types) > 1 {
             name = fmt.aprintf("result%d", i + 1)
         }
-        graph_node(b, .Result, .Explicit, parent, name, rt, span)
+        r := graph_node(b, .Result, .Explicit, parent, name, rt, span)
+        if i < len(ts.return_binding_names) { graph_bind(b, name, r) }   // a named result is a local
     }
 }
 
@@ -1836,6 +2096,64 @@ graph_check_calls :: proc(b: ^Graph_Builder) {
         if p in ours { continue }
         emit_diagnostic(.Graph_Error, "", "the call graph has a call %s → %s that the graph lacks", p.caller.name, p.callee.name)
         bad += 1
+    }
+    if bad > 0 {
+        flush_diagnostics()
+        os.exit(1)
+    }
+}
+
+// Refers-to is complete and agrees with usedef.odin: every var operation
+// names a declaration, and each variable use names the one usedef links it
+// to (the same name at the same declaring span). usedef runs on a copy of the
+// program's analysis state, so `mara ask` later starts from none, as before.
+@(private="file")
+graph_check_refers :: proc(b: ^Graph_Builder) {
+    g := b.g
+    bad := 0
+    report :: proc(g: ^Program_Graph, bad: ^int, id: Node_Id, format: string, args: ..any) {
+        o := g.origin[id]
+        emit_diagnostic(.Graph_Error, format_location(o.file, o.line, o.col), format, ..args)
+        bad^ += 1
+    }
+    for k, id in g.kind {
+        if k == .Op && g.op[id] == .Var && g.refers[id] == NO_NODE {
+            report(g, &bad, Node_Id(id), "'%s' names no declaration", g.name[id])
+        }
+    }
+    scratch := b.checked^
+    scratch.var_bindings = {}
+    scratch.use_def = {}
+    scratch.defs = {}
+    scratch.reaching = {}
+    scratch.analyzed = {}
+    scratch.call_sites = {}
+    scratch.want_control_deps = false
+    defer {
+        for vb in scratch.var_bindings { free(vb) }
+        delete(scratch.var_bindings)
+        for d in scratch.defs { free(d) }
+        delete(scratch.defs)
+        delete(scratch.use_def)
+        for _, r in scratch.reaching { delete(r) }
+        delete(scratch.reaching)
+        delete(scratch.analyzed)
+        for _, s in scratch.call_sites { delete(s) }
+        delete(scratch.call_sites)
+    }
+    for _, ft in b.checked.functions {
+        if ft != nil && ft.kind == .Fun { ud_fn(&scratch, ft) }
+    }
+    for ident, binding in scratch.use_def {
+        op, ok := b.ident_op[ident]
+        if !ok { continue }   // a use the graph makes no var operation for
+        d := g.refers[op]
+        if d == NO_NODE { continue }   // reported above
+        if g.name[d] != binding.name || g.origin[d] != binding.span {
+            report(g, &bad, op, "'%s' names %s at %s:%d; usedef.odin links it to %s at %s:%d",
+                   ident.name, g.name[d], filepath.base(g.origin[d].file), g.origin[d].line,
+                   binding.name, filepath.base(binding.span.file), binding.span.line)
+        }
     }
     if bad > 0 {
         flush_diagnostics()
@@ -2077,6 +2395,10 @@ graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
             case .Field, .Param, .Result, .Local, .Const, .Import, .Type_Def:
                 fmt.sbprintf(&b, " : %s", type_name(t))
             }
+        }
+        // Where its value flows: to a declaration, at an operation.
+        for e in graph_out(g, id) {
+            if e.kind == .Flows { fmt.sbprintf(&b, "  ⇒ %d@%d", e.to, e.site) }
         }
     }
     if o := g.origin[id]; o.file != "" { fmt.sbprintf(&b, "   %s:%d", filepath.base(o.file), o.line) }
