@@ -7,10 +7,10 @@ import "core:slice"
 // ---------------------------------------------------------------------------
 // Materialized call graph (design/mara_ask.md §12)
 //
-// A post-check artifact on Checked_Program. Nodes are the program's callable
-// scopes (funs + ctors); edges are resolved calls collected during checking
-// (Checker.call_edges, recorded by check_call); the strongly-connected
-// components are computed once here (Tarjan).
+// A post-check artifact on Checked_Program, an index over the program graph's
+// Calls edges (graph.odin). Nodes are the program's callable scopes (funs +
+// ctors); edges are calls and constructions; the strongly-connected components
+// are computed once here (Tarjan).
 //
 // The SCCs are the prize, not the skeleton: they are the shared cycle/recursion
 // structure every interprocedural summary pass would otherwise hand-roll.
@@ -22,6 +22,12 @@ import "core:slice"
 // edges (§12 "one honest seam") and isolated (call-free) functions as nodes are
 // later additions on the same structure.
 // ---------------------------------------------------------------------------
+
+// One directed edge of the call graph: `from` calls `to`.
+Call_Edge :: struct {
+    from: ^Type_Scope,
+    to:   ^Type_Scope,
+}
 
 Call_Graph :: struct {
     nodes:     [dynamic]^Type_Scope,   // node id -> the callable scope
@@ -73,31 +79,48 @@ cg_node :: proc(g: ^Call_Graph, s: ^Type_Scope) -> int {
     return i
 }
 
-// Materialize the graph from the edges collected during checking, then compute
-// its SCCs. Idempotent w.r.t. duplicate edges (Checker.call_edges is a set).
-build_call_graph :: proc(c: ^Checker) -> Call_Graph {
+// The call graph as an index over the program graph's Calls edges: each call
+// or construct operation is an edge from the fun or struct it runs in to the
+// one it runs, with a default argument's calls in the caller that runs them.
+// A fun hits the outside world directly when it prints or calls a foreign
+// fun: the seed of the purity summary.
+build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
     g: Call_Graph
-    for edge in c.call_edges {
-        from := cg_node(&g, edge.from)
-        to   := cg_node(&g, edge.to)
-        append(&g.out_edges[from], to)
+    pg := &checked.graph
+    effectful: map[^Type_Scope]bool
+    defer delete(effectful)
+    for e in pg.edges {
+        if e.kind != .Calls { continue }
+        caller := graph_caller(pg, e.from)
+        if caller == nil { continue }   // outside any function
+        callee := pg.type_[e.to].(^Type_Scope)
+        from, to := cg_node(&g, caller), cg_node(&g, callee)
+        if !slice.contains(g.out_edges[from][:], to) { append(&g.out_edges[from], to) }
+        if callee.calling_conv == .C { effectful[caller] = true }
+        // Call order: the first line calling it. A default argument is written
+        // in the callee, so it gives no line in the caller.
+        if e.written == .Implied { continue }
+        edge := Call_Edge{from = caller, to = callee}
+        line := pg.origin[e.from].line
+        if cur, ok := g.edge_line[edge]; !ok || line < cur { g.edge_line[edge] = line }
+    }
+    for k, id in pg.kind {
+        if k != .Op || pg.op[id] != .Print { continue }
+        if caller := graph_caller(pg, Node_Id(id)); caller != nil { effectful[caller] = true }
     }
     // Completeness: intern every source function as a node, so a call-free
     // function (neither calls nor is called) is still a node — reachability/DCE
     // needs it (uncalled IS the thing DCE flags). Foreign/intrinsic have no body
     // to analyze and are reachable by definition (external entry), so skip them.
-    if c.checked != nil {
-        for _, cs in c.checked.functions {
-            if _, is_source := cs.origin.(Origin_Source); is_source && cs != nil {
-                cg_node(&g, cs)
-            }
+    for _, cs in checked.functions {
+        if _, is_source := cs.origin.(Origin_Source); is_source && cs != nil {
+            cg_node(&g, cs)
         }
     }
     cg_compute_sccs(&g)
     cg_compute_reachability(&g)
-    cg_compute_purity(&g, c)
+    cg_compute_purity(&g, effectful)
     cg_dump_purity(&g)
-    g.edge_line = c.call_edge_line   // share the call-order index recorded during checking
     return g
 }
 
@@ -111,8 +134,8 @@ build_call_graph :: proc(c: ^Checker) -> Call_Graph {
 //   2. byte-read placement (`x : Head = #big_endian bytes[off]`) reinterprets a
 //      struct from bytes WITHOUT running its constructor — correctly no edge, but
 //      the struct is still TYPE-used (that's the type-dependency graph, not this).
-// (Bracket default-init `Foo{}` DOES run the ctor and IS now an edge —
-// record_construction_edge. That was the Megastruct/Camera gap on Pounce.mara:83.)
+// (Bracket default-init `Foo{}` DOES run the ctor and IS an edge: a construct
+// operation. That was the Megastruct/Camera gap on Pounce.mara:83.)
 cg_compute_reachability :: proc(g: ^Call_Graph) {
     resize(&g.reachable, len(g.nodes))
     root := -1
@@ -167,15 +190,15 @@ cg_bottom_up :: proc(g: ^Call_Graph, transfer: proc(g: ^Call_Graph, node: int) -
 }
 
 // Purity: a function is impure if it directly hits the outside world — an IO
-// built-in or a foreign call, seeded into Checker.effectful_callers during
-// checking — or transitively calls something that does. Pure functions are
+// built-in or a foreign call, the seeds build_call_graph collects — or
+// transitively calls something that does. Pure functions are
 // const-eval candidates. Optimistic seed (pure until proven otherwise) + the
 // bottom-up monotone propagation = the transitive verdict.
-cg_compute_purity :: proc(g: ^Call_Graph, c: ^Checker) {
+cg_compute_purity :: proc(g: ^Call_Graph, effectful: map[^Type_Scope]bool) {
     resize(&g.pure, len(g.nodes))
     for s, i in g.nodes {
         // A foreign node has an opaque body — impure by definition.
-        g.pure[i] = !(s == nil || s.calling_conv == .C || c.effectful_callers[s])
+        g.pure[i] = !(s == nil || s.calling_conv == .C || effectful[s])
     }
     cg_bottom_up(g, cg_purity_transfer)
 }

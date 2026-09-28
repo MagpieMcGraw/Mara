@@ -8,8 +8,8 @@ import "core:strings"
 
 // ---------------------------------------------------------------------------
 // The program graph (design/program_graph.md): the program's shape, built from
-// the checked syntax tree. Phase 1 of design/graph_retrofit.md — built beside
-// the pipeline after checking; nothing reads it yet.
+// the checked syntax tree at the end of a clean check. The analyses after it
+// move onto it one by one (design/graph_retrofit.md, phase 2).
 //
 // Nodes are scopes, the names they declare, and operations (the set in
 // design/program_graph.md § Operations). Each fact is a column indexed by
@@ -292,7 +292,6 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
     graph_index_edges(&g)
     when ODIN_DEBUG {
         graph_check_coverage(&b)
-        graph_check_calls(&b)
         graph_check_runs(&b)
         // It reruns the use-def analysis on every function: the suite's check.
         if b.check_refers { graph_check_refers(&b) }
@@ -1583,8 +1582,7 @@ graph_call_resolved :: proc(b: ^Graph_Builder, rf: Resolved_Func, t: Type, span:
 @(private="file")
 graph_callee :: proc(b: ^Graph_Builder, rf: Resolved_Func) -> ^Type_Scope {
     if rf.callee != nil || rf.name == "" { return rf.callee }
-    // Resolved by name only (qualified, UFCS, dispatch): the checker's
-    // record_resolved_edge recovers the scope the same way.
+    // Resolved by name only (qualified, UFCS, dispatch): look the name up.
     if ft, ok := b.checked.table.funs[rf.name]; ok    { return ft }
     if st, ok := b.checked.table.structs[rf.name]; ok { return st }
     return nil
@@ -2062,49 +2060,6 @@ graph_check_coverage :: proc(b: ^Graph_Builder) {
     }
 }
 
-// The graph's calls agree with the call graph the checker collects
-// (callgraph.odin): the same caller → callee pairs, where the caller is the
-// nearest fun or struct around the call.
-@(private="file")
-graph_check_calls :: proc(b: ^Graph_Builder) {
-    Pair :: struct { caller, callee: ^Type_Scope }
-    g := b.g
-    ours: map[Pair]Node_Id   // each pair's first call operation
-    defer delete(ours)
-    for e in g.edges {
-        // A default argument's calls run in the caller, but the checker checks a
-        // default once, in the callee's defining scope, so the call graph has no
-        // caller for them. Phase 2 derives the call graph from these edges.
-        if e.kind != .Calls || e.written == .Implied { continue }
-        caller := graph_caller(g, e.from)
-        if caller == nil { continue }   // outside any function
-        p := Pair{caller, g.type_[e.to].(^Type_Scope)}
-        if p not_in ours { ours[p] = e.from }
-    }
-    theirs: map[Pair]bool
-    defer delete(theirs)
-    cg := &b.checked.call_graph
-    for outs, i in cg.out_edges {
-        for j in outs { theirs[Pair{cg.nodes[i], cg.nodes[j]}] = true }
-    }
-    bad := 0
-    for p, op in ours {
-        if p in theirs { continue }
-        loc := format_location(g.origin[op].file, g.origin[op].line, g.origin[op].col)
-        emit_diagnostic(.Graph_Error, loc, "the graph has a call %s → %s that the call graph lacks", p.caller.name, p.callee.name)
-        bad += 1
-    }
-    for p in theirs {
-        if p in ours { continue }
-        emit_diagnostic(.Graph_Error, "", "the call graph has a call %s → %s that the graph lacks", p.caller.name, p.callee.name)
-        bad += 1
-    }
-    if bad > 0 {
-        flush_diagnostics()
-        os.exit(1)
-    }
-}
-
 // Refers-to is complete and agrees with usedef.odin: every var operation
 // names a declaration, and each variable use names the one usedef links it
 // to (the same name at the same declaring span). usedef runs on a copy of the
@@ -2164,7 +2119,6 @@ graph_check_refers :: proc(b: ^Graph_Builder) {
 }
 
 // The fun or struct an operation runs in: its nearest callable ancestor.
-@(private="file")
 graph_caller :: proc(g: ^Program_Graph, id: Node_Id) -> ^Type_Scope {
     for p := g.parent[id]; p != NO_NODE; p = g.parent[p] {
         #partial switch g.kind[p] {

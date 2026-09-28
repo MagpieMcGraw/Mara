@@ -1413,7 +1413,8 @@ main :: proc() {
                              web          = args.web,
                              shared       = pkg_shared,
                              target_os    = target_os,
-                             analysis_only = args.ask)
+                             analysis_only = args.ask,
+                             perf          = &perf)
     if checked.errors > 0 {
         perf_timer_end(&perf)
         flush_diagnostics()
@@ -1421,9 +1422,6 @@ main :: proc() {
         os.exit(1)
     }
     ast_shape_check(programs, "check")
-
-    perf_timer_mark(&perf, "graph")
-    checked.graph = build_program_graph(checked, programs)
 
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {

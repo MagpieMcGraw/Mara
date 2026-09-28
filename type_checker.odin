@@ -683,16 +683,6 @@ Resolved_Func :: struct {
     callee:       ^Type_Scope,
 }
 
-// One directed edge of the materialized call graph: `from` calls `to`, both the
-// durable callee Type_Scopes (pointer identity — the same `callee` a resolved
-// call carries). Collected during checking (check_call records each resolved
-// call) and consumed post-check by build_call_graph to materialize nodes +
-// adjacency + SCCs. nil callees (foreign / indirect / fn-typed) record no edge.
-Call_Edge :: struct {
-    from: ^Type_Scope,
-    to:   ^Type_Scope,
-}
-
 // ---------------------------------------------------------------------------
 // Type environment (scope chain)
 // ---------------------------------------------------------------------------
@@ -1088,90 +1078,6 @@ enclosing_callable_scope :: proc(env: ^Type_Scope) -> ^Type_Scope {
     return nil
 }
 
-// Record a call-graph edge for a resolved call. Deferred from check_call, so it
-// fires at every exit once e.resolved_func is populated. Edge = (the enclosing
-// callable scope) -> (the resolved callee). Skips calls with no callee Type_Scope
-// (foreign / indirect / fn-typed-param) and calls outside any function.
-record_call_edge :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) {
-    caller := enclosing_callable_scope(env)
-    if caller == nil { return }   // call outside any callable — nothing to attribute
-    // Direct-effect seed for purity. `print` is a special-form built-in with no
-    // resolved callee (so it never becomes an edge) — catch it by name here,
-    // before the resolved-call early-out.
-    if strings.has_prefix(call_name(e), "print") {
-        c.effectful_callers[caller] = true
-    }
-    rf, ok := e.resolved_func.?
-    if !ok { return }
-    record_resolved_edge(c, caller, rf, e.span.line)
-}
-
-// Record the edge for a call in operator form (`a + b` resolved to an
-// `overload +` function). It is a call like any other: purity, escape and
-// `mara ask` need to see it.
-record_operator_edge :: proc(c: ^Checker, rf: Resolved_Func, env: ^Type_Scope, line: int) {
-    caller := enclosing_callable_scope(env)
-    if caller == nil { return }
-    record_resolved_edge(c, caller, rf, line)
-}
-
-// The edge (caller -> resolved callee), with its first call-site line.
-record_resolved_edge :: proc(c: ^Checker, caller: ^Type_Scope, rf: Resolved_Func, line: int) {
-    callee := rf.callee
-    if callee == nil && rf.name != "" {
-        // Resolved by NAME (module-qualified / UFCS / dispatch) without a callee
-        // pointer — recover the durable Type_Scope from the global table so the
-        // edge still lands. Keeps the graph from missing the bulk of real calls.
-        if ft, fok := c.table.funs[rf.name];    fok { callee = ft }
-        else if st, sok := c.table.structs[rf.name]; sok { callee = st }
-    }
-    if callee == nil { return }
-    // A foreign (.C) callee reaches outside the program — a direct effect.
-    if callee.calling_conv == .C {
-        c.effectful_callers[caller] = true
-    }
-    edge := Call_Edge{from = caller, to = callee}
-    c.call_edges[edge] = true
-    if cur, ok := c.call_edge_line[edge]; !ok || line < cur {
-        c.call_edge_line[edge] = line   // first call site = call order
-    }
-}
-
-// Record a call-graph edge for a struct-LITERAL construction (`Foo{...}` /
-// `Foo{}`). Brackets default-init a struct, which RUNS its field initializers —
-// the same constructor invocation `Foo(...)` parens trigger — so it's a call
-// edge too. Without this the bracket form is invisible to the graph: e.g.
-// `game^ = Megastruct{}` runs Megastruct's `camera := Camera(...)` field init,
-// but with only paren-call edges nothing reaches Megastruct (Pounce.mara:83).
-record_construction_edge :: proc(c: ^Checker, st: ^Type_Scope, env: ^Type_Scope) {
-    if st == nil { return }
-    caller := enclosing_callable_scope(env)
-    if caller == nil { return }
-    c.call_edges[Call_Edge{from = caller, to = st}] = true
-}
-
-// A struct literal constructs its struct — unless it writes into an existing
-// value (`v{ a = x }`). Named or typed by its slot, the edge is the same.
-// Mirrors the program graph's construct operations (graph_expr).
-record_literal_construction :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Scope) {
-    if lit.override_target != "" { return }
-    if ts, ok := lit.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module {
-        record_construction_edge(c, ts, env)
-    }
-}
-
-// A declaration with no value (`x : Foo`) constructs its struct — for an
-// array of structs, each element — and codegen runs the struct's init for
-// it, so it is an edge like `Foo{}`. The program graph has the same rule
-// (graph_construct_bare); phase 2 derives this call graph from it.
-record_bare_construction :: proc(c: ^Checker, t: Type, env: ^Type_Scope) {
-    #partial switch v in distinct_base(t) {
-    case ^Type_Scope:
-        if v.kind == .Struct && !v.is_module { record_construction_edge(c, v, env) }
-    case ^Type_Fixed_Array:   record_bare_construction(c, v.elem, env)
-    case ^Type_Partial_Array: record_bare_construction(c, v.elem, env)
-    }
-}
 
 
 
@@ -1605,7 +1511,7 @@ Checked_Program :: struct {
     function_order: [dynamic]string,
 
     // Materialized call graph (nodes = callable scopes, edges = resolved calls,
-    // + strongly-connected components). Built post-check from Checker.call_edges.
+    // + strongly-connected components): an index over the program graph's calls.
     // See callgraph.odin / design/mara_ask.md §12.
     call_graph:     Call_Graph,
 
@@ -1733,24 +1639,10 @@ Checker :: struct {
     type_params:     map[string]Type,
     top_env:         ^Type_Scope,
     declared_funs:   map[string]bool,  // bare names of Stmt_Scope declarations (direct calls vs variables)
-    // Call-graph edges collected during checking: each resolved call records
-    // (enclosing callable scope -> callee). Materialized post-check into the
-    // Checked_Program call graph (build_call_graph). A set, so duplicate call
-    // sites between the same pair collapse to one edge.
-    call_edges:      map[Call_Edge]bool,
-    // First source line of a call site for each edge (min over duplicate sites), so
-    // the analyzer can order a call tree the way the calls appear in the body.
-    // Recorded in record_call_edge, which sees every call form — including the
-    // name-resolved UFCS/qualified calls that Checked_Program.call_sites omits.
-    call_edge_line:  map[Call_Edge]int,
     // The materialized call graph (set post-check, after build_call_graph) — its
     // bottom-up summaries back the escape pass and the `ask` slicer. Points at
     // checked.call_graph.
     cg:              ^Call_Graph,
-    // Call-graph effect seed: callable scopes whose body has a DIRECT effect —
-    // an IO built-in (`print`) or a foreign (.C) call. The bottom-up purity pass
-    // (cg_compute_purity) propagates these up the graph to a transitive summary.
-    effectful_callers: map[^Type_Scope]bool,
     // True during the register-pass scan over a function's body fields.
     // Field types are resolved in declaration order, so annotations like
     // `h : fn g` may reference locals not yet added to env. Unresolved names
@@ -3025,9 +2917,6 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
             default_value = dv,
             is_using = field.is_using,
         })
-        // The instance's fields are substituted, not checked, so a bare one's
-        // construction is recorded here (`inner: S` with S = Box constructs a Box).
-        if dv == nil { record_bare_construction(c, ft, st) }
     }
 
     // Cache and register
@@ -7358,7 +7247,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                 if is_any(ann_type) {
                     check_error(c, s.span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE)
                 }
-                record_bare_construction(c, ann_type, env)
                 // (Large-value stack/arena routing is handled uniformly for
                 // every value kind in check_storage_sizes — Pass 4 of check_scope.)
                 // Function type from named source: auto-initialize to the function itself.
@@ -10421,7 +10309,8 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
                       compiler_dir: string = "", search_dir: string = "", web: bool = false,
                       shared: bool = false,
                       target_os: Target_OS = .Windows,
-                      analysis_only: bool = false) -> ^Checked_Program {
+                      analysis_only: bool = false,
+                      perf: ^Performance_Timer = nil) -> ^Checked_Program {
     table := new(SymbolTable)
     // The main package's durable module scope IS the root env, wired upfront so
     // builtins (std / void / Program / this_program) and every top-level name land
@@ -10736,9 +10625,19 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         audit_home_package(checked)
     }
 
-    checked.call_graph = build_call_graph(&c)
-    c.cg = &checked.call_graph
-    cg_compute_return_deps(c.cg, &c) // return-dep summary — backs fun_return_dep_set (ask slicer)
+    // The program graph (graph.odin), built from a clean check, and the
+    // analyses that read it (design/graph_retrofit.md, phase 2): the call graph
+    // is an index over its calls, and the summaries on it.
+    if c.errors == 0 {
+        if perf != nil { perf_timer_mark(perf, "graph") }
+        checked.graph = build_program_graph(checked, programs)
+        if perf != nil { perf_timer_mark(perf, "analysis") }
+        checked.call_graph = build_call_graph(checked)
+        c.cg = &checked.call_graph
+        cg_compute_return_deps(c.cg, &c) // backs fun_return_dep_set (ask slicer)
+    } else if perf != nil {
+        perf_timer_mark(perf, "analysis")
+    }
     build_cfgs(checked)               // per-function control-flow graphs (cheap; for return-check)
     flow_analyze_program(&c, checked) // post-check intraproc flow (owns all-paths-return)
     escape_analyze_program(&c, checked) // post-check escape: the lifetime rule + its call summaries
@@ -11089,7 +10988,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                     }
                     if best_score > 0 {
                         e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
-                        record_operator_edge(c, e.overload_fn.?, env, e.span.line)
                         return best_ret
                     }
                 }
@@ -11161,9 +11059,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     case ^Expr_Slice:
         return check_slice(c, e, env)
     case ^Expr_Struct_Literal:
-        // A literal constructs its struct, named (`Foo{…}`) or typed by its slot
-        // (`h : Foo = {…}`): a call-graph edge at every exit, once e.type_ is set.
-        defer record_literal_construction(c, e, env)
         // Broadcast literal `{all <expr>}`: expand_broadcast_array_literal
         // has already validated and populated array_values, and set e.type_
         // to the surrounding field/decl type. Don't re-check (which would
@@ -12393,7 +12288,6 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
             // Use best match if found
             if best_score > 0 {
                 e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
-                record_operator_edge(c, e.overload_fn.?, env, e.span.line)
                 return best_ret
             }
         }
@@ -13255,10 +13149,6 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Scope) -> Type {
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
-    // Collect the call-graph edge (caller -> resolved callee) at every exit,
-    // once resolved_func has been populated below. Every call funnels through
-    // check_call, so this is the one place the whole graph is observed.
-    defer record_call_edge(c, e, env)
     // A call that returns multiple values has nowhere to put the extras when
     // used as a single argument — codegen would silently keep only the first.
     // Reject it here (every call form funnels through check_call) so the user

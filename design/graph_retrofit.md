@@ -139,17 +139,44 @@ suite sets it) they also check refers-to against `usedef.odin`.
 
 Phase 1 is complete: the graph is built on every compile and checked, and nothing reads it yet.
 
+Left for phase 3, where codegen reads the graph: a `const` operation carries no value yet; calls
+produce values, and passing a destination to a call that returns an aggregate (sret, NRVO) is
+codegen's; the graph's arena rule is `routes_to_arena` (≥ 1024 bytes), while codegen's
+`scope_has_big_values` tests structs with `> 1024` and bumps partial arrays without a scope mark;
+the checker types a collection loop's index as `i32` against `i64` lengths.
+
 Found after: a function could name its module's variables. The checker registered them as
 constants, so a read inlined the initial value and a write made a hidden local. A module is a
 scope and its variables are its locals, which no function sees (a function sees the outside world
 only through its arguments): now a checker error (`test/module_locals_neg.mara`), and the graph
 resolves no name to them.
 
-Left for phase 3, where codegen reads the graph: a `const` operation carries no value yet; calls
-produce values, and passing a destination to a call that returns an aggregate (sret, NRVO) is
-codegen's; the graph's arena rule is `routes_to_arena` (≥ 1024 bytes), while codegen's
-`scope_has_big_values` tests structs with `> 1024` and bumps partial arrays without a scope mark;
-the checker types a collection loop's index as `i32` against `i64` lengths.
+## Phase 2 checklist
+
+The analyses move onto the graph one at a time, each proven by the suite, the IR differential and
+the `mara ask` goldens; a change in output is listed with its cause. The analyses run only on a
+program that checked clean, since the graph is built from checked types.
+
+- [x] The graph is built at the end of checking, before the analyses that read it: its own `graph`
+      phase in the perf timer, then `analysis` (Pounce: type check 25 ms, graph 11 ms, analysis
+      31 ms)
+- [x] The call graph is an index over Calls edges (`build_call_graph`): the checker's call
+      recording is deleted (`record_*_edge`, `call_edges`, `effectful_callers`), and so is the
+      graph's calls check, which compared the two. Proven first by building both and comparing
+      nodes, edges, lines and effects on every fixture: the only difference was call-order lines
+      for constructions. Now every call and construct site gives its line (a construction sorted
+      last before), and a default argument's calls count in the caller that runs them (no line);
+      no purity verdict changed on any fixture or Pounce, and the `mara ask` goldens are the same.
+      Printing is the `print` operation, so a user fun named `print_…` no longer counts as one.
+      The call graph, return deps and escape now run only on a clean check (no fixture's
+      diagnostics changed)
+- [ ] Runs replace `cfg.odin`: all-paths-return and control dependence from the runs
+- [ ] Reaching definitions over the runs replace `usedef.odin`
+- [ ] Must-use `err` onto the graph
+- [ ] Slicing, lineage and `mara ask` read the graph
+- [ ] The return-dependency summary from the graph
+- [ ] Definite assignment onto the graph
+- [ ] Escape onto the graph
 
 ## Baselines
 
