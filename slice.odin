@@ -5,13 +5,13 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Backward data slice — `mara ask <fn> contributors` (slice analysis, step 3).
+// Backward data slice — `mara ask return in <fn>` (contributors).
 //
-// "What does this function's return value depend on?" Starting from the return
-// expression's uses, walk the def-use graph (Checked_Program.reaching) backward:
-// a use pulls in the definitions that may reach it; each definition pulls in the
-// uses in its RHS; repeat to a fixpoint. The result is the set of the function's
-// own definitions (parameters + statements) that feed the return.
+// "What does this function's return value depend on?" Starting from the
+// returns' uses, walk the def-use (defuse.odin) backward: a use pulls in the
+// definitions that may reach it; each definition pulls in the uses its value
+// reads; repeat to a fixpoint. The result is the set of the function's own
+// definitions (parameters + statements) that feed the return.
 //
 // Calls are crossed by SUMMARY, not by inlining: a call contributes only the
 // arguments its return value is computed from — the call graph's `return_deps`
@@ -20,41 +20,50 @@ import "core:strings"
 // `len_of(x)` returning a count computed from `x` still pulls in `x`. Unknown
 // callees (foreign / indirect / no summary) fall back to all arguments (sound).
 //
-// This is a DATA slice: it omits control dependence (the branch conditions that
-// guard the contributing statements) — that is step 4.
+// With `control`, the branches guarding each contributing statement are
+// contributors too (control dependence), and so are the values they branch on.
 // ---------------------------------------------------------------------------
 
 @(private="file")
 Slice :: struct {
     checked:   ^Checked_Program,
-    seen_use:  map[^Expr_Ident]bool,
+    seen_use:  map[Node_Id]bool,
     seen_def:  map[^Def]bool,
     result:    [dynamic]^Def,
-    work:      [dynamic]^Expr_Ident,
+    work:      [dynamic]Node_Id,
     ctrl:      [dynamic]Guard,       // the branches/loops guarding contributing statements (control dependence)
     ctrl_seen: map[Span]bool,        // dedup of `ctrl` by controlling-statement span
 }
 
 @(private="file")
-slice_use :: proc(s: ^Slice, u: ^Expr_Ident) {
-    if u == nil || s.seen_use[u] { return }
+slice_free :: proc(s: ^Slice) {
+    delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen)
+}
+
+@(private="file")
+slice_use :: proc(s: ^Slice, u: Node_Id) {
+    if s.seen_use[u] { return }
     s.seen_use[u] = true
     append(&s.work, u)
 }
 
-// Add a contributing definition: its RHS uses (data dependence) and the branches
-// /loops that guard it (control dependence) become contributors too.
+// Add a contributing definition: the uses its value reads (data dependence)
+// and the branches/loops that guard it (control dependence) become
+// contributors too.
 @(private="file")
 slice_add_def :: proc(s: ^Slice, d: ^Def) {
     if s.seen_def[d] { return }
     s.seen_def[d] = true
     append(&s.result, d)
-    slice_value(s, d.value)
+    uses: [dynamic]Node_Id
+    defer delete(uses)
+    du_def_uses(s.checked, d, true, &uses)
+    for u in uses { slice_use(s, u) }
     slice_guards(s, d.guards)
 }
 
 // Fold control dependence: each guarding predicate is recorded (for the render)
-// and its own driving expressions are sliced (a predicate has data dependence).
+// and what it branches on is sliced (a predicate has data dependence).
 @(private="file")
 slice_guards :: proc(s: ^Slice, guards: []Guard) {
     for g in guards {
@@ -65,139 +74,51 @@ slice_guards :: proc(s: ^Slice, guards: []Guard) {
     }
 }
 
-
-// Enqueue every variable use that contributes to an expression's value. A call
-// contributes only the arguments its RETURN is computed from (return_deps) — the
-// interprocedural step — falling back to all arguments when the callee or its
-// summary is unknown.
+// Enqueue every variable use that contributes to a value.
 @(private="file")
-slice_value :: proc(s: ^Slice, e: Expr) {
-    if e == nil { return }
-    #partial switch v in e {
-    case ^Expr_Ident: slice_use(s, v)
-    case ^Expr_Call:
-        if ra, ok := slice_return_deps(s.checked, v); ok {
-            for i in ra { if i >= 0 && i < len(call_args(v)) { slice_value(s, call_args(v)[i]) } }
-        } else {
-            for a in call_args(v) { slice_value(s, a) }
-        }
-        if v.overrides != nil { slice_value(s, v.overrides) }
-    case ^Expr_Unary:        slice_value(s, v.operand)
-    case ^Expr_Binary:       slice_value(s, v.left); slice_value(s, v.right)
-    case ^Expr_Index:        slice_value(s, v.expr); slice_value(s, v.index)
-    case ^Expr_Slice:        slice_value(s, v.expr); slice_value(s, v.low); slice_value(s, v.high)
-    case ^Expr_Field_Access: slice_value(s, v.expr)
-    case ^Expr_Struct_Literal:
-        for f in v.fields { slice_value(s, f.value) }
-        for a in v.array_values { slice_value(s, a) }
-        slice_value(s, v.broadcast_value)
-    case ^Expr_Take:         slice_value(s, v.storage); slice_value(s, take_count(v))
-    case ^Expr_Try:          slice_value(s, v.inner)
-    case ^Expr_If:           slice_value(s, v.condition); slice_value(s, v.then_expr); slice_value(s, v.else_expr)
-    case ^Expr_Array:        for el in v.elements { slice_value(s, el) }
+slice_value :: proc(s: ^Slice, o: Operand) {
+    uses: [dynamic]Node_Id
+    defer delete(uses)
+    du_value_uses(s.checked, o, true, &uses)
+    for u in uses { slice_use(s, u) }
+}
+
+// Drain the worklist: each use pulls in the definitions that may reach it.
+@(private="file")
+slice_close :: proc(s: ^Slice) {
+    for len(s.work) > 0 {
+        u := pop(&s.work)
+        for d in s.checked.du.reaching[u] { slice_add_def(s, d) }
     }
 }
 
-// The callee's return-DEP set (which parameter indices its return value is
-// computed from), read off the materialized call graph. This is the data-
-// dependence summary (cg.return_deps), NOT escape's narrower aliasing summary
-// (cg.esc): a value computed from a param — `obj_get_directions(dir)`
-// returning a column of `mat4_from_quat(dir)` — depends on `dir` even though it
-// doesn't alias its storage, and the slice must cross the call on that. ok=false
-// for foreign / indirect / no-summary calls — the caller then conservatively
-// follows all arguments.
+// Seed the worklist from every explicit `return`, and from every definition
+// of a named result (`-> (x, y: f32)`): the body assigns those and returns
+// them implicitly, so their computation is the slice.
 @(private="file")
-slice_return_deps :: proc(checked: ^Checked_Program, call: ^Expr_Call) -> ([]int, bool) {
-    rf, ok := call.resolved_func.?
-    if !ok || rf.callee == nil || rf.callee.ast == nil { return nil, false }
-    cg := &checked.call_graph
-    node, found := cg.stmt_to_node[rf.callee.ast]
-    if !found || node >= len(cg.return_deps) { return nil, false }
-    return cg.return_deps[node], true
-}
-
-// The uses an expression depends on (return_deps-filtered) — the collection-form
-// mirror of `slice_value`, used to build the forward dependency edges so the two
-// directions agree about which arguments a call propagates.
-@(private="file")
-slice_collect :: proc(checked: ^Checked_Program, e: Expr, out: ^map[^Expr_Ident]bool) {
-    if e == nil { return }
-    #partial switch v in e {
-    case ^Expr_Ident: out[v] = true
-    case ^Expr_Call:
-        if ra, ok := slice_return_deps(checked, v); ok {
-            for i in ra { if i >= 0 && i < len(call_args(v)) { slice_collect(checked, call_args(v)[i], out) } }
-        } else {
-            for a in call_args(v) { slice_collect(checked, a, out) }
-        }
-        if v.overrides != nil { slice_collect(checked, v.overrides, out) }
-    case ^Expr_Unary:        slice_collect(checked, v.operand, out)
-    case ^Expr_Binary:       slice_collect(checked, v.left, out); slice_collect(checked, v.right, out)
-    case ^Expr_Index:        slice_collect(checked, v.expr, out); slice_collect(checked, v.index, out)
-    case ^Expr_Slice:        slice_collect(checked, v.expr, out); slice_collect(checked, v.low, out); slice_collect(checked, v.high, out)
-    case ^Expr_Field_Access: slice_collect(checked, v.expr, out)
-    case ^Expr_Struct_Literal:
-        for f in v.fields { slice_collect(checked, f.value, out) }
-        for a in v.array_values { slice_collect(checked, a, out) }
-        slice_collect(checked, v.broadcast_value, out)
-    case ^Expr_Take:         slice_collect(checked, v.storage, out); slice_collect(checked, take_count(v), out)
-    case ^Expr_Try:          slice_collect(checked, v.inner, out)
-    case ^Expr_If:           slice_collect(checked, v.condition, out); slice_collect(checked, v.then_expr, out); slice_collect(checked, v.else_expr, out)
-    case ^Expr_Array:        for el in v.elements { slice_collect(checked, el, out) }
+slice_seed :: proc(s: ^Slice, f: ^Du_Fn) {
+    g := &s.checked.graph
+    for ret in f.returns {
+        for o in graph_operands(g, ret) { slice_value(s, o) }
+        slice_guards(s, du_return_guards(f, ret))
     }
-}
-
-// Seed the worklist from every `return` in the body (recursing into nested
-// blocks, but not nested functions — those are separate slices).
-@(private="file")
-slice_seed :: proc(s: ^Slice, stmts: []Stmt) {
-    for st in stmts {
-        #partial switch v in st {
-        case Stmt_Return:
-            for e in v.values { slice_value(s, e) }
-            g := s.checked.control_deps[v.span]   // the return's control dependence, from the CFG
-            slice_guards(s, g)
-        case ^Stmt_If:    slice_seed(s, v.body[:]); slice_seed(s, v.else_body[:])
-        case ^Stmt_For:   slice_seed(s, v.body[:])
-        case ^Stmt_Match: for arm in v.arms { slice_seed(s, arm.body[:]) }
-        case ^Stmt_Defer: slice_seed(s, v.body[:])
-        }
-    }
-}
-
-// Functions with named returns (`-> (x, y: f32)`) assign the result into those
-// bindings and return them implicitly, so seed from every definition of a named
-// return — its computation is the slice. (Sound: early `return <const>` paths add
-// no contributors.)
-@(private="file")
-slice_seed_named_returns :: proc(s: ^Slice, ft: ^Type_Scope) {
-    if ft.ast == nil || len(ft.ast.return_bindings) == 0 { return }
-    for d in s.checked.defs {
-        if d.binding == nil || d.binding.fn != ft || s.seen_def[d] { continue }
-        for rb in ft.ast.return_bindings {
-            if d.binding.name == rb.name { slice_add_def(s, d); break }
-        }
+    for d in f.defs {
+        if d.binding != nil && g.kind[d.binding.node] == .Result { slice_add_def(s, d) }
     }
 }
 
 @(private="file")
 slice_run :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> (defs: [dynamic]^Def, ctrl: [dynamic]Guard) {
     s := Slice{ checked = checked }
-    defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen) }
-    slice_seed(&s, ft.body[:])
-    slice_seed_named_returns(&s, ft)
-    for len(s.work) > 0 {
-        u := pop(&s.work)
-        rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
-        for d in rdefs { slice_add_def(&s, d) }
-    }
+    defer slice_free(&s)
+    if f := du_fn(checked, ft); f != nil { slice_seed(&s, f) }
+    slice_close(&s)
     return s.result, s.ctrl
 }
 
 // --- render ----------------------------------------------------------------
 
 render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: string) -> string {
-    ensure_fn_analysis(checked, ft)   // build this function's def-use graph + control deps on demand
     if len(ft.return_types) == 0 {
         return fmt.tprintf("%s returns no value — nothing to slice.\n", label)
     }
@@ -233,7 +154,7 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
     if len(params) == 0 && len(stmts) == 0 {
         fmt.sbprint(&b, "\n  (no variable contributors — the return value is a constant)\n")
     }
-    if checked.want_control_deps {
+    if checked.du.want_control {
         fmt.sbprint(&b, "\n  note: data + control dependence — control comes from the control-flow\n")
         fmt.sbprint(&b, "        graph, so early-return / break guard clauses are included.\n")
     } else {
@@ -260,39 +181,37 @@ guard_word :: proc(k: Guard_Kind) -> string {
 }
 
 // ---------------------------------------------------------------------------
-// Forward slice — `mara ask <fn> affects` (slice analysis, step 5).
+// Forward slice — what a variable affects.
 //
-// The mirror of `contributors`: "what does each parameter affect?" Built on the
-// SAME def-use graph, walked the other way. We materialize the def -> def
-// dependency edges (D1 -> D2 when D2's value or a guard controlling it reads a
-// binding D1 defines, return_deps-filtered exactly like the backward slice),
-// then BFS forward from a parameter's definition. A parameter affects the return
-// when its forward set reaches a definition that feeds a `return`.
+// The mirror of the backward slice, built on the SAME def-use walked the other
+// way. We materialize the def -> def dependency edges (D1 -> D2 when D2's value
+// or a guard controlling it reads a variable D1 defines, return_deps-filtered
+// exactly like the backward slice), then BFS forward from a definition. A value
+// affects the return when its forward set reaches a definition that feeds a
+// `return`.
 //
-// Within the queried function this is the def->def reach; value flow OUT of a
-// call's return uses the same return_deps summary the backward direction does, so
-// `affects` and `contributors` agree. Value flow INTO a call (a bare/predicate
-// call's argument, where the value is consumed by the callee, not returned) is
-// followed ONE hop to the callee parameter it lands in — see the interprocedural
-// forward hop above.
+// Value flow INTO a call (an argument the callee consumes rather than returns)
+// is followed into the callee parameter it lands in — see the interprocedural
+// forward hop below.
 // ---------------------------------------------------------------------------
 
-// Forward dependency edges D1 -> {D2}: D2 reads a binding D1 defines. `data_only`
-// counts just D2's RHS (pure data flow); the full graph also counts a binding read
-// in a guard CONTROLLING D2 (control dependence — D2 runs inside a branch/loop D1
-// drives). The two-graph split is how the forward slice separates data from
-// control: reach via data_only, then via full; the difference is control-only.
+// Forward dependency edges D1 -> {D2}: D2 reads a variable D1 defines.
+// `data_only` counts just D2's value (pure data flow); the full graph also
+// counts a variable read in a guard CONTROLLING D2 (control dependence). The
+// two-graph split is how the forward slice separates data from control: reach
+// via data_only, then via full; the difference is control-only.
 @(private="file")
 slice_build_succ :: proc(checked: ^Checked_Program, ft: ^Type_Scope, data_only: bool) -> map[^Def][dynamic]^Def {
     succ: map[^Def][dynamic]^Def
-    for d2 in checked.defs {
-        if d2.binding == nil || d2.binding.fn != ft { continue }
-        deps: map[^Expr_Ident]bool
-        slice_collect(checked, d2.value, &deps)
-        if !data_only { for g in d2.guards { for c in g.conds { slice_collect(checked, c, &deps) } } }
+    f := du_fn(checked, ft)
+    if f == nil { return succ }
+    for d2 in f.defs {
+        if d2.binding == nil { continue }
+        deps: [dynamic]Node_Id
+        du_def_uses(checked, d2, true, &deps)
+        if !data_only { for g in d2.guards { for c in g.conds { du_value_uses(checked, c, true, &deps) } } }
         for u in deps {
-            rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
-            for d1 in rdefs {
+            for d1 in checked.du.reaching[u] {
                 s := succ[d1]; append(&s, d2); succ[d1] = s
             }
         }
@@ -307,42 +226,27 @@ slice_free_succ :: proc(succ: ^map[^Def][dynamic]^Def) {
     delete(succ^)
 }
 
-// Definitions whose value flows into a `return` — explicit return-value uses'
-// reaching defs, plus named-return definitions. A parameter affects the return
-// iff its forward set contains one of these.
+// Definitions whose value flows into a `return` — the explicit returns' uses'
+// reaching defs, plus named-result definitions. A value affects the return iff
+// its forward set contains one of these.
 @(private="file")
 slice_build_feeders :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> map[^Def]bool {
     feeders: map[^Def]bool
-    slice_return_feeders(checked, ft.body[:], &feeders)
-    if ft.ast != nil {
-        for d in checked.defs {
-            if d.binding == nil || d.binding.fn != ft { continue }
-            for rb in ft.ast.return_bindings { if d.binding.name == rb.name { feeders[d] = true; break } }
+    f := du_fn(checked, ft)
+    if f == nil { return feeders }
+    g := &checked.graph
+    for ret in f.returns {
+        uses: [dynamic]Node_Id
+        for o in graph_operands(g, ret) { du_value_uses(checked, o, true, &uses) }
+        for u in uses {
+            for d in checked.du.reaching[u] { feeders[d] = true }
         }
+        delete(uses)
+    }
+    for d in f.defs {
+        if d.binding != nil && g.kind[d.binding.node] == .Result { feeders[d] = true }
     }
     return feeders
-}
-
-@(private="file")
-slice_return_feeders :: proc(checked: ^Checked_Program, stmts: []Stmt, feeders: ^map[^Def]bool) {
-    for st in stmts {
-        #partial switch v in st {
-        case Stmt_Return:
-            for e in v.values {
-                uses: map[^Expr_Ident]bool
-                slice_collect(checked, e, &uses)
-                for u in uses {
-                    rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
-                    for d in rdefs { feeders[d] = true }
-                }
-                delete(uses)
-            }
-        case ^Stmt_If:    slice_return_feeders(checked, v.body[:], feeders); slice_return_feeders(checked, v.else_body[:], feeders)
-        case ^Stmt_For:   slice_return_feeders(checked, v.body[:], feeders)
-        case ^Stmt_Match: for arm in v.arms { slice_return_feeders(checked, arm.body[:], feeders) }
-        case ^Stmt_Defer: slice_return_feeders(checked, v.body[:], feeders)
-        }
-    }
 }
 
 @(private="file")
@@ -369,18 +273,15 @@ slice_forward_reach :: proc(succ: map[^Def][dynamic]^Def, seed: ^Def) -> map[^De
 // The def->def forward graph links a value only to OTHER definitions in the SAME
 // function and to `return`. A value passed as a call argument — a bare call, a
 // loop/if predicate, a match subject, a pointer the callee mutates — flows into
-// the CALLEE, where this function's def-use graph can't see it. That flow does
-// not exist in the caller at all (it is a side effect, not a `return_deps` edge),
-// so the slice used to report it honestly but blindly as "feeds N calls (effect
-// not traced)".
+// the CALLEE, where this function's def-use can't see it. That flow does not
+// exist in the caller at all (it is a side effect, not a `return_deps` edge).
 //
-// The call graph closes the gap by following ONE hop into the callee: a resolved
-// call carries its callee (resolved_func.callee), and post-UFCS-desugar the
-// receiver is folded into args[0], so call.args[i] maps positionally to
-// callee.params[i]. We report where the value lands — `callee (param p)`. Deeper
-// hops are a drill-down: slice that parameter (`mara ask p in callee`). Only
-// resolved calls with a body are followed; foreign / indirect / bodiless callees
-// stay an honest "not followed" count.
+// The graph closes the gap: a call operation carries its callee (a Calls edge)
+// and its arguments in the callee's parameter order, so argument i lands in
+// callee parameter i. We report where the value lands — `callee (param p)` —
+// and keep following from there, up to the hop budget. Only funs with a body
+// are followed; a construction, a print, a foreign or indirect callee stays an
+// honest "not followed" count.
 // ---------------------------------------------------------------------------
 
 // The call-hop budget for a forward flow query. The shared `depth` token is the
@@ -411,37 +312,29 @@ Hop_Landing :: struct {
     depth:  int,
 }
 
-// The callee a resolved call reaches, or nil (distinct-cast / foreign / indirect).
-@(private="file")
-hop_callee :: proc(call: ^Expr_Call) -> ^Type_Scope {
-    if rf, ok := call.resolved_func.?; ok { return rf.callee }
-    return nil
-}
-
-// The ^Var_Binding for parameter `idx` of `callee`. nil when the callee has no
-// analyzed parameters (e.g. a constructor, which flow_analyze_all skips) or idx
-// is out of range — the caller then treats that argument as not-followed.
+// The binding of parameter `idx` of fun `callee`, or nil.
 @(private="file")
 hop_param_binding :: proc(checked: ^Checked_Program, callee: ^Type_Scope, idx: int) -> ^Var_Binding {
-    for b in checked.var_bindings {
-        if b.fn == callee && b.kind == .Param && b.param_index == idx { return b }
+    f := du_fn(checked, callee)
+    if f == nil { return nil }
+    for b in f.vars {
+        if b.kind == .Param && b.param_index == idx { return b }
     }
     return nil
 }
 
-// Does an argument expression carry one of `targets`? Matched by the use's reaching
-// defs (the same def-level edges the backward graph uses), NOT by binding — so a read
-// of a target binding from a def outside the slice (an earlier one, or one writing a
-// different field) does not count. return_deps-filtered through nested calls
-// (slice_collect), exactly like the slices, so the directions agree.
+// Does an argument carry one of `targets`? Matched by the uses' reaching defs
+// (the same def-level edges the backward graph uses), NOT by binding — so a read
+// of a target variable from a def outside the slice (an earlier one, or one
+// writing a different field) does not count. return_deps-filtered through nested
+// calls, exactly like the slices, so the directions agree.
 @(private="file")
-arg_reads_targets :: proc(checked: ^Checked_Program, arg: Expr, targets: map[^Def]bool) -> bool {
-    uses: map[^Expr_Ident]bool
+arg_reads_targets :: proc(checked: ^Checked_Program, arg: Operand, targets: map[^Def]bool) -> bool {
+    uses: [dynamic]Node_Id
     defer delete(uses)
-    slice_collect(checked, arg, &uses)
+    du_value_uses(checked, arg, true, &uses)
     for u in uses {
-        rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
-        for d in rdefs { if targets[d] { return true } }
+        for d in checked.du.reaching[u] { if targets[d] { return true } }
     }
     return false
 }
@@ -449,131 +342,52 @@ arg_reads_targets :: proc(checked: ^Checked_Program, arg: Expr, targets: map[^De
 // Every DEFINITION the seeds reach within `fn` — the seed defs plus their forward
 // def->def closure. Kept at definition granularity (NOT collapsed to bindings): a
 // call consumes the value only when an argument's reaching def is in this set, so a
-// read of the same binding from a different def — an earlier one, or one writing a
-// different field — does not spuriously count. Collapsing to bindings made `x.f = v`
-// mark all of `x`, so every call reading any field of `x` (even before the write)
-// looked like a landing; that discarded the flow-/order-sensitivity the def graph has.
+// read of the same variable from a different def — an earlier one, or one writing a
+// different field — does not spuriously count.
 @(private="file")
 flow_targets :: proc(checked: ^Checked_Program, fn: ^Type_Scope, seeds: map[^Var_Binding]bool) -> map[^Def]bool {
     targets: map[^Def]bool
     succ := slice_build_succ(checked, fn, true)   // a value "lands in" a call by data flow, not control
     defer slice_free_succ(&succ)
-    for b in seeds {
-        if b.fn != fn { continue }
-        for d in checked.defs {
-            if d.binding == b {
-                r := slice_forward_reach(succ, d)   // includes the seed def d itself
-                for k in r { targets[k] = true }    // keep defs, do not collapse to bindings
-                delete(r)
-            }
-        }
+    f := du_fn(checked, fn)
+    if f == nil { return targets }
+    for d in f.defs {
+        if d.binding == nil || !seeds[d.binding] { continue }
+        r := slice_forward_reach(succ, d)   // includes the seed def d itself
+        for k in r { targets[k] = true }    // keep defs, do not collapse to bindings
+        delete(r)
     }
     return targets
 }
 
 // Collect the callee-param landings out of `fn`: for every call whose argument
-// reads a target, the parameter that argument lands in. Walks bare calls, calls
-// driving a loop/if/match, AND result-binding calls — a value lands in a callee's
-// params whether or not the callee's RETURN carries it back. (The def->def graph
-// only traces the return, so without this a glyph's w/h vanishing into pack_rect —
-// which returns a skyline position, not the glyph — would be invisible.)
-// `unfollowed` counts consuming calls whose callee has no body to follow into.
+// reads a target, the parameter that argument lands in — whether or not the
+// callee's RETURN carries it back (a glyph's w/h landing in pack_rect, which
+// returns a skyline position, not the glyph). `unfollowed` counts consuming
+// calls whose callee has no body to follow into.
 @(private="file")
 collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing) -> (unfollowed: int) {
-    ld_stmts(checked, fn.body[:], targets, out, &unfollowed)
+    f := du_fn(checked, fn)
+    if f == nil { return }
+    g := &checked.graph
+    for op in f.calls {
+        callee := du_callee(g, op)
+        followable := callee != nil && callee.kind == .Fun && callee.ast != nil
+        args := du_call_args(g, op)
+        if g.op[op] == .Print || g.op[op] == .Crash { args = graph_operands(g, op) }
+        consuming, landed := false, false
+        for arg, i in args {
+            if !arg_reads_targets(checked, arg, targets) { continue }
+            consuming = true
+            if !followable { continue }
+            if p := hop_param_binding(checked, callee, i); p != nil {
+                append(out, Hop_Landing{ callee = callee, param = p, site = g.origin[op] })
+                landed = true
+            }
+        }
+        if consuming && !landed { unfollowed += 1 }
+    }
     return
-}
-
-@(private="file")
-ld_stmts :: proc(checked: ^Checked_Program, stmts: []Stmt, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
-    for s in stmts { ld_stmt(checked, s, targets, out, unfollowed) }
-}
-
-// One statement's landings: its expressions walked for calls (ld_expr), its child
-// statements recursed. A nested Stmt_Scope (a nested fun) is deliberately NOT
-// entered — that body is a separate slice, same as slice_seed.
-@(private="file")
-ld_stmt :: proc(checked: ^Checked_Program, s: Stmt, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
-    #partial switch v in s {
-    case Stmt_Call:   ld_expr(checked, v.expr, targets, out, unfollowed)
-    case ^Stmt_If:    ld_expr(checked, v.condition, targets, out, unfollowed); ld_stmts(checked, v.body[:], targets, out, unfollowed); ld_stmts(checked, v.else_body[:], targets, out, unfollowed)
-    case ^Stmt_For:
-        ld_stmt(checked, v.init, targets, out, unfollowed)
-        ld_expr(checked, v.condition, targets, out, unfollowed)
-        ld_stmt(checked, v.post, targets, out, unfollowed)
-        ld_expr(checked, v.range_low, targets, out, unfollowed)
-        ld_expr(checked, v.range_high, targets, out, unfollowed)
-        ld_expr(checked, v.collection, targets, out, unfollowed)
-        ld_stmts(checked, v.body[:], targets, out, unfollowed)
-    case ^Stmt_Match: ld_expr(checked, v.subject, targets, out, unfollowed); for arm in v.arms { ld_stmts(checked, arm.body[:], targets, out, unfollowed) }
-    case ^Stmt_Defer: ld_stmts(checked, v.body[:], targets, out, unfollowed)
-    // Result-binding calls: the value lands in the callee's params even when the
-    // callee's return doesn't carry it back. `px,py := pack_rect(sky,w,h)` — w/h
-    // (glyph-derived) land in pack_rect; its result is a skyline slot, not the
-    // glyph, so the def->def graph alone never shows the glyph reaching pack_rect.
-    case ^Stmt_Decl:   ld_stmts(checked, v.checked[:], targets, out, unfollowed)
-    case ^Stmt_Assign:
-        // A compound `lhs op= rhs` desugars to `lhs = lhs op rhs` REUSING the
-        // target node as the binary's left, so walking `value` covers the
-        // target's calls too — walking both would land the same call twice.
-        if !v.is_compound { ld_expr(checked, v.target, targets, out, unfollowed) }
-        ld_expr(checked, v.value, targets, out, unfollowed)
-    case ^Stmt_Multi_Assign: for a in v.assigns { ld_stmt(checked, a, targets, out, unfollowed) }
-    case ^Stmt_Multi_Return_Assign:
-        if len(v.checked) > 0 {   // broadcast: the desugared per-target assigns ARE the statement
-            ld_stmts(checked, v.checked[:], targets, out, unfollowed)
-        } else {
-            for t in v.targets { ld_expr(checked, t, targets, out, unfollowed) }
-            for e in v.values  { ld_expr(checked, e, targets, out, unfollowed) }
-        }
-    case Stmt_Return: for e in v.values { ld_expr(checked, e, targets, out, unfollowed) }
-    }
-}
-
-// Find every call in an expression, wherever it sits: an assignment's RHS
-// (including the binary a compound `op=` desugars into), a condition/subject
-// operand, an index, another call's argument. The old walk matched only a
-// TOP-LEVEL Expr_Call, so `x *= f(y)` and `if f(y) > 0` never landed y in f.
-// Mirrors slice_value's traversal.
-@(private="file")
-ld_expr :: proc(checked: ^Checked_Program, e: Expr, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
-    if e == nil { return }
-    #partial switch v in e {
-    case ^Expr_Call:
-        ld_call(checked, v, targets, out, unfollowed)
-        for a in call_args(v) { ld_expr(checked, a, targets, out, unfollowed) }
-        if v.overrides != nil { ld_expr(checked, v.overrides, targets, out, unfollowed) }
-    case ^Expr_Unary:        ld_expr(checked, v.operand, targets, out, unfollowed)
-    case ^Expr_Binary:       ld_expr(checked, v.left, targets, out, unfollowed); ld_expr(checked, v.right, targets, out, unfollowed)
-    case ^Expr_Index:        ld_expr(checked, v.expr, targets, out, unfollowed); ld_expr(checked, v.index, targets, out, unfollowed)
-    case ^Expr_Slice:        ld_expr(checked, v.expr, targets, out, unfollowed); ld_expr(checked, v.low, targets, out, unfollowed); ld_expr(checked, v.high, targets, out, unfollowed)
-    case ^Expr_Field_Access: ld_expr(checked, v.expr, targets, out, unfollowed)
-    case ^Expr_Struct_Literal:
-        for f in v.fields { ld_expr(checked, f.value, targets, out, unfollowed) }
-        for a in v.array_values { ld_expr(checked, a, targets, out, unfollowed) }
-        ld_expr(checked, v.broadcast_value, targets, out, unfollowed)
-    case ^Expr_Take:         ld_expr(checked, v.storage, targets, out, unfollowed); ld_expr(checked, take_count(v), targets, out, unfollowed)
-    case ^Expr_Try:          ld_expr(checked, v.inner, targets, out, unfollowed)
-    case ^Expr_If:           ld_expr(checked, v.condition, targets, out, unfollowed); ld_expr(checked, v.then_expr, targets, out, unfollowed); ld_expr(checked, v.else_expr, targets, out, unfollowed)
-    case ^Expr_Array:        for el in v.elements { ld_expr(checked, el, targets, out, unfollowed) }
-    }
-}
-
-@(private="file")
-ld_call :: proc(checked: ^Checked_Program, call: ^Expr_Call, targets: map[^Def]bool, out: ^[dynamic]Hop_Landing, unfollowed: ^int) {
-    callee := hop_callee(call)
-    followable := callee != nil && callee.ast != nil
-    consuming, landed := false, false
-    for arg, i in call_args(call) {
-        if !arg_reads_targets(checked, arg, targets) { continue }
-        consuming = true
-        if !followable { continue }
-        if p := hop_param_binding(checked, callee, i); p != nil {
-            append(out, Hop_Landing{ callee = callee, param = p, site = call.span })
-            landed = true
-        }
-    }
-    if consuming && !landed { unfollowed^ += 1 }
 }
 
 // Interprocedural forward reach over a seed set, up to `max_hops` call hops (a
@@ -698,7 +512,7 @@ flow_param_type :: proc(t: Type) -> string {
 }
 
 // The param-landing block shared by the variable and type-flow forward views:
-// where the value flows in one interprocedural hop, plus any calls we can't follow.
+// where the value flows across call hops, plus any calls we can't follow.
 @(private="file")
 render_landings :: proc(bb: ^strings.Builder, landings: []Hop_Landing, unfollowed: int) {
     if len(landings) > 0 {
@@ -756,13 +570,23 @@ slice_def_word :: proc(k: Def_Kind) -> string {
     return "?"
 }
 
+// A variable's definitions, in its fun's analysis.
+var_defs :: proc(checked: ^Checked_Program, b: ^Var_Binding) -> [dynamic]^Def {
+    out: [dynamic]^Def
+    if f := du_fn(checked, b.fn); f != nil {
+        for d in f.defs { if d.binding == b { append(&out, d) } }
+    }
+    return out
+}
+
 // The variable's root def for a flow query — its earliest definition in source
 // order (the declaration, or a parameter's entry). Flow roots here by default;
 // `at <file>:<line>` overrides it with the specific write on that line.
 var_root_def :: proc(checked: ^Checked_Program, b: ^Var_Binding) -> ^Def {
+    defs := var_defs(checked, b)
+    defer delete(defs)
     best: ^Def
-    for d in checked.defs {
-        if d.binding != b { continue }
+    for d in defs {
         if best == nil || d.span.line < best.span.line || (d.span.line == best.span.line && d.span.col < best.span.col) {
             best = d
         }
@@ -783,7 +607,7 @@ var_root_def :: proc(checked: ^Checked_Program, b: ^Var_Binding) -> ^Def {
 // ---------------------------------------------------------------------------
 
 render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, kind, dir, pkg: string, depth: int, root_def: ^Def = nil) -> string {
-    ensure_fn_analysis(checked, b.fn)
+    du_fn(checked, b.fn)
     knd := "param" if b.kind == .Param else "local"
     bb := strings.builder_make()
     home_pkg := ask_home_package(b.fn)
@@ -828,20 +652,25 @@ render_var_type_graph :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b
     if show_below { render_var_types_below(bb, checked, b, depth) }
 }
 
+// The backward slice from every definition of `b`.
+@(private="file")
+slice_of_var :: proc(checked: ^Checked_Program, b: ^Var_Binding) -> Slice {
+    s := Slice{ checked = checked }
+    defs := var_defs(checked, b)
+    defer delete(defs)
+    for d in defs { slice_add_def(&s, d) }
+    slice_close(&s)
+    return s
+}
+
 // var `type above` — the types carried by the variable's BACKWARD slice: every value
 // that flows into it (its producers, transitively up the chain), grouped by nominal
 // type. The SAME backward slice `var call above` reads for the calls it contains. The
 // seed itself is excluded — its own type is the one it gets for free.
 @(private="file")
 render_var_types_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
-    s := Slice{ checked = checked }
-    defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen); delete(s.result); delete(s.ctrl) }
-    for d in checked.defs { if d.binding == b { slice_add_def(&s, d) } }
-    for len(s.work) > 0 {
-        u := pop(&s.work)
-        rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
-        for d in rdefs { slice_add_def(&s, d) }
-    }
+    s := slice_of_var(checked, b)
+    defer { slice_free(&s); delete(s.result); delete(s.ctrl) }
     suppliers: map[^Var_Binding]bool
     defer delete(suppliers)
     for d in s.result {
@@ -859,7 +688,6 @@ render_var_types_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
 // reach `var call below` uses.
 @(private="file")
 render_var_types_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int) {
-    flow_analyze_all(checked)   // the interprocedural hop reads callees' param bindings
     consumers: map[^Var_Binding]bool
     defer delete(consumers)
 
@@ -867,14 +695,14 @@ render_var_types_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     // things it supplies — skip them, as the forward flow view does).
     data_succ := slice_build_succ(checked, b.fn, true)
     defer slice_free_succ(&data_succ)
-    for d in checked.defs {
-        if d.binding == b {
-            r := slice_forward_reach(data_succ, d)
-            for k in r {
-                if k.binding != nil && k.binding != b && k.kind != .Param { consumers[k.binding] = true }
-            }
-            delete(r)
+    defs := var_defs(checked, b)
+    defer delete(defs)
+    for d in defs {
+        r := slice_forward_reach(data_succ, d)
+        for k in r {
+            if k.binding != nil && k.binding != b && k.kind != .Param { consumers[k.binding] = true }
         }
+        delete(r)
     }
 
     // Interprocedural: the callee parameters the value lands in, across call hops.
@@ -1001,21 +829,15 @@ var_type_sample :: proc(vars: []string) -> string {
 // the chain). A cast (`i32(x)`) is not a call and is skipped, matching lineage.
 @(private="file")
 render_var_calls_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding) {
-    s := Slice{ checked = checked }
-    defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen) }
-    for d in checked.defs { if d.binding == b { slice_add_def(&s, d) } }
-    for len(s.work) > 0 {
-        u := pop(&s.work)
-        rdefs := checked.reaching[u]   // bind before ranging (transient map-index lvalue)
-        for d in rdefs { slice_add_def(&s, d) }
-    }
+    s := slice_of_var(checked, b)
+    defer { slice_free(&s); delete(s.result); delete(s.ctrl) }
     Row :: struct { callee, recv: string, span: Span }
     rows: [dynamic]Row
     defer delete(rows)
     seen: map[Span]bool
     defer delete(seen)
     for d in s.result {
-        callee, ok := lineage_call_label(d.value)
+        callee, ok := du_call_label(checked, d)
         if !ok || seen[d.span] { continue }
         seen[d.span] = true
         recv := d.binding.name if d.binding != nil else ""
@@ -1039,7 +861,6 @@ render_var_calls_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
 // "lands in" set), reusing flow_reach + render_landings.
 @(private="file")
 render_var_calls_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int) {
-    flow_analyze_all(checked)
     seeds: map[^Var_Binding]bool
     defer delete(seeds)
     seeds[b] = true
@@ -1057,18 +878,18 @@ render_var_calls_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
 // it reaches the return.
 @(private="file")
 render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^Var_Binding, depth: int, root_def: ^Def) {
-    flow_analyze_all(checked)   // the interprocedural hop reads callees' param bindings
-
     // Flow roots at one point: the addressed write (root_def), else the declaration.
     // From the root forward, the variable's OWN later modifications are part of what
     // it affects (its value evolving), so — unlike the backward view — same-binding
     // defs are KEPT; only the root itself (the subject) and parameters are dropped.
     root := root_def
     if root == nil { root = var_root_def(checked, b) }
+    defs := var_defs(checked, b)
+    defer delete(defs)
 
-    // Data reach: pure value flow (no CFG). The hot path. With an explicit root we
-    // reach forward from it alone; by default we union every def of the variable so
-    // an independent reassignment (one not reading the prior value) is still covered.
+    // Data reach: pure value flow (no guards). The hot path. With an explicit root
+    // we reach forward from it alone; by default we union every def of the variable
+    // so an independent reassignment (one not reading the prior value) is still covered.
     data_succ := slice_build_succ(checked, b.fn, true)
     defer slice_free_succ(&data_succ)
     feeders := slice_build_feeders(checked, b.fn)
@@ -1081,12 +902,10 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
         for k in r { reached[k] = true }
         delete(r)
     } else {
-        for d in checked.defs {
-            if d.binding == b {
-                r := slice_forward_reach(data_succ, d)
-                for k in r { reached[k] = true }
-                delete(r)
-            }
+        for d in defs {
+            r := slice_forward_reach(data_succ, d)
+            for k in r { reached[k] = true }
+            delete(r)
         }
     }
 
@@ -1104,7 +923,7 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
     // this value drives but aren't computed from its data — full reach minus data.
     ctrl_stmts: [dynamic]^Def
     defer delete(ctrl_stmts)
-    if checked.want_control_deps {
+    if checked.du.want_control {
         full_succ := slice_build_succ(checked, b.fn, false)
         defer slice_free_succ(&full_succ)
         full: map[^Def]bool
@@ -1114,12 +933,10 @@ render_var_affects :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b: ^
             for k in r { full[k] = true }
             delete(r)
         } else {
-            for d in checked.defs {
-                if d.binding == b {
-                    r := slice_forward_reach(full_succ, d)
-                    for k in r { full[k] = true }
-                    delete(r)
-                }
+            for d in defs {
+                r := slice_forward_reach(full_succ, d)
+                for k in r { full[k] = true }
+                delete(r)
             }
         }
         for d in full {
@@ -1183,46 +1000,39 @@ flow_type_base :: proc(t: Type) -> Type {
 @(private="file")
 type_flow_seeds :: proc(checked: ^Checked_Program, T: Type) -> map[^Var_Binding]bool {
     seeds: map[^Var_Binding]bool
-    for b in checked.var_bindings {
+    for b in checked.du.vars {
         if b.type_ == nil { continue }
         if flow_type_base(b.type_) == T { seeds[b] = true }
     }
     return seeds
 }
 
-// flow_analyze_all is data-only (no post-dominators) for speed, so an aggregate
-// would miss control dependence. But a slice stays inside the function holding its
-// seed (calls are crossed by summary), so only the functions that actually hold a
-// relevant occurrence need control-deps. Build them just for `fns`, then re-stamp
-// their defs' guards (the defs were created data-only, with empty guards). Keeps
-// the cost ~O(uses) instead of O(all functions) while restoring full fidelity.
+// du_all is data-only (no post-dominators) for speed, so an aggregate would miss
+// control dependence. But a slice stays inside the function holding its seed
+// (calls are crossed by summary), so only the functions that actually hold a
+// relevant occurrence need guards: build them just for `fns` (du_fn stamps
+// their defs). Keeps the cost ~O(uses) instead of O(all functions).
 @(private="file")
 flow_build_guards :: proc(checked: ^Checked_Program, fns: map[^Type_Scope]bool) {
-    for ft in fns {
-        cfg := cfg_of(checked, ft)
-        if cfg == nil { continue }
-        cfg_build_control_deps(checked, cfg)
-        for d in checked.defs {
-            if d.binding != nil && d.binding.fn == ft { d.guards = checked.control_deps[d.span] }
-        }
-    }
+    for ft in fns { du_fn(checked, ft) }
 }
 
-// Control-deps for the functions holding a value of type T (where type-flow slices).
+// Guards for the functions holding a value of type T (where type-flow slices).
 flow_build_type_guards :: proc(checked: ^Checked_Program, T: Type) {
     fns: map[^Type_Scope]bool
     defer delete(fns)
-    for b in checked.var_bindings {
+    for b in checked.du.vars {
         if b.type_ != nil && b.fn != nil && flow_type_base(b.type_) == T { fns[b.fn] = true }
     }
     flow_build_guards(checked, fns)
 }
 
-// Control-deps for the functions that call F (where function-flow slices the args).
+// Guards for the functions that call F (where function-flow slices the args).
 flow_build_fn_guards :: proc(checked: ^Checked_Program, F: ^Type_Scope) {
     fns: map[^Type_Scope]bool
     defer delete(fns)
-    sites := checked.call_sites[F]
+    sites := du_call_sites(checked, F)
+    defer delete(sites)
     for site in sites { if site.caller != nil { fns[site.caller] = true } }
     flow_build_guards(checked, fns)
 }
@@ -1232,13 +1042,9 @@ render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     defer delete(seeds)
 
     s := Slice{ checked = checked }
-    defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen); delete(s.result); delete(s.ctrl) }
-    for d in checked.defs { if d.binding != nil && seeds[d.binding] { slice_add_def(&s, d) } }
-    for len(s.work) > 0 {
-        u := pop(&s.work)
-        rdefs := checked.reaching[u]
-        for d in rdefs { slice_add_def(&s, d) }
-    }
+    defer { slice_free(&s); delete(s.result); delete(s.ctrl) }
+    for d in checked.du.defs { if d.binding != nil && seeds[d.binding] { slice_add_def(&s, d) } }
+    slice_close(&s)
 
     params: [dynamic]^Def
     stmts:  [dynamic]^Def
@@ -1286,20 +1092,21 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         G := b.fn
         if done_fns[G] { continue }
         done_fns[G] = true
+        f := du_fn(checked, G)
         data_succ := slice_build_succ(checked, G, true)
         feeders := slice_build_feeders(checked, G)
-        for d in checked.defs {
-            if d.binding != nil && seeds[d.binding] && d.binding.fn == G {
+        for d in f.defs {
+            if d.binding != nil && seeds[d.binding] {
                 r := slice_forward_reach(data_succ, d)
                 for k in r { reached[k] = true; if feeders[k] { ret_fns[G] = true } }
                 delete(r)
             }
         }
         slice_free_succ(&data_succ)
-        if checked.want_control_deps {
+        if checked.du.want_control {
             full_succ := slice_build_succ(checked, G, false)
-            for d in checked.defs {
-                if d.binding != nil && seeds[d.binding] && d.binding.fn == G {
+            for d in f.defs {
+                if d.binding != nil && seeds[d.binding] {
                     r := slice_forward_reach(full_succ, d)
                     for k in r { ctrl[k] = true }
                     delete(r)
@@ -1366,18 +1173,15 @@ render_type_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
 // ---------------------------------------------------------------------------
 
 render_fn_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F: ^Type_Scope, label: string) {
-    sites := checked.call_sites[F]
+    sites := du_call_sites(checked, F)
+    defer delete(sites)
     if len(sites) == 0    { fmt.sbprintf(bb, "\nabove (flow) — %s is never called\n", label); return }
     if len(F.params) == 0 { fmt.sbprintf(bb, "\nabove (flow) — %s takes no arguments  (%s)\n", label, ask_plural(len(sites), "call site")); return }
 
     s := Slice{ checked = checked }
-    defer { delete(s.seen_use); delete(s.seen_def); delete(s.work); delete(s.ctrl_seen); delete(s.result); delete(s.ctrl) }
-    for site in sites { for arg in call_args(site.call) { slice_value(&s, arg) } }
-    for len(s.work) > 0 {
-        u := pop(&s.work)
-        rdefs := checked.reaching[u]
-        for d in rdefs { slice_add_def(&s, d) }
-    }
+    defer { slice_free(&s); delete(s.result); delete(s.ctrl) }
+    for site in sites { for arg in du_call_args(&checked.graph, site.op) { slice_value(&s, arg) } }
+    slice_close(&s)
 
     params: [dynamic]^Def
     stmts:  [dynamic]^Def
@@ -1408,18 +1212,20 @@ render_fn_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
 }
 
 render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F: ^Type_Scope, label: string) {
-    sites := checked.call_sites[F]
+    sites := du_call_sites(checked, F)
+    defer delete(sites)
     if len(sites) == 0            { fmt.sbprintf(bb, "\nbelow (flow) — %s is never called\n", label); return }
     if len(F.return_types) == 0   { fmt.sbprintf(bb, "\nbelow (flow) — %s returns no value  (%s)\n", label, ask_plural(len(sites), "call site")); return }
 
     // Result definitions: a call to F bound to a variable (`r := F(...)`). Calls
     // whose result is used inline aren't a def, so they're counted, not traced.
+    g := &checked.graph
     result_defs: map[^Def]bool
     defer delete(result_defs)
-    for d in checked.defs {
-        if call, ok := d.value.(^Expr_Call); ok && d.binding != nil {
-            if rf, rok := call.resolved_func.?; rok && rf.callee == F { result_defs[d] = true }
-        }
+    for d in checked.du.defs {
+        if len(d.writes) == 0 || g.op[d.writes[0]] != .Write { continue }
+        val := graph_operands(g, d.writes[0])[1].op
+        if val != NO_NODE && g.op[val] == .Call && du_callee(g, val) == F { result_defs[d] = true }
     }
     inline := len(sites) - len(result_defs)
     if inline < 0 { inline = 0 }
@@ -1468,7 +1274,7 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
 // flow leaves the function, so for that direction the caller is pointed at the
 // outside view (`mara ask <fn> flow below`).
 render_return_slice :: proc(checked: ^Checked_Program, ft: ^Type_Scope, fn_label, kind, dir, pkg: string) -> string {
-    ensure_fn_analysis(checked, ft)
+    du_fn(checked, ft)
     bb := strings.builder_make()
     home_pkg := ask_home_package(ft)
     if home_pkg == "" { home_pkg = pkg }

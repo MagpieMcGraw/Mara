@@ -1532,36 +1532,9 @@ Checked_Program :: struct {
     // has a single canonical "main TU" to drop them into.
     main_package:   string,
 
-    // Slice analysis (usedef.odin). Step 1 — variable identity: each variable USE
-    // (an Expr_Ident naming a local/parameter) is linked, shadow-correctly, to the
-    // binding it refers to (`use_def`); `var_bindings` owns the binding records.
-    // Step 2 — the def-use graph: `defs` is the pool of definition sites, and
-    // `reaching` maps each use to the set of definitions that may reach it
-    // (reaching-definitions, with sound loop back-edges). Backward slice = walk
-    // `reaching` from a use; forward slice = its inverse. The substrate the slice
-    // queries build on.
-    var_bindings:   [dynamic]^Var_Binding,
-    use_def:        map[^Expr_Ident]^Var_Binding,
-    defs:           [dynamic]^Def,
-    reaching:       map[^Expr_Ident][]^Def,
-
-    // Per-function control-flow graphs (cfg.odin), built on demand for the
-    // analyzer's control dependence (cfg_of). `control_deps` maps a
-    // statement's span to the branches/loops it is control-dependent on (computed
-    // from CFG post-dominators) — the analyzer's guard source.
-    cfgs:           map[^Type_Scope]^CFG,
-    control_deps:   map[Span][]Guard,
-    // Functions whose slice analysis (control deps + def-use) has been built —
-    // it is lazy and per-function (ensure_fn_analysis), kept off the compile path.
-    analyzed:       map[^Type_Scope]bool,
-    // Whether the current `ask` query wants CONTROL dependence (the `control`
-    // filter). Off by default: the post-dominator computation is the analyzer's
-    // one expensive step (it dwarfs the data slice), so the hot path stays
-    // data-only and control deps are computed lazily only when asked.
-    want_control_deps: bool,
-    // Every call site indexed by callee — the function-flow "outside" view slices
-    // the arguments / results around each call. Populated by ud_expr during analysis.
-    call_sites:     map[^Type_Scope][dynamic]Fn_Call_Site,
+    // Def-use over the program graph (defuse.odin), built per function on the
+    // first `mara ask` flow query that needs it: what the flow views slice.
+    du:             Def_Use,
 }
 
 // ---------------------------------------------------------------------------
@@ -10640,9 +10613,8 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     }
     flow_analyze_program(&c, checked) // post-check intraproc flow (missing return, err use, init)
     escape_analyze_program(&c, checked) // post-check escape: the lifetime rule + its call summaries
-    // NOTE: the slice analysis (def-use graph + control dependence, on its CFG) is
-    // built lazily per function on the first `mara ask … contributors/affects` —
-    // ensure_fn_analysis.
+    // NOTE: the slice analysis (def-use + control dependence on the graph) is
+    // built lazily per function by the first `mara ask` flow query — du_fn.
     checked.errors = c.errors
     return checked
 }

@@ -1441,7 +1441,7 @@ main :: proc() {
             if !found { os.exit(1) }
             return
         }
-        checked.want_control_deps = args.ask_control   // gate the post-dominator pass (off = the fast data-only default)
+        checked.du.want_control = args.ask_control   // gate the post-dominator pass (off = the fast data-only default)
         out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.ask_at, args.pkg_name, ask_scope_file, ask_scope_module, args.ask_depth)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed

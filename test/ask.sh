@@ -10,7 +10,7 @@
 # which is copied into a directory named after it, since `mara ask` analyzes
 # the module named by its working directory.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-MARA=$ROOT/Mara.exe
+MARA=${MARA:-$ROOT/Mara.exe}   # another compiler to compare: MARA=... test/ask.sh
 QUERIES=$ROOT/test/ask_queries.txt
 EXPECTED=$ROOT/test/ask_expected.txt
 WORK=${TMP:-/tmp}/mara_ask

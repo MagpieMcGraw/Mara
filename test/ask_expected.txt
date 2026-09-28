@@ -498,18 +498,25 @@ physics_resolution   camera.mara:141
 
 below (flow) — what this variable affects  (forward slice)
 
-  physics_this_frame  ->  5 statements + 4 calls
+  physics_this_frame  ->  5 statements + 9 calls
     write   camera         camera.mara:145
     write   camera         camera.mara:146
     decl    translation_mx camera.mara:148
     decl    rotation_mx    camera.mara:149
     write   camera         camera.mara:150
 
-  into calls — the value lands in  (4 parameters)
+  into calls — the value lands in  (11 parameters)
     mat4_from_quat         (param q : distinct Quat)  camera.mara:149
+    mat4_mul               (param a : distinct Mat4)  camera.mara:150
+    mat4_mul               (param b : distinct Mat4)  camera.mara:150
     mat4_translate         (param pos : distinct Vec3)  camera.mara:148
     mat4_transpose         (param m : distinct Mat4)  camera.mara:149
     pow_f32                (param exp : f32)  camera.mara:145
+    vec3_add               (param a : distinct Vec3)  camera.mara:146
+    vec3_add               (param b : distinct Vec3)  camera.mara:146
+    vec3_negate            (param v : distinct Vec3)  camera.mara:148
+    vec3_scale             (param v : distinct Vec3)  camera.mara:146
+    vec3_scale             (param s : f32)  camera.mara:145
 === Pounce | physics_this_frame in camera_update flow above
 physics_this_frame — local in camera_update  camera.mara:142   (module camera)
 
@@ -522,61 +529,79 @@ physics_this_frame — local in camera_update  camera.mara:142   (module camera)
 
 below (flow) — what this variable affects  (forward slice)
 
-  physics_this_frame  ->  5 statements + 4 calls
+  physics_this_frame  ->  5 statements + 9 calls
     write   camera         camera.mara:145
     write   camera         camera.mara:146
     decl    translation_mx camera.mara:148
     decl    rotation_mx    camera.mara:149
     write   camera         camera.mara:150
 
-  into calls — the value lands in  (4 parameters)
+  into calls — the value lands in  (11 parameters)
     mat4_from_quat         (param q : distinct Quat)  camera.mara:149
+    mat4_mul               (param a : distinct Mat4)  camera.mara:150
+    mat4_mul               (param b : distinct Mat4)  camera.mara:150
     mat4_translate         (param pos : distinct Vec3)  camera.mara:148
     mat4_transpose         (param m : distinct Mat4)  camera.mara:149
     pow_f32                (param exp : f32)  camera.mara:145
+    vec3_add               (param a : distinct Vec3)  camera.mara:146
+    vec3_add               (param b : distinct Vec3)  camera.mara:146
+    vec3_negate            (param v : distinct Vec3)  camera.mara:148
+    vec3_scale             (param v : distinct Vec3)  camera.mara:146
+    vec3_scale             (param s : f32)  camera.mara:145
 === Pounce | physics_this_frame in camera_update call below
 physics_this_frame — local in camera_update  camera.mara:142   (module camera)
 
 below (calls) — calls physics_this_frame supplies
 
-  into calls — the value lands in  (4 parameters)
+  into calls — the value lands in  (11 parameters)
     mat4_from_quat         (param q : distinct Quat)  camera.mara:149
+    mat4_mul               (param a : distinct Mat4)  camera.mara:150
+    mat4_mul               (param b : distinct Mat4)  camera.mara:150
     mat4_translate         (param pos : distinct Vec3)  camera.mara:148
     mat4_transpose         (param m : distinct Mat4)  camera.mara:149
     pow_f32                (param exp : f32)  camera.mara:145
+    vec3_add               (param a : distinct Vec3)  camera.mara:146
+    vec3_add               (param b : distinct Vec3)  camera.mara:146
+    vec3_negate            (param v : distinct Vec3)  camera.mara:148
+    vec3_scale             (param v : distinct Vec3)  camera.mara:146
+    vec3_scale             (param s : f32)  camera.mara:145
 === Pounce | translation_mx in camera_update call above
 translation_mx — local in camera_update  camera.mara:148   (module camera)
 
-above (calls) — calls that supply translation_mx  (1 call)
+above (calls) — calls that supply translation_mx  (3 calls)
+  vec3_scale()           ->  camera         camera.mara:145
+  vec3_add()             ->  camera         camera.mara:146
   mat4_translate()       ->  translation_mx camera.mara:148
 === Pounce | translation_mx in camera_update type above
 translation_mx — local in camera_update  camera.mara:148   (module camera)
 
-above (types) — types whose values supply translation_mx  (3 types, via flow)
+above (types) — types whose values supply translation_mx  (2 types, via flow)
   struct   Camera         camera.mara:10   · 1 value  (camera)
-  basic    f32                             · 2 values  (loop_time, physics_this_frame)
-  basic    f64                             · 2 values  (damping_factor, physics_resolution)
+  basic    f32                             · 4 values  (damping_factor, loop_time, physics_resolution, +1 more)
 === Pounce | at camera.mara:148
 translation_mx — local in camera_update  camera.mara:148   (module camera)
 
 above (flow) — what builds this value, following every input into the calls that produce it
 
 camera   (param / external input)   camera.mara:140
-camera   camera.mara:145
+camera  ⟵ vec3_scale()   camera.mara:145
     camera   (param / external input)   camera.mara:140
     damping_factor   camera.mara:144
     physics_this_frame   camera.mara:142
         loop_time   (param / external input)   camera.mara:140
         physics_resolution   camera.mara:141
-camera   camera.mara:146
+camera  ⟵ vec3_add()   camera.mara:146
     camera   (param / external input)   camera.mara:140
     camera   (shown above)
     loop_time   (param / external input)   camera.mara:140
 
 below (flow) — what this variable affects  (forward slice)
 
-  translation_mx  ->  1 statement
+  translation_mx  ->  1 statement + 1 call
     write   camera         camera.mara:150
+
+  into calls — the value lands in  (1 parameter)
+    mat4_mul               (param b : distinct Mat4)  camera.mara:150
 === test/operator_calls.mara | sum
 sum — fun  operator_calls.mara:26   (module operator_calls)
 

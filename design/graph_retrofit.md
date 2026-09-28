@@ -182,10 +182,34 @@ program that checked clean, since the graph is built from checked types.
       was a misleading "missing return" (`test/retshapes.mara`, `test/retmiss_shapes.mara`,
       `test/unreachable_neg.mara`). The CFGs are now built on demand, for `mara ask`'s control
       dependence only
-- [ ] Control dependence from the runs, then `cfg.odin` goes (with slicing)
-- [ ] Reaching definitions over the runs replace `usedef.odin`
+- [x] Slicing, lineage and `mara ask` read the graph: `defuse.odin` replaces `usedef.odin` and
+      `cfg.odin`. Every operation records the statement it was lowered from (the `stmts` table
+      and `stmt` column: its span and kind), so a definition is one statement's writes to one
+      variable, of its statement's kind. Reaching definitions are dataflow over the runs to a
+      fixpoint (the old walk patched loops by letting every def in a loop reach every use in
+      it); a defer's block sees the state at each exit. Control dependence is post-dominance
+      over the runs. Synthetic locals are seen through; a synthetic local set to a slice of a
+      variable is a view, and writing through it writes the variable. The refers-to check
+      against `usedef.odin` is gone (`MARA_GRAPH_CHECK`); every var operation naming a
+      declaration is still checked in debug builds.
+
+      Proven by a differential: every Pounce function's flow views and every variable's flow,
+      call and type views (7,824 queries), and the same with `control` over the ask fixtures,
+      `test.mara` and `design/all` (~4,000), old compiler against new, each difference traced.
+      `askflow` (the interprocedural hops) is identical. The changes, all deliberate:
+      operator calls are calls (landings, supplying calls, call sites: `v2_add flow` said "no
+      call sites" while its callers listed `sum`); a variable's type is its declared type
+      (`d: f32 = 0.99` was f64, a bare `x : T` had none, a match binding was its union); a
+      cast, `len` or `slice_from_ptr` is no call (they counted as "calls not followed"); loops
+      are precise (a def from a previous iteration no longer reaches past a redeclaration or a
+      write on every path); calls under `?`, inside `assert` and in default arguments are seen;
+      field destructures (`a.x, a.y = f()`), field broadcasts and in-place overrides
+      (`p{ x = 1 }`) are writes; a loop's guard branches on its variable; code after an
+      always-returning body is dead. A bare declaration's implicit construction and a braces
+      literal are no supplying call, as before. test_1M: graph 2.57 → 2.68 s, peak memory 4.39 →
+      4.46 GB (the statement column); the post-check analyses take 4.7 s there, as long as type
+      checking
 - [ ] Must-use `err` onto the graph
-- [ ] Slicing, lineage and `mara ask` read the graph
 - [ ] The return-dependency summary from the graph
 - [ ] Definite assignment onto the graph
 - [ ] Escape onto the graph

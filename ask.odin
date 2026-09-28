@@ -824,8 +824,8 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     // (post-dominators) are the expensive step — build them only on `control`, and
     // only for the functions the slice actually touches.
     if show_flow {
-        flow_analyze_all(checked)
-        if checked.want_control_deps {
+        du_all(checked)
+        if checked.du.want_control {
             if is_fn { flow_build_fn_guards(checked, ft) }
             else     { flow_build_type_guards(checked, subject.type_) }
         }
@@ -833,10 +833,15 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
 
     // The CALL graph (callees/callers) reads off the materialized call_graph and is
     // always available. The FLOW views (args in / results out) need call SITES, which
-    // flow_analyze_all populates; with none, both flow directions are empty — say so
+    // the graph records; with none, both flow directions are empty — say so
     // once and suppress their per-section "never called" repeats. (A function with no
     // callers can still have callees, so this gates flow only, not `call`.)
-    fn_uncalled := is_fn && show_flow && len(checked.call_sites[ft]) == 0
+    fn_uncalled := false
+    if is_fn && show_flow {
+        sites := du_call_sites(checked, ft)
+        fn_uncalled = len(sites) == 0
+        delete(sites)
+    }
     if fn_uncalled {
         fmt.sbprintf(&b, "\n%s has no call sites — its flow views (arguments in, results out) are empty\n", subject.label)
     }
@@ -916,7 +921,7 @@ ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pk
         return fmt.tprintf("mara ask: scope '%s' is ambiguous — %d functions share that name; address the variable with `at <file>:<line>`.\n", scope, len(fns)), false, true
     }
     ft := fns[0]
-    ensure_fn_analysis(checked, ft)
+    f := du_fn(checked, ft)
 
     // `return` is the function's output endpoint — the inside view (what feeds the
     // return), the counterpart to slicing a parameter. `return` is a keyword, so it
@@ -927,8 +932,8 @@ ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pk
 
     vars: [dynamic]^Var_Binding
     defer delete(vars)
-    for vb in checked.var_bindings {
-        if vb.fn == ft && vb.name == target { append(&vars, vb) }
+    if f != nil {
+        for vb in f.vars { if vb.name == target { append(&vars, vb) } }
     }
     if len(vars) == 0 {
         return fmt.tprintf("mara ask: no variable '%s' in function '%s' — its parameters and locals are sliceable.\n", target, scope), false, true
@@ -959,7 +964,7 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
     // Populate def sites by analyzing the functions declared in that file.
     for _, ft in checked.functions {
         if ft != nil && ft.kind == .Fun && filepath.base(ft.body_span.file) == file {
-            ensure_fn_analysis(checked, ft)
+            du_fn(checked, ft)
         }
     }
     // Distinct variables with a definition at exactly (file, line), remembering the
@@ -971,7 +976,7 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
     defer delete(seen)
     root_of: map[^Var_Binding]^Def
     defer delete(root_of)
-    for d in checked.defs {
+    for d in checked.du.defs {
         if d.binding == nil || seen[d.binding] { continue }
         if d.span.line == line && filepath.base(d.span.file) == file {
             seen[d.binding] = true
