@@ -2,21 +2,16 @@
 Pounce — module map   (run `mara ask <module>` to look inside one)
 
   your code
-    Pounce         3 types   · 9 funs   · main
-    asset          8 types   · 9 funs
-    asset_resolve  1 type    · 8 funs
+    Pounce         3 types   · 8 funs   · main
+    asset          8 types   · 2 funs
     cache          6 types   · 11 funs
     camera         1 type    · 9 funs
-    collision      0 types   · 2 funs
-    entity         2 types   · 7 funs
     event          4 types   · 1 fun
     gfx            8 types   · 15 funs
     gfx.shader     1 type    · 2 funs
     object         5 types   · 3 funs
     perf           1 type    · 3 funs
-    stuff          0 types   · 12 funs
     test_draw      1 type    · 2 funs
-    ui             3 types   · 12 funs
 
   stdlib
     mara.core      4 types   · 2 funs
@@ -34,7 +29,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  15 users
+    struct   Camera  camera.mara:10   ·  13 users
 
   funs         (source order)
     fun      camera_look_down  camera.mara:39
@@ -50,7 +45,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  15 users
+    struct   Camera  camera.mara:10   ·  13 users
 
   funs         (source order)
     fun      camera_look_down  camera.mara:39
@@ -66,7 +61,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  15 users
+    struct   Camera  camera.mara:10   ·  13 users
 
   funs         (source order)
     fun      camera_look_down  camera.mara:39
@@ -82,7 +77,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  15 users
+    struct   Camera  camera.mara:10   ·  13 users
 
   funs         (source order)
     fun      camera_look_down  camera.mara:39
@@ -98,7 +93,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  15 users
+    struct   Camera  camera.mara:10   ·  13 users
 
   funs         (source order)
     fun      camera_look_down  camera.mara:39
@@ -114,7 +109,7 @@ camera — module   (1 type, 9 funs)
 camera — module   (1 type, 9 funs)
 
   types        (most-used first)
-    struct   Camera  camera.mara:10   ·  15 users
+    struct   Camera  camera.mara:10   ·  13 users
 
   funs         (source order)
     fun      camera_look_down  camera.mara:39
@@ -190,9 +185,8 @@ above (calls)   (0 functions)
 === Pounce | Camera call below
 Camera — struct  camera.mara:10   (module camera)
 
-below (calls)   (14 functions)
-  fun    append_highlight       gfx_draw_state.mara:166   (param camera : Camera)
-  fun    append_one             gfx_draw_state.mara:129   (param camera : Camera)
+below (calls)   (12 functions)
+  fun    append_one             gfx_draw_state.mara:165   (param camera : Camera)
   fun    camera_align_with_gravity camera.mara:44   (param camera : ^Camera)
   fun    camera_look_down       camera.mara:39   (param camera : ^Camera)
   fun    camera_move            camera.mara:48   (param camera : ^Camera)
@@ -200,18 +194,16 @@ below (calls)   (14 functions)
   fun    camera_turn_walking    camera.mara:117   (param camera : ^Camera)
   fun    camera_update          camera.mara:140   (param camera : ^Camera)
   fun    camera_update_size     camera.mara:153   (param camera : ^Camera)
-  fun    draw_marker            Pounce.mara:258   (param camera : Camera)
-  fun    game_create_shapes_half_circle entity.mara:76   (param camera : ^Camera)
-  fun    game_screen_to_local_offset stuff.mara:132   (param camera : ^Camera)
+  fun    draw_marker            Pounce.mara:172   (param camera : Camera)
+  fun    draw_state_append      gfx_draw_state.mara:129   (param camera : Camera)
   fun    mouse_ray              camera.mara:196   (param camera : ^Camera)
   fun    world_to_screen        camera.mara:174   (param camera : ^Camera)
 === Pounce | Camera flow above 2
 Camera — struct  camera.mara:10   (module camera)
 
-above (flow) — what feeds values of type Camera  (16 values, backward slice)
+above (flow) — what feeds values of type Camera  (13 values, backward slice)
 
-  parameters (7)
-    game           Pounce.mara:179  (in pick_shape)
+  parameters (6)
     loop_time      camera.mara:48  (in camera_move)
     mouse          camera.mara:87  (in camera_turn_flying)
     mouse          camera.mara:117  (in camera_turn_walking)
@@ -261,9 +253,9 @@ above (flow) — what feeds values of type Camera  (16 values, backward slice)
     decl    half_w         camera.mara:167  (in camera_update_size)
     decl    half_h         camera.mara:168  (in camera_update_size)
 === Pounce | Megastruct type above 2
-Megastruct — struct  Pounce.mara:53   (module Pounce)
+Megastruct — struct  Pounce.mara:44   (module Pounce)
 
-above (types)   (36 types, depth 2)
+above (types)   (32 types, depth 2)
   assets : asset.Assets
     font_stream : asset.Font_Stream
       font_files : [64]mara.core.str64
@@ -320,12 +312,7 @@ above (types)   (36 types, depth 2)
     font_texture_id : u32
     font_texture_size : i32
     needs_resolve : bool
-  axes_gizmo : ui.UI_Gizmo
-    bounds : ui.Bounds
-      min_x : f32
-      min_y : f32
-      max_x : f32
-      max_y : f32
+  cameras : [..]camera.Camera
     obj : object.Object
       accel : mara.math.Vec3
       dir : mara.math.Quat
@@ -336,12 +323,6 @@ above (types)   (36 types, depth 2)
       turn_speed : f32
       exists : bool
       highlighted : bool
-    start_index : i64
-    shape_count : i64
-    size_pixels : f32
-    resolved : bool
-  cameras : [..]camera.Camera
-    obj : object.Object  (shown above)
     ortho : mara.math.Mat4
     proj : mara.math.Mat4
     view : mara.math.Mat4
@@ -371,40 +352,21 @@ above (types)   (36 types, depth 2)
     command_count : i32
   draw_state_object : gfx.DrawState  (shown above)
   draw_state_text : gfx.DrawState  (shown above)
-  frame_graph : ui.UI_Graph
-    bounds : ui.Bounds  (shown above)
-    obj : object.Object  (shown above)
-    start_index : i64
-    shape_count : i64
-    samples : [300]f32
-    sample_index : i64
-    width_pixels : f32
-    height_pixels : f32
-    max_value : f32
-    resolved : bool
-    bar_width : f32
-    bar_max_height : f32
   gl_context : mara.sdl.GLContext
-  glyphs : [..]entity.Glyph
-    embed shape : entity.Shape
-      obj : object.Object  (shown above)
-      visual : object.Visual
-        mesh : object.Mesh  (shown above)
-        texture : object.Texture  (shown above)
-        texture_index : u32
-        color : [3]f32
-        font : [..]utf8
-        resolve : bool
-    letter : utf8
-    font_index : i64
   playa : object.Playa
     obj : object.Object  (shown above)
-    visual : object.Visual  (shown above)
+    visual : object.Visual
+      mesh : object.Mesh  (shown above)
+      texture : object.Texture  (shown above)
+      texture_index : u32
+      color : [3]f32
+      font : [..]utf8
+      resolve : bool
   player : Pounce.Player
+    color : mara.math.Vec3
     x : i64
     y : i64
     size : i64
-    color : [3]f32
   quad : test_draw.Quad_Renderer
     program : u32
     vao : u32
@@ -413,7 +375,6 @@ above (types)   (36 types, depth 2)
     u_size : i32
     u_screen : i32
     u_color : i32
-  shapes : [..]entity.Shape  (shown above)
   timers : Pounce.Timers
     fixed : mara.time.Fixed_Timer
       tally : f64
@@ -522,7 +483,7 @@ camera_update — fun  camera.mara:140   (module camera)
 above (flow) — what feeds the arguments at its 1 call site  (backward slice)
 
   parameters (1)
-    game           Pounce.mara:233  (in game_update)
+    game           Pounce.mara:165  (in game_update)
 === Pounce | camera_update flow below
 camera_update — fun  camera.mara:140   (module camera)
 

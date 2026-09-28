@@ -18,29 +18,20 @@ use perf
 use asset
 use test_draw
 use gfx.shader
-use collision
-use stuff
-use entity
-use asset_resolve
-use ui
 
-// Pounce's palette. ui (imported below) defines the same names — that's allowed;
-// a bare use that's ambiguous across two visible modules just has to be qualified.
-COLOR_RED     :: [3]f32{0.9, 0.2, 0.2}
-COLOR_ORANGE  :: [3]f32{0.95, 0.5, 0.1}
-COLOR_YELLOW  :: [3]f32{0.95, 0.85, 0.1}
-COLOR_GREEN   :: [3]f32{0.2, 0.75, 0.2}
-COLOR_TEAL    :: [3]f32{0.1, 0.7, 0.7}
-COLOR_BLUE    :: [3]f32{0.2, 0.4, 0.9}
-COLOR_PURPLE  :: [3]f32{0.6, 0.2, 0.8}
-COLOR_MAGENTA :: [3]f32{0.9, 0.2, 0.6}
+COLOR_RED 		:: Vec3{0.9, 0.2, 0.2}
+COLOR_ORANGE  	:: Vec3{0.95, 0.5, 0.1}
+COLOR_YELLOW  	:: Vec3{0.95, 0.85, 0.1}
+COLOR_GREEN   	:: Vec3{0.2, 0.75, 0.2}
+COLOR_TEAL    	:: Vec3{0.1, 0.7, 0.7}
+COLOR_BLUE    	:: Vec3{0.2, 0.4, 0.9}
+COLOR_PURPLE  	:: Vec3{0.6, 0.2, 0.8}
+COLOR_MAGENTA 	:: [3]f32{0.9, 0.2, 0.6}
 
 Player :: struct {
 	x, y: i64
 	size  := 50
-	// Qualified: bare COLOR_RED is ambiguous now that `use ui` also defines it.
-	// Type inferred from the qualified const (no explicit annotation needed).
-	color := Pounce.COLOR_RED
+	color := COLOR_RED
 }
 
 Timers :: struct {
@@ -86,15 +77,6 @@ Megastruct :: struct {
 	quad:   Quad_Renderer
 	player: Player
 	playa : Playa
-
-	// Game entities (Warlock's shapes/glyphs arrays). Resolved lazily over the
-	// first frames, then rendered each frame through the object/text draw states.
-	shapes: [..512]Shape          // scene quads (12) + gizmo (7) + frame graph (300); keep >= that sum
-	glyphs: [..512]entity.Glyph   // qualify: mara.font also defines a Glyph
-
-	// World-space UI overlay (shapes/glyphs for these live in the arrays above).
-	axes_gizmo:  UI_Gizmo
-	frame_graph: UI_Graph
 }
 
 game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
@@ -119,10 +101,6 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game.draw_state_object = draw_state_create(
 		"data/shaders/instanced.glsl",
 		&game.vao, 8192, 32)
-	// Outlines of highlighted shapes: the object shader again, drawn first.
-	game.draw_state_highlight = draw_state_create(
-		"data/shaders/instanced.glsl",
-		&game.vao, 8192, 32)
 	game.draw_state_text = draw_state_create(
 		"data/shaders/instanced_text.glsl",
 		&game.vao, 8192, 32)
@@ -134,7 +112,6 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	// draw states sample texture 0 and discard everything (draw_state_assert_ready
 	// catches it).
 	game.draw_state_object.texture = game.assets.texture_id
-	game.draw_state_highlight.texture = game.assets.texture_id
 	game.draw_state_text.texture = game.assets.font_texture_id
 
 	// Camera setup mirrors the Warlock reference (Warlock.odin): sit at the origin
@@ -152,50 +129,8 @@ game_init :: fun(game: ^Megastruct, memory: ^[]byte) {
 	game.playa.obj.scale = Vec3{70, 70, 70}
 	game.playa.visual.texture = ATLAS_TEXTURE
 
-	// Scene: a ring of atlas quads + a 16x16 glyph grid. Both carry string asset
-	// references that resolve lazily (visual_resolve / glyph_resolve) over the
-	// next frames as the font/atlas layers come online. "Inter" fuzzy-matches the
-	// loaded font path.
-	game_create_shapes_half_circle(&game.shapes, &game.camera, 12, 300.0, 40.0)
-	game_create_font_grid(&game.glyphs, "Inter", Vec3{-240, 220, 120}, 22.0, 4.0)
-
-	// World-space UI overlay: an orientation gizmo + a frame-time graph. Their
-	// shapes are appended into `game.shapes`, so the scene render loop draws them
-	// once resolved; they track the camera via tracking_offset each frame.
-	game.axes_gizmo  = ui_gizmo_create_pixels(-140, -90, 70, &game.shapes)
-	// Uses ui_graph_create_pixels' default color (ui.COLOR_GREEN). This used to
-	// fail — the default resolved in Pounce's scope and hit Pounce's Vec3
-	// COLOR_GREEN instead of ui's [3]f32 — until defaults were bound in the
-	// callee's scope.
-	game.frame_graph = ui_graph_create_pixels(120, -90, 200, 70, 33.3, &game.shapes)
-
 	game.running = true
 	game.initialized = true
-}
-
-// Ray-pick the nearest scene shape along the camera's view axis and toggle its
-// highlight flag. A center-screen pick (not the mouse ray yet) — enough to drive
-// collision.ray_obb_intersect from the loop.
-pick_shape :: fun(game: ^Megastruct) {
-	cam := &game.camera
-	fwd, up, right := obj_get_directions(cam.obj.dir)
-	_ = up		_ = right
-	ray_origin := cam.obj.pos
-	ray_dir    := vec3_negate(fwd)   // the view looks toward -fwd
-
-	best_t : f32 = -1.0
-	best_i : i64 = -1
-	for i in 0..game.shapes.len {
-		if not game.shapes[i].obj.exists do continue
-		s    := &game.shapes[i]
-		half := s.obj.scale * 0.5
-		t    := ray_obb_intersect(ray_origin, ray_dir, s.obj.pos, s.obj.dir, half)
-		if t >= 0.0 and (best_i < 0 or t < best_t) {
-			best_t = t
-			best_i = i
-		}
-	}
-	if best_i >= 0 do game.shapes[best_i].obj.highlighted = not game.shapes[best_i].obj.highlighted
 }
 
 game_events :: fun(game: ^Megastruct) {
@@ -226,31 +161,10 @@ game_events :: fun(game: ^Megastruct) {
 		_ = sdl.SetWindowRelativeMouseMode(game.window, game.mouse_look)
 	}
 	if game.mouse_look do camera_turn_walking(&game.camera, &ev.mouse)
-
-	// Left click ray-picks the nearest scene shape (toggles its highlight flag).
-	if ev.mouse.pressed[1] do pick_shape(game)
 }
 game_update :: fun(game: ^Megastruct, dt: f64) {
 	camera_move(&game.camera, &game.events.keyboard, f32(game.timers.fixed.step))
 	camera_update(&game.camera, f32(game.timers.fixed.step))
-
-	// Deferred asset resolution. Each call resolves once then no-ops, so this is
-	// cheap after the first few frames: shapes resolve mesh/texture names; glyphs
-	// resolve their font into atlas UVs + a pixel-sized scale.
-	for i in 0..game.shapes.len {
-		_ = visual_resolve(&game.assets, &game.shapes[i].visual)
-	}
-	for i in 0..game.glyphs.len {
-		_ = glyph_resolve(&game.assets, &game.glyphs[i])
-	}
-
-	// UI overlay: resolve once (builds its shapes' geometry), feed the frame-time
-	// sample, then track the camera so the widgets sit in screen corners.
-	_ = ui_gizmo_resolve(&game.axes_gizmo, &game.shapes, game.camera.fov_y, game.camera.w_height)
-	_ = ui_graph_resolve(&game.frame_graph, &game.shapes, game.camera.fov_y, game.camera.w_height)
-	ui_graph_add_sample(&game.frame_graph, f32(dt * 1000.0))
-	ui_gizmo_update(&game.axes_gizmo, &game.shapes, game.camera.obj)
-	ui_graph_update(&game.frame_graph, &game.shapes, game.camera.obj)
 }
 // Append a solid-colored quad through the object shader. The image atlas holds a
 // white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
@@ -275,22 +189,10 @@ game_draw :: fun(game: ^Megastruct) {
 	//   each mesh_id resolves to a VAO_Mesh with index_count > 0
 	//   command_count > 0 once batches are flattened to DrawCommands
 	draw_state_assert_ready(&game.draw_state_object)
-	draw_state_assert_ready(&game.draw_state_highlight)
 	draw_state_assert_ready(&game.draw_state_text)
 
 	ClearColor(0.85, 0.80, 0.70, 1.0)
 	Clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
-
-	// Outlines of the shapes a click has highlighted (pick_shape), drawn first so
-	// the shapes below paint over all but the rim.
-	for i in 0..game.shapes.len {
-		if game.shapes[i].obj.highlighted {
-			append_highlight(&game.draw_state_highlight,
-				game.shapes[i].obj, game.shapes[i].visual, game.camera)
-		}
-	}
-	draw_state_render(&game.draw_state_highlight)
-	draw_state_reset(&game.draw_state_highlight)
 
 	// Orientation cross of solid quads around the playa, so one object isn't the
 	// only thing on screen: +X red, +Y green, -X blue, -Y yellow, at the playa's
@@ -299,26 +201,12 @@ game_draw :: fun(game: ^Megastruct) {
 	draw_marker(&game.draw_state_object, Vec3{  0,  90, 120}, [0, 1, 0], game.camera)
 	draw_marker(&game.draw_state_object, Vec3{-90,   0, 120}, [0, 0, 1], game.camera)
 	draw_marker(&game.draw_state_object, Vec3{  0, -90, 120}, [1, 1, 0], game.camera)
-
-	// Scene shapes (the half-circle ring), resolved to atlas quads.
-	for i in 0..game.shapes.len {
-		if game.shapes[i].obj.exists {
-			append_one(&game.draw_state_object,
-				game.shapes[i].obj, game.shapes[i].visual, game.camera)
-		}
-	}
 	draw_state_render(&game.draw_state_object)
 	draw_state_reset(&game.draw_state_object)
 
-	// Playa quad + the glyph grid through the text shader / font atlas.
+	// Playa quad through the text shader / font atlas.
 	append_one(&game.draw_state_text,
 		game.playa.obj, game.playa.visual, game.camera)
-	for i in 0..game.glyphs.len {
-		if game.glyphs[i].obj.exists {
-			append_one(&game.draw_state_text,
-				game.glyphs[i].obj, game.glyphs[i].visual, game.camera)
-		}
-	}
 	draw_state_render(&game.draw_state_text)
 	draw_state_reset(&game.draw_state_text)
 
