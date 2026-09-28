@@ -131,13 +131,19 @@ suite sets it) they also check refers-to against `usedef.odin`.
       codegen's cost); peak memory 6.3 → 7.0 GB. Worth a profiling pass before phase 2
 - [x] Refers-to: each `var` operation → the declaration it names, checked against `usedef.odin`
       (every one of test_1M's 894k uses agrees). Locals resolve through a scope stack as the walk
-      goes; definitions (constants, functions, types, a module's variables) by the nearest
-      enclosing scope once all are built, since they can be used before they are written; the
-      compiler's own `this_program` and `context` are fields of a synthetic `program` scope. The
-      flow index: a Flows edge per declaration a value is read from, at each write, call argument,
-      return and match binding (field-insensitive). test_1M: graph 2.6 s in the debug build
+      goes; definitions (constants, functions, types) by the nearest enclosing scope once all
+      are built, since they can be used before they are written; the compiler's own
+      `this_program` and `context` are fields of a synthetic `program` scope. The flow index: a
+      Flows edge per declaration a value is read from, at each write, call argument, return and
+      match binding (field-insensitive). test_1M: graph 2.6 s in the debug build
 
 Phase 1 is complete: the graph is built on every compile and checked, and nothing reads it yet.
+
+Found after: a function could name its module's variables. The checker registered them as
+constants, so a read inlined the initial value and a write made a hidden local. A module is a
+scope and its variables are its locals, which no function sees (a function sees the outside world
+only through its arguments): now a checker error (`test/module_locals_neg.mara`), and the graph
+resolves no name to them.
 
 Left for phase 3, where codegen reads the graph: a `const` operation carries no value yet; calls
 produce values, and passing a destination to a call that returns an aggregate (sret, NRVO) is

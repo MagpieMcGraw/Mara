@@ -1,0 +1,23 @@
+module module_locals_neg
+//@ expect-fail: a function sees the outside world only through its arguments
+
+// A module is a scope like any other: its variables are its locals, and a
+// function sees the outside world only through its arguments. Its `::`
+// definitions stay visible everywhere.
+
+LIMIT :: 10
+counter : i64 = 5
+total := counter + LIMIT
+
+bump :: fun() -> i64 {
+	return counter + LIMIT       // reads a module local
+}
+
+set :: fun() {
+	counter = 7                  // writes one
+}
+
+main :: fun() {
+	set()
+	print(bump(), total)
+}

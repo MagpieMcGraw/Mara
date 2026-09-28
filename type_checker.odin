@@ -765,6 +765,43 @@ scope_local_lookup :: proc(start: ^Type_Scope, name: string) -> (Type, bool) {
 // scope's own includes, stop at the module. The migration target for the legacy
 // env.parent + cur.includes walk (now that decls chain through their file scope,
 // the scope chain reaches every include-holding scope the env chain did).
+// A block's names are its locals, seen only from inside its own function
+// (scope_local_lookup). Past a function boundary a block shows just the
+// modules it names (a file's `gl :: use mara.open_gl`): a function sees the
+// outside world through its arguments, never an enclosing scope's locals —
+// a module's variables included, since a module is a scope like any other.
+names_module :: proc(t: Type) -> bool {
+    m, ok := t.(^Type_Scope)
+    return ok && m.is_module
+}
+
+// When `name` is a local of a scope past the function boundary — the one
+// thing scope_resolve won't show — the scope that owns it (the module or
+// function the block belongs to); nil otherwise.
+outer_local_owner :: proc(env: ^Type_Scope, name: string) -> ^Type_Scope {
+    s := env
+    for s != nil && s.kind == .Block { s = s.parent_scope }
+    for ; s != nil; s = s.parent_scope {
+        if s.kind != .Block || s.types == nil { continue }
+        if t, ok := s.types[name]; !ok || names_module(t) { continue }
+        owner := s
+        for owner != nil && owner.kind == .Block { owner = owner.parent_scope }
+        return owner
+    }
+    return nil
+}
+
+// A name that didn't resolve. When it is an enclosing scope's local, that is
+// the rule it broke, so say so instead of `msg`.
+report_unresolved :: proc(c: ^Checker, span: Span, env: ^Type_Scope, name: string, msg: string) {
+    if owner := outer_local_owner(env, name); owner != nil {
+        where_ := owner.source_name if owner.source_name != "" else owner.name
+        check_error(c, span, TYPE_LOCAL_OF_ENCLOSING_SCOPE, name, where_)
+        return
+    }
+    check_error(c, span, msg, name)
+}
+
 scope_includes_lookup :: proc(env: ^Type_Scope, name: string, below_module: bool) -> (Type, bool) {
     for s := env; s != nil; s = s.parent_scope {
         if below_module && s.is_module { break }
@@ -777,7 +814,10 @@ scope_includes_lookup :: proc(env: ^Type_Scope, name: string, below_module: bool
 scope_resolve :: proc(env: ^Type_Scope, name: string, below_module := false) -> (Type, ^Type_Scope, bool) {
     for s := env; s != nil; s = s.parent_scope {
         if below_module && s.is_module { break }
-        if s.types != nil { if t, ok := s.types[name]; ok { return t, s, true } }
+        if s.types != nil {
+            t, ok := s.types[name]
+            if ok && (s.kind != .Block || names_module(t)) { return t, s, true }
+        }
         if s.functions != nil { if f, ok := s.functions[name]; ok && f != nil { return f, s, true } }
     }
     if t, ok := scope_includes_lookup(env, name, below_module); ok { return t, nil, true }
@@ -7224,7 +7264,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // it (and broadcast `x, y = 7` minted two locals — the bug that
             // motivated this). Bind it to Type_Error to recover.
             if is_undeclared_reassign(c, env, s.name, s.is_decl) {
-                check_error(c, s.span, TYPE_ASSIGN_UNDECLARED_VARIABLE, s.name)
+                report_unresolved(c, s.span, env, s.name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
                 type_env_set(env, s.name, Type_Error{})
                 continue
             }
@@ -7264,10 +7304,16 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             in_struct_body := parent_struct_scope(env) != nil
             if s.is_decl && !env_is_module(env) && !in_struct_body {
                 // Shadowing of an enclosing local: walk the durable scope chain
-                // above the current scope, below the module.
+                // above the current scope, below the module. Past the function
+                // boundary a block's locals are out of sight (names_module), so
+                // there is nothing there to shadow.
                 start: ^Type_Scope = env.parent_scope if env != nil else nil
+                crossed := false
                 for sc := start; sc != nil && !sc.is_module; sc = sc.parent_scope {
-                    if _, found := scope_defines(sc, s.name); found {
+                    if sc.kind != .Block { crossed = true }
+                    t, found := scope_defines(sc, s.name)
+                    out_of_sight := crossed && sc.kind == .Block && !names_module(t)
+                    if found && !out_of_sight {
                         check_error(c, s.span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, s.name)
                         break
                     }
@@ -7816,7 +7862,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                                 resolved_type := solidify_type(returns[i])
                                 if name != "" {
                                     if is_undeclared_reassign(c, env, name, s.is_decl) {
-                                        check_error(c, s.span, TYPE_ASSIGN_UNDECLARED_VARIABLE, name)
+                                        report_unresolved(c, s.span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
                                     } else if !s.is_decl && is_immutable_param(env, name) {
                                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name)
                                     }
@@ -10164,39 +10210,15 @@ extract_module_into_checked :: proc(c: ^Checker, stmts: [dynamic]Stmt, mod_env: 
 }
 
 // Register a module's top-level constants (run before its bodies are checked,
-// so its own functions resolve them, and again after, when `Stmt_Decl`s have
-// their desugared entries). Registration is idempotent per module.
+// so its own functions resolve them, and again as its statements are extracted).
+// Registration is idempotent per module.
 register_module_constants :: proc(c: ^Checker, stmts: [dynamic]Stmt, module_name: string) {
     for stmt in stmts { register_module_constant_stmt(c, stmt, module_name) }
 }
 
 register_module_constant_stmt :: proc(c: ^Checker, stmt: Stmt, module_name: string) {
-    // Handle top-level variable/constant declarations.
-    // Module variables are effectively compile-time values — store in constants
-    // so codegen can resolve them cross-function (g.all_vars is per-function).
-    if assign, ok := stmt.(^Stmt_Assign); ok {
-        if _, is_include := assign.value.(^Expr_Include); !is_include && assign.value != nil {
-            register_module_constant(c, module_name, assign.name, assign.value)
-        }
-    }
-    // Multi-assign: flatten each inner assign
-    if multi, ok := stmt.(^Stmt_Multi_Assign); ok {
-        for a in multi.assigns {
-            if a.value != nil {
-                register_module_constant(c, module_name, a.name, a.value)
-            }
-        }
-    }
-    // Stmt_Decl: iterate the desugared entries (same shape as Stmt_Assign / Stmt_Multi_Assign cases above).
-    if decl, ok := stmt.(^Stmt_Decl); ok {
-        for inner in decl.checked {
-            if a, aok := inner.(^Stmt_Assign); aok {
-                if _, is_include := a.value.(^Expr_Include); !is_include && a.value != nil {
-                    register_module_constant(c, module_name, a.name, a.value)
-                }
-            }
-        }
-    }
+    // Only definitions are constants. A module's variables (`x := v`,
+    // `x : T = v`) are its locals, which no function sees (see names_module).
     // Stmt_Define: `name :: value` or `name : Type : value` — always a compile-time constant.
     // Skip include forms (`name :: include path`) — those are handled by the
     // include-processing path in register_and_check_declarations, same as
@@ -10633,27 +10655,9 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         // during their own extraction (which runs earlier), but the main package's
         // extraction (extract_main_program_stmts) runs later — so without this its
         // own constants are invisible to resolve_const_ref while its bodies check,
-        // and a main-vs-import name collision goes undetected. Mirrors the
-        // const-registration loop in extract_module_into_checked.
-        if main_package != "" {
-            for stmt in main_prog^ {
-                if assign, ok := stmt.(^Stmt_Assign); ok {
-                    if _, is_inc := assign.value.(^Expr_Include); !is_inc && assign.value != nil {
-                        register_module_constant(&c, main_package, assign.name, assign.value)
-                    }
-                }
-                if multi, ok := stmt.(^Stmt_Multi_Assign); ok {
-                    for a in multi.assigns {
-                        if a.value != nil { register_module_constant(&c, main_package, a.name, a.value) }
-                    }
-                }
-                if def, ok := stmt.(^Stmt_Define); ok {
-                    if _, is_inc := def.value.(^Expr_Include); !is_inc && def.value != nil {
-                        register_module_constant(&c, main_package, define_name(def), def.value)
-                    }
-                }
-            }
-        }
+        // and a main-vs-import name collision goes undetected. The same
+        // registration extract_module_into_checked does.
+        if main_package != "" { register_module_constants(&c, main_prog^, main_package) }
 
         // Canonical per-file pipeline (see check_package_files for the phase map).
         main_files_by_src, main_file_order, main_file_envs := partition_package_files(main_prog^, env)
@@ -11037,7 +11041,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         } else if ident_flat in c.table.unions {
             check_error(c, e.span, TYPE_TYPE_VALUE_DID_MEAN, e.name, e.name)
         } else {
-            check_error(c, e.span, TYPE_UNDEFINED_IDENTIFIER, e.name)
+            report_unresolved(c, e.span, env, e.name, TYPE_UNDEFINED_IDENTIFIER)
         }
         return Type_Error{}
     case ^Expr_Unary:

@@ -278,7 +278,8 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
     slice.sort(modules[:])
     for name in modules {
         m := graph_node(&b, .Module, .Explicit, NO_NODE, name, nil, {})
-        // A module's variables are its fields: one copy.
+        // A module is a scope like a struct: its variables are its fields, which
+        // no function sees (a function sees only its arguments).
         for s in programs[name]^ { graph_stmt(&b, s, m, {kind = .Field}) }
         graph_close(&b, m)
     }
@@ -1649,10 +1650,11 @@ graph_link_calls :: proc(b: ^Graph_Builder) {
     }
 }
 
-// A name no local binds names a definition: a constant, a function, a type,
-// a module's variable. Definitions are visible wherever their scope is,
-// before or after the line that writes them, so these resolve once every
-// scope is built: the definition of that name in the nearest enclosing scope.
+// A name no local binds names a definition: a constant, a function, a type.
+// Definitions are visible wherever their scope is, before or after the line
+// that writes them, so these resolve once every scope is built: the
+// definition of that name in the nearest enclosing scope. A module's
+// variables are locals, not definitions: no function sees them.
 @(private="file")
 graph_resolve_defs :: proc(b: ^Graph_Builder) {
     g := b.g
@@ -1666,7 +1668,7 @@ graph_resolve_defs :: proc(b: ^Graph_Builder) {
         case .Const, .Import, .Fun, .Struct, .Union, .Enum, .Type_Def, .Dispatch:
             if g.kind[p] == .Union { continue }   // a variant's struct is named through its union
         case .Field:
-            if g.kind[p] != .Module { continue }  // a struct's fields are locals of its code
+            if p != b.program { continue }        // the compiler's own this_program, context
         case:
             continue
         }
