@@ -55,7 +55,6 @@ Def :: struct {
     writes:  [dynamic]Node_Id,   // the operations it takes its value from
     valued:  bool,               // some write carries a value (not a bare zero or construction)
     run:     i32,                // the run of its first write, for its guards; -1 for a param
-    at_entry: bool,              // defined from the fun's entry: a param, a declaration that stores nothing
     guards:  []Guard,
     order:   int,                // creation order: source order among defs sharing a span
 }
@@ -176,18 +175,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     }
 
     // Its runs: its code's, then each defer block's, entered by a run defer.
-    seen: map[i32]bool
-    defer delete(seen)
-    du_collect_runs(g, du.starts, node, &f.runs, &seen)
-    f.main = len(f.runs)
-    for i := 0; i < len(f.runs); i += 1 {
-        for op in graph_run(g, int(f.runs[i])) {
-            if g.op[op] != .Run_Defer { continue }
-            for e in graph_out(g, op) {
-                if e.kind == .Runs { du_collect_runs(g, du.starts, e.to, &f.runs, &seen) }
-            }
-        }
-    }
+    f.main = graph_code_runs(g, du.starts, node, &f.runs)
 
     // Views: a synthetic local set to a slice of a variable (`dst[lo:] = src`
     // writes through one). What is written through it writes that variable.
@@ -236,16 +224,6 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
             }
         }
     }
-    // A declaration that stores nothing (`x : T = void`) still defines its
-    // variable where it is written, as from the fun's entry: a later whole
-    // write replaces it.
-    for b in f.vars {
-        if b.kind != .Local || g.kind[b.node] != .Local { continue }
-        if _, ok := def_of[[2]i32{i32(b.node), g.stmt[b.node]}]; ok { continue }
-        d := du_def(checked, f, &def_of, b.node, g.stmt[b.node], g.stmts[g.stmt[b.node]].span)
-        d.valued = true   // `void`, as written
-        d.at_entry = true
-    }
     for d in f.defs { du_classify(g, views, d) }
 
     // Reaching definitions: states are bit sets over the fun's definitions.
@@ -271,7 +249,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     todo: [dynamic]int
     defer delete(todo)
     if len(f.runs) > 0 {
-        for d, i in f.defs { if d.kind == .Param || d.at_entry { bits_set(in_state[0], i) } }
+        for d, i in f.defs { if d.kind == .Param { bits_set(in_state[0], i) } }
         entered[0] = true
         append(&todo, 0)
     }
@@ -362,25 +340,6 @@ du_uses_in :: proc(g: ^Program_Graph, du: ^Def_Use, f: ^Du_Fn, op: Node_Id, stat
     if len(reach) > 0 { du.reaching[op] = reach[:] } else { delete(reach) }
 }
 
-// The runs a scope's code reaches from its entry (a Then edge from the scope).
-@(private="file")
-du_collect_runs :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32, seen: ^map[i32]bool) {
-    todo: [dynamic]i32
-    defer delete(todo)
-    for e in graph_out(g, scope) { if e.kind == .Then { append(&todo, starts[e.to]) } }
-    for len(todo) > 0 {
-        r := pop(&todo)
-        if r in seen^ { continue }
-        seen^[r] = true
-        append(out, r)
-        ops := graph_run(g, int(r))
-        // Depth-first in edge order keeps a run's successors after it.
-        for i := len(graph_out(g, ops[len(ops) - 1])) - 1; i >= 0; i -= 1 {
-            e := graph_out(g, ops[len(ops) - 1])[i]
-            if e.kind == .Then { append(&todo, starts[e.to]) }
-        }
-    }
-}
 
 
 // --- helpers ------------------------------------------------------------------

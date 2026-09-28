@@ -183,6 +183,40 @@ graph_falls_off :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_
     return false
 }
 
+// A fun's (or struct's) code as runs: those its entry reaches, then those of
+// each defer block a run defer in them runs. Returns how many are its own
+// code's; each list keeps a run's successors after it.
+graph_code_runs :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32) -> (own: int) {
+    seen: map[i32]bool
+    defer delete(seen)
+    reach :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32, seen: ^map[i32]bool) {
+        todo: [dynamic]i32
+        defer delete(todo)
+        for e in graph_out(g, scope) { if e.kind == .Then { append(&todo, starts[e.to]) } }
+        for len(todo) > 0 {
+            r := pop(&todo)
+            if r in seen^ { continue }
+            seen^[r] = true
+            append(out, r)
+            ops := graph_run(g, int(r))
+            // Depth-first in edge order keeps a run's successors after it.
+            next := graph_out(g, ops[len(ops) - 1])
+            for i := len(next) - 1; i >= 0; i -= 1 {
+                if next[i].kind == .Then { append(&todo, starts[next[i].to]) }
+            }
+        }
+    }
+    reach(g, starts, scope, out, &seen)
+    own = len(out)
+    for i := 0; i < len(out); i += 1 {
+        for op in graph_run(g, int(out[i])) {
+            if g.op[op] != .Run_Defer { continue }
+            for e in graph_out(g, op) { if e.kind == .Runs { reach(g, starts, e.to, out, &seen) } }
+        }
+    }
+    return
+}
+
 graph_is_terminator :: proc(k: Op_Kind) -> bool {
     #partial switch k {
     case .Jump, .Branch, .Switch, .Return: return true
@@ -468,7 +502,7 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
             graph_node(b, .Import, .Explicit, parent, v.name, t, v.span)
         } else if v.is_decl && v.target == nil {
             d := graph_decl(b, site, parent, v.name, t, v.span)
-            if code { graph_init(b, d, v.value, v.span) }
+            if code { graph_init(b, d, v.value, v.span, v.slice_cap_expr) }
         } else if code {
             // `this_program = Program(…)` names the program's arena, set up at
             // main's entry; the checker has read it (scan_allocator).
@@ -479,12 +513,11 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
                 break
             }
             dest_t := v.target_type if v.target != nil else v.var_type
-            // `x = void` de-inits: nothing is stored, except a pointer's null.
+            // `x = void` de-inits: it writes the uninitialized value.
             if _, is_void := v.value.(^Expr_Skip_Constructor); is_void || is_void_literal(v.value) {
-                if _, is_ptr := distinct_base(dest_t).(^Type_Ptr); is_ptr {
-                    p := graph_place(b, v.target, v.span) if v.target != nil else graph_var(b, v.name, NO_NODE, dest_t, v.span)
-                    graph_op(b, .Zero, .Explicit, v.span, dest_t, "", p)
-                }
+                val := graph_void(b, dest_t, v.span)
+                p := graph_place(b, v.target, v.span) if v.target != nil else graph_var(b, v.name, NO_NODE, dest_t, v.span)
+                graph_op(b, .Write, .Explicit, v.span, nil, "", p, val)
                 break
             }
             switch {
@@ -615,19 +648,35 @@ graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: st
 }
 
 // A declaration's initial value: its initializer, or — bare — zero or its
-// struct's construction; nothing for `= void`. A big value lives on the arena.
+// struct's construction (a sized slice's zero takes its capacity); `void` for
+// `= void`. A big value lives on the arena.
 @(private="file")
-graph_init :: proc(b: ^Graph_Builder, d: Node_Id, value: Expr, span: Span) {
+graph_init :: proc(b: ^Graph_Builder, d: Node_Id, value: Expr, span: Span, cap: Expr = nil) {
     t := b.g.type_[d]
     if b.arena && t != nil && routes_to_arena(t) && b.g.name[d] != b.code.nrvo {
         graph_op(b, .Arena_Alloc, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span))
     }
     if value == nil {
+        if cap != nil {   // `s : []T(n)`: the slice, with storage for n
+            n := graph_value(b, cap)
+            graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span), n)
+            return
+        }
         graph_construct_bare(b, graph_var(b, b.g.name[d], d, t, span), t, span)
         return
     }
-    if _, is_void := value.(^Expr_Skip_Constructor); is_void { return }
+    if _, is_void := value.(^Expr_Skip_Constructor); is_void {
+        val := graph_void(b, t, span)
+        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, b.g.name[d], d, t, span), val)
+        return
+    }
     graph_store(b, graph_dest_var(b.g.name[d], d, t), value, span)
+}
+
+// `void`: the uninitialized value (a pointer's null), as written.
+@(private="file")
+graph_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
+    return graph_op_value(b, .Const, .Explicit, span, t, "void")
 }
 
 // Several names declared together: one value each, or one call's outputs.

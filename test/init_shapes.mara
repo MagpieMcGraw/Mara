@@ -1,0 +1,37 @@
+module init_shapes
+//@ expect-output: 5
+//@ expect-output: set-through-alias
+//@ expect-output: 4
+
+// Reads the definite-assignment check must accept (defer, alias, sized slice).
+
+Node :: struct { next : ^Node  val : i64 }
+
+// A defer runs at exit, when p holds a value: set after the `defer` is fine.
+set_later_in_defer :: fun(src: ^i64) {
+	p : ^i64
+	defer print(p^)
+	p = src
+}
+
+// A field written through an alias is set on the variable it aliases.
+written_through_alias :: fun(src: ^Node) -> bool {
+	root : Node
+	it := &root
+	it.next = src
+	return root.next == src
+}
+
+// A sized slice has its storage from the start.
+sized_slice :: fun() -> i64 {
+	s : []Node(4)
+	return s.cap
+}
+
+main :: fun() {
+	v := 5
+	n : Node
+	set_later_in_defer(&v)
+	if written_through_alias(&n) do print("set-through-alias")
+	print(sized_slice())
+}

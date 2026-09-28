@@ -230,7 +230,20 @@ program that checked clean, since the graph is built from checked types.
       which is what settled it. Goldens unchanged; the ask corpus changed in 111 Pounce and 47
       fixture queries, all through these summaries (`pack_rect`'s slot now traces to the
       glyph's size). test_1M: the analysis phase 4.8 → 3.5 s
-- [ ] Definite assignment onto the graph
+- [x] Definite assignment onto the graph: forward dataflow over each fun's runs of what may be
+      unset (locals that are pointers, slices or `void` scalars, and a struct local's pointer and
+      slice fields), unioned at joins; out-parameters (`init(&h)`) set what they are handed; an
+      alias is a pointer every write of which is `&x`. Two graph changes it needed: a `void`
+      store is a write of the `void` constant (it wrote nothing, so neither this check nor
+      def-use could see `x : T = void`; def-use's special case for it is gone), and a sized
+      slice's `zero` takes its capacity (`s : []T(n)` looked exactly like an unset `s : []T`,
+      and codegen will need it). The nine fixtures report identically. Differences, all
+      deliberate: a defer's reads see the state at exit, not at the `defer` (a pointer set
+      after the `defer` was a false error); a field written through an alias is set (another
+      false error); a value unset on a loop's back edge is caught (`p = void` at the end of a
+      body, read at its start); and a struct built from braces has only the fields it is given
+      even when its type is inferred (`n := Node{val = 1}` then `n.next`) — the old walk
+      tracked fields only for annotated declarations (`test/init_shapes.mara`)
 - [ ] Escape onto the graph
 
 ## Baselines

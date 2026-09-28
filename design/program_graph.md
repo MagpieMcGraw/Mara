@@ -151,7 +151,7 @@ Every node is a numbered id, and each kind of connection is stored by its shape:
 
 `total` is id 3 and its subtree is ids 3 to 8, so "is `it` inside `total`?" is 3 ≤ 7 ≤ 8: two integer comparisons.
 
-**One-per-node facts: a column indexed by id.** A declaration has exactly one type; a use of a name refers to exactly one declaration. Each is an array with one slot per node: `has_type[4] = []Item`, and the `sum` in `return sum` has `refers_to = 5`. The reverse direction (every use of `sum`, everything of type `Item`) is built once per build by inverting the column.
+**One-per-node facts: a column indexed by id.** A declaration has exactly one type; a use of a name refers to exactly one declaration. Each is an array with one slot per node: `has_type[4] = []Item`, and the `sum` in `return sum` has `refers_to = 5`. The reverse direction (every use of `sum`, everything of type `Item`) is built once per build by inverting the column. An operation also records the statement it was lowered from (a statements table: its origin and kind), which is how an analysis reports a line and what a write is: a declaration, an assignment, a destructure.
 
 **Many-to-many (calls, flows): one edge table.** Each connection is a record:
 
@@ -212,9 +212,9 @@ About thirty kinds in all.
 | Operation | Written as | LLVM |
 | --- | --- | --- |
 | `read` | a place used as a value | `load`, or the address itself for a struct |
-| `write` | `x = v`, `p.x += 1` | `store`, or `memcpy` for a struct |
+| `write` | `x = v`, `p.x += 1`; `x = void` writes the `void` constant | `store`, or `memcpy` for a struct; `void` stores nothing, or a pointer's null |
 | `address` | `&x` | the place itself; no instruction |
-| `zero` | synthetic, from `x : T` | `store zeroinitializer` or `memset` |
+| `zero` | synthetic, from `x : T`; `s : []T(n)` takes `n` | `store zeroinitializer` or `memset`; for `n`, storage for n elements and the slice header over it |
 | `construct` | `Foo(a)`, `Foo{…}`; synthetic from `x : Foo` | `memset`, then a call to Foo's init into the place |
 | `fill` | `{all x}` | a store per slot, a loop when large |
 | `carve` | `let(T, mem)`, `slice([:n]T, mem)` | align the cursor, `getelementptr`, bump `mem.len` |

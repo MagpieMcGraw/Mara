@@ -1,0 +1,27 @@
+module init_shapes_neg
+//@ expect-fail: is used before being assigned a value
+
+// Reads the definite-assignment check must reject: unset on a loop's back
+// edge, and a field a braces literal never gave, its type inferred.
+
+Node :: struct { next : ^Node  val : i64 }
+
+unset_on_the_back_edge :: fun(src: ^i64) {
+	p := src
+	for i in 0..3 {
+		print(p^)            // the second time round, p is void
+		p = void
+	}
+}
+
+inferred_literal :: fun() {
+	n := Node{val = 1}
+	m := n.next              // next was never given
+	print(m == void)
+}
+
+main :: fun() {
+	v := 5
+	unset_on_the_back_edge(&v)
+	inferred_literal()
+}
