@@ -772,7 +772,7 @@ TTF :: struct (bytes: ^[]byte) {
 		return hmtx
 	}
 	pick_cmap_subtable :: fun(cmap: Cmap, cmap_loc: i64) -> i64 {
-		best : i32 = -1
+		best : i64 = -1
 		best_score : i32 = -1
 		for e, i in cmap.encodings {
 			score : i32 = 1

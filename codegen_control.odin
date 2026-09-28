@@ -307,10 +307,11 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         data_ptr = gen_field_address(g, coll_fa)
         elem_ir = llvm_type_from_checker(s.elem_type_)
         // The array type for GEP — look at the field access type
-        if fa_type, fa_ok := expr_type(coll_fa).(^Type_Fixed_Array); fa_ok {
-            use_array_gep = true
-            arr_type_str = llvm_type_from_checker(fa_type)
-        }
+        fa_type, fa_ok := distinct_base(expr_type(coll_fa)).(^Type_Fixed_Array)
+        if !fa_ok { codegen_fatal(g, s.span, CODE_COLLECTION_REQUIRES_IDENTIFIER_FIELD_ACCESS) }
+        use_array_gep = true
+        arr_type_str = llvm_type_from_checker(fa_type)
+        length_val = fmt.tprintf("%d", fa_type.size)
     } else if av, av_ok := get_array(g, coll_name); av_ok {
         // Fixed array: iterate 0 to capacity
         data_ptr = av.alloca
@@ -341,7 +342,7 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     emit_alloca(g, idx_alloca, w)
     emit_store(g, w, "0", idx_alloca)
     if s.index_var != "" {
-        g.all_vars[s.index_var] = Scalar_Var{idx_alloca}
+        g.all_vars[s.index_var] = Scalar_Var{idx_alloca}   // the count, at w like the checker's
     }
 
     // Labels

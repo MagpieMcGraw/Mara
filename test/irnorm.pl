@@ -8,11 +8,17 @@
 # compares two emitters, design/graph_retrofit.md), one rule each:
 #   - a block no branch reaches from the entry;
 #   - a store the next instruction overwrites: same type, same pointer;
-#   - address arithmetic whose shape can't matter: `inbounds`, an unused
-#     getelementptr, a chain of them folded into one;
+#   - address arithmetic whose shape can't matter: `inbounds`, a constant
+#     index's width (it is sign-extended to the pointer's: `i32 1` and
+#     `i64 1` step alike), an unused getelementptr, a chain of them folded
+#     into one, where one used once is computed (just before its use);
 #   - a zeroing memset the next instruction repeats, or overwrites with a
-#     memcpy of the same size;
+#     memcpy of the same size (after only address arithmetic);
 #   - an alloca nothing reads (only stored into), with its stores;
+#   - the order of the entry block's allocas (by first use);
+#   - the name a bounds failure reports for the place it indexes: the graph's
+#     emitter names it as written (`o.cells`, `grid[i]`), the old one by its
+#     last name or as `array` (a message change, made on purpose);
 #   - then, a string constant nothing references.
 # Usage: irnorm.pl file.ll > file.norm
 use strict; use warnings;
@@ -89,7 +95,33 @@ sub clean {
         next unless $seen{$i};
         push @kept, @{ $blocks[$i]{lines} };
     }
-    return drop_overwritten(drop_unread(simplify_geps(@kept)));
+    s/(call void \@__mara_bounds_fail\(.*, )ptr \@[-\w.\$]+\)$/${1}ptr NAME)/ for @kept;
+    return order_allocas(drop_overwritten(drop_unread(simplify_geps(@kept))));
+}
+
+# Where a fixed-size alloca sits among the entry block's others can't matter —
+# they all run before anything uses them — so they go in the order the code
+# first uses them.
+sub order_allocas {
+    my @lines = @_;
+    my (@at, %first);
+    for my $i (0 .. $#lines) {
+        last if $i > 0 && $lines[$i] =~ /^[-\w.\$]+:/;   # the entry block only
+        push @at, $i if $lines[$i] =~ /^\s+%[-\w.\$]+ = alloca [^%]*$/;
+    }
+    return @lines if @at < 2;
+    for my $i (0 .. $#lines) {
+        my $rest = $lines[$i];
+        next if $rest =~ /^\s+%[-\w.\$]+ = alloca /;
+        $rest =~ s/^\s+%[-\w.\$]+ = //;
+        while ($rest =~ /(%[-\w.\$]+)/g) { $first{$1} //= $i; }
+    }
+    my %name = map { $_ => ($lines[$_] =~ /^\s+(%[-\w.\$]+) = /)[0] } @at;
+    my @order = sort {
+        ($first{$name{$a}} // 1e9) <=> ($first{$name{$b}} // 1e9) || $a <=> $b
+    } @at;
+    @lines[@at] = @lines[@order];
+    return @lines;
 }
 
 # An alloca nothing reads — only stored into — is dead, and so are its stores.
@@ -114,10 +146,22 @@ sub drop_unread {
 }
 
 # Address arithmetic whose shape can't change behavior: `inbounds` dropped, a
-# getelementptr nothing uses dropped, and one whose base is another's result,
-# used only there, folded into it (a chain of steps is one getelementptr).
+# getelementptr nothing uses dropped, and one whose base is another's result
+# folded into it (a chain of steps is one getelementptr; the base stays while
+# something else uses it).
 sub simplify_geps {
-    my @lines = map { my $l = $_; chomp $l; $l =~ s/ = getelementptr inbounds / = getelementptr /; $l } @_;
+    my @lines = map {
+        my $l = $_;
+        chomp $l;
+        $l =~ s/ = getelementptr inbounds / = getelementptr /;
+        # The indices, after the base: a constant's width, i64.
+        if ($l =~ /^(\s+%[-\w.\$]+ = getelementptr .*?, ptr [%@][-\w.\$]+)(.*)$/) {
+            my ($head, $at) = ($1, $2);
+            $at =~ s/\bi32 (-?\d+)\b/i64 $1/g;
+            $l = $head . $at;
+        }
+        $l
+    } @_;
     my $changed = 1;
     while ($changed) {
         $changed = 0;
@@ -135,16 +179,48 @@ sub simplify_geps {
             }
             next unless $line =~ /^(\s+%[-\w.\$]+ = getelementptr ).+?, ptr (%[-\w.\$]+), i(?:32|64) 0((?:, .*)?)$/;
             my ($head, $a, $rest) = ($1, $2, $3);
-            next unless ($uses{$a} // 0) == 1 && defined $def{$a};
+            next unless defined $def{$a};
             my $base = $lines[$def{$a}];
             next unless defined $base && $base =~ /^\s+\Q$a\E = getelementptr (.+)$/;
             $lines[$i] = $head . $1 . $rest;
-            $lines[$def{$a}] = undef;
             $changed = 1;
         }
         @lines = grep { defined } @lines;
     }
-    return map { "$_\n" } @lines;
+    return map { "$_\n" } sink_geps(@lines);
+}
+
+# Where a getelementptr is computed can't matter either — it touches no
+# memory, and its operands dominate its one use — so one used once (not by a
+# phi) moves to just before its use.
+sub sink_geps {
+    my @lines = @_;
+    my (%def, %uses, %user);
+    for my $i (0 .. $#lines) {
+        my $rest = $lines[$i];
+        $def{$1} = $i if $rest =~ /^\s+(%[-\w.\$]+) = getelementptr /;
+        $rest =~ s/^\s+%[-\w.\$]+ = //;
+        while ($rest =~ /(%[-\w.\$]+)/g) { $uses{$1}++; $user{$1} = $i; }
+    }
+    my %sink = map { $_ => 1 }
+        grep { ($uses{$_} // 0) == 1 && $lines[$user{$_}] !~ / = phi / } keys %def;
+    my (@out, %done);
+    my $place;
+    $place = sub {
+        my ($line) = @_;
+        my $rest = $line;
+        $rest =~ s/^\s+%[-\w.\$]+ = //;
+        for my $v ($rest =~ /(%[-\w.\$]+)/g) {
+            next if !$sink{$v} || $done{$v}++;
+            $place->($lines[$def{$v}]);
+        }
+        push @out, $line;
+    };
+    for my $line (@lines) {
+        next if $line =~ /^\s+(%[-\w.\$]+) = getelementptr / && $sink{$1};
+        $place->($line);
+    }
+    return @out;
 }
 
 # A store the very next line overwrites (same type, same pointer) does nothing;
@@ -163,7 +239,11 @@ sub drop_overwritten {
         if ($lines[$i] =~ /^\s+call void \@llvm\.memset\.p0\.i64\(ptr (%[-\w.\$]+), i8 0, i64 (\d+), i1 false\)$/) {
             my ($p, $n) = ($1, $2);
             next if $next eq $lines[$i];
-            next if $next =~ /^\s+call void \@llvm\.memcpy\.p0\.p0\.i64\(ptr \Q$p\E, ptr [^,]+, i64 $n, i1 false\)$/;
+            # The memcpy may come after address arithmetic, which touches no memory.
+            my $j = $i + 1;
+            $j++ while $j <= $#lines && $lines[$j] =~ /^\s+%[-\w.\$]+ = getelementptr /;
+            my $copy = $j <= $#lines ? $lines[$j] : "";
+            next if $copy =~ /^\s+call void \@llvm\.memcpy\.p0\.p0\.i64\(ptr \Q$p\E, ptr [^,]+, i64 $n, i1 false\)$/;
         }
         push @out, $lines[$i];
     }

@@ -348,8 +348,41 @@ evaluates its destination and value); how instructions are chosen stays in the e
       (later steps): a bare construction whose constructor has default arguments, the
       in-place update `x = f(x)`, `using` fields, structs holding partial arrays or a sized
       slice's backing
-- [ ] Arrays: bounds checks, `fill`, `zero`, element construction, array params and results,
-      swizzles
+- [x] Arrays: a fixed array is handled by its address like a struct (params, locals, fields,
+      results in the caller's slot, NRVO); a zero is a memset; a literal zeroes, then writes
+      its elements; `{all x}` writes the one value into every element (nothing to zero); an
+      array of structs runs each element's constructor on its zeroed storage; an index is a
+      bounds check — none for a constant in range, none for a loop's own element — then its
+      address; a one-letter swizzle is its element. The graph now says: an index widens to
+      the header width by an implied cast; an array literal returned or passed is built at
+      the type its use takes (it had the literal's own, `[2]infer_int`); a collection loop
+      counts at the header width (its `i32` counter was compared with an `i64` length); a
+      broadcast's value has the element's type, and is evaluated once (the old emitter
+      evaluated the checker's clone of it per slot: `{all f()}` called f N times); a literal
+      or construction assigned to storage that already holds a value is built whole in a
+      temporary, then written — it may read what it replaces (`p = P{x = p.y}`, or through
+      a param: `fill(&cs, cs[0].pos)`), which building in place zeroes first. The emitter
+      builds such a temporary in place when nothing read from its first write on can be
+      that storage: the old emitter's type-based rule (`storage_read_hits`), on graph
+      places; `mara ask` still names the construction as what supplies the storage
+      (`du_built_in_temp`). Language (decided 2026-09-28): the index of `for x, i in xs` is `i64`, like a
+      length — it was `i32`, and the old emitter loaded it as an `i32` out of the `i64`
+      counter's slot (`code/font.mara` held one in an `i32`). Old emitter, to the graph's
+      shape: an array copy (`b := a`, `b = a`, a returned local) is one memcpy, not an
+      element loop; a literal always zeroes first, a broadcast never; a new local given an
+      array-returning call isn't zeroed first (every array-returning fun writes all of its
+      result: a returned literal now zeroes the slot); a constructor's array field isn't
+      zeroed again; an array-valued overloaded operator is built where it goes, like the
+      call it is. Found: a loop over an array field had no bound (invalid IR;
+      `test/array_field_loop.mara`), and a fallible constructor's Self slot was never
+      zeroed (garbage in its bare fields; `test/fallible_ctor_zero.mara`). A bounds failure
+      names the place as written (`o.cells`, `grid[i]`; the old emitter said `array` for
+      anything but a bare name). Normalizer: a constant index's width, where a single-use
+      getelementptr is computed, a chain folded even when its base has other uses, a
+      memset overwritten by a memcpy after only address arithmetic, the order of the entry
+      block's allocas, the bounds failure's name. `MARA_GRAPH_CG=log` also says where each
+      declined fun stopped. Still declined: swizzles of several letters, constant tables, a
+      broadcast of aggregates, arrays on the arena
 - [ ] Slices and partial arrays: headers, slicing, `len`/`cap`, slice params and results,
       sized slices, `let` / `slice` carves, byte reads and writes, `#big_endian`
 - [ ] Strings, `print`, `assert`, `crash`

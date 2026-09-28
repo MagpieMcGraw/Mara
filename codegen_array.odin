@@ -515,11 +515,12 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
 
     av, _ := get_array(g, name)
 
-    // No initializer — just zero the array (unless `= void` opted out)
+    // No initializer — just zero the array (unless `= void` opted out, or a
+    // constructor's field, which its caller zeroed)
     if value == nil {
         if !skip_zero {
             total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-            emit_memset_zero(g, av.alloca, total_bytes)
+            if !av.zeroed { emit_memset_zero(g, av.alloca, total_bytes) }
             // Construct each element after the zero-fill so a `[N]Struct` /
             // `[N]str64` decl (local or struct field) comes up with field
             // defaults applied and nested partial-array headers stamped, not
@@ -569,11 +570,9 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
 
     // Check if the value is an array literal
     if arr_lit, ok := value.(^Expr_Array); ok {
-        // Zero-init first (handles undersized literals), then store each element
-        if len(arr_lit.elements) < alloc_cap {
-            total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-            emit_memset_zero(g, av.alloca, total_bytes)
-        }
+        // A literal zeroes its storage, then stores each element
+        total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
+        emit_memset_zero(g, av.alloca, total_bytes)
         et := literal_elem_type(arr_lit, elem_mara)
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
@@ -583,15 +582,20 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
     } else if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         // Distinct-fixed-array struct literal (Quat{...}). Zero-init the slab
         // then store each non-nil slot; nil entries were checker-marked as
-        // zero-fill. A `[N]T = all x` broadcast lands here too.
-        total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-        emit_memset_zero(g, av.alloca, total_bytes)
+        // zero-fill. A `[N]T = all x` broadcast lands here too, and writes
+        // every slot: nothing to zero.
+        if !sl.is_broadcast {
+            total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
+            emit_memset_zero(g, av.alloca, total_bytes)
+        }
         et := literal_elem_type(sl, elem_mara)
-        for elem, i in sl.array_values {
-            if elem == nil { continue }
-            gep := fresh_tmp(g)
-            emit_array_gep_const(g, gep, arr_type, av.alloca, i)
-            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true)
+        if !gen_broadcast_scalar(g, av.alloca, arr_type, elem_type, et, sl) {
+            for elem, i in sl.array_values {
+                if elem == nil { continue }
+                gep := fresh_tmp(g)
+                emit_array_gep_const(g, gep, arr_type, av.alloca, i)
+                gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true)
+            }
         }
     } else {
         // Value is an expression — copy from another array
@@ -619,46 +623,7 @@ copy_array_expr :: proc(g: ^Codegen, name: string, value: Expr) {
             codegen_fatal(g, ident.span, CODE_ARRAY, ident.name)
         }
         dst, _ := get_array(g, name)
-
-        // Copy all elements (always use capacity — full arrays). Counter
-        // is slice_layout.len_ir wide; array capacities fit by construction.
-        loop_bound := fmt.tprintf("%d", src.capacity)
-        w := slice_layout.len_ir
-
-        src_type := array_var_type(&src)
-        dst_type := array_var_type(&dst)
-        cond_label := fresh_label(g, "copy.cond")
-        body_label := fresh_label(g, "copy.body")
-        end_label  := fresh_label(g, "copy.end")
-
-        idx_ptr := fresh_tmp(g)
-        emit_alloca(g, idx_ptr, w)
-        emit_store(g, w, "0", idx_ptr)
-        emit_br(g, cond_label)
-
-        emit_label(g, cond_label)
-        idx := fresh_tmp(g)
-        emit_load_into(g, idx, w, idx_ptr)
-        cmp := fresh_tmp(g)
-        emit(g, "  %s = icmp slt %s %s, %s", cmp, w, idx, loop_bound)
-        emit_cond_br(g, cmp, body_label, end_label)
-
-        emit_label(g, body_label)
-        idx2 := fresh_tmp(g)
-        emit_load_into(g, idx2, w, idx_ptr)
-        src_gep := fresh_tmp(g)
-        emit_array_gep_var(g, src_gep, src_type, src.alloca, idx2, w)
-        val := fresh_tmp(g)
-        emit_load_into(g, val, dst.elem_type, src_gep)
-        dst_gep := fresh_tmp(g)
-        emit_array_gep_var(g, dst_gep, dst_type, dst.alloca, idx2, w)
-        emit_store(g, dst.elem_type, val, dst_gep)
-        next := fresh_tmp(g)
-        emit(g, "  %s = add %s %s, 1", next, w, idx2)
-        emit_store(g, w, next, idx_ptr)
-        emit_br(g, cond_label)
-
-        emit_label(g, end_label)
+        emit_memcpy(g, dst.alloca, src.alloca, dst.capacity * elem_byte_size(dst.elem_type, g.checked))
         return
     }
 
@@ -2540,6 +2505,20 @@ gen_construct_partial_array_elements :: proc(g: ^Codegen, pa_addr: string, pa: ^
 // pointer to element 0), but only when the element type needs it. Emits a
 // runtime counted loop so `[..256]Font` is a handful of instructions, not 256
 // unrolled constructors.
+// `{all x}` of register values: x evaluated once and stored into every slot —
+// each element is the one value (the graph's fill). An aggregate element
+// still builds each slot from the checker's clone of x. False: not that case.
+gen_broadcast_scalar :: proc(g: ^Codegen, dst, arr_type, elem_ir: string, et: Type, sl: ^Expr_Struct_Literal) -> bool {
+    if !sl.is_broadcast || len(sl.array_values) == 0 || et == nil || is_pointer_valued_type(et) { return false }
+    val := gen_expr_coerced(g, sl.array_values[0], elem_ir)
+    for i in 0 ..< len(sl.array_values) {
+        gep := fresh_tmp(g)
+        emit_array_gep_const(g, gep, arr_type, dst, i)
+        emit_store(g, elem_ir, val, gep)
+    }
+    return true
+}
+
 gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int) {
     if count <= 0 { return }
     if !type_needs_construction(g, elem) { return }

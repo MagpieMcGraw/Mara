@@ -7844,10 +7844,8 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
             type_env_set(child, s.elem_var, elem_type)
         }
         if s.index_var != "" {
-            // Index lives at slice header width — that's what codegen allocates
-            // the counter as. Typing it as i64 here would force users to cast
-            // when feeding it back into other slice ops.
-            type_env_set(child, s.index_var, Type_Numeric{kind = .Signed, bits = 32})
+            // The index counts at slice header width, like a slice's len.
+            type_env_set(child, s.index_var, slice_header_width_type)
         }
 
         s.elem_type_ = distinct_base(elem_type)

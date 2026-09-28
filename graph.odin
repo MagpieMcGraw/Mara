@@ -535,7 +535,7 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
                     graph_op(b, .Write, .Explicit, v.span, nil, "", graph_var(b, v.name, NO_NODE, dest_t, v.span), graph_void(b, dest_t, v.span))
                     break
                 }
-                graph_store(b, graph_dest_var(v.name, NO_NODE, dest_t), v.value, v.span)
+                graph_assign(b, graph_dest_var(v.name, NO_NODE, dest_t), v.value, v.span)
                 break
             }
             // The target's place first, then the value: a compound `t op= x`
@@ -548,7 +548,7 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
                 break
             }
             if v.is_compound && !is_slice { b.compound = {graph_expr_key(v.target), p} }
-            graph_store(b, Dest{kind = .At, at = p, type_ = dest_t}, v.value, v.span)
+            graph_assign(b, Dest{kind = .At, at = p, type_ = dest_t}, v.value, v.span)
             b.compound = {}
         }
     case ^Stmt_Multi_Assign:
@@ -865,7 +865,9 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
             elem = graph_node(b, .Local, .Explicit, f, v.elem_var, v.elem_type_, span)
             graph_bind(b, v.elem_var, elem)
         }
-        index_t := Type(Type_Numeric{kind = .Signed, bits = 32})   // as the checker binds it
+        // The loop counts at the slice header's width; a named index is
+        // that count.
+        index_t := Type(slice_header_width_type)
         if v.index_var != "" {
             counter = graph_node(b, .Local, .Explicit, f, v.index_var, index_t, span)
             graph_bind(b, v.index_var, counter)
@@ -915,6 +917,7 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
     if elem != NO_NODE {
         ct := b.g.type_[counter]
         at := graph_read(b, graph_var(b, b.g.name[counter], counter, ct, span), ct, span)
+        at = graph_widen(b, at, slice_header_width_type, span)
         slot := graph_op_value(b, .Index, .Synthetic, span, v.elem_type_, "", graph_coll_place(b, coll, coll_slot, span), at)
         graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.elem_var, elem, v.elem_type_, span),
                  graph_read(b, slot, v.elem_type_, span))
@@ -946,7 +949,7 @@ graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
 // A value at the type its use takes: a narrower number widens, implied —
 // sign- or zero-extended by its own signedness, or f32 to f64 — wherever the
 // checker lets a narrower value in (an operation's operands, a store, an
-// argument, a return). A literal already has its use's type.
+// argument, a return, an index). A literal already has its use's type.
 @(private="file")
 graph_widen :: proc(b: ^Graph_Builder, v: Operand, to: Type, span: Span) -> Operand {
     if v.op == NO_NODE || v.out != 0 || to == nil { return v }
@@ -956,6 +959,17 @@ graph_widen :: proc(b: ^Graph_Builder, v: Operand, to: Type, span: Span) -> Oper
     tb, tk, tok := numeric_info(to)
     if !fok || !tok || tb <= fb || (fk == .Float) != (tk == .Float) { return v }
     return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), v)
+}
+
+// A value at the type its use takes (a return, an argument): an array
+// literal is built at that type — a short one's other slots zero — and a
+// narrower number widens.
+@(private="file")
+graph_value_as :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span, w := Written.Explicit) -> Operand {
+    if arr, is_arr := e.(^Expr_Array); is_arr && t != nil && graph_aggregate(t) {
+        return graph_temp_into(b, e, t, arr.span)
+    }
+    return graph_widen(b, graph_value(b, e, w), t, span)
 }
 
 // The type a binary operation works in: its own for arithmetic, else the
@@ -1027,7 +1041,7 @@ graph_return_stmt :: proc(b: ^Graph_Builder, v: Stmt_Return) {
     rts := graph_result_types(b)
     for e, i in v.values {
         rt: Type = rts[i] if i < len(rts) else nil
-        append(&vals, graph_widen(b, graph_value(b, e), rt, v.span))
+        append(&vals, graph_value_as(b, e, rt, v.span))
     }
     graph_exit_scopes(b, 0, v.span)
     graph_op(b, .Return, .Explicit, v.span, nil, "", ..vals[:])
@@ -1511,7 +1525,8 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
         }
     case ^Expr_Index:
         base := graph_base_place(b, v.expr, v.span)
-        return graph_op_value(b, .Index, .Explicit, v.span, v.type_, "", base, graph_value(b, v.index))
+        at := graph_widen(b, graph_value(b, v.index), slice_header_width_type, v.span)
+        return graph_op_value(b, .Index, .Explicit, v.span, v.type_, "", base, at)
     case ^Expr_Unary:
         if v.op == .Caret {
             return graph_op_value(b, .Deref, .Explicit, v.span, v.type_, "", graph_place(b, v.operand, v.span))
@@ -1562,6 +1577,47 @@ graph_aggregate :: proc(t: Type) -> bool {
     return false
 }
 
+// A store into storage that already holds a value. What graph_into builds in
+// place — zeroing it, then filling it — is built whole first, then written: it
+// may read what it replaces (`p = P{x = p.y}`, `a = [a[1], a[0]]`). The
+// emitter builds it in place when nothing it reads can be that storage.
+@(private="file")
+graph_assign :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
+    if !graph_builds_into(b, value) {
+        graph_store(b, d, value, span)
+        return
+    }
+    t := b.g.type_[d.at.op] if d.kind == .At else d.type_   // the place's own type
+    if t == nil || is_infer(t) { t = expr_type(value) }
+    val := graph_temp_into(b, value, t, span)
+    graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
+}
+
+// Whether graph_into builds `e` in place.
+@(private="file")
+graph_builds_into :: proc(b: ^Graph_Builder, e: Expr) -> bool {
+    #partial switch v in e {
+    case ^Expr_Struct_Literal:
+        if v.override_target != "" { return false }
+        if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module { return true }
+        return v.is_broadcast || graph_aggregate(v.type_)
+    case ^Expr_Array:
+        return true
+    case ^Expr_Call:
+        rf, resolved := v.resolved_func.?
+        if !resolved { return false }
+        callee := graph_callee(b, rf)
+        return callee != nil && callee.kind == .Struct
+    case ^Expr_Ident:
+        _, is_variant := v.resolved.(Resolved_Union_Variant)
+        return is_variant
+    case ^Expr_Field_Access:
+        _, is_variant := v.resolved.(Resolved_Union_Variant)
+        return is_variant
+    }
+    return false
+}
+
 // Build an aggregate into a fresh synthetic local and read it.
 @(private="file")
 graph_temp_into :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> Operand {
@@ -1581,7 +1637,7 @@ graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
     case ^Expr_Struct_Literal:
         if v.override_target != "" { return false }
         if v.is_broadcast {
-            val := graph_value(b, v.broadcast_value)
+            val := graph_widen(b, graph_value(b, v.broadcast_value), graph_elem_type(v.type_), v.span)
             graph_op(b, .Fill, .Explicit, v.span, v.type_, "", graph_dest_place(b, d, v.span), val)
             return true
         }
@@ -1599,9 +1655,11 @@ graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
         graph_literal_writes(b, v, d, .Explicit)
         return true
     case ^Expr_Array:
-        graph_op(b, .Zero, .Explicit, v.span, v.type_, "", graph_dest_place(b, d, v.span))
+        // At its destination's type: a short literal leaves the rest zero.
+        t := d.type_ if d.type_ != nil && !is_infer(d.type_) else v.type_
+        graph_op(b, .Zero, .Explicit, v.span, t, "", graph_dest_place(b, d, v.span))
         parent := d
-        elem_t := graph_elem_type(v.type_)
+        elem_t := graph_elem_type(t)
         for el, i in v.elements {
             graph_store(b, Dest{kind = .Index, index = i, type_ = elem_t, parent = &parent}, el, v.span)
         }
@@ -1685,7 +1743,7 @@ graph_call :: proc(b: ^Graph_Builder, v: ^Expr_Call, dest: ^Dest, w: Written) ->
         aw := w
         if callee != nil && i < len(callee.params) && a == callee.params[i].default_value { aw = .Implied }
         pt: Type = callee.params[i].type_ if callee != nil && i < len(callee.params) else nil
-        append(&vals, graph_widen(b, graph_value(b, a, aw), pt, v.span))
+        append(&vals, graph_value_as(b, a, pt, v.span, aw))
     }
     ops := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
     if callee == nil {
@@ -1968,8 +2026,10 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
         return g.type_[id]
     case .Compare:
         if other := ops[1 - k].op; other != NO_NODE && !is_infer(g.type_[other]) { return g.type_[other] }
-    case .Write, .Fill:
+    case .Write:
         if k > 0 { return g.type_[ops[0].op] }
+    case .Fill:
+        if k > 0 { return graph_elem_type(g.type_[ops[0].op]) }
     case .Call:
         if c, ok := callee[id]; ok && k < len(c.params) { return c.params[k].type_ }
     case .Construct:   // its first operand is where it builds
@@ -2161,6 +2221,34 @@ graph_root :: proc(g: ^Program_Graph, p: Operand) -> Node_Id {
         }
     }
     return NO_NODE
+}
+
+// A place as the source writes it: `o.inner.p`, `a[i]`. A temporary, or a
+// place reached through an explicit dereference, has no name.
+graph_place_name :: proc(g: ^Program_Graph, p: Operand) -> string {
+    if p.op == NO_NODE { return "" }
+    ops := graph_operands(g, p.op)
+    #partial switch g.op[p.op] {
+    case .Var:
+        if g.written[p.op] == .Synthetic { return "" }
+        return g.name[p.op]
+    case .Field, .Swizzle:
+        base := graph_place_name(g, ops[0])
+        if base == "" { return g.name[p.op] }
+        return fmt.tprintf("%s.%s", base, g.name[p.op])
+    case .Deref:
+        if g.written[p.op] == .Implied { return graph_place_name(g, ops[0]) }
+    case .Index:
+        base := graph_place_name(g, ops[0])
+        if base == "" { return "" }
+        i := ops[1].op
+        if i != NO_NODE && g.op[i] == .Cast && g.written[i] == .Implied { i = graph_operands(g, i)[0].op }
+        idx := ""
+        if i != NO_NODE && g.op[i] == .Read { idx = graph_place_name(g, graph_operands(g, i)[0]) }
+        if idx == "" { return base }
+        return fmt.tprintf("%s[%s]", base, idx)
+    }
+    return ""
 }
 
 // The fun or struct whose code an operation is in.
@@ -2681,7 +2769,6 @@ graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
     fmt.println(strings.to_string(b))
 }
 
-@(private="file")
 graph_kind_word :: proc(k: Node_Kind) -> string {
     switch k {
     case .Module:   return "module"
@@ -2704,7 +2791,6 @@ graph_kind_word :: proc(k: Node_Kind) -> string {
     return "?"
 }
 
-@(private="file")
 graph_op_word :: proc(k: Op_Kind) -> string {
     switch k {
     case .Var:         return "var"

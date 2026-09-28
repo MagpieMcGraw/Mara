@@ -110,6 +110,7 @@ Array_Var :: struct {
     capacity_val: string, // LLVM IR value for runtime capacity (VLA only, "" for fixed)
     elem_type:    string, // LLVM element type: "i64", "double", "ptr", etc.
     is_utf8:      bool,   // true for utf8 arrays — drives string-vs-array print formatting
+    zeroed:       bool,   // storage its caller zeroed (a constructor's field): a bare decl skips the zero-fill
 }
 
 // Info about a slice variable in codegen

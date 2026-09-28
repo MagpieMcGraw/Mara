@@ -977,7 +977,7 @@ esc_report_store :: proc(e: ^Esc, site: Esc_Site, val: Esc_Roots) {
         return
     }
     span := g.stmts[g.stmt[site.op]].span if g.stmt[site.op] >= 0 else g.origin[site.op]
-    if into := esc_place_name(g, site.place); into != "" {
+    if into := graph_place_name(g, site.place); into != "" {
         esc_diag(e, span, TYPE_ESCAPE_STORE, what, into)
     } else {
         esc_diag(e, span, TYPE_ESCAPE_STORE_ANON, what)
@@ -1035,33 +1035,6 @@ esc_built_by :: proc(e: ^Esc, ri: int, ret: Node_Id, read: Node_Id) -> Node_Id {
 esc_param_name :: proc(callee: ^Type_Scope, i: int) -> string {
     if callee != nil && i >= 0 && i < len(callee.params) { return callee.params[i].name }
     return "?"
-}
-
-// A place as the source writes it: `o.inner.p`, `a[i]`. A temporary, or a
-// place reached through an explicit dereference, has no name.
-@(private="file")
-esc_place_name :: proc(g: ^Program_Graph, p: Operand) -> string {
-    if p.op == NO_NODE { return "" }
-    ops := graph_operands(g, p.op)
-    #partial switch g.op[p.op] {
-    case .Var:
-        if g.written[p.op] == .Synthetic { return "" }
-        return g.name[p.op]
-    case .Field, .Swizzle:
-        base := esc_place_name(g, ops[0])
-        if base == "" { return g.name[p.op] }
-        return fmt.tprintf("%s.%s", base, g.name[p.op])
-    case .Deref:
-        if g.written[p.op] == .Implied { return esc_place_name(g, ops[0]) }
-    case .Index:
-        base := esc_place_name(g, ops[0])
-        if base == "" { return "" }
-        idx := ""
-        if i := ops[1].op; i != NO_NODE && g.op[i] == .Read { idx = esc_place_name(g, graph_operands(g, i)[0]) }
-        if idx == "" { return base }
-        return fmt.tprintf("%s[%s]", base, idx)
-    }
-    return ""
 }
 
 // The shortest-lived thing a value may point into, for a diagnostic.

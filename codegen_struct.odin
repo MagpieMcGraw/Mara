@@ -1087,9 +1087,7 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
 
     // Bare array literal [a, b, c].
     if arr_lit, ok := value.(^Expr_Array); ok {
-        if len(arr_lit.elements) < alloc_cap {
-            emit_memset_zero(g, dst_ptr, total_bytes)
-        }
+        emit_memset_zero(g, dst_ptr, total_bytes)
         et := literal_elem_type(arr_lit)
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
@@ -1101,10 +1099,11 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
 
     // Distinct-fixed-array struct literal (Quat{...} etc.) — array_values has
     // per-slot exprs, nil meaning zero-fill. A `[N]T = all x` broadcast also
-    // lands here.
+    // lands here, and writes every slot: nothing to zero.
     if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
-        emit_memset_zero(g, dst_ptr, total_bytes)
+        if !sl.is_broadcast { emit_memset_zero(g, dst_ptr, total_bytes) }
         et := literal_elem_type(sl)
+        if gen_broadcast_scalar(g, dst_ptr, arr_type, elem_type, et, sl) { return }
         for elem, i in sl.array_values {
             if elem == nil { continue }
             gep := fresh_tmp(g)
@@ -1114,39 +1113,10 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
         return
     }
 
-    // Ident referring to another array variable — element-wise loop copy.
+    // Ident referring to another array variable: its bytes.
     if ident, ok := value.(^Expr_Ident); ok {
         if src, src_ok := get_array(g, ident.name); src_ok {
-            src_type := array_var_type(&src)
-            w := slice_layout.len_ir
-            cond_label := fresh_label(g, "copy.cond")
-            body_label := fresh_label(g, "copy.body")
-            end_label  := fresh_label(g, "copy.end")
-            idx_ptr := fresh_tmp(g)
-            emit_alloca(g, idx_ptr, w)
-            emit_store(g, w, "0", idx_ptr)
-            emit_br(g, cond_label)
-            emit_label(g, cond_label)
-            idx := fresh_tmp(g)
-            emit_load_into(g, idx, w, idx_ptr)
-            cmp := fresh_tmp(g)
-            emit(g, "  %s = icmp slt %s %s, %d", cmp, w, idx, src.capacity)
-            emit_cond_br(g, cmp, body_label, end_label)
-            emit_label(g, body_label)
-            idx2 := fresh_tmp(g)
-            emit_load_into(g, idx2, w, idx_ptr)
-            src_gep := fresh_tmp(g)
-            emit_array_gep_var(g, src_gep, src_type, src.alloca, idx2, w)
-            val := fresh_tmp(g)
-            emit_load_into(g, val, elem_type, src_gep)
-            dst_gep := fresh_tmp(g)
-            emit_array_gep_var(g, dst_gep, arr_type, dst_ptr, idx2, w)
-            emit_store(g, elem_type, val, dst_gep)
-            next := fresh_tmp(g)
-            emit(g, "  %s = add %s %s, 1", next, w, idx2)
-            emit_store(g, w, next, idx_ptr)
-            emit_br(g, cond_label)
-            emit_label(g, end_label)
+            emit_memcpy(g, dst_ptr, src.alloca, total_bytes)
             return
         }
     }

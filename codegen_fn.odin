@@ -333,10 +333,10 @@ prebind_field_var :: proc(g: ^Codegen, name, addr: string, ft: Type) {
             capacity  = v.size,
             elem_type = elem_t,
             is_utf8   = utf8,
+            zeroed    = true,
         }
         // (Element construction for a fixed-array field happens in the body's
-        // field-decl statement via gen_array_assign — doing it here too would
-        // be clobbered by that statement's zero-fill.)
+        // field-decl statement via gen_array_assign, on the zeroed storage.)
         return
     case ^Type_Slice:
         elem_t := llvm_type_from_checker(v.elem)

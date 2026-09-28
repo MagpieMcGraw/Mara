@@ -1,0 +1,30 @@
+module fallible_ctor_zero
+
+//@ expect-output: 7 7 7
+//@ expect-output: 5 5 5
+
+// A fallible constructor builds Self in its caller's slot 0, which — like any
+// construction's storage — starts zeroed: a bare field reads 0, not whatever
+// the slot held (the call used to pass an unzeroed temporary).
+
+Bad :: error {
+	Negative
+}
+
+Thing :: struct(x: i64) -> err {
+	cells: [3]i64
+	n: i64
+	if x < 0 do return Negative
+	cells[1] = cells[1] + x
+	n = n + x
+}
+
+main :: fun() {
+	d, de := Thing(7)
+	print(d.cells[1], d.n, d.cells[1] + d.n - 7)
+	d.cells[1] = 100
+	d.n = 100
+	d, de = Thing(5)
+	print(d.cells[1], d.n, d.cells[1] + d.n - 5)
+	_ = de
+}

@@ -79,15 +79,20 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                     return
                 }
             }
-            // Array-returning call: use sret convention
-            if call, call_ok := s.value.(^Expr_Call); call_ok {
+            // Array-returning call — or an overloaded operator, the call it
+            // is: use sret convention
+            call, call_ok := s.value.(^Expr_Call)
+            if !call_ok { call, call_ok = overload_as_call(s.value) }
+            if call_ok {
                 info, info_ok := call_fun_info(g, call)
                 if info_ok && info.ret_array_cap > 0 {
                     if existing, ex_ok := get_array(g, s.name); ex_ok {
                         // NRVO alias: call directly into pre-registered buffer
                         gen_call_into_array(g, call, &existing, &info, s.is_decl, var_ref(s.name, s.var_type))
                     } else {
-                        gen_array_assign(g, s.name, fa.size, elem_t, nil, utf8, loc)
+                        // The call writes the whole result: storage, not zeroed.
+                        unzeroed := Expr_Skip_Constructor{span = s.span}
+                        gen_array_assign(g, s.name, fa.size, elem_t, &unzeroed, utf8, loc)
                         existing, _ := get_array(g, s.name)
                         gen_call_into_array(g, call, &existing, &info, true)
                     }
@@ -1342,52 +1347,18 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
     // the sret slot unwritten (= a zeroed array returned to the caller).
     handled := false
     if ident, id_ok := arr_ret_val.(^Expr_Ident); id_ok {
-        // Case A: returning an array variable (NRVO if aliased to sret, else loop-copy).
+        // Case A: returning an array variable (NRVO if aliased to sret, else copied).
         // A non-array ident (e.g. a slice) leaves handled=false → error below.
         src_av, av_ok := get_array(g, ident.name)
         if av_ok { handled = true }
         if av_ok && src_av.alloca != sret_av.alloca {
-            src_type := array_var_type(&src_av)
-            copy_bound := fmt.tprintf("%d", src_av.capacity)
-
-            w := slice_layout.len_ir
-            cond_label := fresh_label(g, "ret.copy.cond")
-            body_label := fresh_label(g, "ret.copy.body")
-            end_label  := fresh_label(g, "ret.copy.end")
-
-            idx_ptr := fresh_tmp(g)
-            emit_alloca(g, idx_ptr, w)
-            emit_store(g, w, "0", idx_ptr)
-            emit_br(g, cond_label)
-
-            emit_label(g, cond_label)
-            idx := fresh_tmp(g)
-            emit_load_into(g, idx, w, idx_ptr)
-            cmp := fresh_tmp(g)
-            emit(g, "  %s = icmp slt %s %s, %s", cmp, w, idx, copy_bound)
-            emit_cond_br(g, cmp, body_label, end_label)
-
-            emit_label(g, body_label)
-            idx2 := fresh_tmp(g)
-            emit_load_into(g, idx2, w, idx_ptr)
-            src_gep := fresh_tmp(g)
-            emit_array_gep_var(g, src_gep, src_type, src_av.alloca, idx2, w)
-            val := fresh_tmp(g)
-            emit_load_into(g, val, sret_av.elem_type, src_gep)
-            dst_gep := fresh_tmp(g)
-            emit_array_gep_var(g, dst_gep, sret_type, sret_av.alloca, idx2, w)
-            emit_store(g, sret_av.elem_type, val, dst_gep)
-            next := fresh_tmp(g)
-            emit(g, "  %s = add %s %s, 1", next, w, idx2)
-            emit_store(g, w, next, idx_ptr)
-            emit_br(g, cond_label)
-
-            emit_label(g, end_label)
+            emit_memcpy(g, sret_av.alloca, src_av.alloca, sret_av.capacity * elem_byte_size(sret_av.elem_type, g.checked))
             reanchor_partial_arrays(g, expr_type(arr_ret_val), sret_av.alloca)
         }
     } else if arr_lit, lit_ok := arr_ret_val.(^Expr_Array); lit_ok {
-        // Case B: returning an array literal
+        // Case B: returning an array literal: zeroed, then its elements
         handled = true
+        emit_memset_zero(g, sret_av.alloca, sret_av.capacity * elem_byte_size(sret_av.elem_type, g.checked))
         et := literal_elem_type(arr_lit)
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
@@ -1413,14 +1384,18 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         // just a GEP+store into sret. Without this case the return was
         // silently emitting `ret void` with no writes — every distinct-
         // array literal return produced uninitialized output. A
-        // `[N]T = all x` broadcast return lands here too.
+        // `[N]T = all x` broadcast return lands here too (it writes every
+        // slot); anything else is zeroed first, its nil slots left so.
         handled = true
+        if !sl.is_broadcast { emit_memset_zero(g, sret_av.alloca, sret_av.capacity * elem_byte_size(sret_av.elem_type, g.checked)) }
         et := literal_elem_type(sl)
-        for elem, i in sl.array_values {
-            if elem == nil { continue }   // nil slot — leave as zero
-            gep := fresh_tmp(g)
-            emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
-            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, sl.span, slot_fresh = true)
+        if !gen_broadcast_scalar(g, sret_av.alloca, sret_type, sret_av.elem_type, et, sl) {
+            for elem, i in sl.array_values {
+                if elem == nil { continue }   // nil slot — leave as zero
+                gep := fresh_tmp(g)
+                emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
+                gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, sl.span, slot_fresh = true)
+            }
         }
     }
     if !handled {

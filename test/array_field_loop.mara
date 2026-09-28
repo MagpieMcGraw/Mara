@@ -1,0 +1,45 @@
+module array_field_loop
+
+//@ expect-output: 10 3 16
+//@ expect-output: 1 2 0 0
+
+// A loop over a fixed-array field (`for c in b.cells`) runs to the array's
+// length (its bound used to be missing), and a short array literal returned
+// as a longer array leaves the other slots zero.
+
+Pt :: struct { x: i64 = 1 }
+
+Box :: struct {
+	cells: [4]i64
+	pts: [3]Pt
+}
+
+walk :: fun(b: Box) -> i64 {
+	s : i64 = 0
+	for c in b.cells { s += c }
+	return s
+}
+
+count :: fun(b: Box) -> i64 {
+	s : i64 = 0
+	for p in b.pts { s += p.x }
+	return s
+}
+
+sum_index :: fun(b: Box) -> i64 {
+	s : i64 = 0
+	for c, i in b.cells { s += c * i }
+	return s
+}
+
+short :: fun() -> [4]i64 {
+	return [1, 2]
+}
+
+main :: fun() {
+	b := Box()
+	b.cells = [1, 2, 3, 4]
+	print(walk(b), count(b), sum_index(b) - 4)
+	s := short()
+	print(s[0], s[1], s[2], s[3])
+}

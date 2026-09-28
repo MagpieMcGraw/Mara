@@ -1769,6 +1769,10 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             // plain alloca per slot overflows the stack.
             clear(&g.tuple_result_ptrs)
             clear(&g.tuple_result_types)
+            // A fallible constructor builds Self in slot 0, and runs on
+            // zeroed storage like any other.
+            cf := call_signature(g, e)
+            ctor := cf != nil && cf.kind == .Struct
             for elem, i in info.ret_types {
                 et := llvm_type_from_checker(elem)
                 tmp_ptr: string
@@ -1781,6 +1785,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                     tmp_ptr = fresh_tmp(g)
                     emit_alloca(g, tmp_ptr, et)
                 }
+                if ctor && i == 0 { emit_memset_zero(g, tmp_ptr, total_bytes) }
                 append(&arg_strs, fmt.tprintf("ptr %s", tmp_ptr))
                 append(&g.tuple_result_ptrs, tmp_ptr)
                 append(&g.tuple_result_types, et)

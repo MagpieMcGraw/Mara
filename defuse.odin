@@ -572,10 +572,14 @@ du_call_label :: proc(checked: ^Checked_Program, d: ^Def) -> (name: string, ok: 
     g := &checked.graph
     if len(d.writes) == 0 { return "", false }
     op := d.writes[0]
-    #partial switch g.op[op] {
-    case .Write:
+    if g.op[op] == .Write {
         op = graph_operands(g, op)[1].op
-        if op == NO_NODE || g.op[op] != .Call { return "", false }
+        if op == NO_NODE { return "", false }
+        op = du_built_in_temp(g, op)
+        if g.op[op] != .Call && g.op[op] != .Construct { return "", false }
+    }
+    #partial switch g.op[op] {
+    case .Call:
     case .Construct:
         // Braces, or a bare declaration's implicit construction: no call written.
         if strings.has_suffix(g.name[op], "{}") || g.written[op] == .Synthetic { return "", false }
@@ -585,6 +589,23 @@ du_call_label :: proc(checked: ^Checked_Program, d: ^Def) -> (name: string, ok: 
     }
     if callee := du_callee(g, op); callee != nil { return ask_label(callee), true }
     return g.name[op], true
+}
+
+// A value read out of a temporary it was built in whole — a construction
+// assigned to storage that already holds a value (graph_assign) — is that
+// construction; any other value is itself.
+du_built_in_temp :: proc(g: ^Program_Graph, v: Node_Id) -> Node_Id {
+    if g.op[v] != .Read { return v }
+    place := graph_operands(g, v)[0].op
+    if place == NO_NODE || g.op[place] != .Var { return v }
+    t := g.refers[place]
+    if t == NO_NODE || g.kind[t] != .Local || g.written[t] != .Synthetic { return v }
+    for id := t + 1; id < v; id += 1 {
+        if g.kind[id] != .Op || g.op[id] != .Construct { continue }
+        dest := graph_operands(g, id)[0].op
+        if dest != NO_NODE && g.op[dest] == .Var && g.refers[dest] == t { return id }
+    }
+    return v
 }
 
 // Where a fun is called: every call operation that runs it.
