@@ -319,8 +319,35 @@ evaluates its destination and value); how instructions are chosen stays in the e
       once before every read (a range's end) is that value. Normalizer: string constants
       nothing references. Coverage: 4 of Pounce's 243 funs, 17 of `test.mara`'s 251, every one
       identical modulo naming; `mara ask` goldens and the Pounce corpus unchanged
-- [ ] Pointers and structs: address, deref, fields, struct params and locals, constructions,
-      overrides, results built in the caller's slot (sret, NRVO)
+- [x] Pointers and structs: address, deref, fields, struct params and locals, constructions,
+      copies, results built in the caller's slot (sret, NRVO), constructors. An assignment
+      now works out its target's place before its value, and a compound `t op= x` reads
+      through that place — the old emitter's order (the value came first in the graph); only
+      which runtime error fires first could tell. A struct is handled by its address: a read
+      yields it, a write copies (`memcpy`), a param is the caller's. A construction zeroes its
+      storage and runs the constructor on it; a constructor runs on zeroed storage, so it
+      neither zeroes nor constructs its fields' zero again. A struct-returning call builds
+      its result where the value goes when the old emitter's rule says that is safe (a
+      declaration or temporary; this fun's own slot for a returned call; an existing place
+      when no argument passes the callee storage), else in a temporary, copied in. The local
+      every return returns is the result slot, and so is a temporary whose one read is a
+      return. Found, by the graph emitter's one rule (a construction zeroes its storage, then
+      runs the constructor): the old emitter ran constructors on storage it hadn't zeroed —
+      the NRVO local (it lives in the caller's slot, so `a = half(1)` kept a's old fields),
+      a returned `Vec()`, a constructor with params called into an existing value, and one
+      built in a temporary (never zeroed: garbage) (`test/nrvo_zero.mara`,
+      `test/ctor_zero.mara`). The old emitter now zeroes on every one, and no longer zeroes a
+      new local whose value is a struct-returning call or construction (it writes all of
+      it); an overloaded operator returning a struct is built where it goes, like the call
+      it is. The graph had `#self` as a read of Self, typed as a
+      pointer (the emitter loaded a pointer out of the struct's first field); it is Self's
+      address, and reaching through it is Self. Normalizer: `inbounds`, unused
+      getelementptrs and chains of them, a memset repeated or overwritten by a same-size
+      memcpy, an alloca only ever stored into (the old constructor wrote a pointer field's
+      null into a local of its own instead of the field). Still declined
+      (later steps): a bare construction whose constructor has default arguments, the
+      in-place update `x = f(x)`, `using` fields, structs holding partial arrays or a sized
+      slice's backing
 - [ ] Arrays: bounds checks, `fill`, `zero`, element construction, array params and results,
       swizzles
 - [ ] Slices and partial arrays: headers, slicing, `len`/`cap`, slice params and results,

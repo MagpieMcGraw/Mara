@@ -8,6 +8,11 @@
 # compares two emitters, design/graph_retrofit.md), one rule each:
 #   - a block no branch reaches from the entry;
 #   - a store the next instruction overwrites: same type, same pointer;
+#   - address arithmetic whose shape can't matter: `inbounds`, an unused
+#     getelementptr, a chain of them folded into one;
+#   - a zeroing memset the next instruction repeats, or overwrites with a
+#     memcpy of the same size;
+#   - an alloca nothing reads (only stored into), with its stores;
 #   - then, a string constant nothing references.
 # Usage: irnorm.pl file.ll > file.norm
 use strict; use warnings;
@@ -82,20 +87,83 @@ sub clean {
     my @kept;
     for my $i (0 .. $#blocks) {
         next unless $seen{$i};
-        push @kept, drop_overwritten(@{ $blocks[$i]{lines} });
+        push @kept, @{ $blocks[$i]{lines} };
     }
-    return @kept;
+    return drop_overwritten(drop_unread(simplify_geps(@kept)));
 }
 
-# A store the very next line overwrites (same type, same pointer) does nothing.
+# An alloca nothing reads — only stored into — is dead, and so are its stores.
+sub drop_unread {
+    my @lines = @_;
+    my (%slot, %other);
+    for (@lines) {
+        $slot{$1} = 1 if /^\s+(%[-\w.\$]+) = alloca /;
+    }
+    for (@lines) {
+        next if /^\s+%[-\w.\$]+ = alloca /;
+        my $line = $_;
+        # A store's pointer operand isn't a read of the slot; its value is.
+        my $ptr = $line =~ /^\s+store .+, ptr (%[-\w.\$]+)$/ ? $1 : "";
+        $line =~ s/, ptr \Q$ptr\E$// if $ptr ne "";
+        $other{$1} = 1 while $line =~ /(%[-\w.\$]+)/g;
+    }
+    return grep {
+        !(/^\s+(%[-\w.\$]+) = alloca / && !$other{$1}) &&
+        !(/^\s+store .+, ptr (%[-\w.\$]+)$/ && $slot{$1} && !$other{$1})
+    } @lines;
+}
+
+# Address arithmetic whose shape can't change behavior: `inbounds` dropped, a
+# getelementptr nothing uses dropped, and one whose base is another's result,
+# used only there, folded into it (a chain of steps is one getelementptr).
+sub simplify_geps {
+    my @lines = map { my $l = $_; chomp $l; $l =~ s/ = getelementptr inbounds / = getelementptr /; $l } @_;
+    my $changed = 1;
+    while ($changed) {
+        $changed = 0;
+        my (%uses, %def);
+        for my $i (0 .. $#lines) {
+            my $rest = $lines[$i];
+            if ($rest =~ s/^\s+(%[-\w.\$]+) = //) { $def{$1} = $i; }
+            $uses{$1}++ while $rest =~ /(%[-\w.\$]+)/g;
+        }
+        for my $i (0 .. $#lines) {
+            my $line = $lines[$i];
+            next unless defined $line;
+            if ($line =~ /^\s+(%[-\w.\$]+) = getelementptr / && !$uses{$1}) {
+                $lines[$i] = undef; $changed = 1; next;
+            }
+            next unless $line =~ /^(\s+%[-\w.\$]+ = getelementptr ).+?, ptr (%[-\w.\$]+), i(?:32|64) 0((?:, .*)?)$/;
+            my ($head, $a, $rest) = ($1, $2, $3);
+            next unless ($uses{$a} // 0) == 1 && defined $def{$a};
+            my $base = $lines[$def{$a}];
+            next unless defined $base && $base =~ /^\s+\Q$a\E = getelementptr (.+)$/;
+            $lines[$i] = $head . $1 . $rest;
+            $lines[$def{$a}] = undef;
+            $changed = 1;
+        }
+        @lines = grep { defined } @lines;
+    }
+    return map { "$_\n" } @lines;
+}
+
+# A store the very next line overwrites (same type, same pointer) does nothing;
+# nor does a zeroing memset the next line repeats, or overwrites with a memcpy
+# of the same size.
 sub drop_overwritten {
     my @lines = @_;
     my @out;
     for my $i (0 .. $#lines) {
+        my $next = $i < $#lines ? $lines[$i + 1] : "";
         my ($t1, $p1) = store_of($lines[$i]);
-        if (defined $t1 && $i < $#lines) {
-            my ($t2, $p2) = store_of($lines[$i + 1]);
+        if (defined $t1) {
+            my ($t2, $p2) = store_of($next);
             next if defined $t2 && $t1 eq $t2 && $p1 eq $p2;
+        }
+        if ($lines[$i] =~ /^\s+call void \@llvm\.memset\.p0\.i64\(ptr (%[-\w.\$]+), i8 0, i64 (\d+), i1 false\)$/) {
+            my ($p, $n) = ($1, $2);
+            next if $next eq $lines[$i];
+            next if $next =~ /^\s+call void \@llvm\.memcpy\.p0\.p0\.i64\(ptr \Q$p\E, ptr [^,]+, i64 $n, i1 false\)$/;
         }
         push @out, $lines[$i];
     }

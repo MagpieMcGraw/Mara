@@ -73,8 +73,9 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
             alloca = alloca_name,
             struct_name = skey,
         }
-        // Always zero-init (ensures null ptrs, zero ints, etc.)
-        emit_memset_zero(g, alloca_name, total)
+        // Zero-init (ensures null ptrs, zero ints, etc.) — unless the value is
+        // a struct-returning call, which writes all of it.
+        if !call_writes_struct(g, value) { emit_memset_zero(g, alloca_name, total) }
 
         // Sized-slice fields are NOT init'd here — the struct's auto-init
         // function (called below for bare decls) and gen_store_struct_into
@@ -115,6 +116,11 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     // Structs without an emitted init function (hardcoded Context, Args,
     // any foreign types) stay zero-initialized from the alloca-time memset
     // above. By construction they have no field defaults to apply.
+    //
+    // The NRVO local is zeroed here: it lives in the caller's result slot,
+    // which holds whatever the caller had there (`a = half(1)` kept a's old
+    // fields where half set none).
+    if !needs_alloca && name == g.nrvo_var { emit_memset_zero(g, sv.alloca, struct_byte_size(st, g.checked)) }
     emit_struct_init_call(g, st.name, sv.alloca)
     // Init sized-slice fields AFTER the struct init function has run — the
     // init function memcpys zeros over field positions (including slice
@@ -1347,6 +1353,13 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         }
     }
 
+    // An overloaded operator is a call of its function: built where it goes,
+    // like one.
+    if call, is_op := overload_as_call(value); is_op {
+        gen_store_struct_into(g, dst_ptr, st, call, dest_fresh, dest_expr)
+        return
+    }
+
     if call, ok := value.(^Expr_Call); ok {
         resolved_name := call_resolved_name(call)
 
@@ -1391,8 +1404,10 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             }
         }
 
-        // Pure-struct zero-arg constructor `Foo()`: route through init function.
+        // Pure-struct zero-arg constructor `Foo()`: route through init function,
+        // on zeroed storage (`a = f()` returning `Foo()` kept a's old fields).
         if is_pure_struct && len(call_args(call)) == 0 && has_init {
+            emit_memset_zero(g, dst_ptr, total)
             emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
             if call.overrides != nil {
                 apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true)
@@ -1477,6 +1492,30 @@ sized_slice_info :: proc(g: ^Codegen, t: Type) -> (int, ^Type_Slice, bool) {
 // return. The callee then constructs directly into the caller's sret slot,
 // including writing sized-slice headers, so any caller-side re-init would
 // just store the same values back.
+call_writes_struct :: proc(g: ^Codegen, value: Expr) -> bool {
+    // A struct-returning fun, or a constructor (its one result is Self; it
+    // zeroes the storage it builds in).
+    returns_struct :: proc(f: ^Type_Scope) -> bool {
+        return f != nil && len(f.cg_returns) == 1 && as_struct_body(f.cg_returns[0]) != nil
+    }
+    #partial switch v in value {
+    case ^Expr_Call:
+        if _, is_cast := gen_type_cast_name(v); is_cast { return false }
+        return returns_struct(call_signature(g, v))
+    case ^Expr_Binary:
+        if rf, ok := v.overload_fn.?; ok { return returns_struct(rf.callee) }
+    case ^Expr_Unary:
+        if rf, ok := v.overload_fn.?; ok { return returns_struct(rf.callee) }
+    }
+    return false
+}
+
+// A call that is a type cast: `i32(x)`, `f64(x)`.
+gen_type_cast_name :: proc(e: ^Expr_Call) -> (string, bool) {
+    if _, _, _, ok := cast_target_ir_type(call_name(e)); ok { return call_name(e), true }
+    return "", false
+}
+
 value_is_nrvo_call :: proc(g: ^Codegen, value: Expr) -> bool {
     call, ok := value.(^Expr_Call)
     if !ok { return false }

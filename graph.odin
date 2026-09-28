@@ -261,6 +261,9 @@ Graph_Builder :: struct {
     fn_base:    int,
     self:       Node_Id,         // what `Self` names in a struct's code
     program:    Node_Id,         // the synthetic scope of the compiler's globals (this_program)
+    // A compound assignment's target (its expression, by identity) and the
+    // place already computed for it: its read reuses the place.
+    compound:   struct { key: rawptr, place: Operand },
 }
 
 @(private="file")
@@ -526,27 +529,27 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
                 break
             }
             dest_t := v.target_type if v.target != nil else v.var_type
-            // `x = void` de-inits: it writes the uninitialized value.
-            if _, is_void := v.value.(^Expr_Skip_Constructor); is_void || is_void_literal(v.value) {
-                val := graph_void(b, dest_t, v.span)
-                p := graph_place(b, v.target, v.span) if v.target != nil else graph_var(b, v.name, NO_NODE, dest_t, v.span)
-                graph_op(b, .Write, .Explicit, v.span, nil, "", p, val)
+            if v.target == nil {
+                // `x = void` de-inits: it writes the uninitialized value.
+                if _, is_void := v.value.(^Expr_Skip_Constructor); is_void || is_void_literal(v.value) {
+                    graph_op(b, .Write, .Explicit, v.span, nil, "", graph_var(b, v.name, NO_NODE, dest_t, v.span), graph_void(b, dest_t, v.span))
+                    break
+                }
+                graph_store(b, graph_dest_var(v.name, NO_NODE, dest_t), v.value, v.span)
                 break
             }
-            switch {
-            case v.target == nil:
-                graph_store(b, graph_dest_var(v.name, NO_NODE, dest_t), v.value, v.span)
-            case graph_pure_place(v.target):
-                graph_store(b, Dest{kind = .Place, expr = v.target, type_ = dest_t}, v.value, v.span)
-            case:
-                // A target that runs something (`a[f()] = v`): the value
-                // first, then the target, once. A slice (`dst[lo:hi] = src`)
-                // is the run of elements the value's are copied into.
-                val := graph_value(b, v.value)
-                _, is_slice := v.target.(^Expr_Slice)
-                dest := graph_value(b, v.target) if is_slice else graph_place(b, v.target, v.span)
-                graph_op(b, .Write, .Explicit, v.span, nil, "", dest, val)
+            // The target's place first, then the value: a compound `t op= x`
+            // reads through that same place. A slice (`dst[lo:hi] = src`) is
+            // the run of elements the value's are copied into.
+            _, is_slice := v.target.(^Expr_Slice)
+            p := graph_value(b, v.target) if is_slice else graph_place(b, v.target, v.span)
+            if _, is_void := v.value.(^Expr_Skip_Constructor); is_void || is_void_literal(v.value) {
+                graph_op(b, .Write, .Explicit, v.span, nil, "", p, graph_void(b, dest_t, v.span))
+                break
             }
+            if v.is_compound && !is_slice { b.compound = {graph_expr_key(v.target), p} }
+            graph_store(b, Dest{kind = .At, at = p, type_ = dest_t}, v.value, v.span)
+            b.compound = {}
         }
     case ^Stmt_Multi_Assign:
         for a in v.assigns { graph_stmt(b, a, parent, site) }
@@ -1310,11 +1313,12 @@ graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span:
 
 // Where a value is stored, as a recipe: the place's operations are emitted
 // where the store happens, after the value — which may have crossed runs on
-// the way (an `if` expression, `and`, `?`).
+// the way (an `if` expression, `and`, `?`). An assignment's target is worked
+// out before its value, so its place arrives computed (.At).
 @(private="file")
 Dest :: struct {
     kind:   Dest_Kind,
-    expr:   Expr,      // .Place: a place expression that runs nothing (graph_pure_place)
+    at:     Operand,   // .At: the place, already computed
     decl:   Node_Id,   // .Var: its declaration, when known here
     name:   string,    // .Var: the variable; .Field: the field
     index:  int,       // .Index
@@ -1323,7 +1327,7 @@ Dest :: struct {
 }
 
 @(private="file")
-Dest_Kind :: enum u8 { Var, Place, Field, Index }
+Dest_Kind :: enum u8 { Var, At, Field, Index }
 
 @(private="file")
 graph_dest_var :: proc(name: string, decl: Node_Id, t: Type) -> Dest {
@@ -1335,7 +1339,7 @@ graph_dest_var :: proc(name: string, decl: Node_Id, t: Type) -> Dest {
 graph_dest_place :: proc(b: ^Graph_Builder, d: Dest, span: Span) -> Operand {
     switch d.kind {
     case .Var:   return graph_var(b, d.name, d.decl, d.type_, span)
-    case .Place: return graph_place(b, d.expr, span)
+    case .At:    return d.at
     case .Field: return graph_op_value(b, .Field, .Explicit, span, d.type_, d.name, graph_dest_place(b, d.parent^, span))
     case .Index: return graph_op_value(b, .Index, .Explicit, span, d.type_, "", graph_dest_place(b, d.parent^, span), graph_const_index(b, d.index, span))
     }
@@ -1395,7 +1399,8 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         }
         return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
     case ^Expr_Self:
-        return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
+        // `#self` points at the value under construction: Self's address.
+        return graph_op_value(b, .Address, w, v.span, v.type_, "", graph_place(b, e, v.span))
     case ^Expr_Field_Access:
         if v.resolved != nil {
             #partial switch r in v.resolved {
@@ -1480,6 +1485,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
 // points at. Anything else is evaluated into a synthetic local.
 @(private="file")
 graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
+    if b.compound.key != nil && graph_expr_key(e) == b.compound.key { return b.compound.place }
     #partial switch v in e {
     case ^Expr_Ident:
         if v.lowered != nil { return graph_place(b, v.lowered, span) }
@@ -1491,7 +1497,7 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
             return graph_op_value(b, .Global, .Explicit, v.span, v.type_, v.name)   // a constant table
         }
     case ^Expr_Self:
-        return graph_var(b, "Self", b.self, v.type_, v.span)
+        return graph_var(b, "Self", b.self, graph_pointee(v.type_), v.span)   // Self itself
     case ^Expr_String:
         return graph_op_value(b, .Global, .Explicit, v.span, v.type_)
     case ^Expr_Field_Access:
@@ -1532,6 +1538,7 @@ graph_is_member :: proc(r: Resolved_Name) -> bool {
 @(private="file")
 graph_base_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
     p := graph_place(b, e, span)
+    if _, is_self := e.(^Expr_Self); is_self { return p }   // through `#self` is Self
     if pt, ok := distinct_base(expr_type(e)).(^Type_Ptr); ok {
         return graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)
     }
@@ -1886,6 +1893,17 @@ graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
 graph_expr_ptr :: proc(e: Expr) -> rawptr {
     #partial switch v in e {
     case ^Expr_Call: return v
+    }
+    return nil
+}
+
+// An assignment target's identity: its node.
+@(private="file")
+graph_expr_key :: proc(e: Expr) -> rawptr {
+    #partial switch v in e {
+    case ^Expr_Field_Access: return v
+    case ^Expr_Index:        return v
+    case ^Expr_Unary:        return v
     }
     return nil
 }

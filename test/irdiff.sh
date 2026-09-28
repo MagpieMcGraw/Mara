@@ -7,7 +7,7 @@
 #   test/irdiff.sh      IR must be byte-identical
 #   test/irdiff.sh -n   IR must match modulo naming (see irnorm.pl): locals,
 #                       labels and string-global names, and what can't change
-#                       behavior (unreachable blocks, overwritten stores)
+#                       behavior (the rules are listed in irnorm.pl)
 #   test/irdiff.sh -r   also run every fixture both builds made, and compare
 #                       output and exit code (the runtime differential)
 #   test/irdiff.sh -g   compare the working compiler's two emitters instead of

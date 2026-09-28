@@ -1003,6 +1003,26 @@ gen_binary :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string = "") -> st
     return tmp
 }
 
+// An overloaded operator as the call of its function it stands for.
+overload_as_call :: proc(value: Expr) -> (call: ^Expr_Call, ok: bool) {
+    #partial switch v in value {
+    case ^Expr_Binary:
+        rf := v.overload_fn.? or_return
+        call = new(Expr_Call)
+        append(call_args_mut(call), v.left)
+        append(call_args_mut(call), v.right)
+        call.lowered_name, call.span, call.type_, call.resolved_func = rf.name, v.span, v.type_, rf
+    case ^Expr_Unary:
+        rf := v.overload_fn.? or_return
+        call = new(Expr_Call)
+        append(call_args_mut(call), v.operand)
+        call.lowered_name, call.span, call.type_, call.resolved_func = rf.name, v.span, v.type_, rf
+    case:
+        return nil, false
+    }
+    return call, true
+}
+
 gen_short_circuit_and :: proc(g: ^Codegen, e: ^Expr_Binary) -> string {
     // Use alloca+store pattern to avoid PHI predecessor tracking issues. The
     // result is the left side unless the right one runs.
@@ -2107,6 +2127,10 @@ emit_call_with_sret :: proc(g: ^Codegen, e: ^Expr_Call, info: ^Fun_Info, sret: s
             continue
         }
         append(&arg_strs, gen_mara_call_arg(g, arg, i, info))
+    }
+    // A constructor runs on zeroed storage, whatever the slot held before.
+    if cf := call_signature(g, e); cf != nil && cf.kind == .Struct && self_arg < 0 {
+        if sd := as_struct_body(cf); sd != nil { emit_memset_zero(g, sret, struct_byte_size(sd, g.checked)) }
     }
     append(&arg_strs, fmt.tprintf("ptr %s", sret))
     emit(g, "  call void %s(%s)", ir_name, strings.join(arg_strs[:], ", "))

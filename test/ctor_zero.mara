@@ -1,0 +1,30 @@
+module ctor_zero
+//@ expect-output: 0 0
+//@ expect-output: 3 0
+//@ expect-output: 5 0
+
+// A constructor runs on zeroed storage, whatever the slot held before: a
+// field it doesn't set is zero. Built into an existing value — through a
+// returned `Vec()`, a constructor with params, one handed storage (a temp) —
+// the old slot's fields once survived.
+
+Vec :: struct { x: i64, y: i64 }
+Pair :: struct(n: i64) { a: i64 = n  b: i64 }
+Held :: struct(p: ^i64) { a: i64 = p^  b: i64 }
+
+fresh :: fun() -> Vec { return Vec() }
+
+main :: fun() {
+	v := Vec{x = 7, y = 99}
+	v = fresh()
+	print(v.x, v.y)
+	w := Pair(1)
+	w.b = 99
+	w = Pair(3)
+	print(w.a, w.b)
+	k : i64 = 5
+	h := Held(&k)
+	h.b = 99
+	h = Held(&k)
+	print(h.a, h.b)
+}

@@ -1,0 +1,22 @@
+module nrvo_zero
+//@ expect-output: 1 0
+//@ expect-output: 2 0
+
+// A struct built in its caller's slot (the local every return returns) starts
+// from zero, like any declaration: `a = half(1)` once kept a's old `y`.
+
+Vec :: struct { x: i64, y: i64 }
+
+half :: fun(x: i64) -> Vec {
+	v : Vec
+	v.x = x
+	return v
+}
+
+main :: fun() {
+	a := Vec{x = 7, y = 99}
+	a = half(1)
+	print(a.x, a.y)
+	b := half(2)
+	print(b.x, b.y)
+}
