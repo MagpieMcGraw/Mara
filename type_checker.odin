@@ -1625,8 +1625,17 @@ Checker :: struct {
     receiver:        Expr,
     receiver_type:   Type,
     // The program graph's builder, made before checking: the bodies it can,
-    // the checker builds as it checks them (graph_fuse_begin).
+    // the checker builds as it checks them (graph_fuse_begin). What the walk
+    // asks of the next expression it checks (fuse_expr), what the one being
+    // checked was asked (fuse_asked), what it built; the call whose arguments
+    // are being checked.
     gb:              ^Graph_Builder,
+    want:            Fuse_Want,
+    want_written:    Written,
+    asked:           Fuse_Want,
+    asked_written:   Written,
+    fused:           Fused,
+    call:            ^Fuse_Call,
     table:           ^SymbolTable,
     errors:          int,
     current_package: string,
@@ -5527,6 +5536,116 @@ fuse_fail :: proc(c: ^Checker, reason: string) {
     if b := fusing(c); b != nil { graph_fuse_fail(b, b.fuse, reason) }
 }
 
+// What the walk building the graph asks of an expression (fuse_expr): its
+// value; its place — a variable, a field, an element; or its place when it
+// has one, else its value (its consumer decides: a view, a read).
+Fuse_Want :: enum u8 { None, Value, Place, Either }
+
+// What the checker built for an expression: a value, or a place.
+Fused :: struct {
+    v:     Operand,
+    place: bool,
+    ok:    bool,
+}
+
+// A call being built: its operands (check_call_arg) — each at its param's
+// type, or a builtin's as they are.
+Fuse_Call :: struct {
+    w:      Written,
+    ops:    [dynamic]Operand,
+    params: bool,
+}
+
+// Check an expression, building what it computes, in the order it runs.
+// Written is the operations' (a default argument's are implied).
+fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Value, w := Written.Explicit) -> (Type, Fused) {
+    if fusing(c) == nil { return check_expr(c, e, env), {} }
+    c.want, c.want_written, c.fused = want, w, {}
+    t := check_expr(c, e, env)
+    r := c.fused
+    c.fused = {}
+    if !r.ok { fuse_fail(c, fmt.aprintf("%v", reflect.union_variant_typeid(e))) }
+    return t, r
+}
+
+// What the expression being checked was asked to build, taken by the
+// construct that builds it — before its operands are checked.
+fuse_asked :: proc(c: ^Checker) -> (Fuse_Want, Written) {
+    want, w := c.asked, c.asked_written
+    c.asked = .None
+    if fusing(c) == nil { return .None, w }
+    return want, w
+}
+
+fuse_done :: proc(c: ^Checker, v: Operand, place := false) {
+    c.fused = {v, place, true}
+}
+
+// A built expression's value: a place is read, right after it.
+fuse_value :: proc(c: ^Checker, r: Fused, e: Expr, t: Type) -> Operand {
+    b := fusing(c)
+    if b == nil || !r.place { return r.v }
+    return graph_read(b, r.v, t, expr_span(e)^)
+}
+
+// A leaf: what the builder builds of it, from what its check found.
+fuse_leaf :: proc(c: ^Checker, e: Expr) {
+    want, w := fuse_asked(c)
+    b := fusing(c)
+    if b == nil || want == .None { return }
+    #partial switch v in e {
+    case ^Expr_Number, ^Expr_Char, ^Expr_Bool, ^Expr_Size_Of, ^Expr_Compiler_Intrinsic:
+        if want == .Place { return }
+        fuse_done(c, graph_value(b, e, w))
+    case ^Expr_String:
+        // Text is its global: its place and its value.
+        fuse_done(c, graph_value(b, e, w), want == .Place)
+    case ^Expr_Ident:
+        // A variable, or a constant table, is a place; the rest are values.
+        is_place := v.resolved == nil
+        if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(v.type_) { is_place = true }
+        if is_void_literal(e) { is_place = false }
+        switch {
+        case want == .Value:  fuse_done(c, graph_value(b, e, w))
+        case is_place:        fuse_done(c, graph_place(b, e, v.span), true)
+        case want == .Either: fuse_done(c, graph_value(b, e, w))
+        }
+    }
+}
+
+// An argument or a returned value at the type its use takes (graph_value_as):
+// a view where one is taken, else its value, widened.
+fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: Span, w: Graph_Widen) -> Operand {
+    b := fusing(c)
+    if b == nil { return NO_VALUE }
+    if to != nil {
+        _, to_ptr := distinct_base(to).(^Type_Ptr)
+        _, from_ptr := distinct_base(t).(^Type_Ptr)
+        if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(t) {
+            return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), fuse_value(c, r, e, t))
+        }
+        _, to_slice := distinct_base(to).(^Type_Slice)
+        _, from_array := distinct_base(t).(^Type_Fixed_Array)
+        _, to_array := distinct_base(to).(^Type_Fixed_Array)
+        _, is_literal := e.(^Expr_Array)
+        if to_slice && from_array || to_array || is_literal && graph_aggregate(to) {
+            fuse_fail(c, "a view or a literal at its use's type")
+            return NO_VALUE
+        }
+    }
+    return graph_fuse_widen(b, fuse_value(c, r, e, t), span, w)
+}
+
+// The graph checks the scalars written to a variable; what else a store
+// builds (in place, a view, from bytes) waits.
+fuse_scalar :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(t) {
+    case Type_F64, Type_Infer_Int, Type_Infer_Float, Type_Bool, Type_Utf8, Type_Numeric, ^Type_Ptr, ^Type_Enum:
+        return true
+    }
+    return false
+}
+
 // Check with nothing built — a definition, a signature, another scope: what
 // the graph holds of them is not the code being checked.
 fuse_suspend :: proc(c: ^Checker) -> ^Graph_Fuse {
@@ -5570,7 +5689,59 @@ stmt_before :: proc(x, y: Stmt) -> bool {
 // A statement of the code the checker doesn't build yet: its body is the
 // builder's.
 fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
+    #partial switch v in s {
+    case Stmt_Return, Stmt_Call, ^Stmt_If:
+        return
+    case ^Stmt_Decl:
+        // (`a, b := f()` destructures.)
+        if len(decl_init(v)) != 1 || len(v.names) == 1 { return }
+        fuse_fail(c, "a destructuring declaration")
+        return
+    case ^Stmt_Assign:
+        if v.target == nil { return }
+        fuse_fail(c, "a store through a place")
+        return
+    }
     fuse_fail(c, fmt.aprintf("%v", reflect.union_variant_typeid(s)))
+}
+
+// A declaration or an assignment to a variable, built: the local (made
+// before its value), the value, and — once the statement's check has typed
+// it — the store (graph_init, graph_assign).
+Fuse_Assign :: struct {
+    on:         bool,
+    decl:       Node_Id,
+    value:      Fused,
+    value_type: Type,
+}
+
+fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
+    b := fusing(c)
+    if b == nil || !fa.on { return }
+    _, is_skip := s.value.(^Expr_Skip_Constructor)
+    if s.is_decl {
+        t := s.env_type if s.env_type != nil else s.var_type
+        graph_fuse_typed(b, fa.decl, t)
+        if !fuse_scalar(t) {
+            fuse_fail(c, "a declaration of an aggregate")
+            return
+        }
+        if is_skip {
+            graph_fuse_void_decl(b, fa.decl, t, s.span)
+            return
+        }
+        graph_fuse_write_var(b, s.name, fa.decl, t, fuse_value(c, fa.value, s.value, fa.value_type), s.span)
+        return
+    }
+    if !fuse_scalar(s.var_type) {
+        fuse_fail(c, "an assignment of an aggregate")
+        return
+    }
+    if is_skip || is_void_literal(s.value) {   // `x = void` de-inits
+        graph_fuse_void_assign(b, s.name, s.var_type, s.span)
+        return
+    }
+    graph_fuse_write_var(b, s.name, NO_NODE, s.var_type, fuse_value(c, fa.value, s.value, fa.value_type), s.span)
 }
 
 check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil, scope_defs: [dynamic]Stmt = nil) {
@@ -6068,8 +6239,6 @@ find_operator_overload :: proc(c: ^Checker, env: ^Type_Scope, op: Token_Kind) ->
 register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil) {
     pub := public_env if public_env != nil else env
     for stmt in stmts {
-        fs := fuse_stmt(c, stmt)
-        defer fuse_stmt_end(fs)
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
             // Generic union: register as a template and skip concrete
@@ -6343,6 +6512,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
     //   via the chain file_env -> mod_env), include names stay in the file env (private).
     pub := public_env if public_env != nil else env
     for stmt in stmts {
+        fs := fuse_stmt(c, stmt)
+        defer fuse_stmt_end(fs)
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
             // Generic union: registration happens in Pass 1a (template only).
@@ -6838,6 +7009,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // mara.X → look up X in std scope (stdlib modules)
             // bare Y → walk scope chain for sibling, lazy-load if not found
             if inc, is_include := s.value.(^Expr_Include); is_include {
+                fuse_fail(c, "an include")
                 // Bare `use path` — the path is a dotted module name. Resolve
                 // it to exactly that module (no parent-glob; submodules are
                 // pulled in by their own explicit `use`), load and flatten it.
@@ -6886,7 +7058,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // next — `_ = f()` then `_ = g()` with different returns is fine.
             if s.name == "_" && !s.is_decl {
                 c.expected_hint = nil
-                s.var_type = distinct_base(solidify_type(check_expr(c, s.value, env)))
+                dt, _ := fuse_expr(c, s.value, env)   // (built: its value, dropped)
+                s.var_type = distinct_base(solidify_type(dt))
                 continue
             }
             // Reassigning a by-address param would overwrite the caller's value.
@@ -6943,6 +7116,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // Same alias-into-caller-storage semantics as let — mark the name
             // as a view binding so it can't escape via return.
             if take_expr, is_take := s.value.(^Expr_Take); is_take {
+                fuse_fail(c, "a take binding")
                 val_type := check_expr(c, s.value, env)
                 // If an annotation was given, it must match take's resolved type.
                 if !is_any(ann_type) {
@@ -6970,6 +7144,16 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 }
                 if is_any(ann_type) {
                     check_error(c, s.span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE)
+                }
+                // Built: the local, then its zero — or its construction.
+                if b := fusing(c); b != nil {
+                    if s.slice_cap_expr != nil || !fuse_scalar(ann_type) {
+                        fuse_fail(c, "a bare declaration of an aggregate")
+                    } else {
+                        d := graph_fuse_decl(b, s.name, s.span)
+                        graph_fuse_typed(b, d, ann_type)
+                        graph_fuse_zero_var(b, d, ann_type, s.span)
+                    }
                 }
                 // (Large-value stack/arena routing is handled uniformly for
                 // every value kind in check_storage_sizes — Pass 4 of check_scope.)
@@ -7048,7 +7232,22 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             }
             c.expected_hint = assign_hint
             errors_before_value := c.errors
-            val_type := check_expr(c, s.value, env)
+            // Built: a declaration's local, then its value, then the value
+            // stored — once the statement is checked (its type known).
+            fa: Fuse_Assign
+            if b := fusing(c); b != nil {
+                fa.on = true
+                if s.is_decl { fa.decl = graph_fuse_decl(b, s.name, s.span) }
+            }
+            defer fuse_assign_end(c, s, &fa)
+            val_type: Type
+            _, is_skip := s.value.(^Expr_Skip_Constructor)
+            if fa.on && !is_skip && !(!s.is_decl && is_void_literal(s.value)) {
+                val_type, fa.value = fuse_expr(c, s.value, env)
+            } else {
+                val_type = check_expr(c, s.value, env)
+            }
+            fa.value_type = val_type
             // `x : []utf8 = "lit"` — writable view over rodata; sized slices
             // (`[:N]utf8`, cap_expr set) copy into owned backing and pass.
             if s.slice_cap_expr == nil {
@@ -7906,7 +8105,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
 
     // A fun's graph is built as its body is checked.
     f: ^Graph_Fuse
-    if c.gb != nil && ft.kind == .Fun { f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit) }
+    if c.gb != nil && ft.kind == .Fun {
+        record_return_bindings(ft, s)   // (its named results are locals)
+        f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit)
+    }
     defer if f != nil { fuse_end(c, f) }
 
     // Nothing to descend into only when BOTH are empty. A pure-namespace struct
@@ -8134,12 +8336,21 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
 
     // Per-value type check for each supplied value against its positional slot.
     // Skip when count is wrong — the count error already explains the shape.
+    // Built: each value at its result's type, then the return.
+    vals := make([dynamic]Operand, 0, len(s.values), context.temp_allocator)
     if count_ok {
         for val, i in s.values {
             if i >= n_expected { break }
             expected := rts[i]
             c.expected_hint = expected
-            vt := check_expr(c, val, env)
+            vt, r := fuse_expr(c, val, env, .Either)
+            if fusing(c) != nil {
+                // (Text returned as a partial array is built into one.)
+                if k, folds := graph_constant(val).?; folds && k.is_text {
+                    if _, pa := distinct_base(expected).(^Type_Partial_Array); pa { fuse_fail(c, "text returned as a partial array") }
+                }
+                append(&vals, fuse_value_as(c, val, vt, r, expected, s.span, {to = expected}))
+            }
             if !is_any(vt) && !is_any(expected) {
                 if !coerce_deferred(c, vt, expected, s.span) && !types_equal(expected, vt) && !value_preserving_widen(vt, expected) {
                     if n_expected > 1 {
@@ -8157,6 +8368,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
             }
         }
     }
+    if b := fusing(c); b != nil { graph_fuse_return(b, vals[:], s.span) }
     // Escape analysis: prevent returning pointers/slices to local memory.
     // (Return-escape analysis — returning &local / a struct whose slice fields
     //  point at local memory / a laundered call result — now runs in the
@@ -8182,16 +8394,22 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
         case ^Stmt_If:
             // Comptime `#if` was folded away before the checker ran, so every
             // Stmt_If here is a runtime conditional.
-            cond_type := check_expr(c, s.condition, env)
+            cond_type, cond := fuse_expr(c, s.condition, env)
             if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
                 check_error(c, s.span, TYPE_CONDITION_BOOL_2, type_name(cond_type))
             }
+            // Built: the branch, then each block as it is checked.
+            b := fusing(c)
+            fi: Graph_If
+            if b != nil { fi = graph_fuse_if(b, cond.v, s) }
             child := type_env_block_child(env)
             check_scope(c, s.body, child)
+            if b != nil { graph_fuse_else(b, &fi, s) }
             if len(s.else_body) > 0 {
                 else_child := type_env_block_child(env)
                 check_scope(c, s.else_body, else_child)
             }
+            if b != nil { graph_fuse_if_end(b, &fi) }
             // (Definite-assignment branch-merge now lives in the flow pass.)
 
         case ^Stmt_For:
@@ -8218,8 +8436,9 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
                     }
                 }
             }
+            if handled_override { fuse_fail(c, "a struct override") }
             if !handled_override {
-                rt := check_expr(c, s.expr, env)
+                rt, _ := fuse_expr(c, s.expr, env)
                 // Must-use: a bare call that yields a value silently discards it.
                 // void calls (the side-effect case) type to nil and are fine, as
                 // are append-style operator statements (`&slice + x`), which are
@@ -9505,12 +9724,17 @@ extract_checked_scope :: proc(s: ^Stmt_Scope, env: ^Type_Scope, table: ^SymbolTa
     ft.body = s.body
     ft.body_span = s.span
     ft.is_exposed = s.is_exposed
+    record_return_bindings(ft, s)
+    populate_cg_signature(ft)
+    return ft, true
+}
+
+// A fun's named results, by name (its body binds them).
+record_return_bindings :: proc(ft: ^Type_Scope, s: ^Stmt_Scope) {
     clear(&ft.return_binding_names)
     for rb in s.return_bindings {
         append(&ft.return_binding_names, rb.name)
     }
-    populate_cg_signature(ft)
-    return ft, true
 }
 
 // ---------------------------------------------------------------------------
@@ -10594,9 +10818,163 @@ check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             c.once_seen[k] = seen
         }
     }
+    c.asked, c.asked_written, c.want = c.want, c.want_written, .None
     result := check_expr_impl(c, expr, env)
     set_expr_type(expr, result)
+    // What building asked of it and nothing took: a leaf's, built here.
+    if c.asked != .None { fuse_leaf(c, expr) }
     return result
+}
+
+// A unary operation, built: its operand's value, then it. (`&x` and `p^`
+// name places; an overload is a call.)
+Fuse_Unary :: struct {
+    w:       Written,
+    operand: Operand,
+}
+
+check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
+    want, w := fuse_asked(c)
+    if want == .None { return check_unary_impl(c, e, env, nil) }
+    if e.op == .Caret || e.op == .Ampersand || want == .Place {
+        fuse_fail(c, "a place's unary, or a unary's place")
+        return check_unary_impl(c, e, env, nil)
+    }
+    fu := Fuse_Unary{w = w}
+    t := check_unary_impl(c, e, env, &fu)
+    b := fusing(c)
+    if b == nil { return t }
+    if _, over := e.overload_fn.?; over {
+        fuse_fail(c, "an operator overload")
+        return t
+    }
+    op := "-%" if e.op == .Minus && e.wrapping else graph_token_text(e.op)
+    fuse_done(c, graph_op_value(b, .Unary, w, e.span, t, op, fu.operand))
+    return t
+}
+
+fuse_unary_operand :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope, fu: ^Fuse_Unary) -> Type {
+    if fu == nil { return check_expr(c, e.operand, env) }
+    t, r := fuse_expr(c, e.operand, env, .Value, fu.w)
+    fu.operand = r.v
+    return t
+}
+
+check_unary_impl :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope, fu: ^Fuse_Unary) -> Type {
+    operand_type := fuse_unary_operand(c, e, env, fu)
+    #partial switch e.op {
+    case .Minus:
+        if e.wrapping {
+            // `-%x`: wrapping negate. Integer-only, and unlike plain `-x` it
+            // ACCEPTS unsigned (two's-complement negate is well-defined) and
+            // won't trap on MIN. No overload dispatch.
+            if !is_wrap_operand(operand_type) {
+                check_error(c, e.span, TYPE_WRAPPING_REQUIRES_INTEGER_UNARY, type_name(operand_type))
+                return Type_Error{}
+            }
+            return operand_type
+        }
+        if !is_numeric(operand_type) {
+            // Try `overload -` dispatch with a single-arg function (e.g.
+            // mara.math's `vec3_negate`). Falls through to the standard
+            // not-numeric error if no overload matches.
+            if dispatch_names, has_overload := find_operator_overload(c, env, e.op); has_overload {
+                best_flat := ""
+                best_ft: ^Type_Scope = nil  // resolved callee for the winning best_flat
+                best_ret: Type = nil
+                best_score := 0  // 0=none, 2=concrete structural, 3=concrete exact
+                for dispatch_name in dispatch_names {
+                    if fn_names, is_dispatch := find_dispatch(c, env, dispatch_name); is_dispatch {
+                        for fn_name in fn_names {
+                            ft_raw, ft_found := type_env_get(env, fn_name)
+                            if !ft_found { continue }
+                            ft, ft_ok := ft_raw.(^Type_Scope)
+                            if !ft_ok { continue }
+                            if len(ft.params) != 1 { continue }
+                            if types_incompatible(ft.params[0].type_, operand_type) { continue }
+                            score := 2
+                            if types_name_equal(ft.params[0].type_, operand_type) { score = 3 }
+                            if score > best_score {
+                                best_flat = make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
+                                best_ft = ft
+                                best_ret = fn_primary_return(ft)
+                                best_score = score
+                            }
+                        }
+                    }
+                }
+                if best_score > 0 {
+                    e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
+                    return best_ret
+                }
+            }
+            check_error(c, e.span, TYPE_CANNOT_NEGATE, type_name(operand_type))
+        } else if _, kind, k_ok := numeric_info(operand_type); k_ok && kind == .Unsigned {
+            // Negating an unsigned value has no representable result
+            // (except 0). Binary `0 - x` already traps the underflow at
+            // runtime; the unary form is knowable here, so reject it at
+            // compile time instead of silently wrapping two's-complement.
+            check_error(c, e.span, TYPE_CANNOT_NEGATE_UNSIGNED, type_name(operand_type))
+        }
+        return operand_type
+    case .Not:
+        if _, ok := operand_type.(Type_Bool); !ok && !is_any(operand_type) {
+            check_error(c, e.span, TYPE_CANNOT_APPLY, type_name(operand_type))
+        }
+        return Type_Bool{}
+    case .Tilde:
+        if !is_integer(operand_type) && !is_any(operand_type) {
+            check_error(c, e.span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(operand_type))
+        }
+        return operand_type
+    case .Ampersand:
+        // Address-of: &x produces ^T. Reject if the address would land in
+        // immutable-param storage — letting `&t` escape would silently
+        // grant the mutation that declaring `t` without `^` denied.
+        if pname, immut := write_root_immutable_param(e.operand, env); immut {
+            check_error(c, e.span,
+                TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER,
+                pname)
+        }
+        if name, is_const := write_root_constant(c, e.operand); is_const {
+            check_error(c, e.span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, name)
+        }
+        // A string literal's bytes live in read-only rodata. `&` is the
+        // mutation gate, so an addressed literal (append destination,
+        // `^[]utf8` argument) would aim writes at a read-only page.
+        if _, is_lit := e.operand.(^Expr_String); is_lit {
+            check_error(c, e.span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL)
+        }
+        // A field or element of a ternary or a literal: those are values,
+        // not storage — a ternary's is one of its operands', so a write
+        // through the address would reach that operand. A slice expression
+        // builds a fresh header with nowhere to point at.
+        #partial switch _ in access_root(e.operand) {
+        case ^Expr_If, ^Expr_Array, ^Expr_Struct_Literal:
+            check_error(c, e.span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
+        }
+        if _, is_slice := e.operand.(^Expr_Slice); is_slice {
+            check_error(c, e.span, CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP)
+        }
+        pt := new(Type_Ptr)
+        pt.elem = operand_type
+        return pt
+    case .Caret:
+        // Dereference: p^ — operand must be a pointer. The Expr_Ident
+        // check at the operand site already fires is_invalid_ref, which
+        // covers both no-initializer pointers and pointers currently
+        // holding `void` (see invalid_refs comment on Type_Env).
+        if p, ok := operand_type.(^Type_Ptr); ok {
+            return p.elem
+        }
+        // Allow deref on Type_Any (backwards compat with raw ptr)
+        if is_any(operand_type) {
+            return Type_Error{}
+        }
+        check_error(c, e.span, TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE, type_name(operand_type))
+        return Type_Error{}
+    }
+    return Type_Error{}
 }
 
 check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
@@ -10635,7 +11013,10 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     case ^Expr_Ident:
         // A dot-ref lowered to an expression (`.len` in a subscript) is that
         // expression — typed with the hint still in place, as if written out.
-        if e.lowered != nil { return check_expr(c, e.lowered, env) }
+        if e.lowered != nil {
+            c.want, c.want_written, c.asked = c.asked, c.asked_written, .None   // (built as it)
+            return check_expr(c, e.lowered, env)
+        }
         // Snapshot the hint for this expression and clear it on the checker so
         // child calls within this branch don't accidentally inherit it.
         hint := c.expected_hint
@@ -10777,119 +11158,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         }
         return Type_Error{}
     case ^Expr_Unary:
-        operand_type := check_expr(c, e.operand, env)
-        #partial switch e.op {
-        case .Minus:
-            if e.wrapping {
-                // `-%x`: wrapping negate. Integer-only, and unlike plain `-x` it
-                // ACCEPTS unsigned (two's-complement negate is well-defined) and
-                // won't trap on MIN. No overload dispatch.
-                if !is_wrap_operand(operand_type) {
-                    check_error(c, e.span, TYPE_WRAPPING_REQUIRES_INTEGER_UNARY, type_name(operand_type))
-                    return Type_Error{}
-                }
-                return operand_type
-            }
-            if !is_numeric(operand_type) {
-                // Try `overload -` dispatch with a single-arg function (e.g.
-                // mara.math's `vec3_negate`). Falls through to the standard
-                // not-numeric error if no overload matches.
-                if dispatch_names, has_overload := find_operator_overload(c, env, e.op); has_overload {
-                    best_flat := ""
-                    best_ft: ^Type_Scope = nil  // resolved callee for the winning best_flat
-                    best_ret: Type = nil
-                    best_score := 0  // 0=none, 2=concrete structural, 3=concrete exact
-                    for dispatch_name in dispatch_names {
-                        if fn_names, is_dispatch := find_dispatch(c, env, dispatch_name); is_dispatch {
-                            for fn_name in fn_names {
-                                ft_raw, ft_found := type_env_get(env, fn_name)
-                                if !ft_found { continue }
-                                ft, ft_ok := ft_raw.(^Type_Scope)
-                                if !ft_ok { continue }
-                                if len(ft.params) != 1 { continue }
-                                if types_incompatible(ft.params[0].type_, operand_type) { continue }
-                                score := 2
-                                if types_name_equal(ft.params[0].type_, operand_type) { score = 3 }
-                                if score > best_score {
-                                    best_flat = make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
-                                    best_ft = ft
-                                    best_ret = fn_primary_return(ft)
-                                    best_score = score
-                                }
-                            }
-                        }
-                    }
-                    if best_score > 0 {
-                        e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
-                        return best_ret
-                    }
-                }
-                check_error(c, e.span, TYPE_CANNOT_NEGATE, type_name(operand_type))
-            } else if _, kind, k_ok := numeric_info(operand_type); k_ok && kind == .Unsigned {
-                // Negating an unsigned value has no representable result
-                // (except 0). Binary `0 - x` already traps the underflow at
-                // runtime; the unary form is knowable here, so reject it at
-                // compile time instead of silently wrapping two's-complement.
-                check_error(c, e.span, TYPE_CANNOT_NEGATE_UNSIGNED, type_name(operand_type))
-            }
-            return operand_type
-        case .Not:
-            if _, ok := operand_type.(Type_Bool); !ok && !is_any(operand_type) {
-                check_error(c, e.span, TYPE_CANNOT_APPLY, type_name(operand_type))
-            }
-            return Type_Bool{}
-        case .Tilde:
-            if !is_integer(operand_type) && !is_any(operand_type) {
-                check_error(c, e.span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(operand_type))
-            }
-            return operand_type
-        case .Ampersand:
-            // Address-of: &x produces ^T. Reject if the address would land in
-            // immutable-param storage — letting `&t` escape would silently
-            // grant the mutation that declaring `t` without `^` denied.
-            if pname, immut := write_root_immutable_param(e.operand, env); immut {
-                check_error(c, e.span,
-                    TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER,
-                    pname)
-            }
-            if name, is_const := write_root_constant(c, e.operand); is_const {
-                check_error(c, e.span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, name)
-            }
-            // A string literal's bytes live in read-only rodata. `&` is the
-            // mutation gate, so an addressed literal (append destination,
-            // `^[]utf8` argument) would aim writes at a read-only page.
-            if _, is_lit := e.operand.(^Expr_String); is_lit {
-                check_error(c, e.span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL)
-            }
-            // A field or element of a ternary or a literal: those are values,
-            // not storage — a ternary's is one of its operands', so a write
-            // through the address would reach that operand. A slice expression
-            // builds a fresh header with nowhere to point at.
-            #partial switch _ in access_root(e.operand) {
-            case ^Expr_If, ^Expr_Array, ^Expr_Struct_Literal:
-                check_error(c, e.span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
-            }
-            if _, is_slice := e.operand.(^Expr_Slice); is_slice {
-                check_error(c, e.span, CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP)
-            }
-            pt := new(Type_Ptr)
-            pt.elem = operand_type
-            return pt
-        case .Caret:
-            // Dereference: p^ — operand must be a pointer. The Expr_Ident
-            // check at the operand site already fires is_invalid_ref, which
-            // covers both no-initializer pointers and pointers currently
-            // holding `void` (see invalid_refs comment on Type_Env).
-            if p, ok := operand_type.(^Type_Ptr); ok {
-                return p.elem
-            }
-            // Allow deref on Type_Any (backwards compat with raw ptr)
-            if is_any(operand_type) {
-                return Type_Error{}
-            }
-            check_error(c, e.span, TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE, type_name(operand_type))
-            return Type_Error{}
-        }
+        return check_unary(c, e, env)
     case ^Expr_Binary:
         return check_binary(c, e, env)
     case ^Expr_Call:
@@ -11992,14 +12261,63 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
     return Type_Error{}, false
 }
 
+// A binary operation, built: each side's value, widened to the type it works
+// in (decided once that is known), then it. (`and` / `or` run their right
+// side only when needed; an overload is a call.)
+Fuse_Binary :: struct {
+    w:     Written,
+    span:  Span,
+    sides: [2]Operand,
+    types: [2]Type,
+    widen: [2]int,   // each side's widening, in the body's list; -1 for none
+}
+
 check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
+    want, w := fuse_asked(c)
+    if want == .None { return check_binary_impl(c, e, env, nil) }
+    if e.op == .And || e.op == .Or || want == .Place {
+        fuse_fail(c, "and / or, or a binary's place")
+        return check_binary_impl(c, e, env, nil)
+    }
+    fb := Fuse_Binary{w = w, span = e.span, widen = {-1, -1}}
+    t := check_binary_impl(c, e, env, &fb)
+    b := fusing(c)
+    if b == nil { return t }
+    if _, over := e.overload_fn.?; over {
+        fuse_fail(c, "an operator overload")
+        return t
+    }
+    work := Graph_Work{e.op, t, fb.types[0], fb.types[1]}
+    for k in fb.widen {
+        if k >= 0 { b.fuse.widens[k].work = work }
+    }
+    kind: Op_Kind = .Compare if is_comparison_op(e.op) else .Arith
+    word := graph_token_text(e.op)
+    if e.wrapping { word = strings.concatenate({word, "%"}) }   // `+%` `-%` `*%` wrap
+    fuse_done(c, graph_op_value(b, kind, w, e.span, t, word, fb.sides[0], fb.sides[1]))
+    return t
+}
+
+fuse_side :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, fb: ^Fuse_Binary, k: int) -> Type {
+    if fb == nil { return check_expr(c, e, env) }
+    t, r := fuse_expr(c, e, env, .Value, fb.w)
+    fb.types[k] = t
+    b := fusing(c)
+    if b == nil { return t }
+    n := len(b.fuse.widens)
+    fb.sides[k] = graph_fuse_widen(b, r.v, fb.span, {binary = true})
+    if len(b.fuse.widens) > n { fb.widen[k] = n }
+    return t
+}
+
+check_binary_impl :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope, fb: ^Fuse_Binary) -> Type {
     // Propagate the hint to both sides so `OpenGL | Resizable` resolves both
     // operands against the surrounding `WindowFlags` expectation.
     hint := c.expected_hint
     c.expected_hint = hint
-    left_type := check_expr(c, e.left, env)
+    left_type := fuse_side(c, e.left, env, fb, 0)
     c.expected_hint = hint
-    right_type := check_expr(c, e.right, env)
+    right_type := fuse_side(c, e.right, env, fb, 1)
 
     // Wrapping operators (`+%`/`-%`/`*%`) are integer-only — two's-complement
     // wrap has no meaning for floats, and there's no overload concept. Otherwise
@@ -12436,9 +12754,43 @@ fn_params_desc :: proc(ft: ^Type_Scope) -> string {
 
 // An argument's type: checked — unless it is a method call's receiver, which
 // was checked to find its method (one check per node).
-check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope) -> Type {
-    if c.receiver != nil && arg == c.receiver { return c.receiver_type }
-    return check_expr(c, arg, env)
+check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scope = nil, param := -1, span := Span{}) -> Type {
+    if c.receiver != nil && arg == c.receiver {
+        if c.call != nil { fuse_fail(c, "a method's receiver") }
+        return c.receiver_type
+    }
+    // A built call's (fusing): its value, at its param's type.
+    fc := c.call
+    if fc == nil || fusing(c) == nil { return check_expr(c, arg, env) }
+    c.call = nil
+    defer c.call = fc
+    if !fc.params {
+        t, r := fuse_expr(c, arg, env, .Value, fc.w)
+        append(&fc.ops, r.v)
+        return t
+    }
+    pt: Type
+    w := fc.w
+    if sig != nil && param >= 0 && param < len(sig.params) {
+        pt = sig.params[param].type_
+        if arg == sig.params[param].default_value { w = .Implied }   // run at the call, not written there
+    }
+    t, r := fuse_expr(c, arg, env, .Either, w)
+    append(&fc.ops, fuse_value_as(c, arg, t, r, pt, span, {sig = sig, param = param}))
+    return t
+}
+
+// A builtin, built: its operands' values, then its operation.
+fuse_builtin :: proc(c: ^Checker, e: ^Expr_Call, fc: ^Fuse_Call) {
+    b := fusing(c)
+    if b == nil { return }
+    switch name := call_name(e); name {
+    case "print", "print_cstr", "print_float", "print_int", "crash":
+        graph_op(b, .Crash if name == "crash" else .Print, fc.w, e.span, nil, name, ..fc.ops[:])
+        fuse_done(c, NO_VALUE)
+    case:
+        fuse_fail(c, fmt.aprintf("the builtin %s", name))
+    }
 }
 
 // Shared helper: check that args match a function's parameter types.
@@ -12467,7 +12819,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             if arg == fun_type.params[i].default_value {
                 if ms := callee_def_scope(fun_type); ms != nil { arg_env = ms }
             }
-            arg_type := check_call_arg(c, arg, arg_env)
+            arg_type := check_call_arg(c, arg, arg_env, fun_type, i, span)
             // Byte-buffer reinterpret-read at the call boundary: a param
             // typed `[N]T` accepts `buf[off]` or `buf[lo:hi]` from a byte
             // buffer — same shape as `arr : [N]T = buf[off]` at decl sites.
@@ -12997,6 +13349,13 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Scope) -> Type {
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
+    // Built (fusing): its arguments' values as they are checked, then it.
+    want, w := fuse_asked(c)
+    fc := Fuse_Call{w = w}
+    defer delete(fc.ops)
+    saved_call := c.call
+    c.call = nil
+    defer c.call = saved_call
     saved_receiver, saved_receiver_type := c.receiver, c.receiver_type
     c.receiver, c.receiver_type = nil, nil
     defer c.receiver, c.receiver_type = saved_receiver, saved_receiver_type
@@ -13028,6 +13387,10 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
 
     qual_dispatch_fns: [dynamic]string
     if call_qualifier(e) != nil {
+        if want != .None {
+            fuse_fail(c, "a qualified call")
+            want = .None
+        }
         res, ft, qfns, err := resolve_qualified_call(c, e, env, &check_args)
         if err { return Type_Error{} }
         resolution = res
@@ -13038,8 +13401,13 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     }
 
     // Phase 2: Check the call — builtins, then user-defined functions.
+    if want != .None { c.call = &fc }
     builtin_result, is_builtin := check_builtin_call(c, e, check_args[:], env)
-    if is_builtin { return builtin_result }
+    c.call = nil
+    if is_builtin {
+        if want != .None { fuse_builtin(c, e, &fc) }
+        return builtin_result
+    }
 
     // Qualified dispatch (e.g. `m.sqrt(x)`): resolve_qualified_call set
     // qual_dispatch_fns to the qualified module's candidates (only).
@@ -13185,7 +13553,19 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
         for a in call_args(e) { append(&check_args, a) }
     }
 
+    fc.params = true
+    if want != .None && fun_type.kind == .Fun && e.fn_value == nil { c.call = &fc }
     check_call_args(c, check_args[:], fun_type, call_name(e), e.span, env)
+    if c.call != nil {
+        c.call = nil
+        if b := fusing(c); b != nil {
+            if want == .Place {
+                fuse_fail(c, "a call's place")
+            } else {
+                fuse_done(c, {graph_call_op(b, .Call, w, e.span, fun_type, fn_primary_return(fun_type), ..fc.ops[:]), 0})
+            }
+        }
+    }
 
     // Any struct construction: the call's value IS the struct itself (Self) —
     // pure-data (0 params, args already rejected above) and parameterized alike.
