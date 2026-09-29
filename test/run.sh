@@ -29,8 +29,6 @@ MARA=../Mara.exe
 # every fixture that uses it, so it counts once). Full list: ast_shape.log.
 export MARA_AST_SHAPE=1
 
-SHAPE_RAW=$(mktemp)
-collect_shape() { echo "$1" | grep -E '^ast-shape\[' | grep -vE '^ast-shape\[[a-z]+\] total ' >> "$SHAPE_RAW"; }
 
 LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg inferconflict widenneg"
 # name:reason — stale/pre-existing-broken fixtures that DO have a main (so they
@@ -40,10 +38,19 @@ LEGACY_SKIP="font_test:stale-calls-removed-load_glyphs leak_consumer:stale-multi
 in_list() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
 skip_reason() { for kv in $LEGACY_SKIP; do case "$kv" in "$1:"*) echo "${kv#*:}"; return ;; esac; done; }
 
-pass=0; xfail=0; skip=0; bad=0
-for f in *.mara; do
-  name="${f%.mara}"
-  exp=pass; substr=""
+# The fixtures are checked in parallel (JOBS at a time, default every core):
+# each writes its verdict to its own file in $RES — the first line pass,
+# xfail, skip or bad, then what to say about it — and its reshape lines to
+# another; they're tallied afterwards in fixture order.
+JOBS=${JOBS:-$(nproc 2>/dev/null || echo 4)}
+RES=$(mktemp -d)
+ROOT="$(cd .. && pwd)"
+export MARA RES ROOT LEGACY_FAIL LEGACY_SKIP
+verdict() { printf '%s\n' "$2" "${3-}" > "$RES/$1.res"; }                   # key kind [message]
+shapes() { echo "$2" | grep -E '^ast-shape\[' | grep -vE '^ast-shape\[[a-z]+\] total ' > "$RES/$1.shape"; }  # key output
+
+check_file() {  # f
+  local f=$1 name="${1%.mara}" exp=pass substr="" out comp run rc missing want
   if grep -qE '//@ expect-fail' "$f" 2>/dev/null; then
     exp=fail
     substr=$(sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' "$f" | head -1)
@@ -56,15 +63,15 @@ for f in *.mara; do
   elif ! grep -qE '^[[:space:]]*main[[:space:]]*::' "$f"; then
     exp=skip
   fi
-  [ "$exp" = skip ] && { skip=$((skip+1)); continue; }
+  [ "$exp" = skip ] && { verdict "$name" skip; return; }
 
   out=$("$MARA" build "$name" 2>&1)
-  collect_shape "$out"
-  if echo "$out" | grep -qE "has no .main|no files found"; then skip=$((skip+1)); continue; fi
+  shapes "$name" "$out"
+  if echo "$out" | grep -qE "has no .main|no files found"; then verdict "$name" skip; return; fi
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
 
   if [ "$exp" = pass ]; then
-    if [ "$comp" != yes ]; then echo "REGRESSION (want pass, failed): $name"; bad=$((bad+1)); continue; fi
+    if [ "$comp" != yes ]; then verdict "$name" bad "REGRESSION (want pass, failed): $name"; return; fi
     if grep -qE '//@ expect-output:' "$f"; then
       run=$(timeout 10 "./$name.exe" 2>&1); rc=$?
       missing=""
@@ -72,16 +79,16 @@ for f in *.mara; do
         echo "$run" | grep -qF -- "$want" || missing="$want"
       done < <(sed -nE 's#.*//@ expect-output:[[:space:]]*(.+)#\1#p' "$f" | tr -d '\r')
       if [ $rc -ne 0 ] || [ -n "$missing" ]; then
-        echo "WRONG OUTPUT: $name (exit $rc${missing:+, missing: \"$missing\"})"; bad=$((bad+1)); continue
+        verdict "$name" bad "WRONG OUTPUT: $name (exit $rc${missing:+, missing: \"$missing\"})"; return
       fi
     fi
-    pass=$((pass+1))
+    verdict "$name" pass
   else
-    if [ "$comp" = yes ]; then echo "STALE NEGATIVE (want fail, compiled): $name"; bad=$((bad+1))
-    elif [ -n "$substr" ] && ! echo "$out" | grep -qF "$substr"; then echo "WRONG ERROR: $name (want substring: $substr)"; bad=$((bad+1))
-    else xfail=$((xfail+1)); fi
+    if [ "$comp" = yes ]; then verdict "$name" bad "STALE NEGATIVE (want fail, compiled): $name"
+    elif [ -n "$substr" ] && ! echo "$out" | grep -qF "$substr"; then verdict "$name" bad "WRONG ERROR: $name (want substring: $substr)"
+    else verdict "$name" xfail; fi
   fi
-done
+}
 
 # Multi-file module fixtures (cross-file resolution) live in opt-in subdirs
 # marked with a .multifile file. The flat per-file loop above can't combine
@@ -89,31 +96,45 @@ done
 # Each marked test/<dir>/ is built as module <dir>; success = compiles, unless
 # a file in the subdir carries //@ expect-fail[: substr] (same semantics as the
 # flat loop) — used for negative multi-file properties like file-private imports.
-ROOT="$(cd .. && pwd)"
-for d in */; do
-  d="${d%/}"
-  [ -f "$d/.multifile" ] || continue
-  exp=pass; substr=""
+check_dir() {  # d
+  local d=$1 key="dir.$1" exp=pass substr="" out comp
   if grep -rqE '//@ expect-fail' "$d" 2>/dev/null; then
     exp=fail
     substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1)
   fi
   out=$(cd "$d" && "$ROOT/Mara.exe" build "$d" 2>&1)
-  collect_shape "$out"
+  shapes "$key" "$out"
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
   if [ "$exp" = pass ]; then
-    if [ "$comp" = yes ]; then pass=$((pass+1)); else echo "REGRESSION (multi-file subdir, want pass): $d"; bad=$((bad+1)); fi
+    if [ "$comp" = yes ]; then verdict "$key" pass; else verdict "$key" bad "REGRESSION (multi-file subdir, want pass): $d"; fi
   else
-    if [ "$comp" = yes ]; then echo "STALE NEGATIVE (multi-file subdir, want fail): $d"; bad=$((bad+1))
-    elif [ -n "$substr" ] && ! echo "$out" | grep -qF "$substr"; then echo "WRONG ERROR (multi-file subdir): $d (want: $substr)"; bad=$((bad+1))
-    else xfail=$((xfail+1)); fi
+    if [ "$comp" = yes ]; then verdict "$key" bad "STALE NEGATIVE (multi-file subdir, want fail): $d"
+    elif [ -n "$substr" ] && ! echo "$out" | grep -qF "$substr"; then verdict "$key" bad "WRONG ERROR (multi-file subdir): $d (want: $substr)"
+    else verdict "$key" xfail; fi
   fi
   rm -f "$d/$d.exe" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
+}
+export -f in_list skip_reason verdict shapes check_file check_dir
+
+dirs=()
+for d in */; do d="${d%/}"; [ -f "$d/.multifile" ] && dirs+=("$d"); done
+{ printf 'file %s\n' *.mara; printf 'dir %s\n' "${dirs[@]}"; } \
+  | xargs -P "$JOBS" -L 1 bash -c 'check_$0 "$1"'
+
+pass=0; xfail=0; skip=0; bad=0
+for key in $(printf '%s\n' *.mara | sed 's/\.mara$//') $(printf 'dir.%s\n' "${dirs[@]}"); do
+  { read -r kind; read -r msg; } < "$RES/$key.res"
+  case $kind in
+    pass)  pass=$((pass+1)) ;;
+    xfail) xfail=$((xfail+1)) ;;
+    skip)  skip=$((skip+1)) ;;
+    bad)   echo "$msg"; bad=$((bad+1)) ;;
+  esac
 done
 
 echo "----"
 # Reshapes: each distinct one is a mismatch.
-sort -u "$SHAPE_RAW" > ast_shape.log; rm -f "$SHAPE_RAW"
+cat "$RES"/*.shape 2>/dev/null | sort -u > ast_shape.log; rm -rf "$RES"
 shape_n=$(wc -l < ast_shape.log)
 while IFS= read -r r; do echo "RESHAPE: ${r#ast-shape}"; done < ast_shape.log
 bad=$((bad + shape_n))
