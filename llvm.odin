@@ -33,6 +33,8 @@ Llvm :: struct {
     ret:   string,              // its IR return type
     sret:  Type,                // a struct result, built in the caller's slot (%sret)
     by_value: Type,             // a union result: returned as an IR value (the old ABI; a slot like the rest: later)
+    rets:    []Type,            // several results: each into the caller's slot for it, %sret.<i>
+    slot:    string,            // the result slot: %sret, or a fallible constructor's Self, %sret.0
     ctor:  bool,                // a struct's code: it builds Self in %sret, which starts zeroed
     main:  bool,                // main's body: `@main` returns i64, 0 when it falls off its end
     fields: strings.Builder,    // a constructor's field addresses, first in its entry
@@ -50,6 +52,10 @@ Llvm :: struct {
     bound:   map[Node_Id]Node_Id,       // a match arm's binding → its variant place (it is the payload)
     arena:   map[Node_Id]bool,          // a big local: its storage from the arena (its arena alloc)
     ahead:   map[Node_Id]bool,          // places computed ahead of their turn (a call builds its result there)
+    outs:    map[Node_Id][]string,      // a call with several results: where each is (a temporary it wrote)
+    out_run: map[Node_Id]i32,           // the run such a call is in
+    loaded:  map[Operand]string,        // a result loaded in its call's run (which dominates every use)
+    out_user: map[Operand]Node_Id,      // each output's user, as `user` is each operation's (-2: several)
     why:     Node_Id,             // where it declined (for MARA_GRAPH_CG=log)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
@@ -132,11 +138,24 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
 
     // The signature: its params, then its result — a scalar returned, or a
     // struct built in the caller's slot (a constructor's is Self).
-    if len(cf.cg_returns) > 1 || len(cf.return_binding_names) > 0 { e.note = "multiple or named results"; return false }
+    if len(cf.return_binding_names) > 0 { e.note = "named results"; return false }
     e.ret = "void"
+    e.slot = "%sret"
     if e.ctor {
-        if len(cf.cg_returns) != 1 || llvm_struct(cf.cg_returns[0]) == nil { return false }
+        // Self, built in the caller's slot; a fallible constructor's declared
+        // results (its err) follow it, each in the slot after.
+        if len(cf.cg_returns) < 1 || llvm_struct(cf.cg_returns[0]) == nil { return false }
         e.sret = cf.cg_returns[0]
+        if len(cf.cg_returns) > 1 {
+            for rt in cf.cg_returns[1:] { if !llvm_scalar(rt) { e.note = "result type"; return false } }
+            e.slot, e.rets = "%sret.0", cf.cg_returns[:]
+        }
+    } else if len(cf.cg_returns) > 1 {
+        // Several results: each written into the caller's slot for it.
+        for rt in cf.cg_returns {
+            if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
+        }
+        e.rets = cf.cg_returns[:]
     } else if len(cf.cg_returns) == 1 {
         rt := cf.cg_returns[0]
         switch {
@@ -155,7 +174,11 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         if !ok { e.note = fmt.tprintf("param '%s'", p.name); return false }
         append(&params, fmt.tprintf("%s %%%s.arg", ir, p.name))
     }
-    if e.sret != nil { append(&params, "ptr %sret") }
+    if e.rets != nil {
+        for _, i in e.rets { append(&params, fmt.tprintf("ptr %%sret.%d", i)) }
+    } else if e.sret != nil {
+        append(&params, "ptr %sret")
+    }
     // `#expose`: in a DLL's export table, and the host's program — its first
     // param — is the one the DLL's code reads, set first thing.
     linkage := "dllexport " if cf.is_exposed else ""
@@ -176,7 +199,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     llvm_users(e)
     if !llvm_variables(e) { return false }
     llvm_carved(e)
-    if e.sret != nil { llvm_result_slot(e) }
+    if e.sret != nil || e.rets != nil { llvm_result_slot(e) }
     // A big variable lives on the arena, or in the caller's slot (a big
     // temporary: later).
     for id := e.node + 1; id <= e.pg.last[e.node]; id += 1 {
@@ -184,7 +207,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         case .Fun, .Struct, .Union, .Enum: id = e.pg.last[id]; continue   // (another scope's)
         }
         if e.pg.kind[id] != .Local || !routes_to_arena(e.pg.type_[id]) || id in e.arena { continue }
-        if e.value[id - e.node] != "%sret" { e.why = id; return false }
+        if e.value[id - e.node] != e.slot { e.why = id; return false }
     }
     llvm_in_place(e)
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
@@ -243,7 +266,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
             i := struct_field_index(llvm_struct(e.sret), pg.name[id])
             if i < 0 { return false }
             at := fresh_tmp(e.g)
-            fmt.sbprintf(&e.fields, "  %s = getelementptr %s, ptr %%sret, i32 0, i32 %d\n", at, llvm_type_from_checker(e.sret), i)
+            fmt.sbprintf(&e.fields, "  %s = getelementptr %s, ptr %s, i32 0, i32 %d\n", at, llvm_type_from_checker(e.sret), e.slot, i)
             e.value[id - e.node] = at
             // A partial array: its header stamped over its elements, and those
             // constructed, right after its address (its zero is not all zeros).
@@ -293,12 +316,17 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
     e.used[name] = true
     if explicit { e.shared[key] = name }
     e.value[d - e.node] = name
-    // Bytes held inline are aligned for any value viewed in them.
-    if pa := llvm_partial(pg.type_[d]); pa != nil && llvm_type_from_checker(pa.elem) == "i8" {
-        ir = strings.concatenate({ir, ", align 16"})
-    }
-    emit_alloca(e.g, name, ir)
+    emit_alloca(e.g, name, llvm_alloca_type(pg.type_[d]))
     return name
+}
+
+// A local's IR type as allocated: bytes held inline aligned for any value
+// viewed in them.
+@(private="file")
+llvm_alloca_type :: proc(t: Type) -> string {
+    ir := llvm_type_from_checker(t)
+    if pa := llvm_partial(t); pa != nil && llvm_type_from_checker(pa.elem) == "i8" { return strings.concatenate({ir, ", align 16"}) }
+    return ir
 }
 
 // Point the emit helpers' output at a constructor's entry prefix (e.fields),
@@ -330,6 +358,8 @@ llvm_users :: proc(e: ^Llvm) {
                 if o.op == NO_NODE { continue }
                 u := &e.user[o.op - e.node]
                 u^ = op if u^ == -1 else -2
+                ou, seen := e.out_user[o]
+                e.out_user[o] = -2 if seen && ou != op else op
             }
             // A match arm's binding is the payload's place.
             if pg.op[op] == .Variant && pg.refers[op] != NO_NODE { e.bound[pg.refers[op]] = op }
@@ -338,27 +368,43 @@ llvm_users :: proc(e: ^Llvm) {
     }
 }
 
-// What a struct-returning fun builds in its caller's slot rather than in
+// What a fun returning aggregates builds in its caller's slots rather than in
 // storage of its own: the local every return returns (NRVO), and a
 // temporary whose one read is a return (a literal or construction returned).
+// With several results, each aggregate one's slot — a returned local only
+// when a fixed array (as the old emitter; the others at the switch-over).
 @(private="file")
 llvm_result_slot :: proc(e: ^Llvm) {
+    if e.rets == nil || e.ctor {
+        llvm_result_slot_at(e, 0, 1, e.slot, named = true)
+        return
+    }
+    for rt, i in e.rets {
+        if !llvm_aggregate(rt) { continue }
+        llvm_result_slot_at(e, i, len(e.rets), fmt.tprintf("%%sret.%d", i), named = llvm_array(rt) != nil)
+    }
+}
+
+// The k-th result's slot, of n: what lives there (a `?`'s return, of zeros,
+// returns no local).
+@(private="file")
+llvm_result_slot_at :: proc(e: ^Llvm, k, n: int, slot: string, named: bool) {
     pg := e.pg
     returned := NO_NODE   // the local every return returns, so far
     every := true
     for r in e.runs[:e.own] {   // (a defer block's return goes back where it ran)
         for op in graph_run(pg, int(r)) {
-            if pg.op[op] != .Return { continue }
+            if pg.op[op] != .Return || pg.written[op] == .Implied { continue }
             ops := graph_operands(pg, op)
             v := NO_NODE
-            if len(ops) == 1 && ops[0].op != NO_NODE && pg.op[ops[0].op] == .Read {
-                place := graph_operands(pg, ops[0].op)[0].op
+            if len(ops) == n && ops[k].op != NO_NODE && pg.op[ops[k].op] == .Read {
+                place := graph_operands(pg, ops[k].op)[0].op
                 if pg.op[place] == .Var && pg.kind[pg.refers[place]] == .Local { v = pg.refers[place] }
             }
             if v in e.carved { v, every = NO_NODE, false }   // the carved memory: copied out
             if v != NO_NODE && pg.written[v] == .Synthetic {
                 // (Not an `if` expression's, written by its arms: its own.)
-                if llvm_reads(e, v) == 1 && llvm_written_only_in(e, v, r) { e.value[v - e.node] = "%sret" }
+                if llvm_reads(e, v) == 1 && llvm_written_only_in(e, v, r) { e.value[v - e.node] = slot }
                 v = NO_NODE   // a temporary is no named local
             }
             switch {
@@ -368,7 +414,7 @@ llvm_result_slot :: proc(e: ^Llvm) {
             }
         }
     }
-    if every && returned != NO_NODE { e.value[returned - e.node] = "%sret" }
+    if named && every && returned != NO_NODE { e.value[returned - e.node] = slot }
 }
 
 // Whether every write to variable v is in run r.
@@ -544,7 +590,7 @@ llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
 @(private="file")
 llvm_in_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
     if e.ctor && (d == e.node || e.pg.kind[d] == .Field) { return true }
-    return d > e.node && d <= e.pg.last[e.node] && e.value[d - e.node] == "%sret"
+    return d > e.node && d <= e.pg.last[e.node] && e.value[d - e.node] == e.slot
 }
 
 // How many reads a variable has.
@@ -669,7 +715,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Var:
         d := pg.refers[op]
         if e.ctor && d == e.node {   // Self: the value under construction
-            e.value[op - e.node] = "%sret"
+            e.value[op - e.node] = e.slot
             return true
         }
         if d <= e.node || d > pg.last[e.node] { return false }   // not this fun's
@@ -681,6 +727,11 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         case !e.held[d - e.node]:                          e.value[op - e.node] = llvm_storage(e, d)
         }
     case .Const:
+        // A result's zero value (what `?` returns beside an error), of any type.
+        if pg.written[op] == .Implied && pg.name[op] == "zero" {
+            e.value[op - e.node] = "zeroinitializer"
+            return true
+        }
         v, ok := llvm_const(e, op)
         if !ok { return false }
         e.value[op - e.node] = v
@@ -912,8 +963,10 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             e.value[op - e.node] = e.value[x - e.node]
             return true
         }
+        from = llvm_type_of(e, ops[0])   // (a call's result: its own type)
         if !llvm_scalar(from) || !llvm_scalar(to) { return false }
-        e.value[op - e.node] = llvm_convert(e, e.value[x - e.node], from, to)
+        v := llvm_operand(e, ops[0], from) or_return
+        e.value[op - e.node] = llvm_convert(e, v, from, to)
     case .Call:
         return llvm_call(e, op, ops)
     case .Jump:
@@ -923,8 +976,15 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if !ok { return false }
         emit_cond_br(g, c, e.label[llvm_target(e, op, 0)], e.label[llvm_target(e, op, 1)])
     case .Return:
-        if e.ctor {   // Self was built in place
-            if len(ops) != 0 { return false }
+        if e.ctor {
+            // Self was built in place; the declared results after it (a
+            // fallible constructor's err) are stored.
+            if len(ops) != max(len(e.rets) - 1, 0) { return false }
+            for o, i in ops {
+                rt := e.rets[i + 1]
+                v := llvm_operand(e, o, rt) or_return
+                emit_store(g, llvm_type_from_checker(rt), v, fmt.tprintf("%%sret.%d", i + 1))
+            }
             emit(g, "  ret void")
             return true
         }
@@ -932,7 +992,24 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // Into the caller's slot, unless it was built there.
             if len(ops) != 1 { return false }
             v := llvm_operand(e, ops[0], e.sret) or_return
-            if v != "%sret" { llvm_copy(e, "%sret", v, e.sret) }
+            if v != e.slot { llvm_copy(e, e.slot, v, e.sret) }
+            emit(g, "  ret void")
+            return true
+        }
+        if e.rets != nil {
+            // Each result into the caller's slot for it: a register value stored,
+            // an aggregate copied (unless built there), a zero value stored whole.
+            if len(ops) != len(e.rets) { return false }
+            for rt, i in e.rets {
+                at := fmt.tprintf("%%sret.%d", i)
+                v := llvm_operand(e, ops[i], rt) or_return
+                switch {
+                case v == "zeroinitializer" || llvm_scalar(rt):
+                    emit_store(g, llvm_type_from_checker(rt), v, at)
+                case v != at:
+                    llvm_copy(e, at, v, rt)
+                }
+            }
             emit(g, "  ret void")
             return true
         }
@@ -1028,7 +1105,7 @@ llvm_place :: proc(e: ^Llvm, place: Node_Id) -> string {
     if pg.op[place] != .Var { return e.value[place - e.node] }
     d := pg.refers[place]
     switch {
-    case e.ctor && d == e.node:                          return "%sret"
+    case e.ctor && d == e.node:                          return e.slot
     case pg.kind[d] == .Param || pg.kind[d] == .Field:   return e.value[d - e.node]
     }
     return llvm_storage(e, d)
@@ -1054,10 +1131,52 @@ llvm_direct_value :: proc(e: ^Llvm, place: Node_Id) -> string {
 // An operand's IR value, which must already be of the type its use takes.
 @(private="file")
 llvm_operand :: proc(e: ^Llvm, o: Operand, want: Type) -> (string, bool) {
-    if o.op == NO_NODE || o.out != 0 { return "", false }
+    if o.op == NO_NODE { return "", false }
+    if at, several := e.outs[o.op]; several { return llvm_output(e, o, at, want) }
+    if o.out != 0 { return "", false }
     have := e.pg.type_[o.op]
     if !llvm_same_type(have, want) { return "", false }
     return e.value[o.op - e.node], true
+}
+
+// A call's k-th result, from the temporary it wrote it into: a register value
+// loaded where it is used, an aggregate its temporary.
+@(private="file")
+llvm_output :: proc(e: ^Llvm, o: Operand, at: []string, want: Type) -> (string, bool) {
+    if int(o.out) >= len(at) { return "", false }
+    t := llvm_type_of(e, o)
+    if !llvm_same_type(t, want) { return "", false }
+    if !llvm_scalar(t) { return at[o.out], true }
+    if v, done := e.loaded[o]; done { return v, true }
+    v := fresh_tmp(e.g)
+    emit_load_into(e.g, v, llvm_type_from_checker(t), at[o.out])
+    if e.run == e.out_run[o.op] { e.loaded[o] = v }
+    return v, true
+}
+
+// Where a declaration takes a call's result, when that is all the result does:
+// the declared variable's storage (the write then has nothing to copy).
+@(private="file")
+llvm_declared_at :: proc(e: ^Llvm, o: Operand) -> string {
+    pg := e.pg
+    u, ok := e.out_user[o]
+    if !ok || u < 0 || pg.op[u] != .Write { return "" }
+    uops := graph_operands(pg, u)
+    dest := uops[0].op
+    if uops[1] != o || pg.op[dest] != .Var || llvm_direct(e, dest) { return "" }
+    d := pg.refers[dest]
+    if pg.kind[d] != .Local || (pg.written[d] != .Synthetic && pg.stmt[d] != pg.stmt[u]) { return "" }
+    return llvm_place(e, dest)
+}
+
+// The type of an operation's output: a call's k-th result, else its own.
+@(private="file")
+llvm_type_of :: proc(e: ^Llvm, o: Operand) -> Type {
+    if o.op in e.outs {
+        callee := llvm_callee(e, o.op)
+        if callee != nil && int(o.out) < len(callee.cg_returns) { return callee.cg_returns[o.out] }
+    }
+    return e.pg.type_[o.op]
 }
 
 // The run the k-th Then edge of an operation leads to.
@@ -1216,7 +1335,7 @@ llvm_unary :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
 
 // A number's conversion: widening by the source's signedness, narrowing by
 // truncation, between ints and floats by the target's (to an int) or the
-// source's (from one) signedness.
+// source's (from one) signedness; to a bool, whether it's nonzero.
 @(private="file")
 llvm_convert :: proc(e: ^Llvm, v: string, from, to: Type) -> string {
     g := e.g
@@ -1224,6 +1343,10 @@ llvm_convert :: proc(e: ^Llvm, v: string, from, to: Type) -> string {
     if fi == ti { return v }
     tmp := fresh_tmp(g)
     ff, tf := is_ir_float(fi), is_ir_float(ti)
+    if ti == "i1" && !ff {   // to bool: whether it's nonzero
+        emit(g, "  %s = icmp ne %s %s, 0", tmp, fi, v)
+        return tmp
+    }
     fb, tb := ir_type_bits(fi), ir_type_bits(ti)
     inst := ""
     switch {
@@ -1312,6 +1435,19 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     }
     at := e.value[dest - e.node]
     append(&args, fmt.tprintf("ptr %s", at))
+    // A fallible constructor's declared results (its err) after Self: each
+    // into a temporary, where its uses find it (Self is the place).
+    if len(callee.cg_returns) > 1 {
+        outs := make([]string, len(callee.cg_returns))
+        outs[0] = at
+        for rt, i in callee.cg_returns[1:] {
+            if !llvm_scalar(rt) { e.note = "result type"; return false }
+            outs[i + 1] = fresh_tmp(g)
+            emit_alloca(g, outs[i + 1], llvm_type_from_checker(rt))
+            append(&args, fmt.tprintf("ptr %s", outs[i + 1]))
+        }
+        e.outs[op], e.out_run[op] = outs, e.run
+    }
     // A bare field of a constructor is already zero; a literal is a fresh value anywhere.
     if !(llvm_zeroed(e, dest) && pg.written[op] == .Synthetic) { emit_memset_zero(g, at, llvm_size(e, t)) }
     emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, callee.name), "(",
@@ -1354,6 +1490,17 @@ llvm_slice_index :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, elem: Type, span
     return true
 }
 
+// Whether a slice operation views a whole fixed array: no bounds given.
+@(private="file")
+llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
+    pg := e.pg
+    if pg.op[op] != .Slice || pg.name[op] != "" { return false }
+    ops := graph_operands(pg, op)
+    if len(ops) == 0 || ops[0].op == NO_NODE || llvm_array(pg.type_[ops[0].op]) == nil { return false }
+    for o in ops[1:] { if o.op != NO_NODE { return false } }
+    return true
+}
+
 // A slice of an array or a slice: the elements from lo up to hi — lo 0 and
 // hi the array's size or the slice's len when not given — as a new header,
 // len = cap = hi - lo.
@@ -1371,6 +1518,31 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if pg.name[op] != "" { return false }
     // Written to, it's the run of elements a write fills (llvm_copy_into).
     if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[0].op == op { return true }
+    // A whole fixed array viewed only to be copied from: the array itself, no
+    // header (llvm_copy_into reads it as the array).
+    if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op &&
+       pg.op[graph_operands(pg, u)[0].op] == .Slice && llvm_whole_array(e, op) {
+        e.value[op - e.node] = e.value[ops[0].op - e.node]
+        return true
+    }
+    // A whole fixed array — not a constant's table — viewed into a slice's
+    // place (a field, an element, what a pointer points at): its header built
+    // there (the write then has nothing to copy).
+    if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[1].op == op && llvm_whole_array(e, op) && pg.op[ops[0].op] != .Global {
+        dest := graph_operands(pg, u)[0].op
+        #partial switch pg.op[dest] {
+        case .Field, .Index, .Deref:
+        case:
+            dest = NO_NODE
+        }
+        if dest != NO_NODE && llvm_slice(pg.type_[dest]) != nil && !llvm_direct(e, dest) && llvm_ahead(e, dest) {
+            at := llvm_place(e, dest)
+            n := fmt.tprintf("%d", llvm_array(pg.type_[ops[0].op]).size)
+            emit_slice_header_at(g, at, e.value[ops[0].op - e.node], n, n)
+            e.value[op - e.node] = at
+            return true
+        }
+    }
     base := ops[0].op
     if base == NO_NODE || llvm_direct(e, base) { return false }
     lo, hi: string
@@ -1458,6 +1630,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     side :: proc(e: ^Llvm, at: Node_Id, bound_field: int) -> (s: Side, ok: bool) {
         g, pg := e.g, e.pg
         t := pg.type_[at]
+        if llvm_whole_array(e, at) { t = pg.type_[graph_operands(pg, at)[0].op] }   // the array it views
         addr := e.value[at - e.node]
         if fa := llvm_array(t); fa != nil { return {addr, fmt.tprintf("%d", fa.size), fa.size, fa.elem}, true }
         s.elem = llvm_header_elem(t)
@@ -1855,7 +2028,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         dest := graph_operands(pg, u)[0].op
         if pg.op[dest] == .Var {
             s := pg.stmt[u]
-            if (s >= 0 && pg.stmts[s].kind == .Decl) || llvm_place(e, dest) == "%sret" { out = llvm_place(e, dest) }
+            if (s >= 0 && pg.stmts[s].kind == .Decl) || llvm_place(e, dest) == e.slot { out = llvm_place(e, dest) }
         }
     }
     if out == "" {
@@ -2080,7 +2253,6 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     callee := llvm_callee(e, op)
     if callee == nil || callee.kind != .Fun { e.note = "a function value"; return false }   // (later)
     if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
-    if len(callee.cg_returns) > 1 { e.note = "multiple results"; return false }
     if len(ops) != len(callee.cg_params) { e.note = "arguments left to defaults"; return false }
     ret := "void"
     result: Type
@@ -2100,6 +2272,25 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         append(&args, fmt.tprintf("%s %s", ir, v))
     }
     name := mara_fn_name(g, callee.name)
+    if len(callee.cg_returns) > 1 {
+        // Several results: each into a temporary, where its uses find it —
+        // an aggregate that a declaration takes, straight into its storage.
+        at := make([]string, len(callee.cg_returns))
+        for rt, i in callee.cg_returns {
+            if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
+            if llvm_aggregate(rt) { at[i] = llvm_declared_at(e, Operand{op, i32(i)}) }
+            if at[i] == "" {
+                if routes_to_arena(rt) { e.note = "a big result (on the arena: later)"; return false }
+                at[i] = fresh_tmp(g)
+                emit_alloca(g, at[i], llvm_alloca_type(rt))
+            }
+            append(&args, fmt.tprintf("ptr %s", at[i]))
+        }
+        emit(g, "  call void %s(%s)", name, strings.join(args[:], ", ", context.temp_allocator))
+        e.outs[op], e.out_run[op] = at, e.run
+        e.value[op - e.node] = at[0]
+        return true
+    }
     if ret == "void" && result != nil {
         // A struct result, built where it goes (llvm_result_place).
         at := llvm_result_place(e, op, callee, result) or_return
@@ -2134,6 +2325,9 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
             emit_alloca(g, at, ret)
         }
         emit_store(g, ret, tmp, at)
+        // Its partial arrays pointed into the callee's frame, gone: re-pointed
+        // at its own elements.
+        reanchor_partial_arrays(g, result, at)
         e.value[op - e.node] = at
     }
     return true
@@ -2152,7 +2346,7 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
         uops := graph_operands(pg, u)
         #partial switch pg.op[u] {
         case .Return:
-            if e.sret != nil { return "%sret", true }
+            if e.sret != nil { return e.slot, true }
         case .Write:
             dest := uops[0].op
             if uops[1].op == op && !llvm_direct(e, dest) {
@@ -2220,7 +2414,7 @@ llvm_passes_storage :: proc(callee: ^Type_Scope) -> bool {
 @(private="file")
 llvm_scalar :: proc(t: Type) -> bool {
     #partial switch _ in distinct_base(resolve_infer(t)) {
-    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString:
+    case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err:
         return true
     }
     return false

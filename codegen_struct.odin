@@ -75,9 +75,9 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
             alloca = alloca_name,
             struct_name = skey,
         }
-        // Zero-init (ensures null ptrs, zero ints, etc.) — unless the value is
-        // a struct-returning call, which writes all of it.
-        if !call_writes_struct(g, value) { emit_memset_zero(g, alloca_name, total) }
+        // Zero-init (ensures null ptrs, zero ints, etc.) — unless the value
+        // writes all of it: a struct-returning call, or a copy of a place.
+        if !call_writes_struct(g, value) && !copies_whole_struct(value) { emit_memset_zero(g, alloca_name, total) }
 
         // Sized-slice fields are NOT init'd here — the struct's auto-init
         // function (called below for bare decls) and gen_store_struct_into
@@ -165,8 +165,7 @@ gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, ge
 // bug gen_store_slice_into guards against in gen_field_assign).
 gen_positional_ctor_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr) {
     if _, sl_ok := distinct_base(field.type_).(^Type_Slice); sl_ok {
-        src := gen_slice_value_ptr(g, value)
-        emit_memcpy(g, gep, src, slice_header_bytes)
+        gen_slice_into(g, gep, value)
         return
     }
     ft := field_ir_type(field)
@@ -219,6 +218,13 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
                     emit_typed_store_cap(g, fmt.tprintf("%d", fa.size), cap_gep)
                     continue
                 }
+            }
+            // A register value: read and stored.
+            if ft := field_ir_type(&st.fields[i]); len(ft) > 0 && ft[0] != '{' && ft[0] != '[' && ft[0] != '%' {
+                v := fresh_tmp(g)
+                emit_load_into(g, v, ft, src_ptr)
+                emit_store(g, ft, v, dst_field_gep)
+                continue
             }
             // Direct copy: same shape on both sides.
             size := checker_type_byte_size(sf.type_)
@@ -302,16 +308,13 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         // automatically — caller writes `Mesh_Data{verts, inds}` without
         // explicit `[:]`.
         if strings.has_prefix(ft, "{ ") {
-            src_ptr: string
-            if _, is_slice := f.type_.(^Type_Slice); is_slice {
-                src_ptr = gen_slice_value_ptr(g, field.value)
-            } else {
-                src_ptr = gen_expr(g, field.value, ft)
-            }
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
-            size := checker_type_byte_size(f.type_)
-            emit_memcpy(g, gep, src_ptr, size)
+            if _, is_slice := f.type_.(^Type_Slice); is_slice {
+                gen_slice_into(g, gep, field.value)
+                continue
+            }
+            emit_memcpy(g, gep, gen_expr(g, field.value, ft), checker_type_byte_size(f.type_))
             continue
         }
         // Named-struct field (`%class.X`): the one struct store — a nested
@@ -1017,14 +1020,16 @@ gen_array_field_store :: proc(g: ^Codegen, data_ptr: string, array_cap: int, arr
 //   - array-returning function call       → NRVO via gen_call_into_array
 //   - fallback expression                 → gen_expr + memcpy from claim_call_result
 gen_store_array_into :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, dest_fresh: bool = false, dest_expr: Expr = nil) {
-    store_array_value(g, dst_ptr, capacity, elem_type, value, is_utf8, dest_fresh, dest_expr)
-    // Whatever path copied the value in (bytes, elements, a call's result),
-    // partial arrays inside the elements are re-pointed at dst. Paths that
-    // built it in place already have them right; re-pointing is idempotent.
-    reanchor_partial_arrays(g, expr_type(value), dst_ptr)
+    // Whatever path copied the value in (bytes, a temp's elements, a call's
+    // result), partial arrays inside the elements are re-pointed at dst; a
+    // literal built in place has them right already.
+    if !store_array_value(g, dst_ptr, capacity, elem_type, value, is_utf8, dest_fresh, dest_expr) {
+        reanchor_partial_arrays(g, expr_type(value), dst_ptr)
+    }
 }
 
-store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, dest_fresh: bool = false, dest_expr: Expr = nil) {
+// Whether the value was built in place: a literal, element by element.
+store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type: string, value: Expr, is_utf8: bool = false, dest_fresh: bool = false, dest_expr: Expr = nil) -> (in_place: bool) {
     alloc_cap := capacity
     arr_type := fmt.tprintf("[%d x %s]", alloc_cap, elem_type)
     ebs := elem_byte_size(elem_type, g.checked)
@@ -1091,12 +1096,13 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
     if arr_lit, ok := value.(^Expr_Array); ok {
         emit_memset_zero(g, dst_ptr, total_bytes)
         et := literal_elem_type(arr_lit)
+        stamped := stamp_literal_array(g, dst_ptr, et, capacity)
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
-            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span, slot_fresh = true)
+            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span, slot_fresh = true, stamped = stamped)
         }
-        return
+        return true
     }
 
     // Distinct-fixed-array struct literal (Quat{...} etc.) — array_values has
@@ -1105,14 +1111,14 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
     if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         if !sl.is_broadcast { emit_memset_zero(g, dst_ptr, total_bytes) }
         et := literal_elem_type(sl)
-        if gen_broadcast_scalar(g, dst_ptr, arr_type, elem_type, et, sl) { return }
+        if gen_broadcast_scalar(g, dst_ptr, arr_type, elem_type, et, sl) { return true }
         for elem, i in sl.array_values {
             if elem == nil { continue }
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
             gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true)
         }
-        return
+        return true
     }
 
     // Ident referring to another array variable: its bytes.
@@ -1483,6 +1489,18 @@ call_writes_struct :: proc(g: ^Codegen, value: Expr) -> bool {
         if rf, ok := v.overload_fn.?; ok { return returns_struct(rf.callee) }
     case ^Expr_Unary:
         if rf, ok := v.overload_fn.?; ok { return returns_struct(rf.callee) }
+    }
+    return false
+}
+
+// A value copied whole from a place: a variable, a field, an element, what a
+// pointer points at (not a constant, whose value is inlined).
+copies_whole_struct :: proc(value: Expr) -> bool {
+    #partial switch v in value {
+    case ^Expr_Ident:        return v.resolved == nil
+    case ^Expr_Field_Access: return v.resolved == nil
+    case ^Expr_Index:        return true
+    case ^Expr_Unary:        return v.op == .Caret
     }
     return false
 }

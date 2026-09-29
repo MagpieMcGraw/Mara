@@ -1189,7 +1189,14 @@ gen_type_cast :: proc(g: ^Codegen, e: ^Expr_Call) -> (string, bool) {
         return tmp, true
     }
 
-    // int → int (or bool)
+    // → bool: whether it's nonzero (truncating kept only the low bit: an
+    // err of an even tag, `bool(Probe.Second)`, read as false).
+    if target == "i1" && !src_is_float {
+        emit(g, "  %s = icmp ne %s %s, 0", tmp, src_type, val)
+        return tmp, true
+    }
+
+    // int → int
     src_bits := ir_type_bits(src_type)
     tgt_bits := ir_type_bits(target)
     if src_bits == tgt_bits {
@@ -1267,6 +1274,35 @@ gen_expr_coerced :: proc(g: ^Codegen, e: Expr, target_ir: string) -> string {
 // existing slice var, and general slice expression. Returns the IR pointer
 // to a `{ ptr, i64, i64 }` slice header — callers wrap as needed (arg
 // strings, memcpy sources for struct field stores, etc.).
+// A fixed array's storage, to view as a slice: an array literal (either
+// spelling) materialized on the stack — gen_expr would yield its by-value
+// aggregate, not a data pointer — anything else where it is.
+gen_fixed_array_storage :: proc(g: ^Codegen, arg: Expr, fa: ^Type_Fixed_Array) -> string {
+    if !is_array_literal(arg) { return gen_expr(g, arg) }   // (its data pointer)
+    elem_ir := llvm_type_from_checker(fa.elem)
+    arr_alloca := fresh_tmp(g)
+    emit_alloca(g, arr_alloca, fmt.tprintf("[%d x %s]", fa.size, elem_ir))
+    gen_store_array_into(g, arr_alloca, fa.size, elem_ir, arg, dest_fresh = true)
+    return arr_alloca
+}
+
+// A slice value stored at dst: a fixed array's header written there (the
+// view of its storage — as the array or as `a[:]`), anything else's header
+// copied. (A constant array keeps the copy: its value is inlined into a
+// temporary.)
+gen_slice_into :: proc(g: ^Codegen, dst: string, value: Expr) {
+    arr := value
+    if sl, is_sl := value.(^Expr_Slice); is_sl && sl.low == nil && sl.high == nil && !sl.is_big_endian { arr = sl.expr }
+    if _, is_const := codegen_const_value(g, arr); !is_const {
+        if fa, is_fa := distinct_base(expr_type(arr)).(^Type_Fixed_Array); is_fa {
+            n := fmt.tprintf("%d", fa.size)
+            emit_slice_header_at(g, dst, gen_fixed_array_storage(g, arr, fa), n, n)
+            return
+        }
+    }
+    emit_memcpy(g, dst, gen_slice_value_ptr(g, value), slice_header_bytes)
+}
+
 gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
     // Constant reference (bare, Module.X, or scope-local): inline the value
     // expression and let the shape-aware paths below (string-literal,
@@ -1294,24 +1330,12 @@ gen_slice_value_ptr :: proc(g: ^Codegen, arg: Expr) -> string {
         return emit_build_temp_slice(g, data_ptr, size_str, cap_str)
     }
     if fa, fa_ok := distinct_base(arg_checker_type).(^Type_Fixed_Array); fa_ok {
-        // Array literal (either spelling): materialize on the stack, then build
-        // the slice over it — gen_expr would yield the literal's by-value
-        // aggregate, not a data pointer.
-        if is_array_literal(arg) {
-            elem_ir := llvm_type_from_checker(fa.elem)
-            arr_alloca := fresh_tmp(g)
-            emit_alloca(g, arr_alloca, fmt.tprintf("[%d x %s]", fa.size, elem_ir))
-            gen_store_array_into(g, arr_alloca, fa.size, elem_ir, arg, dest_fresh = true)
-            size_str := fmt.tprintf("%d", fa.size)
-            return emit_build_temp_slice(g, arr_alloca, size_str, size_str)
-        }
-        val := gen_expr(g, arg)  // returns data_ptr for arrays
-        len_val := fmt.tprintf("%d", fa.size)
         // Fixed-array → slice: populated view (len=N, cap=N). Fixed arrays
         // are populated buffers — coercing them gives a view the receiver
         // can iterate / index naturally. For a fresh-cursor scratch buffer,
         // declare `name : []T(N)` (a sized slice) instead of `name : [N]T`.
-        return emit_build_temp_slice(g, val, len_val, len_val)
+        len_val := fmt.tprintf("%d", fa.size)
+        return emit_build_temp_slice(g, gen_fixed_array_storage(g, arg, fa), len_val, len_val)
     }
     // Existing slice var: the alloca pointer is already a ptr-to-header.
     if ident, id_ok := arg.(^Expr_Ident); id_ok {
@@ -1734,7 +1758,9 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                     tmp_ptr = emit_arena_bump(g, total_bytes, ret_name, ret_loc)
                 } else {
                     tmp_ptr = fresh_tmp(g)
-                    emit_alloca(g, tmp_ptr, et)
+                    // Bytes held inline are aligned for any value viewed in them.
+                    pa, is_pa := distinct_base(elem).(^Type_Partial_Array)
+                    emit_alloca(g, tmp_ptr, fmt.tprintf("%s, align 16", et) if is_pa && llvm_type_from_checker(pa.elem) == "i8" else et)
                 }
                 if ctor && i == 0 { emit_memset_zero(g, tmp_ptr, total_bytes) }
                 append(&arg_strs, fmt.tprintf("ptr %s", tmp_ptr))
@@ -1910,26 +1936,15 @@ gen_try :: proc(g: ^Codegen, e: ^Expr_Try, target_type: string) -> string {
     // Determine the err value and the optional success value.
     err_val: string
     success_val := ""
+    // The success value, when there is one: read on the path that goes on.
+    val_ir, val_slot := "", ""
     multi := len(g.tuple_result_ptrs) > 0
     if multi {
         n := len(g.tuple_result_ptrs)
         err_slot := g.tuple_result_ptrs[n-1]
         err_val = fresh_tmp(g)
         emit_load_into(g, err_val, "i32", err_slot)
-        if n == 2 {
-            val_ir := g.tuple_result_types[0]
-            // Aggregates (struct `%...`, array `[...]`, slice `{...}`) come back
-            // by pointer — the binding memcpy's from the sret slot. Returning a
-            // loaded aggregate *value* would hand a struct/array value to a copy
-            // that expects a pointer (invalid IR). Scalars load into an SSA value.
-            if len(val_ir) > 0 && (val_ir[0] == '%' || val_ir[0] == '[' || val_ir[0] == '{') {
-                success_val = g.tuple_result_ptrs[0]
-            } else {
-                tmp := fresh_tmp(g)
-                emit_load_into(g, tmp, val_ir, g.tuple_result_ptrs[0])
-                success_val = tmp
-            }
-        }
+        if n == 2 { val_ir, val_slot = g.tuple_result_types[0], g.tuple_result_ptrs[0] }
     } else {
         // Single-return call: result IS the err.
         err_val = call_result
@@ -1950,25 +1965,41 @@ gen_try :: proc(g: ^Codegen, e: ^Expr_Try, target_type: string) -> string {
     emit_err_propagate(g, err_val)
 
     emit_label(g, cont_lbl)
+    if val_slot != "" {
+        // Aggregates (struct `%...`, array `[...]`, slice `{...}`) come back
+        // by pointer — the binding memcpy's from the sret slot. Returning a
+        // loaded aggregate *value* would hand a struct/array value to a copy
+        // that expects a pointer (invalid IR). Scalars load into an SSA value.
+        if len(val_ir) > 0 && (val_ir[0] == '%' || val_ir[0] == '[' || val_ir[0] == '{') {
+            success_val = val_slot
+        } else {
+            success_val = fresh_tmp(g)
+            emit_load_into(g, success_val, val_ir, val_slot)
+        }
+    }
     return success_val
 }
 
 // `?` found an error: return it from the enclosing function. Like any other
 // return, it first runs the deferred blocks and arena resets of every open scope
 // (emit_return_resets) — the error path used to `ret` straight away and skip
-// them. A multi-return function zeroes its other result slots and writes the
-// err into the trailing one; zeroinitializer is the universal "default value"
+// them. Then, as any return writes its results once the defers ran, a
+// multi-return function zeroes its other result slots and writes the err
+// into the trailing one; zeroinitializer is the universal "default value"
 // (primitives, structs, arrays, slices, ptrs alike). A single-return err
 // function just returns the err.
 emit_err_propagate :: proc(g: ^Codegen, err_val: string) {
     if g.ret_types != nil {
+        emit_return_resets(g)
         n_ret := len(g.ret_types)
         for i in 0..<n_ret - 1 {
+            // (A fallible constructor's Self, slot 0, is no result a return
+            // writes: it was being built in place.)
+            if i == 0 && g.ctor_has_self_sret { continue }
             ir_t := llvm_type_from_checker(g.ret_types[i])
             emit(g, "  store %s zeroinitializer, ptr %%sret.%d", ir_t, i)
         }
         emit(g, "  store i32 %s, ptr %%sret.%d", err_val, n_ret - 1)
-        emit_return_resets(g)
         emit(g, "  ret void")
     } else {
         emit_return_resets(g)

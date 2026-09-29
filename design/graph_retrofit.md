@@ -573,7 +573,40 @@ evaluates its destination and value); how instructions are chosen stays in the e
       And the big-variable decline didn't skip nested funs (Pounce's TTF declined for
       `loca_correct_format`'s big local)
 - [ ] Calls: foreign ABI, function values, default and tuple-default arguments, multi-return,
-      `?`, fallible constructors
+      `?`, fallible constructors. Done so far — several results, `err`, `?` and fallible
+      constructors: a fun with several results takes a slot for each (`%sret.<i>`) and a
+      return writes them; a call gives each result a temporary its uses read (a register
+      value loaded in the call's run is kept, since that run dominates every use), an
+      aggregate a declaration takes written straight into its storage; a fallible
+      constructor builds Self in `%sret.0`, its err in the slots after. `err` is a register
+      value (i32, set << 16 | tag); an error set's constant is one. The graph now gives a
+      return an operand for each result: an omitted trailing err is an implied `Ok` (also
+      when code falls off the end of err-only results), and `?`'s return is each other
+      result's zero, then the err — the one-operand return was read as `?`'s, so `return 7`
+      in a `-> i64, err` fun typed the 7 as the err and linked its flow to the err result
+      (graph, flow edges and escape). `?` branches on an implied `bool(err)`. Decided
+      (2026-09-29): a defer that changes a local a return returns is an error
+      (`flow_check_defer_writes`) — the emitters disagreed on whether the caller saw the
+      change — so a return may take its values, run its defers, then write its slots, the
+      graph's order, which the old emitter now follows (it stored as it evaluated). Found:
+      `bool(e)` truncated to one bit — an error of an even tag, `bool(Probe.Second)`, read
+      false, in both emitters (`test/err_bool.mara`); a struct literal spreading a call,
+      `Mesh_Data{primitive_quad()}`, wrote only the call's first result, into the first
+      field — Pounce's meshes would have lost their indices (`test/spread_literal.mara`); a
+      union returned by value is re-anchored where it's stored (its partial arrays pointed
+      into the callee's frame). Old emitter, to the graph's shape: the one copy primitive
+      for a struct result (it copied field by field); a fresh declaration claims a call's
+      result slot, a struct too, and `_` binds nothing (it was a variable named `_`); an
+      expression target's place before the value read into it; `?` inside a fallible
+      constructor leaves Self alone, as its returns do; a string-array literal stamps all its
+      elements' headers after the zero, then writes each (it stamped and zeroed each again),
+      and one built in place isn't re-anchored; a struct declared as a copy of a place isn't
+      zeroed first; a fixed array stored as a slice (the array, or `a[:]`) has its header
+      written at the destination, no temporary; a byte partial array's result temporary is
+      aligned like every other. Normalizer: nothing new. Still declined: foreign calls
+      (the C ABI), function values, arguments left to defaults, a fun that consumes a param,
+      named results, a big result (on the arena), `= void` on an aggregate. Pounce: 163 of
+      238 funs from the graph
 - [ ] Switch over: every function from the graph; the syntax-tree emitter deleted
 
 ## Baselines

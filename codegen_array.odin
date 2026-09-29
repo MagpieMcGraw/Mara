@@ -108,7 +108,7 @@ emit_value_copy :: proc(g: ^Codegen, t: Type, dst_ptr: string, src_ptr: string) 
 // — directly, in a struct field, in an array or partial-array slot, in a
 // union's live variant — back at its own inline elements: the copied header
 // still aims at the SOURCE's. Every copy of such a value goes through here (or
-// emit_value_copy / emit_struct_copy / partial_array_copy, which call it), so
+// emit_value_copy / partial_array_copy, which call it), so
 // structs holding strings copy like any other value.
 // A zeroed value of type `t` at `ptr` made a valid zero value: each partial
 // array in it — through struct fields and array elements — gets its header
@@ -384,7 +384,7 @@ literal_elem_type :: proc(lit: Expr, known: Type = nil) -> Type {
 // element being assigned (`arr[i] = v`). An existing partial-array slot is
 // copied into as-is — resetting it first would clobber a value that reads it
 // (`arr[i] = f(arr[i])`).
-gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span, slot_fresh: bool, dest_expr: Expr = nil) {
+gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type: Type, elem: Expr, span: Span, slot_fresh: bool, dest_expr: Expr = nil, stamped := false) {
     base := distinct_base(elem_type)
     if sd := as_struct_body(base); sd != nil {
         gen_store_struct_into(g, gep, sd, elem, dest_fresh = slot_fresh, dest_expr = dest_expr)
@@ -414,6 +414,10 @@ gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type
     }
     et := llvm_type_from_checker(pa.elem)
     eb := elem_byte_size(et, g.checked)
+    if stamped {   // a zeroed literal's element, its header stamped already
+        gen_partial_array_init_value(g, gep, elem, et, eb, pa.size, pa, span, "array element")
+        return
+    }
     gen_partial_array_init_in_place(g, gep, pa)   // ptr -> inline, len 0, cap N
     // Zero the inline so bytes past a shorter value (the str64 tail) stay
     // deterministic, matching the partial-array decl path.
@@ -424,21 +428,38 @@ gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type
     gen_partial_array_init_value(g, gep, elem, et, eb, pa.size, pa, span, "array element")
 }
 
+// A literal's zeroed array made a valid zero value before its elements are
+// written — each partial-array element's header stamped (a partial array's
+// zero isn't all zeros), as the graph's zero does — so the elements' writes
+// don't stamp again. Whether it stamped.
+stamp_literal_array :: proc(g: ^Codegen, dst: string, elem: Type, n: int) -> bool {
+    inner := distinct_base(elem)
+    for a, nested := inner.(^Type_Fixed_Array); nested; a, nested = inner.(^Type_Fixed_Array) { inner = distinct_base(a.elem) }
+    if _, pa := inner.(^Type_Partial_Array); !pa || n == 0 { return false }
+    emit_each_element(g, dst, elem, n, stamp_zero_partial_arrays)
+    return true
+}
+
 // Alloca a slice header (SLICE_IR_TYPE) and store data_ptr / len / cap into
 // its fields. Returns the alloca ptr. Callers load from it to get the slice value.
 emit_build_temp_slice :: proc(g: ^Codegen, data_ptr: string, len_val: string, cap_val: string) -> string {
     slice_alloca := fresh_tmp(g)
     emit_slice_alloca(g, slice_alloca)
+    emit_slice_header_at(g, slice_alloca, data_ptr, len_val, cap_val)
+    return slice_alloca
+}
+
+// A slice header's fields stored at `at`: ptr, len, cap.
+emit_slice_header_at :: proc(g: ^Codegen, at: string, data_ptr: string, len_val: string, cap_val: string) {
     ptr_gep := fresh_tmp(g)
-    emit_slice_gep(g, ptr_gep, slice_alloca, SLICE.ptr)
+    emit_slice_gep(g, ptr_gep, at, SLICE.ptr)
     emit_store(g, "ptr", data_ptr, ptr_gep)
     len_gep := fresh_tmp(g)
-    emit_slice_gep(g, len_gep, slice_alloca, SLICE.len)
+    emit_slice_gep(g, len_gep, at, SLICE.len)
     emit_typed_store_len(g, len_val, len_gep)
     cap_gep := fresh_tmp(g)
-    emit_slice_gep(g, cap_gep, slice_alloca, SLICE.cap)
+    emit_slice_gep(g, cap_gep, at, SLICE.cap)
     emit_typed_store_cap(g, cap_val, cap_gep)
-    return slice_alloca
 }
 
 // ---------------------------------------------------------------------------
@@ -617,10 +638,11 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
         total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
         emit_memset_zero(g, av.alloca, total_bytes)
         et := literal_elem_type(arr_lit, elem_mara)
+        stamped := stamp_literal_array(g, av.alloca, et, alloc_cap)
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, av.alloca, i)
-            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span, slot_fresh = true)
+            gen_store_elem_into(g, gep, elem_type, et, elem, arr_lit.span, slot_fresh = true, stamped = stamped)
         }
     } else if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         // Distinct-fixed-array struct literal (Quat{...}). Zero-init the slab
@@ -1793,11 +1815,9 @@ gen_store_slice_into :: proc(g: ^Codegen, dst_ptr: string, value: Expr) {
         emit_store(g, "ptr", elem_ptr, ptr_gep)
         return
     }
-    // gen_slice_value_ptr also synthesizes a header for the sources that decay to
-    // a slice (fixed array, string literal, constant) — gen_expr would hand back
-    // their DATA pointer, and the memcpy would read elements as a header.
-    src := gen_slice_value_ptr(g, value)
-    emit_memcpy(g, dst_ptr, src, slice_header_bytes)
+    // Not gen_expr: for the sources that decay to a slice (fixed array, string
+    // literal, constant) it would hand back their DATA pointer, read as a header.
+    gen_slice_into(g, dst_ptr, value)
 }
 
 // Resolve the source pointer for a 1-arg `slice(source)`. Currently accepts

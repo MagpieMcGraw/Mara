@@ -1999,6 +1999,10 @@ graph_literal_writes :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, d: Dest
         return
     }
     sd := as_scope_body(distinct_base(v.type_))
+    if v.is_spread && sd != nil {
+        graph_spread_writes(b, v, sd, &parent, w)
+        return
+    }
     // A union's variant: its fields are the variant struct's, past the tag.
     skip := 0
     if st := graph_variant_struct(b, v.type_, v.name); st != nil {
@@ -2014,6 +2018,34 @@ graph_literal_writes :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, d: Dest
             if fi, ok := sd.field_map[name]; ok { t = sd.fields[fi].type_ }
         }
         graph_store(b, Dest{kind = .Field, name = name, type_ = t, parent = &parent}, f.value, v.span)
+    }
+}
+
+// `Foo{call()}`, the call's results matching Foo's fields: the call once, and
+// each field written its result — an array result a slice field takes seen
+// whole from a temporary it's written to. (It wrote the first result only,
+// into the first field.)
+@(private="file")
+graph_spread_writes :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, sd: ^Scope_Body, parent: ^Dest, w: Written) {
+    call, is_call := v.fields[0].value.(^Expr_Call)
+    callee: ^Type_Scope
+    if is_call {
+        if rf, resolved := call.resolved_func.?; resolved { callee = graph_callee(b, rf) }
+    }
+    if callee == nil { graph_fatal(v.span, "a spread literal of no call") }
+    c := graph_value(b, call, w)
+    for rt, i in callee.return_types {
+        if i >= len(sd.fields) { break }
+        f := sd.fields[i]
+        val := Operand{c.op, i32(i)}
+        _, to_slice := distinct_base(f.type_).(^Type_Slice)
+        if _, from_array := distinct_base(rt).(^Type_Fixed_Array); to_slice && from_array {
+            slot := graph_slot(b, "temp", rt, v.span)
+            graph_op(b, .Write, .Explicit, v.span, nil, "", graph_var(b, "temp", slot, rt, v.span), val)
+            val = graph_op_value(b, .Slice, .Implied, v.span, f.type_, "", graph_var(b, "temp", slot, rt, v.span))
+        }
+        field := graph_dest_place(b, Dest{kind = .Field, name = f.name, type_ = f.type_, parent = parent}, v.span)
+        graph_op(b, .Write, .Explicit, v.span, nil, "", field, val)
     }
 }
 
@@ -2201,7 +2233,8 @@ graph_try :: proc(b: ^Graph_Builder, v: ^Expr_Try, w: Written) -> Operand {
     if n == 0 { graph_fatal(v.span, "`?` on a call with no err output") }
     err := Operand{inner.op, i32(n - 1)}
     fail, ok := graph_run_new(b), graph_run_new(b)
-    graph_branch(b, err, fail, ok, .Implied, v.span)
+    failed := graph_op_value(b, .Cast, .Implied, v.span, Type_Bool{}, "bool", err)   // an error: nonzero
+    graph_branch(b, failed, fail, ok, .Implied, v.span)
     b.code.run = fail
     // It returns the err, and each other result's zero value (implied).
     rts := graph_result_types(b)

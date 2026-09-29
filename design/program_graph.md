@@ -230,13 +230,13 @@ About thirty kinds in all.
 | `arith` | `+ - * / %`, wrapping `+% -% *%`, shifts, bit operations | `add`, `fadd` and so on, with overflow (not when wrapping) and division-by-zero traps |
 | `compare` | `== != < <= > >=` | `icmp`, `fcmp` |
 | `unary` | `-x`, `not x` | `sub 0`, `xor` |
-| `cast` | `f32(x)`, `Meters(x)` | `sext`, `trunc`, `sitofp` and so on, or nothing |
+| `cast` | `f32(x)`, `Meters(x)`, `bool(e)`; implied by `?` (whether its err is one) | `sext`, `trunc`, `sitofp` and so on, or nothing; to `bool`, `icmp ne 0` |
 
 **Calls**
 
 | Operation | Written as | LLVM |
 | --- | --- | --- |
-| `call` | `f(a)`, `a.f()`, a dispatch or generic call, `a + b` through `overload`, `op(x)` through a function value, a foreign function | `call`: direct, through a pointer, or with the C ABI; struct and multiple returns go into destination places |
+| `call` | `f(a)`, `a.f()`, a dispatch or generic call, `a + b` through `overload`, `op(x)` through a function value, a foreign function | `call`: direct, through a pointer, or with the C ABI; a struct result, and each of several, goes into a destination place (a declaration's own storage when it takes it), its uses reading it there |
 | `print` | `print(a, b)`, `print("%d of %d", a, b)` | one operation over values already computed; a formatting call per argument, chosen by its type, spaced or into a first text operand's `%` places |
 | `assert` | `assert(c)` | a branch to a failure that prints the source text and, for a comparison, each side's value (the graph keeps the sides' texts) |
 | `crash` | `crash(msg)` | print, then `exit` |
@@ -248,7 +248,7 @@ About thirty kinds in all.
 | `jump` | the end of a block, `break`, `continue`, a loop's back edge | `br label` |
 | `branch` | `if`, `elif`, a loop's condition, `and` / `or`, `if` expressions, `?` | `br i1` |
 | `switch` | `match`: each arm's value (a union arm's tag, implied), the `else` arm the default | a union: load the tag, `switch`; a value: compares. No arm's tag: a failure, `__mara_match_fail` |
-| `return` | `return a, b`; implied by `?` on an error | store the return slots, `ret` |
+| `return` | `return a, b`; implied by `?` on an error. An operand for each result: an omitted trailing err an implied `Ok`, and `?`'s the zero of each other result, then the err | store the return slots, `ret` |
 | `run defer` | synthetic, at every exit of a scope, once per defer registered so far, the last first | the defer's block, emitted inline: a copy at each exit, its labels fresh, its `return` falling through to what follows |
 | `arena mark`, `arena reset` | synthetic, at entry to and every exit of a scope holding big values — not a struct's body (its declarations are fields) nor main's (its scope ends with the program, which made the arena) | a call to the arena's `mark` / `reset` |
 

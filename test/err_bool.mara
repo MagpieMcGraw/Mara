@@ -1,0 +1,28 @@
+module err_bool
+
+//@ expect-output: 0 fine Ok false
+//@ expect-output: 1 error Probe.First true
+//@ expect-output: 2 error Probe.Second true
+
+// `bool(e)` is whether e is an error: nonzero. It was lowered as a truncation
+// to one bit, which kept only the low bit of the value (set << 16 | tag): an
+// error of an even tag, Probe.Second, read as false — `if bool(e)` missed it.
+
+Probe :: error { First Second }
+
+get :: fun(k: i64) -> i64, err {
+	if k == 1 do return 0, Probe.First
+	if k == 2 do return 0, Probe.Second
+	return k
+}
+
+main :: fun() {
+	for k in 0 .. 3 {
+		_, e := get(k)
+		if bool(e) {
+			print(k, "error", e, bool(e))
+		else
+			print(k, "fine", e, bool(e))
+		}
+	}
+}

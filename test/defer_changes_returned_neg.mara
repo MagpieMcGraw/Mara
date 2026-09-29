@@ -1,4 +1,5 @@
 module defer_changes_returned_neg
+
 //@ expect-fail: a defer can't change 's'
 
 // A return takes its values, then the defers it leaves run. A defer changing

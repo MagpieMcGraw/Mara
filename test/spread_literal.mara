@@ -1,0 +1,30 @@
+module spread_literal
+
+//@ expect-output: verts 3 1 2 3
+//@ expect-output: inds 2 7 8
+//@ expect-output: pair 5 6
+
+// `Foo{call()}`, the call's results matching Foo's fields, writes each field
+// its result: an array result a slice field takes is viewed whole. The graph
+// wrote the first result only, into the first field — `inds` stayed empty.
+
+Mesh :: struct {
+	verts: []i64
+	inds:  []i64
+}
+Pair :: struct { a: i64, b: i64 }
+
+parts :: fun() -> [3]i64, [2]i64 {
+	return [1, 2, 3], [7, 8]
+}
+two :: fun() -> i64, i64 {
+	return 5, 6
+}
+
+main :: fun() {
+	m := Mesh{parts()}
+	print("verts % % % %", m.verts.len, m.verts[0], m.verts[1], m.verts[2])
+	print("inds % % %", m.inds.len, m.inds[0], m.inds[1])
+	p := Pair{two()}
+	print("pair % %", p.a, p.b)
+}

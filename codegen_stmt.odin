@@ -926,15 +926,19 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
 
     for name, i in s.names {
         if i >= len(g.tuple_result_ptrs) { break }
+        if name == "_" { continue }   // discarded: no binding
 
         elem_type := g.tuple_result_types[i]
         src_ptr := g.tuple_result_ptrs[i]
 
-        // Struct element: alloca the struct, memcpy from sret slot, register
-        // as Struct_Var so subsequent field access (info.size) works.
+        // Aggregate elements: a fresh binding claims the call's slot (it was
+        // allocated for this statement and nothing else reads it); existing
+        // storage, or an expression target, is copied into.
+        //
+        // Struct element: registered as a Struct_Var so subsequent field
+        // access (info.size) works.
         if ret_types != nil && i < len(ret_types) {
             if sd := as_struct_body(distinct_base(ret_types[i])); sd != nil {
-                struct_llvm := struct_llvm_name(sd.name)
                 if name == "" {
                     // Expression target (`x, obj.field := f()`): copy the
                     // slot into the target's storage in place.
@@ -942,20 +946,14 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                     if !addr_ok {
                         codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
                     }
-                    emit_struct_copy(g, sd, struct_llvm, src_ptr, addr)
+                    emit_value_copy(g, ret_types[i], addr, src_ptr)
                     continue
                 }
-                alloca_name: string
                 if existing, ok := get_struct(g, name); ok {
-                    alloca_name = existing.alloca
-                } else {
-                    alloca_name = emit_local_alloca(g, fmt.tprintf("%%%s", name), elem_type)
-                    g.all_vars[name] = Struct_Var{
-                        alloca      = alloca_name,
-                        struct_name = sd.name,
-                    }
+                    emit_value_copy(g, ret_types[i], existing.alloca, src_ptr)
+                    continue
                 }
-                emit_struct_copy(g, sd, struct_llvm, src_ptr, alloca_name)
+                g.all_vars[name] = Struct_Var{alloca = src_ptr, struct_name = sd.name}
                 continue
             }
             // Fixed-array element: same shape as the struct case — alloca
@@ -1037,15 +1035,11 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                     if !addr_ok {
                         codegen_fatal(g, s.span, CODE_STRUCT_MULTI_RETURN_TARGET_EXPRESSION)
                     }
-                    hdr := fresh_tmp(g)
-                    emit_load_into(g, hdr, elem_type, src_ptr)
-                    emit_store(g, elem_type, hdr, addr)
+                    emit_value_copy(g, ret_types[i], addr, src_ptr)
                     continue
                 }
                 if existing, exists := get_slice(g, name); exists {
-                    hdr := fresh_tmp(g)
-                    emit_load_into(g, hdr, elem_type, src_ptr)
-                    emit_store(g, elem_type, hdr, existing.alloca)
+                    emit_value_copy(g, ret_types[i], existing.alloca, src_ptr)
                     continue
                 }
                 g.all_vars[name] = Slice_Var{
@@ -1077,14 +1071,17 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
             }
         }
 
-        val := fresh_tmp(g)
-        emit_load_into(g, val, elem_type, src_ptr)
-
-        // Expression target (field access, index, deref)
+        // Expression target (field access, deref): its place, then the value
+        // into it.
         if name == "" && i < len(s.targets) && s.targets[i] != nil {
-            gen_multi_return_store_target(g, s.targets[i], elem_type, val)
+            at := gen_multi_return_target_place(g, s.targets[i])
+            val := fresh_tmp(g)
+            emit_load_into(g, val, elem_type, src_ptr)
+            emit_store(g, elem_type, val, at)
             continue
         }
+        val := fresh_tmp(g)
+        emit_load_into(g, val, elem_type, src_ptr)
 
         // Bare identifier target. Honor any pre-bound entry — struct
         // constructors bind every field to its %sret GEP at function entry,
@@ -1139,8 +1136,9 @@ gen_multi_return_target_addr :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign, 
     return "", false
 }
 
-// Store a multi-return element into an expression target (field access, index, deref).
-gen_multi_return_store_target :: proc(g: ^Codegen, target: Expr, elem_type: string, val: string) {
+// The place of a multi-return element's expression target (field access,
+// deref) — computed before the element is read into it, as the graph does.
+gen_multi_return_target_place :: proc(g: ^Codegen, target: Expr) -> string {
     #partial switch t in target {
     case ^Expr_Field_Access:
         st, base_ptr, found := resolve_lhs_struct(g, t.expr)
@@ -1154,20 +1152,16 @@ gen_multi_return_store_target :: proc(g: ^Codegen, target: Expr, elem_type: stri
         }
         gep := fresh_tmp(g)
         emit_field_gep_into(g, gep, st_llvm, base_ptr, idx)
-        emit_store(g, elem_type, val, gep)
+        return gep
     case ^Expr_Index:
         codegen_fatal(g, t.span, CODE_INDEX_TARGET_MULTI_RETURN_ASSIGN)
     case ^Expr_Unary:
         if t.op == .Caret {
-            // Deref target: store through pointer
-            ptr_val := gen_expr(g, t.operand)
-            emit_store(g, elem_type, val, ptr_val)
-        } else {
-            codegen_fatal(g, t.span, CODE_UNARY_OP_VALID_MULTI_RETURN, t.op)
+            return gen_expr(g, t.operand)   // a deref target: where the pointer points
         }
-    case:
-        codegen_fatal(g, {}, CODE_UNSUPPORTED_MULTI_RETURN_TARGET_EXPRESSION)
+        codegen_fatal(g, t.span, CODE_UNARY_OP_VALID_MULTI_RETURN, t.op)
     }
+    codegen_fatal(g, {}, CODE_UNSUPPORTED_MULTI_RETURN_TARGET_EXPRESSION)
 }
 
 // ---------------------------------------------------------------------------
@@ -1179,26 +1173,35 @@ emit_ret_void :: proc(g: ^Codegen) {
     emit(g, "  ret void")
 }
 
-// Multi-return: store each value into its sret param.
+// Multi-return: each value into its sret param, in the graph's order. The
+// values first — a register value computed, an aggregate literal built in its
+// slot, any other aggregate found where it is — then the defers the return
+// leaves, then the slots written. (A defer can't change a returned local, so
+// the order returns the same values either way.)
 gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
     // Fallible constructor: sret slot 0 is the implicit Self (built in place),
     // so the explicit return values map onto the trailing declared slots —
     // `return <err>` fills slot 1, never Self. offset is 0 for ordinary funs.
     offset := 0
     if g.ctor_has_self_sret { offset = 1 }
+    // A slot's write, made once the defers ran: a register value stored, a
+    // value copied from where it is (a slice's header alone; a partial array
+    // re-anchored to the slot's own elements).
+    Write_Kind :: enum { Store, Value, Header, Partial }
+    Slot_Write :: struct { kind: Write_Kind, slot: string, t: Type, ir, val: string }
+    writes := make([dynamic]Slot_Write, 0, len(g.ret_types), context.temp_allocator)
     for val, i in s.values {
         slot := i + offset
-        resolved_type := distinct_base(g.ret_types[slot])
-        elem_type := llvm_type_from_checker(g.ret_types[slot])
+        t := g.ret_types[slot]
+        resolved_type := distinct_base(t)
+        elem_type := llvm_type_from_checker(t)
         sret_ptr := fmt.tprintf("%%sret.%d", slot)
-        // Array/fixed-array returns: memcpy from alloca to sret. When the
-        // local's alloca IS the sret slot (named-return NRVO), the memcpy is
-        // a self-copy — skip it. LLVM memcpy with overlapping src/dst is UB.
+        // Fixed array: a local copied — unless its storage IS the slot
+        // (named-return NRVO; a memcpy onto itself is UB).
         if fa, fa_ok := resolved_type.(^Type_Fixed_Array); fa_ok {
             if ident, id_ok := val.(^Expr_Ident); id_ok {
                 if av, av_ok := get_array(g, ident.name); av_ok {
-                    if av.alloca == sret_ptr { continue }
-                    emit_value_copy(g, g.ret_types[slot], sret_ptr, av.alloca)
+                    if av.alloca != sret_ptr { append(&writes, Slot_Write{.Value, sret_ptr, t, "", av.alloca}) }
                     continue
                 }
             }
@@ -1213,82 +1216,80 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
             continue
         }
         // Union slot: a variant literal is built in place; any other union
-        // value is pointer-valued and copied by the union's true size.
+        // value is pointer-valued, copied by the union's true size.
         if ut, ut_ok := resolved_type.(^Type_Union); ut_ok {
-            gen_store_union_into(g, sret_ptr, ut, val, dest_fresh = true)
+            lit, is_lit := val.(^Expr_Struct_Literal)
+            if _, is_bare := bare_variant_literal(val); is_bare || (is_lit && lit.name != "") {
+                gen_store_union_into(g, sret_ptr, ut, val, dest_fresh = true)
+                continue
+            }
+            src := gen_expr(g, val, union_llvm_name(union_key(ut)))
+            if src != sret_ptr { append(&writes, Slot_Write{.Value, sret_ptr, t, "", src}) }
             continue
         }
-        // Struct returns: field-wise copy from src alloca to sret (can't use
-        // `store %struct %ptr` — the value operand must be a struct, not a ptr).
+        // Struct slot: a literal built in place — the same construction
+        // primitive as everywhere else (zero-init, the init function's
+        // defaults, then the literal's fields), so `Foo{...}` returned in a
+        // tuple slot behaves as a `Foo{...}` decl does — any other value
+        // copied from where it is.
         if sd := as_struct_body(resolved_type); sd != nil {
-            struct_llvm := struct_llvm_name(sd.name)
             if lit, lit_ok := val.(^Expr_Struct_Literal); lit_ok {
-                // Same construction primitive as everywhere else: zero-init, run
-                // the init function for defaults, then layer the literal's fields
-                // — `Foo{...}` returned in a tuple slot behaves identically to a
-                // `Foo{...}` decl (and to `Foo(){...}`), no separate fill loop.
                 gen_store_struct_into(g, sret_ptr, sd, lit, dest_fresh = true)
                 continue
             }
+            src := ""
             if ident, id_ok := val.(^Expr_Ident); id_ok {
-                if src_sv, sv_ok := get_struct(g, ident.name); sv_ok {
-                    if src_sv.alloca == sret_ptr { continue }
-                    emit_struct_copy(g, sd, struct_llvm, src_sv.alloca, sret_ptr)
-                    continue
-                }
+                if src_sv, sv_ok := get_struct(g, ident.name); sv_ok { src = src_sv.alloca }
             }
-            // Fallback: gen_expr yields a pointer to the struct
-            src_ptr := gen_expr(g, val, elem_type)
-            emit_struct_copy(g, sd, struct_llvm, src_ptr, sret_ptr)
+            if src == "" { src = gen_expr(g, val, elem_type) }   // a pointer to the struct
+            if src != sret_ptr { append(&writes, Slot_Write{.Value, sret_ptr, t, "", src}) }
             continue
         }
-        // Slice returns: memcpy the slice descriptor (slice_header_bytes).
-        // The single-slice-return path (gen_return_slice) does the same; this
-        // mirrors it for slices as one element of a multi-return tuple. The
-        // bare scalar fallback below would otherwise emit
-        // `store { ptr, i64 } <alloca-ptr>, ptr %sret.N` which is invalid IR
-        // (alloca-ptr is `ptr`, not the slice descriptor value).
+        // Slice slot: its header copied (slice_header_bytes), as the single
+        // slice return does. Not gen_expr for anything but a slice local: a
+        // fixed array or string literal decaying to the slice yields its DATA
+        // pointer there, which the copy would read as a header.
         if _, sl_ok := resolved_type.(^Type_Slice); sl_ok {
             src: string
             if ident, id_ok := val.(^Expr_Ident); id_ok {
-                if sv, sv_ok := get_slice(g, ident.name); sv_ok {
-                    src = sv.alloca
-                }
+                if sv, sv_ok := get_slice(g, ident.name); sv_ok { src = sv.alloca }
             }
-            if src == "" {
-                // Not gen_expr: a fixed array or string literal decaying to the
-                // slice yields its DATA pointer there, which the memcpy would
-                // read as a header.
-                src = gen_slice_value_ptr(g, val)
-            }
-            if src == sret_ptr { continue }
-            emit_memcpy(g, sret_ptr, src, slice_header_bytes)
+            if src == "" { src = gen_slice_value_ptr(g, val) }
+            if src != sret_ptr { append(&writes, Slot_Write{.Header, sret_ptr, t, "", src}) }
             continue
         }
-        // Partial-array slot: deep-copy the whole {ptr,len,cap,[N]} struct into
-        // the sret slot, re-anchoring the copy's ptr to its own inline backing
-        // (partial_array_copy). The scalar fallback below would emit
-        // `store {..} <alloca-ptr>, ptr %sret.N` — invalid IR, since the source
-        // is a ptr to the struct, not the struct value. Mirrors the slice case
-        // and the single-PA return (gen_return_partial_array).
-        if pa, pa_ok := resolved_type.(^Type_Partial_Array); pa_ok {
+        // Partial-array slot: the whole {ptr,len,cap,[N]} deep-copied into the
+        // slot, its ptr re-anchored to the slot's own elements
+        // (partial_array_copy), as the single partial-array return does.
+        if _, pa_ok := resolved_type.(^Type_Partial_Array); pa_ok {
             src := gen_expr(g, val, elem_type)
-            if src == sret_ptr { continue }
-            partial_array_copy(g, sret_ptr, src, llvm_type_from_checker(pa.elem), pa.size, pa.elem)
+            if src != sret_ptr { append(&writes, Slot_Write{.Partial, sret_ptr, t, "", src}) }
             continue
         }
-        v := gen_expr_coerced(g, val, elem_type)
-        emit_store(g, elem_type, v, sret_ptr)
+        append(&writes, Slot_Write{.Store, sret_ptr, t, elem_type, gen_expr_coerced(g, val, elem_type)})
     }
     // Implicit `.Ok` fill for trailing err slots the user omitted. The type
     // checker guarantees the missing positions are err-typed (i32 in IR), and
     // .Ok is the zero value (set_id 0, tag 0). With a Self slot 0 (constructor)
     // the offset keeps the fill on the declared err slots and never on Self.
     for i in (len(s.values) + offset)..<len(g.ret_types) {
-        sret_ptr := fmt.tprintf("%%sret.%d", i)
-        emit_store(g, "i32", "0", sret_ptr)
+        append(&writes, Slot_Write{.Store, fmt.tprintf("%%sret.%d", i), g.ret_types[i], "i32", "0"})
     }
-    emit_ret_void(g)
+    emit_return_resets(g)
+    for w in writes {
+        switch w.kind {
+        case .Store:
+            emit_store(g, w.ir, w.val, w.slot)
+        case .Value:
+            emit_value_copy(g, w.t, w.slot, w.val)
+        case .Header:
+            emit_memcpy(g, w.slot, w.val, slice_header_bytes)
+        case .Partial:
+            pa := distinct_base(w.t).(^Type_Partial_Array)
+            partial_array_copy(g, w.slot, w.val, llvm_type_from_checker(pa.elem), pa.size, pa.elem)
+        }
+    }
+    emit(g, "  ret void")
 }
 
 // Struct return: copy value into %sret.
@@ -1337,10 +1338,11 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         handled = true
         emit_memset_zero(g, sret_av.alloca, sret_av.capacity * elem_byte_size(sret_av.elem_type, g.checked))
         et := literal_elem_type(arr_lit)
+        stamped := stamp_literal_array(g, sret_av.alloca, et, sret_av.capacity)
         for elem, i in arr_lit.elements {
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
-            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, arr_lit.span, slot_fresh = true)
+            gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, arr_lit.span, slot_fresh = true, stamped = stamped)
         }
     } else if call, call_ok := arr_ret_val.(^Expr_Call); call_ok {
         // Case C: returning result of another array-returning call
