@@ -444,9 +444,15 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         // because union variants ARE struct literals)
         if ut, ut_ok := var_type.(^Type_Union); ut_ok {
             ukey := union_key(ut)
-            if s.value == nil {
-                // Uninitialized union: alloca only (e.g. for foreign code to fill)
+            _, skip := s.value.(^Expr_Skip_Constructor)
+            if s.value == nil || skip {
+                // A constructor's field, prebound to its place in the
+                // caller's slot (zeroed there): left alone.
+                if _, bound := get_union(g, s.name); bound && g.result_vars[s.name] { return }
+                // A bare declaration: zeroed, like every value; `= void`
+                // opts out (e.g. for foreign code to fill).
                 alloca_name := emit_local_alloca(g, fmt.tprintf("%%%s", s.name), union_llvm_name(ukey))
+                if !skip { emit_memset_zero(g, alloca_name, union_byte_size(g.checked, ut)) }
                 g.all_vars[s.name] = Union_Var{
                     alloca = alloca_name,
                     union_name  = ukey,

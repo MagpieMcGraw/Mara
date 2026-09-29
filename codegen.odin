@@ -890,8 +890,8 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
         // Slice index: chain.array_elem holds the slice elem type; cap is runtime.
         if chain.final_kind == .Slice {
             elem_ir := chain.array_elem
-            name_hint := "slice"
-            if id, id_ok := e.expr.(^Expr_Ident); id_ok { name_hint = id.name }
+            name_hint := place_name_as_written(e.expr)
+            if name_hint == "" { name_hint = "slice" }
             append(&chain.steps, Step_Slice_Index{
                 elem_type  = elem_ir,
                 index_expr = e.index,
@@ -912,7 +912,7 @@ build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool
             elem_type  = chain.array_elem,
             index_expr = e.index,
             capacity   = chain.array_cap,
-            name_hint  = "array",
+            name_hint  = place_name_as_written(e.expr) if place_name_as_written(e.expr) != "" else "array",
             span       = e.span,
         })
 
@@ -3099,19 +3099,11 @@ struct_byte_size :: proc { struct_byte_size_fun, struct_byte_size_sd }
 // A big value is a fixed-size array whose total byte size >= 1024.
 // Skips the NRVO variable since it's aliased to the caller's sret buffer (no allocation).
 scope_has_big_values :: proc(stmts: []Stmt, g: ^Codegen) -> bool {
+    // A big local lives on the arena: routes_to_arena, the one test (a partial
+    // array was missed — bumped, never reset).
     assign_is_big :: proc(assign: ^Stmt_Assign, g: ^Codegen) -> bool {
         if g.nrvo_var != "" && assign.name == g.nrvo_var { return false }
-        vt := assign.var_type
-        if fa, fa_ok := vt.(^Type_Fixed_Array); fa_ok {
-            elem_t := llvm_type_from_checker(fa.elem)
-            total := fa.size * elem_byte_size(elem_t)
-            if total >= 1024 { return true }
-        }
-        if sd := as_struct_body(vt); sd != nil {
-            // structs over 1024 bytes are auto-routed to the scope arena.
-            if struct_byte_size(sd, g.checked) > 1024 { return true }
-        }
-        return false
+        return assign.var_type != nil && routes_to_arena(assign.var_type)
     }
     for stmt in stmts {
         if assign, ok := stmt.(^Stmt_Assign); ok {
@@ -3646,163 +3638,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
     emit_raw(&g, "entry:")
 
-    // Context: backed by a real LLVM global so it survives main returning.
-    // Required for web builds where emscripten owns the main loop —
-    // emscripten_set_main_loop_arg returns to JS, the rAF callback runs
-    // after main's stack is gone, and any later @__mara_program load would
-    // dereference a dangling stack pointer (manifests as arena.base.cap
-    // reading 0 and the very first byte-buffer write tripping the bounds
-    // check). Native is unaffected: same global lifetime, same fields.
-    {
-        ctx_alloca := "@__mara_program_storage"
-        emit_raw(&g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_program"}))
-        g.ctx_alloca = ctx_alloca
+    emit_main_prologue(&g, checked)
 
-        // Register 'context' as a struct var so field access works normally
-        g.all_vars["context"] = Struct_Var{alloca = ctx_alloca, struct_name = "Context"}
-
-        // Arena init (if scope allocator is active).
-        if g.context_enabled {
-            arena_ptr := fresh_tmp(&g)
-            emit_raw(&g, strings.concatenate({"  ", arena_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 0"}))
-            new_ir := mara_fn_name(&g, g.arena_new_name)
-            alloc_size := "268435456"  // default 256 MB
-            if checked.table.scope_allocator_args != nil && len(checked.table.scope_allocator_args) > 0 {
-                size_val := gen_expr(&g, checked.table.scope_allocator_args[0])
-                alloc_size = size_val
-            }
-            emit_raw(&g, strings.concatenate({"  call void ", new_ir, "(i64 ", alloc_size, ", ptr ", arena_ptr, ")"}))
-        }
-
-        // Populate context.args — partial array {len, cap, ptr, [64 x slice]}
-        // embedded as a field of Context.
-        args_field_idx := "1" if g.context_enabled else "0"
-        ARGS_CAP :: "64"
-        pa_ir := partial_array_ir_type(SLICE_IR_TYPE, 64)
-
-        // GEP to the partial-array field within Context
-        args_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", args_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
-
-        // More arguments than the args array holds is an error, not a silent
-        // truncation — a program handed a long file list must not quietly
-        // miss the tail. (Raise ARGS_CAP if 64 ever proves too few.)
-        argc_over := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argc_over, " = icmp sgt i32 %argc, ", ARGS_CAP}))
-        args_err_lbl := fmt.tprintf("args_too_many_%d", g.label_counter)
-        args_ok_lbl := fmt.tprintf("args_ok_%d", g.label_counter)
-        emit_raw(&g, strings.concatenate({"  br i1 ", argc_over, ", label %", args_err_lbl, ", label %", args_ok_lbl}))
-        emit_raw(&g, strings.concatenate({args_err_lbl, ":"}))
-        args_err_name, args_err_len := get_string_literal(&g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n")
-        args_err_ptr := fresh_tmp(&g)
-        emit_string_gep(&g, args_err_ptr, args_err_len, args_err_name)
-        emit_raw(&g, strings.concatenate({"  call i32 (ptr, ...) @printf(ptr ", args_err_ptr, ", i32 %argc)"}))
-        emit_raw(&g, "  call void @exit(i32 1)")
-        emit_raw(&g, "  unreachable")
-        emit_raw(&g, strings.concatenate({args_ok_lbl, ":"}))
-        argc_min := "%argc" // every argument fits from here on
-
-        // Store len at field 0. The header len is at slice_layout.len_ir;
-        // argc_min is i32 (matches argc + the i32 loop counter below), so widen
-        // it for the store when the header is wider.
-        len_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", len_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 0"}))
-        len_store_val := argc_min
-        if slice_layout.len_ir != "i32" {
-            len_store_val = fresh_tmp(&g)
-            emit_raw(&g, strings.concatenate({"  ", len_store_val, " = sext i32 ", argc_min, " to ", slice_layout.len_ir}))
-        }
-        emit_typed_store_len(&g, len_store_val, len_ptr)
-
-        // Store cap = 64 at field 1
-        cap_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", cap_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 1"}))
-        emit_typed_store_cap(&g, ARGS_CAP, cap_ptr)
-
-        // GEP to elements storage (field 3) — also the value we store into ptr (field 2)
-        elements_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", elements_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 3"}))
-
-        // Store ptr = &elements at field 2
-        ptr_field := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", ptr_field, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 2"}))
-        emit_raw(&g, strings.concatenate({"  store ptr ", elements_ptr, ", ptr ", ptr_field}))
-
-        // Loop: for i = 0; i < len; i++ — fill elements[i] = { strlen, strlen, argv[i] }
-        // Counter is i32 to match argc and the slice header — no widen/trunc.
-        loop_i := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", loop_i, " = alloca i32"}))
-        emit_raw(&g, strings.concatenate({"  store i32 0, ptr ", loop_i}))
-        loop_lbl := fmt.tprintf("args_loop_%d", g.label_counter)
-        body_lbl := fmt.tprintf("args_body_%d", g.label_counter)
-        done_lbl := fmt.tprintf("args_done_%d", g.label_counter)
-        g.label_counter += 1
-        emit_raw(&g, strings.concatenate({"  br label %", loop_lbl}))
-
-        emit_raw(&g, strings.concatenate({loop_lbl, ":"}))
-        cur_i := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", cur_i, " = load i32, ptr ", loop_i}))
-        cmp := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", cmp, " = icmp slt i32 ", cur_i, ", ", argc_min}))
-        emit_raw(&g, strings.concatenate({"  br i1 ", cmp, ", label %", body_lbl, ", label %", done_lbl}))
-
-        emit_raw(&g, strings.concatenate({body_lbl, ":"}))
-        argv_i_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %argv, i32 ", cur_i}))
-        argv_i := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", argv_i, " = load ptr, ptr ", argv_i_ptr}))
-        // strlen returns size_t (i64 native / i32 on web). Coerce to the slice
-        // header width for the len/cap store — argv strings fit trivially.
-        str_len := fresh_tmp(&g)
-        if g.web {
-            if slice_layout.len_ir == "i32" {
-                emit_raw(&g, strings.concatenate({"  ", str_len, " = call i32 @strlen(ptr ", argv_i, ")"}))
-            } else {
-                str_len_32 := fresh_tmp(&g)
-                emit_raw(&g, strings.concatenate({"  ", str_len_32, " = call i32 @strlen(ptr ", argv_i, ")"}))
-                emit_raw(&g, strings.concatenate({"  ", str_len, " = zext i32 ", str_len_32, " to ", slice_layout.len_ir}))
-            }
-        } else {
-            if slice_layout.len_ir == "i64" {
-                emit_raw(&g, strings.concatenate({"  ", str_len, " = call i64 @strlen(ptr ", argv_i, ")"}))
-            } else {
-                str_len_64 := fresh_tmp(&g)
-                emit_raw(&g, strings.concatenate({"  ", str_len_64, " = call i64 @strlen(ptr ", argv_i, ")"}))
-                emit_raw(&g, strings.concatenate({"  ", str_len, " = trunc i64 ", str_len_64, " to ", slice_layout.len_ir}))
-            }
-        }
-        // elements[i] is a slice — write len, cap, ptr. cap counts argv's
-        // terminating 0 (as a string literal's does), so cstring(arg) finds it
-        // at [len] — passing an argument to a file open or any C call works.
-        elem_ptr := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i32 0, i32 ", cur_i}))
-        slen_ptr := fresh_tmp(&g)
-        emit_slice_gep(&g, slen_ptr, elem_ptr, SLICE.len)
-        emit_typed_store_len(&g, str_len, slen_ptr)
-        str_cap := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", str_cap, " = add ", slice_layout.cap_ir, " ", str_len, ", 1"}))
-        scap_ptr := fresh_tmp(&g)
-        emit_slice_gep(&g, scap_ptr, elem_ptr, SLICE.cap)
-        emit_typed_store_cap(&g, str_cap, scap_ptr)
-        data_ptr := fresh_tmp(&g)
-        emit_slice_gep(&g, data_ptr, elem_ptr, SLICE.ptr)
-        emit_raw(&g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))
-        // i++
-        next_i := fresh_tmp(&g)
-        emit_raw(&g, strings.concatenate({"  ", next_i, " = add i32 ", cur_i, ", 1"}))
-        emit_raw(&g, strings.concatenate({"  store i32 ", next_i, ", ptr ", loop_i}))
-        emit_raw(&g, strings.concatenate({"  br label %", loop_lbl}))
-
-        emit_raw(&g, strings.concatenate({done_lbl, ":"}))
-    }
-
-    // Enable alloca hoisting for main body
-    begin_alloca_hoist(&g)
-
-    // Emit the user's main body. main lowers to `i64 @main` (C entry-point
-    // convention), so a bare `return` inside main must terminate with
-    // `ret i64 0`. Setting current_ret_type wires this into the bare-return
-    // codepath in gen_return.
     main_cf, main_ok := checked.functions["main"]
     if !main_ok {
         // The package has a `main` (else this is a shared build and @main is
@@ -3811,37 +3648,49 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         // far from the cause.
         codegen_fatal(&g, {}, "`main` was declared but never extracted as a function")
     }
-    prev_ret_type := g.current_ret_type
-    g.current_ret_type = "i64"
-    // Wrap the body in a Main_Body scope so `defer` works in main exactly as
-    // in any other function — previously main had no scope entry at all, so a
-    // top-level `defer` hit "defer outside of any scope". has_mark is forced
-    // false (not via push_scope): main is where the arena is created
-    // (`this_program = Program(...)`), so its own body can't be the target of
-    // an arena mark/reset — push_scope would emit_arena_mark before the arena
-    // exists. This scope is for defer tracking only; nested scopes inside
-    // main still mark/reset normally.
-    append(&g.scope_stack, Scope_Entry{has_mark = false, scope_kind = .Main_Body})
-    has_ret := false
-    for s in main_cf.body {
-        gen_stmt(&g, s)
-        if _, ok := s.(Stmt_Return); ok {
-            has_ret = true
-        }
-    }
-    if !has_ret {
-        pop_scope(&g)   // emit main's deferred blocks before the default ret (no reset)
-        emit(&g, "  ret i64 0")
+    // Main's body from the graph, else the syntax tree's emitter.
+    if g.graph_cg && llvm_main(&g, main_cf) {
+        if g.graph_cg_log { fmt.eprintln("graph-cg: main") }
     } else {
-        // an explicit top-level return already emitted main's defers
-        if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
+        // Enable alloca hoisting for main body
+        begin_alloca_hoist(&g)
+
+        // Emit the user's main body. main lowers to `i64 @main` (C entry-point
+        // convention), so a bare `return` inside main must terminate with
+        // `ret i64 0`. Setting current_ret_type wires this into the bare-return
+        // codepath in gen_return.
+        prev_ret_type := g.current_ret_type
+        g.current_ret_type = "i64"
+        // Wrap the body in a Main_Body scope so `defer` works in main exactly as
+        // in any other function — previously main had no scope entry at all, so a
+        // top-level `defer` hit "defer outside of any scope". has_mark is forced
+        // false (not via push_scope): main is where the arena is created
+        // (`this_program = Program(...)`), so its own body can't be the target of
+        // an arena mark/reset — push_scope would emit_arena_mark before the arena
+        // exists. This scope is for defer tracking only; nested scopes inside
+        // main still mark/reset normally.
+        append(&g.scope_stack, Scope_Entry{has_mark = false, scope_kind = .Main_Body})
+        has_ret := false
+        for s in main_cf.body {
+            gen_stmt(&g, s)
+            if _, ok := s.(Stmt_Return); ok {
+                has_ret = true
+            }
+        }
+        if !has_ret {
+            pop_scope(&g)   // emit main's deferred blocks before the default ret (no reset)
+            emit(&g, "  ret i64 0")
+        } else {
+            // an explicit top-level return already emitted main's defers
+            if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
+        }
+        g.current_ret_type = prev_ret_type
+
+        // Flush: hoisted allocas first, then body code
+        end_alloca_hoist(&g)
+
+        emit(&g, "}")
     }
-    g.current_ret_type = prev_ret_type
-
-    // Flush: hoisted allocas first, then body code
-    end_alloca_hoist(&g)
-
-    emit(&g, "}")
 
     // Web wrapper: `i32 @main(i32, ptr)` calling our i64 mara main and
     // truncating the return code so emscripten's runtime sees a regular int.
@@ -4405,3 +4254,158 @@ ensure_dir :: proc(path: string) -> bool {
 // - gen_match/value    -> codegen_match.odin
 // - gen_if, gen_for    -> codegen_control.odin
 // - gen_expr, gen_call -> codegen_expr.odin
+
+// The program's setup, at @main's entry: the program global (the context), its
+// arena when there is a scope allocator, and context.args from argv. The
+// user's main body follows it.
+emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
+    // Context: backed by a real LLVM global so it survives main returning.
+    // Required for web builds where emscripten owns the main loop —
+    // emscripten_set_main_loop_arg returns to JS, the rAF callback runs
+    // after main's stack is gone, and any later @__mara_program load would
+    // dereference a dangling stack pointer (manifests as arena.base.cap
+    // reading 0 and the very first byte-buffer write tripping the bounds
+    // check). Native is unaffected: same global lifetime, same fields.
+    {
+        ctx_alloca := "@__mara_program_storage"
+        emit_raw(g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_program"}))
+        g.ctx_alloca = ctx_alloca
+
+        // Register 'context' as a struct var so field access works normally
+        g.all_vars["context"] = Struct_Var{alloca = ctx_alloca, struct_name = "Context"}
+
+        // Arena init (if scope allocator is active).
+        if g.context_enabled {
+            arena_ptr := fresh_tmp(g)
+            emit_raw(g, strings.concatenate({"  ", arena_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 0"}))
+            new_ir := mara_fn_name(g, g.arena_new_name)
+            alloc_size := "268435456"  // default 256 MB
+            if checked.table.scope_allocator_args != nil && len(checked.table.scope_allocator_args) > 0 {
+                size_val := gen_expr(g, checked.table.scope_allocator_args[0])
+                alloc_size = size_val
+            }
+            emit_raw(g, strings.concatenate({"  call void ", new_ir, "(i64 ", alloc_size, ", ptr ", arena_ptr, ")"}))
+        }
+
+        // Populate context.args — partial array {len, cap, ptr, [64 x slice]}
+        // embedded as a field of Context.
+        args_field_idx := "1" if g.context_enabled else "0"
+        ARGS_CAP :: "64"
+        pa_ir := partial_array_ir_type(SLICE_IR_TYPE, 64)
+
+        // GEP to the partial-array field within Context
+        args_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", args_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 ", args_field_idx}))
+
+        // More arguments than the args array holds is an error, not a silent
+        // truncation — a program handed a long file list must not quietly
+        // miss the tail. (Raise ARGS_CAP if 64 ever proves too few.)
+        argc_over := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", argc_over, " = icmp sgt i32 %argc, ", ARGS_CAP}))
+        args_err_lbl := fmt.tprintf("args_too_many_%d", g.label_counter)
+        args_ok_lbl := fmt.tprintf("args_ok_%d", g.label_counter)
+        emit_raw(g, strings.concatenate({"  br i1 ", argc_over, ", label %", args_err_lbl, ", label %", args_ok_lbl}))
+        emit_raw(g, strings.concatenate({args_err_lbl, ":"}))
+        args_err_name, args_err_len := get_string_literal(g, "runtime error: too many command-line arguments: %d (the limit is " + ARGS_CAP + ")\n")
+        args_err_ptr := fresh_tmp(g)
+        emit_string_gep(g, args_err_ptr, args_err_len, args_err_name)
+        emit_raw(g, strings.concatenate({"  call i32 (ptr, ...) @printf(ptr ", args_err_ptr, ", i32 %argc)"}))
+        emit_raw(g, "  call void @exit(i32 1)")
+        emit_raw(g, "  unreachable")
+        emit_raw(g, strings.concatenate({args_ok_lbl, ":"}))
+        argc_min := "%argc" // every argument fits from here on
+
+        // Store len at field 0. The header len is at slice_layout.len_ir;
+        // argc_min is i32 (matches argc + the i32 loop counter below), so widen
+        // it for the store when the header is wider.
+        len_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", len_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 0"}))
+        len_store_val := argc_min
+        if slice_layout.len_ir != "i32" {
+            len_store_val = fresh_tmp(g)
+            emit_raw(g, strings.concatenate({"  ", len_store_val, " = sext i32 ", argc_min, " to ", slice_layout.len_ir}))
+        }
+        emit_typed_store_len(g, len_store_val, len_ptr)
+
+        // Store cap = 64 at field 1
+        cap_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", cap_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 1"}))
+        emit_typed_store_cap(g, ARGS_CAP, cap_ptr)
+
+        // GEP to elements storage (field 3) — also the value we store into ptr (field 2)
+        elements_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", elements_ptr, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 3"}))
+
+        // Store ptr = &elements at field 2
+        ptr_field := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", ptr_field, " = getelementptr ", pa_ir, ", ptr ", args_ptr, ", i32 0, i32 2"}))
+        emit_raw(g, strings.concatenate({"  store ptr ", elements_ptr, ", ptr ", ptr_field}))
+
+        // Loop: for i = 0; i < len; i++ — fill elements[i] = { strlen, strlen, argv[i] }
+        // Counter is i32 to match argc and the slice header — no widen/trunc.
+        loop_i := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", loop_i, " = alloca i32"}))
+        emit_raw(g, strings.concatenate({"  store i32 0, ptr ", loop_i}))
+        loop_lbl := fmt.tprintf("args_loop_%d", g.label_counter)
+        body_lbl := fmt.tprintf("args_body_%d", g.label_counter)
+        done_lbl := fmt.tprintf("args_done_%d", g.label_counter)
+        g.label_counter += 1
+        emit_raw(g, strings.concatenate({"  br label %", loop_lbl}))
+
+        emit_raw(g, strings.concatenate({loop_lbl, ":"}))
+        cur_i := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", cur_i, " = load i32, ptr ", loop_i}))
+        cmp := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", cmp, " = icmp slt i32 ", cur_i, ", ", argc_min}))
+        emit_raw(g, strings.concatenate({"  br i1 ", cmp, ", label %", body_lbl, ", label %", done_lbl}))
+
+        emit_raw(g, strings.concatenate({body_lbl, ":"}))
+        argv_i_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", argv_i_ptr, " = getelementptr ptr, ptr %argv, i32 ", cur_i}))
+        argv_i := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", argv_i, " = load ptr, ptr ", argv_i_ptr}))
+        // strlen returns size_t (i64 native / i32 on web). Coerce to the slice
+        // header width for the len/cap store — argv strings fit trivially.
+        str_len := fresh_tmp(g)
+        if g.web {
+            if slice_layout.len_ir == "i32" {
+                emit_raw(g, strings.concatenate({"  ", str_len, " = call i32 @strlen(ptr ", argv_i, ")"}))
+            } else {
+                str_len_32 := fresh_tmp(g)
+                emit_raw(g, strings.concatenate({"  ", str_len_32, " = call i32 @strlen(ptr ", argv_i, ")"}))
+                emit_raw(g, strings.concatenate({"  ", str_len, " = zext i32 ", str_len_32, " to ", slice_layout.len_ir}))
+            }
+        } else {
+            if slice_layout.len_ir == "i64" {
+                emit_raw(g, strings.concatenate({"  ", str_len, " = call i64 @strlen(ptr ", argv_i, ")"}))
+            } else {
+                str_len_64 := fresh_tmp(g)
+                emit_raw(g, strings.concatenate({"  ", str_len_64, " = call i64 @strlen(ptr ", argv_i, ")"}))
+                emit_raw(g, strings.concatenate({"  ", str_len, " = trunc i64 ", str_len_64, " to ", slice_layout.len_ir}))
+            }
+        }
+        // elements[i] is a slice — write len, cap, ptr. cap counts argv's
+        // terminating 0 (as a string literal's does), so cstring(arg) finds it
+        // at [len] — passing an argument to a file open or any C call works.
+        elem_ptr := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", elem_ptr, " = getelementptr [64 x ", SLICE_IR_TYPE, "], ptr ", elements_ptr, ", i32 0, i32 ", cur_i}))
+        slen_ptr := fresh_tmp(g)
+        emit_slice_gep(g, slen_ptr, elem_ptr, SLICE.len)
+        emit_typed_store_len(g, str_len, slen_ptr)
+        str_cap := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", str_cap, " = add ", slice_layout.cap_ir, " ", str_len, ", 1"}))
+        scap_ptr := fresh_tmp(g)
+        emit_slice_gep(g, scap_ptr, elem_ptr, SLICE.cap)
+        emit_typed_store_cap(g, str_cap, scap_ptr)
+        data_ptr := fresh_tmp(g)
+        emit_slice_gep(g, data_ptr, elem_ptr, SLICE.ptr)
+        emit_raw(g, strings.concatenate({"  store ptr ", argv_i, ", ptr ", data_ptr}))
+        // i++
+        next_i := fresh_tmp(g)
+        emit_raw(g, strings.concatenate({"  ", next_i, " = add i32 ", cur_i, ", 1"}))
+        emit_raw(g, strings.concatenate({"  store i32 ", next_i, ", ptr ", loop_i}))
+        emit_raw(g, strings.concatenate({"  br label %", loop_lbl}))
+
+        emit_raw(g, strings.concatenate({done_lbl, ":"}))
+    }
+}

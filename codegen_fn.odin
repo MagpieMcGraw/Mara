@@ -795,7 +795,8 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     // skip their own alloca and write straight into the caller's slot. No
     // tail-phase copy is needed.
 
-    push_scope(g, .Function, cf.body[:])
+    // (A struct's declarations are its fields: in Self, never on the arena.)
+    push_scope(g, .Function, cf.body[:] if cf.kind != .Struct else nil)
     has_ret := false
     for s in cf.body {
         gen_stmt(g, s)

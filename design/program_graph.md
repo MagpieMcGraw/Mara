@@ -220,14 +220,14 @@ About thirty kinds in all.
 | `fill` | `{all x}` | a store per slot, a loop when large |
 | `carve` | `let(T, mem)`, `slice([:n]T, mem)`; positional, `let(T, &bytes[i])` | align the cursor, `getelementptr`, bump `mem.len`; positional, the view of the bytes there |
 | `byte read` | a partial array filled from bytes (`pa = bytes[off]`, `pa = bytes[lo:hi]`), a value from a span (`x : T = bytes[lo:hi]`); `#big_endian` | checks, `memcpy`, `bswap`; a fill sets `len` |
-| `arena alloc` | synthetic, for a local too big for the stack | `call arena_alloc` |
+| `arena alloc` | synthetic, for a local too big for the stack (a constructor's field is in Self, never here) | a call to the program arena's `alloc`: the local's storage |
 
 **Values**
 
 | Operation | Written as | LLVM |
 | --- | --- | --- |
 | `const` | `42`, `2.5`, `true`, `'a'`, `.Ok`, `size_of(T)` | an immediate |
-| `arith` | `+ - * / %`, shifts, bit operations | `add`, `fadd` and so on, with overflow and division-by-zero traps |
+| `arith` | `+ - * / %`, wrapping `+% -% *%`, shifts, bit operations | `add`, `fadd` and so on, with overflow (not when wrapping) and division-by-zero traps |
 | `compare` | `== != < <= > >=` | `icmp`, `fcmp` |
 | `unary` | `-x`, `not x` | `sub 0`, `xor` |
 | `cast` | `f32(x)`, `Meters(x)` | `sext`, `trunc`, `sitofp` and so on, or nothing |
@@ -249,8 +249,8 @@ About thirty kinds in all.
 | `branch` | `if`, `elif`, a loop's condition, `and` / `or`, `if` expressions, `?` | `br i1` |
 | `switch` | `match`: each arm's value (a union arm's tag, implied), the `else` arm the default | a union: load the tag, `switch`; a value: compares. No arm's tag: a failure, `__mara_match_fail` |
 | `return` | `return a, b`; implied by `?` on an error | store the return slots, `ret` |
-| `run defer` | synthetic, at every exit of a scope, once per defer registered so far, the last first | the defer's block, emitted inline |
-| `arena mark`, `arena reset` | synthetic, at entry to and every exit of a scope holding big values | `call` |
+| `run defer` | synthetic, at every exit of a scope, once per defer registered so far, the last first | the defer's block, emitted inline: a copy at each exit, its labels fresh, its `return` falling through to what follows |
+| `arena mark`, `arena reset` | synthetic, at entry to and every exit of a scope holding big values — not a struct's body (its declarations are fields) nor main's (its scope ends with the program, which made the arena) | a call to the arena's `mark` / `reset` |
 
 **Braces are a block of writes.** `{…}` after a value runs its writes against that value, as a scope body runs against its scope. The forms differ only in the step before the writes:
 

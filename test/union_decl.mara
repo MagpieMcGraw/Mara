@@ -1,0 +1,30 @@
+module union_decl
+
+//@ expect-output: z 5
+//@ expect-output: y 4
+//@ expect-output: x 3
+
+// A union declared bare is zeroed, like every value; `= void` leaves it
+// unset, for a later write. It was copied from a null pointer (a crash), and
+// a bare one was left holding whatever the stack held.
+
+Node :: union(tag u8) { Lit = 1 { v: i64 } Neg = 2 { x: i64 } }
+make :: fun(v: i64) -> Node { return Lit{v = v} }
+show :: fun(name: []utf8, n: Node) {
+	match n {
+	Lit l
+		print("% %", name, l.v)
+	Neg g
+		print("% neg %", name, g.x)
+	}
+}
+main :: fun() {
+	z : Node = void
+	z = Lit{v = 5}
+	show("z", z)
+	y : Node
+	y = make(4)
+	show("y", y)
+	x := make(3)
+	show("x", x)
+}

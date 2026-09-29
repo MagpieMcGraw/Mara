@@ -63,9 +63,9 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     if needs_alloca {
         total := struct_byte_size(st, g.checked)
         alloca_name: string
-        // Large structs go on the scope arena — a stack alloca would be unsafe.
-        // (1024-byte threshold matches the type checker's big-array gate.)
-        if total > 1024 {
+        // Large structs go on the scope arena — a stack alloca would be unsafe
+        // (the threshold is routes_to_arena's).
+        if total >= ARENA_THRESHOLD {
             loc := format_location(span.file, span.line, span.col)
             alloca_name = emit_arena_bump(g, total, name, loc)
         } else {
@@ -1211,7 +1211,7 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
 // carry field defaults but get no generated constructor) — normal structs
 // apply their defaults through the init fn. Fields the literal sets
 // explicitly are skipped; those land in apply_struct_literal_fields.
-apply_struct_field_defaults :: proc(g: ^Codegen, st: ^Scope_Body, llvm_name: string, base_ptr: string, lit: ^Expr_Struct_Literal) {
+apply_struct_field_defaults :: proc(g: ^Codegen, st: ^Scope_Body, llvm_name: string, base_ptr: string, lit: ^Expr_Struct_Literal, stamped := false) {
     span: Span
     if lit != nil { span = lit.span }
     for &sdf, i in st.fields {
@@ -1225,7 +1225,7 @@ apply_struct_field_defaults :: proc(g: ^Codegen, st: ^Scope_Body, llvm_name: str
         if provided { continue }
         gep := fresh_tmp(g)
         emit_field_gep_into(g, gep, llvm_name, base_ptr, i)
-        if !gen_partial_array_field_store(g, &sdf, gep, sdf.default_value, span) {
+        if !gen_partial_array_field_store(g, &sdf, gep, sdf.default_value, span, stamped = stamped) {
             ft := field_ir_type(&sdf)
             val := gen_expr(g, sdf.default_value, ft)
             emit_store(g, ft, val, gep)
@@ -1304,10 +1304,11 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             if _, has_init := g.checked.functions[st.name]; has_init {
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
             } else {
-                // No init fn (union variant structs): apply field defaults
-                // directly so they survive the routing through this path.
-                apply_struct_field_defaults(g, st, llvm_name, dst_ptr, lit)
-                stamped = false
+                // No init fn (union variant structs): its zero value's partial
+                // arrays stamped (their zero isn't all zeros), then the field
+                // defaults applied directly.
+                stamp_zero_partial_arrays(g, dst_ptr, sd_type_scope(st))
+                apply_struct_field_defaults(g, st, llvm_name, dst_ptr, lit, stamped = true)
             }
         }
         apply_struct_literal_fields(g, lit, st, llvm_name, dst_ptr, fields_fresh = true, stamped = stamped)

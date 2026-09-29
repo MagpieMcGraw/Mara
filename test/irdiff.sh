@@ -60,11 +60,13 @@ export ROOT OUT NORMALIZE RUN SIDES
 # One program, every side: built, its IR kept (and normalized), then — a
 # program to run — run from its directory, output and exit code kept. The
 # sides go one after another (they share the build directory and the exe).
-one_program() {  # dir module run
-  local dir=$1 mod=$2 run=$3 s side exe cg f
+one_program() {  # dir module run [build flags]
+  local dir=$1 mod=$2 run=$3 flags=$4 s side exe cg f
   for s in $SIDES; do
     side=${s%%:*}; exe=${s#*:}; exe=${exe%:*}; cg=${s##*:}
-    ( cd "$dir" && rm -rf "${mod}_build" "$mod.exe" && MARA_GRAPH_CG=$cg "$exe" build "$mod" 2>&1 ) \
+    # Windows can hold a fresh exe a moment (a virus scan): retry its removal.
+    for t in 1 2 3 4 5; do rm -f "$dir/$mod.exe" 2>/dev/null; [ -e "$dir/$mod.exe" ] || break; sleep 1; done
+    ( cd "$dir" && { rm -rf "${mod}_build" "$mod.exe" 2>/dev/null; MARA_GRAPH_CG=$cg "$exe" build "$mod" $flags 2>&1; } ) \
       | grep -vE '[0-9]+(\.[0-9]+)?ms|Purity quotient|is ambiguous \(defined in' \
       | sort > "$OUT/$side/$mod.out"   # diagnostics order follows map iteration
     if [ -d "$dir/${mod}_build" ]; then
@@ -86,7 +88,7 @@ one_program() {  # dir module run
 export -f one_program
 
 # The programs: each fixture with a main and each multifile fixture (built
-# and run), Pounce and design/all (built).
+# and run; a .shared one, a DLL, built), Pounce and design/all (built).
 list=$OUT/programs.txt
 : > "$list"
 cd "$ROOT/test"
@@ -94,11 +96,12 @@ for f in *.mara; do
   grep -qE '^[[:space:]]*main[[:space:]]*::' "$f" && echo "$ROOT/test ${f%.mara} 1" >> "$list"
 done
 for d in "$ROOT"/test/*/; do
-  d=${d%/}; [ -f "$d/.multifile" ] && echo "$d $(basename "$d") 1" >> "$list"
+  d=${d%/}; [ -f "$d/.multifile" ] || continue
+  if [ -f "$d/.shared" ]; then echo "$d $(basename "$d") 0 -shared"; else echo "$d $(basename "$d") 1"; fi >> "$list"
 done
 echo "$ROOT/Pounce Pounce 0" >> "$list"
 echo "$ROOT/design all 0" >> "$list"
-xargs -P "$JOBS" -L 1 bash -c 'one_program "$0" "$1" "$2"' < "$list"
+xargs -P "$JOBS" -L 1 bash -c 'one_program "$0" "$1" "$2" "$3"' < "$list"
 
 # Two sides compared: their builds (output and IR, normalized with -n), then,
 # with -r, their runs. `ir_fails` 0 lists IR differences without failing.

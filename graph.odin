@@ -341,7 +341,7 @@ Code :: struct {
 @(private="file")
 Run :: struct {
     ops:     [dynamic]Node_Id,
-    waiting: [dynamic]Node_Id,   // whose `then` is this run's first operation, once it has one
+    waiting: [dynamic]i32,       // the `then` edges (by index) whose target is this run's first operation, once it has one
 }
 
 @(private="file")
@@ -416,6 +416,10 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
     graph_settle_literals(&b)
     graph_resolve_defs(&b)
     graph_link_flows(&b)
+    // A `then` into a run that never got an operation leads nowhere.
+    kept := 0
+    for e in g.edges { if e.to != NO_NODE { g.edges[kept] = e; kept += 1 } }
+    resize(&g.edges, kept)
     graph_index_edges(&g)
     when ODIN_DEBUG {
         graph_check_coverage(&b)
@@ -424,6 +428,26 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
     }
     graph_dump(&g)
     return g
+}
+
+// A type with its `:=` bindings' deferred widths settled — the one each
+// adopted, else the default, i64 or f64. (A literal's own, with no binding,
+// takes the type its use gives it — except behind a pointer, which no use
+// types.)
+graph_settled :: proc(t: Type, pointee := false) -> Type {
+    #partial switch v in t {
+    case Type_Infer_Int:
+        if v.cell == nil && !pointee { return t }
+        r := resolve_infer(t)
+        return Type_Numeric{.Signed, 64} if is_infer(r) else r
+    case Type_Infer_Float:
+        if v.cell == nil && !pointee { return t }
+        r := resolve_infer(t)
+        return Type_F64{} if is_infer(r) else r
+    case ^Type_Ptr:
+        if is_infer(v.elem) { return new_clone(Type_Ptr{elem = graph_settled(v.elem, pointee = true)}) }
+    }
+    return t
 }
 
 // A new node. The columns grow in chunks and are written by index: ten
@@ -441,7 +465,7 @@ graph_node :: proc(b: ^Graph_Builder, kind: Node_Kind, written: Written, parent:
     g.parent[i] = parent
     g.last[i] = id
     g.name[i] = name
-    g.type_[i] = t
+    g.type_[i] = graph_settled(t)
     g.origin[i] = origin
     g.refers[i] = NO_NODE
     g.stmt[i] = b.stmt
@@ -708,7 +732,7 @@ graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: st
 @(private="file")
 graph_init :: proc(b: ^Graph_Builder, d: Node_Id, value: Expr, span: Span, cap: Expr = nil) {
     t := b.g.type_[d]
-    if b.arena && t != nil && routes_to_arena(t) && b.g.name[d] != b.code.nrvo {
+    if b.arena && b.g.kind[d] == .Local && t != nil && routes_to_arena(t) && b.g.name[d] != b.code.nrvo {   // (a field is in Self)
         graph_op(b, .Arena_Alloc, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span))
     }
     if value == nil {
@@ -1322,11 +1346,14 @@ graph_code_block :: proc(b: ^Graph_Builder, label: string, body: []Stmt, parent:
     graph_close(b, n)
 }
 
-// Enter a scope: an arena mark when it holds a big value.
+// Enter a scope: an arena mark when it holds a big value. (A struct's
+// declarations are its fields: in Self, not on the arena.) Nor main's body:
+// its scope ends with the program, which made the arena in its setup.
 @(private="file")
 graph_scope_open :: proc(b: ^Graph_Builder, block: Node_Id, body: []Stmt, span: Span) {
     graph_frame_push(b)
-    mark := b.arena && graph_has_big_values(b, body)
+    main, _ := b.checked.functions["main"]
+    mark := b.arena && b.g.kind[block] != .Struct && (main == nil || b.g.type_[block] != Type(main)) && graph_has_big_values(b, body)
     append(&b.code.scopes, Code_Scope{block = block, mark = mark})
     if mark { graph_op(b, .Arena_Mark, .Synthetic, span) }
 }
@@ -1431,7 +1458,10 @@ graph_then :: proc(b: ^Graph_Builder, from: Node_Id, to: ^Run, written: Written)
     if len(to.ops) > 0 {
         append(&b.g.edges, Edge{from = from, to = to.ops[0], kind = .Then, written = written, site = from})
     } else {
-        append(&to.waiting, from)
+        // Its place among the edges now — a branch's targets keep their order
+        // (yes, then no) — and its target once the run has an operation.
+        append(&to.waiting, i32(len(b.g.edges)))
+        append(&b.g.edges, Edge{from = from, to = NO_NODE, kind = .Then, written = written, site = from})
     }
 }
 
@@ -1451,7 +1481,8 @@ graph_emit :: proc(b: ^Graph_Builder, id: Node_Id) {
     r := b.code.run
     if len(r.ops) == 0 {
         for w in r.waiting {
-            append(&b.g.edges, Edge{from = w, to = id, kind = .Then, written = b.g.written[id], site = w})
+            b.g.edges[w].to = id
+            b.g.edges[w].written = b.g.written[id]
         }
         clear(&r.waiting)
     }
@@ -1656,7 +1687,10 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         l := graph_widen(b, graph_value(b, v.left, w), work, v.span)
         r := graph_widen(b, graph_value(b, v.right, w), work, v.span)
         kind: Op_Kind = .Compare if is_comparison_op(v.op) else .Arith
-        return graph_op_value(b, kind, w, v.span, v.type_, graph_token_text(v.op), l, r)
+        // `+%` `-%` `*%` wrap: the parser keeps them as + - * with a flag.
+        word := graph_token_text(v.op)
+        if v.wrapping { word = strings.concatenate({word, "%"}) }
+        return graph_op_value(b, kind, w, v.span, v.type_, word, l, r)
     case ^Expr_Call:
         return graph_call(b, v, nil, w)
     case ^Expr_Struct_Literal:
@@ -1733,6 +1767,9 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
                 return graph_op_value(b, .Swizzle, .Explicit, v.span, v.type_, v.field, base)
             }
             return graph_op_value(b, .Field, .Explicit, v.span, v.type_, v.field, base)
+        }
+        if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(v.type_) {
+            return graph_const_global(b, .Explicit, v.span, v.type_, v.field, v.resolved)   // a module's constant table
         }
     case ^Expr_Index:
         // Bytes indexed as another type (a byte read at an argument): a view.

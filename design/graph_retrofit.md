@@ -522,8 +522,44 @@ evaluates its destination and value); how instructions are chosen stays in the e
       its result). Pounce: 130 of 233 funs from the graph (`event_process`, the SDL
       event union, among them); what's left is arena storage (step 8), `err` values,
       foreign and multi-return calls (step 9)
-- [ ] Scope work: defers, the arena's mark, reset and big locals; `main` and the program's
-      setup; `#expose`
+- [x] Scope work: defers, the arena's mark, reset and big locals; `main` and the program's
+      setup; `#expose`. A `run defer` emits the defer's block where the scope is left: a
+      copy at each exit, as though written there, its labels fresh, its entry going on in
+      the current block and its `return` falling through to what follows (a block whose
+      entry is a loop's head: later). A scope holding a big value marks the arena on entry
+      and resets it at each exit; a big local's storage is its `arena alloc`, bumped from
+      the program's arena (no alloca). `main` is the program's setup — the program global,
+      its arena, `args` — shared by both emitters (`emit_main_prologue`), then its body from
+      the graph; falling off its end or a bare `return` is `ret i64 0`. `#expose`:
+      `dllexport`, and the host's program (the first param) stored into `@__mara_program`
+      first thing. Found: a branch's `then` edges came out of order when a target run had
+      no operation yet (an `or`'s yes and no swapped) — an edge now takes its place when
+      made and its target later, and one into a run that never gets an operation is
+      dropped; the wrapping operators were plain `+ - *` in the graph (the parser keeps a
+      flag): now `+% -% *%`; the deferred `:=` widths are settled on every node
+      (`graph_settled`: the width a binding adopted, else i64 or f64), and the old
+      emitter's arithmetic takes the settled width too; a call builds its result in a
+      field or a constant index of a variable, computed ahead of its turn. Both emitters,
+      to one rule: a struct's declarations are its fields, in Self, so its constructor
+      never marks the arena (the old emitter marked it for a big field), nor does main's
+      body (its scope ends with the program, which made the arena); `routes_to_arena` is
+      the one test for a big local (the old emitter's structs went at `> 1024`, and a big
+      partial array was bumped and never reset); a variant's construct stamps its partial
+      arrays' headers (cap 0 before); a failure names the place as written (`grid[i]`,
+      `o.cells`; the old emitter said `array`: a message change). `&` of a field or element
+      of a ternary or a literal, or of a slice expression, is a checker error (it was the
+      old emitter's). Old emitter bugs: a union declared bare was left uninitialized (now
+      zeroed), `= void` on one copied from a null pointer (a crash), and a constructor's
+      union field was rebound to a fresh local (`test/union_decl.mara`); a collection
+      loop's copy of a byte partial array is aligned like every other; an aggregate `if`
+      arm is built in the temporary, not copied. `test/dll_smoke` had rotted (`^Context`,
+      renamed `^Program`, and nothing built it): a `.shared` marker builds a fixture
+      directory as a DLL in `run.sh` and `irdiff.sh`. Normalizer: a load nothing uses; a
+      slot stored once, with a constant, before each of its loads (its block dominates
+      theirs) is that constant — the new emitter holds such a value, e.g. a loop's index
+      when a `break` ends every pass; a store the next overwrites is found by address text,
+      computed up front. Still declined: `= void` on an aggregate, a big temporary (a
+      call's result on the arena), a defer block entered at a loop's head
 - [ ] Calls: foreign ABI, function values, default and tuple-default arguments, multi-return,
       `?`, fallible constructors
 - [ ] Switch over: every function from the graph; the syntax-tree emitter deleted

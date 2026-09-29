@@ -534,7 +534,7 @@ gen_if_expr :: proc(g: ^Codegen, e: ^Expr_If, target_type: string = "") -> strin
     emit_cond_br(g, cond, then_label, else_label)
     arm :: proc(g: ^Codegen, x: Expr, t: Type, target_type, result_type, slot: string, by_address: bool) {
         if by_address {
-            emit_value_copy(g, t, slot, gen_value_address(g, x, t, target_type))
+            gen_store_elem_into(g, slot, result_type, t, x, expr_span(x)^, slot_fresh = true)   // built there, or copied
         } else {
             emit_store(g, result_type, gen_expr(g, x, result_type), slot)
         }
@@ -671,8 +671,11 @@ binary_op_type :: proc(g: ^Codegen, e: ^Expr_Binary, target_type: string) -> (ir
         is_comparison = true
     }
     work: Type
-    if !is_comparison && e.type_ != nil && !is_infer(e.type_) && !is_any(e.type_) {
-        work = e.type_
+    // (A deferred `:=` width the program settled — `seed := 4` used as a u32 —
+    // is that width.)
+    settled := resolve_infer(e.type_) if e.type_ != nil else nil
+    if !is_comparison && settled != nil && !is_infer(settled) && !is_any(settled) {
+        work = settled
     } else {
         l_infer := is_infer_expr(g, e.left)
         r_infer := is_infer_expr(g, e.right)

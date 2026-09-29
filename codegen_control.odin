@@ -392,7 +392,12 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
         // a scalar is loaded and stored.
         elem_base := distinct_base(s.elem_type_)
         if is_pointer_valued_type(elem_base) {
-            elem_alloca := emit_local_alloca(g, fmt.tprintf("%%%s", s.elem_var), elem_ir)
+            // Bytes held inline are aligned for any value viewed in them.
+            slot_ir := elem_ir
+            if pa, ok := elem_base.(^Type_Partial_Array); ok && llvm_type_from_checker(pa.elem) == "i8" {
+                slot_ir = fmt.tprintf("%s, align 16", elem_ir)
+            }
+            elem_alloca := emit_local_alloca(g, fmt.tprintf("%%%s", s.elem_var), slot_ir)
             emit_value_copy(g, s.elem_type_, elem_alloca, elem_ptr)
             if sd := as_struct_body(elem_base); sd != nil {
                 g.all_vars[s.elem_var] = Struct_Var{elem_alloca, sd.name}

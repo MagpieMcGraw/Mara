@@ -10626,6 +10626,17 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             if _, is_lit := e.operand.(^Expr_String); is_lit {
                 check_error(c, e.span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL)
             }
+            // A field or element of a ternary or a literal: those are values,
+            // not storage — a ternary's is one of its operands', so a write
+            // through the address would reach that operand. A slice expression
+            // builds a fresh header with nowhere to point at.
+            #partial switch _ in access_root(e.operand) {
+            case ^Expr_If, ^Expr_Array, ^Expr_Struct_Literal:
+                check_error(c, e.span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
+            }
+            if _, is_slice := e.operand.(^Expr_Slice); is_slice {
+                check_error(c, e.span, CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP)
+            }
             pt := new(Type_Ptr)
             pt.elem = operand_type
             return pt

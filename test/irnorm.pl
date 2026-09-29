@@ -10,7 +10,8 @@
 #   - a store the next instruction overwrites: same type, same pointer (after
 #     only address arithmetic);
 #   - a constant's width changed, which is that constant at the new width,
-#     and integer arithmetic of constants, which is its result;
+#     and integer arithmetic of constants, which is its result; a pointer
+#     bitcast to a pointer, which is that pointer;
 #   - address arithmetic whose shape can't matter: `inbounds`, a constant
 #     index's width (it is sign-extended to the pointer's: `i32 1` and
 #     `i64 1` step alike), an unused getelementptr, a chain of them folded
@@ -18,8 +19,12 @@
 #   - a zeroing memset the next instruction repeats, or overwrites with a
 #     memcpy of the same size (after only address arithmetic); and one of no
 #     more than the memset just before it zeroed at the same pointer;
-#   - an alloca nothing reads (only stored into), with its stores;
-#   - the order of the entry block's allocas (by first use);
+#   - a slot stored once, with a constant, before each of its loads (the
+#     store dominates them), which is that constant (see forward_constants);
+#   - an alloca nothing reads (only stored into), with its stores; a load
+#     nothing uses;
+#   - the order of the entry block's allocas, and of any block's leading run of
+#     them (by first use);
 #   - the name a bounds failure reports for the place it indexes: the graph's
 #     emitter names it as written (`o.cells`, `grid[i]`), the old one by its
 #     last name or as `array` (a message change, made on purpose);
@@ -103,7 +108,11 @@ sub clean {
         push @kept, @{ $blocks[$i]{lines} };
     }
     s/(call void \@__mara_bounds_fail\(.*, )ptr \@[-\w.\$]+\)$/${1}ptr NAME)/ for @kept;
-    return order_allocas(simplify_geps(drop_overwritten(drop_unread(simplify_geps(fold_widths(@kept))))));   # (again: what a dropped memset addressed)
+    my @l = drop_overwritten(drop_unread(simplify_geps(fold_widths(@kept))));
+    # A slot's one store, once the stores overwritten are gone; what it
+    # forwards may fold, and leaves the slot unread.
+    @l = drop_unread(fold_widths(forward_constants(@l)));
+    return order_allocas(simplify_geps(@l));   # (again: what a dropped memset addressed)
 }
 
 # A constant's width changed (`trunc i64 0 to i32`, `fptrunc double 0.5 to
@@ -134,6 +143,11 @@ sub fold_widths {
                 $const{$name} = $x if $x < $lim && $x >= -$lim;
                 next;
             }
+            # A pointer cast to a pointer is the pointer.
+            if (/^\s+(%[-\w.\$]+) = bitcast ptr (%[-\w.\$]+|\@[-\w.\$]+) to ptr$/) {
+                $const{$1} = $2;
+                next;
+            }
             next unless /^\s+(%[-\w.\$]+) = (trunc|sext|zext) i(\d+) (-?\d+) to i(\d+)$/;
             my ($name, $op, $to, $c) = ($1, $2, $5, $4);
             next if $op eq 'zext' && $c < 0;
@@ -156,30 +170,44 @@ sub fold_widths {
 # first uses them.
 sub order_allocas {
     my @lines = @_;
-    my (@at, %first);
-    for my $i (0 .. $#lines) {
-        last if $i > 0 && $lines[$i] =~ /^[-\w.\$]+:/;   # the entry block only
-        push @at, $i if $lines[$i] =~ /^\s+%[-\w.\$]+ = alloca / && $lines[$i] !~ /, i\d+ %/;
-    }
-    return @lines if @at < 2;
+    my %first;
     for my $i (0 .. $#lines) {
         my $rest = $lines[$i];
         next if $rest =~ /^\s+%[-\w.\$]+ = alloca /;
         $rest =~ s/^\s+%[-\w.\$]+ = //;
         while ($rest =~ /(%[-\w.\$]+)/g) { $first{$1} //= $i; }
     }
-    my %name = map { $_ => ($lines[$_] =~ /^\s+(%[-\w.\$]+) = /)[0] } @at;
-    my @order = sort {
-        ($first{$name{$a}} // 1e9) <=> ($first{$name{$b}} // 1e9) || $a <=> $b
-    } @at;
-    @lines[@at] = @lines[@order];
+    # The entry block's allocas, and each other block's leading run of them
+    # (hoisted there: @main's follow the program's setup).
+    my (@runs, @at);
+    my $entry = 1;
+    for my $i (0 .. $#lines) {
+        if ($i > 0 && $lines[$i] =~ /^[-\w.\$]+:/) { push @runs, [@at]; @at = (); $entry = 0; next }
+        my $fixed = $lines[$i] =~ /^\s+%[-\w.\$]+ = alloca / && $lines[$i] !~ /, i\d+ %/;
+        if ($fixed && ($entry || !@at || $at[-1] == $i - 1) && ($entry || $lines[$i - 1] =~ /^[-\w.\$]+:/ || @at)) { push @at, $i }
+    }
+    push @runs, [@at];
+    for my $run (@runs) {
+        my @at = @$run;
+        next if @at < 2;
+        my %name = map { $_ => ($lines[$_] =~ /^\s+(%[-\w.\$]+) = /)[0] } @at;
+        my @order = sort {
+            ($first{$name{$a}} // 1e9) <=> ($first{$name{$b}} // 1e9) || $a <=> $b
+        } @at;
+        @lines[@at] = @lines[@order];
+    }
     return @lines;
 }
 
-# An alloca nothing reads — only stored into — is dead, and so are its stores.
+# An alloca nothing reads — only stored into — is dead, and so are its stores;
+# a load nothing uses (a load does nothing but produce its value).
 sub drop_unread {
     my @lines = @_;
-    my (%slot, %other);
+    my (%slot, %other, %used);
+    for (@lines) {
+        (my $line = $_) =~ s/^\s+%[-\w.\$]+ = //;
+        $used{$1} = 1 while $line =~ /(%[-\w.\$]+)/g;
+    }
     for (@lines) {
         $slot{$1} = 1 if /^\s+(%[-\w.\$]+) = alloca /;
     }
@@ -193,7 +221,8 @@ sub drop_unread {
     }
     return grep {
         !(/^\s+(%[-\w.\$]+) = alloca / && !$other{$1}) &&
-        !(/^\s+store .+, ptr (%[-\w.\$]+)$/ && $slot{$1} && !$other{$1})
+        !(/^\s+store .+, ptr (%[-\w.\$]+)$/ && $slot{$1} && !$other{$1}) &&
+        !(/^\s+(%[-\w.\$]+) = load / && !$used{$1})
     } @lines;
 }
 
@@ -289,10 +318,15 @@ sub drop_overwritten {
     my @lines = @_;
     my @out;
     my ($zp, $zn) = ("", -1);   # what the last kept memset zeroed, while nothing since touched memory
-    my %at;                      # a getelementptr's name → what it computes (the same text: the same address)
+    # A getelementptr's name → what it computes: the same text is the same
+    # address. Known up front, since a later store's address may be computed
+    # after this line.
+    my %at;
+    for (@lines) {
+        $at{$1} = $2 if /^\s+(%[-\w.\$]+) = (getelementptr .*)$/;
+    }
     my $where = sub { my ($p) = @_; return $at{$p} // $p };
     for my $i (0 .. $#lines) {
-        $at{$1} = $2 if $lines[$i] =~ /^\s+(%[-\w.\$]+) = (getelementptr .*)$/;
         if ($lines[$i] =~ /^\s+call void \@llvm\.memset\.p0\.i64\(ptr (%[-\w.\$]+), i8 0, i64 (\d+), i1 false\)$/ && $where->($1) eq $zp && $2 <= $zn) {
             next;
         }
@@ -304,7 +338,7 @@ sub drop_overwritten {
             my $j = $i + 1;
             $j++ while $j <= $#lines && $lines[$j] =~ /^\s+%[-\w.\$]+ = getelementptr /;
             my ($t2, $p2) = store_of($j <= $#lines ? $lines[$j] : "");
-            next if defined $t2 && $t1 eq $t2 && $p1 eq $p2;
+            next if defined $t2 && $t1 eq $t2 && $where->($p1) eq $where->($p2);
         }
         if ($lines[$i] =~ /^\s+call void \@llvm\.memset\.p0\.i64\(ptr (%[-\w.\$]+), i8 0, i64 (\d+), i1 false\)$/) {
             my ($p, $n) = ($1, $2);
@@ -322,6 +356,90 @@ sub drop_overwritten {
 }
 
 # A store's type and pointer: `store <type> <value>, ptr <pointer>`.
+# A slot stored once, with a constant, where that store comes before each of
+# its loads — earlier in the store's block, or in a block the store's block
+# dominates — is that constant: its loads are the constant, and the slot and
+# its store go. Only a slot nothing else touches (no call, copy or address
+# arithmetic sees it).
+sub forward_constants {
+    my @lines = @_;
+    my (%slot, %store, %loads, %bad);
+    for (@lines) { $slot{$1} = 1 if /^\s+(%[-\w.\$]+) = alloca / }
+    for my $i (0 .. $#lines) {
+        local $_ = $lines[$i];
+        next if /^\s+%[-\w.\$]+ = alloca /;
+        if (/^\s+store (\S+) (\S+), ptr (%[-\w.\$]+)$/ && $slot{$3} && $2 !~ /%|undef|poison/) {
+            $bad{$3} = 1 if $store{$3};
+            $store{$3} = [$i, $1, $2];
+            next;
+        }
+        if (/^\s+(%[-\w.\$]+) = load (\S+), ptr (%[-\w.\$]+)$/) {
+            push @{ $loads{$3} }, [$i, $1, $2];
+            next;
+        }
+        (my $line = $_) =~ s/^\s+%[-\w.\$]+ = //;
+        $bad{$1} = 1 while $line =~ /(%[-\w.\$]+)/g;
+    }
+    my @slots = grep { !$bad{$_} } keys %store;
+    return @lines unless @slots;
+
+    # Blocks (the entry and each label's) and their successors.
+    my (@block, %index, @succ);
+    my $b = 0;
+    for my $i (0 .. $#lines) {
+        $b++ if $i > 0 && $lines[$i] =~ /^[-\w.\$]+:/;
+        $index{$1} = $b if $lines[$i] =~ /^([-\w.\$]+):/;
+        $block[$i] = $b;
+    }
+    for my $i (0 .. $#lines) {
+        next unless $lines[$i] =~ /^\s+(br|switch|i\d+ -?\d+, label)\b/;
+        while ($lines[$i] =~ /label %([-\w.\$]+)/g) {
+            push @{ $succ[$block[$i]] }, $index{$1} if defined $index{$1};
+        }
+    }
+    # The blocks the entry reaches without passing through block $d: the ones
+    # $d doesn't dominate.
+    my %around;
+    my $reached = sub {
+        my ($d) = @_;
+        return $around{$d} //= do {
+            my %seen;
+            my @todo = $d == 0 ? () : (0);
+            $seen{0} = 1 if @todo;
+            while (@todo) {
+                for my $s (@{ $succ[pop @todo] // [] }) {
+                    next if $s == $d || $seen{$s}++;
+                    push @todo, $s;
+                }
+            }
+            \%seen;
+        };
+    };
+
+    my (%value, %drop);
+    for my $s (@slots) {
+        my ($at, $type, $c) = @{ $store{$s} };
+        my $sb = $block[$at];
+        my $ok = 1;
+        for my $l (@{ $loads{$s} // [] }) {
+            my ($li, undef, $lt) = @$l;
+            $ok = 0 if $lt ne $type;
+            $ok = 0 if $block[$li] == $sb ? $li < $at : $reached->($sb)->{$block[$li]};
+        }
+        next unless $ok;
+        $drop{$at} = 1;
+        for my $l (@{ $loads{$s} // [] }) { $drop{$l->[0]} = 1; $value{$l->[1]} = $c }
+    }
+    return @lines unless %drop;
+    my @out;
+    for my $i (0 .. $#lines) {
+        next if $drop{$i};
+        (my $line = $lines[$i]) =~ s/(%[-\w.\$]+)/$value{$1} \/\/ $1/ge;
+        push @out, $line;
+    }
+    return @out;   # (the slot itself: drop_unread, nothing reads it now)
+}
+
 sub store_of {
     my ($line) = @_;
     return unless $line =~ /^\s+store (.+) (\S+), ptr (%[-\w.\$]+)$/;

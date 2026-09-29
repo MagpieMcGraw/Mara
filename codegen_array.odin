@@ -1044,10 +1044,32 @@ elem_at :: proc(g: ^Codegen, ptr: string, elem_ir: string, t: Type) -> string {
     return emit_load(g, elem_ir, ptr)
 }
 
+// A place as written, for a failure to name it (`o.cells`, `grid[i]`) — as the
+// graph's emitter names it (graph_place_name); "" for no place a user wrote.
+place_name_as_written :: proc(e: Expr) -> string {
+    #partial switch v in e {
+    case ^Expr_Ident:
+        return v.name
+    case ^Expr_Field_Access:
+        base := place_name_as_written(v.expr)
+        return v.field if base == "" else fmt.tprintf("%s.%s", base, v.field)
+    case ^Expr_Index:
+        base := place_name_as_written(v.expr)
+        if base == "" { return "" }
+        idx := ""
+        #partial switch _ in v.index {
+        case ^Expr_Ident, ^Expr_Field_Access, ^Expr_Index: idx = place_name_as_written(v.index)
+        }
+        return base if idx == "" else fmt.tprintf("%s[%s]", base, idx)
+    }
+    return ""
+}
+
 // Element `e.index` of the fixed array `fa` stored at `base`, bounds-checked.
 index_fixed_array_at :: proc(g: ^Codegen, base: string, fa: ^Type_Fixed_Array, e: ^Expr_Index) -> string {
     elem_ir := llvm_type_from_checker(fa.elem)
-    idx := gen_checked_index(g, e.index, fmt.tprintf("%d", fa.size), "array", e.span)
+    name := place_name_as_written(e.expr)
+    idx := gen_checked_index(g, e.index, fmt.tprintf("%d", fa.size), name if name != "" else "array", e.span)
     gep := fresh_tmp(g)
     emit_array_gep_var(g, gep, fmt.tprintf("[%d x %s]", fa.size, elem_ir), base, idx, slice_layout.len_ir)
     return elem_at(g, gep, elem_ir, fa.elem)

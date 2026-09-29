@@ -96,13 +96,15 @@ check_file() {  # f
 # Each marked test/<dir>/ is built as module <dir>; success = compiles, unless
 # a file in the subdir carries //@ expect-fail[: substr] (same semantics as the
 # flat loop) — used for negative multi-file properties like file-private imports.
+# A .shared file there too builds it as a DLL (`-shared`: its `#expose` funs).
 check_dir() {  # d
-  local d=$1 key="dir.$1" exp=pass substr="" out comp
+  local d=$1 key="dir.$1" exp=pass substr="" out comp flags=""
+  [ -f "$d/.shared" ] && flags=-shared
   if grep -rqE '//@ expect-fail' "$d" 2>/dev/null; then
     exp=fail
     substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1)
   fi
-  out=$(cd "$d" && "$ROOT/Mara.exe" build "$d" 2>&1)
+  out=$(cd "$d" && "$ROOT/Mara.exe" build "$d" $flags 2>&1)
   shapes "$key" "$out"
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
   if [ "$exp" = pass ]; then
@@ -112,7 +114,7 @@ check_dir() {  # d
     elif [ -n "$substr" ] && ! echo "$out" | grep -qF "$substr"; then verdict "$key" bad "WRONG ERROR (multi-file subdir): $d (want: $substr)"
     else verdict "$key" xfail; fi
   fi
-  rm -f "$d/$d.exe" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
+  rm -f "$d/$d.exe" "$d/$d.dll" "$d/$d.lib" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
 }
 export -f in_list skip_reason verdict shapes check_file check_dir
 
