@@ -7230,8 +7230,23 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // Same alias-into-caller-storage semantics as let — mark the name
             // as a view binding so it can't escape via return.
             if take_expr, is_take := s.value.(^Expr_Take); is_take {
-                fuse_fail(c, "a take binding")
-                val_type := check_expr(c, s.value, env)
+                // Built as a declaration's value (a `let` binds the memory it
+                // takes: no space of its own on the arena).
+                fa: Fuse_Assign
+                if b := fusing(c); b != nil {
+                    fa.on = true
+                    if s.is_decl { fa.decl = graph_fuse_decl(b, s.name, s.span, bound = take_expr.keyword == "let") }
+                }
+                defer fuse_assign_end(c, s, &fa)
+                val_type: Type
+                if fa.on && s.is_decl {
+                    val_type, fa.value = fuse_expr(c, s.value, env, .Into, dest = graph_dest_var(s.name, fa.decl, nil if is_untyped(ann_type) else ann_type))
+                } else if fa.on {
+                    val_type, fa.value = fuse_expr(c, s.value, env, .Into, dest = graph_dest_var(s.name, NO_NODE, nil), temp = true, temp_span = s.span)
+                } else {
+                    val_type = check_expr(c, s.value, env)
+                }
+                fa.value_type = val_type
                 // If an annotation was given, it must match take's resolved type.
                 if !is_any(ann_type) {
                     if types_incompatible(ann_type, val_type) && !value_preserving_widen(val_type, ann_type) {
@@ -12127,11 +12142,22 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                 check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
             }
         }
+        // Built: the count at the header's width, then the storage it
+        // carves from (a plain place, checked without building, built after
+        // it as the builder walks it), then the carve.
+        want, w := fuse_asked(c)
+        b := fusing(c) if want != .None else nil
+        if b != nil && (want == .Place || !fuse_carves_place(e)) {
+            fuse_fail(c, "a take's place, or a take from no plain place")
+            b = nil
+        }
+        count_op := NO_VALUE
         // Runtime-counted form: validate count is integer at slice header
         // width, resolved is a slice. Codegen does NOT emit an implicit
         // narrow/widen on the count.
         if count := take_count(e); count != nil {
-            count_type := check_expr(c, count, env)
+            count_type: Type
+            if b != nil { count_type, count_op = fuse_bound(c, count, env, w, e.span) } else { count_type = check_expr(c, count, env) }
             if !is_any(count_type) && !is_numeric(count_type) {
                 check_error(c, e.span,
                     TYPE_TAKE_COUNT_INTEGER, type_name(count_type))
@@ -12168,6 +12194,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                 type_name(src_type))
         }
         e.type_ = resolved
+        if b != nil && fusing(c) != nil { fuse_done(c, graph_fuse_carve(b, e, count_op, w)) }
         return resolved
     case ^Expr_If:
         return check_if_expr(c, e, env)
@@ -14498,7 +14525,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     }
 
     fc.params = true
-    if want != .None && (fun_type.kind == .Fun || fun_type.kind == .Struct && e.fn_value == nil) { c.call = &fc }
+    // (A pure-data struct reaches here as a value — its resolution is set
+    // below: it is a construction.)
+    if want != .None && (fun_type.kind == .Fun || fun_type.kind == .Struct) { c.call = &fc }
     // (Built into storage that holds a value: a temporary made before the
     // arguments.)
     if b := fusing(c); b != nil && c.call != nil && want == .Into && into_temp && fun_type.kind == .Struct {
@@ -14869,6 +14898,13 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
     if fusing(c) == nil { return t }
     fuse_done(c, graph_op_value(b, .Slice, w, e.span, t, "", graph_fuse_base_place(b, e.expr, e.span), fs.lo, fs.hi))
     return t
+}
+
+// Whether a take's storage is a plain place (`&s`, `&bytes[i]`, `s`): what
+// the builder walks where the carve is.
+fuse_carves_place :: proc(e: ^Expr_Take) -> bool {
+    if u, is_addr := e.storage.(^Expr_Unary); is_addr && u.op == .Ampersand { return graph_pure_place(u.operand) }
+    return graph_pure_place(e.storage)
 }
 
 // A slice's bound, built: at the header's width.

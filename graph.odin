@@ -3718,11 +3718,11 @@ graph_fuse_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
 
 // A local's declaration (graph_decl), before its value: typed once it is
 // checked (graph_fuse_typed).
-graph_fuse_decl :: proc(b: ^Graph_Builder, name: string, span: Span) -> Node_Id {
+graph_fuse_decl :: proc(b: ^Graph_Builder, name: string, span: Span, bound := false) -> Node_Id {
     d := graph_decl(b, {kind = .Local}, b.code.block, name, nil, span)
     // A big value lives on the arena (graph_init): its space, taken before
-    // its value — kept once its type says so.
-    if b.arena {
+    // its value — kept once its type says so. (A `let` binds memory it takes.)
+    if b.arena && !bound {
         v := graph_var(b, name, d, nil, span)
         a := graph_op(b, .Arena_Alloc, .Synthetic, span, nil, "", v)
         append(&b.fuse.allocs, Graph_Alloc{decl = d, var = v.op, alloc = a, nrvo = b.code.nrvo})
@@ -3898,6 +3898,12 @@ graph_fuse_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Sp
     slot := graph_slot(b, "temp", t, span)
     graph_op(b, .Write, .Implied, span, nil, "", graph_var(b, "temp", slot, t, span), graph_read(b, view, t, span))
     return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
+}
+
+// A take (graph_value's): the count, built; the storage it carves from,
+// built here; the carve.
+graph_fuse_carve :: proc(b: ^Graph_Builder, v: ^Expr_Take, count: Operand, w: Written) -> Operand {
+    return graph_op_value(b, .Carve, w, v.span, v.type_, v.keyword, graph_carve_storage(b, v), count)
 }
 
 // A plain place the checker checked without building (a loop's collection,
