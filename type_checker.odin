@@ -14076,7 +14076,9 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     }
 
     if b := fusing(c); b != nil && b == c.gb {
-        for k, i in as_ { b.fuse.widens[k].sig, b.fuse.widens[k].param = ft, i }
+        for k, i in as_ {
+            if k >= 0 { b.fuse.widens[k].sig, b.fuse.widens[k].param = ft, i }
+        }
     }
     // Trailing default fill: append each missing slot's default expression so
     // codegen sees a fully-saturated arg list. Mirrors fill_default_args.

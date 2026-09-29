@@ -81,6 +81,10 @@ Operand :: struct {
 
 NO_VALUE :: Operand{op = NO_NODE}
 
+// A node no drop replaced (Graph_Builder.repl).
+@(private="file")
+KEPT :: Operand{op = Node_Id(-2)}
+
 // A statement code is lowered from: where it is written and what it does to
 // the variables it writes, which is how an analysis reports a write.
 Graph_Stmt :: struct {
@@ -297,8 +301,11 @@ Graph_Builder :: struct {
     fuse_off: bool,
     fuse_log: bool,
     // Operations made before whether they are needed was known, found not
-    // to be: each is left out, and what it stood for used in its place.
-    dropped:  map[Node_Id]Operand,
+    // to be: each is left out, and what it stood for used in its place —
+    // by node, once the graph is put together (repl; KEPT where it is not),
+    // listed until then.
+    repl:     []Operand,
+    drops:    [dynamic][2]Operand,
 }
 
 // What one build made: the nodes, closed runs, statements and unreachable
@@ -485,7 +492,8 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     delete(b.fused)
     for f in b.fuses { graph_fuse_free(f) }
     delete(b.fuses)
-    delete(b.dropped)
+    delete(b.repl)
+    delete(b.drops)
     free(b.g)
     free(b)
 }
@@ -522,6 +530,12 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
         graph_segment_place(b, si, t.parent, t.stmt, graph_scope_name(t.ts, t.s, t.written))
     }
     graph_piece_end(b, 0)
+    // What was dropped, by node: those listed while checking, then settling's.
+    if len(b.fuses) > 0 || len(b.drops) > 0 {
+        b.repl = make([]Operand, b.nodes)
+        slice.fill(b.repl, KEPT)
+        for d in b.drops { b.repl[d[0].op] = d[1] }
+    }
     for f in b.fuses { graph_fuse_settle(b, f) }
     if b.fuse_log { fmt.eprintfln("fuse: %d bodies built as they were checked", len(b.fused)) }
     graph_resize(g, b.nodes)
@@ -544,6 +558,20 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
     }
     graph_dump(g)
     return g^
+}
+
+// Leave node id out of the graph, `with` standing for it where it is used.
+graph_drop :: proc(b: ^Graph_Builder, id: Node_Id, with: Operand) {
+    if b.repl != nil {
+        b.repl[id] = with
+    } else {
+        append(&b.drops, [2]Operand{{id, 0}, with})
+    }
+}
+
+@(private="file")
+graph_dropped :: proc(b: ^Graph_Builder, id: Node_Id) -> bool {
+    return b.repl != nil && b.repl[id] != KEPT
 }
 
 // The builder's counts of each item, as they stand now.
@@ -661,7 +689,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
                     if s.anchors[k].seg >= 0 { walk(b, s.anchors[k].seg, item, out) }
                     k += 1
                 }
-                if item == .Node && Node_Id(i) in b.dropped { continue }
+                if item == .Node && graph_dropped(b, Node_Id(i)) { continue }
                 append(out, i)
             }
         }
@@ -686,7 +714,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     }
     ro :: proc(b: ^Graph_Builder, new_id: []Node_Id, o: Operand) -> Operand {
         o := o
-        for (o.op != NO_NODE && o.op in b.dropped) { o = b.dropped[o.op] }
+        for (o.op != NO_NODE && graph_dropped(b, o.op)) { o = b.repl[o.op] }
         return Operand{re(new_id, o.op), o.out}
     }
     kept :: proc(new_id: []Node_Id, id: Node_Id) -> bool { return id != NO_NODE && new_id[id] != NO_NODE }
@@ -725,7 +753,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
         waiting := 0
         ops := g.run_ops[g.run_first[old]:g.run_first[old + 1]]
         for op, k in ops {
-            if op in b.dropped {
+            if graph_dropped(b, op) {
                 if k == waiting { waiting += 1 }
                 continue
             }
@@ -739,7 +767,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     for e in g.edges {
         if !kept(new_id, e.from) { continue }
         to, written := e.to, e.written
-        if to != NO_NODE && to in b.dropped {
+        if to != NO_NODE && graph_dropped(b, to) {
             to = next_kept[to] or_else NO_NODE
             if to != NO_NODE { written = g.written[to] }
         }
@@ -2052,7 +2080,7 @@ graph_slot :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) -> Node
     // unsettled width takes the default, as behind a pointer.
     if f := b.fuse; f != nil {
         id := graph_node(b, .Local, .Synthetic, b.code.block, name, t, span)
-        f.slots[id] = true
+        append(&f.slots, id)
         return id
     }
     return graph_node(b, .Local, .Synthetic, b.code.block, name, graph_settled(t, pointee = true), span)
@@ -3445,7 +3473,7 @@ Graph_Fuse :: struct {
     // adopts from a later use, a param's default's once its fun is checked.
     // Synthetic locals settle as behind a pointer; constants whose width a
     // binding settles are listed in g.settled; a widening is kept or dropped.
-    slots:      map[Node_Id]bool,
+    slots:      [dynamic]Node_Id,
     consts:     [dynamic]Node_Id,
     widens:     [dynamic]Graph_Widen,
     checks:     [dynamic]Graph_Check,
@@ -3564,8 +3592,12 @@ graph_fuse_as :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, read_
         val = graph_read(b, v, t, read_span)   // (at the expression, as graph_value reads it)
         w.read = val.op
     }
+    // A cast only where one can be taken — a number's widening, a partial
+    // array's header — and a slice only of a fixed array's place.
+    _, _, num := numeric_info(graph_settled(t))
+    if !num && !graph_partial_of(t) || is_infer(t) && infer_cell_of(t) == nil { return val, -1 }
     w.id, w.v = graph_op(b, .Cast, .Implied, span, nil, "", val), val
-    if place { w.slice = graph_op(b, .Slice, .Implied, span, nil, "", v) }
+    if _, from_array := distinct_base(t).(^Type_Fixed_Array); place && from_array { w.slice = graph_op(b, .Slice, .Implied, span, nil, "", v) }
     append(&b.fuse.widens, w)
     return {w.id, 0}, len(b.fuse.widens) - 1
 }
@@ -3578,11 +3610,42 @@ graph_fuse_widen :: proc(b: ^Graph_Builder, v: Operand, span: Span, w: Graph_Wid
     from := b.g.type_[v.op]
     if _, _, num := numeric_info(graph_settled(from)); !num { return v }
     if is_infer(from) && infer_cell_of(from) == nil { return v }
+    // Where no width is still open, decided now.
+    if !w.binary && !graph_open_width(from) {
+        to := w.to
+        if w.sig != nil { to = w.sig.params[w.param].type_ if w.param < len(w.sig.params) else nil }
+        if !graph_open_width(to) && !(w.sig != nil && graph_param_open(w.sig, w.param)) {
+            if w.settle_to { to = graph_settled(to) }
+            if !graph_widens(graph_settled(from), to) { return v }
+            return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), v)
+        }
+    }
     f := b.fuse
     w := w
     w.id, w.v, w.read, w.slice = graph_op(b, .Cast, .Implied, span, nil, "", v), v, NO_NODE, NO_NODE
     append(&f.widens, w)
     return {w.id, 0}
+}
+
+// Whether a type's width is a `:=` binding's still open (it adopts a later
+// use's).
+@(private="file")
+graph_open_width :: proc(t: Type) -> bool {
+    #partial switch v in t {
+    case Type_Infer_Int:   return v.cell != nil && is_infer(t)
+    case Type_Infer_Float: return v.cell != nil && is_infer(t)
+    case ^Type_Ptr:        return graph_open_width(v.elem)
+    }
+    return false
+}
+
+// Whether a callee's param may still change type: one with a default whose
+// width its body settles (solidify_param_defaults) and hasn't yet.
+@(private="file")
+graph_param_open :: proc(sig: ^Type_Scope, param: int) -> bool {
+    if param < 0 || param >= len(sig.params) { return false }
+    p := sig.params[param]
+    return p.default_value != nil && is_infer(p.type_)
 }
 
 // A block of code (graph_code_block): opened before its statements are
@@ -3714,7 +3777,7 @@ graph_fuse_drop_since :: proc(b: ^Graph_Builder, m: Graph_Mark) {
         graph_fuse_fail(b, b.fuse, "a field access's base crossed runs")
         return
     }
-    for i in m.nodes ..< b.nodes { b.dropped[Node_Id(i)] = NO_VALUE }
+    for i in m.nodes ..< b.nodes { graph_drop(b, Node_Id(i), NO_VALUE) }
     if m.run == nil {
         b.code.run = nil   // (the run the base began: code after a jump)
         return
@@ -3798,7 +3861,7 @@ graph_fuse_prefix :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, span: 
 
 graph_fuse_prefix_end :: proc(b: ^Graph_Builder, p: [2]Node_Id, keep: bool, t: Type) {
     for id in p {
-        if keep { b.g.type_[id] = t } else { b.dropped[id] = NO_VALUE }
+        if keep { b.g.type_[id] = t } else { graph_drop(b, id, NO_VALUE) }
     }
 }
 
@@ -4309,23 +4372,23 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
             _, from_array := distinct_base(w.t).(^Type_Fixed_Array)
             if to != nil && to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(w.t) {
                 g.type_[w.id], g.name[w.id] = to, type_name(to)   // its header, as one
-                if w.slice != NO_NODE { b.dropped[w.slice] = NO_VALUE }
+                if w.slice != NO_NODE { graph_drop(b, w.slice, NO_VALUE) }
                 continue
             }
             if w.slice != NO_NODE {
                 if to != nil && to_slice && from_array {
                     g.type_[w.slice] = to   // its place, as a slice
-                    b.dropped[w.read] = {w.slice, 0}
-                    b.dropped[w.id] = {w.read, 0}
+                    graph_drop(b, w.read, {w.slice, 0})
+                    graph_drop(b, w.id, {w.read, 0})
                     continue
                 }
             }
         }
-        if w.slice != NO_NODE { b.dropped[w.slice] = NO_VALUE }   // (no view taken)
+        if w.slice != NO_NODE { graph_drop(b, w.slice, NO_VALUE) }   // (no view taken)
         if graph_widens(graph_settled(g.type_[w.v.op]), to) {
             g.type_[w.id], g.name[w.id] = to, type_name(to)
         } else {
-            b.dropped[w.id] = w.v
+            graph_drop(b, w.id, w.v)
         }
     }
     for id in f.consts {
@@ -4338,8 +4401,8 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     for m in f.marks {
         keep := (main == nil || g.type_[m.block] != Type(main)) && graph_has_big_values(b, m.body, m.nrvo)
         if keep { continue }
-        b.dropped[m.mark] = NO_VALUE
-        for r in m.resets { b.dropped[r] = NO_VALUE }
+        graph_drop(b, m.mark, NO_VALUE)
+        for r in m.resets { graph_drop(b, r, NO_VALUE) }
     }
     // A big local's space on the arena, taken before its value.
     for a in f.allocs {
@@ -4348,7 +4411,7 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
             g.type_[a.var], g.type_[a.alloc] = t, t
             continue
         }
-        b.dropped[a.var], b.dropped[a.alloc] = NO_VALUE, NO_VALUE
+        graph_drop(b, a.var, NO_VALUE); graph_drop(b, a.alloc, NO_VALUE)
     }
     for pc in f.calls {
         braces := strings.has_suffix(g.name[pc.op], "{}")   // a literal's construction, as written
@@ -4359,7 +4422,7 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     // check that it counts up where a bound is no constant.
     resolve :: proc(b: ^Graph_Builder, o: Operand) -> Operand {
         o := o
-        for (o.op != NO_NODE && o.op in b.dropped) { o = b.dropped[o.op] }
+        for (o.op != NO_NODE && graph_dropped(b, o.op)) { o = b.repl[o.op] }
         return o
     }
     for k in f.checks {
@@ -4367,18 +4430,20 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
         if k.t != nil && !is_infer(k.t) && !types_equal(k.t, k.ct) {
             g.type_[k.ids[0]], g.name[k.ids[0]] = k.ct, type_name(k.ct)
         } else {
-            b.dropped[k.ids[0]] = k.v
+            graph_drop(b, k.ids[0], k.v)
         }
     }
     for k in f.checks {
         if k.kind != .Ascends { continue }
         if resolve(b, k.lo).op in g.consts && resolve(b, k.hi).op in g.consts {
-            b.dropped[k.ids[0]], b.dropped[k.ids[1]] = NO_VALUE, NO_VALUE
+            graph_drop(b, k.ids[0], NO_VALUE); graph_drop(b, k.ids[1], NO_VALUE)
         }
     }
+    k := 0   // (its synthetic locals, in the order they were made)
     for p in b.segs[f.seg].pieces {
         for i in p.nodes[0] ..< p.nodes[1] {
-            g.type_[i] = graph_settled(g.type_[i], pointee = Node_Id(i) in f.slots)
+            for k < len(f.slots) && int(f.slots[k]) < i { k += 1 }
+            g.type_[i] = graph_settled(g.type_[i], pointee = k < len(f.slots) && int(f.slots[k]) == i)
         }
     }
     // Params by their scope's types: a default's width is settled once its
