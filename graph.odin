@@ -2015,7 +2015,6 @@ graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span:
 // where the store happens, after the value — which may have crossed runs on
 // the way (an `if` expression, `and`, `?`). An assignment's target is worked
 // out before its value, so its place arrives computed (.At).
-@(private="file")
 Dest :: struct {
     kind:   Dest_Kind,
     at:     Operand,   // .At: the place, already computed
@@ -2026,16 +2025,13 @@ Dest :: struct {
     parent: ^Dest,     // .Field, .Index, .Variant: the value they are part of
 }
 
-@(private="file")
 Dest_Kind :: enum u8 { Var, At, Field, Index, Variant }
 
-@(private="file")
 graph_dest_var :: proc(name: string, decl: Node_Id, t: Type) -> Dest {
     return Dest{kind = .Var, name = name, decl = decl, type_ = t}
 }
 
 // Emit a destination's place in the current run.
-@(private="file")
 graph_dest_place :: proc(b: ^Graph_Builder, d: Dest, span: Span) -> Operand {
     switch d.kind {
     case .Var:   return graph_var(b, d.name, d.decl, d.type_, span)
@@ -2052,7 +2048,6 @@ graph_read :: proc(b: ^Graph_Builder, place: Operand, t: Type, span: Span) -> Op
 }
 
 // A synthetic local of the current block, for a value that outlives a run.
-@(private="file")
 graph_slot :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) -> Node_Id {
     // Storage no use types (an if-expression's of a bare literal): an
     // unsettled width takes the default, as behind a pointer.
@@ -2309,7 +2304,6 @@ graph_assign :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
 
 // The type a destination holds: an existing place's own (a target's type as
 // the checker records it can be the whole variable's: `a[i] = x`).
-@(private="file")
 graph_dest_type :: proc(b: ^Graph_Builder, d: Dest) -> Type {
     if d.kind == .At && d.at.op != NO_NODE {
         if t := b.g.type_[d.at.op]; t != nil { return t }
@@ -2546,7 +2540,6 @@ graph_default_value :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> 
 }
 
 // An array's element type.
-@(private="file")
 graph_elem_type :: proc(t: Type) -> Type {
     #partial switch v in distinct_base(t) {
     case ^Type_Fixed_Array:   return v.elem
@@ -2758,7 +2751,6 @@ graph_call_resolved :: proc(b: ^Graph_Builder, rf: Resolved_Func, t: Type, span:
 
 // The fun or struct a resolved call runs. Casts and distinct conversions
 // resolve to none: they are no call.
-@(private="file")
 graph_callee :: proc(b: ^Graph_Builder, rf: Resolved_Func) -> ^Type_Scope {
     if rf.callee != nil || rf.name == "" { return rf.callee }
     // Resolved by name only (qualified, UFCS, dispatch): look the name up.
@@ -3607,6 +3599,11 @@ graph_fuse_decl :: proc(b: ^Graph_Builder, name: string, span: Span) -> Node_Id 
 
 graph_fuse_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
     b.g.type_[d] = t
+    // Its variable's operations made before that was known (where a value
+    // was built into it), typed as it is.
+    for i in int(d) + 1 ..< b.nodes {
+        if b.g.kind[i] == .Op && b.g.op[i] == .Var && b.g.refers[i] == d && b.g.type_[i] == nil { b.g.type_[i] = t }
+    }
 }
 
 // A value written to a variable (graph_store's last case): at the variable's
@@ -3920,6 +3917,119 @@ Graph_Check :: struct {
     v:      Operand,      // the bound's value
     t, ct:  Type,         // its type, the counter's
     lo, hi: Operand,      // the bounds, as the check reads them
+}
+
+// A struct literal built into d (graph_into), before its fields are
+// checked: its construction — zero for `Foo{0}`, else its constructor on
+// its params' defaults (a union's variant: its tag, then the field defaults
+// the literal doesn't give) — and where its fields are. Nil when t is no
+// aggregate the literal builds.
+Graph_Literal :: struct {
+    d, parent: Dest,
+    sd:        ^Scope_Body,
+    skip:      int,
+}
+
+graph_fuse_literal :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, t: Type, d: Dest) -> ^Graph_Literal {
+    span := v.span
+    ts, is_scope := t.(^Type_Scope)
+    if is_scope && ts.kind == .Struct && !ts.is_module && v.zero_init {
+        graph_op(b, .Zero, .Explicit, span, t, "{0}", graph_dest_place(b, d, span))
+    } else if is_scope && ts.kind == .Struct && !ts.is_module {
+        ops := graph_default_args(b, graph_dest_place(b, d, span), ts, span)
+        op := graph_call_op(b, .Construct, .Explicit, span, ts, t, ..ops)
+        b.g.name[op] = strings.concatenate({b.g.name[op], "{}"})   // as written: braces, no call
+        if ts.is_union_variant { graph_field_defaults(b, ts, v, d, span) }
+    } else if graph_aggregate(t) {
+        _, is_union := distinct_base(t).(^Type_Union)
+        graph_op(b, .Construct if is_union else .Zero, .Explicit, span, t, v.name, graph_dest_place(b, d, span))
+        if is_union { graph_variant_defaults(b, t, v.name, v, d, span) }
+    } else {
+        return nil
+    }
+    gl := new(Graph_Literal, context.temp_allocator)
+    gl.d, gl.parent = d, d
+    gl.sd = as_scope_body(distinct_base(t))
+    // A union's variant: its fields are the variant struct's, past the tag.
+    if st := graph_variant_struct(b, t, v.name); st != nil {
+        gl.sd = as_scope_body(st)
+        gl.parent = Dest{kind = .Variant, name = v.name, type_ = st, parent = &gl.d}
+        for f in gl.sd.fields { if strings.has_prefix(f.name, "__") { gl.skip += 1 } }
+    }
+    return gl
+}
+
+// Where the literal's field goes: named, or its position's (graph_literal_writes).
+graph_fuse_literal_field :: proc(gl: ^Graph_Literal, name: string, i: int) -> Dest {
+    name := name
+    if name == "" && gl.sd != nil && gl.skip + i < len(gl.sd.fields) { name = gl.sd.fields[gl.skip + i].name }
+    t: Type
+    if gl.sd != nil {
+        if fi, ok := gl.sd.field_map[name]; ok { t = gl.sd.fields[fi].type_ }
+    }
+    return Dest{kind = .Field, name = name, type_ = t, parent = &gl.parent}
+}
+
+// An array literal built into d (graph_into): zero at the destination's
+// type — a short literal leaves the rest zero — or, with none known yet, the
+// literal's (typed once its first element is), then each element into its
+// slot.
+Graph_Array :: struct {
+    d:      Dest,
+    zero:   Node_Id,
+    elem_t: Type,
+}
+
+graph_fuse_array :: proc(b: ^Graph_Builder, v: ^Expr_Array, d: Dest) -> ^Graph_Array {
+    ga := new(Graph_Array, context.temp_allocator)
+    ga.d = d
+    t := d.type_ if d.type_ != nil && !is_infer(d.type_) else nil
+    ga.zero = graph_op(b, .Zero, .Explicit, v.span, t, "", graph_dest_place(b, d, v.span))
+    if t != nil { ga.elem_t = graph_elem_type(t) }
+    return ga
+}
+
+// Element i's slot; the literal's own type, from its first element, when the
+// destination gave none.
+graph_fuse_array_elem :: proc(b: ^Graph_Builder, ga: ^Graph_Array, i: int, first: Type, lit_t: Type) -> Dest {
+    if ga.elem_t == nil {
+        ga.elem_t = first
+        b.g.type_[ga.zero] = lit_t
+    }
+    return Dest{kind = .Index, index = i, type_ = ga.elem_t, parent = &ga.d}
+}
+
+// A variant built at d (graph_into, a bare variant): its construction, then
+// its field defaults.
+graph_fuse_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span) {
+    graph_op(b, .Construct, .Explicit, span, t, name, graph_dest_place(b, d, span))
+    graph_variant_defaults(b, t, name, nil, d, span)
+}
+
+// An aggregate built where no destination was given: a synthetic local,
+// made before it (graph_temp_place), typed once it is.
+graph_fuse_temp :: proc(b: ^Graph_Builder, span: Span) -> Dest {
+    return graph_dest_var("temp", graph_slot(b, "temp", nil, span), nil)
+}
+
+graph_fuse_temp_end :: proc(b: ^Graph_Builder, d: Dest, t: Type, span: Span) -> Operand {
+    b.g.type_[d.decl] = t
+    graph_fuse_typed(b, d.decl, t)
+    return graph_var(b, "temp", d.decl, t, span)
+}
+
+// A construction's operation into d (graph_call's): its place, the
+// arguments, then its overrides' writes (graph_fuse_literal_field over the
+// overrides, with gl.parent = d).
+graph_fuse_construct :: proc(b: ^Graph_Builder, callee: ^Type_Scope, t: Type, d: Dest, args: []Operand, w: Written, span: Span) -> ^Graph_Literal {
+    ops := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
+    append(&ops, graph_dest_place(b, d, span))
+    append(&ops, ..args)
+    b.code.constructed = graph_call_op(b, .Construct, w, span, callee, t, ..ops[:])
+    gl := new(Graph_Literal, context.temp_allocator)
+    gl.d, gl.parent = d, d
+    gl.sd = as_scope_body(distinct_base(t))
+    return gl
 }
 
 // A bare declaration of a value no constructor builds: zero.

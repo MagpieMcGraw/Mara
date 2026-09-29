@@ -1632,8 +1632,11 @@ Checker :: struct {
     gb:              ^Graph_Builder,
     want:            Fuse_Want,
     want_written:    Written,
+    want_dest:       Dest,
     asked:           Fuse_Want,
     asked_written:   Written,
+    asked_dest:      Dest,
+    lit:             ^Fuse_Lit,        // the literal whose fields are being built
     fused:           Fused,
     call:            ^Fuse_Call,
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
@@ -5540,13 +5543,15 @@ fuse_fail :: proc(c: ^Checker, reason: string) {
 // What the walk building the graph asks of an expression (fuse_expr): its
 // value; its place — a variable, a field, an element; or its place when it
 // has one, else its value (its consumer decides: a view, a read).
-Fuse_Want :: enum u8 { None, Value, Place, Either }
+Fuse_Want :: enum u8 { None, Value, Place, Either, Into }
 
-// What the checker built for an expression: a value, or a place.
+// What the checker built for an expression: a value, or a place — or
+// nothing, built into the destination it was given (.Into: else, as .Either).
 Fused :: struct {
     v:     Operand,
     place: bool,
     ok:    bool,
+    into:  bool,
 }
 
 // A call being built: its operands (check_call_arg) — each at its param's
@@ -5565,17 +5570,17 @@ Fuse_Call :: struct {
 
 // Check an expression, building what it computes, in the order it runs.
 // Written is the operations' (a default argument's are implied).
-fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Value, w := Written.Explicit) -> (Type, Fused) {
+fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Value, w := Written.Explicit, dest := Dest{}) -> (Type, Fused) {
     b := fusing(c)
     if b == nil { return check_expr(c, e, env), {} }
     // A compound assignment's target, read in its value: through the place
     // already built.
     if c.compound.key != nil && expr_identity(e) == c.compound.key {
         t := check_expr(c, e, env)
-        if want == .Value { return t, {graph_read(b, c.compound.place, t, expr_span(e)^), false, true} }
-        return t, {c.compound.place, true, true}
+        if want == .Value { return t, {graph_read(b, c.compound.place, t, expr_span(e)^), false, true, false} }
+        return t, {c.compound.place, true, true, false}
     }
-    c.want, c.want_written, c.fused = want, w, {}
+    c.want, c.want_written, c.want_dest, c.fused = want, w, dest, {}
     t := check_expr(c, e, env)
     r := c.fused
     c.fused = {}
@@ -5592,8 +5597,8 @@ fuse_asked :: proc(c: ^Checker) -> (Fuse_Want, Written) {
     return want, w
 }
 
-fuse_done :: proc(c: ^Checker, v: Operand, place := false) {
-    c.fused = {v, place, true}
+fuse_done :: proc(c: ^Checker, v: Operand, place := false, into := false) {
+    c.fused = {v, place, true, into}
 }
 
 // A built expression's value: a place is read, right after it.
@@ -5616,14 +5621,19 @@ fuse_leaf :: proc(c: ^Checker, e: Expr) {
         // Text is its global: its place and its value.
         fuse_done(c, graph_value(b, e, w), want == .Place)
     case ^Expr_Ident:
-        // A variable, or a constant table, is a place; the rest are values.
+        // A variable, or a constant table, is a place; the rest are values
+        // (a variant is built where it goes).
         is_place := v.resolved == nil
         if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(v.type_) { is_place = true }
         if is_void_literal(e) { is_place = false }
+        _, is_variant := v.resolved.(Resolved_Union_Variant)
         switch {
+        case want == .Into && is_variant:
+            graph_fuse_variant(b, v.type_, v.name, c.asked_dest, v.span)
+            fuse_done(c, NO_VALUE, into = true)
         case want == .Value:  fuse_done(c, graph_value(b, e, w))
         case is_place:        fuse_done(c, graph_place(b, e, v.span), true)
-        case want == .Either: fuse_done(c, graph_value(b, e, w))
+        case want != .Place:  fuse_done(c, graph_value(b, e, w))
         }
     }
 }
@@ -5755,14 +5765,20 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
             graph_fuse_void_decl(b, fa.decl, t, s.span)
             return
         }
-        fuse_store_var(c, s.name, fa.decl, t, s.value, fa, s.span)
+        // (A text written to a new partial array fills a prefix of it.)
+        wrote := fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, fa.decl, t), s.span, settle = true)
+        if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, wrote && is_partial_array(t) && graph_fills_prefix(s.value), t) }
         return
     }
     if is_skip || is_void_literal(s.value) {   // `x = void` de-inits
         graph_fuse_void_assign(b, s.name, s.var_type, s.span)
         return
     }
-    fuse_store_var(c, s.name, NO_NODE, s.var_type, s.value, fa, s.span)
+    if fuse_builds_into(s.value) {
+        fuse_fail(c, "a value built in place of one")
+        return
+    }
+    fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, NO_NODE, s.var_type), s.span)
 }
 
 // A value stored in a variable (graph_store, graph_assign): a view where one
@@ -7343,7 +7359,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             defer fuse_assign_end(c, s, &fa)
             val_type: Type
             if fa.on && !is_skip && !(!s.is_decl && is_void_literal(s.value)) {
-                val_type, fa.value = fuse_expr(c, s.value, env, .Either)
+                // A declaration's value is built where it goes (its type,
+                // when not written, known once it is).
+                if s.is_decl {
+                    at := graph_dest_var(s.name, fa.decl, nil if is_untyped(ann_type) else ann_type)
+                    val_type, fa.value = fuse_expr(c, s.value, env, .Into, dest = at)
+                } else {
+                    val_type, fa.value = fuse_expr(c, s.value, env, .Either)
+                }
             } else {
                 val_type = check_expr(c, s.value, env)
             }
@@ -8810,6 +8833,15 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
     ensure_struct_signature(c, st)  // resolve fields on demand before matching the literal
     if !override { check_literal_constructs(c, lit, st) }
     if override && lit.type_ == nil { lit.type_ = sd_type_scope(st) }   // `Foo(){...}`: Foo's fields
+    // Built (the literal being built): its construction, then each field
+    // stored as it is checked.
+    fl := c.lit if c.lit != nil && c.lit.e == lit else nil
+    c.lit = nil
+    gl: ^Graph_Literal
+    if b := fusing(c); b != nil && fl != nil {
+        gl = fl.gl if override else graph_fuse_literal(b, lit, lit.type_, fl.dest)
+        fl.built = gl != nil
+    }
     // Positional form (`Foo{a, b, c}`): match entries to struct fields by index.
     if lit.positional {
         // Multi-return spread: `Foo{call()}` where call's return list matches
@@ -8819,6 +8851,10 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         // (Only a call can be one; its type is the positional path's too.)
         probed: Type
         if _, is_call := lit.fields[0].value.(^Expr_Call); is_call && len(lit.fields) == 1 && len(st.fields) > 1 {
+            if gl != nil {
+                fuse_fail(c, "a spread literal")
+                gl = nil
+            }
             single_val := lit.fields[0].value
             probed = check_expr(c, single_val, env)
             returns := call_return_list(c, single_val, env)
@@ -8853,7 +8889,14 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
             if needs_field_type_hint(field.value) {
                 c.expected_hint = sf.type_
             }
-            ft := probed if i == 0 && probed != nil else check_expr(c, field.value, env)
+            ft: Type
+            if i == 0 && probed != nil {
+                ft = probed
+            } else if gl != nil {
+                ft = fuse_store_into(c, field.value, env, graph_fuse_literal_field(gl, "", i), lit.span)
+            } else {
+                ft = check_expr(c, field.value, env)
+            }
             if !coerce_deferred(c, ft, sf.type_, span) && types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
                 check_error(c, span, TYPE_FIELD_POSITION_EXPECTED,
                     sf.name, i, type_name(sf.type_), type_name(ft))
@@ -8875,7 +8918,12 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
             if needs_field_type_hint(field.value) || needs_union_variant_hint(sf.type_, field.value) {
                 c.expected_hint = sf.type_
             }
-            ft := check_expr(c, field.value, env)
+            ft: Type
+            if gl != nil {
+                ft = fuse_store_into(c, field.value, env, graph_fuse_literal_field(gl, field.name, 0), lit.span)
+            } else {
+                ft = check_expr(c, field.value, env)
+            }
             if !coerce_deferred(c, ft, sf.type_, span) && types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
                 check_error(c, span, TYPE_FIELD_EXPECTED,
                     field.name, type_name(sf.type_), type_name(ft))
@@ -10983,7 +11031,7 @@ check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             c.once_seen[k] = seen
         }
     }
-    c.asked, c.asked_written, c.want = c.want, c.want_written, .None
+    c.asked, c.asked_written, c.asked_dest, c.want = c.want, c.want_written, c.want_dest, .None
     result := check_expr_impl(c, expr, env)
     set_expr_type(expr, result)
     // What building asked of it and nothing took: a leaf's, built here.
@@ -11164,6 +11212,363 @@ check_unary_impl :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope, fu: ^Fus
         }
         check_error(c, e.span, TYPE_CANNOT_DEREFERENCE_NON_POINTER_TYPE, type_name(operand_type))
         return Type_Error{}
+    }
+    return Type_Error{}
+}
+
+// A literal, built where it goes (graph_into): into its destination, or —
+// as a value — into a temporary made before it. Its fields are built as
+// check_struct_literal_fields checks them.
+Fuse_Lit :: struct {
+    e:     rawptr,
+    dest:  Dest,
+    built: bool,
+    gl:    ^Graph_Literal,   // an override block's: the construction's
+}
+
+check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Scope) -> Type {
+    want, w := fuse_asked(c)
+    d := c.asked_dest
+    b := fusing(c)
+    if want == .None || b == nil { return check_struct_literal_impl(c, e, env) }
+    if e.override_target != "" || e.is_broadcast {
+        fuse_fail(c, "an override or a broadcast literal")
+        return check_struct_literal_impl(c, e, env)
+    }
+    temp := want != .Into
+    if temp { d = graph_fuse_temp(b, e.span) }
+    fl := Fuse_Lit{e = e, dest = d}
+    saved := c.lit
+    c.lit = &fl
+    t := check_struct_literal_impl(c, e, env)
+    c.lit = saved
+    if fusing(c) == nil { return t }
+    if !fl.built {
+        fuse_fail(c, "a literal the graph builds no way")
+        return t
+    }
+    if !temp {
+        fuse_done(c, NO_VALUE, into = true)
+        return t
+    }
+    p := graph_fuse_temp_end(b, d, t, e.span)
+    if want == .Place {
+        fuse_done(c, p, true)
+    } else {
+        fuse_done(c, graph_read(b, p, t, e.span))
+    }
+    return t
+}
+
+// An array literal, built as a struct literal is: zero, then each element
+// into its slot.
+check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Type {
+    want, w := fuse_asked(c)
+    d := c.asked_dest
+    b := fusing(c)
+    if want == .None || b == nil || len(e.elements) == 0 { return check_array_literal_impl(c, e, env, nil) }
+    temp := want != .Into
+    if temp { d = graph_fuse_temp(b, e.span) }
+    ga := graph_fuse_array(b, e, d)
+    t := check_array_literal_impl(c, e, env, ga)
+    if fusing(c) == nil { return t }
+    if b.g.type_[ga.zero] == nil { b.g.type_[ga.zero] = t }
+    if !temp {
+        fuse_done(c, NO_VALUE, into = true)
+        return t
+    }
+    p := graph_fuse_temp_end(b, d, t, e.span)
+    if want == .Place {
+        fuse_done(c, p, true)
+    } else {
+        fuse_done(c, graph_read(b, p, t, e.span))
+    }
+    return t
+}
+
+// A value stored into a destination (graph_store): what builds in place
+// builds there; else a view where one is taken, or the value at the
+// destination's type, written. `settle` when the destination's type is a
+// declaration's or a place's (the builder's is settled).
+fuse_store_into :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, d: Dest, span: Span, settle := false) -> Type {
+    t, r := fuse_expr(c, e, env, .Into, dest = d)
+    fuse_store_finish(c, e, t, r, d, span, settle)
+    return t
+}
+
+fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span: Span, settle := false) -> (wrote: bool) {
+    b := fusing(c)
+    if b == nil || r.into { return }
+    if fuse_builds_into(e) {
+        fuse_fail(c, "a value built in place, taken as one")
+        return
+    }
+    dt := graph_dest_type(b, d)
+    _, to_ptr := distinct_base(dt).(^Type_Ptr)
+    _, from_ptr := distinct_base(t).(^Type_Ptr)
+    if to_ptr == from_ptr && graph_header_of(dt) && graph_partial_of(t) {
+        v := graph_op_value(b, .Cast, .Implied, span, dt, type_name(dt), fuse_value(c, r, e, t))
+        graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)   // (the view, then the place)
+        return
+    }
+    _, to_slice := distinct_base(dt).(^Type_Slice)
+    _, from_array := distinct_base(t).(^Type_Fixed_Array)
+    if to_slice && from_array {
+        if !r.place {
+            fuse_fail(c, "a slice of an array value")
+            return
+        }
+        v := graph_op_value(b, .Slice, .Implied, span, dt, "", r.v)
+        graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
+        return
+    }
+    if d.type_ != nil && byte_flow(d.type_, e, t) == .Read {
+        fuse_fail(c, "bytes read as another type")
+        return
+    }
+    val := graph_fuse_widen(b, fuse_value(c, r, e, t), span, {to = dt, settle_to = settle})
+    graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
+    return true
+}
+
+check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Scope) -> Type {
+    // Broadcast literal `{all <expr>}`: expand_broadcast_array_literal
+    // has already validated and populated array_values, and set e.type_
+    // to the surrounding field/decl type. Don't re-check (which would
+    // return Type_Error for the anonymous shape) and overwrite the type.
+    if e.is_broadcast && e.type_ != nil {
+        if _, is_err := e.type_.(Type_Error); !is_err {
+            return e.type_
+        }
+    }
+    // Inline typed-array literal: `[3]f32{0.9, 0.2, 0.6}`. The parser
+    // attaches the inline type expression; resolve it and reuse the
+    // array-literal validation path used by named distinct array types.
+    if e.type_expr != nil {
+        resolved := resolve_type_expr(e.type_expr, c, e.span, env = env)
+        if fa, fa_ok := resolved.(^Type_Fixed_Array); fa_ok {
+            check_array_struct_literal(c, e, fa, env)
+            e.type_ = resolved
+            return resolved
+        }
+        // Empty partial-array literal: `[..N]T{}` — a default-init
+        // constructor that yields a fresh partial array with .len = 0,
+        // .cap = N, .ptr aimed at the destination's inline elements.
+        // Codegen emits the in-place init; the literal itself doesn't
+        // need any element values (any fields would currently be
+        // rejected as the codegen doesn't fill elements through this
+        // path).
+        if _, pa_ok := resolved.(^Type_Partial_Array); pa_ok {
+            if len(e.fields) > 0 {
+                check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
+                return Type_Error{}
+            }
+            e.type_ = resolved
+            return resolved
+        }
+        check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
+        return Type_Error{}
+    }
+    // Distinct-fixed-array literal: Quat{1,2,3,4} / Quat{w: 1} / Quat{}.
+    // Detected by resolving e.name to a Type_Distinct wrapping Type_Fixed_Array
+    // (or a plain Type_Fixed_Array via alias). Validates and normalizes the
+    // fields into e.array_values for codegen.
+    if e.name != "" {
+        flat := resolve_type_name(c, e.name, "", env)
+        if dt, ok := c.table.distinct_types[flat]; ok {
+            if fa, fa_ok := dt.base_type.(^Type_Fixed_Array); fa_ok {
+                check_array_struct_literal(c, e, fa, env)
+                return dt
+            }
+        }
+    }
+    // Dotted type path: `Parent.Inner{...}` / `mod.Type{...}` /
+    // `Union.Variant{...}` — resolve through the same machinery as type
+    // position, which owns all the dotted cases (module aliases, nested
+    // types, variant structs). A dotted name can never be a variable or
+    // a local, so a resolution miss is a hard error here rather than the
+    // suppressed fallthrough bare names get.
+    if strings.index_byte(e.name, '.') >= 0 {
+        resolved := resolve_type_expr(Type_Name{name = e.name, span = e.span}, c, e.span, env = env)
+        if sd := as_scope_body(resolved); sd != nil {
+            e.type_ = resolved
+            if !defer_literal_validation(c, e, sd, env) {
+                check_struct_literal_fields(c, e, sd, e.span, env)
+            }
+            return resolved
+        }
+        if dt, dt_ok := resolved.(^Type_Distinct); dt_ok {
+            if fa, fa_ok := dt.base_type.(^Type_Fixed_Array); fa_ok {
+                check_array_struct_literal(c, e, fa, env)
+                e.type_ = dt
+                return dt
+            }
+        }
+        check_error(c, e.span, TYPE_STRUCT_LITERAL_NAME_NOT_STRUCT, e.name, e.name)
+        return Type_Error{}
+    }
+    // Named struct literal: run the full field-matching check (positional vs
+    // named, multi-return spread, types). Without this, `x := Foo{call()}`
+    // with no annotation would skip the structural check and is_spread
+    // never gets set by the spread-detection branch.
+    if e.name != "" {
+        flat := resolve_type_name(c, e.name, "", env)
+        if st, ok := c.table.structs[flat]; ok {
+            e.type_ = st
+            if !defer_literal_validation(c, e, &st.sd, env) {
+                check_struct_literal_fields(c, e, &st.sd, e.span, env)
+            }
+            return st
+        }
+        if st, ok := c.table.funs[flat]; ok {
+            e.type_ = st
+            if !defer_literal_validation(c, e, &st.sd, env) {
+                check_struct_literal_fields(c, e, &st.sd, e.span, env)
+            }
+            return st
+        }
+        // Function-LOCAL struct types are keyed in c.table.structs by a
+        // MANGLED name (enclosing + "_" + bare); resolve_type_name produces
+        // a module-flat name that doesn't match, so a local `LocalStruct{...}`
+        // misses the lookups above. Find it through the env, which binds the
+        // nested type directly (codegen's lookup_struct then finds it by the
+        // same mangled name). Guard with a name match — the type's mangled
+        // name equals or ends with `_<e.name>` — so a VARIABLE of that struct
+        // type (`var{...}`, the copy form) isn't silently turned into a
+        // construct-new; that stays unsupported for now.
+        if tv, found := type_env_get(env, e.name); found {
+            if ts, ts_ok := tv.(^Type_Scope); ts_ok && ts.kind == .Struct {
+                names_type := ts.name == e.name ||
+                    strings.has_suffix(ts.name, strings.concatenate({"_", e.name}))
+                if names_type {
+                    e.type_ = ts
+                    if !defer_literal_validation(c, e, &ts.sd, env) {
+                        check_struct_literal_fields(c, e, &ts.sd, e.span, env)
+                    }
+                    return ts
+                }
+                // e.name is a struct VARIABLE in value position — the
+                // copy-with-overrides form (`new := var{...}`), which is
+                // not implemented. Hard error; the old fallthrough yielded
+                // an untyped value with checking bypassed.
+                check_error(c, e.span, TYPE_STRUCT_COPY_FORM, e.name, e.name, e.name)
+                return Type_Error{}
+            }
+        }
+    }
+    // Anonymous literal with a context-supplied type. Used for things like
+    // `quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})` where the parameter type
+    // (Vec3 :: distinct [3]f32) is the only source of shape information.
+    // Without this, array_values would never be populated and codegen
+    // would emit a bare `0` for the aggregate.
+    if hint := c.expected_hint; hint != nil {
+        if fa, fa_ok := distinct_base(hint).(^Type_Fixed_Array); fa_ok {
+            check_array_struct_literal(c, e, fa, env)
+            e.type_ = hint
+            return hint
+        }
+        // Struct-typed context (call argument, mainly — assignments,
+        // decls and returns have their own special-cased paths): give a
+        // bare literal the same field-matching treatment those get. The
+        // hinted struct's fields resolve on demand: nested in a constant
+        // (`Quad{{{1, 2}, 2}, ...}`) nothing else has asked for them yet.
+        if sd := as_scope_body(distinct_base(hint)); sd != nil {
+            ensure_struct_signature(c, sd)
+            if len(sd.fields) > 0 {
+                e.type_ = hint   // (its fields are built at it)
+                check_struct_literal_fields(c, e, sd, e.span, env)
+                return hint
+            }
+        }
+        // Union-typed context: a variant literal `A{...}` in a return slot,
+        // argument, or nested field. Validate the variant's fields and type
+        // the node as the UNION so it satisfies the slot; codegen
+        // materializes the value from e.name (the tag-inclusive variant for
+        // a normal union, the bare pointer for a niche one).
+        if ut, ut_ok := distinct_base(hint).(^Type_Union); ut_ok && e.name != "" && e.name in ut.tag_map {
+            if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
+                check_struct_literal_fields(c, e, &st.sd, e.span, env)
+                return ut   // node types as the union; codegen materializes the variant from e.name
+            }
+        }
+    }
+    // Bare variant literal with no matching type hint — the inferred-type
+    // binding positions a `::` constant or `:=` local create, e.g.
+    // `FOO :: Circle{r=3}`. When the variant name identifies a single union
+    // (variant_owner_union), self-type the node as that union and validate
+    // its fields, exactly as the union-hint branch above does for a hinted
+    // slot; codegen then materializes the value from e.name. Without this the
+    // literal stays Type_Error and codegen hits the null-pointer backstop
+    // (CODE_STRUCT_LITERAL_UNTYPED_EXPR) — the silent-accept-then-late-abort
+    // anti-pattern. This extends "bare variant resolution goes through an
+    // expected type" to the binding positions, where the value's own type IS
+    // the inferred type (mirroring how a struct literal `Foo{...}` self-types).
+    if e.name != "" {
+        if ut := variant_owner_union(c, e.name); ut != nil {
+            if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
+                check_struct_literal_fields(c, e, &st.sd, e.span, env)
+                e.type_ = ut
+                return ut
+            }
+        }
+    }
+    // Bare variant literal whose name is shared by 2+ unions/enums — the
+    // ambiguity sentinel "" that register_enum_variants writes into
+    // variant_to_enum (variant_owner_union returns nil for it). We only
+    // reach here HINT-LESS: the union-hint branch above returns for any
+    // context that supplies an expected type, and check_define now feeds an
+    // annotated `::`'s type as a hint too — so the name has no single
+    // inferred owner. Emit a located error pointing at the qualified form
+    // (`A.Dup{...}`, handled by the dotted path above) or annotating the
+    // binding, mirroring resolve_variant_ident's ambiguity diagnostic for
+    // the `.Variant` dot-shorthand. Without this the literal silently stays
+    // Type_Error and codegen aborts one phase too late
+    // (CODE_STRUCT_LITERAL_UNTYPED_EXPR).
+    if e.name != "" {
+        if owner, mapped := c.table.variant_to_enum[e.name]; mapped && owner == "" {
+            // List only the UNIONS that own this variant: a `{...}` literal
+            // constructs a payload, which is meaningful for unions but not
+            // plain enums, and the synthetic <Name>_Tag enums each union
+            // carries would otherwise pollute the list.
+            owners: [dynamic]string
+            defer delete(owners)
+            for _, ut in c.table.unions {
+                if e.name in ut.tag_map {
+                    append(&owners, ut.source_name if ut.source_name != "" else ut.name)
+                }
+            }
+            slice.sort(owners[:])
+            first := owners[0] if len(owners) > 0 else e.name
+            check_error(c, e.span, TYPE_AMBIGUOUS_VARIANT_LITERAL,
+                e.name, strings.join(owners[:], ", "), first, e.name)
+            return Type_Error{}
+        }
+    }
+    // Anonymous struct literal: just check each field value. A name that
+    // matched no type, struct variable, variant, or hint reaches here and
+    // stays a suppressed Type_Error (e.g. context-typed variant literals
+    // are validated by the enclosing decl, not here) — so we can't turn
+    // this into a hard "undefined" error without false-flagging them.
+    //
+    // BUT a NAMED literal whose name is neither a known variant nor a bound
+    // local matched nothing at all — `Nonexist{...}`. That is a genuine
+    // unknown type, so emit the same `unknown type 'X'` the type-annotation
+    // path gives, one phase before codegen's null-pointer backstop
+    // (CODE_STRUCT_LITERAL_UNTYPED_EXPR) would otherwise fire. A bare variant
+    // literal (`Circle{...}`) is spared: it is validated later against its
+    // union by the enclosing annotated decl / return / arg (check_define
+    // runs check_expr hint-lessly first). Variant ownership lives in the same
+    // variant→owner index the `.N` dot-shorthand resolves through — union
+    // variants land there via each union's synthetic tag enum — so reuse it
+    // rather than rescanning the union table.
+    _, is_known_variant := c.table.variant_to_enum[e.name]
+    if e.name != "" && !is_known_variant {
+        if _, _, bound := type_env_locate(env, e.name); !bound {
+            check_error(c, e.span, TYPE_UNKNOWN_TYPE, e.name)
+        }
+    }
+    for field in e.fields {
+        check_expr(c, field.value, env)
     }
     return Type_Error{}
 }
@@ -11363,245 +11768,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     case ^Expr_Slice:
         return check_slice(c, e, env)
     case ^Expr_Struct_Literal:
-        // Broadcast literal `{all <expr>}`: expand_broadcast_array_literal
-        // has already validated and populated array_values, and set e.type_
-        // to the surrounding field/decl type. Don't re-check (which would
-        // return Type_Error for the anonymous shape) and overwrite the type.
-        if e.is_broadcast && e.type_ != nil {
-            if _, is_err := e.type_.(Type_Error); !is_err {
-                return e.type_
-            }
-        }
-        // Inline typed-array literal: `[3]f32{0.9, 0.2, 0.6}`. The parser
-        // attaches the inline type expression; resolve it and reuse the
-        // array-literal validation path used by named distinct array types.
-        if e.type_expr != nil {
-            resolved := resolve_type_expr(e.type_expr, c, e.span, env = env)
-            if fa, fa_ok := resolved.(^Type_Fixed_Array); fa_ok {
-                check_array_struct_literal(c, e, fa, env)
-                e.type_ = resolved
-                return resolved
-            }
-            // Empty partial-array literal: `[..N]T{}` — a default-init
-            // constructor that yields a fresh partial array with .len = 0,
-            // .cap = N, .ptr aimed at the destination's inline elements.
-            // Codegen emits the in-place init; the literal itself doesn't
-            // need any element values (any fields would currently be
-            // rejected as the codegen doesn't fill elements through this
-            // path).
-            if _, pa_ok := resolved.(^Type_Partial_Array); pa_ok {
-                if len(e.fields) > 0 {
-                    check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
-                    return Type_Error{}
-                }
-                e.type_ = resolved
-                return resolved
-            }
-            check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
-            return Type_Error{}
-        }
-        // Distinct-fixed-array literal: Quat{1,2,3,4} / Quat{w: 1} / Quat{}.
-        // Detected by resolving e.name to a Type_Distinct wrapping Type_Fixed_Array
-        // (or a plain Type_Fixed_Array via alias). Validates and normalizes the
-        // fields into e.array_values for codegen.
-        if e.name != "" {
-            flat := resolve_type_name(c, e.name, "", env)
-            if dt, ok := c.table.distinct_types[flat]; ok {
-                if fa, fa_ok := dt.base_type.(^Type_Fixed_Array); fa_ok {
-                    check_array_struct_literal(c, e, fa, env)
-                    return dt
-                }
-            }
-        }
-        // Dotted type path: `Parent.Inner{...}` / `mod.Type{...}` /
-        // `Union.Variant{...}` — resolve through the same machinery as type
-        // position, which owns all the dotted cases (module aliases, nested
-        // types, variant structs). A dotted name can never be a variable or
-        // a local, so a resolution miss is a hard error here rather than the
-        // suppressed fallthrough bare names get.
-        if strings.index_byte(e.name, '.') >= 0 {
-            resolved := resolve_type_expr(Type_Name{name = e.name, span = e.span}, c, e.span, env = env)
-            if sd := as_scope_body(resolved); sd != nil {
-                e.type_ = resolved
-                if !defer_literal_validation(c, e, sd, env) {
-                    check_struct_literal_fields(c, e, sd, e.span, env)
-                }
-                return resolved
-            }
-            if dt, dt_ok := resolved.(^Type_Distinct); dt_ok {
-                if fa, fa_ok := dt.base_type.(^Type_Fixed_Array); fa_ok {
-                    check_array_struct_literal(c, e, fa, env)
-                    e.type_ = dt
-                    return dt
-                }
-            }
-            check_error(c, e.span, TYPE_STRUCT_LITERAL_NAME_NOT_STRUCT, e.name, e.name)
-            return Type_Error{}
-        }
-        // Named struct literal: run the full field-matching check (positional vs
-        // named, multi-return spread, types). Without this, `x := Foo{call()}`
-        // with no annotation would skip the structural check and is_spread
-        // never gets set by the spread-detection branch.
-        if e.name != "" {
-            flat := resolve_type_name(c, e.name, "", env)
-            if st, ok := c.table.structs[flat]; ok {
-                e.type_ = st
-                if !defer_literal_validation(c, e, &st.sd, env) {
-                    check_struct_literal_fields(c, e, &st.sd, e.span, env)
-                }
-                return st
-            }
-            if st, ok := c.table.funs[flat]; ok {
-                e.type_ = st
-                if !defer_literal_validation(c, e, &st.sd, env) {
-                    check_struct_literal_fields(c, e, &st.sd, e.span, env)
-                }
-                return st
-            }
-            // Function-LOCAL struct types are keyed in c.table.structs by a
-            // MANGLED name (enclosing + "_" + bare); resolve_type_name produces
-            // a module-flat name that doesn't match, so a local `LocalStruct{...}`
-            // misses the lookups above. Find it through the env, which binds the
-            // nested type directly (codegen's lookup_struct then finds it by the
-            // same mangled name). Guard with a name match — the type's mangled
-            // name equals or ends with `_<e.name>` — so a VARIABLE of that struct
-            // type (`var{...}`, the copy form) isn't silently turned into a
-            // construct-new; that stays unsupported for now.
-            if tv, found := type_env_get(env, e.name); found {
-                if ts, ts_ok := tv.(^Type_Scope); ts_ok && ts.kind == .Struct {
-                    names_type := ts.name == e.name ||
-                        strings.has_suffix(ts.name, strings.concatenate({"_", e.name}))
-                    if names_type {
-                        e.type_ = ts
-                        if !defer_literal_validation(c, e, &ts.sd, env) {
-                            check_struct_literal_fields(c, e, &ts.sd, e.span, env)
-                        }
-                        return ts
-                    }
-                    // e.name is a struct VARIABLE in value position — the
-                    // copy-with-overrides form (`new := var{...}`), which is
-                    // not implemented. Hard error; the old fallthrough yielded
-                    // an untyped value with checking bypassed.
-                    check_error(c, e.span, TYPE_STRUCT_COPY_FORM, e.name, e.name, e.name)
-                    return Type_Error{}
-                }
-            }
-        }
-        // Anonymous literal with a context-supplied type. Used for things like
-        // `quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})` where the parameter type
-        // (Vec3 :: distinct [3]f32) is the only source of shape information.
-        // Without this, array_values would never be populated and codegen
-        // would emit a bare `0` for the aggregate.
-        if hint := c.expected_hint; hint != nil {
-            if fa, fa_ok := distinct_base(hint).(^Type_Fixed_Array); fa_ok {
-                check_array_struct_literal(c, e, fa, env)
-                e.type_ = hint
-                return hint
-            }
-            // Struct-typed context (call argument, mainly — assignments,
-            // decls and returns have their own special-cased paths): give a
-            // bare literal the same field-matching treatment those get. The
-            // hinted struct's fields resolve on demand: nested in a constant
-            // (`Quad{{{1, 2}, 2}, ...}`) nothing else has asked for them yet.
-            if sd := as_scope_body(distinct_base(hint)); sd != nil {
-                ensure_struct_signature(c, sd)
-                if len(sd.fields) > 0 {
-                    check_struct_literal_fields(c, e, sd, e.span, env)
-                    e.type_ = hint
-                    return hint
-                }
-            }
-            // Union-typed context: a variant literal `A{...}` in a return slot,
-            // argument, or nested field. Validate the variant's fields and type
-            // the node as the UNION so it satisfies the slot; codegen
-            // materializes the value from e.name (the tag-inclusive variant for
-            // a normal union, the bare pointer for a niche one).
-            if ut, ut_ok := distinct_base(hint).(^Type_Union); ut_ok && e.name != "" && e.name in ut.tag_map {
-                if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
-                    check_struct_literal_fields(c, e, &st.sd, e.span, env)
-                    return ut   // node types as the union; codegen materializes the variant from e.name
-                }
-            }
-        }
-        // Bare variant literal with no matching type hint — the inferred-type
-        // binding positions a `::` constant or `:=` local create, e.g.
-        // `FOO :: Circle{r=3}`. When the variant name identifies a single union
-        // (variant_owner_union), self-type the node as that union and validate
-        // its fields, exactly as the union-hint branch above does for a hinted
-        // slot; codegen then materializes the value from e.name. Without this the
-        // literal stays Type_Error and codegen hits the null-pointer backstop
-        // (CODE_STRUCT_LITERAL_UNTYPED_EXPR) — the silent-accept-then-late-abort
-        // anti-pattern. This extends "bare variant resolution goes through an
-        // expected type" to the binding positions, where the value's own type IS
-        // the inferred type (mirroring how a struct literal `Foo{...}` self-types).
-        if e.name != "" {
-            if ut := variant_owner_union(c, e.name); ut != nil {
-                if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
-                    check_struct_literal_fields(c, e, &st.sd, e.span, env)
-                    e.type_ = ut
-                    return ut
-                }
-            }
-        }
-        // Bare variant literal whose name is shared by 2+ unions/enums — the
-        // ambiguity sentinel "" that register_enum_variants writes into
-        // variant_to_enum (variant_owner_union returns nil for it). We only
-        // reach here HINT-LESS: the union-hint branch above returns for any
-        // context that supplies an expected type, and check_define now feeds an
-        // annotated `::`'s type as a hint too — so the name has no single
-        // inferred owner. Emit a located error pointing at the qualified form
-        // (`A.Dup{...}`, handled by the dotted path above) or annotating the
-        // binding, mirroring resolve_variant_ident's ambiguity diagnostic for
-        // the `.Variant` dot-shorthand. Without this the literal silently stays
-        // Type_Error and codegen aborts one phase too late
-        // (CODE_STRUCT_LITERAL_UNTYPED_EXPR).
-        if e.name != "" {
-            if owner, mapped := c.table.variant_to_enum[e.name]; mapped && owner == "" {
-                // List only the UNIONS that own this variant: a `{...}` literal
-                // constructs a payload, which is meaningful for unions but not
-                // plain enums, and the synthetic <Name>_Tag enums each union
-                // carries would otherwise pollute the list.
-                owners: [dynamic]string
-                defer delete(owners)
-                for _, ut in c.table.unions {
-                    if e.name in ut.tag_map {
-                        append(&owners, ut.source_name if ut.source_name != "" else ut.name)
-                    }
-                }
-                slice.sort(owners[:])
-                first := owners[0] if len(owners) > 0 else e.name
-                check_error(c, e.span, TYPE_AMBIGUOUS_VARIANT_LITERAL,
-                    e.name, strings.join(owners[:], ", "), first, e.name)
-                return Type_Error{}
-            }
-        }
-        // Anonymous struct literal: just check each field value. A name that
-        // matched no type, struct variable, variant, or hint reaches here and
-        // stays a suppressed Type_Error (e.g. context-typed variant literals
-        // are validated by the enclosing decl, not here) — so we can't turn
-        // this into a hard "undefined" error without false-flagging them.
-        //
-        // BUT a NAMED literal whose name is neither a known variant nor a bound
-        // local matched nothing at all — `Nonexist{...}`. That is a genuine
-        // unknown type, so emit the same `unknown type 'X'` the type-annotation
-        // path gives, one phase before codegen's null-pointer backstop
-        // (CODE_STRUCT_LITERAL_UNTYPED_EXPR) would otherwise fire. A bare variant
-        // literal (`Circle{...}`) is spared: it is validated later against its
-        // union by the enclosing annotated decl / return / arg (check_define
-        // runs check_expr hint-lessly first). Variant ownership lives in the same
-        // variant→owner index the `.N` dot-shorthand resolves through — union
-        // variants land there via each union's synthetic tag enum — so reuse it
-        // rather than rescanning the union table.
-        _, is_known_variant := c.table.variant_to_enum[e.name]
-        if e.name != "" && !is_known_variant {
-            if _, _, bound := type_env_locate(env, e.name); !bound {
-                check_error(c, e.span, TYPE_UNKNOWN_TYPE, e.name)
-            }
-        }
-        for field in e.fields {
-            check_expr(c, field.value, env)
-        }
-        return Type_Error{}
+        return check_struct_literal(c, e, env)
     case ^Expr_Field_Access:
         return check_field_access(c, e, env)
     case ^Expr_Size_Of:
@@ -11974,6 +12141,7 @@ Fuse_Field :: struct {
 
 check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope) -> Type {
     want, w := fuse_asked(c)
+    d := c.asked_dest
     b := fusing(c)
     if want == .None || b == nil { return check_field_access_impl(c, e, env, nil) }
     ff := Fuse_Field{on = true, mark = graph_fuse_mark(b)}
@@ -11992,10 +12160,14 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     }
     graph_fuse_drop_since(b, ff.mark)
     _, is_const := e.resolved.(Resolved_Constant)
+    _, is_variant := e.resolved.(Resolved_Union_Variant)
     switch {
+    case want == .Into && is_variant:
+        graph_fuse_variant(b, t, e.field, d, e.span)
+        fuse_done(c, NO_VALUE, into = true)
     case want == .Value:                  fuse_done(c, graph_value(b, e, w))
     case is_const && graph_aggregate(t):  fuse_done(c, graph_place(b, e, e.span), true)   // a constant table
-    case want == .Either:                 fuse_done(c, graph_value(b, e, w))
+    case want != .Place:                  fuse_done(c, graph_value(b, e, w))
     }
     return t
 }
@@ -13747,8 +13919,10 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Scope) -> Type {
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
-    // Built (fusing): its arguments' values as they are checked, then it.
+    // Built (fusing): its arguments' values as they are checked, then it (a
+    // construction: into where it goes, or a temporary).
     want, w := fuse_asked(c)
+    dest := c.asked_dest
     fc := Fuse_Call{w = w}
     defer delete(fc.ops)
     saved_call := c.call
@@ -13956,13 +14130,18 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     }
 
     fc.params = true
-    if want != .None && fun_type.kind == .Fun && e.fn_value == nil { c.call = &fc }
+    if want != .None && (fun_type.kind == .Fun || fun_type.kind == .Struct) && e.fn_value == nil { c.call = &fc }
     check_call_args(c, check_args[:], fun_type, call_name(e), e.span, env)
+    construct: ^Graph_Literal
+    construct_at: Dest
     if c.call != nil {
         c.call = nil
         if b := fusing(c); b != nil {
             if want == .Place {
                 fuse_fail(c, "a call's place")
+            } else if fun_type.kind == .Struct {
+                construct_at = dest if want == .Into else graph_dest_var("temp", graph_slot(b, "temp", fun_type, e.span), fun_type)
+                construct = graph_fuse_construct(b, fun_type, fun_type, construct_at, fc.ops[:], w, e.span)
             } else {
                 fuse_done(c, {graph_call_op(b, .Call, w, e.span, fun_type, fn_primary_return(fun_type), ..fc.ops[:]), 0})
             }
@@ -13984,7 +14163,19 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             e.resolved_func = Resolved_Func{name = fun_type.name, callee = fun_type}
         }
         if e.overrides != nil {
+            // (Built: each override written into what it constructed.)
+            ol := Fuse_Lit{e = e.overrides, gl = construct, built = construct != nil}
+            saved := c.lit
+            if construct != nil { c.lit = &ol }
             check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env, override = true)
+            c.lit = saved
+        }
+        if b := fusing(c); b != nil && construct != nil {
+            if want == .Into {
+                fuse_done(c, NO_VALUE, into = true)
+            } else {
+                fuse_done(c, graph_read(b, graph_dest_place(b, construct_at, e.span), fun_type, e.span))
+            }
         }
         return fun_type
     }
@@ -14080,16 +14271,35 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
 
 // check_module_call removed — module calls now resolve through the unified
 // assoc_fn/types path in check_call, same as type-qualified calls.
-check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Type {
+check_array_literal_impl :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope, ga: ^Graph_Array) -> Type {
     if len(e.elements) == 0 {
         // Empty array literal — type is unknown until assigned
         return Type_Error{}
     }
 
-    // Infer element type from first element
-    elem_type := check_expr(c, e.elements[0], env)
+    // Infer element type from first element (built: each element into its
+    // slot; the first's type is the literal's, when its destination gave
+    // none — it can't be built in place before that is known).
+    elem_type: Type
+    if b := fusing(c); b != nil && ga != nil {
+        r: Fused
+        if ga.elem_t == nil {
+            elem_type, r = fuse_expr(c, e.elements[0], env, .Either)
+            lit_t := new_clone(Type_Fixed_Array{size = len(e.elements), elem = elem_type})
+            fuse_store_finish(c, e.elements[0], elem_type, r, graph_fuse_array_elem(b, ga, 0, elem_type, lit_t), e.span)
+        } else {
+            elem_type = fuse_store_into(c, e.elements[0], env, graph_fuse_array_elem(b, ga, 0, nil, nil), e.span)
+        }
+    } else {
+        elem_type = check_expr(c, e.elements[0], env)
+    }
     for i := 1; i < len(e.elements); i += 1 {
-        et := check_expr(c, e.elements[i], env)
+        et: Type
+        if b := fusing(c); b != nil && ga != nil {
+            et = fuse_store_into(c, e.elements[i], env, graph_fuse_array_elem(b, ga, i, nil, nil), e.span)
+        } else {
+            et = check_expr(c, e.elements[i], env)
+        }
         if types_incompatible(elem_type, et) {
             check_error(c, e.span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED,
                 i, type_name(et), type_name(elem_type))
