@@ -948,14 +948,8 @@ CLI_Args :: struct {
     // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
     // Runs the front half of the pipeline and stops after check_program.
     ask:          bool,
-    ask_target:   string,  // the type/fn/variable the query is about
-    ask_kind:     string,  // "types" | "flow" | "" (both graphs)
-    ask_dir:      string,  // "above" | "below" | "" (both directions)
-    ask_scope:    string,  // optional `in <module|file|fn>` token; "" = cwd default
-    ask_scope2:   string,  // second `in` token — the two compose (`<var> in <fn> in <module>`)
-    ask_at:       string,  // optional `at <file>:<line>` precise variable location
-    ask_depth:    int,     // hop budget; -1 = unbounded (the default)
-    ask_control:  bool,    // the `control` filter — add control dependence (post-doms); off = data-only (the fast default)
+    ask_query:    Ask_Query,  // the one query (ask_parse_query)
+    ask_stdin:    bool,       // `--stdin`: the queries come from stdin, one per line
 }
 
 USAGE :: "Usage: mara build [module] [-web] [-shared] [-release] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>]"
@@ -1000,7 +994,12 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     mara ask camera_move flow        the function's value flow (args in, results out)
     mara ask pos in world_to_screen  slice the local 'pos' (both directions)
     mara ask game in game_run 2      forward slice, following calls two hops deep
-    mara ask at camera.mara:176      slice whatever is defined on that line`
+    mara ask at camera.mara:176      slice whatever is defined on that line
+
+  Many queries, one check:
+    mara ask --stdin                 each line stdin sends is a query, answered
+                                     as 'mara ask <line>' would be, then a line
+                                     '-- end of answer --'; until stdin closes`
 
 // Help-flag spellings honored wherever a help request is accepted — the common
 // one/two-dash, short/long variants, the Windows `/?`, plus the bare `help`/`?`
@@ -1092,161 +1091,26 @@ parse_args :: proc() -> CLI_Args {
     // verb, BOTH deps and users are reported.
     if subcmd == "ask" {
         rest := positional[2:]   // tokens after the `ask` subcommand
-
-        // A shell-quoted whole query (`mara ask "v in fn flow below"`) arrives as
-        // ONE token — split every token on whitespace so both forms parse
-        // identically. The value after a standalone `at` is kept intact: a quoted
-        // path may legitimately contain spaces (`at "C:\My Code\f.mara:12"`).
-        {
-            flat: [dynamic]string
-            i := 0
-            for i < len(rest) {
-                tok := rest[i]
-                if tok == "at" && i + 1 < len(rest) {
-                    append(&flat, tok)
-                    append(&flat, rest[i + 1])
-                    i += 2
-                    continue
-                }
-                for piece in strings.fields(tok) { append(&flat, piece) }
-                i += 1
-            }
-            rest = flat[:]
-        }
-
-        // An explicit help request prints usage rather than being looked up as a
-        // name — `mara ask --help` must not 404 on a type called "--help". Help is
-        // a successful terminal action, so exit 0 directly (the `return args`
-        // error paths leave ok=false, which main turns into exit 1).
-        for tok in rest {
-            if is_help_flag(tok) {
+        // `mara ask --stdin`: check once, then answer each query stdin sends.
+        if len(rest) == 1 && rest[0] == "--stdin" {
+            args.ask_stdin = true
+        } else {
+            q, err := ask_parse_query(rest)
+            // Help is a successful terminal action (exit 0); an error leaves
+            // ok=false, which main turns into exit 1.
+            if q.help {
                 fmt.println(ASK_USAGE)
                 os.exit(0)
             }
-        }
-
-        // Peel `in <scope>` tokens — up to two, which COMPOSE: `<var> in <fn> in
-        // <module>` scopes the variable to a function AND narrows the module. Each
-        // value's role (module / file / fn scope) is classified after discovery in
-        // main(), so the two are order-independent here. The actual file -> module
-        // resolution also happens after discovery.
-        for {
-            found := -1
-            for idx in 0 ..< len(rest) { if rest[idx] == "in" { found = idx; break } }
-            if found < 0 { break }
-            if found + 1 >= len(rest) {
-                fmt.println("mara ask: `in` needs a module, file, or function name")
+            if err != "" {
+                fmt.println(err)
                 return args
             }
-            val := rest[found + 1]
-            switch {
-            case args.ask_scope  == "": args.ask_scope  = val
-            case args.ask_scope2 == "": args.ask_scope2 = val
-            case:
-                fmt.println("mara ask: at most two `in` scopes (e.g. a function and a module)")
-                return args
-            }
-            // Excise just the `in <scope>` pair — filters may follow it
-            // (`<var> in <fn> above`), so don't truncate the tail.
-            kept: [dynamic]string
-            for t, j in rest { if j != found && j != found + 1 { append(&kept, t) } }
-            rest = kept[:]
+            args.ask_query = q
         }
-
-        // Peel an optional `at <file>:<line>` — precise variable addressing.
-        for idx in 0 ..< len(rest) {
-            if rest[idx] == "at" {
-                if idx + 1 >= len(rest) {
-                    fmt.println("mara ask: `at` needs a <file>:<line> location")
-                    return args
-                }
-                args.ask_at = rest[idx + 1]
-                kept: [dynamic]string
-                for t, j in rest { if j != idx && j != idx + 1 { append(&kept, t) } }
-                rest = kept[:]
-                break
-            }
-        }
-
-        // Peel an optional depth — the first bare integer anywhere in the tokens.
-        // -1 is the omitted sentinel (unbounded); an explicit value is >= 0.
-        args.ask_depth = -1
-        {
-            kept: [dynamic]string
-            for tok in rest {
-                if args.ask_depth < 0 {
-                    if d, ok := ask_parse_depth(tok); ok { args.ask_depth = d; continue }
-                }
-                append(&kept, tok)
-            }
-            rest = kept[:]
-        }
-
-        // What remains is the name plus optional filters, in any order:
-        //   kind = types | data    (which graph)
-        //   dir  = above | below   (which direction)
-        // Omitting a filter widens to both. The lone non-filter token is the name.
-        for tok in rest {
-            if k, kok := ask_canon_kind(tok); kok {
-                if args.ask_kind != "" && args.ask_kind != k {
-                    fmt.printf("mara ask: conflicting kind filters ('%s' and '%s')\n", args.ask_kind, k)
-                    return args
-                }
-                args.ask_kind = k
-                continue
-            }
-            if d, dok := ask_canon_dir(tok); dok {
-                if args.ask_dir != "" && args.ask_dir != d {
-                    fmt.printf("mara ask: conflicting direction filters ('%s' and '%s')\n", args.ask_dir, d)
-                    return args
-                }
-                args.ask_dir = d
-                continue
-            }
-            // `control` adds control dependence (loop/branch guards) to a flow
-            // slice — the post-dominator pass, off by default so the data slice
-            // stays fast. A flag, not a kind/dir, so it composes with both.
-            if tok == "control" || tok == "ctrl" {
-                args.ask_control = true
-                continue
-            }
-            if args.ask_target != "" {
-                // Two name-like tokens. Usually one is really a mistyped filter or
-                // a retired keyword (`lineage`) — surface that, since the bare
-                // "two names" complaint misdiagnoses the actual mistake. Check the
-                // trailing token first (the common `<name> <typo>` order), then the
-                // leading one, then fall back to the plain error + a help pointer.
-                if hint, hok := ask_keyword_hint(tok); hok {
-                    fmt.printf("mara ask: %s\n", hint)
-                } else if hint, hok := ask_keyword_hint(args.ask_target); hok {
-                    fmt.printf("mara ask: %s\n", hint)
-                } else {
-                    fmt.printf("mara ask: expected one name, got '%s' and '%s'  (see `mara ask --help`)\n", args.ask_target, tok)
-                }
-                return args
-            }
-            args.ask_target = tok
-        }
-        // `at` already identifies the variable, so a bare <name> alongside it is
-        // contradictory. (`at` + `in` is checked after discovery: `in <module>`
-        // composes with `at` — it only narrows where the name lives — but
-        // `in <fn>`/`in <file>` is a second variable address and conflicts. Module
-        // vs fn isn't known until the discovered file set exists, so that check
-        // lives in main().)
-        if args.ask_at != "" && args.ask_target != "" {
-            fmt.printf("mara ask: `at` already identifies the variable — drop the name '%s'\n", args.ask_target)
-            return args
-        }
-        // A filter with no criterion has nothing to act on; bare `mara ask` (no
-        // name, no `at`, no filters) is the module map and leaves ask_target "".
-        if args.ask_target == "" && args.ask_at == "" && (args.ask_kind != "" || args.ask_dir != "") {
-            fmt.println("mara ask: a filter needs a name — e.g. `mara ask <name> above`")
-            return args
-        }
-
         args.ask = true
         cwd, _ := os.get_working_directory(context.allocator)
-        args.pkg_name = filepath.base(cwd)   // may be overridden by `in <scope>` after discovery
+        args.pkg_name = filepath.base(cwd)
         args.ok = true
         return args
     }
@@ -1283,47 +1147,14 @@ main :: proc() {
 
     all_files := discover_all_files(args.compiler_dir, args.search_dir)
 
-    // `ask ... in <scope>`. Every `in` form NARROWS where the subject name
-    // resolves; none re-root. The analyzed program is always cwd + the stdlib it
-    // uses (that's how the compiler sees a program). A MODULE name scopes
-    // resolution to that module's namespace; a FILE pins the subject to that file;
-    // anything else is tried as a function (for `<var> in <fn>`). Resolved here
-    // (post-discovery) as the file set only exists now; a module's membership in
-    // the use-closure is checked once that closure is built, below.
-    ask_scope_file := ""
-    ask_scope_module := ""   // a module scope (`<name> in <module>`) — narrows resolution, never re-roots
-    ask_scope_name := ""   // a fn scope (for `<var> in <fn>`), resolved post-check in `ask`
-    if args.ask {
-        for sc in ([2]string{ args.ask_scope, args.ask_scope2 }) {
-            if sc == "" { continue }
-            if sc in all_files {
-                if ask_scope_module != "" { fmt.println("mara ask: two module scopes — narrow to one module at a time"); os.exit(1) }
-                ask_scope_module = sc                            // module scope: narrow resolution, keep the cwd root
-            } else if ask_file_discovered(all_files, sc) {
-                if ask_scope_file != "" { fmt.println("mara ask: two file scopes — pin one file at a time"); os.exit(1) }
-                ask_scope_file = filepath.base(sc)               // file scope: pin subject, keep root
-            } else {
-                if ask_scope_name != "" { fmt.println("mara ask: two function scopes — disambiguate one with `at <file>:<line>`"); os.exit(1) }
-                ask_scope_name = sc                              // not a module/file — try it as a function in `ask`
-            }
-        }
-        // `at` precisely identifies a variable, so a SECOND variable address —
-        // `in <fn>` or `in <file>` — conflicts. `in <module>` only narrows where a
-        // name resolves (it never re-roots), so it still composes with the already-
-        // precise `at`: `at f.mara:12 in mymod` is allowed (the module is redundant).
-        if args.ask_at != "" && (ask_scope_name != "" || ask_scope_file != "") {
-            fmt.println("mara ask: `at` already identifies the variable — use `in <module>` only to pin where it lives, not `in <fn>`/`in <file>`")
-            os.exit(1)
-        }
-    }
-
     // Validate up front that the requested package was discovered so the user
     // gets one clean error block rather than partial-build noise. `ask` defaults
     // its root to the cwd's folder name, so a miss there is usually "you ran this
     // outside a module dir", not "module not found" — give it query-shaped help.
     if args.pkg_name not_in all_files {
         if args.ask {
-            fmt.print(ask_no_module_here(all_files, args.compiler_dir, args.pkg_name, args.ask_target, ask_filters_str(args.ask_kind, args.ask_dir)))
+            q := args.ask_query
+            fmt.print(ask_no_module_here(all_files, args.compiler_dir, args.pkg_name, q.target, ask_filters_str(q.kind, q.dir)))
         } else {
             fmt.println("Error: no files found for the following modules:")
             fmt.printf("  %s\n", args.pkg_name)
@@ -1338,12 +1169,16 @@ main :: proc() {
     // search dir can't dump diagnostics into the build.
     files := compute_use_closure(all_files, args.pkg_name)
 
-    // `in <module>` narrows where the SUBJECT resolves; it never re-roots — the
-    // program analyzed is always cwd plus the stdlib it uses. A module that exists
-    // on disk but the cwd project doesn't pull in simply isn't part of this program.
-    if args.ask && ask_scope_module != "" && ask_scope_module not_in files {
-        fmt.printf("mara ask: module '%s' isn't part of this program — %s (cwd) doesn't use it.\n", ask_scope_module, args.pkg_name)
-        os.exit(1)
+    // `ask ... in <scope>` narrows where the subject resolves (ask_scopes). A
+    // bad scope fails here, before the check; a query from stdin, as its answer.
+    ask_in: Ask_Scopes
+    if args.ask && !args.ask_stdin {
+        in_err: string
+        ask_in, in_err = ask_scopes(args.ask_query, all_files, files, args.pkg_name)
+        if in_err != "" {
+            fmt.println(in_err)
+            os.exit(1)
+        }
     }
 
     perf_timer_mark(&perf, "lex")
@@ -1426,23 +1261,12 @@ main :: proc() {
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {
         flush_diagnostics()
-        if args.ask_target == "" && args.ask_at == "" {
-            // Bare `mara ask` — the module map (the project at a glance). `at`
-            // identifies a variable without a name, so it is not the bare form.
-            fmt.print(ask_module_map(checked, programs, all_files, args.compiler_dir, args.pkg_name))
+        s := Ask_Session{checked, programs, all_files, files, args.compiler_dir, args.pkg_name}
+        if args.ask_stdin {
+            ask_serve(&s)
             return
         }
-        // `at <file>:<line>:<col>` with no name — the position query. A point in
-        // the source names exactly one node, so unlike `at <file>:<line>` (which
-        // disambiguates a NAMED variable) this form needs no target at all.
-        if args.ask_target == "" && strings.count(args.ask_at, ":") == 2 {
-            out, found := ask_at_point(programs, all_files, args.ask_at)
-            fmt.print(out)
-            if !found { os.exit(1) }
-            return
-        }
-        checked.du.want_control = args.ask_control   // gate the post-dominator pass (off = the fast data-only default)
-        out, found := ask(checked, args.ask_target, args.ask_kind, args.ask_dir, ask_scope_name, args.ask_at, args.pkg_name, ask_scope_file, ask_scope_module, args.ask_depth)
+        out, found := ask_run(&s, args.ask_query, ask_in)
         fmt.print(out)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed
         return
