@@ -1111,12 +1111,13 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
     if sl, ok := value.(^Expr_Struct_Literal); ok && sl.array_values != nil {
         if !sl.is_broadcast { emit_memset_zero(g, dst_ptr, total_bytes) }
         et := literal_elem_type(sl)
-        if gen_broadcast_scalar(g, dst_ptr, arr_type, elem_type, et, sl) { return true }
+        if gen_broadcast(g, dst_ptr, arr_type, elem_type, et, sl) { return true }
+        stamped := stamp_literal_array(g, dst_ptr, et, capacity)
         for elem, i in sl.array_values {
             if elem == nil { continue }
             gep := fresh_tmp(g)
             emit_array_gep_const(g, gep, arr_type, dst_ptr, i)
-            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true)
+            gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true, stamped = stamped)
         }
         return true
     }

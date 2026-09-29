@@ -1576,50 +1576,7 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             src_ptr = fresh_tmp(g)
             emit_load_into(g, src_ptr, "ptr", data_gep)
         }
-        at_len_lbl  := fresh_label(g, "cstring.at_len")
-        at_end_lbl  := fresh_label(g, "cstring.at_end")
-        end_ok_lbl  := fresh_label(g, "cstring.end_ok")
-        pass_lbl    := fresh_label(g, "cstring.pass")
-        crash_lbl   := fresh_label(g, "cstring.fail")
-        has_room := fresh_tmp(g)
-        emit(g, "  %s = icmp slt %s %s, %s", has_room, w, len_val, cap_val)
-        emit_cond_br(g, has_room, at_len_lbl, at_end_lbl)
-        // len < cap: terminator sits right after the content.
-        emit_label(g, at_len_lbl)
-        p1 := fresh_tmp(g)
-        emit(g, "  %s = getelementptr i8, ptr %s, %s %s", p1, src_ptr, w, len_val)
-        b1 := fresh_tmp(g)
-        emit_load_into(g, b1, "i8", p1)
-        ok1 := fresh_tmp(g)
-        emit(g, "  %s = icmp eq i8 %s, 0", ok1, b1)
-        emit_cond_br(g, ok1, pass_lbl, crash_lbl)
-        // len == cap: full view — the last byte must be 0 (and cap > 0 so
-        // the [cap-1] read stays inside the storage).
-        emit_label(g, at_end_lbl)
-        cap_pos := fresh_tmp(g)
-        emit(g, "  %s = icmp sgt %s %s, 0", cap_pos, w, cap_val)
-        emit_cond_br(g, cap_pos, end_ok_lbl, crash_lbl)
-        emit_label(g, end_ok_lbl)
-        last := fresh_tmp(g)
-        emit(g, "  %s = sub %s %s, 1", last, w, cap_val)
-        p2 := fresh_tmp(g)
-        emit(g, "  %s = getelementptr i8, ptr %s, %s %s", p2, src_ptr, w, last)
-        b2 := fresh_tmp(g)
-        emit_load_into(g, b2, "i8", p2)
-        ok2 := fresh_tmp(g)
-        emit(g, "  %s = icmp eq i8 %s, 0", ok2, b2)
-        emit_cond_br(g, ok2, pass_lbl, crash_lbl)
-        emit_label(g, crash_lbl)
-        loc := format_location(e.span.file, e.span.line, e.span.col)
-        err_msg := fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — append into headroom or zero-pad the buffer\n", loc)
-        err_name, err_len := get_string_literal(g, err_msg)
-        err_ptr := fresh_tmp(g)
-        emit_string_gep(g, err_ptr, err_len, err_name)
-        emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", err_ptr)
-        emit(g, "  call void @exit(i32 1)")
-        emit(g, "  unreachable")
-        emit_label(g, pass_lbl)
-        return src_ptr
+        return emit_cstring_check(g, len_val, cap_val, src_ptr, e.span)
     }
 
     // Built-in: slice_from_ptr(ptr, cap) -> []byte — wraps a raw pointer + capacity into a byte slice.
@@ -1680,6 +1637,11 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
             // Struct return: alloca a temp, pass as sret, call void.
             tmp_struct := fresh_tmp(g)
             emit_alloca(g, tmp_struct, struct_llvm_name(info.ret_struct))
+            // A constructor runs on zeroed storage (as emit_call_with_sret's):
+            // a field with no default was the temporary's garbage.
+            if cf := call_signature(g, e); cf != nil && cf.kind == .Struct {
+                if sd := as_struct_body(cf); sd != nil { emit_memset_zero(g, tmp_struct, struct_byte_size(sd, g.checked)) }
+            }
             append(&arg_strs, fmt.tprintf("ptr %s", tmp_struct))
             args_joined := strings.join(arg_strs[:], ", ")
             emit(g, "  call void %s(%s)", ir_name, args_joined)
@@ -1797,6 +1759,58 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
     }
 
     codegen_fatal(g, e.span, CODE_CALL_UNKNOWN_FUNCTION_FUN_INFO, lookup_name)
+}
+
+// cstring(s) — VALIDITY, not content: a 0 must exist inside the slice's
+// storage so C can never run past it. len < cap: the byte at [len] must be 0;
+// len == cap: the LAST byte [cap-1] must be 0 (and cap > 0). No terminator: a
+// loud crash with the location. The data pointer, checked.
+emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: string, span: Span) -> string {
+    w := slice_layout.len_ir
+    at_len_lbl  := fresh_label(g, "cstring.at_len")
+    at_end_lbl  := fresh_label(g, "cstring.at_end")
+    end_ok_lbl  := fresh_label(g, "cstring.end_ok")
+    pass_lbl    := fresh_label(g, "cstring.pass")
+    crash_lbl   := fresh_label(g, "cstring.fail")
+    has_room := fresh_tmp(g)
+    emit(g, "  %s = icmp slt %s %s, %s", has_room, w, len_val, cap_val)
+    emit_cond_br(g, has_room, at_len_lbl, at_end_lbl)
+    // len < cap: terminator sits right after the content.
+    emit_label(g, at_len_lbl)
+    p1 := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", p1, src_ptr, w, len_val)
+    b1 := fresh_tmp(g)
+    emit_load_into(g, b1, "i8", p1)
+    ok1 := fresh_tmp(g)
+    emit(g, "  %s = icmp eq i8 %s, 0", ok1, b1)
+    emit_cond_br(g, ok1, pass_lbl, crash_lbl)
+    // len == cap: full view — the last byte must be 0 (and cap > 0 so
+    // the [cap-1] read stays inside the storage).
+    emit_label(g, at_end_lbl)
+    cap_pos := fresh_tmp(g)
+    emit(g, "  %s = icmp sgt %s %s, 0", cap_pos, w, cap_val)
+    emit_cond_br(g, cap_pos, end_ok_lbl, crash_lbl)
+    emit_label(g, end_ok_lbl)
+    last := fresh_tmp(g)
+    emit(g, "  %s = sub %s %s, 1", last, w, cap_val)
+    p2 := fresh_tmp(g)
+    emit(g, "  %s = getelementptr i8, ptr %s, %s %s", p2, src_ptr, w, last)
+    b2 := fresh_tmp(g)
+    emit_load_into(g, b2, "i8", p2)
+    ok2 := fresh_tmp(g)
+    emit(g, "  %s = icmp eq i8 %s, 0", ok2, b2)
+    emit_cond_br(g, ok2, pass_lbl, crash_lbl)
+    emit_label(g, crash_lbl)
+    loc := format_location(span.file, span.line, span.col)
+    err_msg := fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — append into headroom or zero-pad the buffer\n", loc)
+    err_name, err_len := get_string_literal(g, err_msg)
+    err_ptr := fresh_tmp(g)
+    emit_string_gep(g, err_ptr, err_len, err_name)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s)", err_ptr)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, pass_lbl)
+    return src_ptr
 }
 
 // The callee pointer of an indirect call: the function value held in `name` —

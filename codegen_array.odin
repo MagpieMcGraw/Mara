@@ -678,12 +678,13 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
             emit_memset_zero(g, av.alloca, total_bytes)
         }
         et := literal_elem_type(sl, elem_mara)
-        if !gen_broadcast_scalar(g, av.alloca, arr_type, elem_type, et, sl) {
+        if !gen_broadcast(g, av.alloca, arr_type, elem_type, et, sl) {
+            stamped := stamp_literal_array(g, av.alloca, et, alloc_cap)
             for elem, i in sl.array_values {
                 if elem == nil { continue }
                 gep := fresh_tmp(g)
                 emit_array_gep_const(g, gep, arr_type, av.alloca, i)
-                gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true)
+                gen_store_elem_into(g, gep, elem_type, et, elem, sl.span, slot_fresh = true, stamped = stamped)
             }
         }
     } else {
@@ -1713,17 +1714,21 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_t
             if !sv_ok { return }
             elem_t := llvm_type_from_checker(pa.elem)
             ir_type := partial_array_ir_type(elem_t, pa.size)
-            for elem_expr, i in lit.array_values {
-                if elem_expr == nil { continue }
+            // The value once, then every slot given it (gen_broadcast).
+            src := ""
+            if is_pointer_valued_type(pa.elem) {
+                src = gen_value_address(g, lit.array_values[0], pa.elem, elem_t)
+            } else {
+                src = gen_expr_coerced(g, lit.array_values[0], elem_t)
+            }
+            for _, i in lit.array_values {
                 slot := fresh_tmp(g)
                 emit(g, "  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d, i32 %d",
                     slot, ir_type, sv.alloca, PARTIAL_ELEMENTS_FIELD, i)
-                if sd := as_struct_body(pa.elem); sd != nil {
-                    // Struct/class element — write through the unified store.
-                    gen_store_struct_into(g, slot, sd, elem_expr)
+                if is_pointer_valued_type(pa.elem) {
+                    emit_value_copy(g, pa.elem, slot, src)
                 } else {
-                    val := gen_expr(g, elem_expr, elem_t)
-                    emit_store(g, elem_t, val, slot)
+                    emit_store(g, elem_t, src, slot)
                 }
             }
             // Update the slice's len to match the broadcast count (the user
@@ -2661,11 +2666,21 @@ gen_construct_partial_array_elements :: proc(g: ^Codegen, pa_addr: string, pa: ^
     gen_construct_elements(g, inline_ptr, pa.elem, pa.size)
 }
 
-// `{all x}` of register values: x evaluated once and stored into every slot —
-// each element is the one value (the graph's fill). An aggregate element
-// still builds each slot from the checker's clone of x. False: not that case.
-gen_broadcast_scalar :: proc(g: ^Codegen, dst, arr_type, elem_ir: string, et: Type, sl: ^Expr_Struct_Literal) -> bool {
-    if !sl.is_broadcast || len(sl.array_values) == 0 || et == nil || is_pointer_valued_type(et) { return false }
+// `{all x}`: x evaluated once, and every slot given it — a register value
+// stored, an aggregate copied (its partial arrays re-pointed): the graph's
+// fill. (Building each slot from the checker's clone of x ran x N times:
+// `{all f()}` called f N times.) False: not a broadcast.
+gen_broadcast :: proc(g: ^Codegen, dst, arr_type, elem_ir: string, et: Type, sl: ^Expr_Struct_Literal) -> bool {
+    if !sl.is_broadcast || len(sl.array_values) == 0 || et == nil { return false }
+    if is_pointer_valued_type(et) {
+        src := gen_value_address(g, sl.array_values[0], et, elem_ir)
+        for i in 0 ..< len(sl.array_values) {
+            gep := fresh_tmp(g)
+            emit_array_gep_const(g, gep, arr_type, dst, i)
+            emit_value_copy(g, et, gep, src)
+        }
+        return true
+    }
     val := gen_expr_coerced(g, sl.array_values[0], elem_ir)
     for i in 0 ..< len(sl.array_values) {
         gep := fresh_tmp(g)

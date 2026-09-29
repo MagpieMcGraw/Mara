@@ -2545,7 +2545,11 @@ graph_settle_literals :: proc(b: ^Graph_Builder) {
         id := Node_Id(i)
         if g.kind[id] != .Op { continue }
         for o, k in graph_operands(g, id) {
-            if o.op == NO_NODE || o.out != 0 || !is_infer(g.type_[o.op]) { continue }
+            // A literal of no type yet — a number, or an untyped `void` (its
+            // use's pointer: `p == void`, an argument) — takes its use's.
+            if o.op == NO_NODE || o.out != 0 { continue }
+            untyped_void := g.op[o.op] == .Const && g.name[o.op] == "void" && is_any(g.type_[o.op])
+            if !is_infer(g.type_[o.op]) && !untyped_void { continue }
             if t := graph_literal_use(g, callee, id, k); t != nil && !is_infer(t) {
                 g.type_[o.op] = t
                 if g.op[o.op] == .Const && o.op in g.consts { append(&g.settled, o.op) }

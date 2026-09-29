@@ -733,6 +733,18 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         case !e.held[d - e.node]:                          e.value[op - e.node] = llvm_storage(e, d)
         }
     case .Const:
+        // `void`, the uninitialized value: a pointer's null, a number's zero
+        // (a write of it decides what's stored: llvm_write_void); an
+        // aggregate's, nothing.
+        if pg.name[op] == "void" {
+            t := pg.type_[op]
+            switch {
+            case !llvm_scalar(t):                        e.value[op - e.node] = "void"
+            case llvm_type_from_checker(t) == "ptr":    e.value[op - e.node] = "null"
+            case:                                        e.value[op - e.node] = llvm_zero(t)
+            }
+            return true
+        }
         // A result's zero value (what `?` returns beside an error), of any type.
         if pg.written[op] == .Implied && pg.name[op] == "zero" {
             e.value[op - e.node] = "zeroinitializer"
@@ -773,6 +785,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Write:
         place := ops[0].op
         if pg.op[place] == .Slice { return llvm_copy_into(e, ops, span) }
+        if v := ops[1].op; v != NO_NODE && pg.op[v] == .Const && pg.name[v] == "void" { return llvm_write_void(e, op, place) }
         if llvm_union_tag(e, place) != nil { return false }   // a union's tag is its variant's: a construct writes it
         t := pg.type_[place]
         // Another type's value into bytes is a write through a view of them (later).
@@ -949,18 +962,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         emit_array_gep_const(g, tmp, llvm_type_from_checker(at), e.value[base - e.node], k)
         e.value[op - e.node] = tmp
     case .Fill:
-        // Every element of an array the one value.
-        place := ops[0].op
-        at := pg.type_[place]
-        fa := llvm_array(at)
-        if fa == nil || !llvm_scalar(fa.elem) || llvm_direct(e, place) { return false }
-        v := llvm_operand(e, ops[1], fa.elem) or_return
-        ir := llvm_type_from_checker(fa.elem)
-        for k in 0 ..< fa.size {
-            tmp := fresh_tmp(g)
-            emit_array_gep_const(g, tmp, llvm_type_from_checker(at), e.value[place - e.node], k)
-            emit_store(g, ir, v, tmp)
-        }
+        return llvm_fill(e, ops)
     case .Arith:
         return llvm_arith(e, op, ops, span)
     case .Compare:
@@ -970,6 +972,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Cast:
         x := ops[0].op
         from, to := pg.type_[x], pg.type_[op]
+        if llvm_is_cstring(to) && !llvm_is_cstring(from) { return llvm_cstring(e, op, x, span) }
         // A partial array taken as a slice is its own header: no instruction.
         if llvm_partial(from) != nil && llvm_slice(to) != nil {
             // Text is no header: a view of its bytes, len its length (cap
@@ -1168,6 +1171,72 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
     llvm_into_fields(e, true)
     fixup_partial_array_fields(g, e.slot, st)
     llvm_into_fields(e, false)
+    return true
+}
+
+// `{all x}`: every element of an array — a fixed array's, or all of a
+// partial array's, its len then its cap — the one value: a register value
+// stored, an aggregate copied (its partial arrays re-pointed).
+@(private="file")
+llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
+    g, pg := e.g, e.pg
+    place := ops[0].op
+    at := pg.type_[place]
+    if llvm_direct(e, place) { return false }
+    to := e.value[place - e.node]
+    elem: Type
+    n: int
+    pa := llvm_partial(at)
+    if fa := llvm_array(at); fa != nil {
+        elem, n = fa.elem, fa.size
+    } else if pa != nil {
+        elem, n = pa.elem, pa.size
+    } else {
+        return false
+    }
+    if !llvm_scalar(elem) && !llvm_aggregate(elem) { return false }
+    v := llvm_operand(e, ops[1], elem) or_return
+    ir := llvm_type_from_checker(elem)
+    for k in 0 ..< n {
+        slot := fresh_tmp(g)
+        if pa != nil {
+            emit(g, "  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d, i32 %d", slot, partial_array_ir_type(ir, pa.size), to, PARTIAL_ELEMENTS_FIELD, k)
+        } else {
+            emit_array_gep_const(g, slot, llvm_type_from_checker(at), to, k)
+        }
+        if llvm_scalar(elem) { emit_store(g, ir, v, slot) } else { llvm_copy(e, slot, v, elem) }
+    }
+    if pa != nil {
+        len_gep := fresh_tmp(g)
+        emit_slice_gep(g, len_gep, to, SLICE.len)
+        emit_typed_store_len(g, fmt.tprintf("%d", pa.size), len_gep)
+    }
+    return true
+}
+
+// `x = void`, or a declaration `x : T = void`: uninitialized. A pointer is
+// null either way. A declared scalar is zero (a read of it before a write is
+// the flow check's to catch); a reassigned one keeps its bytes. A declared
+// partial array gets its header — its elements left as they are; any other
+// aggregate nothing.
+@(private="file")
+llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
+    g, pg := e.g, e.pg
+    t := pg.type_[place]
+    s := pg.stmt[op]
+    decl := s >= 0 && pg.stmts[s].kind == .Decl
+    if llvm_direct(e, place) { return false }
+    switch {
+    case llvm_scalar(t):
+        ir := llvm_type_from_checker(t)
+        if ir == "ptr" { emit_store(g, ir, "null", e.value[place - e.node]) }
+        else if decl { emit_store(g, ir, llvm_zero(t), e.value[place - e.node]) }
+    case llvm_partial(t) != nil:
+        if decl { emit_partial_array_zero(g, e.value[place - e.node], llvm_partial(t), zero = false) }
+    case llvm_aggregate(t):
+    case:
+        return false
+    }
     return true
 }
 
@@ -2519,6 +2588,33 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         }
         e.value[op - e.node] = at
     }
+    return true
+}
+
+// `cstring(s)`: s's bytes for C — text as they are (terminated), a slice or a
+// partial array checked to hold a terminating 0 (emit_cstring_check).
+@(private="file")
+llvm_cstring :: proc(e: ^Llvm, op, x: Node_Id, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    if _, is_text := llvm_text(e, x); is_text {
+        e.value[op - e.node] = e.value[x - e.node]
+        return true
+    }
+    if llvm_header_elem(pg.type_[x]) == nil || e.value[x - e.node] == "" { return false }
+    hdr := e.value[x - e.node]
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, hdr, SLICE.len)
+    n := fresh_tmp(g)
+    emit_typed_load_len(g, n, len_gep)
+    cap_gep := fresh_tmp(g)
+    emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
+    c := fresh_tmp(g)
+    emit_typed_load_cap(g, c, cap_gep)
+    data_gep := fresh_tmp(g)
+    emit_slice_gep(g, data_gep, hdr, SLICE.ptr)
+    data := fresh_tmp(g)
+    emit_load_into(g, data, "ptr", data_gep)
+    e.value[op - e.node] = emit_cstring_check(g, n, c, data, span)
     return true
 }
 

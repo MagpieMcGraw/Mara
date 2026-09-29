@@ -1372,12 +1372,13 @@ gen_return_array :: proc(g: ^Codegen, s: Stmt_Return, sret_av_in: Array_Var) {
         handled = true
         if !sl.is_broadcast { emit_memset_zero(g, sret_av.alloca, sret_av.capacity * elem_byte_size(sret_av.elem_type, g.checked)) }
         et := literal_elem_type(sl)
-        if !gen_broadcast_scalar(g, sret_av.alloca, sret_type, sret_av.elem_type, et, sl) {
+        if !gen_broadcast(g, sret_av.alloca, sret_type, sret_av.elem_type, et, sl) {
+            stamped := stamp_literal_array(g, sret_av.alloca, et, sret_av.capacity)
             for elem, i in sl.array_values {
                 if elem == nil { continue }   // nil slot — leave as zero
                 gep := fresh_tmp(g)
                 emit_array_gep_const(g, gep, sret_type, sret_av.alloca, i)
-                gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, sl.span, slot_fresh = true)
+                gen_store_elem_into(g, gep, sret_av.elem_type, et, elem, sl.span, slot_fresh = true, stamped = stamped)
             }
         }
     }
