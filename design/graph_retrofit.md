@@ -572,7 +572,7 @@ evaluates its destination and value); how instructions are chosen stays in the e
       wrapped small (`test/byte_carve_count.mara`; its message now says what was asked).
       And the big-variable decline didn't skip nested funs (Pounce's TTF declined for
       `loca_correct_format`'s big local)
-- [ ] Calls: foreign ABI, function values, default and tuple-default arguments, multi-return,
+- [x] Calls: foreign ABI, function values, default and tuple-default arguments, multi-return,
       `?`, fallible constructors. Done so far — several results, `err`, `?` and fallible
       constructors: a fun with several results takes a slot for each (`%sret.<i>`) and a
       return writes them; a call gives each result a temporary its uses read (a register
@@ -637,9 +637,18 @@ evaluates its destination and value); how instructions are chosen stays in the e
       calling the pointer. And the update in place reuses the destination's place: a
       write's place is computed before its value, so the consumed argument's place — the
       same operations — takes its values rather than being computed again (one bounds
-      check, one pointer load, as the old emitter; a pointer's field `ph.f` included). Still
-      declined: named results, a foreign call's variadic arguments, a big result (on the
-      arena), `= void` on an aggregate. Pounce: 199 of 238 funs from the graph
+      check, one pointer load, as the old emitter; a pointer's field `ph.f` included). Last,
+      named results, where the old emitter kept them — with several results a struct or
+      fixed array in its caller slot, a register value a local zeroed at entry; a single
+      struct result the result slot, its partial arrays stamped at entry — and arguments:
+      bytes where a fixed array is taken (`read_u16be(bytes[0])`, a `[2]byte`) are that
+      many bytes seen as the array, copied into a temporary (the graph passed one byte); a
+      C pointer param takes any pointer (`const void *data` is `^byte`); a call through a
+      function value types its arguments by the value's signature; a tuple default whose
+      source is one value is a broadcast, each slot the value again (the graph took output
+      1 of a constant). Pounce: 210 of 238 funs from the graph. What's left isn't calls —
+      `= void` on an aggregate, some broadcast fills, writes, casts and views, a big
+      temporary on the arena: the switch-over's
 - [ ] Switch over: every function from the graph; the syntax-tree emitter deleted
 
 ## Baselines

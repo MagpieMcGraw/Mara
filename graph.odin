@@ -1075,6 +1075,27 @@ graph_index_value :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
 @(private="file")
 graph_value_as :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span, w := Written.Explicit) -> Operand {
     if v, is_view := graph_view(b, e, t, span); is_view { return v }
+    // Bytes where a fixed array is taken (`read_u16be(bytes[0])`, a `[2]byte`
+    // param): that many bytes at the offset seen as the array, copied into a
+    // temporary (the checker types `bytes[0]` a byte; it was read as one).
+    if _, to_array := distinct_base(t).(^Type_Fixed_Array); to_array {
+        buf, off: Expr
+        big := false
+        #partial switch v in e {
+        case ^Expr_Index:
+            if _, is_byte := distinct_base(v.type_).(Type_Byte); is_byte && is_byte_buffer(expr_type(v.expr)) {
+                buf, off, big = v.expr, v.index, v.is_big_endian
+            }
+        case ^Expr_Slice:
+            if is_byte_buffer(expr_type(v.expr)) { buf, off, big = v.expr, v.low, v.is_big_endian }
+        }
+        if buf != nil {
+            view := graph_view_at(b, buf, off, t, big, span)
+            slot := graph_slot(b, "temp", t, span)
+            graph_op(b, .Write, .Implied, span, nil, "", graph_var(b, "temp", slot, t, span), graph_read(b, view, t, span))
+            return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
+        }
+    }
     if arr, is_arr := e.(^Expr_Array); is_arr && t != nil && graph_aggregate(t) {
         return graph_temp_into(b, e, t, arr.span)
     }
@@ -1758,7 +1779,9 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         return graph_if_value(b, v, w)
     case ^Expr_Tuple_Default:
         // The slots of one default share its source call: it runs once, and
-        // each slot is one of its outputs.
+        // each slot is one of its outputs. A source of one value (`a, b: i64
+        // = 7`) is a broadcast: each slot is it, evaluated again.
+        if graph_outputs(b, v.source) < 2 { return graph_value(b, v.source, w) }
         key := graph_expr_ptr(v.source)
         if v.index == 0 { b.code.tuples[key] = graph_value(b, v.source, w).op }
         call, ok := b.code.tuples[key]
@@ -2131,12 +2154,17 @@ graph_call :: proc(b: ^Graph_Builder, v: ^Expr_Call, dest: ^Dest, w: Written) ->
         return graph_op_value(b, .Cast, w, v.span, v.type_, call_name(v), graph_value(b, args[0], w))
     }
     is_construct := callee != nil && callee.kind == .Struct
+    // The signature: the callee's, or through a function value, its type's.
+    sig := callee
+    if sig == nil && v.fn_value != nil {
+        if ft, is_fn := distinct_base(v.fn_value).(^Type_Scope); is_fn { sig = ft }
+    }
     vals := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
     for a, i in args {
         // A default argument runs at the call site, which doesn't write it.
         aw := w
-        if callee != nil && i < len(callee.params) && a == callee.params[i].default_value { aw = .Implied }
-        pt: Type = callee.params[i].type_ if callee != nil && i < len(callee.params) else nil
+        if sig != nil && i < len(sig.params) && a == sig.params[i].default_value { aw = .Implied }
+        pt: Type = sig.params[i].type_ if sig != nil && i < len(sig.params) else nil
         append(&vals, graph_value_as(b, a, pt, v.span, aw))
     }
     ops := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)

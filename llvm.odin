@@ -141,7 +141,6 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
 
     // The signature: its params, then its result — a scalar returned, or a
     // struct built in the caller's slot (a constructor's is Self).
-    if len(cf.return_binding_names) > 0 { e.note = "named results"; return false }
     e.ret = "void"
     e.slot = "%sret"
     if e.ctor {
@@ -259,6 +258,8 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
         case .Param:
             _ = llvm_param_type(pg.type_[id]) or_return
             e.value[id - e.node] = fmt.tprintf("%%%s.arg", pg.name[id])
+        case .Result:
+            if pg.written[id] == .Explicit && !llvm_named_result(e, id) { return false }
         case .Local:
             t := pg.type_[id]
             if !llvm_scalar(t) && !llvm_aggregate(t) { return false }
@@ -289,7 +290,7 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
                 gen_construct_elements(e.g, at, fa.elem, fa.size)
                 llvm_into_fields(e, false)
             }
-        case .Result, .Block, .Const, .Import, .Type_Def, .Dispatch, .Op:
+        case .Block, .Const, .Import, .Type_Def, .Dispatch, .Op:
         case:
             return false
         }
@@ -1132,6 +1133,42 @@ llvm_place :: proc(e: ^Llvm, place: Node_Id) -> string {
     case pg.kind[d] == .Param || pg.kind[d] == .Field:   return e.value[d - e.node]
     }
     return llvm_storage(e, d)
+}
+
+// A named result: a local the code writes, where the old emitter kept it. With
+// several results, a struct or fixed array in the caller's slot for it, a
+// register value a local of its own, zeroed first; a single struct result the
+// result slot itself, its partial arrays' headers stamped first.
+@(private="file")
+llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
+    g, pg := e.g, e.pg
+    t := pg.type_[d]
+    i := 0   // which result
+    for id := e.node + 1; id < d; id += 1 { if pg.kind[id] == .Result && pg.parent[id] == e.node { i += 1 } }
+    if e.rets != nil && !e.ctor {
+        switch {
+        case llvm_struct(t) != nil || llvm_array(t) != nil:
+            e.value[d - e.node] = fmt.tprintf("%%sret.%d", i)
+        case llvm_scalar(t):
+            // (At the entry, before the code's own allocas, as the old emitter.)
+            name := fmt.tprintf("%%%s", pg.name[d])
+            e.used[name] = true
+            ir := llvm_type_from_checker(t)
+            fmt.sbprintf(&e.fields, "  %s = alloca %s\n  store %s %s, ptr %s\n", name, ir, ir, llvm_zero(t), name)
+            e.value[d - e.node] = name
+        case:
+            e.note = "a named result's type"
+            return false
+        }
+        return true
+    }
+    st := llvm_struct(t)
+    if e.sret == nil || st == nil || e.ctor { e.note = "a named result"; return false }
+    e.value[d - e.node] = e.slot
+    llvm_into_fields(e, true)
+    fixup_partial_array_fields(g, e.slot, st)
+    llvm_into_fields(e, false)
+    return true
 }
 
 // Whether a place holds its value directly, not at an address: a scalar param
@@ -2424,6 +2461,11 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
         } else {
             ok: bool
             v, ok = llvm_operand(e, ops[i], pt)
+            // A C pointer is a pointer: what it points at is the callee's to
+            // know (`const void *data` is `^byte`, handed any pointer).
+            if at := llvm_type_of(e, ops[i]); !ok && ops[i].out == 0 && llvm_scalar(at) && llvm_type_from_checker(at) == "ptr" && llvm_type_from_checker(pt) == "ptr" {
+                v, ok = e.value[ops[i].op - e.node], true
+            }
             if !ok { e.note = fmt.tprintf("argument '%s'", p.name); return false }
         }
         switch pl in classify_arg(pt, conv, os) {
