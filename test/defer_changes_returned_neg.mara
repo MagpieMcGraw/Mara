@@ -1,0 +1,22 @@
+module defer_changes_returned_neg
+//@ expect-fail: a defer can't change 's'
+
+// A return takes its values, then the defers it leaves run. A defer changing
+// the local being returned is an error: whether the caller saw the change
+// depended on how the value traveled — built in the caller's slot, it did
+// (`f` gave 2); copied out, it didn't — and the graph emitter copied after
+// the defers. Writing a field, an element or the whole local counts, and so
+// does taking its address.
+
+S :: struct { n: i64 }
+
+f :: fun() -> S {
+	s : S
+	s.n = 1
+	defer s.n = 2
+	return s
+}
+
+main :: fun() {
+	print(f().n)
+}

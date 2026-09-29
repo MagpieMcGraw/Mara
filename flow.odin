@@ -10,8 +10,9 @@ import "core:strings"
 //
 // On the program graph (a clean check builds it; design/graph_retrofit.md,
 // phase 2): all-paths-return (a fun whose runs reach the end of its body),
-// unreachable code (a statement right after a return, break or continue) and
-// must-use err (an err local nothing reads). Still over each function's body:
+// unreachable code (a statement right after a return, break or continue),
+// must-use err (an err local nothing reads) and a defer changing what a return
+// returns. Still over each function's body:
 // definite assignment (no read-before-init of a pointer or slice) and the void
 // checks. MARA_DUMP_FLOW=1 dumps coverage and what was flagged.
 
@@ -44,6 +45,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         flow_check_unreachable(c, checked)
         flow_check_unused(c, checked)
         flow_check_init(c, checked, starts)
+        flow_check_defer_writes(c, checked, starts)
     }
     for ft in flow_functions(checked) {
         if ft == nil { continue }
@@ -127,6 +129,98 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
         seen[span] = true
         check_error(c, span, TYPE_UNUSED_ERR, g.name[id])
     }
+}
+
+// --- defers and returned values -------------------------------------------
+// A return takes its values, then the defers it leaves run. One of those
+// defers changing a local the return returns — writing it, a field or an
+// element of it, or taking its address — would change what the caller gets
+// or not depending on how the value travels (a copy, or built in place), so
+// it is an error. A value the return computes is no local; a write through a
+// pointer that aliases one is not seen (field-insensitive, like escape).
+flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program, starts: map[Node_Id]i32) {
+    g := &checked.graph
+    seen: map[Span]bool   // generic instances share their template's spans
+    defer delete(seen)
+    runs, block: [dynamic]i32
+    defer { delete(runs); delete(block) }
+    for ft in flow_functions(checked) {
+        if ft == nil { continue }
+        if _, src := ft.origin.(Origin_Source); !src { continue }
+        node, ok := g.scope_node[ft]
+        if !ok || g.kind[node] != .Fun { continue }
+        clear(&runs)
+        own := graph_code_runs(g, starts, node, &runs)
+        for r in runs[:own] {
+            ops := graph_run(g, int(r))
+            ret := ops[len(ops) - 1]
+            if g.op[ret] != .Return { continue }
+            // The defers it runs: the run defers just before it.
+            for k := len(ops) - 2; k >= 0; k -= 1 {
+                if g.op[ops[k]] == .Arena_Reset { continue }
+                if g.op[ops[k]] != .Run_Defer { break }
+                for edge in graph_out(g, ops[k]) {
+                    if edge.kind != .Runs { continue }
+                    clear(&block)
+                    graph_code_runs(g, starts, edge.to, &block)
+                    flow_defer_writes(c, g, ret, block[:], &seen)
+                }
+            }
+        }
+    }
+}
+
+// A defer block's changes to what `ret` returns.
+@(private="file")
+flow_defer_writes :: proc(c: ^Checker, g: ^Program_Graph, ret: Node_Id, block: []i32, seen: ^map[Span]bool) {
+    for o in graph_operands(g, ret) {
+        v := flow_returned_local(g, o.op)
+        if v == NO_NODE { continue }
+        for r in block {
+            for op in graph_run(g, int(r)) {
+                #partial switch g.op[op] {
+                case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Carve, .Address:
+                case:
+                    continue
+                }
+                ops := graph_operands(g, op)
+                if len(ops) == 0 || flow_storage_root(g, ops[0].op) != v { continue }
+                span := g.origin[op]
+                if span in seen^ { continue }
+                seen[span] = true
+                check_error(c, span, TYPE_DEFER_CHANGES_RETURNED, g.name[v], g.origin[ret].line)
+            }
+        }
+    }
+}
+
+// The local a returned value is, as read (through an implied widening); none
+// for a value computed.
+@(private="file")
+flow_returned_local :: proc(g: ^Program_Graph, v: Node_Id) -> Node_Id {
+    v := v
+    for v != NO_NODE && g.op[v] == .Cast && g.written[v] == .Implied { v = graph_operands(g, v)[0].op }
+    if v == NO_NODE || g.op[v] != .Read { return NO_NODE }
+    root := flow_storage_root(g, graph_operands(g, v)[0].op)
+    if root == NO_NODE || (g.kind[root] != .Local && g.kind[root] != .Result) { return NO_NODE }
+    return root
+}
+
+// The variable whose own storage a place is in: through fields, elements and
+// views, not through a pointer.
+@(private="file")
+flow_storage_root :: proc(g: ^Program_Graph, p: Node_Id) -> Node_Id {
+    for id := p; id != NO_NODE; {
+        #partial switch g.op[id] {
+        case .Var:
+            return g.refers[id]
+        case .Field, .Index, .View, .Swizzle, .Variant, .Slice:
+            id = graph_operands(g, id)[0].op
+        case:
+            return NO_NODE
+        }
+    }
+    return NO_NODE
 }
 
 // --- definite assignment --------------------------------------------------
