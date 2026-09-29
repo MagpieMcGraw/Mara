@@ -3,6 +3,7 @@ package mara
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:reflect"
 import "core:slice"
 import "core:strings"
 
@@ -1623,6 +1624,9 @@ Checker :: struct {
     // becomes is not checked again (check_call_args), one check per node.
     receiver:        Expr,
     receiver_type:   Type,
+    // The program graph's builder, made before checking: the bodies it can,
+    // the checker builds as it checks them (graph_fuse_begin).
+    gb:              ^Graph_Builder,
     table:           ^SymbolTable,
     errors:          int,
     current_package: string,
@@ -2857,6 +2861,8 @@ resolve_type_expr_with_subst :: proc(te: Type_Expr, c: ^Checker, span: Span, sub
 // Instantiate a generic struct template with concrete type arguments.
 // Returns a cached result if this instantiation was already created.
 instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_args: []Type, span: Span) -> ^Type_Scope {
+    outer := fuse_suspend(c)
+    defer fuse_resume(c, outer)
     // Build mangled name
     mangled := mangle_generic_name(tmpl.name, type_args)
 
@@ -2936,6 +2942,8 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
 // with substituted field types, the tag enum, and registers everything into
 // c.table.unions / c.table.structs / c.table.enums under mangled names.
 instantiate_generic_union :: proc(c: ^Checker, tmpl: ^Generic_Union_Template, type_args: []Type, span: Span) -> ^Type_Union {
+    outer := fuse_suspend(c)
+    defer fuse_resume(c, outer)
     mangled := mangle_generic_name(tmpl.name, type_args)
 
     // Cache check
@@ -3125,6 +3133,8 @@ mono_body_env :: proc(env: ^Type_Scope, fun: ^Type_Scope) -> ^Type_Scope {
 // Registers a ^Type_Scope in checked.functions under the mangled name.
 instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^map[string]Type, mangled: string, env: ^Type_Scope) {
     ast := tmpl.ast
+    outer := fuse_suspend(c)
+    defer fuse_resume(c, outer)
 
     // Build concrete function type
     fun_type := new(Type_Scope)
@@ -3186,8 +3196,12 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     cloned_body := clone_stmts(ast.body)
     cloned_defs := clone_stmts(ast.defs)
 
-    // Type-check the cloned function body
+    // Type-check the cloned function body, building its graph (the builder
+    // builds an instance's definitions from the template's).
+    f: ^Graph_Fuse
+    if c.gb != nil && len(ast.defs) == 0 { f = graph_fuse_begin(c.gb, fun_type, ast, cloned_body[:], .Synthetic) }
     check_scope(c, cloned_body, child, scope_defs = cloned_defs)
+    if f != nil { fuse_end(c, f) }
 
     // Store cloned body for codegen extraction
     c.table.mono_fun_bodies[mangled] = cloned_body
@@ -3296,7 +3310,10 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
     }
     cloned_body := clone_stmts(ast.body)
     cloned_defs := clone_stmts(ast.defs)
+    // (Its graph is the builder's: it builds the template's body for it.)
+    outer := fuse_suspend(c)
     check_scope(c, cloned_body, child, scope_defs = cloned_defs)
+    fuse_resume(c, outer)
     c.table.mono_fun_bodies[mangled] = cloned_body
 
     return make_flat_name(home, mangled), mono_ft
@@ -5495,6 +5512,67 @@ check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope)
     }
 }
 
+// --- building the graph as the checker checks (design/graph_retrofit.md) ------
+
+// The builder, while the body being checked is one the checker builds and
+// nothing has stopped it.
+fusing :: proc(c: ^Checker) -> ^Graph_Builder {
+    b := c.gb
+    if b == nil || b.fuse == nil || b.fuse.failed != "" || c.errors > 0 { return nil }
+    return b
+}
+
+// What the checker can't build yet: the body is left to the builder.
+fuse_fail :: proc(c: ^Checker, reason: string) {
+    if b := fusing(c); b != nil { graph_fuse_fail(b, b.fuse, reason) }
+}
+
+// Check with nothing built — a definition, a signature, another scope: what
+// the graph holds of them is not the code being checked.
+fuse_suspend :: proc(c: ^Checker) -> ^Graph_Fuse {
+    if c.gb == nil { return nil }
+    f := c.gb.fuse
+    c.gb.fuse = nil
+    return f
+}
+
+fuse_resume :: proc(c: ^Checker, f: ^Graph_Fuse) {
+    if c.gb != nil { c.gb.fuse = f }
+}
+
+fuse_end :: proc(c: ^Checker, f: ^Graph_Fuse) {
+    if c.errors > 0 { graph_fuse_fail(c.gb, f, "errors") }
+    graph_fuse_end(c.gb, f)
+}
+
+// A statement a pass meets, as the graph enters it (the builder's
+// graph_stmt): the one it is in for what the pass builds.
+Fuse_Stmt :: struct {
+    b:     ^Graph_Builder,
+    saved: i32,
+}
+
+fuse_stmt :: proc(c: ^Checker, s: Stmt) -> Fuse_Stmt {
+    if c.gb == nil || c.gb.fuse == nil || is_scope_def(s) { return {} }
+    return {c.gb, graph_fuse_stmt(c.gb, s)}
+}
+
+fuse_stmt_end :: proc(fs: Fuse_Stmt) {
+    if fs.b != nil { graph_fuse_stmt_end(fs.b, fs.saved) }
+}
+
+// Whether a definition is written before a statement.
+stmt_before :: proc(x, y: Stmt) -> bool {
+    a, b := stmt_span(x), stmt_span(y)
+    return a.line < b.line || (a.line == b.line && a.col < b.col)
+}
+
+// A statement of the code the checker doesn't build yet: its body is the
+// builder's.
+fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
+    fuse_fail(c, fmt.aprintf("%v", reflect.union_variant_typeid(s)))
+}
+
 check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil, scope_defs: [dynamic]Stmt = nil) {
     // SPLIT mode (a Stmt_Scope body): compile-time defs live in `scope_defs`,
     // runtime statements in `stmts`. The registration/check passes run over the
@@ -5503,6 +5581,9 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
     // nil and the single `stmts` list carries both, exactly as before.
     split := scope_defs != nil
     def_list := scope_defs if split else stmts
+    // The definitions build nothing of this code: the builder builds them,
+    // where they are written.
+    fuse := fuse_suspend(c)
 
     // Pass 1a: pre-register every `name :: ...` definition so any later
     // statement can reference it. Fun signatures are NOT resolved here — they
@@ -5530,14 +5611,28 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
     }
     register_and_check_declarations(c, defs[:], env, owner, public_env)
     check_bodies(c, defs[:], env)
+    fuse_resume(c, fuse)
     when ODIN_DEBUG {
         saved_stmt := c.once_stmt   // the enclosing statement's, when this is its block
         defer c.once_stmt = saved_stmt
     }
+    b := c.gb if fuse != nil else nil   // this code's graph is built as it is checked
+    di := 0
     for i in 0 ..< len(code) {
         when ODIN_DEBUG { c.once_stmt += 1 }
+        saved: i32
+        if b != nil {
+            for ; di < len(defs) && stmt_before(defs[di], code[i]); di += 1 { graph_fuse_def(b, defs[di]) }
+            graph_fuse_body_stmt(b, code[i])
+            saved = graph_fuse_stmt(b, code[i], fresh = true)
+            fuse_code_stmt(c, code[i])
+        }
         register_and_check_declarations(c, code[i:i + 1], env, owner, public_env)
         check_bodies(c, code[i:i + 1], env)
+        if b != nil { graph_fuse_stmt_end(b, saved) }
+    }
+    if b != nil {
+        for ; di < len(defs); di += 1 { graph_fuse_def(b, defs[di]) }
     }
 
     // Pass 4 (stack/arena routing) is runtime-only — over the body statements.
@@ -5973,6 +6068,8 @@ find_operator_overload :: proc(c: ^Checker, env: ^Type_Scope, op: Token_Kind) ->
 register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil) {
     pub := public_env if public_env != nil else env
     for stmt in stmts {
+        fs := fuse_stmt(c, stmt)
+        defer fuse_stmt_end(fs)
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
             // Generic union: register as a template and skip concrete
@@ -7521,6 +7618,9 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
 // declaration order.
 check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signature_only: bool = false) {
     if len(s.generic_params) > 0 { return }
+    // A scope's body builds its own graph, or none: not its parent's.
+    outer := fuse_suspend(c)
+    defer fuse_resume(c, outer)
     if s.is_intrinsic {
         // Body is compiler-generated. Validate the declared signature against
         // the LLVM intrinsic's expected shape (arity + element types).
@@ -7804,6 +7904,11 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
         return
     }
 
+    // A fun's graph is built as its body is checked.
+    f: ^Graph_Fuse
+    if c.gb != nil && ft.kind == .Fun { f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit) }
+    defer if f != nil { fuse_end(c, f) }
+
     // Nothing to descend into only when BOTH are empty. A pure-namespace struct
     // (only nested `::` defs, no runtime body) still needs check_scope below so
     // its nested types get a full body check — without it their field defaults
@@ -8068,6 +8173,8 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
     // same path that checks any decl. Function signatures resolve in Phase 1.)
 
     for stmt in stmts {
+        fs := fuse_stmt(c, stmt)
+        defer fuse_stmt_end(fs)
         #partial switch s in stmt {
         case ^Stmt_Scope:
             check_scope_body(c, s, env)
@@ -9527,6 +9634,8 @@ check_package_files :: proc(
 // Returns a Type_Scope (module-struct) with scope set to the module's checked env.
 // Modules are funs — Type_Scope with no data fields, only functions/types/scope.
 check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scope {
+    outer := fuse_suspend(c)
+    defer fuse_resume(c, outer)
     // Return cached if already checked
     if existing, ok := c.checked_modules[module_name]; ok {
         return existing
@@ -10159,6 +10268,9 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         }
     }
 
+    // The graph is built as the program is checked (its arena known now).
+    c.gb = graph_builder_new(checked)
+
     // Build Context struct: { arena? , args: [..64][]utf8 }
     {
         ARGS_CAP :: 64
@@ -10321,13 +10433,15 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // is an index over its calls, and the summaries on it.
     if c.errors == 0 {
         if perf != nil { perf_timer_mark(perf, "graph") }
-        checked.graph = build_program_graph(checked, programs)
+        checked.graph = build_program_graph(c.gb, programs)
         if perf != nil { perf_timer_mark(perf, "analysis") }
         checked.call_graph = build_call_graph(checked)
         c.cg = &checked.call_graph
-    } else if perf != nil {
-        perf_timer_mark(perf, "analysis")
+    } else {
+        graph_builder_free(c.gb)
+        if perf != nil { perf_timer_mark(perf, "analysis") }
     }
+    c.gb = nil
     flow_analyze_program(&c, checked) // post-check intraproc flow (missing return, err use, init)
     escape_analyze_program(&c, checked) // post-check escape: the lifetime rule + its call summaries
     // NOTE: the slice analysis (def-use + control dependence on the graph) is
@@ -11322,6 +11436,8 @@ build_scope_decl_env :: proc(ft: ^Type_Scope) -> ^Type_Scope {
 // Idempotent: skips a list that's already populated, so repeated demand pulls
 // and the cycle guard are no-ops once resolved.
 resolve_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
+    outer := fuse_suspend(c)
+    defer fuse_resume(c, outer)
     if ft.ast == nil { return }
     env := build_scope_decl_env(ft)
     if env == nil { return }
