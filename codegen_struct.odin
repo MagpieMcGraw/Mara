@@ -87,8 +87,10 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
             struct_name = skey,
         }
         // Zero-init (ensures null ptrs, zero ints, etc.) — unless the value
-        // writes all of it: a struct-returning call, or a copy of a place.
-        if !call_writes_struct(g, value) && !copies_place(value) && !is_try { emit_memset_zero(g, alloca_name, total) }
+        // writes all of it: a struct-returning call, a copy of a place, `?`'s
+        // value, an if-expression's.
+        _, is_if := value.(^Expr_If)
+        if !call_writes_struct(g, value) && !copies_place(value) && !is_try && !is_if { emit_memset_zero(g, alloca_name, total) }
 
         // Sized-slice fields are NOT init'd here — the struct's auto-init
         // function (called below for bare decls) and gen_store_struct_into
@@ -2037,16 +2039,22 @@ gen_swizzle_write_single :: proc(g: ^Codegen, av: ^Array_Var, field: string, val
 gen_swizzle_write_multi :: proc(g: ^Codegen, av: ^Array_Var, field: string, value: Expr) {
     dst_arr_type := array_var_type(av)
 
-    // Case 1: RHS is an array literal — gen each element directly
-    if arr_lit, arr_ok := value.(^Expr_Array); arr_ok {
+    // Case 1: RHS is an array literal — built whole in a temporary first, as
+    // it may read the components it replaces (element by element, `v.xy =
+    // [v.y, v.x]` wrote v.y twice), then each element into its component.
+    if _, arr_ok := value.(^Expr_Array); arr_ok {
+        src_arr_type := fmt.tprintf("[%d x %s]", len(field), av.elem_type)
+        tmp := fresh_tmp(g)
+        emit_alloca(g, tmp, src_arr_type)
+        gen_store_array_into(g, tmp, len(field), av.elem_type, value, dest_fresh = true)
         for i := 0; i < len(field); i += 1 {
-            dst_idx := swizzle_char_to_index(field[i])
-            if i < len(arr_lit.elements) {
-                elem_val := gen_expr(g, arr_lit.elements[i], av.elem_type)
-                gep := fresh_tmp(g)
-                emit_array_gep_const(g, gep, dst_arr_type, av.alloca, dst_idx)
-                emit_store(g, av.elem_type, elem_val, gep)
-            }
+            src_gep := fresh_tmp(g)
+            emit_array_gep_const(g, src_gep, src_arr_type, tmp, i)
+            elem := fresh_tmp(g)
+            emit_load_into(g, elem, av.elem_type, src_gep)
+            dst_gep := fresh_tmp(g)
+            emit_array_gep_const(g, dst_gep, dst_arr_type, av.alloca, swizzle_char_to_index(field[i]))
+            emit_store(g, av.elem_type, elem, dst_gep)
         }
         return
     }

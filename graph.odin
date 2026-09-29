@@ -1666,7 +1666,9 @@ graph_read :: proc(b: ^Graph_Builder, place: Operand, t: Type, span: Span) -> Op
 // A synthetic local of the current block, for a value that outlives a run.
 @(private="file")
 graph_slot :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) -> Node_Id {
-    return graph_node(b, .Local, .Synthetic, b.code.block, name, t, span)
+    // Storage no use types (an if-expression's of a bare literal): an
+    // unsettled width takes the default, as behind a pointer.
+    return graph_node(b, .Local, .Synthetic, b.code.block, name, graph_settled(t, pointee = true), span)
 }
 
 // An expression that names a place without running anything: walking it again
@@ -1694,7 +1696,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
     case ^Expr_Number:            return graph_const(b, w, v.span, v.type_, "", Const_Value{int = v.int_value, float = v.value, is_float = v.is_float})
     case ^Expr_Char:              return graph_const(b, w, v.span, v.type_, "", Const_Value{int = i128(v.value)})
     case ^Expr_Bool:              return graph_const(b, w, v.span, v.type_, "", Const_Value{int = 1 if v.value else 0})
-    case ^Expr_Size_Of:           return graph_const(b, w, v.span, v.type_, "size_of", graph_size_of(v.resolved_type))
+    case ^Expr_Size_Of:           return graph_const(b, w, v.span, v.type_, "size_of", graph_size_of(v.resolved_type, b.checked))
     case ^Expr_Compiler_Intrinsic:
         // The caller's name or place is text; a target flag, a bool.
         if v.kind == .Caller_Name || v.kind == .Caller_Span {
@@ -1708,7 +1710,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         #partial switch r in v.resolved {
         case Resolved_Enum_Variant, Resolved_Constant:
             if graph_aggregate(v.type_) { return graph_read(b, graph_const_global(b, w, v.span, v.type_, v.name, v.resolved), v.type_, v.span) }
-            return graph_const(b, w, v.span, v.type_, v.name, graph_const_value(v.resolved))
+            return graph_named_const(b, w, v.span, v.type_, v.name, v.resolved)
         case Resolved_Func:
             return graph_op_value(b, .Global, w, v.span, v.type_, v.name)   // a function as a value
         case Resolved_Union_Variant:
@@ -1723,7 +1725,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
             #partial switch r in v.resolved {
             case Resolved_Enum_Variant, Resolved_Constant:
                 if graph_aggregate(v.type_) { return graph_read(b, graph_const_global(b, w, v.span, v.type_, v.field, v.resolved), v.type_, v.span) }
-                return graph_const(b, w, v.span, v.type_, v.field, graph_const_value(v.resolved))
+                return graph_named_const(b, w, v.span, v.type_, v.field, v.resolved)
             case Resolved_Func:
                 return graph_op_value(b, .Global, w, v.span, v.type_, v.field)
             case Resolved_Union_Variant:
@@ -1859,6 +1861,8 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
         if v.op == .Caret {
             return graph_op_value(b, .Deref, .Explicit, v.span, v.type_, "", graph_place(b, v.operand, v.span))
         }
+    case ^Expr_If:
+        if graph_aggregate(v.type_) { return graph_if_place(b, v, .Explicit) }   // its value's local
     }
     t := expr_type(e)
     slot := graph_slot(b, "temp", t, span)
@@ -2272,6 +2276,13 @@ graph_short_circuit :: proc(b: ^Graph_Builder, v: ^Expr_Binary, w: Written) -> O
 // An `if` expression: each branch writes a synthetic local, read after both.
 @(private="file")
 graph_if_value :: proc(b: ^Graph_Builder, v: ^Expr_If, w: Written) -> Operand {
+    return graph_read(b, graph_if_place(b, v, w), v.type_, v.span)
+}
+
+// The synthetic local an `if` expression's branches write: where its value
+// is, after both (a field of it is read there).
+@(private="file")
+graph_if_place :: proc(b: ^Graph_Builder, v: ^Expr_If, w: Written) -> Operand {
     slot := graph_slot(b, "if", v.type_, v.span)
     cond := graph_value(b, v.condition, w)
     yes, no, join := graph_run_new(b), graph_run_new(b), graph_run_new(b)
@@ -2283,7 +2294,7 @@ graph_if_value :: proc(b: ^Graph_Builder, v: ^Expr_If, w: Written) -> Operand {
     graph_store(b, graph_dest_var("if", slot, v.type_), v.else_expr, v.span)
     graph_jump(b, join, .Synthetic, v.span)
     b.code.run = join
-    return graph_read(b, graph_var(b, "if", slot, v.type_, v.span), v.type_, v.span)
+    return graph_var(b, "if", slot, v.type_, v.span)
 }
 
 // `f()?`: on an error, leave every scope and return it; otherwise go on with
@@ -2421,6 +2432,55 @@ graph_fills_prefix :: proc(value: Expr) -> bool {
     return false
 }
 
+// A named register-value constant where it's used: its value. One computed
+// from floats (`TWO_PI :: PI * 2`) is computed at the precision of the type
+// it's used at; one the graph can't fold (a union's size) is its
+// expression's operations, run here.
+@(private="file")
+graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
+    value := graph_const_value(r)
+    rc, is_const := r.(Resolved_Constant)
+    if !is_const || value != nil || rc.value_expr == nil { return graph_const(b, w, span, t, name, value) }
+    if ir := llvm_type_from_checker(t); ir == "double" || ir == "float" {
+        if x, folds := graph_fold_float(rc.value_expr, ir == "float"); folds {
+            return graph_const(b, w, span, t, name, Const_Value{float = x, is_float = true})
+        }
+    }
+    return graph_value_as(b, rc.value_expr, t, span, w)
+}
+
+// A constant float expression's value, each step rounded to single precision
+// when it's used as one — as its arithmetic would be done there. (Rounding a
+// double result to single is the single result: a double holds more than
+// twice the digits.)
+@(private="file")
+graph_fold_float :: proc(e: Expr, single: bool) -> (x: f64, ok: bool) {
+    at :: proc(x: f64, single: bool) -> f64 { return f64(f32(x)) if single else x }
+    #partial switch v in e {
+    case ^Expr_Number:
+        return at(v.value if v.is_float else f64(v.int_value), single), true
+    case ^Expr_Unary:
+        if v.op != .Minus { return 0, false }
+        n := graph_fold_float(v.operand, single) or_return
+        return -n, true
+    case ^Expr_Binary:
+        if _, overloaded := v.overload_fn.?; overloaded { return 0, false }
+        l := graph_fold_float(v.left, single) or_return
+        r := graph_fold_float(v.right, single) or_return
+        #partial switch v.op {
+        case .Plus:  return at(l + r, single), true
+        case .Minus: return at(l - r, single), true
+        case .Star:  return at(l * r, single), true
+        case .Slash: if r != 0 { return at(l / r, single), true }
+        }
+    case ^Expr_Ident:
+        if rc, ok := v.resolved.(Resolved_Constant); ok && rc.value_expr != nil { return graph_fold_float(rc.value_expr, single) }
+    case ^Expr_Field_Access:
+        if rc, ok := v.resolved.(Resolved_Constant); ok && rc.value_expr != nil { return graph_fold_float(rc.value_expr, single) }
+    }
+    return 0, false
+}
+
 // A string constant's global carries its text in the constants table.
 @(private="file")
 graph_text :: proc(b: ^Graph_Builder, global: Operand, value: Maybe(Const_Value)) -> Operand {
@@ -2486,10 +2546,15 @@ graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
     return nil
 }
 
-// A type's size in bytes, by Mara's layout (a union's: later).
+// A type's size in bytes, by Mara's layout (a union's by its variants', which
+// the program's structs give).
 @(private="file")
-graph_size_of :: proc(t: Type) -> Maybe(Const_Value) {
-    if _, is_union := distinct_base(t).(^Type_Union); is_union || t == nil { return nil }
+graph_size_of :: proc(t: Type, checked: ^Checked_Program = nil) -> Maybe(Const_Value) {
+    if t == nil { return nil }
+    if _, is_union := distinct_base(t).(^Type_Union); is_union {
+        if checked == nil { return nil }
+        return Const_Value{int = i128(elem_byte_size(llvm_type_from_checker(t), checked))}
+    }
     return Const_Value{int = i128(checker_type_byte_size(t))}
 }
 

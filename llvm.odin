@@ -457,6 +457,7 @@ llvm_in_place :: proc(e: ^Llvm) {
             if v == NO_NODE || wops[1].out != 0 || pg.op[v] != .Read || !llvm_aggregate(pg.type_[v]) { continue }
             tv := graph_operands(pg, v)[0].op
             if pg.op[tv] != .Var || llvm_direct(e, x) { continue }
+            if pg.op[x] == .Swizzle { continue }   // components, not one array's storage
             t := pg.refers[tv]
             if t <= e.node || t > pg.last[e.node] || pg.kind[t] != .Local || pg.written[t] != .Synthetic { continue }
             if e.value[t - e.node] != "" || llvm_reads(e, t) != 1 { continue }
@@ -525,6 +526,32 @@ llvm_builds_alone :: proc(e: ^Llvm, before: []Node_Id, t, x: Node_Id) -> bool {
     return true
 }
 
+// A swizzle's components between the array they name (`base`, of type `at`)
+// and an array of just them (`part`, of type `pt`), element by element:
+// gathered into part, or scattered from it.
+@(private="file")
+llvm_swizzle_copy :: proc(e: ^Llvm, name: string, at: Type, base: string, pt: Type, part: string, gather: bool) {
+    g := e.g
+    ir := llvm_type_from_checker(llvm_array(at).elem)
+    for c, i in transmute([]u8)name {
+        in_base, in_part := fresh_tmp(g), fresh_tmp(g)
+        emit_array_gep_const(g, in_base, llvm_type_from_checker(at), base, swizzle_char_to_index(c))
+        emit_array_gep_const(g, in_part, llvm_type_from_checker(pt), part, i)
+        v := fresh_tmp(g)
+        emit_load_into(g, v, ir, in_base if gather else in_part)
+        emit_store(g, ir, v, in_part if gather else in_base)
+    }
+}
+
+// Whether a variable is `this_program`, the compiler's global the program's
+// scope declares.
+@(private="file")
+llvm_this_program :: proc(e: ^Llvm, d: Node_Id) -> bool {
+    pg := e.pg
+    p := pg.parent[d]
+    return pg.name[d] == "this_program" && p != NO_NODE && pg.kind[p] == .Module && pg.parent[p] == NO_NODE
+}
+
 // Where a place lives: the variable at the root of its path; whether the
 // path crosses a pointer (then the root says nothing about where it is), and
 // once it does, `region`, the type of the object the last crossing lands in —
@@ -551,7 +578,9 @@ llvm_where :: proc(e: ^Llvm, p: Node_Id) -> Llvm_Where {
                 continue
             }
             w.root = pg.refers[id]
-            if !w.via_ptr { w.region = pg.type_[id] }
+            // this_program is an object of its type, reached through the
+            // pointer @__mara_program.
+            if !w.via_ptr { w.via_ptr, w.region = llvm_this_program(e, w.root), pg.type_[id] }
             return w
         case .Deref:
             if pg.written[id] != .Implied { w.explicit = true }
@@ -600,7 +629,7 @@ llvm_overlaps :: proc(e: ^Llvm, read, dest: Node_Id) -> bool {
 // a constructor, the local every return returns.
 @(private="file")
 llvm_in_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
-    if e.ctor && (d == e.node || e.pg.kind[d] == .Field) { return true }
+    if e.ctor && (d == e.node || (e.pg.kind[d] == .Field && e.pg.parent[d] == e.node)) { return true }
     return d > e.node && d <= e.pg.last[e.node] && e.value[d - e.node] == e.slot
 }
 
@@ -729,6 +758,14 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             e.value[op - e.node] = e.slot
             return true
         }
+        if llvm_this_program(e, d) {
+            // The program's own storage, which main hands over: at each use,
+            // where @__mara_program points.
+            at := fresh_tmp(g)
+            emit_raw(g, strings.concatenate({"  ", at, " = load ptr, ptr @__mara_program"}))
+            e.value[op - e.node] = at
+            return true
+        }
         if d <= e.node || d > pg.last[e.node] { return false }   // not this fun's
         if pg.kind[d] == .Const { return false }   // a constant has no storage: a use reads its value
         if d in e.hdr { return true }   // a view held as values: no storage
@@ -790,6 +827,14 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Write:
         place := ops[0].op
         if pg.op[place] == .Slice { return llvm_copy_into(e, ops, span) }
+        if pg.op[place] == .Swizzle && len(pg.name[place]) > 1 {
+            // Into several components: each its element of the value.
+            t := pg.type_[place]
+            val := llvm_operand(e, ops[1], t) or_return
+            sw := graph_operands(pg, place)[0].op
+            llvm_swizzle_copy(e, pg.name[place], pg.type_[sw], e.value[place - e.node], t, val, gather = false)
+            return true
+        }
         if v := ops[1].op; v != NO_NODE && pg.op[v] == .Const && pg.name[v] == "void" { return llvm_write_void(e, op, place) }
         if llvm_union_tag(e, place) != nil { return false }   // a union's tag is its variant's: a construct writes it
         t := pg.type_[place]
@@ -962,16 +1007,32 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         emit_array_gep_var(g, tmp, llvm_type_from_checker(at), e.value[base - e.node], i, "i64")
         e.value[op - e.node] = tmp
     case .Swizzle:
-        // One component of a small array is its element (several: later).
+        // One component of a small array is its element. Several, written,
+        // are the array (the write scatters into them); otherwise gathered
+        // into a temporary, their value.
         base := ops[0].op
         at := pg.type_[base]
         fa := llvm_array(at)
         name := pg.name[op]
-        if fa == nil || len(name) != 1 || llvm_direct(e, base) { return false }
-        k := swizzle_char_to_index(name[0])
-        if k < 0 || k >= fa.size { return false }
+        if fa == nil || llvm_direct(e, base) { return false }
+        for c in transmute([]u8)name {
+            if k := swizzle_char_to_index(c); k < 0 || k >= fa.size { return false }
+        }
+        from := e.value[base - e.node]
+        if len(name) == 1 {
+            tmp := fresh_tmp(g)
+            emit_array_gep_const(g, tmp, llvm_type_from_checker(at), from, swizzle_char_to_index(name[0]))
+            e.value[op - e.node] = tmp
+            return true
+        }
+        if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write && graph_operands(pg, u)[0].op == op {
+            e.value[op - e.node] = from
+            return true
+        }
+        t := pg.type_[op]
         tmp := fresh_tmp(g)
-        emit_array_gep_const(g, tmp, llvm_type_from_checker(at), e.value[base - e.node], k)
+        emit_alloca(g, tmp, llvm_type_from_checker(t))
+        llvm_swizzle_copy(e, name, at, from, t, tmp, gather = true)
         e.value[op - e.node] = tmp
     case .Fill:
         return llvm_fill(e, ops)
@@ -1260,6 +1321,7 @@ llvm_direct :: proc(e: ^Llvm, place: Node_Id) -> bool {
     if pg.op[place] != .Var { return e.held[place - e.node] }   // a held view's len or cap
     d := pg.refers[place]
     if pg.kind[d] == .Param { return llvm_scalar(pg.type_[d]) }
+    if d <= e.node || d > pg.last[e.node] { return false }   // this_program's: in memory
     return e.held[d - e.node]
 }
 
@@ -2683,7 +2745,8 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
             if e.sret != nil { return e.slot, true }
         case .Write:
             dest := uops[0].op
-            if uops[1].op == op && !llvm_direct(e, dest) {
+            // (Several components of an array aren't one's storage: a temporary.)
+            if uops[1].op == op && !llvm_direct(e, dest) && pg.op[dest] != .Swizzle {
                 fresh := false
                 if pg.op[dest] == .Var {
                     d := pg.refers[dest]
@@ -2935,7 +2998,7 @@ llvm_header_field :: proc(name: string) -> int {
 @(private="file")
 llvm_struct :: proc(t: Type) -> ^Scope_Body {
     if t == nil { return nil }
-    sd := as_struct_body(t)
+    sd := as_struct_body(distinct_base(t))   // a distinct struct's is its base's
     if sd == nil || llvm_has_backing(t) { return nil }
     return sd
 }

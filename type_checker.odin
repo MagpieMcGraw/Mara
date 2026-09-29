@@ -8063,7 +8063,8 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
             if lit, is_lit := s.expr.(^Expr_Struct_Literal); is_lit && lit.name != "" {
                 if vt, _, found := type_env_locate(env, lit.name); found {
                     if sd := resolve_to_struct_type(c, vt); sd != nil {
-                        check_struct_literal_fields(c, lit, sd, lit.span, env)
+                        lit.type_ = vt   // the variable's: its fields are written
+                        check_struct_literal_fields(c, lit, sd, lit.span, env, override = true)
                         lit.override_target = lit.name
                         handled_override = true
                     }
@@ -9062,6 +9063,8 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
                     check_literal_overflow(c, s.value, fa.elem, s.span)
                 }
             } else {
+                // The target names len(field) elements, as a read of it does.
+                fa_expr.type_ = new_clone(Type_Fixed_Array{size = len(fa_expr.field), elem = fa.elem})
                 // Multi-component write: value must be an array with matching element type
                 if va, va_ok := val_type.(^Type_Fixed_Array); va_ok {
                     if types_incompatible(fa.elem, va.elem) {

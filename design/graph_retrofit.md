@@ -678,7 +678,22 @@ evaluates its destination and value); how instructions are chosen stays in the e
       `t := f()?` claims the call's result slot (a construction's is its temporary,
       copied in without zeroing t first); a fallible construction destructured into an
       existing struct is built in it when its callee is handed none of the caller's
-      storage, as a single-result one is.
+      storage, as a single-result one is. Then: a distinct struct is its base's; the
+      in-place override `p{ x = 10 }` is typed as p (and not checked as a construction);
+      `this_program` is where `@__mara_program` points, reached through a pointer. A named
+      constant computed from floats (`TWO_PI :: PI * 2`) is folded at the precision of
+      the type it's used at; one the graph can't fold is its expression's operations
+      where it's used, as the old emitter's (normalizer: float arithmetic of two
+      constants is its result, like integer arithmetic). `size_of` of a union is by its
+      variants'. A slot no use types (an if-expression of bare literals) takes the
+      default width; an aggregate if-expression's slot is its place (`(if c do a else
+      b).x` reads the slot, no copy). Swizzles of several components: read, gathered
+      into a temporary; written, scattered element by element — never a place to build
+      a value in (the graph's emitter built a literal "in place" at `v.yz`: the wrong
+      elements). Found: the old emitter wrote an array literal into components one by
+      one, reading what it had just written (`v.xy = [v.y, v.x]` gave two copies of
+      v.y); now built whole first, as the graph does. Old emitter, to the graph's
+      shape: a struct declared from an if-expression isn't zeroed first.
 
 ## Baselines
 

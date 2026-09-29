@@ -143,6 +143,18 @@ sub fold_widths {
                 $const{$name} = $x if $x < $lim && $x >= -$lim;
                 next;
             }
+            # Float arithmetic of two constants (`fmul double PI, 2.0`): its
+            # result, rounded to single for a float (the double result rounds
+            # to the single one: a double holds over twice the digits).
+            if (/^\s+(%[-\w.\$]+) = (fadd|fsub|fmul|fdiv) (double|float) (0x[0-9A-Fa-f]{16}), (0x[0-9A-Fa-f]{16})$/) {
+                my ($name, $op, $ty) = ($1, $2, $3);
+                my ($a, $b) = map { unpack('d>', pack('H16', substr($_, 2))) } ($4, $5);
+                next if $op eq 'fdiv' && $b == 0;
+                my $x = $op eq 'fadd' ? $a + $b : $op eq 'fsub' ? $a - $b : $op eq 'fmul' ? $a * $b : $a / $b;
+                $x = unpack('f', pack('f', $x)) if $ty eq 'float';
+                $const{$name} = '0x' . uc unpack('H16', pack('d>', $x));
+                next;
+            }
             # A pointer cast to a pointer is the pointer.
             if (/^\s+(%[-\w.\$]+) = bitcast ptr (%[-\w.\$]+|\@[-\w.\$]+) to ptr$/) {
                 $const{$1} = $2;
