@@ -793,6 +793,23 @@ erroneous program reports, the negative fixtures say so.
       its type, a store builds into its destination — construct by construct, the builder's case
       deleted as each moves; a body the checker can't build yet is built by the builder, from the
       annotations, as phase 3 did per function
+      In progress: 2277 of the corpus's fun bodies are built as they are checked (the rest: 46
+      checked with errors, 71 of constructs still the builder's; struct bodies and module-level
+      declarations not started). A segment holds its scope's node and is built in pieces,
+      anchored at a position and placed when the builder meets its scope (graph_fuse_place: its
+      definitions built there). The checker's walk asks each expression what to build (fuse_expr:
+      its value, its place, either, or into a destination — a temporary first where the storage
+      already holds a value) and gets what it built (c.fused). Where the builder decides before
+      something is checked what it decides after, the checker makes the operation where it goes
+      and decides it when the graph is put together, when every width is known: a widening, an
+      operand's view at a param chosen later, a range's bound cast and its check, a partial
+      array's prefix zero, the arena's marks and resets and a big local's space; it is kept or
+      dropped (repl), and what a dropped one began its run with passes to the next.
+      Types settle then too. A field access's base built before it names a type or a module is
+      left out (graph_fuse_drop_since); bytes' element places are retyped into views where their
+      use says so. A body or a construct the checker can't build yet fails the body to the
+      builder (MARA_FUSE=log: why). Graph identical in all 275 programs at every step (shuffled
+      too). test_1M: 33 s vs 28 s with MARA_FUSE=0 (canonicalize 2.7 s is the cost to cut)
 - [ ] The builder deleted: module-level declarations and constants from the checker too
 - [ ] The last readers of annotations: `void` into a pointer checked where the store is checked;
       the returned local and the consumed param as graph queries; constant tables from values the
