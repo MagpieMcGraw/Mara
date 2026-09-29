@@ -3916,6 +3916,24 @@ graph_fuse_view :: proc(b: ^Graph_Builder, place: Operand, t: Type, big: bool, s
     }
 }
 
+// Bytes read by a byte read (graph_store): of the element built, its
+// buffer's place (its dereference at the read) and its index as it was
+// before it was widened; the element's operation left out.
+graph_fuse_byte_operands :: proc(b: ^Graph_Builder, place: Operand, span: Span) -> (Operand, Operand) {
+    id := place.op
+    end := int(b.g.operand_first[id + 1]) if int(id) + 1 < b.nodes else len(b.g.operands)
+    ops := b.g.operands[b.g.operand_first[id]:end]
+    buf, off := ops[0], ops[1]
+    if off.op != NO_NODE && b.g.op[off.op] == .Cast && b.g.written[off.op] == .Implied {
+        raw := b.g.operands[b.g.operand_first[off.op]]
+        graph_drop(b, off.op, raw)
+        off = raw
+    }
+    graph_drop(b, id, NO_VALUE)
+    if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { b.g.origin[buf.op] = span }
+    return buf, off
+}
+
 // Bytes taken as an array (graph_value_as): their view, copied into a
 // temporary, read.
 graph_fuse_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Span) -> Operand {

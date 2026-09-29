@@ -5733,16 +5733,6 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
     return graph_fuse_widen(b, fuse_value(c, r, e, t), span, w)
 }
 
-// A value the builder can build again from its check: one of no operations
-// but its own.
-fuse_is_leaf :: proc(e: Expr) -> bool {
-    #partial switch v in e {
-    case ^Expr_Number, ^Expr_Char, ^Expr_Bool, ^Expr_String, ^Expr_Size_Of: return true
-    case ^Expr_Ident: return v.lowered == nil
-    }
-    return false
-}
-
 // The graph checks the scalars written to a variable; what else a store
 // builds (in place, a view, from bytes) waits.
 fuse_scalar :: proc(t: Type) -> bool {
@@ -5852,8 +5842,9 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
             return
         }
         // (A text written to a new partial array fills a prefix of it.)
-        wrote := fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, fa.decl, t), s.span, settle = true)
-        if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, wrote && is_partial_array(t) && graph_fills_prefix(s.value), t) }
+        wrote, zeroed := fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, fa.decl, t), s.span, settle = true)
+        if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, zeroed || wrote && is_partial_array(t) && graph_fills_prefix(s.value), t) }
+        if zeroed && !fa.prefixed { fuse_fail(c, "a new partial array read from bytes") }
         return
     }
     if is_skip || is_void_literal(s.value) {   // `x = void` de-inits
@@ -11594,13 +11585,13 @@ fuse_store_into :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, d: Dest, span: S
     return t
 }
 
-fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span: Span, settle := false) -> (wrote: bool) {
+fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span: Span, settle := false) -> (wrote: bool, zeroed: bool) {
     b := fusing(c)
     if b == nil || r.into { return }
     if r.temp {
         // Built whole in a temporary, then written (graph_assign).
         graph_fuse_write_at(b, graph_dest_place(b, d, span), r.v, span)
-        return true
+        return true, false
     }
     if fuse_builds_into(e) {
         fuse_fail(c, "a value built in place, taken as one")
@@ -11631,19 +11622,28 @@ fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span
         // a span, a byte read: the builder's.)
         _, into_slice := distinct_base(dt).(^Type_Slice)
         _, is_index := e.(^Expr_Index)
-        if !is_index || !r.place || into_slice || is_partial_array(dt) {
+        if !is_index || !r.place {
             fuse_fail(c, "bytes read as another type")
             return
         }
         ix := e.(^Expr_Index)
+        if into_slice || is_partial_array(dt) {
+            // Into a slice or a partial array, a byte read: the bytes'
+            // place and the index as the builder takes them (the element's
+            // read and its index's widening left out), then the read. A new
+            // partial array is zero first.
+            buf, off := graph_fuse_byte_operands(b, r.v, span)
+            graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if ix.is_big_endian else "", graph_dest_place(b, d, span), buf, off)
+            return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
+        }
         graph_fuse_view(b, r.v, dt, ix.is_big_endian, span)
         val := graph_read(b, r.v, dt, span)   // (the read, then the place)
         graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
-        return true
+        return true, false
     }
     val := graph_fuse_widen(b, fuse_value(c, r, e, t), span, {to = dt, settle_to = settle})
     graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
-    return true
+    return true, false
 }
 
 // An `if` expression, built (graph_if_place): the synthetic local its
@@ -11735,14 +11735,12 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     if e.is_broadcast && e.type_ != nil {
         if _, is_err := e.type_.(Type_Error); !is_err {
             // Built (its value checked with its field's type, before the
-            // body: a leaf, built here): the value, then the fill.
+            // body, built here from that check): the value, then the fill.
             if fl := c.lit; fl != nil && fl.e == e {
                 c.lit = nil
                 if b := fusing(c); b != nil {
-                    if fuse_is_leaf(e.broadcast_value) {
-                        graph_fuse_fill(b, e, e.type_, fl.dest, graph_value(b, e.broadcast_value))
-                        fl.built = true
-                    }
+                    graph_fuse_fill(b, e, e.type_, fl.dest, graph_value(b, e.broadcast_value))
+                    fl.built = true
                 }
             }
             return e.type_
