@@ -5686,7 +5686,7 @@ fuse_leaf :: proc(c: ^Checker, e: Expr) {
         switch {
         case want == .Into && is_variant:
             d := c.asked_dest
-            if c.asked_temp { d = graph_fuse_temp(b, c.asked_span, fuse_temp_type(d, true)) }
+            if c.asked_temp { d = graph_fuse_temp(b, c.asked_span, fuse_temp_type(d)) }
             graph_fuse_variant(b, v.type_, v.name, d, v.span)
             fuse_built(c, b, want, c.asked_temp, c.asked_temp, d, v.type_, c.asked_span)
         case want == .Value:  fuse_done(c, graph_value(b, e, w))
@@ -5726,6 +5726,8 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
             graph_fuse_view(b, r.v, to, e.(^Expr_Index).is_big_endian, span)
             return graph_fuse_view_temp(b, r.v, to, span)
         }
+        // (A literal asked at it: built so — fuse_use_type.)
+        if is_literal && graph_aggregate(to) && r.v.op != NO_NODE && b.g.type_[r.v.op] == to { return r.v }
         if to_array && (fuse_byte_index(e) || is_slice && is_byte_buffer(expr_type(sl.expr))) || is_literal && graph_aggregate(to) {
             fuse_fail(c, "bytes or a literal at its use's type")
             return NO_VALUE
@@ -8632,7 +8634,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
                     graph_fuse_zero_var(b, text_slot, expected, s.span)
                 }
             }
-            vt, r := fuse_expr(c, val, env, .Either)
+            vt, r := fuse_expr(c, val, env, .Either, dest = fuse_use_type(val, expected))
             if k, folds := graph_constant(val).?; folds && k.is_text && is_partial_array(expected) && !text_pa {
                 fuse_fail(c, "a text constant returned as a partial array")
             }
@@ -11516,7 +11518,7 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
     }
     temp := want != .Into || into_temp
     at := c.asked_span if into_temp else e.span
-    if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d, into_temp)) }
+    if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
     fl := Fuse_Lit{e = e, dest = d}
     saved := c.lit
     c.lit = &fl
@@ -11532,11 +11534,19 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
 }
 
 // Where a value built in place goes: its destination; else a temporary made
-// before it — typed as the storage it is then written to (graph_assign), or
-// as itself — read (as a value) or its place.
-fuse_temp_type :: proc(d: Dest, into_temp: bool) -> Type {
-    if into_temp && d.type_ != nil && !is_infer(d.type_) { return d.type_ }
+// before it — typed as the storage it is then written to (graph_assign), as
+// the use that takes it (fuse_use_type), or as itself — read (as a value) or
+// its place.
+fuse_temp_type :: proc(d: Dest) -> Type {
+    if d.type_ != nil && !is_infer(d.type_) { return d.type_ }
     return nil
+}
+
+// What a use that takes a value at a type (graph_value_as) asks of it: an
+// array literal is built at that type — a short one's other slots zero.
+fuse_use_type :: proc(e: Expr, t: Type) -> Dest {
+    if _, is_literal := e.(^Expr_Array); is_literal && t != nil && graph_aggregate(t) { return {type_ = t} }
+    return {}
 }
 
 fuse_built :: proc(c: ^Checker, b: ^Graph_Builder, want: Fuse_Want, temp, into_temp: bool, d: Dest, t: Type, span: Span) {
@@ -11562,7 +11572,7 @@ check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Ty
     if want == .None || b == nil || len(e.elements) == 0 { return check_array_literal_impl(c, e, env, nil) }
     temp := want != .Into || into_temp
     at := c.asked_span if into_temp else e.span
-    if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d, into_temp)) }
+    if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
     ga := graph_fuse_array(b, e, d)
     t := check_array_literal_impl(c, e, env, ga)
     if fusing(c) == nil { return t }
@@ -12611,7 +12621,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     _, is_variant := e.resolved.(Resolved_Union_Variant)
     switch {
     case want == .Into && is_variant:
-        if into_temp { d = graph_fuse_temp(b, temp_span, fuse_temp_type(d, true)) }
+        if into_temp { d = graph_fuse_temp(b, temp_span, fuse_temp_type(d)) }
         graph_fuse_variant(b, t, e.field, d, e.span)
         fuse_built(c, b, want, into_temp, into_temp, d, t, temp_span)
     case want == .Value:                  fuse_done(c, graph_value(b, e, w))
@@ -13800,7 +13810,7 @@ check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scop
         pt = sig.params[param].type_
         if arg == sig.params[param].default_value { w = .Implied }   // run at the call, not written there
     }
-    t, r := fuse_expr(c, arg, env, .Either, w)
+    t, r := fuse_expr(c, arg, env, .Either, w, dest = fuse_use_type(arg, pt))
     append(&fc.ops, fuse_value_as(c, arg, t, r, pt, span, {sig = sig, param = param}))
     return t
 }
@@ -14726,7 +14736,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // (Built into storage that holds a value: a temporary made before the
     // arguments.)
     if b := fusing(c); b != nil && c.call != nil && want == .Into && into_temp && fun_type.kind == .Struct {
-        dest = graph_fuse_temp(b, temp_span, fuse_temp_type(dest, true))
+        dest = graph_fuse_temp(b, temp_span, fuse_temp_type(dest))
     }
     check_call_args(c, check_args[:], fun_type, call_name(e), e.span, env)
     construct: ^Graph_Literal
