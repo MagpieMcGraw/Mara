@@ -11305,6 +11305,9 @@ Fuse_Unary :: struct {
     w:       Written,
     operand: Operand,
     place:   bool,   // the operand's place is wanted
+    either:  bool,   // (`-x`) its place or its value: an overload's param may view it
+    fused:   Fused,
+    t:       Type,
 }
 
 // An index into bytes: what the checker types a byte may be read as another
@@ -11322,14 +11325,29 @@ check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
         fuse_fail(c, "a unary's place")
         return check_unary_impl(c, e, env, nil)
     }
-    fu := Fuse_Unary{w = w, place = e.op == .Caret || e.op == .Ampersand}
+    fu := Fuse_Unary{w = w, place = e.op == .Caret || e.op == .Ampersand, either = e.op == .Minus && !e.wrapping}
     t := check_unary_impl(c, e, env, &fu)
     b := fusing(c)
     if b == nil { return t }
-    if _, over := e.overload_fn.?; over {
-        fuse_fail(c, "an operator overload")
+    if rf, over := e.overload_fn.?; over {
+        // A call, its operand at its param's type (graph_operator_arg).
+        callee := graph_callee(b, rf)
+        if callee == nil {
+            fuse_fail(c, "an operator resolved to no function")
+            return t
+        }
+        arg: Operand
+        if len(callee.params) > 0 {
+            arg = fuse_value_as(c, e.operand, fu.t, fu.fused, callee.params[0].type_, e.span, {to = callee.params[0].type_})
+        } else {
+            arg = fuse_value(c, fu.fused, e.operand, fu.t)
+        }
+        if fusing(c) == nil { return t }
+        kind: Op_Kind = .Construct if callee.kind == .Struct else .Call
+        fuse_done(c, {graph_call_op(b, kind, w, e.span, callee, t, arg), 0})
         return t
     }
+    if fu.either { fu.operand = fuse_value(c, fu.fused, e.operand, fu.t) }
     #partial switch e.op {
     case .Caret:
         p := graph_op_value(b, .Deref, .Explicit, e.span, t, "", fu.operand)
@@ -11354,8 +11372,9 @@ check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
 
 fuse_unary_operand :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope, fu: ^Fuse_Unary) -> Type {
     if fu == nil { return check_expr(c, e.operand, env) }
-    t, r := fuse_expr(c, e.operand, env, .Place if fu.place else .Value, fu.w, temp_span = e.span)
-    fu.operand = r.v
+    want: Fuse_Want = .Place if fu.place else .Either if fu.either else .Value
+    t, r := fuse_expr(c, e.operand, env, want, fu.w, temp_span = e.span)
+    fu.operand, fu.fused, fu.t = r.v, r, t
     return t
 }
 
