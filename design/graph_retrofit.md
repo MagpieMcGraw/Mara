@@ -734,6 +734,42 @@ evaluates its destination and value); how instructions are chosen stays in the e
       and runs the same. `test/irdiff.sh` compares two compilers only (its emitter modes
       are gone).
 
+## Phase 4 checklist
+
+The checker builds the graph as it checks, so nothing re-reads the syntax tree for what the
+checker found. Today it can't: one body is checked in two passes (declarations and
+reassignments, then control flow, calls, returns and stores through places), work happens out of
+order (a module on `use`, a generic instance at its first call, another struct's signature on
+demand), and some nodes are checked twice (a default argument at every call, an annotated
+literal as a value and again as what the declaration holds). Operations must come in the order
+they run, once each. So the checker's walk changes first, while the graph stays byte-for-byte the
+same; then the building moves into it.
+
+The proof, each step: the graph is the same — `MARA_GRAPH=full` dumps every column, edge, run and
+table, and the corpus's dumps match the baseline's (`test/graphdiff.sh`) — and so is the IR
+(`test/irdiff.sh -r`); the suite, the ask goldens and the corpus. Where a step changes what an
+erroneous program reports, the negative fixtures say so.
+
+- [ ] Tooling: `MARA_GRAPH=full`; `test/graphdiff.sh` (the corpus's full dumps, baseline against
+      working)
+- [ ] Each node checked once: a default argument in its callee's scope, once (every call takes the
+      result); an annotated literal once; a struct's `::` constants once; a `Module.X` default once
+- [ ] One ordered walk per body: a function's or struct's code, and every block, checked
+      statement by statement in the order it runs (the two passes merged); a local visible from
+      its declaration on
+- [ ] Segments: one fun's or struct's graph built on its own and placed afterwards in the
+      canonical order (the checker finishes bodies out of order); the checker builds each body's
+      graph when it finishes checking it
+- [ ] Fusion: the walk builds operations as it checks — an expression gives its operand beside
+      its type, a store builds into its destination — construct by construct, the builder's case
+      deleted as each moves; a body the checker can't build yet is built by the builder, from the
+      annotations, as phase 3 did per function
+- [ ] The builder deleted: module-level declarations and constants from the checker too
+- [ ] The last readers of annotations: `void` into a pointer checked where the store is checked;
+      the returned local and the consumed param as graph queries; constant tables from values the
+      checker evaluated; hit testing from origins
+- [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
+
 ## Baselines
 
 Recorded at 3c9bbc5, before any change, with the debug compiler (`odin build . -debug`). Peak memory

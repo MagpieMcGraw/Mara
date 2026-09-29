@@ -3387,6 +3387,10 @@ graph_dominators :: proc(n: int, succ, pred: [][dynamic]i32, is_entry: []bool) -
 graph_dump :: proc(g: ^Program_Graph) {
     want := os.get_env("MARA_GRAPH", context.temp_allocator)
     if want == "" { return }
+    if want == "full" {
+        graph_dump_full(g)
+        return
+    }
     fmt.printf("graph: %d nodes, %d runs\n", len(g.kind), len(g.run_first) - 1)
     run_of := make([]i32, len(g.kind), context.temp_allocator)
     slice.fill(run_of, -1)
@@ -3419,6 +3423,47 @@ graph_depth :: proc(g: ^Program_Graph, id: Node_Id) -> int {
     d := 0
     for p := g.parent[id]; p != NO_NODE; p = g.parent[p] { d += 1 }
     return d
+}
+
+// MARA_GRAPH=full: every column of every node, then the edges, runs, statements
+// and tables, one fact a line in id order — two builds of one program compare
+// line by line (a type is its name; a constant's value expression its span).
+@(private="file")
+graph_dump_full :: proc(g: ^Program_Graph) {
+    span :: proc(s: Span) -> string {
+        return fmt.tprintf("%s:%d:%d", filepath.base(s.file), s.line, s.col) if s.file != "" else "-"
+    }
+    fmt.printf("graph: %d nodes, %d runs, %d edges\n", len(g.kind), len(g.run_first) - 1, len(g.edges))
+    for id in 0 ..< len(g.kind) {
+        b := strings.builder_make(context.temp_allocator)
+        fmt.sbprintf(&b, "n %d %v %v %v p%d l%d %q", id, g.kind[id], g.op[id], g.written[id],
+            g.parent[id], g.last[id], g.name[id])
+        if t := g.type_[id]; t != nil { fmt.sbprintf(&b, " t=%s", type_name(t)) }
+        fmt.sbprintf(&b, " @%s r%d s%d", span(g.origin[id]), g.refers[id], g.stmt[id])
+        if ops := graph_operands(g, Node_Id(id)); len(ops) > 0 {
+            strings.write_string(&b, " (")
+            for o, i in ops { fmt.sbprintf(&b, "%s%d.%d", ", " if i > 0 else "", o.op, o.out) }
+            strings.write_string(&b, ")")
+        }
+        if c, ok := g.consts[Node_Id(id)]; ok { fmt.sbprintf(&b, " const=%v", c) }
+        if s, ok := g.assert_sides[Node_Id(id)]; ok { fmt.sbprintf(&b, " sides=%q|%q", s[0], s[1]) }
+        if e, ok := g.const_values[Node_Id(id)]; ok { fmt.sbprintf(&b, " value@%s", span(expr_span(e)^)) }
+        fmt.println(strings.to_string(b))
+    }
+    for e in g.edges { fmt.printfln("e %d -> %d %v %v site%d", e.from, e.to, e.kind, e.written, e.site) }
+    for r in 0 ..< len(g.run_first) - 1 {
+        b := strings.builder_make(context.temp_allocator)
+        fmt.sbprintf(&b, "r %d:", r)
+        for op in graph_run(g, r) { fmt.sbprintf(&b, " %d", op) }
+        fmt.println(strings.to_string(b))
+    }
+    for s, i in g.stmts { fmt.printfln("s %d %v @%s", i, s.kind, span(s.span)) }
+    for s in g.unreachable { fmt.printfln("u @%s", span(s)) }
+    for id in g.settled { fmt.printfln("settled %d", id) }
+    names := make([dynamic]string, 0, len(g.scope_node), context.temp_allocator)
+    for ts, id in g.scope_node { append(&names, fmt.tprintf("scope %s %d", ts.name, id)) }
+    slice.sort(names[:])
+    for n in names { fmt.println(n) }
 }
 
 @(private="file")
