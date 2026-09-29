@@ -750,7 +750,7 @@ table, and the corpus's dumps match the baseline's (`test/graphdiff.sh`) — and
 (`test/irdiff.sh -r`); the suite, the ask goldens and the corpus. Where a step changes what an
 erroneous program reports, the negative fixtures say so.
 
-- [ ] Tooling: `MARA_GRAPH=full`; `test/graphdiff.sh` (the corpus's full dumps, baseline against
+- [x] Tooling: `MARA_GRAPH=full`; `test/graphdiff.sh` (the corpus's full dumps, baseline against
       working)
 - [ ] Each node checked once: a default argument in its callee's scope, once (every call takes the
       result); an annotated literal once; a struct's `::` constants once; a `Module.X` default once

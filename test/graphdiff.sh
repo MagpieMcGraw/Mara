@@ -27,13 +27,14 @@ rm -rf "$OUT"; mkdir -p "$OUT/old" "$OUT/new"
 export ROOT OUT BASE WORK
 
 # One program, both sides, one after the other (they share the build
-# directory): its dump, less the timing lines.
+# directory): its dump and the checker's diagnostics (a link or clang
+# failure — a Windows virus scan holding the exe — is no graph's).
 one_program() {  # dir module [build flags]
   local dir=$1 mod=$2 flags=$3 side exe
   for side in old new; do
     exe=$BASE; [ $side = new ] && exe=$WORK
     ( cd "$dir" && { rm -rf "${mod}_build" 2>/dev/null; MARA_GRAPH=full "$exe" build "$mod" $flags 2>&1; } ) \
-      | grep -vE '[0-9]+(\.[0-9]+)?ms|Purity quotient|is ambiguous \(defined in' > "$OUT/$side/$mod.dump"
+      | grep -E '^(graph:|n |e |r |s |u |settled |scope |\[)' | grep -v 'is ambiguous (defined in' > "$OUT/$side/$mod.dump"
   done
   rm -rf "$dir/${mod}_build" "$dir/$mod.exe" 2>/dev/null
 }
