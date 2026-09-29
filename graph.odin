@@ -4176,6 +4176,11 @@ graph_fuse_literal :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, t: Type, 
     return gl
 }
 
+// Where an array literal's element goes (graph_literal_writes, array values).
+graph_fuse_literal_elem :: proc(gl: ^Graph_Literal, i: int, elem_t: Type) -> Dest {
+    return Dest{kind = .Index, index = i, type_ = elem_t, parent = &gl.parent}
+}
+
 // Where the literal's field goes: named, or its position's (graph_literal_writes).
 graph_fuse_literal_field :: proc(gl: ^Graph_Literal, name: string, i: int) -> Dest {
     name := name

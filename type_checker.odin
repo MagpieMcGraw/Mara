@@ -9108,9 +9108,34 @@ needs_union_variant_hint :: proc(field_type: Type, value: Expr) -> bool {
 //   Name{x: v, ...}   — named; each name must be a swizzle char (x/y/z/w or
 //                       r/g/b/a) whose index is within fa.size; duplicates
 //                       rejected; missing slots zero-fill
-check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^Type_Fixed_Array, env: ^Type_Scope) {
+check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^Type_Fixed_Array, env: ^Type_Scope, lit_t: Type = nil) {
     clear(&lit.array_values)
     resize(&lit.array_values, fa.size)
+    // Built (the literal being built): zero, then each element into its
+    // slot in turn (graph_literal_writes: by index — a named form given out
+    // of order, and a broadcast, are the builder's).
+    fl := c.lit if c.lit != nil && c.lit.e == lit else nil
+    c.lit = nil
+    gl: ^Graph_Literal
+    if b := fusing(c); b != nil && fl != nil {
+        in_order := true
+        if !lit.positional {
+            last := -1
+            for field in lit.fields {
+                if len(field.name) != 1 { continue }
+                idx := swizzle_char_to_index(field.name[0])
+                if idx <= last { in_order = false }
+                last = idx
+            }
+        }
+        if lit.is_broadcast || !in_order {
+            fuse_fail(c, "a broadcast, or swizzles out of order")
+        } else {
+            gl = graph_fuse_literal(b, lit, lit_t, fl.dest)
+            fl.built = gl != nil
+        }
+    }
+    elem_t := graph_elem_type(lit_t) if gl != nil else nil
 
     // Broadcast: `{all <expr>}` — check the expression once against the
     // element type, then fill every slot with a clone so codegen emits
@@ -9146,7 +9171,12 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
             // An anonymous nested literal (`{{1, 2}, {3, 4}}`) takes its shape
             // from the element type, as a struct field's does.
             if needs_field_type_hint(field.value) { c.expected_hint = fa.elem }
-            val_type := check_expr(c, field.value, env)
+            val_type: Type
+            if gl != nil {
+                val_type = fuse_store_into(c, field.value, env, graph_fuse_literal_elem(gl, i, elem_t), lit.span)
+            } else {
+                val_type = check_expr(c, field.value, env)
+            }
             if types_incompatible(fa.elem, val_type) {
                 check_error(c, lit.span, TYPE_ELEMENT_TYPE_EXPECTED,
                     lit.name, i, type_name(val_type), type_name(fa.elem))
@@ -9172,7 +9202,12 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
             continue
         }
         if needs_field_type_hint(field.value) { c.expected_hint = fa.elem }
-        val_type := check_expr(c, field.value, env)
+        val_type: Type
+        if gl != nil {
+            val_type = fuse_store_into(c, field.value, env, graph_fuse_literal_elem(gl, idx, elem_t), lit.span)
+        } else {
+            val_type = check_expr(c, field.value, env)
+        }
         if types_incompatible(fa.elem, val_type) {
             check_error(c, lit.span, TYPE_FIELD_TYPE_EXPECTED,
                 lit.name, field.name, type_name(val_type), type_name(fa.elem))
@@ -11456,7 +11491,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     if e.type_expr != nil {
         resolved := resolve_type_expr(e.type_expr, c, e.span, env = env)
         if fa, fa_ok := resolved.(^Type_Fixed_Array); fa_ok {
-            check_array_struct_literal(c, e, fa, env)
+            check_array_struct_literal(c, e, fa, env, resolved)
             e.type_ = resolved
             return resolved
         }
@@ -11473,6 +11508,11 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
                 return Type_Error{}
             }
             e.type_ = resolved
+            // (Built: its zero, where it goes.)
+            if fl := c.lit; fl != nil && fl.e == e {
+                c.lit = nil
+                if b := fusing(c); b != nil { fl.built = graph_fuse_literal(b, e, resolved, fl.dest) != nil }
+            }
             return resolved
         }
         check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
@@ -11486,7 +11526,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
         flat := resolve_type_name(c, e.name, "", env)
         if dt, ok := c.table.distinct_types[flat]; ok {
             if fa, fa_ok := dt.base_type.(^Type_Fixed_Array); fa_ok {
-                check_array_struct_literal(c, e, fa, env)
+                check_array_struct_literal(c, e, fa, env, dt)
                 return dt
             }
         }
@@ -11508,7 +11548,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
         }
         if dt, dt_ok := resolved.(^Type_Distinct); dt_ok {
             if fa, fa_ok := dt.base_type.(^Type_Fixed_Array); fa_ok {
-                check_array_struct_literal(c, e, fa, env)
+                check_array_struct_literal(c, e, fa, env, dt)
                 e.type_ = dt
                 return dt
             }
@@ -11572,7 +11612,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     // would emit a bare `0` for the aggregate.
     if hint := c.expected_hint; hint != nil {
         if fa, fa_ok := distinct_base(hint).(^Type_Fixed_Array); fa_ok {
-            check_array_struct_literal(c, e, fa, env)
+            check_array_struct_literal(c, e, fa, env, hint)
             e.type_ = hint
             return hint
         }
