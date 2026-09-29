@@ -1176,14 +1176,32 @@ graph_binary_type :: proc(v: ^Expr_Binary) -> Type {
 // The result types of the fun whose code is being built.
 @(private="file")
 graph_result_types :: proc(b: ^Graph_Builder) -> []Type {
+    if ts := graph_code_scope(b); ts != nil { return ts.return_types[:] }
+    return nil
+}
+
+// The fun or struct whose code is being built.
+@(private="file")
+graph_code_scope :: proc(b: ^Graph_Builder) -> ^Type_Scope {
     for p := b.code.block; p != NO_NODE; p = b.g.parent[p] {
         #partial switch b.g.kind[p] {
         case .Fun, .Struct:
-            if ts, ok := b.g.type_[p].(^Type_Scope); ok { return ts.return_types[:] }
-            return nil
+            ts, _ := b.g.type_[p].(^Type_Scope)
+            return ts
         }
     }
     return nil
+}
+
+// The results after `vals` — each a trailing err a return may leave out —
+// as an implied `Ok`, the err that is none. (Code falling off the end of
+// results that aren't errs is the missing-return check's to report: it
+// stops there.)
+@(private="file")
+graph_implied_oks :: proc(b: ^Graph_Builder, vals: ^[dynamic]Operand, rts: []Type, span: Span) {
+    for i := len(vals); i < len(rts) && is_err_type(rts[i]); i += 1 {
+        append(vals, graph_const(b, .Implied, span, rts[i], "Ok", Const_Value{}))
+    }
 }
 
 // A range's bound, as the loop counts: at the counter's type.
@@ -1241,14 +1259,17 @@ graph_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
     graph_jump(b, l.done if is_break else l.cont, .Explicit, span)
 }
 
+// A return has an operand for each result: the values given, then an implied
+// `Ok` for each trailing err left out.
 @(private="file")
 graph_return_stmt :: proc(b: ^Graph_Builder, v: Stmt_Return) {
-    vals := make([dynamic]Operand, 0, len(v.values), context.temp_allocator)
     rts := graph_result_types(b)
+    vals := make([dynamic]Operand, 0, len(rts), context.temp_allocator)
     for e, i in v.values {
         rt: Type = rts[i] if i < len(rts) else nil
         append(&vals, graph_value_as(b, e, rt, v.span))
     }
+    graph_implied_oks(b, &vals, rts, v.span)
     graph_exit_scopes(b, 0, v.span)
     graph_op(b, .Return, .Explicit, v.span, nil, "", ..vals[:])
     graph_run_close(b)
@@ -1427,8 +1448,12 @@ graph_code_body :: proc(b: ^Graph_Builder, owner: Node_Id, body: []Stmt, span: S
 @(private="file")
 graph_code_finish :: proc(b: ^Graph_Builder, span: Span) {
     if graph_reachable(b) {
+        // Falling off the end returns `Ok` for each err result (the checker
+        // allows it for those alone).
+        vals := make([dynamic]Operand, 0, 2, context.temp_allocator)
+        graph_implied_oks(b, &vals, graph_result_types(b), span)
         graph_exit_scopes(b, 0, span)
-        graph_op(b, .Return, .Synthetic, span)
+        graph_op(b, .Return, .Synthetic, span, nil, "", ..vals[:])
         graph_run_close(b)
     }
     for len(b.code.scopes) > 0 {
@@ -2178,8 +2203,13 @@ graph_try :: proc(b: ^Graph_Builder, v: ^Expr_Try, w: Written) -> Operand {
     fail, ok := graph_run_new(b), graph_run_new(b)
     graph_branch(b, err, fail, ok, .Implied, v.span)
     b.code.run = fail
+    // It returns the err, and each other result's zero value (implied).
+    rts := graph_result_types(b)
+    vals := make([dynamic]Operand, 0, len(rts), context.temp_allocator)
+    for i in 0 ..< len(rts) - 1 { append(&vals, graph_const(b, .Implied, v.span, rts[i], "zero", Const_Value{})) }
+    append(&vals, err)
     graph_exit_scopes(b, 0, v.span)
-    graph_op(b, .Return, .Implied, v.span, nil, "", err)
+    graph_op(b, .Return, .Implied, v.span, nil, "", ..vals[:])
     graph_run_close(b)
     b.code.run = ok
     if n == 1 { return NO_VALUE }   // err only
@@ -2463,8 +2493,7 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
         ts, is_scope := g.type_[fun].(^Type_Scope)
         if !is_scope { return nil }
         rts := ts.return_types[:]
-        if len(ops) == 1 && len(rts) > 1 { return rts[len(rts) - 1] }   // `?` returns the err
-        if k < len(rts) { return rts[k] }
+        if k < len(rts) { return rts[k] }   // (an operand for each result)
     case .Index, .View, .Slice, .Zero, .Carve:
         if k > 0 { return slice_header_width_type }
     case .Byte_Read:
@@ -2586,14 +2615,7 @@ graph_link_flows :: proc(b: ^Graph_Builder) {
         case .Return:
             fun := graph_code_owner(g, op)
             rs := results[fun]
-            if len(ops) == 1 && len(rs) > 1 {
-                // `?`'s return carries only the err: the last result.
-                clear(&srcs)
-                graph_sources(g, callee, results, ops[0], &srcs)
-                flow(g, srcs[:], rs[len(rs) - 1], op)
-                continue
-            }
-            for o, i in ops {
+            for o, i in ops {   // (an operand for each result)
                 if i >= len(rs) { break }
                 clear(&srcs)
                 graph_sources(g, callee, results, o, &srcs)

@@ -656,9 +656,8 @@ esc_record :: proc(e: ^Esc, st: Esc_Store) {
 @(private="file")
 esc_return_op :: proc(e: ^Esc, ri: int, op: Node_Id, ops: []Operand, state: []Esc_Roots) {
     rts := e.ft.return_types
-    for o, i in ops {
-        k := len(rts) - 1 if len(ops) == 1 && len(rts) > 1 else i
-        rt: Type = rts[k] if k < len(rts) else nil
+    for o, i in ops {   // (an operand for each result)
+        rt: Type = rts[i] if i < len(rts) else nil
         esc_return(e, ri, op, esc_into(e, o, rt, state), o, state)
     }
 }

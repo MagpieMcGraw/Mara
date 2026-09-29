@@ -51,6 +51,7 @@ Llvm :: struct {
     arena:   map[Node_Id]bool,          // a big local: its storage from the arena (its arena alloc)
     ahead:   map[Node_Id]bool,          // places computed ahead of their turn (a call builds its result there)
     why:     Node_Id,             // where it declined (for MARA_GRAPH_CG=log)
+    note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
 }
 
@@ -121,7 +122,8 @@ llvm_why :: proc(e: ^Llvm) {
     what := graph_kind_word(pg.kind[at])
     if pg.kind[at] == .Op { what = graph_op_word(pg.op[at]) }
     s := pg.origin[at]
-    fmt.eprintfln("graph-cg no: %s at %s '%s' %s:%d", e.ft.name, what, pg.name[at], s.file, s.line)
+    note := fmt.tprintf(" (%s)", e.note) if e.note != "" else ""
+    fmt.eprintfln("graph-cg no: %s at %s '%s' %s:%d%s", e.ft.name, what, pg.name[at], s.file, s.line, note)
 }
 
 @(private="file")
@@ -130,7 +132,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
 
     // The signature: its params, then its result — a scalar returned, or a
     // struct built in the caller's slot (a constructor's is Self).
-    if len(cf.cg_returns) > 1 || len(cf.return_binding_names) > 0 { return false }
+    if len(cf.cg_returns) > 1 || len(cf.return_binding_names) > 0 { e.note = "multiple or named results"; return false }
     e.ret = "void"
     if e.ctor {
         if len(cf.cg_returns) != 1 || llvm_struct(cf.cg_returns[0]) == nil { return false }
@@ -141,15 +143,16 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         case llvm_scalar(rt):        e.ret = llvm_type_from_checker(rt)
         case llvm_union(rt) != nil:   e.ret, e.by_value = llvm_type_from_checker(rt), rt
         case llvm_aggregate(rt):     e.sret = rt
-        case:                        return false
+        case:                        e.note = "result type"; return false
         }
     }
     // A fun that consumes a param into its result (its opening copy is
     // skipped when the caller passes that storage as the slot): later.
-    if _, consumes := consumed_param_of(cf).?; consumes { return false }
+    if _, consumes := consumed_param_of(cf).?; consumes { e.note = "consumes a param"; return false }
     params := make([dynamic]string, 0, len(cf.cg_params), context.temp_allocator)
     for p in cf.cg_params {
-        ir := llvm_param_type(p.type_) or_return
+        ir, ok := llvm_param_type(p.type_)
+        if !ok { e.note = fmt.tprintf("param '%s'", p.name); return false }
         append(&params, fmt.tprintf("%s %%%s.arg", ir, p.name))
     }
     if e.sret != nil { append(&params, "ptr %sret") }
@@ -2075,9 +2078,10 @@ llvm_held_header :: proc(e: ^Llvm, place: Node_Id) -> (Llvm_Header, bool) {
 llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     g := e.g
     callee := llvm_callee(e, op)
-    if callee == nil || callee.kind != .Fun { return false }   // through a function value (later)
-    if _, src := callee.origin.(Origin_Source); !src { return false }
-    if len(callee.cg_returns) > 1 || len(ops) != len(callee.cg_params) { return false }
+    if callee == nil || callee.kind != .Fun { e.note = "a function value"; return false }   // (later)
+    if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
+    if len(callee.cg_returns) > 1 { e.note = "multiple results"; return false }
+    if len(ops) != len(callee.cg_params) { e.note = "arguments left to defaults"; return false }
     ret := "void"
     result: Type
     if len(callee.cg_returns) == 1 {
