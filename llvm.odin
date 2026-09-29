@@ -618,6 +618,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             return true
         }
         if d <= e.node || d > pg.last[e.node] { return false }   // not this fun's
+        if pg.kind[d] == .Const { return false }   // a constant has no storage: a use reads its value
         if d in e.hdr { return true }   // a view held as values: no storage
         switch {
         case pg.kind[d] == .Param || pg.kind[d] == .Field: e.value[op - e.node] = e.value[d - e.node]

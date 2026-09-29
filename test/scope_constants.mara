@@ -1,0 +1,34 @@
+module scope_constants
+
+//@ expect-output: 42 8 15
+
+// A constant declared in a scope — a struct's, a fun's body — is the one a
+// name there means: it shadows a module constant of that name, and another
+// module's constant of that name never leaks in. (Uses were looked up by bare
+// name: `room` read the module's HEADER_SIZE, 8, and Pounce's
+// Arena_Debug.alloc read cache.mara's, 16 for a 32-byte header; the graph
+// emitter gave `STEP` an uninitialized slot.)
+
+Small :: struct { a: u32, b: u32 }
+HEADER_SIZE :: size_of(Small)
+
+Pool :: struct {
+	Head :: struct { a: i64, b: i64, c: i64, d: i64 }
+	HEADER_SIZE :: size_of(Head)
+	n : i64
+
+	room :: fun(p: ^Self, want: i64) -> i64 {
+		return want + HEADER_SIZE
+	}
+}
+
+inner :: fun(x: i64) -> i64 {
+	STEP :: 3
+	return x * STEP
+}
+
+main :: fun() {
+	p : Pool
+	pp := &p
+	print(pp.room(10), HEADER_SIZE, inner(5))
+}

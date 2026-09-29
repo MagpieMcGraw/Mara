@@ -7598,6 +7598,9 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
             c.table.constants[bare] = def.value
             type_env_set(child, define_name(def), val_type)
             type_env_set(child, bare, val_type)
+            // A use resolves to this declaration through the scope (not by name).
+            if child.sd.consts == nil { child.sd.consts = make(map[string]^Stmt_Define) }
+            child.sd.consts[bare] = def
             // Mirror onto the defs layer (ft) whenever there is one — structs and
             // funs (methods included) — so sibling methods / nested funs reach the
             // const by bare name.
@@ -8175,6 +8178,9 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
     // pub: where the constant binding is registered. In module-scope mode this
     // is the module env (so siblings see it); otherwise it's env (back-compat).
     pub := public_env if public_env != nil else env
+    // A use resolves to this declaration through its scope (not by name).
+    if pub.sd.consts == nil { pub.sd.consts = make(map[string]^Stmt_Define) }
+    if s.name not_in pub.sd.consts { pub.sd.consts[s.name] = s }
     // Skip if already pre-registered (parent's body scan)
     _, pre_registered := scope_defines(pub, define_name(s))
     if pre_registered {
@@ -10471,6 +10477,23 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                     return Type_Error{}
                 }
             }
+            // A constant declared in a scope — a struct's, a fun's — resolves to
+            // its own declaration's value, not by name: another scope or module
+            // can reuse the name (`HEADER_SIZE` in two places read the wrong one),
+            // and it shadows a module constant of that name. (A fun body's
+            // constants are bound in its module's scope: those, when nothing
+            // else resolved the name.)
+            // A block local (no scope found): the blocks out to its fun.
+            def: ^Stmt_Define
+            if loc_scope == nil {
+                for s := env; s != nil; s = s.parent_scope {
+                    if d, ok := s.sd.consts[e.name]; ok { def = d; break }
+                    if s.kind != .Block { break }
+                }
+            } else if !loc_scope.is_module || e.resolved == nil {
+                def = loc_scope.sd.consts[e.name]
+            }
+            if def != nil && def.value != nil { e.resolved = Resolved_Constant{value_expr = def.value} }
             // Set variant resolution metadata if this is an enum variant.
             // Only attach when the env binding actually IS the enum — without
             // this guard, any local `N :: 1000` would silently get overridden

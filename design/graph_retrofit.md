@@ -475,7 +475,18 @@ evaluates its destination and value); how instructions are chosen stays in the e
       again (every construction and zero already has); an aggregate `if` expression is a
       temporary each arm writes, like a scalar one (it picked the arm's address with a
       phi), and the new emitter keeps that temporary out of the result slot — only
-      fixtures use one.
+      fixtures use one. Then constants: `size_of(T)` carries its value, by Mara's layout
+      (`checker_type_byte_size`; a union's: step 7), and so does a named constant whose
+      value converts a constant (`u32(0x68636143)`, `File_Id(0)`) when the type holds it
+      exactly. Found, a miscompile in both emitters: the checker left a name of a constant
+      declared in a struct's or fun's scope unresolved, and the emitters looked it up by
+      bare name in the global constants table — a module constant of that name won
+      (shadowing never worked), and so did another module's: Pounce's
+      `Arena_Debug.alloc` reserved cache.mara's `HEADER_SIZE` (16 bytes) for its 32-byte
+      header. The checker now resolves such a name to its own declaration's value; the
+      graph emitter had given a fun body's constant an uninitialized slot, and now
+      declines a var naming a constant (`test/scope_constants.mara`). Normalizer: a float constant's width change (`fptrunc double 0.5 to
+      float`), like an integer's.
       Still declined: `-no assert` (the graph keeps an assert's condition, which
       the old emitter never evaluated), a crash message computed at runtime, `cstring(s)`
       (only ever a foreign call's argument: with those, step 9)

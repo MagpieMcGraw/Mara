@@ -1567,7 +1567,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
     case ^Expr_Number:            return graph_const(b, w, v.span, v.type_, "", Const_Value{int = v.int_value, float = v.value, is_float = v.is_float})
     case ^Expr_Char:              return graph_const(b, w, v.span, v.type_, "", Const_Value{int = i128(v.value)})
     case ^Expr_Bool:              return graph_const(b, w, v.span, v.type_, "", Const_Value{int = 1 if v.value else 0})
-    case ^Expr_Size_Of:           return graph_op_value(b, .Const, w, v.span, v.type_, "size_of")
+    case ^Expr_Size_Of:           return graph_const(b, w, v.span, v.type_, "size_of", graph_size_of(v.resolved_type))
     case ^Expr_Compiler_Intrinsic:
         // The caller's name or place is text; a target flag, a bool.
         if v.kind == .Caller_Name || v.kind == .Caller_Span {
@@ -2190,6 +2190,48 @@ graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
         return Const_Value{int = -x.int, float = -x.float, is_float = x.is_float}
     case ^Expr_Ident:          return graph_const_value(v.resolved)
     case ^Expr_Field_Access:   return graph_const_value(v.resolved)
+    case ^Expr_Size_Of:        return graph_size_of(v.resolved_type)
+    case ^Expr_Call:
+        // A conversion of a constant: its value, when the type holds it.
+        args := call_args(v)
+        if len(args) != 1 || !graph_converts(v) { return nil }
+        x, ok := graph_literal_value(args[0]).?
+        if !ok { return nil }
+        return graph_fits(x, v.type_)
+    }
+    return nil
+}
+
+// A type's size in bytes, by Mara's layout (a union's: later).
+@(private="file")
+graph_size_of :: proc(t: Type) -> Maybe(Const_Value) {
+    if _, is_union := distinct_base(t).(^Type_Union); is_union || t == nil { return nil }
+    return Const_Value{int = i128(checker_type_byte_size(t))}
+}
+
+// Whether a call converts its argument: a numeric cast, or to a distinct type.
+@(private="file")
+graph_converts :: proc(v: ^Expr_Call) -> bool {
+    name := call_name(v)
+    if _, is_cast := cast_result_type(name); is_cast { return true }
+    rf, resolved := v.resolved_func.?
+    d, is_distinct := v.type_.(^Type_Distinct)
+    return resolved && rf.callee == nil && is_distinct && (d.source_name == name || d.name == name)
+}
+
+// Constant x as a value of type t, when t holds it exactly.
+@(private="file")
+graph_fits :: proc(x: Const_Value, t: Type) -> Maybe(Const_Value) {
+    #partial switch n in distinct_base(t) {
+    case Type_Numeric:
+        if n.kind == .Float { return Const_Value{float = x.float if x.is_float else f64(x.int), is_float = true} }
+        if x.is_float { return nil }
+        lo, hi: i128 = 0, (i128(1) << uint(n.bits)) - 1
+        if n.kind == .Signed { lo, hi = -(i128(1) << uint(n.bits - 1)), (i128(1) << uint(n.bits - 1)) - 1 }
+        if x.int < lo || x.int > hi { return nil }
+        return x
+    case Type_F64:
+        return Const_Value{float = x.float if x.is_float else f64(x.int), is_float = true}
     }
     return nil
 }

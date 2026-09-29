@@ -104,12 +104,19 @@ sub clean {
     return order_allocas(drop_overwritten(drop_unread(simplify_geps(fold_widths(@kept)))));
 }
 
-# A constant's width changed (`trunc i64 0 to i32`) is the constant itself at
-# the new width, when it fits: its uses take the constant.
+# A constant's width changed (`trunc i64 0 to i32`, `fptrunc double 0.5 to
+# float`) is the constant itself at the new width, when it fits exactly: its
+# uses take the constant.
 sub fold_widths {
     my @lines = @_;
     my %const;
     for (@lines) {
+        if (/^\s+(%[-\w.\$]+) = (fptrunc double|fpext float) (0x[0-9A-Fa-f]{16}) to (float|double)$/) {
+            my ($name, $c) = ($1, $3);
+            my $d = unpack('d>', pack('H16', substr($c, 2)));
+            $const{$name} = $c if $2 eq 'fpext float' || unpack('f', pack('f', $d)) == $d;
+            next;
+        }
         next unless /^\s+(%[-\w.\$]+) = (trunc|sext|zext) i(\d+) (-?\d+) to i(\d+)$/;
         my ($name, $op, $to, $c) = ($1, $2, $5, $4);
         next if $op eq 'zext' && $c < 0;
