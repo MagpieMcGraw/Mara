@@ -1624,6 +1624,8 @@ Checker :: struct {
     // becomes is not checked again (check_call_args), one check per node.
     receiver:        Expr,
     receiver_type:   Type,
+    receiver_fused:  Fused,              // (building) what its check built
+    receiver_want:   Maybe(Written),     // (building) a qualified call's: build its receiver
     // The program graph's builder, made before checking: the bodies it can,
     // the checker builds as it checks them (graph_fuse_begin). What the walk
     // asks of the next expression it checks (fuse_expr), what the one being
@@ -12807,13 +12809,24 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
         fuse_done(c, graph_fuse_and_end(b, sa, fb.sides[1]))
         return t
     }
-    if _, over := e.overload_fn.?; over {
-        fuse_fail(c, "an operator overload")
+    // Each side at the type the operation works in; an overload's, at its
+    // param's (a call).
+    if rf, over := e.overload_fn.?; over {
+        callee := graph_callee(b, rf)
+        if callee == nil {
+            fuse_fail(c, "an operator resolved to no function")
+            return t
+        }
+        for k, i in fb.widen {
+            if k >= 0 && i < len(callee.params) { b.fuse.widens[k].sig, b.fuse.widens[k].param = callee, i }
+        }
+        kind: Op_Kind = .Construct if callee.kind == .Struct else .Call
+        fuse_done(c, {graph_call_op(b, kind, w, e.span, callee, t, fb.sides[0], fb.sides[1]), 0})
         return t
     }
     work := Graph_Work{e.op, t, fb.types[0], fb.types[1]}
     for k in fb.widen {
-        if k >= 0 { b.fuse.widens[k].work = work }
+        if k >= 0 { b.fuse.widens[k].work, b.fuse.widens[k].binary, b.fuse.widens[k].views = work, true, false }
     }
     kind: Op_Kind = .Compare if is_comparison_op(e.op) else .Arith
     word := graph_token_text(e.op)
@@ -12824,18 +12837,28 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
 
 fuse_side :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, fb: ^Fuse_Binary, k: int) -> Type {
     if fb == nil { return check_expr(c, e, env) }
-    t, r := fuse_expr(c, e, env, .Value, fb.w)
+    if fb.and != nil {
+        t, r := fuse_expr(c, e, env, .Value, fb.w)
+        fb.types[k] = t
+        b := fusing(c)
+        if b == nil { return t }
+        fb.sides[k] = r.v
+        if k == 0 { graph_fuse_and_left(b, &fb.and.?, r.v) }
+        return t
+    }
+    // (An overload's param is known once both sides are: a place's view, or
+    // its read, is chosen then.)
+    t, r := fuse_expr(c, e, env, .Either, fb.w)
     fb.types[k] = t
     b := fusing(c)
     if b == nil { return t }
-    if sa, is_and := &fb.and.?; is_and {
-        fb.sides[k] = r.v
-        if k == 0 { graph_fuse_and_left(b, sa, r.v) }
+    _, is_literal := e.(^Expr_Array)
+    _, is_array := distinct_base(t).(^Type_Fixed_Array)
+    if is_literal || is_array && !r.place || fuse_byte_index(e) {
+        fuse_fail(c, "a literal, an array value or bytes as an operand")
         return t
     }
-    n := len(b.fuse.widens)
-    fb.sides[k] = graph_fuse_widen(b, r.v, fb.span, {binary = true})
-    if len(b.fuse.widens) > n { fb.widen[k] = n }
+    fb.sides[k], fb.widen[k] = graph_fuse_as(b, r.v, r.place, t, expr_span(e)^, fb.span, {})
     return t
 }
 
@@ -13285,7 +13308,15 @@ fn_params_desc :: proc(ft: ^Type_Scope) -> string {
 // was checked to find its method (one check per node).
 check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scope = nil, param := -1, span := Span{}) -> Type {
     if c.receiver != nil && arg == c.receiver {
-        if c.call != nil { fuse_fail(c, "a method's receiver") }
+        // (Built where it was checked, to find its method: its value here.)
+        if fc := c.call; fc != nil && fusing(c) != nil {
+            pt: Type = sig.params[param].type_ if sig != nil && param >= 0 && param < len(sig.params) else nil
+            if !fc.params || !c.receiver_fused.ok {
+                fuse_fail(c, "a builtin's receiver")
+            } else {
+                append(&fc.ops, fuse_value_as(c, arg, c.receiver_type, c.receiver_fused, pt, span, {sig = sig, param = param}))
+            }
+        }
         return c.receiver_type
     }
     // A built call's (fusing): its value, at its param's type.
@@ -13638,7 +13669,12 @@ resolve_qualified_call :: proc(
     }
     // Value-qualified call (obj.method) — type-check qualifier to find struct type.
     if !resolved_assoc {
-        qual_type := check_expr(c, call_qualifier(e), env)
+        qual_type: Type
+        if w, building := c.receiver_want.?; building {
+            qual_type, c.receiver_fused = fuse_expr(c, call_qualifier(e), env, .Either, w)
+        } else {
+            qual_type = check_expr(c, call_qualifier(e), env)
+        }
         c.receiver, c.receiver_type = call_qualifier(e), qual_type
         if assoc_st := resolve_to_struct_type(c, qual_type); assoc_st != nil {
             if fn, found := assoc_st.functions[call_name(e)]; found && fn != nil {
@@ -13726,7 +13762,18 @@ resolve_qualified_call :: proc(
 // also be omitted as long as the missing positions have defaults — those
 // fill in after the candidate is picked. All matching candidates are
 // collected; if more than one matches, the call is rejected as ambiguous.
-check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]string, check_args: []Expr, env: ^Type_Scope) -> Type {
+check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]string, check_args: []Expr, env: ^Type_Scope, want := Fuse_Want.None, w := Written.Explicit) -> Type {
+    // Built: each argument as it is checked, at its param's type once the
+    // function is chosen; the defaults the call leaves out; then the call.
+    b := fusing(c) if want != .None else nil
+    if b != nil && want == .Place {
+        fuse_fail(c, "a call's place")
+        b = nil
+    }
+    vals: [dynamic]Operand
+    defer delete(vals)
+    as_: [dynamic]int
+    defer delete(as_)
     // Mark underscore positions — they can't be typed without knowing which
     // overload (and therefore which default) they'll take. Non-underscore
     // args get typed once; their arg_types slot stays nil for underscores.
@@ -13740,11 +13787,29 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         }
     }
 
+    if has_underscore && b != nil {
+        fuse_fail(c, "a dispatch call with `_`")   // (its defaults are checked after the others)
+        b = nil
+    }
     arg_types: [dynamic]Type
     defer delete(arg_types)
     for arg, i in check_args {
         if is_underscore[i] {
             append(&arg_types, nil)
+        } else if b != nil && fusing(c) != nil {
+            t, r := fuse_expr(c, arg, env, .Either, w)
+            append(&arg_types, t)
+            if fusing(c) == nil { continue }
+            _, is_literal := arg.(^Expr_Array)
+            _, is_array := distinct_base(t).(^Type_Fixed_Array)
+            sl, is_slice := arg.(^Expr_Slice)
+            if fuse_byte_index(arg) || is_slice && is_byte_buffer(expr_type(sl.expr)) || is_literal || is_array && !r.place {
+                fuse_fail(c, "bytes, a literal or an array value as a dispatch's argument")
+                continue
+            }
+            v, k := graph_fuse_as(b, r.v, r.place, t, expr_span(arg)^, e.span, {})
+            append(&vals, v)
+            append(&as_, k)
         } else {
             append(&arg_types, check_expr(c, arg, env))
         }
@@ -13857,6 +13922,9 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         }
     }
 
+    if b := fusing(c); b != nil && b == c.gb {
+        for k, i in as_ { b.fuse.widens[k].sig, b.fuse.widens[k].param = ft, i }
+    }
     // Trailing default fill: append each missing slot's default expression so
     // codegen sees a fully-saturated arg list. Mirrors fill_default_args.
     for i := len(call_args(e)); i < len(ft.params); i += 1 {
@@ -13872,13 +13940,22 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         } else {
             new_arg = def
         }
-        check_expr(c, new_arg, arg_scope)
+        if fusing(c) != nil && b != nil {
+            aw := Written.Implied if new_arg == def else w   // (run at the call, not written there)
+            t, r := fuse_expr(c, new_arg, arg_scope, .Either, aw)
+            append(&vals, fuse_value_as(c, new_arg, t, r, ft.params[i].type_, e.span, {sig = ft, param = i}))
+        } else {
+            check_expr(c, new_arg, arg_scope)
+        }
         append(call_args_mut(e), new_arg)
     }
 
     disp_flat := make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
     e.lowered_name = fn_name  // rewrite call target for codegen
     e.resolved_func = Resolved_Func{name = disp_flat, callee = ft}
+    if fb := fusing(c); fb != nil && b != nil {
+        fuse_done(c, {graph_call_op(fb, .Call, w, e.span, ft, fn_primary_return(ft), ..vals[:]), 0})
+    }
     return fn_primary_return(ft)
 }
 
@@ -13928,9 +14005,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     saved_call := c.call
     c.call = nil
     defer c.call = saved_call
-    saved_receiver, saved_receiver_type := c.receiver, c.receiver_type
-    c.receiver, c.receiver_type = nil, nil
-    defer c.receiver, c.receiver_type = saved_receiver, saved_receiver_type
+    saved_receiver, saved_receiver_type, saved_receiver_fused := c.receiver, c.receiver_type, c.receiver_fused
+    c.receiver, c.receiver_type, c.receiver_fused = nil, nil, {}
+    defer c.receiver, c.receiver_type, c.receiver_fused = saved_receiver, saved_receiver_type, saved_receiver_fused
     // A call that returns multiple values has nowhere to put the extras when
     // used as a single argument — codegen would silently keep only the first.
     // Reject it here (every call form funnels through check_call) so the user
@@ -13959,11 +14036,18 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
 
     qual_dispatch_fns: [dynamic]string
     if call_qualifier(e) != nil {
-        if want != .None {
-            fuse_fail(c, "a qualified call")
-            want = .None
+        // (Built: a receiver is the first argument, built where it is
+        // checked; a qualifier that names a type or a module builds none.)
+        mark: Graph_Mark
+        if b := fusing(c); b != nil && want != .None {
+            mark = graph_fuse_mark(b)
+            c.receiver_want = w
         }
         res, ft, qfns, err := resolve_qualified_call(c, e, env, &check_args)
+        c.receiver_want = nil
+        if b := fusing(c); b != nil && want != .None && c.receiver_fused.ok {
+            if len(check_args) == 0 || check_args[0] != c.receiver { graph_fuse_drop_since(b, mark) }
+        }
         if err { return Type_Error{} }
         resolution = res
         qual_fn_type = ft
@@ -13988,7 +14072,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // Qualified dispatch (e.g. `m.sqrt(x)`): resolve_qualified_call set
     // qual_dispatch_fns to the qualified module's candidates (only).
     if len(qual_dispatch_fns) > 0 {
-        return check_dispatch_call(c, e, qual_dispatch_fns, check_args[:], env)
+        return check_dispatch_call(c, e, qual_dispatch_fns, check_args[:], env, want, w)
     }
 
     // Dispatch group resolution: mul(a,b) -> mat4_mul(a,b)
@@ -13996,7 +14080,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // a specific function.
     if qual_fn_type == nil {
         if fn_names, is_dispatch := find_dispatch(c, env, call_name(e)); is_dispatch {
-            return check_dispatch_call(c, e, fn_names, check_args[:], env)
+            return check_dispatch_call(c, e, fn_names, check_args[:], env, want, w)
         }
 
         // Generic function instantiation. A clone of a checked call (a
@@ -14005,6 +14089,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
         gtmpl, gtmpl_ok := &c.table.generic_templates[call_name(e)]
         if !gtmpl_ok { gtmpl, gtmpl_ok = &c.table.generic_templates[e.name] }
         if gtmpl_ok {
+            if want != .None { fuse_fail(c, "a generic call") }
             return check_generic_call(c, e, gtmpl, check_args[:], env)
         }
     }
@@ -14037,8 +14122,19 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             }
             saved_hint := c.expected_hint
             c.expected_hint = dt.base_type
-            arg_type := check_expr(c, check_args[0], env)
+            // Built: the argument's value, then the conversion.
+            arg_type: Type
+            arg: Fused
+            if want != .None && want != .Place {
+                arg_type, arg = fuse_expr(c, check_args[0], env, .Value, w)
+            } else {
+                if want == .Place { fuse_fail(c, "a conversion's place") }
+                arg_type = check_expr(c, check_args[0], env)
+            }
             c.expected_hint = saved_hint
+            if b := fusing(c); b != nil && want != .None && want != .Place {
+                fuse_done(c, graph_op_value(b, .Cast, w, e.span, dt, call_name(e), arg.v))
+            }
             if !is_any(arg_type) && !is_infer(arg_type) {
                 if types_incompatible(dt.base_type, arg_type) {
                     check_error(c, e.span,
@@ -14130,7 +14226,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     }
 
     fc.params = true
-    if want != .None && (fun_type.kind == .Fun || fun_type.kind == .Struct) && e.fn_value == nil { c.call = &fc }
+    if want != .None && (fun_type.kind == .Fun || fun_type.kind == .Struct && e.fn_value == nil) { c.call = &fc }
     check_call_args(c, check_args[:], fun_type, call_name(e), e.span, env)
     construct: ^Graph_Literal
     construct_at: Dest
@@ -14142,6 +14238,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             } else if fun_type.kind == .Struct {
                 construct_at = dest if want == .Into else graph_dest_var("temp", graph_slot(b, "temp", fun_type, e.span), fun_type)
                 construct = graph_fuse_construct(b, fun_type, fun_type, construct_at, fc.ops[:], w, e.span)
+            } else if e.fn_value != nil {
+                // Through a function value: it, read, is the first operand.
+                fuse_done(c, graph_fuse_indirect(b, call_name(e), e.fn_value, fn_primary_return(fun_type), fc.ops[:], w, e.span))
             } else {
                 fuse_done(c, {graph_call_op(b, .Call, w, e.span, fun_type, fn_primary_return(fun_type), ..fc.ops[:]), 0})
             }

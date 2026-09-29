@@ -2761,10 +2761,16 @@ graph_callee :: proc(b: ^Graph_Builder, rf: Resolved_Func) -> ^Type_Scope {
 
 // A call or construct operation, with a Calls edge to what it runs.
 graph_call_op :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span, callee: ^Type_Scope, t: Type, operands: ..Operand) -> Node_Id {
-    name := callee.source_name if callee.source_name != "" else ask_demangle(callee.name, callee.home_package)
-    op := graph_op(b, kind, w, span, t, name, ..operands)
+    op := graph_op(b, kind, w, span, t, graph_call_name(callee), ..operands)
     append(&b.calls, Pending_Call{op = op, callee = callee})
+    // (An instance's name is known once checking is done.)
+    if f := b.fuse; f != nil { append(&f.calls, Pending_Call{op = op, callee = callee}) }
     return op
+}
+
+@(private="file")
+graph_call_name :: proc(callee: ^Type_Scope) -> string {
+    return callee.source_name if callee.source_name != "" else ask_demangle(callee.name, callee.home_package)
 }
 
 // An element's position, as a constant.
@@ -3439,6 +3445,7 @@ Graph_Fuse :: struct {
     consts:     [dynamic]Node_Id,
     widens:     [dynamic]Graph_Widen,
     checks:     [dynamic]Graph_Check,
+    calls:      [dynamic]Pending_Call,   // named by their callees when the graph is put together
     failed:     string,
 }
 
@@ -3455,6 +3462,15 @@ Graph_Widen :: struct {
     param:     int,
     work:      Graph_Work,
     binary:    bool,
+    // A value at a param's type chosen after it is built (graph_value_as, for
+    // a dispatch's or an operator's argument): a view may be taken — its
+    // place seen as a slice (slice; read left out), or a partial array's
+    // header as one (the cast) — else it widens. t is its type; read and
+    // slice are a place's.
+    views:     bool,
+    t:         Type,
+    read:      Node_Id,
+    slice:     Node_Id,
 }
 
 // Start building a fun's body as the checker checks it, or nil — the builder
@@ -3505,7 +3521,26 @@ graph_fuse_free :: proc(f: ^Graph_Fuse) {
     delete(f.consts)
     delete(f.widens)
     delete(f.checks)
+    delete(f.calls)
     free(f)
+}
+
+// A value at a param's type known only later (graph_value_as): a place is
+// read, cast (a header's view, a widening), and seen as a slice — whichever
+// its param takes kept; a value, cast. Its index in the body's list, to name
+// the param once it is known.
+graph_fuse_as :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, read_span, span: Span, w: Graph_Widen) -> (Operand, int) {
+    w := w
+    w.views, w.t, w.read, w.slice = true, t, NO_NODE, NO_NODE
+    val := v
+    if place {
+        val = graph_read(b, v, t, read_span)   // (at the expression, as graph_value reads it)
+        w.read = val.op
+    }
+    w.id, w.v = graph_op(b, .Cast, .Implied, span, nil, "", val), val
+    if place { w.slice = graph_op(b, .Slice, .Implied, span, nil, "", v) }
+    append(&b.fuse.widens, w)
+    return {w.id, 0}, len(b.fuse.widens) - 1
 }
 
 // A number at the type its use takes, as graph_widen: an operation made
@@ -3518,7 +3553,7 @@ graph_fuse_widen :: proc(b: ^Graph_Builder, v: Operand, span: Span, w: Graph_Wid
     if is_infer(from) && infer_cell_of(from) == nil { return v }
     f := b.fuse
     w := w
-    w.id, w.v = graph_op(b, .Cast, .Implied, span, nil, "", v), v
+    w.id, w.v, w.read, w.slice = graph_op(b, .Cast, .Implied, span, nil, "", v), v, NO_NODE, NO_NODE
     append(&f.widens, w)
     return {w.id, 0}
 }
@@ -3730,6 +3765,15 @@ graph_fuse_prefix_end :: proc(b: ^Graph_Builder, p: [2]Node_Id, keep: bool, t: T
     for id in p {
         if keep { b.g.type_[id] = t } else { b.dropped[id] = NO_VALUE }
     }
+}
+
+// A call through a function value (graph_call's): the arguments, then the
+// value, read, then the call.
+graph_fuse_indirect :: proc(b: ^Graph_Builder, name: string, fn_value: Type, t: Type, args: []Operand, w: Written, span: Span) -> Operand {
+    ops := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
+    append(&ops, graph_read(b, graph_var(b, name, NO_NODE, fn_value, span), fn_value, span))
+    append(&ops, ..args)
+    return graph_op_value(b, .Call, w, span, t, name, ..ops[:])
 }
 
 // A value written to a place already built.
@@ -4050,6 +4094,26 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
             to = w.sig.params[w.param].type_ if w.param < len(w.sig.params) else nil
         }
         if w.settle_to { to = graph_settled(to) }
+        if w.views {
+            _, to_ptr := distinct_base(to).(^Type_Ptr)
+            _, from_ptr := distinct_base(w.t).(^Type_Ptr)
+            _, to_slice := distinct_base(to).(^Type_Slice)
+            _, from_array := distinct_base(w.t).(^Type_Fixed_Array)
+            if to != nil && to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(w.t) {
+                g.type_[w.id], g.name[w.id] = to, type_name(to)   // its header, as one
+                if w.slice != NO_NODE { b.dropped[w.slice] = NO_VALUE }
+                continue
+            }
+            if w.slice != NO_NODE {
+                if to != nil && to_slice && from_array {
+                    g.type_[w.slice] = to   // its place, as a slice
+                    b.dropped[w.read] = {w.slice, 0}
+                    b.dropped[w.id] = {w.read, 0}
+                    continue
+                }
+            }
+        }
+        if w.slice != NO_NODE { b.dropped[w.slice] = NO_VALUE }   // (no view taken)
         if graph_widens(graph_settled(g.type_[w.v.op]), to) {
             g.type_[w.id], g.name[w.id] = to, type_name(to)
         } else {
@@ -4058,6 +4122,11 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     }
     for id in f.consts {
         if is_infer(g.type_[id]) && !is_infer(graph_settled(g.type_[id])) { append(&g.settled, id) }
+    }
+    for pc in f.calls {
+        braces := strings.has_suffix(g.name[pc.op], "{}")   // a literal's construction, as written
+        g.name[pc.op] = graph_call_name(pc.callee)
+        if braces { g.name[pc.op] = strings.concatenate({g.name[pc.op], "{}"}) }
     }
     // A range's bounds cast to the counter's type where theirs differs; the
     // check that it counts up where a bound is no constant.
