@@ -2684,7 +2684,12 @@ graph_if_place :: proc(b: ^Graph_Builder, v: ^Expr_If, w: Written) -> Operand {
 // the call's first output.
 @(private="file")
 graph_try :: proc(b: ^Graph_Builder, v: ^Expr_Try, w: Written) -> Operand {
-    inner := graph_value(b, v.inner, w)
+    return graph_try_after(b, v, graph_value(b, v.inner, w))
+}
+
+// `?` after its call is built: a branch on the call's err — its failure
+// returns the err — then the call's value, where it didn't fail.
+graph_try_after :: proc(b: ^Graph_Builder, v: ^Expr_Try, inner: Operand) -> Operand {
     n := graph_outputs(b, v.inner)
     if n == 0 { graph_fatal(v.span, "`?` on a call with no err output") }
     err := Operand{graph_outputs_op(b, v.inner, inner), i32(n - 1)}
@@ -3842,6 +3847,106 @@ graph_fuse_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure, 
         dest = graph_var(b, name, mr.decls[i], t, v.span)
     }
     graph_op(b, .Write, .Explicit, v.span, nil, "", dest, val)
+}
+
+// A match (graph_match), its subject checked: the switch on its tag — each
+// arm's tag a constant filled in when the arm is (graph_fuse_arm) — then,
+// per arm, its block; the code after it joins.
+Graph_Match :: struct {
+    slot:     Node_Id,
+    is_union: bool,
+    tags:     []Node_Id,
+    arms:     []^Run,
+    join:     ^Run,
+    span:     Span,
+}
+
+graph_fuse_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, slot: Node_Id) -> ^Graph_Match {
+    gm := new(Graph_Match, context.temp_allocator)
+    gm.slot, gm.span = slot, v.span
+    _, gm.is_union = distinct_base(expr_type(v.subject)).(^Type_Union)
+    ops := make([dynamic]Operand, 0, len(v.arms) + 1, context.temp_allocator)
+    if gm.is_union {
+        append(&ops, graph_fuse_subject(b, v, gm))
+    } else {
+        append(&ops, graph_read(b, graph_fuse_subject(b, v, gm), expr_type(v.subject), v.span))
+    }
+    gm.tags = make([]Node_Id, len(v.arms), context.temp_allocator)
+    gm.arms = make([]^Run, len(v.arms), context.temp_allocator)
+    for &arm, i in v.arms {
+        gm.arms[i] = graph_run_new(b)
+        gm.tags[i] = NO_NODE
+        if arm.is_else { continue }
+        t := graph_tag_type(expr_type(v.subject)) if gm.is_union else expr_type(v.subject)
+        tag := graph_const(b, .Implied, v.span, t, "", Const_Value{})
+        gm.tags[i] = tag.op
+        append(&ops, tag)
+    }
+    graph_switch(b, ops[:], gm.arms, v.span)
+    gm.join = graph_run_new(b)
+    return gm
+}
+
+@(private="file")
+graph_fuse_subject :: proc(b: ^Graph_Builder, v: ^Stmt_Match, gm: ^Graph_Match) -> Operand {
+    if gm.slot != NO_NODE { return graph_var(b, "subject", gm.slot, b.g.type_[gm.slot], v.span) }
+    return graph_base_place(b, v.subject, v.span)
+}
+
+// An arm, resolved: its tag, its run and block, and — a union's arm that
+// binds its payload — the binding, the payload's place.
+graph_fuse_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, v: ^Stmt_Match, arm: ^Match_Arm, i: int) -> Graph_Block {
+    if id := gm.tags[i]; id != NO_NODE {
+        b.g.name[id] = arm.variant
+        b.g.consts[id] = Const_Value{int = i128(arm.resolved_tag)}
+    }
+    span := gm.span
+    b.code.run = gm.arms[i]
+    label := "else" if arm.is_else else fmt.aprintf("arm %s", arm.variant)
+    k := Graph_Block{n = graph_node(b, .Block, .Explicit, b.code.block, label, nil, span), outer = b.code.block, span = span}
+    b.code.block = k.n
+    graph_scope_open(b, k.n, arm.body[:], span)
+    if arm.is_union_arm && arm.bound_name != "" {
+        t := graph_arm_type(b, arm, span)
+        bound := graph_node(b, .Local, .Explicit, k.n, arm.bound_name, t, span)
+        // The binding is the payload's place, not a copy.
+        payload := graph_op(b, .Variant, .Explicit, span, t, arm.bound_name, graph_fuse_subject(b, v, gm))
+        b.g.refers[payload] = bound
+        graph_bind(b, arm.bound_name, bound)   // after the subject's place: it may reuse the name
+    }
+    return k
+}
+
+graph_fuse_arm_end :: proc(b: ^Graph_Builder, gm: ^Graph_Match, k: Graph_Block) {
+    graph_fuse_block_close(b, k)
+    if graph_reachable(b) { graph_jump(b, gm.join, .Synthetic, k.span) }
+}
+
+graph_fuse_match_end :: proc(b: ^Graph_Builder, gm: ^Graph_Match) {
+    b.code.run = gm.join
+}
+
+// A defer's block (graph_defer): its code of its own — a run entered from
+// the block, ending in a return — built as its statements are checked, then
+// registered with the scope it is in (Run_Defer runs it at every exit).
+Graph_Defer :: struct {
+    d:     Node_Id,
+    saved: Code,
+    span:  Span,
+}
+
+graph_fuse_defer :: proc(b: ^Graph_Builder, v: ^Stmt_Defer) -> Graph_Defer {
+    gd := Graph_Defer{d = graph_node(b, .Block, .Explicit, b.code.block, "defer", nil, v.span), span = v.span}
+    gd.saved = graph_code_begin(b, gd.d, "")
+    graph_scope_open(b, gd.d, v.body[:], v.span)
+    return gd
+}
+
+graph_fuse_defer_end :: proc(b: ^Graph_Builder, gd: Graph_Defer) {
+    graph_code_finish(b, gd.span)
+    graph_code_end(b, gd.saved)
+    append(&b.code.scopes[len(b.code.scopes) - 1].defers, gd.d)
+    graph_close(b, gd.d)
 }
 
 // A value written to a place already built.

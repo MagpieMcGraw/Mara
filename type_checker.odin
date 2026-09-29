@@ -5732,7 +5732,7 @@ stmt_before :: proc(x, y: Stmt) -> bool {
 // builder's.
 fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
     #partial switch v in s {
-    case Stmt_Return, Stmt_Call, ^Stmt_If, ^Stmt_For, Stmt_Break, Stmt_Continue:
+    case Stmt_Return, Stmt_Call, ^Stmt_If, ^Stmt_For, Stmt_Break, Stmt_Continue, ^Stmt_Match, ^Stmt_Defer:
         return
     case ^Stmt_Decl, ^Stmt_Multi_Return_Assign:
         return
@@ -7730,11 +7730,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
             // (Built below: one call's outputs. `?` on it, and values
             // assigned in parallel, are the builder's.)
-            if len(s.values) != 1 {
-                fuse_fail(c, "a destructure of several values")
-            } else if _, is_try := s.values[0].(^Expr_Try); is_try {
-                fuse_fail(c, "a destructure of a `?`")
-            }
+            if len(s.values) != 1 { fuse_fail(c, "a destructure of several values") }
 
             if len(s.values) == 1 {
                 // Detect Expr_Try wrapping a multi-return call: `x, y := foo()?`.
@@ -7750,7 +7746,24 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 }
 
                 if is_try && inner_call != nil {
+                    // Built: the names it declares, the call, the branch on
+                    // its err, then each other output written in turn.
+                    mr: Graph_Destructure
+                    if b := fusing(c); b != nil { mr = graph_fuse_destructure(b, s) }
+                    // (The call is checked as a call, not an expression: it has
+                    // no type of its own here.)
+                    if fusing(c) != nil { c.asked, c.asked_written, c.fused = .Value, .Explicit, {} }
                     check_call(c, inner_call, env)
+                    call := c.fused
+                    c.fused = {}
+                    if b := fusing(c); b != nil && mr.on {
+                        if !call.ok {
+                            fuse_fail(c, "a `?` on no call built")
+                        } else {
+                            b.g.type_[call.v.op] = nil
+                            mr.call = graph_try_after(b, try_node, call.v)
+                        }
+                    }
                     returns := call_return_list(c, inner_call, env)
                     rts := enclosing_return_types(env)
                     if len(returns) == 0 || !is_err_type(returns[len(returns)-1]) {
@@ -7776,7 +7789,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                 if name != "" {
                                     type_env_set(env, name, resolved_type)
                                 } else if i < len(s.targets) && s.targets[i] != nil {
-                                    target_type := check_expr(c, s.targets[i], env)
+                                    target_type, at := fuse_expr(c, s.targets[i], env, .Place)
+                                    mr.place = at.v
                                     if cname, is_const := write_root_constant(c, s.targets[i]); is_const {
                                         check_error(c, s.span, TYPE_CANNOT_WRITE_CONSTANT, cname)
                                     }
@@ -7788,6 +7802,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                     }
                                 }
                                 append(&s.var_types, distinct_base(resolved_type))
+                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i) }
                             }
                         }
                     }
@@ -8673,8 +8688,13 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             // Body is checked in a child env so any declarations inside the
             // defer stay scoped to the deferred block. At runtime the body
             // executes on scope exit (LIFO across defers in the same scope).
+            // (Built as its own code.)
             child := type_env_block_child(env)
+            b := fusing(c)
+            gd: Graph_Defer
+            if b != nil { gd = graph_fuse_defer(b, s) }
             check_scope(c, s.body, child)
+            if b != nil { graph_fuse_defer_end(b, gd) }
 
         // Declarations were already fully handled in register_and_check_declarations
         case ^Stmt_Assign:
@@ -9728,13 +9748,46 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     }
 }
 
+// A match arm's body, checked in its block (graph_match): its run, its
+// block and its binding before, its scope's end and the jump to the join
+// after.
+fuse_arm_body :: proc(c: ^Checker, gm: ^Graph_Match, s: ^Stmt_Match, arm: ^Match_Arm, i: int, env: ^Type_Scope) {
+    b := c.gb if gm != nil else nil
+    k: Graph_Block
+    if b != nil { k = graph_fuse_arm(b, gm, s, arm, i) }
+    check_scope(c, arm.body, env)
+    if b != nil { graph_fuse_arm_end(b, gm, k) }
+}
+
 check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     // match dispatches on a union value, so it always needs a subject. The
     // parser already reports a missing one; bail here so we don't deref nil.
     if s.subject == nil {
         return
     }
-    subj_type := check_expr(c, s.subject, env)
+    // Built (graph_match): the subject — a plain place, walked where it is
+    // needed; else held in a local made first — then the switch on its tag,
+    // each arm's tag filled in as the arm is checked, then each arm's block.
+    // (An arm matching a value is the builder's.)
+    gm: ^Graph_Match
+    b := fusing(c)
+    for arm in s.arms {
+        if arm.value != nil && b != nil {
+            fuse_fail(c, "a match arm of a value")
+            b = nil
+        }
+    }
+    slot := NO_NODE
+    subj_type: Type
+    if b != nil && !graph_pure_place(s.subject) {
+        slot = graph_slot(b, "subject", nil, s.span)
+        subj_type = fuse_store_into(c, s.subject, env, graph_dest_var("subject", slot, nil), s.span)
+        if fusing(c) != nil { graph_fuse_typed(b, slot, subj_type) }
+    } else {
+        subj_type = check_expr(c, s.subject, env)
+    }
+    if fusing(c) != nil && b != nil { gm = graph_fuse_match(b, s, slot) }
+    defer if gm != nil { graph_fuse_match_end(b, gm) }
     ut, is_union_match := subj_type.(^Type_Union)
     et, is_enum_match := subj_type.(^Type_Enum)
     _, is_err_match := subj_type.(Type_Err)
@@ -9771,7 +9824,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     }
 
 
-    for &arm in s.arms {
+    for &arm, arm_i in s.arms {
         if arm.dot_shorthand != "" {
             // Dot shorthand arm: .Variant — resolve against subject's enum or union type
             arm.variant = arm.dot_shorthand
@@ -9797,7 +9850,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
                 check_error(c, s.span, TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING, arm.dot_shorthand)
             }
             child := type_env_block_child(env)
-            check_scope(c, arm.body, child)
+            fuse_arm_body(c, gm, s, &arm, arm_i, child)
         } else if arm.is_union_arm {
             // Union pattern arm: VariantName [bindingName] { body }
             arm.variant = arm.variant_name
@@ -9842,11 +9895,11 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
                     type_env_set(child, arm.bound_name, st)
                 }
             }
-            check_scope(c, arm.body, child)
+            fuse_arm_body(c, gm, s, &arm, arm_i, child)
         } else if arm.is_else {
             // Else (wildcard) arm — just type-check the body
             child := type_env_block_child(env)
-            check_scope(c, arm.body, child)
+            fuse_arm_body(c, gm, s, &arm, arm_i, child)
         } else {
             // Value match arm — try to infer bare identifiers as enum/union variants
             if ident, ident_ok := arm.value.(^Expr_Ident); ident_ok {
@@ -9856,7 +9909,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
                         arm.variant = ident.name
                         arm.resolved_tag = tag_val
                         child := type_env_block_child(env)
-                        check_scope(c, arm.body, child)
+                        fuse_arm_body(c, gm, s, &arm, arm_i, child)
                         continue
                     }
                 } else if is_union_match {
@@ -9871,7 +9924,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
                             arm.resolved_struct = arm_st.name
                         }
                         child := type_env_block_child(env)
-                        check_scope(c, arm.body, child)
+                        fuse_arm_body(c, gm, s, &arm, arm_i, child)
                         continue
                     }
                 }
@@ -9879,7 +9932,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
             // Regular value match arm
             check_expr(c, arm.value, env)
             child := type_env_block_child(env)
-            check_scope(c, arm.body, child)
+            fuse_arm_body(c, gm, s, &arm, arm_i, child)
         }
     }
     // An else arm (with or without a body) opts out of the variant-coverage
@@ -14019,8 +14072,18 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
 // err)`) aren't supported yet since Mara doesn't have true value tuples; the
 // flat err-set design is what the user signed up for and that's covered.
 check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Scope) -> Type {
-    inner_t := check_expr(c, e.inner, env)
+    // Built: the call's value, then the branch on its err (graph_try_after).
+    want, w := fuse_asked(c)
+    if want == .Place { fuse_fail(c, "a `?`'s place") }
+    inner_t: Type
+    inner: Fused
+    if want != .None && want != .Place {
+        inner_t, inner = fuse_expr(c, e.inner, env, .Value, w)
+    } else {
+        inner_t = check_expr(c, e.inner, env)
+    }
     _ = inner_t
+    defer if b := fusing(c); b != nil && want != .None && want != .Place && inner.ok { fuse_done(c, graph_try_after(b, e, inner.v)) }
 
     call, is_call := e.inner.(^Expr_Call)
     if !is_call {
