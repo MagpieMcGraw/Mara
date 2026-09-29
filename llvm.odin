@@ -652,6 +652,8 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 return false
             }
             e.value[op - e.node] = e.value[place - e.node]
+        case llvm_union_tag(e, place) != nil:   // a union's tag, read as a match reads it
+            e.value[op - e.node] = load_union_tag(g, llvm_union_tag(e, place), e.value[place - e.node])
         case llvm_scalar(t) && pg.op[place] == .View:
             // From bytes at any address: align 1; big-endian, swapped.
             tmp := fresh_tmp(g)
@@ -667,6 +669,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Write:
         place := ops[0].op
         if pg.op[place] == .Slice { return llvm_copy_into(e, ops, span) }
+        if llvm_union_tag(e, place) != nil { return false }   // a union's tag is its variant's: a construct writes it
         t := pg.type_[place]
         // Another type's value into bytes is a write through a view of them (later).
         if ops[1].op != NO_NODE && llvm_is_byte(t) != llvm_is_byte(pg.type_[ops[1].op]) { return false }
@@ -724,6 +727,23 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
     case .Field:
         base := ops[0].op
+        if ut := llvm_union(pg.type_[base]); ut != nil {
+            // A union's tag is at its start — read as load_union_tag reads it
+            // (a niche union's is its pointer's nullness); its padding, just
+            // past the tag.
+            if llvm_direct(e, base) { return false }
+            at := e.value[base - e.node]
+            switch pg.name[op] {
+            case "tag": e.value[op - e.node] = at
+            case "pad":
+                if ut.tag_pad == nil { return false }
+                pad := fresh_tmp(g)
+                emit(g, "  %s = getelementptr i8, ptr %s, i32 %d", pad, at, elem_byte_size(union_tag_ir_type(ut)))
+                e.value[op - e.node] = pad
+            case: return false
+            }
+            return true
+        }
         if llvm_header_elem(pg.type_[base]) != nil {
             // A slice header's len or cap; a held view's is its value.
             i := llvm_header_field(pg.name[op])
@@ -2057,6 +2077,14 @@ llvm_scalar :: proc(t: Type) -> bool {
 @(private="file")
 llvm_aggregate :: proc(t: Type) -> bool {
     return llvm_struct(t) != nil || llvm_array(t) != nil || llvm_slice(t) != nil || llvm_partial(t) != nil || llvm_union(t) != nil
+}
+
+// The union whose `.tag` place p is; nil when p is no union's tag.
+@(private="file")
+llvm_union_tag :: proc(e: ^Llvm, p: Node_Id) -> ^Type_Union {
+    pg := e.pg
+    if pg.op[p] != .Field || pg.name[p] != "tag" { return nil }
+    return llvm_union(pg.type_[graph_operands(pg, p)[0].op])
 }
 
 // A union: its tag and the payload its variants overlay at its start (a niche

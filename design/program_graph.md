@@ -204,7 +204,7 @@ About thirty kinds in all.
 | `index` | `a[i]` | bounds check and `getelementptr`; a slice loads its pointer first |
 | `view` | bytes at an offset seen as a `T`: `x : T = bytes[off]`, `bytes[off] = x`, `&bytes[off]` taken as a `^T`; `#big_endian` | check `off + size_of(T) <= cap`, then `getelementptr` to the byte; what goes through it is `align 1`, and a big-endian view's integers are swapped |
 | `deref` | `p^`; implied in `p.x` when `p: ^T` | `load ptr` |
-| `variant` | the bound payload in a `match` arm | `getelementptr` past the tag |
+| `variant` | the bound payload in a `match` arm; a variant literal's fields | the union's own address: each variant's struct, its tag first, overlays the union |
 | `swizzle` | `v.xy` | element addresses or `shufflevector` |
 | `slice` | `a[lo:hi]`, `slice_from_ptr(p, n)`; written to, `a[lo:hi] = b` | a slice header: pointer, length, capacity; written to, b's elements copied in from lo — as many as b has when hi is open — with lo and hi checked against the capacity |
 
@@ -216,7 +216,7 @@ About thirty kinds in all.
 | `write` | `x = v`, `p.x += 1`; `x = void` writes the `void` constant | `store`, or `memcpy` for a struct; `void` stores nothing, or a pointer's null |
 | `address` | `&x` | the place itself; no instruction |
 | `zero` | synthetic, from `x : T`; `Foo{0}`; `s : []T(n)` takes `n` | `store zeroinitializer` or `memset`; for `n`, storage for n elements and the slice header over it |
-| `construct` | `Foo(a)`, `Foo{…}`; synthetic from `x : Foo` | `memset`, then a call to Foo's init into the place |
+| `construct` | `Foo(a)`, `Foo{…}`; synthetic from `x : Foo`; a union's variant, `Circle{…}` | `memset`, then a call to Foo's init into the place; a variant: the union zeroed, its tag stored (a variant has no init: its field defaults are writes at the site) |
 | `fill` | `{all x}` | a store per slot, a loop when large |
 | `carve` | `let(T, mem)`, `slice([:n]T, mem)`; positional, `let(T, &bytes[i])` | align the cursor, `getelementptr`, bump `mem.len`; positional, the view of the bytes there |
 | `byte read` | a partial array filled from bytes (`pa = bytes[off]`, `pa = bytes[lo:hi]`), a value from a span (`x : T = bytes[lo:hi]`); `#big_endian` | checks, `memcpy`, `bswap`; a fill sets `len` |
@@ -247,7 +247,7 @@ About thirty kinds in all.
 | --- | --- | --- |
 | `jump` | the end of a block, `break`, `continue`, a loop's back edge | `br label` |
 | `branch` | `if`, `elif`, a loop's condition, `and` / `or`, `if` expressions, `?` | `br i1` |
-| `switch` | `match` | load the tag, `switch` |
+| `switch` | `match`: each arm's value (a union arm's tag, implied), the `else` arm the default | a union: load the tag, `switch`; a value: compares. No arm's tag: a failure, `__mara_match_fail` |
 | `return` | `return a, b`; implied by `?` on an error | store the return slots, `ret` |
 | `run defer` | synthetic, at every exit of a scope, once per defer registered so far, the last first | the defer's block, emitted inline |
 | `arena mark`, `arena reset` | synthetic, at entry to and every exit of a scope holding big values | `call` |

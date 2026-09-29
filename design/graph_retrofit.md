@@ -490,7 +490,7 @@ evaluates its destination and value); how instructions are chosen stays in the e
       Still declined: `-no assert` (the graph keeps an assert's condition, which
       the old emitter never evaluated), a crash message computed at runtime, `cstring(s)`
       (only ever a foreign call's argument: with those, step 9)
-- [ ] Unions and `match`: tags, variants, niche layouts. A union is an aggregate handled
+- [x] Unions and `match`: tags, variants, niche layouts. A union is an aggregate handled
       by its address; a `variant` place is the union's own address (each variant's
       struct, its tag first, overlays the union from its start; a niche union's Some
       variant is its storage outright), and a match arm's binding is that place, not a
@@ -513,7 +513,15 @@ evaluates its destination and value); how instructions are chosen stays in the e
       reads no storage (it built `m = Some{value = q}` in a temporary for q, a pointer).
       Normalizer: a memset of no more than the one just before it zeroed at the same
       address (the same `getelementptr` text is the same address), and the address
-      arithmetic only it used
+      arithmetic only it used. Also: a match is a union's by its subject's type (a dot
+      arm, `.None`, binds no variant; an enum's dot arm gets its value as an implied
+      constant, as a union arm gets its tag); a union's `.tag` reads as a match reads it (a niche
+      union's: its pointer's nullness), `.pad` at the tag's end; an array indexed by an
+      enum takes its value as a number, an implied cast; a constant's integer
+      arithmetic folds (`KB :: 1 << 10`; normalizer: integer arithmetic of constants is
+      its result). Pounce: 130 of 233 funs from the graph (`event_process`, the SDL
+      event union, among them); what's left is arena storage (step 8), `err` values,
+      foreign and multi-return calls (step 9)
 - [ ] Scope work: defers, the arena's mark, reset and big locals; `main` and the program's
       setup; `#expose`
 - [ ] Calls: foreign ABI, function values, default and tuple-default arguments, multi-return,

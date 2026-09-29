@@ -9,7 +9,8 @@
 #   - a block no branch reaches from the entry;
 #   - a store the next instruction overwrites: same type, same pointer (after
 #     only address arithmetic);
-#   - a constant's width changed, which is that constant at the new width;
+#   - a constant's width changed, which is that constant at the new width,
+#     and integer arithmetic of constants, which is its result;
 #   - address arithmetic whose shape can't matter: `inbounds`, a constant
 #     index's width (it is sign-extended to the pointer's: `i32 1` and
 #     `i64 1` step alike), an unused getelementptr, a chain of them folded
@@ -106,32 +107,48 @@ sub clean {
 }
 
 # A constant's width changed (`trunc i64 0 to i32`, `fptrunc double 0.5 to
-# float`) is the constant itself at the new width, when it fits exactly: its
-# uses take the constant.
+# float`) is the constant itself at the new width, when it fits exactly, and
+# integer arithmetic of constants (`shl i64 1, 10`) is its result: its uses
+# take the constant.
 sub fold_widths {
     my @lines = @_;
-    my %const;
-    for (@lines) {
-        if (/^\s+(%[-\w.\$]+) = (fptrunc double|fpext float) (0x[0-9A-Fa-f]{16}) to (float|double)$/) {
-            my ($name, $c) = ($1, $3);
-            my $d = unpack('d>', pack('H16', substr($c, 2)));
-            $const{$name} = $c if $2 eq 'fpext float' || unpack('f', pack('f', $d)) == $d;
-            next;
+    # Folding one can make another's operands constants: again, until none.
+    while (1) {
+        my %const;
+        for (@lines) {
+            if (/^\s+(%[-\w.\$]+) = (fptrunc double|fpext float) (0x[0-9A-Fa-f]{16}) to (float|double)$/) {
+                my ($name, $c) = ($1, $3);
+                my $d = unpack('d>', pack('H16', substr($c, 2)));
+                $const{$name} = $c if $2 eq 'fpext float' || unpack('f', pack('f', $d)) == $d;
+                next;
+            }
+            # Integer arithmetic of two constants (`shl i64 1, 10`): its result,
+            # while it stays well inside the width.
+            if (/^\s+(%[-\w.\$]+) = (shl|add|sub|mul|and|or|xor) i(\d+) (-?\d+), (-?\d+)$/) {
+                my ($name, $op, $bits, $a, $b) = ($1, $2, $3, $4 + 0, $5 + 0);
+                next if $op eq 'shl' && ($b < 0 || $b > 52);
+                my $x = $op eq 'shl' ? $a * 2 ** $b : $op eq 'add' ? $a + $b : $op eq 'sub' ? $a - $b
+                      : $op eq 'mul' ? $a * $b : $op eq 'and' ? ($a & $b) : $op eq 'or' ? ($a | $b) : ($a ^ $b);
+                next if $a < 0 || $b < 0 and $op =~ /^(and|or|xor)$/;
+                my $lim = $bits < 53 ? 2 ** ($bits - 1) : 2 ** 52;
+                $const{$name} = $x if $x < $lim && $x >= -$lim;
+                next;
+            }
+            next unless /^\s+(%[-\w.\$]+) = (trunc|sext|zext) i(\d+) (-?\d+) to i(\d+)$/;
+            my ($name, $op, $to, $c) = ($1, $2, $5, $4);
+            next if $op eq 'zext' && $c < 0;
+            next if $to < 64 && ($c >= 2 ** ($to - 1) || $c < -(2 ** ($to - 1)));
+            $const{$name} = $c;
         }
-        next unless /^\s+(%[-\w.\$]+) = (trunc|sext|zext) i(\d+) (-?\d+) to i(\d+)$/;
-        my ($name, $op, $to, $c) = ($1, $2, $5, $4);
-        next if $op eq 'zext' && $c < 0;
-        next if $to < 64 && ($c >= 2 ** ($to - 1) || $c < -(2 ** ($to - 1)));
-        $const{$name} = $c;
+        return @lines unless %const;
+        my @out;
+        for my $line (@lines) {
+            next if $line =~ /^\s+(%[-\w.\$]+) = / && exists $const{$1};
+            $line =~ s/(?<![-\w.\$])(%[-\w.\$]+)(?![-\w.\$])/exists $const{$1} ? $const{$1} : $1/ge;
+            push @out, $line;
+        }
+        @lines = @out;
     }
-    return @lines unless %const;
-    my @out;
-    for my $line (@lines) {
-        next if $line =~ /^\s+(%[-\w.\$]+) = / && exists $const{$1};
-        $line =~ s/(?<![-\w.\$])(%[-\w.\$]+)(?![-\w.\$])/exists $const{$1} ? $const{$1} : $1/ge;
-        push @out, $line;
-    }
-    return @out;
 }
 
 # Where a fixed-size alloca sits among the entry block's others can't matter —

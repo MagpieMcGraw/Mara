@@ -1033,6 +1033,17 @@ graph_widen :: proc(b: ^Graph_Builder, v: Operand, to: Type, span: Span) -> Oper
     return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), v)
 }
 
+// An index at the header width: a narrower number widens; an enum's value, its
+// tag, is taken as a number.
+@(private="file")
+graph_index_value :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
+    at := graph_value(b, e)
+    if _, is_enum := distinct_base(expr_type(e)).(^Type_Enum); is_enum {
+        return graph_op_value(b, .Cast, .Implied, span, slice_header_width_type, type_name(slice_header_width_type), at)
+    }
+    return graph_widen(b, at, slice_header_width_type, span)
+}
+
 // A value at the type its use takes (a return, an argument): an array
 // literal is built at that type — a short one's other slots zero — and a
 // narrower number widens.
@@ -1226,8 +1237,7 @@ graph_return_stmt :: proc(b: ^Graph_Builder, v: Stmt_Return) {
 graph_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, parent: Node_Id) {
     if !b.code.active { return }
     span := v.span
-    is_union := false
-    for arm in v.arms { if arm.is_union_arm { is_union = true } }
+    _, is_union := distinct_base(expr_type(v.subject)).(^Type_Union)
     slot: Node_Id = NO_NODE
     if !graph_pure_place(v.subject) {
         slot = graph_slot(b, "subject", expr_type(v.subject), span)
@@ -1255,6 +1265,8 @@ graph_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, parent: Node_Id) {
             append(&ops, graph_const(b, .Implied, span, graph_tag_type(expr_type(v.subject)), arm.variant, tag))
         case arm.value != nil:
             append(&ops, graph_value(b, arm.value))
+        case arm.variant != "":   // an enum's `.Variant`: its value
+            append(&ops, graph_const(b, .Implied, span, expr_type(v.subject), arm.variant, Const_Value{int = i128(arm.resolved_tag)}))
         }
     }
     graph_switch(b, ops[:], arms, span)
@@ -1728,8 +1740,7 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
             return graph_view_place(b, v, v.type_, v.span)
         }
         base := graph_base_place(b, v.expr, v.span)
-        at := graph_widen(b, graph_value(b, v.index), slice_header_width_type, v.span)
-        return graph_op_value(b, .Index, .Explicit, v.span, v.type_, "", base, at)
+        return graph_op_value(b, .Index, .Explicit, v.span, v.type_, "", base, graph_index_value(b, v.index, v.span))
     case ^Expr_Unary:
         if v.op == .Caret {
             return graph_op_value(b, .Deref, .Explicit, v.span, v.type_, "", graph_place(b, v.operand, v.span))
@@ -2256,6 +2267,27 @@ graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
     case ^Expr_Ident:          return graph_const_value(v.resolved)
     case ^Expr_Field_Access:   return graph_const_value(v.resolved)
     case ^Expr_Size_Of:        return graph_size_of(v.resolved_type)
+    case ^Expr_Binary:
+        // Integer arithmetic of constants (`KB :: 1 << 10`): its value.
+        if _, overloaded := v.overload_fn.?; overloaded { return nil }
+        l, lok := graph_literal_value(v.left).?
+        r, rok := graph_literal_value(v.right).?
+        if !lok || !rok || l.is_float || r.is_float || l.is_text || r.is_text { return nil }
+        x: i128
+        #partial switch v.op {
+        case .Plus:      x = l.int + r.int
+        case .Minus:     x = l.int - r.int
+        case .Star:      x = l.int * r.int
+        case .Ampersand: x = l.int & r.int
+        case .Pipe:      x = l.int | r.int
+        case .Tilde:     x = l.int ~ r.int
+        case .Shift_Left, .Shift_Right:
+            if r.int < 0 || r.int > 63 { return nil }
+            x = l.int << uint(r.int) if v.op == .Shift_Left else l.int >> uint(r.int)
+        case:            return nil
+        }
+        if x < -(i128(1) << 63) || x >= i128(1) << 64 { return nil }
+        return Const_Value{int = x}
     case ^Expr_Call:
         // A conversion of a constant: its value, when the type holds it.
         args := call_args(v)
