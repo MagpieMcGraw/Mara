@@ -5857,6 +5857,18 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
     fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, NO_NODE, s.var_type), s.span)
 }
 
+// Whether a use of a `from` as a `to` views it (graph_view): a fixed array
+// as a slice; a partial array, or a pointer to one, as a slice's header.
+fuse_views :: proc(to, from: Type) -> bool {
+    if to == nil || from == nil { return false }
+    _, to_ptr := distinct_base(to).(^Type_Ptr)
+    _, from_ptr := distinct_base(from).(^Type_Ptr)
+    if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(from) { return true }
+    _, to_slice := distinct_base(to).(^Type_Slice)
+    _, from_array := distinct_base(from).(^Type_Fixed_Array)
+    return to_slice && from_array
+}
+
 // What a store builds in place (graph_builds_into): a literal, an array, a
 // construction, a variant.
 fuse_builds_into :: proc(e: Expr) -> bool {
@@ -11517,7 +11529,9 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
         return check_struct_literal_impl(c, e, env)
     }
     temp := want != .Into || into_temp
-    at := c.asked_span if into_temp else e.span
+    // (A temporary a use places — `T{}[i]` — at the use's span.)
+    placed := want == .Place && c.asked_span != {}
+    at := c.asked_span if into_temp || placed else e.span
     if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
     fl := Fuse_Lit{e = e, dest = d}
     saved := c.lit
@@ -11571,7 +11585,9 @@ check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Ty
     b := fusing(c)
     if want == .None || b == nil || len(e.elements) == 0 { return check_array_literal_impl(c, e, env, nil) }
     temp := want != .Into || into_temp
-    at := c.asked_span if into_temp else e.span
+    // (A temporary a use places — `T{}[i]` — at the use's span.)
+    placed := want == .Place && c.asked_span != {}
+    at := c.asked_span if into_temp || placed else e.span
     if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
     ga := graph_fuse_array(b, e, d)
     t := check_array_literal_impl(c, e, env, ga)
@@ -11681,6 +11697,7 @@ Fuse_If :: struct {
     slot:  Node_Id,
     gi:    Graph_If_Expr,
     widen: [2]int,
+    types: [2]Type,   // each branch's
 }
 
 check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
@@ -11699,6 +11716,16 @@ check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
     t := check_if_expr_impl(c, e, env, &fi)
     b := fi.b
     if b == nil || fusing(c) == nil { return t }
+    // (A branch the if's type views — a fixed array's place as a slice, a
+    // partial array's header as one — or one filling a prefix of it: the
+    // builder's.)
+    for bt, k in fi.types {
+        branch := e.then_expr if k == 0 else e.else_expr
+        if fuse_views(t, bt) || is_partial_array(t) && graph_fills_prefix(branch) {
+            fuse_fail(c, "an if's branch viewed, or filling a prefix")
+            return t
+        }
+    }
     for k in fi.widen { if k >= 0 { b.fuse.widens[k].to = t } }
     graph_fuse_typed(b, fi.slot, t)
     p := graph_var(b, "if", fi.slot, t, e.span)
@@ -11715,10 +11742,10 @@ fuse_if_branch :: proc(c: ^Checker, e: ^Expr_If, branch: Expr, env: ^Type_Scope,
     if fi.b == nil { return check_expr(c, branch, env) }
     b := fi.b
     t, r := fuse_expr(c, branch, env, .Into, dest = graph_dest_var("if", fi.slot, nil))
+    fi.types[k] = t
     if fusing(c) == nil || r.into { return t }
-    _, is_array := distinct_base(t).(^Type_Fixed_Array)
-    if is_array || graph_partial_of(t) || fuse_builds_into(branch) || fuse_byte_index(branch) {
-        fuse_fail(c, "an if's branch viewed, built in place, or of bytes")
+    if fuse_builds_into(branch) || fuse_byte_index(branch) {
+        fuse_fail(c, "an if's branch built in place, or of bytes")
         return t
     }
     n := len(b.fuse.widens)
