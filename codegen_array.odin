@@ -2016,7 +2016,9 @@ resolve_byte_target :: proc(g: ^Codegen, expr: Expr, span: Span) -> (data_ptr: s
 // in play (true for the i64 header) — a strictly wider index would need
 // gen_checked_index's trap-before-narrow path instead.
 gen_int_at_slice_width :: proc(g: ^Codegen, expr: Expr) -> string {
-    t := distinct_base(expr_type(expr))
+    // (A `:=` width the program settled is that width: `i := 0` adopting a
+    // u16 widens unsigned — it sign-extended from 32768 on.)
+    t := distinct_base(resolve_infer(expr_type(expr)))
     if is_infer(t) || is_any(t) {
         return gen_expr(g, expr, slice_layout.len_ir)
     }

@@ -43,6 +43,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     defer delete(starts)
     if graphed {
         flow_check_unreachable(c, checked)
+        flow_check_literal_ranges(c, checked)
         flow_check_unused(c, checked)
         flow_check_init(c, checked, starts)
         flow_check_defer_writes(c, checked, starts)
@@ -87,6 +88,23 @@ flow_check_unreachable :: proc(c: ^Checker, checked: ^Checked_Program) {
         if span in seen { continue }
         seen[span] = true
         check_error(c, span, TYPE_UNREACHABLE_CODE)
+    }
+}
+
+// Literal ranges: a literal whose type is its use's — the width its `:=`
+// adopted, an operand's — must fit it, as one written at that type must
+// (`first := -1` adopting a u16 index's width was 65535, never below 0).
+flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
+    g := &checked.graph
+    seen: map[Span]bool   // generic instances share their template's spans
+    defer delete(seen)
+    for id in g.settled {
+        v, ok := g.consts[id]
+        if !ok || v.is_text { continue }
+        span := g.origin[id]
+        if span in seen { continue }
+        seen[span] = true
+        check_value_range(c, v.float if v.is_float else f64(v.int), v.int, g.type_[id], span)
     }
 }
 

@@ -5008,7 +5008,12 @@ check_literal_overflow :: proc(c: ^Checker, expr: Expr, target: Type, span: Span
         }
         return
     }
+    check_value_range(c, val, i_val, target, span)
+}
 
+// Check that a constant's value fits the target type's range (as an integer,
+// i_val; as a float, val).
+check_value_range :: proc(c: ^Checker, val: f64, i_val: i128, target: Type, span: Span) {
     tn := type_name(target)
 
     #partial switch v in target {

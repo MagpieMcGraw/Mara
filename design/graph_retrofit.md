@@ -617,9 +617,23 @@ evaluates its destination and value); how instructions are chosen stays in the e
       the slot (zeroed, then the text, as a declaration), a text argument gets a header
       over its bytes, as the old emitter's (`test/text_partial_array.mara`). Old emitter,
       to the graph's shape: a fresh slot given a whole partial array from a place copies it
-      (it stamped and zeroed the slot first). Still declined: foreign calls (the C ABI),
-      function values, arguments left to defaults, named results, a big result (on the
-      arena), `= void` on an aggregate. Pounce: 169 of 238 funs from the graph
+      (it stamped and zeroed the slot first). Then foreign calls and intrinsics: an
+      intrinsic (a fun whose body names `@llvm.*`) is that call, its arguments at the param
+      types (a fixed array loaded, by value); a foreign function follows the platform's C
+      ABI (abi.odin's classification, shared with the old emitter): a register value as
+      itself (text for a cstring its bytes' address), an aggregate in registers loaded in
+      8-byte parts, a bigger one `byval`, the result returned (an aggregate one put back
+      together in a temporary) or in a hidden `sret` slot. Found: a literal whose type is
+      its use's — the width a `:=` adopts — was never range-checked: font.mara's
+      `first_on_curve := -1`, a "none" sentinel, adopted a u16 index's width and was 65535
+      (the graph's emitter, following the type, never took the no-on-curve path; the old
+      emitter compared it signed by accident). The graph records each literal it settles
+      (`settled`) and flow checks it fits (`flow_check_literal_ranges`, the checker's
+      `check_value_range`; `test/settled_literal_range_neg.mara`); font.mara's sentinel is
+      `n_points`. The old emitter widened an index by a `:=` variable's unsettled type:
+      signed, where the settled u16 is not (from 32768 on). Still declined: function values,
+      arguments left to defaults, named results, a foreign call's variadic arguments, a big
+      result (on the arena), `= void` on an aggregate. Pounce: 199 of 238 funs from the graph
 - [ ] Switch over: every function from the graph; the syntax-tree emitter deleted
 
 ## Baselines

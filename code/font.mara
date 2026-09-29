@@ -140,8 +140,9 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 		point_end := outline.contour_end_pts[ci]
 		n_points := point_end - point_start + 1
 		if n_points >= 2 {
-			// first on-curve point in the contour (relative index)
-			first_on_curve := -1
+			// first on-curve point in the contour (relative index); n_points
+			// when there is none (an index is unsigned: -1 was 65535)
+			first_on_curve := n_points
 			for k in 0..n_points {
 				if outline.points[point_start + k].on_curve {
 					first_on_curve = k
@@ -156,7 +157,7 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas)
 			have_off := false
 			off_x : f32 = 0.0
 			off_y : f32 = 0.0
-			if first_on_curve < 0 {
+			if first_on_curve == n_points {
 				// No on-curve point at all — a ring of pure controls (how
 				// circles and dots often ship). Every anchor is implied; the
 				// start anchor is the midpoint between the last and first

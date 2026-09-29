@@ -136,6 +136,7 @@ Program_Graph :: struct {
     // Statements right after a return, break or continue: the first of each
     // stretch.
     unreachable: [dynamic]Span,
+    settled:     [dynamic]Node_Id,   // literals whose type is their use's (a `:=` width adopted, an operand's): for the range check
 
     // A constant operation's value, where code needs one: a literal, an enum
     // variant, a named scalar constant, a fixed array's length. `void` and a
@@ -2321,7 +2322,10 @@ graph_const_index :: proc(b: ^Graph_Builder, i: int, span: Span) -> Operand {
 @(private="file")
 graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, value: Maybe(Const_Value)) -> Operand {
     o := graph_op_value(b, .Const, w, span, t, name)
-    if v, ok := value.?; ok { b.g.consts[o.op] = v }
+    if v, ok := value.?; ok {
+        b.g.consts[o.op] = v
+        if is_infer(t) && !is_infer(b.g.type_[o.op]) { append(&b.g.settled, o.op) }   // a width its `:=` adopted
+    }
     return o
 }
 
@@ -2516,6 +2520,7 @@ graph_settle_literals :: proc(b: ^Graph_Builder) {
             if o.op == NO_NODE || o.out != 0 || !is_infer(g.type_[o.op]) { continue }
             if t := graph_literal_use(g, callee, id, k); t != nil && !is_infer(t) {
                 g.type_[o.op] = t
+                if g.op[o.op] == .Const && o.op in g.consts { append(&g.settled, o.op) }
             }
         }
         if is_infer(g.type_[id]) { g.type_[id] = solidify_type(g.type_[id]) }

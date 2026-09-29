@@ -2266,6 +2266,8 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     g := e.g
     callee := llvm_callee(e, op)
     if callee == nil || callee.kind != .Fun { e.note = "a function value"; return false }   // (later)
+    if oi, is_intrinsic := callee.origin.(Origin_Intrinsic); is_intrinsic { return llvm_intrinsic(e, op, ops, callee, oi.llvm_name) }
+    if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
     if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
     if len(ops) != len(callee.cg_params) { e.note = "arguments left to defaults"; return false }
     ret := "void"
@@ -2351,6 +2353,136 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         reanchor_partial_arrays(g, result, at)
         e.value[op - e.node] = at
     }
+    return true
+}
+
+// A call to a foreign (C) function, by the platform's C ABI (abi.odin): each
+// argument by its lowering — a register value as itself (text for a cstring
+// its bytes' address), an aggregate in registers loaded in 8-byte parts from
+// where it is, or by address (byval) — and the result returned (an aggregate
+// in parts put back together in a temporary) or written to a hidden slot.
+@(private="file")
+llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, name: string) -> bool {
+    g := e.g
+    conv, os := callee.calling_conv, g.checked.target_os
+    if len(ops) != len(callee.cg_params) { e.note = "a foreign call's variadic arguments"; return false }
+    args := make([dynamic]string, 0, len(ops) + 1, context.temp_allocator)
+    // The result: none, returned, or in a hidden slot (first).
+    result: Type
+    if len(callee.cg_returns) == 1 && !is_untyped(callee.cg_returns[0]) { result = callee.cg_returns[0] }
+    if len(callee.cg_returns) > 1 { e.note = "a foreign call's results"; return false }
+    ret_ir, slot := "void", ""
+    ret_low: Lowering
+    if result != nil {
+        if !llvm_scalar(result) && !llvm_aggregate(result) { e.note = "result type"; return false }
+        ret_low = classify_ret(result, conv, os)
+        switch r in ret_low {
+        case Lowering_Direct:
+            ret_ir = direct_ir_for_return(r.parts[:])
+        case Lowering_Indirect:
+            slot = fresh_tmp(g)
+            emit_alloca(g, slot, llvm_type_from_checker(result))
+            append(&args, fmt.tprintf("ptr sret(%s) %s", llvm_type_from_checker(result), slot))
+        }
+    }
+    for p, i in callee.cg_params {
+        pt := p.type_
+        v := ""
+        if _, is_text := llvm_text(e, ops[i].op); is_text && llvm_is_cstring(pt) {
+            v = e.value[ops[i].op - e.node]   // text for a cstring: its bytes, already terminated
+        } else {
+            ok: bool
+            v, ok = llvm_operand(e, ops[i], pt)
+            if !ok { e.note = fmt.tprintf("argument '%s'", p.name); return false }
+        }
+        switch pl in classify_arg(pt, conv, os) {
+        case Lowering_Direct:
+            if is_aggregate(pt) {
+                for part, k in pl.parts {
+                    at := v
+                    if k > 0 {
+                        at = fresh_tmp(g)
+                        emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", at, v, k * 8)
+                    }
+                    loaded := fresh_tmp(g)
+                    emit_load_into(g, loaded, part, at)
+                    append(&args, fmt.tprintf("%s %s", part, loaded))
+                }
+                continue
+            }
+            if pl.parts[0] == "ptr" && v == "0" { v = "null" }
+            append(&args, fmt.tprintf("%s %s", pl.parts[0], v))
+        case Lowering_Indirect:
+            append(&args, fmt.tprintf("ptr byval(%s) %s", llvm_type_from_checker(pt), v))
+        }
+    }
+    joined := strings.join(args[:], ", ", context.temp_allocator)
+    if ret_ir == "void" {
+        emit(g, "  call void @%s(%s)", name, joined)
+        if slot != "" { e.value[op - e.node] = slot }
+        return true
+    }
+    tmp := fresh_tmp(g)
+    emit(g, "  %s = call %s @%s(%s)", tmp, ret_ir, name, joined)
+    e.value[op - e.node] = tmp
+    // An aggregate returned in registers: put back together where it can be
+    // read as one.
+    if direct, is_direct := ret_low.(Lowering_Direct); is_direct && is_aggregate(result) {
+        at := fresh_tmp(g)
+        emit_alloca(g, at, llvm_type_from_checker(result))
+        if len(direct.parts) == 1 {
+            emit_store(g, direct.parts[0], tmp, at)
+        } else {
+            for part, k in direct.parts {
+                ev := fresh_tmp(g)
+                emit(g, "  %s = extractvalue %s %s, %d", ev, ret_ir, tmp, k)
+                to := at
+                if k > 0 {
+                    to = fresh_tmp(g)
+                    emit(g, "  %s = getelementptr i8, ptr %s, i64 %d", to, at, k * 8)
+                }
+                emit_store(g, part, ev, to)
+            }
+        }
+        e.value[op - e.node] = at
+    }
+    return true
+}
+
+// Whether a type is cstring.
+@(private="file")
+llvm_is_cstring :: proc(t: Type) -> bool {
+    _, is := distinct_base(t).(Type_CString)
+    return is
+}
+
+// A call to an LLVM intrinsic (a fun whose body names one): its arguments at
+// the param types — a fixed array by value, loaded from where it is — and its
+// result a register value.
+@(private="file")
+llvm_intrinsic :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, name: string) -> bool {
+    g := e.g
+    if name == "" || len(ops) != len(callee.cg_params) || len(callee.cg_returns) != 1 || !llvm_scalar(callee.cg_returns[0]) {
+        e.note = "an intrinsic's shape"
+        return false
+    }
+    args := make([dynamic]string, 0, len(ops), context.temp_allocator)
+    for p, i in callee.cg_params {
+        v := llvm_operand(e, ops[i], p.type_) or_return
+        ir := llvm_type_from_checker(p.type_)
+        if fa := llvm_array(p.type_); fa != nil {
+            loaded := fresh_tmp(g)
+            emit_load_into(g, loaded, ir, v)
+            v = loaded
+        } else if !llvm_scalar(p.type_) {
+            e.note = fmt.tprintf("param '%s'", p.name)
+            return false
+        }
+        append(&args, fmt.tprintf("%s %s", ir, v))
+    }
+    tmp := fresh_tmp(g)
+    emit(g, "  %s = call %s @%s(%s)", tmp, llvm_type_from_checker(callee.cg_returns[0]), name, strings.join(args[:], ", ", context.temp_allocator))
+    e.value[op - e.node] = tmp
     return true
 }
 

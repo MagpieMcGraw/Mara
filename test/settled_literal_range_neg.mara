@@ -1,0 +1,17 @@
+module settled_literal_range_neg
+
+//@ expect-fail: constant -1 overflows u16
+
+// A literal whose type is its use's — here the width `f := -1` adopts from
+// the u16 index written to it later — must fit that type, as `f : u16 = -1`
+// must. It went unchecked: f held 65535 and `f < 0` was never true (font.mara
+// used -1 as a "none" sentinel for a u16 index this way).
+
+main :: fun() {
+	n : u16 = 3
+	f := -1
+	for k in 0..n {
+		if k == 1 do f = k
+	}
+	print(f < 0)
+}
