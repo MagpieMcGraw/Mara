@@ -396,9 +396,8 @@ evaluates its destination and value); how instructions are chosen stays in the e
       place's type (for `a[i] = x` it took the whole array's, so a narrower `x` wasn't
       widened). An index is evaluated before the slice header it indexes is read, and a
       slice's bounds before its source's header: the old emitter read the header first (it
-      now doesn't). The result slot counts
-      as fresh for a call writing into it (no argument can reach it), and a constructor's
-      field declaration is fresh (the old emitter took both as existing storage). Byte
+      now doesn't). A constructor's field declaration is fresh (the old emitter took it
+      as existing storage). (The result slot was taken as fresh too — wrong: step 6.) Byte
       views — an address of bytes taken as a `^T`, another type's value written into bytes
       — are declined (below). Normalizer: a constant's width change, a store overwritten
       after address arithmetic, a getelementptr copied to each of its uses, the order of
@@ -440,7 +439,46 @@ evaluates its destination and value); how instructions are chosen stays in the e
       also for types naming other types. Still declined: positional `slice([:n]T,
       &bytes[i])`, a sized slice from bytes or from a string (the graph drops its count),
       a slice's elements into a partial array, big (arena) storage
-- [ ] Strings, `print`, `assert`, `crash`
+- [x] Strings, `print`, `assert`, `crash`: a string constant is a global whose text the
+      constants table holds — its value is its bytes' address; as a slice it is a header
+      over them (`len` its length, `cap` one more: the terminating 0); into a partial array
+      its bytes are copied (with the 0 when there's room) and `len` set. `print` is one
+      operation over values already computed (decided 2026-09-28: every argument is
+      evaluated before anything prints — a call that prints does so first); each prints by
+      its type, spaced, or into the `%` places of a first operand that is text with them.
+      `assert` branches to its failure, which names the source text and, for a comparison,
+      each side's value: the graph records the sides' texts (`assert_sides`, "" for a side
+      whose text states its value). `crash` prints where and its message, and exits; what
+      follows is a dead block. `#caller_name` / `#caller_span` are text; `#windows` and the
+      other target flags are bool constants. A constant table's global names its
+      declaration (`refers`), whose value as written the graph keeps (`const_values`): the
+      emitter builds the read-only table from it, as before. Old emitter, to the graph's
+      shape: print evaluates every argument first (it interleaved evaluating and printing),
+      and a text argument's address is taken as it's evaluated; the failure blocks of
+      `assert` and `crash` and the raw printers (`print_int`, …) are shared with the new
+      emitter. Printing opened most of `test.mara` to the graph (154 funs), which turned up:
+      an index into text is a byte of it, bounded like its slice (the first try read a
+      header out of the string's bytes); `[..N]T{}` assigned to a partial array is its zero
+      value, elements zeroed too — the old emitter reset only a field's header (growing
+      `len` again showed stale elements) and didn't compile it into a local
+      (`test/pa_literal_zero.mara`); a span read's failures name the span read, not its
+      statement (the graph had the statement's place); a fixed array of partial arrays —
+      a local, a constructor's field — stamps every element's header (the graph emitter
+      stamped only a bare one: cap 0; `test/pa_array_stamp.mara`); a literal reading only
+      values held in registers (scalar params) is built where it goes. Found, a miscompile
+      in both emitters: the result slot is no fresher than any place — the local every
+      return returns lives there, so `x = f(x)` built f's result over the x f was still
+      reading (`f(%sret, %sret)`; the old emitter did it for slices, since step 5a;
+      `test/result_slot_alias.mara`). Old emitter, to the graph's shape: a collection
+      loop's named index is a local like any other, sharing its name's slot; text or a
+      slice written into a constructed value's partial-array field doesn't stamp its header
+      again (every construction and zero already has); an aggregate `if` expression is a
+      temporary each arm writes, like a scalar one (it picked the arm's address with a
+      phi), and the new emitter keeps that temporary out of the result slot — only
+      fixtures use one.
+      Still declined: `-no assert` (the graph keeps an assert's condition, which
+      the old emitter never evaluated), a crash message computed at runtime, `cstring(s)`
+      (only ever a foreign call's argument: with those, step 9)
 - [ ] Unions and `match`: tags, variants, niche layouts
 - [ ] Scope work: defers, the arena's mark, reset and big locals; `main` and the program's
       setup; `#expose`

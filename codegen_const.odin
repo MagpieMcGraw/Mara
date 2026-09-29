@@ -89,17 +89,12 @@ const_table_ref :: proc(g: ^Codegen, expr: Expr) -> (Var_Entry, bool) {
 // The table for aggregate constant `value` (type `t`) as the storage a
 // reference binds to — built the first time any function in this TU reads it.
 const_table_var :: proc(g: ^Codegen, value: Expr, t: Type, ref: Expr) -> Var_Entry {
-    key, named := g.const_names[expr_identity(value)]
-    if !named { codegen_fatal(g, expr_span(ref)^, CODE_CONST_TABLE_UNNAMED) }
-    name := strings.concatenate({"@mara_const.", ir_safe_name(key)})
-    if name not_in g.const_tables {
-        what := key // for diagnostics: the name as written at the reference
-        #partial switch r in ref {
-        case ^Expr_Ident:        what = r.name
-        case ^Expr_Field_Access: what = r.field
-        }
-        g.const_tables[name] = build_const_table(g, name, what, value, t, expr_span(ref)^)
+    what := "" // for diagnostics: the name as written at the reference
+    #partial switch r in ref {
+    case ^Expr_Ident:        what = r.name
+    case ^Expr_Field_Access: what = r.field
     }
+    name := const_table(g, value, t, what, expr_span(ref)^)
     base := distinct_base(t)
     if sd := as_struct_body(base); sd != nil {
         return Struct_Var{alloca = name, struct_name = struct_key(sd)}
@@ -112,6 +107,18 @@ const_table_var :: proc(g: ^Codegen, value: Expr, t: Type, ref: Expr) -> Var_Ent
         return Union_Var{alloca = name, union_name = union_key(v)}
     }
     unreachable()
+}
+
+// The global of aggregate constant `value`'s table, built the first time this
+// TU reads it; `what` and `span` are the reference's, for diagnostics.
+const_table :: proc(g: ^Codegen, value: Expr, t: Type, what: string, span: Span) -> string {
+    key, named := g.const_names[expr_identity(value)]
+    if !named { codegen_fatal(g, span, CODE_CONST_TABLE_UNNAMED) }
+    name := strings.concatenate({"@mara_const.", ir_safe_name(key)})
+    if name not_in g.const_tables {
+        g.const_tables[name] = build_const_table(g, name, what if what != "" else key, value, t, span)
+    }
+    return name
 }
 
 @(private="file")

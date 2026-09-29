@@ -203,6 +203,14 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
                 gen_construct_partial_array_elements(e.g, at, pa)
                 llvm_into_fields(e, false)
             }
+            // An array of them: each one so.
+            inner := t
+            for a := llvm_array(inner); a != nil; a = llvm_array(inner) { inner = a.elem }
+            if fa := llvm_array(t); fa != nil && llvm_partial(inner) != nil {
+                llvm_into_fields(e, true)
+                gen_construct_elements(e.g, at, fa.elem, fa.size)
+                llvm_into_fields(e, false)
+            }
         case .Result, .Block, .Const, .Import, .Type_Def, .Dispatch, .Op:
         case:
             return false
@@ -294,7 +302,8 @@ llvm_result_slot :: proc(e: ^Llvm) {
             }
             if v in e.carved { v, every = NO_NODE, false }   // the carved memory: copied out
             if v != NO_NODE && pg.written[v] == .Synthetic {
-                if llvm_reads(e, v) == 1 { e.value[v - e.node] = "%sret" }
+                // (Not an `if` expression's, written by its arms: its own.)
+                if llvm_reads(e, v) == 1 && llvm_written_only_in(e, v, r) { e.value[v - e.node] = "%sret" }
                 v = NO_NODE   // a temporary is no named local
             }
             switch {
@@ -305,6 +314,22 @@ llvm_result_slot :: proc(e: ^Llvm) {
         }
     }
     if every && returned != NO_NODE { e.value[returned - e.node] = "%sret" }
+}
+
+// Whether every write to variable v is in run r.
+@(private="file")
+llvm_written_only_in :: proc(e: ^Llvm, v: Node_Id, r: i32) -> bool {
+    pg := e.pg
+    for q in e.runs {
+        if q == r { continue }
+        for op in graph_run(pg, int(q)) {
+            #partial switch pg.op[op] {
+            case .Zero, .Construct, .Fill, .Write, .Byte_Read:
+                if llvm_where(e, graph_operands(pg, op)[0].op).root == v { return false }
+            }
+        }
+    }
+    return true
 }
 
 // Which temporaries are built in the storage they are then written to. The
@@ -380,6 +405,7 @@ llvm_builds_alone :: proc(e: ^Llvm, before: []Node_Id, t, x: Node_Id) -> bool {
         #partial switch pg.op[op] {
         case .Read, .Address:
             if llvm_where(e, ops[0].op).root == t { continue }
+            if pg.op[op] == .Read && llvm_direct(e, ops[0].op) { continue }   // a value, in no memory
             if llvm_overlaps(e, ops[0].op, x) { return false }
         case .Construct:
             // t's own construction, handed arguments.
@@ -634,6 +660,11 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         t := pg.type_[place]
         // Another type's value into bytes is a write through a view of them (later).
         if ops[1].op != NO_NODE && llvm_is_byte(t) != llvm_is_byte(pg.type_[ops[1].op]) { return false }
+        // Into a partial array, text or a slice's elements fill a prefix.
+        if pa := llvm_partial(t); pa != nil && ops[1].op != NO_NODE && !llvm_direct(e, place) {
+            if text, is_text := llvm_text(e, ops[1].op); is_text { return llvm_text_into(e, place, pa, text) }
+            if llvm_slice(pg.type_[ops[1].op]) != nil { return llvm_elements_into(e, place, pa, ops[1].op) }
+        }
         val, ok := llvm_operand(e, ops[1], t)
         if !ok { return false }
         if pg.op[place] == .Var && pg.refers[place] in e.hdr { return true }   // held at its slice
@@ -733,6 +764,18 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
     case .Index:
         base := ops[0].op
         at := pg.type_[base]
+        // Text has no header: a byte of it, bounded like its slice (the
+        // terminating 0 counts).
+        if text, is_text := llvm_text(e, base); is_text {
+            i := llvm_operand(e, ops[1], slice_header_width_type) or_return
+            global, n := get_string_literal(g, text)
+            name := graph_place_name(pg, ops[0])
+            emit_bounds_check(g, i, fmt.tprintf("%d", n), name if name != "" else "array", span)
+            tmp := fresh_tmp(g)
+            emit_array_gep_var(g, tmp, fmt.tprintf("[%d x i8]", n), global, i, "i64")
+            e.value[op - e.node] = tmp
+            return true
+        }
         if elem := llvm_header_elem(at); elem != nil { return llvm_slice_index(e, op, ops, elem, span) }
         // An array's element: the index checked against its length — unless
         // the graph built it in range (a loop's element) — then its address.
@@ -782,6 +825,13 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         from, to := pg.type_[x], pg.type_[op]
         // A partial array taken as a slice is its own header: no instruction.
         if llvm_partial(from) != nil && llvm_slice(to) != nil {
+            // Text is no header: a view of its bytes, len its length (cap
+            // counts the terminating zero).
+            if text, is_text := llvm_text(e, x); is_text {
+                n := len(text)
+                e.value[op - e.node] = emit_build_temp_slice(g, e.value[x - e.node], fmt.tprintf("%d", n), fmt.tprintf("%d", n + 1))
+                return true
+            }
             e.value[op - e.node] = e.value[x - e.node]
             return true
         }
@@ -819,7 +869,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         if !ok { return false }
         emit(g, "  ret %s %s", e.ret, v)
     case .Assert:
-        if pg.written[op] != .Synthetic || pg.name[op] != "range" { return false }
+        if pg.written[op] != .Synthetic || pg.name[op] != "range" { return llvm_assert(e, op, ops, span) }
         c, ok := llvm_operand(e, ops[0], Type_Bool{})
         if !ok { return false }
         emit_range_check(g, c, span)
@@ -829,11 +879,36 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         return llvm_view(e, op, ops, span)
     case .Carve:
         return llvm_carve(e, op, ops, span)
+    case .Global:
+        // A string constant: its bytes' address (its text is in the
+        // constants table). A constant table: its global, read-only. (A
+        // function: later.)
+        if c, has := pg.consts[op]; has && c.is_text {
+            global, n := get_string_literal(g, c.text)
+            tmp := fresh_tmp(g)
+            emit_string_gep(g, tmp, n, global)
+            e.value[op - e.node] = tmp
+            return true
+        }
+        d := pg.refers[op]
+        value, is_table := pg.const_values[d]
+        if d == NO_NODE || !is_table || !is_table_const(value, pg.type_[op]) { return false }
+        e.value[op - e.node] = const_table(g, value, pg.type_[op], pg.name[op], span)
     case .Byte_Read:
         return llvm_byte_read(e, op, ops, span)
-    case .Global, .Variant,
+    case .Print:
+        return llvm_print(e, op, ops, span)
+    case .Crash:
+        // Its message is text (one computed at runtime: later).
+        msg := ""
+        if len(ops) == 1 {
+            if _, is_text := llvm_text(e, ops[0].op); !is_text { return false }
+            msg = e.value[ops[0].op - e.node]
+        }
+        emit_crash(g, span, msg)
+    case .Variant,
          .Arena_Alloc,
-         .Print, .Crash, .Switch, .Run_Defer, .Arena_Mark, .Arena_Reset:
+         .Switch, .Run_Defer, .Arena_Mark, .Arena_Reset:
         return false
     }
     return true
@@ -1336,6 +1411,62 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
     return true
 }
 
+// A string constant's text, when an operation's value is one: its global,
+// or a read of it.
+@(private="file")
+llvm_text :: proc(e: ^Llvm, op: Node_Id) -> (string, bool) {
+    pg := e.pg
+    at := op
+    if pg.op[at] == .Read { at = graph_operands(pg, at)[0].op }
+    if at == NO_NODE || pg.op[at] != .Global { return "", false }
+    c, has := pg.consts[at]
+    return c.text, has && c.is_text
+}
+
+// Text into a partial array: its bytes into the elements — with the
+// terminating zero when there's room — and len its length; the elements past
+// it keep what they held.
+@(private="file")
+llvm_text_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, text: string) -> bool {
+    g := e.g
+    if llvm_type_from_checker(pa.elem) != "i8" || len(text) > pa.size { return false }
+    at := e.value[place - e.node]
+    elements := emit_partial_array_zero(g, at, pa, stamp = false)
+    if len(text) > 0 {
+        global, n := get_string_literal(g, text)
+        src := fresh_tmp(g)
+        emit_string_gep(g, src, n, global)
+        emit_memcpy(g, elements, src, len(text) + 1 if pa.size > len(text) else len(text))
+    }
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, at, SLICE.len)
+    emit_typed_store_len(g, fmt.tprintf("%d", len(text)), len_gep)
+    return true
+}
+
+// A slice's elements into a partial array: as many as fit (up to its cap),
+// len their count; the elements past them keep what they held.
+@(private="file")
+llvm_elements_into :: proc(e: ^Llvm, place: Node_Id, pa: ^Type_Partial_Array, src: Node_Id) -> bool {
+    g, pg := e.g, e.pg
+    if !llvm_same_type(llvm_slice(pg.type_[src]).elem, pa.elem) { return false }
+    w := slice_layout.len_ir
+    elem_ir := llvm_type_from_checker(pa.elem)
+    at, hdr := e.value[place - e.node], e.value[src - e.node]
+    dptr := fresh_tmp(g); emit_slice_gep(g, dptr, hdr, SLICE.ptr)
+    data := fresh_tmp(g); emit_load_into(g, data, "ptr", dptr)
+    slen := fresh_tmp(g); emit_slice_gep(g, slen, hdr, SLICE.len)
+    n0 := fresh_tmp(g); emit_typed_load_len(g, n0, slen)
+    cmp := fresh_tmp(g); emit(g, "  %s = icmp slt %s %s, %d", cmp, w, n0, pa.size)
+    n := fresh_tmp(g); emit(g, "  %s = select i1 %s, %s %s, %s %d", n, cmp, w, n0, w, pa.size)
+    elements := emit_partial_array_zero(g, at, pa, stamp = false)
+    nbytes := fresh_tmp(g); emit(g, "  %s = mul %s %s, %d", nbytes, w, n, elem_byte_size(elem_ir, g.checked))
+    emit(g, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)", elements, data, nbytes)
+    plen := fresh_tmp(g); emit_slice_gep(g, plen, at, SLICE.len)
+    emit_typed_store_len(g, n, plen)
+    return true
+}
+
 // A byte buffer's data and its bound: a byte slice's or partial array's
 // pointer and cap, a byte array's own address and size.
 @(private="file")
@@ -1610,6 +1741,74 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     return true
 }
 
+// A print: its operands are values already. Each prints by its type (text
+// as its bytes, an aggregate from where it is), spaced apart or into the `%`
+// places of a first operand that is text with them; then a newline. The raw
+// printers print their one value as C does.
+@(private="file")
+llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    args := make([dynamic]Print_Arg, 0, len(ops), context.temp_allocator)
+    for o in ops {
+        if o.op == NO_NODE || o.out != 0 { return false }
+        t, v := pg.type_[o.op], e.value[o.op - e.node]
+        if v == "" { return false }   // a held view (later)
+        text, is_text := llvm_text(e, o.op)
+        switch {
+        case is_text && llvm_aggregate(t):   // (text at a ^byte prints as a C string)
+            append(&args, Print_Arg{text = text, is_text = true, val = v, t = t})
+        case llvm_aggregate(t): append(&args, Print_Arg{addr = v, t = t})
+        case llvm_scalar(t):    append(&args, Print_Arg{val = v, t = t})
+        case:                   return false
+        }
+    }
+    if spec, ir, raw := raw_print(pg.name[op]); raw {
+        if len(args) != 1 || args[0].addr != "" || llvm_type_from_checker(args[0].t) != ir { return false }
+        emit_print_raw(g, spec, ir, args[0].val)
+        return true
+    }
+    if len(args) > 0 && args[0].is_text && string_has_format_pct(args[0].text) {
+        emit_print_format(g, args[0].text, args[1:], span)
+    } else {
+        for a, i in args {
+            if i > 0 { emit_print_literal(g, " ") }
+            emit_print_operand(g, a)
+        }
+    }
+    emit_print_newline(g)
+    return true
+}
+
+// An assert: its condition, a value already, branches to the failure, which
+// reports a comparison's sides by their text and value (emit_assert_fail).
+// With `-no assert` the condition isn't evaluated either: later.
+@(private="file")
+llvm_assert :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    if g.no_assert { return false }
+    c := llvm_operand(e, ops[0], Type_Bool{}) or_return
+    ok_label := fresh_label(g, "assert.ok")
+    fail_label := fresh_label(g, "assert.fail")
+    emit_cond_br(g, c, ok_label, fail_label)
+    emit_label(g, fail_label)
+    sides: [2]Assert_Side
+    reported: []Assert_Side
+    ir := ""
+    unsigned := false
+    if texts, has := pg.assert_sides[op]; has && pg.op[ops[0].op] == .Compare {
+        compared := graph_operands(pg, ops[0].op)
+        t := pg.type_[compared[0].op]
+        if assert_reports(llvm_type_from_checker(t)) {
+            ir, unsigned = llvm_type_from_checker(t), llvm_unsigned(t)
+            for &s, i in sides { s = {texts[i], e.value[compared[i].op - e.node], t} }
+            reported = sides[:]
+        }
+    }
+    emit_assert_fail(g, span, pg.name[op], reported, ir, unsigned)
+    emit_label(g, ok_label)
+    return true
+}
+
 // A view held as its header's values (llvm_holds_header).
 @(private="file")
 Llvm_Header :: struct {
@@ -1688,9 +1887,9 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
                     s := pg.stmt[u]
                     fresh = pg.written[d] == .Synthetic || (s >= 0 && pg.stmts[s].kind == .Decl)
                 }
-                // The result slot is as good as fresh: no argument can reach
-                // it (a caller hands over a fresh slot when one carries storage).
-                if fresh || llvm_place(e, dest) == "%sret" { return llvm_place(e, dest), true }
+                // (The result slot is no fresher than any place: the local
+                // every return returns lives there, and `x = f(x)` passes it.)
+                if fresh { return llvm_place(e, dest), true }
                 // An update `x = f(x, …)` built in place: later.
                 if _, consumes := consumed_param_of(callee).?; consumes { return "", false }
                 if !llvm_passes_storage(callee) { return llvm_place(e, dest), true }

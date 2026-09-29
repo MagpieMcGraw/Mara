@@ -223,7 +223,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
         _, pa_dest := var_type.(^Type_Partial_Array)
         if pa, pa_ok := var_type.(^Type_Partial_Array); pa_ok && s.value != nil {
             if existing, ex_ok := get_slice(g, s.name); ex_ok {
-                if _, broadcast := s.value.(^Expr_Struct_Literal); !broadcast {
+                if _, lit := s.value.(^Expr_Struct_Literal); !lit || is_empty_partial_array_literal(s.value) {
                     gen_store_partial_array_into(g, existing.alloca, pa, s.value, s.span, s.name, dest_fresh = s.is_decl, dest_expr = var_ref(s.name, s.var_type))
                     return
                 }
@@ -232,13 +232,13 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
 
         // Check if value is a slice expression (inferred type)
         if _, ok := s.value.(^Expr_Slice); ok && !pa_dest {
-            gen_slice_assign_inferred(g, s.name, s.value, var_type)
+            gen_slice_assign_inferred(g, s.name, s.value, var_type, decl = s.is_decl)
             return
         }
 
         // Check if reassigning to an existing slice variable
         if _, sl_ok := get_slice(g, s.name); sl_ok {
-            gen_slice_assign_inferred(g, s.name, s.value)
+            gen_slice_assign_inferred(g, s.name, s.value, decl = s.is_decl)
             return
         }
 
@@ -331,7 +331,7 @@ gen_stmt :: proc(g: ^Codegen, stmt: Stmt) {
                 g.all_vars[s.name] = Slice_Var{alloca = alloca_name, elem_type = elem_t, is_utf8 = sl_utf8}
                 return
             }
-            gen_slice_from_expr(g, s.name, s.value, elem_t, sl_utf8)
+            gen_slice_from_expr(g, s.name, s.value, elem_t, sl_utf8, decl = s.is_decl)
             return
         }
 

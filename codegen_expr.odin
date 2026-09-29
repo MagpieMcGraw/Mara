@@ -314,7 +314,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
             if sv, ok := get_struct(g, e.override_target); ok {
                 if sd, sd_ok := lookup_struct(g, sv.struct_name); sd_ok {
                     llvm_name := struct_llvm_name(struct_key(sd))
-                    apply_struct_literal_fields(g, e, sd, llvm_name, sv.alloca)
+                    apply_struct_literal_fields(g, e, sd, llvm_name, sv.alloca, stamped = true)
                 }
             }
             return "0"
@@ -377,40 +377,22 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         // assert(cond): on failure print
         //   Assert failed at <file:line:col>
         //   Expected <cond>, but <operand> was <value> [and <operand> was <value>]
-        // and exit. Operand values are reported for direct numeric/bool
-        // comparisons; a side that is itself a literal is omitted (its text
-        // already states its value), and bools print as true/false. The whole
-        // message is a per-site printf format assembled here at compile time —
-        // only the values are runtime arguments. Asserts stay on in -release
-        // (TigerStyle); only an explicit `-no assert` compiles them out.
+        // and exit (emit_assert_fail). Operand values are reported for direct
+        // numeric/bool comparisons. Asserts stay on in -release (TigerStyle);
+        // only an explicit `-no assert` compiles them out.
         if g.no_assert { return "0" }
         ok_label := fresh_label(g, "assert.ok")
         fail_label := fresh_label(g, "assert.fail")
-        loc := format_location(e.span.file, e.span.line, e.span.col)
-
-        // Embedded source text must not smuggle conversion specs into the
-        // format string (`a % b == 0`), so escape every %.
-        esc_cond, _ := strings.replace_all(e.cond_text, "%", "%%")
-        msg: strings.Builder
-        strings.builder_init(&msg)
-        fmt.sbprintf(&msg, "Assert failed at %s\nExpected %s", loc, esc_cond)
-
         if bin, is_bin := e.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) &&
            e.lhs_text != "" && e.rhs_text != "" {
             _, overloaded := bin.overload_fn.?
             ir_type, is_unsigned := binary_op_type(g, bin, "")
-            is_float := ir_type == "double" || ir_type == "float" || ir_type == "half"
-            is_bool  := ir_type == "i1"
-            // Value reporting covers what printf can carry: bools, scalar ints
-            // up to 64 bits, floats. Anything else (ptr, i128, aggregates,
-            // overloaded compares) falls through to the plain message.
-            is_int := ir_type == "i8" || ir_type == "i16" || ir_type == "i32" || ir_type == "i64"
-            if !overloaded && (is_float || is_bool || is_int) {
+            if !overloaded && assert_reports(ir_type) {
                 left := gen_expr_coerced(g, bin.left, ir_type)
                 right := gen_expr_coerced(g, bin.right, ir_type)
                 cond_val := fresh_tmp(g)
                 pred := ""
-                if is_float {
+                if is_ir_float(ir_type) {
                     #partial switch bin.op {
                     case .Equal_Equal:   pred = "oeq"
                     case .Not_Equal:     pred = "une"
@@ -433,83 +415,11 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
                 }
                 emit_cond_br(g, cond_val, ok_label, fail_label)
                 emit_label(g, fail_label)
-                emit_crash_journal_begin(g)
-
-                Assert_Side :: struct { text, val: string, ex: Expr, report: bool }
                 sides := [2]Assert_Side{
-                    {e.lhs_text, left,  bin.left,  !assert_side_is_literal(bin.left)},
-                    {e.rhs_text, right, bin.right, !assert_side_is_literal(bin.right)},
+                    {"" if assert_side_is_literal(bin.left) else e.lhs_text, left, expr_type(bin.left)},
+                    {"" if assert_side_is_literal(bin.right) else e.rhs_text, right, expr_type(bin.right)},
                 }
-                spec := is_bool ? "%s" : (is_float ? "%g" : (is_unsigned ? "%llu" : "%lld"))
-                args: strings.Builder
-                strings.builder_init(&args)
-                joiner := ", but "
-                for side in sides {
-                    if !side.report { continue }
-                    esc_side, _ := strings.replace_all(side.text, "%", "%%")
-                    // An enum side prints its variant name through the same
-                    // inline switch print() uses. That machinery does its own
-                    // printf calls, so flush the message built so far and let
-                    // it take over mid-sentence.
-                    if et, is_enum := enum_type_of(side.ex); is_enum {
-                        fmt.sbprintf(&msg, "%s%s was ", joiner, esc_side)
-                        joiner = " and "
-                        assert_flush_printf(g, &msg, &args)
-                        tag_ir := "i64"
-                        if et.tag_type != "" { tag_ir = tag_type_to_ir(et.tag_type) }
-                        v := side.val
-                        if ir_type != tag_ir {
-                            w := fresh_tmp(g)
-                            op := ir_type_bits(ir_type) > ir_type_bits(tag_ir) ? "trunc" : "zext"
-                            emit(g, "  %s = %s %s %s to %s", w, op, ir_type, side.val, tag_ir)
-                            v = w
-                        }
-                        gen_print_enum(g, v, tag_ir, et)
-                        continue
-                    }
-                    // A utf8 side renders as the glyph, same as print() — the
-                    // value reads like the literal it's compared to: 'e'.
-                    is_char := !is_bool && !is_float && is_char_expr(g, side.ex)
-                    fmt.sbprintf(&msg, "%s%s was %s", joiner, esc_side, is_char ? "'%c'" : spec)
-                    joiner = " and "
-                    if is_bool {
-                        t_global, _ := get_string_literal(g, "true")
-                        f_global, _ := get_string_literal(g, "false")
-                        sel := fresh_tmp(g)
-                        emit(g, "  %s = select i1 %s, ptr %s, ptr %s", sel, side.val, t_global, f_global)
-                        fmt.sbprintf(&args, ", ptr %s", sel)
-                    } else if is_float {
-                        v := side.val
-                        if ir_type != "double" {
-                            w := fresh_tmp(g)
-                            emit(g, "  %s = fpext %s %s to double", w, ir_type, side.val)
-                            v = w
-                        }
-                        fmt.sbprintf(&args, ", double %s", v)
-                    } else if is_char {
-                        // %c reads an i32 vararg (default promotion).
-                        v := side.val
-                        if ir_type != "i32" {
-                            w := fresh_tmp(g)
-                            emit(g, "  %s = %s %s %s to i32", w, ir_type == "i64" ? "trunc" : "zext", ir_type, side.val)
-                            v = w
-                        }
-                        fmt.sbprintf(&args, ", i32 %s", v)
-                    } else {
-                        v := side.val
-                        if ir_type != "i64" {
-                            w := fresh_tmp(g)
-                            emit(g, "  %s = %s %s %s to i64", w, is_unsigned ? "zext" : "sext", ir_type, side.val)
-                            v = w
-                        }
-                        fmt.sbprintf(&args, ", i64 %s", v)
-                    }
-                }
-                strings.write_string(&msg, "\n")
-                assert_flush_printf(g, &msg, &args)
-                emit_crash_journal_end(g)
-                emit(g, "  call void @exit(i32 1)")
-                emit(g, "  unreachable")
+                emit_assert_fail(g, e.span, e.cond_text, sides[:], ir_type, is_unsigned)
                 emit_label(g, ok_label)
                 return "0"
             }
@@ -520,14 +430,7 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         cond_val := gen_expr(g, e.cond)
         emit_cond_br(g, cond_val, ok_label, fail_label)
         emit_label(g, fail_label)
-        emit_crash_journal_begin(g)
-        strings.write_string(&msg, ", but it was false\n")
-        args: strings.Builder
-        strings.builder_init(&args)
-        assert_flush_printf(g, &msg, &args)
-        emit_crash_journal_end(g)
-        emit(g, "  call void @exit(i32 1)")
-        emit(g, "  unreachable")
+        emit_assert_fail(g, e.span, e.cond_text, nil, "", false)
         emit_label(g, ok_label)
         return "0"
     case ^Expr_Take:
@@ -618,72 +521,44 @@ gen_tuple_default :: proc(g: ^Codegen, e: ^Expr_Tuple_Default) -> string {
 // ---------------------------------------------------------------------------
 
 gen_if_expr :: proc(g: ^Codegen, e: ^Expr_If, target_type: string = "") -> string {
-    // A struct, union, slice / partial-array header or fixed array is
-    // represented by a pointer to its storage, so the branches yield pointers:
-    // merge those, not aggregate values. A scalar goes through a slot each
-    // branch stores (as `and` / `or` do).
+    // The value goes through a slot each branch writes (as `and` / `or` do):
+    // a scalar stored, an aggregate — a struct, union, slice / partial-array
+    // header or fixed array, represented by a pointer to its storage — copied
+    // in; the result is the scalar loaded, or the slot's address.
     by_address := is_pointer_valued_type(e.type_)
-    if !by_address {
-        result_type := target_type != "" ? target_type : expr_ir_type(g, e.then_expr)
-        slot := fresh_tmp(g)
-        emit_alloca(g, slot, result_type)
-        cond := gen_expr(g, e.condition)
-        then_label := fresh_label(g, "ifx.then")
-        else_label := fresh_label(g, "ifx.else")
-        end_label  := fresh_label(g, "ifx.end")
-        emit_cond_br(g, cond, then_label, else_label)
-        emit_label(g, then_label)
-        emit_store(g, result_type, gen_expr(g, e.then_expr, result_type), slot)
-        emit_br(g, end_label)
-        emit_label(g, else_label)
-        emit_store(g, result_type, gen_expr(g, e.else_expr, result_type), slot)
-        emit_br(g, end_label)
-        emit_label(g, end_label)
-        result := fresh_tmp(g)
-        emit_load_into(g, result, result_type, slot)
-        return result
-    }
-
-    cond_val := gen_expr(g, e.condition)
+    result_type := target_type != "" ? target_type : expr_ir_type(g, e.then_expr)
+    if by_address { result_type = llvm_type_from_checker(e.type_) }
+    slot := fresh_tmp(g)
+    emit_alloca(g, slot, result_type)
+    cond := gen_expr(g, e.condition)
     then_label := fresh_label(g, "ifx.then")
     else_label := fresh_label(g, "ifx.else")
     end_label  := fresh_label(g, "ifx.end")
-
-    emit_cond_br(g, cond_val, then_label, else_label)
-    branch :: proc(g: ^Codegen, x: Expr, t: Type, target_type: string, by_address: bool) -> string {
-        if by_address { return gen_value_address(g, x, t, target_type) }
-        return gen_expr(g, x, target_type)
+    emit_cond_br(g, cond, then_label, else_label)
+    arm :: proc(g: ^Codegen, x: Expr, t: Type, target_type, result_type, slot: string, by_address: bool) {
+        if by_address {
+            emit_value_copy(g, t, slot, gen_value_address(g, x, t, target_type))
+        } else {
+            emit_store(g, result_type, gen_expr(g, x, result_type), slot)
+        }
     }
-
-    // Each branch ends in its own exit block, and THAT is the phi's
-    // predecessor: a branch expression can open blocks of its own (a bounds
-    // check, an overflow-checked `+`), so its value doesn't necessarily arrive
-    // from the block it started in — naming then/else_label made an invalid phi.
-    emit_raw(g, fmt.tprintf("%s:", then_label))
-    then_val := branch(g, e.then_expr, e.type_, target_type, by_address)
-    then_exit := fresh_label(g, "ifx.then.exit")
-    emit_br(g, then_exit)
-    emit_raw(g, fmt.tprintf("%s:", then_exit))
+    emit_label(g, then_label)
+    arm(g, e.then_expr, e.type_, target_type, result_type, slot, by_address)
     emit_br(g, end_label)
-
-    emit_raw(g, fmt.tprintf("%s:", else_label))
-    else_val := branch(g, e.else_expr, e.type_, target_type, by_address)
-    else_exit := fresh_label(g, "ifx.else.exit")
-    emit_br(g, else_exit)
-    emit_raw(g, fmt.tprintf("%s:", else_exit))
+    emit_label(g, else_label)
+    arm(g, e.else_expr, e.type_, target_type, result_type, slot, by_address)
     emit_br(g, end_label)
-
-    emit_raw(g, fmt.tprintf("%s:", end_label))
+    emit_label(g, end_label)
+    if by_address {
+        if fa, is_fa := distinct_base(e.type_).(^Type_Fixed_Array); is_fa {
+            // Publish the array's storage like an array element / field
+            // (claim_field_array), replacing whatever a branch left pending.
+            set_field_result(g, Array_Var{alloca = slot, capacity = fa.size, elem_type = llvm_type_from_checker(fa.elem)})
+        }
+        return slot
+    }
     result := fresh_tmp(g)
-    result_type := target_type != "" ? target_type : expr_ir_type(g, e.then_expr)
-    if by_address { result_type = "ptr" }
-    emit(g, "  %s = phi %s [ %s, %%%s ], [ %s, %%%s ]",
-        result, result_type, then_val, then_exit, else_val, else_exit)
-    if fa, is_fa := distinct_base(e.type_).(^Type_Fixed_Array); is_fa {
-        // Publish the merged array's storage like an array element / field
-        // (claim_field_array), replacing whatever a branch left pending.
-        set_field_result(g, Array_Var{alloca = result, capacity = fa.size, elem_type = llvm_type_from_checker(fa.elem)})
-    }
+    emit_load_into(g, result, result_type, slot)
     return result
 }
 
@@ -855,6 +730,105 @@ assert_side_is_literal :: proc(ex: Expr) -> bool {
         }
     }
     return false
+}
+
+// Whether an assert on a comparison in this IR type reports its sides'
+// values: what printf can carry — bools, ints up to 64 bits, floats.
+assert_reports :: proc(ir_type: string) -> bool {
+    switch ir_type {
+    case "i1", "i8", "i16", "i32", "i64", "half", "float", "double": return true
+    }
+    return false
+}
+
+// One side of an assert's comparison: its source text ("" when that states
+// its value: not reported), its value in the comparison's IR type, and its
+// own type.
+Assert_Side :: struct {
+    text, val: string,
+    t:         Type,
+}
+
+// An assert's failure: the crash journal opens, the message prints — where,
+// what was expected, and each reported side's value, or with no sides, that
+// the condition was false — and the program exits. The message is one
+// printf format assembled here; only the values are runtime arguments.
+emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []Assert_Side, ir_type: string, is_unsigned: bool) {
+    emit_crash_journal_begin(g)
+    loc := format_location(span.file, span.line, span.col)
+    // Embedded source text must not smuggle conversion specs into the
+    // format string (`a % b == 0`), so escape every %.
+    esc_cond, _ := strings.replace_all(cond_text, "%", "%%", context.temp_allocator)
+    msg := strings.builder_make(context.temp_allocator)
+    args := strings.builder_make(context.temp_allocator)
+    fmt.sbprintf(&msg, "Assert failed at %s\nExpected %s", loc, esc_cond)
+    if len(sides) == 0 { strings.write_string(&msg, ", but it was false") }
+    is_float := is_ir_float(ir_type)
+    is_bool  := ir_type == "i1"
+    spec := is_bool ? "%s" : (is_float ? "%g" : (is_unsigned ? "%llu" : "%lld"))
+    joiner := ", but "
+    for side in sides {
+        if side.text == "" { continue }
+        esc_side, _ := strings.replace_all(side.text, "%", "%%", context.temp_allocator)
+        // An enum side prints its variant name through the same inline
+        // switch print() uses. That machinery does its own printf calls, so
+        // flush the message built so far and let it take over mid-sentence.
+        if et, is_enum := distinct_base(side.t).(^Type_Enum); is_enum {
+            fmt.sbprintf(&msg, "%s%s was ", joiner, esc_side)
+            joiner = " and "
+            assert_flush_printf(g, &msg, &args)
+            tag_ir := "i64"
+            if et.tag_type != "" { tag_ir = tag_type_to_ir(et.tag_type) }
+            v := side.val
+            if ir_type != tag_ir {
+                w := fresh_tmp(g)
+                op := ir_type_bits(ir_type) > ir_type_bits(tag_ir) ? "trunc" : "zext"
+                emit(g, "  %s = %s %s %s to %s", w, op, ir_type, side.val, tag_ir)
+                v = w
+            }
+            gen_print_enum(g, v, tag_ir, et)
+            continue
+        }
+        // A utf8 side renders as the glyph, same as print() — the value
+        // reads like the literal it's compared to: 'e'.
+        _, is_utf8 := side.t.(Type_Utf8)
+        is_char := !is_bool && !is_float && is_utf8
+        fmt.sbprintf(&msg, "%s%s was %s", joiner, esc_side, is_char ? "'%c'" : spec)
+        joiner = " and "
+        v := side.val
+        switch {
+        case is_bool:
+            t_global, _ := get_string_literal(g, "true")
+            f_global, _ := get_string_literal(g, "false")
+            sel := fresh_tmp(g)
+            emit(g, "  %s = select i1 %s, ptr %s, ptr %s", sel, side.val, t_global, f_global)
+            fmt.sbprintf(&args, ", ptr %s", sel)
+        case is_float:
+            if ir_type != "double" {
+                v = fresh_tmp(g)
+                emit(g, "  %s = fpext %s %s to double", v, ir_type, side.val)
+            }
+            fmt.sbprintf(&args, ", double %s", v)
+        case is_char:
+            // %c reads an i32 vararg (default promotion).
+            if ir_type != "i32" {
+                v = fresh_tmp(g)
+                emit(g, "  %s = %s %s %s to i32", v, ir_type == "i64" ? "trunc" : "zext", ir_type, side.val)
+            }
+            fmt.sbprintf(&args, ", i32 %s", v)
+        case:
+            if ir_type != "i64" {
+                v = fresh_tmp(g)
+                emit(g, "  %s = %s %s %s to i64", v, is_unsigned ? "zext" : "sext", ir_type, side.val)
+            }
+            fmt.sbprintf(&args, ", i64 %s", v)
+        }
+    }
+    strings.write_string(&msg, "\n")
+    assert_flush_printf(g, &msg, &args)
+    emit_crash_journal_end(g)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
 }
 
 // Emit the pending assert-message segment as one printf and reset the
@@ -1514,33 +1488,10 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
         return "0"
     }
 
-    // Built-in: print_cstr(ptr) — print a null-terminated C string (no newline)
-    if call_name(e) == "print_cstr" && len(call_args(e)) == 1 {
-        val := gen_expr(g, call_args(e)[0])
-        fmt_name, fmt_len := get_string_literal(g, "%s")
-        fmt_ptr := fresh_tmp(g)
-        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        emit_printf_ptr(g, fmt_ptr, val)
-        return "0"
-    }
-
-    // Built-in: print_int(val) — print an integer (no newline)
-    if call_name(e) == "print_int" && len(call_args(e)) == 1 {
-        val := gen_expr(g, call_args(e)[0])
-        fmt_name, fmt_len := get_string_literal(g, "%lld")
-        fmt_ptr := fresh_tmp(g)
-        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        emit_printf_i64(g, fmt_ptr, val)
-        return "0"
-    }
-
-    // Built-in: print_float(val) — print a float (no newline)
-    if call_name(e) == "print_float" && len(call_args(e)) == 1 {
-        val := gen_expr(g, call_args(e)[0])
-        fmt_name, fmt_len := get_string_literal(g, "%g")
-        fmt_ptr := fresh_tmp(g)
-        emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-        emit_printf_double(g, fmt_ptr, val)
+    // Built-ins print_cstr, print_int, print_float: one value as C prints
+    // it (no newline).
+    if spec, ir, raw := raw_print(call_name(e)); raw && len(call_args(e)) == 1 {
+        emit_print_raw(g, spec, ir, gen_expr(g, call_args(e)[0]))
         return "0"
     }
 
@@ -2559,53 +2510,36 @@ call_callee :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
 gen_crash :: proc(g: ^Codegen, e: ^Expr_Call) {
     // Evaluate the message BEFORE the journal opens — the argument is
     // ordinary user code and must not have its own prints teed.
-    val := ""
-    arg_type: Type
+    msg := ""
     if len(call_args(e)) == 1 {
-        val = gen_expr(g, call_args(e)[0])
-        arg_type = expr_type(call_args(e)[0])
+        msg = gen_expr(g, call_args(e)[0])
+        if fa, ok := expr_type(call_args(e)[0]).(^Type_Fixed_Array); ok {
+            if _, is_utf8 := fa.elem.(Type_Utf8); !is_utf8 { msg = "" }
+        }
     }
+    emit_crash(g, e.span, msg)
+}
 
+// A crash: the journal opens, "Crashed at <where>" and the message (a C
+// string, when there is one) print, and the program exits. Code after it in
+// the same scope lands in a fresh dead block — IR after `unreachable` is
+// invalid.
+emit_crash :: proc(g: ^Codegen, span: Span, msg: string) {
     emit_crash_journal_begin(g)
 
     // Location line, same family as the assert message.
-    loc := format_location(e.span.file, e.span.line, e.span.col)
-    esc_loc, _ := strings.replace_all(loc, "%", "%%")
-    loc_global, _ := get_string_literal(g, strings.concatenate({"Crashed at ", esc_loc, "\n"}))
+    loc := format_location(span.file, span.line, span.col)
+    esc_loc, _ := strings.replace_all(loc, "%", "%%", context.temp_allocator)
+    loc_global, _ := get_string_literal(g, strings.concatenate({"Crashed at ", esc_loc, "\n"}, context.temp_allocator))
     emit(g, "  call i32 (ptr, ...) %s(ptr %s)", printf_sym(g), loc_global)
-
-    if len(call_args(e)) == 1 {
-        // Print the message (string literal or runtime string)
-        if fa, ok := arg_type.(^Type_Fixed_Array); ok {
-            if _, is_utf8 := fa.elem.(Type_Utf8); is_utf8 {
-                fmt_name, fmt_len := get_string_literal(g, "%s")
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_ptr(g, fmt_ptr, val)
-            }
-        } else {
-            // Assume string-like (ptr)
-            fmt_name, fmt_len := get_string_literal(g, "%s")
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_ptr(g, fmt_ptr, val)
-        }
-
-        // Print newline
-        nl_name, nl_len := get_string_literal(g, "\n")
-        nl_ptr := fresh_tmp(g)
-        emit_string_gep(g, nl_ptr, nl_len, nl_name)
-        emit_printf_void(g, nl_ptr)
+    if msg != "" {
+        emit_printf_ptr(g, emit_fmt_ptr(g, "%s"), msg)
+        emit_print_newline(g)
     }
-
     emit_crash_journal_end(g)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
-
-    // Start a dead block so any code after crash() in the same scope
-    // doesn't produce IR after unreachable (which is invalid LLVM IR).
-    dead_label := fresh_label(g, "crash.dead")
-    emit_label(g, dead_label)
+    emit_label(g, fresh_label(g, "crash.dead"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2618,26 +2552,112 @@ gen_print :: proc(g: ^Codegen, e: ^Expr_Call) {
     // string literals as well as `name :: "..."` constants — those parse as
     // an Expr_Ident at the call site, but the constants table holds the
     // underlying Expr_String.
-    if len(call_args(e)) > 0 {
-        if fmt_str, ok := resolve_format_string_value(g, call_args(e)[0]); ok {
-            if string_has_format_pct(fmt_str) {
-                gen_print_format(g, fmt_str, call_args(e)[1:], e.span)
-                emit_print_newline(g)
-                return
-            }
+    args := call_args(e)[:]
+    format := ""
+    if len(args) > 0 {
+        if fmt_str, ok := resolve_format_string_value(g, args[0]); ok && string_has_format_pct(fmt_str) {
+            format = fmt_str
+            args = args[1:]
         }
     }
-
-    // Variadic mode: print each arg, space-separated, type-dispatched.
-    for arg_expr, i in call_args(e) {
-        if i > 0 {
-            // Print a space between arguments
-            emit_print_literal(g, " ")
+    // Every argument first, in order, then the printing: what the arguments
+    // do (a call that prints, say) happens before any of this print's output.
+    vals := make([dynamic]Print_Arg, 0, len(args), context.temp_allocator)
+    for a in args { append(&vals, gen_print_operand(g, a, e.span)) }
+    if format != "" {
+        emit_print_format(g, format, vals[:], e.span)
+    } else {
+        // Variadic mode: each arg, space-separated, type-dispatched.
+        for v, i in vals {
+            if i > 0 { emit_print_literal(g, " ") }
+            emit_print_operand(g, v)
         }
-        emit_print_arg(g, arg_expr, e.span)
     }
-
     emit_print_newline(g)
+}
+
+// A print's argument, evaluated: a string constant's text, a register value,
+// or where an aggregate is.
+Print_Arg :: struct {
+    text:    string,
+    is_text: bool,
+    val:     string,   // a register value; text's bytes' address
+    addr:    string,   // an aggregate's address
+    t:       Type,
+}
+
+gen_print_operand :: proc(g: ^Codegen, a: Expr, span: Span) -> Print_Arg {
+    t := expr_type(a)
+    if s, ok := resolve_format_string_value(g, a); ok { return print_text(g, s, t) }
+    if intr, ok := a.(^Expr_Compiler_Intrinsic); ok && !intr.bool_value && is_utf8_array_expr(g, a) {
+        return print_text(g, intr.resolved_value, t)
+    }
+    if is_pointer_valued_type(t) {
+        addr := ""
+        #partial switch v in a {
+        case ^Expr_Ident:
+            if sv, ok := get_slice(g, v.name); ok {
+                addr = sv.alloca
+            } else if av, ok := get_array(g, v.name); ok {
+                addr = av.alloca
+            } else if stv, ok := get_struct(g, v.name); ok {
+                addr = stv.alloca
+            }
+        case ^Expr_Field_Access:
+            addr = gen_field_address(g, v)
+        case ^Expr_Index:
+            addr = gen_index_address(g, v)
+        case:
+            addr = gen_expr(g, a)   // a call's, a sub-slice's or a literal's temporary
+        }
+        if addr == "" { codegen_fatal(g, span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(t)) }
+        return {addr = addr, t = t}
+    }
+    bt := distinct_base(t)
+    ir := ""
+    #partial switch v in bt {
+    case Type_Bool: ir = "i1"
+    case Type_Err:  ir = "i32"
+    case ^Type_Enum: ir = v.tag_type != "" ? tag_type_to_ir(v.tag_type) : "i64"
+    }
+    return {val = gen_expr(g, a, ir) if ir != "" else gen_expr(g, a), t = t}
+}
+
+emit_print_operand :: proc(g: ^Codegen, v: Print_Arg) {
+    switch {
+    case v.is_text:   emit_print_text_at(g, v.val, len(v.text))
+    case v.addr != "": emit_print_at_addr(g, v.addr, v.t)
+    case:             emit_print_value(g, v.val, v.t)
+    }
+}
+
+// print_cstr, print_int, print_float: the printf spec each prints its value
+// with, and the value's IR type.
+raw_print :: proc(name: string) -> (spec, ir: string, ok: bool) {
+    switch name {
+    case "print_cstr":  return "%s", "ptr", true
+    case "print_int":   return "%lld", "i64", true
+    case "print_float": return "%g", "double", true
+    }
+    return
+}
+
+emit_print_raw :: proc(g: ^Codegen, spec, ir, val: string) {
+    emit(g, "  call i32 (ptr, ...) %s(ptr %s, %s %s)", printf_sym(g), emit_fmt_ptr(g, spec), ir, val)
+}
+
+// A string constant as a print's argument: its text, and its bytes' address.
+print_text :: proc(g: ^Codegen, text: string, t: Type) -> Print_Arg {
+    name, n := get_string_literal(g, text)
+    data := fresh_tmp(g)
+    emit_string_gep(g, data, n, name)
+    return {text = text, is_text = true, val = data, t = t}
+}
+
+// Text of `n` bytes at `data`, printed.
+emit_print_text_at :: proc(g: ^Codegen, data: string, n: int) {
+    h := Array_Handle{fixed_alloca = data, elem_type = "i8", static_cap = n, is_utf8 = true}
+    emit_array_print(g, &h)
 }
 
 // If `expr` is (transitively) a string literal — either an inline literal or a
@@ -2670,8 +2690,8 @@ string_has_format_pct :: proc(s: string) -> bool {
 
 // Emit the printf calls for a format string with `%` placeholders. Static
 // runs are emitted as a single `printf("%s", ...)` per run (with `%%` decoded
-// to a literal `%`); each placeholder pulls the next arg through emit_print_arg.
-gen_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Expr, call_span: Span) {
+// to a literal `%`); each placeholder prints the next (evaluated) arg.
+emit_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Print_Arg, call_span: Span) {
     seg_buf: [dynamic]u8
     defer delete(seg_buf)
     arg_idx := 0
@@ -2701,7 +2721,7 @@ gen_print_format :: proc(g: ^Codegen, fmt_str: string, args: []Expr, call_span: 
             if arg_idx >= len(args) {
                 codegen_fatal(g, call_span, CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN)
             }
-            emit_print_arg(g, args[arg_idx], call_span)
+            emit_print_operand(g, args[arg_idx])
             arg_idx += 1
             // Advance past `%`. If a letter follows, treat it as a human-
             // readable type marker and consume it too (`%d` → emit value,
@@ -2737,219 +2757,6 @@ emit_print_newline :: proc(g: ^Codegen) {
     nl_ptr := fresh_tmp(g)
     emit_string_gep(g, nl_ptr, nl_len, nl_name)
     emit_printf_void(g, nl_ptr)
-}
-
-// Emit a single arg as printf output, dispatched on the arg's checker type.
-// Used by both variadic mode and format-string placeholders.
-emit_print_arg :: proc(g: ^Codegen, arg_expr: Expr, call_span: Span) {
-        // utf8 array shape (fixed array, slice, partial array, or string
-        // literal) — print via %.*s bounded by len. Resolves the expression
-        // to a unified Array_Handle once, then dispatches through the
-        // shared printer instead of branching by source-noun. Replaces four
-        // near-identical hand-rolled branches that drifted out of sync.
-        if is_utf8_array_expr(g, arg_expr) {
-            // The type already says text; print it as text. (The handle's cached
-            // is_utf8 flag can lag the type — gating on it printed NOTHING for a
-            // `[]utf8` view declared over a byte buffer.) An argument that can't
-            // be resolved is an error, never a silent no-op.
-            h, ok := resolve_array_handle(g, arg_expr)
-            if !ok {
-                codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
-            }
-            emit_array_print(g, &h)
-        } else if is_array_expr(g, arg_expr) {
-            // Check if the expression is a non-utf8 array variable
-            gen_print_array(g, arg_expr)
-        } else if is_pa_or_slice_nonutf8(expr_type(arg_expr)) {
-            // Non-utf8 slice / partial array — its storage is the {len,cap,ptr}
-            // header, so resolve the value's address and route it through the
-            // same runtime-length printer struct fields use. Covers ident
-            // variables, field accesses (obj.field), and indexed elements (arr[i])
-            // alike — any lvalue whose address we can take.
-            addr := ""
-            #partial switch e in arg_expr {
-            case ^Expr_Ident:
-                if sv, sok := get_slice(g, e.name); sok {
-                    addr = sv.alloca
-                } else if av, aok := get_array(g, e.name); aok {
-                    addr = av.alloca
-                }
-            case ^Expr_Field_Access:
-                addr = gen_field_address(g, e)
-            case ^Expr_Index:
-                addr = gen_index_address(g, e)
-            case ^Expr_Call:
-                // A call that returns a PA/slice builds its result into a temp
-                // buffer and hands back that pointer — exactly the header address
-                // we need, so a temporary prints without binding it first.
-                addr = gen_expr(g, arg_expr)
-            }
-            if addr != "" {
-                emit_print_at_addr(g, addr, expr_type(arg_expr))
-            } else {
-                codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
-            }
-        } else if as_struct_body(distinct_base(expr_type(arg_expr))) != nil {
-            // Any struct-typed argument — variable, field access (obj.field),
-            // indexed element (arr[i]), or call result — printed via its address
-            // through the shared recursive printer. (is_array_expr ran first, so
-            // an array-class struct already took the array path.)
-            addr := ""
-            #partial switch e in arg_expr {
-            case ^Expr_Ident:
-                if stv, ok := get_struct(g, e.name); ok { addr = stv.alloca }
-            case ^Expr_Field_Access:
-                addr = gen_field_address(g, e)
-            case ^Expr_Index:
-                addr = gen_index_address(g, e)
-            case ^Expr_Call:
-                addr = gen_expr(g, arg_expr)
-            }
-            if addr != "" {
-                emit_print_at_addr(g, addr, expr_type(arg_expr))
-            } else {
-                codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
-            }
-        } else if is_char_expr(g, arg_expr) {
-            val := gen_expr(g, arg_expr)
-            // utf8 / char literal prints as a character using %c
-            ext := fresh_tmp(g)
-            emit(g, "  %s = zext i8 %s to i32", ext, val)
-            fmt_name, fmt_len := get_string_literal(g, "%c")
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
-        } else if is_string_expr(g, arg_expr) {
-            val := gen_expr(g, arg_expr)
-            fmt_name, fmt_len := get_string_literal(g, "%s")
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_ptr(g, fmt_ptr, val)
-        } else if is_float_expr(g, arg_expr) {
-            val := gen_expr(g, arg_expr)
-            fmt_name, fmt_len := get_string_literal(g, "%g")
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_double(g, fmt_ptr, val)
-        } else if is_ptr_expr(g, arg_expr) {
-            val := gen_expr(g, arg_expr)
-            // ^byte by convention carries null-terminated cstrings (e.g.
-            // #caller_name); print them as text rather than addresses.
-            spec := "%p"
-            t := expr_type(arg_expr)
-            // Print-as-string for any pointer-to-utf8 / pointer-to-byte
-            // shape, unwrapping distinct types so user wrappers (like the
-            // stdlib's `cstring :: distinct ^utf8`) inherit the rule
-            // structurally. Codegen sees only the IR shape; the distinct
-            // identity is the type checker's concern.
-            base := distinct_base(t)
-            if pt, ok := base.(^Type_Ptr); ok {
-                if _, is_byte := pt.elem.(Type_Byte); is_byte { spec = "%s" }
-                if _, is_utf8 := pt.elem.(Type_Utf8); is_utf8 { spec = "%s" }
-            }
-            if _, is_cs := t.(Type_CString); is_cs { spec = "%s" }
-            fmt_name, fmt_len := get_string_literal(g, spec)
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_ptr(g, fmt_ptr, val)
-        } else if _, is_err := expr_type(arg_expr).(Type_Err); is_err {
-            // Open `err` value: route through the program-wide runtime
-            // helper since the specific error_kind isn't known statically.
-            val := gen_expr(g, arg_expr, "i32")
-            emit(g, "  call void @__mara_print_err(i32 %s)", val)
-        } else if et, is_enum := enum_type_of(arg_expr); is_enum {
-            // Enum value: print the variant name via an inline switch. Falls
-            // back to "EnumName(<tag>)" for unknown tags (out-of-range or
-            // bitwise-OR'd flag combos). Caught before is_numeric_expr so
-            // raw enums don't render as plain integers.
-            tag_ir := "i64"
-            if et.tag_type != "" { tag_ir = tag_type_to_ir(et.tag_type) }
-            val := gen_expr(g, arg_expr, tag_ir)
-            gen_print_enum(g, val, tag_ir, et)
-        } else if _, is_bool := expr_type(arg_expr).(Type_Bool); is_bool {
-            // bool prints as true/false (see gen_print_bool). Without an
-            // explicit case it falls to the final %lld branch, which passes an
-            // i1 where printf's i64 vararg is expected — invalid IR.
-            gen_print_bool(g, gen_expr(g, arg_expr, "i1"))
-        } else if is_numeric_expr(g, arg_expr) {
-            val := gen_expr(g, arg_expr)
-            nt := get_numeric_type(g, arg_expr)
-            // Format spec matches the value's natural IR width — no
-            // sext/zext to a "convention" width. Mimics C varargs:
-            // printf reads whichever width the spec says.
-            is_unsigned := false
-            ft := distinct_base(expr_type(arg_expr))
-            if n, n_ok := ft.(Type_Numeric); n_ok {
-                is_unsigned = n.kind == .Unsigned
-            }
-            if _, b_ok := ft.(Type_Byte); b_ok {
-                // byte is a raw octet — always renders unsigned (0..255).
-                is_unsigned = true
-            }
-            switch nt {
-            case "float":
-                // f32 → double for printf varargs (C ABI requires default-
-                // promotion for variadic float args). Not an implicit type
-                // conversion in user code — a calling-convention adapter.
-                ext := fresh_tmp(g)
-                emit(g, "  %s = fpext float %s to double", ext, val)
-                fmt_name, fmt_len := get_string_literal(g, "%g")
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_double(g, fmt_ptr, ext)
-            case "half":
-                // f16 → double for printf varargs, same default-promotion as
-                // f32. The half→double widen is fpext; the integer `case:`
-                // default below would emit `sext half` — an integer op on a
-                // float, which is invalid IR.
-                ext := fresh_tmp(g)
-                emit(g, "  %s = fpext half %s to double", ext, val)
-                fmt_name, fmt_len := get_string_literal(g, "%g")
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_double(g, fmt_ptr, ext)
-            case "i64":
-                spec := is_unsigned ? "%llu" : "%lld"
-                fmt_name, fmt_len := get_string_literal(g, spec)
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit_printf_i64(g, fmt_ptr, val)
-            case "i32":
-                spec := is_unsigned ? "%u" : "%d"
-                fmt_name, fmt_len := get_string_literal(g, spec)
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, val)
-            case:
-                // i8 / i16: still extend to i32 for printf's default-int
-                // varargs promotion (C calling convention; not an implicit
-                // user-code conversion).
-                ext := fresh_tmp(g)
-                if is_unsigned {
-                    emit(g, "  %s = zext %s %s to i32", ext, nt, val)
-                } else {
-                    emit(g, "  %s = sext %s %s to i32", ext, nt, val)
-                }
-                spec := is_unsigned ? "%u" : "%d"
-                fmt_name, fmt_len := get_string_literal(g, spec)
-                fmt_ptr := fresh_tmp(g)
-                emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-                emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s)", fmt_ptr, ext)
-            }
-        } else {
-            // No print rule matched. The fallback passes the raw value in
-            // printf's i64 vararg slot, so anything that isn't i64-shaped
-            // would emit invalid IR clang rejects with a cryptic type
-            // mismatch — hard error here instead, naming the Mara type.
-            if it := expr_ir_type(g, arg_expr); it != "i64" {
-                codegen_fatal(g, call_span, CODE_PRINT_UNSUPPORTED_VALUE, type_name(expr_type(arg_expr)))
-            }
-            val := gen_expr(g, arg_expr)
-            fmt_name, fmt_len := get_string_literal(g, "%lld")
-            fmt_ptr := fresh_tmp(g)
-            emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
-            emit_printf_i64(g, fmt_ptr, val)
-        }
 }
 
 // Print an i1 as `true`/`false`. Shared by scalar args, struct fields, and
@@ -2996,11 +2803,10 @@ emit_fmt_ptr :: proc(g: ^Codegen, spec: string) -> string {
     return p
 }
 
-// Print an already-loaded scalar VALUE given its Mara type — the value-level twin
-// of emit_print_arg's scalar dispatch, and the single source of truth for how a
-// scalar renders. Struct fields and array elements route through here so they
-// match a bare `print(x)`: chars as glyphs, sign-aware integers, %g floats.
-// Non-scalars (a nested struct/array field reaching here) hard-error rather than
+// Print an already-loaded scalar VALUE given its Mara type — the single source
+// of truth for how a scalar renders: print's own arguments, struct fields and
+// array elements all route through here, so they match a bare `print(x)`:
+// chars as glyphs, sign-aware integers, %g floats. Non-scalars (a nested struct/array field reaching here) hard-error rather than
 // mis-emit — aggregates are handled by their own recursion before this is called.
 emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
     if ty == nil { codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, "<unknown>") }

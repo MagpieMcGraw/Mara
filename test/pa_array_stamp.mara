@@ -1,0 +1,35 @@
+module pa_array_stamp
+
+//@ expect-output: 15 13 4
+
+// A fixed array of partial arrays — a local, a struct's field, a `{0}` zero —
+// has every element's header stamped (ptr at its elements, cap N): a partial
+// array's zero is not all zeros. (The graph emitter first stamped only a bare
+// partial array, leaving these with cap 0.)
+
+Shelf :: struct {
+	rows : [3][..4]i64
+}
+
+local_rows :: fun() -> i64 {
+	bufs : [2][..4]i64
+	bufs[0].len = 2
+	bufs[0][1] = 7
+	return bufs[0].cap + bufs[1].cap + bufs[0][1]
+}
+
+field_rows :: fun() -> i64 {
+	s : Shelf
+	s.rows[2].len = 1
+	s.rows[2][0] = 5
+	return s.rows[0].cap + s.rows[2].cap + s.rows[2][0]
+}
+
+zero_rows :: fun() -> i64 {
+	s := Shelf{0}
+	return s.rows[1].cap
+}
+
+main :: fun() {
+	print(local_rows(), field_rows(), zero_rows())
+}

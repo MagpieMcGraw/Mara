@@ -111,12 +111,20 @@ emit_value_copy :: proc(g: ^Codegen, t: Type, dst_ptr: string, src_ptr: string) 
 // emit_value_copy / emit_struct_copy / partial_array_copy, which call it), so
 // structs holding strings copy like any other value.
 // A zeroed value of type `t` at `ptr` made a valid zero value: each partial
-// array in it — through struct fields — gets its header (ptr → its elements,
-// cap N), since a partial array's zero is not all zeros.
+// array in it — through struct fields and array elements — gets its header
+// (ptr → its elements, cap N), since a partial array's zero is not all zeros.
 stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: string, t: Type) {
     base := distinct_base(t)
     if pa, is_pa := base.(^Type_Partial_Array); is_pa {
         stamp_partial_array_header(g, ptr, pa)
+        return
+    }
+    // An array of partial arrays: each element. (An array of structs is
+    // constructed next, which stamps them.)
+    if fa, is_fa := base.(^Type_Fixed_Array); is_fa {
+        inner := distinct_base(fa.elem)
+        for a, nested := inner.(^Type_Fixed_Array); nested; a, nested = inner.(^Type_Fixed_Array) { inner = distinct_base(a.elem) }
+        if _, pa := inner.(^Type_Partial_Array); pa && fa.size > 0 { emit_each_element(g, ptr, fa.elem, fa.size, stamp_zero_partial_arrays) }
         return
     }
     sd := as_struct_body(base)
@@ -125,7 +133,7 @@ stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: string, t: Type) {
     for &f, i in sd.fields {
         if !value_has_partial_array(g, f.type_) { continue }
         #partial switch _ in distinct_base(f.type_) {
-        case ^Type_Partial_Array, ^Type_Scope:
+        case ^Type_Partial_Array, ^Type_Scope, ^Type_Fixed_Array:
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, ptr, i)
             stamp_zero_partial_arrays(g, gep, f.type_)
@@ -326,12 +334,24 @@ writes_whole_partial_array :: proc(g: ^Codegen, value: Expr) -> bool {
     return whole
 }
 
+// `[..N]T{}`: a partial array's zero value — the only literal one has.
+is_empty_partial_array_literal :: proc(value: Expr) -> bool {
+    lit, ok := value.(^Expr_Struct_Literal)
+    if !ok || lit.type_expr == nil || len(lit.fields) != 0 || lit.array_values != nil { return false }
+    _, is_pa := distinct_base(expr_type(value)).(^Type_Partial_Array)
+    return is_pa
+}
+
 // Store a value into an existing partial array at `pa_ptr` (header stamped):
 // always a copy into its own inline elements. A partial-array-returning call
 // builds straight into it (through a temp when an argument might alias it —
 // see gen_call_into_struct); every other value — a string, another partial
 // array, a slice — is copied by gen_partial_array_init_value.
 gen_store_partial_array_into :: proc(g: ^Codegen, pa_ptr: string, pa: ^Type_Partial_Array, value: Expr, span: Span, name: string, dest_fresh: bool, dest_expr: Expr = nil) {
+    if is_empty_partial_array_literal(value) {
+        emit_partial_array_zero(g, pa_ptr, pa)
+        return
+    }
     if call, is_call := value.(^Expr_Call); is_call {
         if info, ok := call_fun_info(g, call); ok && info.ret_partial_cap > 0 {
             gen_call_into_struct(g, call, pa_ptr, &info, dest_fresh, dest_expr)
@@ -1599,7 +1619,7 @@ gen_slice_decl_runtime_cap :: proc(g: ^Codegen, s: ^Stmt_Assign, sl: ^Type_Slice
 }
 
 // Assign a slice expression to an inferred-type variable: x := arr[1:3]
-gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_type: Type = nil) {
+gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_type: Type = nil, decl := false) {
     // Pre-bound slice with no body initializer (e.g. `name: String` as a struct
     // field where prebind_field_var already wired the header) — there's
     // nothing to do here. Falling through would `gen_expr(nil) = "0"` and
@@ -1655,8 +1675,9 @@ gen_slice_assign_inferred :: proc(g: ^Codegen, name: string, value: Expr, decl_t
                 }
             }
             sv, _ := get_slice(g, name)
-            // The result slot is as good as fresh: no argument can reach it.
-            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists || sv.alloca == "%sret")
+            // Fresh: a declaration (the result slot is no fresher than any
+            // place: the local returned lives there, and `s = f(s)` passes it).
+            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists || decl)
             return
         }
     }
@@ -1777,7 +1798,7 @@ gen_slice_one_arg_source_ptr :: proc(g: ^Codegen, storage: Expr, span: Span) -> 
 
 // Assign a slice-typed expression (e.g. alloc()) to a named variable.
 // The expression must return a { len, cap, ptr } alloca.
-gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: string, is_utf8: bool = false) {
+gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: string, is_utf8: bool = false, decl := false) {
     // NRVO: if value is a slice-returning Mara call, route its sret
     // straight to our dest's alloca. When `name` is the function's NRVO
     // candidate, its alloca is %sret — so the inner call writes directly
@@ -1796,8 +1817,9 @@ gen_slice_from_expr :: proc(g: ^Codegen, name: string, value: Expr, elem_type: s
                 }
             }
             sv, _ := get_slice(g, name)
-            // The result slot is as good as fresh: no argument can reach it.
-            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists || sv.alloca == "%sret")
+            // Fresh: a declaration (the result slot is no fresher than any
+            // place: the local returned lives there, and `s = f(s)` passes it).
+            gen_call_into_struct(g, call, sv.alloca, &info, !slice_exists || decl)
             return
         }
     }
@@ -2550,10 +2572,6 @@ gen_construct_partial_array_elements :: proc(g: ^Codegen, pa_addr: string, pa: ^
     gen_construct_elements(g, inline_ptr, pa.elem, pa.size)
 }
 
-// Run no-arg construction over `count` elements starting at `elements_ptr` (a
-// pointer to element 0), but only when the element type needs it. Emits a
-// runtime counted loop so `[..256]Font` is a handful of instructions, not 256
-// unrolled constructors.
 // `{all x}` of register values: x evaluated once and stored into every slot —
 // each element is the one value (the graph's fill). An aggregate element
 // still builds each slot from the checker's clone of x. False: not that case.
@@ -2568,9 +2586,18 @@ gen_broadcast_scalar :: proc(g: ^Codegen, dst, arr_type, elem_ir: string, et: Ty
     return true
 }
 
+// Run no-arg construction over `count` elements starting at `elements_ptr` (a
+// pointer to element 0), but only when the element type needs it.
 gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int) {
     if count <= 0 { return }
     if !type_needs_construction(g, elem) { return }
+    emit_each_element(g, elements_ptr, elem, count, gen_construct_value_at)
+}
+
+// `each` over `count` elements of type `elem` starting at `elements_ptr` (a
+// pointer to element 0): a runtime counted loop, so `[..256]Font` is a
+// handful of instructions, not 256 unrolled ones.
+emit_each_element :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int, each: proc(g: ^Codegen, ptr: string, t: Type)) {
     elem_ir := llvm_type_from_checker(elem)
     w := slice_layout.len_ir
     cond_label := fresh_label(g, "ctor.cond")
@@ -2594,7 +2621,7 @@ gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, co
     emit_load_into(g, idx2, w, idx_ptr)
     elem_ptr := fresh_tmp(g)
     emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_ptr, elem_ir, elements_ptr, w, idx2)
-    gen_construct_value_at(g, elem_ptr, elem)
+    each(g, elem_ptr, elem)
     next := fresh_tmp(g)
     emit(g, "  %s = add %s %s, 1", next, w, idx2)
     emit_store(g, w, next, idx_ptr)

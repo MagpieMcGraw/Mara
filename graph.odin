@@ -141,6 +141,15 @@ Program_Graph :: struct {
     // variant, a named scalar constant, a fixed array's length. `void` and a
     // constant not evaluated here have none.
     consts: map[Node_Id]Const_Value,
+
+    // An assert on a comparison: each side's source text, which its failure
+    // reports beside the side's value — "" for a side whose text states its
+    // value (a literal, a variant).
+    assert_sides: map[Node_Id][2]string,
+
+    // A constant's value as written, by its declaration: resolved before
+    // the graph, it has no operations; a table's bytes are built from it.
+    const_values: map[Node_Id]Expr,
 }
 
 // A constant's value: an integer (bools and chars too), or a float.
@@ -148,6 +157,8 @@ Const_Value :: struct {
     int:      i128,
     float:    f64,
     is_float: bool,
+    text:     string,   // a string constant's, when is_text
+    is_text:  bool,
 }
 
 graph_out :: proc(g: ^Program_Graph, id: Node_Id) -> []Edge {
@@ -264,6 +275,16 @@ Graph_Builder :: struct {
     // A compound assignment's target (its expression, by identity) and the
     // place already computed for it: its read reuses the place.
     compound:   struct { key: rawptr, place: Operand },
+    // Each constant's declaration, by its value's identity, and the table
+    // globals waiting to name theirs.
+    const_decls: map[rawptr]Node_Id,
+    tables:      [dynamic]Graph_Table,
+}
+
+@(private="file")
+Graph_Table :: struct {
+    global: Node_Id,
+    value:  rawptr,
 }
 
 @(private="file")
@@ -364,6 +385,8 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
         delete(b.runs)
         delete(b.names)
         delete(b.frames)
+        delete(b.const_decls)
+        delete(b.tables)
     }
     graph_index(&b)
 
@@ -581,7 +604,11 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
         t := v.env_type if v.env_type != nil else v.var_type
         kind: Node_Kind = .Const
         if _, is_import := v.value.(^Expr_Include); is_import { kind = .Import }   // `core :: include mara.core`
-        graph_node(b, kind, .Explicit, parent, v.name, t, v.span)
+        d := graph_node(b, kind, .Explicit, parent, v.name, t, v.span)
+        if kind == .Const && v.value != nil {
+            b.const_decls[expr_identity(v.value)] = d
+            b.g.const_values[d] = v.value
+        }
     case Stmt_Call:
         if code { graph_value(b, v.expr) }
     case Stmt_Return:
@@ -819,9 +846,15 @@ graph_store :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
             buf := graph_base_place(b, v.expr, span)
             lo := graph_value(b, v.low) if v.low != nil else NO_VALUE
             hi := graph_value(b, v.high) if v.high != nil else NO_VALUE
-            graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if v.is_big_endian else "", graph_dest_place(b, d, span), buf, lo, hi)
+            // At the span read: where its failures say it is.
+            graph_op(b, .Byte_Read, .Explicit, v.span, d.type_, "#big_endian" if v.is_big_endian else "", graph_dest_place(b, d, span), buf, lo, hi)
             return
         }
+    }
+    // Text or a slice's elements written into a new partial array fill only a
+    // prefix of it: it is zero first.
+    if _, into_partial := distinct_base(graph_dest_type(b, d)).(^Type_Partial_Array); into_partial && d.kind == .Var && d.decl != NO_NODE && graph_fills_prefix(value) {
+        graph_op(b, .Zero, .Synthetic, span, graph_dest_type(b, d), "", graph_dest_place(b, d, span))
     }
     val := graph_widen(b, graph_value(b, value), graph_dest_type(b, d), span)
     graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
@@ -1531,18 +1564,23 @@ graph_pure_place :: proc(e: Expr) -> bool {
 graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operand {
     if e == nil { return NO_VALUE }
     switch v in e {
-    case ^Expr_Number:            return graph_const(b, w, v.span, v.type_, "", Const_Value{v.int_value, v.value, v.is_float})
+    case ^Expr_Number:            return graph_const(b, w, v.span, v.type_, "", Const_Value{int = v.int_value, float = v.value, is_float = v.is_float})
     case ^Expr_Char:              return graph_const(b, w, v.span, v.type_, "", Const_Value{int = i128(v.value)})
     case ^Expr_Bool:              return graph_const(b, w, v.span, v.type_, "", Const_Value{int = 1 if v.value else 0})
     case ^Expr_Size_Of:           return graph_op_value(b, .Const, w, v.span, v.type_, "size_of")
-    case ^Expr_Compiler_Intrinsic: return graph_op_value(b, .Const, w, v.span, v.type_, v.resolved_value)
-    case ^Expr_String:            return graph_op_value(b, .Global, w, v.span, v.type_)
+    case ^Expr_Compiler_Intrinsic:
+        // The caller's name or place is text; a target flag, a bool.
+        if v.kind == .Caller_Name || v.kind == .Caller_Span {
+            return graph_text(b, graph_op_value(b, .Global, w, v.span, v.type_), Const_Value{text = v.resolved_value, is_text = true})
+        }
+        return graph_const(b, w, v.span, v.type_, v.resolved_value, Const_Value{int = 1 if v.bool_value else 0})
+    case ^Expr_String:            return graph_text(b, graph_op_value(b, .Global, w, v.span, v.type_), Const_Value{text = v.value, is_text = true})
     case ^Expr_Ident:
         if v.lowered != nil { return graph_value(b, v.lowered, w) }
         if is_void_literal(e) { return graph_op_value(b, .Const, w, v.span, v.type_, "void") }   // an uninitialized value, a null pointer
         #partial switch r in v.resolved {
         case Resolved_Enum_Variant, Resolved_Constant:
-            if graph_aggregate(v.type_) { return graph_read(b, graph_op_value(b, .Global, w, v.span, v.type_, v.name), v.type_, v.span) }
+            if graph_aggregate(v.type_) { return graph_read(b, graph_const_global(b, w, v.span, v.type_, v.name, v.resolved), v.type_, v.span) }
             return graph_const(b, w, v.span, v.type_, v.name, graph_const_value(v.resolved))
         case Resolved_Func:
             return graph_op_value(b, .Global, w, v.span, v.type_, v.name)   // a function as a value
@@ -1557,7 +1595,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         if v.resolved != nil {
             #partial switch r in v.resolved {
             case Resolved_Enum_Variant, Resolved_Constant:
-                if graph_aggregate(v.type_) { return graph_read(b, graph_op_value(b, .Global, w, v.span, v.type_, v.field), v.type_, v.span) }
+                if graph_aggregate(v.type_) { return graph_read(b, graph_const_global(b, w, v.span, v.type_, v.field, v.resolved), v.type_, v.span) }
                 return graph_const(b, w, v.span, v.type_, v.field, graph_const_value(v.resolved))
             case Resolved_Func:
                 return graph_op_value(b, .Global, w, v.span, v.type_, v.field)
@@ -1613,7 +1651,13 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         hi := graph_value(b, v.high, w) if v.high != nil else NO_VALUE
         return graph_op_value(b, .Slice, w, v.span, v.type_, "", graph_base_place(b, v.expr, v.span), lo, hi)
     case ^Expr_Assert:
-        graph_op(b, .Assert, w, v.span, nil, v.cond_text, graph_value(b, v.cond, w))
+        a := graph_op(b, .Assert, w, v.span, nil, v.cond_text, graph_value(b, v.cond, w))
+        if bin, is_bin := v.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) && v.lhs_text != "" && v.rhs_text != "" {
+            b.g.assert_sides[a] = {
+                "" if assert_side_is_literal(bin.left) else v.lhs_text,
+                "" if assert_side_is_literal(bin.right) else v.rhs_text,
+            }
+        }
         return NO_VALUE
     case ^Expr_Take:
         count := NO_VALUE
@@ -1654,12 +1698,12 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
             return p
         }
         if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(v.type_) {
-            return graph_op_value(b, .Global, .Explicit, v.span, v.type_, v.name)   // a constant table
+            return graph_const_global(b, .Explicit, v.span, v.type_, v.name, v.resolved)   // a constant table
         }
     case ^Expr_Self:
         return graph_var(b, "Self", b.self, graph_pointee(v.type_), v.span)   // Self itself
     case ^Expr_String:
-        return graph_op_value(b, .Global, .Explicit, v.span, v.type_)
+        return graph_text(b, graph_op_value(b, .Global, .Explicit, v.span, v.type_), Const_Value{text = v.value, is_text = true})
     case ^Expr_Field_Access:
         if v.resolved == nil || graph_is_member(v.resolved) {
             base := graph_base_place(b, v.expr, v.span)
@@ -2099,17 +2143,51 @@ graph_const_value :: proc(r: Resolved_Name) -> Maybe(Const_Value) {
     return nil
 }
 
+// Whether a value written into a partial array fills only a prefix of it: a
+// string constant, or a slice.
+@(private="file")
+graph_fills_prefix :: proc(value: Expr) -> bool {
+    if _, is_slice := distinct_base(expr_type(value)).(^Type_Slice); is_slice { return true }
+    #partial switch v in value {
+    case ^Expr_String:       return true
+    case ^Expr_Ident:
+        if c, ok := graph_const_value(v.resolved).?; ok { return c.is_text }
+    case ^Expr_Field_Access:
+        if c, ok := graph_const_value(v.resolved).?; ok { return c.is_text }
+    }
+    return false
+}
+
+// A string constant's global carries its text in the constants table.
+@(private="file")
+graph_text :: proc(b: ^Graph_Builder, global: Operand, value: Maybe(Const_Value)) -> Operand {
+    if c, ok := value.?; ok && c.is_text { b.g.consts[global.op] = c }
+    return global
+}
+
+// A named constant held in memory: text, or a table — which names its
+// declaration (once every one is built: a use can come first).
+@(private="file")
+graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
+    o := graph_text(b, graph_op_value(b, .Global, w, span, t, name), graph_const_value(r))
+    if rc, ok := r.(Resolved_Constant); ok && rc.value_expr != nil {
+        append(&b.tables, Graph_Table{o.op, expr_identity(rc.value_expr)})
+    }
+    return o
+}
+
 @(private="file")
 graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
     #partial switch v in e {
-    case ^Expr_Number: return Const_Value{v.int_value, v.value, v.is_float}
+    case ^Expr_Number: return Const_Value{int = v.int_value, float = v.value, is_float = v.is_float}
     case ^Expr_Char:   return Const_Value{int = i128(v.value)}
     case ^Expr_Bool:   return Const_Value{int = 1 if v.value else 0}
+    case ^Expr_String: return Const_Value{text = v.value, is_text = true}
     case ^Expr_Unary:
         if v.op != .Minus { return nil }
         x, ok := graph_literal_value(v.operand).?
         if !ok { return nil }
-        return Const_Value{-x.int, -x.float, x.is_float}
+        return Const_Value{int = -x.int, float = -x.float, is_float = x.is_float}
     case ^Expr_Ident:          return graph_const_value(v.resolved)
     case ^Expr_Field_Access:   return graph_const_value(v.resolved)
     }
@@ -2269,6 +2347,10 @@ graph_resolve_defs :: proc(b: ^Graph_Builder) {
         if g.refers[id] == NO_NODE {
             if d, ok := defs[Key{b.program, g.name[id]}]; ok { g.refers[id] = d }
         }
+    }
+    // A constant table's global names the declaration of its value.
+    for t in b.tables {
+        if d, ok := b.const_decls[t.value]; ok { g.refers[t.global] = d }
     }
 }
 

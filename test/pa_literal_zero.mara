@@ -1,0 +1,36 @@
+module pa_literal_zero
+
+//@ expect-output: 0 0
+
+// `[..N]T{}` assigned to a partial array that already holds elements is its
+// zero value: len 0 and every element zeroed, so growing len again shows no
+// stale element (into a field it only reset the header; into a local it
+// didn't compile).
+
+Item :: struct { v: i32 }
+
+Box :: struct {
+	items : [..8]Item
+}
+
+empty_field :: fun() -> i64 {
+	c : Box
+	c.items.len = 3
+	c.items[1] = Item{v = 5}
+	c.items = [..8]Item{}
+	c.items.len = 3
+	return i64(c.items[1].v)
+}
+
+empty_local :: fun() -> i64 {
+	xs : [..8]Item
+	xs.len = 3
+	xs[1] = Item{v = 5}
+	xs = [..8]Item{}
+	xs.len = 3
+	return i64(xs[1].v)
+}
+
+main :: fun() {
+	print(empty_field(), empty_local())
+}

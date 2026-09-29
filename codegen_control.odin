@@ -338,9 +338,15 @@ gen_for_collection :: proc(g: ^Codegen, s: ^Stmt_For) {
     // wide) or is a compile-time int literal for fixed-array iteration.
     // Either way the counter at the same width keeps the comparison and
     // GEP homogeneous.
+    // A named index is a local like any other: its slot is its name's.
     w := slice_layout.len_ir
-    idx_alloca := fresh_tmp(g)
-    emit_alloca(g, idx_alloca, w)
+    idx_alloca := ""
+    if s.index_var != "" {
+        idx_alloca = emit_local_alloca(g, fmt.tprintf("%%%s", s.index_var), w)
+    } else {
+        idx_alloca = fresh_tmp(g)
+        emit_alloca(g, idx_alloca, w)
+    }
     emit_store(g, w, "0", idx_alloca)
     if s.index_var != "" {
         g.all_vars[s.index_var] = Scalar_Var{idx_alloca}   // the count, at w like the checker's

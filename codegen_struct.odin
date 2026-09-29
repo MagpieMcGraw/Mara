@@ -139,7 +139,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
 // (invalid IR) and never set len. Returns true if it handled the field; false
 // means the caller does its normal scalar/aggregate store. The enclosing struct
 // should be memset-zeroed first (the stamp sets ptr/cap; the copy sets len).
-gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr, span: Span, dest_expr: Expr = nil, dest_fresh := false) -> bool {
+gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, gep: string, value: Expr, span: Span, dest_expr: Expr = nil, dest_fresh := false, stamped := false) -> bool {
     pa, pa_ok := distinct_base(field.type_).(^Type_Partial_Array)
     if !pa_ok { return false }
     // A whole partial-array value (a call's result, another partial array)
@@ -153,7 +153,7 @@ gen_partial_array_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, ge
     elem_t := llvm_type_from_checker(pa.elem)
     alloc_cap := pa.size
     elem_bytes := elem_byte_size(elem_t, g.checked)
-    stamp_partial_array_header(g, gep, pa)
+    if !stamped { stamp_partial_array_header(g, gep, pa) }   // memory a construction hasn't stamped
     gen_partial_array_init_value(g, gep, value, elem_t, elem_bytes, alloc_cap, pa, span, field.name)
     return true
 }
@@ -180,7 +180,7 @@ gen_positional_ctor_field_store :: proc(g: ^Codegen, field: ^Struct_Type_Field, 
 // scalar fields, embedded (`using`) struct fields, fixed-array fields, and
 // aggregate (slice) fields. Unknown field names are silently skipped — the
 // type checker has already reported them.
-apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: ^Scope_Body, llvm_name: string, base_ptr: string, fields_fresh := false) {
+apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: ^Scope_Body, llvm_name: string, base_ptr: string, fields_fresh := false, stamped := false) {
     // Multi-return spread: `Foo{call()}` where call returns a tuple matching
     // Foo's fields. Emit the call (results land in g.tuple_result_ptrs as
     // sret-filled temps), then materialize each struct field from the
@@ -293,7 +293,7 @@ apply_struct_literal_fields :: proc(g: ^Codegen, lit: ^Expr_Struct_Literal, st: 
         if _, is_pa := distinct_base(f.type_).(^Type_Partial_Array); is_pa {
             gep := fresh_tmp(g)
             emit_field_gep_into(g, gep, llvm_name, base_ptr, idx)
-            gen_partial_array_field_store(g, f, gep, field.value, lit.span, dest_fresh = fields_fresh)
+            gen_partial_array_field_store(g, f, gep, field.value, lit.span, dest_fresh = fields_fresh, stamped = stamped)
             continue
         }
         // Aggregate field (e.g. []byte = { ptr, i64, i64 }): memcpy from source.
@@ -877,7 +877,7 @@ gen_field_access :: proc(g: ^Codegen, e: ^Expr_Field_Access) -> string {
 
     // Slice / partial-array field access: sl.ptr, sl.len, sl.cap.
     // Routes through the array handle so the cap convention matches the
-    // cap() builtin and emit_print_arg.
+    // cap() builtin and print.
     if _, sv_ok := get_slice(g, ident.name); sv_ok {
         if e.field == "ptr" || e.field == "len" || e.field == "cap" {
             h, _ := resolve_array_handle(g, ident)
@@ -1299,6 +1299,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         }
         // The zero value's partial arrays still get their headers.
         if lit.zero_init { stamp_zero_partial_arrays(g, dst_ptr, sd_type_scope(st)) }
+        stamped := true   // the zero or the constructor stamped its partial arrays
         if !lit.zero_init {
             if _, has_init := g.checked.functions[st.name]; has_init {
                 emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
@@ -1306,9 +1307,10 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
                 // No init fn (union variant structs): apply field defaults
                 // directly so they survive the routing through this path.
                 apply_struct_field_defaults(g, st, llvm_name, dst_ptr, lit)
+                stamped = false
             }
         }
-        apply_struct_literal_fields(g, lit, st, llvm_name, dst_ptr, fields_fresh = true)
+        apply_struct_literal_fields(g, lit, st, llvm_name, dst_ptr, fields_fresh = true, stamped = stamped)
         return
     }
 
@@ -1372,7 +1374,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             if info, info_ok := call_fun_info(g, call); info_ok && info.ret_struct != "" {
                 gen_call_into_struct(g, call, dst_ptr, &info, dest_fresh, dest_expr)
                 if call.overrides != nil {
-                    apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true)
+                    apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true, stamped = true)
                 }
                 return
             }
@@ -1384,7 +1386,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
             emit_memset_zero(g, dst_ptr, total)
             emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
             if call.overrides != nil {
-                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true)
+                apply_struct_literal_fields(g, call.overrides, st, llvm_name, dst_ptr, fields_fresh = true, stamped = true)
             }
             return
         }
@@ -1813,20 +1815,20 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
                 gen_partial_array_byte_fill_at_from_index(g, field_ptr, pa, idx_expr, s.span)
                 return
             }
-            if lit, lit_ok := s.value.(^Expr_Struct_Literal); lit_ok && lit.type_expr != nil && len(lit.fields) == 0 {
+            if is_empty_partial_array_literal(s.value) {
                 field_ptr := fresh_tmp(g)
                 emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
-                gen_partial_array_init_in_place(g, field_ptr, pa)
+                emit_partial_array_zero(g, field_ptr, pa)
                 return
             }
             // Ordinary value into a partial-array field — a string literal, a
             // bare slice, or another partial array. (The byte-buffer reinterpret
-            // cases above already returned.) Stamp the header and copy the
-            // contents, so `f.name = "x"` and `f.name = some_slice` both work —
-            // including into a fresh array slot whose header isn't stamped yet.
+            // cases above already returned.) Copy the contents, so
+            // `f.name = "x"` and `f.name = some_slice` both work; the header is
+            // already stamped — every construction and zero stamps it.
             pa_field_ptr := fresh_tmp(g)
             emit_field_gep_into(g, pa_field_ptr, st_llvm, base_ptr, idx)
-            if gen_partial_array_field_store(g, f, pa_field_ptr, s.value, s.span, dest_expr = s.target) {
+            if gen_partial_array_field_store(g, f, pa_field_ptr, s.value, s.span, dest_expr = s.target, stamped = true) {
                 return
             }
         }

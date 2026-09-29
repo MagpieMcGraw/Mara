@@ -199,7 +199,7 @@ About thirty kinds in all.
 | Operation | Written as | LLVM |
 | --- | --- | --- |
 | `var` | `x` | the variable's slot; no instruction |
-| `global` | `COLORS` (a constant table), `"hi"` | `@name`, `@.str.<hash>` |
+| `global` | `COLORS` (a constant table: it refers to the constant's declaration), `"hi"` and `#caller_name` (text: the constants table holds it) | `@mara_const.<name>`, `@.str.<hash>` |
 | `field` | `p.x` | `getelementptr` to the field |
 | `index` | `a[i]` | bounds check and `getelementptr`; a slice loads its pointer first |
 | `view` | bytes at an offset seen as a `T`: `x : T = bytes[off]`, `bytes[off] = x`, `&bytes[off]` taken as a `^T`; `#big_endian` | check `off + size_of(T) <= cap`, then `getelementptr` to the byte; what goes through it is `align 1`, and a big-endian view's integers are swapped |
@@ -237,8 +237,8 @@ About thirty kinds in all.
 | Operation | Written as | LLVM |
 | --- | --- | --- |
 | `call` | `f(a)`, `a.f()`, a dispatch or generic call, `a + b` through `overload`, `op(x)` through a function value, a foreign function | `call`: direct, through a pointer, or with the C ABI; struct and multiple returns go into destination places |
-| `print` | `print(a, b)` | one operation; a formatting call per argument, chosen by its type |
-| `assert` | `assert(c)` | a branch to a failure that prints the source text |
+| `print` | `print(a, b)`, `print("%d of %d", a, b)` | one operation over values already computed; a formatting call per argument, chosen by its type, spaced or into a first text operand's `%` places |
+| `assert` | `assert(c)` | a branch to a failure that prints the source text and, for a comparison, each side's value (the graph keeps the sides' texts) |
 | `crash` | `crash(msg)` | print, then `exit` |
 
 **Ending a run**

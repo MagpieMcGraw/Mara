@@ -1,0 +1,44 @@
+module result_slot_alias
+
+//@ expect-output: 15 2 1
+
+// `x = f(x)` where x is the local every return returns: x lives in the
+// caller's result slot, so the call's result can't be built there while f
+// still reads its argument — it goes through a temporary. (The graph emitter
+// took the result slot as fresh: f(%sret, %sret) zeroed x before reading it.)
+
+g :: fun(pa: [..4]i64) -> [..4]i64 {
+	r : [..4]i64
+	r.len = 1
+	r[0] = pa[0] + 10
+	return r
+}
+
+f :: fun() -> [..4]i64 {
+	buf : [..4]i64
+	buf.len = 1
+	buf[0] = 5
+	buf = g(buf)
+	return buf
+}
+
+P :: struct { a: i64, b: i64 }
+
+swap :: fun(p: P) -> P {
+	q : P
+	q.a = p.b
+	q.b = p.a
+	return q
+}
+
+h :: fun() -> P {
+	x := P{a = 1, b = 2}
+	x = swap(x)
+	return x
+}
+
+main :: fun() {
+	r := f()
+	s := h()
+	print(r[0], s.a, s.b)
+}
