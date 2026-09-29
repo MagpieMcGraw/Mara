@@ -13224,6 +13224,7 @@ Fuse_Binary :: struct {
     types: [2]Type,
     widen: [2]int,   // each side's widening, in the body's list; -1 for none
     and:   Maybe(Graph_And),   // `and` / `or`: the right side runs when needed
+    array: [2]bool,  // the side is an array's value, no place
 }
 
 check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
@@ -13257,6 +13258,13 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
         for k, i in fb.widen {
             if k >= 0 && i < len(callee.params) { b.fuse.widens[k].sig, b.fuse.widens[k].param = callee, i }
         }
+        for is_array, i in fb.array {
+            if !is_array || i >= len(callee.params) { continue }
+            if _, to_slice := distinct_base(callee.params[i].type_).(^Type_Slice); to_slice {
+                fuse_fail(c, "an array's value viewed by an operator")
+                return t
+            }
+        }
         kind: Op_Kind = .Construct if callee.kind == .Struct else .Call
         fuse_done(c, {graph_call_op(b, kind, w, e.span, callee, t, fb.sides[0], fb.sides[1]), 0})
         return t
@@ -13289,12 +13297,12 @@ fuse_side :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, fb: ^Fuse_Binary, k: i
     fb.types[k] = t
     b := fusing(c)
     if b == nil { return t }
-    _, is_literal := e.(^Expr_Array)
-    _, is_array := distinct_base(t).(^Type_Fixed_Array)
-    if is_literal || is_array && !r.place || fuse_byte_index(e) {
-        fuse_fail(c, "a literal, an array value or bytes as an operand")
+    if _, is_literal := e.(^Expr_Array); is_literal {
+        fuse_fail(c, "an array literal as an operand")
         return t
     }
+    _, is_array := distinct_base(t).(^Type_Fixed_Array)
+    fb.array[k] = is_array && !r.place
     fb.sides[k], fb.widen[k] = graph_fuse_as(b, r.v, r.place, t, expr_span(e)^, fb.span, {})
     return t
 }
