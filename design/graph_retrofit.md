@@ -631,9 +631,15 @@ evaluates its destination and value); how instructions are chosen stays in the e
       (`settled`) and flow checks it fits (`flow_check_literal_ranges`, the checker's
       `check_value_range`; `test/settled_literal_range_neg.mara`); font.mara's sentinel is
       `n_points`. The old emitter widened an index by a `:=` variable's unsettled type:
-      signed, where the settled u16 is not (from 32768 on). Still declined: function values,
-      arguments left to defaults, named results, a foreign call's variadic arguments, a big
-      result (on the arena), `= void` on an aggregate. Pounce: 199 of 238 funs from the graph
+      signed, where the settled u16 is not (from 32768 on). Then function values: a
+      function-typed value is a register value (a pointer); a function named as a value is
+      its symbol; a call through a value is the direct call's lowering by the value's type,
+      calling the pointer. And the update in place reuses the destination's place: a
+      write's place is computed before its value, so the consumed argument's place — the
+      same operations — takes its values rather than being computed again (one bounds
+      check, one pointer load, as the old emitter; a pointer's field `ph.f` included). Still
+      declined: named results, a foreign call's variadic arguments, a big result (on the
+      arena), `= void` on an aggregate. Pounce: 199 of 238 funs from the graph
 - [ ] Switch over: every function from the graph; the syntax-tree emitter deleted
 
 ## Baselines

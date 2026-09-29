@@ -57,6 +57,8 @@ Llvm :: struct {
     out_run: map[Node_Id]i32,           // the run such a call is in
     loaded:  map[Operand]string,        // a result loaded in its call's run (which dominates every use)
     out_user: map[Operand]Node_Id,      // each output's user, as `user` is each operation's (-2: several)
+    update:  map[Node_Id]bool,          // a call updating its destination in place (llvm_in_place_updates)
+    alias:   map[Node_Id]Node_Id,       // an operation that is another, computed already: its value that one's
     why:     Node_Id,             // where it declined (for MARA_GRAPH_CG=log)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
@@ -199,6 +201,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
 
     llvm_users(e)
     if !llvm_variables(e) { return false }
+    llvm_in_place_updates(e)
     llvm_carved(e)
     if e.sret != nil || e.rets != nil { llvm_result_slot(e) }
     // A big variable lives on the arena, or in the caller's slot (a big
@@ -216,6 +219,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         e.run = r
         for op in graph_run(pg, int(r)) {
             if op in e.ahead { delete_key(&e.ahead, op); continue }   // done already
+            if d, is := e.alias[op]; is { e.value[op - e.node] = e.value[d - e.node]; continue }
             e.why = op
             if !llvm_op(e, op) { return false }
         }
@@ -1062,8 +1066,13 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         return llvm_carve(e, op, ops, span)
     case .Global:
         // A string constant: its bytes' address (its text is in the
-        // constants table). A constant table: its global, read-only. (A
-        // function: later.)
+        // constants table). A constant table: its global, read-only. A
+        // function: its symbol.
+        if ft, is_fn := pg.type_[op].(^Type_Scope); is_fn && ft.kind == .Fun {
+            if _, src := ft.origin.(Origin_Source); !src { return false }   // (a foreign or intrinsic one: later)
+            e.value[op - e.node] = mara_fn_name(g, ft.name)
+            return true
+        }
         if c, has := pg.consts[op]; has && c.is_text {
             global, n := get_string_literal(g, c.text)
             tmp := fresh_tmp(g)
@@ -1187,7 +1196,7 @@ llvm_declared_at :: proc(e: ^Llvm, o: Operand) -> string {
 @(private="file")
 llvm_type_of :: proc(e: ^Llvm, o: Operand) -> Type {
     if o.op in e.outs {
-        callee := llvm_callee(e, o.op)
+        callee := llvm_signature(e, o.op)
         if callee != nil && int(o.out) < len(callee.cg_returns) { return callee.cg_returns[o.out] }
     }
     return e.pg.type_[o.op]
@@ -1381,6 +1390,17 @@ llvm_convert :: proc(e: ^Llvm, v: string, from, to: Type) -> string {
 llvm_zeroed :: proc(e: ^Llvm, place: Node_Id) -> bool {
     pg := e.pg
     return e.ctor && pg.op[place] == .Var && pg.refers[place] != NO_NODE && pg.kind[pg.refers[place]] == .Field
+}
+
+// The signature a call runs by: its callee's, or — through a function value,
+// its first operand — that value's type.
+@(private="file")
+llvm_signature :: proc(e: ^Llvm, op: Node_Id) -> ^Type_Scope {
+    if callee := llvm_callee(e, op); callee != nil { return callee }
+    ops := graph_operands(e.pg, op)
+    if e.pg.op[op] != .Call || len(ops) == 0 || ops[0].op == NO_NODE { return nil }
+    ft, is_fn := distinct_base(e.pg.type_[ops[0].op]).(^Type_Scope)
+    return ft if is_fn && ft.kind == .Fun else nil
 }
 
 // The fun or struct a call or construction runs; nil through a function value.
@@ -2264,11 +2284,23 @@ llvm_held_header :: proc(e: ^Llvm, place: Node_Id) -> (Llvm_Header, bool) {
 @(private="file")
 llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     g := e.g
+    ops := ops
+    // What's called: the callee, or — through a function value, the first
+    // operand — that value, by its type's signature (the same ABI).
     callee := llvm_callee(e, op)
-    if callee == nil || callee.kind != .Fun { e.note = "a function value"; return false }   // (later)
-    if oi, is_intrinsic := callee.origin.(Origin_Intrinsic); is_intrinsic { return llvm_intrinsic(e, op, ops, callee, oi.llvm_name) }
-    if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
-    if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
+    name := ""
+    if callee == nil {
+        callee = llvm_signature(e, op)
+        if callee == nil { e.note = "a function value"; return false }
+        name = llvm_operand(e, ops[0], e.pg.type_[ops[0].op]) or_return
+        ops = ops[1:]
+    } else {
+        if callee.kind != .Fun { return false }
+        if oi, is_intrinsic := callee.origin.(Origin_Intrinsic); is_intrinsic { return llvm_intrinsic(e, op, ops, callee, oi.llvm_name) }
+        if fo, is_foreign := callee.origin.(Origin_Foreign); is_foreign { return llvm_c_call(e, op, ops, callee, fo.link_name if fo.link_name != "" else callee.name) }
+        if _, src := callee.origin.(Origin_Source); !src { e.note = "foreign"; return false }
+        name = mara_fn_name(g, callee.name)
+    }
     if len(ops) != len(callee.cg_params) { e.note = "arguments left to defaults"; return false }
     ret := "void"
     result: Type
@@ -2294,7 +2326,6 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         }
         append(&args, fmt.tprintf("%s %s", ir, v))
     }
-    name := mara_fn_name(g, callee.name)
     if len(callee.cg_returns) > 1 {
         // Several results: each into a temporary, where its uses find it —
         // an aggregate that a declaration takes, straight into its storage.
@@ -2512,13 +2543,9 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
                 // (The result slot is no fresher than any place: the local
                 // every return returns lives there, and `x = f(x)` passes it.)
                 if fresh && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-                // The functional update `x = f(x, …)`: f consumes that argument
-                // (builds its result from it alone, consumed_param_of) and nothing
-                // else it's handed can reach x — x is both the argument and the
-                // result slot, and f skips its opening copy.
-                if k, consumes := consumed_param_of(callee).?; consumes && llvm_updates_in_place(e, op, k, dest) && llvm_ahead(e, dest) {
-                    return llvm_place(e, dest), true
-                }
+                // The functional update `x = f(x, …)` (llvm_in_place_updates): x
+                // is both the argument and the result slot.
+                if e.update[op] && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
                 if !llvm_passes_storage(callee) && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
             }
         }
@@ -2527,6 +2554,51 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
     tmp := fresh_tmp(e.g)
     emit_alloca(e.g, tmp, llvm_type_from_checker(result))
     return tmp, true
+}
+
+// Each functional update `x = f(x, …)` — f consumes that argument (builds its
+// result from it alone, consumed_param_of) and nothing else it's handed can
+// reach x: x is both the argument and the result slot, and f skips its
+// opening copy. The argument's place is the destination's, computed before it
+// (a write's place comes first): the same operations, not done again.
+@(private="file")
+llvm_in_place_updates :: proc(e: ^Llvm) {
+    pg := e.pg
+    for r in e.runs {
+        for op in graph_run(pg, int(r)) {
+            if pg.op[op] != .Call { continue }
+            callee := llvm_callee(e, op)
+            if callee == nil { continue }
+            k, consumes := consumed_param_of(callee).?
+            u := e.user[op - e.node]
+            if !consumes || u < 0 || pg.op[u] != .Write { continue }
+            uops := graph_operands(pg, u)
+            dest := uops[0].op
+            if uops[1].op != op || llvm_direct(e, dest) || !llvm_updates_in_place(e, op, k, dest) { continue }
+            e.update[op] = true
+            llvm_alias_place(e, graph_operands(pg, graph_operands(pg, op)[k].op)[0].op, dest)
+        }
+    }
+}
+
+// Place a — the same storage as d, spelled the same (llvm_same_storage) — as
+// d's operations, computed before it: each of a's, and its index's read, d's.
+// (A variable's operation computes nothing: not aliased.)
+@(private="file")
+llvm_alias_place :: proc(e: ^Llvm, a, d: Node_Id) {
+    pg := e.pg
+    if a == NO_NODE || d == NO_NODE || a == d || d > a || pg.op[a] == .Var { return }
+    e.alias[a] = d
+    ao, do_ := graph_operands(pg, a), graph_operands(pg, d)
+    #partial switch pg.op[a] {
+    case .Field, .Deref, .Read:
+        llvm_alias_place(e, ao[0].op, do_[0].op)
+    case .Index:
+        llvm_alias_place(e, ao[0].op, do_[0].op)
+        if ai, di := ao[1].op, do_[1].op; ai != NO_NODE && di != NO_NODE && pg.op[ai] == .Read && pg.op[di] == .Read {
+            llvm_alias_place(e, ai, di)   // the index's read
+        }
+    }
 }
 
 // Whether a call's k-th argument is its destination's storage (a read of
@@ -2572,9 +2644,9 @@ llvm_same_storage :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
             return pg.op[ap] == .Var && pg.op[bp] == .Var && pg.refers[ap] == pg.refers[bp]
         }
     case .Deref:
-        ap, bp := ao[0].op, bo[0].op
-        if pg.op[ap] != .Read || pg.op[bp] != .Read { return false }
-        return llvm_same_storage(e, graph_operands(pg, ap)[0].op, graph_operands(pg, bp)[0].op)
+        return llvm_same_storage(e, ao[0].op, bo[0].op)   // the pointer's place (or its read)
+    case .Read:
+        return llvm_same_storage(e, ao[0].op, bo[0].op)
     }
     return false
 }
@@ -2636,9 +2708,11 @@ llvm_passes_storage :: proc(callee: ^Type_Scope) -> bool {
 // A value held in one register: a number, a bool, a byte, an enum, a pointer.
 @(private="file")
 llvm_scalar :: proc(t: Type) -> bool {
-    #partial switch _ in distinct_base(resolve_infer(t)) {
+    #partial switch v in distinct_base(resolve_infer(t)) {
     case Type_Numeric, Type_F64, Type_Bool, Type_Utf8, Type_Byte, ^Type_Enum, ^Type_Ptr, Type_CString, Type_Err:
         return true
+    case ^Type_Scope:
+        return v.kind == .Fun   // a function value: its pointer
     }
     return false
 }
