@@ -4323,8 +4323,8 @@ graph_fuse_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, sp
 
 // An aggregate built where no destination was given: a synthetic local,
 // made before it (graph_temp_place), typed once it is.
-graph_fuse_temp :: proc(b: ^Graph_Builder, span: Span) -> Dest {
-    return graph_dest_var("temp", graph_slot(b, "temp", nil, span), nil)
+graph_fuse_temp :: proc(b: ^Graph_Builder, span: Span, t: Type = nil) -> Dest {
+    return graph_dest_var("temp", graph_slot(b, "temp", t, span), t)
 }
 
 graph_fuse_temp_end :: proc(b: ^Graph_Builder, d: Dest, t: Type, span: Span) -> Operand {

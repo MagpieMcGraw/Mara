@@ -1635,9 +1635,13 @@ Checker :: struct {
     want:            Fuse_Want,
     want_written:    Written,
     want_dest:       Dest,
+    want_temp:       bool,             // (with .Into) the destination holds a value: build in a temporary
+    want_span:       Span,             // … at the store's span
     asked:           Fuse_Want,
     asked_written:   Written,
     asked_dest:      Dest,
+    asked_temp:      bool,
+    asked_span:      Span,
     lit:             ^Fuse_Lit,        // the literal whose fields are being built
     fused:           Fused,
     call:            ^Fuse_Call,
@@ -5562,6 +5566,7 @@ Fused :: struct {
     place: bool,
     ok:    bool,
     into:  bool,
+    temp:  bool,   // built in a temporary, as storage that holds a value is written (read)
 }
 
 // A call being built: its operands (check_call_arg) — each at its param's
@@ -5580,17 +5585,17 @@ Fuse_Call :: struct {
 
 // Check an expression, building what it computes, in the order it runs.
 // Written is the operations' (a default argument's are implied).
-fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Value, w := Written.Explicit, dest := Dest{}) -> (Type, Fused) {
+fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Value, w := Written.Explicit, dest := Dest{}, temp := false, temp_span := Span{}) -> (Type, Fused) {
     b := fusing(c)
     if b == nil { return check_expr(c, e, env), {} }
     // A compound assignment's target, read in its value: through the place
     // already built.
     if c.compound.key != nil && expr_identity(e) == c.compound.key {
         t := check_expr(c, e, env)
-        if want == .Value { return t, {graph_read(b, c.compound.place, t, expr_span(e)^), false, true, false} }
-        return t, {c.compound.place, true, true, false}
+        if want == .Value { return t, {graph_read(b, c.compound.place, t, expr_span(e)^), false, true, false, false} }
+        return t, {c.compound.place, true, true, false, false}
     }
-    c.want, c.want_written, c.want_dest, c.fused = want, w, dest, {}
+    c.want, c.want_written, c.want_dest, c.want_temp, c.want_span, c.fused = want, w, dest, temp, temp_span, {}
     t := check_expr(c, e, env)
     r := c.fused
     c.fused = {}
@@ -5607,8 +5612,8 @@ fuse_asked :: proc(c: ^Checker) -> (Fuse_Want, Written) {
     return want, w
 }
 
-fuse_done :: proc(c: ^Checker, v: Operand, place := false, into := false) {
-    c.fused = {v, place, true, into}
+fuse_done :: proc(c: ^Checker, v: Operand, place := false, into := false, temp := false) {
+    c.fused = {v, place, true, into, temp}
 }
 
 // A built expression's value: a place is read, right after it.
@@ -5639,8 +5644,10 @@ fuse_leaf :: proc(c: ^Checker, e: Expr) {
         _, is_variant := v.resolved.(Resolved_Union_Variant)
         switch {
         case want == .Into && is_variant:
-            graph_fuse_variant(b, v.type_, v.name, c.asked_dest, v.span)
-            fuse_done(c, NO_VALUE, into = true)
+            d := c.asked_dest
+            if c.asked_temp { d = graph_fuse_temp(b, c.asked_span, fuse_temp_type(d, true)) }
+            graph_fuse_variant(b, v.type_, v.name, d, v.span)
+            fuse_built(c, b, want, c.asked_temp, c.asked_temp, d, v.type_, c.asked_span)
         case want == .Value:  fuse_done(c, graph_value(b, e, w))
         case is_place:        fuse_done(c, graph_place(b, e, v.span), true)
         case want != .Place:  fuse_done(c, graph_value(b, e, w))
@@ -5784,10 +5791,6 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
     }
     if is_skip || is_void_literal(s.value) {   // `x = void` de-inits
         graph_fuse_void_assign(b, s.name, s.var_type, s.span)
-        return
-    }
-    if fuse_builds_into(s.value) {
-        fuse_fail(c, "a value built in place of one")
         return
     }
     fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, NO_NODE, s.var_type), s.span)
@@ -7377,7 +7380,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     at := graph_dest_var(s.name, fa.decl, nil if is_untyped(ann_type) else ann_type)
                     val_type, fa.value = fuse_expr(c, s.value, env, .Into, dest = at)
                 } else {
-                    val_type, fa.value = fuse_expr(c, s.value, env, .Either)
+                    // (Into a variable that holds a value: what builds in
+                    // place builds in a temporary, then is written.)
+                    vt: Type = distinct_base(assign_hint) if !is_untyped(assign_hint) else nil
+                    val_type, fa.value = fuse_expr(c, s.value, env, .Into, dest = graph_dest_var(s.name, NO_NODE, vt), temp = true, temp_span = s.span)
                 }
             } else {
                 val_type = check_expr(c, s.value, env)
@@ -11171,7 +11177,7 @@ check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             c.once_seen[k] = seen
         }
     }
-    c.asked, c.asked_written, c.asked_dest, c.want = c.want, c.want_written, c.want_dest, .None
+    c.asked, c.asked_written, c.asked_dest, c.asked_temp, c.asked_span, c.want = c.want, c.want_written, c.want_dest, c.want_temp, c.want_span, .None
     result := check_expr_impl(c, expr, env)
     set_expr_type(expr, result)
     // What building asked of it and nothing took: a leaf's, built here.
@@ -11368,15 +11374,16 @@ Fuse_Lit :: struct {
 
 check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Scope) -> Type {
     want, w := fuse_asked(c)
-    d := c.asked_dest
+    d, into_temp := c.asked_dest, c.asked_temp
     b := fusing(c)
     if want == .None || b == nil { return check_struct_literal_impl(c, e, env) }
     if e.override_target != "" || e.is_broadcast {
         fuse_fail(c, "an override or a broadcast literal")
         return check_struct_literal_impl(c, e, env)
     }
-    temp := want != .Into
-    if temp { d = graph_fuse_temp(b, e.span) }
+    temp := want != .Into || into_temp
+    at := c.asked_span if into_temp else e.span
+    if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d, into_temp)) }
     fl := Fuse_Lit{e = e, dest = d}
     saved := c.lit
     c.lit = &fl
@@ -11387,42 +11394,47 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
         fuse_fail(c, "a literal the graph builds no way")
         return t
     }
+    fuse_built(c, b, want, temp, into_temp, d, t, at)
+    return t
+}
+
+// Where a value built in place goes: its destination; else a temporary made
+// before it — typed as the storage it is then written to (graph_assign), or
+// as itself — read (as a value) or its place.
+fuse_temp_type :: proc(d: Dest, into_temp: bool) -> Type {
+    if into_temp && d.type_ != nil && !is_infer(d.type_) { return d.type_ }
+    return nil
+}
+
+fuse_built :: proc(c: ^Checker, b: ^Graph_Builder, want: Fuse_Want, temp, into_temp: bool, d: Dest, t: Type, span: Span) {
     if !temp {
         fuse_done(c, NO_VALUE, into = true)
-        return t
+        return
     }
-    p := graph_fuse_temp_end(b, d, t, e.span)
-    if want == .Place {
-        fuse_done(c, p, true)
-    } else {
-        fuse_done(c, graph_read(b, p, t, e.span))
+    tt := d.type_ if d.type_ != nil else t
+    p := graph_fuse_temp_end(b, d, tt, span)
+    switch {
+    case into_temp:      fuse_done(c, graph_read(b, p, tt, span), temp = true)
+    case want == .Place: fuse_done(c, p, true)
+    case:                fuse_done(c, graph_read(b, p, tt, span))
     }
-    return t
 }
 
 // An array literal, built as a struct literal is: zero, then each element
 // into its slot.
 check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Type {
     want, w := fuse_asked(c)
-    d := c.asked_dest
+    d, into_temp := c.asked_dest, c.asked_temp
     b := fusing(c)
     if want == .None || b == nil || len(e.elements) == 0 { return check_array_literal_impl(c, e, env, nil) }
-    temp := want != .Into
-    if temp { d = graph_fuse_temp(b, e.span) }
+    temp := want != .Into || into_temp
+    at := c.asked_span if into_temp else e.span
+    if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d, into_temp)) }
     ga := graph_fuse_array(b, e, d)
     t := check_array_literal_impl(c, e, env, ga)
     if fusing(c) == nil { return t }
     if b.g.type_[ga.zero] == nil { b.g.type_[ga.zero] = t }
-    if !temp {
-        fuse_done(c, NO_VALUE, into = true)
-        return t
-    }
-    p := graph_fuse_temp_end(b, d, t, e.span)
-    if want == .Place {
-        fuse_done(c, p, true)
-    } else {
-        fuse_done(c, graph_read(b, p, t, e.span))
-    }
+    fuse_built(c, b, want, temp, into_temp, d, t, at)
     return t
 }
 
@@ -11439,6 +11451,11 @@ fuse_store_into :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, d: Dest, span: S
 fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span: Span, settle := false) -> (wrote: bool) {
     b := fusing(c)
     if b == nil || r.into { return }
+    if r.temp {
+        // Built whole in a temporary, then written (graph_assign).
+        graph_fuse_write_at(b, graph_dest_place(b, d, span), r.v, span)
+        return true
+    }
     if fuse_builds_into(e) {
         fuse_fail(c, "a value built in place, taken as one")
         return
@@ -12298,7 +12315,7 @@ Fuse_Field :: struct {
 
 check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope) -> Type {
     want, w := fuse_asked(c)
-    d := c.asked_dest
+    d, into_temp, temp_span := c.asked_dest, c.asked_temp, c.asked_span
     b := fusing(c)
     if want == .None || b == nil { return check_field_access_impl(c, e, env, nil) }
     ff := Fuse_Field{on = true, mark = graph_fuse_mark(b)}
@@ -12320,8 +12337,9 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     _, is_variant := e.resolved.(Resolved_Union_Variant)
     switch {
     case want == .Into && is_variant:
+        if into_temp { d = graph_fuse_temp(b, temp_span, fuse_temp_type(d, true)) }
         graph_fuse_variant(b, t, e.field, d, e.span)
-        fuse_done(c, NO_VALUE, into = true)
+        fuse_built(c, b, want, into_temp, into_temp, d, t, temp_span)
     case want == .Value:                  fuse_done(c, graph_value(b, e, w))
     case is_const && graph_aggregate(t):  fuse_done(c, graph_place(b, e, e.span), true)   // a constant table
     case want != .Place:                  fuse_done(c, graph_value(b, e, w))
@@ -12402,7 +12420,8 @@ fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Typ
     if b == nil || place == NO_VALUE { return check_expr(c, s.value, env), {} }
     saved := c.compound
     if s.is_compound { c.compound = {expr_identity(s.target), place} }
-    vt, r := fuse_expr(c, s.value, env, .Either)
+    // (What builds in place builds in a temporary, then is written.)
+    vt, r := fuse_expr(c, s.value, env, .Into, dest = Dest{kind = .At, at = place, type_ = b.g.type_[place.op]}, temp = true, temp_span = s.span)
     c.compound = saved
     return vt, {true, place, r, vt}
 }
@@ -14164,7 +14183,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // Built (fusing): its arguments' values as they are checked, then it (a
     // construction: into where it goes, or a temporary).
     want, w := fuse_asked(c)
-    dest := c.asked_dest
+    dest, into_temp, temp_span := c.asked_dest, c.asked_temp, c.asked_span
     fc := Fuse_Call{w = w}
     defer delete(fc.ops)
     saved_call := c.call
@@ -14392,6 +14411,11 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
 
     fc.params = true
     if want != .None && (fun_type.kind == .Fun || fun_type.kind == .Struct && e.fn_value == nil) { c.call = &fc }
+    // (Built into storage that holds a value: a temporary made before the
+    // arguments.)
+    if b := fusing(c); b != nil && c.call != nil && want == .Into && into_temp && fun_type.kind == .Struct {
+        dest = graph_fuse_temp(b, temp_span, fuse_temp_type(dest, true))
+    }
     check_call_args(c, check_args[:], fun_type, call_name(e), e.span, env)
     construct: ^Graph_Literal
     construct_at: Dest
@@ -14435,7 +14459,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             c.lit = saved
         }
         if b := fusing(c); b != nil && construct != nil {
-            if want == .Into {
+            if want == .Into && into_temp {
+                fuse_built(c, b, want, true, true, construct_at, fun_type, temp_span)
+            } else if want == .Into {
                 fuse_done(c, NO_VALUE, into = true)
             } else {
                 fuse_done(c, graph_read(b, graph_dest_place(b, construct_at, e.span), fun_type, e.span))
