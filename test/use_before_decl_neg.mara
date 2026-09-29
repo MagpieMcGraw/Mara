@@ -1,0 +1,12 @@
+module use_before_decl_neg
+
+//@ expect-fail: undefined identifier 'x'
+
+// A local is visible from its declaration on: the checker walks a body in
+// the order it runs. (It checked declarations in a pass of their own first,
+// so `x` was already known here, and the graph found it named nothing.)
+
+main :: fun() {
+	print(x)
+	x := 5
+}

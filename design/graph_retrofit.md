@@ -754,9 +754,17 @@ erroneous program reports, the negative fixtures say so.
       working)
 - [ ] Each node checked once: a default argument in its callee's scope, once (every call takes the
       result); an annotated literal once; a struct's `::` constants once; a `Module.X` default once
-- [ ] One ordered walk per body: a function's or struct's code, and every block, checked
+- [x] One ordered walk per body: a function's or struct's code, and every block, checked
       statement by statement in the order it runs (the two passes merged); a local visible from
       its declaration on
+      A body's definitions are still hoisted — registered and checked before its code, so code
+      can name one written after it; a block's (an if's, a loop's, an arm's) are split off the
+      same way. Then each statement goes through both passes before the next. Found: a local used
+      before its declaration passed the checker (the declarations pass had bound it) and failed
+      in the graph (`'x' names no declaration`); it is `undefined identifier 'x'` now
+      (`test/use_before_decl_neg.mara`). Graph identical in all 274 programs (diagnostics come
+      in the walk's order: graphdiff sorts them, as irdiff does), IR byte-identical, runs
+      identical (187), suite, ask goldens and the corpus.
 - [ ] Segments: one fun's or struct's graph built on its own and placed afterwards in the
       canonical order (the checker finishes bodies out of order); the checker builds each body's
       graph when it finishes checking it

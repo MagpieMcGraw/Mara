@@ -5504,15 +5504,25 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
     // parent_scope to resolve the enclosing scope, whose signature pass recurses
     // back down. e.g. `body := head.count` with `Inner` defined later.)
 
-    // Pass 1b: register declarations and run deferred-body work for pre-
-    // registered scopes. Pass 2: check everything, descending into child scopes.
-    // Each is `setup + one loop`; def-kind and runtime-kind cases are disjoint,
-    // so running over defs then body processes each statement exactly once.
-    register_and_check_declarations(c, def_list, env, owner, public_env)
-    if split { register_and_check_declarations(c, stmts, env, owner, public_env) }
-
-    check_bodies(c, def_list, env)
-    if split { check_bodies(c, stmts, env) }
+    // The definitions first — registered, then checked, descending into child
+    // scopes — so code can name one written after it. Then the code, one
+    // statement at a time in the order it runs, each checked whole (both
+    // passes) before the next: a local is visible from its declaration on, and
+    // what the checker finds comes in the order the program does it.
+    // (A block — an if's, a loop's, an arm's — holds both: split here.)
+    defs, code: [dynamic]Stmt
+    defer if !split { delete(defs); delete(code) }
+    if split {
+        defs, code = def_list, stmts
+    } else {
+        for s in stmts { append(&defs if is_scope_def(s) else &code, s) }
+    }
+    register_and_check_declarations(c, defs[:], env, owner, public_env)
+    check_bodies(c, defs[:], env)
+    for i in 0 ..< len(code) {
+        register_and_check_declarations(c, code[i:i + 1], env, owner, public_env)
+        check_bodies(c, code[i:i + 1], env)
+    }
 
     // Pass 4 (stack/arena routing) is runtime-only — over the body statements.
     // (Unused-err is now the post-check flow pass's job — see flow.odin.)
@@ -6211,7 +6221,7 @@ is_undeclared_reassign :: proc(c: ^Checker, env: ^Type_Scope, name: string, is_d
     return !found
 }
 
-register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil) {
+register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil) {
     // pub: where defined names (fun/struct/type/foreign/constants) get registered.
     // - In single-env mode (callers from inside fun bodies, struct bodies): public_env is nil
     //   and pub == env, so behavior is unchanged.
@@ -6687,7 +6697,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                     }
                 }
             }
-            register_and_check_declarations(c, s.checked, env, owner, public_env)
+            register_and_check_declarations(c, s.checked[:], env, owner, public_env)
         case ^Stmt_Assign:
             // Complex LHS (field / index / slice / deref): registration is a
             // no-op — no new binding enters scope. The typing logic runs in
@@ -7276,7 +7286,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // Wrapper of individual assigns — check each one
             inner: [dynamic]Stmt
             for a in s.assigns { append(&inner, Stmt(a)) }
-            register_and_check_declarations(c, inner, env, public_env = public_env)
+            register_and_check_declarations(c, inner[:], env, public_env = public_env)
         case ^Stmt_Multi_Return_Assign:
             ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
 
@@ -7404,7 +7414,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
                             }
                             append(&s.checked, Stmt(a))
                         }
-                        register_and_check_declarations(c, s.checked, env, owner, public_env)
+                        register_and_check_declarations(c, s.checked[:], env, owner, public_env)
                     }
                 }
             }
@@ -7937,8 +7947,8 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         if s.init != nil {
             init_stmts: [dynamic]Stmt
             append(&init_stmts, s.init)
-            register_and_check_declarations(c, init_stmts, child)
-            check_bodies(c, init_stmts, child)
+            register_and_check_declarations(c, init_stmts[:], child)
+            check_bodies(c, init_stmts[:], child)
         }
         cond_type := check_expr(c, s.condition, child)
         if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
@@ -7949,8 +7959,8 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
             // typed by the first (it went unchecked).
             post_stmts: [dynamic]Stmt
             append(&post_stmts, s.post)
-            register_and_check_declarations(c, post_stmts, child)
-            check_bodies(c, post_stmts, child)
+            register_and_check_declarations(c, post_stmts[:], child)
+            check_bodies(c, post_stmts[:], child)
         }
         check_scope(c, s.body, child)
     }
@@ -8030,7 +8040,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
     //  post-check escape pass, escape.odin.)
 }
 
-check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
+check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
     // (Former per-scope struct-signature pre-pass removed: struct fields resolve
     // ON DEMAND at the use site via ensure_struct_signature — field access,
     // construction, literal matching each pull the struct's signature when they
@@ -8122,7 +8132,7 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
             // Broadcast desugared into s.checked there; run the body pass on those
             // so field/index targets get their per-target check and bare-name env
             // updates apply (same handoff as Stmt_Decl). Empty list → no-op.
-            check_bodies(c, s.checked, env)
+            check_bodies(c, s.checked[:], env)
 
         case Stmt_Return:
             check_return_body(c, s, env)
@@ -8180,7 +8190,7 @@ check_bodies :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope) {
             // Already expanded during register_and_check_declarations. Run
             // check_bodies on the desugared statements so their env updates
             // (e.g. sequential shadowing via Stmt_Assign) are applied.
-            check_bodies(c, s.checked, env)
+            check_bodies(c, s.checked[:], env)
         case ^Stmt_Union_Def:
             // already registered
         case ^Stmt_Foreign:
@@ -9455,7 +9465,7 @@ check_package_files :: proc(
 
     c.defer_define_literals = true  // 1b — queue named struct literals (see flush below)
     for src in file_order {
-        register_and_check_declarations(c, files_by_src[src], file_envs[src], owner, pkg_env)
+        register_and_check_declarations(c, files_by_src[src][:], file_envs[src], owner, pkg_env)
     }
     c.defer_define_literals = false
 
@@ -9472,7 +9482,7 @@ check_package_files :: proc(
     flush_deferred_literals(c)  // 2a.5
 
     for src in file_order {  // 2 — bodies
-        check_bodies(c, files_by_src[src], file_envs[src])
+        check_bodies(c, files_by_src[src][:], file_envs[src])
     }
 }
 
