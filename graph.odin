@@ -717,16 +717,33 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     for i := len(nodes) - 1; i >= 0; i -= 1 {
         if p := ng.parent[i]; p != NO_NODE && ng.last[i] > ng.last[p] { ng.last[p] = ng.last[i] }
     }
+    // A dropped operation that began its run: what entered it enters the
+    // next one there (none, when there is none).
+    next_kept := make(map[Node_Id]Node_Id, context.temp_allocator)
     for old in runs {
         append(&ng.run_first, i32(len(ng.run_ops)))
-        for op in g.run_ops[g.run_first[old]:g.run_first[old + 1]] {
-            if op not_in b.dropped { append(&ng.run_ops, re(new_id, op)) }
+        waiting := 0
+        ops := g.run_ops[g.run_first[old]:g.run_first[old + 1]]
+        for op, k in ops {
+            if op in b.dropped {
+                if k == waiting { waiting += 1 }
+                continue
+            }
+            for j in 0 ..< waiting { next_kept[ops[j]] = op }
+            waiting = 0
+            append(&ng.run_ops, re(new_id, op))
         }
+        for j in 0 ..< waiting { next_kept[ops[j]] = NO_NODE }
     }
     append(&ng.run_first, i32(len(ng.run_ops)))
     for e in g.edges {
         if !kept(new_id, e.from) { continue }
-        append(&ng.edges, Edge{from = re(new_id, e.from), to = re(new_id, e.to), kind = e.kind, written = e.written, site = re(new_id, e.site)})
+        to, written := e.to, e.written
+        if to != NO_NODE && to in b.dropped {
+            to = next_kept[to] or_else NO_NODE
+            if to != NO_NODE { written = g.written[to] }
+        }
+        append(&ng.edges, Edge{from = re(new_id, e.from), to = re(new_id, to), kind = e.kind, written = written, site = re(new_id, e.site)})
     }
     for old in stmts { append(&ng.stmts, g.stmts[old]) }
     for old in unreach { append(&ng.unreachable, g.unreachable[old]) }
@@ -2797,7 +2814,6 @@ graph_const_value :: proc(r: Resolved_Name) -> Maybe(Const_Value) {
 
 // Whether a value written into a partial array fills only a prefix of it: a
 // string constant, or a slice.
-@(private="file")
 graph_fills_prefix :: proc(value: Expr) -> bool {
     if _, is_slice := distinct_base(expr_type(value)).(^Type_Slice); is_slice { return true }
     #partial switch v in value {
@@ -3474,8 +3490,8 @@ graph_fuse_fail :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, reason: string) {
 // The body is checked: finish it, settle its types and keep it for the
 // builder to put in place — or, if it failed, drop it.
 graph_fuse_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
-    ok := f.failed == ""
-    graph_contents_end(b, f.contents, finish = ok)
+    graph_contents_end(b, f.contents, finish = f.failed == "")
+    ok := f.failed == ""   // (its end can find what it can't build: a scope's values on the arena)
     b.stmt = f.stmt
     graph_segment_leave(b, f.outer)
     b.fuse, b.compound = f.outer_fuse, f.compound
@@ -3508,10 +3524,6 @@ graph_fuse_widen :: proc(b: ^Graph_Builder, v: Operand, span: Span, w: Graph_Wid
     if _, _, num := numeric_info(graph_settled(from)); !num { return v }
     if is_infer(from) && infer_cell_of(from) == nil { return v }
     f := b.fuse
-    if b.code.run == nil || len(b.code.run.ops) == 0 {
-        graph_fuse_fail(b, f, "a widening first in its run")
-        return v
-    }
     w := w
     w.id, w.v = graph_op(b, .Cast, .Implied, span, nil, "", v), v
     append(&f.widens, w)
@@ -3696,6 +3708,40 @@ graph_fuse_and_end :: proc(b: ^Graph_Builder, sa: ^Graph_And, r: Operand) -> Ope
     graph_jump(b, sa.join, .Synthetic, sa.span)
     b.code.run = sa.join
     return graph_read(b, graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), Type_Bool{}, sa.span)
+}
+
+// A bare declaration's value (graph_init): its type's construction, or zero;
+// a sized slice's zero takes its capacity.
+graph_fuse_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, cap: Maybe(Operand), span: Span) {
+    if c, has := cap.?; has {
+        n := graph_fuse_widen(b, c, span, {to = slice_header_width_type})
+        graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span), n)
+        return
+    }
+    graph_construct_bare(b, graph_var(b, b.g.name[d], d, t, span), t, span)
+}
+
+// A new partial array's zero, made before the value it may be a prefix of:
+// kept, typed, when it is.
+graph_fuse_prefix :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, span: Span) -> [2]Node_Id {
+    v := graph_var(b, name, decl, nil, span)
+    return {v.op, graph_op(b, .Zero, .Synthetic, span, nil, "", v)}
+}
+
+graph_fuse_prefix_end :: proc(b: ^Graph_Builder, p: [2]Node_Id, keep: bool, t: Type) {
+    for id in p {
+        if keep { b.g.type_[id] = t } else { b.dropped[id] = NO_VALUE }
+    }
+}
+
+// A value written to a place already built.
+graph_fuse_write_at :: proc(b: ^Graph_Builder, place, v: Operand, span: Span) {
+    graph_op(b, .Write, .Explicit, span, nil, "", place, v)
+}
+
+// A view written to a variable, as it is.
+graph_fuse_write_view :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, v: Operand, span: Span) {
+    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, decl, t, span), v)
 }
 
 // A bare declaration of a value no constructor builds: zero.

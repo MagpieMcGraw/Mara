@@ -1636,6 +1636,7 @@ Checker :: struct {
     asked_written:   Written,
     fused:           Fused,
     call:            ^Fuse_Call,
+    compound:        Graph_Compound,   // a compound assignment's target and the place built for it
     table:           ^SymbolTable,
     errors:          int,
     current_package: string,
@@ -5565,7 +5566,15 @@ Fuse_Call :: struct {
 // Check an expression, building what it computes, in the order it runs.
 // Written is the operations' (a default argument's are implied).
 fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Value, w := Written.Explicit) -> (Type, Fused) {
-    if fusing(c) == nil { return check_expr(c, e, env), {} }
+    b := fusing(c)
+    if b == nil { return check_expr(c, e, env), {} }
+    // A compound assignment's target, read in its value: through the place
+    // already built.
+    if c.compound.key != nil && expr_identity(e) == c.compound.key {
+        t := check_expr(c, e, env)
+        if want == .Value { return t, {graph_read(b, c.compound.place, t, expr_span(e)^), false, true} }
+        return t, {c.compound.place, true, true}
+    }
     c.want, c.want_written, c.fused = want, w, {}
     t := check_expr(c, e, env)
     r := c.fused
@@ -5704,8 +5713,10 @@ fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
         fuse_fail(c, "a destructuring declaration")
         return
     case ^Stmt_Assign:
-        if v.target == nil { return }
-        fuse_fail(c, "a store through a place")
+        #partial switch _ in v.target {
+        case nil, ^Expr_Field_Access, ^Expr_Index, ^Expr_Unary: return
+        }
+        fuse_fail(c, "a store through a slice")
         return
     }
     fuse_fail(c, fmt.aprintf("%v", reflect.union_variant_typeid(s)))
@@ -5719,6 +5730,8 @@ Fuse_Assign :: struct {
     decl:       Node_Id,
     value:      Fused,
     value_type: Type,
+    prefix:     [2]Node_Id,   // a new partial array's zero, made before its value
+    prefixed:   bool,
 }
 
 fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
@@ -5728,26 +5741,80 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
     if s.is_decl {
         t := s.env_type if s.env_type != nil else s.var_type
         graph_fuse_typed(b, fa.decl, t)
-        if !fuse_scalar(t) {
-            fuse_fail(c, "a declaration of an aggregate")
-            return
-        }
         if is_skip {
             graph_fuse_void_decl(b, fa.decl, t, s.span)
             return
         }
-        graph_fuse_write_var(b, s.name, fa.decl, t, fuse_value(c, fa.value, s.value, fa.value_type), s.span)
-        return
-    }
-    if !fuse_scalar(s.var_type) {
-        fuse_fail(c, "an assignment of an aggregate")
+        fuse_store_var(c, s.name, fa.decl, t, s.value, fa, s.span)
         return
     }
     if is_skip || is_void_literal(s.value) {   // `x = void` de-inits
         graph_fuse_void_assign(b, s.name, s.var_type, s.span)
         return
     }
-    graph_fuse_write_var(b, s.name, NO_NODE, s.var_type, fuse_value(c, fa.value, s.value, fa.value_type), s.span)
+    fuse_store_var(c, s.name, NO_NODE, s.var_type, s.value, fa, s.span)
+}
+
+// A value stored in a variable (graph_store, graph_assign): a view where one
+// is taken — a fixed array's place as a slice, a partial array's header as
+// one — else the value at the variable's type; then the write. (What is
+// built in place — a literal, a construction, a variant — and bytes read as
+// another type wait.)
+fuse_store_var :: proc(c: ^Checker, name: string, decl: Node_Id, t: Type, value: Expr, fa: ^Fuse_Assign, span: Span) {
+    b := fusing(c)
+    vt, r := fa.value_type, fa.value
+    keep_prefix := false
+    defer if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, keep_prefix, t) }
+    if fuse_builds_into(value) {
+        fuse_fail(c, "a value built in place")
+        return
+    }
+    _, to_ptr := distinct_base(t).(^Type_Ptr)
+    _, from_ptr := distinct_base(vt).(^Type_Ptr)
+    if to_ptr == from_ptr && graph_header_of(t) && graph_partial_of(vt) {
+        graph_fuse_write_view(b, name, decl, t, graph_op_value(b, .Cast, .Implied, span, t, type_name(t), fuse_value(c, r, value, vt)), span)
+        return
+    }
+    _, to_slice := distinct_base(t).(^Type_Slice)
+    _, from_array := distinct_base(vt).(^Type_Fixed_Array)
+    if to_slice && from_array {
+        if _, is_literal := value.(^Expr_Array); is_literal || !r.place {
+            fuse_fail(c, "a slice of an array value")
+            return
+        }
+        graph_fuse_write_view(b, name, decl, t, graph_op_value(b, .Slice, .Implied, span, t, "", r.v), span)
+        return
+    }
+    if byte_flow(t, value, vt) == .Read {
+        fuse_fail(c, "bytes read as another type")
+        return
+    }
+    keep_prefix = decl != NO_NODE && is_partial_array(t) && graph_fills_prefix(value)
+    graph_fuse_write_var(b, name, decl, t, fuse_value(c, r, value, vt), span)
+}
+
+// What a store builds in place (graph_builds_into): a literal, an array, a
+// construction, a variant.
+fuse_builds_into :: proc(e: Expr) -> bool {
+    #partial switch v in e {
+    case ^Expr_Struct_Literal: return v.override_target == ""
+    case ^Expr_Array:          return true
+    case ^Expr_Call:
+        rf, resolved := v.resolved_func.?
+        return resolved && rf.callee != nil && rf.callee.kind == .Struct
+    case ^Expr_Ident:
+        _, is_variant := v.resolved.(Resolved_Union_Variant)
+        return is_variant
+    case ^Expr_Field_Access:
+        _, is_variant := v.resolved.(Resolved_Union_Variant)
+        return is_variant
+    }
+    return false
+}
+
+is_partial_array :: proc(t: Type) -> bool {
+    _, is_pa := distinct_base(t).(^Type_Partial_Array)
+    return is_pa
 }
 
 check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: ^Type_Scope = nil, public_env: ^Type_Scope = nil, scope_defs: [dynamic]Stmt = nil) {
@@ -7151,16 +7218,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 if is_any(ann_type) {
                     check_error(c, s.span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE)
                 }
-                // Built: the local, then its zero — or its construction.
-                if b := fusing(c); b != nil {
-                    if s.slice_cap_expr != nil || !fuse_scalar(ann_type) {
-                        fuse_fail(c, "a bare declaration of an aggregate")
-                    } else {
-                        d := graph_fuse_decl(b, s.name, s.span)
-                        graph_fuse_typed(b, d, ann_type)
-                        graph_fuse_zero_var(b, d, ann_type, s.span)
-                    }
-                }
+                // Built: the local, then its zero or its construction (a sized
+                // slice's zero takes its capacity).
+                bare := NO_NODE
+                if b := fusing(c); b != nil { bare = graph_fuse_decl(b, s.name, s.span) }
                 // (Large-value stack/arena routing is handled uniformly for
                 // every value kind in check_storage_sizes — Pass 4 of check_scope.)
                 // Function type from named source: auto-initialize to the function itself.
@@ -7182,11 +7243,21 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     }
                 }
                 // Sized slice decl `name : []T(N)` — validate N is numeric.
+                cap: Maybe(Operand)
                 if s.slice_cap_expr != nil {
-                    cap_type := check_expr(c, s.slice_cap_expr, env)
+                    cap_type, n := fuse_expr(c, s.slice_cap_expr, env)
                     if !is_any(cap_type) && !is_numeric(cap_type) {
                         check_error(c, s.span,
                             TYPE_SLICE_CAPACITY_INTEGER, type_name(cap_type))
+                    }
+                    cap = n.v
+                }
+                if b := fusing(c); b != nil && bare != NO_NODE {
+                    if s.value != nil {
+                        fuse_fail(c, "a function value's declaration")
+                    } else {
+                        graph_fuse_typed(b, bare, ann_type)
+                        graph_fuse_bare(b, bare, ann_type, cap, s.span)
                     }
                 }
                 s.var_type = distinct_base(ann_type)
@@ -7241,15 +7312,28 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // Built: a declaration's local, then its value, then the value
             // stored — once the statement is checked (its type known).
             fa: Fuse_Assign
+            _, is_skip := s.value.(^Expr_Skip_Constructor)
             if b := fusing(c); b != nil {
                 fa.on = true
-                if s.is_decl { fa.decl = graph_fuse_decl(b, s.name, s.span) }
+                if s.is_decl {
+                    fa.decl = graph_fuse_decl(b, s.name, s.span)
+                    // Text or a slice's elements fill only a prefix of a new
+                    // partial array: it is zero first — kept once the value's
+                    // type says so. (Declared by its value, it is one only
+                    // when that is text.)
+                    may_be_text := false
+                    #partial switch _ in s.value {
+                    case ^Expr_String, ^Expr_Ident, ^Expr_Field_Access: may_be_text = true
+                    }
+                    if !is_skip && (is_untyped(ann_type) && may_be_text || is_partial_array(ann_type)) {
+                        fa.prefix, fa.prefixed = graph_fuse_prefix(b, s.name, fa.decl, s.span), true
+                    }
+                }
             }
             defer fuse_assign_end(c, s, &fa)
             val_type: Type
-            _, is_skip := s.value.(^Expr_Skip_Constructor)
             if fa.on && !is_skip && !(!s.is_decl && is_void_literal(s.value)) {
-                val_type, fa.value = fuse_expr(c, s.value, env)
+                val_type, fa.value = fuse_expr(c, s.value, env, .Either)
             } else {
                 val_type = check_expr(c, s.value, env)
             }
@@ -9019,8 +9103,13 @@ check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixe
 
 check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     un := s.target.(^Expr_Unary)
-    ptr_type := check_expr(c, un.operand, env)
-    val_type := check_expr(c, s.value, env)
+    // Built: the place the pointer points at, then the value into it.
+    ptr_type, ptr := fuse_expr(c, un.operand, env, .Place)
+    place := NO_VALUE
+    if b := fusing(c); b != nil {
+        if p, ok := ptr_type.(^Type_Ptr); ok { place = graph_op_value(b, .Deref, .Explicit, un.span, p.elem, "", ptr.v) }
+    }
+    val_type := fuse_store(c, s, place, env)
     if p, ok := ptr_type.(^Type_Ptr); ok {
         s.target_type = p.elem
         if types_incompatible(p.elem, val_type) {
@@ -9051,13 +9140,28 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
             return
         }
     }
-    target_type := distinct_base(check_expr(c, ix.expr, env))
+    // Built: the element's place — its collection's, the index at the
+    // header's width — then the value into it. (Bytes written as another
+    // type are a view: the builder's.)
+    coll_type, coll := fuse_expr(c, ix.expr, env, .Place)
+    target_type := distinct_base(coll_type)
     s.target_type = target_type
     ix.type_ = index_elem_type(target_type)   // the target names one element
+    base := coll.v
+    if b := fusing(c); b != nil {
+        if is_byte_buffer(coll_type) { fuse_fail(c, "bytes written as another type") }
+        if pt, is_ptr := target_type.(^Type_Ptr); is_ptr {
+            base = graph_op_value(b, .Deref, .Implied, ix.span, pt.elem, "", coll.v)
+        }
+    }
     if fa, ok := target_type.(^Type_Fixed_Array); ok && fa.index_type != nil {
         c.expected_hint = fa.index_type
     }
-    idx_type := check_expr(c, ix.index, env)
+    idx_type, at := fuse_expr(c, ix.index, env)
+    place := NO_VALUE
+    if b := fusing(c); b != nil {
+        place = graph_op_value(b, .Index, .Explicit, ix.span, ix.type_, "", base, fuse_index_value(b, at.v, idx_type, ix.span))
+    }
     // Hint the value with the element type so an infer literal (`a[i] = 0`)
     // resolves to the element width rather than defaulting. Byte targets are
     // left unhinted — their reinterpret-write path (below) types the value on
@@ -9069,7 +9173,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     } else if sl, ok := target_type.(^Type_Slice); ok {
         if _, is_byte := sl.elem.(Type_Byte); !is_byte { c.expected_hint = sl.elem }
     }
-    val_type := check_expr(c, s.value, env)
+    val_type := fuse_store(c, s, place, env)
 
     if !is_numeric(idx_type) && !is_any(idx_type) {
         check_error(c, s.span, TYPE_ARRAY_INDEX_NUMBER, type_name(idx_type))
@@ -9304,7 +9408,8 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
 
 check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     fa_expr := s.target.(^Expr_Field_Access)
-    obj_type := check_expr(c, fa_expr.expr, env)
+    // Built: the field's place, then the value into it.
+    obj_type, base := fuse_expr(c, fa_expr.expr, env, .Either)
 
     // Pre-resolve the field's type so check_expr(s.value) can pick it up via
     // c.expected_hint. The 1-arg `slice(source)` form needs this to infer
@@ -9317,12 +9422,22 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
             pre_st = sd
         }
     }
+    place := NO_VALUE
     if pre_st != nil {
         if ft := resolve_struct_field(pre_st, fa_expr.field, c.table); ft != nil {
             c.expected_hint = ft
+            place = fuse_member_place(c, fa_expr, base, obj_type, ft)
         }
     }
-    val_type := check_expr(c, s.value, env)
+    if place == NO_VALUE && fusing(c) != nil {
+        // A slice's or partial array's header, or an array's swizzle.
+        if t := fuse_target_field_type(obj_type, fa_expr.field); t != nil {
+            place = fuse_member_place(c, fa_expr, base, obj_type, t)
+        } else {
+            fuse_fail(c, "a write to an unknown field")
+        }
+    }
+    val_type := fuse_store(c, s, place, env)
     c.expected_hint = nil
 
     // Auto-deref: if obj is ^Struct, check field on the inner struct
@@ -11822,18 +11937,8 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     if fusing(c) == nil { return t }
     set_expr_type(e, t)   // (the builder's reads it)
     if e.resolved == nil || graph_is_member(e.resolved) {
-        if !ff.base.ok || !ff.base.place {
-            fuse_fail(c, "a field of a value")
-            return t
-        }
-        base := ff.base.v
-        if _, is_self := e.expr.(^Expr_Self); !is_self {
-            if pt, is_ptr := distinct_base(ff.base_type).(^Type_Ptr); is_ptr {
-                base = graph_op_value(b, .Deref, .Implied, e.span, pt.elem, "", base)
-            }
-        }
-        _, is_array := distinct_base(graph_pointee(ff.base_type)).(^Type_Fixed_Array)
-        p := graph_op_value(b, .Swizzle if is_array else .Field, .Explicit, e.span, t, e.field, base)
+        p := fuse_member_place(c, e, ff.base, ff.base_type, t)
+        if p == NO_VALUE { return t }
         if want == .Value {
             fuse_done(c, graph_read(b, p, t, e.span))
         } else {
@@ -11849,6 +11954,99 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     case want == .Either:                 fuse_done(c, graph_value(b, e, w))
     }
     return t
+}
+
+// A member's place (graph_place): its base's — through a pointer, what it
+// points at — then the field, or a swizzle of an array.
+fuse_member_place :: proc(c: ^Checker, e: ^Expr_Field_Access, base: Fused, base_type: Type, t: Type) -> Operand {
+    b := fusing(c)
+    if b == nil { return NO_VALUE }
+    if !base.ok || !base.place {
+        fuse_fail(c, "a field of a value")
+        return NO_VALUE
+    }
+    p := base.v
+    if _, is_self := e.expr.(^Expr_Self); !is_self {
+        if pt, is_ptr := distinct_base(base_type).(^Type_Ptr); is_ptr {
+            p = graph_op_value(b, .Deref, .Implied, e.span, pt.elem, "", p)
+        }
+    }
+    _, is_array := distinct_base(graph_pointee(base_type)).(^Type_Fixed_Array)
+    return graph_op_value(b, .Swizzle if is_array else .Field, .Explicit, e.span, t, e.field, p)
+}
+
+// The type of a written field that is no struct's (as check_field_assign
+// finds it after the value): a header's len, cap or ptr; an array's swizzle.
+fuse_target_field_type :: proc(obj_type: Type, field: string) -> Type {
+    t := obj_type
+    if pt, ok := t.(^Type_Ptr); ok { t = pt.elem }
+    t = distinct_base(t)
+    elem: Type
+    #partial switch v in t {
+    case ^Type_Slice:         elem = v.elem
+    case ^Type_Partial_Array: elem = v.elem
+    case ^Type_Fixed_Array:
+        if !is_swizzle_field(field, v.size) { return nil }
+        if len(field) == 1 { return v.elem }
+        return new_clone(Type_Fixed_Array{size = len(field), elem = v.elem})
+    case:
+        return nil
+    }
+    switch field {
+    case "len", "cap": return slice_header_width_type
+    case "ptr":        return new_clone(Type_Ptr{elem = elem})
+    }
+    return nil
+}
+
+// An index at the header's width (graph_index_value): an enum's value is its
+// tag, taken as a number; a narrower number widens.
+fuse_index_value :: proc(b: ^Graph_Builder, at: Operand, t: Type, span: Span) -> Operand {
+    if _, is_enum := distinct_base(t).(^Type_Enum); is_enum {
+        return graph_op_value(b, .Cast, .Implied, span, slice_header_width_type, type_name(slice_header_width_type), at)
+    }
+    return graph_fuse_widen(b, at, span, {to = slice_header_width_type})
+}
+
+// A store's value into the place its target's check built (graph_assign):
+// checked, then — a view where one is taken, else at the place's type —
+// written. A compound `t op= x` reads the target through that place.
+fuse_store :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scope) -> Type {
+    b := fusing(c)
+    if b == nil || place == NO_VALUE { return check_expr(c, s.value, env) }
+    saved := c.compound
+    if s.is_compound { c.compound = {expr_identity(s.target), place} }
+    vt, r := fuse_expr(c, s.value, env, .Either)
+    c.compound = saved
+    if fusing(c) == nil { return vt }
+    pt := b.g.type_[place.op]
+    if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip || is_void_literal(s.value) {
+        fuse_fail(c, "a place written void")
+        return vt
+    }
+    if fuse_builds_into(s.value) {
+        fuse_fail(c, "a value built in place")
+        return vt
+    }
+    _, to_ptr := distinct_base(pt).(^Type_Ptr)
+    _, from_ptr := distinct_base(vt).(^Type_Ptr)
+    if to_ptr == from_ptr && graph_header_of(pt) && graph_partial_of(vt) {
+        graph_fuse_write_at(b, place, graph_op_value(b, .Cast, .Implied, s.span, pt, type_name(pt), fuse_value(c, r, s.value, vt)), s.span)
+        return vt
+    }
+    _, to_slice := distinct_base(pt).(^Type_Slice)
+    _, from_array := distinct_base(vt).(^Type_Fixed_Array)
+    if to_slice && from_array {
+        if _, is_literal := s.value.(^Expr_Array); is_literal || !r.place {
+            fuse_fail(c, "a slice of an array value")
+            return vt
+        }
+        graph_fuse_write_at(b, place, graph_op_value(b, .Slice, .Implied, s.span, pt, "", r.v), s.span)
+        return vt
+    }
+    val := graph_fuse_widen(b, fuse_value(c, r, s.value, vt), s.span, {to = pt, settle_to = true})
+    graph_fuse_write_at(b, place, val, s.span)
+    return vt
 }
 
 check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope, ff: ^Fuse_Field) -> Type {
@@ -13968,15 +14166,7 @@ check_index_impl :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope, fi: ^Fus
     if fi != nil {
         at: Fused
         idx_type, at = fuse_expr(c, e.index, env, .Value, .Explicit)
-        if b := fusing(c); b != nil {
-            // An enum's value is its tag, taken as a number; a narrower
-            // number widens.
-            if _, is_enum := distinct_base(idx_type).(^Type_Enum); is_enum {
-                fi.index = graph_op_value(b, .Cast, .Implied, e.span, slice_header_width_type, type_name(slice_header_width_type), at.v)
-            } else {
-                fi.index = graph_fuse_widen(b, at.v, e.span, {to = slice_header_width_type})
-            }
-        }
+        if b := fusing(c); b != nil { fi.index = fuse_index_value(b, at.v, idx_type, e.span) }
     } else {
         idx_type = check_expr(c, e.index, env)
     }
