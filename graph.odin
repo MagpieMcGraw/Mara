@@ -3996,36 +3996,49 @@ graph_fuse_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure, 
 Graph_Match :: struct {
     slot:     Node_Id,
     is_union: bool,
+    ops:      [dynamic]Operand,
     tags:     []Node_Id,
     arms:     []^Run,
     join:     ^Run,
     span:     Span,
 }
 
-graph_fuse_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, slot: Node_Id) -> ^Graph_Match {
+graph_fuse_match_begin :: proc(b: ^Graph_Builder, v: ^Stmt_Match, slot: Node_Id) -> ^Graph_Match {
     gm := new(Graph_Match, context.temp_allocator)
     gm.slot, gm.span = slot, v.span
     _, gm.is_union = distinct_base(expr_type(v.subject)).(^Type_Union)
-    ops := make([dynamic]Operand, 0, len(v.arms) + 1, context.temp_allocator)
+    gm.ops = make([dynamic]Operand, 0, len(v.arms) + 1, context.temp_allocator)
     if gm.is_union {
-        append(&ops, graph_fuse_subject(b, v, gm))
+        append(&gm.ops, graph_fuse_subject(b, v, gm))
     } else {
-        append(&ops, graph_read(b, graph_fuse_subject(b, v, gm), expr_type(v.subject), v.span))
+        append(&gm.ops, graph_read(b, graph_fuse_subject(b, v, gm), expr_type(v.subject), v.span))
     }
     gm.tags = make([]Node_Id, len(v.arms), context.temp_allocator)
     gm.arms = make([]^Run, len(v.arms), context.temp_allocator)
     for &arm, i in v.arms {
         gm.arms[i] = graph_run_new(b)
         gm.tags[i] = NO_NODE
-        if arm.is_else { continue }
-        t := graph_tag_type(expr_type(v.subject)) if gm.is_union else expr_type(v.subject)
-        tag := graph_const(b, .Implied, v.span, t, "", Const_Value{})
-        gm.tags[i] = tag.op
-        append(&ops, tag)
     }
-    graph_switch(b, ops[:], gm.arms, v.span)
-    gm.join = graph_run_new(b)
     return gm
+}
+
+// An arm's tag: a union's variant's, an enum's — a constant filled in when
+// the arm is resolved (graph_fuse_arm).
+graph_fuse_match_tag :: proc(b: ^Graph_Builder, gm: ^Graph_Match, v: ^Stmt_Match, i: int) {
+    t := graph_tag_type(expr_type(v.subject)) if gm.is_union else expr_type(v.subject)
+    tag := graph_const(b, .Implied, v.span, t, "", Const_Value{})
+    gm.tags[i] = tag.op
+    append(&gm.ops, tag)
+}
+
+// A value's arm: its value.
+graph_fuse_match_value :: proc(b: ^Graph_Builder, gm: ^Graph_Match, val: Operand) {
+    append(&gm.ops, val)
+}
+
+graph_fuse_match_switch :: proc(b: ^Graph_Builder, gm: ^Graph_Match, v: ^Stmt_Match) {
+    graph_switch(b, gm.ops[:], gm.arms, v.span)
+    gm.join = graph_run_new(b)
 }
 
 @(private="file")

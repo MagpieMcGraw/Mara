@@ -9953,16 +9953,11 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     }
     // Built (graph_match): the subject — a plain place, walked where it is
     // needed; else held in a local made first — then the switch on its tag,
-    // each arm's tag filled in as the arm is checked, then each arm's block.
-    // (An arm matching a value is the builder's.)
+    // each arm's tag filled in as the arm is checked (a value's arm: its
+    // value, checked here, before the arms), then each arm's block.
     gm: ^Graph_Match
     b := fusing(c)
-    for arm in s.arms {
-        if arm.value != nil && b != nil {
-            fuse_fail(c, "a match arm of a value")
-            b = nil
-        }
-    }
+    prechecked := make([]bool, len(s.arms), context.temp_allocator)
     slot := NO_NODE
     subj_type: Type
     if b != nil && !graph_pure_place(s.subject) {
@@ -9972,11 +9967,30 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     } else {
         subj_type = check_expr(c, s.subject, env)
     }
-    if fusing(c) != nil && b != nil { gm = graph_fuse_match(b, s, slot) }
-    defer if gm != nil { graph_fuse_match_end(b, gm) }
     ut, is_union_match := subj_type.(^Type_Union)
     et, is_enum_match := subj_type.(^Type_Enum)
     _, is_err_match := subj_type.(Type_Err)
+    if fusing(c) != nil && b != nil {
+        gm = graph_fuse_match_begin(b, s, slot)
+        for &arm, i in s.arms {
+            if arm.is_else { continue }
+            if gm.is_union || arm.value == nil {
+                graph_fuse_match_tag(b, gm, s, i)
+                continue
+            }
+            // (An enum's variant named bare is its arm's, unchecked: the
+            // builder builds it as written.)
+            if ident, is_ident := arm.value.(^Expr_Ident); is_ident && is_enum_match && ident.name in et.variants {
+                graph_fuse_match_value(b, gm, graph_value(b, arm.value))
+                continue
+            }
+            _, v := fuse_expr(c, arm.value, env)
+            graph_fuse_match_value(b, gm, v.v)
+            prechecked[i] = true
+        }
+        graph_fuse_match_switch(b, gm, s)
+    }
+    defer if gm != nil { graph_fuse_match_end(b, gm) }
 
     // Union-only: match is for variant dispatch — payload unions, payload-less
     // unions (a.k.a. enums), and open `err`. Structs, scalars, bools, etc. are
@@ -10115,8 +10129,8 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
                     }
                 }
             }
-            // Regular value match arm
-            check_expr(c, arm.value, env)
+            // Regular value match arm (built before the switch: checked there)
+            if !prechecked[arm_i] { check_expr(c, arm.value, env) }
             child := type_env_block_child(env)
             fuse_arm_body(c, gm, s, &arm, arm_i, child)
         }
