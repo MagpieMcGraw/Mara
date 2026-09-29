@@ -288,37 +288,49 @@ Graph_Builder :: struct {
     seg:     int,
     tasks:   [dynamic]Graph_Task,
     shuffle: bool,
+    shuffled: int,
 }
 
-// What one build of contents made: the ranges of nodes, closed runs,
-// statements and unreachable spans it added, and the scopes whose contents
-// were left to a segment of their own, where each goes.
+// What one build made: the nodes, closed runs, statements and unreachable
+// spans it added — in pieces, when another build ran in the middle of it —
+// and the segments that go inside it, where each goes.
 @(private="file")
 Graph_Segment :: struct {
-    nodes, runs, stmts, unreach: [2]int,
+    pieces:  [dynamic]Graph_Piece,
     anchors: [dynamic]Graph_Anchor,
+    root:    Node_Id,   // a scope's: its node, placed by its anchor
 }
 
-// A scope node made here whose contents are segment `seg`: they go right
-// after it, and its runs, statements and spans where this segment's counts
-// stood when it was made.
+// A stretch of one segment's items: [from, to) of each.
+@(private="file")
+Graph_Piece :: struct {
+    nodes, runs, stmts, unreach: [2]int,
+}
+
+// Where segment `seg` goes in the one it is anchored in: before the items
+// that segment made after these counts.
 @(private="file")
 Graph_Anchor :: struct {
-    node:                  Node_Id,
-    seg:                   int,
-    runs, stmts, unreach: int,
+    seg:                          int,
+    nodes, runs, stmts, unreach:  int,
 }
 
-// A scope's contents waiting to be built: at the statement its scope is.
+// A scope (its node and contents) waiting to be built, where it goes.
 @(private="file")
 Graph_Task :: struct {
     ts:           ^Type_Scope,
     s:            ^Stmt_Scope,
-    n:            Node_Id,
+    parent:       Node_Id,
     written:      Written,
     stmt:         i32,
     seg, anchor:  int,
 }
+
+// The statement column of what a scope's segment makes outside its own
+// statements (its node, params, results, implied return), until its anchor
+// says which statement that is.
+@(private="file")
+STMT_ANCHOR :: i32(-2)
 
 @(private="file")
 Graph_Table :: struct {
@@ -428,10 +440,17 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
         delete(b.frames)
         delete(b.const_decls)
         delete(b.tables)
+        for s in b.segs {
+            delete(s.pieces)
+            delete(s.anchors)
+        }
+        delete(b.segs)
+        delete(b.tasks)
     }
     graph_index(&b)
     when ODIN_DEBUG { b.shuffle = os.get_env("MARA_GRAPH_SHUFFLE", context.temp_allocator) == "1" }
-    append(&b.segs, Graph_Segment{})   // the program's own: its modules' declarations
+    append(&b.segs, Graph_Segment{root = NO_NODE})   // the program's own: its modules' declarations
+    graph_piece_begin(&b, 0)
 
     // The compiler's own globals, which code names but never declares.
     b.program = graph_node(&b, .Module, .Synthetic, NO_NODE, "program", nil, {})
@@ -452,19 +471,14 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
         for s in programs[name]^ { graph_stmt(&b, s, m, {kind = .Field}) }
         graph_close(&b, m)
     }
-    graph_segment_end(&b, 0)
-    // The contents left for later, the last first; each may leave more.
+    // The scopes left for later, the last first; each may leave more.
     for len(b.tasks) > 0 {
         t := pop(&b.tasks)
-        si := len(b.segs)
-        append(&b.segs, Graph_Segment{nodes = {b.nodes, 0}, runs = {len(g.run_first), 0},
-            stmts = {len(g.stmts), 0}, unreach = {len(g.unreachable), 0}})
+        si := graph_scope_segment(&b, t.ts, t.s, t.written)
         b.segs[t.seg].anchors[t.anchor].seg = si
-        b.seg, b.stmt = si, t.stmt
-        graph_scope_contents(&b, t.ts, t.s, t.n, t.written)
-        b.seg, b.stmt = 0, -1
-        graph_segment_end(&b, si)
+        graph_segment_place(&b, si, t.parent, t.stmt, graph_scope_name(t.ts, t.s, t.written))
     }
+    graph_piece_end(&b, 0)
     graph_resize(&g, b.nodes)
     append(&g.operand_first, i32(len(g.operands)))
     append(&g.run_first, i32(len(g.run_ops)))
@@ -487,11 +501,82 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
     return g
 }
 
-// A segment's ranges end where the builder's counts stand now.
+// The builder's counts of each item, as they stand now.
 @(private="file")
-graph_segment_end :: proc(b: ^Graph_Builder, si: int) {
-    s := &b.segs[si]
-    s.nodes[1], s.runs[1], s.stmts[1], s.unreach[1] = b.nodes, len(b.g.run_first), len(b.g.stmts), len(b.g.unreachable)
+graph_counts :: proc(b: ^Graph_Builder) -> [4]int {
+    return {b.nodes, len(b.g.run_first), len(b.g.stmts), len(b.g.unreachable)}
+}
+
+// Segment si's next piece starts, or its last ends, where the counts stand.
+@(private="file")
+graph_piece_begin :: proc(b: ^Graph_Builder, si: int) {
+    c := graph_counts(b)
+    append(&b.segs[si].pieces, Graph_Piece{nodes = {c[0], -1}, runs = {c[1], -1}, stmts = {c[2], -1}, unreach = {c[3], -1}})
+}
+
+@(private="file")
+graph_piece_end :: proc(b: ^Graph_Builder, si: int) {
+    p := &b.segs[si].pieces[len(b.segs[si].pieces) - 1]
+    c := graph_counts(b)
+    p.nodes[1], p.runs[1], p.stmts[1], p.unreach[1] = c[0], c[1], c[2], c[3]
+}
+
+// A new segment, built from here until graph_segment_leave: what the current
+// one makes after it is another piece of that one.
+@(private="file")
+graph_segment_enter :: proc(b: ^Graph_Builder) -> (si, saved: int) {
+    si, saved = len(b.segs), b.seg
+    append(&b.segs, Graph_Segment{root = NO_NODE})
+    graph_piece_end(b, saved)
+    b.seg = si
+    graph_piece_begin(b, si)
+    return
+}
+
+@(private="file")
+graph_segment_leave :: proc(b: ^Graph_Builder, saved: int) {
+    graph_piece_end(b, b.seg)
+    b.seg = saved
+    graph_piece_begin(b, saved)
+}
+
+// Where a segment goes: here, in the one being built.
+@(private="file")
+graph_anchor_here :: proc(b: ^Graph_Builder, seg := -1) -> int {
+    c := graph_counts(b)
+    s := &b.segs[b.seg]
+    append(&s.anchors, Graph_Anchor{seg = seg, nodes = c[0], runs = c[1], stmts = c[2], unreach = c[3]})
+    return len(s.anchors) - 1
+}
+
+// A scope built in a segment of its own, at any time: its node, then its
+// contents. Its node's parent and statement are its anchor's (graph_segment_place).
+@(private="file")
+graph_scope_segment :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, written: Written) -> int {
+    si, saved := graph_segment_enter(b)
+    saved_stmt := b.stmt
+    b.stmt = STMT_ANCHOR
+    n := graph_scope_root(b, ts, s, NO_NODE, written)
+    b.segs[si].root = n
+    graph_scope_contents(b, ts, s, n, written)
+    b.stmt = saved_stmt
+    graph_segment_leave(b, saved)
+    return si
+}
+
+// Put a scope's segment where its anchor is: its node's parent and name
+// (an instance's is its mangled name, known once checking is done), and the
+// statement it and the rest made outside the scope's own statements are in.
+@(private="file")
+graph_segment_place :: proc(b: ^Graph_Builder, si: int, parent: Node_Id, stmt: i32, name: string) {
+    s := b.segs[si]
+    b.g.parent[s.root] = parent
+    b.g.name[s.root] = name
+    for p in s.pieces {
+        for i in p.nodes[0] ..< p.nodes[1] {
+            if b.g.stmt[i] == STMT_ANCHOR { b.g.stmt[i] = stmt }
+        }
+    }
 }
 
 // Put every segment where its scope is: the nodes in the order one build in
@@ -507,16 +592,9 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     Item :: enum { Node, Run, Stmt, Unreach }
     walk :: proc(b: ^Graph_Builder, si: int, item: Item, out: ^[dynamic]int) {
         s := b.segs[si]
-        lo, hi: int
-        switch item {
-        case .Node:    lo, hi = s.nodes[0], s.nodes[1]
-        case .Run:     lo, hi = s.runs[0], s.runs[1]
-        case .Stmt:    lo, hi = s.stmts[0], s.stmts[1]
-        case .Unreach: lo, hi = s.unreach[0], s.unreach[1]
-        }
         at :: proc(a: Graph_Anchor, item: Item) -> int {
             switch item {
-            case .Node:    return int(a.node) + 1   // right after the scope's node
+            case .Node:    return a.nodes
             case .Run:     return a.runs
             case .Stmt:    return a.stmts
             case .Unreach: return a.unreach
@@ -524,12 +602,25 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
             return 0
         }
         k := 0
-        for i in lo ..= hi {
-            for k < len(s.anchors) && at(s.anchors[k], item) == i {
-                if s.anchors[k].seg >= 0 { walk(b, s.anchors[k].seg, item, out) }
-                k += 1
+        for p in s.pieces {
+            r: [2]int
+            switch item {
+            case .Node:    r = p.nodes
+            case .Run:     r = p.runs
+            case .Stmt:    r = p.stmts
+            case .Unreach: r = p.unreach
             }
-            if i < hi { append(out, i) }
+            for i in r[0] ..< r[1] {
+                // What was anchored before this item was made goes before it.
+                for k < len(s.anchors) && at(s.anchors[k], item) <= i {
+                    if s.anchors[k].seg >= 0 { walk(b, s.anchors[k].seg, item, out) }
+                    k += 1
+                }
+                append(out, i)
+            }
+        }
+        for ; k < len(s.anchors); k += 1 {
+            if s.anchors[k].seg >= 0 { walk(b, s.anchors[k].seg, item, out) }
         }
     }
     order: [Item][dynamic]int
@@ -554,6 +645,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
         ng.last[i] = Node_Id(i)
         ng.name[i], ng.type_[i], ng.origin[i] = g.name[old], g.type_[old], g.origin[old]
         ng.refers[i] = re(new_id, g.refers[old])
+        assert(g.stmt[old] != STMT_ANCHOR, "a segment's node was never placed")
         ng.stmt[i] = g.stmt[old] if g.stmt[old] < 0 else new_stmt[g.stmt[old]]
         ng.operand_first[i] = i32(len(ng.operands))
         for o in g.operands[g.operand_first[old]:g.operand_first[old + 1]] {
@@ -3179,20 +3271,36 @@ graph_scope :: proc(b: ^Graph_Builder, s: ^Stmt_Scope, parent: Node_Id) {
 // struct's field initializers — in a scope of its own.
 @(private="file")
 graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, parent: Node_Id, written: Written) {
-    kind: Node_Kind = .Fun if ts.kind == .Fun else .Struct
-    name := s.name if written == .Explicit else ask_demangle(ts.name, ts.home_package)
-    n := graph_node(b, kind, written, parent, name, ts, s.span)
-    b.g.scope_node[ts] = n
     if b.shuffle {
-        // Its contents later, in a segment of their own, put back right here.
-        seg := &b.segs[b.seg]
-        append(&seg.anchors, Graph_Anchor{node = n, seg = -1, runs = len(b.g.run_first),
-            stmts = len(b.g.stmts), unreach = len(b.g.unreachable)})
-        append(&b.tasks, Graph_Task{ts = ts, s = s, n = n, written = written, stmt = b.stmt,
-            seg = b.seg, anchor = len(seg.anchors) - 1})
+        // In a segment of its own, put in right here: every other scope built
+        // now, in the middle of this one's, the rest later, the last first.
+        b.shuffled += 1
+        if b.shuffled % 2 == 0 {
+            si := graph_scope_segment(b, ts, s, written)
+            graph_anchor_here(b, si)
+            graph_segment_place(b, si, parent, b.stmt, graph_scope_name(ts, s, written))
+            return
+        }
+        append(&b.tasks, Graph_Task{ts = ts, s = s, parent = parent, written = written, stmt = b.stmt,
+            seg = b.seg, anchor = graph_anchor_here(b)})
         return
     }
-    graph_scope_contents(b, ts, s, n, written)
+    graph_scope_contents(b, ts, s, graph_scope_root(b, ts, s, parent, written), written)
+}
+
+// A fun's or struct's node.
+@(private="file")
+graph_scope_root :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, parent: Node_Id, written: Written) -> Node_Id {
+    kind: Node_Kind = .Fun if ts.kind == .Fun else .Struct
+    n := graph_node(b, kind, written, parent, graph_scope_name(ts, s, written), ts, s.span)
+    b.g.scope_node[ts] = n
+    return n
+}
+
+// A scope's name: as written, or an instance's, from its mangled one.
+@(private="file")
+graph_scope_name :: proc(ts: ^Type_Scope, s: ^Stmt_Scope, written: Written) -> string {
+    return s.name if written == .Explicit else ask_demangle(ts.name, ts.home_package)
 }
 
 // A scope's contents: its params and results, then its code.
