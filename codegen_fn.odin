@@ -402,6 +402,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     ret_slice_utf8 := false
     ret_partial_elem := ""
     ret_partial_cap := 0
+    ret_partial: ^Type_Partial_Array
     if len(cf.cg_returns) > 1 {
         ret_type = "void"
         ret_types = cf.cg_returns[:]
@@ -427,6 +428,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
             ret_type = "void"
             ret_partial_elem = llvm_type_from_checker(pa.elem)
             ret_partial_cap = pa.size
+            ret_partial = pa
         } else if single == nil || is_untyped(single) {
             ret_type = "void"
         } else {
@@ -522,6 +524,7 @@ gen_scope_def :: proc(g: ^Codegen, cf: ^Type_Scope) {
     // save/restore needed — each function overwrites.
     g.ret_partial_cap = ret_partial_cap
     g.ret_partial_elem = ret_partial_elem
+    g.ret_partial = ret_partial
 
     // Register sret pointer for struct-returning functions
     g.nrvo_var = ""

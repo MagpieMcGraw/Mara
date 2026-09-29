@@ -77,7 +77,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         }
         // Zero-init (ensures null ptrs, zero ints, etc.) — unless the value
         // writes all of it: a struct-returning call, or a copy of a place.
-        if !call_writes_struct(g, value) && !copies_whole_struct(value) { emit_memset_zero(g, alloca_name, total) }
+        if !call_writes_struct(g, value) && !copies_place(value) { emit_memset_zero(g, alloca_name, total) }
 
         // Sized-slice fields are NOT init'd here — the struct's auto-init
         // function (called below for bare decls) and gen_store_struct_into
@@ -1495,7 +1495,7 @@ call_writes_struct :: proc(g: ^Codegen, value: Expr) -> bool {
 
 // A value copied whole from a place: a variable, a field, an element, what a
 // pointer points at (not a constant, whose value is inlined).
-copies_whole_struct :: proc(value: Expr) -> bool {
+copies_place :: proc(value: Expr) -> bool {
     #partial switch v in value {
     case ^Expr_Ident:        return v.resolved == nil
     case ^Expr_Field_Access: return v.resolved == nil

@@ -401,6 +401,7 @@ Codegen :: struct {
     // gen_return key off these.
     ret_partial_cap:  int,
     ret_partial_elem: string,
+    ret_partial:      ^Type_Partial_Array,   // its type
     // Multi-return: list of return types for current function (empty if not multi-return)
     ret_types:        []Type,
     // Tuple call result: temp alloca pointers from the most recent tuple-returning call

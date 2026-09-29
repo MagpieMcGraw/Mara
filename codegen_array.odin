@@ -418,6 +418,13 @@ gen_store_elem_into :: proc(g: ^Codegen, gep: string, elem_ir: string, elem_type
         gen_partial_array_init_value(g, gep, elem, et, eb, pa.size, pa, span, "array element")
         return
     }
+    // A whole partial array copied in from a place writes the header and
+    // every element: nothing to stamp or zero first. (Text is no place: a
+    // literal is typed as a partial array.)
+    if _, whole := distinct_base(expr_type(elem)).(^Type_Partial_Array); whole && copies_place(elem) {
+        partial_array_copy(g, gep, gen_expr(g, elem), et, pa.size, pa.elem)
+        return
+    }
     gen_partial_array_init_in_place(g, gep, pa)   // ptr -> inline, len 0, cap N
     // Zero the inline so bytes past a shorter value (the str64 tail) stay
     // deterministic, matching the partial-array decl path.
@@ -438,6 +445,23 @@ stamp_literal_array :: proc(g: ^Codegen, dst: string, elem: Type, n: int) -> boo
     if _, pa := inner.(^Type_Partial_Array); !pa || n == 0 { return false }
     emit_each_element(g, dst, elem, n, stamp_zero_partial_arrays)
     return true
+}
+
+// Whether a value is text (a string literal, or a constant naming one): only
+// its bytes, no partial array in memory, whatever its type says.
+is_text_value :: proc(g: ^Codegen, e: Expr) -> bool {
+    e := e
+    if v, is_const := codegen_const_value(g, e); is_const { e = v }
+    _, is_str := e.(^Expr_String)
+    return is_str
+}
+
+// Text built into a partial array at `at`: its header stamped and elements
+// zeroed, then the bytes copied in and len set — as a declaration from text.
+emit_text_into_partial_array :: proc(g: ^Codegen, at: string, pa: ^Type_Partial_Array, text: Expr, span: Span) {
+    et := llvm_type_from_checker(pa.elem)
+    emit_partial_array_zero(g, at, pa)
+    gen_partial_array_init_value(g, at, text, et, elem_byte_size(et, g.checked), pa.size, pa, span, "return")
 }
 
 // Alloca a slice header (SLICE_IR_TYPE) and store data_ptr / len / cap into

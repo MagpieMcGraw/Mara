@@ -35,6 +35,7 @@ Llvm :: struct {
     by_value: Type,             // a union result: returned as an IR value (the old ABI; a slot like the rest: later)
     rets:    []Type,            // several results: each into the caller's slot for it, %sret.<i>
     slot:    string,            // the result slot: %sret, or a fallible constructor's Self, %sret.0
+    consumed: string,           // a param the result is built from (consumed_param_of): its argument
     ctor:  bool,                // a struct's code: it builds Self in %sret, which starts zeroed
     main:  bool,                // main's body: `@main` returns i64, 0 when it falls off its end
     fields: strings.Builder,    // a constructor's field addresses, first in its entry
@@ -165,9 +166,9 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         case:                        e.note = "result type"; return false
         }
     }
-    // A fun that consumes a param into its result (its opening copy is
-    // skipped when the caller passes that storage as the slot): later.
-    if _, consumes := consumed_param_of(cf).?; consumes { e.note = "consumes a param"; return false }
+    // A fun that consumes a param into its result: its opening copy is
+    // skipped when the caller passes that storage as the slot.
+    if k, consumes := consumed_param_of(cf).?; consumes { e.consumed = fmt.tprintf("%%%s.arg", cf.cg_params[k].name) }
     params := make([dynamic]string, 0, len(cf.cg_params), context.temp_allocator)
     for p in cf.cg_params {
         ir, ok := llvm_param_type(p.type_)
@@ -787,6 +788,19 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             // An aggregate is copied into the place, unless a call built it
             // there; from a big-endian view, its integers are swapped in the copy.
             if llvm_direct(e, place) { return false }
+            if val == e.consumed && e.value[place - e.node] == e.slot {
+                // The consumed param into the result: nothing to copy when the
+                // caller passed its storage as the slot (`x = f(x, …)`).
+                same := fresh_tmp(g)
+                emit(g, "  %s = icmp eq ptr %s, %s", same, e.slot, val)
+                copy, done := fresh_label(g, "consume.copy"), fresh_label(g, "consume.done")
+                emit_cond_br(g, same, done, copy)
+                emit_label(g, copy)
+                llvm_copy(e, e.slot, val, t)
+                emit_br(g, done)
+                emit_label(g, done)
+                return true
+            }
             if val != e.value[place - e.node] { llvm_copy(e, e.value[place - e.node], val, t) }
             if r := ops[1].op; pg.op[r] == .Read {
                 from := graph_operands(pg, r)[0].op
@@ -2262,13 +2276,20 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         case llvm_scalar(result):        ret = llvm_type_from_checker(result)
         case llvm_union(result) != nil:  ret = llvm_type_from_checker(result)   // as a value (the old ABI)
         case llvm_aggregate(result):
-        case:                            return false
+        case:                            e.note = "result type"; return false
         }
     }
     args := make([dynamic]string, 0, len(ops) + 1, context.temp_allocator)
     for p, i in callee.cg_params {
-        ir := llvm_param_type(p.type_) or_return
-        v := llvm_operand(e, ops[i], p.type_) or_return
+        ir, ok := llvm_param_type(p.type_)
+        if !ok { e.note = fmt.tprintf("param '%s'", p.name); return false }
+        v, vok := llvm_operand(e, ops[i], p.type_)
+        if !vok { e.note = fmt.tprintf("argument '%s'", p.name); return false }
+        // Text taken as a partial array is only its bytes in memory: the
+        // callee gets a header over them (it reads the elements through ptr).
+        if text, is_text := llvm_text(e, ops[i].op); is_text && llvm_partial(p.type_) != nil {
+            v = emit_build_temp_slice(g, v, fmt.tprintf("%d", len(text)), fmt.tprintf("%d", len(text) + 1))
+        }
         append(&args, fmt.tprintf("%s %s", ir, v))
     }
     name := mara_fn_name(g, callee.name)
@@ -2359,8 +2380,13 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
                 // (The result slot is no fresher than any place: the local
                 // every return returns lives there, and `x = f(x)` passes it.)
                 if fresh && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
-                // An update `x = f(x, …)` built in place: later.
-                if _, consumes := consumed_param_of(callee).?; consumes { return "", false }
+                // The functional update `x = f(x, …)`: f consumes that argument
+                // (builds its result from it alone, consumed_param_of) and nothing
+                // else it's handed can reach x — x is both the argument and the
+                // result slot, and f skips its opening copy.
+                if k, consumes := consumed_param_of(callee).?; consumes && llvm_updates_in_place(e, op, k, dest) && llvm_ahead(e, dest) {
+                    return llvm_place(e, dest), true
+                }
                 if !llvm_passes_storage(callee) && llvm_ahead(e, dest) { return llvm_place(e, dest), true }
             }
         }
@@ -2369,6 +2395,71 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
     tmp := fresh_tmp(e.g)
     emit_alloca(e.g, tmp, llvm_type_from_checker(result))
     return tmp, true
+}
+
+// Whether a call's k-th argument is its destination's storage (a read of
+// it, spelled the same) and each other argument can't reach that storage.
+@(private="file")
+llvm_updates_in_place :: proc(e: ^Llvm, call: Node_Id, k: int, dest: Node_Id) -> bool {
+    pg := e.pg
+    ops := graph_operands(pg, call)
+    if k >= len(ops) || ops[k].op == NO_NODE || pg.op[ops[k].op] != .Read { return false }
+    if !llvm_same_storage(e, graph_operands(pg, ops[k].op)[0].op, dest) { return false }
+    d := llvm_where(e, dest)
+    if d.root == NO_NODE { return false }
+    for a, i in ops {
+        if i != k && !llvm_cannot_reach(e, a, d) { return false }
+    }
+    return true
+}
+
+// Whether two places are one storage, as spelled: the same variable, the same
+// field of it, the same element (by the same constant, or variable's value),
+// what the same pointer points at.
+@(private="file")
+llvm_same_storage :: proc(e: ^Llvm, a, b: Node_Id) -> bool {
+    pg := e.pg
+    if a == NO_NODE || b == NO_NODE || pg.op[a] != pg.op[b] { return false }
+    ao, bo := graph_operands(pg, a), graph_operands(pg, b)
+    #partial switch pg.op[a] {
+    case .Var:
+        return pg.refers[a] == pg.refers[b]
+    case .Field:
+        return pg.name[a] == pg.name[b] && llvm_same_storage(e, ao[0].op, bo[0].op)
+    case .Index:
+        if !llvm_same_storage(e, ao[0].op, bo[0].op) { return false }
+        ai, bi := ao[1].op, bo[1].op
+        if ai == NO_NODE || bi == NO_NODE || pg.op[ai] != pg.op[bi] { return false }
+        #partial switch pg.op[ai] {
+        case .Const:
+            av, aok := pg.consts[ai]
+            bv, bok := pg.consts[bi]
+            return aok && bok && !av.is_float && !bv.is_float && av.int == bv.int
+        case .Read:
+            ap, bp := graph_operands(pg, ai)[0].op, graph_operands(pg, bi)[0].op
+            return pg.op[ap] == .Var && pg.op[bp] == .Var && pg.refers[ap] == pg.refers[bp]
+        }
+    case .Deref:
+        ap, bp := ao[0].op, bo[0].op
+        if pg.op[ap] != .Read || pg.op[bp] != .Read { return false }
+        return llvm_same_storage(e, graph_operands(pg, ap)[0].op, graph_operands(pg, bp)[0].op)
+    }
+    return false
+}
+
+// Whether an argument can't reach storage `d` while the callee runs: it holds
+// no pointers, and it's a value in a register, or read from a different
+// variable's own storage (a temporary included), no pointer on either path.
+@(private="file")
+llvm_cannot_reach :: proc(e: ^Llvm, a: Operand, d: Llvm_Where) -> bool {
+    pg := e.pg
+    if a.op == NO_NODE { return true }
+    t := llvm_type_of(e, a)
+    if !is_plain_data(t) { return false }
+    if llvm_scalar(t) { return true }
+    if pg.op[a.op] != .Read { return false }
+    w := llvm_where(e, graph_operands(pg, a.op)[0].op)
+    return w.root != NO_NODE && !d.via_ptr && !w.via_ptr && w.root != d.root
 }
 
 // Whether place p's address is at hand for a call to build its result in: it

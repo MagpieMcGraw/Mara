@@ -1261,7 +1261,11 @@ gen_return_tuple :: proc(g: ^Codegen, s: Stmt_Return) {
         // Partial-array slot: the whole {ptr,len,cap,[N]} deep-copied into the
         // slot, its ptr re-anchored to the slot's own elements
         // (partial_array_copy), as the single partial-array return does.
-        if _, pa_ok := resolved_type.(^Type_Partial_Array); pa_ok {
+        if pa, pa_ok := resolved_type.(^Type_Partial_Array); pa_ok {
+            if is_text_value(g, val) {   // only its bytes: built in the slot
+                emit_text_into_partial_array(g, sret_ptr, pa, val, s.span)
+                continue
+            }
             src := gen_expr(g, val, elem_type)
             if src != sret_ptr { append(&writes, Slot_Write{.Partial, sret_ptr, t, "", src}) }
             continue
@@ -1423,7 +1427,11 @@ gen_return_slice :: proc(g: ^Codegen, s: Stmt_Return, sret_slv: Slice_Var) {
 // branchy local, a call result) is copied in via partial_array_copy, which
 // re-anchors %sret.ptr to %sret's own inline storage.
 gen_return_partial_array :: proc(g: ^Codegen, s: Stmt_Return) {
-    if len(s.values) > 0 {
+    if len(s.values) > 0 && is_text_value(g, s.values[0]) {
+        // Text is only its bytes: built into %sret, as a declaration is (a
+        // copy read a partial array's worth past them).
+        emit_text_into_partial_array(g, "%sret", g.ret_partial, s.values[0], s.span)
+    } else if len(s.values) > 0 {
         src := gen_expr(g, s.values[0])
         if src != "%sret" {
             pa, _ := distinct_base(expr_type(s.values[0])).(^Type_Partial_Array)

@@ -603,10 +603,23 @@ evaluates its destination and value); how instructions are chosen stays in the e
       and one built in place isn't re-anchored; a struct declared as a copy of a place isn't
       zeroed first; a fixed array stored as a slice (the array, or `a[:]`) has its header
       written at the destination, no temporary; a byte partial array's result temporary is
-      aligned like every other. Normalizer: nothing new. Still declined: foreign calls
-      (the C ABI), function values, arguments left to defaults, a fun that consumes a param,
-      named results, a big result (on the arena), `= void` on an aggregate. Pounce: 163 of
-      238 funs from the graph
+      aligned like every other. Normalizer: nothing new. Then the functional update: a fun
+      that consumes a param (`r := pk` first, r returned) skips that opening copy when its
+      caller passes pk's storage as the result slot, and `x = f(x, …)` does so when x is
+      the consumed argument (spelled the same) and nothing else f is handed can reach x
+      (`llvm_updates_in_place`, the old emitter's rule); otherwise a temporary. An
+      operator's operands go to its `overload` at the param types, as a call's arguments
+      do (the graph passed `&s` in `&s + c` as a `^[..N]utf8` where `^[]utf8` is taken).
+      Found: text is only its bytes, whatever its type says — returned from a `-> str64`
+      fun, both emitters copied a whole partial array's worth from it (reading past it;
+      the result held its neighbours), and handed to a `str64` param the graph's emitter
+      passed the bytes' address as the partial array: now a returned text is built into
+      the slot (zeroed, then the text, as a declaration), a text argument gets a header
+      over its bytes, as the old emitter's (`test/text_partial_array.mara`). Old emitter,
+      to the graph's shape: a fresh slot given a whole partial array from a place copies it
+      (it stamped and zeroed the slot first). Still declined: foreign calls (the C ABI),
+      function values, arguments left to defaults, named results, a big result (on the
+      arena), `= void` on an aggregate. Pounce: 169 of 238 funs from the graph
 - [ ] Switch over: every function from the graph; the syntax-tree emitter deleted
 
 ## Baselines

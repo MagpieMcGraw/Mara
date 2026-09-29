@@ -1267,6 +1267,16 @@ graph_return_stmt :: proc(b: ^Graph_Builder, v: Stmt_Return) {
     vals := make([dynamic]Operand, 0, len(rts), context.temp_allocator)
     for e, i in v.values {
         rt: Type = rts[i] if i < len(rts) else nil
+        // Text returned as a partial array is only its bytes: built into one
+        // (the result slot, once it's the temporary's).
+        if c, folds := graph_literal_value(e).?; folds && c.is_text && rt != nil {
+            if _, pa := distinct_base(rt).(^Type_Partial_Array); pa {
+                slot := graph_slot(b, "temp", rt, v.span)
+                graph_store(b, graph_dest_var("temp", slot, rt), e, v.span)   // (zeroed, then the text)
+                append(&vals, graph_read(b, graph_var(b, "temp", slot, rt, v.span), rt, v.span))
+                continue
+            }
+        }
         append(&vals, graph_value_as(b, e, rt, v.span))
     }
     graph_implied_oks(b, &vals, rts, v.span)
@@ -1685,7 +1695,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
     case ^Expr_Unary:
         if rf, ok := v.overload_fn.?; ok {
-            return graph_call_resolved(b, rf, v.type_, v.span, w, graph_value(b, v.operand, w))
+            return graph_call_resolved(b, rf, v.type_, v.span, w, graph_operator_arg(b, rf, 0, v.operand, v.span, w))
         }
         #partial switch v.op {
         case .Caret:     return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
@@ -1702,8 +1712,8 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         return graph_op_value(b, .Unary, w, v.span, v.type_, op, graph_value(b, v.operand, w))
     case ^Expr_Binary:
         if rf, ok := v.overload_fn.?; ok {
-            l := graph_value(b, v.left, w)
-            r := graph_value(b, v.right, w)
+            l := graph_operator_arg(b, rf, 0, v.left, v.span, w)
+            r := graph_operator_arg(b, rf, 1, v.right, v.span, w)
             return graph_call_resolved(b, rf, v.type_, v.span, w, l, r)
         }
         if v.op == .And || v.op == .Or { return graph_short_circuit(b, v, w) }
@@ -2261,6 +2271,16 @@ graph_outputs :: proc(b: ^Graph_Builder, e: Expr) -> int {
     if callee == nil { return 0 }
     if list, is_ctor := constructor_effective_returns(callee); is_ctor { return len(list) }
     return len(callee.return_types)
+}
+
+// An operator's k-th operand as its `overload` takes it: at its param's type,
+// widened or viewed (`&s + c` hands a `^[..N]utf8` over as a `^[]utf8`), as a
+// call's argument is.
+@(private="file")
+graph_operator_arg :: proc(b: ^Graph_Builder, rf: Resolved_Func, k: int, e: Expr, span: Span, w: Written) -> Operand {
+    callee := graph_callee(b, rf)
+    if callee == nil || k >= len(callee.params) { return graph_value(b, e, w) }
+    return graph_value_as(b, e, callee.params[k].type_, span, w)
 }
 
 // A call in operator form, resolved to an `overload` function.
