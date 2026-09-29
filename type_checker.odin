@@ -9291,7 +9291,7 @@ check_array_assign :: proc(c: ^Checker, span: Span, name: string, fa: ^Type_Fixe
 check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     un := s.target.(^Expr_Unary)
     // Built: the place the pointer points at, then the value into it.
-    ptr_type, ptr := fuse_expr(c, un.operand, env, .Place)
+    ptr_type, ptr := fuse_expr(c, un.operand, env, .Place, temp_span = un.span)
     place := NO_VALUE
     if b := fusing(c); b != nil {
         if p, ok := ptr_type.(^Type_Ptr); ok { place = graph_op_value(b, .Deref, .Explicit, un.span, p.elem, "", ptr.v) }
@@ -9330,7 +9330,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     // Built: the element's place — its collection's, the index at the
     // header's width — then the value into it. (Bytes written as another
     // type are a view: the builder's.)
-    coll_type, coll := fuse_expr(c, ix.expr, env, .Place)
+    coll_type, coll := fuse_expr(c, ix.expr, env, .Place, temp_span = ix.span)
     target_type := distinct_base(coll_type)
     s.target_type = target_type
     ix.type_ = index_elem_type(target_type)   // the target names one element
@@ -11240,7 +11240,7 @@ check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
 
 fuse_unary_operand :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope, fu: ^Fuse_Unary) -> Type {
     if fu == nil { return check_expr(c, e.operand, env) }
-    t, r := fuse_expr(c, e.operand, env, .Place if fu.place else .Value, fu.w)
+    t, r := fuse_expr(c, e.operand, env, .Place if fu.place else .Value, fu.w, temp_span = e.span)
     fu.operand = r.v
     return t
 }
@@ -11500,6 +11500,87 @@ fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span
     return true
 }
 
+// An `if` expression, built (graph_if_place): the synthetic local its
+// branches write, made first (typed once both are checked), its condition,
+// each branch's value stored in a run of its own — at the if's type, known
+// then — and the local after them: its place, or read.
+Fuse_If :: struct {
+    b:     ^Graph_Builder,
+    w:     Written,
+    slot:  Node_Id,
+    gi:    Graph_If_Expr,
+    widen: [2]int,
+}
+
+check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
+    want, w := fuse_asked(c)
+    fi := Fuse_If{w = w, widen = {-1, -1}}
+    if b := fusing(c); b != nil && want != .None {
+        // (A branch built in place, or text, takes the if's type first: the
+        // builder's.)
+        #partial switch _ in e.then_expr { case ^Expr_Array, ^Expr_String: fuse_fail(c, "an if of a literal array or of text") }
+        #partial switch _ in e.else_expr { case ^Expr_Array, ^Expr_String: fuse_fail(c, "an if of a literal array or of text") }
+        if fusing(c) != nil {
+            fi.b = b
+            fi.slot = graph_slot(b, "if", nil, e.span)
+        }
+    }
+    t := check_if_expr_impl(c, e, env, &fi)
+    b := fi.b
+    if b == nil || fusing(c) == nil { return t }
+    for k in fi.widen { if k >= 0 { b.fuse.widens[k].to = t } }
+    graph_fuse_typed(b, fi.slot, t)
+    p := graph_var(b, "if", fi.slot, t, e.span)
+    switch {
+    case want == .Value:                        fuse_done(c, graph_read(b, p, t, e.span))
+    case want != .Place || graph_aggregate(t):  fuse_done(c, p, true)
+    case:                                       fuse_fail(c, "an if's place, of no aggregate")
+    }
+    return t
+}
+
+// A branch's value, stored in the if's local, in its run.
+fuse_if_branch :: proc(c: ^Checker, e: ^Expr_If, branch: Expr, env: ^Type_Scope, fi: ^Fuse_If, k: int) -> Type {
+    if fi.b == nil { return check_expr(c, branch, env) }
+    b := fi.b
+    t, r := fuse_expr(c, branch, env, .Into, dest = graph_dest_var("if", fi.slot, nil))
+    if fusing(c) == nil || r.into { return t }
+    _, is_array := distinct_base(t).(^Type_Fixed_Array)
+    if is_array || graph_partial_of(t) || fuse_builds_into(branch) || fuse_byte_index(branch) {
+        fuse_fail(c, "an if's branch viewed, built in place, or of bytes")
+        return t
+    }
+    n := len(b.fuse.widens)
+    val := graph_fuse_widen(b, fuse_value(c, r, branch, t), e.span, {pending = true})
+    if len(b.fuse.widens) > n { fi.widen[k] = n }
+    graph_fuse_write_at(b, graph_var(b, "if", fi.slot, nil, e.span), val, e.span)
+    return t
+}
+
+check_if_expr_impl :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope, fi: ^Fuse_If) -> Type {
+    cond_type: Type
+    cond: Fused
+    if fi.b != nil { cond_type, cond = fuse_expr(c, e.condition, env, .Value, fi.w) } else { cond_type = check_expr(c, e.condition, env) }
+    if !is_any(cond_type) {
+        if _, is_bool := cond_type.(Type_Bool); !is_bool {
+            check_error(c, e.span, TYPE_EXPRESSION_CONDITION_BOOL, type_name(cond_type))
+        }
+    }
+    if fi.b != nil && fusing(c) != nil { fi.gi = graph_fuse_if_expr(fi.b, cond.v, fi.w, e.span) }
+    then_type := fuse_if_branch(c, e, e.then_expr, env, fi, 0)
+    if fi.b != nil && fusing(c) != nil { graph_fuse_if_expr_else(fi.b, &fi.gi) }
+    else_type := fuse_if_branch(c, e, e.else_expr, env, fi, 1)
+    if fi.b != nil && fusing(c) != nil { graph_fuse_if_expr_end(fi.b, &fi.gi) }
+    // Unify: if either is untyped/infer, adopt the other
+    if is_untyped(then_type) || is_infer(then_type) { return else_type }
+    if is_untyped(else_type) || is_infer(else_type) { return then_type }
+    if types_incompatible(then_type, else_type) {
+        check_error(c, e.span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS,
+            type_name(then_type), type_name(else_type))
+    }
+    return then_type
+}
+
 check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Scope) -> Type {
     // Broadcast literal `{all <expr>}`: expand_broadcast_array_literal
     // has already validated and populated array_values, and set e.type_
@@ -11661,6 +11742,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
         // a normal union, the bare pointer for a niche one).
         if ut, ut_ok := distinct_base(hint).(^Type_Union); ut_ok && e.name != "" && e.name in ut.tag_map {
             if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
+                e.type_ = ut   // (its fields are built at it)
                 check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return ut   // node types as the union; codegen materializes the variant from e.name
             }
@@ -11680,8 +11762,8 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     if e.name != "" {
         if ut := variant_owner_union(c, e.name); ut != nil {
             if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
+                e.type_ = ut   // (its fields are built at it)
                 check_struct_literal_fields(c, e, &st.sd, e.span, env)
-                e.type_ = ut
                 return ut
             }
         }
@@ -12088,22 +12170,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         e.type_ = resolved
         return resolved
     case ^Expr_If:
-        cond_type := check_expr(c, e.condition, env)
-        if !is_any(cond_type) {
-            if _, is_bool := cond_type.(Type_Bool); !is_bool {
-                check_error(c, e.span, TYPE_EXPRESSION_CONDITION_BOOL, type_name(cond_type))
-            }
-        }
-        then_type := check_expr(c, e.then_expr, env)
-        else_type := check_expr(c, e.else_expr, env)
-        // Unify: if either is untyped/infer, adopt the other
-        if is_untyped(then_type) || is_infer(then_type) { return else_type }
-        if is_untyped(else_type) || is_infer(else_type) { return then_type }
-        if types_incompatible(then_type, else_type) {
-            check_error(c, e.span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS,
-                type_name(then_type), type_name(else_type))
-        }
-        return then_type
+        return check_if_expr(c, e, env)
     case ^Expr_Compiler_Intrinsic:
         switch e.kind {
         case .Caller_Name:
@@ -12458,7 +12525,9 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
     }
     obj_type: Type
     if ff != nil {
-        obj_type, ff.base = fuse_expr(c, e.expr, env, .Either)
+        // (A call is only a member's base: its place, a temporary.)
+        _, of_call := e.expr.(^Expr_Call)
+        obj_type, ff.base = fuse_expr(c, e.expr, env, .Place if of_call else .Either, temp_span = e.span)
         ff.base_type = obj_type
     } else {
         obj_type = check_expr(c, e.expr, env)
@@ -14184,6 +14253,25 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // construction: into where it goes, or a temporary).
     want, w := fuse_asked(c)
     dest, into_temp, temp_span := c.asked_dest, c.asked_temp, c.asked_span
+    // Its place (graph_place's): a temporary made first, the call stored in
+    // it — built there, a construction — at the use's span.
+    place_slot := NO_NODE
+    if b := fusing(c); b != nil && want == .Place {
+        if temp_span == {} { temp_span = e.span }
+        place_slot = graph_slot(b, "temp", nil, temp_span)
+        want, dest = .Into, graph_dest_var("temp", place_slot, nil)
+    }
+    defer if b := fusing(c); b != nil && place_slot != NO_NODE {
+        r := c.fused
+        t := e.type_ if e.type_ != nil else fn_primary_return(e.resolved_func.?.callee) if e.resolved_func != nil && e.resolved_func.?.callee != nil else nil
+        if !r.ok {
+            fuse_fail(c, "a call's place")
+        } else {
+            if !r.into { graph_fuse_write_at(b, graph_var(b, "temp", place_slot, nil, temp_span), r.v, temp_span) }
+            graph_fuse_typed(b, place_slot, t)
+            fuse_done(c, graph_var(b, "temp", place_slot, t, temp_span), true)
+        }
+    }
     fc := Fuse_Call{w = w}
     defer delete(fc.ops)
     saved_call := c.call
@@ -14684,7 +14772,7 @@ check_index_impl :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope, fi: ^Fus
     base_type: Type
     if fi != nil {
         base: Fused
-        base_type, base = fuse_expr(c, e.expr, env, .Place)
+        base_type, base = fuse_expr(c, e.expr, env, .Place, temp_span = e.span)
         fi.base = base.v
         if b := fusing(c); b != nil {
             if pt, is_ptr := distinct_base(base_type).(^Type_Ptr); is_ptr {

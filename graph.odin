@@ -2029,7 +2029,6 @@ graph_op_value :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span,
 
 // A variable's place; `decl` is its declaration when known here (the rest are
 // resolved with refers-to, next step).
-@(private="file")
 graph_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, span: Span) -> Operand {
     decl := decl
     if decl == NO_NODE { decl = graph_lookup(b, name) }
@@ -3523,6 +3522,7 @@ Graph_Widen :: struct {
     t:         Type,
     read:      Node_Id,
     slice:     Node_Id,
+    pending:   bool,   // `to` is set once known (an if expression's type)
 }
 
 // Start building a fun's body as the checker checks it, or nil — the builder
@@ -3611,7 +3611,7 @@ graph_fuse_widen :: proc(b: ^Graph_Builder, v: Operand, span: Span, w: Graph_Wid
     if _, _, num := numeric_info(graph_settled(from)); !num { return v }
     if is_infer(from) && infer_cell_of(from) == nil { return v }
     // Where no width is still open, decided now.
-    if !w.binary && !graph_open_width(from) {
+    if !w.binary && !w.pending && !graph_open_width(from) {
         to := w.to
         if w.sig != nil { to = w.sig.params[w.param].type_ if w.param < len(w.sig.params) else nil }
         if !graph_open_width(to) && !(w.sig != nil && graph_param_open(w.sig, w.param)) {
@@ -4040,6 +4040,30 @@ graph_fuse_defer_end :: proc(b: ^Graph_Builder, gd: Graph_Defer) {
     graph_code_end(b, gd.saved)
     append(&b.code.scopes[len(b.code.scopes) - 1].defers, gd.d)
     graph_close(b, gd.d)
+}
+
+// An `if` expression's runs (graph_if_place): the branch on its condition,
+// each branch's run, and the join.
+Graph_If_Expr :: struct {
+    yes, no, join: ^Run,
+    span:          Span,
+}
+
+graph_fuse_if_expr :: proc(b: ^Graph_Builder, cond: Operand, w: Written, span: Span) -> Graph_If_Expr {
+    gi := Graph_If_Expr{yes = graph_run_new(b), no = graph_run_new(b), join = graph_run_new(b), span = span}
+    graph_branch(b, cond, gi.yes, gi.no, w, span)
+    b.code.run = gi.yes
+    return gi
+}
+
+graph_fuse_if_expr_else :: proc(b: ^Graph_Builder, gi: ^Graph_If_Expr) {
+    graph_jump(b, gi.join, .Synthetic, gi.span)
+    b.code.run = gi.no
+}
+
+graph_fuse_if_expr_end :: proc(b: ^Graph_Builder, gi: ^Graph_If_Expr) {
+    graph_jump(b, gi.join, .Synthetic, gi.span)
+    b.code.run = gi.join
 }
 
 // A value written to a place already built.
