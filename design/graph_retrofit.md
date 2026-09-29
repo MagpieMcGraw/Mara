@@ -762,9 +762,10 @@ erroneous program reports, the negative fixtures say so.
       declaration (`literal_matched`), a union's variant literal too; a positional literal's one
       value probed as a spread and checked again (only a call is probed now); a broadcast's first
       target took the probed value itself (each target a copy now). What stays is what the graph
-      evaluates as often: a compound assignment's target (its place and its read), a default
-      shared by several params (once per param). Left for fusion: a tuple default's source call,
-      which the graph evaluates once (its cache), is checked once per slot. Graph identical (275
+      evaluates as often: a default shared by several params (once per param). Left for fusion,
+      where the graph caches what the checker checks twice: a compound assignment's target (the
+      graph computes its place once and reads it there) and a tuple default's source call (the
+      graph calls it once), each checked once per use. Graph identical (275
       programs), IR byte-identical, runs, suite, goldens and the corpus.
 - [x] One ordered walk per body: a function's or struct's code, and every block, checked
       statement by statement in the order it runs (the two passes merged); a local visible from
@@ -777,10 +778,18 @@ erroneous program reports, the negative fixtures say so.
       (`test/use_before_decl_neg.mara`). Graph identical in all 274 programs (diagnostics come
       in the walk's order: graphdiff sorts them, as irdiff does), IR byte-identical, runs
       identical (187), suite, ask goldens and the corpus.
-- [ ] Segments: one fun's or struct's graph built on its own and placed afterwards in the
-      canonical order (the checker finishes bodies out of order); the checker builds each body's
-      graph when it finishes checking it
-- [ ] Fusion: the walk builds operations as it checks — an expression gives its operand beside
+- [x] Segments: one fun's or struct's graph built on its own and placed afterwards in the
+      canonical order (the checker finishes bodies out of order)
+      A scope's contents (params, results, code) can be built at any time, in a segment of its
+      own, anchored where its scope node is: `graph_canonicalize` walks the segments depth-first
+      and lays out nodes, operands, runs, statements and spans as one build in written order
+      would, every id renumbered. `MARA_GRAPH_SHUFFLE=1` (debug builds) defers every scope's
+      contents and builds them last first; `test/graphdiff.sh -s` requires that graph to be the
+      normal one: identical in all 275 programs. (Anchors will need to be positions rather than
+      nodes once a scope's contents can come before its node — a nested definition checked
+      before its parent's code — and instances will anchor at their template, by name.)
+- [ ] Fusion: the checker builds each body's graph as it checks it — it finishes bodies out of
+      order, the segments put them in place — and the walk builds operations as it checks — an expression gives its operand beside
       its type, a store builds into its destination — construct by construct, the builder's case
       deleted as each moves; a body the checker can't build yet is built by the builder, from the
       annotations, as phase 3 did per function

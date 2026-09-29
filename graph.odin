@@ -280,6 +280,44 @@ Graph_Builder :: struct {
     // globals waiting to name theirs.
     const_decls: map[rawptr]Node_Id,
     tables:      [dynamic]Graph_Table,
+    // Segments: a scope's contents built on their own, at any time, then put
+    // where the scope is (graph_canonicalize). MARA_GRAPH_SHUFFLE=1 (debug
+    // builds) defers every scope's contents and builds them last first — the
+    // graph must come out the same.
+    segs:    [dynamic]Graph_Segment,
+    seg:     int,
+    tasks:   [dynamic]Graph_Task,
+    shuffle: bool,
+}
+
+// What one build of contents made: the ranges of nodes, closed runs,
+// statements and unreachable spans it added, and the scopes whose contents
+// were left to a segment of their own, where each goes.
+@(private="file")
+Graph_Segment :: struct {
+    nodes, runs, stmts, unreach: [2]int,
+    anchors: [dynamic]Graph_Anchor,
+}
+
+// A scope node made here whose contents are segment `seg`: they go right
+// after it, and its runs, statements and spans where this segment's counts
+// stood when it was made.
+@(private="file")
+Graph_Anchor :: struct {
+    node:                  Node_Id,
+    seg:                   int,
+    runs, stmts, unreach: int,
+}
+
+// A scope's contents waiting to be built: at the statement its scope is.
+@(private="file")
+Graph_Task :: struct {
+    ts:           ^Type_Scope,
+    s:            ^Stmt_Scope,
+    n:            Node_Id,
+    written:      Written,
+    stmt:         i32,
+    seg, anchor:  int,
 }
 
 @(private="file")
@@ -392,6 +430,8 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
         delete(b.tables)
     }
     graph_index(&b)
+    when ODIN_DEBUG { b.shuffle = os.get_env("MARA_GRAPH_SHUFFLE", context.temp_allocator) == "1" }
+    append(&b.segs, Graph_Segment{})   // the program's own: its modules' declarations
 
     // The compiler's own globals, which code names but never declares.
     b.program = graph_node(&b, .Module, .Synthetic, NO_NODE, "program", nil, {})
@@ -412,9 +452,23 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
         for s in programs[name]^ { graph_stmt(&b, s, m, {kind = .Field}) }
         graph_close(&b, m)
     }
+    graph_segment_end(&b, 0)
+    // The contents left for later, the last first; each may leave more.
+    for len(b.tasks) > 0 {
+        t := pop(&b.tasks)
+        si := len(b.segs)
+        append(&b.segs, Graph_Segment{nodes = {b.nodes, 0}, runs = {len(g.run_first), 0},
+            stmts = {len(g.stmts), 0}, unreach = {len(g.unreachable), 0}})
+        b.segs[t.seg].anchors[t.anchor].seg = si
+        b.seg, b.stmt = si, t.stmt
+        graph_scope_contents(&b, t.ts, t.s, t.n, t.written)
+        b.seg, b.stmt = 0, -1
+        graph_segment_end(&b, si)
+    }
     graph_resize(&g, b.nodes)
     append(&g.operand_first, i32(len(g.operands)))
     append(&g.run_first, i32(len(g.run_ops)))
+    if len(b.segs) > 1 { graph_canonicalize(&b) }
     graph_link_calls(&b)
     graph_settle_literals(&b)
     graph_resolve_defs(&b)
@@ -431,6 +485,121 @@ build_program_graph :: proc(checked: ^Checked_Program, programs: map[string]^Pro
     }
     graph_dump(&g)
     return g
+}
+
+// A segment's ranges end where the builder's counts stand now.
+@(private="file")
+graph_segment_end :: proc(b: ^Graph_Builder, si: int) {
+    s := &b.segs[si]
+    s.nodes[1], s.runs[1], s.stmts[1], s.unreach[1] = b.nodes, len(b.g.run_first), len(b.g.stmts), len(b.g.unreachable)
+}
+
+// Put every segment where its scope is: the nodes in the order one build in
+// written order makes them — each scope's contents right after its node — and
+// the runs, statements and unreachable spans where they would have come; every
+// id that names one of them renumbered. (A build in written order is already
+// canonical; this is for contents built out of order.)
+@(private="file")
+graph_canonicalize :: proc(b: ^Graph_Builder) {
+    g := b.g
+    n := b.nodes
+    // Each segment's items in order, a nested segment's where its anchor says.
+    Item :: enum { Node, Run, Stmt, Unreach }
+    walk :: proc(b: ^Graph_Builder, si: int, item: Item, out: ^[dynamic]int) {
+        s := b.segs[si]
+        lo, hi: int
+        switch item {
+        case .Node:    lo, hi = s.nodes[0], s.nodes[1]
+        case .Run:     lo, hi = s.runs[0], s.runs[1]
+        case .Stmt:    lo, hi = s.stmts[0], s.stmts[1]
+        case .Unreach: lo, hi = s.unreach[0], s.unreach[1]
+        }
+        at :: proc(a: Graph_Anchor, item: Item) -> int {
+            switch item {
+            case .Node:    return int(a.node) + 1   // right after the scope's node
+            case .Run:     return a.runs
+            case .Stmt:    return a.stmts
+            case .Unreach: return a.unreach
+            }
+            return 0
+        }
+        k := 0
+        for i in lo ..= hi {
+            for k < len(s.anchors) && at(s.anchors[k], item) == i {
+                if s.anchors[k].seg >= 0 { walk(b, s.anchors[k].seg, item, out) }
+                k += 1
+            }
+            if i < hi { append(out, i) }
+        }
+    }
+    order: [Item][dynamic]int
+    defer for o in order { delete(o) }
+    for item in Item { walk(b, 0, item, &order[item]) }
+    nodes, runs, stmts, unreach := order[.Node][:], order[.Run][:], order[.Stmt][:], order[.Unreach][:]
+    assert(len(nodes) == n && len(runs) == len(g.run_first) - 1 && len(stmts) == len(g.stmts))
+    new_id := make([]Node_Id, n)
+    defer delete(new_id)
+    for old, i in nodes { new_id[old] = Node_Id(i) }
+    re :: proc(new_id: []Node_Id, id: Node_Id) -> Node_Id { return id if id == NO_NODE else new_id[id] }
+    new_stmt := make([]i32, len(g.stmts))
+    defer delete(new_stmt)
+    for old, i in stmts { new_stmt[old] = i32(i) }
+
+    // The nodes' columns, and their operands.
+    ng: Program_Graph
+    graph_resize(&ng, n)
+    for old, i in nodes {
+        ng.kind[i], ng.op[i], ng.written[i] = g.kind[old], g.op[old], g.written[old]
+        ng.parent[i] = re(new_id, g.parent[old])
+        ng.last[i] = Node_Id(i)
+        ng.name[i], ng.type_[i], ng.origin[i] = g.name[old], g.type_[old], g.origin[old]
+        ng.refers[i] = re(new_id, g.refers[old])
+        ng.stmt[i] = g.stmt[old] if g.stmt[old] < 0 else new_stmt[g.stmt[old]]
+        ng.operand_first[i] = i32(len(ng.operands))
+        for o in g.operands[g.operand_first[old]:g.operand_first[old + 1]] {
+            append(&ng.operands, Operand{re(new_id, o.op), o.out})
+        }
+    }
+    append(&ng.operand_first, i32(len(ng.operands)))
+    // A subtree is one run of ids: each node's last is its last descendant's.
+    for i := n - 1; i >= 0; i -= 1 {
+        if p := ng.parent[i]; p != NO_NODE && ng.last[i] > ng.last[p] { ng.last[p] = ng.last[i] }
+    }
+    for old in runs {
+        append(&ng.run_first, i32(len(ng.run_ops)))
+        for op in g.run_ops[g.run_first[old]:g.run_first[old + 1]] { append(&ng.run_ops, new_id[op]) }
+    }
+    append(&ng.run_first, i32(len(ng.run_ops)))
+    for e in g.edges {
+        append(&ng.edges, Edge{from = re(new_id, e.from), to = re(new_id, e.to), kind = e.kind, written = e.written, site = re(new_id, e.site)})
+    }
+    for old in stmts { append(&ng.stmts, g.stmts[old]) }
+    for old in unreach { append(&ng.unreachable, g.unreachable[old]) }
+    for id in g.settled { append(&ng.settled, new_id[id]) }
+    slice.sort(ng.settled[:])
+    for ts, id in g.scope_node { ng.scope_node[ts] = new_id[id] }
+    for id, c in g.consts { ng.consts[new_id[id]] = c }
+    for id, s in g.assert_sides { ng.assert_sides[new_id[id]] = s }
+    for id, e in g.const_values { ng.const_values[new_id[id]] = e }
+
+    // What the builder still holds by id.
+    for &c in b.calls { c.op = new_id[c.op] }
+    for &t in b.tables { t.global = new_id[t.global] }
+    for k, id in b.const_decls { b.const_decls[k] = new_id[id] }
+    b.program = new_id[b.program]
+    graph_free_columns(g)
+    g^ = ng
+}
+
+// The storage of a graph's columns and tables, before it is replaced.
+@(private="file")
+graph_free_columns :: proc(g: ^Program_Graph) {
+    delete(g.kind); delete(g.op); delete(g.written); delete(g.parent); delete(g.last)
+    delete(g.name); delete(g.type_); delete(g.origin); delete(g.refers); delete(g.stmt)
+    delete(g.operands); delete(g.operand_first); delete(g.run_ops); delete(g.run_first)
+    delete(g.edges); delete(g.out_first); delete(g.in_edges); delete(g.in_first)
+    delete(g.scope_node); delete(g.stmts); delete(g.unreachable); delete(g.settled)
+    delete(g.consts); delete(g.assert_sides); delete(g.const_values)
 }
 
 // A type with its `:=` bindings' deferred widths settled — the one each
@@ -3014,6 +3183,22 @@ graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, par
     name := s.name if written == .Explicit else ask_demangle(ts.name, ts.home_package)
     n := graph_node(b, kind, written, parent, name, ts, s.span)
     b.g.scope_node[ts] = n
+    if b.shuffle {
+        // Its contents later, in a segment of their own, put back right here.
+        seg := &b.segs[b.seg]
+        append(&seg.anchors, Graph_Anchor{node = n, seg = -1, runs = len(b.g.run_first),
+            stmts = len(b.g.stmts), unreach = len(b.g.unreachable)})
+        append(&b.tasks, Graph_Task{ts = ts, s = s, n = n, written = written, stmt = b.stmt,
+            seg = b.seg, anchor = len(seg.anchors) - 1})
+        return
+    }
+    graph_scope_contents(b, ts, s, n, written)
+}
+
+// A scope's contents: its params and results, then its code.
+@(private="file")
+graph_scope_contents :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, n: Node_Id, written: Written) {
+    kind := b.g.kind[n]
     // A fresh set of names: its params, named results and locals.
     saved_base, saved_len, saved_self := b.fn_base, len(b.names), b.self
     b.fn_base = saved_len
