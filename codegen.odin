@@ -432,12 +432,7 @@ Codegen :: struct {
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
     release: bool,   // -release build mode — -O3; asserts stay ON
     no_assert: bool, // -no assert — compile asserts out entirely
-    // Phase 3 (design/graph_retrofit.md): emit a function from the program graph
-    // when llvm.odin handles every operation in it. MARA_GRAPH_CG=0 turns it
-    // off, to compare with the syntax-tree emitter; MARA_GRAPH_CG=log lists
-    // each fun it lowers.
-    graph_cg:     bool,
-    graph_cg_log: bool,
+    // Every function's code comes from the program graph (llvm.odin).
     run_starts:  map[Node_Id]i32,   // the graph's runs by first operation, read-only
     // Inside an assert/crash fail block (native builds): print-shaped
     // emissions route through __mara_tee_printf, which mirrors the message
@@ -1724,11 +1719,10 @@ module_codegen_worker :: proc(t: thread.Task) {
     for fn_name in task.fn_names {
         cf, cf_ok := task.checked.functions[fn_name]
         if !cf_ok { continue }
-        if local.graph_cg && llvm_function(&local, cf) {
-            if local.graph_cg_log { fmt.eprintln("graph-cg:", fn_name) }
-        } else {
-            gen_scope_def(&local, cf)
-        }
+        // Foreigns and intrinsics have no body: a call goes through its
+        // `declare` and link name, or expands where it is.
+        if _, src := cf.origin.(Origin_Source); !src { continue }
+        llvm_function(&local, cf)
     }
     flush_current_module(&local)
 
@@ -1755,8 +1749,6 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.shared             = task.shared_mode
     g.release            = task.main_g.release
     g.no_assert          = task.main_g.no_assert
-    g.graph_cg           = task.main_g.graph_cg
-    g.graph_cg_log       = task.main_g.graph_cg_log
     g.run_starts         = task.main_g.run_starts
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
@@ -3377,9 +3369,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.shared = shared
     g.release = release
     g.no_assert = no_assert
-    graph_cg := os.get_env("MARA_GRAPH_CG", context.temp_allocator)
-    g.graph_cg, g.graph_cg_log = graph_cg != "0", graph_cg == "log"
-    if g.graph_cg { g.run_starts = graph_run_starts(&checked.graph) }
+    g.run_starts = graph_run_starts(&checked.graph)
     word_size_is_32 = web
     init_slice_layout()
 
@@ -3622,49 +3612,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         // far from the cause.
         codegen_fatal(&g, {}, "`main` was declared but never extracted as a function")
     }
-    // Main's body from the graph, else the syntax tree's emitter.
-    if g.graph_cg && llvm_main(&g, main_cf) {
-        if g.graph_cg_log { fmt.eprintln("graph-cg: main") }
-    } else {
-        // Enable alloca hoisting for main body
-        begin_alloca_hoist(&g)
-
-        // Emit the user's main body. main lowers to `i64 @main` (C entry-point
-        // convention), so a bare `return` inside main must terminate with
-        // `ret i64 0`. Setting current_ret_type wires this into the bare-return
-        // codepath in gen_return.
-        prev_ret_type := g.current_ret_type
-        g.current_ret_type = "i64"
-        // Wrap the body in a Main_Body scope so `defer` works in main exactly as
-        // in any other function — previously main had no scope entry at all, so a
-        // top-level `defer` hit "defer outside of any scope". has_mark is forced
-        // false (not via push_scope): main is where the arena is created
-        // (`this_program = Program(...)`), so its own body can't be the target of
-        // an arena mark/reset — push_scope would emit_arena_mark before the arena
-        // exists. This scope is for defer tracking only; nested scopes inside
-        // main still mark/reset normally.
-        append(&g.scope_stack, Scope_Entry{has_mark = false, scope_kind = .Main_Body})
-        has_ret := false
-        for s in main_cf.body {
-            gen_stmt(&g, s)
-            if _, ok := s.(Stmt_Return); ok {
-                has_ret = true
-            }
-        }
-        if !has_ret {
-            pop_scope(&g)   // emit main's deferred blocks before the default ret (no reset)
-            emit(&g, "  ret i64 0")
-        } else {
-            // an explicit top-level return already emitted main's defers
-            if len(g.scope_stack) > 0 { pop(&g.scope_stack) }
-        }
-        g.current_ret_type = prev_ret_type
-
-        // Flush: hoisted allocas first, then body code
-        end_alloca_hoist(&g)
-
-        emit(&g, "}")
-    }
+    // Main's body, from the graph.
+    llvm_main(&g, main_cf)
 
     // Web wrapper: `i32 @main(i32, ptr)` calling our i64 mara main and
     // truncating the return code so emscripten's runtime sees a regular int.

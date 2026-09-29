@@ -12,10 +12,9 @@ import "core:strings"
 // alloca at the top of the entry block; a scalar param is its argument; a
 // synthetic scalar local written once, before every read, is just that value.
 //
-// The worker loop asks llvm_function for every fun. It emits into a scratch
-// buffer and declines — having emitted nothing — the moment it meets what it
-// doesn't lower yet; the syntax-tree emitter (codegen_fn.odin) does those,
-// until it does nothing and is deleted.
+// The worker loop asks llvm_function for every fun with a body, the
+// program's setup llvm_main for main's. What it doesn't lower is an error at
+// the operation it stopped at.
 // ---------------------------------------------------------------------------
 
 // One fun's emission.
@@ -59,80 +58,63 @@ Llvm :: struct {
     out_user: map[Operand]Node_Id,      // each output's user, as `user` is each operation's (-2: several)
     update:  map[Node_Id]bool,          // a call updating its destination in place (llvm_in_place_updates)
     alias:   map[Node_Id]Node_Id,       // an operation that is another, computed already: its value that one's
-    why:     Node_Id,             // where it declined (for MARA_GRAPH_CG=log)
+    why:     Node_Id,             // where it stopped, when it can't lower something (llvm_decline)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
 }
 
-// Emit a fun from the graph. False, having emitted nothing, when some part of
-// it isn't lowered yet.
-llvm_function :: proc(g: ^Codegen, cf: ^Type_Scope) -> bool {
-    if _, src := cf.origin.(Origin_Source); !src { return false }
+// Emit a fun with a body from the graph.
+llvm_function :: proc(g: ^Codegen, cf: ^Type_Scope) {
     g.tmp_counter, g.label_counter = 0, 0
     g.emitted_allocas = {}
-    return llvm_code(g, cf, main = false)
+    llvm_code(g, cf, main = false)
 }
 
 // Main's body, after the program's setup (emit_main_prologue) — `@main`'s
 // `define` and entry the caller has written. Its falling off the end, or a
 // bare return, returns 0.
-llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope) -> bool {
-    // A decline leaves the syntax tree's emitter what it found: the counters,
-    // and no allocas named (it would take one for its own, and skip it).
-    tmp, label := g.tmp_counter, g.label_counter
-    named := make(map[string]string, len(g.emitted_allocas), context.temp_allocator)
-    for k, v in g.emitted_allocas { named[k] = v }
-    if llvm_code(g, cf, main = true) { return true }
-    g.tmp_counter, g.label_counter = tmp, label
-    clear(&g.emitted_allocas)
-    for k, v in named { g.emitted_allocas[k] = v }
-    return false
+llvm_main :: proc(g: ^Codegen, cf: ^Type_Scope) {
+    llvm_code(g, cf, main = true)
 }
 
 @(private="file")
-llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) -> bool {
+llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
     pg := &g.checked.graph
     node, ok := pg.scope_node[cf]
-    if !ok || (pg.kind[node] != .Fun && pg.kind[node] != .Struct) { return false }
+    if !ok || (pg.kind[node] != .Fun && pg.kind[node] != .Struct) { codegen_fatal(g, {}, CODE_GRAPH_NO_SCOPE, cf.name) }
     e := Llvm{g = g, pg = pg, ft = cf, node = node, ctor = pg.kind[node] == .Struct, main = main}
     e.own = graph_code_runs(pg, g.run_starts, node, &e.runs)
-    if e.own == 0 { return false }   // no code
+    if e.own == 0 { codegen_fatal(g, {}, CODE_GRAPH_NO_CODE, cf.name) }
     size := int(pg.last[node] - node) + 1
     e.value = make([]string, size)
     e.held = make([]bool, size)
 
-    // Emit as the old emitter does, allocas hoisted: every alloca into the
-    // entry's buffer in the order code first needs it, the rest into the
-    // body's. Keep them only when every part lowered: the `define`, the
-    // entry's field addresses and allocas, then the body.
+    // Allocas hoisted: every alloca into the entry's buffer in the order code
+    // first needs it, the rest into the body's; then the `define`, the entry's
+    // field addresses and allocas, and the body.
     begin_alloca_hoist(g)
     e.why = node
-    lowered := llvm_emit(&e)
+    if !llvm_emit(&e) { llvm_decline(&e) }
     g.hoist_allocas = false
-    if !lowered && g.graph_cg_log { llvm_why(&e) }
-    if lowered {
-        if !main {
-            strings.write_string(&g.out, e.head)
-            strings.write_string(&g.out, "\nentry:\n")
-        }
-        strings.write_string(&g.out, strings.to_string(e.fields))
-        strings.write_string(&g.out, strings.to_string(g.alloca_buf))
-        strings.write_string(&g.out, strings.to_string(g.body_buf))
+    if !main {
+        strings.write_string(&g.out, e.head)
+        strings.write_string(&g.out, "\nentry:\n")
     }
-    return lowered
+    strings.write_string(&g.out, strings.to_string(e.fields))
+    strings.write_string(&g.out, strings.to_string(g.alloca_buf))
+    strings.write_string(&g.out, strings.to_string(g.body_buf))
 }
 
-// Where a fun was declined: the operation or variable it stopped at (the fun
-// itself for its signature).
+// What the graph's emitter doesn't lower: an error at the operation or
+// variable it stopped at (the fun itself for its signature).
 @(private="file")
-llvm_why :: proc(e: ^Llvm) {
+llvm_decline :: proc(e: ^Llvm) -> ! {
     pg := e.pg
     at := e.why
     what := graph_kind_word(pg.kind[at])
     if pg.kind[at] == .Op { what = graph_op_word(pg.op[at]) }
-    s := pg.origin[at]
     note := fmt.tprintf(" (%s)", e.note) if e.note != "" else ""
-    fmt.eprintfln("graph-cg no: %s at %s '%s' %s:%d%s", e.ft.name, what, pg.name[at], s.file, s.line, note)
+    codegen_fatal(e.g, pg.origin[at], CODE_GRAPH_DECLINED, e.ft.name, what, pg.name[at], note)
 }
 
 @(private="file")
@@ -1244,7 +1226,8 @@ llvm_place :: proc(e: ^Llvm, place: Node_Id) -> string {
 // A named result: a local the code writes, where the old emitter kept it. With
 // several results, a struct or fixed array in the caller's slot for it, a
 // register value a local of its own, zeroed first; a single struct result the
-// result slot itself, its partial arrays' headers stamped first.
+// result slot itself, its partial arrays' headers stamped first; a single
+// register value a plain local.
 @(private="file")
 llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
     g, pg := e.g, e.pg
@@ -1268,6 +1251,9 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
         }
         return true
     }
+    // A single register value: a local like any other, its alloca where the
+    // code first needs it (llvm_storage).
+    if e.sret == nil && !e.ctor && llvm_scalar(t) { return true }
     st := llvm_struct(t)
     if e.sret == nil || st == nil || e.ctor { e.note = "a named result"; return false }
     e.value[d - e.node] = e.slot
