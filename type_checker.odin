@@ -1612,6 +1612,17 @@ SymbolTable :: struct {
 // ---------------------------------------------------------------------------
 
 Checker :: struct {
+    // MARA_CHECK_ONCE=1 (debug builds): each statement of a body's code is
+    // numbered, and an expression checked twice within one is reported — the
+    // walk that builds the graph must meet each once (design/graph_retrofit.md,
+    // phase 4).
+    once_stmt:       int,
+    once_seen:       map[rawptr][2]int,   // an expression → the statement it was last checked in, and how often
+    once_on:         bool,
+    // A method call's receiver, checked to find its struct: the argument it
+    // becomes is not checked again (check_call_args), one check per node.
+    receiver:        Expr,
+    receiver_type:   Type,
     table:           ^SymbolTable,
     errors:          int,
     current_package: string,
@@ -5519,7 +5530,12 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
     }
     register_and_check_declarations(c, defs[:], env, owner, public_env)
     check_bodies(c, defs[:], env)
+    when ODIN_DEBUG {
+        saved_stmt := c.once_stmt   // the enclosing statement's, when this is its block
+        defer c.once_stmt = saved_stmt
+    }
     for i in 0 ..< len(code) {
+        when ODIN_DEBUG { c.once_stmt += 1 }
         register_and_check_declarations(c, code[i:i + 1], env, owner, public_env)
         check_bodies(c, code[i:i + 1], env)
     }
@@ -7022,7 +7038,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 value_needs_literal_handling := val_is_struct_lit || byte_read
                 // Validate assignment compatibility (same as in check_assign)
                 if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 && value_needs_literal_handling {
-                    check_struct_literal_assign(c, s.span, s.value, sd, env)
+                    if !literal_matched(s.value, check_ann) { check_struct_literal_assign(c, s.span, s.value, sd, env) }
                     // Byte-buffer reinterpret read into a struct (slice form): a
                     // span shorter than the struct is a partial fill (tail zero);
                     // only a span LARGER than the struct overruns it -> error.
@@ -7045,7 +7061,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     continue
                 }
                 if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
-                    check_union_literal_assign(c, s.span, s.value, ut, env)
+                    if !literal_matched(s.value, check_ann) { check_union_literal_assign(c, s.span, s.value, ut, env) }
                     s.var_type = distinct_base(ann_type)
                     s.env_type = ann_type
                     type_env_set(env, s.name, ann_type)
@@ -7401,12 +7417,14 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                         // gen_broadcast_assign built Stmt_Assigns at codegen time with
                         // hand-set fields; real type-checked assigns lower correctly.
                         // The RHS is re-evaluated per target — bind an effectful RHS to
-                        // a local first if exactly-once evaluation matters.
+                        // a local first if exactly-once evaluation matters. Each
+                        // target's is a copy, checked once as its own (the value
+                        // itself was checked above, to tell the forms apart).
                         for name, i in s.names {
                             a := new(Stmt_Assign)
                             a.span = s.span
                             a.is_decl = s.is_decl
-                            a.value = i == 0 ? s.values[0] : clone_expr(s.values[0])
+                            a.value = clone_expr(s.values[0])
                             if name != "" {
                                 a.name = name
                             } else if i < len(s.targets) && s.targets[i] != nil {
@@ -8338,9 +8356,11 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         // Foo's fields one-to-one (with normal compatibility, including
         // array→slice coercion). Codegen detects the same pattern and routes
         // the call's sret args into temps then into the struct.
-        if len(lit.fields) == 1 && len(st.fields) > 1 {
+        // (Only a call can be one; its type is the positional path's too.)
+        probed: Type
+        if _, is_call := lit.fields[0].value.(^Expr_Call); is_call && len(lit.fields) == 1 && len(st.fields) > 1 {
             single_val := lit.fields[0].value
-            check_expr(c, single_val, env)
+            probed = check_expr(c, single_val, env)
             returns := call_return_list(c, single_val, env)
             if len(returns) == len(st.fields) {
                 all_ok := true
@@ -8373,7 +8393,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
             if needs_field_type_hint(field.value) {
                 c.expected_hint = sf.type_
             }
-            ft := check_expr(c, field.value, env)
+            ft := probed if i == 0 && probed != nil else check_expr(c, field.value, env)
             if !coerce_deferred(c, ft, sf.type_, span) && types_incompatible(sf.type_, ft) && !value_preserving_widen(ft, sf.type_) {
                 check_error(c, span, TYPE_FIELD_POSITION_EXPECTED,
                     sf.name, i, type_name(sf.type_), type_name(ft))
@@ -8429,6 +8449,23 @@ check_literal_constructs :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, sd: ^Sc
     } else if len(ts.return_types) > 0 {
         check_error(c, lit.span, TYPE_LITERAL_CAN_FAIL, name, name)
     }
+}
+
+// Whether a literal's own check already matched its fields to type t — it
+// was typed t there (named, or by the annotation's hint; a union's variant,
+// by name): a declaration of type t doesn't match them again, so each node
+// is checked once.
+literal_matched :: proc(value: Expr, t: Type) -> bool {
+    lit, is_lit := value.(^Expr_Struct_Literal)
+    if !is_lit || lit.type_ == nil { return false }
+    if ut, is_union := t.(^Type_Union); is_union {
+        // Typed as the union, or as the variant's own struct (`Circle{1}`).
+        if lit.name not_in ut.tag_map { return false }
+        if types_equal(distinct_base(lit.type_), t) { return true }
+        st, is_struct := lit.type_.(^Type_Scope)
+        return is_struct && ut.variant_structs[lit.name] == st.name
+    }
+    return types_equal(distinct_base(lit.type_), t)
 }
 
 check_struct_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, st: ^Scope_Body, env: ^Type_Scope) {
@@ -9978,6 +10015,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     table.root_env = env
 
     c := Checker{ table = table }
+    when ODIN_DEBUG { c.once_on = os.get_env("MARA_CHECK_ONCE", context.temp_allocator) == "1" }
     checked := new(Checked_Program)
     checked.table = table
     checked.target_os = target_os
@@ -10429,6 +10467,19 @@ set_expr_type :: proc(expr: Expr, t: Type) {
 }
 
 check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
+    when ODIN_DEBUG {
+        if c.once_on && c.once_stmt > 0 && expr != nil {
+            k := expr_identity(expr)
+            seen := c.once_seen[k]
+            if seen[0] == c.once_stmt {
+                seen[1] += 1
+                if seen[1] == 2 { fmt.eprintfln("checked twice: %s", format_location(expr_span(expr).file, expr_span(expr).line, expr_span(expr).col)) }
+            } else {
+                seen = {c.once_stmt, 1}
+            }
+            c.once_seen[k] = seen
+        }
+    }
     result := check_expr_impl(c, expr, env)
     set_expr_type(expr, result)
     return result
@@ -11564,7 +11615,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
                 call_name(e), n, n == 1 ? "" : "s", len(args))
         } else {
             for arg in args {
-                check_expr(c, arg, env)
+                check_call_arg(c, arg, env)
             }
         }
     }
@@ -11580,7 +11631,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         if len(args) != 1 {
             check_error(c, e.span, TYPE_LEN_EXPECTS_ARGUMENT, len(args))
         } else {
-            arg_type := check_expr(c, args[0], env)
+            arg_type := check_call_arg(c, args[0], env)
             if !is_array_type(arg_type) && !is_any(arg_type) {
                 check_error(c, e.span, TYPE_LEN_REQUIRES_ARRAY_SLICE, type_name(arg_type))
             }
@@ -11592,14 +11643,14 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         if len(args) != 1 {
             check_error(c, e.span, TYPE_CAP_EXPECTS_ARGUMENT, len(args))
         } else {
-            arg_type := check_expr(c, args[0], env)
+            arg_type := check_call_arg(c, args[0], env)
             if !is_array_type(arg_type) && !is_any(arg_type) {
                 check_error(c, e.span, TYPE_CAP_REQUIRES_ARRAY_SLICE, type_name(arg_type))
             }
         }
         return slice_header_width_type, true
     case "print":
-        for arg in args { check_expr(c, arg, env) }
+        for arg in args { check_call_arg(c, arg, env) }
         // Format-string mode: when the first arg resolves to a string literal
         // (either inline, or an identifier bound to a `name :: "..."`
         // constant) containing unescaped `%`, validate placeholder count
@@ -11662,28 +11713,28 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         if len(args) > 1 {
             check_error(c, e.span, TYPE_CRASH_EXPECTS_ARGUMENTS, len(args))
         } else if len(args) == 1 {
-            check_expr(c, args[0], env)
+            check_call_arg(c, args[0], env)
         }
         return Type_Error{}, true
     case "print_cstr":
         if len(args) != 1 {
             check_error(c, e.span, TYPE_PRINT_CSTR_EXPECTS_ARGUMENT_BYTE, len(args))
         } else {
-            check_expr(c, args[0], env)
+            check_call_arg(c, args[0], env)
         }
         return Type_Error{}, true
     case "print_int":
         if len(args) != 1 {
             check_error(c, e.span, TYPE_PRINT_INT_EXPECTS_ARGUMENT_INT, len(args))
         } else {
-            check_expr(c, args[0], env)
+            check_call_arg(c, args[0], env)
         }
         return Type_Error{}, true
     case "print_float":
         if len(args) != 1 {
             check_error(c, e.span, TYPE_PRINT_FLOAT_EXPECTS_ARGUMENT_FLOAT, len(args))
         } else {
-            check_expr(c, args[0], env)
+            check_call_arg(c, args[0], env)
         }
         return Type_Error{}, true
     case "slice_from_ptr":
@@ -11696,7 +11747,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         if len(args) != 2 {
             check_error(c, e.span, TYPE_SLICE_PTR_EXPECTS_ARGUMENTS_PTR, len(args))
         } else {
-            ptr_type := check_expr(c, args[0], env)
+            ptr_type := check_call_arg(c, args[0], env)
             _, ptr_ok := ptr_type.(^Type_Ptr)
             if !ptr_ok && !is_any(ptr_type) {
                 check_error(c, e.span, TYPE_SLICE_PTR_FIRST_ARGUMENT_POINTER, type_name(ptr_type))
@@ -11735,7 +11786,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, call_name(e), len(args))
             return Type_CString{}, true
         }
-        src_type := check_expr(c, args[0], env)
+        src_type := check_call_arg(c, args[0], env)
         elem: Type
         #partial switch at in distinct_base(src_type) {
         case ^Type_Partial_Array: elem = at.elem
@@ -11780,7 +11831,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, call_name(e), len(args))
             return Type_Error{}, true
         }
-        src_type := check_expr(c, args[0], env)
+        src_type := check_call_arg(c, args[0], env)
         // Redundant-cast warning: an identity cast — the operand already has the
         // target type — is a no-op in every context, so the fossil can be
         // dropped. cast_target_same_as_operand is a STRICT same-type test (not
@@ -12227,32 +12278,26 @@ callee_def_scope :: proc(fun_type: ^Type_Scope) -> ^Type_Scope {
 
 // Creates fresh intrinsic nodes resolved at the call site.
 fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env: ^Type_Scope) {
-    // A default expression belongs to the function's DEFINITION, so its names
-    // resolve in the callee's defining scope — not the caller's `env`. Resolving
-    // in `env` lets a default that references a module const bind to whatever the
-    // caller happens to have under that name (wrong const on a name collision;
-    // unresolvable when the caller lacks the name entirely).
-    callee_scope := callee_def_scope(fun_type)
-    if callee_scope == nil { callee_scope = env }
+    // The defaults are appended unchecked: check_call_args checks each argument
+    // once, a default in its callee's defining scope — it belongs to the
+    // function's DEFINITION, so its names resolve there, not in the caller's
+    // `env` (a default naming a module const would bind to whatever the caller
+    // has under that name).
     for i := len(call_args(e)); i < len(fun_type.params); i += 1 {
         def := fun_type.params[i].default_value
         if def == nil { continue }
         // Compiler intrinsic defaults (#caller_name / #caller_span) are the one
         // exception: they resolve to CALL-SITE info, so they get a fresh node
-        // checked in the caller's env.
+        // (checked in the caller's env: it is no default_value).
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
             fresh := new_clone(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
                 span = e.span,
             })
-            check_expr(c, fresh, env)
             append(call_args_mut(e), Expr(fresh))
             continue
         }
-        // Regular expression default: type-check in the callee's scope and
-        // append. The node is shared across call sites, but now every check
-        // runs in the same (callee) scope, so the resolution is consistent.
-        check_expr(c, def, callee_scope)
+        // A regular default: the node shared by every call site.
         append(call_args_mut(e), def)
     }
 }
@@ -12271,6 +12316,13 @@ fn_params_desc :: proc(ft: ^Type_Scope) -> string {
         strings.write_string(&b, type_name(p.type_))
     }
     return strings.to_string(b)
+}
+
+// An argument's type: checked — unless it is a method call's receiver, which
+// was checked to find its method (one check per node).
+check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope) -> Type {
+    if c.receiver != nil && arg == c.receiver { return c.receiver_type }
+    return check_expr(c, arg, env)
 }
 
 // Shared helper: check that args match a function's parameter types.
@@ -12299,7 +12351,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             if arg == fun_type.params[i].default_value {
                 if ms := callee_def_scope(fun_type); ms != nil { arg_env = ms }
             }
-            arg_type := check_expr(c, arg, arg_env)
+            arg_type := check_call_arg(c, arg, arg_env)
             // Byte-buffer reinterpret-read at the call boundary: a param
             // typed `[N]T` accepts `buf[off]` or `buf[lo:hi]` from a byte
             // buffer — same shape as `arr : [N]T = buf[off]` at decl sites.
@@ -12549,6 +12601,7 @@ resolve_qualified_call :: proc(
     // Value-qualified call (obj.method) — type-check qualifier to find struct type.
     if !resolved_assoc {
         qual_type := check_expr(c, call_qualifier(e), env)
+        c.receiver, c.receiver_type = call_qualifier(e), qual_type
         if assoc_st := resolve_to_struct_type(c, qual_type); assoc_st != nil {
             if fn, found := assoc_st.functions[call_name(e)]; found && fn != nil {
                 fn_type = fn
@@ -12828,6 +12881,9 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Scope) -> Type {
 }
 
 check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
+    saved_receiver, saved_receiver_type := c.receiver, c.receiver_type
+    c.receiver, c.receiver_type = nil, nil
+    defer c.receiver, c.receiver_type = saved_receiver, saved_receiver_type
     // A call that returns multiple values has nowhere to put the extras when
     // used as a single argument — codegen would silently keep only the first.
     // Reject it here (every call form funnels through check_call) so the user

@@ -752,8 +752,20 @@ erroneous program reports, the negative fixtures say so.
 
 - [x] Tooling: `MARA_GRAPH=full`; `test/graphdiff.sh` (the corpus's full dumps, baseline against
       working)
-- [ ] Each node checked once: a default argument in its callee's scope, once (every call takes the
-      result); an annotated literal once; a struct's `::` constants once; a `Module.X` default once
+- [x] Each node checked once for each time the graph evaluates it: code's checks line up with
+      the builder's evaluations (a signature's, a constant's, the field pre-pass's checks emit
+      nothing, and stay). `MARA_CHECK_ONCE=1` (debug builds) numbers the code walk's statements
+      and reports an expression checked twice in one. Fixed: a default argument was checked by
+      `fill_default_args` and again by `check_call_args` (now only the latter, in its callee's
+      scope); a method call's receiver, checked to find its method, again as its first argument
+      (and by a builtin); an annotated or hinted literal matched to its type again by the
+      declaration (`literal_matched`), a union's variant literal too; a positional literal's one
+      value probed as a spread and checked again (only a call is probed now); a broadcast's first
+      target took the probed value itself (each target a copy now). What stays is what the graph
+      evaluates as often: a compound assignment's target (its place and its read), a default
+      shared by several params (once per param). Left for fusion: a tuple default's source call,
+      which the graph evaluates once (its cache), is checked once per slot. Graph identical (275
+      programs), IR byte-identical, runs, suite, goldens and the corpus.
 - [x] One ordered walk per body: a function's or struct's code, and every block, checked
       statement by statement in the order it runs (the two passes merged); a local visible from
       its declaration on
