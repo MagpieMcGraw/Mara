@@ -337,6 +337,7 @@ Code :: struct {
     loops:  [dynamic]Loop,
     nrvo:   string,               // the local built in the caller's return slot
     tuples: map[rawptr]Node_Id,   // a default's shared source call → its operation
+    constructed: Node_Id,         // the last construction's operation (its outputs past Self: a fallible one's err)
 }
 
 @(private="file")
@@ -781,7 +782,8 @@ graph_destructure :: proc(b: ^Graph_Builder, v: ^Stmt_Multi_Return_Assign, decls
         for e, i in v.values { vals[i] = graph_value(b, e) }
     } else if len(v.values) > 0 {
         call := graph_value(b, v.values[0])
-        for i in 0 ..< len(vals) { vals[i] = Operand{call.op, i32(i)} }
+        outs := graph_outputs_op(b, v.values[0], call)
+        for i in 0 ..< len(vals) { vals[i] = call if i == 0 else Operand{outs, i32(i)} }
     }
     for name, i in v.names {
         if name == "_" || (name == "" && (i >= len(v.targets) || v.targets[i] == nil)) { continue }
@@ -797,25 +799,41 @@ graph_destructure :: proc(b: ^Graph_Builder, v: ^Stmt_Multi_Return_Assign, decls
 }
 
 // The struct a bare declaration constructs, or zero for anything else. An
-// array of structs is zeroed, then each element constructed.
+// array of structs is zeroed, then each element constructed. A struct that
+// can't be built bare stays zero: an array's elements (the checker warns), a
+// `~T` slot's field (the shape shortcut fills it; the checker rejects others).
 @(private="file")
 graph_construct_bare :: proc(b: ^Graph_Builder, dest: Operand, t: Type, span: Span) {
     #partial switch v in distinct_base(t) {
     case ^Type_Scope:
-        if v.kind == .Struct && !v.is_module {
-            graph_call_op(b, .Construct, .Synthetic, span, v, t, dest)
+        if v.kind == .Struct && !v.is_module && constructs_bare(v) {
+            graph_call_op(b, .Construct, .Synthetic, span, v, t, ..graph_default_args(b, dest, v, span))
             return
         }
     case ^Type_Fixed_Array:
         graph_op(b, .Zero, .Synthetic, span, t, "", dest)
-        if st := graph_elem_struct(v.elem); st != nil { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, dest) }
+        if st := graph_elem_struct(v.elem); st != nil && constructs_bare(st) { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, dest) }
         return
     case ^Type_Partial_Array:
         graph_op(b, .Zero, .Synthetic, span, t, "", dest)
-        if st := graph_elem_struct(v.elem); st != nil { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, dest) }
+        if st := graph_elem_struct(v.elem); st != nil && constructs_bare(st) { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, dest) }
         return
     }
     graph_op(b, .Zero, .Synthetic, span, t, "", dest)
+}
+
+// A construction written without arguments — a bare declaration, a literal —
+// runs its constructor on its params' defaults (the checker lets none be
+// built so without one): its operands, the place it builds in first.
+@(private="file")
+graph_default_args :: proc(b: ^Graph_Builder, dest: Operand, callee: ^Type_Scope, span: Span) -> []Operand {
+    ops := make([]Operand, 1 + len(callee.params), context.temp_allocator)
+    ops[0] = dest
+    for p, i in callee.params {
+        if p.default_value == nil { graph_fatal(span, "'%s' built without its argument '%s'", callee.name, p.name) }
+        ops[i + 1] = graph_default_value(b, p.default_value, p.type_, span)
+    }
+    return ops
 }
 
 // The struct an array's elements construct, through nested arrays.
@@ -1971,7 +1989,8 @@ graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
             // `Foo{0}`: the zero value — no constructor, no defaults.
             graph_op(b, .Zero, .Explicit, v.span, v.type_, "{0}", graph_dest_place(b, d, v.span))
         } else if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module {
-            op := graph_call_op(b, .Construct, .Explicit, v.span, ts, v.type_, graph_dest_place(b, d, v.span))
+            ops := graph_default_args(b, graph_dest_place(b, d, v.span), ts, v.span)
+            op := graph_call_op(b, .Construct, .Explicit, v.span, ts, v.type_, ..ops)
             b.g.name[op] = strings.concatenate({b.g.name[op], "{}"})   // as written: braces, no call
         } else if graph_aggregate(v.type_) {
             // A union variant, or an array: its own construction (no init
@@ -2114,18 +2133,22 @@ graph_variant_defaults :: proc(b: ^Graph_Builder, t: Type, variant: string, lit:
             }
         }
         if given { continue }
-        // A variant's defaults aren't checked where it's declared: a constant
-        // one is written at its field's type.
-        val: Operand
-        c, folds := graph_literal_value(f.default_value).?
-        if dt := expr_type(f.default_value); folds && !c.is_text && (dt == nil || is_infer(dt)) {
-            val = graph_const(b, .Implied, span, f.type_, "", c)
-        } else {
-            val = graph_value_as(b, f.default_value, f.type_, span, .Implied)
-        }
+        val := graph_default_value(b, f.default_value, f.type_, span)
         fd := Dest{kind = .Field, name = f.name, type_ = f.type_, parent = &vd}
         graph_op(b, .Write, .Implied, span, nil, "", graph_dest_place(b, fd, span), val)
     }
+}
+
+// A default — a variant's field's, a constructor param's — where it's used:
+// it isn't checked where it's declared, so a constant one is written at the
+// type it defaults.
+@(private="file")
+graph_default_value :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> Operand {
+    c, folds := graph_literal_value(e).?
+    if dt := expr_type(e); folds && !c.is_text && (dt == nil || is_infer(dt)) {
+        return graph_const(b, .Implied, span, t, "", c)
+    }
+    return graph_value_as(b, e, t, span, .Implied)
 }
 
 // An array's element type.
@@ -2185,7 +2208,7 @@ graph_call :: proc(b: ^Graph_Builder, v: ^Expr_Call, dest: ^Dest, w: Written) ->
     }
     append(&ops, graph_dest_place(b, target, v.span))
     append(&ops, ..vals[:])
-    graph_call_op(b, .Construct, w, v.span, callee, v.type_, ..ops[:])
+    b.code.constructed = graph_call_op(b, .Construct, w, v.span, callee, v.type_, ..ops[:])
     // `Foo(){ a = x }`: writes into the constructed value.
     if v.overrides != nil { graph_literal_writes(b, v.overrides, target, w) }
     if dest != nil { return NO_VALUE }
@@ -2270,7 +2293,7 @@ graph_try :: proc(b: ^Graph_Builder, v: ^Expr_Try, w: Written) -> Operand {
     inner := graph_value(b, v.inner, w)
     n := graph_outputs(b, v.inner)
     if n == 0 { graph_fatal(v.span, "`?` on a call with no err output") }
-    err := Operand{inner.op, i32(n - 1)}
+    err := Operand{graph_outputs_op(b, v.inner, inner), i32(n - 1)}
     fail, ok := graph_run_new(b), graph_run_new(b)
     failed := graph_op_value(b, .Cast, .Implied, v.span, Type_Bool{}, "bool", err)   // an error: nonzero
     graph_branch(b, failed, fail, ok, .Implied, v.span)
@@ -2285,7 +2308,19 @@ graph_try :: proc(b: ^Graph_Builder, v: ^Expr_Try, w: Written) -> Operand {
     graph_run_close(b)
     b.code.run = ok
     if n == 1 { return NO_VALUE }   // err only
-    return Operand{inner.op, 0}
+    return inner
+}
+
+// The operation whose outputs a call's value `v` is the first of: the call; a
+// fallible construction's, its construct (the value is the built place, read).
+@(private="file")
+graph_outputs_op :: proc(b: ^Graph_Builder, e: Expr, v: Operand) -> Node_Id {
+    if call, is_call := e.(^Expr_Call); is_call {
+        if rf, ok := call.resolved_func.?; ok {
+            if callee := graph_callee(b, rf); callee != nil && callee.kind == .Struct { return b.code.constructed }
+        }
+    }
+    return v.op
 }
 
 // How many outputs a call has: its callee's return list (a fallible
@@ -2733,10 +2768,13 @@ graph_sources :: proc(g: ^Program_Graph, callee: map[Node_Id]Node_Id, results: m
         if r := g.refers[o.op]; r != NO_NODE && !slice.contains(out[:], r) { append(out, r) }
     case .Call, .Construct:
         // A call's value is its callee's result; its arguments flow into the
-        // callee's params, not into this value.
-        if c, ok := callee[o.op]; ok {
-            if rs, has := results[c]; has && int(o.out) < len(rs) && !slice.contains(out[:], rs[o.out]) {
-                append(out, rs[o.out])
+        // callee's params, not into this value. (A construction's outputs are
+        // Self, then its declared results.)
+        k := int(o.out)
+        if g.op[o.op] == .Construct { k -= 1 }
+        if c, ok := callee[o.op]; ok && k >= 0 {
+            if rs, has := results[c]; has && k < len(rs) && !slice.contains(out[:], rs[k]) {
+                append(out, rs[k])
             }
         }
     case .Const, .Global:

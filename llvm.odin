@@ -545,6 +545,11 @@ llvm_where :: proc(e: ^Llvm, p: Node_Id) -> Llvm_Where {
         ops := graph_operands(pg, id)
         #partial switch pg.op[id] {
         case .Var:
+            // A match arm's binding is its scrutinee's payload: where that is.
+            if v, bound := e.bound[pg.refers[id]]; bound {
+                id = v
+                continue
+            }
             w.root = pg.refers[id]
             if !w.via_ptr { w.region = pg.type_[id] }
             return w
@@ -795,8 +800,15 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             if text, is_text := llvm_text(e, ops[1].op); is_text { return llvm_text_into(e, place, pa, text) }
             if llvm_slice(pg.type_[ops[1].op]) != nil { return llvm_elements_into(e, place, pa, ops[1].op) }
         }
+        // Into a fixed utf8 array, text: the array zeroed, then its bytes.
+        if fa := llvm_array(t); fa != nil && ops[1].op != NO_NODE && !llvm_direct(e, place) {
+            if text, is_text := llvm_text(e, ops[1].op); is_text && llvm_type_from_checker(fa.elem) == "i8" {
+                emit_text_into_array(g, e.value[place - e.node], text, llvm_size(e, t))
+                return true
+            }
+        }
         val, ok := llvm_operand(e, ops[1], t)
-        if !ok { return false }
+        if !ok { e.note = "the value's type"; return false }
         if pg.op[place] == .Var && pg.refers[place] in e.hdr { return true }   // held at its slice
         if pg.op[place] == .Var && e.carved[pg.refers[place]] == ops[1].op && ops[1].op != NO_NODE {
             return true   // a `let` declaration: the name is the carved memory

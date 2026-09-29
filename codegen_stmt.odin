@@ -886,6 +886,16 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
         ret_types = info.ret_types
     }
 
+    // A construction destructured into an existing struct builds in it, as
+    // one assigned to it does, when its callee is handed none of the
+    // caller's storage (it could be reading that while it builds).
+    if cf := call_signature(g, call); cf != nil && cf.kind == .Struct && len(s.names) > 0 {
+        existing, exists := get_struct(g, s.names[0])
+        info, info_ok := call_fun_info(g, call)
+        if exists && info_ok && !call_passes_storage(&info, len(call_args(call))) {
+            g.construct_into = existing.alloca
+        }
+    }
     gen_call(g, call)
 
     if len(g.tuple_result_ptrs) == 0 {
@@ -950,7 +960,7 @@ gen_multi_return_assign :: proc(g: ^Codegen, s: ^Stmt_Multi_Return_Assign) {
                     continue
                 }
                 if existing, ok := get_struct(g, name); ok {
-                    emit_value_copy(g, ret_types[i], existing.alloca, src_ptr)
+                    if existing.alloca != src_ptr { emit_value_copy(g, ret_types[i], existing.alloca, src_ptr) }
                     continue
                 }
                 g.all_vars[name] = Struct_Var{alloca = src_ptr, struct_name = sd.name}

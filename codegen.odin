@@ -407,6 +407,7 @@ Codegen :: struct {
     // Tuple call result: temp alloca pointers from the most recent tuple-returning call
     tuple_result_ptrs:  [dynamic]string,  // alloca names for each tuple element
     tuple_result_types: [dynamic]string,  // LLVM types for each tuple element
+    construct_into:     string,           // where the next multi-result construction builds Self ("": a temp)
     // Per-call cache for Expr_Tuple_Default dedup: when multiple bindings in
     // a param group share one tuple source, the source is evaluated once at
     // each call site and the slot ptrs cached here keyed by source pointer.

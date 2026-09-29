@@ -1,0 +1,16 @@
+module literal_ctor_args_neg
+
+//@ expect-fail: 'literal_ctor_args_neg.Q' expects 1 argument(s) (x: i32), got 0
+
+// A literal builds its struct as a call without arguments does: `Q{}` is
+// `Q(){}`, and Q's constructor needs its x.
+
+Q :: struct(x: i32) {
+	v: i32
+	v = x
+}
+
+main :: fun() {
+	q := Q{v = 1}
+	print(q.v)
+}

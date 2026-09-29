@@ -40,6 +40,17 @@ emit_diagnostic :: proc(kind: Diagnostic_Kind, location: string, msg: string, ar
     append(&g_diagnostics, Diagnostic{kind = kind, location = location, message = body})
 }
 
+// Queue a diagnostic unless the same one is queued at the same place already;
+// whether it was queued.
+emit_diagnostic_once :: proc(kind: Diagnostic_Kind, location: string, msg: string, args: ..any) -> bool {
+    body := fmt.aprintf(msg, ..args)
+    for d in g_diagnostics {
+        if d.kind == kind && d.location == location && d.message == body { return false }
+    }
+    append(&g_diagnostics, Diagnostic{kind = kind, location = location, message = body})
+    return true
+}
+
 // Print every queued diagnostic and clear the queue. Safe to call
 // multiple times — second call has nothing to print.
 flush_diagnostics :: proc() {
@@ -617,6 +628,8 @@ TYPE_WRAPPING_REQUIRES_INTEGER :: "wrapping operator `%s%%` requires integer ope
 TYPE_WRAPPING_REQUIRES_INTEGER_UNARY :: "wrapping negate `-%%` requires an integer operand, got %s"
 TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER :: "argument %d of '%s': '_' requires a default value, but parameter '%s' has none"
 TYPE_EXPECTS_ARGS :: "'%s' expects %d argument(s) (%s), got %d"
+TYPE_BARE_CAN_FAIL :: "'%s' of type '%s' can't be built bare: its constructor can fail, and nothing would take its err. Construct it with a call: '%s, e := %s(...)', or `?`"
+TYPE_LITERAL_CAN_FAIL :: "'%s' can fail, and a literal has no err to hand back: construct it with a call, taking its err (`x, e := %s(...)`, or `?`)"
 TYPE_ARGUMENT_EXPECTED :: "argument %d%s of '%s': parameter '%s' expects %s, got %s"
 TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE :: "method '%s' requires a pointer receiver — take an address with `&` (or use a `^%s` local) before calling"
 TYPE_MODULE_FUNCTION :: "module '%s' has no function '%s'"
@@ -694,6 +707,8 @@ CODE_STRUCT_FIELD :: "struct '%s' has no field '%s'"
 CODE_INDEX_TARGET_MULTI_RETURN_ASSIGN :: "index target in multi-return assign not yet supported"
 CODE_UNARY_OP_VALID_MULTI_RETURN :: "unary op '%v' is not a valid multi-return target"
 CODE_UNSUPPORTED_MULTI_RETURN_TARGET_EXPRESSION :: "unsupported multi-return target expression"
+CODE_TEXT_LONGER_THAN_ARRAY :: "text of %d bytes into an array of %d"
+CODE_BARE_CONSTRUCTION_ARGUMENT :: "'%s' is built without arguments, but its param '%s' has no default"
 CODE_SPREAD_SET_LIT_FIELDS_CALL :: "is_spread set but lit.fields[0] is not a call"
 CODE_CONST_NOT_COMPILE_TIME :: "constant '%s': its value must be known at compile time — literals, other constants and arithmetic on them (a call, or a struct with constructor params or statements in its body, needs code to run)"
 CODE_CONST_TABLE_UNNAMED :: "internal: aggregate constant has no entry in the constant table"

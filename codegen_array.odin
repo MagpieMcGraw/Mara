@@ -229,6 +229,22 @@ reanchor_slots :: proc(g: ^Codegen, elem: Type, arr_ir: string, base: string, co
     emit_label(g, end_label)
 }
 
+// Text into a fixed byte array: the array zeroed, then the text's bytes — the
+// zeros past them end it. (Not its terminating zero: text that fills the array
+// has no room for one; copying it wrote a byte past the array.)
+emit_text_into_array :: proc(g: ^Codegen, dst: string, text: string, total_bytes: int) {
+    if len(text) > total_bytes { codegen_fatal(g, {}, CODE_TEXT_LONGER_THAN_ARRAY, len(text), total_bytes) }
+    if len(text) == 0 {
+        emit_memset_zero(g, dst, total_bytes)
+        return
+    }
+    global, n := get_string_literal(g, text)
+    src := fresh_tmp(g)
+    emit_string_gep(g, src, n, global)
+    emit_memset_zero(g, dst, total_bytes)
+    emit_memcpy(g, dst, src, len(text))
+}
+
 // Whether a value of type `t` holds a partial array anywhere inside it —
 // directly, in a struct field, an array slot, or a union variant.
 value_has_partial_array :: proc(g: ^Codegen, t: Type) -> bool {
@@ -621,26 +637,13 @@ gen_array_assign :: proc(g: ^Codegen, name: string, capacity: int, elem_type: st
         return
     }
 
-    // Check if the value is a string literal (for utf8 arrays)
+    // Text into a utf8 array (a literal, or #caller_name and the like).
     if str_lit, ok := value.(^Expr_String); ok {
-        global_name, byte_len := get_string_literal(g, str_lit.value)
-        src_ptr := fresh_tmp(g)
-        emit_string_gep(g, src_ptr, byte_len, global_name)
-        // Zero-initialize first, then copy string bytes over
-        total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-        emit_memset_zero(g, av.alloca, total_bytes)
-        emit_memcpy(g, av.alloca, src_ptr, byte_len)
+        emit_text_into_array(g, av.alloca, str_lit.value, alloc_cap * elem_byte_size(elem_type, g.checked))
         return
     }
-
-    // Check if the value is a compiler intrinsic (#caller_name, #caller_span) — same as string literal
     if intrinsic, ok := value.(^Expr_Compiler_Intrinsic); ok {
-        global_name, byte_len := get_string_literal(g, intrinsic.resolved_value)
-        src_ptr := fresh_tmp(g)
-        emit_string_gep(g, src_ptr, byte_len, global_name)
-        total_bytes := alloc_cap * elem_byte_size(elem_type, g.checked)
-        emit_memset_zero(g, av.alloca, total_bytes)
-        emit_memcpy(g, av.alloca, src_ptr, byte_len)
+        emit_text_into_array(g, av.alloca, intrinsic.resolved_value, alloc_cap * elem_byte_size(elem_type, g.checked))
         return
     }
 
@@ -2591,8 +2594,10 @@ type_needs_construction :: proc(g: ^Codegen, t: Type) -> bool {
     #partial switch v in bt {
     case ^Type_Scope:
         if v.kind == .Struct {
+            // (An element that can't be built bare stays zero: its
+            // constructor needs arguments, or can fail.)
             _, has_init := g.checked.functions[v.name]
-            return has_init
+            return has_init && constructs_bare(v)
         }
     case ^Type_Partial_Array:
         return true
@@ -2613,21 +2618,10 @@ emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: string) {
         info, _ := lookup_fun_info(g, st_name)
         arg_strs: [dynamic]string
         for &param, i in init_fn.cg_params {
-            if param.default_value != nil {
-                // Lowered like any argument (aggregates by address).
-                append(&arg_strs, gen_mara_call_arg(g, param.default_value, i, &info))
-            } else if _, is_ptr := distinct_base(param.type_).(^Type_Ptr); is_ptr {
-                append(&arg_strs, "ptr null")
-            } else if pt := info.param_types[i]; pt == "ptr" || pt == SLICE_IR_TYPE {
-                // No default for a by-address aggregate: a zeroed temp.
-                tmp := fresh_tmp(g)
-                ir := llvm_type_from_checker(param.type_)
-                emit_alloca(g, tmp, ir)
-                emit_memset_zero(g, tmp, elem_byte_size(ir, g.checked))
-                append(&arg_strs, fmt.tprintf("ptr %s", tmp))
-            } else {
-                append(&arg_strs, fmt.tprintf("%s zeroinitializer", pt))
-            }
+            // Built bare only when each param has one (constructs_bare).
+            if param.default_value == nil { codegen_fatal(g, {}, CODE_BARE_CONSTRUCTION_ARGUMENT, st_name, param.name) }
+            // Lowered like any argument (aggregates by address).
+            append(&arg_strs, gen_mara_call_arg(g, param.default_value, i, &info))
         }
         append(&arg_strs, fmt.tprintf("ptr %s", addr))
         emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st_name), "(", strings.join(arg_strs[:], ", "), ")"}))

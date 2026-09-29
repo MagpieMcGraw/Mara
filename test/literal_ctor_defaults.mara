@@ -1,0 +1,45 @@
+module literal_ctor_defaults
+
+//@ expect-output: 5 9 5 7 2
+//@ expect-output: 0 0
+
+// A literal builds its struct as a call without arguments does — `P{}` is
+// `P(){}` — so its constructor runs on its params' defaults (a literal used
+// to call it with none: whatever the argument registers held). An array's
+// elements whose constructor needs arguments, or can fail, aren't built at
+// all: they stay zero, as the checker warns.
+
+Bad :: error {
+	Neg
+}
+
+P :: struct(x: i32 = 5) {
+	v: i32
+	v = x
+}
+
+Q :: struct(x: i32) {
+	v: i32 = 3
+	v = v + x
+}
+
+T :: struct(x: i32 = 0) -> err {
+	v: i32 = 4
+	if x < 0 do return Neg
+}
+
+Holder :: struct {
+	p: P = P(7)
+	q: Q = Q(-1)
+}
+
+main :: fun() {
+	p := P{}
+	p2 : P = {v = 9}
+	pb : P
+	h := Holder{}
+	print(p.v, p2.v, pb.v, h.p.v, h.q.v)
+	qs : [2]Q
+	ts : [2]T
+	print(qs[1].v, ts[1].v)
+}

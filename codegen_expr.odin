@@ -1724,11 +1724,13 @@ gen_call_inner :: proc(g: ^Codegen, e: ^Expr_Call) -> string {
                     pa, is_pa := distinct_base(elem).(^Type_Partial_Array)
                     emit_alloca(g, tmp_ptr, fmt.tprintf("%s, align 16", et) if is_pa && llvm_type_from_checker(pa.elem) == "i8" else et)
                 }
+                if ctor && i == 0 && g.construct_into != "" { tmp_ptr = g.construct_into }
                 if ctor && i == 0 { emit_memset_zero(g, tmp_ptr, total_bytes) }
                 append(&arg_strs, fmt.tprintf("ptr %s", tmp_ptr))
                 append(&g.tuple_result_ptrs, tmp_ptr)
                 append(&g.tuple_result_types, et)
             }
+            g.construct_into = ""
             args_joined := strings.join(arg_strs[:], ", ")
             emit(g, "  call void %s(%s)", ir_name, args_joined)
             return "0" // no single return value; results are in tuple_result_ptrs

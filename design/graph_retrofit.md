@@ -650,6 +650,35 @@ evaluates its destination and value); how instructions are chosen stays in the e
       `= void` on an aggregate, some broadcast fills, writes, casts and views, a big
       temporary on the arena: the switch-over's
 - [ ] Switch over: every function from the graph; the syntax-tree emitter deleted
+      Declines first, down to none. `void`: a pointer null, a declared scalar zero, a
+      reassigned one keeps its bytes, a declared partial array its header; an untyped
+      `void` takes its use's pointer type. `cstring(s)`: text is its bytes, a slice or
+      partial array checked to hold its terminating 0. A broadcast `{all x}` fills a fixed
+      array, or a partial array's cap. Destructuring a fallible construction takes its err
+      from the construction (the graph read output 1 of the built value). A construction
+      overridden in an annotated declaration (`c : P = P(){ x = 7 }`) has its fields
+      typed (the checker typed the override block on the unannotated path only). Text
+      into a fixed utf8 array: zeroed, then its bytes (`emit_text_into_array`, shared).
+      Match bindings are their scrutinee's payload when a literal asks whether it may be
+      built in place: `s = Two{a = one.m}` in `s`'s arm `One one` zeroed s before reading
+      one.m (`test/literal_self_reference.mara` caught it). Found, construction without
+      arguments: `P{}` is `P(){}`, but a literal skipped the constructor's arguments —
+      a param with a default wasn't passed it, one without wasn't an error, a fallible
+      constructor's err slot wasn't passed at all (each ran on whatever the registers
+      held; a crash). Now a literal needs what a call would: every param defaulted
+      (`TYPE_EXPECTS_ARGS`, got 0) and a constructor that can't fail
+      (`TYPE_LITERAL_CAN_FAIL`); a bare declaration or field of a fallible one is an error
+      too (`TYPE_BARE_CAN_FAIL`), and the defaults are passed (`graph_default_args`). An
+      array's elements that can't be built bare stay zero, as the checker's warning says
+      (both emitters called the constructor with zeroed arguments); a `~T` slot's field
+      the shape shortcut fills. The checker reports one error once per place, and the
+      bare-declaration errors point at the declaration (they gave the enclosing scope's
+      line). Text copied into a fixed array stops at its length (its terminating zero
+      landed a byte past an array it filled). Old emitter, to the graph's shape: a fresh
+      `t := f()?` claims the call's result slot (a construction's is its temporary,
+      copied in without zeroing t first); a fallible construction destructured into an
+      existing struct is built in it when its callee is handed none of the caller's
+      storage, as a single-result one is.
 
 ## Baselines
 

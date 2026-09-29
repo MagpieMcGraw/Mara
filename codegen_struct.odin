@@ -60,6 +60,17 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
     // Alloca if variable doesn't exist yet, or if re-declared with a different struct type
     existing_sv, already_exists := get_struct(g, name)
     needs_alloca := !already_exists || existing_sv.struct_name != skey
+    // A `?` call's success value writes all of the binding (or the function
+    // returns): a fresh binding claims the call's result slot, allocated for
+    // this statement — a construction's is a temporary, copied in unzeroed.
+    try_node, is_try := value.(^Expr_Try)
+    if is_try && !already_exists {
+        if cf := call_signature(g, try_node.inner.(^Expr_Call)); cf == nil || cf.kind != .Struct {
+            g.all_vars[name] = Struct_Var{alloca = gen_expr(g, value), struct_name = skey}
+            emit_nested_sized_slice_init(g, g.all_vars[name].(Struct_Var).alloca, st)
+            return
+        }
+    }
     if needs_alloca {
         total := struct_byte_size(st, g.checked)
         alloca_name: string
@@ -77,7 +88,7 @@ gen_struct_assign :: proc(g: ^Codegen, name: string, st: ^Scope_Body, value: Exp
         }
         // Zero-init (ensures null ptrs, zero ints, etc.) — unless the value
         // writes all of it: a struct-returning call, or a copy of a place.
-        if !call_writes_struct(g, value) && !copies_place(value) { emit_memset_zero(g, alloca_name, total) }
+        if !call_writes_struct(g, value) && !copies_place(value) && !is_try { emit_memset_zero(g, alloca_name, total) }
 
         // Sized-slice fields are NOT init'd here — the struct's auto-init
         // function (called below for bare decls) and gen_store_struct_into
@@ -1061,23 +1072,13 @@ store_array_value :: proc(g: ^Codegen, dst_ptr: string, capacity: int, elem_type
         return
     }
 
-    // String literal targeting a utf8 array.
+    // Text into a utf8 array (a literal, or #caller_name and the like).
     if str_lit, ok := value.(^Expr_String); ok {
-        global_name, byte_len := get_string_literal(g, str_lit.value)
-        src_ptr := fresh_tmp(g)
-        emit_string_gep(g, src_ptr, byte_len, global_name)
-        emit_memset_zero(g, dst_ptr, total_bytes)
-        emit_memcpy(g, dst_ptr, src_ptr, byte_len)
+        emit_text_into_array(g, dst_ptr, str_lit.value, total_bytes)
         return
     }
-
-    // Compiler intrinsic (#caller_name etc.) — produces a string literal.
     if intrinsic, ok := value.(^Expr_Compiler_Intrinsic); ok {
-        global_name, byte_len := get_string_literal(g, intrinsic.resolved_value)
-        src_ptr := fresh_tmp(g)
-        emit_string_gep(g, src_ptr, byte_len, global_name)
-        emit_memset_zero(g, dst_ptr, total_bytes)
-        emit_memcpy(g, dst_ptr, src_ptr, byte_len)
+        emit_text_into_array(g, dst_ptr, intrinsic.resolved_value, total_bytes)
         return
     }
 
@@ -1309,7 +1310,7 @@ gen_store_struct_into :: proc(g: ^Codegen, dst_ptr: string, st: ^Scope_Body, val
         stamped := true   // the zero or the constructor stamped its partial arrays
         if !lit.zero_init {
             if _, has_init := g.checked.functions[st.name]; has_init {
-                emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st.name), "(ptr ", dst_ptr, ")"}))
+                emit_struct_init_call(g, st.name, dst_ptr)   // its params' defaults
             } else {
                 // No init fn (union variant structs): its zero value's partial
                 // arrays stamped (their zero isn't all zeros), then the field

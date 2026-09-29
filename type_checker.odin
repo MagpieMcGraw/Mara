@@ -313,6 +313,14 @@ constructor_effective_returns :: proc(ft: ^Type_Scope) -> ([]Type, bool) {
     return list, true
 }
 
+// Whether a struct can be built without arguments — as a bare declaration, a
+// field, an array's element is: each constructor param has a default, and the
+// constructor can't fail (nothing would take its err).
+constructs_bare :: proc(ft: ^Type_Scope) -> bool {
+    for p in ft.params { if p.default_value == nil { return false } }
+    return len(ft.return_types) == 0
+}
+
 // If `e` is a call to a callable scope, return that callee's return-types list.
 // Returns nil for non-calls, calls whose callee can't be resolved, or non-fun
 // callees (struct constructors). The caller decides whether nil + non-call vs
@@ -442,6 +450,7 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
                     type_expr     = s.type_expr,
                     default_value = s.value,
                     is_using      = s.is_using,
+                    span          = s.span,
                 })
             }
         case ^Stmt_Multi_Assign:
@@ -452,6 +461,7 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
                     type_expr     = a.type_expr,
                     default_value = a.value,
                     is_using      = a.is_using,
+                    span          = a.span,
                 })
             }
         case ^Stmt_Decl:
@@ -478,6 +488,7 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
                     type_expr     = decl_type(s),
                     default_value = val,
                     is_using      = s.is_using,
+                    span          = s.span,
                 })
             }
         }
@@ -1796,8 +1807,11 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
 }
 
 check_error :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
-    emit_diagnostic(.Type_Error, format_location(span.file, span.line, span.col), msg, ..args)
-    c.errors += 1
+    // Once per place: two checks can reach one node (a declaration's
+    // literal is checked as a value and as what the declaration holds).
+    if emit_diagnostic_once(.Type_Error, format_location(span.file, span.line, span.col), msg, ..args) {
+        c.errors += 1
+    }
 }
 
 check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
@@ -2029,6 +2043,8 @@ check_early_self_decls :: proc(c: ^Checker, body: [dynamic]Stmt) {
 //
 // Only applies to Type_Scope with kind=.Struct and params (i.e. classes with ctor args).
 // Pure data structs (kind=.Struct, no params) and callable funs aren't affected.
+// A constructor that can fail can't run bare either: nothing takes its err.
+// An array's elements that can't be built bare are left zero (a warning).
 check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, field_type: Type) {
     // Walk through fixed-array and partial-array layers: `[6]Camera` and
     // `[..6]Camera` need the same check as bare `Camera` — every element
@@ -2052,13 +2068,18 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
     class_ft, ok := elem_type.(^Type_Scope)
     if !ok || class_ft.kind != .Struct { return }
     if len(class_ft.params) == 0 { return }
+    type_shown := class_ft.source_name if class_ft.source_name != "" else class_ft.name
+    if is_array && !constructs_bare(class_ft) {
+        check_warning(c, span, TYPE_WON_GET_AUTO_CONSTRUCTED_DECLARED, type_shown, name)
+        return
+    }
     for p in class_ft.params {
         if p.default_value == nil {
             // Build a signature like `Camera(w: f32, h: f32, fovy: f32)` so the
             // user can see exactly what to pass.
             sig: strings.Builder
             strings.builder_init(&sig)
-            strings.write_string(&sig, class_ft.name)
+            strings.write_string(&sig, type_shown)
             strings.write_string(&sig, "(")
             for pp, i in class_ft.params {
                 if i > 0 { strings.write_string(&sig, ", ") }
@@ -2070,17 +2091,14 @@ check_uninitialized_class_decl :: proc(c: ^Checker, span: Span, name: string, fi
             }
             strings.write_string(&sig, ")")
 
-            if is_array {
-                check_warning(c, span,
-                    TYPE_WON_GET_AUTO_CONSTRUCTED_DECLARED,
-                    class_ft.name, name)
-            } else {
-                check_error(c, span,
-                    TYPE_TYPE_SELF_CONSTRUCTING_CALL_LIKE,
-                    name, class_ft.name, strings.to_string(sig), name, class_ft.name, class_ft.name)
-            }
+            check_error(c, span,
+                TYPE_TYPE_SELF_CONSTRUCTING_CALL_LIKE,
+                name, type_shown, strings.to_string(sig), name, type_shown, type_shown)
             return
         }
+    }
+    if len(class_ft.return_types) > 0 {
+        check_error(c, span, TYPE_BARE_CAN_FAIL, name, type_shown, name, type_shown)
     }
 }
 
@@ -7654,7 +7672,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
                 }
             }
             if field.default_value == nil {
-                check_uninitialized_class_decl(c, s.span, field.name, field_type)
+                check_uninitialized_class_decl(c, field.span if field.span.file != "" else s.span, field.name, field_type)
             } else if is_numeric(field_type) {
                 // Pin earlier deferred fields feeding this annotated field's
                 // default to its width: `per_row : i32 = size / cell` settles
@@ -8286,8 +8304,10 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
 
 // Validate that a struct literal's fields match a struct definition:
 // every literal field exists and has the right type, and no struct fields are missing.
-check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: ^Scope_Body, span: Span, env: ^Type_Scope) {
+check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: ^Scope_Body, span: Span, env: ^Type_Scope, override := false) {
     ensure_struct_signature(c, st)  // resolve fields on demand before matching the literal
+    if !override { check_literal_constructs(c, lit, st) }
+    if override && lit.type_ == nil { lit.type_ = sd_type_scope(st) }   // `Foo(){...}`: Foo's fields
     // Positional form (`Foo{a, b, c}`): match entries to struct fields by index.
     if lit.positional {
         // Multi-return spread: `Foo{call()}` where call's return list matches
@@ -8366,6 +8386,25 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
     }
     // No missing-field check: all struct literals are zero-initialized first,
     // then defaults are applied for unspecified fields. Partial literals are allowed.
+}
+
+// A literal builds its struct as a call without arguments does (`Foo{...}`
+// is `Foo(){...}`) — unless it is the zero value `Foo{0}`: its constructor
+// must need no argument, and can't fail (a literal has no err to hand back).
+check_literal_constructs :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, sd: ^Scope_Body) {
+    ts := sd_type_scope(sd)
+    if lit.zero_init || ts == nil || ts.kind != .Struct || ts.is_module { return }
+    name := lit.name
+    if name == "" { name = ts.source_name if ts.source_name != "" else ts.name }
+    if count_required_params(ts) > 0 {
+        qualified := name
+        if ts.home_package != "" && strings.index_byte(name, '.') < 0 {
+            qualified = fmt.tprintf("%s.%s", ts.home_package, name)
+        }
+        check_error(c, lit.span, TYPE_EXPECTS_ARGS, qualified, len(ts.params), fn_params_desc(ts), 0)
+    } else if len(ts.return_types) > 0 {
+        check_error(c, lit.span, TYPE_LITERAL_CAN_FAIL, name, name)
+    }
 }
 
 check_struct_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, st: ^Scope_Body, env: ^Type_Scope) {
@@ -12965,7 +13004,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             e.resolved_func = Resolved_Func{name = fun_type.name, callee = fun_type}
         }
         if e.overrides != nil {
-            check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env)
+            check_struct_literal_fields(c, e.overrides, &fun_type.sd, e.span, env, override = true)
         }
         return fun_type
     }
@@ -13004,7 +13043,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
     // Init function applies defaults and zero-inits fields without defaults.
     if len(call_args(e)) == 0 {
         if e.overrides != nil {
-            check_struct_literal_fields(c, e.overrides, &st.sd, e.span, env)
+            check_struct_literal_fields(c, e.overrides, &st.sd, e.span, env, override = true)
         }
         return st
     }
@@ -13054,7 +13093,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
         }
     }
     if e.overrides != nil {
-        check_struct_literal_fields(c, e.overrides, &st.sd, e.span, env)
+        check_struct_literal_fields(c, e.overrides, &st.sd, e.span, env, override = true)
     }
     return st
 }

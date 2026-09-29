@@ -127,6 +127,7 @@ Scope_Binding :: struct {
     type_expr:     Type_Expr, // nil union if untyped
     default_value: Expr,      // nil if no default
     is_using:      bool,      // only meaningful for data-type funs (struct fields)
+    span:          Span,      // its declaration (zero where none was kept)
 }
 
 Generic_Param :: struct {
