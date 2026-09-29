@@ -3802,6 +3802,12 @@ graph_fuse_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Sp
     return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
 }
 
+// A plain place the checker checked without building (a loop's collection,
+// a slice's): built where it is walked, from its check.
+graph_fuse_base_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
+    return graph_base_place(b, e, span)
+}
+
 // A value written to a place already built.
 graph_fuse_write_at :: proc(b: ^Graph_Builder, place, v: Operand, span: Span) {
     graph_op(b, .Write, .Explicit, span, nil, "", place, v)

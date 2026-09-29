@@ -5741,7 +5741,7 @@ fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
         return
     case ^Stmt_Assign:
         #partial switch _ in v.target {
-        case nil, ^Expr_Field_Access, ^Expr_Index, ^Expr_Unary: return
+        case nil, ^Expr_Field_Access, ^Expr_Index, ^Expr_Unary, ^Expr_Slice: return
         }
         fuse_fail(c, "a store through a slice")
         return
@@ -9375,6 +9375,14 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     sl := s.target.(^Expr_Slice)
     lower_subscript_dots(sl.expr, sl.low)
     lower_subscript_dots(sl.expr, sl.high)
+    // Built: the target's slice (its bounds, its collection's place — a
+    // plain place, checked first), then the value into its elements. (Into
+    // bytes, a value written as its own type is a view: the builder's.)
+    b := fusing(c)
+    if b != nil && !graph_pure_place(sl.expr) {
+        fuse_fail(c, "a slice of no plain place")
+        b = nil
+    }
     target_type := check_expr(c, sl.expr, env)
     s.target_type = target_type
     if elem := index_elem_type(target_type); elem != nil {   // the target names a run of elements
@@ -9382,12 +9390,19 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         t.elem = elem
         sl.type_ = t
     }
-    low_type    := check_expr(c, sl.low,  env)
-    high_type: Type
+    lo, hi := NO_VALUE, NO_VALUE
+    low_type, high_type: Type
+    if b != nil { low_type, lo = fuse_bound(c, sl.low, env, .Explicit, sl.span) } else { low_type = check_expr(c, sl.low, env) }
     if sl.high != nil {
-        high_type = check_expr(c, sl.high, env)
+        if b != nil { high_type, hi = fuse_bound(c, sl.high, env, .Explicit, sl.span) } else { high_type = check_expr(c, sl.high, env) }
     }
-    val_type    := check_expr(c, s.value, env)
+    place := NO_VALUE
+    if b != nil && fusing(c) != nil { place = graph_op_value(b, .Slice, .Explicit, sl.span, sl.type_, "", graph_fuse_base_place(b, sl.expr, sl.span), lo, hi) }
+    val_type, fs := fuse_store_value(c, s, place, env)
+    defer {
+        if s.assign_value_type != nil && is_byte_buffer(target_type) { fuse_fail(c, "bytes written as another type") }
+        fuse_store_write(c, s, &fs, s.target_type)
+    }
 
     if !is_numeric(low_type) && !is_any(low_type) {
         check_error(c, s.span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(low_type))
@@ -14587,7 +14602,38 @@ check_index_impl :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope, fi: ^Fus
     return Type_Error{}
 }
 
+// A slice, built: its bounds at the header's width, then its collection's
+// place — a plain place, checked first and built after them (as the builder
+// walks it) — then the slice.
+Fuse_Slice :: struct {
+    w:      Written,
+    lo, hi: Operand,
+}
+
 check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
+    want, w := fuse_asked(c)
+    b := fusing(c)
+    if want == .None || b == nil { return check_slice_impl(c, e, env, nil) }
+    if want == .Place || !graph_pure_place(e.expr) {
+        fuse_fail(c, "a slice's place, or a slice of no plain place")
+        return check_slice_impl(c, e, env, nil)
+    }
+    fs := Fuse_Slice{w = w, lo = NO_VALUE, hi = NO_VALUE}
+    t := check_slice_impl(c, e, env, &fs)
+    if fusing(c) == nil { return t }
+    fuse_done(c, graph_op_value(b, .Slice, w, e.span, t, "", graph_fuse_base_place(b, e.expr, e.span), fs.lo, fs.hi))
+    return t
+}
+
+// A slice's bound, built: at the header's width.
+fuse_bound :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, w: Written, span: Span) -> (Type, Operand) {
+    t, r := fuse_expr(c, e, env, .Value, w)
+    b := fusing(c)
+    if b == nil { return t, NO_VALUE }
+    return t, graph_fuse_widen(b, r.v, span, {to = slice_header_width_type})
+}
+
+check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fuse_Slice) -> Type {
     lower_subscript_dots(e.expr, e.low)
     lower_subscript_dots(e.expr, e.high)
     target_type := check_expr(c, e.expr, env)
@@ -14615,7 +14661,8 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
     // Check that low/high are numeric AND match slice header width — codegen
     // does NOT emit an implicit narrow/widen.
     if e.low != nil {
-        lt := check_expr(c, e.low, env)
+        lt: Type
+        if fs != nil { lt, fs.lo = fuse_bound(c, e.low, env, fs.w, e.span) } else { lt = check_expr(c, e.low, env) }
         if !is_numeric(lt) && !is_any(lt) {
             check_error(c, e.span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
         } else if !coerces_to_slice_width(lt) {
@@ -14624,7 +14671,8 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
         }
     }
     if e.high != nil {
-        ht := check_expr(c, e.high, env)
+        ht: Type
+        if fs != nil { ht, fs.hi = fuse_bound(c, e.high, env, fs.w, e.span) } else { ht = check_expr(c, e.high, env) }
         if !is_numeric(ht) && !is_any(ht) {
             check_error(c, e.span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
         } else if !coerces_to_slice_width(ht) {
