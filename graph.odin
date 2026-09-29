@@ -424,7 +424,7 @@ Code_Scope :: struct {
     block:  Node_Id,
     defers: [dynamic]Node_Id,   // defer blocks registered so far, in order
     mark:   bool,               // arena mark at entry, reset at every exit
-    body:   []Stmt,             // a fused body's, until its mark is built there
+    tentative: int,             // a fused body's: its mark and resets, decided later (b.fuse.marks); -1
 }
 
 @(private="file")
@@ -1803,11 +1803,18 @@ graph_code_block :: proc(b: ^Graph_Builder, label: string, body: []Stmt, parent:
 @(private="file")
 graph_scope_open :: proc(b: ^Graph_Builder, block: Node_Id, body: []Stmt, span: Span) {
     graph_frame_push(b)
+    // The checker opens a scope before its declarations are typed: its mark,
+    // and the reset at each of its exits, are made and decided when the
+    // graph is put together (main's body is no fused one's until then).
+    if f := b.fuse; f != nil && b.arena && b.g.kind[block] != .Struct {
+        m := Graph_Arena{mark = graph_op(b, .Arena_Mark, .Synthetic, span), block = block, body = body, nrvo = b.code.nrvo}
+        append(&f.marks, m)
+        append(&b.code.scopes, Code_Scope{block = block, tentative = len(f.marks) - 1})
+        return
+    }
     main, _ := b.checked.functions["main"]
-    mark := b.arena && b.g.kind[block] != .Struct && (main == nil || b.g.type_[block] != Type(main)) && graph_has_big_values(b, body)
-    // (The checker opens a scope before its declarations are typed: one that
-    // turns out to hold values on the arena is the builder's.)
-    append(&b.code.scopes, Code_Scope{block = block, mark = mark, body = body if b.fuse != nil && b.arena else nil})
+    mark := b.arena && b.g.kind[block] != .Struct && (main == nil || b.g.type_[block] != Type(main)) && graph_has_big_values(b, body, b.code.nrvo)
+    append(&b.code.scopes, Code_Scope{block = block, mark = mark, tentative = -1})
     if mark { graph_op(b, .Arena_Mark, .Synthetic, span) }
 }
 
@@ -1816,7 +1823,6 @@ graph_scope_open :: proc(b: ^Graph_Builder, block: Node_Id, body: []Stmt, span: 
 graph_scope_close :: proc(b: ^Graph_Builder, span: Span) {
     if graph_reachable(b) { graph_exit_scopes(b, len(b.code.scopes) - 1, span) }
     s := pop(&b.code.scopes)
-    graph_fuse_scope_end(b, s)
     delete(s.defers)
     graph_frame_pop(b)
 }
@@ -1832,22 +1838,23 @@ graph_exit_scopes :: proc(b: ^Graph_Builder, from: int, span: Span) {
             append(&b.g.edges, Edge{from = op, to = s.defers[j], kind = .Runs, written = .Synthetic, site = op})
         }
         if s.mark { graph_op(b, .Arena_Reset, .Synthetic, span) }
+        if s.tentative >= 0 { append(&b.fuse.marks[s.tentative].resets, graph_op(b, .Arena_Reset, .Synthetic, span)) }
     }
 }
 
 // Whether a scope's own declarations include one that lives on the arena
 // (routes_to_arena, less the local built in the caller's return slot).
 @(private="file")
-graph_has_big_values :: proc(b: ^Graph_Builder, body: []Stmt) -> bool {
-    big :: proc(b: ^Graph_Builder, a: ^Stmt_Assign) -> bool {
-        return a.is_decl && a.var_type != nil && a.name != b.code.nrvo && routes_to_arena(a.var_type)
+graph_has_big_values :: proc(b: ^Graph_Builder, body: []Stmt, nrvo: string) -> bool {
+    big :: proc(a: ^Stmt_Assign, nrvo: string) -> bool {
+        return a.is_decl && a.var_type != nil && a.name != nrvo && routes_to_arena(a.var_type)
     }
     for s in body {
         #partial switch v in s {
-        case ^Stmt_Assign: if big(b, v) { return true }
+        case ^Stmt_Assign: if big(v, nrvo) { return true }
         case ^Stmt_Decl:
             for inner in v.checked {
-                if a, ok := inner.(^Stmt_Assign); ok && big(b, a) { return true }
+                if a, ok := inner.(^Stmt_Assign); ok && big(a, nrvo) { return true }
             }
         }
     }
@@ -1891,15 +1898,7 @@ graph_code_finish :: proc(b: ^Graph_Builder, span: Span) {
     }
     for len(b.code.scopes) > 0 {
         s := pop(&b.code.scopes)
-        graph_fuse_scope_end(b, s)
         delete(s.defers)
-    }
-}
-
-@(private="file")
-graph_fuse_scope_end :: proc(b: ^Graph_Builder, s: Code_Scope) {
-    if s.body != nil && b.fuse != nil && graph_has_big_values(b, s.body) {
-        graph_fuse_fail(b, b.fuse, "a scope with values on the arena")
     }
 }
 
@@ -3450,8 +3449,28 @@ Graph_Fuse :: struct {
     consts:     [dynamic]Node_Id,
     widens:     [dynamic]Graph_Widen,
     checks:     [dynamic]Graph_Check,
+    marks:      [dynamic]Graph_Arena,
+    allocs:     [dynamic]Graph_Alloc,
     calls:      [dynamic]Pending_Call,   // named by their callees when the graph is put together
     failed:     string,
+}
+
+// A scope's arena mark and the resets at its exits, made where the builder
+// makes them, kept when its declarations turn out to hold a value on the
+// arena (graph_scope_open).
+Graph_Arena :: struct {
+    mark:   Node_Id,
+    resets: [dynamic]Node_Id,
+    block:  Node_Id,
+    body:   []Stmt,
+    nrvo:   string,
+}
+
+// A local's space on the arena (graph_init), made before its value: kept
+// when its type turns out to route there.
+Graph_Alloc :: struct {
+    decl, var, alloc: Node_Id,
+    nrvo:             string,
 }
 
 // A number widened to the type its use takes (graph_widen), decided when the
@@ -3527,6 +3546,9 @@ graph_fuse_free :: proc(f: ^Graph_Fuse) {
     delete(f.widens)
     delete(f.checks)
     delete(f.calls)
+    for m in f.marks { delete(m.resets) }
+    delete(f.marks)
+    delete(f.allocs)
     free(f)
 }
 
@@ -3634,7 +3656,15 @@ graph_fuse_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
 // A local's declaration (graph_decl), before its value: typed once it is
 // checked (graph_fuse_typed).
 graph_fuse_decl :: proc(b: ^Graph_Builder, name: string, span: Span) -> Node_Id {
-    return graph_decl(b, {kind = .Local}, b.code.block, name, nil, span)
+    d := graph_decl(b, {kind = .Local}, b.code.block, name, nil, span)
+    // A big value lives on the arena (graph_init): its space, taken before
+    // its value — kept once its type says so.
+    if b.arena {
+        v := graph_var(b, name, d, nil, span)
+        a := graph_op(b, .Arena_Alloc, .Synthetic, span, nil, "", v)
+        append(&b.fuse.allocs, Graph_Alloc{decl = d, var = v.op, alloc = a, nrvo = b.code.nrvo})
+    }
+    return d
 }
 
 graph_fuse_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
@@ -4300,6 +4330,25 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     }
     for id in f.consts {
         if is_infer(g.type_[id]) && !is_infer(graph_settled(g.type_[id])) { append(&g.settled, id) }
+    }
+    // A scope holding values on the arena (graph_scope_open): its mark and
+    // resets, where the builder makes them; else none. Main's own body sets
+    // the arena up and leaves it with the program.
+    main, _ := b.checked.functions["main"]
+    for m in f.marks {
+        keep := (main == nil || g.type_[m.block] != Type(main)) && graph_has_big_values(b, m.body, m.nrvo)
+        if keep { continue }
+        b.dropped[m.mark] = NO_VALUE
+        for r in m.resets { b.dropped[r] = NO_VALUE }
+    }
+    // A big local's space on the arena, taken before its value.
+    for a in f.allocs {
+        t := g.type_[a.decl]
+        if t != nil && routes_to_arena(t) && g.name[a.decl] != a.nrvo {
+            g.type_[a.var], g.type_[a.alloc] = t, t
+            continue
+        }
+        b.dropped[a.var], b.dropped[a.alloc] = NO_VALUE, NO_VALUE
     }
     for pc in f.calls {
         braces := strings.has_suffix(g.name[pc.op], "{}")   // a literal's construction, as written

@@ -1642,6 +1642,7 @@ Checker :: struct {
     fused:           Fused,
     call:            ^Fuse_Call,
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
+    byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
     table:           ^SymbolTable,
     errors:          int,
     current_package: string,
@@ -4315,6 +4316,13 @@ maybe_stamp_byte_view :: proc(c: ^Checker, expected: Type, value: Expr) {
     if !is_byte_buffer(src_type) { return }
     addr.byte_view_size = checker_type_byte_size(pt.elem)
     addr.byte_view_type = pt.elem
+    // Built: the address is the view's, of the bytes as that type.
+    if b := fusing(c); b != nil {
+        if ops, built := c.byte_addrs[rawptr(addr)]; built {
+            graph_fuse_view(b, {ops[1], 0}, pt.elem, idx.is_big_endian, addr.span)
+            b.g.type_[ops[0]] = new_clone(Type_Ptr{elem = pt.elem})
+        }
+    }
 }
 
 // Compute struct byte size with alignment padding (matches LLVM/C layout).
@@ -11212,11 +11220,11 @@ check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
         }
         return t
     case .Ampersand:
-        if fuse_byte_index(e.operand) {
-            fuse_fail(c, "a byte view's address")
-            return t
-        }
-        fuse_done(c, graph_op_value(b, .Address, w, e.span, t, "", fu.operand))
+        a := graph_op_value(b, .Address, w, e.span, t, "", fu.operand)
+        // Bytes' address: a view of them where its use takes it as another
+        // pointer (maybe_stamp_byte_view, once the use is checked).
+        if fuse_byte_index(e.operand) { c.byte_addrs[rawptr(e)] = {a.op, fu.operand.op} }
+        fuse_done(c, a)
         return t
     }
     op := "-%" if e.op == .Minus && e.wrapping else graph_token_text(e.op)
