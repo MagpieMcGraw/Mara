@@ -5732,6 +5732,10 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
             graph_fuse_view(b, r.v, to, e.(^Expr_Index).is_big_endian, span)
             return graph_fuse_view_temp(b, r.v, to, span)
         }
+        if to_array && is_slice && r.v.op != NO_NODE && r.v.op == c.span_read.op && c.span_read.scalar {
+            // That many bytes at the span's start, seen as the array, copied.
+            return graph_fuse_view_temp(b, graph_fuse_span_view(b, r.v, to, sl.is_big_endian, span), to, span)
+        }
         // (A literal asked at it: built so — fuse_use_type.)
         if is_literal && graph_aggregate(to) && r.v.op != NO_NODE && b.g.type_[r.v.op] == to { return r.v }
         if to_array && (fuse_byte_index(e) || is_slice && is_byte_buffer(expr_type(sl.expr))) || is_literal && graph_aggregate(to) {
@@ -11580,6 +11584,9 @@ fuse_use_type :: proc(e: Expr, t: Type, span: Span) -> (Dest, Span) {
         return {}, {}
     }
     if _, is_literal := e.(^Expr_Array); is_literal && graph_aggregate(t) { return {type_ = t}, {} }
+    // (A span taken as an array: of bytes, read as it — check_slice.)
+    _, is_span := e.(^Expr_Slice)
+    if _, to_array := distinct_base(t).(^Type_Fixed_Array); to_array && is_span { return {type_ = t}, {} }
     return {}, {}
 }
 
@@ -11668,14 +11675,13 @@ fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span
             fuse_fail(c, "a span of bytes read as another type")
             return
         }
-        buf, lo, hi := graph_fuse_span_operands(b, r.v, span)
-        big := "#big_endian" if sl.is_big_endian else ""
         if c.span_read.scalar {
-            at := graph_fuse_widen(b, lo, span, {to = slice_header_width_type}) if lo != NO_VALUE else graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
-            val := graph_read(b, graph_op_value(b, .View, .Explicit, span, dt, big, buf, at), dt, span)
+            val := graph_read(b, graph_fuse_span_view(b, r.v, dt, sl.is_big_endian, span), dt, span)
             graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
             return true, false
         }
+        buf, lo, hi := graph_fuse_span_operands(b, r.v, span)
+        big := "#big_endian" if sl.is_big_endian else ""
         graph_op(b, .Byte_Read, .Explicit, sl.span, d.type_, big, graph_dest_place(b, d, span), buf, lo, hi)
         return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
     }
@@ -15151,9 +15157,10 @@ check_index_impl :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope, fi: ^Fus
 Fuse_Slice :: struct {
     w:       Written,
     lo, hi:  Operand,
-    read_as: Type,      // (asked into a destination) its type
+    read_as: Type,      // (asked into a destination, or at a use's type) its type
     reads:   bool,      // bytes read as that type: built as the store takes them
-    scalar:  bool,      // … a register value: its end unbuilt
+    scalar:  bool,      // … a view of its start (a register value, a use's array): its end unbuilt
+    view:    bool,      // asked at a use's type: a read is a view of its start
     base:    Operand,
 }
 
@@ -15174,7 +15181,9 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
         return check_slice_impl(c, e, env, nil)
     }
     fs := Fuse_Slice{w = w, lo = NO_VALUE, hi = NO_VALUE, base = NO_VALUE}
-    if want == .Into { fs.read_as = graph_dest_type(b, c.asked_dest) }
+    use := want != .Into && c.asked_dest.type_ != nil   // (fuse_use_type)
+    if want == .Into || use { fs.read_as = graph_dest_type(b, c.asked_dest) }
+    fs.view = use
     t := check_slice_impl(c, e, env, &fs)
     if fusing(c) == nil { return t }
     if fs.reads {
@@ -15230,7 +15239,7 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
     if b := fusing(c); b != nil && fs != nil && fs.read_as != nil && elem_type != nil {
         probe := Type_Slice{elem = elem_type}
         if byte_flow(fs.read_as, e, &probe) == .Read {
-            fs.reads, fs.scalar = true, !graph_aggregate(fs.read_as)
+            fs.reads, fs.scalar = true, fs.view || !graph_aggregate(fs.read_as)
             fs.base = graph_fuse_base_place(b, e.expr, e.span)
         }
     }

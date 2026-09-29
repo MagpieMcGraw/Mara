@@ -3939,6 +3939,20 @@ graph_fuse_span_operands :: proc(b: ^Graph_Builder, slice: Operand, span: Span) 
     return
 }
 
+// A span of bytes seen as a `t` at its start (graph_view_at): of the slice
+// built, its bytes' place and its start, at the header's width (0 when it
+// has none); the view.
+graph_fuse_span_view :: proc(b: ^Graph_Builder, slice: Operand, t: Type, big: bool, span: Span) -> Operand {
+    buf, lo, _ := graph_fuse_span_operands(b, slice, span)
+    at: Operand
+    if lo != NO_VALUE {
+        at = graph_fuse_widen(b, lo, span, {to = slice_header_width_type})
+    } else {
+        at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
+    }
+    return graph_op_value(b, .View, .Explicit, span, t, "#big_endian" if big else "", buf, at)
+}
+
 // Bytes taken as an array (graph_value_as): their view, copied into a
 // temporary, read.
 graph_fuse_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Span) -> Operand {
