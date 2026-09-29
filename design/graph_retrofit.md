@@ -693,7 +693,30 @@ evaluates its destination and value); how instructions are chosen stays in the e
       elements). Found: the old emitter wrote an array literal into components one by
       one, reading what it had just written (`v.xy = [v.y, v.x]` gave two copies of
       v.y); now built whole first, as the graph does. Old emitter, to the graph's
-      shape: a struct declared from an if-expression isn't zeroed first.
+      shape: a struct declared from an if-expression isn't zeroed first. Then the last
+      declines: slice bounds at the header width (`buf[a:b]`, u32 each); a distinct
+      conversion of an aggregate is its bytes where they are; a union's variant struct
+      built as a struct of its own (zero, tag, defaults); a struct with no init function
+      only zeroed (a generic instance a shape shortcut fills); Program's constructor is
+      the compiler's — main sets its storage up — so its fields build no code; falling
+      off the end of a shape's bodiless method returns its slot as is, or a register's
+      zero; a slice's `.ptr` is a header field; a C function as a value is its link
+      symbol; a struct result's temporary is on the stack (as the old emitter's); a big
+      literal built in place needs no arena temporary; a `let` over bytes holding
+      partial arrays is the memory, and a copy out of a view is raw bytes (its headers
+      come with them, and what fills them next restamps them); a number from a byte
+      span is the bytes at its start, a struct or array field from one a sized read; a
+      positional `slice([:n]T, &bytes[i])` checks and takes n at the offset; a pointer
+      converts to a number (and `bool` of one is its not being null); a declared local
+      struct `= void` is zero, a constructor's field left as Self's zero. Found: the
+      checker never typed a C-style loop's step (`k += 1`: it went unchecked), and a
+      field's declaration had no statement kind (not fresh for a call's result). Found
+      in the graph's emitter: a big `let`-bound local was given arena storage and read
+      from there, not from the bytes (`test/let_big_view.mara`; Pounce's game memory).
+      Old emitter, to the graph's shape: a struct or array field read from a byte span
+      is a sized read, as a declaration's (it read the field's size at lo, whatever
+      hi was). Every function of the fixtures and Pounce now comes from the graph:
+      Pounce's IR is the old emitter's, modulo naming, in every unit.
 
 ## Baselines
 

@@ -2075,12 +2075,17 @@ emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, siz
 emit_byte_offset_ptr_runtime :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, count: string, size: int, label: string, span: Span) -> (elem_ptr: string, ok: bool) {
     data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span)
     if !resolved { return "", false }
-
-    w := slice_layout.len_ir
     offset := "0"
     if offset_expr != nil {
         offset = gen_int_at_slice_width(g, offset_expr)  // widen narrower offsets to header width
     }
+    return emit_byte_count_ptr(g, data_ptr, cap_val, offset, count, size, label), true
+}
+
+// The address of `count` elements of `size` bytes at byte `offset` of the
+// buffer at data_ptr, cap_val bytes long — checked to lie within it.
+emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: string, size: int, label: string) -> string {
+    w := slice_layout.len_ir
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := emit_byte_span_outside(g, offset, count, cap_val, size)
@@ -2097,9 +2102,9 @@ emit_byte_offset_ptr_runtime :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: E
     emit(g, "  unreachable")
     emit_label(g, ok_lbl)
 
-    elem_ptr = fresh_tmp(g)
+    elem_ptr := fresh_tmp(g)
     emit(g, "  %s = getelementptr i8, ptr %s, %s %s", elem_ptr, data_ptr, w, offset)
-    return elem_ptr, true
+    return elem_ptr
 }
 
 // Address of a byte-buffer element, widened to a typed-pointer view of
@@ -2280,6 +2285,43 @@ gen_byte_target_read :: proc(g: ^Codegen, name: string, buf_expr: Expr, offset_e
 // index form (src[i]) stays on gen_byte_target_read — an exact sizeof(T) read.
 gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low_expr: Expr, high_expr: Expr, span_loc: Span, target_type: Type, is_big_endian: bool) {
     target_ir_type := llvm_type_from_checker(target_type)
+    if sd := as_struct_body(target_type); sd != nil {
+        // Reuse the destination's existing storage when it's already bound: a
+        // bare-declared return var is NRVO-aliased to %sret, so writing there
+        // keeps the self-referential partial-array ptr valid through the return
+        // copy. A fresh alloca would dangle that ptr once the struct is copied
+        // out of this frame.
+        alloca_name := fmt.tprintf("%%%s", name)
+        if existing, ex_ok := get_struct(g, name); ex_ok {
+            alloca_name = existing.alloca
+        } else {
+            alloca_name = emit_local_alloca(g, alloca_name, target_ir_type)
+        }
+        emit_byte_span_read(g, alloca_name, buf_expr, low_expr, high_expr, span_loc, target_type, is_big_endian)
+        g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
+    } else if fa, fa_ok := target_type.(^Type_Fixed_Array); fa_ok {
+        data_name := emit_local_alloca(g, fmt.tprintf("%%%s.data", name), target_ir_type)
+        emit_byte_span_read(g, data_name, buf_expr, low_expr, high_expr, span_loc, target_type, is_big_endian)
+        elem_t := llvm_type_from_checker(fa.elem)
+        utf8 := false
+        if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
+        g.all_vars[name] = Array_Var{
+            alloca    = data_name,
+            capacity  = fa.size,
+            elem_type = elem_t,
+            is_utf8   = utf8,
+        }
+    } else {
+        codegen_fatal(g, span_loc, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+    }
+}
+
+// A span of bytes `buf[lo:hi]` read into the struct or fixed array at `dst`:
+// the span within the buffer and within the value, the value zeroed, the span
+// copied in (the tail stays zero), a struct's partial arrays stamped, and
+// `#big_endian`, its integers swapped. A declaration's and a field's alike.
+emit_byte_span_read :: proc(g: ^Codegen, dst: string, buf_expr: Expr, low_expr: Expr, high_expr: Expr, span_loc: Span, target_type: Type, is_big_endian: bool) {
+    target_ir_type := llvm_type_from_checker(target_type)
     target_size := checker_type_byte_size(target_type)
     w := slice_layout.len_ir
     loc := format_location(span_loc.file, span_loc.line, span_loc.col)
@@ -2337,47 +2379,15 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
 
     // Destination: zero-init the whole value, then copy `span` bytes; the tail
     // past `span` keeps its zero init.
-    if sd := as_struct_body(target_type); sd != nil {
-        // Reuse the destination's existing storage when it's already bound: a
-        // bare-declared return var is NRVO-aliased to %sret, so writing there
-        // keeps the self-referential partial-array ptr valid through the return
-        // copy. A fresh alloca would dangle that ptr once the struct is copied
-        // out of this frame.
-        alloca_name := fmt.tprintf("%%%s", name)
-        if existing, ex_ok := get_struct(g, name); ex_ok {
-            alloca_name = existing.alloca
-        } else {
-            alloca_name = emit_local_alloca(g, alloca_name, target_ir_type)
-        }
-        emit_memset_zero(g, alloca_name, target_size)
-        emit_memcpy_runtime(g, alloca_name, src_off_ptr, span_ssa)
-        // The zero-fill leaves any [..N]T field header cap=0 / ptr=null; stamp
-        // them (cap=N, ptr -> inline backing) so the struct is usable, exactly
-        // as a normal decl's constructor would. Those fields sit past the header
-        // span, so the memcpy above doesn't touch them.
-        fixup_partial_array_fields(g, alloca_name, sd)
-        if is_big_endian {
-            emit_bswap_in_place(g, alloca_name, target_ir_type, target_type)
-        }
-        g.all_vars[name] = Struct_Var{alloca = alloca_name, struct_name = struct_key(sd)}
-    } else if fa, fa_ok := target_type.(^Type_Fixed_Array); fa_ok {
-        data_name := emit_local_alloca(g, fmt.tprintf("%%%s.data", name), target_ir_type)
-        emit_memset_zero(g, data_name, target_size)
-        emit_memcpy_runtime(g, data_name, src_off_ptr, span_ssa)
-        if is_big_endian {
-            emit_bswap_in_place(g, data_name, target_ir_type, target_type)
-        }
-        elem_t := llvm_type_from_checker(fa.elem)
-        utf8 := false
-        if _, u_ok := fa.elem.(Type_Utf8); u_ok { utf8 = true }
-        g.all_vars[name] = Array_Var{
-            alloca    = data_name,
-            capacity  = fa.size,
-            elem_type = elem_t,
-            is_utf8   = utf8,
-        }
-    } else {
-        codegen_fatal(g, span_loc, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
+    emit_memset_zero(g, dst, target_size)
+    emit_memcpy_runtime(g, dst, src_off_ptr, span_ssa)
+    // The zero-fill leaves any [..N]T field header cap=0 / ptr=null; stamp
+    // them (cap=N, ptr -> inline backing) so the struct is usable, exactly
+    // as a normal decl's constructor would. Those fields sit past the header
+    // span, so the memcpy above doesn't touch them.
+    if sd := as_struct_body(target_type); sd != nil { fixup_partial_array_fields(g, dst, sd) }
+    if is_big_endian {
+        emit_bswap_in_place(g, dst, target_ir_type, target_type)
     }
 }
 

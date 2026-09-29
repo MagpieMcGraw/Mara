@@ -1,0 +1,38 @@
+module let_big_view
+
+//@ expect-output: first 0 then 5
+
+// A `let` binds its name to the memory it takes: a big struct viewed over
+// bytes has no storage of its own. The graph's emitter gave it some on the
+// arena, as it does every big local, and read the struct's fields from
+// there, not from the bytes (Pounce's game memory). A partial array in the
+// bytes is left as the memory holds it.
+
+use mara.core
+use mara.memory
+
+Big :: struct {
+	initialized: bool
+	n: i64
+	items: [..8]i64
+	pad: [256]i64
+}
+
+step :: fun(memory: ^[]byte) -> i64 {
+	s := let(Big, &memory[0])
+	was := s.n
+	if not s.initialized {
+		s.initialized = true
+		s.n = 5
+	}
+	return was
+}
+
+main :: fun() {
+	this_program = Program(Arena_Debug(1 * MB))
+	buf : [4096]byte
+	m : []byte = buf[:]
+	a := step(&m)
+	b := step(&m)
+	print("first", a, "then", b)
+}

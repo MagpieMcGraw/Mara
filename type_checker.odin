@@ -7935,8 +7935,11 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
             check_error(c, s.span, TYPE_CONDITION_BOOL, type_name(cond_type))
         }
         if s.post != nil {
+            // Both passes, as the init: a plain reassignment (`k += 1`) is
+            // typed by the first (it went unchecked).
             post_stmts: [dynamic]Stmt
             append(&post_stmts, s.post)
+            register_and_check_declarations(c, post_stmts, child)
             check_bodies(c, post_stmts, child)
         }
         check_scope(c, s.body, child)

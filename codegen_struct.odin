@@ -1862,6 +1862,15 @@ gen_field_assign :: proc(g: ^Codegen, s: ^Stmt_Assign) {
         // bytes would put raw data where the (len, cap, ptr) header goes.
         _, field_is_slice := distinct_base(f.type_).(^Type_Slice)
         if sl_expr, ok := s.value.(^Expr_Slice); ok && !field_is_slice && codegen_is_byte_buffer_source(g, sl_expr.expr) {
+            // Into a struct or an array, the span's bytes (a sized read, as a
+            // declaration's); into a number, those at its start seen as it.
+            _, field_is_array := distinct_base(f.type_).(^Type_Fixed_Array)
+            if as_struct_body(distinct_base(f.type_)) != nil || field_is_array {
+                field_ptr := fresh_tmp(g)
+                emit_field_gep_into(g, field_ptr, st_llvm, base_ptr, idx)
+                emit_byte_span_read(g, field_ptr, sl_expr.expr, sl_expr.low, sl_expr.high, sl_expr.span, f.type_, sl_expr.is_big_endian)
+                return
+            }
             gen_byte_target_field_read(g, st_llvm, base_ptr, idx, f, sl_expr.expr, sl_expr.low, s.span, sl_expr.is_big_endian)
             return
         }

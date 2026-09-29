@@ -338,6 +338,7 @@ Code :: struct {
     nrvo:   string,               // the local built in the caller's return slot
     tuples: map[rawptr]Node_Id,   // a default's shared source call → its operation
     constructed: Node_Id,         // the last construction's operation (its outputs past Self: a fallible one's err)
+    managed: bool,                // Program's: main sets up its storage, its fields build no code
 }
 
 @(private="file")
@@ -679,6 +680,7 @@ graph_stmt_kind :: proc(s: Stmt) -> Stmt_Kind {
         return .Assign
     case ^Stmt_Multi_Return_Assign:
         return .Destructure if len(v.checked) == 0 else .Other
+    case ^Stmt_Decl:  return .Decl   // (a local's is its checked assignments; a field's, itself)
     case ^Stmt_For:   return .Loop
     case ^Stmt_If:    return .If
     case ^Stmt_Match: return .Match
@@ -733,8 +735,12 @@ graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: st
 // `= void`. A big value lives on the arena.
 @(private="file")
 graph_init :: proc(b: ^Graph_Builder, d: Node_Id, value: Expr, span: Span, cap: Expr = nil) {
+    if b.code.managed { return }
     t := b.g.type_[d]
-    if b.arena && b.g.kind[d] == .Local && t != nil && routes_to_arena(t) && b.g.name[d] != b.code.nrvo {   // (a field is in Self)
+    // (A `let` binds the name to memory it takes: no storage of its own.)
+    tk, is_take := value.(^Expr_Take)
+    bound := is_take && tk.keyword == "let"
+    if b.arena && b.g.kind[d] == .Local && t != nil && routes_to_arena(t) && b.g.name[d] != b.code.nrvo && !bound {   // (a field is in Self)
         graph_op(b, .Arena_Alloc, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span))
     }
     if value == nil {
@@ -883,6 +889,14 @@ graph_store :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
             graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
             return
         case ^Expr_Slice:
+            // A register value from a span of bytes is the bytes at its start
+            // seen as it, as `bytes[lo]` is (the checker holds the span to its
+            // size).
+            if t := graph_dest_type(b, d); !graph_aggregate(t) {
+                val := graph_read(b, graph_view_at(b, v.expr, v.low, t, v.is_big_endian, span), t, span)
+                graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
+                return
+            }
             if _, into_partial := distinct_base(graph_dest_type(b, d)).(^Type_Partial_Array); into_partial && d.kind == .Var && d.decl != NO_NODE {
                 graph_op(b, .Zero, .Synthetic, span, graph_dest_type(b, d), "", graph_dest_place(b, d, span))
             }
@@ -1779,8 +1793,9 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
     case ^Expr_Array:
         return graph_temp_into(b, e, v.type_, v.span)
     case ^Expr_Slice:
-        lo := graph_value(b, v.low, w) if v.low != nil else NO_VALUE
-        hi := graph_value(b, v.high, w) if v.high != nil else NO_VALUE
+        // The bounds at the header width, as an index is (`buf[a:b]`, a u32 each).
+        lo := graph_widen(b, graph_value(b, v.low, w), slice_header_width_type, v.span) if v.low != nil else NO_VALUE
+        hi := graph_widen(b, graph_value(b, v.high, w), slice_header_width_type, v.span) if v.high != nil else NO_VALUE
         return graph_op_value(b, .Slice, w, v.span, v.type_, "", graph_base_place(b, v.expr, v.span), lo, hi)
     case ^Expr_Assert:
         a := graph_op(b, .Assert, w, v.span, nil, v.cond_text, graph_value(b, v.cond, w))
@@ -1996,6 +2011,7 @@ graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
             ops := graph_default_args(b, graph_dest_place(b, d, v.span), ts, v.span)
             op := graph_call_op(b, .Construct, .Explicit, v.span, ts, v.type_, ..ops)
             b.g.name[op] = strings.concatenate({b.g.name[op], "{}"})   // as written: braces, no call
+            if ts.is_union_variant { graph_field_defaults(b, ts, v, d, v.span) }   // (no constructor runs them)
         } else if graph_aggregate(v.type_) {
             // A union variant, or an array: its own construction (no init
             // function to call), or zero before the element writes.
@@ -2123,9 +2139,16 @@ graph_variant_struct :: proc(b: ^Graph_Builder, t: Type, name: string) -> ^Type_
 graph_variant_defaults :: proc(b: ^Graph_Builder, t: Type, variant: string, lit: ^Expr_Struct_Literal, d: Dest, span: Span) {
     st := graph_variant_struct(b, t, variant)
     if st == nil { return }
-    sd := as_scope_body(st)
     dd := d
-    vd := Dest{kind = .Variant, name = variant, type_ = st, parent = &dd}
+    graph_field_defaults(b, st, lit, Dest{kind = .Variant, name = variant, type_ = st, parent = &dd}, span)
+}
+
+// Each field default of variant struct st a literal doesn't give, written at
+// the struct's place d.
+@(private="file")
+graph_field_defaults :: proc(b: ^Graph_Builder, st: ^Type_Scope, lit: ^Expr_Struct_Literal, d: Dest, span: Span) {
+    sd := as_scope_body(st)
+    vd := d
     skip := 0
     for f in sd.fields { if strings.has_prefix(f.name, "__") { skip += 1 } }
     for f, i in sd.fields {
@@ -3005,6 +3028,10 @@ graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, par
         return
     }
     saved := graph_code_begin(b, n, graph_nrvo(ts) if kind == .Fun else "")
+    // The program's struct is the compiler's: main's entry sets up its
+    // storage (`this_program = Program(…)` names the arena), and nothing
+    // constructs it.
+    b.code.managed = kind == .Struct && ts == (b.checked.table.funs["Program"] or_else nil)
     graph_scope_open(b, n, body, s.span)
     graph_scope_stmts(b, s.defs[:], body, n, site)
     graph_code_finish(b, s.span)
