@@ -5641,10 +5641,20 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
         }
         _, to_slice := distinct_base(to).(^Type_Slice)
         _, from_array := distinct_base(t).(^Type_Fixed_Array)
-        _, to_array := distinct_base(to).(^Type_Fixed_Array)
         _, is_literal := e.(^Expr_Array)
-        if to_slice && from_array || to_array || is_literal && graph_aggregate(to) {
-            fuse_fail(c, "a view or a literal at its use's type")
+        if to_slice && from_array {
+            if is_literal || !r.place {
+                fuse_fail(c, "a slice of an array value")
+                return NO_VALUE
+            }
+            return graph_op_value(b, .Slice, .Implied, span, to, "", r.v)
+        }
+        // Bytes taken as an array (a view, into a temporary); a literal
+        // built at its use's type.
+        _, to_array := distinct_base(to).(^Type_Fixed_Array)
+        sl, is_slice := e.(^Expr_Slice)
+        if to_array && (fuse_byte_index(e) || is_slice && is_byte_buffer(expr_type(sl.expr))) || is_literal && graph_aggregate(to) {
+            fuse_fail(c, "bytes or a literal at its use's type")
             return NO_VALUE
         }
     }
@@ -5705,7 +5715,7 @@ stmt_before :: proc(x, y: Stmt) -> bool {
 // builder's.
 fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
     #partial switch v in s {
-    case Stmt_Return, Stmt_Call, ^Stmt_If:
+    case Stmt_Return, Stmt_Call, ^Stmt_If, ^Stmt_For, Stmt_Break, Stmt_Continue:
         return
     case ^Stmt_Decl:
         // (`a, b := f()` destructures.)
@@ -8275,7 +8285,19 @@ all_err_returns :: proc(types: [dynamic]Type) -> bool {
 // Phase-2 checker for a `for` statement: dispatches to collection-for, range-for, or C-style.
 check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
     child := type_env_block_child(env)
+    // Built around its checks (graph_for). A step is checked before the
+    // body but runs after it, and a collection that is no plain place is
+    // held first: those loops are the builder's.
+    b := fusing(c)
+    if b != nil && (!s.is_range && !s.is_collection_for && s.post != nil || s.is_collection_for && !graph_pure_place(s.collection)) {
+        fuse_fail(c, "a loop's step, or a collection that is no place")
+        b = nil
+    }
+    fl: Graph_For
+    if b != nil { fl = graph_fuse_for(b, s) }
+    defer if b != nil { graph_fuse_for_end(b, &fl, s) }
     if s.is_collection_for {
+        // (A plain place: walked where the loop needs it, not here.)
         coll_type := check_expr(c, s.collection, child)
 
         elem_type: Type
@@ -8312,10 +8334,23 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
 
         s.elem_type_ = distinct_base(elem_type)
 
+        if b != nil { graph_fuse_for_collection(b, &fl, s) }
         check_scope(c, s.body, child)
     } else if s.is_range {
-        low_type  := check_expr(c, s.range_low, child)
-        high_type := check_expr(c, s.range_high, child)
+        // The counter first, then each bound at its type (known once both
+        // are checked).
+        bounds := [2]int{-1, -1}
+        if b != nil { graph_fuse_range_counter(b, &fl, s) }
+        low_type, lo := fuse_expr(c, s.range_low, child)
+        if fusing(c) != nil {
+            bounds[0] = len(b.fuse.checks)
+            fl.lo = graph_fuse_range_bound(b, lo.v, low_type, s.span)
+        }
+        high_type, hi := fuse_expr(c, s.range_high, child)
+        if fusing(c) != nil {
+            bounds[1] = len(b.fuse.checks)
+            fl.hi = graph_fuse_range_bound(b, hi.v, high_type, s.span)
+        }
 
         iter_type: Type
         if s.iter_type != nil {
@@ -8354,6 +8389,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         type_env_set(child, s.loop_var, iter_type)
         s.var_type = distinct_base(iter_type)
 
+        if b != nil { graph_fuse_range(b, &fl, s, bounds) }
         check_scope(c, s.body, child)
     } else {
         // C-style for or simple for-condition loop.
@@ -8365,7 +8401,15 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
             register_and_check_declarations(c, init_stmts[:], child)
             check_bodies(c, init_stmts[:], child)
         }
-        cond_type := check_expr(c, s.condition, child)
+        if b != nil { graph_fuse_for_runs(b, &fl, s) }
+        cond_type: Type
+        cond: Fused
+        if s.condition != nil {
+            cond_type, cond = fuse_expr(c, s.condition, child)
+        } else {
+            cond_type = check_expr(c, s.condition, child)
+        }
+        if b != nil && s.condition != nil { graph_fuse_for_cond(b, &fl, s, cond.v) }
         if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
             check_error(c, s.span, TYPE_CONDITION_BOOL, type_name(cond_type))
         }
@@ -8572,9 +8616,9 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             check_return_body(c, s, env)
 
         case Stmt_Break:
-            // nothing to check
+            if b := fusing(c); b != nil { graph_fuse_loop_exit(b, s.span, is_break = true) }
         case Stmt_Continue:
-            // nothing to check
+            if b := fusing(c); b != nil { graph_fuse_loop_exit(b, s.span, is_break = false) }
 
         case ^Stmt_Defer:
             // Body is checked in a child env so any declarations inside the

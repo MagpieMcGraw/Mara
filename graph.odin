@@ -2066,7 +2066,6 @@ graph_slot :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) -> Node
 
 // An expression that names a place without running anything: walking it again
 // gives the same place.
-@(private="file")
 graph_pure_place :: proc(e: Expr) -> bool {
     #partial switch v in e {
     case ^Expr_Ident:        return v.lowered == nil || graph_pure_place(v.lowered)
@@ -3447,6 +3446,7 @@ Graph_Fuse :: struct {
     slots:      map[Node_Id]bool,
     consts:     [dynamic]Node_Id,
     widens:     [dynamic]Graph_Widen,
+    checks:     [dynamic]Graph_Check,
     failed:     string,
 }
 
@@ -3512,6 +3512,7 @@ graph_fuse_free :: proc(f: ^Graph_Fuse) {
     delete(f.slots)
     delete(f.consts)
     delete(f.widens)
+    delete(f.checks)
     free(f)
 }
 
@@ -3744,6 +3745,183 @@ graph_fuse_write_view :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t:
     graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, decl, t, span), v)
 }
 
+// A loop (graph_for), built around its checks: its block, the loop's
+// variables, then its runs — the check, the body, the step — and the code
+// after it.
+Graph_For :: struct {
+    f, outer:                Node_Id,
+    counter:                 Node_Id,
+    end_slot, coll_slot:     Node_Id,
+    elem:                    Node_Id,
+    lo, hi:                  Operand,
+    check, body, post, done: ^Run,
+    body_block:              Node_Id,
+    has_post:                bool,
+    span:                    Span,
+}
+
+graph_fuse_for :: proc(b: ^Graph_Builder, v: ^Stmt_For) -> Graph_For {
+    fl := Graph_For{span = v.span, counter = NO_NODE, end_slot = NO_NODE, coll_slot = NO_NODE, elem = NO_NODE}
+    fl.f = graph_node(b, .Block, .Explicit, b.code.block, "for", nil, v.span)
+    fl.outer = b.code.block
+    b.code.block = fl.f
+    graph_frame_push(b)   // the loop's variables, before its body's scope
+    return fl
+}
+
+// A range's counter, before its bounds (typed once they are checked).
+graph_fuse_range_counter :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
+    fl.counter = graph_node(b, .Local, .Explicit, fl.f, v.loop_var, nil, fl.span)
+    graph_bind(b, v.loop_var, fl.counter)
+}
+
+// A range's bound at the counter's type (graph_range_bound): cast when its
+// own differs — decided when the graph is put together.
+graph_fuse_range_bound :: proc(b: ^Graph_Builder, v: Operand, t: Type, span: Span) -> Operand {
+    id := graph_op(b, .Cast, .Synthetic, span, nil, "", v)
+    append(&b.fuse.checks, Graph_Check{kind = .Bound, ids = {id, NO_NODE}, v = v, t = t})
+    return {id, 0}
+}
+
+// The range's bounds checked: the counter typed, the end held (a literal's
+// is itself), the check that the range counts up — kept when a bound is no
+// constant — and the counter's first value; then the check run.
+graph_fuse_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, bounds: [2]int) {
+    ct := v.var_type
+    b.g.type_[fl.counter] = ct
+    for k in bounds { if k >= 0 { b.fuse.checks[k].ct = ct } }
+    if _, is_lit := v.range_high.(^Expr_Number); !is_lit {
+        fl.end_slot = graph_slot(b, "end", ct, fl.span)
+        graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "end", fl.end_slot, ct, fl.span), fl.hi)
+    }
+    up := graph_op_value(b, .Compare, .Synthetic, fl.span, Type_Bool{}, "<=", fl.lo, fl.hi)
+    assert := graph_op(b, .Assert, .Synthetic, fl.span, nil, "range", up)
+    append(&b.fuse.checks, Graph_Check{kind = .Ascends, ids = {up.op, assert}, lo = fl.lo, hi = fl.hi})
+    graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, v.loop_var, fl.counter, ct, fl.span), fl.lo)
+    graph_fuse_for_runs(b, fl, v)
+}
+
+// A collection loop, the collection checked (a plain place: walked where the
+// loop needs it): a slice's elements as they are when the loop begins, the
+// element and the index; then the check run.
+graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
+    if view := graph_loop_view(v.collection); view != nil {
+        fl.coll_slot = graph_slot(b, "items", view, fl.span)
+        val := graph_op_value(b, .Slice, .Implied, fl.span, view, "", graph_base_place(b, v.collection, fl.span))
+        graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "items", fl.coll_slot, view, fl.span), val)
+    }
+    if v.elem_var != "" {
+        fl.elem = graph_node(b, .Local, .Explicit, fl.f, v.elem_var, v.elem_type_, fl.span)
+        graph_bind(b, v.elem_var, fl.elem)
+    }
+    index_t := Type(slice_header_width_type)
+    if v.index_var != "" {
+        fl.counter = graph_node(b, .Local, .Explicit, fl.f, v.index_var, index_t, fl.span)
+        graph_bind(b, v.index_var, fl.counter)
+    } else {
+        fl.counter = graph_slot(b, "index", index_t, fl.span)
+    }
+    graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, b.g.name[fl.counter], fl.counter, index_t, fl.span),
+             graph_const(b, .Synthetic, fl.span, index_t, "0", Const_Value{}))
+    graph_fuse_for_runs(b, fl, v)
+}
+
+// The loop's runs, into the check: a counter against its bound; else the
+// condition, checked next (graph_fuse_for_cond); else none (`for {}`).
+graph_fuse_for_runs :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
+    fl.check, fl.body, fl.post, fl.done = graph_run_new(b), graph_run_new(b), graph_run_new(b), graph_run_new(b)
+    fl.has_post = v.post != nil || fl.counter != NO_NODE
+    graph_jump(b, fl.check, .Synthetic, fl.span)
+    b.code.run = fl.check
+    span := fl.span
+    if fl.counter != NO_NODE {
+        ct := b.g.type_[fl.counter]
+        cur := graph_read(b, graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), ct, span)
+        bound: Operand
+        if v.is_range {
+            if fl.end_slot != NO_NODE {
+                bound = graph_read(b, graph_var(b, "end", fl.end_slot, b.g.type_[fl.end_slot], span), b.g.type_[fl.end_slot], span)
+            } else {
+                bound = graph_value(b, v.range_high)
+            }
+        } else {
+            bound = graph_len(b, graph_coll_place(b, v.collection, fl.coll_slot, span), expr_type(v.collection), span)
+        }
+        cmp := graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "<", cur, bound)
+        graph_branch(b, cmp, fl.body, fl.done, .Synthetic, span)
+        graph_fuse_for_body(b, fl, v)
+    } else if v.condition == nil {
+        graph_jump(b, fl.body, .Synthetic, span)   // `for {}`: until a break
+        graph_fuse_for_body(b, fl, v)
+    }
+}
+
+// A condition loop's condition, built in its check run.
+graph_fuse_for_cond :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, cond: Operand) {
+    graph_branch(b, cond, fl.body, fl.done, .Explicit, fl.span)
+    graph_fuse_for_body(b, fl, v)
+}
+
+// The body's run and block, its statements checked next: an element's
+// loop reads the element first.
+@(private="file")
+graph_fuse_for_body :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
+    span := fl.span
+    b.code.run = fl.body
+    append(&b.code.loops, Loop{cont = fl.post if fl.has_post else fl.check, done = fl.done, scope = len(b.code.scopes)})
+    fl.body_block = graph_node(b, .Block, .Explicit, fl.f, "body", nil, span)
+    b.code.block = fl.body_block
+    graph_scope_open(b, fl.body_block, v.body[:], span)
+    if fl.elem != NO_NODE {
+        ct := b.g.type_[fl.counter]
+        at := graph_read(b, graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), ct, span)
+        at = graph_widen(b, at, slice_header_width_type, span)
+        slot := graph_op_value(b, .Index, .Synthetic, span, v.elem_type_, "", graph_coll_place(b, v.collection, fl.coll_slot, span), at)
+        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.elem_var, fl.elem, v.elem_type_, span),
+                 graph_read(b, slot, v.elem_type_, span))
+    }
+}
+
+// After the body: its scope's end, the step, and the code after the loop.
+graph_fuse_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
+    span := fl.span
+    graph_scope_close(b, span)
+    graph_close(b, fl.body_block)
+    b.code.block = fl.f
+    pop(&b.code.loops)
+    cont := fl.post if fl.has_post else fl.check
+    if graph_reachable(b) { graph_jump(b, cont, .Synthetic, span) }
+    if fl.has_post {
+        b.code.run = fl.post
+        if fl.counter != NO_NODE {
+            ct := b.g.type_[fl.counter]
+            cur := graph_read(b, graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), ct, span)
+            next := graph_op_value(b, .Arith, .Synthetic, span, ct, "+%", cur, graph_const(b, .Synthetic, span, ct, "1", Const_Value{int = 1}))
+            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), next)
+        }
+        graph_jump(b, fl.check, .Synthetic, span)
+    }
+    graph_close(b, fl.f)
+    b.code.run = fl.done
+    b.code.block = fl.outer
+    graph_frame_pop(b)
+}
+
+// `break`, `continue` (graph_loop_exit).
+graph_fuse_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
+    graph_loop_exit(b, span, is_break)
+}
+
+// A range's bound cast or its check that it counts up, decided when the
+// graph is put together (graph_range_bound, graph_for).
+Graph_Check :: struct {
+    kind:   enum u8 { Bound, Ascends },
+    ids:    [2]Node_Id,   // the cast; the compare and the assert
+    v:      Operand,      // the bound's value
+    t, ct:  Type,         // its type, the counter's
+    lo, hi: Operand,      // the bounds, as the check reads them
+}
+
 // A bare declaration of a value no constructor builds: zero.
 graph_fuse_zero_var :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Span) {
     graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, b.g.name[decl], decl, t, span))
@@ -3770,6 +3948,27 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     }
     for id in f.consts {
         if is_infer(g.type_[id]) && !is_infer(graph_settled(g.type_[id])) { append(&g.settled, id) }
+    }
+    // A range's bounds cast to the counter's type where theirs differs; the
+    // check that it counts up where a bound is no constant.
+    resolve :: proc(b: ^Graph_Builder, o: Operand) -> Operand {
+        o := o
+        for (o.op != NO_NODE && o.op in b.dropped) { o = b.dropped[o.op] }
+        return o
+    }
+    for k in f.checks {
+        if k.kind != .Bound { continue }
+        if k.t != nil && !is_infer(k.t) && !types_equal(k.t, k.ct) {
+            g.type_[k.ids[0]], g.name[k.ids[0]] = k.ct, type_name(k.ct)
+        } else {
+            b.dropped[k.ids[0]] = k.v
+        }
+    }
+    for k in f.checks {
+        if k.kind != .Ascends { continue }
+        if resolve(b, k.lo).op in g.consts && resolve(b, k.hi).op in g.consts {
+            b.dropped[k.ids[0]], b.dropped[k.ids[1]] = NO_VALUE, NO_VALUE
+        }
     }
     for p in b.segs[f.seg].pieces {
         for i in p.nodes[0] ..< p.nodes[1] {
