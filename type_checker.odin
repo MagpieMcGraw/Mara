@@ -5554,6 +5554,12 @@ Fuse_Call :: struct {
     w:      Written,
     ops:    [dynamic]Operand,
     params: bool,
+    // A builtin's: its operands as built (a place, for len and cap), their
+    // types, and where the build stood before them.
+    args:   [dynamic]Fused,
+    types:  [dynamic]Type,
+    want:   Fuse_Want,
+    mark:   Graph_Mark,
 }
 
 // Check an expression, building what it computes, in the order it runs.
@@ -10831,21 +10837,47 @@ check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
 Fuse_Unary :: struct {
     w:       Written,
     operand: Operand,
+    place:   bool,   // the operand's place is wanted
+}
+
+// An index into bytes: what the checker types a byte may be read as another
+// type (maybe_stamp_byte_view), once its use is checked. The builder's.
+fuse_byte_index :: proc(e: Expr) -> bool {
+    ix, is_ix := e.(^Expr_Index)
+    return is_ix && is_byte_buffer(expr_type(ix.expr))
 }
 
 check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
     want, w := fuse_asked(c)
     if want == .None { return check_unary_impl(c, e, env, nil) }
-    if e.op == .Caret || e.op == .Ampersand || want == .Place {
-        fuse_fail(c, "a place's unary, or a unary's place")
+    // `p^` is the place p points at; `&x` the address of x's place.
+    if want == .Place && e.op != .Caret {
+        fuse_fail(c, "a unary's place")
         return check_unary_impl(c, e, env, nil)
     }
-    fu := Fuse_Unary{w = w}
+    fu := Fuse_Unary{w = w, place = e.op == .Caret || e.op == .Ampersand}
     t := check_unary_impl(c, e, env, &fu)
     b := fusing(c)
     if b == nil { return t }
     if _, over := e.overload_fn.?; over {
         fuse_fail(c, "an operator overload")
+        return t
+    }
+    #partial switch e.op {
+    case .Caret:
+        p := graph_op_value(b, .Deref, .Explicit, e.span, t, "", fu.operand)
+        if want == .Value {
+            fuse_done(c, graph_read(b, p, t, e.span))
+        } else {
+            fuse_done(c, p, true)
+        }
+        return t
+    case .Ampersand:
+        if fuse_byte_index(e.operand) {
+            fuse_fail(c, "a byte view's address")
+            return t
+        }
+        fuse_done(c, graph_op_value(b, .Address, w, e.span, t, "", fu.operand))
         return t
     }
     op := "-%" if e.op == .Minus && e.wrapping else graph_token_text(e.op)
@@ -10855,7 +10887,7 @@ check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
 
 fuse_unary_operand :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope, fu: ^Fuse_Unary) -> Type {
     if fu == nil { return check_expr(c, e.operand, env) }
-    t, r := fuse_expr(c, e.operand, env, .Value, fu.w)
+    t, r := fuse_expr(c, e.operand, env, .Place if fu.place else .Value, fu.w)
     fu.operand = r.v
     return t
 }
@@ -11423,11 +11455,24 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         return Type_Infer_Int{}
     case ^Expr_Assert:
         // assert(cond) — cond must be boolean; the expression yields no value.
-        cond_type := check_expr(c, e.cond, env)
+        // Built: the condition's value, then the assert.
+        want, w := fuse_asked(c)
+        cond_type: Type
+        cond: Fused
+        if want == .Value {
+            cond_type, cond = fuse_expr(c, e.cond, env, .Value, w)
+        } else {
+            if want != .None { fuse_fail(c, "an assert's place") }
+            cond_type = check_expr(c, e.cond, env)
+        }
         if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
             check_error(c, e.span, TYPE_CONDITION_BOOL, type_name(cond_type))
         }
         e.type_ = Type_Void{}
+        if b := fusing(c); b != nil && want == .Value {
+            graph_assert(b, e, cond.v, w)
+            fuse_done(c, NO_VALUE)
+        }
         return Type_Void{}
     case ^Expr_Take:
         // Two forms:
@@ -11757,7 +11802,56 @@ check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope
     return Type_Error{}
 }
 
+// A field access, built: a member is its base's place (through a pointer,
+// what it points at), then the field. What names no member — a variant, a
+// constant, a module's function — is a value of its own: its base, built
+// before that was known, is left out.
+Fuse_Field :: struct {
+    on:        bool,
+    mark:      Graph_Mark,
+    base:      Fused,
+    base_type: Type,
+}
+
 check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope) -> Type {
+    want, w := fuse_asked(c)
+    b := fusing(c)
+    if want == .None || b == nil { return check_field_access_impl(c, e, env, nil) }
+    ff := Fuse_Field{on = true, mark = graph_fuse_mark(b)}
+    t := check_field_access_impl(c, e, env, &ff)
+    if fusing(c) == nil { return t }
+    set_expr_type(e, t)   // (the builder's reads it)
+    if e.resolved == nil || graph_is_member(e.resolved) {
+        if !ff.base.ok || !ff.base.place {
+            fuse_fail(c, "a field of a value")
+            return t
+        }
+        base := ff.base.v
+        if _, is_self := e.expr.(^Expr_Self); !is_self {
+            if pt, is_ptr := distinct_base(ff.base_type).(^Type_Ptr); is_ptr {
+                base = graph_op_value(b, .Deref, .Implied, e.span, pt.elem, "", base)
+            }
+        }
+        _, is_array := distinct_base(graph_pointee(ff.base_type)).(^Type_Fixed_Array)
+        p := graph_op_value(b, .Swizzle if is_array else .Field, .Explicit, e.span, t, e.field, base)
+        if want == .Value {
+            fuse_done(c, graph_read(b, p, t, e.span))
+        } else {
+            fuse_done(c, p, true)
+        }
+        return t
+    }
+    graph_fuse_drop_since(b, ff.mark)
+    _, is_const := e.resolved.(Resolved_Constant)
+    switch {
+    case want == .Value:                  fuse_done(c, graph_value(b, e, w))
+    case is_const && graph_aggregate(t):  fuse_done(c, graph_place(b, e, e.span), true)   // a constant table
+    case want == .Either:                 fuse_done(c, graph_value(b, e, w))
+    }
+    return t
+}
+
+check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope, ff: ^Fuse_Field) -> Type {
     // Self-module qualification: `<current_package>.X` resolves X via the
     // current module's flat-name table or env directly. The main package
     // doesn't get a synthesized mod_struct (unlike imported modules), so its
@@ -11774,7 +11868,13 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
             return check_expr(c, const_expr, env)
         }
     }
-    obj_type := check_expr(c, e.expr, env)
+    obj_type: Type
+    if ff != nil {
+        obj_type, ff.base = fuse_expr(c, e.expr, env, .Either)
+        ff.base_type = obj_type
+    } else {
+        obj_type = check_expr(c, e.expr, env)
+    }
     // Qualified enum access: EnumName.Variant
     if et, ok := obj_type.(^Type_Enum); ok {
         if val, v_ok := et.variants[e.field]; v_ok {
@@ -12137,7 +12237,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
             if !ptr_ok && !is_any(ptr_type) {
                 check_error(c, e.span, TYPE_SLICE_PTR_FIRST_ARGUMENT_POINTER, type_name(ptr_type))
             }
-            size_type := check_expr(c, args[1], env)
+            size_type := check_call_arg(c, args[1], env)
             if !is_numeric(size_type) && !is_any(size_type) {
                 check_error(c, e.span, TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC, type_name(size_type))
             } else if !coerces_to_slice_width(size_type) {
@@ -12270,19 +12370,29 @@ Fuse_Binary :: struct {
     sides: [2]Operand,
     types: [2]Type,
     widen: [2]int,   // each side's widening, in the body's list; -1 for none
+    and:   Maybe(Graph_And),   // `and` / `or`: the right side runs when needed
 }
 
 check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
     want, w := fuse_asked(c)
-    if want == .None { return check_binary_impl(c, e, env, nil) }
-    if e.op == .And || e.op == .Or || want == .Place {
-        fuse_fail(c, "and / or, or a binary's place")
+    b := fusing(c)
+    if want == .None || b == nil { return check_binary_impl(c, e, env, nil) }
+    if want == .Place {
+        fuse_fail(c, "a binary's place")
         return check_binary_impl(c, e, env, nil)
     }
     fb := Fuse_Binary{w = w, span = e.span, widen = {-1, -1}}
+    if e.op == .And || e.op == .Or { fb.and = graph_fuse_and(b, e.op == .And, w, e.span) }
     t := check_binary_impl(c, e, env, &fb)
-    b := fusing(c)
-    if b == nil { return t }
+    if fusing(c) == nil { return t }
+    if sa, is_and := &fb.and.?; is_and {
+        if _, is_bool := t.(Type_Bool); !is_bool {
+            fuse_fail(c, "and / or of no bool")
+            return t
+        }
+        fuse_done(c, graph_fuse_and_end(b, sa, fb.sides[1]))
+        return t
+    }
     if _, over := e.overload_fn.?; over {
         fuse_fail(c, "an operator overload")
         return t
@@ -12304,6 +12414,11 @@ fuse_side :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, fb: ^Fuse_Binary, k: i
     fb.types[k] = t
     b := fusing(c)
     if b == nil { return t }
+    if sa, is_and := &fb.and.?; is_and {
+        fb.sides[k] = r.v
+        if k == 0 { graph_fuse_and_left(b, sa, r.v) }
+        return t
+    }
     n := len(b.fuse.widens)
     fb.sides[k] = graph_fuse_widen(b, r.v, fb.span, {binary = true})
     if len(b.fuse.widens) > n { fb.widen[k] = n }
@@ -12765,8 +12880,9 @@ check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scop
     c.call = nil
     defer c.call = fc
     if !fc.params {
-        t, r := fuse_expr(c, arg, env, .Value, fc.w)
-        append(&fc.ops, r.v)
+        t, r := fuse_expr(c, arg, env, fc.want, fc.w)
+        append(&fc.args, r)
+        append(&fc.types, t)
         return t
     }
     pt: Type
@@ -12780,14 +12896,54 @@ check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scop
     return t
 }
 
-// A builtin, built: its operands' values, then its operation.
-fuse_builtin :: proc(c: ^Checker, e: ^Expr_Call, fc: ^Fuse_Call) {
+// A builtin, built (graph_builtin): its operands, then its operation.
+fuse_builtin :: proc(c: ^Checker, e: ^Expr_Call, fc: ^Fuse_Call, t: Type, want: Fuse_Want) {
+    defer {
+        delete(fc.args)
+        delete(fc.types)
+    }
     b := fusing(c)
     if b == nil { return }
-    switch name := call_name(e); name {
+    if want == .Place {
+        fuse_fail(c, "a builtin's place")
+        return
+    }
+    vals := make([]Operand, len(fc.args), context.temp_allocator)
+    for r, i in fc.args { vals[i] = r.v }
+    name := call_name(e)
+    if _, is_cast := cast_result_type(name); is_cast {
+        fuse_done(c, graph_op_value(b, .Cast, fc.w, e.span, t, name, ..vals))
+        return
+    }
+    switch name {
     case "print", "print_cstr", "print_float", "print_int", "crash":
-        graph_op(b, .Crash if name == "crash" else .Print, fc.w, e.span, nil, name, ..fc.ops[:])
+        graph_op(b, .Crash if name == "crash" else .Print, fc.w, e.span, nil, name, ..vals)
         fuse_done(c, NO_VALUE)
+    case "len", "cap":
+        // A fixed array's is its size: its operand, built, is left out.
+        if len(fc.args) != 1 { return }
+        at := fc.types[0]
+        if fa, fixed := distinct_base(graph_pointee(at)).(^Type_Fixed_Array); fixed {
+            graph_fuse_drop_since(b, fc.mark)
+            fuse_done(c, graph_const(b, fc.w, e.span, t, name, Const_Value{int = i128(fa.size)}))
+            return
+        }
+        if !fc.args[0].place {
+            fuse_fail(c, "the length of a value")
+            return
+        }
+        base := fc.args[0].v
+        if _, is_self := call_args(e)[0].(^Expr_Self); !is_self {
+            if pt, is_ptr := distinct_base(at).(^Type_Ptr); is_ptr {
+                base = graph_op_value(b, .Deref, .Implied, e.span, pt.elem, "", base)
+            }
+        }
+        field := graph_op_value(b, .Field, fc.w, e.span, t, name, base)
+        fuse_done(c, graph_read(b, field, t, e.span))
+    case "int", "uint", "isize", "usize", "bool", "cstring":
+        fuse_done(c, graph_op_value(b, .Cast, fc.w, e.span, t, name, ..vals))
+    case "slice_from_ptr":
+        fuse_done(c, graph_op_value(b, .Slice, fc.w, e.span, t, name, ..vals))
     case:
         fuse_fail(c, fmt.aprintf("the builtin %s", name))
     }
@@ -13401,11 +13557,15 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     }
 
     // Phase 2: Check the call — builtins, then user-defined functions.
-    if want != .None { c.call = &fc }
+    if b := fusing(c); b != nil && want != .None {
+        c.call = &fc
+        fc.want = .Either if call_name(e) == "len" || call_name(e) == "cap" else .Value
+        fc.mark = graph_fuse_mark(b)
+    }
     builtin_result, is_builtin := check_builtin_call(c, e, check_args[:], env)
     c.call = nil
     if is_builtin {
-        if want != .None { fuse_builtin(c, e, &fc) }
+        if want != .None { fuse_builtin(c, e, &fc, builtin_result, want) }
         return builtin_result
     }
 
@@ -13746,9 +13906,51 @@ lower_subscript_dots :: proc(base: Expr, sub: Expr) {
     }
 }
 
+// An element, built: its collection's place (through a pointer, what it
+// points at), the index at the header's width, then the element. (Bytes
+// indexed as another type are a view: the builder's.)
+Fuse_Index :: struct {
+    w:     Written,
+    base:  Operand,
+    index: Operand,
+}
+
 check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope) -> Type {
+    want, w := fuse_asked(c)
+    b := fusing(c)
+    if want == .None || b == nil { return check_index_impl(c, e, env, nil) }
+    fi := Fuse_Index{w = w}
+    t := check_index_impl(c, e, env, &fi)
+    if fusing(c) == nil { return t }
+    if is_byte_buffer(expr_type(e.expr)) {
+        fuse_fail(c, "an index into bytes")
+        return t
+    }
+    p := graph_op_value(b, .Index, .Explicit, e.span, t, "", fi.base, fi.index)
+    if want == .Value {
+        fuse_done(c, graph_read(b, p, t, e.span))
+    } else {
+        fuse_done(c, p, true)
+    }
+    return t
+}
+
+check_index_impl :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope, fi: ^Fuse_Index) -> Type {
     lower_subscript_dots(e.expr, e.index)
-    target_type := distinct_base(check_expr(c, e.expr, env))
+    base_type: Type
+    if fi != nil {
+        base: Fused
+        base_type, base = fuse_expr(c, e.expr, env, .Place)
+        fi.base = base.v
+        if b := fusing(c); b != nil {
+            if pt, is_ptr := distinct_base(base_type).(^Type_Ptr); is_ptr {
+                fi.base = graph_op_value(b, .Deref, .Implied, e.span, pt.elem, "", base.v)
+            }
+        }
+    } else {
+        base_type = check_expr(c, e.expr, env)
+    }
+    target_type := distinct_base(base_type)
     // Auto-deref: `^[]T` and `^[N]T` index like their pointee. Mirrors the
     // field-access auto-deref so `s[i]` for `s: ^[]T` (the mutable slice
     // param form) works without a manual `s^[i]`.
@@ -13762,7 +13964,22 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope) -> Type {
     if fa, ok := target_type.(^Type_Fixed_Array); ok && fa.index_type != nil {
         c.expected_hint = fa.index_type
     }
-    idx_type := check_expr(c, e.index, env)
+    idx_type: Type
+    if fi != nil {
+        at: Fused
+        idx_type, at = fuse_expr(c, e.index, env, .Value, .Explicit)
+        if b := fusing(c); b != nil {
+            // An enum's value is its tag, taken as a number; a narrower
+            // number widens.
+            if _, is_enum := distinct_base(idx_type).(^Type_Enum); is_enum {
+                fi.index = graph_op_value(b, .Cast, .Implied, e.span, slice_header_width_type, type_name(slice_header_width_type), at.v)
+            } else {
+                fi.index = graph_fuse_widen(b, at.v, e.span, {to = slice_header_width_type})
+            }
+        }
+    } else {
+        idx_type = check_expr(c, e.index, env)
+    }
 
     if !is_numeric(idx_type) {
         check_error(c, e.span, TYPE_INDEX_NUMBER, type_name(idx_type))

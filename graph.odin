@@ -2159,13 +2159,7 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         hi := graph_widen(b, graph_value(b, v.high, w), slice_header_width_type, v.span) if v.high != nil else NO_VALUE
         return graph_op_value(b, .Slice, w, v.span, v.type_, "", graph_base_place(b, v.expr, v.span), lo, hi)
     case ^Expr_Assert:
-        a := graph_op(b, .Assert, w, v.span, nil, v.cond_text, graph_value(b, v.cond, w))
-        if bin, is_bin := v.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) && v.lhs_text != "" && v.rhs_text != "" {
-            b.g.assert_sides[a] = {
-                "" if assert_side_is_literal(bin.left) else v.lhs_text,
-                "" if assert_side_is_literal(bin.right) else v.rhs_text,
-            }
-        }
+        graph_assert(b, v, graph_value(b, v.cond, w), w)
         return NO_VALUE
     case ^Expr_Take:
         count := NO_VALUE
@@ -2247,7 +2241,6 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
 
 // A tag or padding access names part of the value (a place); variants,
 // constants and functions don't.
-@(private="file")
 graph_is_member :: proc(r: Resolved_Name) -> bool {
     #partial switch _ in r {
     case Resolved_Union_Tag, Resolved_Union_Pad: return true
@@ -2267,7 +2260,6 @@ graph_base_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
     return p
 }
 
-@(private="file")
 graph_pointee :: proc(t: Type) -> Type {
     if pt, ok := distinct_base(t).(^Type_Ptr); ok { return pt.elem }
     return t
@@ -2774,7 +2766,6 @@ graph_const_index :: proc(b: ^Graph_Builder, i: int, span: Span) -> Operand {
 }
 
 // A constant operation, with its value when it has one.
-@(private="file")
 graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, value: Maybe(Const_Value)) -> Operand {
     o := graph_op_value(b, .Const, w, span, t, name)
     if v, ok := value.?; ok {
@@ -3621,6 +3612,90 @@ graph_fuse_void_decl :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Sp
 
 graph_fuse_void_assign :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) {
     graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, NO_NODE, t, span), graph_void(b, t, span))
+}
+
+// Where the build stands, to leave out what is built after it: a field
+// access's base, built before the access is found to name no member (a
+// variant, a constant, a module's function) — the builder never builds it.
+Graph_Mark :: struct {
+    nodes: int,
+    run:   ^Run,
+    ops:   int,
+}
+
+graph_fuse_mark :: proc(b: ^Graph_Builder) -> Graph_Mark {
+    return {b.nodes, b.code.run, len(b.code.run.ops) if b.code.run != nil else 0}
+}
+
+graph_fuse_drop_since :: proc(b: ^Graph_Builder, m: Graph_Mark) {
+    if b.nodes == m.nodes { return }
+    r := b.code.run
+    if r == nil || r != m.run && m.run != nil {
+        graph_fuse_fail(b, b.fuse, "a field access's base crossed runs")
+        return
+    }
+    for i in m.nodes ..< b.nodes { b.dropped[Node_Id(i)] = NO_VALUE }
+    if m.run == nil {
+        b.code.run = nil   // (the run the base began: code after a jump)
+        return
+    }
+    // The then-edges its first operation took wait for the next again.
+    if m.ops == 0 && len(r.ops) > 0 {
+        for &e, k in b.g.edges {
+            if e.kind == .Then && e.to == r.ops[0] {
+                e.to = NO_NODE
+                append(&r.waiting, i32(k))
+            }
+        }
+    }
+    resize(&r.ops, m.ops)
+}
+
+// An assert of its condition's value; a comparison's sides as written, for
+// its failure's message.
+graph_assert :: proc(b: ^Graph_Builder, v: ^Expr_Assert, cond: Operand, w: Written) {
+    a := graph_op(b, .Assert, w, v.span, nil, v.cond_text, cond)
+    if bin, is_bin := v.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) && v.lhs_text != "" && v.rhs_text != "" {
+        b.g.assert_sides[a] = {
+            "" if assert_side_is_literal(bin.left) else v.lhs_text,
+            "" if assert_side_is_literal(bin.right) else v.rhs_text,
+        }
+    }
+}
+
+// `a and b`, `a or b` (graph_short_circuit): the result through a synthetic
+// local, the right side in a run of its own — begun before the left side,
+// branched on after it, joined after the right.
+Graph_And :: struct {
+    slot:      Node_Id,
+    word:      string,
+    rhs, join: ^Run,
+    and:       bool,
+    w:         Written,
+    span:      Span,
+}
+
+graph_fuse_and :: proc(b: ^Graph_Builder, is_and: bool, w: Written, span: Span) -> Graph_And {
+    word := "and" if is_and else "or"
+    return {slot = graph_slot(b, word, Type_Bool{}, span), word = word, and = is_and, w = w, span = span}
+}
+
+graph_fuse_and_left :: proc(b: ^Graph_Builder, sa: ^Graph_And, l: Operand) {
+    graph_op(b, .Write, .Synthetic, sa.span, nil, "", graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), l)
+    sa.rhs, sa.join = graph_run_new(b), graph_run_new(b)
+    if sa.and {
+        graph_branch(b, l, sa.rhs, sa.join, sa.w, sa.span)
+    } else {
+        graph_branch(b, l, sa.join, sa.rhs, sa.w, sa.span)
+    }
+    b.code.run = sa.rhs
+}
+
+graph_fuse_and_end :: proc(b: ^Graph_Builder, sa: ^Graph_And, r: Operand) -> Operand {
+    graph_op(b, .Write, .Synthetic, sa.span, nil, "", graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), r)
+    graph_jump(b, sa.join, .Synthetic, sa.span)
+    b.code.run = sa.join
+    return graph_read(b, graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), Type_Bool{}, sa.span)
 }
 
 // A bare declaration of a value no constructor builds: zero.
