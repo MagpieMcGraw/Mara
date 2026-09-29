@@ -4093,6 +4093,29 @@ graph_fuse_if_expr_end :: proc(b: ^Graph_Builder, gi: ^Graph_If_Expr) {
     b.code.run = gi.join
 }
 
+// `void` written: the uninitialized value (graph_void).
+graph_fuse_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
+    return graph_void(b, t, span)
+}
+
+// An override block written into a variable's struct (graph_literal_writes
+// at the variable): each field's value into its field.
+graph_fuse_override :: proc(b: ^Graph_Builder, d: Dest, sd: ^Scope_Body) -> ^Graph_Literal {
+    gl := new(Graph_Literal, context.temp_allocator)
+    gl.d, gl.parent, gl.sd = d, d, sd
+    return gl
+}
+
+// The call the slots of a default share (Code.tuples): made at the first.
+graph_fuse_tuple_set :: proc(b: ^Graph_Builder, key: rawptr, op: Node_Id) {
+    b.code.tuples[key] = op
+}
+
+graph_fuse_tuple_get :: proc(b: ^Graph_Builder, key: rawptr) -> (Node_Id, bool) {
+    op, ok := b.code.tuples[key]
+    return op, ok
+}
+
 // A value written to a place already built.
 graph_fuse_write_at :: proc(b: ^Graph_Builder, place, v: Operand, span: Span) {
     graph_op(b, .Write, .Explicit, span, nil, "", place, v)

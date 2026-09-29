@@ -3340,12 +3340,38 @@ auto_monomorphize_for_struct :: proc(c: ^Checker, fn_name: string, ft: ^Type_Sco
 }
 
 // Check a call to a generic function: infer type params, instantiate, rewrite call.
-check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, args: []Expr, env: ^Type_Scope) -> Type {
+check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, args: []Expr, env: ^Type_Scope, want := Fuse_Want.None, w := Written.Explicit) -> Type {
+    // Built: each argument as it is checked, at its param's type once the
+    // instance is known (graph_fuse_as, as a dispatch's), then the call.
+    b := fusing(c) if want != .None else nil
+    if b != nil && want == .Place {
+        fuse_fail(c, "a call's place")
+        b = nil
+    }
+    vals: [dynamic]Operand
+    defer delete(vals)
+    as_: [dynamic]int
+    defer delete(as_)
     // Step 1: Check all argument types
     arg_types: [dynamic]Type
     defer delete(arg_types)
     for arg in args {
-        append(&arg_types, check_expr(c, arg, env))
+        if b != nil && fusing(c) != nil {
+            t, r := fuse_expr(c, arg, env, .Either, w)
+            append(&arg_types, t)
+            if fusing(c) == nil { continue }
+            _, is_literal := arg.(^Expr_Array)
+            _, is_array := distinct_base(t).(^Type_Fixed_Array)
+            if fuse_byte_index(arg) || is_literal || is_array && !r.place {
+                fuse_fail(c, "bytes, a literal or an array value as a generic's argument")
+                continue
+            }
+            v, k := graph_fuse_as(b, r.v, r.place, t, expr_span(arg)^, e.span, {})
+            append(&vals, v)
+            append(&as_, k)
+        } else {
+            append(&arg_types, check_expr(c, arg, env))
+        }
     }
 
     // Step 2: Build substitution map by inferring from arg types.
@@ -3481,6 +3507,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     }
     // Generic constructor call: e.g. Pair(int)(1, 2)
     if len(fun_type.fields) > 0 && len(fun_type.params) == 0 {
+        if b != nil { fuse_fail(c, "a generic construction") }
         return check_pure_struct_construction(c, e, fun_type, env)
     }
 
@@ -3494,6 +3521,12 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         check_error(c, e.span, TYPE_EXPECTS_ARGUMENT, tmpl.name, len(fun_type.params), len(args))
     }
 
+    if fb := fusing(c); fb != nil && b != nil {
+        for k, i in as_ {
+            if k >= 0 { fb.fuse.widens[k].sig, fb.fuse.widens[k].param = fun_type, i }
+        }
+        fuse_done(c, {graph_call_op(fb, .Call, w, e.span, fun_type, fn_primary_return(fun_type), ..vals[:]), 0})
+    }
     return fn_primary_return(fun_type)
 }
 
@@ -8698,13 +8731,20 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
                 if vt, _, found := type_env_locate(env, lit.name); found {
                     if sd := resolve_to_struct_type(c, vt); sd != nil {
                         lit.type_ = vt   // the variable's: its fields are written
+                        // Built: each field's value written into the variable's.
+                        ol := Fuse_Lit{e = lit}
+                        saved := c.lit
+                        if b := fusing(c); b != nil {
+                            ol.gl, ol.built = graph_fuse_override(b, graph_dest_var(lit.name, NO_NODE, vt), sd), true
+                            c.lit = &ol
+                        }
                         check_struct_literal_fields(c, lit, sd, lit.span, env, override = true)
+                        c.lit = saved
                         lit.override_target = lit.name
                         handled_override = true
                     }
                 }
             }
-            if handled_override { fuse_fail(c, "a struct override") }
             if !handled_override {
                 rt, _ := fuse_expr(c, s.expr, env)
                 // Must-use: a bare call that yields a value silently discards it.
@@ -12314,7 +12354,32 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         // Otherwise the user wrote a single non-multi value with N names —
         // that's the broadcast case (`a, b: i64 = 7`), so each binding takes
         // the source's type directly and codegen re-evaluates per binding.
-        src_type := check_expr(c, e.source, env)
+        // Built: the slots of one call share it — built at the first, each
+        // slot one of its outputs; a broadcast's is its value, again.
+        want, w := fuse_asked(c)
+        shared := e.index > 0 && len(call_return_list(c, e.source, env)) > 1
+        src_type: Type
+        src: Fused
+        if want != .None && !shared {
+            src_type, src = fuse_expr(c, e.source, env, .Value, w)
+        } else {
+            src_type = check_expr(c, e.source, env)
+        }
+        if b := fusing(c); b != nil && want != .None {
+            key := rawptr(e.source.(^Expr_Call)) if len(call_return_list(c, e.source, env)) > 1 else nil
+            switch {
+            case key == nil:  fuse_done(c, src.v)
+            case e.index == 0:
+                graph_fuse_tuple_set(b, key, src.v.op)
+                fuse_done(c, src.v)
+            case:
+                if op, ok := graph_fuse_tuple_get(b, key); ok {
+                    fuse_done(c, {op, i32(e.index)})
+                } else {
+                    fuse_fail(c, "a default's slot before its call")
+                }
+            }
+        }
         if _, is_err := src_type.(Type_Error); is_err { return Type_Error{} }
         returns := call_return_list(c, e.source, env)
         if len(returns) > 1 {
@@ -12542,10 +12607,12 @@ Fuse_Store :: struct {
     place: Operand,
     value: Fused,
     vt:    Type,
+    void:  bool,
 }
 
 fuse_store :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scope) -> Type {
     vt, fs := fuse_store_value(c, s, place, env)
+    // (Its target's type: a field's, what a pointer points at.)
     fuse_store_write(c, s, &fs, fusing(c).g.type_[place.op] if fs.on && fusing(c) != nil else nil)
     return vt
 }
@@ -12553,12 +12620,16 @@ fuse_store :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scop
 fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scope) -> (Type, Fuse_Store) {
     b := fusing(c)
     if b == nil || place == NO_VALUE { return check_expr(c, s.value, env), {} }
+    // (`= void` writes the uninitialized value: its value isn't built.)
+    if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip || is_void_literal(s.value) {
+        return check_expr(c, s.value, env), {on = true, place = place, void = true}
+    }
     saved := c.compound
     if s.is_compound { c.compound = {expr_identity(s.target), place} }
     // (What builds in place builds in a temporary, then is written.)
     vt, r := fuse_expr(c, s.value, env, .Into, dest = Dest{kind = .At, at = place, type_ = b.g.type_[place.op]}, temp = true, temp_span = s.span)
     c.compound = saved
-    return vt, {true, place, r, vt}
+    return vt, {true, place, r, vt, false}
 }
 
 // The write, `dt` its target's type (the checker's); `view` the type bytes
@@ -12566,11 +12637,11 @@ fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Typ
 fuse_store_write :: proc(c: ^Checker, s: ^Stmt_Assign, fs: ^Fuse_Store, dt: Type, view: Type = nil, big := false) {
     b := fusing(c)
     if b == nil || !fs.on { return }
-    if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip || is_void_literal(s.value) {
-        fuse_fail(c, "a place written void")
+    if view != nil { graph_fuse_view(b, fs.place, view, big, s.span) }
+    if fs.void {
+        graph_fuse_write_at(b, fs.place, graph_fuse_void(b, dt, s.span), s.span)   // (its value unbuilt)
         return
     }
-    if view != nil { graph_fuse_view(b, fs.place, view, big, s.span) }
     fuse_store_finish(c, s.value, fs.vt, fs.value, Dest{kind = .At, at = fs.place, type_ = dt}, s.span, settle = true)
 }
 
@@ -14431,8 +14502,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
         gtmpl, gtmpl_ok := &c.table.generic_templates[call_name(e)]
         if !gtmpl_ok { gtmpl, gtmpl_ok = &c.table.generic_templates[e.name] }
         if gtmpl_ok {
-            if want != .None { fuse_fail(c, "a generic call") }
-            return check_generic_call(c, e, gtmpl, check_args[:], env)
+            return check_generic_call(c, e, gtmpl, check_args[:], env, want, w)
         }
     }
 
