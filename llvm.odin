@@ -31,7 +31,7 @@ Llvm :: struct {
     held:  []bool,              // by id - node: a variable held as its one value
     ret:   string,              // its IR return type
     sret:  Type,                // a struct result, built in the caller's slot (%sret)
-    by_value: Type,             // a union result: returned as an IR value (the old ABI; a slot like the rest: later)
+    by_value: Type,             // a union result: returned as an IR value (a slot like the rest: later)
     rets:    []Type,            // several results: each into the caller's slot for it, %sret.<i>
     slot:    string,            // the result slot: %sret, or a fallible constructor's Self, %sret.0
     consumed: string,           // a param the result is built from (consumed_param_of): its argument
@@ -363,7 +363,7 @@ llvm_users :: proc(e: ^Llvm) {
 // storage of its own: the local every return returns (NRVO), and a
 // temporary whose one read is a return (a literal or construction returned).
 // With several results, each aggregate one's slot — a returned local only
-// when a fixed array (as the old emitter; the others at the switch-over).
+// when a fixed array (the others: later).
 @(private="file")
 llvm_result_slot :: proc(e: ^Llvm) {
     if e.rets == nil || e.ctor {
@@ -429,7 +429,7 @@ llvm_written_only_in :: proc(e: ^Llvm, v: Node_Id, r: i32) -> bool {
 // in a temporary — it may read what it replaces; it is built in place when,
 // from its first write on, nothing it reads can be that storage
 // (llvm_overlaps), and — a construction — its callee is handed none of the
-// caller's storage (the old emitter's rule for calls, as in llvm_result_place).
+// caller's storage (the rule for calls, as in llvm_result_place).
 @(private="file")
 llvm_in_place :: proc(e: ^Llvm) {
     pg := e.pg
@@ -585,12 +585,12 @@ llvm_where :: proc(e: ^Llvm, p: Node_Id) -> Llvm_Where {
     return w
 }
 
-// Whether reading place `read` can observe place `dest` — the old emitter's
-// rule (storage_read_hits). Yes when both are one variable's own storage, when
-// what is read holds pointers, or when either is unknown. Otherwise it comes
-// down to where each can live: a variable's own storage is an object of its
-// type, one through a pointer an object of the pointee's; two overlap only if
-// one's object type can hold the other's, and a local's own storage is never
+// Whether reading place `read` can observe place `dest`. Yes when both are
+// one variable's own storage, when what is read holds pointers, or when
+// either is unknown. Otherwise it comes down to where each can live: a
+// variable's own storage is an object of its type, one through a pointer an
+// object of the pointee's; two overlap only if one's object type can hold
+// the other's, and a local's own storage is never
 // inside anything — but the caller's (a param, the result slot) can be. And
 // the result slot never overlaps what a param reaches: a caller hands over a
 // fresh slot whenever an argument carries storage.
@@ -1223,7 +1223,7 @@ llvm_place :: proc(e: ^Llvm, place: Node_Id) -> string {
     return llvm_storage(e, d)
 }
 
-// A named result: a local the code writes, where the old emitter kept it. With
+// A named result: a local the code writes, kept where its result goes. With
 // several results, a struct or fixed array in the caller's slot for it, a
 // register value a local of its own, zeroed first; a single struct result the
 // result slot itself, its partial arrays' headers stamped first; a single
@@ -1239,7 +1239,7 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
         case llvm_struct(t) != nil || llvm_array(t) != nil:
             e.value[d - e.node] = fmt.tprintf("%%sret.%d", i)
         case llvm_scalar(t):
-            // (At the entry, before the code's own allocas, as the old emitter.)
+            // (At the entry, before the code's own allocas.)
             name := fmt.tprintf("%%%s", pg.name[d])
             e.used[name] = true
             ir := llvm_type_from_checker(t)
@@ -1327,7 +1327,7 @@ llvm_write_void :: proc(e: ^Llvm, op, place: Node_Id) -> bool {
         if decl { emit_partial_array_zero(g, e.value[place - e.node], llvm_partial(t), zero = false) }
     case llvm_struct(t) != nil:
         // A declared local struct is zero (a constructor's field is left as
-        // it is, in Self zeroed already): the old emitter's.
+        // it is, in Self zeroed already).
         local := pg.op[place] == .Var && pg.kind[pg.refers[place]] == .Local
         if decl && local { emit_memset_zero(g, e.value[place - e.node], llvm_size(e, t)) }
     case llvm_aggregate(t):
@@ -1871,7 +1871,7 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     // A partial array in the bytes: bound by a `let`, it is the memory
     // itself; copied out whole into a place (`h : T = bytes[0]`), its header
     // comes with the bytes, as they are — what fills it next restamps it
-    // (the old emitter's; a view read any other way: later).
+    // (a view read any other way: later).
     u := e.user[op - e.node]
     bound_here := u >= 0 && pg.op[u] == .Carve && pg.name[u] == "let"
     copied := u >= 0 && pg.op[u] == .Read && e.user[u - e.node] >= 0 && pg.op[e.user[u - e.node]] == .Write &&
@@ -2568,7 +2568,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         result = callee.cg_returns[0]
         switch {
         case llvm_scalar(result):        ret = llvm_type_from_checker(result)
-        case llvm_union(result) != nil:  ret = llvm_type_from_checker(result)   // as a value (the old ABI)
+        case llvm_union(result) != nil:  ret = llvm_type_from_checker(result)   // as a value
         case llvm_aggregate(result):
         case:                            e.note = "result type"; return false
         }
@@ -2624,7 +2624,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     if llvm_union(result) != nil {
         // A union value, kept where it can be read as one: the synthetic
         // local it initializes (a match's subject), else a temporary the
-        // write copies from (the old emitter's; a slot like a struct's: later).
+        // write copies from (a slot like a struct's: later).
         at := ""
         pg := e.pg
         if u := e.user[op - e.node]; u >= 0 && pg.op[u] == .Write {
@@ -2843,8 +2843,8 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
             }
         }
     }
-    // (A struct's temporary is on the stack whatever its size, as the old
-    // emitter's; another big one goes on the arena: later.)
+    // (A struct's temporary is on the stack whatever its size; another big
+    // one goes on the arena: later.)
     if routes_to_arena(result) && llvm_struct(result) == nil { return "", false }
     tmp := fresh_tmp(e.g)
     emit_alloca(e.g, tmp, llvm_type_from_checker(result))

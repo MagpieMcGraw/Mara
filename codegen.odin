@@ -13,9 +13,9 @@ import os_old "core:os/old"
 // ---------------------------------------------------------------------------
 // LLVM IR Code Generator
 //
-// Walks the typed AST and emits LLVM IR text (.ll file).
-// Supports: int arithmetic, booleans, comparisons, variables,
-//           if/else, for loops, functions, print() builtin.
+// Emits each module's LLVM IR text (.ll file): its types, constants and
+// runtime helpers, and every function's code from the program graph
+// (llvm.odin), in parallel by module.
 // ---------------------------------------------------------------------------
 
 // Slice / partial-array header layout.
@@ -161,101 +161,6 @@ Var_Entry :: union {
 // Address chain — unified address resolution for field access and indexing
 // ---------------------------------------------------------------------------
 
-// A single step in an address resolution chain
-Chain_Step :: union { Step_Field, Step_Index, Step_Slice_Index, Step_Deref }
-
-Step_Field :: struct {
-    llvm_type: string,             // e.g. "%class.Outer"
-    field_idx: int,
-    field_def: ^Struct_Type_Field, // for type info after resolution
-}
-
-Step_Index :: struct {
-    array_type: string,  // "[8 x i64]"
-    elem_type:  string,  // "i64"
-    index_expr: Expr,    // AST expr (gen_expr'd during emission)
-    capacity:   int,     // compile-time cap for bounds check
-    name_hint:  string,  // for error messages
-    span:       Span,
-}
-
-// Index into a slice (dynamic cap, runtime-loaded). current_ptr points at a
-// slice header (see Slice_Var for layout); emission loads data+cap, bounds-checks
-// against cap (writes-at-len need to be legal so use cap, not len), and GEPs
-// elem_type from the data pointer. Resets the index segment so subsequent field
-// steps GEP into the element struct.
-Step_Slice_Index :: struct {
-    elem_type:  string,
-    index_expr: Expr,
-    name_hint:  string,
-    span:       Span,
-}
-
-Step_Deref :: struct {
-    name_hint:   string,
-    span:        Span,
-    // LLVM type for the pointee — drives the subsequent GEP segment.
-    // Empty when the deref target type isn't useful (e.g. legacy callers).
-    result_type: string,
-}
-
-// GEP index entry for multi-index emission
-GEP_Index :: struct {
-    width: string,  // "i32" or "i64"
-    value: string,  // "0", "3", or "%t42"
-}
-
-// The final kind of the address chain target
-Chain_Result :: enum { Scalar, Struct, Array, Slice }
-
-// A resolved address chain ready for emission
-Address_Chain :: struct {
-    base_ptr:    string,             // alloca or loaded ptr
-    base_type:   string,             // LLVM type at base
-    // An rvalue root (`f()[i]`, `f().x`, `(a * b).y`): evaluated in
-    // emit_address_chain, only once the whole chain has been built — building is
-    // speculative, and a failed build must not have run the call.
-    root_value:  Expr,
-    steps:       [dynamic]Chain_Step,
-    final_type:  string,             // LLVM IR type of the final element
-    final_kind:  Chain_Result,
-    struct_name: string,             // if final is struct
-    array_cap:   int,                // if final is array — used during walks for index steps
-    array_elem:  string,             // if final is array — used during walks for index steps
-    // Source-of-truth for array-destination flag info (is_utf8). The chain
-    // doesn't snapshot these on itself — consumers call chain_array_flags()
-    // which reads through to either the originating field (via
-    // field_array_info) or to the root Var's captured flags. Adding a new
-    // flag means one helper change, not one assignment per chain-build site —
-    // that was the drift that caused tag prints to silently emit nothing.
-    array_source: Chain_Array_Source,
-    elem_signed: bool,               // if final scalar is signed
-}
-
-// Source-of-truth for an Array destination on an Address_Chain.
-Chain_Array_Source :: union {
-    ^Struct_Type_Field,    // chain ended on a struct field — field_array_info is the truth
-    Chain_Array_Root,      // chain is just a root ident — captures the Var's flag fields
-}
-
-Chain_Array_Root :: struct {
-    is_utf8: bool,
-}
-
-// Resolve an array destination's flag fields from the chain's array_source.
-// Returns false if the chain doesn't have an array destination at all.
-chain_array_flags :: proc(chain: ^Address_Chain) -> (is_utf8: bool, ok: bool) {
-    switch s in chain.array_source {
-    case ^Struct_Type_Field:
-        if _, _, autf8, info_ok := field_array_info(s); info_ok {
-            return autf8, true
-        }
-    case Chain_Array_Root:
-        return s.is_utf8, true
-    }
-    return false, false
-}
-
 // Info about a user-defined function's signature for struct-aware calling
 Fun_Info :: struct {
     ret_type:          string,            // LLVM type: "i64", "double", "i1", "ptr", "void"
@@ -277,32 +182,6 @@ Fun_Info :: struct {
     // sized-slice header re-init after the call would be a redundant
     // write-of-same-values.
     uses_struct_nrvo: bool,
-}
-
-// Control-flow scope tracking for the context system (automatic arena mark/reset).
-// Distinct from Scope_Kind in parser.odin, which tags struct vs fun declarations.
-Control_Scope_Kind :: enum { Function, If_Then, If_Else, For_Body, Match_Arm, Main_Body }
-
-Scope_Entry :: struct {
-    has_mark:        bool,                    // true if this scope emitted an arena mark
-    scope_kind:      Control_Scope_Kind,
-    deferred_blocks: [dynamic][dynamic]Stmt,  // defer blocks (LIFO order: last block runs first, stmts within block run forward)
-}
-
-// Branch targets for the enclosing loop. Pushed by gen_loop_body, popped on
-// exit. gen_stmt reads the top entry when emitting `break` / `continue`, so
-// these statements work at any depth (inside if / match / etc.), not just at
-// the loop's top level.
-Loop_Labels :: struct {
-    break_label:    string,
-    continue_label: string,
-}
-
-// One entry in the tuple-default cache: the slot pointers and types from
-// a tuple-returning source call evaluated at the current call site.
-Tuple_Default_Entry :: struct {
-    ptrs:  [dynamic]string,
-    types: [dynamic]string,
 }
 
 Codegen :: struct {
@@ -350,7 +229,6 @@ Codegen :: struct {
     tmp_pool:    []string,         // pre-formatted "%.tN" names; indexed by tmp_counter
     label_counter: int,            // label numbering
     all_vars:    map[string]Var_Entry,    // unified variable registry (scalars, arrays, structs, unions, slices)
-    current_ret_type: string,            // LLVM return type of the current function ("i64", "ptr", etc.)
     // Type info from the type checker
     checked:     ^Checked_Program,       // resolved type info from type checker
     // String literal table: value -> global name
@@ -374,53 +252,13 @@ Codegen :: struct {
     arena_reset_name: string,                     // flat name for the arena reset function
     arena_new_name:   string,                     // flat name for the arena new function
     arena_alloc_has_debug: bool,                  // true if alloc() takes name/span debug params
-    scope_stack:      [dynamic]Scope_Entry,       // tracks active scopes for mark/reset
-    loop_label_stack: [dynamic]Loop_Labels,        // current loop's break/continue branch targets (innermost on top)
     ctx_alloca:       string,                     // LLVM tmp for Context alloca in @main
-    // NRVO: name of variable aliased to sret (skipped in scope_has_big_values)
-    nrvo_var:         string,
-    // The current function consumes a param into its result (see
-    // consumed_param_of): its opening `r := pk`, and pk's name.
-    consume_stmt:     ^Stmt_Assign,
-    consume_src:      string,
-    // Names in the current function bound to storage that belongs to some
-    // other variable — a match arm's payload (the union's own bytes), a
-    // take/let view, the compound-assign stand-in for its LHS. Storage reached
-    // through one can't be told apart by name (see storage_root).
-    alias_vars:       map[string]bool,
-    // Names in the current function whose storage belongs to the CALLER, so
-    // (unlike a local's own allocation) it can sit inside some other value —
-    // see storage_read_hits. result_vars live in the result slot (NRVO local,
-    // named returns, a constructor's fields); param_vars are params passed by
-    // address, or pointers, reaching the caller's storage.
-    result_vars:      map[string]bool,
-    param_vars:       map[string]bool,
-    // Single partial-array return via sret: cap (>0 marks it) and elem IR type.
-    // The callee builds into %sret — NRVO when the returned local is the
-    // candidate, a copy-into-%sret otherwise. The partial-array decl path and
-    // gen_return key off these.
     ret_partial_cap:  int,
     ret_partial_elem: string,
-    ret_partial:      ^Type_Partial_Array,   // its type
     // Multi-return: list of return types for current function (empty if not multi-return)
     ret_types:        []Type,
-    // Tuple call result: temp alloca pointers from the most recent tuple-returning call
-    tuple_result_ptrs:  [dynamic]string,  // alloca names for each tuple element
-    tuple_result_types: [dynamic]string,  // LLVM types for each tuple element
-    construct_into:     string,           // where the next multi-result construction builds Self ("": a temp)
-    // Per-call cache for Expr_Tuple_Default dedup: when multiple bindings in
-    // a param group share one tuple source, the source is evaluated once at
-    // each call site and the slot ptrs cached here keyed by source pointer.
-    // Saved/restored around nested gen_call invocations so each call site
-    // gets a fresh cache.
-    tuple_default_cache: map[rawptr]Tuple_Default_Entry,
     // Fun_Info cache: avoids re-deriving from the checked scope on every call
     fun_info_cache:   map[string]Fun_Info,
-    // Temp results: typed fields replacing magic __call_result / __field_result / __swizzle_result
-    // in all_vars. Set by gen_call / gen_field_access / gen_swizzle_read_multi, claimed by callers.
-    temp_call_result:    Maybe(Array_Var),   // array-returning function call
-    temp_field_result:   Maybe(Var_Entry),   // aggregate field access (array, struct, or slice)
-    temp_swizzle_result: Maybe(Array_Var),   // multi-component swizzle read
     // Overflow-checking intrinsics used (for declaration at end of module)
     overflow_intrinsics: map[string]bool,
     // `llvm.bswap.iN` widths used by `#big_endian` byte-buffer reads.
@@ -438,30 +276,6 @@ Codegen :: struct {
     // emissions route through __mara_tee_printf, which mirrors the message
     // into crash.txt (runtime/mara_crash.c). Off everywhere else.
     tee: bool,
-    // Fallible constructor: the current function is a `struct(params) -> err`
-    // whose multi-return sret slot 0 is the implicit Self (built in place via
-    // field prebind). When true, the return machinery skips slot 0 — explicit
-    // `return <err>` fills the trailing declared slots, never Self.
-    ctor_has_self_sret: bool,
-}
-
-// Look up a foreign function's IR name (link_name or fallback to fn_name).
-foreign_ir_name :: proc(g: ^Codegen, fn_name: string) -> (string, bool) {
-    cs, ok := g.checked.functions[fn_name]
-    if !ok { return "", false }
-    fo, is_foreign := cs.origin.(Origin_Foreign)
-    if !is_foreign { return "", false }
-    ln := fo.link_name
-    if ln == "" { ln = fn_name }
-    return fmt.tprintf("@%s", ln), true
-}
-
-// Check if a function name is a foreign function.
-is_foreign_fn :: proc(g: ^Codegen, fn_name: string) -> bool {
-    cs, ok := g.checked.functions[fn_name]
-    if !ok { return false }
-    _, is_foreign := cs.origin.(Origin_Foreign)
-    return is_foreign
 }
 
 // Get a fresh temporary: %t1, %t2, etc.
@@ -533,395 +347,8 @@ codegen_fatal :: proc(g: ^Codegen, span: Span, format: string, args: ..any) -> !
 }
 
 // ---------------------------------------------------------------------------
-// GEP / load / store helpers — reduce boilerplate across all codegen files
-// ---------------------------------------------------------------------------
-
-// Emit a GEP into a struct field: %tmp = getelementptr %StructType, ptr %base, i32 0, i32 <idx>
-emit_field_gep :: proc(g: ^Codegen, llvm_type: string, base_ptr: string, field_idx: int) -> string {
-    gep := fresh_tmp(g)
-    b := emit_target(g)
-    strings.write_string(b, "  ")
-    strings.write_string(b, gep)
-    strings.write_string(b, " = getelementptr ")
-    strings.write_string(b, llvm_type)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, base_ptr)
-    strings.write_string(b, ", i32 0, i32 ")
-    strings.write_int(b, field_idx)
-    strings.write_byte(b, '\n')
-    return gep
-}
-
-// Load a value from a pointer: %tmp = load <ir_type>, ptr %src
-emit_load :: proc(g: ^Codegen, ir_type: string, src_ptr: string) -> string {
-    val := fresh_tmp(g)
-    b := emit_target(g)
-    strings.write_string(b, "  ")
-    strings.write_string(b, val)
-    strings.write_string(b, " = load ")
-    strings.write_string(b, ir_type)
-    strings.write_string(b, ", ptr ")
-    strings.write_string(b, src_ptr)
-    strings.write_byte(b, '\n')
-    return val
-}
-
-// GEP + load in one step: load a struct field by index
-emit_field_load :: proc(g: ^Codegen, llvm_type: string, base_ptr: string, field_idx: int, ir_type: string) -> string {
-    gep := emit_field_gep(g, llvm_type, base_ptr, field_idx)
-    return emit_load(g, ir_type, gep)
-}
-
-// GEP + store in one step: store a value into a struct field by index
-emit_field_store :: proc(g: ^Codegen, llvm_type: string, base_ptr: string, field_idx: int, ir_type: string, val: string) {
-    gep := emit_field_gep(g, llvm_type, base_ptr, field_idx)
-    emit_store(g, ir_type, val, gep)
-}
-
-// ---------------------------------------------------------------------------
 // Address chain — building and emitting
 // ---------------------------------------------------------------------------
-
-// Emit a single GEP instruction with multiple indices.
-emit_multi_gep :: proc(g: ^Codegen, base_type: string, base_ptr: string, indices: []GEP_Index) -> string {
-    gep := fresh_tmp(g)
-    b: strings.Builder
-    fmt.sbprintf(&b, "  %s = getelementptr %s, ptr %s", gep, base_type, base_ptr)
-    for idx in indices {
-        fmt.sbprintf(&b, ", %s %s", idx.width, idx.value)
-    }
-    emit_raw(g, strings.to_string(b))
-    return gep
-}
-
-// Build an address chain from an expression tree. Returns false if the
-// expression contains patterns the chain cannot handle (swizzle, slice index,
-// VLA, function references, etc.) — caller should fall back to existing code.
-build_address_chain :: proc(g: ^Codegen, expr: Expr) -> (Address_Chain, bool) {
-    prepare_const_root(g, expr)
-    chain: Address_Chain
-
-    // Walk the expression bottom-up, building the chain in reverse
-    ok := build_chain_walk(g, expr, &chain)
-    if !ok {
-        return {}, false
-    }
-
-    return chain, true
-}
-
-// Recursive walk to build chain steps. Sets chain.base_* for the root,
-// appends steps for each access level.
-build_chain_walk :: proc(g: ^Codegen, expr: Expr, chain: ^Address_Chain) -> bool {
-    #partial switch e in expr {
-    case ^Expr_Ident:
-        // Base case: root of the chain
-        if sv, ok := get_struct(g, e.name); ok {
-            st, st_ok := lookup_struct(g, sv.struct_name)
-            if !st_ok { return false }
-            chain.base_ptr = sv.alloca
-            chain.base_type = struct_llvm_name(sv.struct_name)
-            chain.final_type = chain.base_type
-            chain.final_kind = .Struct
-            chain.struct_name = sv.struct_name
-            return true
-        }
-        if av, ok := get_array(g, e.name); ok {
-            chain.base_ptr = av.alloca
-            chain.base_type = array_var_type(&av)
-            chain.final_type = av.elem_type
-            chain.final_kind = .Array
-            chain.array_cap = av.capacity
-            chain.array_elem = av.elem_type
-            chain.array_source = Chain_Array_Root{
-                is_utf8 = av.is_utf8,
-            }
-            return true
-        }
-        // Slice as chain base: header lives at sv.alloca; data and cap get
-        // loaded when the next step is an index (Step_Slice_Index). A chain
-        // that ends *at* the slice (no further indexing) doesn't need this
-        // base — the existing slice-header read paths handle it.
-        if sl, ok := get_slice(g, e.name); ok {
-            chain.base_ptr = sl.alloca
-            chain.base_type = ""             // slice header type isn't used for stepping
-            chain.final_type = sl.elem_type
-            chain.final_kind = .Slice
-            chain.array_elem = sl.elem_type
-            chain.array_cap = 0              // unused; cap is dynamic
-            return true
-        }
-        // Pointer to a struct or fixed array: auto-deref. The pointer value may
-        // live in a Scalar_Var alloca (mutable local) or directly as an SSA value
-        // (immutable param — no alloca emitted, no load needed).
-        if pt, pt_ok := e.type_.(^Type_Ptr); pt_ok {
-            sd := as_struct_body(pt.elem)
-            pointee := distinct_base(pt.elem)
-            #partial switch _ in pointee {
-            case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array:
-            case:
-                if sd == nil { return false }
-            }
-            ptr_val: string
-            entry, entry_ok := g.all_vars[e.name]
-            if !entry_ok { return false }
-            #partial switch v in entry {
-            case SSA_Var:    ptr_val = v.ssa
-            case Scalar_Var: ptr_val = emit_load(g, "ptr", v.alloca)
-            case:            return false
-            }
-            chain.base_ptr = ptr_val
-            if sd != nil {
-                chain.base_type = struct_llvm_name(sd.name)
-                chain.final_type = chain.base_type
-                chain.final_kind = .Struct
-                chain.struct_name = sd.name
-            } else {
-                chain.base_type = chain_through_pointer(chain, pointee)
-            }
-            return true
-        }
-        return false
-
-    case ^Expr_Call, ^Expr_If, ^Expr_Array, ^Expr_Struct_Literal:
-        return chain_rvalue_root(expr, chain)
-    case ^Expr_Binary:
-        if _, overloaded := e.overload_fn.?; overloaded { return chain_rvalue_root(expr, chain) }
-        return false
-    case ^Expr_Unary:
-        if _, overloaded := e.overload_fn.?; overloaded { return chain_rvalue_root(expr, chain) }
-        return false
-
-    case ^Expr_Field_Access:
-        // Recurse on inner expression
-        if !build_chain_walk(g, e.expr, chain) { return false }
-
-        // The current final must be a struct to access a field
-        if chain.final_kind != .Struct { return false }
-        st, st_ok := lookup_struct(g, chain.struct_name)
-        if !st_ok {
-            return false
-        }
-        llvm_type := struct_llvm_name(chain.struct_name)
-
-        // Check for swizzle — bail
-        if av, av_ok := get_array(g, ""); false {
-            _ = av; _ = av_ok  // unreachable, just suppress
-        }
-
-        // Find the field
-        idx := struct_field_index(st, e.field)
-        if idx >= 0 {
-            f := &st.fields[idx]
-            ft := field_ir_type(f)
-
-            append(&chain.steps, Step_Field{
-                llvm_type = llvm_type,
-                field_idx = idx,
-                field_def = f,
-            })
-
-            // Determine what this field resolves to
-            if acap, aelem, _, ok := field_array_info(f); ok {
-                // Array field — flag info comes from `f` via chain_array_flags
-                chain.final_type = fmt.tprintf("[%d x %s]", acap, aelem)
-                chain.final_kind = .Array
-                chain.array_cap = acap
-                chain.array_elem = aelem
-                chain.array_source = f
-                chain.struct_name = ""
-                return true
-            }
-            if strings.has_prefix(ft, "%class.") {
-                // Nested struct field
-                inner_name := ft[len("%class."):]
-                chain.final_type = ft
-                chain.final_kind = .Struct
-                chain.struct_name = inner_name
-                return true
-            }
-            if strings.has_prefix(ft, "{ ") {
-                // Slice OR partial-array field — both layouts share the first
-                // slice_header_bytes ({len, cap, ptr}), so the same chain end-state
-                // and subsequent .len/.cap/.ptr access work for both.
-                chain.final_type = ft
-                chain.final_kind = .Slice
-                chain.struct_name = ""
-                chain.array_cap = 0
-                if sl, sl_ok := distinct_base(f.type_).(^Type_Slice); sl_ok {
-                    chain.array_elem = llvm_type_from_checker(sl.elem)
-                } else if pa, pa_ok := distinct_base(f.type_).(^Type_Partial_Array); pa_ok {
-                    chain.array_elem = llvm_type_from_checker(pa.elem)
-                } else {
-                    return false
-                }
-                return true
-            }
-            // Pointer-to-struct field: emit a deref step so subsequent steps
-            // operate on the pointee's storage. Lets `obj.ptr_field.inner = X`
-            // and the read counterpart flow through the same chain mechanism
-            // as inline struct fields.
-            if pt, pt_ok := f.type_.(^Type_Ptr); pt_ok {
-                if sd := as_struct_body(pt.elem); sd != nil {
-                    inner_key := struct_key(sd)
-                    inner_llvm := struct_llvm_name(inner_key)
-                    append(&chain.steps, Step_Deref{
-                        name_hint   = e.field,
-                        span        = e.span,
-                        result_type = inner_llvm,
-                    })
-                    chain.final_type = inner_llvm
-                    chain.final_kind = .Struct
-                    chain.struct_name = inner_key
-                    return true
-                }
-            }
-            // Scalar field
-            chain.final_type = ft
-            chain.final_kind = .Scalar
-            chain.struct_name = ""
-            chain.elem_signed = field_is_signed(f)
-            return true
-        }
-
-        // Try using-promoted field
-        up, up_ok := resolve_using_field(g, st, e.field)
-        if up_ok {
-            append(&chain.steps, Step_Field{
-                llvm_type = llvm_type,
-                field_idx = up.outer_index,
-                field_def = &st.fields[up.outer_index],
-            })
-            append(&chain.steps, Step_Field{
-                llvm_type = struct_llvm_name(struct_key(up.inner_st)),
-                field_idx = up.inner_index,
-                field_def = &up.inner_st.fields[up.inner_index],
-            })
-            // Mirror the regular-field branch above: a using-promoted field
-            // can itself be an array/struct/slice, and subsequent steps in
-            // the chain need to keep drilling into it.
-            inner_f := &up.inner_st.fields[up.inner_index]
-            if acap, aelem, _, ok := field_array_info(inner_f); ok {
-                chain.final_type = fmt.tprintf("[%d x %s]", acap, aelem)
-                chain.final_kind = .Array
-                chain.array_cap = acap
-                chain.array_elem = aelem
-                chain.array_source = inner_f
-                chain.struct_name = ""
-                return true
-            }
-            if strings.has_prefix(up.inner_ir_type, "%class.") {
-                inner_name := up.inner_ir_type[len("%class."):]
-                chain.final_type = up.inner_ir_type
-                chain.final_kind = .Struct
-                chain.struct_name = inner_name
-                return true
-            }
-            if strings.has_prefix(up.inner_ir_type, "{ ") {
-                chain.final_type = up.inner_ir_type
-                chain.final_kind = .Slice
-                chain.struct_name = ""
-                chain.array_cap = 0
-                if sl, sl_ok := distinct_base(inner_f.type_).(^Type_Slice); sl_ok {
-                    chain.array_elem = llvm_type_from_checker(sl.elem)
-                } else {
-                    return false
-                }
-                return true
-            }
-            chain.final_type = up.inner_ir_type
-            chain.final_kind = .Scalar
-            chain.struct_name = ""
-            chain.elem_signed = up.inner_signed
-            return true
-        }
-
-        return false  // field not found
-
-    case ^Expr_Index:
-        // Recurse on inner expression
-        if !build_chain_walk(g, e.expr, chain) { return false }
-
-        // Indexing goes through one pointer: a `^[]T` / `^[..N]T` / `^[N]T`
-        // link (e.g. a pointer field) steps to what it points at first.
-        if chain.final_kind == .Scalar {
-            if pt, pt_ok := distinct_base(expr_type(e.expr)).(^Type_Ptr); pt_ok {
-                pointee := distinct_base(pt.elem)
-                #partial switch _ in pointee {
-                case ^Type_Fixed_Array, ^Type_Slice, ^Type_Partial_Array:
-                    deref := Step_Deref{span = e.span}
-                    deref.result_type = chain_through_pointer(chain, pointee)
-                    append(&chain.steps, deref)
-                }
-            }
-        }
-
-        // Slice index: chain.array_elem holds the slice elem type; cap is runtime.
-        if chain.final_kind == .Slice {
-            elem_ir := chain.array_elem
-            name_hint := place_name_as_written(e.expr)
-            if name_hint == "" { name_hint = "slice" }
-            append(&chain.steps, Step_Slice_Index{
-                elem_type  = elem_ir,
-                index_expr = e.index,
-                name_hint  = name_hint,
-                span       = e.span,
-            })
-            chain_after_index(chain, e, elem_ir)
-            return true
-        }
-
-        // Can only index into arrays
-        if chain.final_kind != .Array { return false }
-        // Don't handle VLA indexing
-        if chain.array_cap == 0 { return false }
-
-        append(&chain.steps, Step_Index{
-            array_type = fmt.tprintf("[%d x %s]", chain.array_cap, chain.array_elem),
-            elem_type  = chain.array_elem,
-            index_expr = e.index,
-            capacity   = chain.array_cap,
-            name_hint  = place_name_as_written(e.expr) if place_name_as_written(e.expr) != "" else "array",
-            span       = e.span,
-        })
-
-        chain_after_index(chain, e, chain.array_elem)
-        return true
-    }
-
-    return false
-}
-
-// What an index step lands on, from the element's IR type — and, for a slice or
-// partial-array element (a `{ ptr, len, cap, ... }` header the IR type alone
-// can't tell from a scalar aggregate), from its checker type, so a further
-// index (`list[i][j]`) steps through the element's header.
-chain_after_index :: proc(chain: ^Address_Chain, e: ^Expr_Index, elem_ir: string) {
-    chain.final_type = elem_ir
-    chain.struct_name = ""
-    chain.array_cap = 0
-    chain.array_elem = ""
-    #partial switch et in distinct_base(index_elem_type(expr_type(e.expr))) {
-    case ^Type_Slice:
-        chain.final_kind = .Slice
-        chain.array_elem = llvm_type_from_checker(et.elem)
-        return
-    case ^Type_Partial_Array:
-        chain.final_kind = .Slice
-        chain.array_elem = llvm_type_from_checker(et.elem)
-        return
-    }
-    if strings.has_prefix(elem_ir, "%class.") {
-        chain.final_kind = .Struct
-        chain.struct_name = elem_ir[len("%class."):]
-    } else if inner_cap, inner_elem, is_nested := parse_array_ir_type(elem_ir); is_nested {
-        chain.final_kind = .Array
-        chain.array_cap = inner_cap
-        chain.array_elem = inner_elem
-    } else {
-        chain.final_kind = .Scalar
-    }
-}
 
 // The element type indexing a value of type `t` yields — through one pointer, as
 // indexing auto-derefs. (Read it off the indexed BASE: the checker doesn't type
@@ -937,74 +364,6 @@ index_elem_type :: proc(t: Type) -> Type {
     return nil
 }
 
-// The chain now stands at what a pointer points to: a fixed array's storage, or
-// a slice / partial-array header (a Step_Slice_Index loads data + cap from it).
-// Returns that pointee's IR type — the chain's base type when the pointer is
-// the root, the Step_Deref's result type when it's a link.
-chain_through_pointer :: proc(chain: ^Address_Chain, pointee: Type) -> string {
-    chain.struct_name = ""
-    #partial switch p in pointee {
-    case ^Type_Fixed_Array:
-        elem_ir := llvm_type_from_checker(p.elem)
-        _, is_utf8 := distinct_base(p.elem).(Type_Utf8)
-        chain.final_type = fmt.tprintf("[%d x %s]", p.size, elem_ir)
-        chain.final_kind = .Array
-        chain.array_cap = p.size
-        chain.array_elem = elem_ir
-        chain.array_source = Chain_Array_Root{is_utf8 = is_utf8}
-        return chain.final_type
-    case ^Type_Slice:
-        chain.array_elem = llvm_type_from_checker(p.elem)
-    case ^Type_Partial_Array:
-        chain.array_elem = llvm_type_from_checker(p.elem)
-    }
-    chain.final_type = SLICE_IR_TYPE
-    chain.final_kind = .Slice
-    chain.array_cap = 0
-    return SLICE_IR_TYPE
-}
-
-// Point a chain at fixed-array storage (the caller sets base_ptr).
-chain_root_fixed_array :: proc(chain: ^Address_Chain, fa: ^Type_Fixed_Array) {
-    chain.base_type = chain_through_pointer(chain, fa)
-}
-
-// An rvalue chain root — a call or an overloaded operator. Only its shape is
-// recorded here; emit_address_chain evaluates it (see Address_Chain.root_value).
-chain_rvalue_root :: proc(x: Expr, chain: ^Address_Chain) -> bool {
-    t := distinct_base(expr_type(x))
-    #partial switch v in t {
-    case ^Type_Slice:
-        chain.final_kind = .Slice
-        chain.array_elem = llvm_type_from_checker(v.elem)
-    case ^Type_Partial_Array: // shares the slice header prefix
-        chain.final_kind = .Slice
-        chain.array_elem = llvm_type_from_checker(v.elem)
-    case ^Type_Fixed_Array:
-        chain_root_fixed_array(chain, v)
-    case ^Type_Ptr: // auto-deref, as for a pointer variable
-        if sd := as_struct_body(v.elem); sd != nil {
-            chain.base_type = struct_llvm_name(struct_key(sd))
-            chain.final_type = chain.base_type
-            chain.final_kind = .Struct
-            chain.struct_name = struct_key(sd)
-        } else if fa, ok := distinct_base(v.elem).(^Type_Fixed_Array); ok {
-            chain_root_fixed_array(chain, fa)
-        } else {
-            return false
-        }
-    case:
-        sd := as_struct_body(t)
-        if sd == nil { return false }
-        chain.base_type = struct_llvm_name(struct_key(sd))
-        chain.final_type = chain.base_type
-        chain.final_kind = .Struct
-        chain.struct_name = struct_key(sd)
-    }
-    chain.root_value = x
-    return true
-}
-
 // The expression an access path (`x.f[i].g`) is rooted at.
 access_root :: proc(e: Expr) -> Expr {
     cur := e
@@ -1015,95 +374,6 @@ access_root :: proc(e: Expr) -> Expr {
         case:                    return cur
         }
     }
-}
-
-// Evaluate an rvalue chain root — a call or operator result, a ternary, a
-// literal — to the address of its value. A fixed array goes through
-// gen_array_address (a literal is built in a temp; a call or ternary result is
-// claimed where it sits). An aggregate-returning call already yields a pointer
-// to its result temp, as does a struct ternary or literal; a pointer-returning
-// call yields the pointer itself.
-chain_eval_root :: proc(g: ^Codegen, x: Expr) -> string {
-    #partial switch v in distinct_base(expr_type(x)) {
-    case ^Type_Slice, ^Type_Partial_Array:
-        return gen_slice_value_ptr(g, x) // the address of its header
-    case ^Type_Fixed_Array:
-        return gen_array_address(g, x, v)
-    }
-    ptr := gen_expr(g, x)
-    claim_call_result(g)
-    return ptr
-}
-
-// Emit GEP(s) from the chain. Returns pointer to the final element.
-// Consecutive offset steps are merged into a single multi-index GEP.
-// Deref steps flush the current GEP, load the pointer, and start fresh.
-emit_address_chain :: proc(g: ^Codegen, chain: ^Address_Chain) -> string {
-    if chain.root_value != nil { chain.base_ptr = chain_eval_root(g, chain.root_value) }
-    current_ptr := chain.base_ptr
-    current_type := chain.base_type
-
-    indices: [dynamic]GEP_Index
-    append(&indices, GEP_Index{"i32", "0"})  // leading zero to enter aggregate
-
-    for &step in chain.steps {
-        switch s in step {
-        case Step_Field:
-            append(&indices, GEP_Index{"i32", fmt.tprintf("%d", s.field_idx)})
-
-        case Step_Index:
-            // Evaluate + bounds-check the index (gen_checked_index reconciles
-            // any integer width to a safe i32, checking before any narrowing).
-            idx := gen_checked_index(g, s.index_expr, fmt.tprintf("%d", s.capacity), s.name_hint, s.span)
-            append(&indices, GEP_Index{slice_layout.len_ir, idx})
-
-        case Step_Slice_Index:
-            // Flush any pending GEP first — current_ptr must point at the
-            // slice header before we read its fields.
-            if len(indices) > 1 {
-                current_ptr = emit_multi_gep(g, current_type, current_ptr, indices[:])
-            }
-            // current_ptr: { ptr, i64 len, i64 cap }*. The index first, then
-            // the header it indexes.
-            iv := gen_index_value(g, s.index_expr)
-            data_gep := fresh_tmp(g)
-            emit_slice_gep(g, data_gep, current_ptr, SLICE.ptr)
-            data_ptr := fresh_tmp(g)
-            emit_load_into(g, data_ptr, "ptr", data_gep)
-            cap_gep := fresh_tmp(g)
-            emit_slice_gep(g, cap_gep, current_ptr, SLICE.cap)
-            cap_val := fresh_tmp(g)
-            emit_typed_load_cap(g, cap_val, cap_gep)
-            idx := check_index_value(g, iv, cap_val, s.name_hint, s.span)
-            elem_ptr := fresh_tmp(g)
-            emit_elem_gep(g, elem_ptr, s.elem_type, data_ptr, idx, slice_layout.len_ir)
-            current_ptr = elem_ptr
-            current_type = s.elem_type
-            clear(&indices)
-            append(&indices, GEP_Index{"i32", "0"})  // leading zero for subsequent field/index into the element
-
-        case Step_Deref:
-            // Flush current GEP segment
-            if len(indices) > 1 {
-                current_ptr = emit_multi_gep(g, current_type, current_ptr, indices[:])
-            }
-            // Load pointer
-            current_ptr = emit_load(g, "ptr", current_ptr)
-            // Reset for next segment
-            clear(&indices)
-            append(&indices, GEP_Index{"i32", "0"})
-            if s.result_type != "" {
-                current_type = s.result_type
-            }
-        }
-    }
-
-    // Flush remaining segment
-    if len(indices) > 1 {
-        current_ptr = emit_multi_gep(g, current_type, current_ptr, indices[:])
-    }
-
-    return current_ptr
 }
 
 // Generate the IR name for a user-defined function.
@@ -1450,43 +720,6 @@ alloca_exists :: proc(g: ^Codegen, name, ir_type: string) -> bool {
     return true
 }
 
-// The slot for a named local. Locals are keyed by source name, so same-named
-// locals in sibling scopes (if/else branches, consecutive loops) arrive here
-// with the same `want`. They share one slot when the IR types match; a
-// different type takes the next free `want.2`, `want.3`, ... so a `[64]i64`
-// never lands in a `[2]i64` slot. Returns the name actually allocated.
-emit_local_alloca :: proc(g: ^Codegen, want, ir_type: string) -> string {
-    name := want
-    if g.hoist_allocas {
-        for n := 2; ; n += 1 {
-            have, taken := g.emitted_allocas[name]
-            if !taken || have == ir_type { break }
-            name = fmt.tprintf("%s.%d", want, n)
-        }
-    }
-    emit_alloca(g, name, ir_type)
-    return name
-}
-
-// A name for a local defined at its point of use (a runtime-sized alloca, an
-// arena pointer) rather than hoisted. Those are never shared, so this takes a
-// name nothing in the function has used, and reserves it.
-unique_local_name :: proc(g: ^Codegen, want: string) -> string {
-    name := want
-    for n := 2; (name in g.emitted_allocas); n += 1 {
-        name = fmt.tprintf("%s.%d", want, n)
-    }
-    g.emitted_allocas[name] = "<point of use>"
-    return name
-}
-
-// Runtime-sized form of emit_local_alloca.
-emit_local_alloca_runtime :: proc(g: ^Codegen, want, elem_ir, count_ir, count_ssa: string, align: int) -> string {
-    name := unique_local_name(g, want)
-    emit_alloca_runtime(g, name, elem_ir, count_ir, count_ssa, align)
-    return name
-}
-
 // Emit an `alloca T, <w> %count` form where the count is a runtime SSA. This
 // must stay at the point of use rather than the entry block (the standard
 // emit_alloca hoists for static allocas), because an entry-block alloca
@@ -1813,36 +1046,6 @@ is_ir_definition :: proc(ir: string, at_token, end_of_token: int) -> bool {
     return false
 }
 
-// Debug-build summary of per-module imports. Reads cleanly enough to spot-
-// check whether a module's imports match what its source code calls.
-@(private="file")
-dump_module_imports :: proc(g: ^Codegen) {
-    fmt.printf("\n=== Per-module imports ===\n")
-    for module_name in g.module_order {
-        imports := g.module_imports[module_name]
-        fmt.printf("[%s] %d imports", module_name, len(imports))
-        if len(imports) == 0 {
-            fmt.printf("\n")
-            continue
-        }
-        names: [dynamic]string
-        defer delete(names)
-        for n in imports { append(&names, n) }
-        slice.sort(names[:])
-        fmt.printf(": ")
-        for n, i in names {
-            if i > 0 { fmt.printf(", ") }
-            fmt.printf("@%s", n)
-            if i == 4 && len(names) > 6 {
-                fmt.printf(", ... (%d more)", len(names) - 5)
-                break
-            }
-        }
-        fmt.printf("\n")
-    }
-    fmt.printf("===========================\n\n")
-}
-
 // Build module_imports by walking each module's buffer for `@<name>`
 // references and subtracting the locally-defined names. Skips well-known
 // categories every TU declares anyway (libc, LLVM intrinsics, the per-TU
@@ -2029,103 +1232,9 @@ begin_alloca_hoist :: proc(g: ^Codegen) {
     g.hoist_allocas = true
 }
 
-// End alloca hoisting: flush hoisted allocas first, then body code, into g.out.
-end_alloca_hoist :: proc(g: ^Codegen) {
-    g.hoist_allocas = false
-    alloca_str := strings.to_string(g.alloca_buf)
-    if len(alloca_str) > 0 {
-        strings.write_string(&g.out, alloca_str)
-    }
-    body_str := strings.to_string(g.body_buf)
-    if len(body_str) > 0 {
-        strings.write_string(&g.out, body_str)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Scope save/restore helpers — lightweight key snapshots instead of full clones
-// ---------------------------------------------------------------------------
-
-// Snapshot the current variable bindings. After a branch, call restore to:
-//   - remove any variables that were added during the branch, AND
-//   - restore the original entry for any variable that was overwritten/shadowed.
-// The full entry (not just the key) is captured so a match arm can rebind an
-// outer name (e.g. shadow a Union_Var with a Struct_Var) and have the original
-// Union_Var come back when the arm ends.
-Var_Scope_Snapshot :: struct {
-    saved: map[string]Var_Entry,
-}
-
-save_var_scope :: proc(g: ^Codegen) -> Var_Scope_Snapshot {
-    snap: Var_Scope_Snapshot
-    snap.saved = make(map[string]Var_Entry)
-    for k, v in g.all_vars { snap.saved[k] = v }
-    return snap
-}
-
-restore_var_scope :: proc(g: ^Codegen, snap: ^Var_Scope_Snapshot) {
-    // Remove keys that didn't exist at snapshot time.
-    keys_to_remove: [dynamic]string
-    for k, _ in g.all_vars {
-        if !(k in snap.saved) {
-            append(&keys_to_remove, k)
-        }
-    }
-    for k in keys_to_remove {
-        delete_key(&g.all_vars, k)
-    }
-    // Restore overwritten entries.
-    for k, v in snap.saved {
-        g.all_vars[k] = v
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Var_Entry accessors — typed access to the unified variable registry
 // ---------------------------------------------------------------------------
-
-get_scalar :: proc(g: ^Codegen, name: string) -> (string, bool) {
-    if entry, ok := g.all_vars[name]; ok {
-        if sv, sv_ok := entry.(Scalar_Var); sv_ok { return sv.alloca, true }
-    }
-    return "", false
-}
-
-get_array :: proc(g: ^Codegen, name: string) -> (Array_Var, bool) {
-    if entry, ok := g.all_vars[name]; ok {
-        if av, av_ok := entry.(Array_Var); av_ok { return av, true }
-    }
-    return {}, false
-}
-
-get_struct :: proc(g: ^Codegen, name: string) -> (Struct_Var, bool) {
-    if entry, ok := g.all_vars[name]; ok {
-        if sv, sv_ok := entry.(Struct_Var); sv_ok { return sv, true }
-    }
-    return {}, false
-}
-
-get_union :: proc(g: ^Codegen, name: string) -> (Union_Var, bool) {
-    if entry, ok := g.all_vars[name]; ok {
-        if uv, uv_ok := entry.(Union_Var); uv_ok { return uv, true }
-    }
-    return {}, false
-}
-
-get_slice :: proc(g: ^Codegen, name: string) -> (Slice_Var, bool) {
-    if entry, ok := g.all_vars[name]; ok {
-        if sv, sv_ok := entry.(Slice_Var); sv_ok { return sv, true }
-    }
-    return {}, false
-}
-
-is_scalar :: proc(g: ^Codegen, name: string) -> bool {
-    if entry, ok := g.all_vars[name]; ok {
-        _, sv_ok := entry.(Scalar_Var)
-        return sv_ok
-    }
-    return false
-}
 
 is_array :: proc(g: ^Codegen, name: string) -> bool {
     if entry, ok := g.all_vars[name]; ok {
@@ -2138,95 +1247,6 @@ is_array :: proc(g: ^Codegen, name: string) -> bool {
 // ---------------------------------------------------------------------------
 // Temp result helpers — typed replacements for magic __call_result etc.
 // ---------------------------------------------------------------------------
-
-// Array-returning call: set by gen_call, claimed by Stmt_Assign / gen_array_assign / gen_return.
-set_call_result :: proc(g: ^Codegen, av: Array_Var) {
-    g.temp_call_result = av
-}
-
-claim_call_result :: proc(g: ^Codegen) -> (Array_Var, bool) {
-    if av, ok := g.temp_call_result.?; ok {
-        g.temp_call_result = nil
-        return av, true
-    }
-    return {}, false
-}
-
-// Field access on aggregate: set by gen_field_access, claimed by index/concat/len/etc.
-set_field_result :: proc(g: ^Codegen, entry: Var_Entry) {
-    g.temp_field_result = entry
-}
-
-claim_field_array :: proc(g: ^Codegen) -> (Array_Var, bool) {
-    if entry, ok := g.temp_field_result.?; ok {
-        if av, av_ok := entry.(Array_Var); av_ok {
-            g.temp_field_result = nil
-            return av, true
-        }
-    }
-    return {}, false
-}
-
-claim_field_struct :: proc(g: ^Codegen) -> (Struct_Var, bool) {
-    if entry, ok := g.temp_field_result.?; ok {
-        if sv, sv_ok := entry.(Struct_Var); sv_ok {
-            g.temp_field_result = nil
-            return sv, true
-        }
-    }
-    return {}, false
-}
-
-claim_field_slice :: proc(g: ^Codegen) -> (Slice_Var, bool) {
-    if entry, ok := g.temp_field_result.?; ok {
-        if sv, sv_ok := entry.(Slice_Var); sv_ok {
-            g.temp_field_result = nil
-            return sv, true
-        }
-    }
-    return {}, false
-}
-
-clear_field_result :: proc(g: ^Codegen) {
-    g.temp_field_result = nil
-}
-
-// Multi-component swizzle: set by gen_swizzle_read_multi, claimed by Stmt_Assign / gen_array_assign.
-set_swizzle_result :: proc(g: ^Codegen, av: Array_Var) {
-    g.temp_swizzle_result = av
-}
-
-claim_swizzle_result :: proc(g: ^Codegen) -> (Array_Var, bool) {
-    if av, ok := g.temp_swizzle_result.?; ok {
-        g.temp_swizzle_result = nil
-        return av, true
-    }
-    return {}, false
-}
-
-// Drop every pending producer/consumer temp result without claiming it. These
-// fields are a per-expression handshake: a producer (array-returning call,
-// aggregate field access, swizzle read) sets one; the enclosing decl/return
-// claims it. The invariant is that none survives past the statement that
-// produced it. A bare call statement discards its value, so nothing claims the
-// result — clear it here (and at each function boundary) so a later decl can't
-// mis-claim the dropped buffer and bind a local to a temp from elsewhere.
-clear_temp_results :: proc(g: ^Codegen) {
-    g.temp_call_result = nil
-    g.temp_field_result = nil
-    g.temp_swizzle_result = nil
-}
-
-// Get the LLVM array type string for an Array_Var
-array_var_type :: proc(av: ^Array_Var) -> string {
-    return fmt.tprintf("[%d x %s]", av.capacity, av.elem_type)
-}
-
-// User-facing capacity. (Sentinel arrays used to reserve one hidden slot
-// here; with sentinel types removed, capacity is just capacity.)
-usable_cap :: proc(av: ^Array_Var) -> int {
-    return av.capacity
-}
 
 // Codegen key for a struct type — names are already flat (flattened during type-checking).
 struct_key_fun :: proc(st: ^Type_Scope) -> string {
@@ -2302,42 +1322,6 @@ struct_field_index :: proc { struct_field_index_sd, struct_field_index_fun }
 // Get the LLVM IR type string for a struct field.
 field_ir_type :: proc(f: ^Struct_Type_Field) -> string {
     return llvm_type_from_checker(f.type_)
-}
-
-// Check if a struct field's type is signed.
-field_is_signed :: proc(f: ^Struct_Type_Field) -> bool {
-    if n, n_ok := f.type_.(Type_Numeric); n_ok {
-        return n.kind == .Signed
-    }
-    return true // default signed for int, etc.
-}
-
-// Get array capacity for a field (0 if not a fixed-array field).
-field_array_cap :: proc(f: ^Struct_Type_Field) -> int {
-    if fa, fa_ok := distinct_base(f.type_).(^Type_Fixed_Array); fa_ok {
-        return fa.size
-    }
-    return 0
-}
-
-// Get LLVM element type for an array field ("" if not an array).
-field_array_elem :: proc(f: ^Struct_Type_Field) -> string {
-    if fa, fa_ok := distinct_base(f.type_).(^Type_Fixed_Array); fa_ok {
-        return llvm_type_from_checker(fa.elem)
-    }
-    return ""
-}
-
-// Pull array-field metadata out of the Mara type. Returns ok=false for
-// non-fixed-array fields. Centralises what was previously open-coded at
-// each Array_Var construction site, including the brittle inference
-// `is_utf8 = (aelem == "i8")` that would have falsely tagged a [N]byte
-// field as utf8.
-field_array_info :: proc(f: ^Struct_Type_Field) -> (cap: int, elem_ir: string, is_utf8: bool, ok: bool) {
-    fa, fa_ok := distinct_base(f.type_).(^Type_Fixed_Array)
-    if !fa_ok { return }
-    _, is_utf8 = fa.elem.(Type_Utf8)
-    return fa.size, llvm_type_from_checker(fa.elem), is_utf8, true
 }
 
 // Get the LLVM type name for a union, e.g. "%union.Shape"
@@ -2778,24 +1762,6 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
     emit_label(g, ok_label)
 }
 
-// Runtime guard against a descending range (low > high), which would otherwise
-// silently iterate zero times. Constant bounds are rejected at compile time
-// (TYPE_DESCENDING_RANGE); this covers variable bounds. Elided when both bounds
-// are integer literals — a constant descending range never reaches codegen, and
-// a constant ascending one can never trip. Mirrors the crash path: journal +
-// located message + exit.
-emit_range_guard :: proc(g: ^Codegen, low_val: string, high_val: string, ir_type: string, is_unsigned: bool, span: Span = {}) {
-    _, lo_lit := strconv.parse_i64(low_val)
-    _, hi_lit := strconv.parse_i64(high_val)
-    if lo_lit && hi_lit {
-        return
-    }
-
-    up := fresh_tmp(g)
-    emit(g, "  %s = icmp %s %s %s, %s", up, is_unsigned ? "ule" : "sle", ir_type, low_val, high_val)
-    emit_range_check(g, up, span)
-}
-
 // The check that a range counts up: crash, located, when `up` is false.
 emit_range_check :: proc(g: ^Codegen, up: string, span: Span) {
     ok_label  := fresh_label(g, "range.ok")
@@ -2893,7 +1859,6 @@ can_elide_overflow :: proc(op, ir_type, left, right: string) -> bool {
     max_excl := i64(1) << (bits - 1)
     return result >= -max_excl && result < max_excl
 }
-
 
 // ---------------------------------------------------------------------------
 // Context system: automatic scope-based arena mark/reset
@@ -3061,31 +2026,6 @@ struct_byte_size_fun :: proc(st: ^Type_Scope, checked: ^Checked_Program = nil) -
 
 struct_byte_size :: proc { struct_byte_size_fun, struct_byte_size_sd }
 
-// Check if a statement list contains any "big value" declarations.
-// A big value is a fixed-size array whose total byte size >= 1024.
-// Skips the NRVO variable since it's aliased to the caller's sret buffer (no allocation).
-scope_has_big_values :: proc(stmts: []Stmt, g: ^Codegen) -> bool {
-    // A big local lives on the arena: routes_to_arena, the one test (a partial
-    // array was missed — bumped, never reset).
-    assign_is_big :: proc(assign: ^Stmt_Assign, g: ^Codegen) -> bool {
-        if g.nrvo_var != "" && assign.name == g.nrvo_var { return false }
-        return assign.var_type != nil && routes_to_arena(assign.var_type)
-    }
-    for stmt in stmts {
-        if assign, ok := stmt.(^Stmt_Assign); ok {
-            if assign_is_big(assign, g) { return true }
-        }
-        if decl, ok := stmt.(^Stmt_Decl); ok {
-            for inner in decl.checked {
-                if a, aok := inner.(^Stmt_Assign); aok && assign_is_big(a, g) {
-                    return true
-                }
-            }
-        }
-    }
-    return false
-}
-
 // Load the context's arena pointer (field 0 of Context struct).
 get_context_arena_ptr :: proc(g: ^Codegen) -> string {
     ctx_ptr := fresh_tmp(g)
@@ -3111,11 +2051,6 @@ emit_arena_mark :: proc(g: ^Codegen) {
 // Emit a call to arena_alloc() for a compile-time known size. Returns the data pointer.
 emit_arena_bump :: proc(g: ^Codegen, size: int, name: string = "<alloc>", loc: string = "<unknown>") -> string {
     return emit_arena_bump_val(g, fmt.tprintf("%d", size), name, loc)
-}
-
-// Emit a call to arena_alloc() with a runtime size value (LLVM IR temporary). Returns the data pointer.
-emit_arena_bump_runtime :: proc(g: ^Codegen, size_val: string, name: string = "<alloc>", loc: string = "<unknown>") -> string {
-    return emit_arena_bump_val(g, size_val, name, loc)
 }
 
 // Call the Mara arena_alloc() function from the memory package.
@@ -3182,51 +2117,9 @@ emit_arena_reset :: proc(g: ^Codegen) {
     }
 }
 
-// Push a scope onto the stack. If it needs mark/reset (has big values), emit mark.
-push_scope :: proc(g: ^Codegen, kind: Control_Scope_Kind, stmts: []Stmt) {
-    needs_mark := g.context_enabled && scope_has_big_values(stmts, g)
-    append(&g.scope_stack, Scope_Entry{has_mark = needs_mark, scope_kind = kind})
-    if needs_mark {
-        emit_arena_mark(g)
-    }
-}
-
-// Emit deferred blocks for a scope entry in reverse (LIFO) order.
-// Each block's statements execute in forward order.
-emit_scope_defers :: proc(g: ^Codegen, entry: ^Scope_Entry) {
-    for i := len(entry.deferred_blocks) - 1; i >= 0; i -= 1 {
-        for stmt in entry.deferred_blocks[i] {
-            gen_stmt(g, stmt)
-        }
-    }
-}
-
-// Pop the current scope. Emit deferred stmts (LIFO), then arena reset if marked.
-pop_scope :: proc(g: ^Codegen) {
-    if len(g.scope_stack) == 0 { return }
-    entry := pop(&g.scope_stack)
-    emit_scope_defers(g, &entry)
-    if entry.has_mark {
-        emit_arena_reset(g)
-    }
-}
-
-// Emit cleanup for all scopes in the stack (for early return).
-// Walks from innermost to outermost, emitting deferred stmts then arena reset.
-// Does NOT pop entries — the caller manages the stack.
-emit_return_resets :: proc(g: ^Codegen) {
-    for i := len(g.scope_stack) - 1; i >= 0; i -= 1 {
-        emit_scope_defers(g, &g.scope_stack[i])
-        if g.context_enabled && g.scope_stack[i].has_mark {
-            emit_arena_reset(g)
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
-
 
 // Generate an LLVM type declaration for a struct from checked type data.
 register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
@@ -4030,26 +2923,6 @@ build_cross_module_declares :: proc(g: ^Codegen) -> map[string]string {
     return declares
 }
 
-// Pre-build the LLVM intrinsic `declare` block: one declare per intrinsic
-// used anywhere in the program, sorted for reproducible IR.
-@(private="file")
-build_intrinsic_declares :: proc(g: ^Codegen) -> string {
-    b: strings.Builder
-    intr_names: [dynamic]string
-    defer delete(intr_names)
-    for name in g.overflow_intrinsics { append(&intr_names, name) }
-    slice.sort(intr_names[:])
-    for name in intr_names {
-        dot_idx := 0
-        for i := len(name) - 1; i >= 0; i -= 1 {
-            if name[i] == '.' { dot_idx = i; break }
-        }
-        it := name[dot_idx+1:]
-        strings.write_string(&b, strings.concatenate({"declare { ", it, ", i1 } @", name, "(", it, ", ", it, ")\n"}))
-    }
-    return strings.to_string(b)
-}
-
 // Extract the type name (`%class.X` or `%union.X`) from a type-decl line
 // like `%class.X = type { ... }`. Returns "" if the line isn't shaped that
 // way (defensive — every entry in struct_decls follows the convention).
@@ -4204,8 +3077,11 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
             new_ir := mara_fn_name(g, g.arena_new_name)
             alloc_size := "268435456"  // default 256 MB
             if checked.table.scope_allocator_args != nil && len(checked.table.scope_allocator_args) > 0 {
-                size_val := gen_expr(g, checked.table.scope_allocator_args[0])
-                alloc_size = size_val
+                // A constant: nothing but constants exists before main runs.
+                size := checked.table.scope_allocator_args[0]
+                c, folds := graph_constant(size).?
+                if !folds || c.is_float || c.is_text { codegen_fatal(g, expr_span(size)^, CODE_ARENA_SIZE_CONSTANT) }
+                alloc_size = fmt.tprintf("%d", c.int)
             }
             emit_raw(g, strings.concatenate({"  call void ", new_ir, "(i64 ", alloc_size, ", ptr ", arena_ptr, ")"}))
         }

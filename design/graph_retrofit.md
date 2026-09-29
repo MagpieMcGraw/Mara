@@ -649,7 +649,7 @@ evaluates its destination and value); how instructions are chosen stays in the e
       1 of a constant). Pounce: 210 of 238 funs from the graph. What's left isn't calls —
       `= void` on an aggregate, some broadcast fills, writes, casts and views, a big
       temporary on the arena: the switch-over's
-- [ ] Switch over: every function from the graph; the syntax-tree emitter deleted
+- [x] Switch over: every function from the graph; the syntax-tree emitter deleted
       Declines first, down to none. `void`: a pointer null, a declared scalar zero, a
       reassigned one keeps its bytes, a declared partial array its header; an untyped
       `void` takes its use's pointer type. `cstring(s)`: text is its bytes, a slice or
@@ -716,7 +716,23 @@ evaluates its destination and value); how instructions are chosen stays in the e
       Old emitter, to the graph's shape: a struct or array field read from a byte span
       is a sized read, as a declaration's (it read the field's size at lo, whatever
       hi was). Every function of the fixtures and Pounce now comes from the graph:
-      Pounce's IR is the old emitter's, modulo naming, in every unit.
+      Pounce's IR is the old emitter's, modulo naming, in every unit. Then the switch:
+      the graph's emitter is the only one — what it can't lower is a codegen error at
+      the operation it stopped at, `MARA_GRAPH_CG` is gone (design/all.mara's single
+      named scalar result, `-> named : i64`, was the last function to lower). The
+      syntax-tree emitter is deleted: everything in codegen*.odin nothing outside it
+      reaches, about 11,200 lines (codegen*.odin: 17.3k lines → 6.1k; what's left is
+      the module's types, constants, runtime helpers, main's setup and the emission
+      helpers the graph's emitter calls). Two last reaches into the syntax tree cut: an
+      array element's constructor defaults are constants (folded, as the graph folds
+      them; another is an error), and the program arena's size is a constant folded at
+      compile time (`Arena_Debug(16 * MB)`: it multiplied at run time, overflow-checked;
+      the checker now checks the arena's arguments, whose names never resolved).
+      Gate: IR byte-identical to the switch's (b5c6e17) in every program but the seven
+      whose arena size is an expression (only @main's arena setup differs); runs
+      identical (187); suite 187 pass; ask goldens and the corpus match; test_1M builds
+      and runs the same. `test/irdiff.sh` compares two compilers only (its emitter modes
+      are gone).
 
 ## Baselines
 

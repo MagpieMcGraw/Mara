@@ -6700,7 +6700,17 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: 
             // is a no-op at codegen, the storage gets synthesized in main's
             // entry. Skip the regular type-check so the user can write the
             // configuration line without satisfying a strict LHS type.
-            if s.name == "this_program" && !s.is_decl { continue }
+            if s.name == "this_program" && !s.is_decl {
+                // Its arena's arguments are read at main's entry, before any
+                // code runs: checked, so their names resolve (the size is a
+                // constant the codegen folds).
+                if outer, ok := s.value.(^Expr_Call); ok && call_name(outer) == "Program" && len(call_args(outer)) > 0 {
+                    if arena, is_call := call_args(outer)[0].(^Expr_Call); is_call {
+                        for a in call_args(arena) { check_expr(c, a, env) }
+                    }
+                }
+                continue
+            }
             // Include expressions: scope-based resolution.
             // mara.X → look up X in std scope (stdlib modules)
             // bare Y → walk scope chain for sibling, lazy-load if not found

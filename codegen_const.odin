@@ -649,3 +649,52 @@ module_const_ir :: proc(g: ^Codegen, module_name: string, is_main_tu: bool) -> s
     strings.write_byte(&b, '\n')
     return strings.to_string(b)
 }
+
+// Compile-time-evaluate an integer expression. Mirrors type_checker's
+// const_eval_int but draws on g.checked.constant_values (the resolved
+// int map) for ident lookups, since codegen doesn't hold a ^Checker.
+codegen_const_eval_int :: proc(g: ^Codegen, e: Expr) -> (int, bool) {
+    if e == nil { return 0, false }
+    if num, ok := e.(^Expr_Number); ok {
+        if !num.is_float { return int(num.int_value), true }
+    }
+    if un, ok := e.(^Expr_Unary); ok {
+        if v, v_ok := codegen_const_eval_int(g, un.operand); v_ok {
+            #partial switch un.op {
+            case .Minus: return -v, true
+            case .Tilde: return ~v, true
+            }
+        }
+    }
+    if bin, ok := e.(^Expr_Binary); ok {
+        l, l_ok := codegen_const_eval_int(g, bin.left)
+        r, r_ok := codegen_const_eval_int(g, bin.right)
+        if l_ok && r_ok {
+            #partial switch bin.op {
+            case .Plus:        return l + r, true
+            case .Minus:       return l - r, true
+            case .Star:        return l * r, true
+            case .Slash:       if r != 0 { return l / r, true }
+            case .Modulo:      if r != 0 { return l % r, true }
+            case .Shift_Left:  if r >= 0 { return l << uint(r), true }
+            case .Shift_Right: if r >= 0 { return l >> uint(r), true }
+            case .Ampersand:   return l & r, true
+            case .Pipe:        return l | r, true
+            case .Tilde:       return l ~ r, true  // xor
+            }
+        }
+    }
+    // Named constant lookup. constant_values only has trivially-resolvable
+    // entries (number literals, unary minus). For richer expressions like
+    // `MB :: 1 << 20`, fall back to the original constant expression and
+    // recurse.
+    if ident, ok := e.(^Expr_Ident); ok {
+        if val, found := g.checked.constant_values[ident.name]; found {
+            return val, true
+        }
+    }
+    if const_expr, found := codegen_const_value(g, e); found {
+        return codegen_const_eval_int(g, const_expr)
+    }
+    return 0, false
+}

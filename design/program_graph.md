@@ -202,10 +202,10 @@ About thirty kinds in all.
 | `global` | `COLORS` (a constant table: it refers to the constant's declaration), `"hi"` and `#caller_name` (text: the constants table holds it) | `@mara_const.<name>`, `@.str.<hash>` |
 | `field` | `p.x` | `getelementptr` to the field |
 | `index` | `a[i]` | bounds check and `getelementptr`; a slice loads its pointer first |
-| `view` | bytes at an offset seen as a `T`: `x : T = bytes[off]`, `bytes[off] = x`, `&bytes[off]` taken as a `^T`; `#big_endian` | check `off + size_of(T) <= cap`, then `getelementptr` to the byte; what goes through it is `align 1`, and a big-endian view's integers are swapped |
+| `view` | bytes at an offset seen as a `T`: `x : T = bytes[off]`, `bytes[off] = x`, `&bytes[off]` taken as a `^T`, a number from a span (`x : u32 = bytes[lo:hi]`, at lo); `#big_endian` | check `off + size_of(T) <= cap`, then `getelementptr` to the byte; what goes through it is `align 1`, a copy out of it is its bytes as they are (a partial array's header with them), and a big-endian view's integers are swapped |
 | `deref` | `p^`; implied in `p.x` when `p: ^T` | `load ptr` |
 | `variant` | the bound payload in a `match` arm; a variant literal's fields | the union's own address: each variant's struct, its tag first, overlays the union |
-| `swizzle` | `v.xy` | element addresses or `shufflevector` |
+| `swizzle` | `v.x`, `v.xy` | one component: its element's address. Several: read, gathered into a temporary; written, each element stored into its component |
 | `slice` | `a[lo:hi]`, `slice_from_ptr(p, n)`; written to, `a[lo:hi] = b` | a slice header: pointer, length, capacity; written to, b's elements copied in from lo — as many as b has when hi is open — with lo and hi checked against the capacity |
 
 **Memory**
@@ -213,24 +213,24 @@ About thirty kinds in all.
 | Operation | Written as | LLVM |
 | --- | --- | --- |
 | `read` | a place used as a value | `load`, or the address itself for a struct |
-| `write` | `x = v`, `p.x += 1`; `x = void` writes the `void` constant | `store`, or `memcpy` for a struct; `void` stores nothing, or a pointer's null |
+| `write` | `x = v`, `p.x += 1`; `x = void` writes the `void` constant | `store`, or `memcpy` for a struct; `void`: a pointer's null, a declared scalar's or local struct's zero, a declared partial array's header, else nothing (a constructor's field stays Self's zero) |
 | `address` | `&x` | the place itself; no instruction |
 | `zero` | synthetic, from `x : T`; `Foo{0}`; `s : []T(n)` takes `n` | `store zeroinitializer` or `memset`; for `n`, storage for n elements and the slice header over it |
-| `construct` | `Foo(a)`, `Foo{…}`; synthetic from `x : Foo`; a union's variant, `Circle{…}` | `memset`, then a call to Foo's init into the place; a variant: the union zeroed, its tag stored (a variant has no init: its field defaults are writes at the site) |
+| `construct` | `Foo(a)`, `Foo{…}`; synthetic from `x : Foo`; a union's variant, `Circle{…}` | `memset`, then a call to Foo's init into the place — without arguments written (`Foo{…}` is `Foo(){…}`, a bare declaration too), its params' defaults; a struct with no init, the `memset`; a variant: the union zeroed, its tag stored (a variant has no init: its field defaults are writes at the site), and a variant's struct on its own likewise |
 | `fill` | `{all x}` | a store per slot, a loop when large |
-| `carve` | `let(T, mem)`, `slice([:n]T, mem)`; positional, `let(T, &bytes[i])` | align the cursor, `getelementptr`, bump `mem.len`; positional, the view of the bytes there |
-| `byte read` | a partial array filled from bytes (`pa = bytes[off]`, `pa = bytes[lo:hi]`), a value from a span (`x : T = bytes[lo:hi]`); `#big_endian` | checks, `memcpy`, `bswap`; a fill sets `len` |
+| `carve` | `let(T, mem)`, `slice([:n]T, mem)`; positional, `let(T, &bytes[i])`, `slice([:n]T, &bytes[i])` | align the cursor, `getelementptr`, bump `mem.len`; positional, the view of the bytes there — a slice's n elements at it, checked against the bytes' cap. A `let` is the memory: its name has no storage of its own |
+| `byte read` | a partial array filled from bytes (`pa = bytes[off]`, `pa = bytes[lo:hi]`), a struct or array from a span (`x : T = bytes[lo:hi]`, a field's too); `#big_endian` | checks, `memcpy`, `bswap`; a fill sets `len`; a span into a value zeroes it first, the tail past the span staying zero |
 | `arena alloc` | synthetic, for a local too big for the stack (a constructor's field is in Self, never here) | a call to the program arena's `alloc`: the local's storage |
 
 **Values**
 
 | Operation | Written as | LLVM |
 | --- | --- | --- |
-| `const` | `42`, `2.5`, `true`, `'a'`, `.Ok`, `size_of(T)` | an immediate |
+| `const` | `42`, `2.5`, `true`, `'a'`, `.Ok`, `size_of(T)`, a named constant (one computed from floats, at the precision of the type it's used at) | an immediate |
 | `arith` | `+ - * / %`, wrapping `+% -% *%`, shifts, bit operations | `add`, `fadd` and so on, with overflow (not when wrapping) and division-by-zero traps |
 | `compare` | `== != < <= > >=` | `icmp`, `fcmp` |
 | `unary` | `-x`, `not x` | `sub 0`, `xor` |
-| `cast` | `f32(x)`, `Meters(x)`, `bool(e)`; implied by `?` (whether its err is one) | `sext`, `trunc`, `sitofp` and so on, or nothing; to `bool`, `icmp ne 0` |
+| `cast` | `f32(x)`, `Meters(x)`, `bool(e)`, `i64(p)`; implied by `?` (whether its err is one) | `sext`, `trunc`, `sitofp`, `ptrtoint` and so on, or nothing (a distinct conversion, an aggregate's too); to `bool`, `icmp ne 0` (a pointer's, `ne null`) |
 
 **Calls**
 

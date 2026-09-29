@@ -2522,6 +2522,13 @@ graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, n
     return o
 }
 
+// A constant expression's value, as the graph folds constants — for what's
+// computed before any code runs (the program arena's size) or in no code of
+// its own (an array element's constructor defaults).
+graph_constant :: proc(e: Expr) -> Maybe(Const_Value) {
+    return graph_literal_value(e)
+}
+
 @(private="file")
 graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
     #partial switch v in e {
