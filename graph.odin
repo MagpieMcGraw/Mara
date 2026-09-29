@@ -424,6 +424,7 @@ Code :: struct {
 Run :: struct {
     ops:     [dynamic]Node_Id,
     waiting: [dynamic]i32,       // the `then` edges (by index) whose target is this run's first operation, once it has one
+    early:   bool,               // (fused) built before what enters it: an edge into it is its first operation's
 }
 
 @(private="file")
@@ -1051,7 +1052,6 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
 }
 
 // What a statement does to the variables it writes (Stmt_Kind).
-@(private="file")
 graph_stmt_kind :: proc(s: Stmt) -> Stmt_Kind {
     #partial switch v in s {
     case ^Stmt_Assign:
@@ -1949,7 +1949,8 @@ graph_run_new :: proc(b: ^Graph_Builder) -> ^Run {
 @(private="file")
 graph_then :: proc(b: ^Graph_Builder, from: Node_Id, to: ^Run, written: Written) {
     if len(to.ops) > 0 {
-        append(&b.g.edges, Edge{from = from, to = to.ops[0], kind = .Then, written = written, site = from})
+        w := b.g.written[to.ops[0]] if to.early else written   // (as when its operation came after)
+        append(&b.g.edges, Edge{from = from, to = to.ops[0], kind = .Then, written = w, site = from})
     } else {
         // Its place among the edges now — a branch's targets keep their order
         // (yes, then no) — and its target once the run has an operation.
@@ -3479,6 +3480,7 @@ Graph_Fuse :: struct {
     marks:      [dynamic]Graph_Arena,
     allocs:     [dynamic]Graph_Alloc,
     calls:      [dynamic]Pending_Call,   // named by their callees when the graph is put together
+    steps:      [dynamic]int,            // its loops' steps' segments
     // A struct's: each field declaration's lowered assignment, and its field.
     fields:     map[rawptr]Node_Id,
     field_inits: map[rawptr]Expr,   // (its initializer as written)
@@ -3579,6 +3581,7 @@ graph_fuse_free :: proc(f: ^Graph_Fuse) {
     delete(f.widens)
     delete(f.checks)
     delete(f.calls)
+    delete(f.steps)
     for m in f.marks { delete(m.resets) }
     delete(f.marks)
     delete(f.allocs)
@@ -4093,6 +4096,19 @@ graph_fuse_if_expr_end :: proc(b: ^Graph_Builder, gi: ^Graph_If_Expr) {
     b.code.run = gi.join
 }
 
+// The kind of the statement being built, once its check says (a
+// destructure found a broadcast is its copies').
+graph_fuse_stmt_kind :: proc(b: ^Graph_Builder, kind: Stmt_Kind) {
+    b.g.stmts[b.stmt].kind = kind
+}
+
+// A broadcast literal built into d (graph_into): its value at the element
+// type, then the fill.
+graph_fuse_fill :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, t: Type, d: Dest, val: Operand) {
+    x := graph_fuse_widen(b, val, v.span, {to = graph_elem_type(t)})
+    graph_op(b, .Fill, .Explicit, v.span, t, "", graph_dest_place(b, d, v.span), x)
+}
+
 // `void` written: the uninitialized value (graph_void).
 graph_fuse_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
     return graph_void(b, t, span)
@@ -4139,10 +4155,11 @@ Graph_For :: struct {
     body_block:              Node_Id,
     has_post:                bool,
     span:                    Span,
+    step:                    int,   // the step's segment, built before the body; -1
 }
 
 graph_fuse_for :: proc(b: ^Graph_Builder, v: ^Stmt_For) -> Graph_For {
-    fl := Graph_For{span = v.span, counter = NO_NODE, end_slot = NO_NODE, coll_slot = NO_NODE, elem = NO_NODE}
+    fl := Graph_For{span = v.span, counter = NO_NODE, end_slot = NO_NODE, coll_slot = NO_NODE, elem = NO_NODE, step = -1}
     fl.f = graph_node(b, .Block, .Explicit, b.code.block, "for", nil, v.span)
     fl.outer = b.code.block
     b.code.block = fl.f
@@ -4274,6 +4291,7 @@ graph_fuse_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
     if graph_reachable(b) { graph_jump(b, cont, .Synthetic, span) }
     if fl.has_post {
         b.code.run = fl.post
+        if fl.step >= 0 { graph_anchor_here(b, fl.step) }   // (the step, where it runs)
         if fl.counter != NO_NODE {
             ct := b.g.type_[fl.counter]
             cur := graph_read(b, graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), ct, span)
@@ -4286,6 +4304,28 @@ graph_fuse_for_end :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
     b.code.run = fl.done
     b.code.block = fl.outer
     graph_frame_pop(b)
+}
+
+// A C-style loop's step, checked before its body: built then, into the
+// step's run, in a segment of its own anchored after the body.
+Graph_Step :: struct {
+    saved:      int,
+    run:        ^Run,
+    block:      Node_Id,
+}
+
+graph_fuse_step :: proc(b: ^Graph_Builder, fl: ^Graph_For) -> Graph_Step {
+    st := Graph_Step{run = b.code.run, block = b.code.block}
+    fl.step, st.saved = graph_segment_enter(b)
+    append(&b.fuse.steps, fl.step)   // (settled with its body)
+    b.code.run, b.code.block = fl.post, fl.f
+    fl.post.early = true
+    return st
+}
+
+graph_fuse_step_end :: proc(b: ^Graph_Builder, fl: ^Graph_For, st: Graph_Step) {
+    b.code.run, b.code.block = st.run, st.block
+    graph_segment_leave(b, st.saved)
 }
 
 // `break`, `continue` (graph_loop_exit).
@@ -4513,11 +4553,16 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
             graph_drop(b, k.ids[0], NO_VALUE); graph_drop(b, k.ids[1], NO_VALUE)
         }
     }
-    k := 0   // (its synthetic locals, in the order they were made)
-    for p in b.segs[f.seg].pieces {
-        for i in p.nodes[0] ..< p.nodes[1] {
-            for k < len(f.slots) && int(f.slots[k]) < i { k += 1 }
-            g.type_[i] = graph_settled(g.type_[i], pointee = k < len(f.slots) && int(f.slots[k]) == i)
+    segs := make([dynamic]int, 0, 1 + len(f.steps), context.temp_allocator)
+    append(&segs, f.seg)
+    append(&segs, ..f.steps[:])
+    for si in segs {
+        k := 0   // (its synthetic locals, in the order they were made)
+        for p in b.segs[si].pieces {
+            for i in p.nodes[0] ..< p.nodes[1] {
+                for k < len(f.slots) && int(f.slots[k]) < i { k += 1 }
+                g.type_[i] = graph_settled(g.type_[i], pointee = k < len(f.slots) && int(f.slots[k]) == i)
+            }
         }
     }
     // Params by their scope's types: a default's width is settled once its

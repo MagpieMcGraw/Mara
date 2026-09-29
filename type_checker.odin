@@ -5733,6 +5733,16 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
     return graph_fuse_widen(b, fuse_value(c, r, e, t), span, w)
 }
 
+// A value the builder can build again from its check: one of no operations
+// but its own.
+fuse_is_leaf :: proc(e: Expr) -> bool {
+    #partial switch v in e {
+    case ^Expr_Number, ^Expr_Char, ^Expr_Bool, ^Expr_String, ^Expr_Size_Of: return true
+    case ^Expr_Ident: return v.lowered == nil
+    }
+    return false
+}
+
 // The graph checks the scalars written to a variable; what else a store
 // builds (in place, a view, from bytes) waits.
 fuse_scalar :: proc(t: Type) -> bool {
@@ -7912,17 +7922,28 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     // Built: the names it declares, the call, then each of
                     // its outputs written to its name — or its target — in
                     // turn. (A broadcast of one value is the builder's.)
+                    // (A broadcast's value is built in each target's copy,
+                    // not here: a call's, built before that was known, is
+                    // left out.)
                     mr: Graph_Destructure
+                    mark: Graph_Mark
+                    _, of_call := s.values[0].(^Expr_Call)
                     if b := fusing(c); b != nil {
-                        if _, is_call := s.values[0].(^Expr_Call); is_call {
-                            mr = graph_fuse_destructure(b, s)
-                        } else {
-                            fuse_fail(c, "a broadcast")
-                        }
+                        mark = graph_fuse_mark(b)
+                        if of_call { mr = graph_fuse_destructure(b, s) }
                     }
-                    val_type, call := fuse_expr(c, s.values[0], env)
+                    val_type: Type
+                    call: Fused
+                    if of_call {
+                        val_type, call = fuse_expr(c, s.values[0], env)
+                    } else {
+                        val_type = check_expr(c, s.values[0], env)
+                    }
                     mr.call = call.v
-                    if b := fusing(c); b != nil && mr.on && call_return_list(c, s.values[0], env) == nil { fuse_fail(c, "a broadcast of a call") }
+                    if b := fusing(c); b != nil && mr.on && call_return_list(c, s.values[0], env) == nil {
+                        graph_fuse_drop_since(b, mark)
+                        mr.on = false
+                    }
                     // Source the return arity from the resolved fun directly —
                     // there is no tuple value on the frontend. The call must be
                     // an Expr_Call whose callee is a multi-return fun.
@@ -7993,6 +8014,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                             }
                             append(&s.checked, Stmt(a))
                         }
+                        // (Its statement is its copies': graph_stmt_kind's Other.)
+                        if b := fusing(c); b != nil { graph_fuse_stmt_kind(b, graph_stmt_kind(s)) }
                         register_and_check_declarations(c, s.checked[:], env, owner, public_env)
                     }
                 }
@@ -8456,8 +8479,8 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
     // body but runs after it, and a collection that is no plain place is
     // held first: those loops are the builder's.
     b := fusing(c)
-    if b != nil && (!s.is_range && !s.is_collection_for && s.post != nil || s.is_collection_for && !graph_pure_place(s.collection)) {
-        fuse_fail(c, "a loop's step, or a collection that is no place")
+    if b != nil && s.is_collection_for && !graph_pure_place(s.collection) {
+        fuse_fail(c, "a collection that is no place")
         b = nil
     }
     fl: Graph_For
@@ -8582,11 +8605,15 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         }
         if s.post != nil {
             // Both passes, as the init: a plain reassignment (`k += 1`) is
-            // typed by the first (it went unchecked).
+            // typed by the first (it went unchecked). (Built into the step's
+            // run, in a segment of its own put after the body, where it runs.)
+            step: Graph_Step
+            if b != nil { step = graph_fuse_step(b, &fl) }
             post_stmts: [dynamic]Stmt
             append(&post_stmts, s.post)
             register_and_check_declarations(c, post_stmts[:], child)
             check_bodies(c, post_stmts[:], child)
+            if b != nil { graph_fuse_step_end(b, &fl, step) }
         }
         check_scope(c, s.body, child)
     }
@@ -8644,13 +8671,24 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
             if i >= n_expected { break }
             expected := rts[i]
             c.expected_hint = expected
-            vt, r := fuse_expr(c, val, env, .Either)
-            if fusing(c) != nil {
-                // (Text returned as a partial array is built into one.)
-                if k, folds := graph_constant(val).?; folds && k.is_text {
-                    if _, pa := distinct_base(expected).(^Type_Partial_Array); pa { fuse_fail(c, "text returned as a partial array") }
+            text_pa, text_slot := false, NO_NODE
+            if b := fusing(c); b != nil {
+                if _, is_text := val.(^Expr_String); is_text && is_partial_array(expected) {
+                    text_pa, text_slot = true, graph_slot(b, "temp", expected, s.span)
+                    graph_fuse_zero_var(b, text_slot, expected, s.span)
                 }
+            }
+            vt, r := fuse_expr(c, val, env, .Either)
+            if k, folds := graph_constant(val).?; folds && k.is_text && is_partial_array(expected) && !text_pa {
+                fuse_fail(c, "a text constant returned as a partial array")
+            }
+            if fusing(c) != nil && !text_pa {
                 append(&vals, fuse_value_as(c, val, vt, r, expected, s.span, {to = expected}))
+            } else if b := fusing(c); b != nil {
+                // Text returned as a partial array: built into one — a
+                // temporary, zero, then the text — read.
+                fuse_store_finish(c, val, vt, r, graph_dest_var("temp", text_slot, expected), s.span)
+                append(&vals, graph_read(b, graph_var(b, "temp", text_slot, expected, s.span), expected, s.span))
             }
             if !is_any(vt) && !is_any(expected) {
                 if !coerce_deferred(c, vt, expected, s.span) && !types_equal(expected, vt) && !value_preserving_widen(vt, expected) {
@@ -9238,8 +9276,10 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
                 last = idx
             }
         }
-        if lit.is_broadcast || !in_order {
-            fuse_fail(c, "a broadcast, or swizzles out of order")
+        if !in_order {
+            fuse_fail(c, "swizzles out of order")
+        } else if lit.is_broadcast {
+            fl.built = true   // (its value, then the fill: below)
         } else {
             gl = graph_fuse_literal(b, lit, lit_t, fl.dest)
             fl.built = gl != nil
@@ -9252,7 +9292,17 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
     // independent stores per element.
     if lit.is_broadcast {
         if is_anonymous_literal(lit.broadcast_value) { c.expected_hint = fa.elem }
-        val_type := check_expr(c, lit.broadcast_value, env)
+        val_type: Type
+        val: Fused
+        if fl != nil && fl.built && fusing(c) != nil {
+            val_type, val = fuse_expr(c, lit.broadcast_value, env)
+            if b := fusing(c); b != nil { graph_fuse_fill(b, lit, lit_t, fl.dest, val.v) }
+        } else {
+            val_type = check_expr(c, lit.broadcast_value, env)
+        }
+        // (Its slots' copies are checked, not built: the fill is.)
+        outer := fuse_suspend(c)
+        defer fuse_resume(c, outer)
         if types_incompatible(fa.elem, val_type) {
             check_error(c, lit.span, TYPE_BROADCAST_VALUE_TYPE_EXPECTED,
                 lit.name, type_name(val_type), type_name(fa.elem))
@@ -11473,8 +11523,8 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
     d, into_temp := c.asked_dest, c.asked_temp
     b := fusing(c)
     if want == .None || b == nil { return check_struct_literal_impl(c, e, env) }
-    if e.override_target != "" || e.is_broadcast {
-        fuse_fail(c, "an override or a broadcast literal")
+    if e.override_target != "" {
+        fuse_fail(c, "an override in a value's place")
         return check_struct_literal_impl(c, e, env)
     }
     temp := want != .Into || into_temp
@@ -11684,6 +11734,17 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     // return Type_Error for the anonymous shape) and overwrite the type.
     if e.is_broadcast && e.type_ != nil {
         if _, is_err := e.type_.(Type_Error); !is_err {
+            // Built (its value checked with its field's type, before the
+            // body: a leaf, built here): the value, then the fill.
+            if fl := c.lit; fl != nil && fl.e == e {
+                c.lit = nil
+                if b := fusing(c); b != nil {
+                    if fuse_is_leaf(e.broadcast_value) {
+                        graph_fuse_fill(b, e, e.type_, fl.dest, graph_value(b, e.broadcast_value))
+                        fl.built = true
+                    }
+                }
+            }
             return e.type_
         }
     }
