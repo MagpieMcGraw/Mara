@@ -2587,6 +2587,7 @@ __MARA_BOUNDS_FAIL    :: "@__mara_bounds_fail"
 __MARA_OVERFLOW_FAIL  :: "@__mara_overflow_fail"
 __MARA_DIVZ_FAIL      :: "@__mara_divz_fail"
 __MARA_SLICE_LEN_FAIL :: "@__mara_slice_len_fail"
+__MARA_MATCH_FAIL     :: "@__mara_match_fail"
 // (assert has no helper: its failure message is a per-site printf format
 // assembled at codegen time — see Expr_Assert in codegen_expr.odin.)
 
@@ -2596,6 +2597,7 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     fmt_overflow,  _ := get_string_literal(g, "%s runtime error: integer overflow\n")
     fmt_divz,      _ := get_string_literal(g, "%s runtime error: division by zero\n")
     fmt_slice_len, _ := get_string_literal(g, "%s runtime error: slice len %d not in [0, %d] (cap) for '%s'\n")
+    fmt_match,     _ := get_string_literal(g, "%s runtime error: match on an invalid tag %lld\n")
 
     b: strings.Builder
     strings.builder_init(&b)
@@ -2642,6 +2644,16 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     strings.write_string(&b, strings.concatenate({
         "  call i32 (ptr, ...) @printf(ptr ", fmt_slice_len,
         ", ptr %loc, i32 %new_len, i32 %cap, ptr %name)\n",
+    }))
+    strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
+
+    // match: (loc, tag). A match covers every variant, so another tag is
+    // corrupt memory (a union read from bytes, say).
+    strings.write_string(&b, "define void ")
+    strings.write_string(&b, __MARA_MATCH_FAIL)
+    strings.write_string(&b, "(ptr %loc, i64 %tag) {\n")
+    strings.write_string(&b, strings.concatenate({
+        "  call i32 (ptr, ...) @printf(ptr ", fmt_match, ", ptr %loc, i64 %tag)\n",
     }))
     strings.write_string(&b, "  call void @exit(i32 1)\n  unreachable\n}\n\n")
 
@@ -4155,6 +4167,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_overflow_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_divz_fail(ptr)\n")
         strings.write_string(&b, "declare void @__mara_slice_len_fail(ptr, i32, i32, ptr)\n")
+        strings.write_string(&b, "declare void @__mara_match_fail(ptr, i64)\n")
         strings.write_string(&b, "declare void @__mara_print_err(i32)\n")
     }
     strings.write_byte(&b, '\n')

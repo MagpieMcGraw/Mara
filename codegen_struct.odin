@@ -2169,8 +2169,11 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
         if lit.name == some_name {
             // Find the single pointer field and store its value at offset 0.
             if len(lit.fields) > 0 {
+                // Through the Some variant's struct: its one field, the pointer.
                 val := gen_expr(g, lit.fields[0].value, "ptr")
-                emit_store(g, "ptr", val, union_ptr)
+                field := fresh_tmp(g)
+                emit_field_gep_into(g, field, struct_llvm_name(ut.variant_structs[some_name]), union_ptr, 0)
+                emit_store(g, "ptr", val, field)
             } else {
                 // Some{} with no fields — caller meant Some(zero); store null.
                 emit_store(g, "ptr", "null", union_ptr)
@@ -2182,9 +2185,12 @@ emit_union_literal_store :: proc(g: ^Codegen, ut: ^Type_Union, value: Expr, unio
         return
     }
 
-    // Non-niche: construct the tag-inclusive variant struct directly at the
-    // union pointer (offset 0). gen_store_struct_into sets the discriminant
-    // and fills the user fields — no separate tag store or payload offset.
+    // Non-niche: the whole union zeroed — its bytes past the variant too, so a
+    // union's bytes are always its value's (written to a file, say) — then the
+    // tag-inclusive variant struct constructed at the union pointer (offset
+    // 0). gen_store_struct_into sets the discriminant and fills the user
+    // fields — no separate tag store or payload offset.
+    emit_memset_zero(g, union_ptr, union_byte_size(g.checked, ut))
     variant_struct_name := ut.variant_structs[lit.name]
     vst, vst_ok := lookup_struct(g, variant_struct_name)
     if !vst_ok { return }

@@ -344,9 +344,6 @@ gen_expr :: proc(g: ^Codegen, expr: Expr, target_type: string = "") -> string {
         if ut, ut_ok := e.type_.(^Type_Union); ut_ok && e.name != "" {
             tmp := fresh_tmp(g)
             emit_alloca(g, tmp, union_llvm_name(union_key(ut)))
-            if !is_niche_layout(g, ut) {
-                emit_memset_zero(g, tmp, union_byte_size(g.checked, ut))
-            }
             emit_union_literal_store(g, ut, e, tmp)
             return tmp
         }
@@ -2367,6 +2364,10 @@ Dest_Info :: struct {
 // storage (gen_call_into_*), so a read through a param can't see a
 // destination that lives in the result slot.
 storage_read_hits :: proc(g: ^Codegen, e: Expr, d: Dest_Info) -> bool {
+    // A scalar param is a value in a register: reading it reads no storage.
+    if id, is_id := e.(^Expr_Ident); is_id && g.param_vars[id.name] && !is_pointer_valued_type(expr_type(e)) {
+        return false
+    }
     r, via_ptr, ok := storage_root(g, e)
     if !ok { return true }
     if g.result_vars[d.root] && g.param_vars[r] && !g.alias_vars[r] { return false }

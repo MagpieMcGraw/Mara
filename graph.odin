@@ -1243,11 +1243,19 @@ graph_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, parent: Node_Id) {
     } else {
         append(&ops, graph_read(b, subject_place(b, v, slot), expr_type(v.subject), span))
     }
+    // Each arm's value, the else arm (last) none: the switch's default. A union
+    // arm names a variant (`.None`, `None`): its value is the variant's tag.
     arms := make([]^Run, len(v.arms), context.temp_allocator)
     for &arm, i in v.arms {
         arms[i] = graph_run_new(b)
-        // A union arm names a variant (`.None`, `None`): the switch picks it by tag.
-        if !is_union && !arm.is_else && arm.value != nil { append(&ops, graph_value(b, arm.value)) }
+        switch {
+        case arm.is_else:
+        case is_union:
+            tag := Const_Value{int = i128(arm.resolved_tag)}
+            append(&ops, graph_const(b, .Implied, span, graph_tag_type(expr_type(v.subject)), arm.variant, tag))
+        case arm.value != nil:
+            append(&ops, graph_value(b, arm.value))
+        }
     }
     graph_switch(b, ops[:], arms, span)
     join := graph_run_new(b)
@@ -1505,14 +1513,14 @@ Dest :: struct {
     kind:   Dest_Kind,
     at:     Operand,   // .At: the place, already computed
     decl:   Node_Id,   // .Var: its declaration, when known here
-    name:   string,    // .Var: the variable; .Field: the field
+    name:   string,    // .Var: the variable; .Field: the field; .Variant: the variant
     index:  int,       // .Index
     type_:  Type,
-    parent: ^Dest,     // .Field, .Index: the value they are part of
+    parent: ^Dest,     // .Field, .Index, .Variant: the value they are part of
 }
 
 @(private="file")
-Dest_Kind :: enum u8 { Var, At, Field, Index }
+Dest_Kind :: enum u8 { Var, At, Field, Index, Variant }
 
 @(private="file")
 graph_dest_var :: proc(name: string, decl: Node_Id, t: Type) -> Dest {
@@ -1527,6 +1535,7 @@ graph_dest_place :: proc(b: ^Graph_Builder, d: Dest, span: Span) -> Operand {
     case .At:    return d.at
     case .Field: return graph_op_value(b, .Field, .Explicit, span, d.type_, d.name, graph_dest_place(b, d.parent^, span))
     case .Index: return graph_op_value(b, .Index, .Explicit, span, d.type_, "", graph_dest_place(b, d.parent^, span), graph_const_index(b, d.index, span))
+    case .Variant: return graph_op_value(b, .Variant, .Implied, span, d.type_, d.name, graph_dest_place(b, d.parent^, span))
     }
     return NO_VALUE
 }
@@ -1862,6 +1871,7 @@ graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
             // function to call), or zero before the element writes.
             _, is_union := distinct_base(v.type_).(^Type_Union)
             graph_op(b, .Construct if is_union else .Zero, .Explicit, v.span, v.type_, v.name, graph_dest_place(b, d, v.span))
+            if is_union { graph_variant_defaults(b, v.type_, v.name, v, d, v.span) }
         } else {
             return false
         }
@@ -1888,11 +1898,13 @@ graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
     case ^Expr_Ident:
         if _, is_variant := v.resolved.(Resolved_Union_Variant); is_variant {
             graph_op(b, .Construct, .Explicit, v.span, v.type_, v.name, graph_dest_place(b, d, v.span))
+            graph_variant_defaults(b, v.type_, v.name, nil, d, v.span)
             return true
         }
     case ^Expr_Field_Access:
         if _, is_variant := v.resolved.(Resolved_Union_Variant); is_variant {
             graph_op(b, .Construct, .Explicit, v.span, v.type_, v.field, graph_dest_place(b, d, v.span))
+            graph_variant_defaults(b, v.type_, v.field, nil, d, v.span)
             return true
         }
     }
@@ -1903,6 +1915,7 @@ graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
 // or an array's slots.
 @(private="file")
 graph_literal_writes :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, d: Dest, w: Written) {
+    whole := d
     parent := d
     if len(v.array_values) > 0 {
         elem_t := graph_elem_type(v.type_)
@@ -1913,14 +1926,66 @@ graph_literal_writes :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, d: Dest
         return
     }
     sd := as_scope_body(distinct_base(v.type_))
+    // A union's variant: its fields are the variant struct's, past the tag.
+    skip := 0
+    if st := graph_variant_struct(b, v.type_, v.name); st != nil {
+        sd = as_scope_body(st)
+        parent = Dest{kind = .Variant, name = v.name, type_ = st, parent = &whole}
+        for f in sd.fields { if strings.has_prefix(f.name, "__") { skip += 1 } }
+    }
     for f, i in v.fields {
         name := f.name
-        if name == "" && sd != nil && i < len(sd.fields) { name = sd.fields[i].name }
+        if name == "" && sd != nil && skip + i < len(sd.fields) { name = sd.fields[skip + i].name }
         t: Type
         if sd != nil {
             if fi, ok := sd.field_map[name]; ok { t = sd.fields[fi].type_ }
         }
         graph_store(b, Dest{kind = .Field, name = name, type_ = t, parent = &parent}, f.value, v.span)
+    }
+}
+
+// A union's variant `name` as a struct: its tag first, then its fields; nil
+// when t is no union with that variant.
+@(private="file")
+graph_variant_struct :: proc(b: ^Graph_Builder, t: Type, name: string) -> ^Type_Scope {
+    ut, is_union := distinct_base(t).(^Type_Union)
+    if !is_union || name == "" { return nil }
+    sname, has := ut.variant_structs[name]
+    if !has { return nil }
+    return b.checked.table.structs[sname] or_else nil
+}
+
+// A variant built at d: after its construct (zero and its tag), each field
+// default the literal doesn't give — a variant has no constructor to run them.
+@(private="file")
+graph_variant_defaults :: proc(b: ^Graph_Builder, t: Type, variant: string, lit: ^Expr_Struct_Literal, d: Dest, span: Span) {
+    st := graph_variant_struct(b, t, variant)
+    if st == nil { return }
+    sd := as_scope_body(st)
+    dd := d
+    vd := Dest{kind = .Variant, name = variant, type_ = st, parent = &dd}
+    skip := 0
+    for f in sd.fields { if strings.has_prefix(f.name, "__") { skip += 1 } }
+    for f, i in sd.fields {
+        if f.default_value == nil { continue }
+        given := false
+        if lit != nil {
+            for lf, j in lit.fields {
+                if lf.name == f.name || (lf.name == "" && skip + j == i) { given = true }
+            }
+        }
+        if given { continue }
+        // A variant's defaults aren't checked where it's declared: a constant
+        // one is written at its field's type.
+        val: Operand
+        c, folds := graph_literal_value(f.default_value).?
+        if dt := expr_type(f.default_value); folds && !c.is_text && (dt == nil || is_infer(dt)) {
+            val = graph_const(b, .Implied, span, f.type_, "", c)
+        } else {
+            val = graph_value_as(b, f.default_value, f.type_, span, .Implied)
+        }
+        fd := Dest{kind = .Field, name = f.name, type_ = f.type_, parent = &vd}
+        graph_op(b, .Write, .Implied, span, nil, "", graph_dest_place(b, fd, span), val)
     }
 }
 
@@ -2758,6 +2823,22 @@ graph_union :: proc(b: ^Graph_Builder, v: ^Stmt_Union_Def, parent: Node_Id) {
         }
     }
     if !found && !generic { graph_fatal(v.span, "'%s' reached the graph unchecked", v.name) }
+}
+
+// A union's tag type: the one it declares (`union(tag u32)`), else i64.
+@(private="file")
+graph_tag_type :: proc(t: Type) -> Type {
+    ut, _ := distinct_base(t).(^Type_Union)
+    switch ut.tag_type if ut != nil else "" {
+    case "u8":  return Type_Numeric{.Unsigned, 8}
+    case "u16": return Type_Numeric{.Unsigned, 16}
+    case "u32": return Type_Numeric{.Unsigned, 32}
+    case "u64": return Type_Numeric{.Unsigned, 64}
+    case "i8":  return Type_Numeric{.Signed, 8}
+    case "i16": return Type_Numeric{.Signed, 16}
+    case "i32": return Type_Numeric{.Signed, 32}
+    }
+    return Type_Numeric{.Signed, 64}
 }
 
 // A union arm's payload: the variant struct the checker resolved.

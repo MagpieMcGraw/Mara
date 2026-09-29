@@ -490,7 +490,30 @@ evaluates its destination and value); how instructions are chosen stays in the e
       Still declined: `-no assert` (the graph keeps an assert's condition, which
       the old emitter never evaluated), a crash message computed at runtime, `cstring(s)`
       (only ever a foreign call's argument: with those, step 9)
-- [ ] Unions and `match`: tags, variants, niche layouts
+- [ ] Unions and `match`: tags, variants, niche layouts. A union is an aggregate handled
+      by its address; a `variant` place is the union's own address (each variant's
+      struct, its tag first, overlays the union from its start; a niche union's Some
+      variant is its storage outright), and a match arm's binding is that place, not a
+      copy. A variant's construct zeroes the whole union — its bytes past the variant
+      too, so a union's bytes are always its value's — then writes its tag (a niche
+      union: None is null, Some the pointer its literal writes next). The graph now
+      says: a variant literal's fields are written through its `variant` place (they
+      were fields of the union, untyped), and a variant has no constructor, so its field
+      defaults are implied writes at each construction (a constant one at its field's
+      type: variant defaults aren't checked where declared); a union switch carries each
+      arm's tag as an implied constant operand, the `else` arm being the target past
+      them. Decided (2026-09-29): a match covers every variant, so a subject holding
+      another tag is corrupt memory, and it fails: `__mara_match_fail` ("match on an
+      invalid tag N" at the match), in both emitters (it skipped every arm). Unions keep
+      the old emitter's ABI for now: params by address, results returned as an IR value
+      (a slot like the other aggregates: decided at the switch-over). Old emitter, to the
+      graph's shape: a value match tests every arm before any arm's body; a variant
+      literal zeroes the whole union wherever it's built (only a temporary did); a
+      niche Some writes its pointer through the variant's struct; reading a scalar param
+      reads no storage (it built `m = Some{value = q}` in a temporary for q, a pointer).
+      Normalizer: a memset of no more than the one just before it zeroed at the same
+      address (the same `getelementptr` text is the same address), and the address
+      arithmetic only it used
 - [ ] Scope work: defers, the arena's mark, reset and big locals; `main` and the program's
       setup; `#expose`
 - [ ] Calls: foreign ABI, function values, default and tuple-default arguments, multi-return,

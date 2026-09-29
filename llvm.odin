@@ -31,6 +31,7 @@ Llvm :: struct {
     held:  []bool,              // by id - node: a variable held as its one value
     ret:   string,              // its IR return type
     sret:  Type,                // a struct result, built in the caller's slot (%sret)
+    by_value: Type,             // a union result: returned as an IR value (the old ABI; a slot like the rest: later)
     ctor:  bool,                // a struct's code: it builds Self in %sret, which starts zeroed
     fields: strings.Builder,    // a constructor's field addresses, first in its entry
     head:  string,              // its `define` line
@@ -44,7 +45,9 @@ Llvm :: struct {
     in_place: map[Node_Id]Node_Id,  // a temporary → the place it is built in (llvm_in_place)
     hdr:     map[Node_Id]Llvm_Header,   // a view held as its header's values (llvm_holds_header)
     carved:  map[Node_Id]Node_Id,       // a local declared from a `let` take → that take (it is the memory)
+    bound:   map[Node_Id]Node_Id,       // a match arm's binding → its variant place (it is the payload)
     why:     Node_Id,             // where it declined (for MARA_GRAPH_CG=log)
+    run:     i32,                 // the run being emitted
 }
 
 // Emit a fun from the graph. False, having emitted nothing, when some part of
@@ -109,6 +112,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         rt := cf.cg_returns[0]
         switch {
         case llvm_scalar(rt):        e.ret = llvm_type_from_checker(rt)
+        case llvm_union(rt) != nil:   e.ret, e.by_value = llvm_type_from_checker(rt), rt
         case llvm_aggregate(rt):     e.sret = rt
         case:                        return false
         }
@@ -140,6 +144,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     llvm_in_place(e)
     for r, i in e.runs {
         if i > 0 { emit_label(g, e.label[r]) }
+        e.run = r
         for op in graph_run(pg, int(r)) {
             e.why = op
             if !llvm_op(e, op) { return false }
@@ -230,6 +235,7 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> string {
         return e.value[d - e.node]
     }
     if c, ok := e.carved[d]; ok { return e.value[c - e.node] }   // the carved memory
+    if v, ok := e.bound[d]; ok { return e.value[v - e.node] }    // the payload
     ir := llvm_type_from_checker(pg.type_[d])
     explicit := pg.written[d] == .Explicit
     key := fmt.tprintf("%s %s", pg.name[d], ir)
@@ -266,7 +272,8 @@ llvm_copy :: proc(e: ^Llvm, dest, src: string, t: Type) {
     reanchor_partial_arrays(e.g, t, dest)
 }
 
-// Each operation's user, when it has exactly one (-1 for none, -2 for several).
+// Each operation's user, when it has exactly one (-1 for none, -2 for
+// several); and each match binding's variant place.
 @(private="file")
 llvm_users :: proc(e: ^Llvm) {
     pg := e.pg
@@ -279,6 +286,8 @@ llvm_users :: proc(e: ^Llvm) {
                 u := &e.user[o.op - e.node]
                 u^ = op if u^ == -1 else -2
             }
+            // A match arm's binding is the payload's place.
+            if pg.op[op] == .Variant && pg.refers[op] != NO_NODE { e.bound[pg.refers[op]] = op }
         }
     }
 }
@@ -860,6 +869,15 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             emit(g, "  ret void")
             return true
         }
+        if e.by_value != nil {
+            // A union: its value, loaded from where it is.
+            if len(ops) != 1 { return false }
+            at := llvm_operand(e, ops[0], e.by_value) or_return
+            v := fresh_tmp(g)
+            emit_load_into(g, v, e.ret, at)
+            emit(g, "  ret %s %s", e.ret, v)
+            return true
+        }
         if len(ops) == 0 {
             if e.ret != "void" { return false }
             emit(g, "  ret void")
@@ -907,9 +925,16 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
             msg = e.value[ops[0].op - e.node]
         }
         emit_crash(g, span, msg)
-    case .Variant,
-         .Arena_Alloc,
-         .Switch, .Run_Defer, .Arena_Mark, .Arena_Reset:
+    case .Variant:
+        // A union seen as one of its variants: each variant's struct overlays
+        // the union from its start, so it is the union's own address.
+        u := ops[0].op
+        if llvm_union(pg.type_[u]) == nil || llvm_struct(pg.type_[op]) == nil || llvm_direct(e, u) { return false }
+        e.value[op - e.node] = e.value[u - e.node]
+    case .Switch:
+        return llvm_switch(e, op, ops, span)
+    case .Arena_Alloc,
+         .Run_Defer, .Arena_Mark, .Arena_Reset:
         return false
     }
     return true
@@ -1158,6 +1183,27 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     g, pg := e.g, e.pg
     dest := ops[0].op
     t := pg.type_[op]
+    if ut := llvm_union(pg.type_[dest]); ut != nil && llvm_same_type(pg.type_[dest], t) {
+        // A variant: the union zeroed — its bytes past the variant too — then
+        // its tag. (Its defaults and fields are the writes that follow.)
+        if len(ops) != 1 || llvm_direct(e, dest) { return false }
+        at := e.value[dest - e.node]
+        if is_niche_layout(g, ut) {
+            // A niche union is its Some variant's pointer: None is null, Some
+            // the pointer its literal writes next (none written: null).
+            some, _ := niche_variants(g, ut)
+            if pg.name[op] != some || !llvm_variant_written(e, op, dest) { emit_store(g, "ptr", "null", at) }
+            return true
+        }
+        sname, has := ut.variant_structs[pg.name[op]]
+        st, found := g.checked.table.structs[sname]
+        if !has || !found { return false }
+        emit_memset_zero(g, at, llvm_size(e, pg.type_[dest]))
+        tag := fresh_tmp(g)
+        emit_field_gep_into(g, tag, llvm_type_from_checker(st), at, 0)
+        emit_store(g, union_tag_ir_type(ut), fmt.tprintf("%d", ut.tag_map[pg.name[op]]), tag)
+        return true
+    }
     if fa := llvm_array(pg.type_[dest]); fa != nil && llvm_same_type(fa.elem, t) {
         if len(ops) != 1 || llvm_direct(e, dest) { return false }
         gen_construct_elements(g, e.value[dest - e.node], fa.elem, fa.size)
@@ -1810,6 +1856,79 @@ llvm_assert :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     return true
 }
 
+// A switch, a match: to the arm whose value the subject holds — a union's
+// tag, picked by an LLVM switch; a value, by a chain of compares — else to the
+// default: the last target, when there is one more than there are values, or,
+// the arms covering every variant, a failure (another tag is corrupt memory).
+@(private="file")
+llvm_switch :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
+    g, pg := e.g, e.pg
+    cases := ops[1:]
+    targets := 0
+    for edge in graph_out(pg, op) { if edge.kind == .Then { targets += 1 } }
+    if targets != len(cases) && targets != len(cases) + 1 { return false }
+    target :: proc(e: ^Llvm, op: Node_Id, k: int) -> string { return e.label[llvm_target(e, op, k)] }
+    fail := targets == len(cases)
+    subject := ops[0].op
+    if ut := llvm_union(pg.type_[subject]); ut != nil {
+        if llvm_direct(e, subject) { return false }
+        tag, ir := load_union_tag(g, ut, e.value[subject - e.node]), union_tag_ir_type(ut)
+        default := fresh_label(g, "match.fail") if fail else target(e, op, len(cases))
+        sw := strings.builder_make(context.temp_allocator)
+        fmt.sbprintf(&sw, "  switch %s %s, label %%%s [\n", ir, tag, default)
+        for c, i in cases {
+            v, has := pg.consts[c.op]
+            if !has || v.is_float { return false }
+            fmt.sbprintf(&sw, "    %s %d, label %%%s\n", ir, v.int, target(e, op, i))
+        }
+        strings.write_string(&sw, "  ]")
+        emit_raw(g, strings.to_string(sw))
+        if fail {
+            emit_label(g, default)
+            emit_match_fail(g, span, tag, ir, union_tag_unsigned(ut))
+        }
+        return true
+    }
+    t := pg.type_[subject]
+    if !llvm_scalar(t) { return false }
+    value := llvm_operand(e, ops[0], t) or_return
+    ir := llvm_type_from_checker(t)
+    last := fresh_label(g, "match.fail") if fail else target(e, op, len(cases))
+    if len(cases) == 0 { emit_br(g, last) }
+    for c, i in cases {
+        v := llvm_operand(e, c, t) or_return
+        next := last
+        if i < len(cases) - 1 { next = fresh_label(g, "match.next") }
+        cmp := fresh_tmp(g)
+        emit(g, "  %s = icmp eq %s %s, %s", cmp, ir, value, v)
+        emit_cond_br(g, cmp, target(e, op, i), next)
+        if i < len(cases) - 1 { emit_label(g, next) }
+    }
+    if fail {
+        emit_label(g, last)
+        emit_match_fail(g, span, value, ir, match_value_unsigned(t))
+    }
+    return true
+}
+
+// Whether the run, after construct `op`, writes a field of its union through
+// a variant place: the literal's fields.
+@(private="file")
+llvm_variant_written :: proc(e: ^Llvm, op, dest: Node_Id) -> bool {
+    pg := e.pg
+    root := llvm_where(e, dest).root
+    after := false
+    for o in graph_run(pg, int(e.run)) {
+        if o == op { after = true; continue }
+        if !after || pg.op[o] != .Write { continue }
+        p := graph_operands(pg, o)[0].op
+        if pg.op[p] != .Field { continue }
+        v := graph_operands(pg, p)[0].op
+        if pg.op[v] == .Variant && llvm_where(e, v).root == root { return true }
+    }
+    return false
+}
+
 // A view held as its header's values (llvm_holds_header).
 @(private="file")
 Llvm_Header :: struct {
@@ -1835,6 +1954,7 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         result = callee.cg_returns[0]
         switch {
         case llvm_scalar(result):        ret = llvm_type_from_checker(result)
+        case llvm_union(result) != nil:  ret = llvm_type_from_checker(result)   // as a value (the old ABI)
         case llvm_aggregate(result):
         case:                            return false
         }
@@ -1862,6 +1982,12 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     tmp := fresh_tmp(g)
     emit(g, "  %s = call %s %s(%s)", tmp, ret, name, joined)
     e.value[op - e.node] = tmp
+    if llvm_union(result) != nil {   // a union value: kept where it can be read as one
+        at := fresh_tmp(g)
+        emit_alloca(g, at, ret)
+        emit_store(g, ret, tmp, at)
+        e.value[op - e.node] = at
+    }
     return true
 }
 
@@ -1924,13 +2050,23 @@ llvm_scalar :: proc(t: Type) -> bool {
     return false
 }
 
-// An aggregate — a struct, a fixed array, a slice's header, a partial array —
-// is a value handled by its address: a param is a pointer to the caller's,
-// and reading one yields where it is; a copy re-points the partial arrays in
-// it at its own elements. (One holding a sized slice's backing: later.)
+// An aggregate — a struct, a fixed array, a slice's header, a partial array, a
+// union — is a value handled by its address: a param is a pointer to the
+// caller's, and reading one yields where it is; a copy re-points the partial
+// arrays in it at its own elements. (One holding a sized slice's backing: later.)
 @(private="file")
 llvm_aggregate :: proc(t: Type) -> bool {
-    return llvm_struct(t) != nil || llvm_array(t) != nil || llvm_slice(t) != nil || llvm_partial(t) != nil
+    return llvm_struct(t) != nil || llvm_array(t) != nil || llvm_slice(t) != nil || llvm_partial(t) != nil || llvm_union(t) != nil
+}
+
+// A union: its tag and the payload its variants overlay at its start (a niche
+// union's storage is its Some variant's pointer alone).
+@(private="file")
+llvm_union :: proc(t: Type) -> ^Type_Union {
+    if t == nil { return nil }
+    ut, ok := distinct_base(t).(^Type_Union)
+    if !ok { return nil }
+    return ut
 }
 
 // A partial array: a slice header over its own inline elements, `ptr`

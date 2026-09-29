@@ -15,7 +15,8 @@
 #     `i64 1` step alike), an unused getelementptr, a chain of them folded
 #     into one, where one is computed (a copy just before each use);
 #   - a zeroing memset the next instruction repeats, or overwrites with a
-#     memcpy of the same size (after only address arithmetic);
+#     memcpy of the same size (after only address arithmetic); and one of no
+#     more than the memset just before it zeroed at the same pointer;
 #   - an alloca nothing reads (only stored into), with its stores;
 #   - the order of the entry block's allocas (by first use);
 #   - the name a bounds failure reports for the place it indexes: the graph's
@@ -101,7 +102,7 @@ sub clean {
         push @kept, @{ $blocks[$i]{lines} };
     }
     s/(call void \@__mara_bounds_fail\(.*, )ptr \@[-\w.\$]+\)$/${1}ptr NAME)/ for @kept;
-    return order_allocas(drop_overwritten(drop_unread(simplify_geps(fold_widths(@kept)))));
+    return order_allocas(simplify_geps(drop_overwritten(drop_unread(simplify_geps(fold_widths(@kept))))));   # (again: what a dropped memset addressed)
 }
 
 # A constant's width changed (`trunc i64 0 to i32`, `fptrunc double 0.5 to
@@ -265,11 +266,20 @@ sub sink_geps {
 # A store the next store overwrites (same type, same pointer; only address
 # arithmetic between) does nothing;
 # nor does a zeroing memset the next line repeats, or overwrites with a memcpy
-# of the same size.
+# of the same size; nor one of no more than the memset just before it zeroed
+# at the same pointer (only address arithmetic between).
 sub drop_overwritten {
     my @lines = @_;
     my @out;
+    my ($zp, $zn) = ("", -1);   # what the last kept memset zeroed, while nothing since touched memory
+    my %at;                      # a getelementptr's name → what it computes (the same text: the same address)
+    my $where = sub { my ($p) = @_; return $at{$p} // $p };
     for my $i (0 .. $#lines) {
+        $at{$1} = $2 if $lines[$i] =~ /^\s+(%[-\w.\$]+) = (getelementptr .*)$/;
+        if ($lines[$i] =~ /^\s+call void \@llvm\.memset\.p0\.i64\(ptr (%[-\w.\$]+), i8 0, i64 (\d+), i1 false\)$/ && $where->($1) eq $zp && $2 <= $zn) {
+            next;
+        }
+        if ($lines[$i] !~ /^\s+%[-\w.\$]+ = getelementptr /) { ($zp, $zn) = ("", -1) }
         my $next = $i < $#lines ? $lines[$i + 1] : "";
         my ($t1, $p1) = store_of($lines[$i]);
         if (defined $t1) {
@@ -287,6 +297,7 @@ sub drop_overwritten {
             $j++ while $j <= $#lines && $lines[$j] =~ /^\s+%[-\w.\$]+ = getelementptr /;
             my $copy = $j <= $#lines ? $lines[$j] : "";
             next if $copy =~ /^\s+call void \@llvm\.memcpy\.p0\.p0\.i64\(ptr \Q$p\E, ptr [^,]+, i64 $n, i1 false\)$/;
+            ($zp, $zn) = ($where->($p), $n);
         }
         push @out, $lines[$i];
     }

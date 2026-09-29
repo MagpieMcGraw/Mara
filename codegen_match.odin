@@ -79,7 +79,6 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
 
     // Check for an else arm (must be last if present)
     has_else := len(s.arms) > 0 && s.arms[len(s.arms) - 1].is_else
-    default_label := end_label
 
     // Build arm labels
     arm_labels: [dynamic]string
@@ -87,10 +86,9 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
         append(&arm_labels, fresh_label(g, fmt.tprintf("match.case.%d", i)))
     }
 
-    // If last arm is else, its label becomes the switch default
-    if has_else {
-        default_label = arm_labels[len(arm_labels) - 1]
-    }
+    // The default: the else arm, or — the arms covering every variant — a
+    // failure (another tag is corrupt memory).
+    default_label := arm_labels[len(arm_labels) - 1] if has_else else fresh_label(g, "match.fail")
 
     // Build switch instruction using strings.Builder (avoids brace issues with emit)
     sw: strings.Builder
@@ -103,6 +101,10 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
     }
     strings.write_string(&sw, "  ]")
     emit_raw(g, strings.to_string(sw))
+    if !has_else {
+        emit_label(g, default_label)
+        emit_match_fail(g, s.span, tag_val, switch_type, union_tag_unsigned(ut))
+    }
 
     // Save variable state — arm-local variables must not leak across arms
     match_snap := save_var_scope(g)
@@ -146,10 +148,41 @@ gen_union_match :: proc(g: ^Codegen, s: ^Stmt_Match, ut: ^Type_Union, union_ptr:
     emit_label(g, end_label)
 }
 
+// A match's failure: its subject holds no arm's tag — corrupt memory, since
+// every match covers every variant. `tag` (of IR type `tag_ir`) is reported.
+emit_match_fail :: proc(g: ^Codegen, span: Span, tag, tag_ir: string, unsigned: bool) {
+    wide := tag
+    if tag_ir != "i64" {
+        wide = fresh_tmp(g)
+        emit(g, "  %s = %s %s %s to i64", wide, "zext" if unsigned else "sext", tag_ir, tag)
+    }
+    loc_global, _ := get_string_literal(g, format_location(span.file, span.line, span.col))
+    emit(g, "  call void %s(ptr %s, i64 %s)", __MARA_MATCH_FAIL, loc_global, wide)
+    emit(g, "  unreachable")
+}
+
+// Whether a union's tag is unsigned (`union(tag u32)`); the default i64 isn't.
+union_tag_unsigned :: proc(ut: ^Type_Union) -> bool {
+    return strings.has_prefix(ut.tag_type, "u")
+}
+
+// Whether a matched value is unsigned: an enum's declared tag type, a number's kind.
+match_value_unsigned :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Enum:   return strings.has_prefix(v.tag_type, "u")
+    case Type_Numeric: return v.kind == .Unsigned
+    case Type_Byte, Type_Utf8, Type_Bool: return true
+    }
+    return false
+}
+
 // ---------------------------------------------------------------------------
 // Value match codegen (match on integers, enum values, etc.)
 // ---------------------------------------------------------------------------
 
+// The arms' tests come first, a chain of compares, each false edge to the next
+// test — the last's to the else arm or, the arms covering every variant, to a
+// failure; then the arms' bodies in order.
 gen_value_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
     // Evaluate the subject expression
     subj_val := gen_expr(g, s.subject)
@@ -163,63 +196,40 @@ gen_value_match :: proc(g: ^Codegen, s: ^Stmt_Match) {
     real_arm_count := len(s.arms)
     if has_else { real_arm_count -= 1 }
 
-    else_label := end_label
-
-    // Save variable state — arm-local variables must not leak across arms
-    vm_snap := save_var_scope(g)
-
-    // For each real arm, generate: compare, branch to body or next check
     arm_body_labels: [dynamic]string
-    arm_next_labels: [dynamic]string
     for i in 0..<real_arm_count {
         append(&arm_body_labels, fresh_label(g, fmt.tprintf("match.body.%d", i)))
-        if i < real_arm_count - 1 {
-            append(&arm_next_labels, fresh_label(g, fmt.tprintf("match.next.%d", i)))
-        } else {
-            // Last real arm's false branch: go to else or end
-            if has_else {
-                else_label = fresh_label(g, "match.else")
-                append(&arm_next_labels, else_label)
-            } else {
-                append(&arm_next_labels, end_label)
-            }
-        }
     }
+    last_label := fresh_label(g, "match.else" if has_else else "match.fail")
 
-    // Edge case: else as only arm — unconditional branch
-    if real_arm_count == 0 && has_else {
-        else_label = fresh_label(g, "match.else")
-        emit_br(g, else_label)
-    }
-
-    // Emit comparison chain for real arms
+    // The tests.
+    if real_arm_count == 0 { emit_br(g, last_label) }
     for i in 0..<real_arm_count {
         arm := s.arms[i]
+        next := last_label
+        if i < real_arm_count - 1 { next = fresh_label(g, fmt.tprintf("match.next.%d", i)) }
         // Variant arms have their tag value resolved by the type checker
         arm_val := arm.variant != "" ? fmt.tprintf("%d", arm.resolved_tag) : gen_expr(g, arm.value)
         cmp := fresh_tmp(g)
         emit(g, "  %s = icmp eq %s %s, %s", cmp, subj_type, subj_val, arm_val)
-        emit_cond_br(g, cmp, arm_body_labels[i], arm_next_labels[i])
-
-        // Emit arm body block
-        emit_label(g, arm_body_labels[i])
-        gen_body_block(g, arm.body[:], .Match_Arm, end_label)
-
-        // Restore variable state after each arm
-        restore_var_scope(g, &vm_snap)
-
-        // Start next comparison block (unless this was the last real arm)
-        if i < real_arm_count - 1 {
-            emit_label(g, arm_next_labels[i])
-        }
+        emit_cond_br(g, cmp, arm_body_labels[i], next)
+        if i < real_arm_count - 1 { emit_label(g, next) }
+    }
+    if !has_else {
+        emit_label(g, last_label)
+        emit_match_fail(g, s.span, subj_val, subj_type, match_value_unsigned(expr_type(s.subject)))
     }
 
-    // Emit else arm body if present
+    // The bodies. Arm-local variables must not leak across arms.
+    vm_snap := save_var_scope(g)
+    for i in 0..<real_arm_count {
+        emit_label(g, arm_body_labels[i])
+        gen_body_block(g, s.arms[i].body[:], .Match_Arm, end_label)
+        restore_var_scope(g, &vm_snap)
+    }
     if has_else {
-        else_arm := s.arms[len(s.arms) - 1]
-        emit_label(g, else_label)
-        gen_body_block(g, else_arm.body[:], .Match_Arm, end_label)
-        // Restore after else arm
+        emit_label(g, last_label)
+        gen_body_block(g, s.arms[len(s.arms) - 1].body[:], .Match_Arm, end_label)
         restore_var_scope(g, &vm_snap)
     }
 
