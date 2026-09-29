@@ -5665,6 +5665,11 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
         // built at its use's type.
         _, to_array := distinct_base(to).(^Type_Fixed_Array)
         sl, is_slice := e.(^Expr_Slice)
+        if to_array && fuse_byte_index(e) && r.place {
+            // That many bytes at the index, seen as the array, copied.
+            graph_fuse_view(b, r.v, to, e.(^Expr_Index).is_big_endian, span)
+            return graph_fuse_view_temp(b, r.v, to, span)
+        }
         if to_array && (fuse_byte_index(e) || is_slice && is_byte_buffer(expr_type(sl.expr))) || is_literal && graph_aggregate(to) {
             fuse_fail(c, "bytes or a literal at its use's type")
             return NO_VALUE
@@ -9243,7 +9248,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     ix.type_ = index_elem_type(target_type)   // the target names one element
     base := coll.v
     if b := fusing(c); b != nil {
-        if is_byte_buffer(coll_type) { fuse_fail(c, "bytes written as another type") }
+
         if pt, is_ptr := target_type.(^Type_Ptr); is_ptr {
             base = graph_op_value(b, .Deref, .Implied, ix.span, pt.elem, "", coll.v)
         }
@@ -9267,7 +9272,10 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     } else if sl, ok := target_type.(^Type_Slice); ok {
         if _, is_byte := sl.elem.(Type_Byte); !is_byte { c.expected_hint = sl.elem }
     }
-    val_type := fuse_store(c, s, place, env)
+    // (Into bytes, the value is written as the type the checker finds it
+    // is, below: the element's place is then a view of that.)
+    val_type, fs := fuse_store_value(c, s, place, env)
+    defer fuse_store_write(c, s, &fs, s.target_type, s.assign_value_type if is_byte_buffer(coll_type) else nil, ix.is_big_endian)
 
     if !is_numeric(idx_type) && !is_any(idx_type) {
         check_error(c, s.span, TYPE_ARRAY_INDEX_NUMBER, type_name(idx_type))
@@ -11325,8 +11333,20 @@ fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span
         return
     }
     if d.type_ != nil && byte_flow(d.type_, e, t) == .Read {
-        fuse_fail(c, "bytes read as another type")
-        return
+        // An element of bytes: its place, a view of the bytes as the
+        // destination's type, read. (Into a slice, a partial array, or from
+        // a span, a byte read: the builder's.)
+        _, into_slice := distinct_base(dt).(^Type_Slice)
+        _, is_index := e.(^Expr_Index)
+        if !is_index || !r.place || into_slice || is_partial_array(dt) {
+            fuse_fail(c, "bytes read as another type")
+            return
+        }
+        ix := e.(^Expr_Index)
+        graph_fuse_view(b, r.v, dt, ix.is_big_endian, span)
+        val := graph_read(b, r.v, dt, span)   // (the read, then the place)
+        graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
+        return true
     }
     val := graph_fuse_widen(b, fuse_value(c, r, e, t), span, {to = dt, settle_to = settle})
     graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
@@ -12229,42 +12249,40 @@ fuse_index_value :: proc(b: ^Graph_Builder, at: Operand, t: Type, span: Span) ->
 // A store's value into the place its target's check built (graph_assign):
 // checked, then — a view where one is taken, else at the place's type —
 // written. A compound `t op= x` reads the target through that place.
+Fuse_Store :: struct {
+    on:    bool,
+    place: Operand,
+    value: Fused,
+    vt:    Type,
+}
+
 fuse_store :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scope) -> Type {
+    vt, fs := fuse_store_value(c, s, place, env)
+    fuse_store_write(c, s, &fs, fusing(c).g.type_[place.op] if fs.on && fusing(c) != nil else nil)
+    return vt
+}
+
+fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scope) -> (Type, Fuse_Store) {
     b := fusing(c)
-    if b == nil || place == NO_VALUE { return check_expr(c, s.value, env) }
+    if b == nil || place == NO_VALUE { return check_expr(c, s.value, env), {} }
     saved := c.compound
     if s.is_compound { c.compound = {expr_identity(s.target), place} }
     vt, r := fuse_expr(c, s.value, env, .Either)
     c.compound = saved
-    if fusing(c) == nil { return vt }
-    pt := b.g.type_[place.op]
+    return vt, {true, place, r, vt}
+}
+
+// The write, `dt` its target's type (the checker's); `view` the type bytes
+// are written as (the target's place is then a view of them).
+fuse_store_write :: proc(c: ^Checker, s: ^Stmt_Assign, fs: ^Fuse_Store, dt: Type, view: Type = nil, big := false) {
+    b := fusing(c)
+    if b == nil || !fs.on { return }
     if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip || is_void_literal(s.value) {
         fuse_fail(c, "a place written void")
-        return vt
+        return
     }
-    if fuse_builds_into(s.value) {
-        fuse_fail(c, "a value built in place")
-        return vt
-    }
-    _, to_ptr := distinct_base(pt).(^Type_Ptr)
-    _, from_ptr := distinct_base(vt).(^Type_Ptr)
-    if to_ptr == from_ptr && graph_header_of(pt) && graph_partial_of(vt) {
-        graph_fuse_write_at(b, place, graph_op_value(b, .Cast, .Implied, s.span, pt, type_name(pt), fuse_value(c, r, s.value, vt)), s.span)
-        return vt
-    }
-    _, to_slice := distinct_base(pt).(^Type_Slice)
-    _, from_array := distinct_base(vt).(^Type_Fixed_Array)
-    if to_slice && from_array {
-        if _, is_literal := s.value.(^Expr_Array); is_literal || !r.place {
-            fuse_fail(c, "a slice of an array value")
-            return vt
-        }
-        graph_fuse_write_at(b, place, graph_op_value(b, .Slice, .Implied, s.span, pt, "", r.v), s.span)
-        return vt
-    }
-    val := graph_fuse_widen(b, fuse_value(c, r, s.value, vt), s.span, {to = pt, settle_to = true})
-    graph_fuse_write_at(b, place, val, s.span)
-    return vt
+    if view != nil { graph_fuse_view(b, fs.place, view, big, s.span) }
+    fuse_store_finish(c, s.value, fs.vt, fs.value, Dest{kind = .At, at = fs.place, type_ = dt}, s.span, settle = true)
 }
 
 check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope, ff: ^Fuse_Field) -> Type {
@@ -14473,8 +14491,10 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope) -> Type {
     fi := Fuse_Index{w = w}
     t := check_index_impl(c, e, env, &fi)
     if fusing(c) == nil { return t }
-    if is_byte_buffer(expr_type(e.expr)) {
-        fuse_fail(c, "an index into bytes")
+    // (A byte, as it is: a use of it as another type sees the element's
+    // place as a view — graph_fuse_view.)
+    if _, of_byte := distinct_base(t).(Type_Byte); !of_byte && t != nil && !is_infer(t) && is_byte_buffer(expr_type(e.expr)) {
+        fuse_fail(c, "bytes indexed as another type")
         return t
     }
     p := graph_op_value(b, .Index, .Explicit, e.span, t, "", fi.base, fi.index)

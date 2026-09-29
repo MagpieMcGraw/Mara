@@ -3776,6 +3776,32 @@ graph_fuse_indirect :: proc(b: ^Graph_Builder, name: string, fn_value: Type, t: 
     return graph_op_value(b, .Call, w, span, t, name, ..ops[:])
 }
 
+// Bytes indexed, seen as another type once the use of them says which
+// (graph_view_place): the element's place, built, is that view — the same
+// operands, the bytes at the index.
+graph_fuse_view :: proc(b: ^Graph_Builder, place: Operand, t: Type, big: bool, span: Span) {
+    id := place.op
+    b.g.op[id], b.g.type_[id], b.g.origin[id] = .View, t, span
+    b.g.name[id] = "#big_endian" if big else ""
+    // (Its base's implied dereference and its offset's widening are the
+    // view's, where it is.)
+    // (Its operands end where the next node's begin — or, the newest, now.)
+    end := int(b.g.operand_first[id + 1]) if int(id) + 1 < b.nodes else len(b.g.operands)
+    ops := b.g.operands[b.g.operand_first[id]:end]
+    for o, k in ops {
+        if o.op == NO_NODE || b.g.written[o.op] != .Implied { continue }
+        if k == 0 && b.g.op[o.op] == .Deref || k == 1 && b.g.op[o.op] == .Cast { b.g.origin[o.op] = span }
+    }
+}
+
+// Bytes taken as an array (graph_value_as): their view, copied into a
+// temporary, read.
+graph_fuse_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Span) -> Operand {
+    slot := graph_slot(b, "temp", t, span)
+    graph_op(b, .Write, .Implied, span, nil, "", graph_var(b, "temp", slot, t, span), graph_read(b, view, t, span))
+    return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
+}
+
 // A value written to a place already built.
 graph_fuse_write_at :: proc(b: ^Graph_Builder, place, v: Operand, span: Span) {
     graph_op(b, .Write, .Explicit, span, nil, "", place, v)
