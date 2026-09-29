@@ -559,7 +559,19 @@ evaluates its destination and value); how instructions are chosen stays in the e
       theirs) is that constant — the new emitter holds such a value, e.g. a loop's index
       when a `break` ends every pass; a store the next overwrites is found by address text,
       computed up front. Still declined: `= void` on an aggregate, a big temporary (a
-      call's result on the arena), a defer block entered at a loop's head
+      call's result on the arena), a defer block entered at a loop's head. Found after,
+      memory-safety holes in both emitters' byte bounds, now one rule
+      (`emit_byte_span_outside`: n elements of a size at offset off lie within cap when
+      off <= cap and n <= (cap - off) / size, unsigned — a negative offset or count is
+      outside, and nothing multiplies or adds before the check): a partial array filled
+      from bytes never checked its source (a `[..4096]u16` from a 16-byte buffer copied
+      8 KB past it; `test/byte_fill_bounds.mara`); a typed byte view took `off + size >
+      cap`, which let `bytes[-1]` read and write the 4 bytes before the buffer
+      (`test/byte_view_negative.mara`); a carve took `cursor + n * size > cap`, signed, so
+      a negative n moved the cursor back under a live carve and a huge one's product
+      wrapped small (`test/byte_carve_count.mara`; its message now says what was asked).
+      And the big-variable decline didn't skip nested funs (Pounce's TTF declined for
+      `loca_correct_format`'s big local)
 - [ ] Calls: foreign ABI, function values, default and tuple-default arguments, multi-return,
       `?`, fallible constructors
 - [ ] Switch over: every function from the graph; the syntax-tree emitter deleted

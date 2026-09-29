@@ -1259,25 +1259,21 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
             // Bytes to view depends on the form. For `let(T, ...)` it's
             // sizeof(T). For `slice([:n]T, ...)` it's n * sizeof(elem).
             t_size := elem_byte_size(llvm_type_from_checker(e.resolved_type), g.checked)
-            bytes_str := fmt.tprintf("%d", t_size)
             count_runtime := ""
             elem_size := t_size
             if take_count(e) != nil {
-                // Slice form: compute count * sizeof(elem) at runtime.
+                // Slice form: a runtime count of elements.
                 sl, _ := distinct_base(e.resolved_type).(^Type_Slice)
                 elem_ir := llvm_type_from_checker(sl.elem)
                 elem_size = elem_byte_size(elem_ir, g.checked)
                 count_runtime = gen_int_at_slice_width(g, take_count(e))
-                bytes_tmp := fresh_tmp(g)
-                emit(g, "  %s = mul %s %s, %d", bytes_tmp, w, count_runtime, elem_size)
-                bytes_str = bytes_tmp
             }
             if un, un_ok := e.storage.(^Expr_Unary); un_ok && un.op == .Ampersand {
                 if idx, idx_ok := un.operand.(^Expr_Index); idx_ok {
                     elem_ptr := ""
                     ok2 := false
                     if take_count(e) != nil {
-                        elem_ptr, ok2 = emit_byte_offset_ptr_runtime(g, idx.expr, idx.index, bytes_str, "slice", idx.span)
+                        elem_ptr, ok2 = emit_byte_offset_ptr_runtime(g, idx.expr, idx.index, count_runtime, elem_size, "slice", idx.span)
                     } else {
                         elem_ptr, ok2 = emit_byte_offset_ptr(g, idx.expr, idx.index, t_size, "view", idx.span)
                     }
@@ -1408,19 +1404,27 @@ gen_expr_take :: proc(g: ^Codegen, e: ^Expr_Take, dest_hdr: string = "") -> stri
     emit_slice_gep(g, cap_gep, sv.alloca, SLICE.cap)
     cap_val := fresh_tmp(g)
     emit_typed_load_cap(g, cap_val, cap_gep)
-    overflow := fresh_tmp(g)
-    emit(g, "  %s = icmp sgt %s %s, %s", overflow, w, new_len, cap_val)
+    // (Its count of elements, or its one value, in the room past the aligned
+    // cursor: emit_byte_span_outside — a negative count is outside.)
+    overflow := ""
+    if take_count(e) != nil {
+        overflow = emit_byte_span_outside(g, aligned_cursor, count_runtime, cap_val, elem_size)
+    } else {
+        overflow = emit_byte_span_outside(g, aligned_cursor, advance_amount, cap_val)
+    }
     fail_label := fresh_label(g, "take.fail")
     ok_label := fresh_label(g, "take.ok")
     emit_cond_br(g, overflow, fail_label, ok_label)
     emit_label(g, fail_label)
     loc := format_location(e.span.file, e.span.line, e.span.col)
-    msg := fmt.tprintf("%s runtime error: take overflows storage: advance to %%d exceeds cap %%d for '%s'\n",
-        loc, name)
+    // What was asked for, as asked (the advance itself may have wrapped).
+    msg := fmt.tprintf("%s runtime error: take overflows storage: %%lld of %d bytes at %%lld exceed cap %%lld for '%s'\n",
+        loc, elem_size, name)
     msg_global, msg_byte_len := get_string_literal(g, msg)
     msg_ptr := fresh_tmp(g)
     emit_string_gep(g, msg_ptr, msg_byte_len, msg_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", msg_ptr, w, new_len, w, cap_val)
+    asked := count_runtime if take_count(e) != nil else "1"
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", msg_ptr, w, asked, w, aligned_cursor, w, cap_val)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, ok_label)
@@ -2012,9 +2016,9 @@ emit_byte_offset_ptr :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, siz
 }
 
 // Runtime-sized variant of emit_byte_offset_ptr. Used by `slice([:n]T, &buf[off])`
-// where the carved region's size is `n * sizeof(elem)` — a runtime SSA value,
-// not a compile-time constant.
-emit_byte_offset_ptr_runtime :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, byte_count_ssa: string, label: string, span: Span) -> (elem_ptr: string, ok: bool) {
+// where the carved region is `count` elements of `size` bytes — a runtime
+// count, checked before anything multiplies it (a huge one's product wraps).
+emit_byte_offset_ptr_runtime :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: Expr, count: string, size: int, label: string, span: Span) -> (elem_ptr: string, ok: bool) {
     data_ptr, cap_val, resolved := resolve_byte_target(g, buf_expr, span)
     if !resolved { return "", false }
 
@@ -2023,19 +2027,18 @@ emit_byte_offset_ptr_runtime :: proc(g: ^Codegen, buf_expr: Expr, offset_expr: E
     if offset_expr != nil {
         offset = gen_int_at_slice_width(g, offset_expr)  // widen narrower offsets to header width
     }
-    end_offset := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, %s", end_offset, w, offset, byte_count_ssa)
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
-    cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp ugt %s %s, %s", cmp, w, end_offset, cap_val)
+    cmp := emit_byte_span_outside(g, offset, count, cap_val, size)
     emit_cond_br(g, cmp, err_lbl, ok_lbl)
     emit_label(g, err_lbl)
-    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%d + %%d > capacity %%d\n", label)
+    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %%lld > capacity %%lld\n", label)
     err_name, err_len := get_string_literal(g, err_msg)
     err_ptr := fresh_tmp(g)
     emit_string_gep(g, err_ptr, err_len, err_name)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", err_ptr, w, offset, w, byte_count_ssa, w, cap_val)
+    bytes := fresh_tmp(g)
+    emit(g, "  %s = mul %s %s, %d", bytes, w, count, size)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", err_ptr, w, offset, w, bytes, w, cap_val)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, ok_lbl)
@@ -2056,20 +2059,41 @@ gen_byte_view_address :: proc(g: ^Codegen, idx: ^Expr_Index, target_size: int) -
     return elem_ptr
 }
 
+// Whether n elements of `size` bytes at byte offset off fall outside a
+// buffer of cap_val bytes: off past the cap, or n more than fit in the room
+// after it. Compared unsigned, a negative offset or count is outside too,
+// and nothing wraps — no `off + n * size`, which let -1 + 4 through and a
+// huge count's product wrap small. All at slice_layout.len_ir. The i1 is
+// true when outside.
+emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: string, size := 1) -> string {
+    w := slice_layout.len_ir
+    past := fresh_tmp(g)
+    emit(g, "  %s = icmp ugt %s %s, %s", past, w, off, cap_val)
+    room := fresh_tmp(g)
+    emit(g, "  %s = sub %s %s, %s", room, w, cap_val, off)
+    if size > 1 {
+        fits := fresh_tmp(g)
+        emit(g, "  %s = udiv %s %s, %d", fits, w, room, size)
+        room = fits
+    }
+    over := fresh_tmp(g)
+    emit(g, "  %s = icmp ugt %s %s, %s", over, w, n, room)
+    outside := fresh_tmp(g)
+    emit(g, "  %s = or i1 %s, %s", outside, past, over)
+    return outside
+}
+
 // Bounds check for byte-buffer access at offset [low, low+size). Operates
 // at slice_layout.len_ir — caller has already normalised low and cap_val
 // to that width via emit_byte_offset_ptr / resolve_byte_target.
 emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string) {
     w := slice_layout.len_ir
-    end_offset := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, %d", end_offset, w, low, size)
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
-    cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp ugt %s %s, %s", cmp, w, end_offset, cap_val)
+    cmp := emit_byte_span_outside(g, low, fmt.tprintf("%d", size), cap_val)
     emit_cond_br(g, cmp, err_lbl, ok_lbl)
     emit_label(g, err_lbl)
-    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%d + %d > capacity %%d\n", label, size)
+    err_msg := fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", label, size)
     err_name, err_len := get_string_literal(g, err_msg)
     err_ptr := fresh_tmp(g)
     emit_string_gep(g, err_ptr, err_len, err_name)
@@ -2221,13 +2245,10 @@ gen_byte_target_read_span :: proc(g: ^Codegen, name: string, buf_expr: Expr, low
     span_ssa := fresh_tmp(g)
     emit(g, "  %s = sub %s %s, %s", span_ssa, w, high, low)
 
-    // Source bound: low + span <= cap.
-    end_off := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, %s", end_off, w, low, span_ssa)
+    // Source bound: the span within the buffer.
     src_ok := fresh_label(g, "span.src.ok")
     src_err := fresh_label(g, "span.src.err")
-    src_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp ugt %s %s, %s", src_cmp, w, end_off, cap_val)
+    src_cmp := emit_byte_span_outside(g, low, span_ssa, cap_val)
     emit_cond_br(g, src_cmp, src_err, src_ok)
     emit_label(g, src_err)
     src_global, src_len := get_string_literal(g, fmt.tprintf("<%s> runtime error: sized read runs past the source buffer\n", loc))
@@ -2778,7 +2799,7 @@ gen_partial_array_byte_fill_at :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_
     src_bytes := fresh_tmp(g)
     emit(g, "  %s = sub %s %s, %s", src_bytes, w, src_high, src_low)
 
-    gen_partial_array_byte_fill_at_core(g, slot_ptr, pa, src_data_ptr, src_low, src_bytes, sl_expr.is_big_endian, span)
+    gen_partial_array_byte_fill_at_core(g, slot_ptr, pa, src_data_ptr, src_cap, src_low, src_bytes, sl_expr.is_big_endian, span)
 }
 
 // Convenience entry: byte-fill from an Expr_Index source. The static cap is
@@ -2791,13 +2812,13 @@ gen_partial_array_byte_fill_at_from_index :: proc(g: ^Codegen, slot_ptr: string,
     // The offset first, then the buffer.
     src_low := "0"
     if idx_expr.index != nil { src_low = gen_int_at_slice_width(g, idx_expr.index) }
-    src_data_ptr, _, resolved := resolve_byte_target(g, idx_expr.expr, span)
+    src_data_ptr, src_cap, resolved := resolve_byte_target(g, idx_expr.expr, span)
     if !resolved {
         codegen_fatal(g, span, CODE_BYTE_BUFFER_READ_SOURCE_BYTE)
     }
     elem_bytes := elem_byte_size(llvm_type_from_checker(pa.elem), g.checked)
     src_bytes := fmt.tprintf("%d", pa.size * elem_bytes)
-    gen_partial_array_byte_fill_at_core(g, slot_ptr, pa, src_data_ptr, src_low, src_bytes, idx_expr.is_big_endian, span)
+    gen_partial_array_byte_fill_at_core(g, slot_ptr, pa, src_data_ptr, src_cap, src_low, src_bytes, idx_expr.is_big_endian, span)
 }
 
 // Initialize a partial-array slot in place AND populate its inline elements
@@ -2805,12 +2826,13 @@ gen_partial_array_byte_fill_at_from_index :: proc(g: ^Codegen, slot_ptr: string,
 // `alloca`) and the field-assign path (slot_ptr is the field's GEP).
 // Handles the header init (.ptr → elements, .len = count, .cap = N), the
 // byte-span memcpy into the elements area, and optional `#big_endian`
-// per-element bswap. Runtime checks: source bytes is divisible by elem
+// per-element bswap. Runtime checks: the span lies within the source's
+// src_cap bytes (it read past them), source bytes is divisible by elem
 // size, and produces count <= cap. The slice-range inverted-bounds check
 // lives in the Expr_Slice entry — the Expr_Index entry uses a static byte
 // count that can't be negative.
 gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array,
-                                             src_data_ptr, src_low, src_bytes: string,
+                                             src_data_ptr, src_cap, src_low, src_bytes: string,
                                              is_big_endian: bool, span: Span) {
     elem_t := llvm_type_from_checker(pa.elem)
     cap_n := pa.size
@@ -2833,6 +2855,19 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^
     emit_typed_store_cap(g, fmt.tprintf("%d", alloc_cap), cap_gep)
 
     w := slice_layout.len_ir
+
+    // Runtime check 0: the span within the source buffer.
+    src_ok := fresh_label(g, "byte.view.ok")
+    src_err := fresh_label(g, "byte.view.err")
+    emit_cond_br(g, emit_byte_span_outside(g, src_low, src_bytes, src_cap), src_err, src_ok)
+    emit_label(g, src_err)
+    src_global, src_len := get_string_literal(g, "runtime error: byte buffer view out of bounds: offset %lld + %lld > capacity %lld\n")
+    src_msg := fresh_tmp(g)
+    emit_string_gep(g, src_msg, src_len, src_global)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", src_msg, w, src_low, w, src_bytes, w, src_cap)
+    emit(g, "  call void @exit(i32 1)")
+    emit(g, "  unreachable")
+    emit_label(g, src_ok)
 
     // Runtime check 1: src_bytes % elem_bytes == 0.
     rem := fresh_tmp(g)

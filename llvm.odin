@@ -177,6 +177,9 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     // A big variable lives on the arena, or in the caller's slot (a big
     // temporary: later).
     for id := e.node + 1; id <= e.pg.last[e.node]; id += 1 {
+        #partial switch e.pg.kind[id] {
+        case .Fun, .Struct, .Union, .Enum: id = e.pg.last[id]; continue   // (another scope's)
+        }
         if e.pg.kind[id] != .Local || !routes_to_arena(e.pg.type_[id]) || id in e.arena { continue }
         if e.value[id - e.node] != "%sret" { e.why = id; return false }
     }
@@ -1651,7 +1654,7 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
         bytes = fresh_tmp(g)
         emit(g, "  %s = sub %s %s, %s", bytes, w, hi, lo)
     }
-    gen_partial_array_byte_fill_at_core(g, e.value[dest - e.node], pa, data, lo, bytes, pg.name[op] == "#big_endian", span)
+    gen_partial_array_byte_fill_at_core(g, e.value[dest - e.node], pa, data, bound, lo, bytes, pg.name[op] == "#big_endian", span)
     return true
 }
 
@@ -1677,11 +1680,8 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     size := checker_type_byte_size(t)
     n := fresh_tmp(g)
     emit(g, "  %s = sub %s %s, %s", n, w, hi, lo)
-    end := fresh_tmp(g)
-    emit(g, "  %s = add %s %s, %s", end, w, lo, n)
     src_ok, src_err := fresh_label(g, "span.src.ok"), fresh_label(g, "span.src.err")
-    src_cmp := fresh_tmp(g)
-    emit(g, "  %s = icmp ugt %s %s, %s", src_cmp, w, end, bound)
+    src_cmp := emit_byte_span_outside(g, lo, n, bound)
     emit_cond_br(g, src_cmp, src_err, src_ok)
     emit_label(g, src_err)
     src_global, src_len := get_string_literal(g, fmt.tprintf("<%s> runtime error: sized read runs past the source buffer\n", loc))
@@ -1818,18 +1818,26 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     emit_slice_gep(g, cap_gep, hdr, SLICE.cap)
     cap_val := fresh_tmp(g)
     emit_typed_load_cap(g, cap_val, cap_gep)
-    over := fresh_tmp(g)
-    emit(g, "  %s = icmp sgt %s %s, %s", over, w, moved, cap_val)
+    // (Its count of elements, or its one value, in the room past the aligned
+    // cursor: a negative count is outside.)
+    over := ""
+    if let {
+        over = emit_byte_span_outside(g, cursor, advance, cap_val)
+    } else {
+        over = emit_byte_span_outside(g, cursor, count, cap_val, size)
+    }
     fail, ok := fresh_label(g, "take.fail"), fresh_label(g, "take.ok")
     emit_cond_br(g, over, fail, ok)
     emit_label(g, fail)
     loc := format_location(span.file, span.line, span.col)
     name := graph_place_name(pg, ops[0])
-    msg := fmt.tprintf("%s runtime error: take overflows storage: advance to %%d exceeds cap %%d for '%s'\n", loc, name)
+    // What was asked for, as asked (the advance itself may have wrapped).
+    msg := fmt.tprintf("%s runtime error: take overflows storage: %%lld of %d bytes at %%lld exceed cap %%lld for '%s'\n", loc, size, name)
     msg_global, msg_len := get_string_literal(g, msg)
     msg_ptr := fresh_tmp(g)
     emit_string_gep(g, msg_ptr, msg_len, msg_global)
-    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s)", msg_ptr, w, moved, w, cap_val)
+    asked := "1" if let else count
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, %s %s, %s %s, %s %s)", msg_ptr, w, asked, w, cursor, w, cap_val)
     emit(g, "  call void @exit(i32 1)")
     emit(g, "  unreachable")
     emit_label(g, ok)

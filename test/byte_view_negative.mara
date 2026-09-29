@@ -1,0 +1,18 @@
+module byte_view_negative
+
+// A byte view at a negative offset is out of bounds. The check was
+// `off + size > cap`, unsigned, which let -1 + 4 = 3 through: a u32 read
+// or written at bytes[-1], the 4 bytes before the buffer. Now: off <= cap
+// and size <= cap - off, unsigned (a negative offset is past any cap).
+// Ends at the failure (the run differential compares it).
+
+main :: fun() {
+	bytes : [..16]byte
+	bytes.len = 8
+	bytes[4] = u32(7)
+	x : u32 = bytes[4]
+	print("in bounds:", x)
+	at := 0 - 1
+	y : u32 = bytes[at]
+	print("unreached", y)
+}

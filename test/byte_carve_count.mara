@@ -1,0 +1,22 @@
+module byte_carve_count
+
+// A carve's count, `slice([:n]T, mem)`, must fit in the room past mem's
+// cursor. The check was `cursor + n * size > cap`, signed: a negative n
+// moved the cursor back (the next carve overlapping a live one) and gave a
+// slice of length n, and a huge n's product wrapped small. Now: n <= (cap -
+// cursor) / size, unsigned, before anything multiplies it. Ends at the
+// failure (the run differential compares it).
+
+carve :: fun(mem: ^[]byte, n: i64) -> i64 {
+	s := slice([:n]i64, mem)
+	return s.len
+}
+
+main :: fun() {
+	storage : [..64]byte
+	buf : []byte = storage
+	a := carve(&buf, 2)
+	print("carved:", a, "cursor", buf.len)
+	b := carve(&buf, 0 - 2)
+	print("unreached", b, buf.len)
+}
