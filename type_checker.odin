@@ -1647,6 +1647,7 @@ Checker :: struct {
     call:            ^Fuse_Call,
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
     byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
+    span_read:       Fuse_Span_Read,   // the span of bytes last built to be read as its destination's type
     table:           ^SymbolTable,
     errors:          int,
     current_package: string,
@@ -5852,44 +5853,6 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         return
     }
     fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, NO_NODE, s.var_type), s.span)
-}
-
-// A value stored in a variable (graph_store, graph_assign): a view where one
-// is taken — a fixed array's place as a slice, a partial array's header as
-// one — else the value at the variable's type; then the write. (What is
-// built in place — a literal, a construction, a variant — and bytes read as
-// another type wait.)
-fuse_store_var :: proc(c: ^Checker, name: string, decl: Node_Id, t: Type, value: Expr, fa: ^Fuse_Assign, span: Span) {
-    b := fusing(c)
-    vt, r := fa.value_type, fa.value
-    keep_prefix := false
-    defer if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, keep_prefix, t) }
-    if fuse_builds_into(value) {
-        fuse_fail(c, "a value built in place")
-        return
-    }
-    _, to_ptr := distinct_base(t).(^Type_Ptr)
-    _, from_ptr := distinct_base(vt).(^Type_Ptr)
-    if to_ptr == from_ptr && graph_header_of(t) && graph_partial_of(vt) {
-        graph_fuse_write_view(b, name, decl, t, graph_op_value(b, .Cast, .Implied, span, t, type_name(t), fuse_value(c, r, value, vt)), span)
-        return
-    }
-    _, to_slice := distinct_base(t).(^Type_Slice)
-    _, from_array := distinct_base(vt).(^Type_Fixed_Array)
-    if to_slice && from_array {
-        if _, is_literal := value.(^Expr_Array); is_literal || !r.place {
-            fuse_fail(c, "a slice of an array value")
-            return
-        }
-        graph_fuse_write_view(b, name, decl, t, graph_op_value(b, .Slice, .Implied, span, t, "", r.v), span)
-        return
-    }
-    if byte_flow(t, value, vt) == .Read {
-        fuse_fail(c, "bytes read as another type")
-        return
-    }
-    keep_prefix = decl != NO_NODE && is_partial_array(t) && graph_fills_prefix(value)
-    graph_fuse_write_var(b, name, decl, t, fuse_value(c, r, value, vt), span)
 }
 
 // What a store builds in place (graph_builds_into): a literal, an array, a
@@ -11630,17 +11593,36 @@ fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span
         graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
         return
     }
-    if d.type_ != nil && byte_flow(d.type_, e, t) == .Read {
+    if sl, is_span := e.(^Expr_Slice); is_span && d.type_ != nil && byte_flow(d.type_, e, t) == .Read {
+        // A span of bytes: its bytes' place and bounds, as its slice built
+        // them; a register value is the bytes at its start seen as it, read,
+        // else a byte read — at the span, where its failures say it is. A
+        // new partial array is zero first.
+        if r.v.op == NO_NODE || r.v.op != c.span_read.op || c.span_read.scalar == graph_aggregate(dt) {
+            fuse_fail(c, "a span of bytes read as another type")
+            return
+        }
+        buf, lo, hi := graph_fuse_span_operands(b, r.v, span)
+        big := "#big_endian" if sl.is_big_endian else ""
+        if c.span_read.scalar {
+            at := graph_fuse_widen(b, lo, span, {to = slice_header_width_type}) if lo != NO_VALUE else graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
+            val := graph_read(b, graph_op_value(b, .View, .Explicit, span, dt, big, buf, at), dt, span)
+            graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
+            return true, false
+        }
+        graph_op(b, .Byte_Read, .Explicit, sl.span, d.type_, big, graph_dest_place(b, d, span), buf, lo, hi)
+        return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
+    }
+    if ix, is_index := e.(^Expr_Index); is_index && d.type_ != nil && byte_flow(d.type_, e, t) == .Read {
         // An element of bytes: its place, a view of the bytes as the
-        // destination's type, read. (Into a slice, a partial array, or from
-        // a span, a byte read: the builder's.)
+        // destination's type, read. (Into a slice or a partial array, a
+        // byte read. Other bytes — a pointer to them — are written as they
+        // are.)
         _, into_slice := distinct_base(dt).(^Type_Slice)
-        _, is_index := e.(^Expr_Index)
-        if !is_index || !r.place {
+        if !r.place {
             fuse_fail(c, "bytes read as another type")
             return
         }
-        ix := e.(^Expr_Index)
         if into_slice || is_partial_array(dt) {
             // Into a slice or a partial array, a byte read: the bytes'
             // place and the index as the builder takes them (the element's
@@ -15067,8 +15049,20 @@ check_index_impl :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope, fi: ^Fus
 // place — a plain place, checked first and built after them (as the builder
 // walks it) — then the slice.
 Fuse_Slice :: struct {
-    w:      Written,
-    lo, hi: Operand,
+    w:       Written,
+    lo, hi:  Operand,
+    read_as: Type,      // (asked into a destination) its type
+    reads:   bool,      // bytes read as that type: built as the store takes them
+    scalar:  bool,      // … a register value: its end unbuilt
+    base:    Operand,
+}
+
+// A span of bytes read as its destination's type (graph_store): the bytes'
+// place, built first, then its bounds as they are (a register value's start
+// only), gathered in a slice the store takes apart (fuse_store_finish).
+Fuse_Span_Read :: struct {
+    op:     Node_Id,
+    scalar: bool,
 }
 
 check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
@@ -15079,9 +15073,16 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
         fuse_fail(c, "a slice's place, or a slice of no plain place")
         return check_slice_impl(c, e, env, nil)
     }
-    fs := Fuse_Slice{w = w, lo = NO_VALUE, hi = NO_VALUE}
+    fs := Fuse_Slice{w = w, lo = NO_VALUE, hi = NO_VALUE, base = NO_VALUE}
+    if want == .Into { fs.read_as = graph_dest_type(b, c.asked_dest) }
     t := check_slice_impl(c, e, env, &fs)
     if fusing(c) == nil { return t }
+    if fs.reads {
+        v := graph_op_value(b, .Slice, w, e.span, t, "", fs.base, fs.lo, fs.hi)
+        c.span_read = {v.op, fs.scalar}
+        fuse_done(c, v)
+        return t
+    }
     fuse_done(c, graph_op_value(b, .Slice, w, e.span, t, "", graph_fuse_base_place(b, e.expr, e.span), fs.lo, fs.hi))
     return t
 }
@@ -15093,11 +15094,12 @@ fuse_carves_place :: proc(e: ^Expr_Take) -> bool {
     return graph_pure_place(e.storage)
 }
 
-// A slice's bound, built: at the header's width.
-fuse_bound :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, w: Written, span: Span) -> (Type, Operand) {
+// A slice's bound, built: at the header's width (as it is, `raw`).
+fuse_bound :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, w: Written, span: Span, raw := false) -> (Type, Operand) {
     t, r := fuse_expr(c, e, env, .Value, w)
     b := fusing(c)
     if b == nil { return t, NO_VALUE }
+    if raw { return t, r.v }
     return t, graph_fuse_widen(b, r.v, span, {to = slice_header_width_type})
 }
 
@@ -15125,12 +15127,19 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
         check_error(c, e.span, TYPE_CANNOT_SLICE, type_name(target_type))
         return Type_Error{}
     }
+    if b := fusing(c); b != nil && fs != nil && fs.read_as != nil && elem_type != nil {
+        probe := Type_Slice{elem = elem_type}
+        if byte_flow(fs.read_as, e, &probe) == .Read {
+            fs.reads, fs.scalar = true, !graph_aggregate(fs.read_as)
+            fs.base = graph_fuse_base_place(b, e.expr, e.span)
+        }
+    }
 
     // Check that low/high are numeric AND match slice header width — codegen
     // does NOT emit an implicit narrow/widen.
     if e.low != nil {
         lt: Type
-        if fs != nil { lt, fs.lo = fuse_bound(c, e.low, env, fs.w, e.span) } else { lt = check_expr(c, e.low, env) }
+        if fs != nil { lt, fs.lo = fuse_bound(c, e.low, env, fs.w, e.span, raw = fs.reads) } else { lt = check_expr(c, e.low, env) }
         if !is_numeric(lt) && !is_any(lt) {
             check_error(c, e.span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
         } else if !coerces_to_slice_width(lt) {
@@ -15140,7 +15149,15 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
     }
     if e.high != nil {
         ht: Type
-        if fs != nil { ht, fs.hi = fuse_bound(c, e.high, env, fs.w, e.span) } else { ht = check_expr(c, e.high, env) }
+        if fs != nil && fs.scalar {
+            f := fuse_suspend(c)   // (unbuilt)
+            ht = check_expr(c, e.high, env)
+            fuse_resume(c, f)
+        } else if fs != nil {
+            ht, fs.hi = fuse_bound(c, e.high, env, fs.w, e.span, raw = fs.reads)
+        } else {
+            ht = check_expr(c, e.high, env)
+        }
         if !is_numeric(ht) && !is_any(ht) {
             check_error(c, e.span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
         } else if !coerces_to_slice_width(ht) {

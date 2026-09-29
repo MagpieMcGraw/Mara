@@ -3763,13 +3763,6 @@ graph_fuse_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
     }
 }
 
-// A value written to a variable (graph_store's last case): at the variable's
-// type, then the write. `decl` is the declaration, when this is its value.
-graph_fuse_write_var :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, val: Operand, span: Span) {
-    v := graph_fuse_widen(b, val, span, {to = t, settle_to = decl != NO_NODE})
-    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, decl, t, span), v)
-}
-
 // `x : T = void` (graph_init) and `x = void` (graph_stmt): the value left
 // uninitialized.
 graph_fuse_void_decl :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Span) {
@@ -3932,6 +3925,18 @@ graph_fuse_byte_operands :: proc(b: ^Graph_Builder, place: Operand, span: Span) 
     graph_drop(b, id, NO_VALUE)
     if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { b.g.origin[buf.op] = span }
     return buf, off
+}
+
+// A span of bytes read (graph_store): of the slice built, its bytes' place
+// (its dereference at the read) and its bounds; the slice left out.
+graph_fuse_span_operands :: proc(b: ^Graph_Builder, slice: Operand, span: Span) -> (buf, lo, hi: Operand) {
+    id := slice.op
+    end := int(b.g.operand_first[id + 1]) if int(id) + 1 < b.nodes else len(b.g.operands)
+    ops := b.g.operands[b.g.operand_first[id]:end]
+    buf, lo, hi = ops[0], ops[1], ops[2]
+    graph_drop(b, id, NO_VALUE)
+    if buf.op != NO_NODE && b.g.op[buf.op] == .Deref && b.g.written[buf.op] == .Implied { b.g.origin[buf.op] = span }
+    return
 }
 
 // Bytes taken as an array (graph_value_as): their view, copied into a
@@ -4166,11 +4171,6 @@ graph_fuse_tuple_get :: proc(b: ^Graph_Builder, key: rawptr) -> (Node_Id, bool) 
 // A value written to a place already built.
 graph_fuse_write_at :: proc(b: ^Graph_Builder, place, v: Operand, span: Span) {
     graph_op(b, .Write, .Explicit, span, nil, "", place, v)
-}
-
-// A view written to a variable, as it is.
-graph_fuse_write_view :: proc(b: ^Graph_Builder, name: string, decl: Node_Id, t: Type, v: Operand, span: Span) {
-    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, decl, t, span), v)
 }
 
 // A loop (graph_for), built around its checks: its block, the loop's
