@@ -3808,6 +3808,42 @@ graph_fuse_base_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand
     return graph_base_place(b, e, span)
 }
 
+// A destructure of a call's outputs (graph_destructure): the names it
+// declares made before the call (typed once checked), then each output
+// written to its name, or to its target's place, in turn.
+Graph_Destructure :: struct {
+    on:    bool,
+    decls: []Node_Id,
+    call:  Operand,
+    place: Operand,   // the target of the output being written
+}
+
+graph_fuse_destructure :: proc(b: ^Graph_Builder, v: ^Stmt_Multi_Return_Assign) -> Graph_Destructure {
+    mr := Graph_Destructure{on = true, decls = make([]Node_Id, len(v.names), context.temp_allocator)}
+    for name, i in v.names {
+        mr.decls[i] = NO_NODE
+        if !v.is_decl || name == "" || name == "_" { continue }
+        if i < len(v.targets) && v.targets[i] != nil { continue }   // an lvalue stores
+        mr.decls[i] = graph_decl(b, {kind = .Local}, b.code.block, name, nil, v.span)
+    }
+    return mr
+}
+
+graph_fuse_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure, v: ^Stmt_Multi_Return_Assign, i: int) {
+    name := v.names[i]
+    target := i < len(v.targets) && v.targets[i] != nil
+    if name == "_" || name == "" && !target { return }
+    val := mr.call
+    if i > 0 { val = {graph_outputs_op(b, v.values[0], mr.call), i32(i)} }
+    dest := mr.place
+    if !target {
+        t: Type = v.var_types[i] if i < len(v.var_types) else nil
+        if mr.decls[i] != NO_NODE { graph_fuse_typed(b, mr.decls[i], t) }
+        dest = graph_var(b, name, mr.decls[i], t, v.span)
+    }
+    graph_op(b, .Write, .Explicit, v.span, nil, "", dest, val)
+}
+
 // A value written to a place already built.
 graph_fuse_write_at :: proc(b: ^Graph_Builder, place, v: Operand, span: Span) {
     graph_op(b, .Write, .Explicit, span, nil, "", place, v)

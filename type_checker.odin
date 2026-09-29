@@ -5734,10 +5734,7 @@ fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
     #partial switch v in s {
     case Stmt_Return, Stmt_Call, ^Stmt_If, ^Stmt_For, Stmt_Break, Stmt_Continue:
         return
-    case ^Stmt_Decl:
-        // (`a, b := f()` destructures.)
-        if len(decl_init(v)) != 1 || len(v.names) == 1 { return }
-        fuse_fail(c, "a destructuring declaration")
+    case ^Stmt_Decl, ^Stmt_Multi_Return_Assign:
         return
     case ^Stmt_Assign:
         #partial switch _ in v.target {
@@ -7731,6 +7728,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             register_and_check_declarations(c, inner[:], env, public_env = public_env)
         case ^Stmt_Multi_Return_Assign:
             ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
+            // (Built below: one call's outputs. `?` on it, and values
+            // assigned in parallel, are the builder's.)
+            if len(s.values) != 1 {
+                fuse_fail(c, "a destructure of several values")
+            } else if _, is_try := s.values[0].(^Expr_Try); is_try {
+                fuse_fail(c, "a destructure of a `?`")
+            }
 
             if len(s.values) == 1 {
                 // Detect Expr_Try wrapping a multi-return call: `x, y := foo()?`.
@@ -7789,7 +7793,20 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     }
                 } else {
                     // Single RHS (multi-return call): x, y := call()
-                    val_type := check_expr(c, s.values[0], env)
+                    // Built: the names it declares, the call, then each of
+                    // its outputs written to its name — or its target — in
+                    // turn. (A broadcast of one value is the builder's.)
+                    mr: Graph_Destructure
+                    if b := fusing(c); b != nil {
+                        if _, is_call := s.values[0].(^Expr_Call); is_call {
+                            mr = graph_fuse_destructure(b, s)
+                        } else {
+                            fuse_fail(c, "a broadcast")
+                        }
+                    }
+                    val_type, call := fuse_expr(c, s.values[0], env)
+                    mr.call = call.v
+                    if b := fusing(c); b != nil && mr.on && call_return_list(c, s.values[0], env) == nil { fuse_fail(c, "a broadcast of a call") }
                     // Source the return arity from the resolved fun directly —
                     // there is no tuple value on the frontend. The call must be
                     // an Expr_Call whose callee is a multi-return fun.
@@ -7812,7 +7829,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                     if pname, immut := write_root_immutable_param(s.targets[i], env); immut {
                                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
                                     }
-                                    target_type := check_expr(c, s.targets[i], env)
+                                    target_type, at := fuse_expr(c, s.targets[i], env, .Place)
+                                    mr.place = at.v
                                     if cname, is_const := write_root_constant(c, s.targets[i]); is_const {
                                         check_error(c, s.span, TYPE_CANNOT_WRITE_CONSTANT, cname)
                                     }
@@ -7824,6 +7842,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                     }
                                 }
                                 append(&s.var_types, distinct_base(resolved_type))
+                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i) }
                             }
                         }
                     } else if is_any(val_type) {
