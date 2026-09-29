@@ -3479,6 +3479,9 @@ Graph_Fuse :: struct {
     marks:      [dynamic]Graph_Arena,
     allocs:     [dynamic]Graph_Alloc,
     calls:      [dynamic]Pending_Call,   // named by their callees when the graph is put together
+    // A struct's: each field declaration's lowered assignment, and its field.
+    fields:     map[rawptr]Node_Id,
+    field_inits: map[rawptr]Expr,   // (its initializer as written)
     failed:     string,
 }
 
@@ -3556,6 +3559,8 @@ graph_fuse_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     graph_segment_leave(b, f.outer)
     b.fuse, b.compound = f.outer_fuse, f.compound
     delete(f.stmts)
+    delete(f.fields)
+    delete(f.field_inits)
     if ok {
         b.fused[f.ts] = f.seg
         append(&b.fuses, f)   // settled when the graph is put together
@@ -3714,6 +3719,22 @@ graph_fuse_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
     graph_exit_scopes(b, 0, span)
     graph_op(b, .Return, .Explicit, span, nil, "", ..all[:])
     graph_run_close(b)
+}
+
+// A struct's field declaration (graph_stmt at its field site): its fields,
+// typed as the struct's; each name's lowered assignment stores into its own
+// and is this statement's.
+graph_fuse_fields :: proc(b: ^Graph_Builder, v: ^Stmt_Decl) {
+    f := b.fuse
+    for name, i in v.names {
+        d := graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, v.span)
+        if i < len(v.checked) {
+            key := stmt_key(v.checked[i])
+            f.fields[key] = d
+            f.stmts[key] = b.stmt
+            if inits := decl_init(v); i < len(inits) { f.field_inits[key] = inits[i] }
+        }
+    }
 }
 
 // A local's declaration (graph_decl), before its value: typed once it is
@@ -4526,7 +4547,8 @@ graph_fuse_def :: proc(b: ^Graph_Builder, s: Stmt) {
 graph_fuse_place :: proc(b: ^Graph_Builder, si: int, parent: Node_Id, name: string) {
     graph_anchor_here(b, si)
     graph_segment_place(b, si, parent, b.stmt, name)
-    for d in b.segs[si].defs {
+    defs := b.segs[si].defs[:]   // (placing them grows b.segs)
+    for d in defs {
         sub, saved := graph_segment_enter(b)
         b.segs[si].anchors[d.anchor].seg = sub
         graph_stmt(b, d.s, d.parent, {kind = .Local})

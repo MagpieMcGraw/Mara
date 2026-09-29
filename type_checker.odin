@@ -5635,6 +5635,13 @@ fuse_leaf :: proc(c: ^Checker, e: Expr) {
     case ^Expr_String:
         // Text is its global: its place and its value.
         fuse_done(c, graph_value(b, e, w), want == .Place)
+    case ^Expr_Self:
+        // `#self`: the address of what is being built; Self itself its place.
+        if want == .Place {
+            fuse_done(c, graph_place(b, e, v.span), true)
+        } else {
+            fuse_done(c, graph_value(b, e, w))
+        }
     case ^Expr_Ident:
         // A variable, or a constant table, is a place; the rest are values
         // (a variant is built where it goes).
@@ -5771,6 +5778,14 @@ Fuse_Assign :: struct {
     value_type: Type,
     prefix:     [2]Node_Id,   // a new partial array's zero, made before its value
     prefixed:   bool,
+    field:      bool,         // the declaration is a struct's field
+}
+
+// The node a declaration declares: a struct's field, made with its
+// declaration; else a local, made now.
+fuse_decl_node :: proc(b: ^Graph_Builder, s: ^Stmt_Assign, bound := false) -> (Node_Id, bool) {
+    if d, is_field := b.fuse.fields[rawptr(s)]; is_field { return d, true }
+    return graph_fuse_decl(b, s.name, s.span, bound = bound), false
 }
 
 fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
@@ -5779,7 +5794,16 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
     _, is_skip := s.value.(^Expr_Skip_Constructor)
     if s.is_decl {
         t := s.env_type if s.env_type != nil else s.var_type
+        if fa.field { t = b.g.type_[fa.decl] }   // (a field: its struct's type)
         graph_fuse_typed(b, fa.decl, t)
+        if is_skip && fa.field {
+            // A field's `= void` is its declaration's, as written: the value
+            // stored, unchecked.
+            orig := b.fuse.field_inits[rawptr(s)]
+            val := graph_value(b, orig)
+            graph_fuse_write_at(b, graph_var(b, s.name, fa.decl, t, s.span), val, s.span)
+            return
+        }
         if is_skip {
             graph_fuse_void_decl(b, fa.decl, t, s.span)
             return
@@ -7095,6 +7119,16 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     }
                 }
             }
+            // Built, a struct's own declarations: its fields (typed as the
+            // struct's), each value stored into one; the declaration is one
+            // statement (its lowering's are that one).
+            if b := fusing(c); b != nil && b.fuse.ts.kind == .Struct && b.code.block == b.fuse.root {
+                if inits := decl_init(s); len(inits) == 1 && len(s.names) > 1 {
+                    fuse_fail(c, "a struct's fields from one call")
+                } else {
+                    graph_fuse_fields(b, s)
+                }
+            }
             register_and_check_declarations(c, s.checked[:], env, owner, public_env)
         case ^Stmt_Assign:
             // Complex LHS (field / index / slice / deref): registration is a
@@ -7235,7 +7269,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 fa: Fuse_Assign
                 if b := fusing(c); b != nil {
                     fa.on = true
-                    if s.is_decl { fa.decl = graph_fuse_decl(b, s.name, s.span, bound = take_expr.keyword == "let") }
+                    if s.is_decl { fa.decl, fa.field = fuse_decl_node(b, s, bound = take_expr.keyword == "let") }
                 }
                 defer fuse_assign_end(c, s, &fa)
                 val_type: Type
@@ -7277,7 +7311,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 // Built: the local, then its zero or its construction (a sized
                 // slice's zero takes its capacity).
                 bare := NO_NODE
-                if b := fusing(c); b != nil { bare = graph_fuse_decl(b, s.name, s.span) }
+                field := false
+                if b := fusing(c); b != nil { bare, field = fuse_decl_node(b, s) }
                 // (Large-value stack/arena routing is handled uniformly for
                 // every value kind in check_storage_sizes — Pass 4 of check_scope.)
                 // Function type from named source: auto-initialize to the function itself.
@@ -7311,6 +7346,10 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 if b := fusing(c); b != nil && bare != NO_NODE {
                     if s.value != nil {
                         fuse_fail(c, "a function value's declaration")
+                    } else if field {
+                        // (A field is its struct's type; its capacity is
+                        // the struct's to give.)
+                        graph_fuse_bare(b, bare, b.g.type_[bare], nil, s.span)
                     } else {
                         graph_fuse_typed(b, bare, ann_type)
                         graph_fuse_bare(b, bare, ann_type, cap, s.span)
@@ -7372,7 +7411,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             if b := fusing(c); b != nil {
                 fa.on = true
                 if s.is_decl {
-                    fa.decl = graph_fuse_decl(b, s.name, s.span)
+                    fa.decl, fa.field = fuse_decl_node(b, s)
                     // Text or a slice's elements fill only a prefix of a new
                     // partial array: it is zero first — kept once the value's
                     // type says so. (Declared by its value, it is one only
@@ -8301,6 +8340,8 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     if c.gb != nil && ft.kind == .Fun {
         record_return_bindings(ft, s)   // (its named results are locals)
         f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit)
+    } else if c.gb != nil && ft.kind == .Struct && !ft.is_module && ft != (c.table.funs["Program"] or_else nil) {
+        f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit)   // (its code: its fields' values)
     }
     defer if f != nil { fuse_end(c, f) }
 
@@ -12552,9 +12593,11 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
     }
     obj_type: Type
     if ff != nil {
-        // (A call is only a member's base: its place, a temporary.)
+        // (A call is only a member's base: its place, a temporary; `#self`
+        // names Self.)
         _, of_call := e.expr.(^Expr_Call)
-        obj_type, ff.base = fuse_expr(c, e.expr, env, .Place if of_call else .Either, temp_span = e.span)
+        _, of_self := e.expr.(^Expr_Self)
+        obj_type, ff.base = fuse_expr(c, e.expr, env, .Place if of_call || of_self else .Either, temp_span = e.span)
         ff.base_type = obj_type
     } else {
         obj_type = check_expr(c, e.expr, env)
