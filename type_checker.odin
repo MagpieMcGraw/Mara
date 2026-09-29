@@ -5702,16 +5702,22 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
     b := fusing(c)
     if b == nil { return NO_VALUE }
     if to != nil {
+        _, to_slice := distinct_base(to).(^Type_Slice)
+        _, from_array := distinct_base(t).(^Type_Fixed_Array)
+        _, is_literal := e.(^Expr_Array)
+        // (A literal a slice views, placed at the use — fuse_use_type — is
+        // an array's.)
+        if _, at := fuse_use_type(e, to, span); at != {} && !from_array {
+            fuse_fail(c, "a literal placed at its use, of no array")
+            return NO_VALUE
+        }
         _, to_ptr := distinct_base(to).(^Type_Ptr)
         _, from_ptr := distinct_base(t).(^Type_Ptr)
         if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(t) {
             return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), fuse_value(c, r, e, t))
         }
-        _, to_slice := distinct_base(to).(^Type_Slice)
-        _, from_array := distinct_base(t).(^Type_Fixed_Array)
-        _, is_literal := e.(^Expr_Array)
         if to_slice && from_array {
-            if is_literal || !r.place {
+            if !r.place {
                 fuse_fail(c, "a slice of an array value")
                 return NO_VALUE
             }
@@ -7443,7 +7449,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 // when not written, known once it is).
                 if s.is_decl {
                     at := graph_dest_var(s.name, fa.decl, nil if is_untyped(ann_type) else ann_type)
-                    val_type, fa.value = fuse_expr(c, s.value, env, .Into, dest = at)
+                    val_type, fa.value = fuse_expr(c, s.value, env, .Into, dest = at, temp_span = s.span)
                 } else {
                     // (Into a variable that holds a value: what builds in
                     // place builds in a temporary, then is written.)
@@ -8646,7 +8652,8 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
                     graph_fuse_zero_var(b, text_slot, expected, s.span)
                 }
             }
-            vt, r := fuse_expr(c, val, env, .Either, dest = fuse_use_type(val, expected))
+            use, at := fuse_use_type(val, expected, s.span)
+            vt, r := fuse_expr(c, val, env, .Either, dest = use, temp_span = at)
             if k, folds := graph_constant(val).?; folds && k.is_text && is_partial_array(expected) && !text_pa {
                 fuse_fail(c, "a text constant returned as a partial array")
             }
@@ -11529,8 +11536,9 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
         return check_struct_literal_impl(c, e, env)
     }
     temp := want != .Into || into_temp
-    // (A temporary a use places — `T{}[i]` — at the use's span.)
-    placed := want == .Place && c.asked_span != {}
+    // (A temporary a use places — `T{}[i]`, a slice's view — at the use's
+    // span: its place.)
+    placed := want != .Into && c.asked_span != {}
     at := c.asked_span if into_temp || placed else e.span
     if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
     fl := Fuse_Lit{e = e, dest = d}
@@ -11543,7 +11551,7 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
         fuse_fail(c, "a literal the graph builds no way")
         return t
     }
-    fuse_built(c, b, want, temp, into_temp, d, t, at)
+    fuse_built(c, b, want, temp, into_temp, d, t, at, placed)
     return t
 }
 
@@ -11557,13 +11565,25 @@ fuse_temp_type :: proc(d: Dest) -> Type {
 }
 
 // What a use that takes a value at a type (graph_value_as) asks of it: an
-// array literal is built at that type — a short one's other slots zero.
-fuse_use_type :: proc(e: Expr, t: Type) -> Dest {
-    if _, is_literal := e.(^Expr_Array); is_literal && t != nil && graph_aggregate(t) { return {type_ = t} }
-    return {}
+// array literal is built at that type — a short one's other slots zero; a
+// literal the use views as a slice (graph_view), in a temporary placed at
+// the use's span — an array's at the slice's element type.
+fuse_use_type :: proc(e: Expr, t: Type, span: Span) -> (Dest, Span) {
+    if t == nil { return {}, {} }
+    if sl, to_slice := distinct_base(t).(^Type_Slice); to_slice {
+        #partial switch v in e {
+        case ^Expr_Array:
+            return {type_ = new_clone(Type_Fixed_Array{size = len(v.elements), elem = sl.elem})}, span
+        case ^Expr_Struct_Literal:
+            return {}, span
+        }
+        return {}, {}
+    }
+    if _, is_literal := e.(^Expr_Array); is_literal && graph_aggregate(t) { return {type_ = t}, {} }
+    return {}, {}
 }
 
-fuse_built :: proc(c: ^Checker, b: ^Graph_Builder, want: Fuse_Want, temp, into_temp: bool, d: Dest, t: Type, span: Span) {
+fuse_built :: proc(c: ^Checker, b: ^Graph_Builder, want: Fuse_Want, temp, into_temp: bool, d: Dest, t: Type, span: Span, placed := false) {
     if !temp {
         fuse_done(c, NO_VALUE, into = true)
         return
@@ -11571,8 +11591,8 @@ fuse_built :: proc(c: ^Checker, b: ^Graph_Builder, want: Fuse_Want, temp, into_t
     tt := d.type_ if d.type_ != nil else t
     p := graph_fuse_temp_end(b, d, tt, span)
     switch {
-    case into_temp:      fuse_done(c, graph_read(b, p, tt, span), temp = true)
-    case want == .Place: fuse_done(c, p, true)
+    case into_temp:                fuse_done(c, graph_read(b, p, tt, span), temp = true)
+    case want == .Place || placed: fuse_done(c, p, true)
     case:                fuse_done(c, graph_read(b, p, tt, span))
     }
 }
@@ -11585,15 +11605,16 @@ check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Ty
     b := fusing(c)
     if want == .None || b == nil || len(e.elements) == 0 { return check_array_literal_impl(c, e, env, nil) }
     temp := want != .Into || into_temp
-    // (A temporary a use places — `T{}[i]` — at the use's span.)
-    placed := want == .Place && c.asked_span != {}
+    // (A temporary a use places — `[..][i]`, a slice's view — at the use's
+    // span: its place.)
+    placed := want != .Into && c.asked_span != {}
     at := c.asked_span if into_temp || placed else e.span
     if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
     ga := graph_fuse_array(b, e, d)
     t := check_array_literal_impl(c, e, env, ga)
     if fusing(c) == nil { return t }
     if b.g.type_[ga.zero] == nil { b.g.type_[ga.zero] = t }
-    fuse_built(c, b, want, temp, into_temp, d, t, at)
+    fuse_built(c, b, want, temp, into_temp, d, t, at, placed)
     return t
 }
 
@@ -11602,7 +11623,7 @@ check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Ty
 // destination's type, written. `settle` when the destination's type is a
 // declaration's or a place's (the builder's is settled).
 fuse_store_into :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, d: Dest, span: Span, settle := false) -> Type {
-    t, r := fuse_expr(c, e, env, .Into, dest = d)
+    t, r := fuse_expr(c, e, env, .Into, dest = d, temp_span = span)
     fuse_store_finish(c, e, t, r, d, span, settle)
     return t
 }
@@ -13837,7 +13858,8 @@ check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scop
         pt = sig.params[param].type_
         if arg == sig.params[param].default_value { w = .Implied }   // run at the call, not written there
     }
-    t, r := fuse_expr(c, arg, env, .Either, w, dest = fuse_use_type(arg, pt))
+    use, at := fuse_use_type(arg, pt, span)
+    t, r := fuse_expr(c, arg, env, .Either, w, dest = use, temp_span = at)
     append(&fc.ops, fuse_value_as(c, arg, t, r, pt, span, {sig = sig, param = param}))
     return t
 }
@@ -14765,6 +14787,16 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     if b := fusing(c); b != nil && c.call != nil && want == .Into && into_temp && fun_type.kind == .Struct {
         dest = graph_fuse_temp(b, temp_span, fuse_temp_type(dest))
     }
+    // (A fixed array its destination views as a slice: held in a temporary
+    // made before the arguments, at the store's span — its place, sliced
+    // there — graph_view's.)
+    view_slot := NO_NODE
+    ret := fn_primary_return(fun_type) if fun_type.kind == .Fun else nil
+    if b := fusing(c); b != nil && c.call != nil && want == .Into && e.fn_value == nil && ret != nil {
+        _, to_slice := distinct_base(graph_dest_type(b, dest)).(^Type_Slice)
+        _, from_array := distinct_base(ret).(^Type_Fixed_Array)
+        if to_slice && from_array { view_slot = graph_slot(b, "temp", ret, temp_span) }
+    }
     check_call_args(c, check_args[:], fun_type, call_name(e), e.span, env)
     construct: ^Graph_Literal
     construct_at: Dest
@@ -14779,6 +14811,10 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             } else if e.fn_value != nil {
                 // Through a function value: it, read, is the first operand.
                 fuse_done(c, graph_fuse_indirect(b, call_name(e), e.fn_value, fn_primary_return(fun_type), fc.ops[:], w, e.span))
+            } else if view_slot != NO_NODE {
+                v := Operand{graph_call_op(b, .Call, w, e.span, fun_type, ret, ..fc.ops[:]), 0}
+                graph_fuse_write_at(b, graph_var(b, "temp", view_slot, ret, temp_span), v, temp_span)
+                fuse_done(c, graph_var(b, "temp", view_slot, ret, temp_span), true)
             } else {
                 fuse_done(c, {graph_call_op(b, .Call, w, e.span, fun_type, fn_primary_return(fun_type), ..fc.ops[:]), 0})
             }
