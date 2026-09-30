@@ -84,6 +84,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_literal(k, n, env, want, w, dest, temp, temp_span)
     case .Index:
         return tc_index(k, n, env, want, w)
+    case .Slice:
+        return tc_slice(k, n, env, want, w, dest)
     case .Array:
         return tc_array_literal(k, n, env, want, w, dest, temp, temp_span)
     }

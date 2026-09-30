@@ -137,7 +137,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
         }
     }
     if sd == nil {
-        tc_unsupported(k, target, "a write to a header or swizzle")
+        tc_header_assign(k, s, target, value, bt, br, field, env, op_tok)
         return
     }
     ft := resolve_struct_field(sd, field, k.table)
@@ -410,4 +410,74 @@ tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
 tc_is_broadcast :: proc(k: ^TC, lit: Tree_Id) -> bool {
     entries := tree_list(k.t, k.t.b[lit])
     return len(entries) == 1 && k.t.tag[entries[0]] == .Broadcast
+}
+
+// `s.len = n`, `a.xy = v`: a slice's or partial array's header field, an
+// array's swizzle (through a pointer, what it points at), then the value.
+tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Fused, field: string,
+                         env: ^Type_Scope, op_tok: Token_Id) {
+    span := tree_span(k.t, s)
+    diag := value if op_tok == 0 else 0
+    place := NO_VALUE
+    if tc_building(k) != nil {
+        if ft := fuse_target_field_type(bt, field); ft != nil {
+            place = tc_member_place(k, target, br, bt, ft)
+        } else {
+            tc_fail(k, "a write to an unknown field")
+        }
+    }
+    vt := tc_store_at(k, value, place, env, span, op_tok, target)
+    k.hint = nil
+    obj := bt
+    if pt, is_ptr := obj.(^Type_Ptr); is_ptr {
+        obj = pt.elem
+        if dt, is_distinct := obj.(^Type_Distinct); is_distinct { obj = dt.base_type }
+    }
+    obj = distinct_base(obj)
+    elem: Type
+    #partial switch v in obj {
+    case ^Type_Slice:         elem = v.elem
+    case ^Type_Partial_Array: elem = v.elem
+    case ^Type_Fixed_Array:
+        if !is_swizzle_field(field, v.size) {
+            if is_all_swizzle_chars(field) { tc_error(k, span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, field, v.size) }
+            return
+        }
+        if pname, immutable := tc_write_root_param(k, target, env); immutable {
+            tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
+        }
+        if len(field) == 1 {
+            tc_set_type(k, target, v.elem)
+            if types_incompatible(v.elem, vt) && !is_infer(vt) {
+                tc_error(k, span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPE, type_name(vt), field, type_name(v.elem))
+            }
+            if is_infer(vt) { tc_literal_overflow(k, diag, v.elem, span) }
+            return
+        }
+        tc_set_type(k, target, new_clone(Type_Fixed_Array{size = len(field), elem = v.elem}))
+        if va, is_array := vt.(^Type_Fixed_Array); is_array {
+            if types_incompatible(v.elem, va.elem) { tc_error(k, span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPES, type_name(vt), field) }
+        } else if !is_any(vt) && !is_infer(vt) {
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_COMPONENT_SWIZZLE, type_name(vt), field)
+        }
+        return
+    case:
+        return
+    }
+    // (A param's header is its caller's: `^[]T` moves a cursor.)
+    if pname, immutable := tc_write_root_param(k, target, env); immutable {
+        tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
+    }
+    ft: Type
+    switch field {
+    case "len", "cap": ft = slice_header_width_type
+    case "ptr":        ft = new_clone(Type_Ptr{elem = elem})
+    case:
+        tc_error(k, span, TYPE_SLICE_TYPE_FIELD, type_name(obj), field)
+        return
+    }
+    if !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !is_infer(vt) && !value_preserving_widen(vt, ft) {
+        tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
+    }
+    if is_infer(vt) { tc_literal_overflow(k, diag, ft, span) }
 }

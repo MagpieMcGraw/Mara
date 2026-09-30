@@ -209,3 +209,117 @@ tc_built :: proc(k: ^TC, want: Fuse_Want, in_temp, into_temp: bool, d: Dest, t: 
     }
     return {v = graph_read(b, p, tt, span), ok = true}
 }
+
+// `a[lo:hi]`: its bounds at the header's width, then its collection's place
+// — a plain place checked first and built after them, as the builder walks
+// it; any other base built as it is checked (held, when it has no place)
+// and put after the bounds — then the slice.
+tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written, dest: Dest) -> (Type, Fused) {
+    tr := k.t
+    span := tree_span(tr, n)
+    base_n := Tree_Id(tr.a[n])
+    lo_n, hi_n := tree_pair(tr, n)
+    if tc_has_dot_ref(k, lo_n) || tc_has_dot_ref(k, hi_n) {
+        tc_unsupported(k, n, "`.len` in a subscript")
+        return Type_Error{}, {}
+    }
+    b := tc_building(k)
+    build := want != .None && b != nil
+    read_as: Type
+    if build && (want == .Into || dest.type_ != nil) { read_as = graph_dest_type(b, dest) }
+    held := false
+    early: Graph_Early
+    base, plain := NO_VALUE, NO_VALUE
+    plain_t, tt: Type
+    if build && !tc_pure_place(k, base_n) {
+        held, early = true, graph_fuse_early_begin(b)
+        if tc_is_place_form(k, base_n) {
+            r: Fused
+            tt, r = tc_expr(k, base_n, env, .Place, temp_span = span)
+            base = r.v
+        } else {
+            tt, base = tc_hold(k, base_n, env, span)
+        }
+        if b = tc_building(k); b != nil {
+            if pt, is_ptr := distinct_base(tt).(^Type_Ptr); is_ptr && base != NO_VALUE {
+                base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base)
+            }
+            graph_fuse_early_end(b, &early)
+        }
+    } else if build {
+        r: Fused
+        tt, r = tc_expr(k, base_n, env, .Place)
+        plain, plain_t = r.v, tt
+    } else {
+        tt = tc_check(k, base_n, env)
+    }
+    target := tt
+    if pt, is_ptr := target.(^Type_Ptr); is_ptr {
+        #partial switch inner in distinct_base(pt.elem) {
+        case ^Type_Slice, ^Type_Fixed_Array: target = distinct_base(pt.elem)
+        }
+    }
+    elem: Type
+    #partial switch v in target {
+    case ^Type_Fixed_Array:   elem = v.elem
+    case ^Type_Slice:         elem = v.elem
+    case ^Type_Partial_Array: elem = v.elem
+    case:
+        if !is_any(target) {
+            tc_error(k, span, TYPE_CANNOT_SLICE, type_name(target))
+            return Type_Error{}, {}
+        }
+    }
+    if build && read_as != nil && elem != nil && is_byte_buffer(target) {
+        tc_unsupported(k, n, "a span of bytes read as a type")
+        return Type_Error{}, {}
+    }
+    lo, hi := NO_VALUE, NO_VALUE
+    if lo_n != 0 {
+        lt: Type
+        lt, lo = tc_bound(k, lo_n, env, w, span, build)
+        if !is_numeric(lt) && !is_any(lt) {
+            tc_error(k, span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
+        } else if !coerces_to_slice_width(lt) {
+            tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(lt))
+        }
+    }
+    if hi_n != 0 {
+        ht: Type
+        ht, hi = tc_bound(k, hi_n, env, w, span, build)
+        if !is_numeric(ht) && !is_any(ht) {
+            tc_error(k, span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
+        } else if !coerces_to_slice_width(ht) {
+            tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(ht))
+        }
+    }
+    if elem == nil { return Type_Error{}, {} }
+    t := new_clone(Type_Slice{elem = elem})
+    if b = tc_building(k); !build || b == nil { return t, {} }
+    if held {
+        if !graph_fuse_early_place(b, &early) {
+            tc_fail(k, "a slice's bounds that branch, of a value")
+            return t, {}
+        }
+    } else {
+        base = graph_fuse_base_place(b, plain, plain_t, false, span)
+    }
+    return t, {v = graph_op_value(b, .Slice, w, span, t, "", base, lo, hi), ok = true}
+}
+
+// A slice's bound, at the header's width.
+tc_bound :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, w: Written, span: Span, build: bool) -> (Type, Operand) {
+    t, r := tc_expr(k, n, env, .Value if build else .None, w)
+    b := tc_building(k)
+    if !build || b == nil { return t, NO_VALUE }
+    return t, graph_fuse_widen(b, r.v, span, {to = slice_header_width_type})
+}
+
+// A place however its base is reached: a field, an element, what a pointer
+// points at.
+tc_is_place_form :: proc(k: ^TC, n: Tree_Id) -> bool {
+    #partial switch k.t.tag[tc_unparen(k, n)] {
+    case .Field, .Index, .Deref: return true
+    }
+    return false
+}

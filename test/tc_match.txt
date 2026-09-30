@@ -16,6 +16,7 @@ callgraph_probe
 capsize
 capsize_neg
 castfield
+chartest
 crashfix
 crossfile_fields
 ctor_zero
@@ -29,6 +30,7 @@ esc_decay_field_neg
 esc_decay_neg
 esc_defer_join_neg
 esc_defer_neg
+esc_index_param_neg
 esc_local_alias_neg
 esc_loop_carried_neg
 esc_loop_return_neg
@@ -39,6 +41,7 @@ esc_reassign_neg
 esc_recursive_neg
 escape_unknown_char_neg
 escape_unknown_neg
+escapeparam
 escapes
 fielddefer
 fordo
@@ -51,12 +54,20 @@ literal_ctor_args_neg
 mixwiden
 negtrap
 nrvo_zero
+pa_array_stamp
+pafill
 param_reassign_neg
+partial_param_header_neg
+partial_param_write_neg
+patest
 printcheck
 ptr_slice_uninit_neg
 puretest
+recur
+result_slot_alias
 retmiss
 settled_literal_range_neg
+slice_param_header_neg
 spread_literal
 u64dec
 uninitbranch
