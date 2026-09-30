@@ -1,27 +1,42 @@
 package mara
 
-// Bodies: a fun's, checked and built statement by statement in the order
-// they run (its graph is built as it is checked, through the builder).
+// Bodies, checked and built statement by statement in the order they run
+// (the graph is built as they are checked, through the builder): a fun's
+// code; a struct's constructor, whose field declarations are its fields —
+// each typed as its declaration finds, so its fields are known once its
+// body is checked.
 
-tc_fun_body :: proc(k: ^TC, fn: ^TC_Fun) {
+tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     t := k.t
-    ft := fn.ft
-    v := scope_view(t, fn.fun)
-    span := tree_span(t, fn.def)
+    ts := sc.ts
+    v := scope_view(t, sc.node)
+    span := tree_span(t, sc.def)
+    is_struct := ts.kind == .Struct
+    if is_struct { ts.sig_state = .In_Progress }
+    hint := k.hint
+    defer k.hint = hint
     f: ^Graph_Fuse
-    if k.gb != nil { f = graph_fuse_begin(k.gb, ft, syntax_id(fn.def), span, v.intrinsic != 0, .Explicit) }
-    defer if f != nil {
+    if k.gb != nil { f = graph_fuse_begin(k.gb, ts, syntax_id(sc.def), span, v.intrinsic != 0, .Explicit) }
+    if v.intrinsic == 0 {
+        body := type_env_block_child(ts)
+        for p in ts.params { type_env_set(body, p.name, p.type_) }
+        tc_scope(k, v.body, body, ts if is_struct else nil)
+    }
+    if is_struct {
+        // (A field's width its uses left open: settled, as a local's is.)
+        for &fl in ts.fields { fl.type_ = solidify_type(fl.type_) }
+        ts.sig_state = .Resolved
+    }
+    if f != nil {
         if k.c.errors > 0 { graph_fuse_fail(k.gb, f, "errors") }
         graph_fuse_end(k.gb, f)
     }
-    if v.intrinsic != 0 { return }
-    body := type_env_block_child(ft)
-    for p in ft.params { type_env_set(body, p.name, p.type_) }
-    tc_scope(k, v.body, body)
 }
 
 // A block's statements: each checked whole, and built, before the next.
-tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope) {
+// `fields_of`: the struct whose top block it is (its declarations are its
+// fields).
+tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil) {
     t := k.t
     for s in stmts {
         if t.tag[s] == .Define {
@@ -35,7 +50,11 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope) {
             graph_fuse_body_stmt(b, span, true)
             saved = graph_fuse_stmt(b, syntax_id(s), span, tc_stmt_kind(k, s), fresh = true)
         }
-        tc_stmt(k, s, env)
+        if t.tag[s] == .Decl && fields_of != nil {
+            tc_decl(k, s, env, fields_of)
+        } else {
+            tc_stmt(k, s, env)
+        }
         if b != nil { graph_fuse_stmt_end(b, saved) }
     }
 }
@@ -69,7 +88,9 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 
 // `x := v`, `x : T = v`, `x : T`: its local, then its value built into it
 // (or its zero), then stored — once the statement is checked (its type known).
-tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+// In a struct's top block (`fields_of`), a field: typed as its annotation,
+// else as its value.
+tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil) {
     t := k.t
     span := tree_span(t, s)
     v := decl_view(t, s)
@@ -81,17 +102,19 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         tc_unsupported(k, s, "this declaration")
         return
     }
-    name := tc_name(k, v.targets[0])
+    target := v.targets[0]
+    name := tc_name(k, target)
     ann: Type = Type_Any{}
     if v.type_ != 0 { ann = tc_type(k, v.type_, env, span) }
     if !tc_declarable(k, env, name, span) { return }
-    if len(v.values) == 0 {
-        tc_decl_bare(k, name, ann, env, span)
+    value := v.values[0] if len(v.values) > 0 else 0
+    if value != 0 && t.tag[value] == .Ident && tc_name(k, value) == "void" {
+        tc_unsupported(k, s, "a `void` declaration")
         return
     }
-    value := v.values[0]
-    if t.tag[value] == .Ident && tc_name(k, value) == "void" {
-        tc_unsupported(k, s, "a `void` declaration")
+    if fields_of != nil && !is_any(ann) { tc_add_field(fields_of, name, ann, value) }
+    if len(v.values) == 0 {
+        tc_decl_bare(k, name, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span))
         return
     }
     b := tc_building(k)
@@ -99,7 +122,8 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     prefix: [2]Node_Id
     prefixed := false
     if b != nil {
-        decl = graph_fuse_decl(b, name, span)
+        decl = tc_field_decl(k, fields_of, name, target, value, span)
+        if decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
         // Text fills only a prefix of a new partial array: it is zero first
         // — kept once the value's type says so.
         #partial switch t.tag[value] {
@@ -119,7 +143,7 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         }
         if is_infer(vt) { tc_literal_overflow(k, value, ann, span) }
         final = ann
-    } else if existing, _, shadowed := type_env_locate_below_module(env, name); shadowed {
+    } else if existing, shadowed := tc_declared_before(env, name, fields_of != nil); shadowed {
         // (Reported as a shadow: checked as the write it reads as.)
         tc_check_write(k, value, vt, existing, name, span)
         return
@@ -141,6 +165,7 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if is_cstring(final) { tc_error(k, span, TYPE_CSTRING_FOREIGN_ONLY) }
     }
     type_env_set(env, name, final)
+    if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, final, value) }
     if b = tc_building(k); b == nil { return }
     graph_fuse_typed(b, decl, final)
     wrote := tc_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
@@ -177,37 +202,70 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> boo
     return true
 }
 
-// `x : T`: its zero, or its construction.
-tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span) {
+// `x : T`: its zero, or its construction (a struct's, an array of them's
+// each). `field`: its node, when it is a struct's field.
+tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span, field := NO_NODE) {
     defer type_env_set(env, name, ann)
     if _, is_error := ann.(Type_Error); is_error { return }
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
     b := tc_building(k)
     if b == nil { return }
-    if tf, is_scope := ann.(^Type_Scope); is_scope && len(tf.params) > 0 {
-        tc_fail(k, "a declaration constructed with args")
-        return
+    args: []Operand
+    if st := tc_bare_struct(ann); st != nil {
+        tc_struct_ensure(k, st)
+        if len(st.params) > 0 {
+            tc_fail(k, "a declaration constructed with args")
+            return
+        }
+        if constructs_bare(st) { args = make([]Operand, 0, context.temp_allocator) }
     }
-    if fuse_bare_args_needed(ann) {
-        tc_fail(k, "a declaration constructed with args")
-        return
+    if b = tc_building(k); b == nil { return }
+    decl := field
+    if decl == NO_NODE {
+        decl = graph_fuse_decl(b, name, span)
+        graph_fuse_typed(b, decl, ann)
     }
-    decl := graph_fuse_decl(b, name, span)
-    graph_fuse_typed(b, decl, ann)
-    graph_fuse_bare(b, decl, ann, nil, nil, span)
+    graph_fuse_bare(b, decl, ann, nil, args, span)
 }
 
-// Whether a bare declaration of the type constructs with its args'
-// defaults (fuse_bare_args).
-fuse_bare_args_needed :: proc(t: Type) -> bool {
+// The struct a bare declaration of the type constructs: its own, or its
+// elements'.
+tc_bare_struct :: proc(t: Type) -> ^Type_Scope {
     #partial switch v in distinct_base(t) {
     case ^Type_Scope:
-        return v.kind == .Struct && !v.is_module && constructs_bare(v)
+        if v.kind == .Struct && !v.is_module { return v }
     case ^Type_Fixed_Array, ^Type_Partial_Array:
-        st := graph_elem_struct(t)
-        return st != nil && constructs_bare(st)
+        return graph_elem_struct(t)
     }
-    return false
+    return nil
+}
+
+// A struct's field, as its declaration finds it.
+tc_add_field :: proc(ts: ^Type_Scope, name: string, t: Type, value: Tree_Id) {
+    append(&ts.fields, Struct_Type_Field{name = name, type_ = t, default_node = value})
+    build_field_map(&ts.sd)
+}
+
+// A field's node, made with its declaration (else none: a local's is made
+// by its caller).
+tc_field_decl :: proc(k: ^TC, fields_of: ^Type_Scope, name: string, target, value: Tree_Id, span: Span) -> Node_Id {
+    b := tc_building(k)
+    if fields_of == nil || b == nil { return NO_NODE }
+    key := syntax_id(target)
+    inits := []Span{tree_span(k.t, value)} if value != 0 else nil
+    graph_fuse_fields(b, {name}, span, {key}, inits, false)
+    return b.fuse.fields[key]
+}
+
+// A name already declared where a declaration would declare it: below the
+// module (in a struct's top block, in it).
+tc_declared_before :: proc(env: ^Type_Scope, name: string, in_struct: bool) -> (Type, bool) {
+    if in_struct {
+        t, ok := env.types[name]
+        return t, ok
+    }
+    t, _, ok := type_env_locate_below_module(env, name)
+    return t, ok
 }
 
 // A value written to a variable of type `existing`: checked against it.
@@ -233,13 +291,32 @@ tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, set
         graph_fuse_write_at(b, graph_dest_place(b, d, span), r.v, span)
         return true
     }
-    dt := graph_dest_type(b, d)
-    if !fuse_scalar(dt) && !is_partial_array(dt) {
-        tc_fail(k, "a store of this type")
+    if tc_builds_into(k, e) {
+        tc_fail(k, "a value built in place, taken as one")
         return false
     }
-    if is_partial_array(dt) && !(k.t.tag[e] == .String && is_partial_array(t)) {
-        tc_fail(k, "a partial array's store")
+    dt := graph_dest_type(b, d)
+    _, to_ptr := distinct_base(dt).(^Type_Ptr)
+    _, from_ptr := distinct_base(t).(^Type_Ptr)
+    if to_ptr == from_ptr && graph_header_of(dt) && graph_partial_of(t) {
+        // A partial array seen as a slice's header.
+        v := graph_op_value(b, .Cast, .Implied, span, dt, type_name(dt), tc_value(k, r, e, t))
+        graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
+        return false
+    }
+    _, to_slice := distinct_base(dt).(^Type_Slice)
+    _, from_array := distinct_base(t).(^Type_Fixed_Array)
+    if to_slice && from_array {
+        if !r.place {
+            tc_fail(k, "a slice of an array value")
+            return false
+        }
+        v := graph_op_value(b, .Slice, .Implied, span, dt, "", r.v)
+        graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
+        return false
+    }
+    if tag := k.t.tag[tc_unparen(k, e)]; tag == .Slice || tag == .Index {
+        tc_unsupported(k, e, "a store of an element or a span")
         return false
     }
     val := graph_fuse_widen(b, tc_value(k, r, e, t), span, {to = dt, settle_to = settle})
@@ -253,6 +330,10 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     span := tree_span(t, s)
     targets := tree_list(t, t.a[s])
     values := tree_list(t, t.b[s])
+    if len(targets) == 1 && len(values) == 1 && t.tag[targets[0]] == .Field {
+        tc_field_assign(k, s, targets[0], values[0], env)
+        return
+    }
     if len(targets) != 1 || len(values) != 1 || t.tag[targets[0]] != .Ident {
         if len(targets) == 1 { tc_unsupported(k, targets[0], "this assignment target"); return }
         tc_unsupported(k, s, "this assignment")
@@ -313,7 +394,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     if count_ok {
         for val, i in values {
             want := rts[i]
-            if is_partial_array(want) || is_slice_type(want) || !fuse_scalar(want) {
+            if is_partial_array(want) || is_slice_type(want) {
                 tc_unsupported(k, s, "a return of this type")
                 return
             }
@@ -355,4 +436,16 @@ tc_if :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     if b != nil { graph_fuse_else(b, &fi, span) }
     if len(v.else_) > 0 { tc_scope(k, v.else_, type_env_block_child(env)) }
     if b != nil { graph_fuse_if_end(b, &fi) }
+}
+
+// What builds where it goes (a literal, an array, a construction): never
+// taken as a value.
+tc_builds_into :: proc(k: ^TC, e: Tree_Id) -> bool {
+    n := tc_unparen(k, e)
+    #partial switch k.t.tag[n] {
+    case .Literal, .Array: return true
+    case .Call:
+        return n in k.constructs
+    }
+    return false
 }

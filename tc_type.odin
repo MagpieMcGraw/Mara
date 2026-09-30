@@ -147,6 +147,17 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
         case .Ampersand:   return l & r, true
         case .Caret:       return l ~ r, true
         }
+    case .Field:
+        // An array's capacity is its type's (a fixed one's length too).
+        field := tc_text(Token_Id(t.b[n]))
+        base := Tree_Id(t.a[n])
+        if (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
+        bt, ok := type_env_get(env, tc_name(k, base))
+        if !ok { return 0, false }
+        #partial switch v in distinct_base(bt) {
+        case ^Type_Partial_Array: if field == "cap" && v.size > 0 { return i64(v.size), true }
+        case ^Type_Fixed_Array:   if v.size > 0 { return i64(v.size), true }
+        }
     case .Ident:
         tc_unsupported(k, n, "a constant in a size")
     }

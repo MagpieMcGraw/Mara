@@ -90,6 +90,7 @@ Struct_Type_Field :: struct {
     name:          string,
     type_:         Type,
     default_value: Expr, // nil if no default
+    default_node:  Tree_Id, // the new checker's (tc.odin): its default in the flat tree; 0 if none
     is_using:      bool,
 }
 
@@ -292,7 +293,7 @@ Type_Scope :: struct {
 
 // Whether a param or a field has a default.
 field_has_default :: proc(f: Struct_Type_Field) -> bool {
-    return f.default_value != nil
+    return f.default_value != nil || f.default_node != 0
 }
 
 // Whether a scope is written in the source — a fun, a struct, an intrinsic, an
@@ -371,7 +372,7 @@ constructor_effective_returns :: proc(ft: ^Type_Scope) -> ([]Type, bool) {
 // field, an array's element is: each constructor param has a default, and the
 // constructor can't fail (nothing would take its err).
 constructs_bare :: proc(ft: ^Type_Scope) -> bool {
-    for p in ft.params { if p.default_value == nil { return false } }
+    for p in ft.params { if !field_has_default(p) { return false } }
     return len(ft.return_types) == 0
 }
 
@@ -14742,7 +14743,7 @@ has_param_defaults :: proc(fun_type: ^Type_Scope) -> bool {
 count_required_params :: proc(fun_type: ^Type_Scope) -> int {
     required := len(fun_type.params)
     for i := len(fun_type.params) - 1; i >= 0; i -= 1 {
-        if fun_type.params[i].default_value != nil {
+        if field_has_default(fun_type.params[i]) {
             required -= 1
         } else {
             break

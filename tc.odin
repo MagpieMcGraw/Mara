@@ -27,15 +27,17 @@ TC :: struct {
     shared:        bool,
     types:         [dynamic]Type,     // each node's type, as checked (by its id)
     hint:          Type,              // the type the expression being checked is expected at
-    funs:          [dynamic]TC_Fun,   // the functions registered, to check and extract
+    scopes:        [dynamic]TC_Scope, // the funs and structs registered, to check and extract
+    scope_of:      map[^Type_Scope]int,   // each one's, by its type
+    constructs:    map[Tree_Id]bool,  // the calls that construct a struct (its constructor's)
 }
 
-// A function as registered: its type, its definition, the scope its name is
-// declared in.
-TC_Fun :: struct {
-    ft:   ^Type_Scope,
+// A fun or a struct as registered: its type, its definition, the scope its
+// name is declared in.
+TC_Scope :: struct {
+    ts:   ^Type_Scope,
     def:  Tree_Id,   // its Define
-    fun:  Tree_Id,   // its Fun_Def
+    node: Tree_Id,   // its Fun_Def or Struct_Def
     env:  ^Type_Scope,
 }
 
@@ -182,11 +184,29 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) {
     for f, i in files {
         for s in tree_list(k.t, k.t.a[f]) { tc_register(k, s, envs[i], mod) }
     }
-    for &fn in k.funs { tc_signature(k, &fn) }
-    for &fn in k.funs {
-        tc_fun_body(k, &fn)
-        if k.gb != nil { graph_module_stmt(k.gb, syntax_id(fn.def), {kind = .Other, set = true}) }
+    for &sc in k.scopes { tc_signature(k, &sc) }
+    // A struct's fields are what its body declares: each struct's body is
+    // checked first (or sooner, by what needs its fields), then each fun's.
+    for sc in k.scopes { tc_struct_ensure(k, sc.ts) }
+    for &sc in k.scopes {
+        if sc.ts.kind == .Fun { tc_scope_body(k, &sc) }
     }
+    for sc in k.scopes {
+        if k.gb != nil { graph_module_stmt(k.gb, syntax_id(sc.def), {kind = .Other, set = true}) }
+    }
+}
+
+// A struct's body checked, its fields found, when something needs them
+// first. (One that needs its own is a cycle.)
+tc_struct_ensure :: proc(k: ^TC, ts: ^Type_Scope) {
+    if ts == nil || ts.node == 0 || ts.kind != .Struct || ts.sig_state == .Resolved { return }
+    i, ok := k.scope_of[ts]
+    if !ok { return }
+    if ts.sig_state == .In_Progress {
+        tc_unsupported(k, k.scopes[i].def, "a struct whose fields need its own")
+        return
+    }
+    tc_scope_body(k, &k.scopes[i])
 }
 
 // A module statement's declaration, registered: a fun's name, its type made.
@@ -202,8 +222,8 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
         }
     case .Define:
         value := Tree_Id(t.b[s])
-        if t.a[s] == 0 && value != 0 && t.tag[value] == .Fun_Def {
-            tc_register_fun(k, s, value, env, mod)
+        if t.a[s] == 0 && value != 0 && (t.tag[value] == .Fun_Def || t.tag[value] == .Struct_Def) {
+            tc_register_scope(k, s, value, env, mod)
             return
         }
         if value != 0 {
@@ -214,78 +234,94 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
     tc_unsupported(k, s, "this module statement")
 }
 
-tc_register_fun :: proc(k: ^TC, def, fun: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
+// A fun or a struct: its name declared in its module, its type made (its
+// signature and body wait).
+tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
+    t := k.t
     name := tc_name(k, def)
-    v := scope_view(k.t, fun)
-    if len(v.generics) > 0 {
-        tc_unsupported(k, def, "a generic fun")
+    span := tree_span(t, def)
+    v := scope_view(t, node)
+    is_struct := t.tag[node] == .Struct_Def
+    switch {
+    case len(v.generics) > 0:
+        tc_unsupported(k, def, "a generic definition")
+        return
+    case is_struct && len(v.returns) > 0:
+        tc_unsupported(k, def, "a struct's results")
         return
     }
     flat := make_flat_name(k.pkg, name)
-    if flat in k.table.funs {
-        tc_error(k, tree_span(k.t, def), TYPE_FUNCTION_ALREADY_DEFINED, name)
+    if is_struct && (flat in k.table.structs || flat in k.table.funs) {
+        tc_error(k, span, TYPE_TYPE_ALREADY_DEFINED, name)
         return
     }
-    ft := new(Type_Scope)
-    ft.has_parens = build_tokens[k.t.main[fun] + 1].kind == .Left_Paren
-    ft.name = flat
-    ft.home_package = k.pkg
-    ft.node = fun
-    ft.source_name = name
-    ft.decl_env = env
-    ft.kind = .Fun
-    ft.parent_scope = env
-    k.table.funs[flat] = ft
-    type_env_set(mod, name, ft)
+    if !is_struct && flat in k.table.funs {
+        tc_error(k, span, TYPE_FUNCTION_ALREADY_DEFINED, name)
+        return
+    }
+    ts := new(Type_Scope)
+    ts.name, ts.source_name, ts.home_package = flat, name, k.pkg
+    ts.kind = .Struct if is_struct else .Fun
+    ts.node, ts.decl_env, ts.parent_scope = node, env, env
+    ts.has_parens = build_tokens[t.main[node] + 1].kind == .Left_Paren
+    ts.is_packed = v.packed != 0
+    // (A struct with params is constructed by a call, as a fun is.)
+    callable := !is_struct || len(v.params) > 0
+    if callable { k.table.funs[flat] = ts } else { k.table.structs[flat] = ts }
+    type_env_set(mod, name, ts)
     k.table.fun_homes[name] = k.pkg
-    k.c.declared_funs[name] = true
-    if mod.functions == nil { mod.functions = make(map[string]^Type_Scope) }
-    mod.functions[name] = ft
-    append(&k.funs, TC_Fun{ft = ft, def = def, fun = fun, env = env})
+    if callable {
+        k.c.declared_funs[name] = true
+        if mod.functions == nil { mod.functions = make(map[string]^Type_Scope) }
+        mod.functions[name] = ts
+    }
+    k.scope_of[ts] = len(k.scopes)
+    append(&k.scopes, TC_Scope{ts = ts, def = def, node = node, env = env})
 }
 
-// A fun's params and returns, resolved in the scope it is declared in.
-tc_signature :: proc(k: ^TC, fn: ^TC_Fun) {
+// A fun's or a struct's params and a fun's results, resolved in the scope
+// it is declared in.
+tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
     t := k.t
-    v := scope_view(t, fn.fun)
-    ft := fn.ft
-    if len(ft.params) > 0 || len(ft.return_types) > 0 { return }
-    span := tree_span(t, fn.def)
+    v := scope_view(t, sc.node)
+    ts := sc.ts
+    if len(ts.params) > 0 || len(ts.return_types) > 0 { return }
+    span := tree_span(t, sc.def)
     for g in v.params {
         pv := params_view(t, g)
         if pv.type_ == 0 || len(pv.values) > 0 {
             tc_unsupported(k, g, "a param with a default")
             continue
         }
-        pt := tc_type(k, pv.type_, fn.env, span)
+        pt := tc_type(k, pv.type_, sc.env, span)
         for name in pv.names {
-            append(&ft.params, Struct_Type_Field{name = tc_text(name), type_ = pt})
+            append(&ts.params, Struct_Type_Field{name = tc_text(name), type_ = pt})
         }
     }
-    build_param_map(ft)
+    build_param_map(ts)
     for r in v.returns {
         if t.tag[r] == .Param_Group {
             tc_unsupported(k, r, "a named result")
             continue
         }
-        append(&ft.return_types, tc_type(k, r, fn.env, span))
+        append(&ts.return_types, tc_type(k, r, sc.env, span))
     }
 }
 
 // Each checked fun, for the emitter: its name (the module's prefix, `main`
 // as itself), its origin, its signature for codegen.
 tc_extract :: proc(k: ^TC, checked: ^Checked_Program) {
-    for &fn in k.funs {
-        ft := fn.ft
+    for &sc in k.scopes {
+        ft := sc.ts
         name := ft.source_name
         key := name
         if name != "main" && k.main_package != "" { key = make_flat_name(k.main_package, name) }
         ft.origin = Origin_Source{}
-        v := scope_view(k.t, fn.fun)
+        v := scope_view(k.t, sc.node)
         if v.intrinsic != 0 {
             ft.origin = Origin_Intrinsic{llvm_name = tc_intrinsic_name(k, v.intrinsic)}
         }
-        ft.body_span = tree_span(k.t, fn.def)
+        ft.body_span = tree_span(k.t, sc.def)
         populate_cg_signature(ft)
         _, already := checked.functions[key]
         ft.name = key
@@ -307,18 +343,19 @@ tc_intrinsic_name :: proc(k: ^TC, n: Tree_Id) -> string {
 // exit code) and takes no params.
 tc_validate_main :: proc(k: ^TC, files: []Tree_Id) {
     found := false
-    for &fn in k.funs {
-        if fn.ft.source_name != "main" { continue }
+    for &sc in k.scopes {
+        fn := sc.ts
+        if fn.kind != .Fun || fn.source_name != "main" { continue }
         found = true
-        span := tree_span(k.t, fn.def)
-        rts := fn.ft.return_types
+        span := tree_span(k.t, sc.def)
+        rts := fn.return_types
         ok := len(rts) == 0
         if len(rts) == 1 {
             if vn, is_num := rts[0].(Type_Numeric); is_num && vn.kind == .Signed && vn.bits == 64 { ok = true }
             if is_any(rts[0]) { ok = true }
         }
         if !ok { tc_error(k, span, TYPE_FUN_MAIN_RETURN_INT_RETURN) }
-        if len(fn.ft.params) != 0 { tc_error(k, span, TYPE_FUN_MAIN_TAKE_PARAMETERS) }
+        if len(fn.params) != 0 { tc_error(k, span, TYPE_FUN_MAIN_TAKE_PARAMETERS) }
     }
     if !found && !k.shared {
         tc_error(k, {}, "module '%s' must define fun main()", k.main_package)

@@ -12,6 +12,12 @@ tc_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want := Fuse_Want.Value, w
     if n == 0 { return Type_Error{}, {} }
     b := tc_building(k)
     ask := want if b != nil else .None
+    // What has no place of its own, asked for one: held in a temporary.
+    if ask == .Place && tc_holds(k, n) {
+        t, p := tc_hold(k, n, env, temp_span if temp_span != {} else tree_span(k.t, n))
+        tc_set_type(k, n, t)
+        return t, {v = p, place = true, ok = p != NO_VALUE}
+    }
     t, r := tc_expr_impl(k, n, env, ask, w, dest, temp, temp_span)
     tc_set_type(k, n, t)
     if ask != .None && !r.ok { tc_fail(k, fmt.aprintf("%v", k.t.tag[n])) }
@@ -64,6 +70,10 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_call(k, n, env, want, w, dest, temp, temp_span)
     case .Assert:
         return tc_assert(k, n, env, want, w)
+    case .Field:
+        return tc_field(k, n, env, want, w)
+    case .Literal:
+        return tc_literal(k, n, env, want, w, dest, temp, temp_span)
     }
     tc_unsupported(k, n, "this expression")
     return Type_Error{}, {}
@@ -88,17 +98,24 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     k.hint = nil
     t, loc_scope, ok := type_env_locate(env, name)
     if !ok {
-        tc_error(k, span, TYPE_UNDEFINED_IDENTIFIER, name)
+        // (A type named as a value: said so.)
+        flat := resolve_type_name(k.c, name, "", env)
+        if flat in k.table.funs || flat in k.table.enums || flat in k.table.unions {
+            tc_error(k, span, TYPE_TYPE_VALUE_DID_MEAN, name, name)
+        } else {
+            report_unresolved(k.c, span, env, name, TYPE_UNDEFINED_IDENTIFIER)
+        }
         return Type_Error{}, {}
     }
-    _ = loc_scope
     b := tc_building(k)
     if name == "void" {
         if want == .None || want == .Place { return t, {} }
         return t, {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
     }
-    if _, is_scope := t.(^Type_Scope); is_scope {
-        tc_unsupported(k, n, "a function or type as a value")
+    // (A local is found in no scope: what a scope holds is a fun, a type, a
+    // constant — a function sees no module's variables.)
+    if loc_scope != nil {
+        tc_unsupported(k, n, "a name that is no local")
         return t, {}
     }
     if want == .None { return t, {} }
@@ -314,57 +331,72 @@ TC_Call :: struct {
     types: [dynamic]Type,
 }
 
+// A call; asked for its place, stored in a temporary made first (built there,
+// a construction) at the use's span.
 tc_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
                 dest: Dest, temp: bool, temp_span: Span) -> (Type, Fused) {
+    b := tc_building(k)
+    if b == nil || want != .Place { return tc_call_impl(k, n, env, want, w, dest, temp, temp_span) }
+    at := temp_span if temp_span != {} else tree_span(k.t, n)
+    slot := graph_slot(b, "temp", nil, at)
+    t, r := tc_call_impl(k, n, env, .Into, w, graph_dest_var("temp", slot, nil), temp, at)
+    if b = tc_building(k); b == nil { return t, {} }
+    if !r.ok {
+        tc_fail(k, "a call's place")
+        return t, {}
+    }
+    if !r.into { graph_fuse_write_at(b, graph_var(b, "temp", slot, nil, at), r.v, at) }
+    graph_fuse_typed(b, slot, t)
+    return t, {v = graph_var(b, "temp", slot, t, at), place = true, ok = true}
+}
+
+tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
+                     dest: Dest, temp: bool, temp_span: Span) -> (Type, Fused) {
     tr := k.t
     span := tree_span(tr, n)
     name := tc_name(k, n)
     args := tree_list(tr, tr.a[n])
-    if tr.b[n] != 0 { tc_unsupported(k, n, "an override block") }
     build := want != .None && tc_building(k) != nil
     if want == .Place {
-        tc_unsupported(k, n, "a call's place")
+        tc_fail(k, "a call's place")
         build = false
     }
-    switch name {
-    case "print", "crash":
-        fc: TC_Call
-        defer { delete(fc.args); delete(fc.types) }
-        for a in args {
-            at, r := tc_expr(k, a, env, .Value if build else .None, w, temp_span = span)
-            append(&fc.args, r)
-            append(&fc.types, at)
-        }
-        if build {
-            if b := tc_building(k); b != nil {
-                vals := make([]Operand, len(fc.args), context.temp_allocator)
-                for r, i in fc.args { vals[i] = r.v }
-                graph_op(b, .Crash if name == "crash" else .Print, w, span, nil, name, ..vals)
-                return nil, {v = NO_VALUE, ok = true}
-            }
-        }
-        return nil, {}
-    }
+    if t, r, is_builtin := tc_builtin(k, n, name, args, env, want if build else .None, w); is_builtin { return t, r }
     ft_raw, found := type_env_get(env, name)
     if !found {
         tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
         for a in args { tc_check(k, a, env) }
         return Type_Error{}, {}
     }
-    ft, is_fun := ft_raw.(^Type_Scope)
-    if !is_fun || ft.kind != .Fun {
-        tc_unsupported(k, n, "a call to no fun")
+    ft, is_scope := ft_raw.(^Type_Scope)
+    if !is_scope || ft.is_module || ft.node == 0 {
+        tc_unsupported(k, n, "a call of this")
         return Type_Error{}, {}
     }
-    if len(args) != len(ft.params) {
+    if tr.b[n] != 0 { tc_unsupported(k, n, "an override block") }
+    is_struct := ft.kind == .Struct
+    if is_struct {
+        tc_struct_ensure(k, ft)
+        k.constructs[n] = true
+    }
+    // (Built into storage that holds a value: a temporary made first.)
+    dest := dest
+    into_temp := false
+    if b := tc_building(k); build && b != nil && is_struct && want == .Into && temp {
+        dest = graph_fuse_temp(b, temp_span, fuse_temp_type(dest))
+        into_temp = true
+    }
+    ops := make([dynamic]Operand, 0, len(args), context.temp_allocator)
+    if len(args) < count_required_params(ft) || len(args) > len(ft.params) {
         qualified := name
         if ft.home_package != "" { qualified = strings.concatenate({ft.home_package, ".", name}) }
         tc_error(k, span, TYPE_EXPECTS_ARGS, qualified, len(ft.params), fn_params_desc(ft), len(args))
-        for a in args { tc_check(k, a, env) }
-        return fn_primary_return(ft), {}
+    } else if len(args) < len(ft.params) {
+        tc_unsupported(k, n, "a call leaving params to their defaults")
+        return Type_Error{}, {}
     }
-    ops := make([dynamic]Operand, 0, len(args), context.temp_allocator)
     for a, i in args {
+        if len(args) > len(ft.params) || len(args) < count_required_params(ft) { break }
         pt := ft.params[i].type_
         k.hint = pt
         at: Type
@@ -378,9 +410,18 @@ tc_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writte
             at = tc_check(k, a, env)
         }
         if !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) && !value_preserving_widen(at, pt) {
-            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, "", name, ft.params[i].name, type_name(pt), type_name(at))
+            clause := ""
+            if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
+            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at))
         }
         if is_infer(at) { tc_literal_overflow(k, a, pt, span) }
+    }
+    if is_struct {
+        if !build || tc_building(k) == nil { return ft, {} }
+        if into_temp {
+            return ft, tc_construct(k, n, ft, ops[:], .Into, w, dest, true, temp_span, made = true)
+        }
+        return ft, tc_construct(k, n, ft, ops[:], want, w, dest, false, temp_span)
     }
     ret := fn_primary_return(ft)
     if !build { return ret, {} }
@@ -457,4 +498,117 @@ tc_is_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
         return build_tokens[k.t.main[n]].kind == .Minus && k.t.tag[tc_unparen(k, Tree_Id(k.t.a[n]))] == .Number
     }
     return false
+}
+
+// An expression with no place of its own: an operation's value, a `?`'s, a
+// slice, an assert, a take. (A deref names one.)
+tc_holds :: proc(k: ^TC, n: Tree_Id) -> bool {
+    #partial switch k.t.tag[n] {
+    case .Binary, .Unary, .Try, .Slice, .Assert, .Take: return true
+    }
+    return false
+}
+
+// Its place, when it has none: a temporary made first, the value stored in
+// it (built there, what builds in place), its variable the place.
+tc_hold :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> (Type, Operand) {
+    b := tc_building(k)
+    if b == nil { return tc_check(k, n, env), NO_VALUE }
+    slot := graph_slot(b, "temp", nil, span)
+    // (Text, or a slice's elements, filling a new partial array: zero first.)
+    prefix := graph_fuse_prefix(b, "temp", slot, span)
+    d := graph_dest_var("temp", slot, nil)
+    t, r := tc_expr(k, n, env, .Into, dest = d, temp_span = span)
+    tc_store(k, n, t, r, d, span)
+    if b = tc_building(k); b == nil { return t, NO_VALUE }
+    graph_fuse_prefix_end(b, prefix, is_partial_array(t) && (k.t.tag[n] == .String || is_slice_type(t)), t)
+    graph_fuse_typed(b, slot, t)
+    return t, graph_var(b, "temp", slot, t, span)
+}
+
+// A builtin: print, crash, a cast. Its args are built as they are, as values.
+tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope,
+                   want: Fuse_Want, w: Written) -> (Type, Fused, bool) {
+    span := tree_span(k.t, n)
+    ask := Fuse_Want.Value if want != .None else .None
+    vals := make([dynamic]Operand, 0, len(args), context.temp_allocator)
+    types := make([dynamic]Type, 0, len(args), context.temp_allocator)
+    each :: proc(k: ^TC, args: []Tree_Id, env: ^Type_Scope, ask: Fuse_Want, w: Written, span: Span,
+                 vals: ^[dynamic]Operand, types: ^[dynamic]Type) {
+        for a in args {
+            t, r := tc_expr(k, a, env, ask, w, temp_span = span)
+            append(vals, r.v)
+            append(types, t)
+        }
+    }
+    switch name {
+    case "print":
+        each(k, args, env, ask, w, span, &vals, &types)
+        tc_print_format(k, args, span)
+        return Type_Error{}, tc_builtin_op(k, .Print, name, vals[:], want, w, span), true
+    case "crash":
+        if len(args) > 1 {
+            tc_error(k, span, TYPE_CRASH_EXPECTS_ARGUMENTS, len(args))
+        } else {
+            each(k, args, env, ask, w, span, &vals, &types)
+        }
+        return Type_Error{}, tc_builtin_op(k, .Crash, name, vals[:], want, w, span), true
+    case "int", "uint":
+        if len(args) != 1 {
+            tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
+            return Type_Error{}, {}, true
+        }
+        each(k, args, env, ask, w, span, &vals, &types)
+        tc_error(k, span, TYPE_TYPE_INT_RESERVED_USE_I64 if name == "int" else TYPE_TYPE_UINT_RESERVED_USE_U64)
+        return Type_Error{}, {}, true
+    }
+    target, is_cast := cast_result_type(name)
+    if !is_cast { return nil, {}, false }
+    if len(args) != 1 {
+        tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
+        return Type_Error{}, {}, true
+    }
+    each(k, args, env, ask, w, span, &vals, &types)
+    // (One that changes nothing is said to.)
+    if cast_target_same_as_operand(types[0], target) {
+        operand := tc_diag_name(k, args[0])
+        if operand == "" { operand = "the operand" }
+        check_warning(k.c, span, WARN_REDUNDANT_CAST, name, operand, name)
+    }
+    b := tc_building(k)
+    if want == .None || b == nil { return target, {}, true }
+    if want == .Place {
+        tc_fail(k, "a builtin's place")
+        return target, {}, true
+    }
+    return target, {v = graph_op_value(b, .Cast, w, span, target, name, ..vals[:]), ok = true}, true
+}
+
+tc_builtin_op :: proc(k: ^TC, op: Op_Kind, name: string, vals: []Operand, want: Fuse_Want, w: Written, span: Span) -> Fused {
+    b := tc_building(k)
+    if want == .None || b == nil { return {} }
+    if want == .Place {
+        tc_fail(k, "a builtin's place")
+        return {}
+    }
+    graph_op(b, op, w, span, nil, name, ..vals)
+    return {v = NO_VALUE, ok = true}
+}
+
+// print's format: its `%`s, one per value after it.
+tc_print_format :: proc(k: ^TC, args: []Tree_Id, span: Span) {
+    if len(args) == 0 || k.t.tag[args[0]] != .String { return }
+    text := tc_text(k.t.main[args[0]])
+    count := 0
+    for i := 0; i < len(text); i += 1 {
+        if text[i] != '%' { continue }
+        if i + 1 < len(text) && text[i + 1] == '%' {
+            i += 1
+            continue
+        }
+        count += 1
+    }
+    if count > 0 && count != len(args) - 1 {
+        tc_error(k, span, TYPE_PRINT_FORMAT_STRING_PLACEHOLDER_VALUE, count, len(args) - 1)
+    }
 }
