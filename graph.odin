@@ -304,18 +304,18 @@ Graph_Builder :: struct {
     // Each module's statements, where each goes (graph_modules): built as the
     // checker settles them (graph_module_stmt), or — a scope, a type — when
     // the graph is put together.
-    module_stmts: map[Stmt_Id]int,
+    module_stmts: map[Syntax_Id]int,
     module_list:  [dynamic]Graph_Module_Stmt,
-    def_segs:     map[Stmt_Id]Graph_Def_Built,   // a body's constants, built as settled
-    const_segs:   map[Stmt_Id]int,               // each constant's code, by its statement (graph_const_begin)
+    def_segs:     map[Syntax_Id]Graph_Def_Built,   // a body's constants, built as settled
+    const_segs:   map[Syntax_Id]int,               // each constant's code, by its statement (graph_const_begin)
     // Each constant's declaration, by its value's identity, and the table
     // globals waiting to name theirs.
-    const_decls: map[Expr_Id]Node_Id,
+    const_decls: map[Syntax_Id]Node_Id,
     tables:      [dynamic]Graph_Table,
     // Every name the checker's table has a constant under, by its value's id
     // (a module's constant is there under its flat name and its bare one):
     // what its table is named (graph_table_names).
-    constant_names: map[string]Expr_Id,
+    constant_names: map[string]Syntax_Id,
     // Segments: a scope's contents built on their own, at any time, then put
     // where the scope is (graph_canonicalize).
     segs:    [dynamic]Graph_Segment,
@@ -325,7 +325,7 @@ Graph_Builder :: struct {
     // body being built; MARA_FUSE=log.
     fused:    map[^Type_Scope]int,
     failed:   map[^Type_Scope]string,
-    scope_of: map[Stmt_Id]^Type_Scope,   // each scope statement's, as the checker built it
+    scope_of: map[Syntax_Id]^Type_Scope,   // each scope statement's, as the checker built it
     fuses:    [dynamic]^Graph_Fuse,
     fuse:     ^Graph_Fuse,
     fuse_log: bool,
@@ -377,12 +377,12 @@ Graph_Anchor :: struct {
 @(private="file")
 STMT_ANCHOR :: i32(-2)
 
-Graph_Compound :: struct { key: Expr_Id, place: Operand }
+Graph_Compound :: struct { key: Syntax_Id, place: Operand }
 
 @(private="file")
 Graph_Table :: struct {
     global: Node_Id,
-    value:  Expr_Id,
+    value:  Syntax_Id,
 }
 
 @(private="file")
@@ -432,7 +432,7 @@ Code :: struct {
     run:    ^Run,                 // the run being filled; nil after a jump or return
     scopes: [dynamic]Code_Scope,  // open scopes, outermost first
     loops:  [dynamic]Loop,
-    tuples: map[Expr_Id]Node_Id,   // a default's shared source call → its operation
+    tuples: map[Syntax_Id]Node_Id,   // a default's shared source call → its operation
     constructed: Node_Id,         // the last construction's operation (its outputs past Self: a fallible one's err)
     managed: bool,                // Program's: main sets up its storage, its fields build no code
 }
@@ -530,7 +530,7 @@ graph_modules :: proc(b: ^Graph_Builder, programs: map[string][]Graph_Decl) {
 // A module's statement the checker has settled — a constant, a variable, a
 // destructure: its declarations, in a segment of their own, put where the
 // statement is. (Once: a statement is settled by the first pass over it.)
-graph_module_stmt :: proc(b: ^Graph_Builder, id: Stmt_Id, declared: Graph_Declared) {
+graph_module_stmt :: proc(b: ^Graph_Builder, id: Syntax_Id, declared: Graph_Declared) {
     i, is_module := b.module_stmts[id]
     if !is_module || b.module_list[i].built { return }
     b.module_list[i].declared = declared
@@ -862,7 +862,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
         if kept(new_id, t.global) { b.tables[tables] = {new_id[t.global], t.value}; tables += 1 }
     }
     resize(&b.tables, tables)
-    gone := make([dynamic]Expr_Id, context.temp_allocator)
+    gone := make([dynamic]Syntax_Id, context.temp_allocator)
     for k, id in b.const_decls {
         if kept(new_id, id) { b.const_decls[k] = new_id[id] } else { append(&gone, k) }
     }
@@ -994,18 +994,28 @@ graph_index :: proc(b: ^Graph_Builder) {
 
 // --- statements ---------------------------------------------------------------
 
+// What the builder keys a statement or an expression by: an id of whichever
+// tree the checker reads (the pointer tree's Stmt_Id or Expr_Id, the flat
+// tree's Tree_Id). 0 is none.
+Syntax_Id :: distinct u32
+
+syntax_id :: proc{syntax_of_stmt, syntax_of_expr, syntax_of_node}
+syntax_of_stmt :: proc(id: Stmt_Id) -> Syntax_Id { return Syntax_Id(id) }
+syntax_of_expr :: proc(id: Expr_Id) -> Syntax_Id { return Syntax_Id(id) }
+syntax_of_node :: proc(id: Tree_Id) -> Syntax_Id { return Syntax_Id(id) }
+
 // What a statement outside any body declares — a module's, a body's
 // definition — as the checker reads it (from whichever tree), for the builder
 // to build where it goes (graph_decl_stmt).
 Graph_Decl :: struct {
-    id:      Stmt_Id,
+    id:      Syntax_Id,
     span:    Span,
     kind:    Stmt_Kind,          // what it does, as the statements table has it
     form:    Graph_Decl_Form,
     settles: bool,               // a variable's or a constant's: built as the checker settles it
     name:    string,             // what it names: an import, a constant, a scope, a type
     names:   []string,           // .Names: each name, "" where it declares none (a store, `_`)
-    value:   Expr_Id,            // .Const: its value (0: none), which its uses find it by
+    value:   Syntax_Id,            // .Const: its value (0: none), which its uses find it by
     generic: bool,               // .Scope, .Union: a generic's, built for each instance
     parts:   []Graph_Decl_Part,  // .Foreign: its funs; .Union: an enum's variants
     group:   []Graph_Decl,       // .Group: each statement's own; .Block: its statements'
@@ -1765,7 +1775,7 @@ graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: st
 // declared constant's value (its id — the code its uses are folded from), or
 // a value already known (an enum's variant, a length).
 Graph_Named :: struct {
-    value: Expr_Id,
+    value: Syntax_Id,
     known: Maybe(Const_Value),
 }
 
@@ -2329,7 +2339,7 @@ Graph_Fuse :: struct {
     outer_fuse: ^Graph_Fuse,
     // Each statement's entry, made the first time the checker meets it (it
     // meets one in each of its passes).
-    stmts:      map[Stmt_Id]i32,
+    stmts:      map[Syntax_Id]i32,
     // Types are settled when the graph is put together, as the builder types
     // what it builds after checking: a `:=` binding's width is the one it
     // adopts from a later use, a param's default's once its fun is checked.
@@ -2345,9 +2355,9 @@ Graph_Fuse :: struct {
     calls:      [dynamic]Pending_Call,   // named by their callees when the graph is put together
     steps:      [dynamic]int,            // its loops' steps' segments
     // A struct's: each field declaration's lowered assignment, and its field.
-    fields:     map[Stmt_Id]Node_Id,
-    field_inits: map[Stmt_Id]Span,   // (where its initializer is written)
-    field_outs: map[Stmt_Id][]Node_Id,   // fields from one call's outputs: their destructure's declarations
+    fields:     map[Syntax_Id]Node_Id,
+    field_inits: map[Syntax_Id]Span,   // (where its initializer is written)
+    field_outs: map[Syntax_Id][]Node_Id,   // fields from one call's outputs: their destructure's declarations
     const_decl: Graph_Decl,              // a constant's: its statement
     failed:     string,
 }
@@ -2394,7 +2404,7 @@ Graph_Widen :: struct {
 
 // Start building a fun's body as the checker checks it: `id` its statement's,
 // `span` its; an intrinsic's has no code of its own.
-graph_fuse_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Stmt_Id, span: Span, intrinsic: bool, written: Written) -> ^Graph_Fuse {
+graph_fuse_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, id: Syntax_Id, span: Span, intrinsic: bool, written: Written) -> ^Graph_Fuse {
     b.scope_of[id] = ts
     f := new(Graph_Fuse)
     f.ts, f.outer_fuse = ts, b.fuse
@@ -2597,7 +2607,7 @@ graph_fuse_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
 // statements that write them — one per name (`inits`, where each one's
 // initializer is written), or one destructure writing them all from one call
 // (`a, b := f()`: each output to its field, graph_init_many).
-graph_fuse_fields :: proc(b: ^Graph_Builder, names: []string, span: Span, lowered: []Stmt_Id, inits: []Span, destructure: bool) {
+graph_fuse_fields :: proc(b: ^Graph_Builder, names: []string, span: Span, lowered: []Syntax_Id, inits: []Span, destructure: bool) {
     f := b.fuse
     ids := make([]Node_Id, len(names))
     for name, i in names {
@@ -3012,7 +3022,7 @@ Graph_Destructure :: struct {
     place:  Operand,   // the target of the output being written
 }
 
-graph_fuse_destructure :: proc(b: ^Graph_Builder, id: Stmt_Id, span: Span, names: []string, stores: []bool, is_decl: bool) -> Graph_Destructure {
+graph_fuse_destructure :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, names: []string, stores: []bool, is_decl: bool) -> Graph_Destructure {
     mr := Graph_Destructure{on = true, names = names, stores = stores, span = span}
     // (A struct's fields from one call: declared as its fields.)
     if ids, of_fields := b.fuse.field_outs[id]; of_fields {
@@ -3224,11 +3234,11 @@ graph_fuse_override :: proc(b: ^Graph_Builder, d: Dest, sd: ^Scope_Body) -> ^Gra
 }
 
 // The call the slots of a default share (Code.tuples): made at the first.
-graph_fuse_tuple_set :: proc(b: ^Graph_Builder, key: Expr_Id, op: Node_Id) {
+graph_fuse_tuple_set :: proc(b: ^Graph_Builder, key: Syntax_Id, op: Node_Id) {
     b.code.tuples[key] = op
 }
 
-graph_fuse_tuple_get :: proc(b: ^Graph_Builder, key: Expr_Id) -> (Node_Id, bool) {
+graph_fuse_tuple_get :: proc(b: ^Graph_Builder, key: Syntax_Id) -> (Node_Id, bool) {
     op, ok := b.code.tuples[key]
     return op, ok
 }
@@ -3802,7 +3812,7 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
 // The statement the checker is on, as graph_stmt enters one: its entry, the
 // first time. A statement the checker meets only once is `fresh` (a body's
 // own statements).
-graph_fuse_stmt :: proc(b: ^Graph_Builder, id: Stmt_Id, span: Span, kind: Stmt_Kind, fresh := false) -> (saved: i32) {
+graph_fuse_stmt :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, kind: Stmt_Kind, fresh := false) -> (saved: i32) {
     f := b.fuse
     saved = b.stmt
     if !fresh {

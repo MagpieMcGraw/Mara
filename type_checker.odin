@@ -3007,7 +3007,7 @@ fuse_program_struct :: proc(c: ^Checker) {
     if c.gb == nil || pt == nil || pt.body_span == {} { return }
     for _, tmpl in c.table.generic_templates {
         if tmpl.ast.span != pt.body_span { continue }
-        f := graph_fuse_begin(c.gb, pt, tmpl.ast.id, tmpl.ast.span, tmpl.ast.is_intrinsic, .Synthetic)
+        f := graph_fuse_begin(c.gb, pt, syntax_id(tmpl.ast.id), tmpl.ast.span, tmpl.ast.is_intrinsic, .Synthetic)
         if f == nil { return }
         fuse_program_fields(c, tmpl.ast.body[:])
         fuse_end(c, f)
@@ -3318,7 +3318,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     // Type-check the cloned function body, building its graph (its
     // definitions: its own copies).
     f: ^Graph_Fuse
-    if c.gb != nil { f = graph_fuse_begin(c.gb, fun_type, ast.id, ast.span, ast.is_intrinsic, .Synthetic) }
+    if c.gb != nil { f = graph_fuse_begin(c.gb, fun_type, syntax_id(ast.id), ast.span, ast.is_intrinsic, .Synthetic) }
     // (Its nested funs and structs registered under it, as a fun's are
     // before its body — check_scope_body; its constants bind as checked.)
     nested: [dynamic]Stmt
@@ -5755,7 +5755,7 @@ fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Valu
     if b == nil { return check_expr(c, e, env), {} }
     // A compound assignment's target, read in its value: through the place
     // already built.
-    if c.compound.key != 0 && expr_id(e) == c.compound.key {
+    if c.compound.key != 0 && syntax_id(expr_id(e)) == c.compound.key {
         t := check_expr(c, e, env)
         if want == .Value { return t, {graph_read(b, c.compound.place, t, expr_span(e)^), false, true, false, false} }
         return t, {c.compound.place, true, true, false, false}
@@ -5926,7 +5926,7 @@ fuse_named :: proc(r: Resolved_Name) -> Graph_Named {
         return {known = Const_Value{int = i128(v.value)}}
     case Resolved_Constant:
         if v.value_expr == nil { return {known = Const_Value{int = i128(v.int_value)}} }
-        return {value = expr_id(v.value_expr)}
+        return {value = syntax_id(expr_id(v.value_expr))}
     }
     return {}
 }
@@ -5935,7 +5935,7 @@ fuse_named :: proc(r: Resolved_Name) -> Graph_Named {
 // builder to name the tables (graph_table_names).
 fuse_constant_names :: proc(c: ^Checker) {
     for key, v in c.table.constants {
-        if v != nil { c.gb.constant_names[key] = expr_id(v) }
+        if v != nil { c.gb.constant_names[key] = syntax_id(expr_id(v)) }
     }
 }
 
@@ -6054,7 +6054,7 @@ Fuse_Stmt :: struct {
 
 fuse_stmt :: proc(c: ^Checker, s: Stmt) -> Fuse_Stmt {
     if c.gb == nil || c.gb.fuse == nil || is_scope_def(s) { return {} }
-    return {c.gb, graph_fuse_stmt(c.gb, stmt_id(s), stmt_span(s), fuse_stmt_kind(s))}
+    return {c.gb, graph_fuse_stmt(c.gb, syntax_id(stmt_id(s)), stmt_span(s), fuse_stmt_kind(s))}
 }
 
 // What a statement does to the variables it writes, as the graph's
@@ -6092,7 +6092,7 @@ fuse_runs_code :: proc(s: Stmt) -> bool {
 // What a statement outside any body declares, as the builder builds it
 // (Graph_Decl): this tree's reading.
 stmt_graph_decl :: proc(s: Stmt) -> Graph_Decl {
-    d := Graph_Decl{id = stmt_id(s), span = stmt_span(s), kind = fuse_stmt_kind(s)}
+    d := Graph_Decl{id = syntax_id(stmt_id(s)), span = stmt_span(s), kind = fuse_stmt_kind(s)}
     #partial switch v in s {
     case ^Stmt_Decl:
         d.form, d.settles, d.names = .Names, true, v.names[:]
@@ -6122,7 +6122,7 @@ stmt_graph_decl :: proc(s: Stmt) -> Graph_Decl {
             d.form = .Import   // `core :: include mara.core`
         } else {
             d.form = .Const
-            if v.value != nil { d.value = expr_id(v.value) }
+            if v.value != nil { d.value = syntax_id(expr_id(v.value)) }
         }
     case Stmt_Call, Stmt_Return, Stmt_Break, Stmt_Continue, Stmt_Overload, Stmt_Module:
         d.form = .None
@@ -6177,7 +6177,7 @@ fuse_program_fields :: proc(c: ^Checker, body: []Stmt) {
             return
         }
         graph_fuse_body_stmt(b, v.span, true)
-        saved := graph_fuse_stmt(b, v.id, v.span, fuse_stmt_kind(s), fresh = true)
+        saved := graph_fuse_stmt(b, syntax_id(v.id), v.span, fuse_stmt_kind(s), fresh = true)
         for name in v.names { graph_fuse_program_field(b, name, v.span) }
         graph_fuse_stmt_end(b, saved)
     }
@@ -6531,7 +6531,7 @@ fuse_const_begin :: proc(c: ^Checker, s: ^Stmt_Define) -> Fuse_Const {
     b := c.gb
     if b == nil || c.errors > 0 || s.value == nil { return {} }
     if _, is_include := s.value.(^Expr_Include); is_include { return {} }
-    if s.id in b.const_segs { return {} }
+    if syntax_id(s.id) in b.const_segs { return {} }
     return {f = graph_const_begin(b, stmt_graph_decl(s))}
 }
 
@@ -6631,7 +6631,7 @@ fuse_variant_value :: proc(c: ^Checker, t: Type, name: string, span: Span) -> Op
 // The node a declaration declares: a struct's field, made with its
 // declaration; else a local, made now.
 fuse_decl_node :: proc(b: ^Graph_Builder, s: ^Stmt_Assign, bound := false) -> (Node_Id, bool) {
-    if d, is_field := b.fuse.fields[s.id]; is_field { return d, true }
+    if d, is_field := b.fuse.fields[syntax_id(s.id)]; is_field { return d, true }
     return graph_fuse_decl(b, s.name, s.span, bound = bound), false
 }
 
@@ -6646,7 +6646,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         if is_skip && fa.field {
             // A field's `= void` is its declaration's, as written: the value
             // stored, unchecked.
-            val := graph_fuse_void(b, t, b.fuse.field_inits[s.id])
+            val := graph_fuse_void(b, t, b.fuse.field_inits[syntax_id(s.id)])
             graph_fuse_write_at(b, graph_var(b, s.name, fa.decl, t, s.span), val, s.span)
             return
         }
@@ -6781,7 +6781,7 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
         if b != nil {
             for ; di < len(defs) && stmt_before(defs[di], code[i]); di += 1 { graph_fuse_def(b, stmt_graph_decl(defs[di])) }
             graph_fuse_body_stmt(b, stmt_span(code[i]), fuse_runs_code(code[i]))
-            saved = graph_fuse_stmt(b, stmt_id(code[i]), stmt_span(code[i]), fuse_stmt_kind(code[i]), fresh = true)
+            saved = graph_fuse_stmt(b, syntax_id(stmt_id(code[i])), stmt_span(code[i]), fuse_stmt_kind(code[i]), fresh = true)
             fuse_code_stmt(c, code[i])
         }
         register_and_check_declarations(c, code[i:i + 1], env, owner, public_env)
@@ -7501,7 +7501,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
     for stmt in stmts {
         fs := fuse_stmt(c, stmt)
         defer fuse_stmt_end(fs)
-        defer if c.gb != nil { graph_module_stmt(c.gb, stmt_id(stmt), fuse_declared(c, stmt)) }   // (a module's, settled: its declarations)
+        defer if c.gb != nil { graph_module_stmt(c.gb, syntax_id(stmt_id(stmt)), fuse_declared(c, stmt)) }   // (a module's, settled: its declarations)
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
             // Generic union: registration happens in Pass 1a (template only).
@@ -7976,9 +7976,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             if b := fusing(c); b != nil && b.fuse.ts.kind == .Struct && b.code.block == b.fuse.root {
                 lowered := decl_lowered(c, s).stmts[:]
                 inits := decl_init(c, s)[:]
-                ids := make([]Stmt_Id, len(lowered), context.temp_allocator)
+                ids := make([]Syntax_Id, len(lowered), context.temp_allocator)
                 spans := make([]Span, len(inits), context.temp_allocator)
-                for l, i in lowered { ids[i] = stmt_id(l) }
+                for l, i in lowered { ids[i] = syntax_id(stmt_id(l)) }
                 for e, i in inits { spans[i] = expr_span(e)^ }
                 destructure := false
                 if len(lowered) == 1 { _, destructure = lowered[0].(^Stmt_Multi_Return_Assign) }
@@ -8685,7 +8685,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     // Built: the names it declares, the call, the branch on
                     // its err, then each other output written in turn.
                     mr: Graph_Destructure
-                    if b := fusing(c); b != nil { mr = graph_fuse_destructure(b, s.id, s.span, s.names[:], destructure_stores(s), s.is_decl) }
+                    if b := fusing(c); b != nil { mr = graph_fuse_destructure(b, syntax_id(s.id), s.span, s.names[:], destructure_stores(s), s.is_decl) }
                     // (The call is checked as a call, not an expression: it has
                     // no type of its own here.)
                     if fusing(c) != nil { c.asked, c.asked_written, c.fused = .Value, .Explicit, {} }
@@ -8755,7 +8755,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     _, of_call := s.values[0].(^Expr_Call)
                     if b := fusing(c); b != nil {
                         mark = graph_fuse_mark(b)
-                        if of_call { mr = graph_fuse_destructure(b, s.id, s.span, s.names[:], destructure_stores(s), s.is_decl) }
+                        if of_call { mr = graph_fuse_destructure(b, syntax_id(s.id), s.span, s.names[:], destructure_stores(s), s.is_decl) }
                     }
                     val_type: Type
                     call: Fused
@@ -8937,7 +8937,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
                 check_llvm_intrinsic_signature(c, ft, s.intrinsic_name, s.span)
                 // (Its graph: its params and results, no code.)
                 if c.gb != nil {
-                    if f := graph_fuse_begin(c.gb, ft, s.id, s.span, s.is_intrinsic, .Explicit); f != nil { fuse_end(c, f) }
+                    if f := graph_fuse_begin(c.gb, ft, syntax_id(s.id), s.span, s.is_intrinsic, .Explicit); f != nil { fuse_end(c, f) }
                 }
             }
         }
@@ -9225,10 +9225,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     f: ^Graph_Fuse
     if c.gb != nil && ft.kind == .Fun {
         record_return_bindings(ft, s)   // (its named results are locals)
-        f = graph_fuse_begin(c.gb, ft, s.id, s.span, s.is_intrinsic, .Explicit)
+        f = graph_fuse_begin(c.gb, ft, syntax_id(s.id), s.span, s.is_intrinsic, .Explicit)
     } else if c.gb != nil && ft.kind == .Struct && !ft.is_module {
         // (Its code: its fields' values. An instance's node is the compiler's.)
-        f = graph_fuse_begin(c.gb, ft, s.id, s.span, s.is_intrinsic, .Synthetic if instance != nil else .Explicit)
+        f = graph_fuse_begin(c.gb, ft, syntax_id(s.id), s.span, s.is_intrinsic, .Synthetic if instance != nil else .Explicit)
     }
     defer if f != nil { fuse_end(c, f) }
 
@@ -13477,7 +13477,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             src_type = check_expr(c, e.source, env)
         }
         if b := fusing(c); b != nil && want != .None {
-            key := expr_id(e.source) if len(call_return_list(c, e.source, env)) > 1 else 0
+            key := syntax_id(expr_id(e.source)) if len(call_return_list(c, e.source, env)) > 1 else 0
             switch {
             case key == 0:    fuse_done(c, src.v)
             case e.index == 0:
@@ -13755,7 +13755,7 @@ fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Typ
         return check_expr(c, s.value, env), {on = true, place = place, void = true}
     }
     saved := c.compound
-    if s.is_compound { c.compound = {expr_id(s.target), place} }
+    if s.is_compound { c.compound = {syntax_id(expr_id(s.target)), place} }
     // (What builds in place builds in a temporary, then is written.)
     // (`unplaced`: its target is built once the value is — of no type yet.)
     pt: Type = b.g.type_[place.op] if place.op != NO_NODE else nil
