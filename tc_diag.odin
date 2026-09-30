@@ -33,7 +33,7 @@ tc_diag_name :: proc(k: ^TC, n: Tree_Id) -> string {
 }
 
 // "p.x (i64), q (i64)": the named operands of `n` too wide for `target`.
-tc_wide_clause :: proc(k: ^TC, n: Tree_Id, target: Type) -> string {
+tc_wide_clause :: proc(k: ^TC, target: Type, roots: ..Tree_Id) -> string {
     srcs: [dynamic]string
     defer delete(srcs)
     collect :: proc(k: ^TC, n: Tree_Id, target: Type, out: ^[dynamic]string) {
@@ -56,14 +56,14 @@ tc_wide_clause :: proc(k: ^TC, n: Tree_Id, target: Type) -> string {
         for s in out^ { if s == entry { return } }
         append(out, entry)
     }
-    collect(k, n, target, &srcs)
+    for n in roots { collect(k, n, target, &srcs) }
     if len(srcs) == 0 { return "" }
     return strings.join(srcs[:], ", ")
 }
 
 // "cannot assign X to variable 'v' of type Y" (— from the wide operands).
-tc_assign_error :: proc(k: ^TC, span: Span, vt: Type, name: string, target: Type, value: Tree_Id) {
-    if clause := tc_wide_clause(k, value, target); clause != "" {
+tc_assign_error :: proc(k: ^TC, span: Span, vt: Type, name: string, target: Type, values: ..Tree_Id) {
+    if clause := tc_wide_clause(k, target, ..values); clause != "" {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM, type_name(vt), name, type_name(target), clause)
         return
     }

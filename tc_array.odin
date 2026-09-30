@@ -60,7 +60,8 @@ tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
 }
 
 // `a[i] = v`: the element's place, then the value into it.
-tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
+tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_tok: Token_Id = 0) {
+    diag := value if op_tok == 0 else 0   // (the value, as diagnostics name it)
     tr := k.t
     span := tree_span(tr, s)
     ix_span := tree_span(tr, target)
@@ -98,7 +99,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     case ^Type_Partial_Array: if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }
     case ^Type_Slice:         if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }
     }
-    vt := tc_store_at(k, value, place, env, span)
+    vt := tc_store_at(k, value, place, env, span, op_tok, target)
     if !is_numeric(it) && !is_any(it) {
         tc_error(k, span, TYPE_ARRAY_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
@@ -121,7 +122,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
             tc_error(k, span, TYPE_CANNOT_ASSIGN_ELEMENT_TYPE, type_name(vt), type_name(tt))
         }
     }
-    if is_infer(vt) { tc_literal_overflow(k, value, elem, span) }
+    if is_infer(vt) { tc_literal_overflow(k, diag, elem, span) }
 }
 
 // Whether a subscript holds a `.len` / `.cap` (its base's).

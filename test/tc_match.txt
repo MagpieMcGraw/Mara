@@ -1,5 +1,7 @@
 aliasprobe
+array_field_loop
 array_param_write_neg
+askmod
 assertb
 assertesc
 assertf
@@ -17,6 +19,7 @@ castfield
 crashfix
 crossfile_fields
 ctor_zero
+defer_changes_returned_neg
 discard_mixed
 esc_array_elem_neg
 esc_block_ptr_neg
@@ -24,7 +27,11 @@ esc_call_store_neg
 esc_decay_elem_neg
 esc_decay_field_neg
 esc_decay_neg
+esc_defer_join_neg
+esc_defer_neg
 esc_local_alias_neg
+esc_loop_carried_neg
+esc_loop_return_neg
 esc_nested_field_neg
 esc_param_alias_neg
 esc_param_reassign_neg
@@ -34,10 +41,12 @@ escape_unknown_char_neg
 escape_unknown_neg
 escapes
 fielddefer
+fordo
 idxsafe
 inferconflict
 inferdef
 init_alias_neg
+init_shapes_neg
 literal_ctor_args_neg
 mixwiden
 negtrap
@@ -47,11 +56,15 @@ printcheck
 ptr_slice_uninit_neg
 puretest
 retmiss
+settled_literal_range_neg
 spread_literal
+u64dec
 uninitbranch
 uninitfield
 uninitptr
+unreachable_neg
 use_before_decl_neg
+usedef
 void_ptr_deinit_neg
 widenneg
 wrapfail

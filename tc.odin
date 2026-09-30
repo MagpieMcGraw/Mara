@@ -30,6 +30,7 @@ TC :: struct {
     scopes:        [dynamic]TC_Scope, // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type
     callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
+    compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
 
 // A fun or a struct as registered: its type, its definition, the scope its

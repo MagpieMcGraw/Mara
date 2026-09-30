@@ -80,6 +80,14 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         tc_return(k, s, env)
     case .If, .Elif:
         tc_if(k, s, env)
+    case .For_Range, .For_Each, .For_C, .For_Cond:
+        tc_for(k, s, env)
+    case .Compound:
+        tc_compound(k, s, env)
+    case .Defer:
+        tc_defer(k, s, env)
+    case .Break, .Continue:
+        if b := tc_building(k); b != nil { graph_fuse_loop_exit(b, span, is_break = t.tag[s] == .Break) }
     case:
         tc_unsupported(k, s, "this statement")
     }
@@ -472,4 +480,219 @@ tc_builds_into :: proc(k: ^TC, e: Tree_Id) -> bool {
         return callee != nil && callee.kind == .Struct
     }
     return false
+}
+
+// --- loops ------------------------------------------------------------------
+
+// `for i in lo..hi`, `for e, i in c`, `for init; cond; step`, `for cond`: built
+// around its checks (graph_for) — its block, its variables, then its runs.
+tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+    t := k.t
+    span := tree_span(t, s)
+    v := for_view(t, s)
+    tag := t.tag[s]
+    child := type_env_block_child(env)
+    b := tc_building(k)
+    fl: Graph_For
+    if b != nil {
+        fl = graph_fuse_for(b, {span = span, var_name = tc_text(v.var) if v.var != 0 else "",
+                                elem_name = tc_text(v.elem) if v.elem != 0 else "",
+                                index_name = tc_text(v.index) if v.index != 0 else "",
+                                is_range = tag == .For_Range, has_cond = v.cond != 0, has_step = v.post != 0,
+                                end_literal = v.hi != 0 && t.tag[tc_unparen(k, v.hi)] == .Number})
+    }
+    defer if b != nil { graph_fuse_for_end(b, &fl) }
+    #partial switch tag {
+    case .For_Each:
+        // (A plain place: walked where the loop needs it. Anything else is
+        // held first, in a local the loop walks.)
+        ct: Type
+        coll := NO_VALUE
+        if b != nil && !tc_pure_place(k, v.collection) {
+            ct = tc_loop_items(k, &fl, v.collection, child)
+        } else if b != nil {
+            r: Fused
+            ct, r = tc_expr(k, v.collection, child, .Place)
+            coll = r.v
+        } else {
+            ct = tc_check(k, v.collection, child)
+        }
+        elem: Type = Type_Error{}
+        #partial switch c in ct {
+        case ^Type_Fixed_Array:   elem = c.elem
+        case ^Type_Slice:         elem = c.elem
+        case ^Type_Partial_Array: elem = c.elem
+        case ^Type_Scope:         tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, c.name)
+        case:                     tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_TYPE, type_name(ct))
+        }
+        if v.type_ != 0 { elem = tc_type(k, v.type_, env, span) }
+        if v.elem != 0 { type_env_set(child, tc_text(v.elem), elem) }
+        if v.index != 0 { type_env_set(child, tc_text(v.index), slice_header_width_type) }
+        if b := tc_building(k); b != nil {
+            graph_fuse_for_collection(b, &fl, coll, ct, false, distinct_base(elem))
+        }
+        tc_scope(k, v.body, child)
+    case .For_Range:
+        // The counter first, then each bound at its type (known once both
+        // are checked).
+        bounds := [2]int{-1, -1}
+        if b != nil { graph_fuse_range_counter(b, &fl) }
+        lt, lo := tc_expr(k, v.lo, child, .Value if b != nil else .None)
+        if b := tc_building(k); b != nil {
+            bounds[0] = len(b.fuse.checks)
+            fl.lo = graph_fuse_range_bound(b, lo.v, lt, span)
+        }
+        ht, hi := tc_expr(k, v.hi, child, .Value if b != nil else .None)
+        if b := tc_building(k); b != nil {
+            fl.high = hi.v
+            bounds[1] = len(b.fuse.checks)
+            fl.hi = graph_fuse_range_bound(b, hi.v, ht, span)
+        }
+        it: Type
+        if v.type_ != 0 {
+            it = tc_type(k, v.type_, env, span)
+        } else {
+            // (Bounds that disagree count at the header's width.)
+            it = try_promote_numeric(lt, ht)
+            if _, is_error := it.(Type_Error); is_error || is_infer(it) { it = slice_header_width_type }
+        }
+        if !is_numeric(lt) && !is_infer(lt) && !is_any(lt) { tc_error(k, span, TYPE_RANGE_LOWER_BOUND_NUMERIC, type_name(lt)) }
+        if !is_numeric(ht) && !is_infer(ht) && !is_any(ht) { tc_error(k, span, TYPE_RANGE_UPPER_BOUND_NUMERIC, type_name(ht)) }
+        // (`..` counts up: known bounds that count down are an error.)
+        lc, lc_ok := tc_comptime_int(k, v.lo, child)
+        hc, hc_ok := tc_comptime_int(k, v.hi, child)
+        if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, hc, lc, hc) }
+        type_env_set(child, tc_text(v.var), it)
+        if b := tc_building(k); b != nil { graph_fuse_range(b, &fl, bounds, distinct_base(it)) }
+        tc_scope(k, v.body, child)
+    case:
+        if v.init != 0 { tc_stmt_entry(k, v.init, child) }
+        if b := tc_building(k); b != nil { graph_fuse_for_runs(b, &fl) }
+        ct, cond := tc_expr(k, v.cond, child, .Value if tc_building(k) != nil else .None)
+        if b := tc_building(k); b != nil { graph_fuse_for_cond(b, &fl, cond.v) }
+        if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
+        if v.post != 0 {
+            // (Built into the step's run, put after the body, where it runs.)
+            step: Graph_Step
+            if b := tc_building(k); b != nil { step = graph_fuse_step(b, &fl) }
+            tc_stmt_entry(k, v.post, child)
+            if b := tc_building(k); b != nil { graph_fuse_step_end(b, &fl, step) }
+        }
+        tc_scope(k, v.body, child)
+    }
+}
+
+// A statement checked where it is its own entry in the graph's statements (a
+// loop's init, its step).
+tc_stmt_entry :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+    b := tc_building(k)
+    saved: i32
+    if b != nil { saved = graph_fuse_stmt(b, syntax_id(s), tree_span(k.t, s), tc_stmt_kind(k, s)) }
+    tc_stmt(k, s, env)
+    if b != nil { graph_fuse_stmt_end(b, saved) }
+}
+
+// A loop's collection that is no plain place: held in the loop's own local
+// (a literal built there, its elements settled), or viewed.
+tc_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id, env: ^Type_Scope) -> Type {
+    b := tc_building(k)
+    gi := graph_fuse_items(b, fl)
+    #partial switch k.t.tag[tc_unparen(k, e)] {
+    case .Array, .Literal:
+        from := b.nodes
+        t := solidify_type(tc_store_into(k, e, env, graph_dest_var("items", fl.coll_slot, nil), fl.span))
+        if b := tc_building(k); b != nil {
+            if graph_loop_view_of(t) != nil { tc_fail(k, "a literal loop over its view") }
+            graph_fuse_retype_literal(b, from, b.nodes, t)
+            graph_fuse_typed(b, fl.coll_slot, t)
+        }
+        return t
+    }
+    t, r := tc_expr(k, e, env, .Either)
+    if b := tc_building(k); b != nil {
+        if view := graph_loop_view_of(t); view != nil {
+            fills := is_partial_array(t) && (k.t.tag[tc_unparen(k, e)] == .String || is_slice_type(t))
+            graph_fuse_items_view(b, fl, &gi, r.v, r.place, t, view, false, fills)
+        } else {
+            graph_fuse_typed(b, fl.coll_slot, t)
+            tc_store(k, e, t, r, graph_dest_var("items", fl.coll_slot, t), fl.span)
+        }
+    }
+    return t
+}
+
+// An expression that names a place without running anything: walking it
+// again gives the same place.
+tc_pure_place :: proc(k: ^TC, n: Tree_Id) -> bool {
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Paren: return tc_pure_place(k, Tree_Id(t.a[n]))
+    case .Ident: return true
+    case .Field, .Deref: return tc_pure_place(k, Tree_Id(t.a[n]))
+    case .Index:
+        #partial switch t.tag[tc_unparen(k, Tree_Id(t.b[n]))] {
+        case .Number, .Ident: return tc_pure_place(k, Tree_Id(t.a[n]))
+        }
+    }
+    return false
+}
+
+// `defer {…}`: its body, built as its own code (run at the scope's exits).
+tc_defer :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+    span := tree_span(k.t, s)
+    b := tc_building(k)
+    gd: Graph_Defer
+    if b != nil { gd = graph_fuse_defer(b, span) }
+    tc_scope(k, tree_list(k.t, k.t.a[s]), type_env_block_child(env))
+    if b != nil { graph_fuse_defer_end(b, gd) }
+}
+
+// `x op= v`: `x = x op v`, the operation at the `op=`; a field's or an
+// element's place built once, the operation reading through it.
+tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+    t := k.t
+    span := tree_span(t, s)
+    target := Tree_Id(t.a[s])
+    r := tree_rec(t, t.b[s], 2)
+    op_tok, value := Token_Id(r[0]), Tree_Id(r[1])
+    #partial switch t.tag[target] {
+    case .Field:
+        tc_field_assign(k, s, target, value, env, op_tok)
+        return
+    case .Index:
+        tc_index_assign(k, s, target, value, env, op_tok)
+        return
+    case .Ident:
+    case:
+        tc_unsupported(k, target, "this compound assignment's target")
+        return
+    }
+    name := tc_name(k, target)
+    existing, loc, found := type_env_locate(env, name)
+    if !found && name not_in k.table.constants {
+        report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
+        type_env_set(env, name, Type_Error{})
+        return
+    }
+    if loc != nil && loc.kind == .Struct {
+        tc_unsupported(k, s, "an assignment to a field or module name")
+        return
+    }
+    if is_immutable_param(env, name) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
+    k.hint = existing if !is_untyped(existing) else nil
+    vt, fr := tc_compound_value(k, op_tok, target, value, env, .Into if tc_building(k) != nil else .None)
+    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
+       types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
+        tc_assign_error(k, span, vt, name, existing, target, value)
+    }
+    tc_store(k, 0, vt, fr, graph_dest_var(name, NO_NODE, existing), span)
+}
+
+// A compound assignment's operation: its target (read, or through the place
+// already built: `k.compound`) op its value.
+tc_compound_value :: proc(k: ^TC, op_tok: Token_Id, target, value: Tree_Id, env: ^Type_Scope, want: Fuse_Want) -> (Type, Fused) {
+    op, _ := compound_assign_op(build_tokens[op_tok].kind)
+    t, r := tc_binary_op(k, op, token_span(build_tokens[op_tok]), target, value, env, want, .Explicit)
+    if want != .None && !r.ok { tc_fail(k, "a compound assignment's operation") }
+    return t, r
 }

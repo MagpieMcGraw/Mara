@@ -120,7 +120,9 @@ tc_member_place :: proc(k: ^TC, n: Tree_Id, base: Fused, bt: Type, t: Type) -> O
 }
 
 // `x.f = v`: the field's place, then the value into it.
-tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
+// (`op_tok`: a compound assignment's operator — the value is `target op value`.)
+tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_tok: Token_Id = 0) {
+    diag := value if op_tok == 0 else 0   // (the value, as diagnostics name it)
     tr := k.t
     span := tree_span(tr, s)
     base := Tree_Id(tr.a[target])
@@ -147,7 +149,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     } else if tc_building(k) != nil {
         tc_fail(k, "a write to an unknown field")
     }
-    vt := tc_store_at(k, value, place, env, span)
+    vt := tc_store_at(k, value, place, env, span, op_tok, target)
     k.hint = nil
     if ft == nil {
         tc_error(k, span, TYPE_CLASS_FIELD, sd.name, field)
@@ -157,23 +159,39 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
     }
     if !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !value_preserving_widen(vt, ft) {
-        tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, value, vt), tc_diag_name(k, target), type_name(ft))
+        tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }
-    if is_infer(vt) { tc_literal_overflow(k, value, ft, span) }
+    if is_infer(vt) { tc_literal_overflow(k, diag, ft, span) }
 }
 
 // A value written into a place its target's check built (graph_assign): built
 // into a temporary where it builds in place, then written at the place's
 // type.
-tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, span: Span) -> Type {
+tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, span: Span,
+                    op_tok: Token_Id = 0, target: Tree_Id = 0) -> Type {
     b := tc_building(k)
-    if b == nil || place == NO_VALUE { return tc_check(k, value, env) }
+    if b == nil || place == NO_VALUE {
+        if op_tok != 0 {
+            t, _ := tc_compound_value(k, op_tok, target, value, env, .None)
+            return t
+        }
+        return tc_check(k, value, env)
+    }
+    pt := b.g.type_[place.op] if place.op != NO_NODE else nil
+    d := Dest{kind = .At, at = place, type_ = pt}
+    if op_tok != 0 {
+        // (The operation reads the target through the place built.)
+        saved := k.compound
+        k.compound = {target, place}
+        vt, r := tc_compound_value(k, op_tok, target, value, env, .Into)
+        k.compound = saved
+        tc_store(k, 0, vt, r, d, span, settle = true)
+        return vt
+    }
     if t := k.t.tag[tc_unparen(k, value)]; t == .Ident && tc_name(k, tc_unparen(k, value)) == "void" {
         tc_unsupported(k, value, "a `void` write")
         return Type_Error{}
     }
-    pt := b.g.type_[place.op] if place.op != NO_NODE else nil
-    d := Dest{kind = .At, at = place, type_ = pt}
     vt, r := tc_expr(k, value, env, .Into, dest = d, temp = true, temp_span = span)
     tc_store(k, value, vt, r, d, span, settle = true)
     return vt

@@ -12,6 +12,14 @@ tc_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want := Fuse_Want.Value, w
     if n == 0 { return Type_Error{}, {} }
     b := tc_building(k)
     ask := want if b != nil else .None
+    // A compound assignment's target, read in its operation: through the
+    // place already built.
+    if ask != .None && n == k.compound.target && n != 0 {
+        t := tc_check(k, n, env)
+        span := tree_span(k.t, n)
+        if ask == .Value { return t, {v = graph_read(b, k.compound.place, t, span), ok = true} }
+        return t, {v = k.compound.place, place = true, ok = true}
+    }
     // What has no place of its own, asked for one: held in a temporary.
     if ask == .Place && tc_holds(k, n) {
         t, p := tc_hold(k, n, env, temp_span if temp_span != {} else tree_span(k.t, n))
@@ -212,8 +220,14 @@ tc_value :: proc(k: ^TC, r: Fused, n: Tree_Id, t: Type) -> Operand {
 // `or` short-circuit.
 tc_binary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
     tr := k.t
-    span := tree_span(tr, n)
-    tok := build_tokens[tr.main[n]].kind
+    return tc_binary_op(k, build_tokens[tr.main[n]].kind, tree_span(tr, n), Tree_Id(tr.a[n]), Tree_Id(tr.b[n]), env, want, w)
+}
+
+// `left op right`, where `span` is: a Binary's, or a compound assignment's
+// (`x += v` is `x = x + v`, at the `+=`).
+tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, env: ^Type_Scope,
+                     want: Fuse_Want, w: Written) -> (Type, Fused) {
+    tr := k.t
     op := tok
     wrapping := false
     #partial switch tok {
@@ -227,7 +241,6 @@ tc_binary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writ
         tc_fail(k, "a binary's place")
         build = false
     }
-    left, right := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
     hint := k.hint
     sides: [2]Operand
     widen := [2]int{-1, -1}
@@ -303,7 +316,7 @@ tc_binary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writ
         }
         t = coerce_infer_to_hint(k.c, promote_numeric(k.c, lt, rt, span), hint, span)
     case:
-        tc_unsupported(k, n, "this operator")
+        tc_error(k, span, "tc: the operator %v is not supported yet", tok)
         return Type_Error{}, {}
     }
     if !build { return t, {} }
