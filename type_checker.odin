@@ -1662,6 +1662,8 @@ Checker :: struct {
     // checked and built in the ident's place (lower_subscript_dots).
     dot_refs:        map[^Expr_Ident]Expr,
     assign_types:    map[^Stmt_Assign]^Assign_Types,   // what each assignment's check found
+    define_types:    map[^Stmt_Define]^Assign_Types,   // ... each constant's (its var and env types)
+    destructure_types: map[^Stmt_Multi_Return_Assign]^[dynamic]Type,   // ... each destructure's, per name
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -6138,6 +6140,20 @@ assign_types :: proc(c: ^Checker, s: ^Stmt_Assign) -> ^Assign_Types {
     return t
 }
 
+define_types :: proc(c: ^Checker, s: ^Stmt_Define) -> ^Assign_Types {
+    if t, ok := c.define_types[s]; ok { return t }
+    t := new(Assign_Types)
+    c.define_types[s] = t
+    return t
+}
+
+destructure_types :: proc(c: ^Checker, s: ^Stmt_Multi_Return_Assign) -> ^[dynamic]Type {
+    if t, ok := c.destructure_types[s]; ok { return t }
+    t := new([dynamic]Type)
+    c.destructure_types[s] = t
+    return t
+}
+
 // What a statement declares, as checked (graph_decl_stmt): each name's
 // type, in order, and what it does — a broadcast's statement is its copies'.
 fuse_declared :: proc(c: ^Checker, s: Stmt) -> Graph_Declared {
@@ -6157,10 +6173,10 @@ fuse_declared :: proc(c: ^Checker, s: Stmt) -> Graph_Declared {
                 append(&types, declared(c, a) if a != nil else nil)
             }
         } else {
-            for _, i in v.names { append(&types, v.var_types[i] if i < len(v.var_types) else nil) }
+            for _, i in v.names { append(&types, destructure_types(c, v)^[i] if i < len(destructure_types(c, v)^) else nil) }
         }
     case ^Stmt_Define:
-        append(&types, v.env_type if v.env_type != nil else v.var_type)
+        append(&types, define_types(c, v).env if define_types(c, v).env != nil else define_types(c, v).var)
     }
     d.types = types[:]
     return d
@@ -7562,8 +7578,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 }
                 if main_mod != nil {
                     type_env_set(env, define_name(c.table, s), main_mod)
-                    s.var_type = main_mod
-                    s.env_type = main_mod
+                    define_types(c, s).var = main_mod
+                    define_types(c, s).env = main_mod
                     inc.type_ = main_mod
                     if c.mara_env != nil {
                         type_env_set(c.mara_env, inc.path, main_mod)
@@ -8376,8 +8392,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                         }
                                     }
                                 }
-                                append(&s.var_types, distinct_base(resolved_type))
-                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i, s.var_types[i] if i < len(s.var_types) else nil) }
+                                append(&destructure_types(c, s)^, distinct_base(resolved_type))
+                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i, destructure_types(c, s)^[i] if i < len(destructure_types(c, s)^) else nil) }
                             }
                         }
                     }
@@ -8442,8 +8458,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                         }
                                     }
                                 }
-                                append(&s.var_types, distinct_base(resolved_type))
-                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i, s.var_types[i] if i < len(s.var_types) else nil) }
+                                append(&destructure_types(c, s)^, distinct_base(resolved_type))
+                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i, destructure_types(c, s)^[i] if i < len(destructure_types(c, s)^) else nil) }
                             }
                         }
                     } else if is_any(val_type) {
@@ -8710,7 +8726,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
             fc := fuse_const_begin(c, def)
             val_type := fuse_const_value(c, &fc, def, child, ann)
             fuse_const_end(c, &fc, def, val_type)
-            def.var_type = val_type
+            define_types(c, def).var = val_type
             c.table.constants[define_name(c.table, def)] = def.value
             c.table.constants[bare] = def.value
             type_env_set(child, define_name(c.table, def), val_type)
@@ -9469,7 +9485,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
 
     // Built: its value, as the constant's code (fuse_const_begin).
     fc := fuse_const_begin(c, s)
-    defer fuse_const_end(c, &fc, s, s.env_type)
+    defer fuse_const_end(c, &fc, s, define_types(c, s).env)
 
     ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
     // Feed the annotation to the value as an expected-type hint, mirroring the
@@ -9499,8 +9515,8 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
             if is_infer(val_type) {
                 check_literal_overflow(c, s.value, ann_type, s.span)
             }
-            s.var_type = distinct_base(ann_type)
-            s.env_type = ann_type
+            define_types(c, s).var = distinct_base(ann_type)
+            define_types(c, s).env = ann_type
             type_env_set(pub, define_name(c.table, s), ann_type)
             return
         }
@@ -9513,22 +9529,22 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
         value_needs_literal_handling := val_is_struct_lit || is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
         if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 && value_needs_literal_handling {
             check_struct_literal_assign(c, s.span, s.value, sd, env)
-            s.var_type = distinct_base(ann_type)
-            s.env_type = ann_type
+            define_types(c, s).var = distinct_base(ann_type)
+            define_types(c, s).env = ann_type
             type_env_set(pub, define_name(c.table, s), ann_type)
             return
         }
         if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
             check_union_literal_assign(c, s.span, s.value, ut, env)
-            s.var_type = distinct_base(ann_type)
-            s.env_type = ann_type
+            define_types(c, s).var = distinct_base(ann_type)
+            define_types(c, s).env = ann_type
             type_env_set(pub, define_name(c.table, s), ann_type)
             return
         }
         if fa, ok := check_ann.(^Type_Fixed_Array); ok {
             check_array_assign(c, s.span, define_name(c.table, s), fa, val_type, s.value)
-            s.var_type = distinct_base(ann_type)
-            s.env_type = ann_type
+            define_types(c, s).var = distinct_base(ann_type)
+            define_types(c, s).env = ann_type
             type_env_set(pub, define_name(c.table, s), ann_type)
             return
         }
@@ -9541,14 +9557,14 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
         if is_infer(val_type) {
             check_literal_overflow(c, s.value, ann_type, s.span)
         }
-        s.var_type = distinct_base(ann_type)
-        s.env_type = ann_type
+        define_types(c, s).var = distinct_base(ann_type)
+        define_types(c, s).env = ann_type
         type_env_set(pub, define_name(c.table, s), ann_type)
         return
     }
 
-    s.var_type = distinct_base(val_type)
-    s.env_type = val_type
+    define_types(c, s).var = distinct_base(val_type)
+    define_types(c, s).env = val_type
     type_env_set(pub, define_name(c.table, s), val_type)
 }
 

@@ -606,7 +606,7 @@ Stmt_Assign :: struct {
     is_using:      bool,       // true for `using name := include ...`
     is_decl:       bool,       // true for desugared Stmt_Decl entries; false for reassignment (`x = 10`)
     // Complex LHS assignment (field/index/slice/deref). When non-nil, `name`,
-    // `type_expr`, `var_type`, etc. are unused and the check/gen procs pull
+    // `type_expr`, etc. are unused and the check procs pull
     // sub-expressions out of target and operate on it directly.
     target:        Expr,
     // True when the parser desugared `lhs op= rhs` into `lhs = lhs op rhs`.
@@ -666,8 +666,6 @@ Stmt_Define :: struct {
     type_expr: Type_Expr, // nil if untyped
     value:     Expr,
     span:      Span,
-    var_type:  Type,      // resolved type (distinct-unwrapped), filled by checker
-    env_type:  Type,      // env type preserving distinct
 }
 
 // Multiple assignment: x, y := get_pair()  or  x, y := a, b  or  x, y : int = a, b
@@ -685,7 +683,6 @@ Stmt_Multi_Return_Assign :: struct {
     values:    [dynamic]Expr,
     type_expr: Type_Expr,
     span:      Span,
-    var_types: [dynamic]Type,   // per-name resolved types, filled by type checker (destructure only)
     is_decl:   bool,            // true for the `:=` forms (`x, y := ...`): bare names
                                 // are DECLARED. False for `=` reassignment, where each
                                 // bare name must already be a binding (else a hard error).
@@ -5002,7 +4999,6 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         c := new_clone(v^)
         c.targets = clone_exprs(v.targets)
         c.values = clone_exprs(v.values)
-        c.var_types = {}
         return c
     case Stmt_Call:
         return Stmt_Call{expr = clone_expr(v.expr), span = v.span}
