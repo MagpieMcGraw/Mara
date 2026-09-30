@@ -104,6 +104,7 @@ hoisttest
 idxelem
 idxsafe
 ifarm_neg
+iftmp_leak
 impdefault
 impprv
 inferconflict
@@ -116,6 +117,7 @@ leak_consumer
 literal_ctor_args_neg
 localstruct
 mandelbrot
+mandelbrot_bench
 match_bare_enum
 minu16
 mixwiden
@@ -157,6 +159,8 @@ retmiss_shapes
 retshapes
 rvalue_access
 scollide
+scope
+scope_constants
 seektest
 settled_literal_range_neg
 slerp

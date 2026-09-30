@@ -26,8 +26,8 @@ tc_diag_name :: proc(k: ^TC, n: Tree_Id) -> string {
         idx := tc_diag_name(k, Tree_Id(t.b[n]))
         if idx == "" { return base }
         return fmt.tprintf("%s[%s]", base, idx)
-    case .Call:
-        return fmt.tprintf("%s()", tc_name(k, n))
+    case .Call, .Method_Call:
+        return fmt.tprintf("%s()", tc_call_name(k, n))
     }
     return ""
 }

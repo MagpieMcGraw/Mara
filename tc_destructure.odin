@@ -16,8 +16,8 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     if ann != 0 { ann_t = tc_type(k, ann, env, span) }
     _ = ann_t
     v := tc_unparen(k, value)
-    is_try := t.tag[v] == .Try && t.tag[tc_unparen(k, Tree_Id(t.a[v]))] == .Call
-    if !is_try && t.tag[v] != .Call {
+    is_try := t.tag[v] == .Try && tc_is_call(k, tc_unparen(k, Tree_Id(t.a[v])))
+    if !is_try && !tc_is_call(k, v) {
         tc_unsupported(k, s, "one value given to several targets")
         return
     }

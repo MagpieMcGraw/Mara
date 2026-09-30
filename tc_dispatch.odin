@@ -32,7 +32,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
     for a, i in args {
         if b != nil && tc_building(k) != nil {
             from := b.nodes
-            t, r := tc_expr(k, a, env, .Either, w)
+            t, r := tc_arg(k, a, env, .Either, w)
             append(&arg_types, t)
             if tc_building(k) == nil { continue }
             _, is_array := distinct_base(t).(^Type_Fixed_Array)
@@ -48,7 +48,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: [dynamic]str
             append(&array_values, is_array && !r.place)
             if tr.tag[u] == .Array { append(&literals, Fuse_Literal_Arg{i, from, b.nodes, t}) }
         } else {
-            append(&arg_types, tc_check(k, a, env))
+            append(&arg_types, k.recv.t if a == k.recv.node else tc_check(k, a, env))
         }
     }
     matched := make([dynamic]string, context.temp_allocator)

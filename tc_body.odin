@@ -98,10 +98,10 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if tc_override(k, e, env) { return }
         rt, _ := tc_expr(k, e, env, .Value)
         // A call's value, dropped: `_ = f()` says so.
-        if t.tag[e] == .Call && rt != nil {
+        if tc_is_call(k, e) && rt != nil {
             _, is_void := rt.(Type_Void)
             _, is_error := rt.(Type_Error)
-            if !is_void && !is_error { tc_error(k, span, TYPE_DISCARDED_RETURN, tc_name(k, e)) }
+            if !is_void && !is_error { tc_error(k, span, TYPE_DISCARDED_RETURN, tc_call_name(k, e)) }
         }
     case .Decl:
         tc_decl(k, s, env)
@@ -582,7 +582,7 @@ tc_builds_into :: proc(k: ^TC, e: Tree_Id) -> bool {
     n := tc_unparen(k, e)
     #partial switch k.t.tag[n] {
     case .Literal, .Array: return true
-    case .Call:
+    case .Call, .Method_Call:
         callee := k.callees[n] or_else nil
         return callee != nil && callee.kind == .Struct
     }

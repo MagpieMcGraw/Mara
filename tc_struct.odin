@@ -36,7 +36,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     ask := Fuse_Want.None
     mark: Graph_Mark
     if build {
-        ask = .Place if tc_holds(k, base) || tr.tag[tc_unparen(k, base)] == .Call else .Either
+        ask = .Place if tc_holds(k, base) || tc_is_call(k, tc_unparen(k, base)) else .Either
         mark = graph_fuse_mark(tc_building(k))
     }
     bt, br := tc_expr(k, base, env, ask, w, temp_span = span)
@@ -502,7 +502,7 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
         // call built once).
         gl := gl
         probed: Type
-        if call := tc_unparen(k, entries[0]); len(entries) == 1 && tr.tag[call] == .Call && len(sd.fields) > 1 {
+        if call := tc_unparen(k, entries[0]); len(entries) == 1 && tc_is_call(k, call) && len(sd.fields) > 1 {
             spread: Fused
             if gl != nil {
                 probed, spread = tc_expr(k, entries[0], env, .Value)

@@ -74,12 +74,16 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
     case .Ident:
         return tc_ident(k, n, env, want, w, dest, temp, temp_span)
     case .Unary:
+        // (`&x.f()`: f's receiver addressed — `f(&x)`.)
+        if m := Tree_Id(k.t.a[n]); build_tokens[k.t.main[n]].kind == .Ampersand && k.t.tag[m] == .Method_Call {
+            return tc_call(k, m, env, want, w, dest, temp, temp_span, addressed = n)
+        }
         return tc_unary(k, n, env, want, w)
     case .Deref:
         return tc_deref(k, n, env, want, w)
     case .Binary:
         return tc_binary(k, n, env, want, w)
-    case .Call:
+    case .Call, .Method_Call:
         return tc_call(k, n, env, want, w, dest, temp, temp_span)
     case .Assert:
         return tc_assert(k, n, env, want, w)
@@ -143,10 +147,15 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
             return et, tc_variant_of(k, et, v, name, span, want, w, dest, temp, temp_span)
         }
     }
-    // (A constant: its own module's, or one it uses' — two is ambiguous.)
-    kc, unambiguous := tc_const_ref(k, env, name, span)
-    if !unambiguous { return Type_Error{}, {} }
+    // (A constant: the one a scope around it declares — it shadows a
+    // module's — else its own module's, or one it uses' — two is ambiguous.)
     t, loc_scope, ok := type_env_locate(env, name)
+    kc := tc_local_const(k, env, loc_scope, name) if ok else nil
+    if kc == nil {
+        unambiguous: bool
+        kc, unambiguous = tc_const_ref(k, env, name, span)
+        if !unambiguous { return Type_Error{}, {} }
+    }
     if kc != nil { k.const_nodes[n] = true }
     if !ok && kc != nil {
         // (Not bound here yet: its value's type.)
@@ -168,11 +177,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         if want == .None || want == .Place { return t, {} }
         return t, {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
     }
-    if kc == nil { kc = tc_local_const(k, env, loc_scope, name) }
-    if kc != nil {
-        k.const_nodes[n] = true
-        return t, tc_const_use(k, kc, n, t, want, w)
-    }
+    if kc != nil { return t, tc_const_use(k, kc, n, t, want, w) }
     // (A local is found in no scope: what a scope holds is a fun, a type, a
     // constant — a function sees no module's variables.)
     if loc_scope != nil {
@@ -190,11 +195,13 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     return t, {v = place, place = true, ok = true}
 }
 
-tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+// (`of`: the operand in place of its own — a method call's receiver, where
+// the `&` is written around the call.)
+tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written, of := Tree_Id(0)) -> (Type, Fused) {
     tr := k.t
     span := tree_span(tr, n)
     op := build_tokens[tr.main[n]].kind
-    operand := Tree_Id(tr.a[n])
+    operand := of if of != 0 else Tree_Id(tr.a[n])
     if op == .Minus && tr.tag[operand] == .Number {
         t, r := tc_number(k, operand, span, true, want, w)
         tc_set_type(k, operand, t)
@@ -460,12 +467,12 @@ TC_Call :: struct {
 // A call; asked for its place, stored in a temporary made first (built there,
 // a construction) at the use's span.
 tc_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
-                dest: Dest, temp: bool, temp_span: Span) -> (Type, Fused) {
+                dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> (Type, Fused) {
     b := tc_building(k)
-    if b == nil || want != .Place { return tc_call_impl(k, n, env, want, w, dest, temp, temp_span) }
+    if b == nil || want != .Place { return tc_call_impl(k, n, env, want, w, dest, temp, temp_span, addressed) }
     at := temp_span if temp_span != {} else tree_span(k.t, n)
     slot := graph_slot(b, "temp", nil, at)
-    t, r := tc_call_impl(k, n, env, .Into, w, graph_dest_var("temp", slot, nil), temp, at)
+    t, r := tc_call_impl(k, n, env, .Into, w, graph_dest_var("temp", slot, nil), temp, at, addressed)
     if b = tc_building(k); b == nil { return t, {} }
     if !r.ok {
         tc_fail(k, "a call's place")
@@ -477,14 +484,25 @@ tc_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writte
 }
 
 tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
-                     dest: Dest, temp: bool, temp_span: Span) -> (Type, Fused) {
+                     dest: Dest, temp: bool, temp_span: Span, addressed := Tree_Id(0)) -> (Type, Fused) {
+    if k.t.tag[n] == .Method_Call { return tc_method_call(k, n, env, want, w, dest, temp, temp_span, addressed) }
+    saved := k.recv
+    k.recv = {}
+    defer k.recv = saved
+    return tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]), env, want, w, dest, temp, temp_span)
+}
+
+// A call of `name` on `args` — or, resolved by its qualifier (a method, a
+// module's fun: `qual`; a module's dispatch: `qual_dispatch`), of that.
+tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
+                     dest: Dest, temp: bool, temp_span: Span, qual: ^Type_Scope = nil, qual_dispatch: []string = nil) -> (Type, Fused) {
     tr := k.t
     span := tree_span(tr, n)
-    name := tc_name(k, n)
-    args := tree_list(tr, tr.a[n])
     build := want != .None && tc_building(k) != nil
-    // (A call of several results, as one argument: its extras would be lost.)
+    // (A call of several results, as one argument: its extras would be lost —
+    // a method call's, checked before its receiver.)
     for a in args {
+        if tr.tag[n] == .Method_Call { break }
         if returns := tc_call_returns(k, a, env); len(returns) > 1 {
             tc_error(k, tree_span(tr, tc_unparen(k, a)), TYPE_MULTI_RETURN_AS_ARG, len(returns))
         }
@@ -493,14 +511,22 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         tc_fail(k, "a call's place")
         build = false
     }
-    if t, r, is_builtin := tc_builtin(k, n, name, args, env, want if build else .None, w); is_builtin { return t, r }
-    if members, is_dispatch := find_dispatch(k.c, env, name); is_dispatch {
+    if len(qual_dispatch) > 0 {
+        members := make([dynamic]string, context.temp_allocator)
+        append(&members, ..qual_dispatch)
         return tc_dispatch_call(k, n, name, members, args, env, want if build else .None, w)
     }
-    if tmpl, is_template := k.templates[name]; is_template {
-        return tc_generic_call(k, n, name, tmpl, args, env, want if build else .None, w)
+    if qual == nil {
+        if t, r, is_builtin := tc_builtin(k, n, name, args, env, want if build else .None, w); is_builtin { return t, r }
+        if members, is_dispatch := find_dispatch(k.c, env, name); is_dispatch {
+            return tc_dispatch_call(k, n, name, members, args, env, want if build else .None, w)
+        }
+        if tmpl, is_template := k.templates[name]; is_template {
+            return tc_generic_call(k, n, name, tmpl, args, env, want if build else .None, w)
+        }
     }
     ft_raw, found := type_env_get(env, name)
+    if qual != nil { ft_raw, found = qual, true }
     if !found {
         tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
         for a in args { tc_check(k, a, env) }
@@ -515,7 +541,7 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}, {}
     }
-    if tr.b[n] != 0 { tc_unsupported(k, n, "an override block") }
+    if tr.tag[n] == .Call && tr.b[n] != 0 { tc_unsupported(k, n, "an override block") }
     is_struct := ft.kind == .Struct
     k.callees[n] = ft
     if is_struct { tc_struct_ensure(k, ft) }
@@ -567,10 +593,16 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
             held: Graph_Later
             if is_slice_type(pt) { held = graph_fuse_later(b) }
             r: Fused
-            at, r = tc_expr(k, a, a_env, .Either, item.w, dest = use, temp_span = use_at)
-            if tc_building(k) != nil { append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held)) }
+            if a == k.recv.node {
+                // (The receiver, built where its method was found: its value here.)
+                at, r = k.recv.t, k.recv.r
+                if tc_building(k) != nil { append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i})) }
+            } else {
+                at, r = tc_expr(k, a, a_env, .Either, item.w, dest = use, temp_span = use_at)
+                if tc_building(k) != nil { append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held)) }
+            }
         } else {
-            at = tc_check(k, a, a_env)
+            at = k.recv.t if a == k.recv.node else tc_check(k, a, a_env)
         }
         if !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) && !value_preserving_widen(at, pt) {
             clause := ""
@@ -716,7 +748,7 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type
     each :: proc(k: ^TC, args: []Tree_Id, env: ^Type_Scope, ask: Fuse_Want, w: Written, span: Span,
                  vals: ^[dynamic]Operand, types: ^[dynamic]Type) {
         for a in args {
-            t, r := tc_expr(k, a, env, ask, w, temp_span = span)
+            t, r := tc_arg(k, a, env, ask, w, temp_span = span)
             append(vals, r.v)
             append(types, t)
         }
@@ -797,11 +829,11 @@ tc_print_format :: proc(k: ^TC, args: []Tree_Id, span: Span) {
 // can fail); nil for what is no call.
 tc_call_returns :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> []Type {
     m := tc_unparen(k, n)
-    if k.t.tag[m] != .Call { return nil }
+    if !tc_is_call(k, m) { return nil }
     callee := k.callees[m] or_else nil
     if callee == nil && env != nil {
         // (Not checked yet: the fun its name names.)
-        if t, ok := type_env_get(env, tc_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
+        if t, ok := type_env_get(env, tc_call_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
     }
     if callee == nil { return nil }
     if list, is_ctor := constructor_effective_returns(callee); is_ctor { return list }
@@ -919,7 +951,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
     mark: Graph_Mark
     if b != nil && want != .None { mark = graph_fuse_mark(b) }
     one :: proc(k: ^TC, a: Tree_Id, env: ^Type_Scope, ask: Fuse_Want, w: Written, span: Span) -> (Type, Fused) {
-        return tc_expr(k, a, env, ask, w, temp_span = span)
+        return tc_arg(k, a, env, ask, w, temp_span = span)
     }
     switch name {
     case "print_cstr", "print_int", "print_float":
@@ -1079,7 +1111,7 @@ tc_try :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written
         if b := tc_building(k); b != nil && builds && r.ok { return t, {v = graph_try_after(b, span, r.v), ok = true} }
         return t, {}
     }
-    if k.t.tag[tc_unparen(k, inner)] != .Call {
+    if !tc_is_call(k, tc_unparen(k, inner)) {
         tc_error(k, span, TYPE_TRY_OPERAND_MUST_BE_CALL)
         return done(k, Type_Error{}, builds, r, span)
     }
@@ -1191,4 +1223,23 @@ tc_access_root :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
         case: return cur
         }
     }
+}
+
+// A call's receiver, built where its method was found (tc_method_call):
+// the first argument, not checked again.
+TC_Recv :: struct {
+    node: Tree_Id,
+    t:    Type,
+    r:    Fused,
+}
+
+// An argument, checked and built — or the receiver, as built.
+tc_arg :: proc(k: ^TC, a: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written, temp_span := Span{}) -> (Type, Fused) {
+    if a != 0 && a == k.recv.node {
+        if want == .None { return k.recv.t, {} }
+        r := k.recv.r
+        if want == .Value && r.place { r = {v = tc_value(k, r, a, k.recv.t), ok = true} }
+        return k.recv.t, r
+    }
+    return tc_expr(k, a, env, want, w, temp_span = temp_span)
 }

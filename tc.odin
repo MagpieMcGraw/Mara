@@ -46,8 +46,10 @@ TC :: struct {
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
     callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
+    call_names:    map[Tree_Id]string,   // a method call's name, as its qualifier resolved it
     const_nodes:   map[Tree_Id]bool,  // the names that resolved to a constant
     variant_nodes: map[Tree_Id]bool,  // the names that resolved to an enum's variant
+    recv:          TC_Recv,           // the call being checked's receiver, built
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     size_of:       map[Tree_Id]Type,  // each size_of's type, as checked
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
@@ -94,6 +96,18 @@ tc_text :: proc(tok: Token_Id) -> string {
 // A node's name: its report point's text (a Define's, an Ident's).
 tc_name :: proc(k: ^TC, n: Tree_Id) -> string {
     return tc_text(k.t.main[n])
+}
+
+// A call's name: a method's as its qualifier resolved it, else as written.
+tc_call_name :: proc(k: ^TC, n: Tree_Id) -> string {
+    if name, ok := k.call_names[n]; ok { return name }
+    if k.t.tag[n] == .Method_Call { return tc_text(method_view(k.t, n).name) }
+    return tc_name(k, n)
+}
+
+// Whether a node is a call: plain, or of a method.
+tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
+    return k.t.tag[n] == .Call || k.t.tag[n] == .Method_Call
 }
 
 // The builder, while the body being checked is one the checker builds and
