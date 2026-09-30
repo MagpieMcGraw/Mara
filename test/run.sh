@@ -23,12 +23,6 @@
 cd "$(dirname "$0")" || exit 2
 MARA=../Mara.exe
 
-# The AST-shape invariant (ast_shape.odin): after parsing, passes may annotate
-# the tree but not reshape it. Every build reports each reshape it finds; each
-# distinct one across all fixtures is a mismatch (a stdlib reshape repeats in
-# every fixture that uses it, so it counts once). Full list: ast_shape.log.
-export MARA_AST_SHAPE=1
-
 
 LEGACY_FAIL="capsize_neg clangfail erruse_neg escape_struct_lit_neg fixed_decay_neg inferconflict widenneg"
 # name:reason — stale/pre-existing-broken fixtures that DO have a main (so they
@@ -40,14 +34,13 @@ skip_reason() { for kv in $LEGACY_SKIP; do case "$kv" in "$1:"*) echo "${kv#*:}"
 
 # The fixtures are checked in parallel (JOBS at a time, default every core):
 # each writes its verdict to its own file in $RES — the first line pass,
-# xfail, skip or bad, then what to say about it — and its reshape lines to
-# another; they're tallied afterwards in fixture order.
+# xfail, skip or bad, then what to say about it; they're tallied afterwards in
+# fixture order.
 JOBS=${JOBS:-$(nproc 2>/dev/null || echo 4)}
 RES=$(mktemp -d)
 ROOT="$(cd .. && pwd)"
 export MARA RES ROOT LEGACY_FAIL LEGACY_SKIP
 verdict() { printf '%s\n' "$2" "${3-}" > "$RES/$1.res"; }                   # key kind [message]
-shapes() { echo "$2" | grep -E '^ast-shape\[' | grep -vE '^ast-shape\[[a-z]+\] total ' > "$RES/$1.shape"; }  # key output
 
 check_file() {  # f
   local f=$1 name="${1%.mara}" exp=pass substr="" out comp run rc missing want
@@ -66,7 +59,6 @@ check_file() {  # f
   [ "$exp" = skip ] && { verdict "$name" skip; return; }
 
   out=$("$MARA" build "$name" 2>&1)
-  shapes "$name" "$out"
   if echo "$out" | grep -qE "has no .main|no files found"; then verdict "$name" skip; return; fi
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
 
@@ -105,7 +97,6 @@ check_dir() {  # d
     substr=$(grep -rhE '//@ expect-fail:' "$d" | sed -nE 's#.*//@ expect-fail:[[:space:]]*(.+)#\1#p' | head -1)
   fi
   out=$(cd "$d" && "$ROOT/Mara.exe" build "$d" $flags 2>&1)
-  shapes "$key" "$out"
   comp=no; echo "$out" | grep -q "Compiled module" && comp=yes
   if [ "$exp" = pass ]; then
     if [ "$comp" = yes ]; then verdict "$key" pass; else verdict "$key" bad "REGRESSION (multi-file subdir, want pass): $d"; fi
@@ -116,7 +107,7 @@ check_dir() {  # d
   fi
   rm -f "$d/$d.exe" "$d/$d.dll" "$d/$d.lib" "$d"/*.ll "$d"/*.o "$d/output.ll" 2>/dev/null
 }
-export -f in_list skip_reason verdict shapes check_file check_dir
+export -f in_list skip_reason verdict check_file check_dir
 
 dirs=()
 for d in */; do d="${d%/}"; [ -f "$d/.multifile" ] && dirs+=("$d"); done
@@ -135,10 +126,6 @@ for key in $(printf '%s\n' *.mara | sed 's/\.mara$//') $(printf 'dir.%s\n' "${di
 done
 
 echo "----"
-# Reshapes: each distinct one is a mismatch.
-cat "$RES"/*.shape 2>/dev/null | sort -u > ast_shape.log; rm -rf "$RES"
-shape_n=$(wc -l < ast_shape.log)
-while IFS= read -r r; do echo "RESHAPE: ${r#ast-shape}"; done < ast_shape.log
-bad=$((bad + shape_n))
+rm -rf "$RES"
 echo "pass=$pass  xfail=$xfail  skip=$skip  mismatches=$bad"
 [ $bad -eq 0 ] && { echo "OK — all fixtures matched expectations"; exit 0; } || exit 1

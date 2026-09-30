@@ -5664,7 +5664,8 @@ fusing :: proc(c: ^Checker) -> ^Graph_Builder {
     return b
 }
 
-// What the checker can't build yet: the body is left to the builder.
+// What the checker can't build: the body fails, and the build stops at its
+// scope with why (graph_scope_node).
 fuse_fail :: proc(c: ^Checker, reason: string) {
     if b := fusing(c); b != nil { graph_fuse_fail(b, b.fuse, reason) }
 }
@@ -11597,7 +11598,6 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     for _, prog in c.programs {
         fold_comptime_ifs(&c, prog)
     }
-    ast_shape_begin(c.programs)   // the baseline: parse + fold, before any pass writes
 
     main_prog, prog_ok := programs[main_package]
     if !prog_ok {

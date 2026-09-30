@@ -32,7 +32,6 @@ SIDES="old:$BASE new:$WORK"
 [ -f "$BASE" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }
 rm -rf "$OUT"
 for s in $SIDES; do mkdir -p "$OUT/${s%%:*}" "$OUT/run/${s%%:*}"; done
-unset MARA_AST_SHAPE
 export ROOT OUT NORMALIZE RUN SIDES
 
 # One program, every side: built, its IR kept (and normalized), then — a

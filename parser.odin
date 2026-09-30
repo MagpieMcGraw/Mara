@@ -4722,7 +4722,8 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
 
 // ---------------------------------------------------------------------------
 // AST deep clone — used by generic function monomorphization so each
-// instantiation gets its own AST nodes with independent type annotations.
+// instantiation gets its own nodes, and what the checker finds in each (kept
+// by the node) is its own.
 // ---------------------------------------------------------------------------
 
 clone_exprs :: proc(exprs: [dynamic]Expr) -> [dynamic]Expr {

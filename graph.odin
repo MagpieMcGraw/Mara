@@ -2350,8 +2350,9 @@ graph_scope_name :: proc(ts: ^Type_Scope, s: ^Stmt_Scope, written: Written) -> s
 // order — a nested definition's before its parent's code, a generic's
 // instance at its first call — and each is placed where it goes.
 //
-// Where the checker can't build something yet, the body is the builder's, as
-// it was: built from the annotations, and this segment left out.
+// Where the checker can't build something, the body fails: its segment is
+// dropped, and the builder stops where it meets the scope, saying why
+// (graph_scope_node).
 Graph_Fuse :: struct {
     seg, outer: int,
     stmt:       i32,           // the enclosing build's statement, as it was
@@ -2438,8 +2439,8 @@ graph_fuse_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, bod
     return f
 }
 
-// Leave what the checker couldn't build to the builder: the rest of the body
-// is checked without building, and its segment is dropped.
+// What the checker couldn't build: the rest of the body is checked without
+// building, its segment is dropped, and the builder stops at its scope.
 graph_fuse_fail :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, reason: string) {
     if f.failed == "" { f.failed = reason }
 }

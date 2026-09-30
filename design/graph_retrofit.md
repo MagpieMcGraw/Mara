@@ -944,7 +944,26 @@ erroneous program reports, the negative fixtures say so.
       callee as built (b.callee_of). The pure-place test and text-filling test are the
       checker's (fuse_pure_place, fuse_fills_prefix). Graph and IR identical throughout (one
       field's `= void` now typed; a loop's slot after its collection's place).
-- [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
+- [x] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
+      (2026-09-30.) No field of the syntax tree is written after parsing: what the checker
+      finds is its own, in records keyed by the node. The families, in order:
+      - a size_of's, a take's, a loop's, a match arm's and an intrinsic's types;
+      - an operator's overload and a unary's byte view;
+      - a literal's form;
+      - a dot-ref's lowering and a nested definition's mangled name (now in the symbol
+        table);
+      - an assignment's, a constant's and a destructure's types;
+      - a declaration's lowering and a broadcast's copies;
+      - a call's name, arguments, resolution and function value (Call_Lowered);
+      - what a name resolved to (resolution);
+      - every expression's type (expr_type / set_expr_type).
+      The accessors take the checker. A clone carries nothing, so each generic instance's
+      nodes have facts of their own. With nothing to annotate there is nothing to tell apart
+      from a reshape, so the shape check (`ast_shape.odin`, MARA_AST_SHAPE, the suite's
+      RESHAPE lines) is gone. Graph, IR, runs and `mara ask` stayed identical throughout.
+      Cost: a map lookup where there was a field. On test_1M the check went from 14.4 s to
+      17.2 s (debug), about 2.7M type sets and 0.9M gets, nearly all memory-bound. Phase 5's
+      integer ids turn these maps into arrays indexed by the node.
 
 ## Baselines
 
