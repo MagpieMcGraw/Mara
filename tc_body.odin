@@ -32,6 +32,8 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
         for &fl in ts.fields { fl.type_ = solidify_type(fl.type_) }
         ts.sig_state = .Resolved
     }
+    // (A default param's width the body left open: settled.)
+    solidify_param_defaults(k.c, ts)
     if f != nil {
         if k.c.errors > 0 { graph_fuse_fail(k.gb, f, "errors") }
         graph_fuse_end(k.gb, f)
@@ -236,11 +238,7 @@ tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Sp
     args: []Operand
     if st := tc_bare_struct(ann); st != nil {
         tc_struct_ensure(k, st)
-        if len(st.params) > 0 {
-            tc_fail(k, "a declaration constructed with args")
-            return
-        }
-        if constructs_bare(st) { args = make([]Operand, 0, context.temp_allocator) }
+        if constructs_bare(st) { args = tc_ctor_args(k, st, span) }
     }
     if b = tc_building(k); b == nil { return }
     decl := field

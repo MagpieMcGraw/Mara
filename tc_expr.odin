@@ -483,12 +483,23 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         qualified := name
         if ft.home_package != "" { qualified = strings.concatenate({ft.home_package, ".", name}) }
         tc_error(k, span, TYPE_EXPECTS_ARGS, qualified, len(ft.params), fn_params_desc(ft), len(args))
-    } else if len(args) < len(ft.params) {
-        tc_unsupported(k, n, "a call leaving params to their defaults")
-        return Type_Error{}, {}
     }
-    for a, i in args {
-        if len(args) > len(ft.params) || len(args) < count_required_params(ft) { break }
+    // (The params it leaves off: their defaults, each checked in its fun's
+    // defining scope, run at the call.)
+    items := make([dynamic]TC_Arg, 0, len(ft.params), context.temp_allocator)
+    if len(args) >= count_required_params(ft) && len(args) <= len(ft.params) {
+        for a in args { append(&items, TC_Arg{a, env, w}) }
+        for i := len(args); i < len(ft.params); i += 1 {
+            def := ft.params[i].default_node
+            if k.t.tag[def] == .Hash_Name {
+                tc_unsupported(k, def, "a default the call site gives")
+                return Type_Error{}, {}
+            }
+            append(&items, TC_Arg{def, callee_def_scope(ft), .Implied})
+        }
+    }
+    for item, i in items {
+        a, a_env := item.node, item.env
         pt := ft.params[i].type_
         k.hint = pt
         at: Type
@@ -499,10 +510,10 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
             held: Graph_Later
             if is_slice_type(pt) { held = graph_fuse_later(b) }
             r: Fused
-            at, r = tc_expr(k, a, env, .Either, w, dest = use, temp_span = use_at)
+            at, r = tc_expr(k, a, a_env, .Either, item.w, dest = use, temp_span = use_at)
             if tc_building(k) != nil { append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held)) }
         } else {
-            at = tc_check(k, a, env)
+            at = tc_check(k, a, a_env)
         }
         if !coerce_deferred(k.c, at, pt, span) && types_incompatible(pt, at) && !value_preserving_widen(at, pt) {
             clause := ""
@@ -807,4 +818,34 @@ tc_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, to: Type, span: Span,
         }
     }
     return graph_fuse_widen(b, tc_value(k, r, e, t), span, w)
+}
+
+// An argument as checked: its expression, where its names resolve, and how
+// it is written (a default the call leaves off: implied).
+TC_Arg :: struct {
+    node: Tree_Id,
+    env:  ^Type_Scope,
+    w:    Written,
+}
+
+// A construction's arguments: its constructor's params' defaults (a missing
+// one is reported where it is left off).
+tc_ctor_args :: proc(k: ^TC, ts: ^Type_Scope, span: Span) -> []Operand {
+    args := make([]Operand, len(ts.params), context.temp_allocator)
+    for p, i in ts.params {
+        if p.default_node == 0 { continue }
+        args[i] = tc_default(k, p.default_node, p.type_, ts, span, {sig = ts, param = i})
+    }
+    return args
+}
+
+// A default, where what leaves it off runs it: checked in its owner's
+// defining scope, built at the type it defaults.
+tc_default :: proc(k: ^TC, def: Tree_Id, t: Type, owner: ^Type_Scope, span: Span, w: Graph_Widen) -> Operand {
+    saved := k.hint
+    k.hint = t
+    defer k.hint = saved
+    use, at := tc_use_type(k, def, t, span)
+    vt, r := tc_expr(k, def, callee_def_scope(owner), .Either, .Implied, dest = use, temp_span = at)
+    return tc_value_as(k, def, vt, r, t, span, w)
 }

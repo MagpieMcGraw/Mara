@@ -1,0 +1,4 @@
+# Programs whose build under the new checker differs from the old one's, each
+# difference explained (tcdiff.sh counts them apart from the matches). One per
+# line: the program, then why.
+ctor_param_infer  A field initialized from an untyped ctor param (`origin := cell`) takes the width the body settles the param at (i32), as the test's comment says; the old checker fixed field types before checking the body, so origin was i64.

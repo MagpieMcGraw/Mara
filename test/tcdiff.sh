@@ -53,7 +53,14 @@ for o in "$OUT"/old/*.out; do
 done
 sort -o "$verdicts" "$verdicts"
 grep ' match$' "$verdicts" | cut -d' ' -f1 > "$OUT/matched.txt"
-echo "TCDIFF: $matched of $total programs match"
+explained_file=$ROOT/test/tc_explained.txt
+explained=0
+if [ -f "$explained_file" ]; then
+  for mod in $(grep -v "^#" "$explained_file" | awk 'NF {print $1}'); do
+    if grep -q "^$mod " "$verdicts" && ! grep -q "^$mod match$" "$verdicts"; then explained=$((explained + 1)); fi
+  done
+fi
+echo "TCDIFF: $matched of $total programs match, $explained more differ as explained (test/tc_explained.txt)"
 
 status=0
 record=$ROOT/test/tc_match.txt

@@ -440,13 +440,10 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
     span := tree_span(t, sc.def)
     for g in v.params {
         pv := params_view(t, g)
-        if pv.type_ == 0 || len(pv.values) > 0 {
-            tc_unsupported(k, g, "a param with a default")
-            continue
-        }
-        pt := tc_type(k, pv.type_, sc.env, span)
-        for name in pv.names {
-            append(&ts.params, Struct_Type_Field{name = tc_text(name), type_ = pt})
+        for name, i in pv.names {
+            def := pv.values[i] if i < len(pv.values) else 0
+            pt := tc_param_type(k, tc_text(name), pv.type_, def, sc.env, span)
+            append(&ts.params, Struct_Type_Field{name = tc_text(name), type_ = pt, default_node = def})
         }
     }
     build_param_map(ts)
@@ -667,4 +664,19 @@ tc_is_definition :: proc(tag: Tree_Tag) -> bool {
         return true
     }
     return false
+}
+
+// A param's type: as written; else its default's — a whole number's width
+// the one the body uses it at (a cell, settled once the body is checked), a
+// fraction f64, anything else its checked type.
+tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+    if type_ != 0 { return tc_type(k, type_, env, span) }
+    if def == 0 { return Type_Error{} }
+    if k.t.tag[def] == .Number {
+        if strings.index_byte(tc_text(k.t.main[def]), '.') >= 0 { return Type_F64{} }
+        cell := new(Infer_Cell)
+        cell.name, cell.span = name, span
+        return Type_Infer_Int{cell = cell}
+    }
+    return solidify_type(tc_check(k, def, env))
 }

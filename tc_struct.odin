@@ -297,11 +297,11 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     gl: ^Graph_Literal
     if build {
         if in_temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
-        if len(ts.params) > 0 && !zero {
-            tc_unsupported(k, n, "a literal of a struct with params")
-            return t, {}
-        }
-        gl = graph_fuse_literal(b, span, tc_name(k, ty) if ty != 0 else "", zero, t, d, nil)
+        // (Its constructor's arguments — its params' defaults — then it.)
+        args: []Operand
+        if !zero { args = tc_ctor_args(k, ts, span) }
+        if b = tc_building(k); b == nil { return t, {} }
+        gl = graph_fuse_literal(b, span, tc_name(k, ty) if ty != 0 else "", zero, t, d, args)
         if gl == nil { tc_fail(k, "a literal the graph builds no way") }
     }
     if !zero { tc_literal_fields(k, n, entries, sd, env, gl) }
