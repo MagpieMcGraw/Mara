@@ -717,6 +717,7 @@ CODE_ARENA_SIZE_CONSTANT :: "the program's arena size must be a constant"
 CODE_BARE_CONSTRUCTION_ARGUMENT :: "'%s' is built without arguments, but its param '%s' has no default"
 CODE_SPREAD_SET_LIT_FIELDS_CALL :: "is_spread set but lit.fields[0] is not a call"
 CODE_CONST_NOT_COMPILE_TIME :: "constant '%s': its value must be known at compile time — literals, other constants and arithmetic on them (a call, or a struct with constructor params or statements in its body, needs code to run)"
+TYPE_CONST_NOT_COMPILE_TIME :: CODE_CONST_NOT_COMPILE_TIME
 CODE_CONST_TABLE_UNNAMED :: "internal: aggregate constant has no entry in the constant table"
 CODE_STRUCT_LITERAL_UNTYPED_EXPR ::"struct literal in expression position has no resolved struct type — codegen cannot materialize it (would otherwise silently pass a null pointer)"
 CODE_SPREAD_CALL_TUPLE_RETURN_INFO :: "spread call has no tuple return info"

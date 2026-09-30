@@ -156,6 +156,11 @@ Program_Graph :: struct {
     // the graph, it has no operations; a table's bytes are built from it.
     const_values: map[Node_Id]Expr,
 
+    // Each table's value, by its constant's declaration, computed from its
+    // code (graph_fold_uses); and the uses of constants that have none.
+    tables:      map[Node_Id]^Fold,
+    fold_errors: [dynamic]Fold_Error,
+
     // A fun that consumes a param into its result → which param, by its
     // place among the fun's (graph_find_consumes).
     consumes: map[Node_Id]int,
@@ -615,6 +620,7 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
     append(&g.run_first, i32(len(g.run_ops)))
     if len(b.segs) > 1 { graph_canonicalize(b) }
     graph_link_calls(b)
+    graph_link_constants(b)
     graph_settle_literals(b)
     graph_resolve_defs(b)
     graph_link_flows(b)
@@ -624,6 +630,7 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
     for e in g.edges { if e.to != NO_NODE { g.edges[kept] = e; kept += 1 } }
     resize(&g.edges, kept)
     graph_index_edges(g)
+    graph_fold_uses(g, checked)
     when ODIN_DEBUG {
         graph_check_coverage(b)
         graph_check_runs(b)
@@ -874,6 +881,7 @@ graph_free_columns :: proc(g: ^Program_Graph) {
     delete(g.edges); delete(g.out_first); delete(g.in_edges); delete(g.in_first)
     delete(g.scope_node); delete(g.stmts); delete(g.unreachable); delete(g.settled)
     delete(g.consts); delete(g.assert_sides); delete(g.const_values); delete(g.consumes)
+    delete(g.tables); delete(g.fold_errors)
 }
 
 // A type with its `:=` bindings' deferred widths settled — the one each
@@ -1916,18 +1924,23 @@ graph_const_index :: proc(b: ^Graph_Builder, i: int, span: Span) -> Operand {
     return graph_const(b, .Synthetic, span, slice_header_width_type, fmt.aprintf("%d", i), Const_Value{int = i128(i)})
 }
 
+// A constant whose width is its use's: settled with its body's.
+@(private="file")
+graph_const_settles :: proc(b: ^Graph_Builder, id: Node_Id, t: Type) {
+    if !is_infer(t) { return }
+    if f := b.fuse; f != nil {
+        append(&f.consts, id)   // its width is known when its body's are
+    } else if !is_infer(b.g.type_[id]) {
+        append(&b.g.settled, id)   // a width its `:=` adopted
+    }
+}
+
 // A constant operation, with its value when it has one.
 graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, value: Maybe(Const_Value)) -> Operand {
     o := graph_op_value(b, .Const, w, span, t, name)
     if v, ok := value.?; ok {
         b.g.consts[o.op] = v
-        if is_infer(t) {
-            if f := b.fuse; f != nil {
-                append(&f.consts, o.op)   // its width is known when its body's are
-            } else if !is_infer(b.g.type_[o.op]) {
-                append(&b.g.settled, o.op)   // a width its `:=` adopted
-            }
-        }
+        graph_const_settles(b, o.op, t)
     }
     return o
 }
@@ -1960,53 +1973,17 @@ graph_fills_prefix :: proc(value: Expr) -> bool {
     return false
 }
 
-// A named register-value constant where it's used: its value. One computed
-// from floats (`TWO_PI :: PI * 2`) is computed at the precision of the type
-// it's used at; one the graph can't fold (a union's size) is its
-// expression's operations, run here.
+// A named register-value constant where it's used: its declaration's
+// value, computed at the use's width once the graph is put together
+// (graph_fold_uses). An enum's variant, a length: its value.
 @(private="file")
 graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
-    value := graph_const_value(r, b.checked)
     rc, is_const := r.(Resolved_Constant)
-    if !is_const || value != nil || rc.value_expr == nil { return graph_const(b, w, span, t, name, value) }
-    if ir := llvm_type_from_checker(t); ir == "double" || ir == "float" {
-        if x, folds := graph_fold_float(rc.value_expr, ir == "float"); folds {
-            return graph_const(b, w, span, t, name, Const_Value{float = x, is_float = true})
-        }
-    }
-    graph_fatal(span, "the constant '%s' has no value the graph can evaluate", name)
-}
-
-// A constant float expression's value, each step rounded to single precision
-// when it's used as one — as its arithmetic would be done there. (Rounding a
-// double result to single is the single result: a double holds more than
-// twice the digits.)
-@(private="file")
-graph_fold_float :: proc(e: Expr, single: bool) -> (x: f64, ok: bool) {
-    at :: proc(x: f64, single: bool) -> f64 { return f64(f32(x)) if single else x }
-    #partial switch v in e {
-    case ^Expr_Number:
-        return at(v.value if v.is_float else f64(v.int_value), single), true
-    case ^Expr_Unary:
-        if v.op != .Minus { return 0, false }
-        n := graph_fold_float(v.operand, single) or_return
-        return -n, true
-    case ^Expr_Binary:
-        if _, overloaded := v.overload_fn.?; overloaded { return 0, false }
-        l := graph_fold_float(v.left, single) or_return
-        r := graph_fold_float(v.right, single) or_return
-        #partial switch v.op {
-        case .Plus:  return at(l + r, single), true
-        case .Minus: return at(l - r, single), true
-        case .Star:  return at(l * r, single), true
-        case .Slash: if r != 0 { return at(l / r, single), true }
-        }
-    case ^Expr_Ident:
-        if rc, ok := v.resolved.(Resolved_Constant); ok && rc.value_expr != nil { return graph_fold_float(rc.value_expr, single) }
-    case ^Expr_Field_Access:
-        if rc, ok := v.resolved.(Resolved_Constant); ok && rc.value_expr != nil { return graph_fold_float(rc.value_expr, single) }
-    }
-    return 0, false
+    if !is_const || rc.value_expr == nil { return graph_const(b, w, span, t, name, graph_const_value(r, b.checked)) }
+    o := graph_op_value(b, .Const, w, span, t, name)
+    append(&b.tables, Graph_Table{o.op, expr_identity(rc.value_expr)})
+    graph_const_settles(b, o.op, t)
+    return o
 }
 
 // A string constant's global carries its text in the constants table.
@@ -2020,7 +1997,7 @@ graph_text :: proc(b: ^Graph_Builder, global: Operand, value: Maybe(Const_Value)
 // declaration (once every one is built: a use can come first).
 @(private="file")
 graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
-    o := graph_text(b, graph_op_value(b, .Global, w, span, t, name), graph_const_value(r))
+    o := graph_op_value(b, .Global, w, span, t, name)
     if rc, ok := r.(Resolved_Constant); ok && rc.value_expr != nil {
         append(&b.tables, Graph_Table{o.op, expr_identity(rc.value_expr)})
     }
@@ -2181,7 +2158,7 @@ graph_settle_literals :: proc(b: ^Graph_Builder) {
             if !is_infer(g.type_[o.op]) && !untyped_void { continue }
             if t := graph_literal_use(g, callee, id, k); t != nil && !is_infer(t) {
                 g.type_[o.op] = t
-                if g.op[o.op] == .Const && o.op in g.consts { append(&g.settled, o.op) }
+                if g.op[o.op] == .Const && (o.op in g.consts || g.refers[o.op] != NO_NODE) { append(&g.settled, o.op) }
             }
         }
         if is_infer(g.type_[id]) { g.type_[id] = solidify_type(g.type_[id]) }
@@ -2278,9 +2255,14 @@ graph_resolve_defs :: proc(b: ^Graph_Builder) {
             if d, ok := defs[Key{b.program, g.name[id]}]; ok { g.refers[id] = d }
         }
     }
-    // A constant table's global names the declaration of its value.
+}
+
+// Each use of a named constant names its declaration (built as the checker
+// checked it: a use can come first).
+@(private="file")
+graph_link_constants :: proc(b: ^Graph_Builder) {
     for t in b.tables {
-        if d, ok := b.const_decls[t.value]; ok { g.refers[t.global] = d }
+        if d, ok := b.const_decls[t.value]; ok { b.g.refers[t.global] = d }
     }
 }
 
@@ -4017,7 +3999,8 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     }
     for k in f.checks {
         if k.kind != .Ascends { continue }
-        if resolve(b, k.lo).op in g.consts && resolve(b, k.hi).op in g.consts {
+        lo, hi := resolve(b, k.lo).op, resolve(b, k.hi).op
+        if lo != NO_NODE && hi != NO_NODE && g.op[lo] == .Const && g.op[hi] == .Const {
             graph_drop(b, k.ids[0], NO_VALUE); graph_drop(b, k.ids[1], NO_VALUE)
         }
     }

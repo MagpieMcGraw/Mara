@@ -12611,6 +12611,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         if _, is_err := resolved.(Type_Error); is_err {
             check_error(c, e.span, TYPE_SIZE_UNKNOWN_TYPE)
         }
+        ensure_layout(c, resolved)   // (its size: known now)
         e.resolved_type = resolved
         return Type_Infer_Int{}
     case ^Expr_Assert:
@@ -12958,6 +12959,24 @@ resolve_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
 // cycle-guarded via sig_state. Works for ALL funs — top-level ones resolve
 // against their persistent decl_env, nested ones against a decl env rebuilt
 // from the durable parent_scope graph (build_scope_decl_env). No eager pass.
+// A type's layout, complete: each struct in it resolved — for a size taken
+// before any use resolved one.
+ensure_layout :: proc(c: ^Checker, t: Type) {
+    #partial switch v in t {
+    case ^Type_Scope:
+        if v.kind != .Struct { return }
+        ensure_struct_signature(c, &v.sd)
+        for f in v.sd.fields { ensure_layout(c, f.type_) }
+    case ^Type_Fixed_Array:   ensure_layout(c, v.elem)
+    case ^Type_Partial_Array: ensure_layout(c, v.elem)
+    case ^Type_Distinct:      ensure_layout(c, v.base_type)
+    case ^Type_Union:
+        for _, flat in v.variant_structs {
+            if st, ok := c.table.structs[flat]; ok { ensure_layout(c, st) }
+        }
+    }
+}
+
 ensure_fun_signature :: proc(c: ^Checker, ft: ^Type_Scope) {
     if ft == nil || ft.kind != .Fun || ft.sig_state != .Unresolved { return }
     ft.sig_state = .In_Progress

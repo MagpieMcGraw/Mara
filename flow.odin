@@ -46,6 +46,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         flow_check_init(c, checked, starts)
         flow_check_defer_writes(c, checked, starts)
         flow_check_void(c, checked)
+        flow_check_constants(c, checked)
     }
     for ft in flow_functions(checked) {
         if ft == nil { continue }
@@ -617,6 +618,20 @@ flow_dump_stats :: proc(stats: Flow_Stats) {
     )
     fmt.eprintf("[flow] missing-return flagged: %d %v\n",
         len(stats.missing_return), stats.missing_return)
+}
+
+// --- constants -----------------------------------------------------------------
+// A use of a constant whose value can't be known before the program runs
+// (graph_fold_uses: a call in it, a struct's construction with arguments).
+
+flow_check_constants :: proc(c: ^Checker, checked: ^Checked_Program) {
+    seen: map[Span]bool   // generic instances share their template's spans
+    defer delete(seen)
+    for e in checked.graph.fold_errors {
+        if seen[e.span] { continue }
+        seen[e.span] = true
+        check_error(c, e.span, TYPE_CONST_NOT_COMPILE_TIME, e.name)
+    }
 }
 
 // --- void into pointers ------------------------------------------------------

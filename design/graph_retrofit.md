@@ -889,6 +889,18 @@ erroneous program reports, the negative fixtures say so.
       the corpus is built (a module's too: the pass that checked a module constant's literal
       fields after the rest — from before struct signatures resolved on demand — is gone);
       the IR identical modulo naming (runs renumbered), the ask corpus identical.
+      (A fun's blocks are now labeled by their place in it, so one fun's IR changes only
+      when its own graph does.) Step 2 done: graph_fold.odin runs a constant's code — a
+      number or text, or an aggregate built as the program builds one (a construction zeroes
+      and runs its struct's code) — and a use of a named constant names its declaration and
+      takes its value once the graph is put together (graph_fold_uses), an untyped one at its
+      use's width (rounded at each step for an f32, as graph_fold_float did); every table's
+      value is computed too (g.tables) and one that can't be is a type error where what can't
+      be computed is written (was a codegen error). The syntax tree's folding at uses is gone
+      (graph_fold_float). Found: a `size_of` checked before its struct's fields resolved was
+      0 (a constant's code is built as it is checked): the checker now completes a type's
+      layout where its size is taken (ensure_layout). IR byte-identical, the graph the same
+      but for the uses' new links to their constants.
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines
