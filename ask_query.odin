@@ -185,7 +185,7 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     // the source names exactly one node, so unlike `at <file>:<line>` (which
     // disambiguates a NAMED variable) it needs no target.
     if q.target == "" && strings.count(q.at, ":") == 2 {
-        return ask_at_point(s.programs, s.all_files, q.at)
+        return ask_at_point(s.programs, s.all_files, &s.checked.graph, q.at)
     }
     s.checked.du.want_control = q.control   // the post-dominator pass, only when asked
     return ask(s.checked, q.target, q.kind, q.dir, in_.fn, q.at, s.pkg, in_.file, in_.module, q.depth)

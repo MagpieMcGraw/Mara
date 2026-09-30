@@ -2985,12 +2985,18 @@ make_lhs_assign :: proc(lhs: Expr, value: Expr, start: Span, is_compound: bool =
 // can restore and reject the statement.
 parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
     lhs: Expr = new_clone(Expr_Ident{name = first_tok.text, span = token_span(p,first_tok)})
+    // (Each link reported at the chain's first token, covering it all.)
+    chain :: proc(p: ^Parser, first_tok: Token) -> Span {
+        s := token_span(p, first_tok)
+        s.tok_end = p.pos
+        return s
+    }
     for {
         #partial switch current_kind(p) {
         case .Dot:
             advance(p) // consume '.'
             field_tok := expect_field_name(p)
-            lhs = new_clone(Expr_Field_Access{expr = lhs, field = field_tok.text, span = token_span(p,first_tok)})
+            lhs = new_clone(Expr_Field_Access{expr = lhs, field = field_tok.text, span = chain(p, first_tok)})
         case .Left_Bracket:
             advance(p) // consume '['
             idx := parse_expr(p)
@@ -2998,10 +3004,10 @@ parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
                 return {}, false
             }
             advance(p) // consume ']'
-            lhs = new_clone(Expr_Index{expr = lhs, index = idx, span = token_span(p,first_tok)})
+            lhs = new_clone(Expr_Index{expr = lhs, index = idx, span = chain(p, first_tok)})
         case .Caret:
             advance(p) // consume '^'
-            lhs = new_clone(Expr_Unary{op = .Caret, operand = lhs, span = token_span(p,first_tok)})
+            lhs = new_clone(Expr_Unary{op = .Caret, operand = lhs, span = chain(p, first_tok)})
         case:
             return lhs, true
         }
@@ -3278,9 +3284,11 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                     expect(p, .Right_Bracket)
                     // Must be immediately followed by '=' to be a slice assign
                     if current_kind(p) == .Equals {
+                        target_span := start
+                        target_span.tok_end = p.pos
                         advance(p) // consume '='
                         value := parse_expr(p)
-                        slice_target := new_clone(Expr_Slice{expr = lhs, low = low, high = high, span = start})
+                        slice_target := new_clone(Expr_Slice{expr = lhs, low = low, high = high, span = target_span})
                         return new_clone(Stmt_Assign{target = slice_target, value = value, span = start}), true
                     }
                     // Not an assignment — can't use slice syntax as an expression statement
@@ -3292,6 +3300,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 idx.expr = lhs
                 idx.index = low
                 idx.span = start
+                idx.span.tok_end = p.pos   // (reported at the target's start, covering it)
                 lhs = idx
             } else if current_kind(p) == .Dot {
                 advance(p) // consume '.'
@@ -3300,6 +3309,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 fa.expr = lhs
                 fa.field = field_tok.text
                 fa.span = start
+                fa.span.tok_end = p.pos
                 lhs = fa
             } else if current_kind(p) == .Caret {
                 advance(p) // consume '^'
@@ -3307,6 +3317,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 unary.op = .Caret
                 unary.operand = lhs
                 unary.span = start
+                unary.span.tok_end = p.pos
                 lhs = unary
             }
         }

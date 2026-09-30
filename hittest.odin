@@ -25,6 +25,10 @@ import "core:path/filepath"
 // what it was aimed at. Some resolved information lives on the desugared node,
 // so a renderer may need to follow those links even though the walk does not.
 // Type_Exprs are also skipped: a separate union, and no extents on it yet.
+//
+// An expression's type is the graph's: of the operation built where it is
+// written (hit_type). What builds none — a constant's value, a module's or a
+// type's name — shows none.
 // ---------------------------------------------------------------------------
 
 Hit :: struct {
@@ -254,11 +258,37 @@ span_text :: proc(src: string, tokens: []Token, s: Span) -> string {
     return strings.trim_space(src[lo:hi])
 }
 
+// The type the graph gives what is written at a span: its first operation
+// written there that holds a value (a place before its read, an operation
+// before what takes it) — not one implied by its use, nor the place a store
+// there writes into (what it is stored in, not what it is).
+@(private="file")
+hit_type :: proc(g: ^Program_Graph, s: Span) -> Type {
+    at := make([dynamic]Node_Id, context.temp_allocator)
+    for id in 0 ..< len(g.kind) {
+        if g.kind[id] == .Op && g.origin[id] == s { append(&at, Node_Id(id)) }
+    }
+    into := make(map[Node_Id]bool, context.temp_allocator)
+    #reverse for id in at {
+        #partial switch g.op[id] {
+        case .Write, .Zero, .Construct, .Fill, .Byte_Read:
+            into[graph_operands(g, id)[0].op] = true
+        case .Field, .Index, .View, .Deref, .Variant, .Swizzle, .Slice:
+            // (A place written into is its base's too.)
+            if into[id] { into[graph_operands(g, id)[0].op] = true }
+        }
+    }
+    for id in at {
+        if g.type_[id] != nil && g.written[id] == .Explicit && !into[id] { return g.type_[id] }
+    }
+    return nil
+}
+
 // Resolve `<file>:<line>:<col>` to the chain of AST nodes containing it.
 // Returns rendered text and whether anything was found.
 ask_at_point :: proc(programs: map[string]^Program,
                      all_files: map[string][dynamic]^Source_File,
-                     spec: string) -> (string, bool) {
+                     g: ^Program_Graph, spec: string) -> (string, bool) {
     parts := strings.split(spec, ":")
     defer delete(parts)
     if len(parts) != 3 {
@@ -316,7 +346,12 @@ ask_at_point :: proc(programs: map[string]^Program,
         if h.span.tok == prev.tok && h.span.tok_end == prev.tok_end { continue }  // defs/body overlap
         prev = h.span
         t := ""
-        if h.expr != nil { t = ask_label(expr_type(h.expr)) }
+        if h.expr != nil {
+            // (A `?`'s value is its call's.)
+            at := h.span
+            if try, is_try := h.expr.(^Expr_Try); is_try { at = expr_span(try.inner)^ }
+            t = ask_label(hit_type(g, at))
+        }
         fmt.sbprintf(&sb, "  %-24s [%d,%d)  %s", h.label, h.span.tok, h.span.tok_end,
                      span_text(src_file.source, tokens, h.span))
         if t != "" { fmt.sbprintf(&sb, "   : %s", t) }

@@ -871,6 +871,14 @@ erroneous program reports, the negative fixtures say so.
       copy of a param, its one mention, of the result's type. The emitter reads it
       (graph_consumed); the syntax-tree versions (consumed_param_of, find_nrvo_candidate, the
       mention walkers) and two Fun_Info fields nothing read are deleted.
+      Hit testing takes an expression's type from the graph: the first operation written
+      where it is that holds a value — not one implied by a use (a cast of an argument), nor
+      a place a store there writes into (a literal's fields and elements are built through
+      its destination, rebuilt at each value's span); a `?` shows its call's. Compared with the
+      annotations' labels over every token of Pounce (16,935 points): the same but where the
+      graph builds nothing — a constant's value, a module's or a type's name (none shown) —
+      and where it knows more (an array literal's distinct type, `#self`). Found on the way: a
+      statement's target (`a.b[i]^ = …`) had the span of its first token, not its extent.
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines

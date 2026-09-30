@@ -602,6 +602,19 @@ below (flow) — what this variable affects  (forward slice)
 
   into calls — the value lands in  (1 parameter)
     mat4_mul               (param b : distinct Mat4)  camera.mara:150
+=== Pounce | at gfx_mesh_generation.mara:69:11
+gfx_mesh_generation.mara:69:11  token '0'
+
+  Stmt_Scope               [430,1487)  primitive_cube :: fun() -> [24]Vertex, [36]u32 { …
+  Stmt_Assign              [463,500)  verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
+  Expr_Index               [463,467)  verts[0]   : Vertex
+  Expr_Number              [465,466)  0
+=== Pounce | at Pounce.mara:101:27
+Pounce.mara:101:27  token 'draw_state_create'
+
+  Stmt_Scope               [350,665)  game_init :: fun(game: ^Megastruct, memory: ^[]byte) { …
+  Stmt_Assign              [487,506)  game.draw_state_object = draw_state_create( …
+  Expr_Call                [491,506)  draw_state_create( …   : DrawState
 === test/operator_calls.mara | sum
 sum — fun  operator_calls.mara:26   (module operator_calls)
 
