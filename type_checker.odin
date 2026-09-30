@@ -1657,6 +1657,10 @@ Checker :: struct {
     byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
     size_of_types:   map[^Expr_Size_Of]Type,  // each size_of's measured type, as checked
     overrides:       map[^Expr_Struct_Literal]bool,   // `var{...}` statements: a variable's fields written in place
+    // What a dot-ref stands for when it is not a variant — `.len` / `.cap` in
+    // a subscript is the base's own field (`a.fonts[.len]` → `a.fonts.len`),
+    // checked and built in the ident's place (lower_subscript_dots).
+    dot_refs:        map[^Expr_Ident]Expr,
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -6045,15 +6049,17 @@ Fuse_Assign :: struct {
 
 // An expression that names a place without running anything: walking it again
 // gives the same place.
-fuse_pure_place :: proc(e: Expr) -> bool {
+fuse_pure_place :: proc(c: ^Checker, e: Expr) -> bool {
     #partial switch v in e {
-    case ^Expr_Ident:        return v.lowered == nil || fuse_pure_place(v.lowered)
+    case ^Expr_Ident:
+        lowered, is_lowered := c.dot_refs[v]
+        return !is_lowered || fuse_pure_place(c, lowered)
     case ^Expr_Self:         return true
-    case ^Expr_Field_Access: return fuse_pure_place(v.expr)
-    case ^Expr_Unary:        return v.op == .Caret && fuse_pure_place(v.operand)
+    case ^Expr_Field_Access: return fuse_pure_place(c, v.expr)
+    case ^Expr_Unary:        return v.op == .Caret && fuse_pure_place(c, v.operand)
     case ^Expr_Index:
         #partial switch i in v.index {
-        case ^Expr_Number, ^Expr_Ident: return fuse_pure_place(v.expr)
+        case ^Expr_Number, ^Expr_Ident: return fuse_pure_place(c, v.expr)
         }
     }
     return false
@@ -8967,7 +8973,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         // else is held first, in a local the loop walks: fuse_loop_items.)
         coll_type: Type
         coll := NO_VALUE
-        if b != nil && !fuse_pure_place(s.collection) {
+        if b != nil && !fuse_pure_place(c, s.collection) {
             coll_type = fuse_loop_items(c, &fl, s, child)
         } else if b != nil {
             r: Fused
@@ -9972,7 +9978,7 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
 
 check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     ix := s.target.(^Expr_Index)
-    lower_subscript_dots(ix.expr, ix.index)
+    lower_subscript_dots(c, ix.expr, ix.index)
     // `::` constants can be read by index — the codegen routes that through
     // the literal's .rodata global. But writing through one would attempt
     // to mutate read-only memory at runtime, so reject at the type-check
@@ -10117,15 +10123,15 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
 
 check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     sl := s.target.(^Expr_Slice)
-    lower_subscript_dots(sl.expr, sl.low)
-    lower_subscript_dots(sl.expr, sl.high)
+    lower_subscript_dots(c, sl.expr, sl.low)
+    lower_subscript_dots(c, sl.expr, sl.high)
     // Built: the target's slice (its bounds, its collection's place — a
     // plain place, checked first), then the value into its elements. Into
     // bytes, a value no array is written as its own type at lo — a view —
     // known once it is checked: both are built, one left out
     // (graph_fuse_span_target).
     b := fusing(c)
-    if b != nil && !fuse_pure_place(sl.expr) {
+    if b != nil && !fuse_pure_place(c, sl.expr) {
         fuse_fail(c, "a slice of no plain place")
         b = nil
     }
@@ -10517,7 +10523,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     slot := NO_NODE
     subj_type: Type
     subject := NO_VALUE
-    if b != nil && !fuse_pure_place(s.subject) {
+    if b != nil && !fuse_pure_place(c, s.subject) {
         slot = graph_slot(b, "subject", nil, s.span)
         subj_type = fuse_store_into(c, s.subject, env, graph_dest_var("subject", slot, nil), s.span)
         if fusing(c) != nil { graph_fuse_typed(b, slot, subj_type) }
@@ -12686,9 +12692,9 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     case ^Expr_Ident:
         // A dot-ref lowered to an expression (`.len` in a subscript) is that
         // expression — typed with the hint still in place, as if written out.
-        if e.lowered != nil {
+        if lowered, is_lowered := c.dot_refs[e]; is_lowered {
             c.want, c.want_written, c.asked = c.asked, c.asked_written, .None   // (built as it)
-            return check_expr(c, e.lowered, env)
+            return check_expr(c, lowered, env)
         }
         // Snapshot the hint for this expression and clear it on the checker so
         // child calls within this branch don't accidentally inherit it.
@@ -12902,7 +12908,8 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         // Type_Slice_Expr{elem = Type_Generic_Instance{Vertex, [n]}}. When the
         // elem name is not a generic template and there's exactly one type-arg,
         // the arg is a runtime count. The source stays as written; the lowered
-        // form goes to e.lowered_type / e.lowered_count.
+        // form is read from here on.
+        take_type, take_count := e.type_expr, e.count_expr
         if e.count_expr == nil {
             if ts, ts_ok := e.type_expr.(^Type_Slice_Expr); ts_ok {
                 if gi, gi_ok := ts.elem.(^Type_Generic_Instance); gi_ok && len(gi.type_args) == 1 {
@@ -12926,8 +12933,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                         if count != nil {
                             bare := new_clone(ts^)
                             bare.elem = Type_Name{name = gi.name, span = gi.span}
-                            e.lowered_type = bare
-                            e.lowered_count = count
+                            take_type, take_count = bare, count
                         }
                     }
                 }
@@ -12951,7 +12957,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                 resolved = Type_Error{}
             }
         } else {
-            resolved = resolve_type_expr(take_type(e), c, e.span, env=env)
+            resolved = resolve_type_expr(take_type, c, e.span, env=env)
             if _, is_err := resolved.(Type_Error); is_err {
                 check_error(c, e.span, TYPE_TAKE_UNKNOWN_TYPE)
             }
@@ -12961,7 +12967,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         // it as the builder walks it), then the carve.
         want, w := fuse_asked(c)
         b := fusing(c) if want != .None else nil
-        if b != nil && (want == .Place || !fuse_carves_place(e)) {
+        if b != nil && (want == .Place || !fuse_carves_place(c, e)) {
             fuse_fail(c, "a take's place, or a take from no plain place")
             b = nil
         }
@@ -12969,7 +12975,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         // Runtime-counted form: validate count is integer at slice header
         // width, resolved is a slice. Codegen does NOT emit an implicit
         // narrow/widen on the count.
-        if count := take_count(e); count != nil {
+        if count := take_count; count != nil {
             count_type: Type
             if b != nil { count_type, count_op = fuse_bound(c, count, env, w, e.span) } else { count_type = check_expr(c, count, env) }
             if !is_any(count_type) && !is_numeric(count_type) {
@@ -15696,18 +15702,18 @@ clone_pure_lvalue :: proc(e: Expr) -> Expr {
     return e
 }
 
-lower_subscript_dots :: proc(base: Expr, sub: Expr) {
+lower_subscript_dots :: proc(c: ^Checker, base: Expr, sub: Expr) {
     if sub == nil || !subscript_base_is_pure(base) { return }
     #partial switch n in sub {
     case ^Expr_Ident:
-        if n.is_dot && (n.name == "len" || n.name == "cap") && n.lowered == nil {
-            n.lowered = new_clone(Expr_Field_Access{expr = clone_pure_lvalue(base), field = n.name, span = n.span})
+        if n.is_dot && (n.name == "len" || n.name == "cap") && n not_in c.dot_refs {
+            c.dot_refs[n] = new_clone(Expr_Field_Access{expr = clone_pure_lvalue(base), field = n.name, span = n.span})
         }
     case ^Expr_Binary:
-        lower_subscript_dots(base, n.left)
-        lower_subscript_dots(base, n.right)
+        lower_subscript_dots(c, base, n.left)
+        lower_subscript_dots(c, base, n.right)
     case ^Expr_Unary:
-        lower_subscript_dots(base, n.operand)
+        lower_subscript_dots(c, base, n.operand)
     }
 }
 
@@ -15743,7 +15749,7 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope) -> Type {
 }
 
 check_index_impl :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope, fi: ^Fuse_Index) -> Type {
-    lower_subscript_dots(e.expr, e.index)
+    lower_subscript_dots(c, e.expr, e.index)
     base_type: Type
     if fi != nil {
         base: Fused
@@ -15883,9 +15889,9 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
 
 // Whether a take's storage is a plain place (`&s`, `&bytes[i]`, `s`): what
 // the builder walks where the carve is.
-fuse_carves_place :: proc(e: ^Expr_Take) -> bool {
-    if u, is_addr := e.storage.(^Expr_Unary); is_addr && u.op == .Ampersand { return fuse_pure_place(u.operand) }
-    return fuse_pure_place(e.storage)
+fuse_carves_place :: proc(c: ^Checker, e: ^Expr_Take) -> bool {
+    if u, is_addr := e.storage.(^Expr_Unary); is_addr && u.op == .Ampersand { return fuse_pure_place(c, u.operand) }
+    return fuse_pure_place(c, e.storage)
 }
 
 // A slice's bound, built: at the header's width (as it is, `raw`).
@@ -15898,10 +15904,10 @@ fuse_bound :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, w: Written, span: Spa
 }
 
 check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fuse_Slice) -> Type {
-    lower_subscript_dots(e.expr, e.low)
-    lower_subscript_dots(e.expr, e.high)
+    lower_subscript_dots(c, e.expr, e.low)
+    lower_subscript_dots(c, e.expr, e.high)
     target_type: Type
-    if b := fusing(c); b != nil && fs != nil && !fuse_pure_place(e.expr) {
+    if b := fusing(c); b != nil && fs != nil && !fuse_pure_place(c, e.expr) {
         // A base that is no plain place, built as it is checked, put after
         // the bounds: a field's, an element's, a pointer's place (over a
         // call's result, say) as it is; else — a call's result, text — held

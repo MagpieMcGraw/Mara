@@ -210,11 +210,6 @@ Expr_Ident :: struct {
     type_:    Type,
     resolved: Resolved_Name,  // filled by type checker (enum variants, constants)
     is_dot:   bool,           // .Variant shorthand: resolve via expected type or visible-variant search
-    // Filled by type checker: what a dot-ref stands for when it is not a
-    // variant — `.len` / `.cap` in a subscript is the base's own field
-    // (`a.fonts[.len]` → `a.fonts.len`). Checked and emitted in the ident's
-    // place; the ident itself stays as written.
-    lowered:  Expr,
 }
 
 Expr_Unary :: struct {
@@ -442,8 +437,7 @@ Expr_Assert :: struct {
 //   take([]T(n), storage)  — runtime-counted: advances by n*sizeof(T),
 //                            returns []T with len=cap=n. n is a runtime
 //                            or compile-time integer expression. The type
-//                            checker lowers it to type []T, count n (read
-//                            through take_type / take_count).
+//                            checker reads it as type []T, count n.
 Expr_Take :: struct {
     type_expr:     Type_Expr,
     storage:       Expr,
@@ -451,18 +445,6 @@ Expr_Take :: struct {
     keyword:       string,    // "let" or "slice" — discriminates value vs slice carve
     span:          Span,
     type_:         Type,
-    // `[]T(n)` as the checker reads it (the parser takes `T(n)` for a generic
-    // instance): type []T, count n. Nil when the source needs no lowering.
-    lowered_type:  Type_Expr,
-    lowered_count: Expr,
-}
-
-take_type :: proc(e: ^Expr_Take) -> Type_Expr {
-    return e.lowered_type if e.lowered_type != nil else e.type_expr
-}
-
-take_count :: proc(e: ^Expr_Take) -> Expr {
-    return e.lowered_count if e.lowered_count != nil else e.count_expr
 }
 
 Expr_If :: struct {
@@ -4877,7 +4859,6 @@ clone_expr :: proc(e: Expr) -> Expr {
         c := new_clone(v^)
         c.type_ = nil
         c.resolved = nil
-        c.lowered = nil
         return c
     case ^Expr_Bool:
         c := new_clone(v^)
@@ -4965,8 +4946,6 @@ clone_expr :: proc(e: Expr) -> Expr {
         c.storage = clone_expr(v.storage)
         if v.count_expr != nil { c.count_expr = clone_expr(v.count_expr) }
         c.type_ = nil
-        c.lowered_type = nil
-        c.lowered_count = nil
         return c
     case ^Expr_If:
         c := new_clone(v^)

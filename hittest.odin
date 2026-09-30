@@ -106,7 +106,7 @@ hit_expr :: proc(e: Expr, i: int, out: ^[dynamic]Hit) {
         hit_expr(v.cond, i, out)
     case ^Expr_Take:
         add_expr(out, "Expr_Take", e, i)
-        hit_expr(v.storage, i, out); hit_expr(take_count(v), i, out)
+        hit_expr(v.storage, i, out); hit_expr(v.count_expr, i, out)
     case ^Expr_If:
         add_expr(out, "Expr_If", e, i)
         hit_expr(v.condition, i, out); hit_expr(v.then_expr, i, out); hit_expr(v.else_expr, i, out)
