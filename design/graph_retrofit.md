@@ -37,7 +37,7 @@ knowledge moves into graph building.
 | 2 | Analyses onto the graph: call graph becomes an index; `cfg.odin`, `usedef.odin` dissolve; flow, slice/lineage, `mara ask`; definite assignment and escape last | analysis files | IR identical; recorded `mara ask` outputs identical |
 | 3 | Codegen from the graph, one function at a time (the switch is the per-module worker loop); graph building absorbs codegen's implicit operations | codegen | normalized IR diff + runtime differential |
 | 4 | The checker builds the graph directly; annotations, `lowered_*`, accessors and the shape check are deleted | checker | suite + IR diff |
-| 5 | Flat syntax tree: integer ids, token ranges, slim tokens | parser, checker | shape parity, then IR diff |
+| 5 | Flat syntax tree: integer ids, token ranges, slim tokens; the checker rewritten on it (`design/flat_tree.md`) | parser, checker | no token lost; graph identical to the old checker's |
 
 Phases 3 and 4 run on their own branch with no parallel compiler work. The compiler runs over 50k
 lines while old and new codegen coexist; the end state should be smaller than today.
@@ -997,7 +997,8 @@ The syntax tree made flat: integer ids, token ranges, slim tokens (the table abo
       text, so a span ending in a string literal showed cut short (fixed).
       Graph, IR, diagnostics and `mara ask` output identical through all three; test_1M
       unchanged within noise (lex and parse a little faster).
-- [ ] The tree in arrays by id
+- [ ] The tree in arrays by id — Zig-style, with the checker rewritten on it (decided
+      2026-09-30): the plan is `design/flat_tree.md`.
 
 ## Baselines
 
