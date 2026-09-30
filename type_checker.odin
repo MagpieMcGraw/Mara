@@ -9589,8 +9589,10 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     lower_subscript_dots(sl.expr, sl.low)
     lower_subscript_dots(sl.expr, sl.high)
     // Built: the target's slice (its bounds, its collection's place — a
-    // plain place, checked first), then the value into its elements. (Into
-    // bytes, a value written as its own type is a view: the builder's.)
+    // plain place, checked first), then the value into its elements. Into
+    // bytes, a value no array is written as its own type at lo — a view —
+    // known once it is checked: both are built, one left out
+    // (graph_fuse_span_target).
     b := fusing(c)
     if b != nil && !graph_pure_place(sl.expr) {
         fuse_fail(c, "a slice of no plain place")
@@ -9603,17 +9605,35 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         t.elem = elem
         sl.type_ = t
     }
+    bytes := b != nil && fusing(c) != nil && is_byte_buffer(target_type)
+    st: Graph_Span_Target
+    if bytes { st = graph_fuse_span_target(b, sl.expr, s.span) }
     lo, hi := NO_VALUE, NO_VALUE
     low_type, high_type: Type
-    if b != nil { low_type, lo = fuse_bound(c, sl.low, env, .Explicit, sl.span) } else { low_type = check_expr(c, sl.low, env) }
+    if b != nil { low_type, lo = fuse_bound(c, sl.low, env, .Explicit, sl.span, raw = bytes) } else { low_type = check_expr(c, sl.low, env) }
+    if bytes { graph_fuse_span_target_hi(b, &st, lo, sl.span) }
     if sl.high != nil {
         if b != nil { high_type, hi = fuse_bound(c, sl.high, env, .Explicit, sl.span) } else { high_type = check_expr(c, sl.high, env) }
     }
     place := NO_VALUE
-    if b != nil && fusing(c) != nil { place = graph_op_value(b, .Slice, .Explicit, sl.span, sl.type_, "", graph_fuse_base_place(b, sl.expr, sl.span), lo, hi) }
-    val_type, fs := fuse_store_value(c, s, place, env)
+    if bytes {
+        graph_fuse_span_target_ops(b, &st, hi, sl.expr, sl.type_, sl.is_big_endian, sl.span, s.span)
+    } else if b != nil && fusing(c) != nil {
+        place = graph_op_value(b, .Slice, .Explicit, sl.span, sl.type_, "", graph_fuse_base_place(b, sl.expr, sl.span), lo, hi)
+    }
+    val_type, fs := fuse_store_value(c, s, place, env, unplaced = bytes)
     defer {
-        if s.assign_value_type != nil && is_byte_buffer(target_type) { fuse_fail(c, "bytes written as another type") }
+        if bytes && fusing(c) != nil && fs.on {
+            // (What builds in place, into the slice, or `= void`: the
+            // builder's, at the target's type.)
+            if fs.void || s.assign_value_type == nil && fuse_builds_into(s.value) {
+                fuse_fail(c, "a literal or void written into bytes")
+            } else {
+                ok: bool
+                fs.place, ok = graph_fuse_span_target_end(b, &st, s.assign_value_type, s.span)
+                if !ok { fuse_fail(c, "a span's end that branches, viewed") }
+            }
+        }
         fuse_store_write(c, s, &fs, s.target_type)
     }
 
@@ -12755,9 +12775,9 @@ fuse_store :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scop
     return vt
 }
 
-fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scope) -> (Type, Fuse_Store) {
+fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Type_Scope, unplaced := false) -> (Type, Fuse_Store) {
     b := fusing(c)
-    if b == nil || place == NO_VALUE { return check_expr(c, s.value, env), {} }
+    if b == nil || place == NO_VALUE && !unplaced { return check_expr(c, s.value, env), {} }
     // (`= void` writes the uninitialized value: its value isn't built.)
     if _, is_skip := s.value.(^Expr_Skip_Constructor); is_skip || is_void_literal(s.value) {
         return check_expr(c, s.value, env), {on = true, place = place, void = true}
@@ -12765,7 +12785,9 @@ fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Typ
     saved := c.compound
     if s.is_compound { c.compound = {expr_identity(s.target), place} }
     // (What builds in place builds in a temporary, then is written.)
-    vt, r := fuse_expr(c, s.value, env, .Into, dest = Dest{kind = .At, at = place, type_ = b.g.type_[place.op]}, temp = true, temp_span = s.span)
+    // (`unplaced`: its target is built once the value is — of no type yet.)
+    pt: Type = b.g.type_[place.op] if place.op != NO_NODE else nil
+    vt, r := fuse_expr(c, s.value, env, .Into, dest = Dest{kind = .At, at = place, type_ = pt}, temp = true, temp_span = s.span)
     c.compound = saved
     return vt, {true, place, r, vt, false}
 }

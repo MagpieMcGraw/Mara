@@ -3953,6 +3953,78 @@ graph_fuse_span_view :: proc(b: ^Graph_Builder, slice: Operand, t: Type, big: bo
     return graph_op_value(b, .View, .Explicit, span, t, "#big_endian" if big else "", buf, at)
 }
 
+// `bytes[lo:hi] = v` (graph_stmt): its target is a view of the bytes at lo —
+// their place, lo at the header's width, the view — where v is no array;
+// else the slice (lo, hi, their place, the slice). Which is known once v is
+// checked: both are built before it, in one line — a view's place, lo, hi,
+// a slice's place, the slice, the view — and one's parts left out.
+Graph_Span_Target :: struct {
+    view_place: [2]int,   // (node ranges)
+    hi:         [2]int,
+    place:      [2]int,
+    lo:         Operand,
+    widened:    bool,     // lo, by a cast of its own
+    run:        ^Run,
+    branched:   bool,     // hi did (a `?`: what follows it is in its runs)
+    vplace:     Operand,
+    slice, zero, view: Node_Id,
+}
+
+// The view's place, first.
+graph_fuse_span_target :: proc(b: ^Graph_Builder, bytes: Expr, span: Span) -> Graph_Span_Target {
+    st := Graph_Span_Target{lo = NO_VALUE, zero = NO_NODE}
+    st.view_place.x = b.nodes
+    st.vplace = graph_base_place(b, bytes, span)
+    st.view_place.y = b.nodes
+    return st
+}
+
+// lo built: at the header's width (a slice's, at it); hi next.
+graph_fuse_span_target_hi :: proc(b: ^Graph_Builder, st: ^Graph_Span_Target, lo: Operand, slice_span: Span) {
+    if lo != NO_VALUE {
+        st.lo = graph_fuse_widen(b, lo, slice_span, {to = slice_header_width_type})
+        st.widened = st.lo.op != lo.op
+    }
+    st.run = b.code.run
+    st.hi.x = b.nodes
+}
+
+// hi built: the slice's place, the slice, then the view (of no type yet).
+graph_fuse_span_target_ops :: proc(b: ^Graph_Builder, st: ^Graph_Span_Target, hi: Operand, bytes: Expr, t: Type, big: bool, slice_span, span: Span) {
+    st.hi.y = b.nodes
+    st.branched = b.code.run != st.run
+    st.place.x = b.nodes
+    p := graph_base_place(b, bytes, slice_span)
+    st.place.y = b.nodes
+    st.slice = graph_op(b, .Slice, .Explicit, slice_span, t, "", p, st.lo, hi)
+    at := st.lo
+    if at == NO_VALUE {
+        at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
+        st.zero = at.op
+    }
+    st.view = graph_op(b, .View, .Explicit, span, nil, "#big_endian" if big else "", st.vplace, at)
+}
+
+// v checked: the target — the view, as `view`; the slice, when nil. False
+// when a view's hi branched.
+graph_fuse_span_target_end :: proc(b: ^Graph_Builder, st: ^Graph_Span_Target, view: Type, span: Span) -> (Operand, bool) {
+    drop :: proc(b: ^Graph_Builder, r: [2]int) {
+        for i in r.x ..< r.y { graph_drop(b, Node_Id(i), NO_VALUE) }
+    }
+    if view == nil {
+        drop(b, st.view_place)
+        if st.zero != NO_NODE { graph_drop(b, st.zero, NO_VALUE) }
+        graph_drop(b, st.view, NO_VALUE)
+        return {st.slice, 0}, true
+    }
+    drop(b, st.hi)
+    drop(b, st.place)
+    graph_drop(b, st.slice, NO_VALUE)
+    b.g.type_[st.view] = view
+    if st.widened { b.g.origin[st.lo.op] = span }   // (lo's widening, at the view)
+    return {st.view, 0}, !st.branched
+}
+
 // Bytes taken as an array (graph_value_as): their view, copied into a
 // temporary, read.
 graph_fuse_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Span) -> Operand {
