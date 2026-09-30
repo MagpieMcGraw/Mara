@@ -304,6 +304,7 @@ Graph_Builder :: struct {
     module_stmts: map[rawptr]int,
     module_list:  [dynamic]Graph_Module_Stmt,
     def_segs:     map[rawptr]Graph_Def_Built,   // a body's constants, built as settled
+    const_segs:   map[rawptr]int,               // each constant's code, by its statement (graph_const_begin)
     // A compound assignment's target (its expression, by identity) and the
     // place already computed for it: its read reuses the place.
     compound:   Graph_Compound,
@@ -557,6 +558,7 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     delete(b.names)
     delete(b.frames)
     delete(b.const_decls)
+    delete(b.const_segs)
     delete(b.tables)
     for s in b.segs {
         delete(s.pieces)
@@ -596,6 +598,10 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
         graph_module_build(b, &ms)
     }
     graph_piece_end(b, 0)
+    for _, si in b.const_segs {
+        root := b.segs[si].root
+        if b.g.parent[root] == NO_NODE { graph_fatal(b.g.origin[root], "the constant '%s' was built but never placed", b.g.name[root]) }
+    }
     // What was dropped, by node: those listed while checking, then settling's.
     if len(b.fuses) > 0 || len(b.drops) > 0 {
         b.repl = make([]Operand, b.nodes)
@@ -985,6 +991,14 @@ graph_index :: proc(b: ^Graph_Builder) {
 // checked.)
 @(private="file")
 graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site) {
+    // (A constant the checker built: put here.)
+    if def, is_def := s.(^Stmt_Define); is_def {
+        if si, built := b.const_segs[rawptr(def)]; built {
+            b.g.parent[b.segs[si].root] = parent
+            graph_anchor_here(b, si)
+            return
+        }
+    }
     saved_stmt := b.stmt
     b.stmt = i32(len(b.g.stmts))
     append(&b.g.stmts, Graph_Stmt{span = stmt_span(s), kind = graph_stmt_kind(s)})
@@ -4021,7 +4035,9 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     }
     // Params by their scope's types: a default's width is settled once its
     // body is checked (solidify_param_defaults).
-    for p, k in f.ts.params { g.type_[f.root + 1 + Node_Id(k)] = graph_settled(p.type_) }
+    if f.ts != nil {
+        for p, k in f.ts.params { g.type_[f.root + 1 + Node_Id(k)] = graph_settled(p.type_) }
+    }
 }
 
 // The statement the checker is on, as graph_stmt enters one: its entry, the
@@ -4103,6 +4119,56 @@ graph_fuse_def_settled :: proc(b: ^Graph_Builder, s: Stmt) {
     resize(&b.names, names)
     graph_segment_leave(b, saved)
     b.def_segs[stmt_key(s)] = {si, parent}
+}
+
+// --- constants ------------------------------------------------------------
+// A constant is its declaration and the code that computes its value — run
+// when the program is compiled, never when it runs. The checker builds it as
+// it checks the value, in a segment of its own, as it builds a body; it is
+// put where it is written once the checker settles the declaration
+// (graph_decl_stmt).
+
+// A constant's code, before its value is checked: its declaration (typed
+// once the value is) and a run entered from it.
+graph_const_begin :: proc(b: ^Graph_Builder, s: ^Stmt_Define) -> ^Graph_Fuse {
+    f := new(Graph_Fuse)
+    f.outer_fuse, f.compound = b.fuse, b.compound
+    b.fuse, b.compound = f, {}
+    f.seg, f.outer = graph_segment_enter(b)
+    f.stmt, b.stmt = b.stmt, i32(len(b.g.stmts))
+    append(&b.g.stmts, Graph_Stmt{span = s.span, kind = graph_stmt_kind(s)})
+    f.root = graph_node(b, .Const, .Explicit, NO_NODE, s.name, nil, s.span)
+    b.segs[f.seg].root = f.root
+    b.const_decls[expr_identity(s.value)] = f.root
+    b.g.const_values[f.root] = s.value
+    f.contents = Graph_Contents{base = b.fn_base, names = len(b.names), self = b.self, n = f.root, span = s.span}
+    b.fn_base, b.self = len(b.names), NO_NODE
+    f.contents.code = graph_code_begin(b, f.root)
+    return f
+}
+
+// Its value checked, of type t: its code ends, and it waits to be put where
+// it is written. One not built (its check found errors) is left out: its
+// declaration is made where it is written, as a bare one.
+graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, s: ^Stmt_Define, t: Type) {
+    if f.failed == "" { graph_fuse_typed(b, f.root, t) }
+    graph_contents_end(b, f.contents, finish = f.failed == "")
+    b.stmt = f.stmt
+    graph_segment_leave(b, f.outer)
+    b.fuse, b.compound = f.outer_fuse, f.compound
+    delete(f.stmts)
+    delete(f.fields)
+    delete(f.field_inits)
+    delete(f.field_outs)
+    if f.failed == "" {
+        b.const_segs[rawptr(s)] = f.seg
+        append(&b.fuses, f)   // settled when the graph is put together
+        return
+    }
+    if f.failed != "errors" { graph_fatal(s.span, "the checker built no graph of the constant '%s': %s", s.name, f.failed) }
+    delete_key(&b.const_decls, expr_identity(s.value))
+    delete_key(&b.g.const_values, f.root)
+    graph_fuse_free(f)
 }
 
 // A statement's identity, for the pointer variants.

@@ -879,6 +879,16 @@ erroneous program reports, the negative fixtures say so.
       graph builds nothing — a constant's value, a module's or a type's name (none shown) —
       and where it knows more (an array literal's distinct type, `#self`). Found on the way: a
       statement's target (`a.b[i]^ = …`) had the span of its first token, not its extent.
+      Constants (decided with the user: A, constants as graph operations): a constant is its
+      declaration and the code that computes its value — run when the program is compiled,
+      never when it runs. Steps: (1) the checker builds each constant's value as it checks
+      it, into the constant, in a segment of its own placed where it is written; (2) a
+      compile-time evaluator over the graph runs a constant's code, and a use takes its value
+      from it (the syntax tree's folding goes); (3) a table's bytes are printed from the
+      evaluated value (codegen_const.odin's evaluator goes). Step 1 done: every constant of
+      the corpus is built (a module's too: the pass that checked a module constant's literal
+      fields after the rest — from before struct signatures resolved on demand — is gone);
+      the IR identical modulo naming (runs renumbered), the ask corpus identical.
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines

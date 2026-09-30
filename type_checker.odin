@@ -1711,48 +1711,6 @@ Checker :: struct {
     // `.Core` find its owner union by name when the expected type isn't a
     // union/enum. Push with `with_expected_hint`; the helper restores after.
     expected_hint: Type,
-    // A named struct literal checked during Pass 1b (module-level `::`
-    // constant or top-level binding) can't validate its fields yet — struct
-    // FIELDS only resolve in Pass 2a (signature pass), so the matching check
-    // would see every struct as empty. The literal's TYPE identity is known
-    // in 1b, though, and consumers (struct field defaults like
-    // `color := COLOR_RED`) need it before 2a finishes. So: the drivers set
-    // defer_define_literals around their Pass 1b loop; the literal checker
-    // returns the type immediately and queues just the field VALIDATION,
-    // which flush_deferred_literals runs after 2a. Saved/restored around
-    // nested module checks like dispatch_groups.
-    defer_define_literals: bool,
-    deferred_literals: [dynamic]Deferred_Literal,
-}
-
-// A named struct literal whose field validation was postponed until the
-// target struct's fields exist (Pass 2a.5).
-Deferred_Literal :: struct {
-    lit: ^Expr_Struct_Literal,
-    sd:  ^Scope_Body,
-    env: ^Type_Scope,
-}
-
-// Gate for the named-literal branches: during Pass 1b, a literal aimed at a
-// struct whose fields aren't resolved yet gets queued for post-2a validation
-// instead of failing against an empty field list. Returns true if queued
-// (caller returns the type without validating).
-defer_literal_validation :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, sd: ^Scope_Body, env: ^Type_Scope) -> bool {
-    if !c.defer_define_literals || len(sd.fields) > 0 { return false }
-    append(&c.deferred_literals, Deferred_Literal{lit = lit, sd = sd, env = env})
-    return true
-}
-
-// Validate the queued literals (Pass 2a.5) — struct fields exist now. Runs
-// with the defer flag off so nested literals take the normal path.
-flush_deferred_literals :: proc(c: ^Checker) {
-    saved := c.defer_define_literals
-    c.defer_define_literals = false
-    for d in c.deferred_literals {
-        check_struct_literal_fields(c, d.lit, d.sd, d.lit.span, d.env)
-    }
-    clear(&c.deferred_literals)
-    c.defer_define_literals = saved
 }
 
 // Set the expected-type hint for the next check_expr call, returning the
@@ -6045,6 +6003,40 @@ Fuse_Assign :: struct {
     field:      bool,         // the declaration is a struct's field
 }
 
+// A constant's value, checked and built: its code (graph_const_begin), the
+// value built into the constant — stored once its type is known. (Once: a
+// constant checked again builds nothing.)
+Fuse_Const :: struct {
+    f:     ^Graph_Fuse,
+    value: Fused,
+    vt:    Type,
+}
+
+fuse_const_begin :: proc(c: ^Checker, s: ^Stmt_Define) -> Fuse_Const {
+    b := c.gb
+    if b == nil || c.errors > 0 || s.value == nil { return {} }
+    if _, is_include := s.value.(^Expr_Include); is_include { return {} }
+    if rawptr(s) in b.const_segs { return {} }
+    return {f = graph_const_begin(b, s)}
+}
+
+fuse_const_value :: proc(c: ^Checker, fc: ^Fuse_Const, s: ^Stmt_Define, env: ^Type_Scope, ann: Type) -> Type {
+    if fc.f == nil || fusing(c) == nil { return check_expr(c, s.value, env) }
+    at := graph_dest_var(s.name, fc.f.root, nil if is_untyped(ann) else ann)
+    fc.vt, fc.value = fuse_expr(c, s.value, env, .Into, dest = at, temp_span = s.span)
+    return fc.vt
+}
+
+fuse_const_end :: proc(c: ^Checker, fc: ^Fuse_Const, s: ^Stmt_Define, t: Type) {
+    if fc.f == nil { return }
+    if c.errors > 0 {
+        graph_fuse_fail(c.gb, fc.f, "errors")
+    } else if fusing(c) != nil {
+        fuse_store_finish(c, s.value, fc.vt, fc.value, graph_dest_var(s.name, fc.f.root, t), s.span, settle = true)
+    }
+    graph_const_end(c.gb, fc.f, s, t)
+}
+
 // The node a declaration declares: a struct's field, made with its
 // declaration; else a local, made now.
 fuse_decl_node :: proc(b: ^Graph_Builder, s: ^Stmt_Assign, bound := false) -> (Node_Id, bool) {
@@ -8497,7 +8489,9 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
             // hint-less inference / ambiguity path.
             ann := resolve_type_expr(def.type_expr, c, def.span, env = child)
             c.expected_hint = ann if !is_any(ann) else nil
-            val_type := check_expr(c, def.value, child)
+            fc := fuse_const_begin(c, def)
+            val_type := fuse_const_value(c, &fc, def, child, ann)
+            fuse_const_end(c, &fc, def, val_type)
             def.var_type = val_type
             c.table.constants[define_name(def)] = def.value
             c.table.constants[bare] = def.value
@@ -9248,6 +9242,10 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
     // body and nested-scope `::` declarations regardless of value type.
     c.table.constants[define_name(s)] = s.value
 
+    // Built: its value, as the constant's code (fuse_const_begin).
+    fc := fuse_const_begin(c, s)
+    defer fuse_const_end(c, &fc, s, s.env_type)
+
     ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
     // Feed the annotation to the value as an expected-type hint, mirroring the
     // runtime-decl path (search `c.expected_hint = assign_hint`). This lets an
@@ -9260,7 +9258,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
     // reaches the bare-variant inference / ambiguity path cleanly instead of
     // inheriting a stale hint left by a previous statement.
     c.expected_hint = ann_type if !is_any(ann_type) else nil
-    val_type := check_expr(c, s.value, env)
+    val_type := fuse_const_value(c, &fc, s, env, ann_type)
 
     if !is_any(ann_type) {
         // Distinct + non-literal: use nominal compatibility (mirrors Stmt_Assign path)
@@ -10650,9 +10648,9 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Scope) ->
 //
 //   1a   register_type_names              — type + fn NAMES (+ eager signatures)
 //   1b   register_and_check_declarations  — body fields, base/param/return types,
-//                                           statement-level decls; named struct-
-//                                           literal `::` constants are QUEUED here
-//                                           (their target's fields don't exist yet)
+//                                           statement-level decls and constants
+//                                           (a literal's struct resolves its
+//                                           fields on demand)
 //   (1.5 removed)                         — a main-package constant pass used to
 //                                           run here; main-package constants are
 //                                           const-folded before codegen, so it was
@@ -10662,8 +10660,6 @@ partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Scope) ->
 //                                           struct from file B; now they resolve
 //                                           ON DEMAND at the use site
 //                                           (ensure_struct_signature), so no hoist.
-//   2a.5 flush_deferred_literals          — validate the queued named-literal
-//                                           constants from 1b
 //   2    check_bodies                     — full function-body type-checking
 //
 // owner is the module-struct that top-level decls attach to (nil for the main
@@ -10681,11 +10677,9 @@ check_package_files :: proc(
         register_type_names(c, files_by_src[src], file_envs[src], owner, pkg_env)
     }
 
-    c.defer_define_literals = true  // 1b — queue named struct literals (see flush below)
-    for src in file_order {
+    for src in file_order {  // 1b
         register_and_check_declarations(c, files_by_src[src][:], file_envs[src], owner, pkg_env)
     }
-    c.defer_define_literals = false
 
     // (1.5 main-package constant pass removed — see header. Main-package
     // constants const-fold to literals during checking before codegen consults
@@ -10696,8 +10690,6 @@ check_package_files :: proc(
     // matching — via ensure_struct_signature, so a body in one file no longer
     // needs every other file's structs pre-resolved. The struct carries its own
     // decl_env and memoizes via sig_state.)
-
-    flush_deferred_literals(c)  // 2a.5
 
     for src in file_order {  // 2 — bodies
         check_bodies(c, files_by_src[src][:], file_envs[src])
@@ -10781,12 +10773,9 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     saved_package := c.current_package
     saved_dispatch := c.dispatch_groups
     saved_overloads := c.operator_overloads
-    saved_deferred := c.deferred_literals
-    saved_defer_flag := c.defer_define_literals
     c.current_package = module_name
     c.dispatch_groups = {}
     c.operator_overloads = {}
-    c.deferred_literals = {}
 
     // Type-check the module's declarations and bodies via the canonical
     // per-file pipeline (see check_package_files for the phase map). mod_struct
@@ -10812,8 +10801,6 @@ check_module :: proc(c: ^Checker, module_name: string, span: Span) -> ^Type_Scop
     c.current_package = saved_package
     c.dispatch_groups = saved_dispatch
     c.operator_overloads = saved_overloads
-    c.deferred_literals = saved_deferred
-    c.defer_define_literals = saved_defer_flag
     delete_key(&c.modules_in_progress, module_name)
 
     // Extract functions/types into checked and populate functions/types
@@ -12246,9 +12233,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
         resolved := resolve_type_expr(Type_Name{name = e.name, span = e.span}, c, e.span, env = env)
         if sd := as_scope_body(resolved); sd != nil {
             e.type_ = resolved
-            if !defer_literal_validation(c, e, sd, env) {
-                check_struct_literal_fields(c, e, sd, e.span, env)
-            }
+            check_struct_literal_fields(c, e, sd, e.span, env)
             return resolved
         }
         if dt, dt_ok := resolved.(^Type_Distinct); dt_ok {
@@ -12269,16 +12254,12 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
         flat := resolve_type_name(c, e.name, "", env)
         if st, ok := c.table.structs[flat]; ok {
             e.type_ = st
-            if !defer_literal_validation(c, e, &st.sd, env) {
-                check_struct_literal_fields(c, e, &st.sd, e.span, env)
-            }
+            check_struct_literal_fields(c, e, &st.sd, e.span, env)
             return st
         }
         if st, ok := c.table.funs[flat]; ok {
             e.type_ = st
-            if !defer_literal_validation(c, e, &st.sd, env) {
-                check_struct_literal_fields(c, e, &st.sd, e.span, env)
-            }
+            check_struct_literal_fields(c, e, &st.sd, e.span, env)
             return st
         }
         // Function-LOCAL struct types are keyed in c.table.structs by a
@@ -12296,9 +12277,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
                     strings.has_suffix(ts.name, strings.concatenate({"_", e.name}))
                 if names_type {
                     e.type_ = ts
-                    if !defer_literal_validation(c, e, &ts.sd, env) {
-                        check_struct_literal_fields(c, e, &ts.sd, e.span, env)
-                    }
+                    check_struct_literal_fields(c, e, &ts.sd, e.span, env)
                     return ts
                 }
                 // e.name is a struct VARIABLE in value position — the
