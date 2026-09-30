@@ -13881,8 +13881,15 @@ check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scop
         // (Built where it was checked, to find its method: its value here.)
         if fc := c.call; fc != nil && fusing(c) != nil {
             pt: Type = sig.params[param].type_ if sig != nil && param >= 0 && param < len(sig.params) else nil
-            if !fc.params || !c.receiver_fused.ok {
-                fuse_fail(c, "a builtin's receiver")
+            if !c.receiver_fused.ok {
+                fuse_fail(c, "a receiver unbuilt")
+            } else if !fc.params {
+                // A builtin's: as its other arguments are (a value, read —
+                // the first argument, right after its place).
+                r := c.receiver_fused
+                if fc.want == .Value && r.place { r = Fused{v = fuse_value(c, r, arg, c.receiver_type), ok = true} }
+                append(&fc.args, r)
+                append(&fc.types, c.receiver_type)
             } else {
                 append(&fc.ops, fuse_value_as(c, arg, c.receiver_type, c.receiver_fused, pt, span, {sig = sig, param = param}))
             }
