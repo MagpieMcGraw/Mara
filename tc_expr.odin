@@ -85,6 +85,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_assert(k, n, env, want, w)
     case .Size_Of:
         return tc_size_of(k, n, env, want, w)
+    case .If_Expr:
+        return tc_if_expr(k, n, env, want, w)
     case .Try:
         return tc_try(k, n, env, want, w)
     case .Dot_Ident:
@@ -247,6 +249,12 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         }
         if cname, is_const := tc_write_root_const(k, operand); is_const { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, cname) }
         if tr.tag[operand] == .String { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL) }
+        // (A part of a value — an if's, a literal's — is no storage; a
+        // slice builds a header with nowhere to point.)
+        #partial switch tr.tag[tc_access_root(k, operand)] {
+        case .If_Expr, .Array, .Literal: tc_error(k, span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
+        }
+        if tr.tag[tc_unparen(k, operand)] == .Slice { tc_error(k, span, CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP) }
         pt := new(Type_Ptr)
         pt.elem = ot
         t = pt
@@ -1086,4 +1094,100 @@ tc_try :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written
     }
     if len(rets) == 1 { return done(k, Type_Void{}, builds, r, span) }
     return done(k, rets[0], builds, r, span)
+}
+
+// `if c do a else b` as a value: its local made first (typed once both
+// branches are checked), the condition, each branch's value written to the
+// local in a run of its own — at the if's type — then the local: its place,
+// or read.
+tc_if_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+    tr := k.t
+    span := tree_span(tr, n)
+    cond_n := Tree_Id(tr.a[n])
+    then_n, else_n := tree_pair(tr, n)
+    b := tc_building(k) if want != .None else nil
+    slot := NO_NODE
+    if b != nil { slot = graph_slot(b, "if", nil, span) }
+    ct, cond := tc_expr(k, cond_n, env, .Value if b != nil else .None, w)
+    if !is_any(ct) {
+        if _, is_bool := ct.(Type_Bool); !is_bool { tc_error(k, span, TYPE_EXPRESSION_CONDITION_BOOL, type_name(ct)) }
+    }
+    gi: Graph_If_Expr
+    if b != nil && tc_building(k) != nil { gi = graph_fuse_if_expr(b, cond.v, w, span) }
+    types: [2]Type
+    widen := [2]int{-1, -1}
+    prefix: [2][2]Node_Id
+    for branch, i in ([2]Tree_Id{then_n, else_n}) {
+        if i == 1 && b != nil && tc_building(k) != nil { graph_fuse_if_expr_else(b, &gi) }
+        if b == nil || tc_building(k) == nil {
+            types[i] = tc_check(k, branch, env)
+            continue
+        }
+        // (Text, a slice's elements: a partial array's prefix, zero first —
+        // kept once the if's type says so. A literal: built in the local.)
+        if tc_may_fill_prefix(k, branch) { prefix[i] = graph_fuse_prefix(b, "if", slot, span) }
+        t, r := tc_expr(k, branch, env, .Into, dest = graph_dest_var("if", slot, nil))
+        types[i] = t
+        if tc_building(k) == nil || r.into { continue }
+        if tc_builds_into(k, branch) || tc_byte_index(k, branch) {
+            tc_fail(k, "an if's branch built in place, or of bytes")
+            continue
+        }
+        count := len(b.fuse.widens)
+        val := graph_fuse_widen(b, tc_value(k, r, branch, t), span, {pending = true})
+        if len(b.fuse.widens) > count { widen[i] = count }
+        graph_fuse_write_at(b, graph_var(b, "if", slot, nil, span), val, span)
+    }
+    if b != nil && tc_building(k) != nil { graph_fuse_if_expr_end(b, &gi) }
+    // (Untyped, a branch takes the other's type.)
+    t := types[0]
+    switch {
+    case is_untyped(types[0]) || is_infer(types[0]): t = types[1]
+    case is_untyped(types[1]) || is_infer(types[1]): t = types[0]
+    case types_incompatible(types[0], types[1]):
+        tc_error(k, span, TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS, type_name(types[0]), type_name(types[1]))
+    }
+    if b == nil || tc_building(k) == nil { return t, {} }
+    for bt, i in types {
+        if fuse_views(t, bt) {
+            tc_fail(k, "an if's branch viewed")
+            return t, {}
+        }
+        if prefix[i] != {} {
+            branch := then_n if i == 0 else else_n
+            fills := is_partial_array(t) && (tr.tag[tc_unparen(k, branch)] == .String || is_slice_type(bt))
+            graph_fuse_prefix_end(b, prefix[i], fills, t)
+        }
+    }
+    for wi in widen { if wi >= 0 { b.fuse.widens[wi].to = t } }
+    // (Its local holds its value: an array of untyped elements settled.)
+    lt := t
+    if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
+        lt = solidify_type(t)
+        graph_fuse_retype_literal(b, int(slot), b.nodes, lt)
+    }
+    graph_fuse_typed(b, slot, lt)
+    p := graph_var(b, "if", slot, lt, span)
+    if want == .Value { return t, {v = graph_read(b, p, lt, span), ok = true} }
+    return t, {v = p, place = true, ok = true}
+}
+
+// Whether a branch may fill only a prefix of a partial array: what is no
+// number, literal or operation.
+tc_may_fill_prefix :: proc(k: ^TC, n: Tree_Id) -> bool {
+    #partial switch k.t.tag[tc_unparen(k, n)] {
+    case .Number, .Char, .True, .False, .Array, .Literal, .Binary, .Unary, .Deref: return false
+    }
+    return true
+}
+
+// The expression an access path (`x.f[i].g`) is rooted at.
+tc_access_root :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
+    cur := tc_unparen(k, n)
+    for {
+        #partial switch k.t.tag[cur] {
+        case .Field, .Index: cur = tc_unparen(k, Tree_Id(k.t.a[cur]))
+        case: return cur
+        }
+    }
 }

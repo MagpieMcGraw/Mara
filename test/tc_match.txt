@@ -37,6 +37,7 @@ chartest
 clangfail
 const_address_neg
 const_qualified_float
+const_reads
 const_runtime_neg
 const_slice_neg
 const_tables
@@ -132,6 +133,7 @@ pafill
 param_reassign_neg
 param_result_alias
 parenless_fun
+partial_array_assign
 partial_param_header_neg
 partial_param_write_neg
 patest
@@ -155,7 +157,9 @@ spantest
 spread_literal
 str64agg
 strfield
+struct_return_shapes
 tailfns
+temp_address_neg
 test_empty_foreign
 test_match_indexed
 text_constant_views
@@ -167,6 +171,7 @@ uninitbranch
 uninitfield
 uninitptr
 unreachable_neg
+untyped_array_literals
 use_before_decl_neg
 usedef
 utof

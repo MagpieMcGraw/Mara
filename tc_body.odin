@@ -265,6 +265,11 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         graph_fuse_prefix_end(b, prefix, zeroed || wrote && fills, final)
     }
     if zeroed && !prefixed { tc_fail(k, "a new partial array read from bytes") }
+    // (An array of untyped elements held as itself — `a := [1, 2, 3]`, an if
+    // of such — built at its own type: its nodes, the store's too, settled.)
+    if va, is_array := distinct_base(vt).(^Type_Fixed_Array); is_array && is_infer(va.elem) && fields_of == nil {
+        graph_fuse_retype_literal(b, int(decl), b.nodes, final)
+    }
 }
 
 // Whether a name can be declared here: not in this scope already, and no
