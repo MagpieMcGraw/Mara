@@ -976,9 +976,27 @@ The syntax tree made flat: integer ids, token ranges, slim tokens (the table abo
       An expression made without an id is a hard error when its type is set. The other
       checker records keyed by an expression stay maps: they are small (what a name resolved
       to: 34 entries on test_1M though looked up 4M times; calls: 40k).
-- [ ] Statement ids
-- [ ] Token ranges in place of spans
-- [ ] Slim tokens
+- [x] Statement ids (2026-09-30). Every statement's first field is its id (`new_stmt`, or
+      `next_stmt_id` for one held by value — a call, a return, a break; clones take fresh
+      ones). Every record by a tree node, the checker's and the builder's, is keyed by the
+      node's id, not its address: a statement held by value now has an identity, so the
+      module walk and the builder's statement entries treat every statement alike
+      (`stmt_key`, which gave values none, and `expr_identity` are gone). Nothing is keyed by
+      a node's pointer any more.
+- [x] Token ranges in place of spans (2026-09-30). Every file is lexed into one table of
+      tokens for the build (`lex_file`: each file a range of it, a token's id its index, 0
+      no token's). A span is three token ids — its report point and its extent — 12 bytes
+      where it was 48 (a file name, a line, a column, two indices); its file, line and column
+      are read from its report point's token (`span_file`, `span_line`, `span_col`,
+      `span_location`). The parser's positions are token ids.
+- [x] Slim tokens (2026-09-30). A token is its kind, file, offset, length and id: 16 bytes
+      where it was about 56. Its text is its file's source there (`token_text`), its line
+      and column follow from where it starts, by its file's line starts (`token_line`,
+      `token_col`); a string or char literal's decoded value is kept beside the tokens by id.
+      Found on the way: a point query's text measured a span's last token by its decoded
+      text, so a span ending in a string literal showed cut short (fixed).
+      Graph, IR, diagnostics and `mara ask` output identical through all three; test_1M
+      unchanged within noise (lex and parse a little faster).
 - [ ] The tree in arrays by id
 
 ## Baselines
