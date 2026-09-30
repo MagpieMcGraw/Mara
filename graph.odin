@@ -178,6 +178,24 @@ graph_operands :: proc(g: ^Program_Graph, id: Node_Id) -> []Operand {
     return g.operands[g.operand_first[id]:g.operand_first[id + 1]]
 }
 
+// The fun or struct a call or construction runs; nil through a function value.
+graph_called :: proc(g: ^Program_Graph, op: Node_Id) -> ^Type_Scope {
+    for edge in graph_out(g, op) {
+        if edge.kind == .Calls { return g.type_[edge.to].(^Type_Scope) }
+    }
+    return nil
+}
+
+// The signature a call runs by: its callee's, or — through a function value,
+// its first operand — that value's type.
+graph_signature :: proc(g: ^Program_Graph, op: Node_Id) -> ^Type_Scope {
+    if callee := graph_called(g, op); callee != nil { return callee }
+    ops := graph_operands(g, op)
+    if g.op[op] != .Call || len(ops) == 0 || ops[0].op == NO_NODE { return nil }
+    ft, is_fn := distinct_base(g.type_[ops[0].op]).(^Type_Scope)
+    return ft if is_fn && ft.kind == .Fun else nil
+}
+
 graph_run :: proc(g: ^Program_Graph, r: int) -> []Node_Id {
     return g.run_ops[g.run_first[r]:g.run_first[r + 1]]
 }
@@ -2192,7 +2210,13 @@ graph_literal_use :: proc(g: ^Program_Graph, callee: map[Node_Id]^Type_Scope, id
     case .Fill:
         if k > 0 { return graph_elem_type(g.type_[ops[0].op]) }
     case .Call:
-        if c, ok := callee[id]; ok && k < len(c.params) { return c.params[k].type_ }
+        if c, ok := callee[id]; ok {
+            if k < len(c.params) { return c.params[k].type_ }
+        } else if k > 0 && ops[0].op != NO_NODE {
+            // (Through a function value, its first operand: its signature's.)
+            ft, is_fn := distinct_base(g.type_[ops[0].op]).(^Type_Scope)
+            if is_fn && ft.kind == .Fun && k - 1 < len(ft.params) { return ft.params[k - 1].type_ }
+        }
     case .Construct:   // its first operand is where it builds
         if c, ok := callee[id]; ok && k >= 1 && k - 1 < len(c.params) { return c.params[k - 1].type_ }
     case .Return:
@@ -2872,14 +2896,14 @@ graph_fuse_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
 }
 
 // `x : T = void` (graph_init) and `x = void` (graph_stmt): the value left
-// uninitialized.
-graph_fuse_void_decl :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Span) {
-    val := graph_void(b, t, span)
+// uninitialized — `void` where it is written, `at`.
+graph_fuse_void_decl :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span, at: Span) {
+    val := graph_void(b, t, at)
     graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, b.g.name[decl], decl, t, span), val)
 }
 
-graph_fuse_void_assign :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) {
-    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, NO_NODE, t, span), graph_void(b, t, span))
+graph_fuse_void_assign :: proc(b: ^Graph_Builder, name: string, t: Type, span, at: Span) {
+    graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, name, NO_NODE, t, span), graph_void(b, t, at))
 }
 
 // Where the build stands, to leave out what is built after it: a field

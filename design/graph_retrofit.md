@@ -854,6 +854,14 @@ erroneous program reports, the negative fixtures say so.
 - [ ] The last readers of annotations: `void` into a pointer checked where the store is checked;
       the returned local and the consumed param as graph queries; constant tables from values the
       checker evaluated; hit testing from origins
+      Done: `void` into a pointer is a query over the graph (flow_check_void): a `void` as
+      written, judged by the operation that takes it — a write into a field, an element or
+      through a pointer, an if-expression's slot or a struct body's field; an argument, but a C
+      function's; a return — and a param's default at its signature (source and the checker's
+      table). The syntax-tree walk is gone. Found on the way: a `void` stored through a place
+      was built at its statement's origin, not its own, and an element's at its collection's
+      type; a literal passed through a function value was never settled at its param's type
+      (so never range-checked). test/void_ptr_store_neg.mara covers every case.
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines

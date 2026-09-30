@@ -504,7 +504,7 @@ llvm_builds_alone :: proc(e: ^Llvm, before: []Node_Id, t, x: Node_Id) -> bool {
         case .Construct:
             // t's own construction, handed arguments.
             if len(ops) == 1 || pg.op[ops[0].op] != .Var || pg.refers[ops[0].op] != t { continue }
-            callee := llvm_callee(e, op)
+            callee := graph_called(e.pg, op)
             if callee == nil || llvm_passes_storage(callee) { return false }
             if _, consumes := consumed_param_of(callee).?; consumes { return false }
         }
@@ -1401,7 +1401,7 @@ llvm_declared_at :: proc(e: ^Llvm, o: Operand) -> string {
 @(private="file")
 llvm_type_of :: proc(e: ^Llvm, o: Operand) -> Type {
     if o.op in e.outs {
-        callee := llvm_signature(e, o.op)
+        callee := graph_signature(e.pg, o.op)
         if callee != nil && int(o.out) < len(callee.cg_returns) { return callee.cg_returns[o.out] }
     }
     return e.pg.type_[o.op]
@@ -1606,26 +1606,6 @@ llvm_zeroed :: proc(e: ^Llvm, place: Node_Id) -> bool {
     return e.ctor && pg.op[place] == .Var && pg.refers[place] != NO_NODE && pg.kind[pg.refers[place]] == .Field
 }
 
-// The signature a call runs by: its callee's, or — through a function value,
-// its first operand — that value's type.
-@(private="file")
-llvm_signature :: proc(e: ^Llvm, op: Node_Id) -> ^Type_Scope {
-    if callee := llvm_callee(e, op); callee != nil { return callee }
-    ops := graph_operands(e.pg, op)
-    if e.pg.op[op] != .Call || len(ops) == 0 || ops[0].op == NO_NODE { return nil }
-    ft, is_fn := distinct_base(e.pg.type_[ops[0].op]).(^Type_Scope)
-    return ft if is_fn && ft.kind == .Fun else nil
-}
-
-// The fun or struct a call or construction runs; nil through a function value.
-@(private="file")
-llvm_callee :: proc(e: ^Llvm, op: Node_Id) -> ^Type_Scope {
-    for edge in graph_out(e.pg, op) {
-        if edge.kind == .Calls { return e.pg.type_[edge.to].(^Type_Scope) }
-    }
-    return nil
-}
-
 // A struct built in place: its storage zeroed, then its constructor run on it
 // with the arguments, the place last. An array's elements, zeroed already,
 // each run theirs.
@@ -1669,7 +1649,7 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         gen_construct_elements(g, elements, pa.elem, pa.size)
         return true
     }
-    callee := llvm_callee(e, op)
+    callee := graph_called(e.pg, op)
     if callee == nil || callee.kind != .Struct || llvm_struct(t) == nil || llvm_direct(e, dest) { return false }
     if !llvm_same_type(pg.type_[dest], t) { return false }   // an array's elements (later)
     if callee.is_union_variant {
@@ -2557,10 +2537,10 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     ops := ops
     // What's called: the callee, or — through a function value, the first
     // operand — that value, by its type's signature (the same ABI).
-    callee := llvm_callee(e, op)
+    callee := graph_called(e.pg, op)
     name := ""
     if callee == nil {
-        callee = llvm_signature(e, op)
+        callee = graph_signature(e.pg, op)
         if callee == nil { e.note = "a function value"; return false }
         name = llvm_operand(e, ops[0], e.pg.type_[ops[0].op]) or_return
         ops = ops[1:]
@@ -2872,7 +2852,7 @@ llvm_in_place_updates :: proc(e: ^Llvm) {
     for r in e.runs {
         for op in graph_run(pg, int(r)) {
             if pg.op[op] != .Call { continue }
-            callee := llvm_callee(e, op)
+            callee := graph_called(e.pg, op)
             if callee == nil { continue }
             k, consumes := consumed_param_of(callee).?
             u := e.user[op - e.node]

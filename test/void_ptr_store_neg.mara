@@ -10,6 +10,17 @@ module void_ptr_store_neg
 H :: struct {
 	n: i64
 	p: ^i64
+	q: ^i64 = void                   // a field's value
+}
+
+Box :: struct(p: ^i64) {
+	q: ^i64 = p
+	get :: fun(self: ^Self, r: ^i64) -> ^i64 { return r }
+}
+
+Opt :: union {
+	Some { value: ^i64 }
+	None {}
 }
 
 find :: fun(q: ^i64, want: bool) -> ^i64 {
@@ -18,12 +29,27 @@ find :: fun(q: ^i64, want: bool) -> ^i64 {
 }
 
 use_p :: fun(p: ^i64) -> i64 { return p^ }
+dflt :: fun(p: ^i64 = void) -> i64 { return 1 }   // a parameter's default
+
+pick :: fun(x: ^i64, c: bool) -> ^i64 {
+	r := if c do x else void         // a branch of an if-expression
+	return r
+}
 
 main :: fun() {
 	x := 5
 	h := H{n = 1, p = void}          // a literal field
 	h.p = void                       // a field store
 	arr : [2]^i64 = {&x, void}       // an array element
+	arr[1] = void                    // an element store
+	pp := &h.p
+	pp^ = void                       // a store through a pointer
 	print(use_p(void))               // an argument
-	print(find(&x, true)^, h.n, arr[0]^)
+	o : Opt = Some{value = void}     // a variant's field
+	bx := Box(void)                  // a constructor's argument
+	bp := &bx
+	r := bp.get(void)                // a method's argument
+	f : fun(^i64) -> i64 = use_p
+	print(f(void))                   // an argument through a function value
+	print(find(&x, true)^, h.n, arr[0]^, dflt(&x), pick(&x, true)^, r^)
 }

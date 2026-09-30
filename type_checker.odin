@@ -6069,7 +6069,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
             return
         }
         if is_skip {
-            graph_fuse_void_decl(b, fa.decl, t, s.span)
+            graph_fuse_void_decl(b, fa.decl, t, s.span, expr_span(s.value)^)
             return
         }
         // (A text written to a new partial array fills a prefix of it.)
@@ -6085,7 +6085,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         return
     }
     if is_skip || is_void_literal(s.value) {   // `x = void` de-inits
-        graph_fuse_void_assign(b, s.name, s.var_type, s.span)
+        graph_fuse_void_assign(b, s.name, s.var_type, s.span, expr_span(s.value)^)
         return
     }
     fuse_store_finish(c, s.value, fa.value_type, fa.value, fuse_parallel_hold(c, graph_dest_var(s.name, NO_NODE, s.var_type), s.span), s.span)
@@ -13144,7 +13144,10 @@ fuse_store_write :: proc(c: ^Checker, s: ^Stmt_Assign, fs: ^Fuse_Store, dt: Type
     if b == nil || !fs.on { return }
     if view != nil { graph_fuse_view(b, fs.place, view, big, s.span) }
     if fs.void {
-        graph_fuse_write_at(b, fs.place, graph_fuse_void(b, dt, s.span), s.span)   // (its value unbuilt)
+        // (Its value unbuilt: of its target's type — an element's, where
+        // `dt` is its collection's.)
+        t := b.g.type_[fs.place.op] if b.g.type_[fs.place.op] != nil else dt
+        graph_fuse_write_at(b, fs.place, graph_fuse_void(b, t, expr_span(s.value)^), s.span)
         return
     }
     fuse_store_finish(c, s.value, fs.vt, fs.value, fuse_parallel_hold(c, Dest{kind = .At, at = fs.place, type_ = dt}, s.span), s.span, settle = true)
