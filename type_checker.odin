@@ -6745,6 +6745,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
     for stmt in stmts {
         fs := fuse_stmt(c, stmt)
         defer fuse_stmt_end(fs)
+        defer if c.gb != nil { graph_module_stmt(c.gb, stmt) }   // (a module's, settled: its declarations)
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
             // Generic union: registration happens in Pass 1a (template only).
@@ -11119,7 +11120,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     }
 
     // The graph is built as the program is checked (its arena known now).
-    c.gb = graph_builder_new(checked)
+    c.gb = graph_builder_new(checked, programs)
 
     // Build Context struct: { arena? , args: [..64][]utf8 }
     {

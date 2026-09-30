@@ -276,6 +276,11 @@ Graph_Builder :: struct {
     fn_base:    int,
     self:       Node_Id,         // what `Self` names in a struct's code
     program:    Node_Id,         // the synthetic scope of the compiler's globals (this_program)
+    // Each module's statements, where each goes (graph_modules): built as the
+    // checker settles them (graph_module_stmt), or — a scope, a type — when
+    // the graph is put together.
+    module_stmts: map[rawptr]int,
+    module_list:  [dynamic]Graph_Module_Stmt,
     // A compound assignment's target (its expression, by identity) and the
     // place already computed for it: its read reuses the place.
     compound:   Graph_Compound,
@@ -435,7 +440,7 @@ Decl_Site :: struct {
 
 // The builder, made before checking: the checker builds each body as it
 // checks it (graph_fuse_begin), and build_program_graph puts them in place.
-graph_builder_new :: proc(checked: ^Checked_Program) -> ^Graph_Builder {
+graph_builder_new :: proc(checked: ^Checked_Program, programs: map[string]^Program) -> ^Graph_Builder {
     b := new(Graph_Builder)
     b.g = new(Program_Graph)
     b.checked = checked
@@ -446,7 +451,75 @@ graph_builder_new :: proc(checked: ^Checked_Program) -> ^Graph_Builder {
     b.fuse_log = os.get_env("MARA_FUSE", context.temp_allocator) == "log"
     append(&b.segs, Graph_Segment{root = NO_NODE})   // the program's own: its modules' declarations
     graph_piece_begin(b, 0)
+    graph_modules(b, programs)
     return b
+}
+
+// A module's statement, and where it goes: before what its module made after
+// it (an anchor in the program's segment).
+Graph_Module_Stmt :: struct {
+    s:      Stmt,
+    module: Node_Id,
+    anchor: int,
+    built:  bool,
+}
+
+// The program's modules, before anything is checked: the compiler's globals
+// (typed once checked), then each module's node, in name order, and a place
+// for each of its statements, in written order. (One that declares nothing:
+// its entry, here.)
+@(private="file")
+graph_modules :: proc(b: ^Graph_Builder, programs: map[string]^Program) {
+    b.program = graph_node(b, .Module, .Synthetic, NO_NODE, "program", nil, {})
+    for name in ([]string{"this_program", "context"}) {
+        graph_node(b, .Field, .Synthetic, b.program, name, nil, {})
+    }
+    graph_close(b, b.program)
+    modules := make([dynamic]string, 0, len(programs), context.temp_allocator)
+    for name in programs { append(&modules, name) }
+    slice.sort(modules[:])
+    for name in modules {
+        m := graph_node(b, .Module, .Explicit, NO_NODE, name, nil, {})
+        // A module is a scope like a struct: its variables are its fields, which
+        // no function sees (a function sees only its arguments).
+        for s in programs[name]^ {
+            key := stmt_key(s)
+            if key == nil {
+                graph_decl_stmt(b, s, m, {kind = .Field})
+                continue
+            }
+            b.module_stmts[key] = len(b.module_list)
+            append(&b.module_list, Graph_Module_Stmt{s = s, module = m, anchor = graph_anchor_here(b)})
+        }
+        graph_close(b, m)
+    }
+}
+
+// A module's statement the checker has settled — a constant, a variable, a
+// destructure: its declarations, in a segment of their own, put where the
+// statement is. (Once: a statement is settled by the first pass over it.)
+graph_module_stmt :: proc(b: ^Graph_Builder, s: Stmt) {
+    i, is_module := b.module_stmts[stmt_key(s)]
+    if !is_module || b.module_list[i].built { return }
+    #partial switch _ in s {
+    case ^Stmt_Define, ^Stmt_Assign, ^Stmt_Decl, ^Stmt_Multi_Assign, ^Stmt_Multi_Return_Assign:
+        graph_module_build(b, &b.module_list[i])
+    }
+}
+
+// (What the builder is in the middle of — a body the checker is building —
+// is no module's: its code and its names are left as they are.)
+@(private="file")
+graph_module_build :: proc(b: ^Graph_Builder, ms: ^Graph_Module_Stmt) {
+    ms.built = true
+    si, saved := graph_segment_enter(b)
+    code, names, base := b.code, len(b.names), b.fn_base
+    b.code, b.fn_base = {}, names
+    graph_decl_stmt(b, ms.s, ms.module, {kind = .Field})
+    b.code, b.fn_base = code, base
+    resize(&b.names, names)
+    graph_segment_leave(b, saved)
+    b.segs[0].anchors[ms.anchor].seg = si
 }
 
 graph_builder_free :: proc(b: ^Graph_Builder) {
@@ -485,23 +558,19 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
     graph_index(b)
 
     // The compiler's own globals, which code names but never declares.
-    b.program = graph_node(b, .Module, .Synthetic, NO_NODE, "program", nil, {})
-    for name in ([]string{"this_program", "context"}) {
-        t: Type
-        if root := checked.table.root_env; root != nil { t, _ = scope_defines(root, name) }
-        graph_node(b, .Field, .Synthetic, b.program, name, t, {})
+    for name, i in ([]string{"this_program", "context"}) {
+        if root := checked.table.root_env; root != nil { g.type_[int(b.program) + 1 + i], _ = scope_defines(root, name) }
     }
-    graph_close(b, b.program)
-
-    modules := make([dynamic]string, 0, len(programs), context.temp_allocator)
-    for name in programs { append(&modules, name) }
-    slice.sort(modules[:])
-    for name in modules {
-        m := graph_node(b, .Module, .Explicit, NO_NODE, name, nil, {})
-        // A module is a scope like a struct: its variables are its fields, which
-        // no function sees (a function sees only its arguments).
-        for s in programs[name]^ { graph_decl_stmt(b, s, m, {kind = .Field}) }
-        graph_close(b, m)
+    // The modules' statements left: their scopes and types — each placed
+    // from what the checker made of it (its bodies built, its instances
+    // known). One the checker settles and didn't is an error.
+    for &ms in b.module_list {
+        if ms.built { continue }
+        #partial switch _ in ms.s {
+        case ^Stmt_Define, ^Stmt_Assign, ^Stmt_Decl, ^Stmt_Multi_Assign, ^Stmt_Multi_Return_Assign:
+            graph_fatal(stmt_span(ms.s), "the checker settled no declaration here")
+        }
+        graph_module_build(b, &ms)
     }
     graph_piece_end(b, 0)
     // What was dropped, by node: those listed while checking, then settling's.
