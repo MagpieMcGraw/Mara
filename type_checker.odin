@@ -10094,10 +10094,10 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
                 graph_fuse_match_tag(b, gm, s, i)
                 continue
             }
-            // (An enum's variant named bare is its arm's, unchecked: the
-            // builder builds it as written.)
+            // (An enum's variant named bare matches as `.Variant` does: its
+            // tag, filled in when the arm is resolved.)
             if ident, is_ident := arm.value.(^Expr_Ident); is_ident && is_enum_match && ident.name in et.variants {
-                graph_fuse_match_value(b, gm, graph_value(b, arm.value))
+                graph_fuse_match_tag(b, gm, s, i)
                 continue
             }
             _, v := fuse_expr(c, arm.value, env)

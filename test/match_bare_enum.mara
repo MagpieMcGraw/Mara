@@ -1,0 +1,26 @@
+module match_bare_enum
+// An enum's variant named bare in a match arm matches as `.Variant` does
+// (the graph built a read of a variable of that name: "'Red' names no
+// declaration").
+//@ expect-output: 1 2 3 2
+Color :: union(tag u8) { Red = 1 Green = 2 Blue = 3 }
+
+name :: fun(c: Color) -> i64 {
+	match c {
+	Red    return 1
+	Green  return 2
+	else   return 3
+	}
+}
+
+dotted :: fun(c: Color) -> i64 {
+	match c {
+	.Red    return 1
+	Green   return 2
+	else    return 3
+	}
+}
+
+main :: fun() {
+	print(name(Color.Red), name(Color.Green), name(Color.Blue), dotted(Color.Green))
+}
