@@ -1073,68 +1073,6 @@ graph_elem_struct :: proc(t: Type) -> ^Type_Scope {
     return nil
 }
 
-// Store a value into a destination: built in place when it is an aggregate
-// literal or construction, a byte read when it reinterprets a byte buffer, a
-// write otherwise. The value comes first, then the place.
-@(private="file")
-graph_store :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
-    if v, is_view := graph_view(b, value, graph_dest_type(b, d), span); is_view {
-        graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), v)
-        return
-    }
-    if graph_into(b, value, d, span) { return }
-    if d.type_ != nil && byte_flow(d.type_, value, expr_type(value)) == .Read {
-        #partial switch v in value {
-        case ^Expr_Index:
-            t := graph_dest_type(b, d)
-            // A slice pointed at bytes (`s : []T(n) = bytes[off]`) is no view
-            // of one value. (Its count isn't carried here yet.)
-            if _, into_slice := distinct_base(t).(^Type_Slice); into_slice {
-                buf := graph_base_place(b, v.expr, span)
-                off := graph_value(b, v.index)
-                graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if v.is_big_endian else "", graph_dest_place(b, d, span), buf, off)
-                return
-            }
-            if _, into_partial := distinct_base(t).(^Type_Partial_Array); into_partial {
-                // A partial array filled from bytes: elements, then its len;
-                // a new one is zero first (past the fill, its elements stay so).
-                if d.kind == .Var && d.decl != NO_NODE { graph_op(b, .Zero, .Synthetic, span, t, "", graph_dest_place(b, d, span)) }
-                buf := graph_base_place(b, v.expr, span)
-                off := graph_value(b, v.index)
-                graph_op(b, .Byte_Read, .Explicit, span, d.type_, "#big_endian" if v.is_big_endian else "", graph_dest_place(b, d, span), buf, off)
-                return
-            }
-            val := graph_read(b, graph_view_place(b, v, t, span), t, span)
-            graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
-            return
-        case ^Expr_Slice:
-            // A register value from a span of bytes is the bytes at its start
-            // seen as it, as `bytes[lo]` is (the checker holds the span to its
-            // size).
-            if t := graph_dest_type(b, d); !graph_aggregate(t) {
-                val := graph_read(b, graph_view_at(b, v.expr, v.low, t, v.is_big_endian, span), t, span)
-                graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
-                return
-            }
-            if _, into_partial := distinct_base(graph_dest_type(b, d)).(^Type_Partial_Array); into_partial && d.kind == .Var && d.decl != NO_NODE {
-                graph_op(b, .Zero, .Synthetic, span, graph_dest_type(b, d), "", graph_dest_place(b, d, span))
-            }
-            buf := graph_base_place(b, v.expr, span)
-            lo := graph_value(b, v.low) if v.low != nil else NO_VALUE
-            hi := graph_value(b, v.high) if v.high != nil else NO_VALUE
-            // At the span read: where its failures say it is.
-            graph_op(b, .Byte_Read, .Explicit, v.span, d.type_, "#big_endian" if v.is_big_endian else "", graph_dest_place(b, d, span), buf, lo, hi)
-            return
-        }
-    }
-    // Text or a slice's elements written into a new partial array fill only a
-    // prefix of it: it is zero first.
-    if _, into_partial := distinct_base(graph_dest_type(b, d)).(^Type_Partial_Array); into_partial && d.kind == .Var && d.decl != NO_NODE && graph_fills_prefix(value) {
-        graph_op(b, .Zero, .Synthetic, span, graph_dest_type(b, d), "", graph_dest_place(b, d, span))
-    }
-    val := graph_widen(b, graph_value(b, value), graph_dest_type(b, d), span)
-    graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
-}
 
 // --- control flow -----------------------------------------------------------
 
@@ -1164,73 +1102,14 @@ graph_widens :: proc(from, to: Type) -> bool {
 // tag, is taken as a number.
 @(private="file")
 graph_index_value :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
-    at := graph_value(b, e)
+    at := graph_leaf(b, e)
     if _, is_enum := distinct_base(expr_type(e)).(^Type_Enum); is_enum {
         return graph_op_value(b, .Cast, .Implied, span, slice_header_width_type, type_name(slice_header_width_type), at)
     }
     return graph_widen(b, at, slice_header_width_type, span)
 }
 
-// A value at the type its use takes (a return, an argument): an array
-// literal is built at that type — a short one's other slots zero — and a
-// narrower number widens.
-@(private="file")
-graph_value_as :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span, w := Written.Explicit) -> Operand {
-    if v, is_view := graph_view(b, e, t, span); is_view { return v }
-    // Bytes where a fixed array is taken (`read_u16be(bytes[0])`, a `[2]byte`
-    // param): that many bytes at the offset seen as the array, copied into a
-    // temporary (the checker types `bytes[0]` a byte; it was read as one).
-    if _, to_array := distinct_base(t).(^Type_Fixed_Array); to_array {
-        buf, off: Expr
-        big := false
-        #partial switch v in e {
-        case ^Expr_Index:
-            if _, is_byte := distinct_base(v.type_).(Type_Byte); is_byte && is_byte_buffer(expr_type(v.expr)) {
-                buf, off, big = v.expr, v.index, v.is_big_endian
-            }
-        case ^Expr_Slice:
-            if is_byte_buffer(expr_type(v.expr)) { buf, off, big = v.expr, v.low, v.is_big_endian }
-        }
-        if buf != nil {
-            view := graph_view_at(b, buf, off, t, big, span)
-            slot := graph_slot(b, "temp", t, span)
-            graph_op(b, .Write, .Implied, span, nil, "", graph_var(b, "temp", slot, t, span), graph_read(b, view, t, span))
-            return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
-        }
-    }
-    if arr, is_arr := e.(^Expr_Array); is_arr && t != nil && graph_aggregate(t) {
-        return graph_temp_into(b, e, t, arr.span)
-    }
-    return graph_widen(b, graph_value(b, e, w), t, span)
-}
 
-// A fixed array where a slice is taken is viewed whole, implied: a slice over
-// its own storage — a literal's in a temporary, at the slice's element type —
-// with len = cap = its size.
-//
-// A partial array, or a pointer to one, where a slice or a pointer to one is
-// taken is itself, implied: its header is a slice's.
-@(private="file")
-graph_view :: proc(b: ^Graph_Builder, e: Expr, to: Type, span: Span) -> (Operand, bool) {
-    if to == nil || e == nil { return NO_VALUE, false }
-    _, to_ptr := distinct_base(to).(^Type_Ptr)
-    _, from_ptr := distinct_base(expr_type(e)).(^Type_Ptr)
-    if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(expr_type(e)) {
-        return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), graph_value(b, e)), true
-    }
-    sl, to_slice := distinct_base(to).(^Type_Slice)
-    _, from_array := distinct_base(expr_type(e)).(^Type_Fixed_Array)
-    if !to_slice || !from_array { return NO_VALUE, false }
-    place: Operand
-    if arr, is_literal := e.(^Expr_Array); is_literal {
-        at := new(Type_Fixed_Array)
-        at.elem, at.size = sl.elem, len(arr.elements)
-        place = graph_temp_place(b, e, at, span)
-    } else {
-        place = graph_place(b, e, span)
-    }
-    return graph_op_value(b, .Slice, .Implied, span, to, "", place), true
-}
 
 // A slice, or a pointer to one.
 graph_header_of :: proc(t: Type) -> bool {
@@ -1240,26 +1119,7 @@ graph_header_of :: proc(t: Type) -> bool {
     return is_slice
 }
 
-// Bytes at an offset seen as a `t` — read (`x : T = bytes[off]`), written
-// (`bytes[off] = x`) or addressed (`&bytes[off]` as a `^T`); `#big_endian`
-// names the view whose integers are stored most significant byte first.
-@(private="file")
-graph_view_place :: proc(b: ^Graph_Builder, ix: ^Expr_Index, t: Type, span: Span) -> Operand {
-    return graph_view_at(b, ix.expr, ix.index, t, ix.is_big_endian, span)
-}
 
-// The view of `bytes` at offset `off` (0 when nil).
-@(private="file")
-graph_view_at :: proc(b: ^Graph_Builder, bytes, off: Expr, t: Type, big: bool, span: Span) -> Operand {
-    base := graph_base_place(b, bytes, span)
-    at: Operand
-    if off != nil {
-        at = graph_widen(b, graph_value(b, off), slice_header_width_type, span)
-    } else {
-        at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
-    }
-    return graph_op_value(b, .View, .Explicit, span, t, "#big_endian" if big else "", base, at)
-}
 
 // What a take carves from: the storage's header — `&s` is s's, a `^[]byte`
 // what it points at — or, positional (`&bytes[i]`), the view of the bytes
@@ -1268,11 +1128,11 @@ graph_view_at :: proc(b: ^Graph_Builder, bytes, off: Expr, t: Type, big: bool, s
 graph_carve_storage :: proc(b: ^Graph_Builder, v: ^Expr_Take) -> Operand {
     if u, is_addr := v.storage.(^Expr_Unary); is_addr && u.op == .Ampersand {
         if ix, is_ix := u.operand.(^Expr_Index); is_ix && is_byte_buffer(expr_type(ix.expr)) {
-            return graph_view_place(b, ix, v.type_, v.span)
+            return graph_plain_view(b, ix, v.type_, v.span)
         }
-        return graph_place(b, u.operand, v.span)
+        return graph_plain_place(b, u.operand, v.span)
     }
-    return graph_base_place(b, v.storage, v.span)
+    return graph_plain_base(b, v.storage, v.span)
 }
 
 // A partial array, or a pointer to one.
@@ -1283,13 +1143,6 @@ graph_partial_of :: proc(t: Type) -> bool {
     return is_partial
 }
 
-// The type a binary operation works in: its own for arithmetic, else the
-// common type of its sides (a comparison's result is a bool). nil when a side
-// is a literal, which takes the other's.
-@(private="file")
-graph_binary_type :: proc(v: ^Expr_Binary) -> Type {
-    return graph_work({v.op, v.type_, expr_type(v.left), expr_type(v.right)})
-}
 
 // A binary operation: its operator, its type and its sides'.
 Graph_Work :: struct {
@@ -1340,7 +1193,7 @@ graph_implied_oks :: proc(b: ^Graph_Builder, vals: ^[dynamic]Operand, rts: []Typ
 @(private="file")
 graph_coll_place :: proc(b: ^Graph_Builder, coll: Expr, slot: Node_Id, span: Span) -> Operand {
     if slot != NO_NODE { return graph_var(b, b.g.name[slot], slot, b.g.type_[slot], span) }
-    return graph_base_place(b, coll, span)
+    return graph_plain_base(b, coll, span)
 }
 
 // The view a collection loop walks, when the collection has a header — a
@@ -1653,10 +1506,11 @@ graph_pure_place :: proc(e: Expr) -> bool {
     return false
 }
 
-// An expression's value.
-graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operand {
-    if e == nil { return NO_VALUE }
-    switch v in e {
+// A leaf's value, from its check (fuse_leaf): a literal, text, an intrinsic,
+// `#self`, a name, a constant or variant field. Anything else the checker
+// builds as it checks it.
+graph_leaf :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operand {
+    #partial switch v in e {
     case ^Expr_Number:            return graph_const(b, w, v.span, v.type_, "", Const_Value{int = v.int_value, float = v.value, is_float = v.is_float})
     case ^Expr_Char:              return graph_const(b, w, v.span, v.type_, "", Const_Value{int = i128(v.value)})
     case ^Expr_Bool:              return graph_const(b, w, v.span, v.type_, "", Const_Value{int = 1 if v.value else 0})
@@ -1669,126 +1523,46 @@ graph_value :: proc(b: ^Graph_Builder, e: Expr, w := Written.Explicit) -> Operan
         return graph_const(b, w, v.span, v.type_, v.resolved_value, Const_Value{int = 1 if v.bool_value else 0})
     case ^Expr_String:            return graph_text(b, graph_op_value(b, .Global, w, v.span, v.type_), Const_Value{text = v.value, is_text = true})
     case ^Expr_Ident:
-        if v.lowered != nil { return graph_value(b, v.lowered, w) }
+        if v.lowered != nil { return graph_leaf(b, v.lowered, w) }
         if is_void_literal(e) { return graph_op_value(b, .Const, w, v.span, v.type_, "void") }   // an uninitialized value, a null pointer
-        #partial switch r in v.resolved {
-        case Resolved_Enum_Variant, Resolved_Constant:
-            if graph_aggregate(v.type_) { return graph_read(b, graph_const_global(b, w, v.span, v.type_, v.name, v.resolved), v.type_, v.span) }
-            return graph_named_const(b, w, v.span, v.type_, v.name, v.resolved)
-        case Resolved_Func:
-            return graph_op_value(b, .Global, w, v.span, v.type_, v.name)   // a function as a value
-        case Resolved_Union_Variant:
-            return graph_temp_into(b, e, v.type_, v.span)
-        }
-        return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
+        if v.resolved != nil { return graph_leaf_resolved(b, v.resolved, v.name, v.type_, v.span, w) }
+        return graph_read(b, graph_plain_place(b, e, v.span), v.type_, v.span)
     case ^Expr_Self:
         // `#self` points at the value under construction: Self's address.
-        return graph_op_value(b, .Address, w, v.span, v.type_, "", graph_place(b, e, v.span))
+        return graph_op_value(b, .Address, w, v.span, v.type_, "", graph_plain_place(b, e, v.span))
     case ^Expr_Field_Access:
-        if v.resolved != nil {
-            #partial switch r in v.resolved {
-            case Resolved_Enum_Variant, Resolved_Constant:
-                if graph_aggregate(v.type_) { return graph_read(b, graph_const_global(b, w, v.span, v.type_, v.field, v.resolved), v.type_, v.span) }
-                return graph_named_const(b, w, v.span, v.type_, v.field, v.resolved)
-            case Resolved_Func:
-                return graph_op_value(b, .Global, w, v.span, v.type_, v.field)
-            case Resolved_Union_Variant:
-                return graph_temp_into(b, e, v.type_, v.span)
-            }
-        }
-        return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
-    case ^Expr_Index:
-        return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
-    case ^Expr_Unary:
-        if rf, ok := v.overload_fn.?; ok {
-            return graph_call_resolved(b, rf, v.type_, v.span, w, graph_operator_arg(b, rf, 0, v.operand, v.span, w))
-        }
-        #partial switch v.op {
-        case .Caret:     return graph_read(b, graph_place(b, e, v.span), v.type_, v.span)
-        case .Ampersand:
-            // `&bytes[off]` taken as a `^T`: the address of a view of them.
-            if ix, is_ix := v.operand.(^Expr_Index); is_ix && v.byte_view_type != nil {
-                pt := new(Type_Ptr)
-                pt.elem = v.byte_view_type
-                return graph_op_value(b, .Address, w, v.span, pt, "", graph_view_place(b, ix, v.byte_view_type, v.span))
-            }
-            return graph_op_value(b, .Address, w, v.span, v.type_, "", graph_place(b, v.operand, v.span))
-        }
-        op := "-%" if v.op == .Minus && v.wrapping else graph_token_text(v.op)   // `-%x` wraps
-        return graph_op_value(b, .Unary, w, v.span, v.type_, op, graph_value(b, v.operand, w))
-    case ^Expr_Binary:
-        if rf, ok := v.overload_fn.?; ok {
-            l := graph_operator_arg(b, rf, 0, v.left, v.span, w)
-            r := graph_operator_arg(b, rf, 1, v.right, v.span, w)
-            return graph_call_resolved(b, rf, v.type_, v.span, w, l, r)
-        }
-        if v.op == .And || v.op == .Or { return graph_short_circuit(b, v, w) }
-        // Each side at the type the operation works in: a narrower one widens.
-        work := graph_binary_type(v)
-        l := graph_widen(b, graph_value(b, v.left, w), work, v.span)
-        r := graph_widen(b, graph_value(b, v.right, w), work, v.span)
-        kind: Op_Kind = .Compare if is_comparison_op(v.op) else .Arith
-        // `+%` `-%` `*%` wrap: the parser keeps them as + - * with a flag.
-        word := graph_token_text(v.op)
-        if v.wrapping { word = strings.concatenate({word, "%"}) }
-        return graph_op_value(b, kind, w, v.span, v.type_, word, l, r)
-    case ^Expr_Call:
-        return graph_call(b, v, nil, w)
-    case ^Expr_Struct_Literal:
-        if v.override_target != "" {
-            graph_literal_writes(b, v, graph_dest_var(v.override_target, NO_NODE, expr_type(v)), w)
-            return NO_VALUE
-        }
-        return graph_temp_into(b, e, v.type_, v.span)
-    case ^Expr_Array:
-        return graph_temp_into(b, e, v.type_, v.span)
-    case ^Expr_Slice:
-        // The bounds at the header width, as an index is (`buf[a:b]`, a u32 each).
-        lo := graph_widen(b, graph_value(b, v.low, w), slice_header_width_type, v.span) if v.low != nil else NO_VALUE
-        hi := graph_widen(b, graph_value(b, v.high, w), slice_header_width_type, v.span) if v.high != nil else NO_VALUE
-        return graph_op_value(b, .Slice, w, v.span, v.type_, "", graph_base_place(b, v.expr, v.span), lo, hi)
-    case ^Expr_Assert:
-        graph_assert(b, v, graph_value(b, v.cond, w), w)
-        return NO_VALUE
-    case ^Expr_Take:
-        count := NO_VALUE
-        if take_count(v) != nil { count = graph_widen(b, graph_value(b, take_count(v), w), slice_header_width_type, v.span) }
-        return graph_op_value(b, .Carve, w, v.span, v.type_, v.keyword, graph_carve_storage(b, v), count)
-    case ^Expr_If:
-        return graph_if_value(b, v, w)
-    case ^Expr_Tuple_Default:
-        // The slots of one default share its source call: it runs once, and
-        // each slot is one of its outputs. A source of one value (`a, b: i64
-        // = 7`) is a broadcast: each slot is it, evaluated again.
-        if graph_outputs(b, v.source) < 2 { return graph_value(b, v.source, w) }
-        key := graph_expr_ptr(v.source)
-        if v.index == 0 { b.code.tuples[key] = graph_value(b, v.source, w).op }
-        call, ok := b.code.tuples[key]
-        if !ok { graph_fatal(v.span, "a default's slot %d comes before its call", v.index) }
-        return Operand{call, i32(v.index)}
-    case ^Expr_Try:
-        return graph_try(b, v, w)
-    case ^Expr_Skip_Constructor:
-        graph_fatal(v.span, "`void` reached the graph as a value")
-    case ^Expr_Include:
-        graph_fatal(v.span, "an include reached the graph as a value")
-    case ^Expr_Type_Name:
-        graph_fatal(v.span, "a type name reached the graph as a value")
+        if v.resolved != nil && !graph_is_member(v.resolved) { return graph_leaf_resolved(b, v.resolved, v.field, v.type_, v.span, w) }
     }
-    return NO_VALUE
+    graph_fatal(expr_span(e)^, "the checker built no value here")
 }
 
-// An expression's place: a variable, a field, an element, what a pointer
-// points at. Anything else is evaluated into a synthetic local.
-graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
+// A name resolved to no variable: a constant, a variant, a function.
+@(private="file")
+graph_leaf_resolved :: proc(b: ^Graph_Builder, r: Resolved_Name, name: string, t: Type, span: Span, w: Written) -> Operand {
+    #partial switch _ in r {
+    case Resolved_Enum_Variant, Resolved_Constant:
+        if graph_aggregate(t) { return graph_read(b, graph_const_global(b, w, span, t, name, r), t, span) }
+        return graph_named_const(b, w, span, t, name, r)
+    case Resolved_Func:
+        return graph_op_value(b, .Global, w, span, t, name)   // a function as a value
+    case Resolved_Union_Variant:
+        // Built in a temporary made first, read.
+        slot := graph_slot(b, "temp", t, span)
+        graph_fuse_variant(b, t, name, graph_dest_var("temp", slot, t), span)
+        return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
+    }
+    graph_fatal(span, "'%s' resolved to no value", name)
+}
+
+// A plain place (graph_pure_place), from its check: a variable, a constant
+// table, Self, text, a field, an element at a name or a number, what a
+// pointer points at.
+graph_plain_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
     if b.compound.key != nil && graph_expr_key(e) == b.compound.key { return b.compound.place }
     #partial switch v in e {
     case ^Expr_Ident:
-        if v.lowered != nil { return graph_place(b, v.lowered, span) }
-        if v.resolved == nil {
-            p := graph_var(b, v.name, NO_NODE, v.type_, v.span)
-            return p
-        }
+        if v.lowered != nil { return graph_plain_place(b, v.lowered, span) }
+        if v.resolved == nil { return graph_var(b, v.name, NO_NODE, v.type_, v.span) }
         if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(v.type_) {
             return graph_const_global(b, .Explicit, v.span, v.type_, v.name, v.resolved)   // a constant table
         }
@@ -1798,7 +1572,7 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
         return graph_text(b, graph_op_value(b, .Global, .Explicit, v.span, v.type_), Const_Value{text = v.value, is_text = true})
     case ^Expr_Field_Access:
         if v.resolved == nil || graph_is_member(v.resolved) {
-            base := graph_base_place(b, v.expr, v.span)
+            base := graph_plain_base(b, v.expr, v.span)
             base_t := graph_pointee(expr_type(v.expr))
             if _, is_array := distinct_base(base_t).(^Type_Fixed_Array); is_array {
                 return graph_op_value(b, .Swizzle, .Explicit, v.span, v.type_, v.field, base)
@@ -1811,22 +1585,38 @@ graph_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
     case ^Expr_Index:
         // Bytes indexed as another type (a byte read at an argument): a view.
         if _, of_byte := distinct_base(v.type_).(Type_Byte); !of_byte && v.type_ != nil && !is_infer(v.type_) && is_byte_buffer(expr_type(v.expr)) {
-            return graph_view_place(b, v, v.type_, v.span)
+            return graph_plain_view(b, v, v.type_, v.span)
         }
-        base := graph_base_place(b, v.expr, v.span)
+        base := graph_plain_base(b, v.expr, v.span)
         return graph_op_value(b, .Index, .Explicit, v.span, v.type_, "", base, graph_index_value(b, v.index, v.span))
     case ^Expr_Unary:
         if v.op == .Caret {
-            return graph_op_value(b, .Deref, .Explicit, v.span, v.type_, "", graph_place(b, v.operand, v.span))
+            return graph_op_value(b, .Deref, .Explicit, v.span, v.type_, "", graph_plain_place(b, v.operand, v.span))
         }
-    case ^Expr_If:
-        if graph_aggregate(v.type_) { return graph_if_place(b, v, .Explicit) }   // its value's local
     }
-    t := expr_type(e)
-    slot := graph_slot(b, "temp", t, span)
-    graph_store(b, graph_dest_var("temp", slot, t), e, span)
-    return graph_var(b, "temp", slot, t, span)
+    graph_fatal(expr_span(e)^, "the checker built no place here")
 }
+
+// A plain place's base: through a pointer, what it points at (one level of
+// automatic dereference).
+graph_plain_base :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
+    p := graph_plain_place(b, e, span)
+    if _, is_self := e.(^Expr_Self); is_self { return p }   // through `#self` is Self
+    if pt, ok := distinct_base(expr_type(e)).(^Type_Ptr); ok {
+        return graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)
+    }
+    return p
+}
+
+// Bytes at a plain index seen as a `t` (graph_view_place).
+@(private="file")
+graph_plain_view :: proc(b: ^Graph_Builder, ix: ^Expr_Index, t: Type, span: Span) -> Operand {
+    base := graph_plain_base(b, ix.expr, span)
+    at := graph_widen(b, graph_leaf(b, ix.index), slice_header_width_type, span)
+    return graph_op_value(b, .View, .Explicit, span, t, "#big_endian" if ix.is_big_endian else "", base, at)
+}
+
+
 
 // A tag or padding access names part of the value (a place); variants,
 // constants and functions don't.
@@ -1837,17 +1627,6 @@ graph_is_member :: proc(r: Resolved_Name) -> bool {
     return false
 }
 
-// The place a field or element is reached through: through a pointer, what
-// it points at (one level of automatic dereference).
-@(private="file")
-graph_base_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
-    p := graph_place(b, e, span)
-    if _, is_self := e.(^Expr_Self); is_self { return p }   // through `#self` is Self
-    if pt, ok := distinct_base(expr_type(e)).(^Type_Ptr); ok {
-        return graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)
-    }
-    return p
-}
 
 graph_pointee :: proc(t: Type) -> Type {
     if pt, ok := distinct_base(t).(^Type_Ptr); ok { return pt.elem }
@@ -1875,139 +1654,10 @@ graph_dest_type :: proc(b: ^Graph_Builder, d: Dest) -> Type {
 }
 
 
-// Build an aggregate into a fresh synthetic local and read it.
-@(private="file")
-graph_temp_into :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> Operand {
-    return graph_read(b, graph_temp_place(b, e, t, span), t, span)
-}
 
-// Build an aggregate into a fresh synthetic local: its place.
-@(private="file")
-graph_temp_place :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> Operand {
-    slot := graph_slot(b, "temp", t, span)
-    if !graph_into(b, e, graph_dest_var("temp", slot, t), span) {
-        graph_fatal(span, "an aggregate value the graph cannot build in place")
-    }
-    return graph_var(b, "temp", slot, t, span)
-}
 
-// Build an aggregate straight into `d`: a literal (braces are writes after a
-// construction or a zero), a construction call, or a bare variant. False when
-// `e` is none of these.
-@(private="file")
-graph_into :: proc(b: ^Graph_Builder, e: Expr, d: Dest, span: Span) -> bool {
-    #partial switch v in e {
-    case ^Expr_Struct_Literal:
-        if v.override_target != "" { return false }
-        if v.is_broadcast {
-            val := graph_widen(b, graph_value(b, v.broadcast_value), graph_elem_type(v.type_), v.span)
-            graph_op(b, .Fill, .Explicit, v.span, v.type_, "", graph_dest_place(b, d, v.span), val)
-            return true
-        }
-        if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module && v.zero_init {
-            // `Foo{0}`: the zero value — no constructor, no defaults.
-            graph_op(b, .Zero, .Explicit, v.span, v.type_, "{0}", graph_dest_place(b, d, v.span))
-        } else if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module {
-            ops := graph_default_args(b, graph_dest_place(b, d, v.span), ts, v.span)
-            op := graph_call_op(b, .Construct, .Explicit, v.span, ts, v.type_, ..ops)
-            b.g.name[op] = strings.concatenate({b.g.name[op], "{}"})   // as written: braces, no call
-            if ts.is_union_variant { graph_field_defaults(b, ts, v, d, v.span) }   // (no constructor runs them)
-        } else if graph_aggregate(v.type_) {
-            // A union variant, or an array: its own construction (no init
-            // function to call), or zero before the element writes.
-            _, is_union := distinct_base(v.type_).(^Type_Union)
-            graph_op(b, .Construct if is_union else .Zero, .Explicit, v.span, v.type_, v.name, graph_dest_place(b, d, v.span))
-            if is_union { graph_variant_defaults(b, v.type_, v.name, v, d, v.span) }
-        } else {
-            return false
-        }
-        graph_literal_writes(b, v, d, .Explicit)
-        return true
-    case ^Expr_Array:
-        // At its destination's type: a short literal leaves the rest zero.
-        t := d.type_ if d.type_ != nil && !is_infer(d.type_) else v.type_
-        graph_op(b, .Zero, .Explicit, v.span, t, "", graph_dest_place(b, d, v.span))
-        parent := d
-        elem_t := graph_elem_type(t)
-        for el, i in v.elements {
-            graph_store(b, Dest{kind = .Index, index = i, type_ = elem_t, parent = &parent}, el, v.span)
-        }
-        return true
-    case ^Expr_Call:
-        rf, resolved := v.resolved_func.?
-        if !resolved { return false }
-        callee := graph_callee(b, rf)
-        if callee == nil || callee.kind != .Struct { return false }
-        dd := d
-        graph_call(b, v, &dd, .Explicit)
-        return true
-    case ^Expr_Ident:
-        if _, is_variant := v.resolved.(Resolved_Union_Variant); is_variant {
-            graph_op(b, .Construct, .Explicit, v.span, v.type_, v.name, graph_dest_place(b, d, v.span))
-            graph_variant_defaults(b, v.type_, v.name, nil, d, v.span)
-            return true
-        }
-    case ^Expr_Field_Access:
-        if _, is_variant := v.resolved.(Resolved_Union_Variant); is_variant {
-            graph_op(b, .Construct, .Explicit, v.span, v.type_, v.field, graph_dest_place(b, d, v.span))
-            graph_variant_defaults(b, v.type_, v.field, nil, d, v.span)
-            return true
-        }
-    }
-    return false
-}
 
-// A literal's writes into the value it builds: named or positional fields,
-// or an array's slots.
-@(private="file")
-graph_literal_writes :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, d: Dest, w: Written) {
-    whole := d
-    parent := d
-    if len(v.array_values) > 0 {
-        elem_t := graph_elem_type(v.type_)
-        for el, i in v.array_values {
-            if el == nil { continue }   // a slot left zero
-            graph_store(b, Dest{kind = .Index, index = i, type_ = elem_t, parent = &parent}, el, v.span)
-        }
-        return
-    }
-    sd := as_scope_body(distinct_base(v.type_))
-    if v.is_spread && sd != nil {
-        graph_spread_writes(b, v, sd, &parent, w)
-        return
-    }
-    // A union's variant: its fields are the variant struct's, past the tag.
-    skip := 0
-    if st := graph_variant_struct(b, v.type_, v.name); st != nil {
-        sd = as_scope_body(st)
-        parent = Dest{kind = .Variant, name = v.name, type_ = st, parent = &whole}
-        for f in sd.fields { if strings.has_prefix(f.name, "__") { skip += 1 } }
-    }
-    for f, i in v.fields {
-        name := f.name
-        if name == "" && sd != nil && skip + i < len(sd.fields) { name = sd.fields[skip + i].name }
-        t: Type
-        if sd != nil {
-            if fi, ok := sd.field_map[name]; ok { t = sd.fields[fi].type_ }
-        }
-        graph_store(b, Dest{kind = .Field, name = name, type_ = t, parent = &parent}, f.value, v.span)
-    }
-}
 
-// `Foo{call()}`, the call's results matching Foo's fields: the call once, and
-// each field written its result — an array result a slice field takes seen
-// whole from a temporary it's written to. (It wrote the first result only,
-// into the first field.)
-@(private="file")
-graph_spread_writes :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, sd: ^Scope_Body, parent: ^Dest, w: Written) {
-    call, is_call := v.fields[0].value.(^Expr_Call)
-    callee: ^Type_Scope
-    if is_call {
-        if rf, resolved := call.resolved_func.?; resolved { callee = graph_callee(b, rf) }
-    }
-    if callee == nil { graph_fatal(v.span, "a spread literal of no call") }
-    graph_spread_results(b, v, sd, parent, callee, graph_value(b, call, w))
-}
 
 // The call's results, each written to its field (graph_spread_writes).
 graph_spread_results :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, sd: ^Scope_Body, parent: ^Dest, callee: ^Type_Scope, c: Operand) {
@@ -2072,14 +1722,14 @@ graph_field_defaults :: proc(b: ^Graph_Builder, st: ^Type_Scope, lit: ^Expr_Stru
 
 // A default — a variant's field's, a constructor param's — where it's used:
 // it isn't checked where it's declared, so a constant one is written at the
-// type it defaults.
+// type it defaults; else it is a leaf (text, a name), at that type.
 @(private="file")
 graph_default_value :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> Operand {
     c, folds := graph_literal_value(e).?
     if dt := expr_type(e); folds && !c.is_text && (dt == nil || is_infer(dt)) {
         return graph_const(b, .Implied, span, t, "", c)
     }
-    return graph_value_as(b, e, t, span, .Implied)
+    return graph_widen(b, graph_leaf(b, e, .Implied), t, span)
 }
 
 // An array's element type.
@@ -2092,143 +1742,11 @@ graph_elem_type :: proc(t: Type) -> Type {
     return nil
 }
 
-// A call: a builtin, a cast, a construction into `dest` (or a fresh local), or
-// a call of a function — directly or through a function value. The arguments
-// come first; a construction's destination is emitted after them.
-@(private="file")
-graph_call :: proc(b: ^Graph_Builder, v: ^Expr_Call, dest: ^Dest, w: Written) -> Operand {
-    args := call_args(v)
-    rf, resolved := v.resolved_func.?
-    if !resolved && v.fn_value == nil { return graph_builtin(b, v, w) }
-    callee := graph_callee(b, rf) if resolved else nil
-    if resolved && callee == nil {
-        // A distinct conversion: `Meters(x)`.
-        if len(args) != 1 { graph_fatal(v.span, "'%s' resolved to no function", call_name(v)) }
-        return graph_op_value(b, .Cast, w, v.span, v.type_, call_name(v), graph_value(b, args[0], w))
-    }
-    is_construct := callee != nil && callee.kind == .Struct
-    // The signature: the callee's, or through a function value, its type's.
-    sig := callee
-    if sig == nil && v.fn_value != nil {
-        if ft, is_fn := distinct_base(v.fn_value).(^Type_Scope); is_fn { sig = ft }
-    }
-    vals := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
-    for a, i in args {
-        // A default argument runs at the call site, which doesn't write it.
-        aw := w
-        if sig != nil && i < len(sig.params) && a == sig.params[i].default_value { aw = .Implied }
-        pt: Type = sig.params[i].type_ if sig != nil && i < len(sig.params) else nil
-        append(&vals, graph_value_as(b, a, pt, v.span, aw))
-    }
-    ops := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
-    if callee == nil {
-        // Through a function value: it is the first operand.
-        append(&ops, graph_read(b, graph_var(b, call_name(v), NO_NODE, v.fn_value, v.span), v.fn_value, v.span))
-        append(&ops, ..vals[:])
-        return graph_op_value(b, .Call, w, v.span, v.type_, call_name(v), ..ops[:])
-    }
-    if !is_construct {
-        return Operand{graph_call_op(b, .Call, w, v.span, callee, v.type_, ..vals[:]), 0}
-    }
-    target: Dest
-    if dest != nil {
-        target = dest^
-    } else {
-        target = graph_dest_var("temp", graph_slot(b, "temp", v.type_, v.span), v.type_)
-    }
-    append(&ops, graph_dest_place(b, target, v.span))
-    append(&ops, ..vals[:])
-    b.code.constructed = graph_call_op(b, .Construct, w, v.span, callee, v.type_, ..ops[:])
-    // `Foo(){ a = x }`: writes into the constructed value.
-    if v.overrides != nil { graph_literal_writes(b, v.overrides, target, w) }
-    if dest != nil { return NO_VALUE }
-    return graph_read(b, graph_dest_place(b, target, v.span), v.type_, v.span)
-}
 
-// A call to a function the checker doesn't resolve: print, crash, len, cap,
-// and the numeric casts.
-@(private="file")
-graph_builtin :: proc(b: ^Graph_Builder, v: ^Expr_Call, w: Written) -> Operand {
-    name := call_name(v)
-    args := call_args(v)
-    if _, is_cast := cast_result_type(name); is_cast {
-        return graph_op_value(b, .Cast, w, v.span, v.type_, name, graph_value(b, args[0], w))
-    }
-    switch name {
-    case "print", "print_cstr", "print_float", "print_int", "crash":
-        ops := make([dynamic]Operand, 0, len(args), context.temp_allocator)
-        for a in args { append(&ops, graph_value(b, a, w)) }
-        graph_op(b, .Crash if name == "crash" else .Print, w, v.span, nil, name, ..ops[:])
-        return NO_VALUE
-    case "len", "cap":
-        t := expr_type(args[0])
-        if fa, fixed := distinct_base(graph_pointee(t)).(^Type_Fixed_Array); fixed {
-            return graph_const(b, w, v.span, v.type_, name, Const_Value{int = i128(fa.size)})
-        }
-        field := graph_op_value(b, .Field, w, v.span, v.type_, name, graph_base_place(b, args[0], v.span))
-        return graph_read(b, field, v.type_, v.span)
-    case "int", "uint", "isize", "usize", "bool", "cstring":
-        return graph_op_value(b, .Cast, w, v.span, v.type_, name, graph_value(b, args[0], w))
-    case "slice_from_ptr":
-        ops := make([dynamic]Operand, 0, len(args), context.temp_allocator)
-        for a in args { append(&ops, graph_value(b, a, w)) }
-        return graph_op_value(b, .Slice, w, v.span, v.type_, name, ..ops[:])
-    }
-    graph_fatal(v.span, "the builtin '%s' has no operation", name)
-}
 
-// `a and b`, `a or b`: the right side runs only when needed, so the result
-// goes through a synthetic local.
-@(private="file")
-graph_short_circuit :: proc(b: ^Graph_Builder, v: ^Expr_Binary, w: Written) -> Operand {
-    word := "and" if v.op == .And else "or"
-    slot := graph_slot(b, word, v.type_, v.span)
-    l := graph_value(b, v.left, w)
-    graph_op(b, .Write, .Synthetic, v.span, nil, "", graph_var(b, word, slot, v.type_, v.span), l)
-    rhs, join := graph_run_new(b), graph_run_new(b)
-    if v.op == .And {
-        graph_branch(b, l, rhs, join, w, v.span)
-    } else {
-        graph_branch(b, l, join, rhs, w, v.span)
-    }
-    b.code.run = rhs
-    r := graph_value(b, v.right, w)
-    graph_op(b, .Write, .Synthetic, v.span, nil, "", graph_var(b, word, slot, v.type_, v.span), r)
-    graph_jump(b, join, .Synthetic, v.span)
-    b.code.run = join
-    return graph_read(b, graph_var(b, word, slot, v.type_, v.span), v.type_, v.span)
-}
 
-// An `if` expression: each branch writes a synthetic local, read after both.
-@(private="file")
-graph_if_value :: proc(b: ^Graph_Builder, v: ^Expr_If, w: Written) -> Operand {
-    return graph_read(b, graph_if_place(b, v, w), v.type_, v.span)
-}
 
-// The synthetic local an `if` expression's branches write: where its value
-// is, after both (a field of it is read there).
-@(private="file")
-graph_if_place :: proc(b: ^Graph_Builder, v: ^Expr_If, w: Written) -> Operand {
-    slot := graph_slot(b, "if", v.type_, v.span)
-    cond := graph_value(b, v.condition, w)
-    yes, no, join := graph_run_new(b), graph_run_new(b), graph_run_new(b)
-    graph_branch(b, cond, yes, no, w, v.span)
-    b.code.run = yes
-    graph_store(b, graph_dest_var("if", slot, v.type_), v.then_expr, v.span)
-    graph_jump(b, join, .Synthetic, v.span)
-    b.code.run = no
-    graph_store(b, graph_dest_var("if", slot, v.type_), v.else_expr, v.span)
-    graph_jump(b, join, .Synthetic, v.span)
-    b.code.run = join
-    return graph_var(b, "if", slot, v.type_, v.span)
-}
 
-// `f()?`: on an error, leave every scope and return it; otherwise go on with
-// the call's first output.
-@(private="file")
-graph_try :: proc(b: ^Graph_Builder, v: ^Expr_Try, w: Written) -> Operand {
-    return graph_try_after(b, v, graph_value(b, v.inner, w))
-}
 
 // `?` after its call is built: a branch on the call's err — its failure
 // returns the err — then the call's value, where it didn't fail.
@@ -2279,23 +1797,7 @@ graph_outputs :: proc(b: ^Graph_Builder, e: Expr) -> int {
     return len(callee.return_types)
 }
 
-// An operator's k-th operand as its `overload` takes it: at its param's type,
-// widened or viewed (`&s + c` hands a `^[..N]utf8` over as a `^[]utf8`), as a
-// call's argument is.
-@(private="file")
-graph_operator_arg :: proc(b: ^Graph_Builder, rf: Resolved_Func, k: int, e: Expr, span: Span, w: Written) -> Operand {
-    callee := graph_callee(b, rf)
-    if callee == nil || k >= len(callee.params) { return graph_value(b, e, w) }
-    return graph_value_as(b, e, callee.params[k].type_, span, w)
-}
 
-// A call in operator form, resolved to an `overload` function.
-@(private="file")
-graph_call_resolved :: proc(b: ^Graph_Builder, rf: Resolved_Func, t: Type, span: Span, w: Written, operands: ..Operand) -> Operand {
-    callee := graph_callee(b, rf)
-    if callee == nil { graph_fatal(span, "an operator resolved to no function") }
-    return Operand{graph_call_op(b, .Construct if callee.kind == .Struct else .Call, w, span, callee, t, ..operands), 0}
-}
 
 // The fun or struct a resolved call runs. Casts and distinct conversions
 // resolve to none: they are no call.
@@ -2346,13 +1848,13 @@ graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: st
 // The value a name resolved to a constant stands for: an enum variant's, or a
 // named constant's when it is a literal (or names one). Others have none here.
 @(private="file")
-graph_const_value :: proc(r: Resolved_Name) -> Maybe(Const_Value) {
+graph_const_value :: proc(r: Resolved_Name, checked: ^Checked_Program = nil) -> Maybe(Const_Value) {
     #partial switch v in r {
     case Resolved_Enum_Variant:
         return Const_Value{int = i128(v.value)}
     case Resolved_Constant:
         if v.value_expr == nil { return Const_Value{int = i128(v.int_value)} }
-        return graph_literal_value(v.value_expr)
+        return graph_literal_value(v.value_expr, checked)
     }
     return nil
 }
@@ -2377,7 +1879,7 @@ graph_fills_prefix :: proc(value: Expr) -> bool {
 // expression's operations, run here.
 @(private="file")
 graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
-    value := graph_const_value(r)
+    value := graph_const_value(r, b.checked)
     rc, is_const := r.(Resolved_Constant)
     if !is_const || value != nil || rc.value_expr == nil { return graph_const(b, w, span, t, name, value) }
     if ir := llvm_type_from_checker(t); ir == "double" || ir == "float" {
@@ -2385,7 +1887,7 @@ graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, na
             return graph_const(b, w, span, t, name, Const_Value{float = x, is_float = true})
         }
     }
-    return graph_value_as(b, rc.value_expr, t, span, w)
+    graph_fatal(span, "the constant '%s' has no value the graph can evaluate", name)
 }
 
 // A constant float expression's value, each step rounded to single precision
@@ -2446,7 +1948,7 @@ graph_constant :: proc(e: Expr) -> Maybe(Const_Value) {
 }
 
 @(private="file")
-graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
+graph_literal_value :: proc(e: Expr, checked: ^Checked_Program = nil) -> Maybe(Const_Value) {
     #partial switch v in e {
     case ^Expr_Number: return Const_Value{int = v.int_value, float = v.value, is_float = v.is_float}
     case ^Expr_Char:   return Const_Value{int = i128(v.value)}
@@ -2454,17 +1956,17 @@ graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
     case ^Expr_String: return Const_Value{text = v.value, is_text = true}
     case ^Expr_Unary:
         if v.op != .Minus { return nil }
-        x, ok := graph_literal_value(v.operand).?
+        x, ok := graph_literal_value(v.operand, checked).?
         if !ok { return nil }
         return Const_Value{int = -x.int, float = -x.float, is_float = x.is_float}
-    case ^Expr_Ident:          return graph_const_value(v.resolved)
-    case ^Expr_Field_Access:   return graph_const_value(v.resolved)
-    case ^Expr_Size_Of:        return graph_size_of(v.resolved_type)
+    case ^Expr_Ident:          return graph_const_value(v.resolved, checked)
+    case ^Expr_Field_Access:   return graph_const_value(v.resolved, checked)
+    case ^Expr_Size_Of:        return graph_size_of(v.resolved_type, checked)   // (a union's, laid out)
     case ^Expr_Binary:
         // Integer arithmetic of constants (`KB :: 1 << 10`): its value.
         if _, overloaded := v.overload_fn.?; overloaded { return nil }
-        l, lok := graph_literal_value(v.left).?
-        r, rok := graph_literal_value(v.right).?
+        l, lok := graph_literal_value(v.left, checked).?
+        r, rok := graph_literal_value(v.right, checked).?
         if !lok || !rok || l.is_float || r.is_float || l.is_text || r.is_text { return nil }
         x: i128
         #partial switch v.op {
@@ -2474,6 +1976,8 @@ graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
         case .Ampersand: x = l.int & r.int
         case .Pipe:      x = l.int | r.int
         case .Tilde:     x = l.int ~ r.int
+        case .Slash:     if r.int == 0 { return nil }; x = l.int / r.int   // (truncating, as the code's)
+        case .Modulo:    if r.int == 0 { return nil }; x = l.int % r.int
         case .Shift_Left, .Shift_Right:
             if r.int < 0 || r.int > 63 { return nil }
             x = l.int << uint(r.int) if v.op == .Shift_Left else l.int >> uint(r.int)
@@ -2485,7 +1989,7 @@ graph_literal_value :: proc(e: Expr) -> Maybe(Const_Value) {
         // A conversion of a constant: its value, when the type holds it.
         args := call_args(v)
         if len(args) != 1 || !graph_converts(v) { return nil }
-        x, ok := graph_literal_value(args[0]).?
+        x, ok := graph_literal_value(args[0], checked).?
         if !ok { return nil }
         return graph_fits(x, v.type_)
     }
@@ -2531,13 +2035,6 @@ graph_fits :: proc(x: Const_Value, t: Type) -> Maybe(Const_Value) {
     return nil
 }
 
-@(private="file")
-graph_expr_ptr :: proc(e: Expr) -> rawptr {
-    #partial switch v in e {
-    case ^Expr_Call: return v
-    }
-    return nil
-}
 
 // An assignment target's identity: its node.
 @(private="file")
@@ -3514,7 +3011,7 @@ Graph_Span_Target :: struct {
 graph_fuse_span_target :: proc(b: ^Graph_Builder, bytes: Expr, span: Span) -> Graph_Span_Target {
     st := Graph_Span_Target{lo = NO_VALUE, zero = NO_NODE}
     st.view_place.x = b.nodes
-    st.vplace = graph_base_place(b, bytes, span)
+    st.vplace = graph_plain_base(b, bytes, span)
     st.view_place.y = b.nodes
     return st
 }
@@ -3534,7 +3031,7 @@ graph_fuse_span_target_ops :: proc(b: ^Graph_Builder, st: ^Graph_Span_Target, hi
     st.hi.y = b.nodes
     st.branched = b.code.run != st.run
     st.place.x = b.nodes
-    p := graph_base_place(b, bytes, slice_span)
+    p := graph_plain_base(b, bytes, slice_span)
     st.place.y = b.nodes
     st.slice = graph_op(b, .Slice, .Explicit, slice_span, t, "", p, st.lo, hi)
     at := st.lo
@@ -3582,7 +3079,7 @@ graph_fuse_carve :: proc(b: ^Graph_Builder, v: ^Expr_Take, count: Operand, w: Wr
 // A plain place the checker checked without building (a loop's collection,
 // a slice's): built where it is walked, from its check.
 graph_fuse_base_place :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
-    return graph_base_place(b, e, span)
+    return graph_plain_base(b, e, span)
 }
 
 // A destructure of a call's outputs (graph_destructure): the names it
@@ -3675,7 +3172,7 @@ graph_fuse_match_switch :: proc(b: ^Graph_Builder, gm: ^Graph_Match, v: ^Stmt_Ma
 @(private="file")
 graph_fuse_subject :: proc(b: ^Graph_Builder, v: ^Stmt_Match, gm: ^Graph_Match) -> Operand {
     if gm.slot != NO_NODE { return graph_var(b, "subject", gm.slot, b.g.type_[gm.slot], v.span) }
-    return graph_base_place(b, v.subject, v.span)
+    return graph_plain_base(b, v.subject, v.span)
 }
 
 // An arm, resolved: its tag, its run and block, and — a union's arm that
@@ -3862,7 +3359,7 @@ graph_fuse_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, bounds
 graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
     if view := graph_loop_view(v.collection); view != nil {
         fl.coll_slot = graph_slot(b, "items", view, fl.span)
-        val := graph_op_value(b, .Slice, .Implied, fl.span, view, "", graph_base_place(b, v.collection, fl.span))
+        val := graph_op_value(b, .Slice, .Implied, fl.span, view, "", graph_plain_base(b, v.collection, fl.span))
         graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "items", fl.coll_slot, view, fl.span), val)
     }
     if v.elem_var != "" {
@@ -3897,7 +3394,7 @@ graph_fuse_for_runs :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
             if fl.end_slot != NO_NODE {
                 bound = graph_read(b, graph_var(b, "end", fl.end_slot, b.g.type_[fl.end_slot], span), b.g.type_[fl.end_slot], span)
             } else {
-                bound = graph_value(b, v.range_high)
+                bound = graph_leaf(b, v.range_high)
             }
         } else {
             bound = graph_len(b, graph_coll_place(b, v.collection, fl.coll_slot, span), expr_type(v.collection), span)

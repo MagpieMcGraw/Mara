@@ -1,0 +1,10 @@
+module const_union_size
+// Constants over a union's size fold where they are used (the graph built
+// their expressions at each use).
+//@ expect-output: 12 25
+Shape :: union(tag u8) { Circle = 1 { r: f32 } Rect = 2 { w: f32 h: f32 } }
+N :: size_of(Shape)
+M :: N * 2 + 1
+main :: fun() {
+	print(N, M)
+}

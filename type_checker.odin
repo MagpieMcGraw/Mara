@@ -5723,16 +5723,16 @@ fuse_leaf :: proc(c: ^Checker, e: Expr) {
     #partial switch v in e {
     case ^Expr_Number, ^Expr_Char, ^Expr_Bool, ^Expr_Size_Of, ^Expr_Compiler_Intrinsic:
         if want == .Place { return }
-        fuse_done(c, graph_value(b, e, w))
+        fuse_done(c, graph_leaf(b, e, w))
     case ^Expr_String:
         // Text is its global: its place and its value.
-        fuse_done(c, graph_value(b, e, w), want == .Place)
+        fuse_done(c, graph_leaf(b, e, w), want == .Place)
     case ^Expr_Self:
         // `#self`: the address of what is being built; Self itself its place.
         if want == .Place {
-            fuse_done(c, graph_place(b, e, v.span), true)
+            fuse_done(c, graph_plain_place(b, e, v.span), true)
         } else {
-            fuse_done(c, graph_value(b, e, w))
+            fuse_done(c, graph_leaf(b, e, w))
         }
     case ^Expr_Ident:
         // A variable, or a constant table, is a place; the rest are values
@@ -5747,9 +5747,9 @@ fuse_leaf :: proc(c: ^Checker, e: Expr) {
             if c.asked_temp { d = graph_fuse_temp(b, c.asked_span, fuse_temp_type(d)) }
             graph_fuse_variant(b, v.type_, v.name, d, v.span)
             fuse_built(c, b, want, c.asked_temp, c.asked_temp, d, v.type_, c.asked_span)
-        case want == .Value:  fuse_done(c, graph_value(b, e, w))
-        case is_place:        fuse_done(c, graph_place(b, e, v.span), true)
-        case want != .Place:  fuse_done(c, graph_value(b, e, w))
+        case want == .Value:  fuse_done(c, graph_leaf(b, e, w))
+        case is_place:        fuse_done(c, graph_plain_place(b, e, v.span), true)
+        case want != .Place:  fuse_done(c, graph_leaf(b, e, w))
         }
     }
 }
@@ -5907,7 +5907,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
             // A field's `= void` is its declaration's, as written: the value
             // stored, unchecked.
             orig := b.fuse.field_inits[rawptr(s)]
-            val := graph_value(b, orig)
+            val := graph_leaf(b, orig)
             graph_fuse_write_at(b, graph_var(b, s.name, fa.decl, t, s.span), val, s.span)
             return
         }
@@ -12803,9 +12803,9 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
         if into_temp { d = graph_fuse_temp(b, temp_span, fuse_temp_type(d)) }
         graph_fuse_variant(b, t, e.field, d, e.span)
         fuse_built(c, b, want, into_temp, into_temp, d, t, temp_span)
-    case want == .Value:                  fuse_done(c, graph_value(b, e, w))
-    case is_const && graph_aggregate(t):  fuse_done(c, graph_place(b, e, e.span), true)   // a constant table
-    case want != .Place:                  fuse_done(c, graph_value(b, e, w))
+    case want == .Value:                  fuse_done(c, graph_leaf(b, e, w))
+    case is_const && graph_aggregate(t):  fuse_done(c, graph_plain_place(b, e, e.span), true)   // a constant table
+    case want != .Place:                  fuse_done(c, graph_leaf(b, e, w))
     }
     return t
 }
