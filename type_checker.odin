@@ -8830,11 +8830,16 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
             if i >= n_expected { break }
             expected := rts[i]
             c.expected_hint = expected
+            // (Text returned as a partial array — a literal, or a constant,
+            // known once checked: its temporary and zero reserved before it.)
             text_pa, text_slot := false, NO_NODE
-            if b := fusing(c); b != nil {
-                if _, is_text := val.(^Expr_String); is_text && is_partial_array(expected) {
+            text_held: Graph_Later
+            if b := fusing(c); b != nil && is_partial_array(expected) {
+                if _, is_text := val.(^Expr_String); is_text {
                     text_pa, text_slot = true, graph_slot(b, "temp", expected, s.span)
                     graph_fuse_zero_var(b, text_slot, expected, s.span)
+                } else {
+                    text_held = graph_fuse_later(b)
                 }
             }
             use, at := fuse_use_type(val, expected, s.span)
@@ -8843,8 +8848,13 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
                 if b := fusing(c); b != nil { held = graph_fuse_later(b) }
             }
             vt, r := fuse_expr(c, val, env, .Either, dest = use, temp_span = at)
-            if k, folds := graph_constant(val).?; folds && k.is_text && is_partial_array(expected) && !text_pa {
-                fuse_fail(c, "a text constant returned as a partial array")
+            if k, folds := graph_constant(val).?; folds && k.is_text && text_held.reserved {
+                if b := fusing(c); b != nil {
+                    graph_fuse_later_begin(b, &text_held)
+                    text_pa, text_slot = true, graph_slot(b, "temp", expected, s.span)
+                    graph_fuse_zero_var(b, text_slot, expected, s.span)
+                    if !graph_fuse_later_end(b, &text_held) { fuse_fail(c, "a text constant returned across runs") }
+                }
             }
             if fusing(c) != nil && !text_pa {
                 append(&vals, fuse_value_as(c, val, vt, r, expected, s.span, {to = expected}, &held))
@@ -9433,25 +9443,13 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
     clear(&lit.array_values)
     resize(&lit.array_values, fa.size)
     // Built (the literal being built): zero, then each element into its
-    // slot in turn (graph_literal_writes: by index — a named form given out
-    // of order, and a broadcast, are the builder's).
+    // slot, as written; a broadcast, its value then the fill.
     fl := c.lit if c.lit != nil && c.lit.e == lit else nil
     c.lit = nil
     gl: ^Graph_Literal
     if b := fusing(c); b != nil && fl != nil {
-        in_order := true
-        if !lit.positional {
-            last := -1
-            for field in lit.fields {
-                if len(field.name) != 1 { continue }
-                idx := swizzle_char_to_index(field.name[0])
-                if idx <= last { in_order = false }
-                last = idx
-            }
-        }
-        if !in_order {
-            fuse_fail(c, "swizzles out of order")
-        } else if lit.is_broadcast {
+        // (A named form's elements in the order they are written.)
+        if lit.is_broadcast {
             fl.built = true   // (its value, then the fill: below)
         } else {
             gl = graph_fuse_literal(b, lit, lit_t, fl.dest)
