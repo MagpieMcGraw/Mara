@@ -9907,10 +9907,9 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     val_type, fs := fuse_store_value(c, s, place, env, unplaced = bytes)
     defer {
         if bytes && fusing(c) != nil && fs.on {
-            // (What builds in place, into the slice, or `= void`: the
-            // builder's, at the target's type.)
-            if fs.void || s.assign_value_type == nil && fuse_builds_into(s.value) {
-                fuse_fail(c, "a literal or void written into bytes")
+            // (`= void` into bytes: the builder's.)
+            if fs.void {
+                fuse_fail(c, "void written into bytes")
             } else {
                 ok: bool
                 fs.place, ok = graph_fuse_span_target_end(b, &st, s.assign_value_type, s.span)
@@ -9943,6 +9942,13 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     // (An array-shaped RHS is an element copy, not a reinterpret — see below.)
     if (is_byte_slice(target_type) || is_byte_partial_array(target_type) || is_byte_fixed_array(target_type)) && !is_array_shaped(val_type) {
         check_byte_write(c, val_type, s.span)
+    }
+    // Untyped numbers copied into bytes (`bytes[0:3] = [1, 2, 3]`) have no
+    // width either, as one written there hasn't: annotate the literal.
+    if is_byte_buffer(target_type) {
+        if fa, is_array := distinct_base(val_type).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
+            check_error(c, s.span, TYPE_BYTE_BUFFER_COPY_UNTYPED, fa.size)
+        }
     }
 
     // Byte slice reinterpret write: mem[off:off+N] = value.

@@ -1,0 +1,10 @@
+module byte_span_literal
+// An array literal copied into a byte span is built at its own type, then
+// copied: it was built at the span's slice type (invalid IR).
+//@ expect-output: 2 3
+main :: fun() {
+	buf : [8]byte
+	b : []byte = buf[:]
+	b[0:3] = [3]u8{1, 2, 3}
+	print(u8(b[1]), u8(b[2]))
+}

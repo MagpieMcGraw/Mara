@@ -443,6 +443,7 @@ llvm_in_place :: proc(e: ^Llvm) {
             tv := graph_operands(pg, v)[0].op
             if pg.op[tv] != .Var || llvm_direct(e, x) { continue }
             if pg.op[x] == .Swizzle { continue }   // components, not one array's storage
+            if pg.op[x] == .Slice { continue }     // a run of elements the value's are copied into, no storage of one type
             t := pg.refers[tv]
             if t <= e.node || t > pg.last[e.node] || pg.kind[t] != .Local || pg.written[t] != .Synthetic { continue }
             if e.value[t - e.node] != "" || llvm_reads(e, t) != 1 { continue }
