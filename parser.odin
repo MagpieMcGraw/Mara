@@ -222,16 +222,6 @@ Expr_Unary :: struct {
     operand: Expr,
     span:    Span,
     type_:   Type,
-    // Set by the type checker when `&buf[i]` is implicitly widened from
-    // ^byte to a typed pointer ^T at a typed-decl/assignment site. Codegen
-    // reads this to emit a runtime byte-buffer bounds check before producing
-    // the pointer. Zero means no widening — use the regular &-of-index path.
-    byte_view_size: int,
-    byte_view_type: Type,   // ... and the type it views the bytes as (the ^T's T)
-    // Set by the type checker when unary `-` resolves through an `overload -`
-    // dispatch (e.g. `-v3` → `vec3_negate(v3)`). Codegen reads this to emit a
-    // call instead of fneg / `sub 0, x`.
-    overload_fn: Maybe(Resolved_Func),
     wrapping:    bool,         // `-%x`: wrapping negate, codegen skips the overflow check
 }
 
@@ -257,7 +247,6 @@ Expr_Binary :: struct {
     right:       Expr,
     span:        Span,
     type_:       Type,
-    overload_fn: Maybe(Resolved_Func),
     wrapping:    bool,         // `+%`/`-%`/`*%`: two's-complement wrap, codegen skips the overflow check
 }
 
@@ -347,10 +336,6 @@ Expr_Struct_Literal :: struct {
     fields:     [dynamic]Struct_Field,
     positional: bool,                 // true if the fields list was parsed as positional values (name == "")
     zero_init:  bool,                 // true for {0} — explicit zero-init, no defaults
-    // Multi-return spread: `Foo{call()}` where call's tuple matches Foo's fields
-    // one-to-one. Set by the type checker; codegen materializes temps for the
-    // call's sret slots and fills each struct field from the corresponding temp.
-    is_spread:  bool,
     // Broadcast literal: `{all <expr>}`. The single value fills every slot
     // (every element of an array, or — future — every field of a same-typed
     // struct). The checker expands `broadcast_value` into `array_values`
@@ -361,16 +346,6 @@ Expr_Struct_Literal :: struct {
     // When set, name is "" and the checker resolves type_expr to determine the
     // literal's type rather than looking up name.
     type_expr:  Type_Expr,
-    // For distinct-fixed-array literals (Quat{...}, Vec3{...}, etc.): ordered
-    // element values after swizzle-name → index resolution. nil entries mean
-    // "zero this slot". Populated by the checker; codegen emits from this.
-    array_values: [dynamic]Expr,
-    // In-place override target: set by the type checker when `name` resolves to
-    // a local VARIABLE of struct type (not a type name) — `var{ a = x; b = y }`
-    // updates the variable's fields in place. Codegen applies the field writes
-    // to that variable's storage via apply_struct_literal_fields and yields no
-    // value (statement-position mutation).
-    override_target: string,
     span:       Span,
     type_:      Type,
 }
@@ -4928,7 +4903,6 @@ clone_expr :: proc(e: Expr) -> Expr {
         c.left = clone_expr(v.left)
         c.right = clone_expr(v.right)
         c.type_ = nil
-        c.overload_fn = nil
         return c
     case ^Expr_Call:
         c := new_clone(v^)
@@ -4975,11 +4949,6 @@ clone_expr :: proc(e: Expr) -> Expr {
             append(&c.fields, Struct_Field{name = f.name, value = clone_expr(f.value)})
         }
         c.broadcast_value = clone_expr(v.broadcast_value)
-        // Checker-derived: each clone derives its own. A shared array_values
-        // buffer let one clone's expansion overwrite another's slots.
-        c.array_values = {}
-        c.is_spread = false
-        c.override_target = ""
         c.type_ = nil
         return c
     case ^Expr_Field_Access:

@@ -1662,6 +1662,7 @@ Checker :: struct {
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
     byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
     size_of_types:   map[^Expr_Size_Of]Type,  // each size_of's measured type, as checked
+    overrides:       map[^Expr_Struct_Literal]bool,   // `var{...}` statements: a variable's fields written in place
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -4425,8 +4426,6 @@ maybe_stamp_byte_view :: proc(c: ^Checker, expected: Type, value: Expr) {
     if !idx_ok { return }
     src_type := expr_type(idx.expr)
     if !is_byte_buffer(src_type) { return }
-    addr.byte_view_size = checker_type_byte_size(pt.elem)
-    addr.byte_view_type = pt.elem
     // Built: the address is the view's, of the bytes as that type.
     if b := fusing(c); b != nil {
         if ops, built := c.byte_addrs[rawptr(addr)]; built {
@@ -6337,9 +6336,9 @@ fuse_views :: proc(to, from: Type) -> bool {
 
 // What a store builds in place (graph_builds_into): a literal, an array, a
 // construction, a variant.
-fuse_builds_into :: proc(e: Expr) -> bool {
+fuse_builds_into :: proc(c: ^Checker, e: Expr) -> bool {
     #partial switch v in e {
-    case ^Expr_Struct_Literal: return v.override_target == ""
+    case ^Expr_Struct_Literal: return v not_in c.overrides
     case ^Expr_Array:          return true
     case ^Expr_Call:
         rf, resolved := v.resolved_func.?
@@ -8491,27 +8490,6 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
 // Pass 2: Check all statement bodies (descend into child scopes)
 // ---------------------------------------------------------------------------
 
-// Fill lit.array_values[0..<size] with the broadcast value: slot 0 reuses the
-// original expr, later slots are independent clones. clone_expr clears
-// `resolved_func` and `type_` on each Expr_Call it copies, so each clone is
-// re-checked here — without this a constructing broadcast (`all Cell()`) would
-// reach codegen with an unresolved call ("unknown function"). The caller must
-// have already type-checked lit.broadcast_value against the element type.
-fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size: int, elem: Type, env: ^Type_Scope) {
-    clear(&lit.array_values)
-    resize(&lit.array_values, size)
-    for i in 0..<size {
-        if i == 0 {
-            lit.array_values[0] = lit.broadcast_value
-        } else {
-            cloned := clone_expr(lit.broadcast_value)
-            if is_anonymous_literal(cloned) { c.expected_hint = elem }
-            check_expr(c, cloned, env)
-            lit.array_values[i] = cloned
-        }
-    }
-}
-
 // A field's `{all <expr>}`, in the field pass: typed as its field, an array.
 // Its value is checked where the field's value is (check_field_broadcast).
 expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, field_type: Type, field_name: string, span: Span, env: ^Type_Scope) {
@@ -8560,7 +8538,6 @@ check_field_broadcast :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type
     if is_infer(val_type) {
         check_literal_overflow(c, lit.broadcast_value, elem_type, field.span)
     }
-    fill_broadcast_array_slots(c, lit, size, elem_type, env)
 }
 
 // Phase-2 checker for a single function/method/struct/module body.
@@ -8908,9 +8885,9 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     }
 
     // Expand `all <expr>` broadcast defaults on array-typed fields against the
-    // field's resolved type, before the body check below reads them: codegen
-    // needs array_values populated, and a partial-array target (`[..6]Camera`)
-    // isn't handled by the inline literal path. Runs per struct in the full pass
+    // field's resolved type, before the body check below reads them: a
+    // partial-array target (`[..6]Camera`) isn't handled by the inline
+    // literal path. Runs per struct in the full pass
     // (errors on), so a field default is validated as part of checking the
     // constructor — there is no separate struct-default pass.
     if ft.kind == .Struct {
@@ -9311,7 +9288,7 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
                         }
                         check_struct_literal_fields(c, lit, sd, lit.span, env, override = true)
                         c.lit = saved
-                        lit.override_target = lit.name
+                        c.overrides[lit] = true
                         handled_override = true
                     }
                 }
@@ -9611,7 +9588,6 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                     }
                 }
                 if all_ok {
-                    lit.is_spread = true
                     if b := fusing(c); b != nil && gl != nil && !graph_fuse_spread(b, gl, lit, spread.v) {
                         fuse_fail(c, "a spread literal of no call")
                     }
@@ -9804,8 +9780,8 @@ needs_union_variant_hint :: proc(field_type: Type, value: Expr) -> bool {
 }
 
 // Validate a `Quat{...}` / `Vec3{...}` style literal that constructs a value of
-// a distinct fixed array type. Populates lit.array_values with positional
-// entries (nil means "zero this slot" — codegen fills from memset).
+// a distinct fixed array type: each slot's value, positional or named by a
+// swizzle letter (a slot left out stays zero).
 //
 // Three surface forms are accepted:
 //   Name{}            — zero-init every slot
@@ -9814,8 +9790,7 @@ needs_union_variant_hint :: proc(field_type: Type, value: Expr) -> bool {
 //                       r/g/b/a) whose index is within fa.size; duplicates
 //                       rejected; missing slots zero-fill
 check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^Type_Fixed_Array, env: ^Type_Scope, lit_t: Type = nil) {
-    clear(&lit.array_values)
-    resize(&lit.array_values, fa.size)
+    values := make([]Expr, fa.size, context.temp_allocator)   // each slot's value, as named (a duplicate: an error)
     // Built (the literal being built): zero, then each element into its
     // slot, as written; a broadcast, its value then the fill.
     fl := c.lit if c.lit != nil && c.lit.e == lit else nil
@@ -9856,10 +9831,6 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
         if is_infer(val_type) {
             check_literal_overflow(c, lit.broadcast_value, fa.elem, lit.span)
         }
-        // Re-check each clone (shared with the field-default path) so a
-        // constructing broadcast like `all Cell()` keeps its resolved_func per
-        // slot; codegen then constructs the element in place per slot.
-        fill_broadcast_array_slots(c, lit, fa.size, fa.elem, env)
         return
     }
 
@@ -9889,7 +9860,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
             if is_infer(val_type) {
                 check_literal_overflow(c, field.value, fa.elem, lit.span)
             }
-            lit.array_values[i] = field.value
+            values[i] = field.value
         }
         return
     }
@@ -9902,7 +9873,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
             continue
         }
         idx := swizzle_char_to_index(field.name[0])
-        if lit.array_values[idx] != nil {
+        if values[idx] != nil {
             check_error(c, lit.span, TYPE_FIELD_SET_MORE_THAN_ONCE, lit.name, field.name)
             continue
         }
@@ -9920,7 +9891,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
         if is_infer(val_type) {
             check_literal_overflow(c, field.value, fa.elem, lit.span)
         }
-        lit.array_values[idx] = field.value
+        values[idx] = field.value
     }
 }
 
@@ -11953,6 +11924,7 @@ Fuse_Unary :: struct {
     either:  bool,   // (`-x`) its place or its value: an overload's param may view it
     fused:   Fused,
     t:       Type,
+    overload: Maybe(Resolved_Func),   // the operator resolved to a function (`overload -`)
 }
 
 // An index into bytes: what the checker types a byte may be read as another
@@ -11974,7 +11946,7 @@ check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
     t := check_unary_impl(c, e, env, &fu)
     b := fusing(c)
     if b == nil { return t }
-    if rf, over := e.overload_fn.?; over {
+    if rf, over := fu.overload.?; over {
         // A call, its operand at its param's type (graph_operator_arg).
         callee := graph_callee(b, rf)
         if callee == nil {
@@ -12067,7 +12039,7 @@ check_unary_impl :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope, fu: ^Fus
                     }
                 }
                 if best_score > 0 {
-                    e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
+                    if fu != nil { fu.overload = Resolved_Func{name = best_flat, callee = best_ft} }
                     return best_ret
                 }
             }
@@ -12155,7 +12127,7 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
     d, into_temp := c.asked_dest, c.asked_temp
     b := fusing(c)
     if want == .None || b == nil { return check_struct_literal_impl(c, e, env) }
-    if e.override_target != "" {
+    if e in c.overrides {
         fuse_fail(c, "an override in a value's place")
         return check_struct_literal_impl(c, e, env)
     }
@@ -12263,7 +12235,7 @@ fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span
         graph_fuse_write_at(b, graph_dest_place(b, d, span), r.v, span)
         return true, false
     }
-    if fuse_builds_into(e) {
+    if fuse_builds_into(c, e) {
         fuse_fail(c, "a value built in place, taken as one")
         return
     }
@@ -12407,7 +12379,7 @@ fuse_if_branch :: proc(c: ^Checker, e: ^Expr_If, branch: Expr, env: ^Type_Scope,
     t, r := fuse_expr(c, branch, env, .Into, dest = graph_dest_var("if", fi.slot, nil))
     fi.types[k] = t
     if fusing(c) == nil || r.into { return t }
-    if fuse_builds_into(branch) || fuse_byte_index(branch) {
+    if fuse_builds_into(c, branch) || fuse_byte_index(branch) {
         fuse_fail(c, "an if's branch built in place, or of bytes")
         return t
     }
@@ -12444,7 +12416,7 @@ check_if_expr_impl :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope, fi: ^Fuse
 
 check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Scope) -> Type {
     // Broadcast literal `{all <expr>}`: expand_broadcast_array_literal
-    // has already validated and populated array_values, and set e.type_
+    // has already validated it, and set e.type_
     // to the surrounding field/decl type. Don't re-check (which would
     // return Type_Error for the anonymous shape) and overwrite the type.
     if e.is_broadcast && e.type_ != nil {
@@ -12491,8 +12463,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     }
     // Distinct-fixed-array literal: Quat{1,2,3,4} / Quat{w: 1} / Quat{}.
     // Detected by resolving e.name to a Type_Distinct wrapping Type_Fixed_Array
-    // (or a plain Type_Fixed_Array via alias). Validates and normalizes the
-    // fields into e.array_values for codegen.
+    // (or a plain Type_Fixed_Array via alias). Validates its slots' values.
     if e.name != "" {
         flat := resolve_type_name(c, e.name, "", env)
         if dt, ok := c.table.distinct_types[flat]; ok {
@@ -12571,8 +12542,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     // Anonymous literal with a context-supplied type. Used for things like
     // `quat_from_fwd_and_up({0, 1, 0}, {0, 0, 1})` where the parameter type
     // (Vec3 :: distinct [3]f32) is the only source of shape information.
-    // Without this, array_values would never be populated and codegen
-    // would emit a bare `0` for the aggregate.
+    // Without this, the literal would have no array type to be built at.
     if hint := c.expected_hint; hint != nil {
         if fa, fa_ok := distinct_base(hint).(^Type_Fixed_Array); fa_ok {
             check_array_struct_literal(c, e, fa, env, hint)
@@ -13972,6 +13942,7 @@ Fuse_Binary :: struct {
     widen: [2]int,   // each side's widening, in the body's list; -1 for none
     and:   Maybe(Graph_And),   // `and` / `or`: the right side runs when needed
     array: [2]bool,  // the side is an array's value, no place
+    overload: Maybe(Resolved_Func),   // the operator resolved to a function (`overload +`)
 }
 
 check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
@@ -13996,7 +13967,7 @@ check_binary :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope) -> Type {
     }
     // Each side at the type the operation works in; an overload's, at its
     // param's (a call).
-    if rf, over := e.overload_fn.?; over {
+    if rf, over := fb.overload.?; over {
         callee := graph_callee(b, rf)
         if callee == nil {
             fuse_fail(c, "an operator resolved to no function")
@@ -14195,7 +14166,7 @@ check_binary_impl :: proc(c: ^Checker, e: ^Expr_Binary, env: ^Type_Scope, fb: ^F
             }
             // Use best match if found
             if best_score > 0 {
-                e.overload_fn = Resolved_Func{name = best_flat, callee = best_ft}
+                if fb != nil { fb.overload = Resolved_Func{name = best_flat, callee = best_ft} }
                 return best_ret
             }
         }
