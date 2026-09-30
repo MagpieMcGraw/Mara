@@ -100,11 +100,11 @@ It keeps the type representation and replaces the checking.
    become ids the checker resolves. After it, only the parser, the checker, hittest and the
    parse dump touch the pointer tree. Gate: everything identical.
 2. **The flat tree** beside the pointer tree: a new parser over the same tokens, the views, the
-   dump, the no-token-lost check on every build. hittest moves onto it.
+   dump, the no-token-lost check on every build.
 3. **The new checker** beside the old, behind `MARA_CHECKER=new`, grown construct by construct
    until every program's graph is the old checker's.
-4. **The switch**: the new checker is the checker; the old parser, the pointer tree, the old
-   checker and the clones are deleted.
+4. **The switch**: the new checker is the checker; hittest moves onto the flat tree; the old
+   parser, the pointer tree, the old checker and the clones are deleted.
 
 ## Checklist
 
@@ -124,6 +124,18 @@ It keeps the type representation and replaces the checking.
       the checker, hittest, the parse dump and the driver's has-`main` / has-`#expose` tests.
       Graph, IR and `mara ask` identical. (An empty body skipping missing-return is on
       purpose: `Arena`'s empty methods declare the shape a `~Arena` param matches.)
-- [ ] 2. The flat tree beside the pointer tree
+- [x] 2. The flat tree beside the pointer tree (2026-09-30, 989f54f). `tree.odin`: the table
+      (`Tree_Id`; tag, report point, extent, `a`, `b`; lists and records in `extra`), each
+      tag's shape (what its fields hold: a child, a list, a token, a token list, a record),
+      so children, tokens, the dump and the check are one walk over any node; views for the
+      forms of more than two fields. `tree_parser.odin`: the old grammar, lookaheads and all,
+      recorded as written; report points the old parser's. `MARA_TREE=dump` prints it,
+      `MARA_TREE=check` checks it — each node inside its parent and after its elder
+      sibling, every token that says something (a name, a literal, an operator, a
+      directive) recorded by a node, and a file one parser rejects rejected by the other.
+      `test/treecheck.sh`: all 301 programs lose nothing; test_1M is 5.1M nodes and 6.3M
+      words of lists and records, 0 problems. hittest moves at the switch (stage 4): its
+      labels change with the tree, and the point-query corpus stays a fixed gate through
+      stage 3.
 - [ ] 3. The new checker: every program's graph identical
 - [ ] 4. The switch
