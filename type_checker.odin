@@ -4996,6 +4996,11 @@ solidify_type :: proc(t: Type) -> Type {
     rt := resolve_infer(t)
     if _, ok := rt.(Type_Infer_Int); ok { return Type_Numeric{kind = .Signed, bits = 64} }
     if _, ok := rt.(Type_Infer_Float); ok { return Type_F64{} }
+    // An array of untyped elements (`[1, 2, 3]` held as itself): its storage
+    // needs a width — the elements' default.
+    if fa, ok := rt.(^Type_Fixed_Array); ok && is_infer(fa.elem) {
+        return new_clone(Type_Fixed_Array{size = fa.size, elem = solidify_type(fa.elem), index_type = fa.index_type})
+    }
     return rt
 }
 
@@ -6015,6 +6020,12 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         wrote, zeroed := fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, fa.decl, t), s.span, settle = true)
         if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, zeroed || wrote && is_partial_array(t) && graph_fills_prefix(s.value), t) }
         if zeroed && !fa.prefixed { fuse_fail(c, "a new partial array read from bytes") }
+        // (An array of untyped elements held as itself — `a := [1, 2, 3]`,
+        // an if of such literals — built at its own type: its nodes, the
+        // store's too, as the declaration's, settled.)
+        if va, is_array := distinct_base(fa.value_type).(^Type_Fixed_Array); is_array && is_infer(va.elem) && !fa.field {
+            graph_fuse_retype_literal(b, int(fa.decl), b.nodes, t)
+        }
         return
     }
     if is_skip || is_void_literal(s.value) {   // `x = void` de-inits
@@ -8671,10 +8682,14 @@ fuse_loop_items :: proc(c: ^Checker, fl: ^Graph_For, s: ^Stmt_For, env: ^Type_Sc
     gi := graph_fuse_items(b, fl)
     #partial switch _ in s.collection {
     case ^Expr_Array, ^Expr_Struct_Literal:
+        from := b.nodes
         d := graph_dest_var("items", fl.coll_slot, nil)
         t := fuse_store_into(c, s.collection, env, d, fl.span)
+        // (Held as itself: an untyped literal's elements settled.)
+        t = solidify_type(t)
         if b := fusing(c); b != nil {
             if graph_loop_view_of(t) != nil { fuse_fail(c, "a literal loop over its view") }
+            graph_fuse_retype_literal(b, from, b.nodes, t)
             graph_fuse_typed(b, fl.coll_slot, t)
         }
         return t
@@ -12027,11 +12042,18 @@ check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
         if fi.prefix[k] != {} { graph_fuse_prefix_end(b, fi.prefix[k], is_partial_array(t) && graph_fills_prefix(branch), t) }
     }
     for k in fi.widen { if k >= 0 { b.fuse.widens[k].to = t } }
-    graph_fuse_typed(b, fi.slot, t)
-    p := graph_var(b, "if", fi.slot, t, e.span)
+    // (Its local holds its value: an array of untyped elements settled —
+    // a number's width is still its use's.)
+    lt := t
+    if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
+        lt = solidify_type(t)
+        graph_fuse_retype_literal(b, int(fi.slot), b.nodes, lt)
+    }
+    graph_fuse_typed(b, fi.slot, lt)
+    p := graph_var(b, "if", fi.slot, lt, e.span)
     // (Its place: its local, a fresh one holding its value.)
     if want == .Value {
-        fuse_done(c, graph_read(b, p, t, e.span))
+        fuse_done(c, graph_read(b, p, lt, e.span))
     } else {
         fuse_done(c, p, true)
     }

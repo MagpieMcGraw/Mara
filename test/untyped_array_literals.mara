@@ -1,0 +1,20 @@
+module untyped_array_literals
+// An untyped array literal held as itself — bound with `:=`, looped over, an
+// if's value — takes its elements' default width (i64, f64) for its
+// storage: each was a codegen error ("can't lower ... its local").
+//@ expect-output: bound 2 2.5
+//@ expect-output: loops 6 6
+//@ expect-output: if 3
+main :: fun() {
+	a := [1, 2, 3]
+	f := [1.5, 2.5]
+	print("bound", a[1], f[1])
+	s : i64 = 0
+	for v in a { s += v }
+	t : i64 = 0
+	for v in [1, 2, 3] { t += v }
+	print("loops", s, t)
+	c := false
+	b := if c do [1, 2] else [3, 4]
+	print("if", b[0])
+}
