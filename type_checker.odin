@@ -627,6 +627,11 @@ Generic_Template :: struct {
     env:            ^Type_Scope,   // where it is defined: a struct instance's body is checked there
 }
 
+Broadcast_Field :: struct {
+    name: string,
+    span: Span,
+}
+
 // A generic struct's instance, its body waiting to be checked
 // (check_struct_instances).
 Struct_Instance :: struct {
@@ -1657,6 +1662,7 @@ Checker :: struct {
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
     byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
+    broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
     span_read:       Fuse_Span_Read,   // the span of bytes last built to be read as its destination's type
     table:           ^SymbolTable,
     errors:          int,
@@ -8108,38 +8114,55 @@ fill_broadcast_array_slots :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, size:
     }
 }
 
-// Expand `{all <expr>}` into per-element entries on `lit.array_values`. The
-// expression is type-checked once against the array's element type; codegen
-// emits N independent stores (clones share the same checked AST node).
+// A field's `{all <expr>}`, in the field pass: typed as its field, an array.
+// Its value is checked where the field's value is (check_field_broadcast).
 expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, field_type: Type, field_name: string, span: Span, env: ^Type_Scope) {
-    size := 0
-    elem_type: Type
-    base := distinct_base(field_type)
-    if fa, ok := base.(^Type_Fixed_Array); ok {
-        size = fa.size
-        elem_type = fa.elem
-    } else if pa, ok := base.(^Type_Partial_Array); ok {
-        size = pa.size
-        elem_type = pa.elem
-    } else {
+    #partial switch _ in distinct_base(field_type) {
+    case ^Type_Fixed_Array, ^Type_Partial_Array:
+        lit.type_ = field_type
+        c.broadcast_fields[rawptr(lit)] = {field_name, span}
+    case:
         check_error(c, span,
             TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES,
             field_name, type_name(field_type))
-        return
+    }
+}
+
+// A field's `{all <expr>}` (typed by expand_broadcast_array_literal): the
+// expression checked once against the array's element type — built, then the
+// fill — and each slot given a checked clone.
+check_field_broadcast :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Scope, fl: ^Fuse_Lit) {
+    field := c.broadcast_fields[rawptr(lit)]
+    field_type := lit.type_
+    size := 0
+    elem_type: Type
+    #partial switch t in distinct_base(field_type) {
+    case ^Type_Fixed_Array:   size, elem_type = t.size, t.elem
+    case ^Type_Partial_Array: size, elem_type = t.size, t.elem
     }
     if is_anonymous_literal(lit.broadcast_value) { c.expected_hint = elem_type }
-    val_type := check_expr(c, lit.broadcast_value, env)
+    val_type: Type
+    if b := fusing(c); b != nil && fl != nil {
+        val: Fused
+        val_type, val = fuse_expr(c, lit.broadcast_value, env)
+        if b := fusing(c); b != nil { graph_fuse_fill(b, lit, field_type, fl.dest, val.v) }
+        fl.built = true
+    } else {
+        val_type = check_expr(c, lit.broadcast_value, env)
+    }
+    // (Its slots' copies are checked, not built: the fill is.)
+    outer := fuse_suspend(c)
+    defer fuse_resume(c, outer)
     if !is_any(val_type) && types_incompatible(elem_type, val_type) {
-        check_error(c, span,
+        check_error(c, field.span,
             TYPE_BROADCAST_VALUE_FIELD_TYPE_EXPECTED,
-            field_name, type_name(val_type), type_name(elem_type), type_name(field_type))
+            field.name, type_name(val_type), type_name(elem_type), type_name(field_type))
         return
     }
     if is_infer(val_type) {
-        check_literal_overflow(c, lit.broadcast_value, elem_type, span)
+        check_literal_overflow(c, lit.broadcast_value, elem_type, field.span)
     }
     fill_broadcast_array_slots(c, lit, size, elem_type, env)
-    lit.type_ = field_type
 }
 
 // Phase-2 checker for a single function/method/struct/module body.
@@ -11920,15 +11943,10 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     // return Type_Error for the anonymous shape) and overwrite the type.
     if e.is_broadcast && e.type_ != nil {
         if _, is_err := e.type_.(Type_Error); !is_err {
-            // Built (its value checked with its field's type, before the
-            // body, built here from that check): the value, then the fill.
-            if fl := c.lit; fl != nil && fl.e == e {
-                c.lit = nil
-                if b := fusing(c); b != nil {
-                    graph_fuse_fill(b, e, e.type_, fl.dest, graph_value(b, e.broadcast_value))
-                    fl.built = true
-                }
-            }
+            // A field's (typed in the field pass): its value checked here.
+            fl: ^Fuse_Lit
+            if c.lit != nil && c.lit.e == e { fl, c.lit = c.lit, nil }
+            if _, is_field := c.broadcast_fields[rawptr(e)]; is_field { check_field_broadcast(c, e, env, fl) }
             return e.type_
         }
     }
