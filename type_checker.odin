@@ -149,6 +149,9 @@ Scope_Body :: struct {
     // Program global, etc.). Lets a resolved call reach the callee's body by
     // pointer instead of re-keying fun_asts by name.
     ast:            ^Stmt_Scope,
+    // Its definition in the flat tree (a Fun_Def, a Struct_Def), when the
+    // new checker made it (tc.odin). 0 otherwise.
+    node:           Tree_Id,
 
     // Signature (field) resolution state — memoizes check_scope_body's
     // signature pass so it runs exactly once per scope regardless of how many
@@ -295,16 +298,18 @@ field_has_default :: proc(f: Struct_Type_Field) -> bool {
 // Whether a scope is written in the source — a fun, a struct, an intrinsic, an
 // instance of one: what the analyses can follow into.
 scope_is_written :: proc(ts: ^Type_Scope) -> bool {
-    return ts.ast != nil
+    return ts.ast != nil || ts.node != 0
 }
 
 // Whether a scope is an intrinsic: its body generated at each call.
 scope_is_intrinsic :: proc(ts: ^Type_Scope) -> bool {
+    if ts.node != 0 { return scope_view(&build_tree, ts.node).intrinsic != 0 }
     return ts.ast != nil && ts.ast.is_intrinsic
 }
 
 // Whether a scope's body is written empty.
 scope_body_is_empty :: proc(ts: ^Type_Scope) -> bool {
+    if ts.node != 0 { return len(scope_view(&build_tree, ts.node).body) == 0 }
     return len(ts.body) == 0
 }
 

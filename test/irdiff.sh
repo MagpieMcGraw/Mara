@@ -27,9 +27,12 @@ while [ $# -gt 0 ]; do
   shift
 done
 BASE=$ROOT/Mara_base_tmp.exe WORK=$ROOT/Mara.exe
-# The sides, each `name:compiler`.
-SIDES="old:$BASE new:$WORK"
-[ -f "$BASE" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }
+# The sides, each `name:compiler` (another differential names its own:
+# tcdiff.sh).
+if [ -z "$SIDES" ]; then
+  SIDES="old:$BASE new:$WORK"
+  [ -f "$BASE" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }
+fi
 rm -rf "$OUT"
 for s in $SIDES; do mkdir -p "$OUT/${s%%:*}" "$OUT/run/${s%%:*}"; done
 export ROOT OUT NORMALIZE RUN SIDES

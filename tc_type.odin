@@ -1,0 +1,77 @@
+package mara
+
+// Types as written (the flat tree's type nodes), resolved: a keyword to its
+// primitive, a name through the scope and the table, a pointer, an array.
+
+tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+    if n == 0 { return Type_Any{} }
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Type_Keyword:
+        return tc_primitive(k, tc_name(k, n), span)
+    case .Type_Name:
+        parts := tree_token_list(t, t.a[n])
+        if len(parts) != 1 {
+            tc_unsupported(k, n, "a qualified type name")
+            return Type_Error{}
+        }
+        name := tc_text(parts[0])
+        if p, is_primitive := tc_primitive_named(name); is_primitive {
+            if name == "int" { tc_error(k, span, TYPE_TYPE_INT_RESERVED_USE_I64); return Type_Error{} }
+            if name == "uint" { tc_error(k, span, TYPE_TYPE_UINT_RESERVED_USE_U64); return Type_Error{} }
+            return p
+        }
+        if found, ok := type_env_get(env, name); ok { return found }
+        flat := make_flat_name(k.pkg, name)
+        if st, ok := k.table.structs[flat]; ok { return st }
+        if st, ok := k.table.funs[flat]; ok { return st }
+        if ut, ok := k.table.unions[flat]; ok { return ut }
+        if et, ok := k.table.enums[flat]; ok { return et }
+        if dt, ok := k.table.distinct_types[flat]; ok { return dt }
+        tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
+        return Type_Error{}
+    case .Type_Pointer:
+        pt := new(Type_Ptr)
+        pt.elem = tc_type(k, Tree_Id(t.a[n]), env, span)
+        return pt
+    case .Type_Paren:
+        return tc_type(k, Tree_Id(t.a[n]), env, span)
+    }
+    tc_unsupported(k, n, "this type")
+    return Type_Error{}
+}
+
+tc_primitive :: proc(k: ^TC, name: string, span: Span) -> Type {
+    if name == "int" { tc_error(k, span, TYPE_TYPE_INT_RESERVED_USE_I64); return Type_Error{} }
+    if p, ok := tc_primitive_named(name); ok { return p }
+    return Type_Error{}
+}
+
+// A primitive type's name: its type.
+tc_primitive_named :: proc(name: string) -> (Type, bool) {
+    switch name {
+    case "int", "uint": return Type_Error{}, true
+    case "f64":     return Type_F64{}, true
+    case "bool":    return Type_Bool{}, true
+    case "utf8":    return Type_Utf8{}, true
+    case "byte":    return Type_Byte{}, true
+    case "void":    return Type_Void{}, true
+    case "err":     return Type_Err{}, true
+    case "cstring": return Type_CString{}, true
+    case "i8":      return Type_Numeric{kind = .Signed,   bits = 8}, true
+    case "i16":     return Type_Numeric{kind = .Signed,   bits = 16}, true
+    case "i32":     return Type_Numeric{kind = .Signed,   bits = 32}, true
+    case "i64":     return Type_Numeric{kind = .Signed,   bits = 64}, true
+    case "i128":    return Type_Numeric{kind = .Signed,   bits = 128}, true
+    case "u8":      return Type_Numeric{kind = .Unsigned, bits = 8}, true
+    case "u16":     return Type_Numeric{kind = .Unsigned, bits = 16}, true
+    case "u32":     return Type_Numeric{kind = .Unsigned, bits = 32}, true
+    case "u64":     return Type_Numeric{kind = .Unsigned, bits = 64}, true
+    case "u128":    return Type_Numeric{kind = .Unsigned, bits = 128}, true
+    case "f16":     return Type_Numeric{kind = .Float,    bits = 16}, true
+    case "f32":     return Type_Numeric{kind = .Float,    bits = 32}, true
+    case "usize":   return Type_Numeric{kind = .Unsigned, bits = 0}, true
+    case "isize":   return Type_Numeric{kind = .Signed,   bits = 0}, true
+    }
+    return nil, false
+}
