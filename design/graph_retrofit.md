@@ -920,6 +920,13 @@ erroneous program reports, the negative fixtures say so.
       passes on (it folded them from the syntax tree). Found: a default that was an
       expression (`w: i64 = N * 2`) was a graph error at a construction. IR byte-identical;
       the graph's defaults now originate where they're written.
+      The last compile-time folds of the syntax tree outside the graph: the program arena's
+      size and a sized slice type's default capacity are integers the checker evaluates (as
+      it does an array's size) and records (scope_allocator_size, Type_Distinct.default_cap);
+      text returned as a partial array is told from what was built. graph_constant, the
+      emitter's integer evaluator and checked.constant_values are gone. Left: telling text by
+      its expression where a value fills a partial array's prefix (graph_fills_prefix) — with
+      the leaves.
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines

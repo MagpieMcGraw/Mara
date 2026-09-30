@@ -3046,13 +3046,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
             emit_raw(g, strings.concatenate({"  ", arena_ptr, " = getelementptr ", program_ir_name(checked), ", ptr ", ctx_alloca, ", i32 0, i32 0"}))
             new_ir := mara_fn_name(g, g.arena_new_name)
             alloc_size := "268435456"  // default 256 MB
-            if checked.table.scope_allocator_args != nil && len(checked.table.scope_allocator_args) > 0 {
-                // A constant: nothing but constants exists before main runs.
-                size := checked.table.scope_allocator_args[0]
-                c, folds := graph_constant(size).?
-                if !folds || c.is_float || c.is_text { codegen_fatal(g, expr_span(size)^, CODE_ARENA_SIZE_CONSTANT) }
-                alloc_size = fmt.tprintf("%d", c.int)
-            }
+            if n, sized := checked.table.scope_allocator_size.?; sized { alloc_size = fmt.tprintf("%d", n) }
             emit_raw(g, strings.concatenate({"  call void ", new_ir, "(i64 ", alloc_size, ", ptr ", arena_ptr, ")"}))
         }
 

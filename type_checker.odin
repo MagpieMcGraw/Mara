@@ -603,6 +603,7 @@ Type_Distinct :: struct {
     span:             Span,    // declaring statement's span (diagnostics / `mara ask` locations)
     base_type:        Type,    // the underlying type (transparent at codegen level)
     default_cap_expr: Expr,    // for sized-slice aliases: default cap when decl omits `(N)`
+    default_cap:      int,     // ... its value, once checking is done
     is_alias:         bool,    // true for `Name :: type(T)` — transparent in types_equal; false for `distinct T` — nominal
 }
 
@@ -1541,12 +1542,9 @@ Checked_Program :: struct {
     // See callgraph.odin / design/mara_ask.md §12.
     call_graph:     Call_Graph,
 
-    // The program graph (graph.odin) — built after checking; nothing reads it
-    // yet (design/graph_retrofit.md, phase 1).
+    // The program graph (graph.odin): built as the program is checked, the
+    // analyses' and the emitter's input.
     graph:          Program_Graph,
-
-    // Compile-time constants: name -> resolved integer value (derived from table.constants)
-    constant_values: map[string]int,
 
     // Target platform — drives ABI lowering for .C-convention functions.
     // Inherited from the checker; stamped at check completion.
@@ -1609,6 +1607,7 @@ SymbolTable :: struct {
     scope_allocator_name: string,        // bare name from source ("Arena_Basic")
     scope_allocator_type: ^Type_Scope,     // resolved allocator fun (Arena_Basic, Arena_Debug, etc.)
     scope_allocator_args: [dynamic]Expr, // constructor args from Arena_Basic(192 * MB)
+    scope_allocator_size: Maybe(i64),    // the first: the arena's size (a constant: nothing but constants exists before main runs)
 
     // Shared (DLL/SO) build with `#expose` fn(s) present: the host promises
     // to pass a real Context at runtime, so arena-using constructs (`var`,
@@ -6005,6 +6004,15 @@ Fuse_Assign :: struct {
     field:      bool,         // the declaration is a struct's field
 }
 
+// Whether what was built is a text constant: its global (a table's is no
+// partial array; a string literal is built as one of its own).
+fuse_is_text_constant :: proc(b: ^Graph_Builder, r: Fused) -> bool {
+    if b == nil || r.v.op == NO_NODE { return false }
+    op := r.v.op
+    if !r.place && b.g.op[op] == .Read { op = graph_built_operands(b, op)[0].op }
+    return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(b.g.type_[op])
+}
+
 // A constant's value, checked and built: its code (graph_const_begin), the
 // value built into the constant — stored once its type is known. (Once: a
 // constant checked again builds nothing.)
@@ -9054,7 +9062,7 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
                 if b := fusing(c); b != nil { held = graph_fuse_later(b) }
             }
             vt, r := fuse_expr(c, val, env, .Either, dest = use, temp_span = at)
-            if k, folds := graph_constant(val).?; folds && k.is_text && text_held.reserved {
+            if text_held.reserved && fuse_is_text_constant(fusing(c), r) {
                 if b := fusing(c); b != nil {
                     graph_fuse_later_begin(b, &text_held)
                     text_pa, text_slot = true, graph_slot(b, "temp", expected, s.span)
@@ -11135,6 +11143,15 @@ validate_scope_allocator :: proc(c: ^Checker) {
     }
 
     c.table.scope_allocator_type = alloc_type
+    // Its size, as main's entry makes it.
+    if len(c.table.scope_allocator_args) > 0 {
+        size := c.table.scope_allocator_args[0]
+        if n, ok := evaluate_comptime_int(c, size); ok {
+            c.table.scope_allocator_size = n
+        } else {
+            check_error(c, expr_span(size)^, TYPE_ARENA_SIZE_CONSTANT)
+        }
+    }
 }
 
 // Extract top-level decls from the main package's program into Checked_Program.
@@ -11513,14 +11530,18 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         validate_scope_allocator(&c)
     }
 
-    // Phase 2: Extract checked info from the completed scope.
-    // Type definitions are already shared via table pointer — no copying needed.
-    // Extract resolved constant values for codegen.
-    for name, expr in c.table.constants {
-        if _, i_val, ok := extract_constant_value(expr); ok {
-            checked.constant_values[name] = int(i_val)
+    // A sized slice alias's default capacity: a constant, evaluated.
+    for _, dt in c.table.distinct_types {
+        if dt.default_cap_expr == nil { continue }
+        if n, ok := evaluate_comptime_int(&c, dt.default_cap_expr); ok {
+            dt.default_cap = int(n)
+        } else {
+            check_error(&c, expr_span(dt.default_cap_expr)^, TYPE_SLICE_DEFAULT_CAP_CONSTANT)
         }
     }
+
+    // Phase 2: Extract checked info from the completed scope.
+    // Type definitions are already shared via table pointer — no copying needed.
 
     // Extract functions, foreign declarations, and globals from the main
     // package's program. They contribute to checked.functions under the

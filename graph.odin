@@ -1939,13 +1939,6 @@ graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, n
     return o
 }
 
-// A constant expression's value, as the graph folds constants — for what's
-// computed before any code runs (the program arena's size) or in no code of
-// its own (an array element's constructor defaults).
-graph_constant :: proc(e: Expr) -> Maybe(Const_Value) {
-    return graph_literal_value(e)
-}
-
 @(private="file")
 graph_literal_value :: proc(e: Expr, checked: ^Checked_Program = nil) -> Maybe(Const_Value) {
     #partial switch v in e {
@@ -3851,7 +3844,6 @@ graph_fuse_zero_var :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Spa
 
 // A fused body's types, now that its widths are known: as the builder types
 // what it builds after checking.
-@(private="file")
 // A node's operands while the graph is being built: they end where the next
 // node's begin — or, the newest, now.
 graph_built_operands :: proc(b: ^Graph_Builder, id: Node_Id) -> []Operand {
@@ -3880,6 +3872,7 @@ graph_fuse_returned :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) -> Node_Id {
     return returned
 }
 
+@(private="file")
 graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     g := b.g
     for w in f.widens {

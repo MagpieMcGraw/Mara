@@ -244,33 +244,6 @@ emit_slice_header_at :: proc(g: ^Codegen, at: string, data_ptr: string, len_val:
 // Array codegen
 // ---------------------------------------------------------------------------
 
-// If `expr` is a reference the checker resolved to a constant — bare `X`,
-// `Module.X`, or `Self.X` — return the constant's value expression. The single
-// place codegen turns a constant reference into its value, without re-resolving
-// the name or knowing anything about module qualifiers (that was the checker's
-// job). Used to substitute a constant RHS with its literal before materializing.
-resolved_const_value :: proc(expr: Expr) -> (Expr, bool) {
-    #partial switch e in expr {
-    case ^Expr_Ident:
-        if rc, ok := e.resolved.(Resolved_Constant); ok && rc.value_expr != nil { return rc.value_expr, true }
-    case ^Expr_Field_Access:
-        if rc, ok := e.resolved.(Resolved_Constant); ok && rc.value_expr != nil { return rc.value_expr, true }
-    }
-    return nil, false
-}
-
-// Like resolved_const_value, but also covers a scope-local constant (function-
-// body `::`) — which the checker doesn't annotate (it's not a module constant),
-// so it's still found by its unique name. Module constants always go through the
-// annotation; the table is only consulted for an un-annotated local ident.
-const_value_of :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
-    if v, ok := resolved_const_value(expr); ok { return v, true }
-    if ident, ok := expr.(^Expr_Ident); ok {
-        if v, ok := g.checked.table.constants[ident.name]; ok { return v, true }
-    }
-    return nil, false
-}
-
 // ---------------------------------------------------------------------------
 // Byte-buffer reinterpret codegen
 //
@@ -806,9 +779,7 @@ sized_slice_info :: proc(g: ^Codegen, t: Type) -> (int, ^Type_Slice, bool) {
     sl, is_slice := dt.base_type.(^Type_Slice)
     if !is_slice { return 0, nil, false }
     if dt.default_cap_expr == nil { return 0, nil, false }
-    n, n_ok := codegen_const_eval_int(g, dt.default_cap_expr)
-    if !n_ok { return 0, nil, false }
-    return n, sl, true
+    return dt.default_cap, sl, true
 }
 
 // A new `.len` for the slice header at `hdr` is within 0 ..= its cap, or the
