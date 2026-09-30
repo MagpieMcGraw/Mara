@@ -208,7 +208,6 @@ Expr_Ident :: struct {
     name:     string,
     span:     Span,
     type_:    Type,
-    resolved: Resolved_Name,  // filled by type checker (enum variants, constants)
     is_dot:   bool,           // .Variant shorthand: resolve via expected type or visible-variant search
 }
 
@@ -310,7 +309,6 @@ Expr_Field_Access :: struct {
     field:    string,
     span:     Span,
     type_:    Type,
-    resolved: Resolved_Name,  // filled by type checker (enum/union variants, constants)
 }
 
 Expr_Size_Of :: struct {
@@ -4780,7 +4778,6 @@ clone_expr :: proc(e: Expr) -> Expr {
     case ^Expr_Ident:
         c := new_clone(v^)
         c.type_ = nil
-        c.resolved = nil
         return c
     case ^Expr_Bool:
         c := new_clone(v^)
@@ -4843,7 +4840,6 @@ clone_expr :: proc(e: Expr) -> Expr {
         c := new_clone(v^)
         c.expr = clone_expr(v.expr)
         c.type_ = nil
-        c.resolved = nil
         return c
     case ^Expr_Size_Of:
         c := new_clone(v^)

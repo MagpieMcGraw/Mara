@@ -1667,6 +1667,7 @@ Checker :: struct {
     decls:           map[^Stmt_Decl]^Decl_Lowered,   // each declaration as the checker reads it
     broadcasts:      map[^Stmt_Multi_Return_Assign]^[dynamic]Stmt,   // a broadcast's copies, one per target
     calls:           map[^Expr_Call]^Call_Lowered,   // each call as the checker resolved it
+    resolutions:     map[rawptr]Resolved_Name,   // what each name or member access stands for (resolution)
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -1736,7 +1737,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
     if hint != nil {
         if et, ok := hint.(^Type_Enum); ok {
             if val, v_ok := et.variants[e.name]; v_ok {
-                e.resolved = Resolved_Enum_Variant{
+                c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
                     enum_name = et.name,
                     variant   = e.name,
                     value     = val,
@@ -1749,7 +1750,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
                 // Data-union variant: the union value holding that variant
                 // with its defaults (`.Rect` == `Rect{}`), as `Shape.Rect`
                 // resolves in check_field_access.
-                e.resolved = Resolved_Union_Variant{
+                c.resolutions[rawptr(e)] = Resolved_Union_Variant{
                     union_name  = ut.name,
                     variant     = e.name,
                     tag_value   = tag_val,
@@ -1782,7 +1783,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
                 ename := err_owners[0]
                 if et, et_ok := c.table.enums[ename]; et_ok {
                     if val, v_ok := et.variants[e.name]; v_ok {
-                        e.resolved = Resolved_Enum_Variant{
+                        c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
                             enum_name = ename,
                             variant   = e.name,
                             value     = val,
@@ -1811,7 +1812,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
         ename := visible_owners[0]
         if et, et_ok := c.table.enums[ename]; et_ok {
             if val, v_ok := et.variants[e.name]; v_ok {
-                e.resolved = Resolved_Enum_Variant{
+                c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
                     enum_name = ename,
                     variant   = e.name,
                     value     = val,
@@ -4989,14 +4990,14 @@ write_root_constant :: proc(c: ^Checker, e: Expr) -> (name: string, ok: bool) {
         inner: Expr
         #partial switch v in cur {
         case ^Expr_Field_Access:
-            if rc, is_const := v.resolved.(Resolved_Constant); is_const && rc.value_expr != nil {
+            if rc, is_const := resolution(c, v).(Resolved_Constant); is_const && rc.value_expr != nil {
                 return v.field, true
             }
             inner = v.expr
         case ^Expr_Index: inner = v.expr
         case ^Expr_Slice: inner = v.expr
         case ^Expr_Ident:
-            if rc, is_const := v.resolved.(Resolved_Constant); is_const && rc.value_expr != nil {
+            if rc, is_const := resolution(c, v).(Resolved_Constant); is_const && rc.value_expr != nil {
                 return v.name, true
             }
             return v.name, v.name in c.table.constants
@@ -5758,7 +5759,7 @@ fuse_hold :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, span: Span) -> (Type, 
     t := fuse_store_into(c, e, env, graph_dest_var("temp", slot, nil), span)
     b = fusing(c)
     if b == nil { return t, NO_VALUE }
-    graph_fuse_prefix_end(b, prefix, is_partial_array(t) && fuse_fills_prefix(e, t), t)
+    graph_fuse_prefix_end(b, prefix, is_partial_array(t) && fuse_fills_prefix(c, e, t), t)
     graph_fuse_typed(b, slot, t)
     return t, graph_var(b, "temp", slot, t, span)
 }
@@ -5784,7 +5785,7 @@ fuse_value :: proc(c: ^Checker, r: Fused, e: Expr, t: Type) -> Operand {
 }
 
 // A leaf, built from its check: `t` its type; what a name resolved to, the
-// checker's own (e.resolved).
+// checker's own (resolution).
 fuse_leaf :: proc(c: ^Checker, e: Expr, t: Type) {
     want, w := fuse_asked(c)
     b := fusing(c)
@@ -5792,10 +5793,10 @@ fuse_leaf :: proc(c: ^Checker, e: Expr, t: Type) {
     #partial switch v in e {
     case ^Expr_Number, ^Expr_Char, ^Expr_Bool:
         if want == .Place { return }
-        fuse_done(c, fuse_leaf_value(b, e, t, w))
+        fuse_done(c, fuse_leaf_value(c, b, e, t, w))
     case ^Expr_String:
         // Text is its global: its place and its value.
-        fuse_done(c, fuse_leaf_value(b, e, t, w), want == .Place)
+        fuse_done(c, fuse_leaf_value(c, b, e, t, w), want == .Place)
     case ^Expr_Self:
         // `#self`: the address of what is being built; Self itself its place.
         self := graph_var(b, "Self", b.self, graph_pointee(t), v.span)
@@ -5807,10 +5808,10 @@ fuse_leaf :: proc(c: ^Checker, e: Expr, t: Type) {
     case ^Expr_Ident:
         // A variable, or a constant table, is a place; the rest are values
         // (a variant is built where it goes).
-        is_place := v.resolved == nil
-        if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(t) { is_place = true }
+        is_place := resolution(c, v) == nil
+        if _, is_const := resolution(c, v).(Resolved_Constant); is_const && graph_aggregate(t) { is_place = true }
         if is_void_literal(e) { is_place = false }
-        _, is_variant := v.resolved.(Resolved_Union_Variant)
+        _, is_variant := resolution(c, v).(Resolved_Union_Variant)
         switch {
         case want == .Into && is_variant:
             d, temp, at := c.asked_dest, c.asked_temp, c.asked_span
@@ -5819,16 +5820,16 @@ fuse_leaf :: proc(c: ^Checker, e: Expr, t: Type) {
             if b := fusing(c); b != nil { fuse_built(c, b, want, temp, temp, d, t, at) }
         case is_variant && want != .Place:
             fuse_done(c, fuse_variant_value(c, t, v.name, v.span))
-        case want == .Value:  fuse_done(c, fuse_leaf_value(b, e, t, w))
-        case is_place:        fuse_done(c, fuse_leaf_place(b, v.name, v.resolved, t, v.span), true)
-        case want != .Place:  fuse_done(c, fuse_leaf_value(b, e, t, w))
+        case want == .Value:  fuse_done(c, fuse_leaf_value(c, b, e, t, w))
+        case is_place:        fuse_done(c, fuse_leaf_place(b, v.name, resolution(c, v), t, v.span), true)
+        case want != .Place:  fuse_done(c, fuse_leaf_value(c, b, e, t, w))
         }
     }
 }
 
 // A leaf's value: a literal, text, an intrinsic, a name — a variable's
 // value, or what it resolved to (a constant, a variant, a function).
-fuse_leaf_value :: proc(b: ^Graph_Builder, e: Expr, t: Type, w: Written) -> Operand {
+fuse_leaf_value :: proc(c: ^Checker, b: ^Graph_Builder, e: Expr, t: Type, w: Written) -> Operand {
     #partial switch v in e {
     case ^Expr_Number:
         return graph_const(b, w, v.span, t, "", Const_Value{int = v.int_value, float = v.value, is_float = v.is_float})
@@ -5840,10 +5841,10 @@ fuse_leaf_value :: proc(b: ^Graph_Builder, e: Expr, t: Type, w: Written) -> Oper
         return graph_text(b, graph_op_value(b, .Global, w, v.span, t), Const_Value{text = v.value, is_text = true})
     case ^Expr_Ident:
         if is_void_literal(e) { return graph_op_value(b, .Const, w, v.span, t, "void") }   // an uninitialized value, a null pointer
-        if v.resolved != nil { return fuse_resolved_value(b, v.resolved, v.name, t, v.span, w) }
+        if r := resolution(c, v); r != nil { return fuse_resolved_value(b, r, v.name, t, v.span, w) }
         return graph_read(b, graph_var(b, v.name, NO_NODE, t, v.span), t, v.span)
     case ^Expr_Field_Access:
-        if v.resolved != nil && !graph_is_member(v.resolved) { return fuse_resolved_value(b, v.resolved, v.field, t, v.span, w) }
+        if r := resolution(c, v); r != nil && !graph_is_member(r) { return fuse_resolved_value(b, r, v.field, t, v.span, w) }
     }
     graph_fatal(expr_span(e)^, "the checker built no value here")
 }
@@ -6078,7 +6079,7 @@ fuse_pure_place :: proc(c: ^Checker, e: Expr) -> bool {
 // reference (.Paused, State.Paused) — is omitted from the assert failure
 // report: `game.running == false` reports only game.running. Named constants
 // are NOT literals: their text doesn't show their value, so they report.
-assert_side_is_literal :: proc(ex: Expr) -> bool {
+assert_side_is_literal :: proc(c: ^Checker, ex: Expr) -> bool {
     #partial switch v in ex {
     case ^Expr_Number: return true
     case ^Expr_Bool:   return true
@@ -6088,11 +6089,11 @@ assert_side_is_literal :: proc(ex: Expr) -> bool {
             if _, is_num := v.operand.(^Expr_Number); is_num { return true }
         }
     case ^Expr_Ident:
-        #partial switch _ in v.resolved {
+        #partial switch _ in resolution(c, v) {
         case Resolved_Enum_Variant, Resolved_Union_Variant: return true
         }
     case ^Expr_Field_Access:
-        #partial switch _ in v.resolved {
+        #partial switch _ in resolution(c, v) {
         case Resolved_Enum_Variant, Resolved_Union_Variant: return true
         }
     }
@@ -6101,21 +6102,21 @@ assert_side_is_literal :: proc(ex: Expr) -> bool {
 
 // Whether a value (of type vt) written into a partial array fills only a
 // prefix of it: a slice's elements, or text.
-fuse_fills_prefix :: proc(value: Expr, vt: Type) -> bool {
+fuse_fills_prefix :: proc(c: ^Checker, value: Expr, vt: Type) -> bool {
     if _, is_slice := distinct_base(vt).(^Type_Slice); is_slice { return true }
-    return fuse_is_text(value)
+    return fuse_is_text(c, value)
 }
 
 // Whether an expression is text: a string literal, or a name of a constant
 // whose value is.
-fuse_is_text :: proc(e: Expr) -> bool {
+fuse_is_text :: proc(c: ^Checker, e: Expr) -> bool {
     r: Resolved_Name
     #partial switch v in e {
     case ^Expr_String:       return true
-    case ^Expr_Ident:        r = v.resolved
-    case ^Expr_Field_Access: r = v.resolved
+    case ^Expr_Ident:        r = resolution(c, v)
+    case ^Expr_Field_Access: r = resolution(c, v)
     }
-    if rc, ok := r.(Resolved_Constant); ok && rc.value_expr != nil { return fuse_is_text(rc.value_expr) }
+    if rc, ok := r.(Resolved_Constant); ok && rc.value_expr != nil { return fuse_is_text(c, rc.value_expr) }
     return false
 }
 
@@ -6198,6 +6199,16 @@ Call_Lowered :: struct {
     qualifier_folded: bool,
     resolved:         Maybe(Resolved_Func),
     fn_value:         ^Type_Scope,
+}
+
+// What a name or a member access stands for when it is not a variable
+// or a field: a variant, a constant, a function. nil for anything else.
+resolution :: proc(c: ^Checker, e: Expr) -> Resolved_Name {
+    #partial switch v in e {
+    case ^Expr_Ident:        return c.resolutions[rawptr(v)]
+    case ^Expr_Field_Access: return c.resolutions[rawptr(v)]
+    }
+    return nil
 }
 
 call_lowered :: proc(c: ^Checker, e: ^Expr_Call) -> ^Call_Lowered {
@@ -6423,7 +6434,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         }
         // (A text written to a new partial array fills a prefix of it.)
         wrote, zeroed := fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, fa.decl, t), s.span, settle = true)
-        if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, zeroed || wrote && is_partial_array(t) && fuse_fills_prefix(s.value, fa.value_type), t) }
+        if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, zeroed || wrote && is_partial_array(t) && fuse_fills_prefix(c, s.value, fa.value_type), t) }
         if zeroed && !fa.prefixed { fuse_fail(c, "a new partial array read from bytes") }
         // (An array of untyped elements held as itself — `a := [1, 2, 3]`,
         // an if of such literals — built at its own type: its nodes, the
@@ -6478,10 +6489,10 @@ fuse_builds_into :: proc(c: ^Checker, e: Expr) -> bool {
         rf, resolved := call_lowered(c, v).resolved.?
         return resolved && rf.callee != nil && rf.callee.kind == .Struct
     case ^Expr_Ident:
-        _, is_variant := v.resolved.(Resolved_Union_Variant)
+        _, is_variant := resolution(c, v).(Resolved_Union_Variant)
         return is_variant
     case ^Expr_Field_Access:
-        _, is_variant := v.resolved.(Resolved_Union_Variant)
+        _, is_variant := resolution(c, v).(Resolved_Union_Variant)
         return is_variant
     }
     return false
@@ -7939,7 +7950,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                 synth.name = fn_name
                                 synth.span = s.span
                                 synth.type_ = ann_type
-                                synth.resolved = Resolved_Func{name = fn_name}
+                                c.resolutions[rawptr(synth)] = Resolved_Func{name = fn_name}
                                 s.value = synth
                             }
                         }
@@ -9084,7 +9095,7 @@ fuse_loop_items :: proc(c: ^Checker, fl: ^Graph_For, s: ^Stmt_For, env: ^Type_Sc
     if b := fusing(c); b != nil {
         if view := graph_loop_view_of(t); view != nil {
             _, is_self := s.collection.(^Expr_Self)
-            fills := is_partial_array(t) && fuse_fills_prefix(s.collection, t)
+            fills := is_partial_array(t) && fuse_fills_prefix(c, s.collection, t)
             graph_fuse_items_view(b, fl, &gi, r.v, r.place, t, view, is_self, fills)
         } else {
             graph_fuse_typed(b, fl.coll_slot, t)
@@ -12473,7 +12484,7 @@ check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
             fuse_fail(c, "an if's branch viewed")
             return t
         }
-        if fi.prefix[k] != {} { graph_fuse_prefix_end(b, fi.prefix[k], is_partial_array(t) && fuse_fills_prefix(branch, bt), t) }
+        if fi.prefix[k] != {} { graph_fuse_prefix_end(b, fi.prefix[k], is_partial_array(t) && fuse_fills_prefix(c, branch, bt), t) }
     }
     for k in fi.widen { if k >= 0 { b.fuse.widens[k].to = t } }
     // (Its local holds its value: an array of untyped elements settled —
@@ -12885,7 +12896,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             // expression, so codegen inlines the right value without re-resolving
             // by name (another module out of scope can reuse the name harmlessly).
             if vexpr, vok := c.table.constants[cflat]; vok {
-                e.resolved = Resolved_Constant{value_expr = vexpr}
+                c.resolutions[rawptr(e)] = Resolved_Constant{value_expr = vexpr}
             }
         }
 
@@ -12919,10 +12930,10 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                     if d, ok := s.sd.consts[e.name]; ok { def = d; break }
                     if s.kind != .Block { break }
                 }
-            } else if !loc_scope.is_module || e.resolved == nil {
+            } else if !loc_scope.is_module || resolution(c, e) == nil {
                 def = loc_scope.sd.consts[e.name]
             }
-            if def != nil && def.value != nil { e.resolved = Resolved_Constant{value_expr = def.value} }
+            if def != nil && def.value != nil { c.resolutions[rawptr(e)] = Resolved_Constant{value_expr = def.value} }
             // Set variant resolution metadata if this is an enum variant.
             // Only attach when the env binding actually IS the enum — without
             // this guard, any local `N :: 1000` would silently get overridden
@@ -12932,7 +12943,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             if owner_enum, mapped := c.table.variant_to_enum[e.name]; mapped {
                 if et, t_ok := t.(^Type_Enum); t_ok && et.name == owner_enum {
                     if val, v_ok := et.variants[e.name]; v_ok {
-                        e.resolved = Resolved_Enum_Variant{
+                        c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
                             enum_name = owner_enum,
                             variant   = e.name,
                             value     = val,
@@ -12947,7 +12958,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             if tf, is_func := t.(^Type_Scope); is_func && len(tf.params) > 0 && e.name in c.declared_funs {
                 home := resolve_fn_home(c, env,e.name)
                 flat := make_flat_name(home, e.name)
-                e.resolved = Resolved_Func{name = flat}
+                c.resolutions[rawptr(e)] = Resolved_Func{name = flat}
             }
             return t
         }
@@ -12955,7 +12966,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         // this env — an IMPORTED constant referenced from a module scope (e.g. a
         // default value checked in its callee-module scope, where the env walk
         // doesn't surface the imported name). Its type is its value's type.
-        if rc, rc_ok := e.resolved.(Resolved_Constant); rc_ok && rc.value_expr != nil {
+        if rc, rc_ok := resolution(c, e).(Resolved_Constant); rc_ok && rc.value_expr != nil {
             return check_expr(c, rc.value_expr, env)
         }
         // Not in env — check for better error messages
@@ -13020,7 +13031,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         e.type_ = Type_Void{}
         if b := fusing(c); b != nil && want == .Value {
             sides: [2]bool
-            if bin, is_bin := e.cond.(^Expr_Binary); is_bin { sides = {assert_side_is_literal(bin.left), assert_side_is_literal(bin.right)} }
+            if bin, is_bin := e.cond.(^Expr_Binary); is_bin { sides = {assert_side_is_literal(c, bin.left), assert_side_is_literal(c, bin.right)} }
             graph_assert(b, e, cond.v, w, sides)
             fuse_done(c, NO_VALUE)
         }
@@ -13394,7 +13405,7 @@ check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope
     // Associated function access (function as value)
     if st.functions != nil {
         if fn, found := st.functions[e.field]; found && fn != nil {
-            e.resolved = Resolved_Func{name = fn.name}
+            c.resolutions[rawptr(e)] = Resolved_Func{name = fn.name}
             return fn
         }
     }
@@ -13422,7 +13433,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     t := check_field_access_impl(c, e, env, &ff)
     if fusing(c) == nil { return t }
     set_expr_type(e, t)   // (the builder's reads it)
-    if e.resolved == nil || graph_is_member(e.resolved) {
+    if resolution(c, e) == nil || graph_is_member(resolution(c, e)) {
         p := fuse_member_place(c, e, ff.base, ff.base_type, t)
         if p == NO_VALUE { return t }
         if want == .Value {
@@ -13433,17 +13444,17 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
         return t
     }
     graph_fuse_drop_since(b, ff.mark)
-    _, is_const := e.resolved.(Resolved_Constant)
-    _, is_variant := e.resolved.(Resolved_Union_Variant)
+    _, is_const := resolution(c, e).(Resolved_Constant)
+    _, is_variant := resolution(c, e).(Resolved_Union_Variant)
     switch {
     case want == .Into && is_variant:
         if into_temp { d = graph_fuse_temp(b, temp_span, fuse_temp_type(d)) }
         fuse_variant(c, t, e.field, d, e.span)
         if b := fusing(c); b != nil { fuse_built(c, b, want, into_temp, into_temp, d, t, temp_span) }
     case is_variant && want != .Place:    fuse_done(c, fuse_variant_value(c, t, e.field, e.span))
-    case want == .Value:                  fuse_done(c, fuse_leaf_value(b, e, t, w))
-    case is_const && graph_aggregate(t):  fuse_done(c, fuse_leaf_place(b, e.field, e.resolved, t, e.span), true)   // a module's constant table
-    case want != .Place:                  fuse_done(c, fuse_leaf_value(b, e, t, w))
+    case want == .Value:                  fuse_done(c, fuse_leaf_value(c, b, e, t, w))
+    case is_const && graph_aggregate(t):  fuse_done(c, fuse_leaf_place(b, e.field, resolution(c, e), t, e.span), true)   // a module's constant table
+    case want != .Place:                  fuse_done(c, fuse_leaf_value(c, b, e, t, w))
     }
     return t
 }
@@ -13563,7 +13574,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
         if const_expr, ce_ok := c.table.constants[flat]; ce_ok {
             // Self-module qualifier (`Pkg.X` inside Pkg): resolve to the value
             // expression — codegen inlines it for any type, scalar or aggregate.
-            e.resolved = Resolved_Constant{value_expr = const_expr}
+            c.resolutions[rawptr(e)] = Resolved_Constant{value_expr = const_expr}
             // Best-effort type: re-check the constant value's expression.
             return check_expr(c, const_expr, env)
         }
@@ -13587,7 +13598,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                 variant   = e.field,
                 value     = val,
             }
-            e.resolved = resolved
+            c.resolutions[rawptr(e)] = resolved
             return et
         }
         check_error(c, e.span, TYPE_ENUM_VARIANT, et.name, e.field)
@@ -13602,7 +13613,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
         if e.field == "tag" {
             tag_enum_name := strings.concatenate({ut.name, "_Tag"})
             if tag_et, found := c.table.enums[tag_enum_name]; found {
-                e.resolved = Resolved_Union_Tag{union_name = ut.name}
+                c.resolutions[rawptr(e)] = Resolved_Union_Tag{union_name = ut.name}
                 return tag_et
             }
             check_error(c, e.span, TYPE_UNION_TAG_ENUM_INTERNAL_ERROR, ut.name)
@@ -13613,7 +13624,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                 check_error(c, e.span, TYPE_UNION_PADDING_DECLARE_UNION_PAD, ut.name)
                 return Type_Error{}
             }
-            e.resolved = Resolved_Union_Pad{union_name = ut.name}
+            c.resolutions[rawptr(e)] = Resolved_Union_Pad{union_name = ut.name}
             return ut.tag_pad
         }
         if tag_val, v_ok := ut.tag_map[e.field]; v_ok {
@@ -13624,7 +13635,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                 tag_value   = tag_val,
                 struct_name = struct_name,
             }
-            e.resolved = resolved
+            c.resolutions[rawptr(e)] = resolved
             return ut
         }
         check_error(c, e.span, TYPE_UNION_VARIANT, ut.name, e.field)
@@ -13662,7 +13673,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                 for _, mt in sd.types {
                     if et, et_ok := mt.(^Type_Enum); et_ok {
                         if val, v_ok := et.variants[e.field]; v_ok {
-                            e.resolved = Resolved_Enum_Variant{
+                            c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
                                 enum_name = et.name,
                                 variant   = e.field,
                                 value     = val,
@@ -13672,7 +13683,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                     } else if ut, ut_ok := mt.(^Type_Union); ut_ok {
                         if tag_val, v_ok := ut.tag_map[e.field]; v_ok {
                             struct_name := ut.variant_structs[e.field] or_else e.field
-                            e.resolved = Resolved_Union_Variant{
+                            c.resolutions[rawptr(e)] = Resolved_Union_Variant{
                                 union_name  = ut.name,
                                 variant     = e.field,
                                 tag_value   = tag_val,
@@ -13688,7 +13699,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
             // Resolve enum types from this module
             if et, et_ok := t.(^Type_Enum); et_ok {
                 if val, v_ok := et.variants[e.field]; v_ok {
-                    e.resolved = Resolved_Enum_Variant{
+                    c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
                         enum_name = et.name,
                         variant   = e.field,
                         value     = val,
@@ -13700,7 +13711,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
             // codegen inlines it for any type (scalar or aggregate).
             flat := make_flat_name(sd.name, e.field)
             if const_expr, ce_ok := c.table.constants[flat]; ce_ok {
-                e.resolved = Resolved_Constant{value_expr = const_expr}
+                c.resolutions[rawptr(e)] = Resolved_Constant{value_expr = const_expr}
             }
             return t
         }
@@ -13730,7 +13741,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
     if fa, fa_ok := obj_type.(^Type_Fixed_Array); fa_ok {
         // Fixed arrays have no distinct len (cap == len always). Accept both names.
         if e.field == "len" || e.field == "cap" {
-            e.resolved = Resolved_Constant{int_value = fa.size}
+            c.resolutions[rawptr(e)] = Resolved_Constant{int_value = fa.size}
             return Type_Numeric{kind = .Signed, bits = 64}
         }
         if is_swizzle_field(e.field, fa.size) {
@@ -13780,7 +13791,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
             if ident, id_ok := e.expr.(^Expr_Ident); id_ok {
                 if const_expr, ck := c.table.constants[ident.name]; ck {
                     if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
-                        e.resolved = Resolved_Constant{int_value = len(lit.value)}
+                        c.resolutions[rawptr(e)] = Resolved_Constant{int_value = len(lit.value)}
                     }
                 }
             }
