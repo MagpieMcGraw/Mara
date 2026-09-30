@@ -62,6 +62,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_binary(k, n, env, want, w)
     case .Call:
         return tc_call(k, n, env, want, w, dest, temp, temp_span)
+    case .Assert:
+        return tc_assert(k, n, env, want, w)
     }
     tc_unsupported(k, n, "this expression")
     return Type_Error{}, {}
@@ -391,13 +393,68 @@ tc_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writte
 tc_literal_overflow :: proc(k: ^TC, n: Tree_Id, target: Type, span: Span) {
     tr := k.t
     neg := false
-    num := n
-    if tr.tag[n] == .Unary && build_tokens[tr.main[n]].kind == .Minus && tr.tag[tr.a[n]] == .Number {
-        neg, num = true, Tree_Id(tr.a[n])
+    num := tc_unparen(k, n)
+    if tr.tag[num] == .Unary && build_tokens[tr.main[num]].kind == .Minus && tr.tag[tc_unparen(k, Tree_Id(tr.a[num]))] == .Number {
+        neg, num = true, tc_unparen(k, Tree_Id(tr.a[num]))
     }
     if tr.tag[num] != .Number { return }
     text := token_text(build_tokens[tr.main[num]])
     f, i, _ := parse_number_text(text)
     if neg { f, i = -f, -i }
     check_value_range(k.c, f, i, target, span)
+}
+
+// `assert(c)`: the condition's value, then the assert — with the
+// condition's text, and a comparison's sides' (a literal's left out: its
+// text is its value).
+tc_assert :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+    t := k.t
+    span := tree_span(t, n)
+    cond := Tree_Id(t.a[n])
+    if want != .None && want != .Value { tc_fail(k, "an assert's place") }
+    ct, r := tc_expr(k, cond, env, .Value if want == .Value else .None, w)
+    if _, ok := ct.(Type_Bool); !ok && !is_any(ct) { tc_error(k, span, TYPE_CONDITION_BOOL, type_name(ct)) }
+    b := tc_building(k)
+    if b == nil || want != .Value { return Type_Void{}, {} }
+    lo, hi := int(t.first[cond]), int(t.end[cond])
+    sides: Maybe([2]string)
+    if bin := tc_unparen(k, cond); t.tag[bin] == .Binary && is_comparison_op(build_tokens[t.main[bin]].kind) {
+        // (Split at the last operator of its kind outside any brackets.)
+        op := build_tokens[t.main[bin]].kind
+        at, depth := -1, 0
+        for i in lo ..< hi {
+            #partial switch build_tokens[i].kind {
+            case .Left_Paren, .Left_Bracket, .Left_Brace:    depth += 1
+            case .Right_Paren, .Right_Bracket, .Right_Brace: depth -= 1
+            case op: if depth == 0 { at = i }
+            }
+        }
+        if at > lo && at < hi - 1 {
+            sides = [2]string{
+                "" if tc_is_literal(k, Tree_Id(t.a[bin])) else token_range_text(lo, at),
+                "" if tc_is_literal(k, Tree_Id(t.b[bin])) else token_range_text(at + 1, hi),
+            }
+        }
+    }
+    graph_assert(b, span, token_range_text(lo, hi), r.v, w, sides)
+    return Type_Void{}, {v = NO_VALUE, ok = true}
+}
+
+// An expression without the parens around it.
+tc_unparen :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
+    n := n
+    for k.t.tag[n] == .Paren { n = Tree_Id(k.t.a[n]) }
+    return n
+}
+
+// Whether an expression's text states its value: a number, a bool, a char,
+// a negated number.
+tc_is_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
+    n := tc_unparen(k, n)
+    #partial switch k.t.tag[n] {
+    case .Number, .True, .False, .Char: return true
+    case .Unary:
+        return build_tokens[k.t.main[n]].kind == .Minus && k.t.tag[tc_unparen(k, Tree_Id(k.t.a[n]))] == .Number
+    }
+    return false
 }

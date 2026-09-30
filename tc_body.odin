@@ -66,26 +66,32 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
 }
 
-// `x := v`, `x : T = v`: its local, then its value built into it, then
-// stored — once the statement is checked (its type known).
+
+// `x := v`, `x : T = v`, `x : T`: its local, then its value built into it
+// (or its zero), then stored — once the statement is checked (its type known).
 tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     t := k.t
     span := tree_span(t, s)
     v := decl_view(t, s)
-    if len(v.targets) != 1 || len(v.values) != 1 || t.tag[v.targets[0]] != .Ident {
+    switch {
+    case len(v.targets) != 1:
+        tc_unsupported(k, s, "a destructure")
+        return
+    case len(v.values) > 1 || t.tag[v.targets[0]] != .Ident:
         tc_unsupported(k, s, "this declaration")
         return
     }
     name := tc_name(k, v.targets[0])
+    ann: Type = Type_Any{}
+    if v.type_ != 0 { ann = tc_type(k, v.type_, env, span) }
+    if !tc_declarable(k, env, name, span) { return }
+    if len(v.values) == 0 {
+        tc_decl_bare(k, name, ann, env, span)
+        return
+    }
     value := v.values[0]
     if t.tag[value] == .Ident && tc_name(k, value) == "void" {
         tc_unsupported(k, s, "a `void` declaration")
-        return
-    }
-    ann: Type = Type_Any{}
-    if v.type_ != 0 { ann = tc_type(k, v.type_, env, span) }
-    if name in k.table.constants {
-        tc_error(k, span, TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE, name)
         return
     }
     b := tc_building(k)
@@ -109,34 +115,30 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     final: Type
     if !is_any(ann) {
         if !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) && !value_preserving_widen(vt, ann) {
-            tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(ann))
+            tc_assign_error(k, span, vt, name, ann, value)
         }
         if is_infer(vt) { tc_literal_overflow(k, value, ann, span) }
         final = ann
-    } else {
-        _, prior, declared := type_env_locate_below_module(env, name)
-        _ = prior
-        if declared {
-            tc_error(k, span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, name)
-            return
-        }
-        if is_infer(vt) {
-            // Its width is the one its first concrete use decides.
-            cell := new(Infer_Cell)
-            cell.name, cell.span = name, span
-            if src := infer_cell_of(vt); src != nil { unify_infer_cells(k.c, cell, src, span) }
-            if _, is_float := vt.(Type_Infer_Float); is_float {
-                final = Type_Infer_Float{cell = cell}
-            } else {
-                final = Type_Infer_Int{cell = cell}
-            }
+    } else if existing, _, shadowed := type_env_locate_below_module(env, name); shadowed {
+        // (Reported as a shadow: checked as the write it reads as.)
+        tc_check_write(k, value, vt, existing, name, span)
+        return
+    } else if is_infer(vt) {
+        // Its width is the one its first concrete use decides.
+        cell := new(Infer_Cell)
+        cell.name, cell.span = name, span
+        if src := infer_cell_of(vt); src != nil { unify_infer_cells(k.c, cell, src, span) }
+        if _, is_float := vt.(Type_Infer_Float); is_float {
+            final = Type_Infer_Float{cell = cell}
         } else {
-            final = solidify_type(vt)
-            if is_untyped(final) && k.c.errors == errors_before {
-                check_warning(k.c, span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, name)
-            }
-            if is_cstring(final) { tc_error(k, span, TYPE_CSTRING_FOREIGN_ONLY) }
+            final = Type_Infer_Int{cell = cell}
         }
+    } else {
+        final = solidify_type(vt)
+        if is_untyped(final) && k.c.errors == errors_before {
+            check_warning(k.c, span, TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING, name)
+        }
+        if is_cstring(final) { tc_error(k, span, TYPE_CSTRING_FOREIGN_ONLY) }
     }
     type_env_set(env, name, final)
     if b = tc_building(k); b == nil { return }
@@ -146,6 +148,75 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         fills := is_partial_array(final) && (t.tag[value] == .String || is_slice_type(vt))
         graph_fuse_prefix_end(b, prefix, wrote && fills, final)
     }
+}
+
+// Whether a name can be declared here: not in this scope already, and no
+// constant's. (Shadowing an enclosing local is reported, and declares.)
+tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> bool {
+    _, here := scope_defines(env, name)
+    if here {
+        tc_error(k, span, TYPE_VARIABLE_ALREADY_DECLARED_SCOPE, name)
+        return false
+    }
+    if !env_is_module(env) && parent_struct_scope(env) == nil {
+        // Past a function's boundary a block's locals are out of sight.
+        crossed := false
+        for sc := env.parent_scope; sc != nil && !sc.is_module; sc = sc.parent_scope {
+            if sc.kind != .Block { crossed = true }
+            st, found := scope_defines(sc, name)
+            if found && !(crossed && sc.kind == .Block && !names_module(st)) {
+                tc_error(k, span, TYPE_VARIABLE_SHADOWS_ENCLOSING_BINDING, name)
+                break
+            }
+        }
+    }
+    if name in k.table.constants {
+        tc_error(k, span, TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE, name)
+        return false
+    }
+    return true
+}
+
+// `x : T`: its zero, or its construction.
+tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span) {
+    defer type_env_set(env, name, ann)
+    if _, is_error := ann.(Type_Error); is_error { return }
+    if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
+    b := tc_building(k)
+    if b == nil { return }
+    if tf, is_scope := ann.(^Type_Scope); is_scope && len(tf.params) > 0 {
+        tc_fail(k, "a declaration constructed with args")
+        return
+    }
+    if fuse_bare_args_needed(ann) {
+        tc_fail(k, "a declaration constructed with args")
+        return
+    }
+    decl := graph_fuse_decl(b, name, span)
+    graph_fuse_typed(b, decl, ann)
+    graph_fuse_bare(b, decl, ann, nil, nil, span)
+}
+
+// Whether a bare declaration of the type constructs with its args'
+// defaults (fuse_bare_args).
+fuse_bare_args_needed :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Scope:
+        return v.kind == .Struct && !v.is_module && constructs_bare(v)
+    case ^Type_Fixed_Array, ^Type_Partial_Array:
+        st := graph_elem_struct(t)
+        return st != nil && constructs_bare(st)
+    }
+    return false
+}
+
+// A value written to a variable of type `existing`: checked against it.
+tc_check_write :: proc(k: ^TC, value: Tree_Id, vt, existing: Type, name: string, span: Span) {
+    if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
+       types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
+        tc_assign_error(k, span, vt, name, existing, value)
+    }
+    if is_infer(vt) { tc_literal_overflow(k, value, existing, span) }
 }
 
 is_slice_type :: proc(t: Type) -> bool {
@@ -183,17 +254,29 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     targets := tree_list(t, t.a[s])
     values := tree_list(t, t.b[s])
     if len(targets) != 1 || len(values) != 1 || t.tag[targets[0]] != .Ident {
+        if len(targets) == 1 { tc_unsupported(k, targets[0], "this assignment target"); return }
         tc_unsupported(k, s, "this assignment")
         return
     }
     name := tc_name(k, targets[0])
     value := values[0]
-    existing, loc, found := type_env_locate(env, name)
-    if !found {
-        tc_error(k, span, TYPE_UNDEFINED_IDENTIFIER, name)
-        tc_check(k, value, env)
+    if name == "_" {
+        // A discard: the value checked (and built) for its own sake.
+        k.hint = nil
+        tc_expr(k, value, env, .Value if tc_building(k) != nil else .None)
         return
     }
+    if name == "this_program" {
+        tc_unsupported(k, s, "an assignment to this_program")
+        return
+    }
+    existing, loc, found := type_env_locate(env, name)
+    if !found && name not_in k.table.constants {
+        report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
+        type_env_set(env, name, Type_Error{})
+        return
+    }
+    if is_immutable_param(env, name) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
     if loc != nil && loc.kind == .Struct {
         tc_unsupported(k, s, "an assignment to a field or module name")
         return
@@ -203,11 +286,7 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     want := Fuse_Want.Into if b != nil else .None
     vt: Type = distinct_base(existing) if !is_untyped(existing) else nil
     val_type, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, NO_NODE, vt), temp = true, temp_span = span)
-    if !coerce_deferred(k.c, val_type, existing, span) && !coerce_deferred(k.c, existing, val_type, span) &&
-       types_incompatible(existing, val_type) && !value_preserving_widen(val_type, existing) {
-        tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(val_type), name, type_name(existing))
-    }
-    if is_infer(val_type) { tc_literal_overflow(k, value, existing, span) }
+    tc_check_write(k, value, val_type, existing, name, span)
     tc_store(k, value, val_type, r, graph_dest_var(name, NO_NODE, existing), span)
 }
 

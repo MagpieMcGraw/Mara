@@ -195,10 +195,19 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
     #partial switch t.tag[s] {
     case .Module:
         return
+    case .Expr_Stmt:
+        if e := Tree_Id(t.a[s]); t.tag[e] == .Import {
+            tc_unsupported(k, e, "an import")
+            return
+        }
     case .Define:
         value := Tree_Id(t.b[s])
         if t.a[s] == 0 && value != 0 && t.tag[value] == .Fun_Def {
             tc_register_fun(k, s, value, env, mod)
+            return
+        }
+        if value != 0 {
+            tc_unsupported(k, value, "this module definition")
             return
         }
     }

@@ -420,16 +420,20 @@ assert_token_display :: proc(tok: Token) -> string {
 // `x < y` keeps its spacing, `a.b[i]` stays tight. Used by assert to carry
 // condition/operand text into the runtime failure message.
 assert_token_text :: proc(p: ^Parser, lo, hi: int) -> string {
+    return token_range_text(lo, hi)
+}
+
+token_range_text :: proc(lo, hi: int) -> string {
     sb := strings.builder_make()
     for i in lo..<hi {
         if i > lo {
-            prev := p.tokens[i - 1]
-            cur  := p.tokens[i]
+            prev := build_tokens[i - 1]
+            cur  := build_tokens[i]
             if token_line(cur) != token_line(prev) || token_col(cur) > token_col(prev) + len(assert_token_display(prev)) {
                 strings.write_byte(&sb, ' ')
             }
         }
-        strings.write_string(&sb, assert_token_display(p.tokens[i]))
+        strings.write_string(&sb, assert_token_display(build_tokens[i]))
     }
     return strings.clone(strings.to_string(sb))
 }

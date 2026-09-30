@@ -36,6 +36,30 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         return pt
     case .Type_Paren:
         return tc_type(k, Tree_Id(t.a[n]), env, span)
+    case .Type_Slice:
+        if t.a[n] != 0 {
+            tc_unsupported(k, n, "a sized slice")
+            return Type_Error{}
+        }
+        sl := new(Type_Slice)
+        sl.elem = tc_type(k, Tree_Id(t.b[n]), env, span)
+        return sl
+    case .Type_Partial:
+        pa := new(Type_Partial_Array)
+        pa.elem = tc_type(k, Tree_Id(t.b[n]), env, span)
+        size, ok := tc_type_size(k, Tree_Id(t.a[n]), pa.elem, env, span)
+        if !ok { return Type_Error{} }
+        pa.size = size
+        return pa
+    case .Type_Array:
+        r := tree_rec(t, t.a[n], 2)
+        fa := new(Type_Fixed_Array)
+        fa.elem = tc_type(k, Tree_Id(t.b[n]), env, span)
+        if r[1] != 0 { fa.index_type = tc_type(k, Tree_Id(r[1]), env, span) }
+        size, ok := tc_type_size(k, Tree_Id(r[0]), fa.elem, env, span)
+        if !ok { return Type_Error{} }
+        fa.size = size
+        return fa
     }
     tc_unsupported(k, n, "this type")
     return Type_Error{}
@@ -74,4 +98,57 @@ tc_primitive_named :: proc(name: string) -> (Type, bool) {
     case "isize":   return Type_Numeric{kind = .Signed,   bits = 0}, true
     }
     return nil, false
+}
+
+// An array's size, known when the program is compiled: a number, or an
+// expression of them.
+tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, env: ^Type_Scope, span: Span) -> (int, bool) {
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Number:
+        _, i, _ := parse_number_text(tc_text(t.main[n]))
+        return int(i), true
+    case .Ident:
+        tc_unsupported(k, n, "a size named by a constant")
+        return 0, false
+    }
+    if v, ok := tc_comptime_int(k, n, env); ok { return int(v), true }
+    tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE, type_name(elem))
+    return 0, false
+}
+
+// An integer expression's value, when it is known before the program runs.
+tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Number:
+        f, _, _ := parse_number_text(tc_text(t.main[n]))
+        return i64(f), true
+    case .Paren:
+        return tc_comptime_int(k, Tree_Id(t.a[n]), env)
+    case .Unary:
+        if build_tokens[t.main[n]].kind != .Minus { return 0, false }
+        v, ok := tc_comptime_int(k, Tree_Id(t.a[n]), env)
+        return -v, ok
+    case .Binary:
+        l, l_ok := tc_comptime_int(k, Tree_Id(t.a[n]), env)
+        if !l_ok { return 0, false }
+        r, r_ok := tc_comptime_int(k, Tree_Id(t.b[n]), env)
+        if !r_ok { return 0, false }
+        #partial switch build_tokens[t.main[n]].kind {
+        case .Plus:        return l + r, true
+        case .Minus:       return l - r, true
+        case .Star:        return l * r, true
+        case .Slash:       if r != 0 { return l / r, true }
+        case .Modulo:      if r != 0 { return l % r, true }
+        case .Shift_Left:  return l << uint(r), true
+        case .Shift_Right: return l >> uint(r), true
+        case .Pipe:        return l | r, true
+        case .Ampersand:   return l & r, true
+        case .Caret:       return l ~ r, true
+        }
+    case .Ident:
+        tc_unsupported(k, n, "a constant in a size")
+    }
+    return 0, false
 }

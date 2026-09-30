@@ -1,0 +1,71 @@
+package mara
+
+import "core:fmt"
+import "core:strings"
+
+// What the new checker's diagnostics say about the source: a name for an
+// expression, the operands a mismatch traces to. (Parens are seen through:
+// the pointer tree had none.)
+
+// "a.b[i]", "f()", or "" when the expression has no nameable form.
+tc_diag_name :: proc(k: ^TC, n: Tree_Id) -> string {
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Paren:
+        return tc_diag_name(k, Tree_Id(t.a[n]))
+    case .Ident:
+        return tc_name(k, n)
+    case .Field:
+        base := tc_diag_name(k, Tree_Id(t.a[n]))
+        field := tc_text(Token_Id(t.b[n]))
+        if base == "" { return field }
+        return fmt.tprintf("%s.%s", base, field)
+    case .Index:
+        base := tc_diag_name(k, Tree_Id(t.a[n]))
+        if base == "" { return "" }
+        idx := tc_diag_name(k, Tree_Id(t.b[n]))
+        if idx == "" { return base }
+        return fmt.tprintf("%s[%s]", base, idx)
+    case .Call:
+        return fmt.tprintf("%s()", tc_name(k, n))
+    }
+    return ""
+}
+
+// "p.x (i64), q (i64)": the named operands of `n` too wide for `target`.
+tc_wide_clause :: proc(k: ^TC, n: Tree_Id, target: Type) -> string {
+    srcs: [dynamic]string
+    defer delete(srcs)
+    collect :: proc(k: ^TC, n: Tree_Id, target: Type, out: ^[dynamic]string) {
+        t := k.t
+        #partial switch t.tag[n] {
+        case .Paren, .Unary:
+            collect(k, Tree_Id(t.a[n]), target, out)
+            return
+        case .Binary:
+            collect(k, Tree_Id(t.a[n]), target, out)
+            collect(k, Tree_Id(t.b[n]), target, out)
+            return
+        }
+        nt := tc_node_type(k, n)
+        if nt == nil || !is_numeric(nt) || is_infer(nt) { return }
+        if !types_incompatible(target, nt) || value_preserving_widen(nt, target) { return }
+        name := tc_diag_name(k, n)
+        if name == "" { return }
+        entry := fmt.tprintf("%s (%s)", name, type_name(nt))
+        for s in out^ { if s == entry { return } }
+        append(out, entry)
+    }
+    collect(k, n, target, &srcs)
+    if len(srcs) == 0 { return "" }
+    return strings.join(srcs[:], ", ")
+}
+
+// "cannot assign X to variable 'v' of type Y" (— from the wide operands).
+tc_assign_error :: proc(k: ^TC, span: Span, vt: Type, name: string, target: Type, value: Tree_Id) {
+    if clause := tc_wide_clause(k, value, target); clause != "" {
+        tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM, type_name(vt), name, type_name(target), clause)
+        return
+    }
+    tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(target))
+}
