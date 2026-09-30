@@ -209,7 +209,9 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     if pname, immutable := tc_write_root_param(k, target, env); immutable {
         tc_error(k, span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, field, pname)
     }
-    if !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !value_preserving_widen(vt, ft) {
+    tc_no_literal_slice(k, ft, value, span)
+    // (Bytes read as the field's type: no conversion to check.)
+    if tc_check_byte_flow(k, ft, value, vt, span) == .None && !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !value_preserving_widen(vt, ft) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }
     if is_infer(vt) { tc_literal_overflow(k, diag, ft, span) }

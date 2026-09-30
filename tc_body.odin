@@ -155,6 +155,8 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
     errors_before := k.c.errors
     want := Fuse_Want.Into if b != nil else .None
     vt, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann), temp_span = span)
+    tc_no_literal_slice(k, vt if is_untyped(ann) else ann, value, span)
+    tc_check_big_endian(k, value, span)
     if returns := tc_call_returns(k, value, env); len(returns) > 1 {
         // (One name for several results: `a, b := f()` takes them.)
         tc_error(k, span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE, 1, len(returns))
@@ -163,7 +165,13 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
     }
     final: Type
     if !is_any(ann) {
-        if !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) && !value_preserving_widen(vt, ann) {
+        // (Bytes read as the annotation's type: no conversion to check.)
+        flow := tc_check_byte_flow(k, ann, value, vt, span)
+        fa, to_array := distinct_base(ann).(^Type_Fixed_Array)
+        if to_array && !tc_is_distinct(ann) && flow == .None {
+            // (A fixed array: its elements', and room for them.)
+            tc_array_assign(k, span, name, fa, vt, value)
+        } else if flow == .None && !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) && !value_preserving_widen(vt, ann) {
             tc_assign_error(k, span, vt, name, ann, value)
         }
         if is_infer(vt) { tc_literal_overflow(k, value, ann, span) }
@@ -193,11 +201,12 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, final, value) }
     if b = tc_building(k); b == nil { return }
     graph_fuse_typed(b, decl, final)
-    wrote := tc_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
+    wrote, zeroed := tc_store(k, value, vt, r, graph_dest_var(name, decl, final), span, settle = true)
     if prefixed {
         fills := is_partial_array(final) && (t.tag[value] == .String || is_slice_type(vt))
-        graph_fuse_prefix_end(b, prefix, wrote && fills, final)
+        graph_fuse_prefix_end(b, prefix, zeroed || wrote && fills, final)
     }
+    if zeroed && !prefixed { tc_fail(k, "a new partial array read from bytes") }
 }
 
 // Whether a name can be declared here: not in this scope already, and no
@@ -291,6 +300,8 @@ tc_declared_before :: proc(env: ^Type_Scope, name: string, in_struct: bool) -> (
 
 // A value written to a variable of type `existing`: checked against it.
 tc_check_write :: proc(k: ^TC, value: Tree_Id, vt, existing: Type, name: string, span: Span) {
+    tc_no_literal_slice(k, existing, value, span)
+    if tc_check_byte_flow(k, existing, value, vt, span) != .None { return }
     if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
        types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
         tc_assign_error(k, span, vt, name, existing, value)
@@ -305,16 +316,16 @@ is_slice_type :: proc(t: Type) -> bool {
 
 // A built value stored where it goes: at the destination's type (a number
 // widened to it).
-tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, settle := false) -> bool {
+tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, settle := false) -> (wrote, zeroed: bool) {
     b := tc_building(k)
-    if b == nil || r.into { return false }
+    if b == nil || r.into { return }
     if r.temp {
         graph_fuse_write_at(b, graph_dest_place(b, d, span), r.v, span)
-        return true
+        return true, false
     }
     if tc_builds_into(k, e) {
         tc_fail(k, "a value built in place, taken as one")
-        return false
+        return
     }
     dt := graph_dest_type(b, d)
     _, to_ptr := distinct_base(dt).(^Type_Ptr)
@@ -323,26 +334,28 @@ tc_store :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, d: Dest, span: Span, set
         // A partial array seen as a slice's header.
         v := graph_op_value(b, .Cast, .Implied, span, dt, type_name(dt), tc_value(k, r, e, t))
         graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
-        return false
+        return
     }
     _, to_slice := distinct_base(dt).(^Type_Slice)
     _, from_array := distinct_base(t).(^Type_Fixed_Array)
     if to_slice && from_array {
         if !r.place {
             tc_fail(k, "a slice of an array value")
-            return false
+            return
         }
         v := graph_op_value(b, .Slice, .Implied, span, dt, "", r.v)
         graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
-        return false
+        return
     }
-    if tag := k.t.tag[tc_unparen(k, e)]; tag == .Slice || tag == .Index {
-        tc_unsupported(k, e, "a store of an element or a span")
-        return false
+    // (Bytes read as the destination's type: tc_store_bytes.)
+    if m, _ := tc_byte_node(k, e); d.type_ != nil && tc_byte_flow(k, d.type_, e, t) == .Read {
+        if k.t.tag[m] == .Index { return tc_store_bytes(k, e, r, d, dt, span) }
+        tc_unsupported(k, e, "a span of bytes read as a type")
+        return
     }
     val := graph_fuse_widen(b, tc_value(k, r, e, t), span, {to = dt, settle_to = settle})
     graph_fuse_write_at(b, graph_dest_place(b, d, span), val, span)
-    return true
+    return true, false
 }
 
 // `x = v`: the value, then the write, at the variable's type.
@@ -357,9 +370,10 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         case .Field: tc_field_assign(k, s, target, values[0], env)
         case .Index: tc_index_assign(k, s, target, values[0], env)
         case .Slice: tc_slice_assign(k, s, target, values[0], env)
+        case .Deref: tc_deref_assign(k, s, target, values[0], env)
         }
         #partial switch t.tag[target] {
-        case .Field, .Index, .Slice:
+        case .Field, .Index, .Slice, .Deref:
             // (Into a constant: its storage is read-only.)
             if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
             return
@@ -669,8 +683,12 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     r := tree_rec(t, t.b[s], 2)
     op_tok, value := Token_Id(r[0]), Tree_Id(r[1])
     #partial switch t.tag[target] {
-    case .Field, .Index:
-        if t.tag[target] == .Field { tc_field_assign(k, s, target, value, env, op_tok) } else { tc_index_assign(k, s, target, value, env, op_tok) }
+    case .Field, .Index, .Deref:
+        #partial switch t.tag[target] {
+        case .Field: tc_field_assign(k, s, target, value, env, op_tok)
+        case .Index: tc_index_assign(k, s, target, value, env, op_tok)
+        case .Deref: tc_deref_assign(k, s, target, value, env, op_tok)
+        }
         if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
         return
     case .Ident:
@@ -706,4 +724,61 @@ tc_compound_value :: proc(k: ^TC, op_tok: Token_Id, target, value: Tree_Id, env:
     t, r := tc_binary_op(k, op, token_span(build_tokens[op_tok]), target, value, env, want, .Explicit)
     if want != .None && !r.ok { tc_fail(k, "a compound assignment's operation") }
     return t, r
+}
+
+// A slice bound to a string literal or to a constant: a writable view of
+// read-only storage (a write through it would fault).
+tc_no_literal_slice :: proc(k: ^TC, target: Type, value: Tree_Id, span: Span) {
+    if value == 0 || !is_slice_type(target) { return }
+    if k.t.tag[tc_unparen(k, value)] == .String {
+        tc_error(k, span, TYPE_SLICE_CANNOT_BIND_STRING_LITERAL)
+    } else if name, is_const := tc_write_root_const(k, value); is_const {
+        tc_error(k, span, TYPE_SLICE_CANNOT_BIND_CONSTANT, name, name)
+    }
+}
+
+// A value declared as a fixed array: its elements' type, and no more of
+// them than it holds (a shorter one leaves the rest zero; text counts its
+// bytes, not its tier).
+tc_array_assign :: proc(k: ^TC, span: Span, name: string, fa: ^Type_Fixed_Array, vt: Type, value: Tree_Id) {
+    #partial switch v in vt {
+    case ^Type_Fixed_Array:
+        if types_incompatible(fa.elem, v.elem) {
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(fa))
+        } else if v.size > 0 && v.size > fa.size {
+            tc_error(k, span, TYPE_ARRAY_ELEMENTS_CAPACITY, v.size, name, fa.size)
+        }
+    case ^Type_Partial_Array:
+        size := v.size
+        if m := tc_unparen(k, value); k.t.tag[m] == .String { size = len(tc_text(k.t.main[m])) }
+        if types_incompatible(fa.elem, v.elem) {
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(fa))
+        } else if size > 0 && size > fa.size {
+            tc_error(k, span, TYPE_ARRAY_ELEMENTS_CAPACITY, size, name, fa.size)
+        }
+    case:
+        if !is_any(vt) { tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(fa)) }
+    }
+}
+
+// `p^ = v`: the place p points at, then v into it.
+tc_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_tok: Token_Id = 0) {
+    tr := k.t
+    span := tree_span(tr, s)
+    at := tree_span(tr, target)
+    diag := value if op_tok == 0 else 0
+    b := tc_building(k)
+    pt, pr := tc_expr(k, Tree_Id(tr.a[target]), env, .Place if b != nil else .None, temp_span = at)
+    place := NO_VALUE
+    if b = tc_building(k); b != nil {
+        if p, is_ptr := pt.(^Type_Ptr); is_ptr { place = graph_op_value(b, .Deref, .Explicit, at, p.elem, "", pr.v) }
+    }
+    vt := tc_store_at(k, value, place, env, span, op_tok, target)
+    if p, is_ptr := pt.(^Type_Ptr); is_ptr {
+        tc_set_type(k, target, p.elem)
+        if types_incompatible(p.elem, vt) { tc_error(k, span, TYPE_CANNOT_ASSIGN_THROUGH_POINTER, type_name(vt), type_name(p.elem)) }
+        if is_infer(vt) { tc_literal_overflow(k, diag, p.elem, span) }
+    } else if !is_any(pt) {
+        tc_error(k, span, TYPE_CANNOT_DEREFERENCE_ASSIGN_NON_POINTER, type_name(pt))
+    }
 }

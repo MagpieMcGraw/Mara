@@ -77,10 +77,6 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     }
     b := tc_building(k)
     ct, cr := tc_expr(k, base_n, env, .Place if b != nil else .None, temp_span = ix_span)
-    if is_byte_buffer(ct) {
-        tc_unsupported(k, target, "a write into bytes")
-        return
-    }
     tt := distinct_base(ct)
     elem := index_elem_type(tt)
     tc_set_type(k, target, elem)
@@ -98,6 +94,11 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     case ^Type_Fixed_Array:   k.hint = v.elem
     case ^Type_Partial_Array: if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }
     case ^Type_Slice:         if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }
+    }
+    if is_byte_buffer(ct) {
+        // (Into bytes: the value's raw bytes, the element's place a view.)
+        tc_byte_write(k, s, target, value, place, ct, tt, it, env, op_tok)
+        return
     }
     vt := tc_store_at(k, value, place, env, span, op_tok, target)
     if !is_numeric(it) && !is_any(it) {

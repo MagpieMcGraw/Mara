@@ -68,6 +68,9 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return Type_Bool{}, {v = v, ok = true}
     case .Paren:
         return tc_expr(k, Tree_Id(t.a[n]), env, want, w, dest, temp, temp_span)
+    case .Big_Endian:
+        // (A read of bytes, big-endian: as the read; where it is viewed, the flag.)
+        return tc_expr(k, Tree_Id(t.a[n]), env, want, w, dest, temp, temp_span)
     case .Ident:
         return tc_ident(k, n, env, want, w)
     case .Unary:
