@@ -108,7 +108,22 @@ It keeps the type representation and replaces the checking.
 
 ## Checklist
 
-- [ ] 1. The builder off the tree
+- [x] 1. The builder off the tree (2026-09-30: 2b1df66, ae368f6, 6e2703e). What the builder
+      took from statements and expressions it takes as data: a construct's span and the few
+      facts it reads (`Graph_Loop`, `Graph_Arm`'s else and union, a literal's name and
+      zero-init, an assert's text and sides, a take's keyword, a destructure's names and
+      stores); what a statement outside any body declares (`Graph_Decl`: id, span, kind, form
+      — names, an import, a constant, a scope, a block, a group, foreign funs, a union, a
+      type, a dispatch — made by the checker, `stmt_graph_decl`); a named constant
+      (`Graph_Named`: its value's id, or its value known) and the table's constant names by
+      id. The passes after checking ask the checker what they asked of the tree
+      (`scope_is_written`, `scope_is_intrinsic`, `scope_body_is_empty`, `field_has_default`,
+      `distinct_is_sized`), and the checker checks a param's `void` default itself
+      (`check_void_defaults`). The builder's keys are still the old tree's ids (`Stmt_Id`,
+      `Expr_Id`); the new checker's are its node ids. Left on the pointer tree: the parser,
+      the checker, hittest, the parse dump and the driver's has-`main` / has-`#expose` tests.
+      Graph, IR and `mara ask` identical. (An empty body skipping missing-return is on
+      purpose: `Arena`'s empty methods declare the shape a `~Arena` param matches.)
 - [ ] 2. The flat tree beside the pointer tree
 - [ ] 3. The new checker: every program's graph identical
 - [ ] 4. The switch
