@@ -71,7 +71,8 @@ stamp_zero_partial_arrays :: proc(g: ^Codegen, ptr: string, t: Type) {
     if fa, is_fa := base.(^Type_Fixed_Array); is_fa {
         inner := distinct_base(fa.elem)
         for a, nested := inner.(^Type_Fixed_Array); nested; a, nested = inner.(^Type_Fixed_Array) { inner = distinct_base(a.elem) }
-        if _, pa := inner.(^Type_Partial_Array); pa && fa.size > 0 { emit_each_element(g, ptr, fa.elem, fa.size, stamp_zero_partial_arrays) }
+        stamp :: proc(g: ^Codegen, ptr: string, t: Type, _: []string) { stamp_zero_partial_arrays(g, ptr, t) }
+        if _, pa := inner.(^Type_Partial_Array); pa && fa.size > 0 { emit_each_element(g, ptr, fa.elem, fa.size, stamp) }
         return
     }
     sd := as_struct_body(base)
@@ -476,29 +477,17 @@ type_needs_construction :: proc(g: ^Codegen, t: Type) -> bool {
 // param defaults for a paramized constructor (mirrors the bare-decl path in
 // gen_struct_assign) or just the sret pointer for a pure-data struct. No-op if
 // the struct has no init function (trivial — the zero-fill already finished it).
-emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: string) {
+// `args`: its constructor's arguments, typed ("i64 6"), the construction's
+// (its params' defaults, which the checker built where it's written).
+emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: string, args: []string = nil) {
     init_fn, has_init := g.checked.functions[st_name]
     if !has_init { return }
     if init_fn != nil && len(init_fn.cg_params) > 0 {
-        info, _ := lookup_fun_info(g, st_name)
-        arg_strs: [dynamic]string
-        for &param, i in init_fn.cg_params {
-            // Built bare only when each param has one (constructs_bare), a
-            // constant: an array's elements are built with no code of their
-            // own to compute it in.
-            if param.default_value == nil { codegen_fatal(g, {}, CODE_BARE_CONSTRUCTION_ARGUMENT, st_name, param.name) }
-            pt := info.param_types[i]
-            if pt == "ptr" && is_void_literal(param.default_value) {
-                append(&arg_strs, "ptr null")
-                continue
-            }
-            c, folds := graph_constant(param.default_value).?
-            if !folds || c.is_text || pt == "ptr" || pt == SLICE_IR_TYPE {
-                codegen_fatal(g, {}, CODE_BARE_CONSTRUCTION_DEFAULT, st_name, param.name)
-            }
-            lit := ("true" if c.int != 0 else "false") if pt == "i1" else emit_number_literal(pt, c.float if c.is_float else f64(c.int), c.int, c.is_float)
-            append(&arg_strs, fmt.tprintf("%s %s", pt, lit))
+        if len(args) != len(init_fn.cg_params) {
+            codegen_fatal(g, {}, CODE_BARE_CONSTRUCTION_ARGUMENT, st_name, init_fn.cg_params[len(args) if len(args) < len(init_fn.cg_params) else 0].name)
         }
+        arg_strs := make([dynamic]string, 0, len(args) + 1, context.temp_allocator)
+        append(&arg_strs, ..args)
         append(&arg_strs, fmt.tprintf("ptr %s", addr))
         emit_raw(g, strings.concatenate({"  call void ", mara_fn_name(g, st_name), "(", strings.join(arg_strs[:], ", "), ")"}))
     } else {
@@ -510,44 +499,44 @@ emit_struct_init_call :: proc(g: ^Codegen, st_name: string, addr: string) {
 // auto-init (struct), stamp its header + construct its inline elements (partial
 // array), or construct each element (fixed array). Mutually recursive with
 // gen_construct_elements.
-gen_construct_value_at :: proc(g: ^Codegen, ptr: string, t: Type) {
+gen_construct_value_at :: proc(g: ^Codegen, ptr: string, t: Type, args: []string = nil) {
     bt := distinct_base(t)
     #partial switch v in bt {
     case ^Type_Scope:
         if v.kind == .Struct {
-            emit_struct_init_call(g, v.name, ptr)
+            emit_struct_init_call(g, v.name, ptr, args)
         }
     case ^Type_Partial_Array:
         stamp_partial_array_header(g, ptr, v)
-        gen_construct_partial_array_elements(g, ptr, v)
+        gen_construct_partial_array_elements(g, ptr, v, args)
     case ^Type_Fixed_Array:
-        gen_construct_elements(g, ptr, v.elem, v.size)
+        gen_construct_elements(g, ptr, v.elem, v.size, args)
     }
 }
 
 // Construct each inline element of a (already header-stamped) partial array at
 // `pa_addr`. Skipped entirely when the element type is trivially zero-formed.
-gen_construct_partial_array_elements :: proc(g: ^Codegen, pa_addr: string, pa: ^Type_Partial_Array) {
+gen_construct_partial_array_elements :: proc(g: ^Codegen, pa_addr: string, pa: ^Type_Partial_Array, args: []string = nil) {
     if !type_needs_construction(g, pa.elem) { return }
     elem_ir := llvm_type_from_checker(pa.elem)
     pa_ir := partial_array_ir_type(elem_ir, pa.size)
     inline_ptr := fresh_tmp(g)
     emit_raw(g, strings.concatenate({"  ", inline_ptr, " = getelementptr inbounds ", pa_ir, ", ptr ", pa_addr, ", i32 0, i32 ", fmt.tprintf("%d", PARTIAL_ELEMENTS_FIELD), ", i32 0"}))
-    gen_construct_elements(g, inline_ptr, pa.elem, pa.size)
+    gen_construct_elements(g, inline_ptr, pa.elem, pa.size, args)
 }
 
 // Run no-arg construction over `count` elements starting at `elements_ptr` (a
 // pointer to element 0), but only when the element type needs it.
-gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int) {
+gen_construct_elements :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int, args: []string = nil) {
     if count <= 0 { return }
     if !type_needs_construction(g, elem) { return }
-    emit_each_element(g, elements_ptr, elem, count, gen_construct_value_at)
+    emit_each_element(g, elements_ptr, elem, count, gen_construct_value_at, args)
 }
 
 // `each` over `count` elements of type `elem` starting at `elements_ptr` (a
 // pointer to element 0): a runtime counted loop, so `[..256]Font` is a
 // handful of instructions, not 256 unrolled ones.
-emit_each_element :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int, each: proc(g: ^Codegen, ptr: string, t: Type)) {
+emit_each_element :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: int, each: proc(g: ^Codegen, ptr: string, t: Type, args: []string), args: []string = nil) {
     elem_ir := llvm_type_from_checker(elem)
     w := slice_layout.len_ir
     cond_label := fresh_label(g, "ctor.cond")
@@ -571,7 +560,7 @@ emit_each_element :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: 
     emit_load_into(g, idx2, w, idx_ptr)
     elem_ptr := fresh_tmp(g)
     emit(g, "  %s = getelementptr %s, ptr %s, %s %s", elem_ptr, elem_ir, elements_ptr, w, idx2)
-    each(g, elem_ptr, elem)
+    each(g, elem_ptr, elem, args)
     next := fresh_tmp(g)
     emit(g, "  %s = add %s %s, 1", next, w, idx2)
     emit_store(g, w, next, idx_ptr)

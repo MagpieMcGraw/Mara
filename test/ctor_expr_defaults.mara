@@ -1,0 +1,25 @@
+module ctor_expr_defaults
+
+//@ expect-output: 9 9 9 9
+
+// A constructor param's default that is an expression, where a construction
+// runs it: a bare declaration, a literal, an array's elements, a field's
+// (was a graph error: the builder rebuilt defaults from the syntax tree).
+
+N :: 3
+
+Cell :: struct(w: i64 = N * 2, h: f32 = 1.5) {
+	area := f32(w) * h
+}
+
+Row :: struct {
+	cells: [2]Cell
+}
+
+main :: fun() {
+	a : [4]Cell
+	r : Row
+	c : Cell
+	d := Cell{}
+	print(a[3].area, r.cells[1].area, c.area, d.area)
+}

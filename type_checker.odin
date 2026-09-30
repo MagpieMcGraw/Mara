@@ -5808,10 +5808,12 @@ fuse_leaf :: proc(c: ^Checker, e: Expr) {
         _, is_variant := v.resolved.(Resolved_Union_Variant)
         switch {
         case want == .Into && is_variant:
-            d := c.asked_dest
-            if c.asked_temp { d = graph_fuse_temp(b, c.asked_span, fuse_temp_type(d)) }
-            graph_fuse_variant(b, v.type_, v.name, d, v.span)
-            fuse_built(c, b, want, c.asked_temp, c.asked_temp, d, v.type_, c.asked_span)
+            d, temp, at := c.asked_dest, c.asked_temp, c.asked_span
+            if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
+            fuse_variant(c, v.type_, v.name, d, v.span)
+            if b := fusing(c); b != nil { fuse_built(c, b, want, temp, temp, d, v.type_, at) }
+        case is_variant && want != .Place:
+            fuse_done(c, fuse_variant_value(c, v.type_, v.name, v.span))
         case want == .Value:  fuse_done(c, graph_leaf(b, e, w))
         case is_place:        fuse_done(c, graph_plain_place(b, e, v.span), true)
         case want != .Place:  fuse_done(c, graph_leaf(b, e, w))
@@ -6035,6 +6037,82 @@ fuse_const_end :: proc(c: ^Checker, fc: ^Fuse_Const, s: ^Stmt_Define, t: Type) {
         fuse_store_finish(c, s.value, fc.vt, fc.value, graph_dest_var(s.name, fc.f.root, t), s.span, settle = true)
     }
     graph_const_end(c.gb, fc.f, s, t)
+}
+
+// A default, where what leaves it off runs it — a construction written
+// without its arguments, as a call leaving them off does (fill_default_args):
+// checked there, in its owner's defining scope, and built at the type it
+// defaults (`w`: a param's, a field's).
+fuse_default :: proc(c: ^Checker, def: Expr, t: Type, owner: ^Type_Scope, span: Span, w: Graph_Widen) -> Operand {
+    saved := c.expected_hint
+    c.expected_hint = t
+    defer c.expected_hint = saved
+    use, at := fuse_use_type(def, t, span)
+    vt, r := fuse_expr(c, def, callee_def_scope(owner), .Either, .Implied, dest = use, temp_span = at)
+    return fuse_value_as(c, def, vt, r, t, span, w)
+}
+
+// A construction's arguments: its constructor's params' defaults (the
+// checker lets none be built without one — a missing one is reported).
+fuse_ctor_args :: proc(c: ^Checker, ts: ^Type_Scope, span: Span) -> []Operand {
+    args := make([]Operand, len(ts.params), context.temp_allocator)
+    for p, i in ts.params {
+        if p.default_value == nil { continue }
+        args[i] = fuse_default(c, p.default_value, p.type_, ts, span, {sig = ts, param = i})
+    }
+    return args
+}
+
+// A bare declaration's (graph_construct_bare): a struct's constructor's
+// arguments, an array's elements'.
+fuse_bare_args :: proc(c: ^Checker, t: Type, span: Span) -> []Operand {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Scope:
+        if v.kind == .Struct && !v.is_module && constructs_bare(v) { return fuse_ctor_args(c, v, span) }
+    case ^Type_Fixed_Array, ^Type_Partial_Array:
+        if st := graph_elem_struct(t); st != nil && constructs_bare(st) { return fuse_ctor_args(c, st, span) }
+    }
+    return nil
+}
+
+// A variant's field defaults, each one a literal doesn't give (lit nil:
+// none given), written into the variant's place d once it's constructed.
+fuse_variant_defaults :: proc(c: ^Checker, st: ^Type_Scope, lit: ^Expr_Struct_Literal, d: Dest, span: Span) {
+    if st == nil || fusing(c) == nil { return }
+    sd := as_scope_body(st)
+    skip := 0
+    for f in sd.fields { if strings.has_prefix(f.name, "__") { skip += 1 } }
+    for f, i in sd.fields {
+        if f.default_value == nil { continue }
+        given := false
+        if lit != nil {
+            for lf, j in lit.fields {
+                if lf.name == f.name || (lf.name == "" && skip + j == i) { given = true }
+            }
+        }
+        if given { continue }
+        v := fuse_default(c, f.default_value, f.type_, st, span, {to = f.type_})
+        if b := fusing(c); b != nil { graph_fuse_field_default(b, d, f.name, f.type_, v, span) }
+    }
+}
+
+// A variant named where it goes: constructed at d, then its defaults.
+fuse_variant :: proc(c: ^Checker, t: Type, name: string, d: Dest, span: Span) {
+    b := fusing(c)
+    if b == nil { return }
+    st := graph_fuse_variant(b, t, name, d, span)
+    dd := d
+    fuse_variant_defaults(c, st, nil, Dest{kind = .Variant, name = name, type_ = st, parent = &dd}, span)
+}
+
+// A variant named as a value: built in a temporary made first, read.
+fuse_variant_value :: proc(c: ^Checker, t: Type, name: string, span: Span) -> Operand {
+    b := fusing(c)
+    if b == nil { return NO_VALUE }
+    d := graph_fuse_temp(b, span, t)
+    fuse_variant(c, t, name, d, span)
+    if b := fusing(c); b != nil { return graph_read(b, graph_dest_place(b, d, span), t, span) }
+    return NO_VALUE
 }
 
 // The node a declaration declares: a struct's field, made with its
@@ -7604,10 +7682,11 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     } else if field {
                         // (A field is its struct's type; its capacity is
                         // the struct's to give.)
-                        graph_fuse_bare(b, bare, b.g.type_[bare], nil, s.span)
+                        graph_fuse_bare(b, bare, b.g.type_[bare], nil, fuse_bare_args(c, b.g.type_[bare], s.span), s.span)
                     } else {
                         graph_fuse_typed(b, bare, ann_type)
-                        graph_fuse_bare(b, bare, ann_type, cap, s.span)
+                        args := fuse_bare_args(c, ann_type, s.span) if cap == nil else nil
+                        if b := fusing(c); b != nil { graph_fuse_bare(b, bare, ann_type, cap, args, s.span) }
                     }
                 }
                 s.var_type = distinct_base(ann_type)
@@ -9339,7 +9418,17 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
     c.lit = nil
     gl: ^Graph_Literal
     if b := fusing(c); b != nil && fl != nil {
-        gl = fl.gl if override else graph_fuse_literal(b, lit, lit.type_, fl.dest)
+        if override {
+            gl = fl.gl
+        } else {
+            // (Its constructor's arguments, then it; a variant's defaults.)
+            args: []Operand
+            if ts, is_scope := lit.type_.(^Type_Scope); is_scope && ts.kind == .Struct && !ts.is_module && !lit.zero_init {
+                args = fuse_ctor_args(c, ts, lit.span)
+            }
+            if b := fusing(c); b != nil { gl = graph_fuse_literal(b, lit, lit.type_, fl.dest, args) }
+            if gl != nil { fuse_variant_defaults(c, gl.variant, lit, gl.parent, lit.span) }
+        }
         fl.built = gl != nil
     }
     // Positional form (`Foo{a, b, c}`): match entries to struct fields by index.
@@ -13039,8 +13128,9 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     switch {
     case want == .Into && is_variant:
         if into_temp { d = graph_fuse_temp(b, temp_span, fuse_temp_type(d)) }
-        graph_fuse_variant(b, t, e.field, d, e.span)
-        fuse_built(c, b, want, into_temp, into_temp, d, t, temp_span)
+        fuse_variant(c, t, e.field, d, e.span)
+        if b := fusing(c); b != nil { fuse_built(c, b, want, into_temp, into_temp, d, t, temp_span) }
+    case is_variant && want != .Place:    fuse_done(c, fuse_variant_value(c, t, e.field, e.span))
     case want == .Value:                  fuse_done(c, graph_leaf(b, e, w))
     case is_const && graph_aggregate(t):  fuse_done(c, graph_plain_place(b, e, e.span), true)   // a constant table
     case want != .Place:                  fuse_done(c, graph_leaf(b, e, w))

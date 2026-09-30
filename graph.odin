@@ -1136,42 +1136,32 @@ graph_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
 // array of structs is zeroed, then each element constructed. A struct that
 // can't be built bare stays zero: an array's elements (the checker warns), a
 // `~T` slot's field (the shape shortcut fills it; the checker rejects others).
+// (Its constructor runs on `args`: its params' defaults, the checker's —
+// an array's elements', each on the same ones.)
 @(private="file")
-graph_construct_bare :: proc(b: ^Graph_Builder, dest: Operand, t: Type, span: Span) {
+graph_construct_bare :: proc(b: ^Graph_Builder, dest: Operand, t: Type, args: []Operand, span: Span) {
+    ops := make([dynamic]Operand, 0, 1 + len(args), context.temp_allocator)
+    append(&ops, dest)
+    append(&ops, ..args)
     #partial switch v in distinct_base(t) {
     case ^Type_Scope:
         if v.kind == .Struct && !v.is_module && constructs_bare(v) {
-            graph_call_op(b, .Construct, .Synthetic, span, v, t, ..graph_default_args(b, dest, v, span))
+            graph_call_op(b, .Construct, .Synthetic, span, v, t, ..ops[:])
             return
         }
     case ^Type_Fixed_Array:
         graph_op(b, .Zero, .Synthetic, span, t, "", dest)
-        if st := graph_elem_struct(v.elem); st != nil && constructs_bare(st) { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, dest) }
+        if st := graph_elem_struct(v.elem); st != nil && constructs_bare(st) { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, ..ops[:]) }
         return
     case ^Type_Partial_Array:
         graph_op(b, .Zero, .Synthetic, span, t, "", dest)
-        if st := graph_elem_struct(v.elem); st != nil && constructs_bare(st) { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, dest) }
+        if st := graph_elem_struct(v.elem); st != nil && constructs_bare(st) { graph_call_op(b, .Construct, .Synthetic, span, st, v.elem, ..ops[:]) }
         return
     }
     graph_op(b, .Zero, .Synthetic, span, t, "", dest)
 }
 
-// A construction written without arguments — a bare declaration, a literal —
-// runs its constructor on its params' defaults (the checker lets none be
-// built so without one): its operands, the place it builds in first.
-@(private="file")
-graph_default_args :: proc(b: ^Graph_Builder, dest: Operand, callee: ^Type_Scope, span: Span) -> []Operand {
-    ops := make([]Operand, 1 + len(callee.params), context.temp_allocator)
-    ops[0] = dest
-    for p, i in callee.params {
-        if p.default_value == nil { graph_fatal(span, "'%s' built without its argument '%s'", callee.name, p.name) }
-        ops[i + 1] = graph_default_value(b, p.default_value, p.type_, span)
-    }
-    return ops
-}
-
 // The struct an array's elements construct, through nested arrays.
-@(private="file")
 graph_elem_struct :: proc(t: Type) -> ^Type_Scope {
     #partial switch v in distinct_base(t) {
     case ^Type_Scope:
@@ -1635,10 +1625,7 @@ graph_leaf_resolved :: proc(b: ^Graph_Builder, r: Resolved_Name, name: string, t
     case Resolved_Func:
         return graph_op_value(b, .Global, w, span, t, name)   // a function as a value
     case Resolved_Union_Variant:
-        // Built in a temporary made first, read.
-        slot := graph_slot(b, "temp", t, span)
-        graph_fuse_variant(b, t, name, graph_dest_var("temp", slot, t), span)
-        return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
+        graph_fatal(span, "the variant '%s' is built where it is checked", name)   // (fuse_variant_value)
     }
     graph_fatal(span, "'%s' resolved to no value", name)
 }
@@ -1767,58 +1754,12 @@ graph_spread_results :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, sd: ^Sc
 
 // A union's variant `name` as a struct: its tag first, then its fields; nil
 // when t is no union with that variant.
-@(private="file")
 graph_variant_struct :: proc(b: ^Graph_Builder, t: Type, name: string) -> ^Type_Scope {
     ut, is_union := distinct_base(t).(^Type_Union)
     if !is_union || name == "" { return nil }
     sname, has := ut.variant_structs[name]
     if !has { return nil }
     return b.checked.table.structs[sname] or_else nil
-}
-
-// A variant built at d: after its construct (zero and its tag), each field
-// default the literal doesn't give — a variant has no constructor to run them.
-@(private="file")
-graph_variant_defaults :: proc(b: ^Graph_Builder, t: Type, variant: string, lit: ^Expr_Struct_Literal, d: Dest, span: Span) {
-    st := graph_variant_struct(b, t, variant)
-    if st == nil { return }
-    dd := d
-    graph_field_defaults(b, st, lit, Dest{kind = .Variant, name = variant, type_ = st, parent = &dd}, span)
-}
-
-// Each field default of variant struct st a literal doesn't give, written at
-// the struct's place d.
-@(private="file")
-graph_field_defaults :: proc(b: ^Graph_Builder, st: ^Type_Scope, lit: ^Expr_Struct_Literal, d: Dest, span: Span) {
-    sd := as_scope_body(st)
-    vd := d
-    skip := 0
-    for f in sd.fields { if strings.has_prefix(f.name, "__") { skip += 1 } }
-    for f, i in sd.fields {
-        if f.default_value == nil { continue }
-        given := false
-        if lit != nil {
-            for lf, j in lit.fields {
-                if lf.name == f.name || (lf.name == "" && skip + j == i) { given = true }
-            }
-        }
-        if given { continue }
-        val := graph_default_value(b, f.default_value, f.type_, span)
-        fd := Dest{kind = .Field, name = f.name, type_ = f.type_, parent = &vd}
-        graph_op(b, .Write, .Implied, span, nil, "", graph_dest_place(b, fd, span), val)
-    }
-}
-
-// A default — a variant's field's, a constructor param's — where it's used:
-// it isn't checked where it's declared, so a constant one is written at the
-// type it defaults; else it is a leaf (text, a name), at that type.
-@(private="file")
-graph_default_value :: proc(b: ^Graph_Builder, e: Expr, t: Type, span: Span) -> Operand {
-    c, folds := graph_literal_value(e).?
-    if dt := expr_type(e); folds && !c.is_text && (dt == nil || is_infer(dt)) {
-        return graph_const(b, .Implied, span, t, "", c)
-    }
-    return graph_widen(b, graph_leaf(b, e, .Implied), t, span)
 }
 
 // An array's element type.
@@ -3054,13 +2995,13 @@ graph_fuse_and_end :: proc(b: ^Graph_Builder, sa: ^Graph_And, r: Operand) -> Ope
 
 // A bare declaration's value (graph_init): its type's construction, or zero;
 // a sized slice's zero takes its capacity.
-graph_fuse_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, cap: Maybe(Operand), span: Span) {
+graph_fuse_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, cap: Maybe(Operand), args: []Operand, span: Span) {
     if c, has := cap.?; has {
         n := graph_fuse_widen(b, c, span, {to = slice_header_width_type})
         graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span), n)
         return
     }
-    graph_construct_bare(b, graph_var(b, b.g.name[d], d, t, span), t, span)
+    graph_construct_bare(b, graph_var(b, b.g.name[d], d, t, span), t, args, span)
 }
 
 // A new partial array's zero, made before the value it may be a prefix of:
@@ -3752,32 +3693,39 @@ Graph_Literal :: struct {
     d, parent: Dest,
     sd:        ^Scope_Body,
     skip:      int,
+    variant:   ^Type_Scope,   // a variant's struct: its field defaults (the checker's, into parent)
 }
 
-graph_fuse_literal :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, t: Type, d: Dest) -> ^Graph_Literal {
+// A literal's construction at d: a struct's constructor run on `args` (its
+// params' defaults, the checker's); a union's variant zeroed and tagged; an
+// array zeroed.
+graph_fuse_literal :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, t: Type, d: Dest, args: []Operand = nil) -> ^Graph_Literal {
     span := v.span
     ts, is_scope := t.(^Type_Scope)
     if is_scope && ts.kind == .Struct && !ts.is_module && v.zero_init {
         graph_op(b, .Zero, .Explicit, span, t, "{0}", graph_dest_place(b, d, span))
     } else if is_scope && ts.kind == .Struct && !ts.is_module {
-        ops := graph_default_args(b, graph_dest_place(b, d, span), ts, span)
-        op := graph_call_op(b, .Construct, .Explicit, span, ts, t, ..ops)
+        if len(args) != len(ts.params) { graph_fatal(span, "'%s' built without its arguments", ts.name) }
+        ops := make([dynamic]Operand, 0, 1 + len(args), context.temp_allocator)
+        append(&ops, graph_dest_place(b, d, span))
+        append(&ops, ..args)
+        op := graph_call_op(b, .Construct, .Explicit, span, ts, t, ..ops[:])
         b.g.name[op] = strings.concatenate({b.g.name[op], "{}"})   // as written: braces, no call
-        if ts.is_union_variant { graph_field_defaults(b, ts, v, d, span) }
     } else if graph_aggregate(t) {
         _, is_union := distinct_base(t).(^Type_Union)
         graph_op(b, .Construct if is_union else .Zero, .Explicit, span, t, v.name, graph_dest_place(b, d, span))
-        if is_union { graph_variant_defaults(b, t, v.name, v, d, span) }
     } else {
         return nil
     }
     gl := new(Graph_Literal, context.temp_allocator)
     gl.d, gl.parent = d, d
     gl.sd = as_scope_body(distinct_base(t))
+    if is_scope && ts.is_union_variant { gl.variant = ts }
     // A union's variant: its fields are the variant struct's, past the tag.
     if st := graph_variant_struct(b, t, v.name); st != nil {
         gl.sd = as_scope_body(st)
         gl.parent = Dest{kind = .Variant, name = v.name, type_ = st, parent = &gl.d}
+        gl.variant = st
         for f in gl.sd.fields { if strings.has_prefix(f.name, "__") { gl.skip += 1 } }
     }
     return gl
@@ -3840,9 +3788,17 @@ graph_fuse_array_elem :: proc(b: ^Graph_Builder, ga: ^Graph_Array, i: int, first
 
 // A variant built at d (graph_into, a bare variant): its construction, then
 // its field defaults.
-graph_fuse_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span) {
+graph_fuse_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span) -> ^Type_Scope {
     graph_op(b, .Construct, .Explicit, span, t, name, graph_dest_place(b, d, span))
-    graph_variant_defaults(b, t, name, nil, d, span)
+    return graph_variant_struct(b, t, name)
+}
+
+// A field default a construction writes (fuse_variant_defaults: a variant
+// has no constructor to run them), into the struct at d.
+graph_fuse_field_default :: proc(b: ^Graph_Builder, d: Dest, name: string, t: Type, v: Operand, span: Span) {
+    vd := d
+    fd := Dest{kind = .Field, name = name, type_ = t, parent = &vd}
+    graph_op(b, .Write, .Implied, span, nil, "", graph_dest_place(b, fd, span), v)
 }
 
 // An array literal built before the type its use takes it at was known (a

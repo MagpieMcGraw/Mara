@@ -1607,6 +1607,22 @@ llvm_zeroed :: proc(e: ^Llvm, place: Node_Id) -> bool {
     return e.ctor && pg.op[place] == .Var && pg.refers[place] != NO_NODE && pg.kind[pg.refers[place]] == .Field
 }
 
+// A construction's arguments, past its place: each at its constructor's
+// param's type, typed ("i64 6").
+@(private="file")
+llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []string, ok: bool) {
+    if len(ops) == 1 { return nil, true }
+    callee := graph_called(e.pg, op)
+    if callee == nil || len(ops) - 1 != len(callee.cg_params) { return nil, false }
+    args = make([]string, len(callee.cg_params), context.temp_allocator)
+    for p, i in callee.cg_params {
+        ir := llvm_param_type(p.type_) or_return
+        v := llvm_operand(e, ops[i + 1], p.type_) or_return
+        args[i] = fmt.tprintf("%s %s", ir, v)
+    }
+    return args, true
+}
+
 // A struct built in place: its storage zeroed, then its constructor run on it
 // with the arguments, the place last. An array's elements, zeroed already,
 // each run theirs.
@@ -1638,16 +1654,19 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         stamp_zero_partial_arrays(g, at, st)   // (a partial array's zero isn't all zeros: no constructor stamps a variant's)
         return true
     }
+    // An array's elements: each constructed on the same arguments.
     if fa := llvm_array(pg.type_[dest]); fa != nil && llvm_same_type(fa.elem, t) {
-        if len(ops) != 1 || llvm_direct(e, dest) { return false }
-        gen_construct_elements(g, e.value[dest - e.node], fa.elem, fa.size)
+        if llvm_direct(e, dest) { return false }
+        args := llvm_ctor_args(e, op, ops) or_return
+        gen_construct_elements(g, e.value[dest - e.node], fa.elem, fa.size, args)
         return true
     }
     if pa := llvm_partial(pg.type_[dest]); pa != nil && llvm_same_type(pa.elem, t) {
-        if len(ops) != 1 || llvm_direct(e, dest) { return false }
+        if llvm_direct(e, dest) { return false }
         if llvm_zeroed(e, dest) { return true }   // a constructor's field: at its entry
+        args := llvm_ctor_args(e, op, ops) or_return
         elements := emit_partial_array_zero(g, e.value[dest - e.node], pa, stamp = false)
-        gen_construct_elements(g, elements, pa.elem, pa.size)
+        gen_construct_elements(g, elements, pa.elem, pa.size, args)
         return true
     }
     callee := graph_called(e.pg, op)
@@ -1672,13 +1691,9 @@ llvm_construct :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         return true
     }
     if _, src := callee.origin.(Origin_Source); !src { return false }
-    if len(ops) - 1 != len(callee.cg_params) { return false }
+    ctor := llvm_ctor_args(e, op, ops) or_return
     args := make([dynamic]string, 0, len(ops), context.temp_allocator)
-    for p, i in callee.cg_params {
-        ir := llvm_param_type(p.type_) or_return
-        v := llvm_operand(e, ops[i + 1], p.type_) or_return
-        append(&args, fmt.tprintf("%s %s", ir, v))
-    }
+    append(&args, ..ctor)
     at := e.value[dest - e.node]
     append(&args, fmt.tprintf("ptr %s", at))
     // A fallible constructor's declared results (its err) after Self: each

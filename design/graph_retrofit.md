@@ -910,6 +910,16 @@ erroneous program reports, the negative fixtures say so.
       graph_constant: the program arena's size, an array element's constructor defaults, text
       held), a sized slice type's default capacity (codegen_const_eval_int) and a text
       constant told by its expression (graph_fills_prefix) — for the leaves and defaults.
+      Defaults: a construction written without its arguments — a literal, a bare
+      declaration, an array's elements — runs its constructor on its params' defaults, and a
+      variant's construction writes its fields' defaults: each is now checked and built by
+      the checker where the construction is, in its owner's defining scope, as a call's
+      missing arguments are (fuse_default). The builder's rebuilding of them from the syntax
+      tree is gone (graph_default_args, graph_field_defaults, graph_default_value), and an
+      array's construction carries its elements' constructor arguments, which the emitter
+      passes on (it folded them from the syntax tree). Found: a default that was an
+      expression (`w: i64 = N * 2`) was a graph error at a construction. IR byte-identical;
+      the graph's defaults now originate where they're written.
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines
