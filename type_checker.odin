@@ -8857,8 +8857,13 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         // (A plain place: walked where the loop needs it, not here. Anything
         // else is held first, in a local the loop walks: fuse_loop_items.)
         coll_type: Type
+        coll := NO_VALUE
         if b != nil && !graph_pure_place(s.collection) {
             coll_type = fuse_loop_items(c, &fl, s, child)
+        } else if b != nil {
+            r: Fused
+            coll_type, r = fuse_expr(c, s.collection, child, .Place)
+            coll = r.v
         } else {
             coll_type = check_expr(c, s.collection, child)
         }
@@ -8897,7 +8902,10 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
 
         s.elem_type_ = distinct_base(elem_type)
 
-        if b != nil { graph_fuse_for_collection(b, &fl, s) }
+        if fusing(c) != nil {
+            _, is_self := s.collection.(^Expr_Self)
+            graph_fuse_for_collection(b, &fl, s, coll, coll_type, is_self)
+        }
         check_scope(c, s.body, child)
     } else if s.is_range {
         // The counter first, then each bound at its type (known once both
@@ -8911,6 +8919,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         }
         high_type, hi := fuse_expr(c, s.range_high, child)
         if fusing(c) != nil {
+            fl.high = hi.v
             bounds[1] = len(b.fuse.checks)
             fl.hi = graph_fuse_range_bound(b, hi.v, high_type, s.span)
         }
@@ -10395,10 +10404,15 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     prechecked := make([]bool, len(s.arms), context.temp_allocator)
     slot := NO_NODE
     subj_type: Type
+    subject := NO_VALUE
     if b != nil && !graph_pure_place(s.subject) {
         slot = graph_slot(b, "subject", nil, s.span)
         subj_type = fuse_store_into(c, s.subject, env, graph_dest_var("subject", slot, nil), s.span)
         if fusing(c) != nil { graph_fuse_typed(b, slot, subj_type) }
+    } else if b != nil {
+        r: Fused
+        subj_type, r = fuse_expr(c, s.subject, env, .Place)
+        subject = r.v
     } else {
         subj_type = check_expr(c, s.subject, env)
     }
@@ -10406,7 +10420,8 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     et, is_enum_match := subj_type.(^Type_Enum)
     _, is_err_match := subj_type.(Type_Err)
     if fusing(c) != nil && b != nil {
-        gm = graph_fuse_match_begin(b, s, slot)
+        _, is_self := s.subject.(^Expr_Self)
+        gm = graph_fuse_match_begin(b, s, slot, subject, subj_type, is_self)
         for &arm, i in s.arms {
             if arm.is_else { continue }
             if gm.is_union || arm.value == nil {

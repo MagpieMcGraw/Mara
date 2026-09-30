@@ -1290,9 +1290,9 @@ graph_implied_oks :: proc(b: ^Graph_Builder, vals: ^[dynamic]Operand, rts: []Typ
 
 // A collection's place each time the loop needs it.
 @(private="file")
-graph_coll_place :: proc(b: ^Graph_Builder, coll: Expr, slot: Node_Id, span: Span) -> Operand {
-    if slot != NO_NODE { return graph_var(b, b.g.name[slot], slot, b.g.type_[slot], span) }
-    return graph_plain_base(b, coll, span)
+graph_coll_place :: proc(b: ^Graph_Builder, fl: ^Graph_For, span: Span) -> Operand {
+    if slot := fl.coll_slot; slot != NO_NODE { return graph_var(b, b.g.name[slot], slot, b.g.type_[slot], span) }
+    return graph_base_of(b, graph_place_again(b, fl.coll, span), fl.coll_t, span, fl.coll_self)
 }
 
 // The view a collection loop walks, when the collection has a header — a
@@ -1679,6 +1679,62 @@ graph_plain_base :: proc(b: ^Graph_Builder, e: Expr, span: Span) -> Operand {
     p := graph_plain_place(b, e, span)
     if _, is_self := e.(^Expr_Self); is_self { return p }   // through `#self` is Self
     if pt, ok := distinct_base(expr_type(e)).(^Type_Ptr); ok {
+        return graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)
+    }
+    return p
+}
+
+// A plain place walked once more (another run): the operations that name it
+// — a variable, a constant table, a field, an element at a constant or at a
+// variable's value, what a pointer points at, bytes seen as a type — copied,
+// an implied dereference at `span`, as a walk there makes one.
+graph_place_again :: proc(b: ^Graph_Builder, p: Operand, span: Span) -> Operand {
+    if p.op == NO_NODE { return p }
+    g := b.g
+    id := p.op
+    #partial switch g.op[id] {
+    case .Var, .Global, .Const, .Field, .Swizzle, .Index, .Deref, .View, .Read, .Cast:
+    case:
+        graph_fatal(g.origin[id], "a place walked again holds a %v", g.op[id])
+    }
+    src := graph_built_operands(b, id)
+    ops := make([]Operand, len(src), context.temp_allocator)
+    for o, k in src { ops[k] = graph_place_again(b, o, span) }
+    origin := g.origin[id]
+    if g.op[id] == .Deref && g.written[id] == .Implied { origin = span }
+    n := graph_op_value(b, g.op[id], g.written[id], origin, g.type_[id], g.name[id], ..ops)
+    g.refers[n.op] = g.refers[id]
+    if c, ok := g.consts[id]; ok { g.consts[n.op] = c }
+    if g.op[id] == .Const { graph_const_settles(b, n.op, g.type_[id]) }
+    for t in b.tables {
+        if t.global == id { append(&b.tables, Graph_Table{n.op, t.value}); break }
+    }
+    // (A widening decided when the graph is put together: this one too, alike.)
+    if f := b.fuse; f != nil && g.op[id] == .Cast {
+        for w in f.widens {
+            if w.id != id { continue }
+            twin := w
+            twin.id, twin.v = n.op, ops[0]
+            append(&f.widens, twin)
+            break
+        }
+    }
+    return Operand{n.op, p.out}
+}
+
+// A plain place left out, its operations built for walking it again (a
+// place used only in the runs where it's walked: graph_place_again).
+graph_drop_place :: proc(b: ^Graph_Builder, p: Operand) {
+    if p.op == NO_NODE { return }
+    for o in graph_built_operands(b, p.op) { graph_drop_place(b, o) }
+    graph_drop(b, p.op, NO_VALUE)
+}
+
+// A plain place's base, from its place (graph_plain_base): through a
+// pointer, what it points at.
+graph_base_of :: proc(b: ^Graph_Builder, p: Operand, t: Type, span: Span, is_self := false) -> Operand {
+    if is_self { return p }   // (through `#self` is Self)
+    if pt, ok := distinct_base(t).(^Type_Ptr); ok {
         return graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)
     }
     return p
@@ -3268,6 +3324,9 @@ graph_fuse_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure, 
 // per arm, its block; the code after it joins.
 Graph_Match :: struct {
     slot:     Node_Id,
+    subject:  Operand,   // else its place, the checker's: walked again where needed
+    t:        Type,      // its type
+    is_self:  bool,
     is_union: bool,
     ops:      [dynamic]Operand,
     tags:     []Node_Id,
@@ -3276,15 +3335,16 @@ Graph_Match :: struct {
     span:     Span,
 }
 
-graph_fuse_match_begin :: proc(b: ^Graph_Builder, v: ^Stmt_Match, slot: Node_Id) -> ^Graph_Match {
+graph_fuse_match_begin :: proc(b: ^Graph_Builder, v: ^Stmt_Match, slot: Node_Id, subject: Operand, t: Type, is_self: bool) -> ^Graph_Match {
     gm := new(Graph_Match, context.temp_allocator)
     gm.slot, gm.span = slot, v.span
-    _, gm.is_union = distinct_base(expr_type(v.subject)).(^Type_Union)
+    gm.subject, gm.t, gm.is_self = subject, t, is_self
+    _, gm.is_union = distinct_base(t).(^Type_Union)
     gm.ops = make([dynamic]Operand, 0, len(v.arms) + 1, context.temp_allocator)
     if gm.is_union {
-        append(&gm.ops, graph_fuse_subject(b, v, gm))
+        append(&gm.ops, graph_fuse_subject(b, v, gm, first = true))
     } else {
-        append(&gm.ops, graph_read(b, graph_fuse_subject(b, v, gm), expr_type(v.subject), v.span))
+        append(&gm.ops, graph_read(b, graph_fuse_subject(b, v, gm, first = true), t, v.span))
     }
     gm.tags = make([]Node_Id, len(v.arms), context.temp_allocator)
     gm.arms = make([]^Run, len(v.arms), context.temp_allocator)
@@ -3298,7 +3358,7 @@ graph_fuse_match_begin :: proc(b: ^Graph_Builder, v: ^Stmt_Match, slot: Node_Id)
 // An arm's tag: a union's variant's, an enum's — a constant filled in when
 // the arm is resolved (graph_fuse_arm).
 graph_fuse_match_tag :: proc(b: ^Graph_Builder, gm: ^Graph_Match, v: ^Stmt_Match, i: int) {
-    t := graph_tag_type(expr_type(v.subject)) if gm.is_union else expr_type(v.subject)
+    t := graph_tag_type(gm.t) if gm.is_union else gm.t
     tag := graph_const(b, .Implied, v.span, t, "", Const_Value{})
     gm.tags[i] = tag.op
     append(&gm.ops, tag)
@@ -3315,10 +3375,12 @@ graph_fuse_match_switch :: proc(b: ^Graph_Builder, gm: ^Graph_Match, v: ^Stmt_Ma
 }
 
 @(private="file")
-graph_fuse_subject :: proc(b: ^Graph_Builder, v: ^Stmt_Match, gm: ^Graph_Match) -> Operand {
+graph_fuse_subject :: proc(b: ^Graph_Builder, v: ^Stmt_Match, gm: ^Graph_Match, first := false) -> Operand {
     if gm.slot != NO_NODE { return graph_var(b, "subject", gm.slot, b.g.type_[gm.slot], v.span) }
-    return graph_plain_base(b, v.subject, v.span)
+    p := gm.subject if first else graph_place_again(b, gm.subject, v.span)
+    return graph_base_of(b, p, gm.t, v.span, gm.is_self)
 }
+
 
 // An arm, resolved: its tag, its run and block, and — a union's arm that
 // binds its payload — the binding, the payload's place.
@@ -3450,6 +3512,10 @@ Graph_For :: struct {
     end_slot, coll_slot:     Node_Id,
     elem:                    Node_Id,
     lo, hi:                  Operand,
+    high:                    Operand,   // a range's end as the checker built it (a literal's: walked again)
+    coll:                    Operand,   // a plain place collection's place, the checker's
+    coll_t:                  Type,
+    coll_self:               bool,
     check, body, post, done: ^Run,
     body_block:              Node_Id,
     has_post:                bool,
@@ -3498,14 +3564,19 @@ graph_fuse_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, bounds
     graph_fuse_for_runs(b, fl, v)
 }
 
-// A collection loop, the collection checked (a plain place: walked where the
-// loop needs it): a slice's elements as they are when the loop begins, the
-// element and the index; then the check run.
-graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
-    if view := graph_loop_view(v.collection); view != nil && fl.coll_slot == NO_NODE {
-        fl.coll_slot = graph_slot(b, "items", view, fl.span)
-        val := graph_op_value(b, .Slice, .Implied, fl.span, view, "", graph_plain_base(b, v.collection, fl.span))
-        graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "items", fl.coll_slot, view, fl.span), val)
+// A collection loop, the collection checked (a plain place, `place` of type
+// `t`: walked where the loop needs it): a slice's elements as they are when
+// the loop begins, the element and the index; then the check run.
+graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, place: Operand, t: Type, is_self: bool) {
+    fl.coll, fl.coll_t, fl.coll_self = place, t, is_self
+    if fl.coll_slot == NO_NODE {
+        if view := graph_loop_view_of(t); view != nil {
+            fl.coll_slot = graph_slot(b, "items", view, fl.span)
+            val := graph_op_value(b, .Slice, .Implied, fl.span, view, "", graph_base_of(b, place, t, fl.span, is_self))
+            graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "items", fl.coll_slot, view, fl.span), val)
+        } else {
+            graph_drop_place(b, place)   // (walked in each run: graph_coll_place)
+        }
     }
     if v.elem_var != "" {
         fl.elem = graph_node(b, .Local, .Explicit, fl.f, v.elem_var, v.elem_type_, fl.span)
@@ -3574,10 +3645,10 @@ graph_fuse_for_runs :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
             if fl.end_slot != NO_NODE {
                 bound = graph_read(b, graph_var(b, "end", fl.end_slot, b.g.type_[fl.end_slot], span), b.g.type_[fl.end_slot], span)
             } else {
-                bound = graph_leaf(b, v.range_high)
+                bound = graph_place_again(b, fl.high, span)   // (a literal)
             }
         } else {
-            bound = graph_len(b, graph_coll_place(b, v.collection, fl.coll_slot, span), expr_type(v.collection), span)
+            bound = graph_len(b, graph_coll_place(b, fl, span), fl.coll_t, span)
         }
         cmp := graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "<", cur, bound)
         graph_branch(b, cmp, fl.body, fl.done, .Synthetic, span)
@@ -3608,7 +3679,7 @@ graph_fuse_for_body :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
         ct := b.g.type_[fl.counter]
         at := graph_read(b, graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), ct, span)
         at = graph_widen(b, at, slice_header_width_type, span)
-        slot := graph_op_value(b, .Index, .Synthetic, span, v.elem_type_, "", graph_coll_place(b, v.collection, fl.coll_slot, span), at)
+        slot := graph_op_value(b, .Index, .Synthetic, span, v.elem_type_, "", graph_coll_place(b, fl, span), at)
         graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.elem_var, fl.elem, v.elem_type_, span),
                  graph_read(b, slot, v.elem_type_, span))
     }
