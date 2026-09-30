@@ -143,6 +143,7 @@ tailfns
 test_match_indexed
 text_constant_views
 u64dec
+u8print
 uninitbranch
 uninitfield
 uninitptr

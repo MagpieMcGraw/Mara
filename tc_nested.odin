@@ -15,7 +15,7 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     t := k.t
     owner := sc.ts
     owner_i := k.scope_of[owner]
-    for s in scope_view(t, sc.node).body {
+    for s in tc_live(k, scope_view(t, sc.node).body) {
         if t.tag[s] != .Define { continue }
         value := Tree_Id(t.b[s])
         if t.a[s] == 0 && value != 0 && (t.tag[value] == .Fun_Def || t.tag[value] == .Struct_Def) {

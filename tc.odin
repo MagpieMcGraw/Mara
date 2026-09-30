@@ -228,20 +228,20 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
         envs[i] = fe
     }
     for f, i in files {
-        for s in tree_list(k.t, k.t.a[f]) { tc_register_types(k, s, envs[i], mod) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register_types(k, s, envs[i], mod) }
     }
     for f, i in files {
-        for s in tree_list(k.t, k.t.a[f]) { tc_register(k, s, envs[i], mod) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_register(k, s, envs[i], mod) }
     }
     mine := list[:]
     // (Signatures first: a constant's value may call a fun — an error, but
     // one found at its call, as the old checker's were on demand.)
     for i in mine { tc_signature(k, k.scopes[i]) }
     for f, i in files {
-        for s in tree_list(k.t, k.t.a[f]) { tc_resolve(k, s, envs[i]) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_resolve(k, s, envs[i]) }
     }
     for f, i in files {
-        for s in tree_list(k.t, k.t.a[f]) { tc_validate(k, s, envs[i]) }
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) { tc_validate(k, s, envs[i]) }
     }
     // A struct's fields are what its body declares: each struct's body is
     // checked first (or sooner, by what needs its fields), then each fun's.
@@ -579,7 +579,7 @@ tc_module_graph_decls :: proc(k: ^TC) -> map[string][]Graph_Decl {
     for name, files in k.modules {
         decls: [dynamic]Graph_Decl
         for f in files {
-            for s in tree_list(k.t, k.t.a[f]) { append(&decls, tc_graph_decl(k, s)) }
+            for s in tc_live(k, tree_list(k.t, k.t.a[f])) { append(&decls, tc_graph_decl(k, s)) }
         }
         out[name] = decls[:]
     }

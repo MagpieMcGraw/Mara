@@ -50,6 +50,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
 // fields).
 tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil, top := false) {
     t := k.t
+    stmts := tc_live(k, stmts)   // (`#if`: its live arm's, in its place)
     // (A body's constants, checked with it: their declarations, settled.)
     if b := tc_building(k); b != nil && top {
         for s in stmts {
@@ -791,4 +792,56 @@ tc_deref_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     } else if !is_any(pt) {
         tc_error(k, span, TYPE_CANNOT_DEREFERENCE_ASSIGN_NON_POINTER, type_name(pt))
     }
+}
+
+// A block's statements with each `#if` whose condition is known replaced by
+// its live arm's (folded before the old checker ran; an elif in its chain
+// is an ordinary if, as the old parser had it).
+tc_live :: proc(k: ^TC, stmts: []Tree_Id) -> []Tree_Id {
+    t := k.t
+    folds := false
+    for s in stmts {
+        if t.tag[s] == .If && if_view(t, s).hash != 0 { folds = true; break }
+    }
+    if !folds { return stmts }
+    out := make([dynamic]Tree_Id, 0, len(stmts), context.temp_allocator)
+    for s in stmts {
+        if t.tag[s] != .If || if_view(t, s).hash == 0 {
+            append(&out, s)
+            continue
+        }
+        v := if_view(t, s)
+        live, known := tc_comptime_bool(k, v.cond)
+        if !known {
+            append(&out, s)   // (left for the check to report)
+            continue
+        }
+        append(&out, ..tc_live(k, v.then if live else v.else_))
+    }
+    return out[:]
+}
+
+// A condition known when the program is compiled: a bool, the target (#web,
+// #native, #windows, #linux, #mac), `not` of one.
+tc_comptime_bool :: proc(k: ^TC, n: Tree_Id) -> (bool, bool) {
+    t := k.t
+    m := tc_unparen(k, n)
+    #partial switch t.tag[m] {
+    case .True:  return true, true
+    case .False: return false, true
+    case .Hash_Name:
+        switch tc_text(Token_Id(t.a[m])) {
+        case "web":     return k.c.target_web, true
+        case "native":  return !k.c.target_web, true
+        case "windows": return k.c.target_os == .Windows, true
+        case "linux":   return k.c.target_os == .Linux, true
+        case "mac":     return k.c.target_os == .Mac, true
+        }
+    case .Unary:
+        if build_tokens[t.main[m]].kind == .Not {
+            v, ok := tc_comptime_bool(k, Tree_Id(t.a[m]))
+            if ok { return !v, true }
+        }
+    }
+    return false, false
 }

@@ -495,6 +495,9 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         for a in args { tc_check(k, a, env) }
         return Type_Error{}, {}
     }
+    if dt, is_distinct := ft_raw.(^Type_Distinct); is_distinct {
+        return tc_distinct_conversion(k, n, name, dt, args, env, want if build else .None, w)
+    }
     ft, is_scope := ft_raw.(^Type_Scope)
     if !is_scope || ft.is_module || ft.node == 0 {
         tc_unsupported(k, n, "a call of this")
@@ -1028,4 +1031,26 @@ tc_ensure_layout :: proc(k: ^TC, t: Type) {
             if st, ok := k.table.structs[flat]; ok { tc_ensure_layout(k, st) }
         }
     }
+}
+
+// `Id(x)`, Id a distinct type: x at its base type, seen as Id (a
+// conversion: its bits as they are).
+tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Distinct, args: []Tree_Id, env: ^Type_Scope,
+                               want: Fuse_Want, w: Written) -> (Type, Fused) {
+    span := tree_span(k.t, n)
+    if len(args) != 1 {
+        tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
+        return Type_Error{}, {}
+    }
+    saved := k.hint
+    k.hint = dt.base_type
+    if want == .Place { tc_fail(k, "a conversion's place") }
+    at, r := tc_expr(k, args[0], env, .Value if want != .None && want != .Place else .None, w)
+    k.hint = saved
+    if !is_any(at) && !is_infer(at) && types_incompatible(dt.base_type, at) {
+        tc_error(k, span, TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE, name, type_name(at), type_name(dt.base_type))
+    }
+    b := tc_building(k)
+    if b == nil || want == .None || want == .Place { return dt, {} }
+    return dt, {v = graph_op_value(b, .Cast, w, span, dt, name, r.v), ok = true}
 }
