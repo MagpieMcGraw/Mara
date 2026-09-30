@@ -189,25 +189,21 @@ Expr_Number :: struct {
                        // their negations, with headroom for future widening if needed.
     is_float:  bool,
     span:      Span,
-    type_:     Type,   // filled by type checker
 }
 
 Expr_String :: struct {
     value: string,
     span:  Span,
-    type_: Type,
 }
 
 Expr_Char :: struct {
     value: u8,
     span:  Span,
-    type_: Type,
 }
 
 Expr_Ident :: struct {
     name:     string,
     span:     Span,
-    type_:    Type,
     is_dot:   bool,           // .Variant shorthand: resolve via expected type or visible-variant search
 }
 
@@ -215,14 +211,12 @@ Expr_Unary :: struct {
     op:      Token_Kind,
     operand: Expr,
     span:    Span,
-    type_:   Type,
     wrapping:    bool,         // `-%x`: wrapping negate, codegen skips the overflow check
 }
 
 Expr_Bool :: struct {
     value: bool,
     span:  Span,
-    type_: Type,
 }
 
 // `#skip_constructor` — explicit "skip the constructor body for this slot."
@@ -232,7 +226,6 @@ Expr_Bool :: struct {
 // The user takes responsibility for assigning before reading.
 Expr_Skip_Constructor :: struct {
     span:  Span,
-    type_: Type,
 }
 
 Expr_Binary :: struct {
@@ -240,7 +233,6 @@ Expr_Binary :: struct {
     left:        Expr,
     right:       Expr,
     span:        Span,
-    type_:       Type,
     wrapping:    bool,         // `+%`/`-%`/`*%`: two's-complement wrap, codegen skips the overflow check
 }
 
@@ -250,20 +242,17 @@ Expr_Call :: struct {
     args:      [dynamic]Expr,
     overrides: ^Expr_Struct_Literal,      // optional `{...}` field override after the call
     span:      Span,
-    type_:     Type,                      // return type, filled by type checker
 }
 
 Expr_Array :: struct {
     elements: [dynamic]Expr,
     span:     Span,
-    type_:    Type,
 }
 
 Expr_Index :: struct {
     expr:  Expr,
     index: Expr,
     span:  Span,
-    type_: Type,   // element type
     // `#big_endian buf[off]` — byte-buffer reinterpret read that byte-swaps every
     // multi-byte integer in the destination after the load/memcpy. Only meaningful
     // when the index targets a byte buffer; the type checker rejects other shapes.
@@ -275,7 +264,6 @@ Expr_Slice :: struct {
     low:   Expr,   // start index (nil = 0)
     high:  Expr,   // end index (nil = len)
     span:  Span,
-    type_: Type,
     // `#big_endian buf[lo:hi]` — see Expr_Index above.
     is_big_endian: bool,
 }
@@ -301,20 +289,17 @@ Expr_Struct_Literal :: struct {
     // literal's type rather than looking up name.
     type_expr:  Type_Expr,
     span:       Span,
-    type_:      Type,
 }
 
 Expr_Field_Access :: struct {
     expr:     Expr,
     field:    string,
     span:     Span,
-    type_:    Type,
 }
 
 Expr_Size_Of :: struct {
     type_expr:     Type_Expr,
     span:          Span,
-    type_:         Type,
 }
 
 // Re-escape processed literal text for display: the lexer stores '\n' as the
@@ -383,7 +368,6 @@ Expr_Assert :: struct {
     lhs_text:      string,
     rhs_text:      string,
     span:          Span,
-    type_:         Type,      // always Type_Void — assert is a statement, no value
 }
 
 // take(T, storage) — carve a typed view from storage's current cursor,
@@ -402,7 +386,6 @@ Expr_Take :: struct {
     count_expr:    Expr,      // set for the slice form `slice([:n]T, ...)`
     keyword:       string,    // "let" or "slice" — discriminates value vs slice carve
     span:          Span,
-    type_:         Type,
 }
 
 Expr_If :: struct {
@@ -410,7 +393,6 @@ Expr_If :: struct {
     then_expr: Expr,
     else_expr: Expr,
     span:      Span,
-    type_:     Type,
 }
 
 Intrinsic_Kind :: enum {
@@ -426,7 +408,6 @@ Intrinsic_Kind :: enum {
 Expr_Compiler_Intrinsic :: struct {
     kind:           Intrinsic_Kind,
     span:           Span,
-    type_:          Type,
 }
 
 // Bare type-keyword in expression context: `Array(byte, 64)` parses with a
@@ -437,7 +418,6 @@ Expr_Compiler_Intrinsic :: struct {
 Expr_Type_Name :: struct {
     kind: Token_Kind,   // Bool_Type / I8 / I64 / U8 / Byte / F32 / F64 / Utf8 etc.
     span: Span,
-    type_: Type,        // filled by type checker
 }
 
 Expr_Include :: struct {
@@ -445,7 +425,6 @@ Expr_Include :: struct {
     is_sealed:   bool,     // `name :: sealed use path` — module reachable only via name.X (no bare-name leak)
     is_reexport: bool,     // true for `include` (re-export); false for `use` (private). Re-export adds names to the module's public surface.
     span:        Span,
-    type_:       Type,
 }
 
 // Synthetic default for one binding in a tuple-destructure param group.
@@ -460,7 +439,6 @@ Expr_Tuple_Default :: struct {
     source: Expr,   // shared by identity across the group
     index:  int,    // 0..N-1
     span:   Span,
-    type_:  Type,   // filled by type checker — the i-th tuple slot
 }
 
 // `#self` — compiler-injected pointer to the under-construction instance,
@@ -472,7 +450,6 @@ Expr_Tuple_Default :: struct {
 // are still the way to thread the instance through helpers.
 Expr_Self :: struct {
     span:  Span,
-    type_: Type,    // filled by type checker — ^Type_Scope of enclosing struct
 }
 
 // Postfix `?` err-propagation. The inner expression must produce a value
@@ -484,7 +461,6 @@ Expr_Self :: struct {
 Expr_Try :: struct {
     inner: Expr,
     span:  Span,
-    type_: Type,    // filled by type checker — inner type minus the trailing err
 }
 
 // The span of any expression, without knowing which variant it is. Returned by
@@ -4764,68 +4740,49 @@ clone_stmts :: proc(stmts: [dynamic]Stmt) -> [dynamic]Stmt {
 clone_expr :: proc(e: Expr) -> Expr {
     switch v in e {
     case ^Expr_Number:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_String:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Char:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Ident:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Bool:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Skip_Constructor:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Unary:
         c := new_clone(v^)
         c.operand = clone_expr(v.operand)
-        c.type_ = nil
         return c
     case ^Expr_Assert:
         c := new_clone(v^)
         c.cond = clone_expr(v.cond)
-        c.type_ = nil
         return c
     case ^Expr_Binary:
         c := new_clone(v^)
         c.left = clone_expr(v.left)
         c.right = clone_expr(v.right)
-        c.type_ = nil
         return c
     case ^Expr_Call:
         c := new_clone(v^)
         c.qualifier = clone_expr(v.qualifier)
         c.args = clone_exprs(v.args)
-        c.type_ = nil
         return c
     case ^Expr_Array:
         c := new_clone(v^)
         c.elements = clone_exprs(v.elements)
-        c.type_ = nil
         return c
     case ^Expr_Index:
         c := new_clone(v^)
         c.expr = clone_expr(v.expr)
         c.index = clone_expr(v.index)
-        c.type_ = nil
         return c
     case ^Expr_Slice:
         c := new_clone(v^)
         c.expr = clone_expr(v.expr)
         c.low = clone_expr(v.low)
         c.high = clone_expr(v.high)
-        c.type_ = nil
         return c
     case ^Expr_Struct_Literal:
         c := new_clone(v^)
@@ -4834,57 +4791,41 @@ clone_expr :: proc(e: Expr) -> Expr {
             append(&c.fields, Struct_Field{name = f.name, value = clone_expr(f.value)})
         }
         c.broadcast_value = clone_expr(v.broadcast_value)
-        c.type_ = nil
         return c
     case ^Expr_Field_Access:
         c := new_clone(v^)
         c.expr = clone_expr(v.expr)
-        c.type_ = nil
         return c
     case ^Expr_Size_Of:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Take:
         c := new_clone(v^)
         c.storage = clone_expr(v.storage)
         if v.count_expr != nil { c.count_expr = clone_expr(v.count_expr) }
-        c.type_ = nil
         return c
     case ^Expr_If:
         c := new_clone(v^)
         c.condition = clone_expr(v.condition)
         c.then_expr = clone_expr(v.then_expr)
         c.else_expr = clone_expr(v.else_expr)
-        c.type_ = nil
         return c
     case ^Expr_Compiler_Intrinsic:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Include:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Type_Name:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Tuple_Default:
         // Preserve `source` by reference — the whole point of this node is
         // that multiple bindings in a group share the SAME source so codegen
         // can dedup. Cloning the source here would defeat that.
         c := new_clone(v^)
-        c.type_ = nil
         return c
     case ^Expr_Self:
-        c := new_clone(v^)
-        c.type_ = nil
-        return c
+        return new_clone(v^)
     case ^Expr_Try:
         c := new_clone(v^)
         c.inner = clone_expr(v.inner)
-        c.type_ = nil
         return c
     }
     return nil

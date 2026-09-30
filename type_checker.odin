@@ -1668,6 +1668,7 @@ Checker :: struct {
     broadcasts:      map[^Stmt_Multi_Return_Assign]^[dynamic]Stmt,   // a broadcast's copies, one per target
     calls:           map[^Expr_Call]^Call_Lowered,   // each call as the checker resolved it
     resolutions:     map[rawptr]Resolved_Name,   // what each name or member access stands for (resolution)
+    types:           map[rawptr]Type,   // each expression's type, as checked (expr_type)
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -1871,9 +1872,7 @@ collect_wide_sources :: proc(c: ^Checker, e: Expr, target: Type, out: ^[dynamic]
     case ^Expr_Unary:
         collect_wide_sources(c, v.operand, target, out)
     case:
-        p := expr_type_ptr(e)
-        if p == nil { return }
-        t := p^
+        t := expr_type(c, e)
         if t == nil || !is_numeric(t) || is_infer(t) { return }
         if !types_incompatible(target, t) || value_preserving_widen(t, target) { return }
         name := expr_diag_name(c, e)
@@ -3429,7 +3428,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
             if fusing(c) == nil { continue }
             _, is_literal := arg.(^Expr_Array)
             _, is_array := distinct_base(t).(^Type_Fixed_Array)
-            if fuse_byte_index(arg) {
+            if fuse_byte_index(c, arg) {
                 fuse_fail(c, "bytes as a generic's argument")
                 continue
             }
@@ -4307,17 +4306,17 @@ is_array_shaped :: proc(t: Type) -> bool {
 }
 
 // True when an expression is an index into a byte slice (e.g. mem[0]).
-is_byte_slice_index_read :: proc(e: Expr) -> bool {
+is_byte_slice_index_read :: proc(c: ^Checker, e: Expr) -> bool {
     idx, ok := e.(^Expr_Index)
     if !ok { return false }
-    return is_byte_slice(expr_type(idx.expr))
+    return is_byte_slice(expr_type(c, idx.expr))
 }
 
 // True when an expression is an index into any byte buffer (mem[0], wb[0]).
-is_byte_buffer_index_read :: proc(e: Expr) -> bool {
+is_byte_buffer_index_read :: proc(c: ^Checker, e: Expr) -> bool {
     idx, ok := e.(^Expr_Index)
     if !ok { return false }
-    return is_byte_buffer(expr_type(idx.expr))
+    return is_byte_buffer(expr_type(c, idx.expr))
 }
 
 // --- byte reinterpretation: no slice headers --------------------------------
@@ -4372,7 +4371,7 @@ Byte_Flow :: enum { None, View, Read }
 // Reports its own errors. Callers apply their byte-read size rules for .Read
 // and treat .View / .None as an ordinary assignment.
 check_byte_flow :: proc(c: ^Checker, dest: Type, value: Expr, val_type: Type, span: Span) -> Byte_Flow {
-    flow := byte_flow(dest, value, val_type)
+    flow := byte_flow(c, dest, value, val_type)
     #partial switch flow {
     case .View:
         sl := distinct_base(dest).(^Type_Slice)
@@ -4392,8 +4391,8 @@ check_byte_flow :: proc(c: ^Checker, dest: Type, value: Expr, val_type: Type, sp
 
 // The rule above without its diagnostics: which flow `value` makes into
 // `dest`. Shared with the program graph (a Read is its `byte read` operation).
-byte_flow :: proc(dest: Type, value: Expr, val_type: Type) -> Byte_Flow {
-    index_read := is_byte_buffer_index_read(value)
+byte_flow :: proc(c: ^Checker, dest: Type, value: Expr, val_type: Type) -> Byte_Flow {
+    index_read := is_byte_buffer_index_read(c, value)
     if !index_read && !is_byte_buffer(val_type) { return .None }
     if _, to_slice := distinct_base(dest).(^Type_Slice); to_slice && !index_read { return .View }
     return .Read
@@ -4429,7 +4428,7 @@ maybe_stamp_byte_view :: proc(c: ^Checker, expected: Type, value: Expr) {
     if !addr_ok || addr.op != .Ampersand { return }
     idx, idx_ok := addr.operand.(^Expr_Index)
     if !idx_ok { return }
-    src_type := expr_type(idx.expr)
+    src_type := expr_type(c, idx.expr)
     if !is_byte_buffer(src_type) { return }
     // Built: the address is the view's, of the bytes as that type.
     if b := fusing(c); b != nil {
@@ -4947,22 +4946,22 @@ is_immutable_param :: proc(env: ^Type_Scope, name: string) -> bool {
 // Walk an assignment LHS down to its root identifier. Returns (name, true) if
 // the write lands on an immutable param's storage WITHOUT crossing a pointer
 // (which would shift the write to the pointed-to memory, not the param).
-write_root_immutable_param :: proc(e: Expr, env: ^Type_Scope) -> (name: string, ok: bool) {
+write_root_immutable_param :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> (name: string, ok: bool) {
     cur := e
     for {
         #partial switch v in cur {
         case ^Expr_Field_Access:
-            if _, is_ptr := distinct_base(expr_type(v.expr)).(^Type_Ptr); is_ptr {
+            if _, is_ptr := distinct_base(expr_type(c, v.expr)).(^Type_Ptr); is_ptr {
                 return "", false
             }
             cur = v.expr
         case ^Expr_Index:
-            if _, is_ptr := distinct_base(expr_type(v.expr)).(^Type_Ptr); is_ptr {
+            if _, is_ptr := distinct_base(expr_type(c, v.expr)).(^Type_Ptr); is_ptr {
                 return "", false
             }
             cur = v.expr
         case ^Expr_Slice:
-            if _, is_ptr := distinct_base(expr_type(v.expr)).(^Type_Ptr); is_ptr {
+            if _, is_ptr := distinct_base(expr_type(c, v.expr)).(^Type_Ptr); is_ptr {
                 return "", false
             }
             cur = v.expr
@@ -5004,7 +5003,7 @@ write_root_constant :: proc(c: ^Checker, e: Expr) -> (name: string, ok: bool) {
         case:
             return "", false
         }
-        if _, is_ptr := distinct_base(expr_type(inner)).(^Type_Ptr); is_ptr { return "", false }
+        if _, is_ptr := distinct_base(expr_type(c, inner)).(^Type_Ptr); is_ptr { return "", false }
         cur = inner
     }
 }
@@ -5908,7 +5907,7 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
         // built at its use's type.
         _, to_array := distinct_base(to).(^Type_Fixed_Array)
         sl, is_slice := e.(^Expr_Slice)
-        if to_array && fuse_byte_index(e) && r.place {
+        if to_array && fuse_byte_index(c, e) && r.place {
             // That many bytes at the index, seen as the array, copied.
             graph_fuse_view(b, r.v, to, e.(^Expr_Index).is_big_endian, span)
             return graph_fuse_view_temp(b, r.v, to, span)
@@ -5919,7 +5918,7 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
         }
         // (A literal asked at it: built so — fuse_use_type.)
         if is_literal && graph_aggregate(to) && r.v.op != NO_NODE && b.g.type_[r.v.op] == to { return r.v }
-        if to_array && (fuse_byte_index(e) || is_slice && is_byte_buffer(expr_type(sl.expr))) || is_literal && graph_aggregate(to) {
+        if to_array && (fuse_byte_index(c, e) || is_slice && is_byte_buffer(expr_type(c, sl.expr))) || is_literal && graph_aggregate(to) {
             fuse_fail(c, "bytes or a literal at its use's type")
             return NO_VALUE
         }
@@ -7693,7 +7692,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     type_env_set(env, define_name(c.table, s), main_mod)
                     define_types(c, s).var = main_mod
                     define_types(c, s).env = main_mod
-                    inc.type_ = main_mod
+                    set_expr_type(c, inc, main_mod)
                     if c.mara_env != nil {
                         type_env_set(c.mara_env, inc.path, main_mod)
                     }
@@ -7805,7 +7804,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 if main_mod != nil {
                     type_env_set(env, s.name, main_mod)
                     assign_types(c, s).var = main_mod
-                    inc.type_ = main_mod
+                    set_expr_type(c, inc, main_mod)
                     if c.mara_env != nil {
                         type_env_set(c.mara_env, inc.path, main_mod)
                     }
@@ -7949,7 +7948,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                 synth := new(Expr_Ident)
                                 synth.name = fn_name
                                 synth.span = s.span
-                                synth.type_ = ann_type
+                                set_expr_type(c, synth, ann_type)
                                 c.resolutions[rawptr(synth)] = Resolved_Func{name = fn_name}
                                 s.value = synth
                             }
@@ -8079,8 +8078,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             if expr_is_big_endian(s.value) {
                 src_type: Type
                 #partial switch v in s.value {
-                case ^Expr_Index: src_type = expr_type(v.expr)
-                case ^Expr_Slice: src_type = expr_type(v.expr)
+                case ^Expr_Index: src_type = expr_type(c, v.expr)
+                case ^Expr_Slice: src_type = expr_type(c, v.expr)
                 }
                 if !is_byte_buffer(src_type) {
                     check_error(c, s.span, TYPE_BIG_ENDIAN_NEEDS_BYTE_BUFFER,
@@ -8153,7 +8152,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 value_needs_literal_handling := val_is_struct_lit || byte_read
                 // Validate assignment compatibility (same as in check_assign)
                 if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 && value_needs_literal_handling {
-                    if !literal_matched(s.value, check_ann) { check_struct_literal_assign(c, s.span, s.value, sd, env) }
+                    if !literal_matched(c, s.value, check_ann) { check_struct_literal_assign(c, s.span, s.value, sd, env) }
                     // Byte-buffer reinterpret read into a struct (slice form): a
                     // span shorter than the struct is a partial fill (tail zero);
                     // only a span LARGER than the struct overruns it -> error.
@@ -8176,7 +8175,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     continue
                 }
                 if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
-                    if !literal_matched(s.value, check_ann) { check_union_literal_assign(c, s.span, s.value, ut, env) }
+                    if !literal_matched(c, s.value, check_ann) { check_union_literal_assign(c, s.span, s.value, ut, env) }
                     assign_types(c, s).var = distinct_base(ann_type)
                     assign_types(c, s).env = ann_type
                     type_env_set(env, s.name, ann_type)
@@ -8480,9 +8479,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                         // downstream code reading it (codegen) has a sensible
                         // value. The full destructure uses call_return_list.
                         if len(non_err) > 0 {
-                            set_expr_type(try_node, non_err[0])
+                            set_expr_type(c, try_node, non_err[0])
                         } else {
-                            set_expr_type(try_node, Type_Void{})
+                            set_expr_type(c, try_node, Type_Void{})
                         }
                         if len(s.names) != len(non_err) {
                             check_error(c, s.span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE,
@@ -8556,7 +8555,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                     }
                                     type_env_set(env, name, resolved_type)
                                 } else if i < len(s.targets) && s.targets[i] != nil {
-                                    if pname, immut := write_root_immutable_param(s.targets[i], env); immut {
+                                    if pname, immut := write_root_immutable_param(c, s.targets[i], env); immut {
                                         check_error(c, s.span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
                                     }
                                     target_type, at := fuse_expr(c, s.targets[i], env, .Place)
@@ -8640,7 +8639,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
 expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, field_type: Type, field_name: string, span: Span, env: ^Type_Scope) {
     #partial switch _ in distinct_base(field_type) {
     case ^Type_Fixed_Array, ^Type_Partial_Array:
-        lit.type_ = field_type
+        set_expr_type(c, lit, field_type)
         c.broadcast_fields[rawptr(lit)] = {field_name, span}
     case:
         check_error(c, span,
@@ -8654,7 +8653,7 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
 // fill — and each slot given a checked clone.
 check_field_broadcast :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Scope, fl: ^Fuse_Lit) {
     field := c.broadcast_fields[rawptr(lit)]
-    field_type := lit.type_
+    field_type := expr_type(c, lit)
     size := 0
     elem_type: Type
     #partial switch t in distinct_base(field_type) {
@@ -9423,7 +9422,7 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             if lit, is_lit := s.expr.(^Expr_Struct_Literal); is_lit && lit.name != "" {
                 if vt, _, found := type_env_locate(env, lit.name); found {
                     if sd := resolve_to_struct_type(c, vt); sd != nil {
-                        lit.type_ = vt   // the variable's: its fields are written
+                        set_expr_type(c, lit, vt)   // the variable's: its fields are written
                         // Built: each field's value written into the variable's.
                         ol := Fuse_Lit{e = lit}
                         saved := c.lit
@@ -9509,13 +9508,13 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
                 case ^Expr_Field_Access:
                     check_field_assign(c, s, env)
                     // The target's own type, for the program graph's place.
-                    if t.type_ == nil { t.type_ = assign_types(c, s).target }
+                    if expr_type(c, t) == nil { set_expr_type(c, t, assign_types(c, s).target) }
                 case ^Expr_Index:        check_index_assign(c, s, env)
                 case ^Expr_Slice:        check_slice_assign(c, s, env)
                 case ^Expr_Unary:
                     if t.op == .Caret {
                         check_deref_assign(c, s, env)
-                        if t.type_ == nil { t.type_ = assign_types(c, s).target }
+                        if expr_type(c, t) == nil { set_expr_type(c, t, assign_types(c, s).target) }
                     } else {
                         check_error(c, s.span, TYPE_INVALID_ASSIGNMENT_TARGET)
                     }
@@ -9639,7 +9638,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
         // fallback below — the literal helpers no-op on non-literals, which let
         // `p : Point = Color()` slip through unchecked.
         check_ann := distinct_base(ann_type)
-        value_needs_literal_handling := val_is_struct_lit || is_byte_buffer(val_type) || is_byte_buffer_index_read(s.value)
+        value_needs_literal_handling := val_is_struct_lit || is_byte_buffer(val_type) || is_byte_buffer_index_read(c, s.value)
         if sd := as_scope_body(check_ann); sd != nil && len(sd.fields) > 0 && value_needs_literal_handling {
             check_struct_literal_assign(c, s.span, s.value, sd, env)
             define_types(c, s).var = distinct_base(ann_type)
@@ -9686,7 +9685,7 @@ check_define :: proc(c: ^Checker, s: ^Stmt_Define, env: ^Type_Scope, public_env:
 check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: ^Scope_Body, span: Span, env: ^Type_Scope, override := false) {
     ensure_struct_signature(c, st)  // resolve fields on demand before matching the literal
     if !override { check_literal_constructs(c, lit, st) }
-    if override && lit.type_ == nil { lit.type_ = sd_type_scope(st) }   // `Foo(){...}`: Foo's fields
+    if override && expr_type(c, lit) == nil { set_expr_type(c, lit, sd_type_scope(st)) }   // `Foo(){...}`: Foo's fields
     // Built (the literal being built): its construction, then each field
     // stored as it is checked.
     fl := c.lit if c.lit != nil && c.lit.e == lit else nil
@@ -9698,10 +9697,10 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         } else {
             // (Its constructor's arguments, then it; a variant's defaults.)
             args: []Operand
-            if ts, is_scope := lit.type_.(^Type_Scope); is_scope && ts.kind == .Struct && !ts.is_module && !lit.zero_init {
+            if ts, is_scope := expr_type(c, lit).(^Type_Scope); is_scope && ts.kind == .Struct && !ts.is_module && !lit.zero_init {
                 args = fuse_ctor_args(c, ts, lit.span)
             }
-            if b := fusing(c); b != nil { gl = graph_fuse_literal(b, lit, lit.type_, fl.dest, args) }
+            if b := fusing(c); b != nil { gl = graph_fuse_literal(b, lit, expr_type(c, lit), fl.dest, args) }
             if gl != nil { fuse_variant_defaults(c, gl.variant, lit, gl.parent, lit.span) }
         }
         fl.built = gl != nil
@@ -9835,17 +9834,17 @@ check_literal_constructs :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, sd: ^Sc
 // was typed t there (named, or by the annotation's hint; a union's variant,
 // by name): a declaration of type t doesn't match them again, so each node
 // is checked once.
-literal_matched :: proc(value: Expr, t: Type) -> bool {
+literal_matched :: proc(c: ^Checker, value: Expr, t: Type) -> bool {
     lit, is_lit := value.(^Expr_Struct_Literal)
-    if !is_lit || lit.type_ == nil { return false }
+    if !is_lit || expr_type(c, lit) == nil { return false }
     if ut, is_union := t.(^Type_Union); is_union {
         // Typed as the union, or as the variant's own struct (`Circle{1}`).
         if lit.name not_in ut.tag_map { return false }
-        if types_equal(distinct_base(lit.type_), t) { return true }
-        st, is_struct := lit.type_.(^Type_Scope)
+        if types_equal(distinct_base(expr_type(c, lit)), t) { return true }
+        st, is_struct := expr_type(c, lit).(^Type_Scope)
         return is_struct && ut.variant_structs[lit.name] == st.name
     }
-    return types_equal(distinct_base(lit.type_), t)
+    return types_equal(distinct_base(expr_type(c, lit)), t)
 }
 
 check_struct_literal_assign :: proc(c: ^Checker, span: Span, value: Expr, st: ^Scope_Body, env: ^Type_Scope) {
@@ -10140,7 +10139,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     coll_type, coll := fuse_expr(c, ix.expr, env, .Place, temp_span = ix.span)
     target_type := distinct_base(coll_type)
     assign_types(c, s).target = target_type
-    ix.type_ = index_elem_type(target_type)   // the target names one element
+    set_expr_type(c, ix, index_elem_type(target_type))   // the target names one element
     base := coll.v
     if b := fusing(c); b != nil {
 
@@ -10154,7 +10153,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     idx_type, at := fuse_expr(c, ix.index, env)
     place := NO_VALUE
     if b := fusing(c); b != nil {
-        place = graph_op_value(b, .Index, .Explicit, ix.span, ix.type_, "", base, fuse_index_value(b, at.v, idx_type, ix.span))
+        place = graph_op_value(b, .Index, .Explicit, ix.span, expr_type(c, ix), "", base, fuse_index_value(b, at.v, idx_type, ix.span))
     }
     // Hint the value with the element type so an infer literal (`a[i] = 0`)
     // resolves to the element width rather than defaulting. Byte targets are
@@ -10179,7 +10178,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
             type_name(slice_header_width_type), type_name(idx_type))
     }
 
-    if pname, immut := write_root_immutable_param(s.target, env); immut {
+    if pname, immut := write_root_immutable_param(c, s.target, env); immut {
         check_error(c, s.span,
             TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER,
             pname)
@@ -10295,7 +10294,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     if elem := index_elem_type(target_type); elem != nil {   // the target names a run of elements
         t := new(Type_Slice)
         t.elem = elem
-        sl.type_ = t
+        set_expr_type(c, sl, t)
     }
     bytes := b != nil && fusing(c) != nil && is_byte_buffer(target_type)
     st: Graph_Span_Target
@@ -10309,9 +10308,9 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     }
     place := NO_VALUE
     if bytes {
-        graph_fuse_span_target_ops(b, &st, hi, sl.type_, sl.is_big_endian, sl.span, s.span)
+        graph_fuse_span_target_ops(b, &st, hi, expr_type(c, sl), sl.is_big_endian, sl.span, s.span)
     } else if b != nil && fusing(c) != nil {
-        place = graph_op_value(b, .Slice, .Explicit, sl.span, sl.type_, "", graph_fuse_base_place(b, bytes_place, target_type, is_self, sl.span), lo, hi)
+        place = graph_op_value(b, .Slice, .Explicit, sl.span, expr_type(c, sl), "", graph_fuse_base_place(b, bytes_place, target_type, is_self, sl.span), lo, hi)
     }
     val_type, fs := fuse_store_value(c, s, place, env, unplaced = bytes)
     defer {
@@ -10341,7 +10340,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
             type_name(slice_header_width_type), type_name(high_type))
     }
 
-    if pname, immut := write_root_immutable_param(s.target, env); immut {
+    if pname, immut := write_root_immutable_param(c, s.target, env); immut {
         check_error(c, s.span,
             TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE,
             pname)
@@ -10495,7 +10494,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         ft := resolve_struct_field(st, fa_expr.field, c.table)
         if ft != nil {
             assign_types(c, s).target = ft
-            if pname, immut := write_root_immutable_param(s.target, env); immut {
+            if pname, immut := write_root_immutable_param(c, s.target, env); immut {
                 check_error(c, s.span,
                     TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER,
                     fa_expr.field, pname)
@@ -10573,7 +10572,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         // A slice / partial-array param's header is read-only too: it's the
         // caller's header (passed by address), so `s.len = n` shortened the
         // caller's. A param that should move its cursor takes `^[]T`.
-        if pname, immut := write_root_immutable_param(s.target, env); immut {
+        if pname, immut := write_root_immutable_param(c, s.target, env); immut {
             check_error(c, s.span, TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER, fa_expr.field, pname)
         }
         switch fa_expr.field {
@@ -10602,13 +10601,13 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     // Array swizzle assignment: arr.x = val, arr.xy = [a, b]
     if fa, fa_ok := obj_type.(^Type_Fixed_Array); fa_ok {
         if is_swizzle_field(fa_expr.field, fa.size) {
-            if pname, immut := write_root_immutable_param(s.target, env); immut {
+            if pname, immut := write_root_immutable_param(c, s.target, env); immut {
                 check_error(c, s.span,
                     TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER,
                     fa_expr.field, pname)
             }
             if len(fa_expr.field) == 1 {
-                fa_expr.type_ = fa.elem   // the target names one element
+                set_expr_type(c, fa_expr, fa.elem)   // the target names one element
                 // Single-component write: value must match element type
                 if types_incompatible(fa.elem, val_type) && !is_infer(val_type) {
                     check_error(c, s.span, TYPE_CANNOT_ASSIGN_SWIZZLE_ELEMENT_TYPE,
@@ -10619,7 +10618,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
                 }
             } else {
                 // The target names len(field) elements, as a read of it does.
-                fa_expr.type_ = new_clone(Type_Fixed_Array{size = len(fa_expr.field), elem = fa.elem})
+                set_expr_type(c, fa_expr, new_clone(Type_Fixed_Array{size = len(fa_expr.field), elem = fa.elem}))
                 // Multi-component write: value must be an array with matching element type
                 if va, va_ok := val_type.(^Type_Fixed_Array); va_ok {
                     if types_incompatible(fa.elem, va.elem) {
@@ -11995,47 +11994,13 @@ stmt_span :: proc(stmt: Stmt) -> Span {
 // Check expressions — returns the inferred type
 // ---------------------------------------------------------------------------
 
-// Return a pointer to the type_ field of any expression node.
-expr_type_ptr :: proc(e: Expr) -> ^Type {
-    switch v in e {
-    case ^Expr_Number:             return &v.type_
-    case ^Expr_String:             return &v.type_
-    case ^Expr_Char:               return &v.type_
-    case ^Expr_Ident:              return &v.type_
-    case ^Expr_Bool:               return &v.type_
-    case ^Expr_Skip_Constructor:             return &v.type_
-    case ^Expr_Unary:              return &v.type_
-    case ^Expr_Binary:             return &v.type_
-    case ^Expr_Call:               return &v.type_
-    case ^Expr_Array:              return &v.type_
-    case ^Expr_Index:              return &v.type_
-    case ^Expr_Slice:              return &v.type_
-    case ^Expr_Struct_Literal:     return &v.type_
-    case ^Expr_Field_Access:       return &v.type_
-    case ^Expr_Size_Of:            return &v.type_
-    case ^Expr_Assert:             return &v.type_
-    case ^Expr_Take:                return &v.type_
-    case ^Expr_If:                 return &v.type_
-    case ^Expr_Compiler_Intrinsic: return &v.type_
-    case ^Expr_Include:            return &v.type_
-    case ^Expr_Type_Name:          return &v.type_
-    case ^Expr_Tuple_Default:      return &v.type_
-    case ^Expr_Self:               return &v.type_
-    case ^Expr_Try:                return &v.type_
-    case nil:                      return nil
-    }
-    return nil
+// An expression's type, as checked: the checker's, kept by the node.
+expr_type :: proc(c: ^Checker, e: Expr) -> Type {
+    return c.types[expr_identity(e)]
 }
 
-// Extract the resolved type from an already-checked expression node.
-expr_type :: proc(e: Expr) -> Type {
-    if p := expr_type_ptr(e); p != nil { return p^ }
-    return nil
-}
-
-// Store the resolved type back onto an expression node.
-set_expr_type :: proc(expr: Expr, t: Type) {
-    if p := expr_type_ptr(expr); p != nil { p^ = t }
+set_expr_type :: proc(c: ^Checker, e: Expr, t: Type) {
+    if e != nil { c.types[expr_identity(e)] = t }
 }
 
 check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
@@ -12054,7 +12019,7 @@ check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     }
     c.asked, c.asked_written, c.asked_dest, c.asked_temp, c.asked_span, c.want = c.want, c.want_written, c.want_dest, c.want_temp, c.want_span, .None
     result := check_expr_impl(c, expr, env)
-    set_expr_type(expr, result)
+    set_expr_type(c, expr, result)
     // What building asked of it and nothing took: a leaf's, built here.
     if c.asked != .None { fuse_leaf(c, expr, result) }
     return result
@@ -12074,9 +12039,9 @@ Fuse_Unary :: struct {
 
 // An index into bytes: what the checker types a byte may be read as another
 // type (maybe_stamp_byte_view), once its use is checked. The builder's.
-fuse_byte_index :: proc(e: Expr) -> bool {
+fuse_byte_index :: proc(c: ^Checker, e: Expr) -> bool {
     ix, is_ix := e.(^Expr_Index)
-    return is_ix && is_byte_buffer(expr_type(ix.expr))
+    return is_ix && is_byte_buffer(expr_type(c, ix.expr))
 }
 
 check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
@@ -12123,7 +12088,7 @@ check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
         a := graph_op_value(b, .Address, w, e.span, t, "", fu.operand)
         // Bytes' address: a view of them where its use takes it as another
         // pointer (maybe_stamp_byte_view, once the use is checked).
-        if fuse_byte_index(e.operand) { c.byte_addrs[rawptr(e)] = {a.op, fu.operand.op} }
+        if fuse_byte_index(c, e.operand) { c.byte_addrs[rawptr(e)] = {a.op, fu.operand.op} }
         fuse_done(c, a)
         return t
     }
@@ -12211,7 +12176,7 @@ check_unary_impl :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope, fu: ^Fus
         // Address-of: &x produces ^T. Reject if the address would land in
         // immutable-param storage — letting `&t` escape would silently
         // grant the mutation that declaring `t` without `^` denied.
-        if pname, immut := write_root_immutable_param(e.operand, env); immut {
+        if pname, immut := write_root_immutable_param(c, e.operand, env); immut {
             check_error(c, e.span,
                 TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER,
                 pname)
@@ -12403,7 +12368,7 @@ fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span
         graph_fuse_write_at(b, graph_dest_place(b, d, span), v, span)
         return
     }
-    if sl, is_span := e.(^Expr_Slice); is_span && d.type_ != nil && byte_flow(d.type_, e, t) == .Read {
+    if sl, is_span := e.(^Expr_Slice); is_span && d.type_ != nil && byte_flow(c, d.type_, e, t) == .Read {
         // A span of bytes: its bytes' place and bounds, as its slice built
         // them; a register value is the bytes at its start seen as it, read,
         // else a byte read — at the span, where its failures say it is. A
@@ -12422,7 +12387,7 @@ fuse_store_finish :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, d: Dest, span
         graph_op(b, .Byte_Read, .Explicit, sl.span, d.type_, big, graph_dest_place(b, d, span), buf, lo, hi)
         return true, is_partial_array(dt) && d.kind == .Var && d.decl != NO_NODE
     }
-    if ix, is_index := e.(^Expr_Index); is_index && d.type_ != nil && byte_flow(d.type_, e, t) == .Read {
+    if ix, is_index := e.(^Expr_Index); is_index && d.type_ != nil && byte_flow(c, d.type_, e, t) == .Read {
         // An element of bytes: its place, a view of the bytes as the
         // destination's type, read. (Into a slice or a partial array, a
         // byte read. Other bytes — a pointer to them — are written as they
@@ -12524,7 +12489,7 @@ fuse_if_branch :: proc(c: ^Checker, e: ^Expr_If, branch: Expr, env: ^Type_Scope,
     t, r := fuse_expr(c, branch, env, .Into, dest = graph_dest_var("if", fi.slot, nil))
     fi.types[k] = t
     if fusing(c) == nil || r.into { return t }
-    if fuse_builds_into(c, branch) || fuse_byte_index(branch) {
+    if fuse_builds_into(c, branch) || fuse_byte_index(c, branch) {
         fuse_fail(c, "an if's branch built in place, or of bytes")
         return t
     }
@@ -12564,13 +12529,13 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     // has already validated it, and set e.type_
     // to the surrounding field/decl type. Don't re-check (which would
     // return Type_Error for the anonymous shape) and overwrite the type.
-    if e.is_broadcast && e.type_ != nil {
-        if _, is_err := e.type_.(Type_Error); !is_err {
+    if e.is_broadcast && expr_type(c, e) != nil {
+        if _, is_err := expr_type(c, e).(Type_Error); !is_err {
             // A field's (typed in the field pass): its value checked here.
             fl: ^Fuse_Lit
             if c.lit != nil && c.lit.e == e { fl, c.lit = c.lit, nil }
             if _, is_field := c.broadcast_fields[rawptr(e)]; is_field { check_field_broadcast(c, e, env, fl) }
-            return e.type_
+            return expr_type(c, e)
         }
     }
     // Inline typed-array literal: `[3]f32{0.9, 0.2, 0.6}`. The parser
@@ -12580,7 +12545,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
         resolved := resolve_type_expr(e.type_expr, c, e.span, env = env)
         if fa, fa_ok := resolved.(^Type_Fixed_Array); fa_ok {
             check_array_struct_literal(c, e, fa, env, resolved)
-            e.type_ = resolved
+            set_expr_type(c, e, resolved)
             return resolved
         }
         // Empty partial-array literal: `[..N]T{}` — a default-init
@@ -12595,7 +12560,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
                 check_error(c, e.span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(resolved))
                 return Type_Error{}
             }
-            e.type_ = resolved
+            set_expr_type(c, e, resolved)
             // (Built: its zero, where it goes.)
             if fl := c.lit; fl != nil && fl.e == e {
                 c.lit = nil
@@ -12627,14 +12592,14 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     if strings.index_byte(e.name, '.') >= 0 {
         resolved := resolve_type_expr(Type_Name{name = e.name, span = e.span}, c, e.span, env = env)
         if sd := as_scope_body(resolved); sd != nil {
-            e.type_ = resolved
+            set_expr_type(c, e, resolved)
             check_struct_literal_fields(c, e, sd, e.span, env)
             return resolved
         }
         if dt, dt_ok := resolved.(^Type_Distinct); dt_ok {
             if fa, fa_ok := dt.base_type.(^Type_Fixed_Array); fa_ok {
                 check_array_struct_literal(c, e, fa, env, dt)
-                e.type_ = dt
+                set_expr_type(c, e, dt)
                 return dt
             }
         }
@@ -12648,12 +12613,12 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     if e.name != "" {
         flat := resolve_type_name(c, e.name, "", env)
         if st, ok := c.table.structs[flat]; ok {
-            e.type_ = st
+            set_expr_type(c, e, st)
             check_struct_literal_fields(c, e, &st.sd, e.span, env)
             return st
         }
         if st, ok := c.table.funs[flat]; ok {
-            e.type_ = st
+            set_expr_type(c, e, st)
             check_struct_literal_fields(c, e, &st.sd, e.span, env)
             return st
         }
@@ -12671,7 +12636,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
                 names_type := ts.name == e.name ||
                     strings.has_suffix(ts.name, strings.concatenate({"_", e.name}))
                 if names_type {
-                    e.type_ = ts
+                    set_expr_type(c, e, ts)
                     check_struct_literal_fields(c, e, &ts.sd, e.span, env)
                     return ts
                 }
@@ -12691,7 +12656,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     if hint := c.expected_hint; hint != nil {
         if fa, fa_ok := distinct_base(hint).(^Type_Fixed_Array); fa_ok {
             check_array_struct_literal(c, e, fa, env, hint)
-            e.type_ = hint
+            set_expr_type(c, e, hint)
             return hint
         }
         // Struct-typed context (call argument, mainly — assignments,
@@ -12702,7 +12667,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
         if sd := as_scope_body(distinct_base(hint)); sd != nil {
             ensure_struct_signature(c, sd)
             if len(sd.fields) > 0 {
-                e.type_ = hint   // (its fields are built at it)
+                set_expr_type(c, e, hint)   // (its fields are built at it)
                 check_struct_literal_fields(c, e, sd, e.span, env)
                 return hint
             }
@@ -12714,7 +12679,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
         // a normal union, the bare pointer for a niche one).
         if ut, ut_ok := distinct_base(hint).(^Type_Union); ut_ok && e.name != "" && e.name in ut.tag_map {
             if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
-                e.type_ = ut   // (its fields are built at it)
+                set_expr_type(c, e, ut)   // (its fields are built at it)
                 check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return ut   // node types as the union; codegen materializes the variant from e.name
             }
@@ -12734,7 +12699,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
     if e.name != "" {
         if ut := variant_owner_union(c, e.name); ut != nil {
             if st, ok := c.table.structs[ut.variant_structs[e.name]]; ok {
-                e.type_ = ut   // (its fields are built at it)
+                set_expr_type(c, e, ut)   // (its fields are built at it)
                 check_struct_literal_fields(c, e, &st.sd, e.span, env)
                 return ut
             }
@@ -13028,7 +12993,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
             check_error(c, e.span, TYPE_CONDITION_BOOL, type_name(cond_type))
         }
-        e.type_ = Type_Void{}
+        set_expr_type(c, e, Type_Void{})
         if b := fusing(c); b != nil && want == .Value {
             sides: [2]bool
             if bin, is_bin := e.cond.(^Expr_Binary); is_bin { sides = {assert_side_is_literal(c, bin.left), assert_side_is_literal(c, bin.right)} }
@@ -13169,7 +13134,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                 TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM,
                 type_name(src_type))
         }
-        e.type_ = resolved
+        set_expr_type(c, e, resolved)
         if b != nil && fusing(c) != nil {
             _, is_self := e.storage.(^Expr_Self)
             fuse_done(c, graph_fuse_carve(b, e, resolved, storage, src_type, addressed, is_self, count_op, w))
@@ -13296,7 +13261,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         // (codegen would emit an undefined %sret), so reject it here.
         if f := enclosing_callable_scope(env); f != nil && f.kind == .Struct {
             t := new_clone(Type_Ptr{elem = f})
-            e.type_ = t
+            set_expr_type(c, e, t)
             return t
         }
         check_error(c, e.span, TYPE_SELF_ONLY_LEGAL_INSIDE_STRUCT)
@@ -13432,7 +13397,7 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
     ff := Fuse_Field{on = true, mark = graph_fuse_mark(b)}
     t := check_field_access_impl(c, e, env, &ff)
     if fusing(c) == nil { return t }
-    set_expr_type(e, t)   // (the builder's reads it)
+    set_expr_type(c, e, t)   // (the builder's reads it)
     if resolution(c, e) == nil || graph_is_member(resolution(c, e)) {
         p := fuse_member_place(c, e, ff.base, ff.base_type, t)
         if p == NO_VALUE { return t }
@@ -14748,7 +14713,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             is_byte_reinterpret := false
             if _, fa_ok := fun_type.params[i].type_.(^Type_Fixed_Array); fa_ok {
                 _, sl_ok := arg.(^Expr_Slice)
-                if is_byte_buffer_index_read(arg) || sl_ok && is_byte_buffer(arg_type) {
+                if is_byte_buffer_index_read(c, arg) || sl_ok && is_byte_buffer(arg_type) {
                     is_byte_reinterpret = check_byte_flow(c, fun_type.params[i].type_, arg, arg_type, span) == .Read
                 }
             }
@@ -15135,7 +15100,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             _, is_literal := arg.(^Expr_Array)
             _, is_array := distinct_base(t).(^Type_Fixed_Array)
             sl, is_slice := arg.(^Expr_Slice)
-            if fuse_byte_index(arg) || is_slice && is_byte_buffer(expr_type(sl.expr)) {
+            if fuse_byte_index(c, arg) || is_slice && is_byte_buffer(expr_type(c, sl.expr)) {
                 fuse_fail(c, "bytes as a dispatch's argument")
                 continue
             }
@@ -15372,7 +15337,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     }
     defer if b := fusing(c); b != nil && place_slot != NO_NODE {
         r := c.fused
-        t := e.type_ if e.type_ != nil else fn_primary_return(call_lowered(c, e).resolved.?.callee) if call_lowered(c, e).resolved != nil && call_lowered(c, e).resolved.?.callee != nil else nil
+        t := expr_type(c, e) if expr_type(c, e) != nil else fn_primary_return(call_lowered(c, e).resolved.?.callee) if call_lowered(c, e).resolved != nil && call_lowered(c, e).resolved.?.callee != nil else nil
         if !r.ok {
             fuse_fail(c, "a call's place")
         } else {
@@ -15524,7 +15489,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
                         call_name(c, e), type_name(arg_type), type_name(dt.base_type))
                 }
             }
-            e.type_ = dt
+            set_expr_type(c, e, dt)
             call_lowered(c, e).resolved = Resolved_Func{name = dt.name}
             return dt
         }
@@ -15656,7 +15621,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // `t, e := ...` via constructor_effective_returns / call_return_list; in plain
     // scalar context the result type is still Self. Brace overrides set fields.
     if fun_type.kind == .Struct {
-        e.type_ = fun_type
+        set_expr_type(c, e, fun_type)
         // A pure-data struct isn't in declared_funs, so the resolution dance above
         // left resolved_func nil — set it here so codegen sees a construction (its
         // callee is a struct) and zero-inits / runs the init fn, rather than
@@ -15709,7 +15674,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
 // post-mono. Unify that path through check_call too and this can be deleted.
 check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Scope) -> Type {
     ensure_struct_signature(c, &st.sd)  // resolve fields on demand before construction
-    e.type_ = st
+    set_expr_type(c, e, st)
     if call_lowered(c, e).resolved == nil && st.name != "" {
         call_lowered(c, e).resolved = Resolved_Func{name = st.name, callee = st}
     }
@@ -15880,7 +15845,7 @@ check_index :: proc(c: ^Checker, e: ^Expr_Index, env: ^Type_Scope) -> Type {
     if fusing(c) == nil { return t }
     // (A byte, as it is: a use of it as another type sees the element's
     // place as a view — graph_fuse_view.)
-    if _, of_byte := distinct_base(t).(Type_Byte); !of_byte && t != nil && !is_infer(t) && is_byte_buffer(expr_type(e.expr)) {
+    if _, of_byte := distinct_base(t).(Type_Byte); !of_byte && t != nil && !is_infer(t) && is_byte_buffer(expr_type(c, e.expr)) {
         fuse_fail(c, "bytes indexed as another type")
         return t
     }
@@ -16101,9 +16066,9 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
     }
     if b := fusing(c); b != nil && fs != nil && fs.read_as != nil && elem_type != nil {
         probe := Type_Slice{elem = elem_type}
-        if byte_flow(fs.read_as, e, &probe) == .Read && fs.held {
+        if byte_flow(c, fs.read_as, e, &probe) == .Read && fs.held {
             fuse_fail(c, "bytes read from a value's span")
-        } else if byte_flow(fs.read_as, e, &probe) == .Read {
+        } else if byte_flow(c, fs.read_as, e, &probe) == .Read {
             fs.reads, fs.scalar = true, fs.view || !graph_aggregate(fs.read_as)
             fs.base = graph_base_of(b, fs.plain, fs.plain_t, e.span, fs.self)   // (right where it was built)
         }

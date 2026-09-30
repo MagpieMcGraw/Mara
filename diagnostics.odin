@@ -327,7 +327,7 @@ dump_parse_expr :: proc(b: ^strings.Builder, expr: Expr) {
         fmt.sbprintf(b, "include(%s)", e.path)
 
     case ^Expr_Type_Name:
-        fmt.sbprintf(b, "type:%s", type_name(e.type_))
+        fmt.sbprintf(b, "type:%v", e.kind)
 
     case ^Expr_Tuple_Default:
         fmt.sbprintf(b, "tuple_default[%d](", e.index)
