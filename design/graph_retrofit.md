@@ -822,12 +822,22 @@ erroneous program reports, the negative fixtures say so.
       `MARA_FUSE=log` prints why a body fell back and each body the builder builds. Graph
       identical in all 275 programs at every step, shuffled too. test_1M: 33 s vs 28 s with
       `MARA_FUSE=0` (canonicalize 2.7 s is the cost to cut)
-- [ ] The builder deleted: module-level declarations and constants from the checker too. Left
-      to the builder: the module level (the program's root, modules, their declarations,
-      constants, types) and the walk that places each body where its scope is, with a fused
-      body's definitions; and inside fused bodies, the leaves and plain places the fused
-      emitters still build from the syntax tree (graph_value, graph_place, graph_base_place),
-      reading its annotations
+- [ ] The builder deleted: module-level declarations and constants from the checker too.
+      Done: fusion is mandatory — the graph is built from a clean check, where the checker
+      builds every body, and a body it didn't build is a graph error naming why (`MARA_FUSE=0`
+      and the shuffled build are gone). The builder's statement walk and expression walk are
+      deleted (graph.odin 5.4k → 4.4k lines): a module's statements and a body's definitions
+      go through graph_decl_stmt (declarations only; code outside a body is an error); the
+      checker's leaves and plain places have builders of their own (graph_leaf,
+      graph_plain_place), fatal on anything else. Found on the way: an enum's variant named
+      bare in a match arm was built as a read of a variable of that name (fixed,
+      test/match_bare_enum.mara); a constant over a union's size ran its expression at each
+      use (it folds now, test/const_union_size.mara; a constant the graph can't fold is an
+      error); a field's broadcast value is checked where the field's value is. Left to the
+      builder: the module level (the program's root, modules, their declarations, constants,
+      types) and the walk that places each body where its scope is, with a fused body's
+      definitions; the leaves, plain places and defaults rebuilt where used (a variant's field
+      defaults, a constructor's param defaults), read from the syntax tree's annotations
 - [ ] The last readers of annotations: `void` into a pointer checked where the store is checked;
       the returned local and the consumed param as graph queries; constant tables from values the
       checker evaluated; hit testing from origins
