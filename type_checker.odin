@@ -5779,47 +5779,100 @@ fuse_value :: proc(c: ^Checker, r: Fused, e: Expr, t: Type) -> Operand {
     return graph_read(b, r.v, t, expr_span(e)^)
 }
 
-// A leaf: what the builder builds of it, from what its check found.
-fuse_leaf :: proc(c: ^Checker, e: Expr) {
+// A leaf, built from its check: `t` its type; what a name resolved to, the
+// checker's own (e.resolved).
+fuse_leaf :: proc(c: ^Checker, e: Expr, t: Type) {
     want, w := fuse_asked(c)
     b := fusing(c)
     if b == nil || want == .None { return }
     #partial switch v in e {
     case ^Expr_Number, ^Expr_Char, ^Expr_Bool, ^Expr_Size_Of, ^Expr_Compiler_Intrinsic:
         if want == .Place { return }
-        fuse_done(c, graph_leaf(b, e, w))
+        fuse_done(c, fuse_leaf_value(b, e, t, w))
     case ^Expr_String:
         // Text is its global: its place and its value.
-        fuse_done(c, graph_leaf(b, e, w), want == .Place)
+        fuse_done(c, fuse_leaf_value(b, e, t, w), want == .Place)
     case ^Expr_Self:
         // `#self`: the address of what is being built; Self itself its place.
+        self := graph_var(b, "Self", b.self, graph_pointee(t), v.span)
         if want == .Place {
-            fuse_done(c, graph_plain_place(b, e, v.span), true)
+            fuse_done(c, self, true)
         } else {
-            fuse_done(c, graph_leaf(b, e, w))
+            fuse_done(c, graph_op_value(b, .Address, w, v.span, t, "", self))
         }
     case ^Expr_Ident:
         // A variable, or a constant table, is a place; the rest are values
         // (a variant is built where it goes).
         is_place := v.resolved == nil
-        if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(v.type_) { is_place = true }
+        if _, is_const := v.resolved.(Resolved_Constant); is_const && graph_aggregate(t) { is_place = true }
         if is_void_literal(e) { is_place = false }
         _, is_variant := v.resolved.(Resolved_Union_Variant)
         switch {
         case want == .Into && is_variant:
             d, temp, at := c.asked_dest, c.asked_temp, c.asked_span
             if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
-            fuse_variant(c, v.type_, v.name, d, v.span)
-            if b := fusing(c); b != nil { fuse_built(c, b, want, temp, temp, d, v.type_, at) }
+            fuse_variant(c, t, v.name, d, v.span)
+            if b := fusing(c); b != nil { fuse_built(c, b, want, temp, temp, d, t, at) }
         case is_variant && want != .Place:
-            fuse_done(c, fuse_variant_value(c, v.type_, v.name, v.span))
-        case want == .Value:  fuse_done(c, graph_leaf(b, e, w))
-        case is_place:        fuse_done(c, graph_plain_place(b, e, v.span), true)
-        case want != .Place:  fuse_done(c, graph_leaf(b, e, w))
+            fuse_done(c, fuse_variant_value(c, t, v.name, v.span))
+        case want == .Value:  fuse_done(c, fuse_leaf_value(b, e, t, w))
+        case is_place:        fuse_done(c, fuse_leaf_place(b, v.name, v.resolved, t, v.span), true)
+        case want != .Place:  fuse_done(c, fuse_leaf_value(b, e, t, w))
         }
     }
 }
 
+// A leaf's value: a literal, text, an intrinsic, a name — a variable's
+// value, or what it resolved to (a constant, a variant, a function).
+fuse_leaf_value :: proc(b: ^Graph_Builder, e: Expr, t: Type, w: Written) -> Operand {
+    #partial switch v in e {
+    case ^Expr_Number:
+        return graph_const(b, w, v.span, t, "", Const_Value{int = v.int_value, float = v.value, is_float = v.is_float})
+    case ^Expr_Char:
+        return graph_const(b, w, v.span, t, "", Const_Value{int = i128(v.value)})
+    case ^Expr_Bool:
+        return graph_const(b, w, v.span, t, "", Const_Value{int = 1 if v.value else 0})
+    case ^Expr_Size_Of:
+        return graph_const(b, w, v.span, t, "size_of", graph_size_of(v.resolved_type, b.checked))
+    case ^Expr_Compiler_Intrinsic:
+        // The caller's name or place is text; a target flag, a bool.
+        if v.kind == .Caller_Name || v.kind == .Caller_Span {
+            return graph_text(b, graph_op_value(b, .Global, w, v.span, t), Const_Value{text = v.resolved_value, is_text = true})
+        }
+        return graph_const(b, w, v.span, t, v.resolved_value, Const_Value{int = 1 if v.bool_value else 0})
+    case ^Expr_String:
+        return graph_text(b, graph_op_value(b, .Global, w, v.span, t), Const_Value{text = v.value, is_text = true})
+    case ^Expr_Ident:
+        if is_void_literal(e) { return graph_op_value(b, .Const, w, v.span, t, "void") }   // an uninitialized value, a null pointer
+        if v.resolved != nil { return fuse_resolved_value(b, v.resolved, v.name, t, v.span, w) }
+        return graph_read(b, graph_var(b, v.name, NO_NODE, t, v.span), t, v.span)
+    case ^Expr_Field_Access:
+        if v.resolved != nil && !graph_is_member(v.resolved) { return fuse_resolved_value(b, v.resolved, v.field, t, v.span, w) }
+    }
+    graph_fatal(expr_span(e)^, "the checker built no value here")
+}
+
+// A name resolved to no variable, as a value: a constant, an enum's variant,
+// a function. (A union's variant is built where it goes: fuse_variant.)
+fuse_resolved_value :: proc(b: ^Graph_Builder, r: Resolved_Name, name: string, t: Type, span: Span, w: Written) -> Operand {
+    #partial switch _ in r {
+    case Resolved_Enum_Variant, Resolved_Constant:
+        if graph_aggregate(t) { return graph_read(b, graph_const_global(b, w, span, t, name, r), t, span) }
+        return graph_named_const(b, w, span, t, name, r)
+    case Resolved_Func:
+        return graph_op_value(b, .Global, w, span, t, name)   // a function as a value
+    }
+    graph_fatal(span, "'%s' resolved to no value", name)
+}
+
+// A name's place: a variable, or a constant table.
+fuse_leaf_place :: proc(b: ^Graph_Builder, name: string, r: Resolved_Name, t: Type, span: Span) -> Operand {
+    if r == nil { return graph_var(b, name, NO_NODE, t, span) }
+    if _, is_const := r.(Resolved_Constant); is_const && graph_aggregate(t) {
+        return graph_const_global(b, .Explicit, span, t, name, r)   // a constant table
+    }
+    graph_fatal(span, "'%s' names no place", name)
+}
 // An argument or a returned value at the type its use takes (graph_value_as):
 // a view where one is taken, else its value, widened.
 fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: Span, w: Graph_Widen, held: ^Graph_Later = nil) -> Operand {
@@ -6142,7 +6195,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
             // A field's `= void` is its declaration's, as written: the value
             // stored, unchecked.
             orig := b.fuse.field_inits[rawptr(s)]
-            val := graph_leaf(b, orig)
+            val := graph_fuse_void(b, t, expr_span(orig)^)
             graph_fuse_write_at(b, graph_var(b, s.name, fa.decl, t, s.span), val, s.span)
             return
         }
@@ -10028,7 +10081,17 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         fuse_fail(c, "a slice of no plain place")
         b = nil
     }
-    target_type := check_expr(c, sl.expr, env)
+    target_type: Type
+    bytes_place, from := NO_VALUE, 0
+    if b != nil {
+        from = b.nodes
+        r: Fused
+        target_type, r = fuse_expr(c, sl.expr, env, .Place)
+        bytes_place = r.v
+    } else {
+        target_type = check_expr(c, sl.expr, env)
+    }
+    _, is_self := sl.expr.(^Expr_Self)
     s.target_type = target_type
     if elem := index_elem_type(target_type); elem != nil {   // the target names a run of elements
         t := new(Type_Slice)
@@ -10037,7 +10100,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     }
     bytes := b != nil && fusing(c) != nil && is_byte_buffer(target_type)
     st: Graph_Span_Target
-    if bytes { st = graph_fuse_span_target(b, sl.expr, s.span) }
+    if bytes { st = graph_fuse_span_target(b, bytes_place, target_type, is_self, from, s.span) }
     lo, hi := NO_VALUE, NO_VALUE
     low_type, high_type: Type
     if b != nil { low_type, lo = fuse_bound(c, sl.low, env, .Explicit, sl.span, raw = bytes) } else { low_type = check_expr(c, sl.low, env) }
@@ -10047,9 +10110,9 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     }
     place := NO_VALUE
     if bytes {
-        graph_fuse_span_target_ops(b, &st, hi, sl.expr, sl.type_, sl.is_big_endian, sl.span, s.span)
+        graph_fuse_span_target_ops(b, &st, hi, sl.type_, sl.is_big_endian, sl.span, s.span)
     } else if b != nil && fusing(c) != nil {
-        place = graph_op_value(b, .Slice, .Explicit, sl.span, sl.type_, "", graph_fuse_base_place(b, sl.expr, sl.span), lo, hi)
+        place = graph_op_value(b, .Slice, .Explicit, sl.span, sl.type_, "", graph_fuse_base_place(b, bytes_place, target_type, is_self, sl.span), lo, hi)
     }
     val_type, fs := fuse_store_value(c, s, place, env, unplaced = bytes)
     defer {
@@ -11786,7 +11849,7 @@ check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     result := check_expr_impl(c, expr, env)
     set_expr_type(expr, result)
     // What building asked of it and nothing took: a leaf's, built here.
-    if c.asked != .None { fuse_leaf(c, expr) }
+    if c.asked != .None { fuse_leaf(c, expr, result) }
     return result
 }
 
@@ -12860,7 +12923,19 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             }
         }
         e.resolved_type = resolved
-        src_type := check_expr(c, e.storage, env)
+        // (Built: `&x` its address, else the place — which the carve takes
+        // apart: graph_fuse_carve.)
+        src_type: Type
+        storage := NO_VALUE
+        _, addressed := e.storage.(^Expr_Unary)
+        if b != nil {
+            r: Fused
+            src_type, r = fuse_expr(c, e.storage, env, .Value if addressed else .Place)
+            storage = r.v
+            if u, is_u := e.storage.(^Expr_Unary); is_u { delete_key(&c.byte_addrs, rawptr(u)) }   // (its view: the carve's)
+        } else {
+            src_type = check_expr(c, e.storage, env)
+        }
         src_base := distinct_base(src_type)
         // Cursor form needs ^[]byte (or ^distinct-byte-slice). Passing []byte
         // directly would let array→slice coercion create a fresh header per
@@ -12883,7 +12958,10 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                 type_name(src_type))
         }
         e.type_ = resolved
-        if b != nil && fusing(c) != nil { fuse_done(c, graph_fuse_carve(b, e, count_op, w)) }
+        if b != nil && fusing(c) != nil {
+            _, is_self := e.storage.(^Expr_Self)
+            fuse_done(c, graph_fuse_carve(b, e, storage, src_type, addressed, is_self, count_op, w))
+        }
         return resolved
     case ^Expr_If:
         return check_if_expr(c, e, env)
@@ -13167,9 +13245,9 @@ check_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope)
         fuse_variant(c, t, e.field, d, e.span)
         if b := fusing(c); b != nil { fuse_built(c, b, want, into_temp, into_temp, d, t, temp_span) }
     case is_variant && want != .Place:    fuse_done(c, fuse_variant_value(c, t, e.field, e.span))
-    case want == .Value:                  fuse_done(c, graph_leaf(b, e, w))
-    case is_const && graph_aggregate(t):  fuse_done(c, graph_plain_place(b, e, e.span), true)   // a constant table
-    case want != .Place:                  fuse_done(c, graph_leaf(b, e, w))
+    case want == .Value:                  fuse_done(c, fuse_leaf_value(b, e, t, w))
+    case is_const && graph_aggregate(t):  fuse_done(c, fuse_leaf_place(b, e.field, e.resolved, t, e.span), true)   // a module's constant table
+    case want != .Place:                  fuse_done(c, fuse_leaf_value(b, e, t, w))
     }
     return t
 }
@@ -15701,6 +15779,9 @@ Fuse_Slice :: struct {
     base:    Operand,
     held:    bool,        // its base is no plain place: held (fuse_hold), built early
     early:   Graph_Early,
+    plain:   Operand,     // else its place, built as it's checked (walked where the slice is)
+    plain_t: Type,
+    self:    bool,
 }
 
 // A span of bytes read as its destination's type (graph_store): the bytes'
@@ -15737,7 +15818,7 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
         }
         base = fs.base
     } else {
-        base = graph_fuse_base_place(b, e.expr, e.span)
+        base = graph_fuse_base_place(b, fs.plain, fs.plain_t, fs.self, e.span)
     }
     fuse_done(c, graph_op_value(b, .Slice, w, e.span, t, "", base, fs.lo, fs.hi))
     return t
@@ -15782,6 +15863,11 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
         }
         fs.base = base
         graph_fuse_early_end(b, &fs.early)
+    } else if b := fusing(c); b != nil && fs != nil {
+        r: Fused
+        target_type, r = fuse_expr(c, e.expr, env, .Place)
+        fs.plain, fs.plain_t = r.v, target_type
+        _, fs.self = e.expr.(^Expr_Self)
     } else {
         target_type = check_expr(c, e.expr, env)
     }
@@ -15811,7 +15897,7 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
             fuse_fail(c, "bytes read from a value's span")
         } else if byte_flow(fs.read_as, e, &probe) == .Read {
             fs.reads, fs.scalar = true, fs.view || !graph_aggregate(fs.read_as)
-            fs.base = graph_fuse_base_place(b, e.expr, e.span)
+            fs.base = graph_base_of(b, fs.plain, fs.plain_t, e.span, fs.self)   // (right where it was built)
         }
     }
 
