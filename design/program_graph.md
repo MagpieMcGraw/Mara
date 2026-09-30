@@ -10,7 +10,7 @@ The program graph is a complete description of a Mara program: everything that e
 - **Editing through the graph**: change a connection and have the change written back into the text.
 - **Position-independent compilation**: point the cursor at code and see its LLVM IR or assembly, live.
 
-Today that description is scattered: annotations and lowered forms on the syntax tree (`type_`, `lowered_args`, `.checked`), plus separate pieces with their own node types and keys — the call graph (`callgraph.odin`), use-def (`usedef.odin`), type dependencies (`ask.odin`) and flow slices (`slice.odin`, `lineage.odin`). The program graph gathers them into one structure with one shape.
+Before the graph retrofit that description was scattered: annotations and lowered forms on the syntax tree (`type_`, `lowered_args`, `.checked`), plus separate pieces with their own node types and keys — the call graph (`callgraph.odin`), use-def (`usedef.odin`), type dependencies (`ask.odin`) and flow slices (`slice.odin`, `lineage.odin`). The program graph gathers them into one structure with one shape.
 
 ## Two structures
 
