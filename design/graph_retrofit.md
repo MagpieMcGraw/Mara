@@ -901,6 +901,15 @@ erroneous program reports, the negative fixtures say so.
       0 (a constant's code is built as it is checked): the checker now completes a type's
       layout where its size is taken (ensure_layout). IR byte-identical, the graph the same
       but for the uses' new links to their constants.
+      Step 3 done: a table is laid out from its computed value (codegen_const.odin 700 → 390
+      lines: the syntax tree's evaluator is gone, and with it the graph's table of each
+      constant's expression, the name map by expression and two helpers only it used). A
+      table's symbol is recorded as the graph is put together (the longest name the checker
+      registered it under, as before). IR byte-identical in all 287 builds.
+      Left of the syntax tree's constant folding: defaults at their uses (graph_default_value,
+      graph_constant: the program arena's size, an array element's constructor defaults, text
+      held), a sized slice type's default capacity (codegen_const_eval_int) and a text
+      constant told by its expression (graph_fills_prefix) — for the leaves and defaults.
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines

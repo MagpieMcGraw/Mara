@@ -356,15 +356,6 @@ is_plain_data :: proc(t: Type) -> bool {
     return false
 }
 
-// A call that is just another value in disguise: a distinct conversion `Vec3(a)` (a no-op at IR level — see the
-// distinct-construction case in gen_call_inner).
-call_passthrough_value :: proc(g: ^Codegen, e: ^Expr_Call) -> (Expr, bool) {
-    if _, is_distinct := g.checked.table.distinct_types[call_resolved_name(e)]; is_distinct && len(call_args(e)) == 1 {
-        return call_args(e)[0], true
-    }
-    return nil, false
-}
-
 // ---------------------------------------------------------------------------
 // Crash builtin — print message and exit(1)
 // ---------------------------------------------------------------------------

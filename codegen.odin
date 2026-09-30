@@ -180,10 +180,8 @@ Codegen :: struct {
     out:         strings.Builder,  // current per-module IR buffer (swapped in from module_outs)
     alloca_buf:  strings.Builder,  // hoisted allocas (entry block)
     body_buf:    strings.Builder,  // temporary buffer for function body during alloca hoisting
-    // Aggregate constants live in read-only tables (codegen_const.odin): each
-    // constant's table name (built once, shared read-only with workers), and
-    // the tables this Codegen's functions referenced (symbol -> table).
-    const_names:  map[rawptr]string,
+    // Aggregate constants live in read-only tables (codegen_const.odin): the
+    // tables this Codegen's functions referenced (symbol -> table).
     const_tables: map[string]Const_Table,
 
     // Per-module IR buffers. Each function's IR lands in the buffer keyed by
@@ -386,15 +384,6 @@ mara_fn_name :: proc(g: ^Codegen, name: string) -> string {
     // like `camera_init` get prepended here.
     if strings.has_prefix(name, "mara_") { return fmt.tprintf("@%s", name) }
     return fmt.tprintf("@mara_%s", name)
-}
-
-// Get the resolved flat name for a call expression.
-// Uses resolved_func annotation if available, otherwise falls back to e.name.
-call_resolved_name :: proc(e: ^Expr_Call) -> string {
-    if rf, rf_ok := e.resolved_func.?; rf_ok {
-        return rf.name
-    }
-    return call_name(e)
 }
 
 // Derive Fun_Info from a checked ^Type_Scope, with caching.
@@ -973,7 +962,6 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.arena_reset_name   = task.main_g.arena_reset_name
     g.arena_new_name     = task.main_g.arena_new_name
     g.arena_alloc_has_debug = task.main_g.arena_alloc_has_debug
-    g.const_names        = task.main_g.const_names
 
     // Per-worker string-name prefix so this task's `@.str.N` references
     // can never collide with the main thread's (used by @main emission)
@@ -2411,8 +2399,6 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     defer delete(module_names)
     for k in fns_by_module { append(&module_names, k) }
     slice.sort(module_names[:])
-
-    build_const_names(&g, checked) // read-only from here on; workers share it
 
     tasks: [dynamic]^Module_Task
     defer delete(tasks)

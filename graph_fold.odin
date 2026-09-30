@@ -82,7 +82,7 @@ graph_fold_uses :: proc(g: ^Program_Graph, checked: ^Checked_Program) {
         #partial switch g.op[id] {
         case .Const:
             v := fold_decl(&fo, d, fold_width_of(g.type_[id]))
-            if v == nil || !fold_scalar(v) {
+            if v == nil || !fold_scalar(v) || llvm_type_from_checker(g.type_[id]) == "ptr" {
                 fold_error(&fo, id, d)
                 continue
             }
@@ -279,7 +279,7 @@ fold_op :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> bool {
 fold_const :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id) -> ^Fold {
     g := fo.g
     if c, ok := g.consts[id]; ok { return fold_value(g.type_[id], c) }
-    if g.name[id] == "void" { return fold_new(g.type_[id]) }
+    if g.name[id] == "void" { return fold_value(g.type_[id], {}) }   // (written: a null)
     d := g.refers[id]
     if d == NO_NODE || g.kind[d] != .Const { return nil }
     width := fc.width

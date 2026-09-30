@@ -270,24 +270,6 @@ const_value_of :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
     return nil, false
 }
 
-// The value a constant reference inlines to — for a scalar or string constant.
-// An aggregate constant isn't inlined: it lives in a read-only table
-// (codegen_const.odin), and a bare reference to it is bound here as a
-// variable whose storage is that table, so the caller's variable path takes
-// it from there (reads, copies, passing by pointer). A qualified one
-// (`mod.K`) reaches its table through qualified_const_storage.
-codegen_const_value :: proc(g: ^Codegen, expr: Expr) -> (Expr, bool) {
-    value, ok := const_value_of(g, expr)
-    if !ok { return nil, false }
-    if table, is_table := const_table_ref(g, expr); is_table {
-        if ident, is_ident := expr.(^Expr_Ident); is_ident {
-            g.all_vars[ident.name] = table
-        }
-        return nil, false
-    }
-    return value, true
-}
-
 // ---------------------------------------------------------------------------
 // Byte-buffer reinterpret codegen
 //

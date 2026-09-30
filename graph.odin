@@ -152,13 +152,10 @@ Program_Graph :: struct {
     // value (a literal, a variant).
     assert_sides: map[Node_Id][2]string,
 
-    // A constant's value as written, by its declaration: resolved before
-    // the graph, it has no operations; a table's bytes are built from it.
-    const_values: map[Node_Id]Expr,
-
     // Each table's value, by its constant's declaration, computed from its
     // code (graph_fold_uses); and the uses of constants that have none.
     tables:      map[Node_Id]^Fold,
+    table_names: map[Node_Id]string,   // each one's symbol's
     fold_errors: [dynamic]Fold_Error,
 
     // A fun that consumes a param into its result → which param, by its
@@ -631,6 +628,7 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
     resize(&g.edges, kept)
     graph_index_edges(g)
     graph_fold_uses(g, checked)
+    graph_table_names(b)
     when ODIN_DEBUG {
         graph_check_coverage(b)
         graph_check_runs(b)
@@ -848,7 +846,6 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     for ts, id in g.scope_node { if kept(new_id, id) { ng.scope_node[ts] = new_id[id] } }
     for id, c in g.consts { if kept(new_id, id) { ng.consts[new_id[id]] = c } }
     for id, s in g.assert_sides { if kept(new_id, id) { ng.assert_sides[new_id[id]] = s } }
-    for id, e in g.const_values { if kept(new_id, id) { ng.const_values[new_id[id]] = e } }
 
     // What the builder still holds by id.
     calls := 0
@@ -880,8 +877,8 @@ graph_free_columns :: proc(g: ^Program_Graph) {
     delete(g.operands); delete(g.operand_first); delete(g.run_ops); delete(g.run_first)
     delete(g.edges); delete(g.out_first); delete(g.in_edges); delete(g.in_first)
     delete(g.scope_node); delete(g.stmts); delete(g.unreachable); delete(g.settled)
-    delete(g.consts); delete(g.assert_sides); delete(g.const_values); delete(g.consumes)
-    delete(g.tables); delete(g.fold_errors)
+    delete(g.consts); delete(g.assert_sides); delete(g.consumes)
+    delete(g.tables); delete(g.table_names); delete(g.fold_errors)
 }
 
 // A type with its `:=` bindings' deferred widths settled — the one each
@@ -1048,10 +1045,7 @@ graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_
         kind: Node_Kind = .Const
         if _, is_import := v.value.(^Expr_Include); is_import { kind = .Import }   // `core :: include mara.core`
         d := graph_node(b, kind, .Explicit, parent, v.name, t, v.span)
-        if kind == .Const && v.value != nil {
-            b.const_decls[expr_identity(v.value)] = d
-            b.g.const_values[d] = v.value
-        }
+        if kind == .Const && v.value != nil { b.const_decls[expr_identity(v.value)] = d }
     case Stmt_Call, Stmt_Return, Stmt_Break, Stmt_Continue, Stmt_Overload, Stmt_Module:
         // Code outside a body runs nothing here; rules and headers declare
         // nothing.
@@ -2254,6 +2248,21 @@ graph_resolve_defs :: proc(b: ^Graph_Builder) {
         if g.refers[id] == NO_NODE {
             if d, ok := defs[Key{b.program, g.name[id]}]; ok { g.refers[id] = d }
         }
+    }
+}
+
+// Each table's name: its constant's longest in the checker's table (a
+// module's is there under its flat name and its bare one), the first of
+// those alike.
+@(private="file")
+graph_table_names :: proc(b: ^Graph_Builder) {
+    g := b.g
+    for key, v in b.checked.table.constants {
+        if v == nil { continue }
+        d, ok := b.const_decls[expr_identity(v)]
+        if !ok || d not_in g.tables { continue }
+        if name, named := g.table_names[d]; named && (len(name) > len(key) || len(name) == len(key) && name < key) { continue }
+        g.table_names[d] = key
     }
 }
 
@@ -4123,7 +4132,6 @@ graph_const_begin :: proc(b: ^Graph_Builder, s: ^Stmt_Define) -> ^Graph_Fuse {
     f.root = graph_node(b, .Const, .Explicit, NO_NODE, s.name, nil, s.span)
     b.segs[f.seg].root = f.root
     b.const_decls[expr_identity(s.value)] = f.root
-    b.g.const_values[f.root] = s.value
     f.contents = Graph_Contents{base = b.fn_base, names = len(b.names), self = b.self, n = f.root, span = s.span}
     b.fn_base, b.self = len(b.names), NO_NODE
     f.contents.code = graph_code_begin(b, f.root)
@@ -4150,8 +4158,14 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, s: ^Stmt_Define, t: T
     }
     if f.failed != "errors" { graph_fatal(s.span, "the checker built no graph of the constant '%s': %s", s.name, f.failed) }
     delete_key(&b.const_decls, expr_identity(s.value))
-    delete_key(&b.g.const_values, f.root)
     graph_fuse_free(f)
+}
+
+// An expression's identity: its node (the pointer every Expr variant holds;
+// a union's payload sits at offset 0).
+expr_identity :: proc(e: Expr) -> rawptr {
+    e := e
+    return (^rawptr)(&e)^
 }
 
 // A statement's identity, for the pointer variants.
@@ -4588,7 +4602,6 @@ graph_dump_full :: proc(g: ^Program_Graph) {
         }
         if c, ok := g.consts[Node_Id(id)]; ok { fmt.sbprintf(&b, " const=%v", c) }
         if s, ok := g.assert_sides[Node_Id(id)]; ok { fmt.sbprintf(&b, " sides=%q|%q", s[0], s[1]) }
-        if e, ok := g.const_values[Node_Id(id)]; ok { fmt.sbprintf(&b, " value@%s", span(expr_span(e)^)) }
         if k, ok := g.consumes[Node_Id(id)]; ok { fmt.sbprintf(&b, " consumes=%d", k) }
         fmt.println(strings.to_string(b))
     }
