@@ -3353,6 +3353,8 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     defer delete(vals)
     as_: [dynamic]int
     defer delete(as_)
+    array_values: [dynamic]bool   // (an argument that is an array's value, no place)
+    defer delete(array_values)
     // Step 1: Check all argument types
     arg_types: [dynamic]Type
     defer delete(arg_types)
@@ -3363,13 +3365,14 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
             if fusing(c) == nil { continue }
             _, is_literal := arg.(^Expr_Array)
             _, is_array := distinct_base(t).(^Type_Fixed_Array)
-            if fuse_byte_index(arg) || is_literal || is_array && !r.place {
-                fuse_fail(c, "bytes, a literal or an array value as a generic's argument")
+            if fuse_byte_index(arg) || is_literal {
+                fuse_fail(c, "bytes or a literal as a generic's argument")
                 continue
             }
             v, k := graph_fuse_as(b, r.v, r.place, t, expr_span(arg)^, e.span, {})
             append(&vals, v)
             append(&as_, k)
+            append(&array_values, is_array && !r.place)
         } else {
             append(&arg_types, check_expr(c, arg, env))
         }
@@ -3526,7 +3529,11 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         for k, i in as_ {
             if k >= 0 { fb.fuse.widens[k].sig, fb.fuse.widens[k].param = fun_type, i }
         }
-        fuse_done(c, {graph_call_op(fb, .Call, w, e.span, fun_type, fn_primary_return(fun_type), ..vals[:]), 0})
+        if fuse_views_value(fun_type, array_values[:]) {
+            fuse_fail(c, "an array's value viewed by a generic's param")
+        } else {
+            fuse_done(c, {graph_call_op(fb, .Call, w, e.span, fun_type, fn_primary_return(fun_type), ..vals[:]), 0})
+        }
     }
     return fn_primary_return(fun_type)
 }
@@ -5865,6 +5872,16 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         return
     }
     fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, NO_NODE, s.var_type), s.span)
+}
+
+// Whether a function's param would view an argument that is an array's
+// value (graph_view: its place, a temporary) — a slice over it.
+fuse_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {
+    for is_value, i in array_values {
+        if !is_value || i >= len(ft.params) { continue }
+        if _, to_slice := distinct_base(ft.params[i].type_).(^Type_Slice); to_slice { return true }
+    }
+    return false
 }
 
 // Whether a use of a `from` as a `to` views it (graph_view): a fixed array
@@ -14325,6 +14342,8 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     defer delete(vals)
     as_: [dynamic]int
     defer delete(as_)
+    array_values: [dynamic]bool   // (an argument that is an array's value, no place)
+    defer delete(array_values)
     // Mark underscore positions — they can't be typed without knowing which
     // overload (and therefore which default) they'll take. Non-underscore
     // args get typed once; their arg_types slot stays nil for underscores.
@@ -14354,13 +14373,14 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             _, is_literal := arg.(^Expr_Array)
             _, is_array := distinct_base(t).(^Type_Fixed_Array)
             sl, is_slice := arg.(^Expr_Slice)
-            if fuse_byte_index(arg) || is_slice && is_byte_buffer(expr_type(sl.expr)) || is_literal || is_array && !r.place {
-                fuse_fail(c, "bytes, a literal or an array value as a dispatch's argument")
+            if fuse_byte_index(arg) || is_slice && is_byte_buffer(expr_type(sl.expr)) || is_literal {
+                fuse_fail(c, "bytes or a literal as a dispatch's argument")
                 continue
             }
             v, k := graph_fuse_as(b, r.v, r.place, t, expr_span(arg)^, e.span, {})
             append(&vals, v)
             append(&as_, k)
+            append(&array_values, is_array && !r.place)
         } else {
             append(&arg_types, check_expr(c, arg, env))
         }
@@ -14477,6 +14497,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         for k, i in as_ {
             if k >= 0 { b.fuse.widens[k].sig, b.fuse.widens[k].param = ft, i }
         }
+        if fuse_views_value(ft, array_values[:]) { fuse_fail(c, "an array's value viewed by a dispatch's param") }
     }
     // Trailing default fill: append each missing slot's default expression so
     // codegen sees a fully-saturated arg list. Mirrors fill_default_args.
