@@ -8,11 +8,6 @@
 # change the graph.
 #
 #   test/graphdiff.sh       dumps must be identical
-#   test/graphdiff.sh -s    the working compiler against itself, its graph
-#                           built out of order (MARA_GRAPH_SHUFFLE=1, debug
-#                           builds: every scope's contents deferred and built
-#                           last first, then put back) — the check for the
-#                           builder's placing (graph_canonicalize)
 #   test/graphdiff.sh -j N  N programs at a time (default: every core)
 #
 # The dumps are kept under $OUT/old and $OUT/new; a program whose build
@@ -20,30 +15,27 @@
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-${TMP:-/tmp}/mara_graphdiff}
 JOBS=$(nproc 2>/dev/null || echo 4)
-SHUFFLE=0
 while [ $# -gt 0 ]; do
   case $1 in
-    -s) SHUFFLE=1 ;;
     -j) JOBS=$2; shift ;;
   esac
   shift
 done
 BASE=$ROOT/Mara_base_tmp.exe WORK=$ROOT/Mara.exe
-[ $SHUFFLE = 1 ] && BASE=$WORK
 [ -f "$BASE" ] || { echo "no baseline: copy Mara.exe to Mara_base_tmp.exe first"; exit 2; }
 rm -rf "$OUT"; mkdir -p "$OUT/old" "$OUT/new"
-export ROOT OUT BASE WORK SHUFFLE
+export ROOT OUT BASE WORK
 
 # One program, both sides, one after the other (they share the build
 # directory): its dump, then the checker's diagnostics, sorted (their order
 # is the checker's walk's) — a link or clang failure (a Windows virus scan
 # holding the exe) is no graph's.
 one_program() {  # dir module [build flags]
-  local dir=$1 mod=$2 flags=$3 side exe shuffled
+  local dir=$1 mod=$2 flags=$3 side exe
   for side in old new; do
-    exe=$BASE shuffled=0
-    [ $side = new ] && exe=$WORK shuffled=$SHUFFLE
-    ( cd "$dir" && { rm -rf "${mod}_build" 2>/dev/null; MARA_GRAPH_SHUFFLE=$shuffled MARA_GRAPH=full "$exe" build "$mod" $flags 2>&1; } ) \
+    exe=$BASE
+    [ $side = new ] && exe=$WORK
+    ( cd "$dir" && { rm -rf "${mod}_build" 2>/dev/null; MARA_GRAPH=full "$exe" build "$mod" $flags 2>&1; } ) \
       | grep -E '^(graph:|n |e |r |s |u |settled |scope |\[)' | grep -v 'is ambiguous (defined in' \
       | awk '/^\[/ { d[n++] = $0; next } { print } END { for (i = 0; i < n; i++) print d[i] | "sort" }' > "$OUT/$side/$mod.dump"
   done

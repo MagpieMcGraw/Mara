@@ -284,21 +284,16 @@ Graph_Builder :: struct {
     const_decls: map[rawptr]Node_Id,
     tables:      [dynamic]Graph_Table,
     // Segments: a scope's contents built on their own, at any time, then put
-    // where the scope is (graph_canonicalize). MARA_GRAPH_SHUFFLE=1 (debug
-    // builds) defers every scope's contents and builds them last first — the
-    // graph must come out the same.
+    // where the scope is (graph_canonicalize).
     segs:    [dynamic]Graph_Segment,
     seg:     int,
-    tasks:   [dynamic]Graph_Task,
-    shuffle: bool,
-    shuffled: int,
     // The bodies the checker built as it checked them, by their scope, each a
-    // segment: the builder puts them in place. The body being built, and
-    // MARA_FUSE's switches.
+    // segment: the builder puts them in place. Why one it began failed; the
+    // body being built; MARA_FUSE=log.
     fused:    map[^Type_Scope]int,
+    failed:   map[^Type_Scope]string,
     fuses:    [dynamic]^Graph_Fuse,
     fuse:     ^Graph_Fuse,
-    fuse_off: bool,
     fuse_log: bool,
     // Operations made before whether they are needed was known, found not
     // to be: each is left out, and what it stood for used in its place —
@@ -340,17 +335,6 @@ Graph_Piece :: struct {
 Graph_Anchor :: struct {
     seg:                          int,
     nodes, runs, stmts, unreach:  int,
-}
-
-// A scope (its node and contents) waiting to be built, where it goes.
-@(private="file")
-Graph_Task :: struct {
-    ts:           ^Type_Scope,
-    s:            ^Stmt_Scope,
-    parent:       Node_Id,
-    written:      Written,
-    stmt:         i32,
-    seg, anchor:  int,
 }
 
 // The statement column of what a scope's segment makes outside its own
@@ -449,21 +433,17 @@ Decl_Site :: struct {
     owner: ^Type_Scope,  // the struct, for .Field
 }
 
-// The builder, made before checking: the checker builds each body it can as
-// it checks it (graph_fuse_begin), and build_program_graph the rest, after.
+// The builder, made before checking: the checker builds each body as it
+// checks it (graph_fuse_begin), and build_program_graph puts them in place.
 graph_builder_new :: proc(checked: ^Checked_Program) -> ^Graph_Builder {
     b := new(Graph_Builder)
     b.g = new(Program_Graph)
     b.checked = checked
     b.stmt = -1
     b.arena = checked.table.has_scope_allocator || checked.table.context_expected_at_runtime
-    when ODIN_DEBUG { b.shuffle = os.get_env("MARA_GRAPH_SHUFFLE", context.temp_allocator) == "1" }
-    // MARA_FUSE=0: the builder builds every body; =log: why the checker
-    // didn't build one.
-    switch os.get_env("MARA_FUSE", context.temp_allocator) {
-    case "0":   b.fuse_off = true
-    case "log": b.fuse_log = true
-    }
+    // MARA_FUSE=log: why the checker didn't build a body (one checked with
+    // errors), and how many it built.
+    b.fuse_log = os.get_env("MARA_FUSE", context.temp_allocator) == "log"
     append(&b.segs, Graph_Segment{root = NO_NODE})   // the program's own: its modules' declarations
     graph_piece_begin(b, 0)
     return b
@@ -489,8 +469,8 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
         delete(s.defs)
     }
     delete(b.segs)
-    delete(b.tasks)
     delete(b.fused)
+    delete(b.failed)
     for f in b.fuses { graph_fuse_free(f) }
     delete(b.fuses)
     delete(b.repl)
@@ -522,13 +502,6 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
         // no function sees (a function sees only its arguments).
         for s in programs[name]^ { graph_stmt(b, s, m, {kind = .Field}) }
         graph_close(b, m)
-    }
-    // The scopes left for later, the last first; each may leave more.
-    for len(b.tasks) > 0 {
-        t := pop(&b.tasks)
-        si := graph_scope_segment(b, t.ts, t.s, t.written)
-        b.segs[t.seg].anchors[t.anchor].seg = si
-        graph_segment_place(b, si, t.parent, t.stmt, graph_scope_name(t.ts, t.s, t.written))
     }
     graph_piece_end(b, 0)
     // What was dropped, by node: those listed while checking, then settling's.
@@ -3415,27 +3388,14 @@ graph_scope :: proc(b: ^Graph_Builder, s: ^Stmt_Scope, parent: Node_Id) {
 // struct's field initializers — in a scope of its own.
 @(private="file")
 graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, parent: Node_Id, written: Written) {
-    // Built by the checker: put in place.
-    if si, fused := b.fused[ts]; fused {
-        graph_fuse_place(b, si, parent, graph_scope_name(ts, s, written))
-        return
+    // Built by the checker: put in place. (The graph is built from a clean
+    // check: every body was.)
+    si, fused := b.fused[ts]
+    if !fused {
+        why, began := b.failed[ts]
+        graph_fatal(s.span, "the checker built no graph of '%s'%s", graph_scope_name(ts, s, written), fmt.tprintf(": %s", why) if began else "")
     }
-    if b.fuse_log { fmt.eprintfln("fuse builder: %s", graph_scope_name(ts, s, written)) }
-    if b.shuffle {
-        // In a segment of its own, put in right here: every other scope built
-        // now, in the middle of this one's, the rest later, the last first.
-        b.shuffled += 1
-        if b.shuffled % 2 == 0 {
-            si := graph_scope_segment(b, ts, s, written)
-            graph_anchor_here(b, si)
-            graph_segment_place(b, si, parent, b.stmt, graph_scope_name(ts, s, written))
-            return
-        }
-        append(&b.tasks, Graph_Task{ts = ts, s = s, parent = parent, written = written, stmt = b.stmt,
-            seg = b.seg, anchor = graph_anchor_here(b)})
-        return
-    }
-    graph_scope_contents(b, ts, s, graph_scope_root(b, ts, s, parent, written, graph_scope_name(ts, s, written)), written)
+    graph_fuse_place(b, si, parent, graph_scope_name(ts, s, written))
 }
 
 // A fun's or struct's node. (One in a segment of its own is named where it
@@ -3537,11 +3497,9 @@ Graph_Widen :: struct {
     pending:   bool,   // `to` is set once known (an if expression's type)
 }
 
-// Start building a fun's body as the checker checks it, or nil — the builder
-// builds it — when fusing is off. `body` is the body checked (an instance's
-// own copy).
+// Start building a fun's body as the checker checks it. `body` is the body
+// checked (an instance's own copy).
 graph_fuse_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, body: []Stmt, written: Written) -> ^Graph_Fuse {
-    if b.fuse_off { return nil }
     f := new(Graph_Fuse)
     f.ts, f.outer_fuse, f.compound = ts, b.fuse, b.compound
     b.fuse, b.compound = f, {}
@@ -3578,6 +3536,7 @@ graph_fuse_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     if b.fuse_log {
         fmt.eprintfln("fuse no: %s: %s", f.ts.name if f.ts.name != "" else b.g.name[f.root], f.failed)
     }
+    b.failed[f.ts] = f.failed
     graph_fuse_free(f)
 }
 
