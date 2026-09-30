@@ -351,17 +351,19 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     span := tree_span(t, s)
     targets := tree_list(t, t.a[s])
     values := tree_list(t, t.b[s])
-    if len(targets) == 1 && len(values) == 1 && t.tag[targets[0]] == .Field {
-        tc_field_assign(k, s, targets[0], values[0], env)
-        return
-    }
-    if len(targets) == 1 && len(values) == 1 && t.tag[targets[0]] == .Index {
-        tc_index_assign(k, s, targets[0], values[0], env)
-        return
-    }
-    if len(targets) == 1 && len(values) == 1 && t.tag[targets[0]] == .Slice {
-        tc_slice_assign(k, s, targets[0], values[0], env)
-        return
+    if len(targets) == 1 && len(values) == 1 {
+        target := targets[0]
+        #partial switch t.tag[target] {
+        case .Field: tc_field_assign(k, s, target, values[0], env)
+        case .Index: tc_index_assign(k, s, target, values[0], env)
+        case .Slice: tc_slice_assign(k, s, target, values[0], env)
+        }
+        #partial switch t.tag[target] {
+        case .Field, .Index, .Slice:
+            // (Into a constant: its storage is read-only.)
+            if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
+            return
+        }
     }
     if len(targets) != 1 || len(values) != 1 || t.tag[targets[0]] != .Ident {
         if len(targets) == 1 { tc_unsupported(k, targets[0], "this assignment target"); return }
@@ -667,11 +669,9 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     r := tree_rec(t, t.b[s], 2)
     op_tok, value := Token_Id(r[0]), Tree_Id(r[1])
     #partial switch t.tag[target] {
-    case .Field:
-        tc_field_assign(k, s, target, value, env, op_tok)
-        return
-    case .Index:
-        tc_index_assign(k, s, target, value, env, op_tok)
+    case .Field, .Index:
+        if t.tag[target] == .Field { tc_field_assign(k, s, target, value, env, op_tok) } else { tc_index_assign(k, s, target, value, env, op_tok) }
+        if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
         return
     case .Ident:
     case:

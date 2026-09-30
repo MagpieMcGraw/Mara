@@ -137,6 +137,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     kc, unambiguous := tc_const_ref(k, env, name, span)
     if !unambiguous { return Type_Error{}, {} }
     t, loc_scope, ok := type_env_locate(env, name)
+    if kc != nil { k.const_nodes[n] = true }
     if !ok && kc != nil {
         // (Not bound here yet: its value's type.)
         ct := tc_check(k, kc.value, env)
@@ -228,6 +229,12 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         if !is_integer(ot) && !is_any(ot) { tc_error(k, span, TYPE_CANNOT_APPLY_REQUIRES_INTEGER_TYPE, type_name(ot)) }
         t = ot
     case .Ampersand:
+        // (An address of an immutable param's storage, of a constant's: what
+        // it would let be written can't be.)
+        if pname, immutable := tc_write_root_param(k, operand, env); immutable {
+            tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_IMMUTABLE_PARAMETER, pname)
+        }
+        if cname, is_const := tc_write_root_const(k, operand); is_const { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, cname) }
         if tr.tag[operand] == .String { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL) }
         pt := new(Type_Ptr)
         pt.elem = ot
@@ -712,7 +719,7 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type
         return Type_Error{}, {}, true
     }
     target, is_cast := cast_result_type(name)
-    if !is_cast { return nil, {}, false }
+    if !is_cast { return tc_builtin_more(k, n, name, args, env, want, w) }
     if len(args) != 1 {
         tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
         return Type_Error{}, {}, true
@@ -875,4 +882,112 @@ tc_default :: proc(k: ^TC, def: Tree_Id, t: Type, owner: ^Type_Scope, span: Span
     use, at := tc_use_type(k, def, t, span)
     vt, r := tc_expr(k, def, callee_def_scope(owner), .Either, .Implied, dest = use, temp_span = at)
     return tc_value_as(k, def, vt, r, t, span, w)
+}
+
+// The rest of the builtins: print_cstr / print_int / print_float (as print),
+// len and cap (of a place — a fixed array's, its size), slice_from_ptr,
+// cstring. `vals`, `types`: its arguments as built.
+tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope,
+                        want: Fuse_Want, w: Written) -> (Type, Fused, bool) {
+    span := tree_span(k.t, n)
+    ask := Fuse_Want.Value if want != .None else .None
+    b := tc_building(k)
+    mark: Graph_Mark
+    if b != nil && want != .None { mark = graph_fuse_mark(b) }
+    one :: proc(k: ^TC, a: Tree_Id, env: ^Type_Scope, ask: Fuse_Want, w: Written, span: Span) -> (Type, Fused) {
+        return tc_expr(k, a, env, ask, w, temp_span = span)
+    }
+    switch name {
+    case "print_cstr", "print_int", "print_float":
+        msg := TYPE_PRINT_CSTR_EXPECTS_ARGUMENT_BYTE
+        if name == "print_int" { msg = TYPE_PRINT_INT_EXPECTS_ARGUMENT_INT }
+        if name == "print_float" { msg = TYPE_PRINT_FLOAT_EXPECTS_ARGUMENT_FLOAT }
+        if len(args) != 1 {
+            tc_error(k, span, msg, len(args))
+            return Type_Error{}, {}, true
+        }
+        _, r := one(k, args[0], env, ask, w, span)
+        return Type_Error{}, tc_builtin_op(k, .Print, name, {r.v}, want, w, span), true
+    case "len", "cap":
+        t := slice_header_width_type
+        if len(args) != 1 {
+            tc_error(k, span, TYPE_LEN_EXPECTS_ARGUMENT if name == "len" else TYPE_CAP_EXPECTS_ARGUMENT, len(args))
+            return t, {}, true
+        }
+        at, r := one(k, args[0], env, .Place if want != .None else .None, w, span)
+        if !is_array_type(at) && !is_any(at) {
+            tc_error(k, span, TYPE_LEN_REQUIRES_ARRAY_SLICE if name == "len" else TYPE_CAP_REQUIRES_ARRAY_SLICE, type_name(at))
+        }
+        if b = tc_building(k); want == .None || b == nil { return t, {}, true }
+        if want == .Place {
+            tc_fail(k, "a builtin's place")
+            return t, {}, true
+        }
+        // (A fixed array's is its size: its operand, built, left out.)
+        if fa, fixed := distinct_base(graph_pointee(at)).(^Type_Fixed_Array); fixed {
+            graph_fuse_drop_since(b, mark)
+            return t, {v = graph_const(b, w, span, t, name, Const_Value{int = i128(fa.size)}), ok = true}, true
+        }
+        if !r.place {
+            tc_fail(k, "the length of a value")
+            return t, {}, true
+        }
+        base := r.v
+        if pt, is_ptr := distinct_base(at).(^Type_Ptr); is_ptr { base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base) }
+        field := graph_op_value(b, .Field, w, span, t, name, base)
+        return t, {v = graph_read(b, field, t, span), ok = true}, true
+    case "slice_from_ptr":
+        t := new_clone(Type_Slice{elem = Type_Byte{}})
+        if len(args) != 2 {
+            tc_error(k, span, TYPE_SLICE_PTR_EXPECTS_ARGUMENTS_PTR, len(args))
+            return t, {}, true
+        }
+        pt, pr := one(k, args[0], env, ask, w, span)
+        if _, is_ptr := pt.(^Type_Ptr); !is_ptr && !is_any(pt) {
+            tc_error(k, span, TYPE_SLICE_PTR_FIRST_ARGUMENT_POINTER, type_name(pt))
+        }
+        st, sr := one(k, args[1], env, ask, w, span)
+        if !is_numeric(st) && !is_any(st) {
+            tc_error(k, span, TYPE_SLICE_PTR_SECOND_ARGUMENT_NUMERIC, type_name(st))
+        } else if !coerces_to_slice_width(st) {
+            tc_error(k, span, TYPE_SLICE_PTR_SECOND_ARGUMENT_WIDTH, type_name(slice_header_width_type), type_name(st))
+        }
+        if k.pkg != "os" && k.pkg != "mara.os" {
+            if _, known := tc_comptime_int(k, args[1], nil); !known {
+                tc_error(k, span, TYPE_SLICE_PTR_OUTSIDE_OS_MODULE +
+                    "(literal, '::' constant, or comptime arithmetic). Runtime-derived lengths " +
+                    "are restricted because they're the classic source of OOB-access bugs at C boundaries.")
+            }
+        }
+        if b = tc_building(k); want == .None || b == nil { return t, {}, true }
+        if want == .Place {
+            tc_fail(k, "a builtin's place")
+            return t, {}, true
+        }
+        return t, {v = graph_op_value(b, .Slice, w, span, t, name, pr.v, sr.v), ok = true}, true
+    case "cstring":
+        if len(args) != 1 {
+            tc_error(k, span, TYPE_EXPECTS_ARGUMENT_3, name, len(args))
+            return Type_CString{}, {}, true
+        }
+        at, r := one(k, args[0], env, ask, w, span)
+        elem: Type
+        #partial switch v in distinct_base(at) {
+        case ^Type_Partial_Array: elem = v.elem
+        case ^Type_Slice:         elem = v.elem
+        case ^Type_Fixed_Array:   elem = v.elem
+        }
+        elem_ok := false
+        #partial switch _ in elem {
+        case Type_Utf8, Type_Byte: elem_ok = true
+        }
+        if !elem_ok && !is_any(at) { tc_error(k, span, TYPE_CSTRING_CTOR_ARGUMENT, type_name(at)) }
+        if b = tc_building(k); want == .None || b == nil { return Type_CString{}, {}, true }
+        if want == .Place {
+            tc_fail(k, "a builtin's place")
+            return Type_CString{}, {}, true
+        }
+        return Type_CString{}, {v = graph_op_value(b, .Cast, w, span, Type_CString{}, name, r.v), ok = true}, true
+    }
+    return nil, {}, false
 }

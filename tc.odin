@@ -42,6 +42,7 @@ TC :: struct {
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
     callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
+    const_nodes:   map[Tree_Id]bool,  // the names that resolved to a constant
     variant_nodes: map[Tree_Id]bool,  // the names that resolved to an enum's variant
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }

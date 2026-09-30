@@ -23,6 +23,14 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     span := tree_span(tr, n)
     base := Tree_Id(tr.a[n])
     field := tc_text(Token_Id(tr.b[n]))
+    // (`pkg.X` inside pkg: its own constant — its value's type.)
+    if tr.tag[base] == .Ident && k.pkg != "" && tc_name(k, base) == k.pkg {
+        if kc, ok := k.consts[make_flat_name(k.pkg, field)]; ok {
+            t := tc_check(k, kc.value, env)
+            k.const_nodes[n] = true
+            return t, tc_const_use(k, kc, n, t, want, w)
+        }
+    }
     build := want != .None && tc_building(k) != nil
     ask := Fuse_Want.None
     mark: Graph_Mark
@@ -280,40 +288,62 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     span := tree_span(tr, n)
     ty := Tree_Id(tr.a[n])
     entries := tree_list(tr, tr.b[n])
+    name := tc_name(k, ty) if ty != 0 && tr.tag[ty] == .Ident else ""
+    // Its type: written (`Foo{…}`, `[3]f32{…}`, `Vec3{…}`), or its use's.
     t: Type
     switch {
     case ty == 0:
-        if k.hint == nil || as_scope_body(distinct_base(k.hint)) == nil {
+        hint := k.hint
+        if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint)) {
             tc_unsupported(k, n, "a literal typed by its use")
             return Type_Error{}, {}
         }
-        t = k.hint
+        t = hint
     case tr.tag[ty] == .Ident:
-        name := tc_name(k, ty)
         found, ok := type_env_get(env, name)
         if !ok {
             tc_unsupported(k, n, "a literal of an unknown name")
             return Type_Error{}, {}
         }
         t = found
-    case:
+    case tr.tag[ty] == .Field:
         tc_unsupported(k, n, "this literal's type")
         return Type_Error{}, {}
+    case:
+        // (A typed array's: `[3]f32{…}`, an empty `[..N]T{}`.)
+        t = tc_type(k, ty, env, span)
+        if is_partial_array(t) {
+            if len(entries) > 0 {
+                tc_error(k, span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(t))
+                return Type_Error{}, {}
+            }
+            tc_unsupported(k, n, "an empty partial array's literal")
+            return Type_Error{}, {}
+        }
+        if !tc_is_fixed_array(t) || tc_is_distinct(t) {
+            tc_error(k, span, TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED, type_name(t))
+            return Type_Error{}, {}
+        }
     }
+    fa: ^Type_Fixed_Array
+    if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     ts, is_scope := t.(^Type_Scope)
-    if !is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0 {
+    if fa == nil && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}, {}
     }
-    tc_struct_ensure(k, ts)
-    sd := &ts.sd
     zero := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
-    if !zero {
-        if count_required_params(ts) > 0 {
-            qualified := fmt.tprintf("%s.%s", ts.home_package, ts.source_name) if ts.home_package != "" else ts.source_name
-            tc_error(k, span, TYPE_EXPECTS_ARGS, qualified, len(ts.params), fn_params_desc(ts), 0)
-        } else if len(ts.return_types) > 0 {
-            tc_error(k, span, TYPE_LITERAL_CAN_FAIL, ts.source_name, ts.source_name)
+    sd: ^Scope_Body
+    if fa == nil {
+        tc_struct_ensure(k, ts)
+        sd = &ts.sd
+        if !zero {
+            if count_required_params(ts) > 0 {
+                qualified := fmt.tprintf("%s.%s", ts.home_package, ts.source_name) if ts.home_package != "" else ts.source_name
+                tc_error(k, span, TYPE_EXPECTS_ARGS, qualified, len(ts.params), fn_params_desc(ts), 0)
+            } else if len(ts.return_types) > 0 {
+                tc_error(k, span, TYPE_LITERAL_CAN_FAIL, ts.source_name, ts.source_name)
+            }
         }
     }
     b := tc_building(k)
@@ -324,19 +354,113 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     placed := want != .Into && temp_span != {}
     at := temp_span if into_temp || placed else span
     gl: ^Graph_Literal
+    broadcast := fa != nil && tc_is_broadcast(k, n)
     if build {
         if in_temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
-        // (Its constructor's arguments — its params' defaults — then it.)
-        args: []Operand
-        if !zero { args = tc_ctor_args(k, ts, span) }
-        if b = tc_building(k); b == nil { return t, {} }
-        gl = graph_fuse_literal(b, span, tc_name(k, ty) if ty != 0 else "", zero, t, d, args)
-        if gl == nil { tc_fail(k, "a literal the graph builds no way") }
+        if fa != nil {
+            // (An array: zero, then each element into its slot; a broadcast,
+            // its value then the fill.)
+            if !broadcast { gl = graph_fuse_literal(b, span, name, zero, t, d) }
+        } else {
+            // (Its constructor's arguments — its params' defaults — then it.)
+            args: []Operand
+            if !zero { args = tc_ctor_args(k, ts, span) }
+            if b = tc_building(k); b == nil { return t, {} }
+            gl = graph_fuse_literal(b, span, name, zero, t, d, args)
+        }
+        if gl == nil && !broadcast { tc_fail(k, "a literal the graph builds no way") }
     }
-    if !zero { tc_literal_fields(k, n, entries, sd, env, gl) }
+    if fa != nil {
+        tc_array_entries(k, n, entries, fa, t, name, env, gl, d, build && broadcast)
+    } else if !zero {
+        tc_literal_fields(k, n, entries, sd, env, gl)
+    }
     b = tc_building(k)
-    if !build || b == nil || gl == nil { return t, {} }
+    if !build || b == nil || (gl == nil && !broadcast) { return t, {} }
     return t, tc_built(k, want, in_temp, into_temp, d, t, at, placed)
+}
+
+tc_is_fixed_array :: proc(t: Type) -> bool {
+    _, ok := distinct_base(t).(^Type_Fixed_Array)
+    return ok
+}
+
+tc_is_distinct :: proc(t: Type) -> bool {
+    _, ok := t.(^Type_Distinct)
+    return ok
+}
+
+// An array literal's entries: each element into its slot, by position or
+// named by its swizzle letter (`{x = 1}`); `{all v}`, v once, then the fill.
+tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed_Array, lit_t: Type, name: string,
+                         env: ^Type_Scope, gl: ^Graph_Literal, d: Dest, fill: bool) {
+    tr := k.t
+    span := tree_span(tr, n)
+    elem_t := graph_elem_type(lit_t) if gl != nil else nil
+    if len(entries) == 1 && tr.tag[entries[0]] == .Broadcast {
+        value := Tree_Id(tr.a[entries[0]])
+        if v := tc_unparen(k, value); tr.tag[v] == .Literal && tr.a[v] == 0 { k.hint = fa.elem }
+        vt: Type
+        if fill && tc_building(k) != nil {
+            r: Fused
+            vt, r = tc_expr(k, value, env)
+            if b := tc_building(k); b != nil { graph_fuse_fill(b, span, lit_t, d, r.v) }
+        } else {
+            vt = tc_check(k, value, env)
+        }
+        if types_incompatible(fa.elem, vt) {
+            tc_error(k, span, TYPE_BROADCAST_VALUE_TYPE_EXPECTED, name, type_name(vt), type_name(fa.elem))
+            return
+        }
+        if is_infer(vt) { tc_literal_overflow(k, value, fa.elem, span) }
+        return
+    }
+    if len(entries) == 0 || len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0" { return }
+    hint_for :: proc(k: ^TC, value: Tree_Id, elem: Type) {
+        if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 && !tc_is_broadcast(k, v) { k.hint = elem }
+    }
+    if tr.tag[entries[0]] != .Named_Entry {
+        if len(entries) != fa.size {
+            tc_error(k, span, TYPE_EXPECTS_POSITIONAL_VALUES, name, fa.size, len(entries))
+            return
+        }
+        for e, i in entries {
+            hint_for(k, e, fa.elem)
+            vt: Type
+            if gl != nil && tc_building(k) != nil {
+                vt = tc_store_into(k, e, env, graph_fuse_literal_elem(gl, i, elem_t), span)
+            } else {
+                vt = tc_check(k, e, env)
+            }
+            if types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_ELEMENT_TYPE_EXPECTED, name, i, type_name(vt), type_name(fa.elem)) }
+            if is_infer(vt) { tc_literal_overflow(k, e, fa.elem, span) }
+        }
+        return
+    }
+    set := make([]bool, fa.size, context.temp_allocator)
+    for e in entries {
+        field := tc_name(k, e)
+        if len(field) != 1 || !is_swizzle_field(field, fa.size) {
+            tc_error(k, span, TYPE_FIELD_USE_SWIZZLE_COMPONENTS_WITHIN, name, field, fa.size)
+            continue
+        }
+        idx := swizzle_char_to_index(field[0])
+        if set[idx] {
+            tc_error(k, span, TYPE_FIELD_SET_MORE_THAN_ONCE, name, field)
+            continue
+        }
+        value := Tree_Id(tr.a[e])
+        hint_for(k, value, fa.elem)
+        vt: Type
+        if gl != nil && tc_building(k) != nil {
+            vt = tc_store_into(k, value, env, graph_fuse_literal_elem(gl, idx, elem_t), span)
+        } else {
+            vt = tc_check(k, value, env)
+        }
+        if types_incompatible(fa.elem, vt) { tc_error(k, span, TYPE_FIELD_TYPE_EXPECTED, name, field, type_name(vt), type_name(fa.elem)) }
+        if is_infer(vt) { tc_literal_overflow(k, value, fa.elem, span) }
+        set[idx] = true
+    }
 }
 
 // A literal's entries against its struct's fields: named, or by position.
@@ -552,6 +676,7 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt:
         return Type_Error{}, {}
     }
     if kc, is_const := k.consts[make_flat_name(sd.name, field)]; is_const {
+        k.const_nodes[n] = true
         b := tc_building(k)
         if !build || b == nil { return t, {} }
         graph_fuse_drop_since(b, mark)
@@ -563,4 +688,31 @@ tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt:
     if p == NO_VALUE { return t, {} }
     if want == .Value { return t, {v = graph_read(b, p, t, span), ok = true} }
     return t, {v = p, place = true, ok = true}
+}
+
+// The constant a write, or an address, lands in, when its target is rooted
+// at one through no pointer.
+tc_write_root_const :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
+    tr := k.t
+    cur := n
+    for {
+        inner: Tree_Id
+        #partial switch tr.tag[cur] {
+        case .Paren:
+            cur = Tree_Id(tr.a[cur])
+            continue
+        case .Field:
+            if cur in k.const_nodes { return tc_text(Token_Id(tr.b[cur])), true }
+            inner = Tree_Id(tr.a[cur])
+        case .Index, .Slice:
+            inner = Tree_Id(tr.a[cur])
+        case .Ident:
+            name := tc_name(k, cur)
+            return name, cur in k.const_nodes || name in k.consts
+        case:
+            return "", false
+        }
+        if _, is_ptr := distinct_base(tc_node_type(k, inner)).(^Type_Ptr); is_ptr { return "", false }
+        cur = inner
+    }
 }
