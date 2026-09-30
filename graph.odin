@@ -500,7 +500,7 @@ build_program_graph :: proc(b: ^Graph_Builder, programs: map[string]^Program) ->
         m := graph_node(b, .Module, .Explicit, NO_NODE, name, nil, {})
         // A module is a scope like a struct: its variables are its fields, which
         // no function sees (a function sees only its arguments).
-        for s in programs[name]^ { graph_stmt(b, s, m, {kind = .Field}) }
+        for s in programs[name]^ { graph_decl_stmt(b, s, m, {kind = .Field}) }
         graph_close(b, m)
     }
     graph_piece_end(b, 0)
@@ -596,20 +596,6 @@ graph_anchor_here :: proc(b: ^Graph_Builder, seg := -1) -> int {
     return len(s.anchors) - 1
 }
 
-// A scope built in a segment of its own, at any time: its node, then its
-// contents. Its node's parent and statement are its anchor's (graph_segment_place).
-@(private="file")
-graph_scope_segment :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, written: Written) -> int {
-    si, saved := graph_segment_enter(b)
-    saved_stmt := b.stmt
-    b.stmt = STMT_ANCHOR
-    n := graph_scope_root(b, ts, s, NO_NODE, written)
-    b.segs[si].root = n
-    graph_scope_contents(b, ts, s, n, written)
-    b.stmt = saved_stmt
-    graph_segment_leave(b, saved)
-    return si
-}
 
 // Put a scope's segment where its anchor is: its node's parent and name
 // (an instance's is its mangled name, known once checking is done), and the
@@ -901,22 +887,21 @@ graph_index :: proc(b: ^Graph_Builder) {
 
 // --- statements ---------------------------------------------------------------
 
+// A statement outside any body — a module's, a body's definition: its
+// declarations, and no code. (A body's code is the checker's, built as it is
+// checked.)
 @(private="file")
-graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site) {
-    code := b.code.active
+graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site) {
     saved_stmt := b.stmt
     b.stmt = i32(len(b.g.stmts))
     append(&b.g.stmts, Graph_Stmt{span = stmt_span(s), kind = graph_stmt_kind(s)})
     defer b.stmt = saved_stmt
-    switch v in s {
+    #partial switch v in s {
     case ^Stmt_Decl:
         if site.kind == .Field {
-            init := decl_init(v)
-            ids := make([]Node_Id, len(v.names), context.temp_allocator)
-            for name, i in v.names { ids[i] = graph_decl(b, site, parent, name, nil, v.span) }
-            if code { graph_init_many(b, ids, init, v.span) }
+            for name in v.names { graph_decl(b, site, parent, name, nil, v.span) }
         } else if len(v.checked) > 0 {
-            for inner in v.checked { graph_stmt(b, inner, parent, site) }
+            for inner in v.checked { graph_decl_stmt(b, inner, parent, site) }
         } else {
             graph_fatal(v.span, "declaration of '%s' reached the graph unchecked", v.names[0])
         }
@@ -925,65 +910,23 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
         if _, is_import := v.value.(^Expr_Include); is_import {
             graph_node(b, .Import, .Explicit, parent, v.name, t, v.span)
         } else if v.is_decl && v.target == nil {
-            d := graph_decl(b, site, parent, v.name, t, v.span)
-            if code { graph_init(b, d, v.value, v.span, v.slice_cap_expr) }
-        } else if code {
-            // `this_program = Program(…)` names the program's arena, set up at
-            // main's entry; the checker has read it (scan_allocator).
-            if v.target == nil && v.name == "this_program" { break }
-            // `_ = e` evaluates e and drops it.
-            if v.target == nil && v.name == "_" {
-                graph_value(b, v.value)
-                break
-            }
-            dest_t := v.target_type if v.target != nil else v.var_type
-            if v.target == nil {
-                // `x = void` de-inits: it writes the uninitialized value.
-                if _, is_void := v.value.(^Expr_Skip_Constructor); is_void || is_void_literal(v.value) {
-                    graph_op(b, .Write, .Explicit, v.span, nil, "", graph_var(b, v.name, NO_NODE, dest_t, v.span), graph_void(b, dest_t, v.span))
-                    break
-                }
-                graph_assign(b, graph_dest_var(v.name, NO_NODE, dest_t), v.value, v.span)
-                break
-            }
-            // The target's place first, then the value: a compound `t op= x`
-            // reads through that same place. A slice (`dst[lo:hi] = src`) is
-            // the run of elements the value's are copied into.
-            _, is_slice := v.target.(^Expr_Slice)
-            p: Operand
-            if ix, is_ix := v.target.(^Expr_Index); is_ix && is_byte_buffer(expr_type(ix.expr)) && v.assign_value_type != nil {
-                p = graph_view_place(b, ix, v.assign_value_type, v.span)   // bytes written as the value's type
-            } else if sl, is_sl := v.target.(^Expr_Slice); is_sl && is_byte_buffer(expr_type(sl.expr)) && v.assign_value_type != nil {
-                // `bytes[lo:hi] = v`, v no array: its bytes, written at lo.
-                p = graph_view_at(b, sl.expr, sl.low, v.assign_value_type, sl.is_big_endian, v.span)
-                is_slice = false
-            } else {
-                p = graph_value(b, v.target) if is_slice else graph_place(b, v.target, v.span)
-            }
-            if _, is_void := v.value.(^Expr_Skip_Constructor); is_void || is_void_literal(v.value) {
-                graph_op(b, .Write, .Explicit, v.span, nil, "", p, graph_void(b, dest_t, v.span))
-                break
-            }
-            if v.is_compound && !is_slice { b.compound = {graph_expr_key(v.target), p} }
-            graph_assign(b, Dest{kind = .At, at = p, type_ = dest_t}, v.value, v.span)
-            b.compound = {}
+            graph_decl(b, site, parent, v.name, t, v.span)
         }
+        // (`this_program = Program(…)` names the program's arena, set up at
+        // main's entry: it runs nothing here.)
     case ^Stmt_Multi_Assign:
-        for a in v.assigns { graph_stmt(b, a, parent, site) }
+        for a in v.assigns { graph_decl_stmt(b, a, parent, site) }
     case ^Stmt_Multi_Return_Assign:
         if len(v.checked) > 0 {
-            for inner in v.checked { graph_stmt(b, inner, parent, site) }
+            for inner in v.checked { graph_decl_stmt(b, inner, parent, site) }
             break
         }
-        decls := make([]Node_Id, len(v.names), context.temp_allocator)
         for name, i in v.names {
-            decls[i] = NO_NODE
             if !v.is_decl || name == "" || name == "_" { continue }
             if i < len(v.targets) && v.targets[i] != nil { continue }   // an lvalue stores
             t: Type = v.var_types[i] if i < len(v.var_types) else nil
-            decls[i] = graph_decl(b, site, parent, name, t, v.span)
+            graph_decl(b, site, parent, name, t, v.span)
         }
-        if code { graph_destructure(b, v, decls) }
     case ^Stmt_Define:
         // A constant's value is resolved before the graph: no operations.
         t := v.env_type if v.env_type != nil else v.var_type
@@ -994,26 +937,17 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
             b.const_decls[expr_identity(v.value)] = d
             b.g.const_values[d] = v.value
         }
-    case Stmt_Call:
-        if code { graph_value(b, v.expr) }
-    case Stmt_Return:
-        if code { graph_return_stmt(b, v) }
-    case Stmt_Break:
-        if code { graph_loop_exit(b, v.span, is_break = true) }
-    case Stmt_Continue:
-        if code { graph_loop_exit(b, v.span, is_break = false) }
-    case Stmt_Overload, Stmt_Module:
-        // Rules and headers: nothing declared, nothing run.
-    case ^Stmt_If:
-        graph_if(b, v, parent)
-    case ^Stmt_For:
-        graph_for(b, v, parent)
+    case Stmt_Call, Stmt_Return, Stmt_Break, Stmt_Continue, Stmt_Overload, Stmt_Module:
+        // Code outside a body runs nothing here; rules and headers declare
+        // nothing.
     case ^Stmt_Scope:
-        graph_scope(b, v, parent)
-    case ^Stmt_Defer:
-        graph_defer(b, v, parent)
-    case ^Stmt_Match:
-        graph_match(b, v, parent)
+        if v.kind == .Block {
+            n := graph_node(b, .Block, .Explicit, parent, "block", nil, v.span)
+            for st in v.body { graph_decl_stmt(b, st, n, {kind = .Local}) }
+            graph_close(b, n)
+            break
+        }
+        graph_scope_def(b, v, parent)
     case ^Stmt_Foreign:
         for &f in v.decls { graph_foreign(b, &f, parent) }
     case ^Stmt_Union_Def:
@@ -1023,8 +957,11 @@ graph_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site)
         graph_node(b, .Type_Def, .Explicit, parent, v.name, d, v.span)
     case ^Stmt_Dispatch_Def:
         graph_node(b, .Dispatch, .Explicit, parent, v.name, nil, v.span)
+    case:
+        graph_fatal(stmt_span(s), "code outside a body reached the graph")
     }
 }
+
 
 // What a statement does to the variables it writes (Stmt_Kind).
 graph_stmt_kind :: proc(s: Stmt) -> Stmt_Kind {
@@ -1045,16 +982,6 @@ graph_stmt_kind :: proc(s: Stmt) -> Stmt_Kind {
     return .Other
 }
 
-// A statement of a body. One right after a return, break or continue (the run
-// it ended is closed, and nothing follows it) is recorded as unreachable; the
-// statements after it are in its run, so only the first of each stretch is.
-@(private="file")
-graph_body_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site) {
-    if b.code.active && b.code.run == nil && graph_runs_code(s) {
-        append(&b.g.unreachable, stmt_span(s))
-    }
-    graph_stmt(b, s, parent, site)
-}
 
 // Whether a statement is code, not a definition.
 @(private="file")
@@ -1087,35 +1014,6 @@ graph_decl :: proc(b: ^Graph_Builder, site: Decl_Site, parent: Node_Id, name: st
     return d
 }
 
-// A declaration's initial value: its initializer, or — bare — zero or its
-// struct's construction (a sized slice's zero takes its capacity); `void` for
-// `= void`. A big value lives on the arena.
-@(private="file")
-graph_init :: proc(b: ^Graph_Builder, d: Node_Id, value: Expr, span: Span, cap: Expr = nil) {
-    if b.code.managed { return }
-    t := b.g.type_[d]
-    // (A `let` binds the name to memory it takes: no storage of its own.)
-    tk, is_take := value.(^Expr_Take)
-    bound := is_take && tk.keyword == "let"
-    if b.arena && b.g.kind[d] == .Local && t != nil && routes_to_arena(t) && b.g.name[d] != b.code.nrvo && !bound {   // (a field is in Self)
-        graph_op(b, .Arena_Alloc, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span))
-    }
-    if value == nil {
-        if cap != nil {   // `s : []T(n)`: the slice, with storage for n
-            n := graph_widen(b, graph_value(b, cap), slice_header_width_type, span)
-            graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, b.g.name[d], d, t, span), n)
-            return
-        }
-        graph_construct_bare(b, graph_var(b, b.g.name[d], d, t, span), t, span)
-        return
-    }
-    if _, is_void := value.(^Expr_Skip_Constructor); is_void {
-        val := graph_void(b, t, span)
-        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, b.g.name[d], d, t, span), val)
-        return
-    }
-    graph_store(b, graph_dest_var(b.g.name[d], d, t), value, span)
-}
 
 // `void`: the uninitialized value (a pointer's null), as written.
 @(private="file")
@@ -1123,43 +1021,7 @@ graph_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
     return graph_op_value(b, .Const, .Explicit, span, t, "void")
 }
 
-// Several names declared together: one value each, or one call's outputs.
-@(private="file")
-graph_init_many :: proc(b: ^Graph_Builder, ids: []Node_Id, init: []Expr, span: Span) {
-    if len(init) == 1 && len(ids) > 1 {
-        call := graph_value(b, init[0])
-        for d, i in ids {
-            dest := graph_var(b, b.g.name[d], d, b.g.type_[d], span)
-            graph_op(b, .Write, .Explicit, span, nil, "", dest, Operand{call.op, i32(i)})
-        }
-        return
-    }
-    for d, i in ids { graph_init(b, d, init[i] if i < len(init) else nil, span) }
-}
 
-// `a, b := f()` (a call's outputs) or `a, b = b, a` (all values first).
-@(private="file")
-graph_destructure :: proc(b: ^Graph_Builder, v: ^Stmt_Multi_Return_Assign, decls: []Node_Id) {
-    vals := make([]Operand, len(v.names), context.temp_allocator)
-    if len(v.values) == len(v.names) && len(v.names) > 1 {
-        for e, i in v.values { vals[i] = graph_value(b, e) }
-    } else if len(v.values) > 0 {
-        call := graph_value(b, v.values[0])
-        outs := graph_outputs_op(b, v.values[0], call)
-        for i in 0 ..< len(vals) { vals[i] = call if i == 0 else Operand{outs, i32(i)} }
-    }
-    for name, i in v.names {
-        if name == "_" || (name == "" && (i >= len(v.targets) || v.targets[i] == nil)) { continue }
-        dest: Operand
-        if i < len(v.targets) && v.targets[i] != nil {
-            dest = graph_place(b, v.targets[i], v.span)
-        } else {
-            t: Type = v.var_types[i] if i < len(v.var_types) else nil
-            dest = graph_var(b, name, decls[i], t, v.span)
-        }
-        graph_op(b, .Write, .Explicit, v.span, nil, "", dest, vals[i])
-    }
-}
 
 // The struct a bare declaration constructs, or zero for anything else. An
 // array of structs is zeroed, then each element constructed. A struct that
@@ -1276,161 +1138,7 @@ graph_store :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
 
 // --- control flow -----------------------------------------------------------
 
-@(private="file")
-graph_if :: proc(b: ^Graph_Builder, v: ^Stmt_If, parent: Node_Id) {
-    if !b.code.active { return }
-    cond := graph_value(b, v.condition)
-    then_r, join := graph_run_new(b), graph_run_new(b)
-    else_r := graph_run_new(b) if len(v.else_body) > 0 else join
-    graph_branch(b, cond, then_r, else_r, .Explicit, v.span)
-    b.code.run = then_r
-    graph_code_block(b, "if", v.body[:], parent, v.span)
-    if graph_reachable(b) { graph_jump(b, join, .Synthetic, v.span) }
-    if len(v.else_body) > 0 {
-        b.code.run = else_r
-        graph_code_block(b, "else", v.else_body[:], parent, v.span)
-        if graph_reachable(b) { graph_jump(b, join, .Synthetic, v.span) }
-    }
-    b.code.run = join
-}
 
-// A loop: runs for the check, the body and the step, then the code after it.
-// A range's end and a collection that is no plain place are evaluated once,
-// into synthetic locals, before the loop.
-@(private="file")
-graph_for :: proc(b: ^Graph_Builder, v: ^Stmt_For, parent: Node_Id) {
-    if !b.code.active { return }
-    span := v.span
-    f := graph_node(b, .Block, .Explicit, parent, "for", nil, span)
-    saved := b.code.block
-    b.code.block = f
-    defer b.code.block = saved
-    graph_frame_push(b)   // the loop's variables, before its body's scope
-    defer graph_frame_pop(b)
-
-    counter: Node_Id = NO_NODE      // the variable the loop steps
-    end_value: Expr                 // what it steps up to (range) …
-    end_slot: Node_Id = NO_NODE     // … held here when evaluated once
-    coll: Expr                      // the collection, walked each time when a plain place …
-    coll_slot: Node_Id = NO_NODE    // … or held here
-    elem: Node_Id = NO_NODE
-    if v.init != nil { graph_stmt(b, v.init, f, {kind = .Local}) }
-    if v.is_range {
-        // Both bounds at the counter's type, then the check that the range
-        // counts up (the checker rejects a constant one that doesn't), then
-        // the counter.
-        ct := v.var_type
-        counter = graph_node(b, .Local, .Explicit, f, v.loop_var, ct, span)
-        graph_bind(b, v.loop_var, counter)
-        lo := graph_range_bound(b, v.range_low, ct, span)
-        hi := graph_range_bound(b, v.range_high, ct, span)
-        if _, is_lit := v.range_high.(^Expr_Number); is_lit {
-            end_value = v.range_high
-        } else {
-            end_slot = graph_slot(b, "end", ct, span)
-            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, "end", end_slot, ct, span), hi)
-        }
-        if lo.op not_in b.g.consts || hi.op not_in b.g.consts {
-            up := graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "<=", lo, hi)
-            graph_op(b, .Assert, .Synthetic, span, nil, "range", up)
-        }
-        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.loop_var, counter, ct, span), lo)
-    } else if v.is_collection_for {
-        coll = v.collection
-        if view := graph_loop_view(v.collection); view != nil {
-            // A slice's elements as they are when the loop begins: its
-            // header — pointer and len — read once, into a view.
-            coll_slot = graph_slot(b, "items", view, span)
-            val := graph_op_value(b, .Slice, .Implied, span, view, "", graph_base_place(b, v.collection, span))
-            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, "items", coll_slot, view, span), val)
-        } else if !graph_pure_place(v.collection) {
-            coll_slot = graph_slot(b, "items", expr_type(v.collection), span)
-            graph_store(b, graph_dest_var("items", coll_slot, expr_type(v.collection)), v.collection, span)
-        }
-        if v.elem_var != "" {
-            elem = graph_node(b, .Local, .Explicit, f, v.elem_var, v.elem_type_, span)
-            graph_bind(b, v.elem_var, elem)
-        }
-        // The loop counts at the slice header's width; a named index is
-        // that count.
-        index_t := Type(slice_header_width_type)
-        if v.index_var != "" {
-            counter = graph_node(b, .Local, .Explicit, f, v.index_var, index_t, span)
-            graph_bind(b, v.index_var, counter)
-        } else {
-            counter = graph_slot(b, "index", index_t, span)
-        }
-        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, b.g.name[counter], counter, index_t, span),
-                 graph_const(b, .Synthetic, span, index_t, "0", Const_Value{}))
-    }
-
-    check, body, post, done := graph_run_new(b), graph_run_new(b), graph_run_new(b), graph_run_new(b)
-    has_post := v.post != nil || counter != NO_NODE
-    graph_jump(b, check, .Synthetic, span)
-
-    // check
-    b.code.run = check
-    if counter != NO_NODE {
-        ct := b.g.type_[counter]
-        cur := graph_read(b, graph_var(b, b.g.name[counter], counter, ct, span), ct, span)
-        bound: Operand
-        if v.is_range {
-            if end_slot != NO_NODE {
-                bound = graph_read(b, graph_var(b, "end", end_slot, b.g.type_[end_slot], span), b.g.type_[end_slot], span)
-            } else {
-                bound = graph_value(b, end_value)
-            }
-        } else {
-            bound = graph_len(b, graph_coll_place(b, coll, coll_slot, span), expr_type(coll), span)
-        }
-        cmp := graph_op_value(b, .Compare, .Synthetic, span, Type_Bool{}, "<", cur, bound)
-        graph_branch(b, cmp, body, done, .Synthetic, span)
-    } else if v.condition != nil {
-        graph_branch(b, graph_value(b, v.condition), body, done, .Explicit, span)
-    } else {
-        graph_jump(b, body, .Synthetic, span)   // `for {}`: until a break
-    }
-
-    // body
-    cont := post if has_post else check
-    b.code.run = body
-    append(&b.code.loops, Loop{cont = cont, done = done, scope = len(b.code.scopes)})
-    // The body is a block of its own: what it declares lives one iteration,
-    // the loop's variables all of them.
-    body_block := graph_node(b, .Block, .Explicit, f, "body", nil, span)
-    b.code.block = body_block
-    graph_scope_open(b, body_block, v.body[:], span)
-    if elem != NO_NODE {
-        ct := b.g.type_[counter]
-        at := graph_read(b, graph_var(b, b.g.name[counter], counter, ct, span), ct, span)
-        at = graph_widen(b, at, slice_header_width_type, span)
-        slot := graph_op_value(b, .Index, .Synthetic, span, v.elem_type_, "", graph_coll_place(b, coll, coll_slot, span), at)
-        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.elem_var, elem, v.elem_type_, span),
-                 graph_read(b, slot, v.elem_type_, span))
-    }
-    for s in v.body { graph_body_stmt(b, s, body_block, {kind = .Local}) }
-    graph_scope_close(b, span)
-    graph_close(b, body_block)
-    b.code.block = f
-    pop(&b.code.loops)
-    if graph_reachable(b) { graph_jump(b, cont, .Synthetic, span) }
-
-    // step
-    if has_post {
-        b.code.run = post
-        if v.post != nil { graph_stmt(b, v.post, f, {kind = .Local}) }
-        if counter != NO_NODE {
-            ct := b.g.type_[counter]
-            // The step can't overflow: the counter is below its bound.
-            cur := graph_read(b, graph_var(b, b.g.name[counter], counter, ct, span), ct, span)
-            next := graph_op_value(b, .Arith, .Synthetic, span, ct, "+%", cur, graph_const(b, .Synthetic, span, ct, "1", Const_Value{int = 1}))
-            graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, b.g.name[counter], counter, ct, span), next)
-        }
-        graph_jump(b, check, .Synthetic, span)
-    }
-    graph_close(b, f)
-    b.code.run = done
-}
 
 // A value at the type its use takes: a narrower number widens, implied —
 // sign- or zero-extended by its own signedness, or f32 to f64 — wherever the
@@ -1627,15 +1335,6 @@ graph_implied_oks :: proc(b: ^Graph_Builder, vals: ^[dynamic]Operand, rts: []Typ
     }
 }
 
-// A range's bound, as the loop counts: at the counter's type.
-@(private="file")
-graph_range_bound :: proc(b: ^Graph_Builder, e: Expr, counter: Type, span: Span) -> Operand {
-    v := graph_value(b, e)
-    if t := expr_type(e); t != nil && !is_infer(t) && !types_equal(t, counter) {
-        return graph_op_value(b, .Cast, .Synthetic, span, counter, type_name(counter), v)
-    }
-    return v
-}
 
 // A collection's place each time the loop needs it.
 @(private="file")
@@ -1682,123 +1381,9 @@ graph_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
     graph_jump(b, l.done if is_break else l.cont, .Explicit, span)
 }
 
-// A return has an operand for each result: the values given, then an implied
-// `Ok` for each trailing err left out.
-@(private="file")
-graph_return_stmt :: proc(b: ^Graph_Builder, v: Stmt_Return) {
-    rts := graph_result_types(b)
-    vals := make([dynamic]Operand, 0, len(rts), context.temp_allocator)
-    for e, i in v.values {
-        rt: Type = rts[i] if i < len(rts) else nil
-        // Text returned as a partial array is only its bytes: built into one
-        // (the result slot, once it's the temporary's).
-        if c, folds := graph_literal_value(e).?; folds && c.is_text && rt != nil {
-            if _, pa := distinct_base(rt).(^Type_Partial_Array); pa {
-                slot := graph_slot(b, "temp", rt, v.span)
-                graph_store(b, graph_dest_var("temp", slot, rt), e, v.span)   // (zeroed, then the text)
-                append(&vals, graph_read(b, graph_var(b, "temp", slot, rt, v.span), rt, v.span))
-                continue
-            }
-        }
-        append(&vals, graph_value_as(b, e, rt, v.span))
-    }
-    graph_implied_oks(b, &vals, rts, v.span)
-    graph_exit_scopes(b, 0, v.span)
-    graph_op(b, .Return, .Explicit, v.span, nil, "", ..vals[:])
-    graph_run_close(b)
-}
 
-// A match: a switch on the subject, one run per arm, then the code after it.
-// The subject is walked again in each arm when it is a plain place, else held
-// in a synthetic local.
-@(private="file")
-graph_match :: proc(b: ^Graph_Builder, v: ^Stmt_Match, parent: Node_Id) {
-    if !b.code.active { return }
-    span := v.span
-    _, is_union := distinct_base(expr_type(v.subject)).(^Type_Union)
-    slot: Node_Id = NO_NODE
-    if !graph_pure_place(v.subject) {
-        slot = graph_slot(b, "subject", expr_type(v.subject), span)
-        graph_store(b, graph_dest_var("subject", slot, expr_type(v.subject)), v.subject, span)
-    }
-    subject_place :: proc(b: ^Graph_Builder, v: ^Stmt_Match, slot: Node_Id) -> Operand {
-        if slot != NO_NODE { return graph_var(b, "subject", slot, b.g.type_[slot], v.span) }
-        return graph_base_place(b, v.subject, v.span)
-    }
-    ops := make([dynamic]Operand, 0, len(v.arms) + 1, context.temp_allocator)
-    if is_union {
-        append(&ops, subject_place(b, v, slot))
-    } else {
-        append(&ops, graph_read(b, subject_place(b, v, slot), expr_type(v.subject), span))
-    }
-    // Each arm's value, the else arm (last) none: the switch's default. A union
-    // arm names a variant (`.None`, `None`): its value is the variant's tag.
-    arms := make([]^Run, len(v.arms), context.temp_allocator)
-    for &arm, i in v.arms {
-        arms[i] = graph_run_new(b)
-        switch {
-        case arm.is_else:
-        case is_union:
-            tag := Const_Value{int = i128(arm.resolved_tag)}
-            append(&ops, graph_const(b, .Implied, span, graph_tag_type(expr_type(v.subject)), arm.variant, tag))
-        case arm.value != nil:
-            append(&ops, graph_value(b, arm.value))
-        case arm.variant != "":   // an enum's `.Variant`: its value
-            append(&ops, graph_const(b, .Implied, span, expr_type(v.subject), arm.variant, Const_Value{int = i128(arm.resolved_tag)}))
-        }
-    }
-    graph_switch(b, ops[:], arms, span)
-    join := graph_run_new(b)
-    for &arm, i in v.arms {
-        b.code.run = arms[i]
-        label := "else" if arm.is_else else fmt.aprintf("arm %s", arm.variant)
-        a := graph_node(b, .Block, .Explicit, parent, label, nil, span)
-        saved := b.code.block
-        b.code.block = a
-        graph_scope_open(b, a, arm.body[:], span)
-        if arm.is_union_arm && arm.bound_name != "" {
-            t := graph_arm_type(b, &arm, span)
-            bound := graph_node(b, .Local, .Explicit, a, arm.bound_name, t, span)
-            // The binding is the payload's place, not a copy.
-            payload := graph_op(b, .Variant, .Explicit, span, t, arm.bound_name, subject_place(b, v, slot))
-            b.g.refers[payload] = bound
-            graph_bind(b, arm.bound_name, bound)   // after the subject's place: it may reuse the name
-        }
-        for s in arm.body { graph_body_stmt(b, s, a, {kind = .Local}) }
-        graph_scope_close(b, span)
-        graph_close(b, a)
-        b.code.block = saved
-        if graph_reachable(b) { graph_jump(b, join, .Synthetic, span) }
-    }
-    b.code.run = join
-}
 
-// A defer's block runs at every exit of the scope it is in (Run_Defer), so its
-// code is built on its own: a run entered from the block, ending in a return.
-@(private="file")
-graph_defer :: proc(b: ^Graph_Builder, v: ^Stmt_Defer, parent: Node_Id) {
-    d := graph_node(b, .Block, .Explicit, parent, "defer", nil, v.span)
-    if b.code.active {
-        saved := graph_code_begin(b, d, "")
-        graph_code_body(b, d, v.body[:], v.span)
-        graph_code_end(b, saved)
-        append(&b.code.scopes[len(b.code.scopes) - 1].defers, d)
-    }
-    graph_close(b, d)
-}
 
-// A block of code inside the current one (an if's branch).
-@(private="file")
-graph_code_block :: proc(b: ^Graph_Builder, label: string, body: []Stmt, parent: Node_Id, span: Span) {
-    n := graph_node(b, .Block, .Explicit, parent, label, nil, span)
-    saved := b.code.block
-    b.code.block = n
-    graph_scope_open(b, n, body, span)
-    for s in body { graph_body_stmt(b, s, n, {kind = .Local}) }
-    graph_scope_close(b, span)
-    b.code.block = saved
-    graph_close(b, n)
-}
 
 // Enter a scope: an arena mark when it holds a big value. (A struct's
 // declarations are its fields: in Self, not on the arena.) Nor main's body:
@@ -1878,15 +1463,6 @@ graph_code_begin :: proc(b: ^Graph_Builder, owner: Node_Id, nrvo: string) -> Cod
     return saved
 }
 
-// The body of that code, in its own scope, ending in a return when its end is
-// reached. `stmts` are walked by the caller when nil (a fun, whose defs and
-// body are merged).
-@(private="file")
-graph_code_body :: proc(b: ^Graph_Builder, owner: Node_Id, body: []Stmt, span: Span) {
-    graph_scope_open(b, owner, body, span)
-    for s in body { graph_body_stmt(b, s, owner, {kind = .Local}) }
-    graph_code_finish(b, span)
-}
 
 @(private="file")
 graph_code_finish :: proc(b: ^Graph_Builder, span: Span) {
@@ -2288,21 +1864,6 @@ graph_aggregate :: proc(t: Type) -> bool {
     return false
 }
 
-// A store into storage that already holds a value. What graph_into builds in
-// place — zeroing it, then filling it — is built whole first, then written: it
-// may read what it replaces (`p = P{x = p.y}`, `a = [a[1], a[0]]`). The
-// emitter builds it in place when nothing it reads can be that storage.
-@(private="file")
-graph_assign :: proc(b: ^Graph_Builder, d: Dest, value: Expr, span: Span) {
-    if !graph_builds_into(b, value) {
-        graph_store(b, d, value, span)
-        return
-    }
-    t := graph_dest_type(b, d)
-    if t == nil || is_infer(t) { t = expr_type(value) }
-    val := graph_temp_into(b, value, t, span)
-    graph_op(b, .Write, .Explicit, span, nil, "", graph_dest_place(b, d, span), val)
-}
 
 // The type a destination holds: an existing place's own (a target's type as
 // the checker records it can be the whole variable's: `a[i] = x`).
@@ -2313,30 +1874,6 @@ graph_dest_type :: proc(b: ^Graph_Builder, d: Dest) -> Type {
     return d.type_
 }
 
-// Whether graph_into builds `e` in place.
-@(private="file")
-graph_builds_into :: proc(b: ^Graph_Builder, e: Expr) -> bool {
-    #partial switch v in e {
-    case ^Expr_Struct_Literal:
-        if v.override_target != "" { return false }
-        if ts, ok := v.type_.(^Type_Scope); ok && ts.kind == .Struct && !ts.is_module { return true }
-        return v.is_broadcast || graph_aggregate(v.type_)
-    case ^Expr_Array:
-        return true
-    case ^Expr_Call:
-        rf, resolved := v.resolved_func.?
-        if !resolved { return false }
-        callee := graph_callee(b, rf)
-        return callee != nil && callee.kind == .Struct
-    case ^Expr_Ident:
-        _, is_variant := v.resolved.(Resolved_Union_Variant)
-        return is_variant
-    case ^Expr_Field_Access:
-        _, is_variant := v.resolved.(Resolved_Union_Variant)
-        return is_variant
-    }
-    return false
-}
 
 // Build an aggregate into a fresh synthetic local and read it.
 @(private="file")
@@ -3359,18 +2896,11 @@ graph_one :: proc(b: ^Graph_Builder, span: Span, name: string) -> Type {
     return list[0]
 }
 
+
+// A fun or struct: its node, for each type it was checked as (a generic's
+// instances), its body put in place.
 @(private="file")
-graph_scope :: proc(b: ^Graph_Builder, s: ^Stmt_Scope, parent: Node_Id) {
-    if s.kind == .Block {
-        if b.code.active {
-            graph_code_block(b, "block", s.body[:], parent, s.span)
-        } else {
-            n := graph_node(b, .Block, .Explicit, parent, "block", nil, s.span)
-            for st in s.body { graph_stmt(b, st, n, {kind = .Local}) }
-            graph_close(b, n)
-        }
-        return
-    }
+graph_scope_def :: proc(b: ^Graph_Builder, s: ^Stmt_Scope, parent: Node_Id) {
     generic := len(s.generic_params) > 0
     list, ok := b.by_span[s.span]
     if !ok {
@@ -4756,7 +4286,7 @@ graph_fuse_place :: proc(b: ^Graph_Builder, si: int, parent: Node_Id, name: stri
     for d in defs {
         sub, saved := graph_segment_enter(b)
         b.segs[si].anchors[d.anchor].seg = sub
-        graph_stmt(b, d.s, d.parent, {kind = .Local})
+        graph_decl_stmt(b, d.s, d.parent, {kind = .Local})
         graph_segment_leave(b, saved)
     }
 }
@@ -4782,18 +4312,6 @@ stmt_key :: proc(s: Stmt) -> rawptr {
     return nil
 }
 
-// A scope's contents: its params and results, then its code.
-@(private="file")
-graph_scope_contents :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, n: Node_Id, written: Written) {
-    kind := b.g.kind[n]
-    // An instance's body is its own checked copy; a struct's is the template's,
-    // with each field typed by the instance.
-    body := ts.body[:] if kind == .Fun && written == .Synthetic else s.body[:]
-    site := Decl_Site{kind = .Local} if kind == .Fun else Decl_Site{kind = .Field, owner = ts}
-    gc := graph_contents_begin(b, ts, s, n, body)
-    graph_scope_stmts(b, s.defs[:], body, n, site)
-    graph_contents_end(b, gc)
-}
 
 // What a scope's contents change in the builder, until they end.
 @(private="file")
@@ -4854,26 +4372,6 @@ graph_nrvo :: proc(ts: ^Type_Scope, body: []Stmt) -> string {
     return find_nrvo_candidate(body) if aggregate else ""
 }
 
-// A scope's statements in written order. Its `::` definitions (nested funs,
-// structs, constants) are held apart from its body, so the two are merged by
-// position.
-@(private="file")
-graph_scope_stmts :: proc(b: ^Graph_Builder, defs, body: []Stmt, parent: Node_Id, site: Decl_Site) {
-    before :: proc(x, y: Stmt) -> bool {
-        a, c := stmt_span(x), stmt_span(y)
-        return a.line < c.line || (a.line == c.line && a.col < c.col)
-    }
-    i, j := 0, 0
-    for i < len(defs) || j < len(body) {
-        if j >= len(body) || (i < len(defs) && before(defs[i], body[j])) {
-            graph_stmt(b, defs[i], parent, site)
-            i += 1
-        } else {
-            graph_body_stmt(b, body[j], parent, site)
-            j += 1
-        }
-    }
-}
 
 // A function's results: named ones by name, else `result` (or `result1`, … when several).
 @(private="file")
