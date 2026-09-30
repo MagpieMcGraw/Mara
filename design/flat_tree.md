@@ -104,6 +104,17 @@ It keeps the type representation and replaces the checking.
   checking it finds: its annotation, else its value's (a width its uses leave open settles at
   the end, as a local's does). The old checker guessed field types from their defaults in a
   pass of their own before the body was checked; that pass has no counterpart.
+- **Generics without clones.** An instance is its template's own nodes checked again with
+  its type params bound, its graph its own; the old checker cloned the body per instance.
+  Two behaviors of the clones are kept for identical IR until the switch: an instance's
+  compound assignment walks its target again (the clone's operation held a copy of it),
+  and an instance's scope chains to its call site's (as the clone's did).
+- **Genericity read off the tree.** The old parser lowered `$T` in a signature and a
+  struct's shape or size params into generic params; the tree keeps them as written, and
+  the checker reads a definition's type params off it (tc_generic.odin).
+- **Explained differences.** A program the new checker builds differently for a reason
+  (its answer the documented one, say) is listed in `test/tc_explained.txt` with why;
+  tcdiff counts those apart from the matches.
 - **Text from tokens.** What the old parser captured as text for later phases (an assert's
   condition and sides) is read from the tokens where it is needed.
 - **Order.** Grown by what programs need, simplest first: functions over integers, locals,
@@ -178,11 +189,15 @@ It keeps the type representation and replaces the checking.
         `test/tc_match.txt` and a lost one fails the run. Any form not yet checked is an
         error saying so (`tc: … is not supported yet`), so a program fails visibly rather
         than differently.
-  - [ ] Functions over integers, locals, control flow, calls, print — done but loops,
-        compound assignment, defer, `#if` (e3f8af0: 23 programs)
+  - [x] Functions over integers, locals, control flow, calls, print (e3f8af0, 45b1397);
+        `#if` still to do
   - [ ] Structs, fields, arrays, slices, text, constants — structs, fields, literals,
-        constructors, casts done (c725a98: 46 programs)
-  - [ ] Unions and match, defaults and constructors
-  - [ ] Generics, modules and imports
+        constructors, casts, indexing, slices, module constants done (c725a98, 480ce15,
+        2e9a609, 1bf175a); local constants to do
+  - [ ] Unions and match, defaults and constructors — param defaults done (ae408b5)
+  - [ ] Generics, modules and imports — modules and `use`, aliases, dispatch and
+        overloads, generic funs, methods done (ec78de1, 525d151); generic structs to do
   - [ ] Byte views, takes, the arena, the rest
+  - Progress (2026-09-30): 111 of 288 programs match; 1 more differs as explained
+    (`test/tc_explained.txt`).
 - [ ] 4. The switch
