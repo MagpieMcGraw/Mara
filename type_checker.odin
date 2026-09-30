@@ -469,7 +469,7 @@ extract_fields_from_body :: proc(c: ^Checker, body: [dynamic]Stmt) -> [dynamic]S
             for name, i in s.names {
                 val: Expr = nil
                 if is_tuple_destructure {
-                    val = new_clone(Expr_Tuple_Default{
+                    val = new_expr(Expr_Tuple_Default{
                         source = inits[0],
                         index  = i,
                         span   = s.span,
@@ -1668,7 +1668,7 @@ Checker :: struct {
     broadcasts:      map[^Stmt_Multi_Return_Assign]^[dynamic]Stmt,   // a broadcast's copies, one per target
     calls:           map[^Expr_Call]^Call_Lowered,   // each call as the checker resolved it
     resolutions:     map[rawptr]Resolved_Name,   // what each name or member access stands for (resolution)
-    types:           map[rawptr]Type,   // each expression's type, as checked (expr_type)
+    types:           [dynamic]Type,   // each expression's type, as checked, by its id (expr_type)
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -2515,7 +2515,7 @@ resolve_type_expr_impl :: proc(te: Type_Expr, c: ^Checker = nil, span: Span = {}
                         }
                     }
                     // Not a constant — treat as runtime variable reference
-                    ident := new_clone(Expr_Ident{name = tn.name, span = tn.span})
+                    ident := new_expr(Expr_Ident{name = tn.name, span = tn.span})
                     append(&type_args, Type_Runtime_Size{expr = ident})
                     continue
                 }
@@ -2912,7 +2912,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
         if ident, ok := dv.(^Expr_Ident); ok {
             if sub, sub_ok := subst[ident.name]; sub_ok {
                 if ci, ci_ok := sub.(Type_Const_Int); ci_ok {
-                    new_num := new(Expr_Number)
+                    new_num := new_expr(Expr_Number{})
                     new_num.int_value = i128(ci.value)
                     new_num.value = f64(ci.value)
                     new_num.span = ident.span
@@ -4595,7 +4595,7 @@ lower_sized_slice :: proc(c: ^Checker, s: ^Stmt_Decl, env: ^Type_Scope) {
     arg_cap :: proc(arg: Type_Expr) -> Expr {
         #partial switch a in arg {
         case Type_Const_Value:
-            num := new(Expr_Number)
+            num := new_expr(Expr_Number{})
             num.int_value = i128(a.value)
             num.value = f64(a.value)
             num.span = a.span
@@ -4681,7 +4681,7 @@ desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
             tn, tn_ok := f.type_expr.(Type_Name)
             if !tn_ok || tn.name != param.name { continue }
             if lit == nil {
-                lit = new(Expr_Struct_Literal)
+                lit = new_expr(Expr_Struct_Literal{})
                 lit.span = s.span
             }
             append(&lit.fields, Struct_Field{name = f.name, value = clone_expr(call)})
@@ -7946,7 +7946,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                         if dot >= 0 {
                             fn_name := resolve_fn_type_name(c, tn.name, env)
                             if fn_name != "" {
-                                synth := new(Expr_Ident)
+                                synth := new_expr(Expr_Ident{})
                                 synth.name = fn_name
                                 synth.span = s.span
                                 set_expr_type(c, synth, ann_type)
@@ -8011,7 +8011,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // reassignment `x = void` keeps its void (see check_bodies).
             if s.is_decl && is_void_literal(s.value) {
                 if _, t_is_ptr := distinct_base(ann_type).(^Type_Ptr); !t_is_ptr {
-                    s.value = new_clone(Expr_Skip_Constructor{span = s.span})
+                    s.value = new_expr(Expr_Skip_Constructor{span = s.span})
                 }
             }
             // A bare reassignment (`q = expr`) carries no annotation, so
@@ -8891,7 +8891,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
             // null meaning.
             if field.default_value != nil && is_void_literal(field.default_value) {
                 if _, t_is_ptr := distinct_base(field_type).(^Type_Ptr); !t_is_ptr {
-                    field.default_value = new_clone(Expr_Skip_Constructor{span = s.span})
+                    field.default_value = new_expr(Expr_Skip_Constructor{span = s.span})
                 }
             }
             if field.default_value == nil {
@@ -11576,6 +11576,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     table.root_env = env
 
     c := Checker{ table = table }
+    resize(&c.types, int(last_expr_id) + 1)   // every parsed expression's slot
     when ODIN_DEBUG { c.once_on = os.get_env("MARA_CHECK_ONCE", context.temp_allocator) == "1" }
     checked := new(Checked_Program)
     checked.table = table
@@ -11698,7 +11699,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
                     if a, a_ok := body_stmt.(^Stmt_Assign); a_ok && a.target == nil && !a.is_decl {
                         // Bare-name reassignment: synthesise an Expr_Ident for
                         // the LHS so scan_allocator can match against `this_program`.
-                        synth := new(Expr_Ident)
+                        synth := new_expr(Expr_Ident{})
                         synth.name = a.name
                         synth.span = a.span
                         scan_allocator(&c, synth, a.value)
@@ -11994,13 +11995,18 @@ stmt_span :: proc(stmt: Stmt) -> Span {
 // Check expressions — returns the inferred type
 // ---------------------------------------------------------------------------
 
-// An expression's type, as checked: the checker's, kept by the node.
+// An expression's type, as checked: the checker's, kept by the node's id.
 expr_type :: proc(c: ^Checker, e: Expr) -> Type {
-    return c.types[expr_identity(e)]
+    id := int(expr_id(e))
+    return c.types[id] if id < len(c.types) else nil
 }
 
 set_expr_type :: proc(c: ^Checker, e: Expr, t: Type) {
-    if e != nil { c.types[expr_identity(e)] = t }
+    if e == nil { return }
+    id := int(expr_id(e))
+    if id == 0 { graph_fatal(expr_span(e)^, "an expression made without an id (new_expr)") }
+    if id >= len(c.types) { resize(&c.types, max(id + 1, 2 * len(c.types))) }
+    c.types[id] = t
 }
 
 check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
@@ -13030,13 +13036,13 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                         //   Type_Const_Expr   — anything else:    take([]T(n*2), ...), take([]T(f(x)), ...)
                         count: Expr
                         if cv, cv_ok := gi.type_args[0].(Type_Const_Value); cv_ok {
-                            num := new(Expr_Number)
+                            num := new_expr(Expr_Number{})
                             num.int_value = i128(cv.value)
                             num.value = f64(cv.value)
                             num.span = cv.span
                             count = num
                         } else if tn, tn_ok := gi.type_args[0].(Type_Name); tn_ok {
-                            count = new_clone(Expr_Ident{name = tn.name, span = tn.span})
+                            count = new_expr(Expr_Ident{name = tn.name, span = tn.span})
                         } else if ce, ce_ok := gi.type_args[0].(Type_Const_Expr); ce_ok {
                             count = ce.expr
                         }
@@ -14513,7 +14519,7 @@ substitute_underscore_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_S
         }
         // Compiler intrinsic defaults need a fresh node with the call site's span.
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
-            call_args_mut(c, e)[i] = new_clone(Expr_Compiler_Intrinsic{
+            call_args_mut(c, e)[i] = new_expr(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
                 span = ident.span,
             })
@@ -14549,7 +14555,7 @@ fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env
         // exception: they resolve to CALL-SITE info, so they get a fresh node
         // (checked in the caller's env: it is no default_value).
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
-            fresh := new_clone(Expr_Compiler_Intrinsic{
+            fresh := new_expr(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
                 span = e.span,
             })
@@ -15210,7 +15216,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
                 if ident, id_ok := call_args(c, e)[i].(^Expr_Ident); id_ok {
                     span = ident.span
                 }
-                new_arg = new_clone(Expr_Compiler_Intrinsic{
+                new_arg = new_expr(Expr_Compiler_Intrinsic{
                     kind = intr.kind,
                     span = span,
                 })
@@ -15249,7 +15255,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         new_arg: Expr
         arg_scope := callee_scope
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
-            new_arg = new_clone(Expr_Compiler_Intrinsic{
+            new_arg = new_expr(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
                 span = e.span,
             })
@@ -15701,7 +15707,7 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
             continue
         }
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
-            call_args_mut(c, e)[i] = new_clone(Expr_Compiler_Intrinsic{
+            call_args_mut(c, e)[i] = new_expr(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
                 span = ident.span,
             })
@@ -15805,9 +15811,9 @@ subscript_base_is_pure :: proc(e: Expr) -> bool {
 clone_pure_lvalue :: proc(e: Expr) -> Expr {
     #partial switch n in e {
     case ^Expr_Ident:
-        return new_clone(n^)
+        return new_expr(n^)
     case ^Expr_Field_Access:
-        return new_clone(Expr_Field_Access{expr = clone_pure_lvalue(n.expr), field = n.field, span = n.span})
+        return new_expr(Expr_Field_Access{expr = clone_pure_lvalue(n.expr), field = n.field, span = n.span})
     }
     return e
 }
@@ -15817,7 +15823,7 @@ lower_subscript_dots :: proc(c: ^Checker, base: Expr, sub: Expr) {
     #partial switch n in sub {
     case ^Expr_Ident:
         if n.is_dot && (n.name == "len" || n.name == "cap") && n not_in c.dot_refs {
-            c.dot_refs[n] = new_clone(Expr_Field_Access{expr = clone_pure_lvalue(base), field = n.name, span = n.span})
+            c.dot_refs[n] = new_expr(Expr_Field_Access{expr = clone_pure_lvalue(base), field = n.name, span = n.span})
         }
     case ^Expr_Binary:
         lower_subscript_dots(c, base, n.left)

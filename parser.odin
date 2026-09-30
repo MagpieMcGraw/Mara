@@ -182,7 +182,55 @@ Expr :: union {
     ^Expr_Try,
 }
 
+// Every expression has an id, given when it is made (new_expr): what the
+// checker finds about it is kept by it (expr_type). Ids are dense and never
+// reused; 0 is no expression's.
+Expr_Id :: distinct u32
+
+// The last id given.
+last_expr_id: Expr_Id
+
+// An expression of its own, with the next id: every expression is made
+// here, a clone too.
+new_expr :: proc(v: $T) -> ^T {
+    n := new_clone(v)
+    last_expr_id += 1
+    n.id = last_expr_id
+    return n
+}
+
+expr_id :: proc(e: Expr) -> Expr_Id {
+    switch v in e {
+    case ^Expr_Number:             return v.id
+    case ^Expr_String:             return v.id
+    case ^Expr_Char:               return v.id
+    case ^Expr_Ident:              return v.id
+    case ^Expr_Bool:               return v.id
+    case ^Expr_Skip_Constructor:   return v.id
+    case ^Expr_Unary:              return v.id
+    case ^Expr_Binary:             return v.id
+    case ^Expr_Call:               return v.id
+    case ^Expr_Array:              return v.id
+    case ^Expr_Index:              return v.id
+    case ^Expr_Slice:              return v.id
+    case ^Expr_Struct_Literal:     return v.id
+    case ^Expr_Field_Access:       return v.id
+    case ^Expr_Size_Of:            return v.id
+    case ^Expr_Assert:             return v.id
+    case ^Expr_Take:               return v.id
+    case ^Expr_If:                 return v.id
+    case ^Expr_Compiler_Intrinsic: return v.id
+    case ^Expr_Include:            return v.id
+    case ^Expr_Type_Name:          return v.id
+    case ^Expr_Tuple_Default:      return v.id
+    case ^Expr_Self:               return v.id
+    case ^Expr_Try:                return v.id
+    }
+    return 0
+}
+
 Expr_Number :: struct {
+    id: Expr_Id,
     value:     f64,    // f64 form (authoritative when is_float = true)
     int_value: i128,   // exact integer form (authoritative when is_float = false).
                        // Wide enough for u64 hex literals (`0xFFFFFFFFFFFFFFFF`) and
@@ -192,22 +240,26 @@ Expr_Number :: struct {
 }
 
 Expr_String :: struct {
+    id: Expr_Id,
     value: string,
     span:  Span,
 }
 
 Expr_Char :: struct {
+    id: Expr_Id,
     value: u8,
     span:  Span,
 }
 
 Expr_Ident :: struct {
+    id: Expr_Id,
     name:     string,
     span:     Span,
     is_dot:   bool,           // .Variant shorthand: resolve via expected type or visible-variant search
 }
 
 Expr_Unary :: struct {
+    id: Expr_Id,
     op:      Token_Kind,
     operand: Expr,
     span:    Span,
@@ -215,6 +267,7 @@ Expr_Unary :: struct {
 }
 
 Expr_Bool :: struct {
+    id: Expr_Id,
     value: bool,
     span:  Span,
 }
@@ -225,10 +278,12 @@ Expr_Bool :: struct {
 // header init) still runs; only the per-field construction logic is skipped.
 // The user takes responsibility for assigning before reading.
 Expr_Skip_Constructor :: struct {
+    id: Expr_Id,
     span:  Span,
 }
 
 Expr_Binary :: struct {
+    id: Expr_Id,
     op:          Token_Kind,
     left:        Expr,
     right:       Expr,
@@ -237,6 +292,7 @@ Expr_Binary :: struct {
 }
 
 Expr_Call :: struct {
+    id: Expr_Id,
     name:      string,
     qualifier: Expr,          // nil for unqualified, Expr_Ident for pkg.func()
     args:      [dynamic]Expr,
@@ -245,11 +301,13 @@ Expr_Call :: struct {
 }
 
 Expr_Array :: struct {
+    id: Expr_Id,
     elements: [dynamic]Expr,
     span:     Span,
 }
 
 Expr_Index :: struct {
+    id: Expr_Id,
     expr:  Expr,
     index: Expr,
     span:  Span,
@@ -260,6 +318,7 @@ Expr_Index :: struct {
 }
 
 Expr_Slice :: struct {
+    id: Expr_Id,
     expr:  Expr,   // the array/slice being sliced
     low:   Expr,   // start index (nil = 0)
     high:  Expr,   // end index (nil = len)
@@ -274,6 +333,7 @@ Struct_Field :: struct {
 }
 
 Expr_Struct_Literal :: struct {
+    id: Expr_Id,
     name:       string,               // variant name (e.g. "Circle") or "" for anonymous
     fields:     [dynamic]Struct_Field,
     positional: bool,                 // true if the fields list was parsed as positional values (name == "")
@@ -292,12 +352,14 @@ Expr_Struct_Literal :: struct {
 }
 
 Expr_Field_Access :: struct {
+    id: Expr_Id,
     expr:     Expr,
     field:    string,
     span:     Span,
 }
 
 Expr_Size_Of :: struct {
+    id: Expr_Id,
     type_expr:     Type_Expr,
     span:          Span,
 }
@@ -363,6 +425,7 @@ assert_token_text :: proc(p: ^Parser, lo, hi: int) -> string {
 // operand next to its value ("but game.running was true"); both empty
 // otherwise. On in every build mode; `-no assert` compiles them out.
 Expr_Assert :: struct {
+    id: Expr_Id,
     cond:          Expr,
     cond_text:     string,
     lhs_text:      string,
@@ -381,6 +444,7 @@ Expr_Assert :: struct {
 //                            or compile-time integer expression. The type
 //                            checker reads it as type []T, count n.
 Expr_Take :: struct {
+    id: Expr_Id,
     type_expr:     Type_Expr,
     storage:       Expr,
     count_expr:    Expr,      // set for the slice form `slice([:n]T, ...)`
@@ -389,6 +453,7 @@ Expr_Take :: struct {
 }
 
 Expr_If :: struct {
+    id: Expr_Id,
     condition: Expr,
     then_expr: Expr,
     else_expr: Expr,
@@ -406,6 +471,7 @@ Intrinsic_Kind :: enum {
 }
 
 Expr_Compiler_Intrinsic :: struct {
+    id: Expr_Id,
     kind:           Intrinsic_Kind,
     span:           Span,
 }
@@ -416,11 +482,13 @@ Expr_Compiler_Intrinsic :: struct {
 // expression positions the same way user-defined type names (Player, etc.)
 // do via Expr_Ident → env lookup → Type_Scope.
 Expr_Type_Name :: struct {
+    id: Expr_Id,
     kind: Token_Kind,   // Bool_Type / I8 / I64 / U8 / Byte / F32 / F64 / Utf8 etc.
     span: Span,
 }
 
 Expr_Include :: struct {
+    id: Expr_Id,
     path:        string,   // dotted module name: "mara.time", "gfx.vao", "camera", etc.
     is_sealed:   bool,     // `name :: sealed use path` — module reachable only via name.X (no bare-name leak)
     is_reexport: bool,     // true for `include` (re-export); false for `use` (private). Re-export adds names to the module's public surface.
@@ -436,6 +504,7 @@ Expr_Include :: struct {
 // init_n=1 and n_names>1 — the statement-level path uses Stmt_Multi_Return_Assign
 // for the same shape and doesn't need this node.
 Expr_Tuple_Default :: struct {
+    id: Expr_Id,
     source: Expr,   // shared by identity across the group
     index:  int,    // 0..N-1
     span:   Span,
@@ -449,6 +518,7 @@ Expr_Tuple_Default :: struct {
 // time, so #self in a nested fun fails the lookup — explicit ^Self params
 // are still the way to thread the instance through helpers.
 Expr_Self :: struct {
+    id: Expr_Id,
     span:  Span,
 }
 
@@ -459,6 +529,7 @@ Expr_Self :: struct {
 // that err in its own trailing slot. The expression's value is whatever the
 // inner expression yielded *without* the err slot.
 Expr_Try :: struct {
+    id: Expr_Id,
     inner: Expr,
     span:  Span,
 }
@@ -1636,7 +1707,7 @@ stmt_decl_to_bindings :: proc(decl: ^Stmt_Decl, out_bindings: ^[dynamic]Scope_Bi
     for name, i in decl.names {
         dv: Expr
         if is_tuple_destructure {
-            dv = new_clone(Expr_Tuple_Default{
+            dv = new_expr(Expr_Tuple_Default{
                 source = decl.init_values[0],
                 index  = i,
                 span   = decl.span,
@@ -2381,7 +2452,7 @@ parse_if_expr :: proc(p: ^Parser) -> Expr {
     if _, is_if := else_expr.(^Expr_If); is_if {
         parse_error(p, tok, PARSE_NESTED_IF_EXPR)
     }
-    e := new(Expr_If)
+    e := new_expr(Expr_If{})
     e.condition = condition
     e.then_expr = then_expr
     e.else_expr = else_expr
@@ -2822,7 +2893,7 @@ make_lhs_assign :: proc(lhs: Expr, value: Expr, start: Span, is_compound: bool =
 // The slice form `a[lo:hi]` is not a bind target — fails out so the caller
 // can restore and reject the statement.
 parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
-    lhs: Expr = new_clone(Expr_Ident{name = first_tok.text, span = token_span(p,first_tok)})
+    lhs: Expr = new_expr(Expr_Ident{name = first_tok.text, span = token_span(p,first_tok)})
     // (Each link reported at the chain's first token, covering it all.)
     chain :: proc(p: ^Parser, first_tok: Token) -> Span {
         s := token_span(p, first_tok)
@@ -2834,7 +2905,7 @@ parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
         case .Dot:
             advance(p) // consume '.'
             field_tok := expect_field_name(p)
-            lhs = new_clone(Expr_Field_Access{expr = lhs, field = field_tok.text, span = chain(p, first_tok)})
+            lhs = new_expr(Expr_Field_Access{expr = lhs, field = field_tok.text, span = chain(p, first_tok)})
         case .Left_Bracket:
             advance(p) // consume '['
             idx := parse_expr(p)
@@ -2842,10 +2913,10 @@ parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
                 return {}, false
             }
             advance(p) // consume ']'
-            lhs = new_clone(Expr_Index{expr = lhs, index = idx, span = chain(p, first_tok)})
+            lhs = new_expr(Expr_Index{expr = lhs, index = idx, span = chain(p, first_tok)})
         case .Caret:
             advance(p) // consume '^'
-            lhs = new_clone(Expr_Unary{op = .Caret, operand = lhs, span = chain(p, first_tok)})
+            lhs = new_expr(Expr_Unary{op = .Caret, operand = lhs, span = chain(p, first_tok)})
         case:
             return lhs, true
         }
@@ -3097,8 +3168,8 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         compound_op, _ := compound_assign_op(current_kind(p))
         op_tok := advance(p)
         rhs := parse_expr(p)
-        bin := new(Expr_Binary)
-        bin.left = new_clone(Expr_Ident{name = name_tok.text, span = token_span(p,name_tok)})
+        bin := new_expr(Expr_Binary{})
+        bin.left = new_expr(Expr_Ident{name = name_tok.text, span = token_span(p,name_tok)})
         bin.op = compound_op
         bin.right = rhs
         bin.span = token_span(p,op_tok)
@@ -3106,7 +3177,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
 
     // name[...] or name.field or name^ — could be index/field/deref assignment
     case .Left_Bracket, .Dot, .Caret:
-        lhs: Expr = new_clone(Expr_Ident{name = name_tok.text, span = token_span(p,name_tok)})
+        lhs: Expr = new_expr(Expr_Ident{name = name_tok.text, span = token_span(p,name_tok)})
 
         for current_kind(p) == .Left_Bracket || current_kind(p) == .Dot || current_kind(p) == .Caret {
             if current_kind(p) == .Left_Bracket {
@@ -3126,7 +3197,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                         target_span.tok_end = p.pos
                         advance(p) // consume '='
                         value := parse_expr(p)
-                        slice_target := new_clone(Expr_Slice{expr = lhs, low = low, high = high, span = target_span})
+                        slice_target := new_expr(Expr_Slice{expr = lhs, low = low, high = high, span = target_span})
                         return new_clone(Stmt_Assign{target = slice_target, value = value, span = start}), true
                     }
                     // Not an assignment — can't use slice syntax as an expression statement
@@ -3134,7 +3205,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                     return {}, false
                 }
                 expect(p, .Right_Bracket)
-                idx := new(Expr_Index)
+                idx := new_expr(Expr_Index{})
                 idx.expr = lhs
                 idx.index = low
                 idx.span = start
@@ -3143,7 +3214,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             } else if current_kind(p) == .Dot {
                 advance(p) // consume '.'
                 field_tok := expect_field_name(p)
-                fa := new(Expr_Field_Access)
+                fa := new_expr(Expr_Field_Access{})
                 fa.expr = lhs
                 fa.field = field_tok.text
                 fa.span = start
@@ -3151,7 +3222,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 lhs = fa
             } else if current_kind(p) == .Caret {
                 advance(p) // consume '^'
-                unary := new(Expr_Unary)
+                unary := new_expr(Expr_Unary{})
                 unary.op = .Caret
                 unary.operand = lhs
                 unary.span = start
@@ -3257,7 +3328,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             compound_op, _ := compound_assign_op(current_kind(p))
             op_tok := advance(p)
             rhs := parse_expr(p)
-            bin := new(Expr_Binary)
+            bin := new_expr(Expr_Binary{})
             bin.left = lhs
             bin.op = compound_op
             bin.right = rhs
@@ -3695,26 +3766,26 @@ parse_expr_inner :: proc(p: ^Parser, min_prec: int = 0) -> Expr {
             // any later AST traversals don't share node identity. Side-effecting
             // LHS would evaluate twice — accept that for the simple-ident case
             // that dominates bounds checks; revisit if it bites.
-            ge := new(Expr_Binary)
+            ge := new_expr(Expr_Binary{})
             ge.op = .Greater_Equal
             ge.left = left
             ge.right = lo
             ge.span = start
 
-            lt := new(Expr_Binary)
+            lt := new_expr(Expr_Binary{})
             lt.op = .Less
             lt.left = clone_expr(left)
             lt.right = hi
             lt.span = start
 
-            and_expr := new(Expr_Binary)
+            and_expr := new_expr(Expr_Binary{})
             and_expr.op = .And
             and_expr.left = ge
             and_expr.right = lt
             and_expr.span = start
 
             if is_not_in {
-                neg := new(Expr_Unary)
+                neg := new_expr(Expr_Unary{})
                 neg.op = .Not
                 neg.operand = and_expr
                 neg.span = start
@@ -3753,7 +3824,7 @@ parse_expr_inner :: proc(p: ^Parser, min_prec: int = 0) -> Expr {
         op := advance(p) // consume the operator
         right := parse_expr(p, prec + 1) // +1 for left-associativity
 
-        bin := new(Expr_Binary)
+        bin := new_expr(Expr_Binary{})
         // Wrapping operators carry the same op kind as their checked counterpart
         // plus a `wrapping` flag; all type-checking then reuses the `.Plus` etc.
         // paths and only codegen diverges (plain op, no overflow trap).
@@ -3899,7 +3970,7 @@ parse_struct_literal :: proc(p: ^Parser) -> Expr {
         }
     }
     expect(p, .Right_Brace)
-    s := new(Expr_Struct_Literal)
+    s := new_expr(Expr_Struct_Literal{})
     s.fields = fields
     s.zero_init = is_zero_init
     s.positional = is_positional
@@ -3948,7 +4019,7 @@ parse_postfix_inner :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
             // check-and-return-early sequence.
             q_span := token_span(p,current(p))
             advance(p) // consume '?'
-            try_node := new(Expr_Try)
+            try_node := new_expr(Expr_Try{})
             try_node.inner = result
             try_node.span = q_span
             result = try_node
@@ -3956,7 +4027,7 @@ parse_postfix_inner :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
             // Postfix dereference: expr^
             caret_span := token_span(p,current(p))
             advance(p) // consume '^'
-            unary := new(Expr_Unary)
+            unary := new_expr(Expr_Unary{})
             unary.op = .Caret
             unary.operand = result
             unary.span = caret_span
@@ -3976,7 +4047,7 @@ parse_postfix_inner :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
                 }
                 p.no_struct_lit = saved_nsl
                 expect(p, .Right_Bracket)
-                sl := new(Expr_Slice)
+                sl := new_expr(Expr_Slice{})
                 sl.expr = result
                 sl.high = high
                 sl.span = bracket_span
@@ -3992,7 +4063,7 @@ parse_postfix_inner :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
                     }
                     p.no_struct_lit = saved_nsl
                     expect(p, .Right_Bracket)
-                    sl := new(Expr_Slice)
+                    sl := new_expr(Expr_Slice{})
                     sl.expr = result
                     sl.low = index
                     sl.high = high
@@ -4001,7 +4072,7 @@ parse_postfix_inner :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
                 } else {
                     p.no_struct_lit = saved_nsl
                     expect(p, .Right_Bracket)
-                    idx := new(Expr_Index)
+                    idx := new_expr(Expr_Index{})
                     idx.expr = result
                     idx.index = index
                     idx.span = bracket_span
@@ -4033,7 +4104,7 @@ parse_postfix_inner :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
                 skip_newlines(p)
                 p.no_struct_lit = saved_nsl
                 expect(p, .Right_Paren)
-                call := new(Expr_Call)
+                call := new_expr(Expr_Call{})
                 call.name = field_tok.text
                 call.qualifier = result
                 call.args = args
@@ -4046,7 +4117,7 @@ parse_postfix_inner :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
                 }
                 result = call
             } else {
-                fa := new(Expr_Field_Access)
+                fa := new_expr(Expr_Field_Access{})
                 fa.expr = result
                 fa.field = field_tok.text
                 fa.span = dot_span
@@ -4255,7 +4326,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         tok := advance(p)
         f_val, i_val, err := parse_number_text(tok.text)
         report_number_parse_error(p, tok, err)
-        result = new_clone(Expr_Number{value = f_val, int_value = i_val, is_float = strings.index_byte(tok.text, '.') >= 0, span = token_span(p,tok)})
+        result = new_expr(Expr_Number{value = f_val, int_value = i_val, is_float = strings.index_byte(tok.text, '.') >= 0, span = token_span(p,tok)})
 
     case .Identifier:
         tok := advance(p)
@@ -4264,7 +4335,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             advance(p) // consume '('
             type_arg := parse_type_expr(p)
             expect(p, .Right_Paren)
-            so := new(Expr_Size_Of)
+            so := new_expr(Expr_Size_Of{})
             so.type_expr = type_arg
             so.span = token_span(p,tok)
             result = so
@@ -4279,7 +4350,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             cond := parse_expr(p)
             cond_end := p.pos
             expect(p, .Right_Paren)
-            a := new(Expr_Assert)
+            a := new_expr(Expr_Assert{})
             a.cond = cond
             a.cond_text = assert_token_text(p, cond_start, cond_end)
             // For a comparison, also capture each operand's text by splitting
@@ -4331,7 +4402,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             // `let` always requires the type-arg form — it has no LHS-cap
             // story, so a bare value source would have nowhere to derive T.
             is_one_arg := kind == "slice" && current_kind(p) != .Left_Bracket
-            tk := new(Expr_Take)
+            tk := new_expr(Expr_Take{})
             tk.keyword = kind
             tk.span = token_span(p,tok)
             if is_one_arg {
@@ -4358,7 +4429,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             // literal. Only triggered when the following token plausibly starts
             // an expression — `all(x)` stays a function call.
             val := parse_expr(p)
-            lit := new(Expr_Struct_Literal)
+            lit := new_expr(Expr_Struct_Literal{})
             lit.is_broadcast = true
             lit.broadcast_value = val
             lit.span = token_span(p,tok)
@@ -4382,7 +4453,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             skip_newlines(p)
             p.no_struct_lit = saved_nsl
             expect(p, .Right_Paren)
-            call := new(Expr_Call)
+            call := new_expr(Expr_Call{})
             call.name = tok.text
             call.args = args
             call.span = token_span(p,tok)
@@ -4401,7 +4472,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             }
             result = lit
         } else {
-            result = new_clone(Expr_Ident{name = tok.text, span = token_span(p,tok)})
+            result = new_expr(Expr_Ident{name = tok.text, span = token_span(p,tok)})
         }
 
     case .Dot:
@@ -4412,28 +4483,28 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         dot_tok := advance(p) // consume '.'
         if current_kind(p) != .Identifier {
             parse_error(p, current(p), PARSE_EXPECTED_VARIANT_NAME)
-            result = new_clone(Expr_Number{value = 0, span = token_span(p,dot_tok)})
+            result = new_expr(Expr_Number{value = 0, span = token_span(p,dot_tok)})
         } else {
             name_tok := advance(p)
-            result = new_clone(Expr_Ident{name = name_tok.text, span = token_span(p,dot_tok), is_dot = true})
+            result = new_expr(Expr_Ident{name = name_tok.text, span = token_span(p,dot_tok), is_dot = true})
         }
 
     case .True:
         tok := advance(p)
-        result = new_clone(Expr_Bool{value = true, span = token_span(p,tok)})
+        result = new_expr(Expr_Bool{value = true, span = token_span(p,tok)})
 
     case .False:
         tok := advance(p)
-        result = new_clone(Expr_Bool{value = false, span = token_span(p,tok)})
+        result = new_expr(Expr_Bool{value = false, span = token_span(p,tok)})
 
     case .String:
         tok := advance(p)
-        result = new_clone(Expr_String{value = tok.text, span = token_span(p,tok)})
+        result = new_expr(Expr_String{value = tok.text, span = token_span(p,tok)})
 
     case .Char:
         tok := advance(p)
         char_val: u8 = len(tok.text) > 0 ? tok.text[0] : 0
-        result = new_clone(Expr_Char{value = char_val, span = token_span(p,tok)})
+        result = new_expr(Expr_Char{value = char_val, span = token_span(p,tok)})
 
     case .Left_Paren:
         advance(p) // consume '('
@@ -4478,7 +4549,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             }
             p.no_struct_lit = saved_nsl
             expect(p, .Right_Bracket)
-            arr := new(Expr_Array)
+            arr := new_expr(Expr_Array{})
             arr.elements = elements
             arr.span = token_span(p,tok)
             result = arr
@@ -4493,7 +4564,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             tok := current(p)
             parse_error(p, tok, PARSE_UNEXPECTED_LBRACE_IN_EXPR)
             advance(p)
-            result = new_clone(Expr_Number{value = 0, span = start})
+            result = new_expr(Expr_Number{value = 0, span = start})
         }
 
     case .Minus:
@@ -4503,10 +4574,10 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             num_tok := advance(p)
             f_val, i_val, err := parse_number_text(num_tok.text)
             report_number_parse_error(p, num_tok, err)
-            result = new_clone(Expr_Number{value = -f_val, int_value = -i_val, is_float = strings.index_byte(num_tok.text, '.') >= 0, span = token_span(p,tok)})
+            result = new_expr(Expr_Number{value = -f_val, int_value = -i_val, is_float = strings.index_byte(num_tok.text, '.') >= 0, span = token_span(p,tok)})
         } else {
             operand := parse_primary(p)
-            unary := new(Expr_Unary)
+            unary := new_expr(Expr_Unary{})
             unary.op = .Minus
             unary.operand = operand
             unary.span = token_span(p,tok)
@@ -4519,7 +4590,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         // it stays an Expr_Unary the checker/codegen handle explicitly.
         tok := advance(p)
         operand := parse_primary(p)
-        unary := new(Expr_Unary)
+        unary := new_expr(Expr_Unary{})
         unary.op = .Minus
         unary.operand = operand
         unary.span = token_span(p,tok)
@@ -4529,7 +4600,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
     case .Not:
         tok := advance(p)
         operand := parse_primary(p)
-        unary := new(Expr_Unary)
+        unary := new_expr(Expr_Unary{})
         unary.op = .Not
         unary.operand = operand
         unary.span = token_span(p,tok)
@@ -4538,7 +4609,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
     case .Tilde:
         tok := advance(p)
         operand := parse_primary(p)
-        unary := new(Expr_Unary)
+        unary := new_expr(Expr_Unary{})
         unary.op = .Tilde
         unary.operand = operand
         unary.span = token_span(p,tok)
@@ -4553,14 +4624,14 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         operand := parse_primary(p, allow_dot = true)
         if call, call_ok := operand.(^Expr_Call); call_ok && call.qualifier != nil {
             // &obj.method(args) -> method(&obj, args)
-            addr_of := new(Expr_Unary)
+            addr_of := new_expr(Expr_Unary{})
             addr_of.op = .Ampersand
             addr_of.operand = call.qualifier
             addr_of.span = token_span(p,tok)
             call.qualifier = addr_of
             result = call
         } else {
-            unary := new(Expr_Unary)
+            unary := new_expr(Expr_Unary{})
             unary.op = .Ampersand
             unary.operand = operand
             unary.span = token_span(p,tok)
@@ -4593,13 +4664,13 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             }
             skip_newlines(p)
             expect(p, .Right_Paren)
-            call := new(Expr_Call)
+            call := new_expr(Expr_Call{})
             call.name = tok.text
             call.args = args
             call.span = token_span(p,tok)
             result = call
         } else {
-            tn := new(Expr_Type_Name)
+            tn := new_expr(Expr_Type_Name{})
             tn.kind = tok.kind
             tn.span = token_span(p,tok)
             result = tn
@@ -4609,7 +4680,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
         hash_tok := advance(p) // consume '#'
         if current_kind(p) != .Identifier {
             parse_error(p, hash_tok, PARSE_EXPECTED_HASH_NAME)
-            result = new_clone(Expr_Number{value = 0, span = token_span(p,hash_tok)})
+            result = new_expr(Expr_Number{value = 0, span = token_span(p,hash_tok)})
         } else {
             name_tok := advance(p)
             // #skip_constructor is value-position only: marks a field as
@@ -4622,9 +4693,9 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
                 // absent generic args. The node survives internally as the
                 // checker's desugar target for `= void`.
                 parse_error(p, hash_tok, PARSE_SKIP_CONSTRUCTOR_REMOVED)
-                result = new_clone(Expr_Skip_Constructor{span = token_span(p,hash_tok)})
+                result = new_expr(Expr_Skip_Constructor{span = token_span(p,hash_tok)})
             } else if name_tok.text == "self" {
-                result = new_clone(Expr_Self{span = token_span(p,hash_tok)})
+                result = new_expr(Expr_Self{span = token_span(p,hash_tok)})
             } else if name_tok.text == "big_endian" {
                 // `#big_endian buf[off]` / `#big_endian buf[lo:hi]` — decorator
                 // on a byte-buffer reinterpret read. Parsed as a prefix on a
@@ -4662,11 +4733,11 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
                     intrinsic_kind = .Mac
                 case:
                     parse_error(p, hash_tok, PARSE_UNKNOWN_INTRINSIC, name_tok.text)
-                    result = new_clone(Expr_Number{value = 0, span = token_span(p,hash_tok)})
+                    result = new_expr(Expr_Number{value = 0, span = token_span(p,hash_tok)})
                     intrinsic_ok = false
                 }
                 if intrinsic_ok {
-                    result = new_clone(Expr_Compiler_Intrinsic{
+                    result = new_expr(Expr_Compiler_Intrinsic{
                         kind = intrinsic_kind,
                         span = token_span(p,hash_tok),
                     })
@@ -4690,7 +4761,7 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             tok := current(p)
             parse_error(p, tok, PARSE_SEALED_NEEDS_USE_INCLUDE, tok.text)
             advance(p)
-            result = new_clone(Expr_Number{value = 0, span = start})
+            result = new_expr(Expr_Number{value = 0, span = start})
             return result
         }
         tok := advance(p)  // consume `use` or `include`
@@ -4705,13 +4776,13 @@ parse_primary_inner :: proc(p: ^Parser, allow_dot: bool = true) -> Expr {
             seg_tok := expect(p, .Identifier)
             path = strings.concatenate({path, ".", seg_tok.text})
         }
-        result = new_clone(Expr_Include{path = path, is_sealed = is_sealed, is_reexport = is_reexport, span = token_span(p,tok)})
+        result = new_expr(Expr_Include{path = path, is_sealed = is_sealed, is_reexport = is_reexport, span = token_span(p,tok)})
 
     case:
         tok := current(p)
         parse_error(p, tok, PARSE_UNEXPECTED_TOKEN, tok.kind, tok.text)
         advance(p)
-        result = new_clone(Expr_Number{value = 0, span = start})
+        result = new_expr(Expr_Number{value = 0, span = start})
     }
 
     // Postfix: index expressions (a[0]), field access (a.b), dereference (p^)
@@ -4741,52 +4812,52 @@ clone_stmts :: proc(stmts: [dynamic]Stmt) -> [dynamic]Stmt {
 clone_expr :: proc(e: Expr) -> Expr {
     switch v in e {
     case ^Expr_Number:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_String:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Char:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Ident:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Bool:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Skip_Constructor:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Unary:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.operand = clone_expr(v.operand)
         return c
     case ^Expr_Assert:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.cond = clone_expr(v.cond)
         return c
     case ^Expr_Binary:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.left = clone_expr(v.left)
         c.right = clone_expr(v.right)
         return c
     case ^Expr_Call:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.qualifier = clone_expr(v.qualifier)
         c.args = clone_exprs(v.args)
         return c
     case ^Expr_Array:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.elements = clone_exprs(v.elements)
         return c
     case ^Expr_Index:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.expr = clone_expr(v.expr)
         c.index = clone_expr(v.index)
         return c
     case ^Expr_Slice:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.expr = clone_expr(v.expr)
         c.low = clone_expr(v.low)
         c.high = clone_expr(v.high)
         return c
     case ^Expr_Struct_Literal:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.fields = {}
         for f in v.fields {
             append(&c.fields, Struct_Field{name = f.name, value = clone_expr(f.value)})
@@ -4794,38 +4865,38 @@ clone_expr :: proc(e: Expr) -> Expr {
         c.broadcast_value = clone_expr(v.broadcast_value)
         return c
     case ^Expr_Field_Access:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.expr = clone_expr(v.expr)
         return c
     case ^Expr_Size_Of:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Take:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.storage = clone_expr(v.storage)
         if v.count_expr != nil { c.count_expr = clone_expr(v.count_expr) }
         return c
     case ^Expr_If:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.condition = clone_expr(v.condition)
         c.then_expr = clone_expr(v.then_expr)
         c.else_expr = clone_expr(v.else_expr)
         return c
     case ^Expr_Compiler_Intrinsic:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Include:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Type_Name:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Tuple_Default:
         // Preserve `source` by reference — the whole point of this node is
         // that multiple bindings in a group share the SAME source so codegen
         // can dedup. Cloning the source here would defeat that.
-        c := new_clone(v^)
+        c := new_expr(v^)
         return c
     case ^Expr_Self:
-        return new_clone(v^)
+        return new_expr(v^)
     case ^Expr_Try:
-        c := new_clone(v^)
+        c := new_expr(v^)
         c.inner = clone_expr(v.inner)
         return c
     }
