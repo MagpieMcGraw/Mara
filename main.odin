@@ -1187,6 +1187,8 @@ main :: proc() {
 
     perf_timer_mark(&perf, "parse")
     programs, parse_errors := parse_target_files(files)
+    // MARA_TREE: the flat tree beside it (design/flat_tree.md), dumped or checked.
+    if mode := tree_mode(); mode != "" { tree_build_and_check(files, parse_errors, mode) }
 
     target_os: Target_OS = .Windows
     when ODIN_OS == .Linux  { target_os = .Linux  }
