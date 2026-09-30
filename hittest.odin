@@ -228,26 +228,13 @@ token_index_at :: proc(tokens: []Token, line, col: int) -> (int, bool) {
 
 // --- entry ------------------------------------------------------------------
 
-// Byte offset of a 1-based (line, col) in `src`, or -1 when out of range.
-@(private="file")
-offset_of :: proc(src: string, line, col: int) -> int {
-    cur, i := 1, 0
-    for i < len(src) && cur < line { if src[i] == '\n' { cur += 1 }; i += 1 }
-    if cur != line { return -1 }
-    off := i + col - 1
-    return off if off <= len(src) else -1
-}
-
 // The source text a span covers, trimmed to one line for display.
 @(private="file")
 span_text :: proc(src: string, s: Span) -> string {
     if s.end <= s.tok { return "" }
     first, last := build_tokens[s.tok], build_tokens[s.end - 1]
-    lo := offset_of(src, token_line(first), token_col(first))
-    if lo < 0 { return "" }
-    hi := offset_of(src, token_line(last), token_col(last) + len(token_text(last)))
-    multiline := token_line(last) != token_line(first)
-    if multiline || hi < 0 || hi > len(src) {
+    lo, hi := int(first.offset), int(last.offset + last.len)   // (a literal as written)
+    if multiline := strings.contains_rune(src[lo:hi], '\n'); multiline {
         // Clip to the first line and mark the truncation.
         end := lo
         for end < len(src) && src[end] != '\n' { end += 1 }
