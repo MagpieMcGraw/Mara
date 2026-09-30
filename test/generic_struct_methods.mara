@@ -1,0 +1,28 @@
+module generic_struct_methods
+// A generic struct's methods are each instance's own — registered when the
+// instance is made, checked with it, its type params seen from them — and
+// an instance declared bare runs its init (a partial array field's header
+// was never set: cap 0).
+//@ expect-output: cap 8
+//@ expect-output: stack 2 4
+//@ expect-output: floats 2.5
+Stack :: struct(item: $T) {
+	items : [..8]item
+	push :: fun(s: ^Self, v: item) {
+		s.items.len += 1
+		s.items[s.items.len - 1] = v
+	}
+	top :: fun(s: ^Self) -> item { return s.items[s.items.len - 1] }
+}
+main :: fun() {
+	st : Stack(i64)
+	print("cap", st.items.cap)
+	p := &st
+	p.push(3)
+	p.push(4)
+	print("stack", st.items.len, p.top())
+	fs : Stack(f64)
+	q := &fs
+	q.push(2.5)
+	print("floats", q.top())
+}

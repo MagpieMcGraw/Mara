@@ -638,6 +638,7 @@ Struct_Instance :: struct {
     tmpl:  Generic_Template,
     st:    ^Type_Scope,
     subst: map[string]Type,
+    defs:  [dynamic]Stmt,   // its methods (and nested types): its own copies
 }
 
 // Parallel template for `Name :: union($T: type) { ... }`. Kept separate from
@@ -2971,7 +2972,19 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
     if c.top_env != nil {
         type_env_set(c.top_env, mangled, st)
     }
-    append(&c.struct_instances, Struct_Instance{tmpl = tmpl^, st = st, subst = subst})   // (its body: check_struct_instances)
+    // Its methods: the template's, its own copies, registered now (a call
+    // names one before the body is checked) — its type params seen from
+    // them, its scope the template's.
+    if st.parent_scope == nil { st.parent_scope = tmpl.env }
+    for name, t in subst { type_env_set(st, name, t) }
+    defs := clone_stmts(tmpl.ast.defs)
+    if len(defs) > 0 {
+        saved_package := c.current_package
+        c.current_package = tmpl.home_package
+        register_scope_defs(c, st, &st.sd, defs)
+        c.current_package = saved_package
+    }
+    append(&c.struct_instances, Struct_Instance{tmpl = tmpl^, st = st, subst = subst, defs = defs})   // (its body: check_struct_instances)
 
     return st
 }
@@ -2995,17 +3008,34 @@ fuse_program_struct :: proc(c: ^Checker) {
 // template's scope, its type params bound — its graph built as it is (as a
 // generic fun's instance is). Instances are made as signatures resolve, so
 // their bodies are checked once every package's are; one may make more.
-// (A template's methods: the builder's, from the template.)
+// Its methods are checked with it, and extracted for codegen as a fun's are.
 check_struct_instances :: proc(c: ^Checker) {
     for i := 0; i < len(c.struct_instances); i += 1 {
         inst := c.struct_instances[i]
-        if len(inst.tmpl.ast.defs) > 0 || inst.tmpl.env == nil { continue }
+        if inst.tmpl.env == nil { continue }
         s := new_clone(inst.tmpl.ast^)
         s.body = clone_stmts(inst.tmpl.ast.body)
-        if inst.st.parent_scope == nil { inst.st.parent_scope = inst.tmpl.env }
+        s.defs = inst.defs
         saved_params, saved_package := c.type_params, c.current_package
         c.type_params, c.current_package = inst.subst, inst.tmpl.home_package
         check_scope_body(c, s, inst.tmpl.env, instance = &inst)
+        if c.checked != nil && len(inst.defs) > 0 { extract_scope_fun_defs(c.checked, inst.defs, inst.st, inst.tmpl.home_package) }
+        // (Its init, for codegen — as a construction call's instance has:
+        // one declared bare, `b : Buf(i64)`, runs it too, its fields' values
+        // and partial arrays' headers.)
+        if c.checked != nil {
+            if _, exists := c.checked.functions[inst.st.name]; !exists {
+                st := inst.st
+                st.home_package = inst.tmpl.home_package
+                st.body = s.body
+                st.ast = inst.tmpl.ast
+                st.origin = Origin_Source{}
+                st.body_span = inst.tmpl.ast.span
+                populate_cg_signature(st)   // Self prepended for .Struct
+                c.checked.functions[st.name] = st
+                append(&c.checked.function_order, st.name)
+            }
+        }
         c.type_params, c.current_package = saved_params, saved_package
     }
 }
@@ -14564,6 +14594,9 @@ resolve_qualified_call :: proc(
                 // (no params, or first param of a different type) leave args alone.
                 first_param_is_self := false
                 first_param_wants_ptr := false
+                // (Its signature, resolved on demand: a method named before
+                // any call resolved it — a generic struct instance's.)
+                if fn.kind == .Fun { ensure_fun_signature(c, fn) }
                 if len(fn.params) > 0 {
                     pt_inner := fn.params[0].type_
                     if pt, is_ptr := fn.params[0].type_.(^Type_Ptr); is_ptr {
