@@ -568,6 +568,7 @@ tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, n
             tc_error(k, span, TYPE_FIELD_EXPECTED, f.name, type_name(f.type_), type_name(vt))
         }
     }
+    tc_byte_view_address(k, f.type_, value)
     if is_infer(vt) { tc_literal_overflow(k, value, f.type_, span) }
 }
 

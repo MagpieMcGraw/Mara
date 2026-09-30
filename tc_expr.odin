@@ -273,7 +273,11 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     b := tc_building(k)
     if want == .None || want == .Place || b == nil { return t, {} }
     if op == .Ampersand {
-        return t, {v = graph_op_value(b, .Address, w, span, t, "", r.v), ok = true}
+        a := graph_op_value(b, .Address, w, span, t, "", r.v)
+        // (Bytes' address: a view of them where its use takes it as another
+        // pointer — tc_byte_view_address.)
+        if tc_byte_index(k, operand) { k.byte_addrs[tc_sid(k, n)] = {a.op, r.v.op} }
+        return t, {v = a, ok = true}
     }
     v := r.v
     if either { v = tc_value(k, r, operand, ot) }
@@ -609,6 +613,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
             if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
             tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at))
         }
+        tc_byte_view_address(k, pt, a)
         if is_infer(at) { tc_literal_overflow(k, a, pt, span) }
     }
     if is_struct {

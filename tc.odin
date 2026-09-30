@@ -52,6 +52,9 @@ TC :: struct {
     recv:          TC_Recv,           // the call being checked's receiver, built
     decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     size_of:       map[Tree_Id]Type,  // each size_of's type, as checked
+    byte_addrs:    map[Syntax_Id][2]Node_Id,   // each `&bytes[i]` built: its address, its element
+    arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
+    arena_env:     ^Type_Scope,       // ... and where it is written
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
 
@@ -162,6 +165,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k.std = std_fun
     k.checked_modules[main_package] = main_mod
 
+    tc_scan_allocator(k)
     k.gb = graph_builder_new(checked, tc_module_graph_decls(k))
     c.gb = k.gb
 
@@ -177,8 +181,12 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         prog_type.name = "Program"
         prog_type.home_package = main_package
         prog_type.kind = .Struct
+        if table.has_scope_allocator {
+            append(&prog_type.fields, Struct_Type_Field{name = "scope_allocator", type_ = Type_Any{}})
+            prog_type.field_map["scope_allocator"] = 0
+        }
+        prog_type.field_map["args"] = len(prog_type.fields)
         append(&prog_type.fields, Struct_Type_Field{name = "args", type_ = args_type})
-        prog_type.field_map["args"] = 0
         table.funs["Program"] = prog_type
         type_env_set(main_mod, "this_program", prog_type)
         type_env_set(main_mod, "Program", prog_type)
@@ -202,6 +210,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         checked.functions[key] = ft
     }
     tc_program_struct(k)
+    tc_validate_allocator(k)
     tc_validate_main(k, main)
 
     if c.errors == 0 {

@@ -233,6 +233,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         } else if flow == .None && !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) && !value_preserving_widen(vt, ann) {
             tc_assign_error(k, span, vt, name, ann, value)
         }
+        tc_byte_view_address(k, ann, value)
         if is_infer(vt) { tc_literal_overflow(k, value, ann, span) }
         final = ann
     } else if existing, shadowed := tc_declared_before(env, name, fields_of != nil); shadowed {
@@ -371,6 +372,7 @@ tc_declared_before :: proc(env: ^Type_Scope, name: string, in_struct: bool) -> (
 // A value written to a variable of type `existing`: checked against it.
 tc_check_write :: proc(k: ^TC, value: Tree_Id, vt, existing: Type, name: string, span: Span) {
     tc_no_literal_slice(k, existing, value, span)
+    tc_byte_view_address(k, existing, value)
     if tc_check_byte_flow(k, existing, value, vt, span) != .None { return }
     if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&
        types_incompatible(existing, vt) && !value_preserving_widen(vt, existing) {
@@ -467,7 +469,7 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         return
     }
     if name == "this_program" {
-        tc_unsupported(k, s, "an assignment to this_program")
+        tc_program_assign(k, value, env)
         return
     }
     existing, loc, found := type_env_locate(env, name)
@@ -549,6 +551,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
                     tc_error(k, span, TYPE_RETURN_TYPE_MATCH_EXPECTED, type_name(vt), type_name(want))
                 }
             }
+            tc_byte_view_address(k, want, val)
             if is_infer(vt) { tc_literal_overflow(k, val, want, span) }
         }
     }

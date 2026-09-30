@@ -126,3 +126,19 @@ tc_byte_write :: proc(k: ^TC, s, target, value: Tree_Id, place: Operand, ct, tt:
     graph_fuse_view(b, place, solidify_type(vt), big, span)
     tc_store(k, value, vt, r, Dest{kind = .At, at = place, type_ = tt}, span, settle = true)
 }
+
+// `&bytes[i]` where a pointer to another type takes it: a view of the bytes
+// as that type, its address a pointer to it (its bounds checked where made).
+tc_byte_view_address :: proc(k: ^TC, expected: Type, value: Tree_Id) {
+    pt, is_ptr := expected.(^Type_Ptr)
+    if !is_ptr { return }
+    if _, to_byte := pt.elem.(Type_Byte); to_byte { return }
+    u := tc_unparen(k, value)
+    b := tc_building(k)
+    if b == nil || k.t.tag[u] != .Unary { return }
+    ops, built := k.byte_addrs[tc_sid(k, u)]
+    if !built { return }
+    _, big := tc_byte_node(k, Tree_Id(k.t.a[u]))
+    graph_fuse_view(b, {ops[1], 0}, pt.elem, big, tree_span(k.t, u))
+    b.g.type_[ops[0]] = new_clone(Type_Ptr{elem = pt.elem})
+}

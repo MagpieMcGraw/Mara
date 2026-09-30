@@ -1,5 +1,6 @@
 addrfixedarr
 aliasprobe
+args_value
 array_field_loop
 array_param_swizzle_neg
 array_param_write_neg
@@ -18,6 +19,7 @@ assertu
 audittest
 autowiden
 bigstack_neg
+bigstack_ok
 booltest
 branchok
 broadcast_clones
@@ -64,6 +66,7 @@ erruse_neg
 erruse_ok
 erruse_shapes_neg
 esc_array_elem_neg
+esc_block_neg
 esc_block_ptr_neg
 esc_call_store_neg
 esc_decay_elem_neg
@@ -118,6 +121,7 @@ literal_ctor_args_neg
 localstruct
 mandelbrot
 mandelbrot_bench
+mandelbrot_bench_simd
 match_bare_enum
 minu16
 mixwiden
@@ -146,11 +150,14 @@ partial_array_copies
 partial_param_header_neg
 partial_param_write_neg
 patest
+pathtest
 printcheck
 ptr_slice_uninit_neg
 puretest
 qcinfer
 qual_const
+quanttest
+rectpack
 recur
 redundant_cast
 result_slot_alias
@@ -167,6 +174,7 @@ slerp
 slice_loop_view
 slice_param_header_neg
 spantest
+spec
 spread_literal
 str64agg
 strfield
@@ -175,6 +183,7 @@ tailfns
 temp_address_neg
 ternary_values
 test_empty_foreign
+test_fail
 test_match_indexed
 text_constant_views
 text_partial_array
