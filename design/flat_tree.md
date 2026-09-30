@@ -99,6 +99,13 @@ It keeps the type representation and replaces the checking.
   cloned, so there are no fresh ids and no instance copies to keep apart.
 - **The builder's keys.** The builder keys statements and expressions by an id of either
   tree's (`Syntax_Id`): the old checker passes its `Stmt_Id` / `Expr_Id`, the new its node ids.
+- **A struct's fields are its body's.** A struct's body is its constructor, checked once —
+  first, or sooner by whatever needs its fields — and each field declaration's type is what
+  checking it finds: its annotation, else its value's (a width its uses leave open settles at
+  the end, as a local's does). The old checker guessed field types from their defaults in a
+  pass of their own before the body was checked; that pass has no counterpart.
+- **Text from tokens.** What the old parser captured as text for later phases (an assert's
+  condition and sides) is read from the tokens where it is needed.
 - **Order.** Grown by what programs need, simplest first: functions over integers, locals,
   control flow, calls, print; then structs and fields, arrays and slices, text, constants,
   unions and match, defaults and constructors, generics, modules and imports, byte views,
@@ -165,10 +172,16 @@ It keeps the type representation and replaces the checking.
       labels change with the tree, and the point-query corpus stays a fixed gate through
       stage 3.
 - [ ] 3. The new checker: every program's IR, runs and diagnostics identical
-  - [ ] Scaffolding: `MARA_CHECKER=new`, builder keys neutral, a diff of the two checkers'
-        builds per program (IR, runs, diagnostics; graphs for reference)
-  - [ ] Functions over integers, locals, control flow, calls, print
-  - [ ] Structs, fields, arrays, slices, text, constants
+  - [x] Scaffolding (2026-09-30: d83ff08, e916025): `MARA_CHECKER=new`, the builder keyed
+        by `Syntax_Id`, `test/tcdiff.sh` — every program built by both checkers, a program
+        matching when its diagnostics, IR and run do; the matches are recorded in
+        `test/tc_match.txt` and a lost one fails the run. Any form not yet checked is an
+        error saying so (`tc: … is not supported yet`), so a program fails visibly rather
+        than differently.
+  - [ ] Functions over integers, locals, control flow, calls, print — done but loops,
+        compound assignment, defer, `#if` (e3f8af0: 23 programs)
+  - [ ] Structs, fields, arrays, slices, text, constants — structs, fields, literals,
+        constructors, casts done (c725a98: 46 programs)
   - [ ] Unions and match, defaults and constructors
   - [ ] Generics, modules and imports
   - [ ] Byte views, takes, the arena, the rest
