@@ -37,6 +37,7 @@ const_qualified_float
 const_runtime_neg
 const_slice_neg
 const_tables
+const_union_size
 const_write_neg
 constlit
 constmoduse

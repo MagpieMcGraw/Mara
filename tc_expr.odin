@@ -83,6 +83,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_call(k, n, env, want, w, dest, temp, temp_span)
     case .Assert:
         return tc_assert(k, n, env, want, w)
+    case .Size_Of:
+        return tc_size_of(k, n, env, want, w)
     case .Dot_Ident:
         name := tc_text(Token_Id(k.t.a[n]))
         hint := k.hint
@@ -993,4 +995,33 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
         return Type_CString{}, {v = graph_op_value(b, .Cast, w, span, Type_CString{}, name, r.v), ok = true}, true
     }
     return nil, {}, false
+}
+
+// `size_of(T)`: T's size, a constant (untyped: the width its use takes).
+tc_size_of :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+    span := tree_span(k.t, n)
+    t := tc_type(k, Tree_Id(k.t.a[n]), env, span)
+    if _, is_error := t.(Type_Error); is_error { tc_error(k, span, TYPE_SIZE_UNKNOWN_TYPE) }
+    tc_ensure_layout(k, t)
+    k.size_of[n] = t
+    b := tc_building(k)
+    if b == nil || want == .None || want == .Place { return Type_Infer_Int{}, {} }
+    return Type_Infer_Int{}, {v = graph_const(b, w, span, Type_Infer_Int{}, "size_of", graph_size_of(t, b.checked)), ok = true}
+}
+
+// A type's layout known: each struct in it checked (its fields found).
+tc_ensure_layout :: proc(k: ^TC, t: Type) {
+    #partial switch v in t {
+    case ^Type_Scope:
+        if v.kind != .Struct { return }
+        tc_struct_ensure(k, v)
+        for f in v.sd.fields { tc_ensure_layout(k, f.type_) }
+    case ^Type_Fixed_Array:   tc_ensure_layout(k, v.elem)
+    case ^Type_Partial_Array: tc_ensure_layout(k, v.elem)
+    case ^Type_Distinct:      tc_ensure_layout(k, v.base_type)
+    case ^Type_Union:
+        for _, flat in v.variant_structs {
+            if st, ok := k.table.structs[flat]; ok { tc_ensure_layout(k, st) }
+        }
+    }
 }

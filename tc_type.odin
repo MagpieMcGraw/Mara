@@ -154,6 +154,8 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
         return i64(f), true
     case .Paren:
         return tc_comptime_int(k, Tree_Id(t.a[n]), env)
+    case .Size_Of:
+        if st, measured := k.size_of[n]; measured { return i64(elem_byte_size(llvm_type_from_checker(st), k.checked)), true }
     case .Unary:
         if build_tokens[t.main[n]].kind != .Minus { return 0, false }
         v, ok := tc_comptime_int(k, Tree_Id(t.a[n]), env)
