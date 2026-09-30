@@ -77,6 +77,7 @@ Source_File :: struct {
     source:  string,           // file bytes (kept alive through lex)
     imports: [dynamic]string,  // paths from `use`/`include`/`sealed use`
     first_token, end_token: Token_Id,   // its range of build_tokens (lex_file)
+    lines:   [dynamic]u32,     // where each of its lines starts (lex_file)
     lex_errors: int,           // lexical errors (e.g. an unknown escape), counted as parse errors
 }
 

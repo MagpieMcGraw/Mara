@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 
-Token_Kind :: enum {
+Token_Kind :: enum u8 {
     EOF,
     Invalid,
 
@@ -114,14 +114,15 @@ Token_Kind :: enum {
     Newline,
 }
 
+// A token is where it is: its text is its file's source there (token_text), its
+// line and column follow from where it starts (token_line, token_col).
 Token :: struct {
-    kind: Token_Kind,
-    text: string, // slice into the source buffer; only escaped string/char literals own a copy
-    line: int,
-    col:  int,
-    id:   Token_Id,   // its index in build_tokens — lets token_span record an
-                      // extent (Span.tok) without threading ids through 87 call sites
-    file: u16,        // its file's index in build_files
+    kind:   Token_Kind,
+    file:   u16,        // its file's index in build_files
+    offset: u32,        // where it starts in its file's source
+    len:    u32,        // its length there, in bytes
+    id:     Token_Id,   // its index in build_tokens — lets token_span record an
+                        // extent (Span.tok) without threading ids through 87 call sites
 }
 
 // A token's id: its index in the build's one table of tokens, which every
@@ -132,9 +133,37 @@ Token_Id :: distinct u32
 build_tokens: [dynamic]Token
 build_files:  [dynamic]^Source_File
 
+// A string or char literal's value, decoded by the lexer (escapes, a
+// multi-line string's indent): its text as the parser reads it.
+build_literals: map[Token_Id]string
+
+// A token's text: a literal's value, else its source.
+token_text :: proc(t: Token) -> string {
+    if t.kind == .String || t.kind == .Char { return build_literals[t.id] }
+    return build_files[t.file].source[t.offset:][:t.len]
+}
+
+// Its line: the last line starting at or before it.
+token_line :: proc(t: Token) -> int {
+    lines := build_files[t.file].lines[:]
+    lo, hi := 0, len(lines)   // lines[0] = 0: every token is at or past it
+    for hi - lo > 1 {
+        mid := (lo + hi) / 2
+        if lines[mid] <= t.offset { lo = mid } else { hi = mid }
+    }
+    return lo + 1
+}
+
+// Its column, in bytes from its line's start (as the lexer counts).
+token_col :: proc(t: Token) -> int {
+    return int(t.offset - build_files[t.file].lines[token_line(t) - 1]) + 1
+}
+
 Lexer :: struct {
     source: string,
     pos:    int,
+    start:  int,      // where the token being lexed starts
+    value:  string,   // a literal's value, decoded
     line:   int,
     col:    int,
     file:   string,
@@ -280,8 +309,8 @@ lexer_advance :: proc(l: ^Lexer, n: int = 1) {
     }
 }
 
-make_token :: proc(l: ^Lexer, kind: Token_Kind, text: string, tok_line: int, tok_col: int) -> Token {
-    return Token{kind = kind, text = text, line = tok_line, col = tok_col}
+make_token :: proc(l: ^Lexer, kind: Token_Kind) -> Token {
+    return Token{kind = kind, offset = u32(l.start), len = u32(l.pos - l.start)}
 }
 
 next_token :: proc(l: ^Lexer) -> Token {
@@ -292,7 +321,7 @@ next_token :: proc(l: ^Lexer) -> Token {
 
     // Check for end of input
     if l.pos >= len(l.source) {
-        return Token{kind = .EOF, line = l.line, col = l.col}
+        return Token{kind = .EOF, offset = u32(l.pos)}
     }
 
     ch := l.source[l.pos]
@@ -305,8 +334,7 @@ next_token :: proc(l: ^Lexer) -> Token {
     }
 
     // Save position for token
-    tok_line := l.line
-    tok_col := l.col
+    l.start = l.pos
 
     // Newlines
     if ch == '\n' || ch == '\r' {
@@ -317,7 +345,7 @@ next_token :: proc(l: ^Lexer) -> Token {
         } else {
             lexer_advance(l)
         }
-        return make_token(l, .Newline, l.source[start:l.pos], tok_line, tok_col)
+        return make_token(l, .Newline)
     }
 
     // Character literals: 'c' with escape sequences
@@ -339,8 +367,8 @@ next_token :: proc(l: ^Lexer) -> Token {
             lexer_advance(l) // skip closing quote
         }
         buf := [1]u8{char_val}
-        text := strings.clone_from_bytes(buf[:])
-        return make_token(l, .Char, text, tok_line, tok_col)
+        l.value = strings.clone_from_bytes(buf[:])
+        return make_token(l, .Char)
     }
 
     // String literals: "..." with escape sequence processing.
@@ -399,8 +427,8 @@ next_token :: proc(l: ^Lexer) -> Token {
             buf = dedent_multiline_string(buf, closing_col - 1)
         }
 
-        text := strings.clone_from_bytes(buf[:])
-        return make_token(l, .String, text, tok_line, tok_col)
+        l.value = strings.clone_from_bytes(buf[:])
+        return make_token(l, .String)
     }
 
     // Numbers: consume all consecutive digits.
@@ -415,7 +443,7 @@ next_token :: proc(l: ^Lexer) -> Token {
             for l.pos < len(l.source) && (is_hex_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
                 lexer_advance(l)
             }
-            return make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
+            return make_token(l, .Number)
         }
         // Binary form `0b...` / `0B...` consumes 0/1 digits plus `_` separators
         // (e.g. `0b1010_0000`). Keeps the `0b` prefix so the parser routes to
@@ -426,7 +454,7 @@ next_token :: proc(l: ^Lexer) -> Token {
             for l.pos < len(l.source) && (l.source[l.pos] == '0' || l.source[l.pos] == '1' || l.source[l.pos] == '_') {
                 lexer_advance(l)
             }
-            return make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
+            return make_token(l, .Number)
         }
         for l.pos < len(l.source) && (is_digit(l.source[l.pos]) || l.source[l.pos] == '_') {
             lexer_advance(l)
@@ -439,7 +467,7 @@ next_token :: proc(l: ^Lexer) -> Token {
                 lexer_advance(l)
             }
         }
-        return make_token(l, .Number, l.source[start:l.pos], tok_line, tok_col)
+        return make_token(l, .Number)
     }
 
     // Identifiers: start with a letter or underscore
@@ -452,10 +480,10 @@ next_token :: proc(l: ^Lexer) -> Token {
 
         // Check for keywords
         if kind, ok := keyword_lookup(text); ok {
-            return make_token(l, kind, text, tok_line, tok_col)
+            return make_token(l, kind)
         }
 
-        return make_token(l, .Identifier, text, tok_line, tok_col)
+        return make_token(l, .Identifier)
     }
 
     // Three-character tokens (check before two-character)
@@ -464,8 +492,8 @@ next_token :: proc(l: ^Lexer) -> Token {
     if l.pos + 2 < len(l.source) {
         three := l.source[start:start+3]
         switch three {
-        case "<<=": lexer_advance(l, 3); return make_token(l, .Shift_Left_Equal,  three, tok_line, tok_col)
-        case ">>=": lexer_advance(l, 3); return make_token(l, .Shift_Right_Equal, three, tok_line, tok_col)
+        case "<<=": lexer_advance(l, 3); return make_token(l, .Shift_Left_Equal)
+        case ">>=": lexer_advance(l, 3); return make_token(l, .Shift_Right_Equal)
         }
     }
 
@@ -473,69 +501,69 @@ next_token :: proc(l: ^Lexer) -> Token {
     if l.pos + 1 < len(l.source) {
         two := l.source[start:start+2]
         switch two {
-        case "==": lexer_advance(l, 2); return make_token(l, .Equal_Equal,   two, tok_line, tok_col)
-        case "!=": lexer_advance(l, 2); return make_token(l, .Not_Equal,     two, tok_line, tok_col)
-        case "<=": lexer_advance(l, 2); return make_token(l, .Less_Equal,    two, tok_line, tok_col)
-        case ">=": lexer_advance(l, 2); return make_token(l, .Greater_Equal, two, tok_line, tok_col)
-        case "<<": lexer_advance(l, 2); return make_token(l, .Shift_Left,    two, tok_line, tok_col)
-        case ">>": lexer_advance(l, 2); return make_token(l, .Shift_Right,   two, tok_line, tok_col)
-        case "+=": lexer_advance(l, 2); return make_token(l, .Plus_Equal,    two, tok_line, tok_col)
-        case "-=": lexer_advance(l, 2); return make_token(l, .Minus_Equal,   two, tok_line, tok_col)
-        case "*=": lexer_advance(l, 2); return make_token(l, .Mul_Equal,     two, tok_line, tok_col)
-        case "+%": lexer_advance(l, 2); return make_token(l, .Wrap_Plus,     two, tok_line, tok_col)
-        case "-%": lexer_advance(l, 2); return make_token(l, .Wrap_Minus,    two, tok_line, tok_col)
-        case "*%": lexer_advance(l, 2); return make_token(l, .Wrap_Star,     two, tok_line, tok_col)
-        case "/=": lexer_advance(l, 2); return make_token(l, .Div_Equal,     two, tok_line, tok_col)
-        case "%=": lexer_advance(l, 2); return make_token(l, .Mod_Equal,     two, tok_line, tok_col)
-        case "&=": lexer_advance(l, 2); return make_token(l, .And_Equal,     two, tok_line, tok_col)
-        case "|=": lexer_advance(l, 2); return make_token(l, .Or_Equal,      two, tok_line, tok_col)
-        case "~=": lexer_advance(l, 2); return make_token(l, .Xor_Equal,     two, tok_line, tok_col)
-        case "->": lexer_advance(l, 2); return make_token(l, .Arrow,         two, tok_line, tok_col)
-        case "::": lexer_advance(l, 2); return make_token(l, .Double_Colon,  two, tok_line, tok_col)
+        case "==": lexer_advance(l, 2); return make_token(l, .Equal_Equal)
+        case "!=": lexer_advance(l, 2); return make_token(l, .Not_Equal)
+        case "<=": lexer_advance(l, 2); return make_token(l, .Less_Equal)
+        case ">=": lexer_advance(l, 2); return make_token(l, .Greater_Equal)
+        case "<<": lexer_advance(l, 2); return make_token(l, .Shift_Left)
+        case ">>": lexer_advance(l, 2); return make_token(l, .Shift_Right)
+        case "+=": lexer_advance(l, 2); return make_token(l, .Plus_Equal)
+        case "-=": lexer_advance(l, 2); return make_token(l, .Minus_Equal)
+        case "*=": lexer_advance(l, 2); return make_token(l, .Mul_Equal)
+        case "+%": lexer_advance(l, 2); return make_token(l, .Wrap_Plus)
+        case "-%": lexer_advance(l, 2); return make_token(l, .Wrap_Minus)
+        case "*%": lexer_advance(l, 2); return make_token(l, .Wrap_Star)
+        case "/=": lexer_advance(l, 2); return make_token(l, .Div_Equal)
+        case "%=": lexer_advance(l, 2); return make_token(l, .Mod_Equal)
+        case "&=": lexer_advance(l, 2); return make_token(l, .And_Equal)
+        case "|=": lexer_advance(l, 2); return make_token(l, .Or_Equal)
+        case "~=": lexer_advance(l, 2); return make_token(l, .Xor_Equal)
+        case "->": lexer_advance(l, 2); return make_token(l, .Arrow)
+        case "::": lexer_advance(l, 2); return make_token(l, .Double_Colon)
         }
     }
 
     // Single-character tokens
     lexer_advance(l)
     switch ch {
-    case '=': return make_token(l, .Equals,        l.source[start:l.pos], tok_line, tok_col)
-    case '<': return make_token(l, .Less,           l.source[start:l.pos], tok_line, tok_col)
-    case '>': return make_token(l, .Greater,        l.source[start:l.pos], tok_line, tok_col)
-    case '+': return make_token(l, .Plus,           l.source[start:l.pos], tok_line, tok_col)
-    case '-': return make_token(l, .Minus,          l.source[start:l.pos], tok_line, tok_col)
-    case '*': return make_token(l, .Star,           l.source[start:l.pos], tok_line, tok_col)
-    case '/': return make_token(l, .Slash,          l.source[start:l.pos], tok_line, tok_col)
-    case '%': return make_token(l, .Modulo,         l.source[start:l.pos], tok_line, tok_col)
-    case '(': return make_token(l, .Left_Paren,     l.source[start:l.pos], tok_line, tok_col)
-    case ')': return make_token(l, .Right_Paren,    l.source[start:l.pos], tok_line, tok_col)
-    case '{': return make_token(l, .Left_Brace,     l.source[start:l.pos], tok_line, tok_col)
-    case '}': return make_token(l, .Right_Brace,    l.source[start:l.pos], tok_line, tok_col)
-    case '[': return make_token(l, .Left_Bracket,   l.source[start:l.pos], tok_line, tok_col)
-    case ']': return make_token(l, .Right_Bracket,  l.source[start:l.pos], tok_line, tok_col)
-    case ',': return make_token(l, .Comma,          l.source[start:l.pos], tok_line, tok_col)
+    case '=': return make_token(l, .Equals)
+    case '<': return make_token(l, .Less)
+    case '>': return make_token(l, .Greater)
+    case '+': return make_token(l, .Plus)
+    case '-': return make_token(l, .Minus)
+    case '*': return make_token(l, .Star)
+    case '/': return make_token(l, .Slash)
+    case '%': return make_token(l, .Modulo)
+    case '(': return make_token(l, .Left_Paren)
+    case ')': return make_token(l, .Right_Paren)
+    case '{': return make_token(l, .Left_Brace)
+    case '}': return make_token(l, .Right_Brace)
+    case '[': return make_token(l, .Left_Bracket)
+    case ']': return make_token(l, .Right_Bracket)
+    case ',': return make_token(l, .Comma)
     case '.':
         // .. is the (exclusive) range operator. The legacy `..<` form was
         // dropped — `..` is the only spelling. Use `n+1` on the upper bound
         // when you want to include the endpoint.
         if l.pos < len(l.source) && l.source[l.pos] == '.' {
             lexer_advance(l) // consume second '.'
-            return make_token(l, .Dot_Dot, l.source[start:l.pos], tok_line, tok_col)
+            return make_token(l, .Dot_Dot)
         }
-        return make_token(l, .Dot, l.source[start:l.pos], tok_line, tok_col)
-    case ':': return make_token(l, .Colon,          l.source[start:l.pos], tok_line, tok_col)
-    case ';': return make_token(l, .Semicolon,     l.source[start:l.pos], tok_line, tok_col)
-    case '!': return make_token(l, .Bang,           l.source[start:l.pos], tok_line, tok_col)
-    case '?': return make_token(l, .Question,       l.source[start:l.pos], tok_line, tok_col)
-    case '&': return make_token(l, .Ampersand,      l.source[start:l.pos], tok_line, tok_col)
-    case '|': return make_token(l, .Pipe,            l.source[start:l.pos], tok_line, tok_col)
-    case '~': return make_token(l, .Tilde,           l.source[start:l.pos], tok_line, tok_col)
-    case '^': return make_token(l, .Caret,           l.source[start:l.pos], tok_line, tok_col)
-    case '#': return make_token(l, .Hash,            l.source[start:l.pos], tok_line, tok_col)
-    case '$': return make_token(l, .Dollar,          l.source[start:l.pos], tok_line, tok_col)
-    case '@': return make_token(l, .At,              l.source[start:l.pos], tok_line, tok_col)
+        return make_token(l, .Dot)
+    case ':': return make_token(l, .Colon)
+    case ';': return make_token(l, .Semicolon)
+    case '!': return make_token(l, .Bang)
+    case '?': return make_token(l, .Question)
+    case '&': return make_token(l, .Ampersand)
+    case '|': return make_token(l, .Pipe)
+    case '~': return make_token(l, .Tilde)
+    case '^': return make_token(l, .Caret)
+    case '#': return make_token(l, .Hash)
+    case '$': return make_token(l, .Dollar)
+    case '@': return make_token(l, .At)
     }
 
-    return make_token(l, .Invalid, l.source[start:l.pos], tok_line, tok_col)
+    return make_token(l, .Invalid)
 }
 
 // Tokenize the entire source into a heap-allocated token array. Returns a
@@ -548,12 +576,16 @@ lex_file :: proc(f: ^Source_File) {
     if len(build_files) > int(max(u16)) { fmt.eprintln("mara: too many source files"); os.exit(1) }
     file := u16(len(build_files))
     append(&build_files, f)
+    if len(f.source) > int(max(u32)) { fmt.eprintfln("mara: %s is too big", f.path); os.exit(1) }
+    append(&f.lines, 0)
+    for c, i in transmute([]u8)f.source { if c == '\n' { append(&f.lines, u32(i + 1)) } }
     l := lexer_init(f.source, f.path)
     f.first_token = Token_Id(len(build_tokens))
     for {
         tok := next_token(&l)
         tok.id = Token_Id(len(build_tokens))   // stamp before append: its id is the current length
         tok.file = file
+        if tok.kind == .String || tok.kind == .Char { build_literals[tok.id] = l.value }
         append(&build_tokens, tok)
         if tok.kind == .EOF { break }
     }

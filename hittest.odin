@@ -210,7 +210,7 @@ hit_stmt :: proc(s: Stmt, i: int, out: ^[dynamic]Hit) {
 token_index_at :: proc(tokens: []Token, line, col: int) -> (int, bool) {
     if len(tokens) == 0 { return 0, false }
     before :: proc(t: Token, line, col: int) -> bool {
-        return t.line < line || (t.line == line && t.col <= col)
+        return token_line(t) < line || (token_line(t) == line && token_col(t) <= col)
     }
     lo, hi, best := 0, len(tokens) - 1, -1
     for lo <= hi {
@@ -220,7 +220,7 @@ token_index_at :: proc(tokens: []Token, line, col: int) -> (int, bool) {
     if best < 0 { return 0, false }
     // Landing on an earlier line means the cursor sits before the first token of
     // its own line (leading indentation). Prefer that line's first token.
-    if tokens[best].line != line && best + 1 < len(tokens) && tokens[best + 1].line == line {
+    if token_line(tokens[best]) != line && best + 1 < len(tokens) && token_line(tokens[best + 1]) == line {
         return best + 1, true
     }
     return best, true
@@ -243,10 +243,10 @@ offset_of :: proc(src: string, line, col: int) -> int {
 span_text :: proc(src: string, s: Span) -> string {
     if s.end <= s.tok { return "" }
     first, last := build_tokens[s.tok], build_tokens[s.end - 1]
-    lo := offset_of(src, first.line, first.col)
+    lo := offset_of(src, token_line(first), token_col(first))
     if lo < 0 { return "" }
-    hi := offset_of(src, last.line, last.col + len(last.text))
-    multiline := last.line != first.line
+    hi := offset_of(src, token_line(last), token_col(last) + len(token_text(last)))
+    multiline := token_line(last) != token_line(first)
     if multiline || hi < 0 || hi > len(src) {
         // Clip to the first line and mark the truncation.
         end := lo
@@ -326,7 +326,7 @@ ask_at_point :: proc(programs: map[string]^Program,
     }
     if len(hits) == 0 {
         return fmt.tprintf("%s:%d:%d — token '%s', but no AST node covers it\n",
-                           want, line, col, tokens[tok_i].text), false
+                           want, line, col, token_text(tokens[tok_i])), false
     }
 
     // Widest first: containment is nested, so this reads outermost → innermost.
@@ -340,7 +340,7 @@ ask_at_point :: proc(programs: map[string]^Program,
     }
 
     sb := strings.builder_make()
-    fmt.sbprintf(&sb, "%s:%d:%d  token '%s'\n\n", want, line, col, tokens[tok_i].text)
+    fmt.sbprintf(&sb, "%s:%d:%d  token '%s'\n\n", want, line, col, token_text(tokens[tok_i]))
     prev: Span
     for h in hits {
         if h.span.tok == prev.tok && h.span.end == prev.end { continue }  // defs/body overlap
