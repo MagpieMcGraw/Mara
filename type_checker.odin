@@ -334,8 +334,8 @@ call_return_list :: proc(c: ^Checker, e: Expr, env: ^Type_Scope) -> []Type {
     call, ok := e.(^Expr_Call)
     if !ok { return nil }
     // Prefer the resolved flat name (set by check_expr) over the AST name.
-    lookup_name := call_name(call)
-    if rf, rf_ok := call.resolved_func.?; rf_ok && rf.name != "" {
+    lookup_name := call_name(c, call)
+    if rf, rf_ok := call_lowered(c, call).resolved.?; rf_ok && rf.name != "" {
         lookup_name = rf.name
     }
     if lookup_name == "" { return nil }
@@ -1666,6 +1666,7 @@ Checker :: struct {
     destructure_types: map[^Stmt_Multi_Return_Assign]^[dynamic]Type,   // ... each destructure's, per name
     decls:           map[^Stmt_Decl]^Decl_Lowered,   // each declaration as the checker reads it
     broadcasts:      map[^Stmt_Multi_Return_Assign]^[dynamic]Stmt,   // a broadcast's copies, one per target
+    calls:           map[^Expr_Call]^Call_Lowered,   // each call as the checker resolved it
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -1837,22 +1838,22 @@ check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
 // Render a readable source-level name for an expression used in a diagnostic —
 // e.g. `dst_x`, `glyphs[i].x`, `ttf.head`. Returns "" for expressions with no
 // natural name (literals, calls, arithmetic) so callers can omit the clause.
-expr_diag_name :: proc(e: Expr) -> string {
+expr_diag_name :: proc(c: ^Checker, e: Expr) -> string {
     #partial switch v in e {
     case ^Expr_Ident:
         return v.name
     case ^Expr_Field_Access:
-        base := expr_diag_name(v.expr)
+        base := expr_diag_name(c, v.expr)
         if base == "" { return v.field }
         return fmt.tprintf("%s.%s", base, v.field)
     case ^Expr_Index:
-        base := expr_diag_name(v.expr)
+        base := expr_diag_name(c, v.expr)
         if base == "" { return "" }
-        idx := expr_diag_name(v.index)
+        idx := expr_diag_name(c, v.index)
         if idx == "" { return base }
         return fmt.tprintf("%s[%s]", base, idx)
     case ^Expr_Call:
-        if call_name(v) != "" { return fmt.tprintf("%s()", call_name(v)) }
+        if call_name(c, v) != "" { return fmt.tprintf("%s()", call_name(c, v)) }
     }
     return ""
 }
@@ -1861,20 +1862,20 @@ expr_diag_name :: proc(e: Expr) -> string {
 // numeric than `target` can hold — the operands that pushed a compound
 // expression past the assignment's width. Each renders as "name (type)". Used
 // to point a numeric-mismatch error at where the offending width entered.
-collect_wide_sources :: proc(e: Expr, target: Type, out: ^[dynamic]string) {
+collect_wide_sources :: proc(c: ^Checker, e: Expr, target: Type, out: ^[dynamic]string) {
     #partial switch v in e {
     case ^Expr_Binary:
-        collect_wide_sources(v.left, target, out)
-        collect_wide_sources(v.right, target, out)
+        collect_wide_sources(c, v.left, target, out)
+        collect_wide_sources(c, v.right, target, out)
     case ^Expr_Unary:
-        collect_wide_sources(v.operand, target, out)
+        collect_wide_sources(c, v.operand, target, out)
     case:
         p := expr_type_ptr(e)
         if p == nil { return }
         t := p^
         if t == nil || !is_numeric(t) || is_infer(t) { return }
         if !types_incompatible(target, t) || value_preserving_widen(t, target) { return }
-        name := expr_diag_name(e)
+        name := expr_diag_name(c, e)
         if name == "" { return }
         entry := fmt.tprintf("%s (%s)", name, type_name(t))
         for s in out^ { if s == entry { return } }   // dedup
@@ -1885,10 +1886,10 @@ collect_wide_sources :: proc(e: Expr, target: Type, out: ^[dynamic]string) {
 // "atlas.per_row (i64), atlas.cell (i64)" for the operands of `e` that don't
 // fit `target`, or "" if none are nameable. Best-effort: literals and
 // unnameable sub-expressions are skipped.
-wide_source_clause :: proc(e: Expr, target: Type) -> string {
+wide_source_clause :: proc(c: ^Checker, e: Expr, target: Type) -> string {
     srcs: [dynamic]string
     defer delete(srcs)
-    collect_wide_sources(e, target, &srcs)
+    collect_wide_sources(c, e, target, &srcs)
     if len(srcs) == 0 { return "" }
     return strings.join(srcs[:], ", ")
 }
@@ -1897,7 +1898,7 @@ wide_source_clause :: proc(e: Expr, target: Type) -> string {
 // <sources>" trailer that names the wide operands when the RHS is a compound
 // expression whose extra width traces to named sub-expressions.
 emit_assign_var_error :: proc(c: ^Checker, span: Span, val_type: Type, name: string, target: Type, rhs: Expr) {
-    if clause := wide_source_clause(rhs, target); clause != "" {
+    if clause := wide_source_clause(c, rhs, target); clause != "" {
         check_error(c, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM,
             type_name(val_type), name, type_name(target), clause)
     } else {
@@ -1909,8 +1910,8 @@ emit_assign_var_error :: proc(c: ^Checker, span: Span, val_type: Type, name: str
 // "name (type)" when the source expression has a nameable form, else just the
 // bare type. Used by assignment/field diagnostics so the offending variable is
 // visible next to its inferred type.
-assign_source_desc :: proc(e: Expr, t: Type) -> string {
-    n := expr_diag_name(e)
+assign_source_desc :: proc(c: ^Checker, e: Expr, t: Type) -> string {
+    n := expr_diag_name(c, e)
     if n == "" { return type_name(t) }
     return fmt.tprintf("%s (%s)", n, type_name(t))
 }
@@ -1919,86 +1920,86 @@ assign_source_desc :: proc(e: Expr, t: Type) -> string {
 // `Expr_Self`. Returns the call's name on first hit. DFS order means
 // nested-most hits first — `wrap(view_and_projections(#self))` reports
 // "view_and_projections" (the actual #self consumer), not the wrapper.
-find_self_call_name :: proc(e: Expr) -> (name: string, found: bool) {
+find_self_call_name :: proc(c: ^Checker, e: Expr) -> (name: string, found: bool) {
     if e == nil { return "", false }
     #partial switch v in e {
     case ^Expr_Call:
-        for arg in call_args(v) {
-            if n, ok := find_self_call_name(arg); ok { return n, true }
+        for arg in call_args(c, v) {
+            if n, ok := find_self_call_name(c, arg); ok { return n, true }
         }
-        for arg in call_args(v) {
+        for arg in call_args(c, v) {
             if _, is_self := arg.(^Expr_Self); is_self {
-                return call_name(v), true
+                return call_name(c, v), true
             }
         }
     case ^Expr_Binary:
-        if n, ok := find_self_call_name(v.left); ok { return n, true }
-        return find_self_call_name(v.right)
+        if n, ok := find_self_call_name(c, v.left); ok { return n, true }
+        return find_self_call_name(c, v.right)
     case ^Expr_Unary:
-        return find_self_call_name(v.operand)
+        return find_self_call_name(c, v.operand)
     case ^Expr_Field_Access:
-        return find_self_call_name(v.expr)
+        return find_self_call_name(c, v.expr)
     case ^Expr_Index:
-        if n, ok := find_self_call_name(v.expr); ok { return n, true }
-        return find_self_call_name(v.index)
+        if n, ok := find_self_call_name(c, v.expr); ok { return n, true }
+        return find_self_call_name(c, v.index)
     case ^Expr_Slice:
-        if n, ok := find_self_call_name(v.expr); ok { return n, true }
-        if n, ok := find_self_call_name(v.low); ok { return n, true }
-        return find_self_call_name(v.high)
+        if n, ok := find_self_call_name(c, v.expr); ok { return n, true }
+        if n, ok := find_self_call_name(c, v.low); ok { return n, true }
+        return find_self_call_name(c, v.high)
     case ^Expr_Struct_Literal:
         for f in v.fields {
-            if n, ok := find_self_call_name(f.value); ok { return n, true }
+            if n, ok := find_self_call_name(c, f.value); ok { return n, true }
         }
         if v.is_broadcast {
-            return find_self_call_name(v.broadcast_value)
+            return find_self_call_name(c, v.broadcast_value)
         }
     case ^Expr_Array:
         for elem in v.elements {
-            if n, ok := find_self_call_name(elem); ok { return n, true }
+            if n, ok := find_self_call_name(c, elem); ok { return n, true }
         }
     case ^Expr_If:
-        if n, ok := find_self_call_name(v.then_expr); ok { return n, true }
-        return find_self_call_name(v.else_expr)
+        if n, ok := find_self_call_name(c, v.then_expr); ok { return n, true }
+        return find_self_call_name(c, v.else_expr)
     case ^Expr_Take:
-        return find_self_call_name(v.storage)
+        return find_self_call_name(c, v.storage)
     case ^Expr_Tuple_Default:
-        return find_self_call_name(v.source)
+        return find_self_call_name(c, v.source)
     }
     return "", false
 }
 
 // True if `#self` appears anywhere in `e`. Used to catch the inline form
 // (`x := #self.fov_y * 2`) that doesn't go through a function call.
-contains_self_anywhere :: proc(e: Expr) -> bool {
+contains_self_anywhere :: proc(c: ^Checker, e: Expr) -> bool {
     if e == nil { return false }
     #partial switch v in e {
     case ^Expr_Self:
         return true
     case ^Expr_Call:
-        for arg in call_args(v) { if contains_self_anywhere(arg) { return true } }
+        for arg in call_args(c, v) { if contains_self_anywhere(c, arg) { return true } }
     case ^Expr_Binary:
-        return contains_self_anywhere(v.left) || contains_self_anywhere(v.right)
+        return contains_self_anywhere(c, v.left) || contains_self_anywhere(c, v.right)
     case ^Expr_Unary:
-        return contains_self_anywhere(v.operand)
+        return contains_self_anywhere(c, v.operand)
     case ^Expr_Field_Access:
-        return contains_self_anywhere(v.expr)
+        return contains_self_anywhere(c, v.expr)
     case ^Expr_Index:
-        return contains_self_anywhere(v.expr) || contains_self_anywhere(v.index)
+        return contains_self_anywhere(c, v.expr) || contains_self_anywhere(c, v.index)
     case ^Expr_Slice:
-        return contains_self_anywhere(v.expr) || contains_self_anywhere(v.low) || contains_self_anywhere(v.high)
+        return contains_self_anywhere(c, v.expr) || contains_self_anywhere(c, v.low) || contains_self_anywhere(c, v.high)
     case ^Expr_Struct_Literal:
-        for f in v.fields { if contains_self_anywhere(f.value) { return true } }
-        if v.is_broadcast { return contains_self_anywhere(v.broadcast_value) }
+        for f in v.fields { if contains_self_anywhere(c, f.value) { return true } }
+        if v.is_broadcast { return contains_self_anywhere(c, v.broadcast_value) }
     case ^Expr_Array:
-        for elem in v.elements { if contains_self_anywhere(elem) { return true } }
+        for elem in v.elements { if contains_self_anywhere(c, elem) { return true } }
     case ^Expr_If:
-        return contains_self_anywhere(v.condition) ||
-               contains_self_anywhere(v.then_expr) ||
-               contains_self_anywhere(v.else_expr)
+        return contains_self_anywhere(c, v.condition) ||
+               contains_self_anywhere(c, v.then_expr) ||
+               contains_self_anywhere(c, v.else_expr)
     case ^Expr_Take:
-        return contains_self_anywhere(v.storage)
+        return contains_self_anywhere(c, v.storage)
     case ^Expr_Tuple_Default:
-        return contains_self_anywhere(v.source)
+        return contains_self_anywhere(c, v.source)
     }
     return false
 }
@@ -2031,12 +2032,12 @@ check_early_self_decls :: proc(c: ^Checker, body: [dynamic]Stmt) {
         if len(decl_init(c, decl)) == 0 { continue }
         if !has_decl_after[i] { continue }
         for init in decl_init(c, decl) {
-            if call_name, ok := find_self_call_name(init); ok {
+            if call_name, ok := find_self_call_name(c, init); ok {
                 check_warning(c, decl.span,
                     TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS,
                     call_name)
                 break
-            } else if contains_self_anywhere(init) {
+            } else if contains_self_anywhere(c, init) {
                 names := strings.join(decl.names[:], ", ")
                 defer delete(names)
                 check_warning(c, decl.span,
@@ -3490,9 +3491,9 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
         // Args were consumed as generic bindings, not field initializers.
         // Clear them and rewrite the call as a parameterless Foo() on the
         // instantiated struct's flat name — same shape Point() takes.
-        call_args_mut(e)^ = {}
-        e.lowered_name = st.name
-        e.resolved_func = Resolved_Func{name = st.name, callee = st}
+        call_args_mut(c, e)^ = {}
+        call_lowered(c, e).name = st.name
+        call_lowered(c, e).resolved = Resolved_Func{name = st.name, callee = st}
 
         // Codegen needs an init function for the instantiated struct so the
         // call site has something to call. Type-position uses (e.g. `var
@@ -3522,7 +3523,7 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     // Step 3: Verify all type params were resolved
     for param in tmpl.generic_params {
         if subst[param.name] == nil {
-            check_error(c, e.span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, param.name, call_name(e))
+            check_error(c, e.span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, param.name, call_name(c, e))
             return Type_Error{}
         }
     }
@@ -3566,12 +3567,12 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     // Step 6: Resolve the concrete function type
     fun_type_raw, ok := type_env_get(env, mangled)
     if !ok {
-        check_error(c, e.span, TYPE_FAILED_INSTANTIATE_GENERIC_FUNCTION, call_name(e))
+        check_error(c, e.span, TYPE_FAILED_INSTANTIATE_GENERIC_FUNCTION, call_name(c, e))
         return Type_Error{}
     }
     fun_type, fun_ok := fun_type_raw.(^Type_Scope)
     if !fun_ok {
-        check_error(c, e.span, TYPE_FAILED_INSTANTIATE_GENERIC_FUNCTION, call_name(e))
+        check_error(c, e.span, TYPE_FAILED_INSTANTIATE_GENERIC_FUNCTION, call_name(c, e))
         return Type_Error{}
     }
     // Generic constructor call: e.g. Pair(int)(1, 2)
@@ -3581,9 +3582,9 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     }
 
     // Step 7: Rewrite the call to target the mangled name
-    e.lowered_name = mangled
+    call_lowered(c, e).name = mangled
     fn_flat_name := make_flat_name(tmpl.home_package, mangled)
-    e.resolved_func = Resolved_Func{name = fn_flat_name, callee = fun_type}
+    call_lowered(c, e).resolved = Resolved_Func{name = fn_flat_name, callee = fun_type}
 
     // Step 8: Validate arg count matches concrete param count
     if len(args) != len(fun_type.params) {
@@ -4692,7 +4693,7 @@ desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
                 lowered.type_args = {}
                 for a in gi.type_args { append(&lowered.type_args, a) }
             }
-            lowered.type_args[arg_i] = Type_Name{name = call_name(call), span = ce.span}
+            lowered.type_args[arg_i] = Type_Name{name = call_name(c, call), span = ce.span}
         }
     }
     if lit != nil {
@@ -5491,19 +5492,19 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Scope
     // Call expressions: look up the callee's Type_Scope in the env.
     //   struct constructor (kind=.Struct with params)  → the struct type itself
     //   function call       (kind=.Fun with returns)   → primary return type
-    if call, ok := value.(^Expr_Call); ok && call_name(call) != "" {
+    if call, ok := value.(^Expr_Call); ok && call_name(c, call) != "" {
         // Primitive cast: f32(x) → f32, i32(x) → i32. Must precede the env
         // lookup — the cast name isn't a function symbol, so the lookup would
         // miss and the proc would silently fall through to Type_Any.
-        if ct, is_cast := cast_result_type(call_name(call)); is_cast {
+        if ct, is_cast := cast_result_type(call_name(c, call)); is_cast {
             return ct
         }
         lookup := proc(env: ^Type_Scope, name: string) -> (Type, bool) {
             return type_env_get(env, name)
         }
-        t, t_ok := lookup(env, call_name(call))
+        t, t_ok := lookup(env, call_name(c, call))
         if !t_ok && c.current_package != "" {
-            t, t_ok = lookup(env, make_flat_name(c.current_package, call_name(call)))
+            t, t_ok = lookup(env, make_flat_name(c.current_package, call_name(c, call)))
         }
         if t_ok {
             if ft, ft_ok := t.(^Type_Scope); ft_ok {
@@ -5519,10 +5520,10 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Scope
     // i32 result would size the field as i64. A fallible constructor inner
     // yields Self (the struct).
     if try_node, ok := value.(^Expr_Try); ok {
-        if call, call_ok := try_node.inner.(^Expr_Call); call_ok && call_name(call) != "" {
-            t, t_ok := type_env_get(env, call_name(call))
+        if call, call_ok := try_node.inner.(^Expr_Call); call_ok && call_name(c, call) != "" {
+            t, t_ok := type_env_get(env, call_name(c, call))
             if !t_ok && c.current_package != "" {
-                t, t_ok = type_env_get(env, make_flat_name(c.current_package, call_name(call)))
+                t, t_ok = type_env_get(env, make_flat_name(c.current_package, call_name(c, call)))
             }
             if t_ok {
                 if fnt, fnt_ok := t.(^Type_Scope); fnt_ok {
@@ -5591,10 +5592,10 @@ infer_field_type_from_default :: proc(c: ^Checker, value: Expr, env: ^Type_Scope
     // source is the broadcast case (`a, b := 1 << 16` — three names sharing
     // one scalar default), so each binding takes the source's type directly.
     if td, ok := value.(^Expr_Tuple_Default); ok {
-        if call, call_ok := td.source.(^Expr_Call); call_ok && call_name(call) != "" {
-            t, t_ok := type_env_get(env, call_name(call))
+        if call, call_ok := td.source.(^Expr_Call); call_ok && call_name(c, call) != "" {
+            t, t_ok := type_env_get(env, call_name(c, call))
             if !t_ok && c.current_package != "" {
-                t, t_ok = type_env_get(env, make_flat_name(c.current_package, call_name(call)))
+                t, t_ok = type_env_get(env, make_flat_name(c.current_package, call_name(c, call)))
             }
             if t_ok {
                 if fnt, fnt_ok := t.(^Type_Scope); fnt_ok && fnt.kind == .Fun {
@@ -6180,6 +6181,59 @@ decl_cap :: proc(c: ^Checker, s: ^Stmt_Decl) -> Expr {
     return s.slice_cap_expr
 }
 
+// A call as the checker resolved it — read through call_name / call_args /
+// call_qualifier, which fall back to the source until a lowering is written:
+//   name:             the target after resolution (dispatch pick, generic
+//                     instance, module-flattened or method name)
+//   args:             the arguments as the callee receives them — a method's
+//                     receiver first, `_` and missing trailing args filled
+//                     with defaults; valid when args_lowered
+//   qualifier_folded: the qualifier was folded into the name or the args
+//   resolved:         what it runs (UFCS, package resolution)
+//   fn_value:         a function value's signature, when the callee is one
+Call_Lowered :: struct {
+    name:             string,
+    args:             [dynamic]Expr,
+    args_lowered:     bool,
+    qualifier_folded: bool,
+    resolved:         Maybe(Resolved_Func),
+    fn_value:         ^Type_Scope,
+}
+
+call_lowered :: proc(c: ^Checker, e: ^Expr_Call) -> ^Call_Lowered {
+    if l, ok := c.calls[e]; ok { return l }
+    l := new(Call_Lowered)
+    c.calls[e] = l
+    return l
+}
+
+call_name :: proc(c: ^Checker, e: ^Expr_Call) -> string {
+    if l, ok := c.calls[e]; ok && l.name != "" { return l.name }
+    return e.name
+}
+
+call_args :: proc(c: ^Checker, e: ^Expr_Call) -> [dynamic]Expr {
+    if l, ok := c.calls[e]; ok && l.args_lowered { return l.args }
+    return e.args
+}
+
+call_qualifier :: proc(c: ^Checker, e: ^Expr_Call) -> Expr {
+    if l, ok := c.calls[e]; ok && l.qualifier_folded { return nil }
+    return e.qualifier
+}
+
+// The lowered argument list, for a pass that rewrites it: a copy of the source
+// arguments on first use, so the source list is never touched.
+call_args_mut :: proc(c: ^Checker, e: ^Expr_Call) -> ^[dynamic]Expr {
+    l := call_lowered(c, e)
+    if !l.args_lowered {
+        l.args = make([dynamic]Expr, 0, len(e.args) + 1)
+        append(&l.args, ..e.args[:])
+        l.args_lowered = true
+    }
+    return &l.args
+}
+
 // A broadcast destructure's copies (`a, b := 0`): one assignment per target.
 broadcast_stmts :: proc(c: ^Checker, s: ^Stmt_Multi_Return_Assign) -> ^[dynamic]Stmt {
     if l, ok := c.broadcasts[s]; ok { return l }
@@ -6421,7 +6475,7 @@ fuse_builds_into :: proc(c: ^Checker, e: Expr) -> bool {
     case ^Expr_Struct_Literal: return v not_in c.overrides
     case ^Expr_Array:          return true
     case ^Expr_Call:
-        rf, resolved := v.resolved_func.?
+        rf, resolved := call_lowered(c, v).resolved.?
         return resolved && rf.callee != nil && rf.callee.kind == .Struct
     case ^Expr_Ident:
         _, is_variant := v.resolved.(Resolved_Union_Variant)
@@ -7704,9 +7758,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 // Its arena's arguments are read at main's entry, before any
                 // code runs: checked, so their names resolve (the size is a
                 // constant the codegen folds).
-                if outer, ok := s.value.(^Expr_Call); ok && call_name(outer) == "Program" && len(call_args(outer)) > 0 {
-                    if arena, is_call := call_args(outer)[0].(^Expr_Call); is_call {
-                        for a in call_args(arena) { check_expr(c, a, env) }
+                if outer, ok := s.value.(^Expr_Call); ok && call_name(c, outer) == "Program" && len(call_args(c, outer)) > 0 {
+                    if arena, is_call := call_args(c, outer)[0].(^Expr_Call); is_call {
+                        for a in call_args(c, arena) { check_expr(c, a, env) }
                     }
                 }
                 continue
@@ -9385,7 +9439,7 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
                     _, is_void := rt.(Type_Void)
                     _, is_errd := rt.(Type_Error)
                     if !is_void && !is_errd {
-                        check_error(c, s.span, TYPE_DISCARDED_RETURN, call_name(call))
+                        check_error(c, s.span, TYPE_DISCARDED_RETURN, call_name(c, call))
                     }
                 }
                 // A NAMED struct-literal statement whose name resolved to nothing
@@ -10461,7 +10515,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
                 // Size comes from field type; bounds checked at runtime
             } else if !coerce_deferred(c, val_type, ft, s.span) && types_incompatible(ft, val_type) && !value_preserving_widen(val_type, ft) {
                 check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
-                    assign_source_desc(s.value, val_type), expr_diag_name(fa_expr), type_name(ft))
+                    assign_source_desc(c, s.value, val_type), expr_diag_name(c, fa_expr), type_name(ft))
             }
             // Check that infer literal fits in the field type
             if is_infer(val_type) {
@@ -10526,7 +10580,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         assign_types(c, s).target = field_type
         if !coerce_deferred(c, val_type, field_type, s.span) && types_incompatible(field_type, val_type) && !is_infer(val_type) && !value_preserving_widen(val_type, field_type) {
             check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
-                assign_source_desc(s.value, val_type), expr_diag_name(fa_expr), type_name(field_type))
+                assign_source_desc(c, s.value, val_type), expr_diag_name(c, fa_expr), type_name(field_type))
         }
         if is_infer(val_type) {
             check_literal_overflow(c, s.value, field_type, s.span)
@@ -11575,16 +11629,16 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         if !id_ok || ident.name != "this_program" { return }
         // Drill: `this_program = Program(<arena_ctor_or_type>)`.
         outer_call, outer_ok := value.(^Expr_Call)
-        if !outer_ok || call_name(outer_call) != "Program" { return }
-        if len(call_args(outer_call)) == 0 { return } // Program() -> void default
+        if !outer_ok || call_name(c, outer_call) != "Program" { return }
+        if len(call_args(c, outer_call)) == 0 { return } // Program() -> void default
         // The arena spec is the first arg. Two valid shapes: another call
         // (the shortcut form: Arena_Debug(50 * MB)) or a bare ident (just
         // the type). Either way, the arena type's NAME is what we record.
-        arena_arg := call_args(outer_call)[0]
+        arena_arg := call_args(c, outer_call)[0]
         c.table.has_scope_allocator = true
         if inner_call, ic_ok := arena_arg.(^Expr_Call); ic_ok {
-            c.table.scope_allocator_name = call_name(inner_call)
-            c.table.scope_allocator_args = call_args(inner_call)
+            c.table.scope_allocator_name = call_name(c, inner_call)
+            c.table.scope_allocator_args = call_args(c, inner_call)
         } else if inner_ident, ii_ok := arena_arg.(^Expr_Ident); ii_ok {
             c.table.scope_allocator_name = inner_ident.name
         }
@@ -13747,7 +13801,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
     check_args_n :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_Scope, n: int) {
         if len(args) != n {
             check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_2,
-                call_name(e), n, n == 1 ? "" : "s", len(args))
+                call_name(c, e), n, n == 1 ? "" : "s", len(args))
         } else {
             for arg in args {
                 check_call_arg(c, arg, env)
@@ -13761,7 +13815,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         return pt
     }
 
-    switch call_name(e) {
+    switch call_name(c, e) {
     case "len":
         if len(args) != 1 {
             check_error(c, e.span, TYPE_LEN_EXPECTS_ARGUMENT, len(args))
@@ -13918,7 +13972,7 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         // only feed argument positions — binding it is caught by the
         // cstring storage ban.
         if len(args) != 1 {
-            check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, call_name(e), len(args))
+            check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, call_name(c, e), len(args))
             return Type_CString{}, true
         }
         src_type := check_call_arg(c, args[0], env)
@@ -13961,9 +14015,9 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         }
         return false
     }
-    if is_type_cast(call_name(e)) {
+    if is_type_cast(call_name(c, e)) {
         if len(args) != 1 {
-            check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, call_name(e), len(args))
+            check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, call_name(c, e), len(args))
             return Type_Error{}, true
         }
         src_type := check_call_arg(c, args[0], env)
@@ -13974,14 +14028,14 @@ check_builtin_call :: proc(c: ^Checker, e: ^Expr_Call, args: []Expr, env: ^Type_
         // literal/const ascriptions, distinct unwraps, and the byte/u8/utf8
         // trio. Widening casts are left alone — their removability is
         // context-dependent (see WARN_REDUNDANT_CAST).
-        if target_t, t_ok := cast_result_type(call_name(e)); t_ok {
+        if target_t, t_ok := cast_result_type(call_name(c, e)); t_ok {
             if cast_target_same_as_operand(src_type, target_t) {
-                operand := expr_diag_name(args[0])
+                operand := expr_diag_name(c, args[0])
                 if operand == "" { operand = "the operand" }
-                check_warning(c, e.span, WARN_REDUNDANT_CAST, call_name(e), operand, call_name(e))
+                check_warning(c, e.span, WARN_REDUNDANT_CAST, call_name(c, e), operand, call_name(c, e))
             }
         }
-        switch call_name(e) {
+        switch call_name(c, e) {
         case "int":
             check_error(c, e.span, TYPE_TYPE_INT_RESERVED_USE_I64)
             return Type_Error{}, true
@@ -14470,10 +14524,10 @@ count_required_params :: proc(fun_type: ^Type_Scope) -> int {
 // Mutates e.args in-place; the caller resyncs check_args afterward to keep
 // both views consistent.
 substitute_underscore_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, param_offset: int, display_name: string) {
-    for i in 0..<len(call_args(e)) {
+    for i in 0..<len(call_args(c, e)) {
         param_idx := i + param_offset
         if param_idx >= len(fun_type.params) { break }
-        ident, id_ok := call_args(e)[i].(^Expr_Ident)
+        ident, id_ok := call_args(c, e)[i].(^Expr_Ident)
         if !id_ok || ident.name != "_" { continue }
         def := fun_type.params[param_idx].default_value
         if def == nil {
@@ -14483,12 +14537,12 @@ substitute_underscore_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_S
         }
         // Compiler intrinsic defaults need a fresh node with the call site's span.
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
-            call_args_mut(e)[i] = new_clone(Expr_Compiler_Intrinsic{
+            call_args_mut(c, e)[i] = new_clone(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
                 span = ident.span,
             })
         } else {
-            call_args_mut(e)[i] = def
+            call_args_mut(c, e)[i] = def
         }
     }
 }
@@ -14512,7 +14566,7 @@ fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env
     // function's DEFINITION, so its names resolve there, not in the caller's
     // `env` (a default naming a module const would bind to whatever the caller
     // has under that name).
-    for i := len(call_args(e)); i < len(fun_type.params); i += 1 {
+    for i := len(call_args(c, e)); i < len(fun_type.params); i += 1 {
         def := fun_type.params[i].default_value
         if def == nil { continue }
         // Compiler intrinsic defaults (#caller_name / #caller_span) are the one
@@ -14523,11 +14577,11 @@ fill_default_args :: proc(c: ^Checker, e: ^Expr_Call, fun_type: ^Type_Scope, env
                 kind = intr.kind,
                 span = e.span,
             })
-            append(call_args_mut(e), Expr(fresh))
+            append(call_args_mut(c, e), Expr(fresh))
             continue
         }
         // A regular default: the node shared by every call site.
-        append(call_args_mut(e), def)
+        append(call_args_mut(c, e), def)
     }
 }
 
@@ -14609,7 +14663,7 @@ fuse_builtin :: proc(c: ^Checker, e: ^Expr_Call, fc: ^Fuse_Call, t: Type, want: 
     }
     vals := make([]Operand, len(fc.args), context.temp_allocator)
     for r, i in fc.args { vals[i] = r.v }
-    name := call_name(e)
+    name := call_name(c, e)
     if _, is_cast := cast_result_type(name); is_cast {
         fuse_done(c, graph_op_value(b, .Cast, fc.w, e.span, t, name, ..vals))
         return
@@ -14632,7 +14686,7 @@ fuse_builtin :: proc(c: ^Checker, e: ^Expr_Call, fc: ^Fuse_Call, t: Type, want: 
             return
         }
         base := fc.args[0].v
-        if _, is_self := call_args(e)[0].(^Expr_Self); !is_self {
+        if _, is_self := call_args(c, e)[0].(^Expr_Self); !is_self {
             if pt, is_ptr := distinct_base(at).(^Type_Ptr); is_ptr {
                 base = graph_op_value(b, .Deref, .Implied, e.span, pt.elem, "", base)
             }
@@ -14706,7 +14760,7 @@ check_call_args :: proc(c: ^Checker, args: []Expr, fun_type: ^Type_Scope, displa
             }
             if !is_byte_reinterpret && !coerce_deferred(c, arg_type, fun_type.params[i].type_, span) && types_incompatible(fun_type.params[i].type_, arg_type) && !value_preserving_widen(arg_type, fun_type.params[i].type_) {
                 arg_clause := ""
-                if an := expr_diag_name(arg); an != "" {
+                if an := expr_diag_name(c, arg); an != "" {
                     arg_clause = fmt.tprintf(" ('%s')", an)
                 }
                 check_error(c, span, TYPE_ARGUMENT_EXPECTED,
@@ -14789,14 +14843,14 @@ resolve_qualified_call :: proc(
 
     // Type-qualified call (TypeName.method or mod.func) — check before
     // check_expr to avoid "type is not a value" errors.
-    if ident, ok := call_qualifier(e).(^Expr_Ident); ok {
+    if ident, ok := call_qualifier(c, e).(^Expr_Ident); ok {
         qual_type, qual_found := type_env_get(env, ident.name)
         if qual_found {
             if qual_sd := as_scope_body(qual_type); qual_sd != nil {
-                if fn, found := qual_sd.functions[call_name(e)]; found && fn != nil {
+                if fn, found := qual_sd.functions[call_name(c, e)]; found && fn != nil {
                     fn_type = fn
                     resolution = Resolved_Func{name = fn.name}
-                    e.lowered_name = fn.name
+                    call_lowered(c, e).name = fn.name
 
                     // Both type qualifiers (TypeName.method) and value qualifiers
                     // (instance.method, where instance has a struct type) bind the
@@ -14835,38 +14889,38 @@ resolve_qualified_call :: proc(
                             if first_param_wants_ptr && !qual_is_ptr {
                                 check_error(c, e.span,
                                     TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE,
-                                    call_name(e), qual_sd.name)
-                                e.qualifier_folded = true
+                                    call_name(c, e), qual_sd.name)
+                                call_lowered(c, e).qualifier_folded = true
                                 return nil, nil, nil, true
                             }
                             new_args: [dynamic]Expr
-                            append(&new_args, call_qualifier(e))
-                            for a in call_args(e) { append(&new_args, a) }
-                            call_args_mut(e)^ = new_args
+                            append(&new_args, call_qualifier(c, e))
+                            for a in call_args(c, e) { append(&new_args, a) }
+                            call_args_mut(c, e)^ = new_args
                         }
                     }
 
-                    e.qualifier_folded = true
-                    for a in call_args(e) { append(check_args, a) }
+                    call_lowered(c, e).qualifier_folded = true
+                    for a in call_args(c, e) { append(check_args, a) }
                     resolved_assoc = true
-                } else if t, found := qual_sd.types[call_name(e)]; found {
+                } else if t, found := qual_sd.types[call_name(c, e)]; found {
                     flat := type_flat_name(t)
                     resolution = Resolved_Func{name = flat}
                     if ts, ts_ok := t.(^Type_Scope); ts_ok { fn_type = ts }
-                    e.lowered_name = flat
-                    e.qualifier_folded = true
-                    for a in call_args(e) { append(check_args, a) }
+                    call_lowered(c, e).name = flat
+                    call_lowered(c, e).qualifier_folded = true
+                    for a in call_args(c, e) { append(check_args, a) }
                     resolved_assoc = true
-                } else if fns, found := qual_sd.dispatch_groups[call_name(e)]; found {
+                } else if fns, found := qual_sd.dispatch_groups[call_name(c, e)]; found {
                     // Qualified dispatch (e.g. `m.sqrt(x)`): pick from this
                     // module's dispatch candidates only — don't merge with
                     // the includer's other visible dispatches of the same name.
-                    e.qualifier_folded = true
-                    for a in call_args(e) { append(check_args, a) }
+                    call_lowered(c, e).qualifier_folded = true
+                    for a in call_args(c, e) { append(check_args, a) }
                     qual_dispatch_fns = fns
                     resolved_assoc = true
                 } else if sd_is_module(qual_sd) {
-                    check_error(c, e.span, TYPE_MODULE_FUNCTION, qual_sd.name, call_name(e))
+                    check_error(c, e.span, TYPE_MODULE_FUNCTION, qual_sd.name, call_name(c, e))
                     return nil, nil, nil, true
                 }
             }
@@ -14881,12 +14935,12 @@ resolve_qualified_call :: proc(
                 assoc_sd = &assoc_sf.sd
             }
             if assoc_sd != nil {
-                if fn, found := assoc_sd.functions[call_name(e)]; found && fn != nil {
+                if fn, found := assoc_sd.functions[call_name(c, e)]; found && fn != nil {
                     fn_type = fn
                     resolution = Resolved_Func{name = fn.name}
-                    e.lowered_name = fn.name
-                    e.qualifier_folded = true
-                    for a in call_args(e) { append(check_args, a) }
+                    call_lowered(c, e).name = fn.name
+                    call_lowered(c, e).qualifier_folded = true
+                    for a in call_args(c, e) { append(check_args, a) }
                     resolved_assoc = true
                 }
             }
@@ -14900,22 +14954,22 @@ resolve_qualified_call :: proc(
     // the value-qualified path below so a real type path isn't mis-checked as a
     // field access; a value path resolves to nil here and falls through.
     if !resolved_assoc {
-        if _, is_fa := call_qualifier(e).(^Expr_Field_Access); is_fa {
-            if qual_sd := resolve_type_path_scope(c, call_qualifier(e), env); qual_sd != nil {
-                if t, found := qual_sd.types[call_name(e)]; found {
+        if _, is_fa := call_qualifier(c, e).(^Expr_Field_Access); is_fa {
+            if qual_sd := resolve_type_path_scope(c, call_qualifier(c, e), env); qual_sd != nil {
+                if t, found := qual_sd.types[call_name(c, e)]; found {
                     flat := type_flat_name(t)
                     resolution = Resolved_Func{name = flat}
                     if ts, ts_ok := t.(^Type_Scope); ts_ok { fn_type = ts }
-                    e.lowered_name = flat
-                    e.qualifier_folded = true
-                    for a in call_args(e) { append(check_args, a) }
+                    call_lowered(c, e).name = flat
+                    call_lowered(c, e).qualifier_folded = true
+                    for a in call_args(c, e) { append(check_args, a) }
                     resolved_assoc = true
-                } else if fn, found := qual_sd.functions[call_name(e)]; found && fn != nil {
+                } else if fn, found := qual_sd.functions[call_name(c, e)]; found && fn != nil {
                     fn_type = fn
                     resolution = Resolved_Func{name = fn.name}
-                    e.lowered_name = fn.name
-                    e.qualifier_folded = true
-                    for a in call_args(e) { append(check_args, a) }
+                    call_lowered(c, e).name = fn.name
+                    call_lowered(c, e).qualifier_folded = true
+                    for a in call_args(c, e) { append(check_args, a) }
                     resolved_assoc = true
                 }
             }
@@ -14925,16 +14979,16 @@ resolve_qualified_call :: proc(
     if !resolved_assoc {
         qual_type: Type
         if w, building := c.receiver_want.?; building {
-            qual_type, c.receiver_fused = fuse_expr(c, call_qualifier(e), env, .Either, w)
+            qual_type, c.receiver_fused = fuse_expr(c, call_qualifier(c, e), env, .Either, w)
         } else {
-            qual_type = check_expr(c, call_qualifier(e), env)
+            qual_type = check_expr(c, call_qualifier(c, e), env)
         }
-        c.receiver, c.receiver_type = call_qualifier(e), qual_type
+        c.receiver, c.receiver_type = call_qualifier(c, e), qual_type
         if assoc_st := resolve_to_struct_type(c, qual_type); assoc_st != nil {
-            if fn, found := assoc_st.functions[call_name(e)]; found && fn != nil {
+            if fn, found := assoc_st.functions[call_name(c, e)]; found && fn != nil {
                 fn_type = fn
                 resolution = Resolved_Func{name = fn.name}
-                e.lowered_name = fn.name
+                call_lowered(c, e).name = fn.name
 
                 // Instance method detection: a method whose first param is the owning
                 // struct (Self) or a pointer to it (^Self) is an instance method, and
@@ -14965,18 +15019,18 @@ resolve_qualified_call :: proc(
                     if first_param_wants_ptr && !qual_is_ptr {
                         check_error(c, e.span,
                             TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE,
-                            call_name(e), assoc_st.name)
-                        e.qualifier_folded = true
+                            call_name(c, e), assoc_st.name)
+                        call_lowered(c, e).qualifier_folded = true
                         return nil, nil, nil, true
                     }
                     // Prepend qualifier as receiver.
                     new_args: [dynamic]Expr
-                    append(&new_args, call_qualifier(e))
-                    for a in call_args(e) { append(&new_args, a) }
-                    call_args_mut(e)^ = new_args
+                    append(&new_args, call_qualifier(c, e))
+                    for a in call_args(c, e) { append(&new_args, a) }
+                    call_args_mut(c, e)^ = new_args
                 }
-                e.qualifier_folded = true
-                for a in call_args(e) { append(check_args, a) }
+                call_lowered(c, e).qualifier_folded = true
+                for a in call_args(c, e) { append(check_args, a) }
                 resolved_assoc = true
             }
         }
@@ -14992,21 +15046,21 @@ resolve_qualified_call :: proc(
         // `<module>_<bare>` and miss it. Fall back to the home-based mint only
         // when the bare name doesn't resolve to a known function in scope.
         ufcs_flat := ""
-        if t, found := type_env_get(env, call_name(e)); found {
+        if t, found := type_env_get(env, call_name(c, e)); found {
             if ts, ok := t.(^Type_Scope); ok && ts.kind == .Fun && ts.name != "" {
                 ufcs_flat = ts.name
             }
         }
         if ufcs_flat == "" {
-            ufcs_flat = make_flat_name(resolve_fn_home(c, env, call_name(e)), call_name(e))
+            ufcs_flat = make_flat_name(resolve_fn_home(c, env, call_name(c, e)), call_name(c, e))
         }
         resolution = Resolved_Func{name = ufcs_flat}
         new_args: [dynamic]Expr
-        append(&new_args, call_qualifier(e))
-        for a in call_args(e) { append(&new_args, a) }
-        call_args_mut(e)^ = new_args
-        e.qualifier_folded = true
-        for a in call_args(e) { append(check_args, a) }
+        append(&new_args, call_qualifier(c, e))
+        for a in call_args(c, e) { append(&new_args, a) }
+        call_args_mut(c, e)^ = new_args
+        call_lowered(c, e).qualifier_folded = true
+        for a in call_args(c, e) { append(check_args, a) }
     }
     return resolution, fn_type, qual_dispatch_fns, false
 }
@@ -15142,7 +15196,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             }
         }
         check_error(c, e.span, TYPE_MATCHING_FUNCTION_DISPATCH_GROUP_ARGUMENT,
-            call_name(e), strings.join(type_strs[:], ", "))
+            call_name(c, e), strings.join(type_strs[:], ", "))
         return Type_Error{}
     }
 
@@ -15152,7 +15206,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         // doesn't pick a winner; the user disambiguates by supplying the
         // distinguishing arg explicitly or removing the default.
         check_error(c, e.span, TYPE_AMBIGUOUS_DISPATCH_MATCHES_MULTIPLE_OVERLOADS,
-            call_name(e), strings.join(matched_fns[:], ", "))
+            call_name(c, e), strings.join(matched_fns[:], ", "))
         return Type_Error{}
     }
 
@@ -15170,14 +15224,14 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     // Re-runs check_expr on the substituted node so codegen sees the resolved
     // type metadata, same as fill_default_args does.
     if has_underscore {
-        for i in 0..<len(call_args(e)) {
+        for i in 0..<len(call_args(c, e)) {
             if !is_underscore[i] { continue }
             def := ft.params[i].default_value
             new_arg: Expr
             arg_scope := callee_scope
             if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
                 span := e.span
-                if ident, id_ok := call_args(e)[i].(^Expr_Ident); id_ok {
+                if ident, id_ok := call_args(c, e)[i].(^Expr_Ident); id_ok {
                     span = ident.span
                 }
                 new_arg = new_clone(Expr_Compiler_Intrinsic{
@@ -15197,7 +15251,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             } else {
                 check_expr(c, new_arg, arg_scope)
             }
-            call_args_mut(e)[i] = new_arg
+            call_args_mut(c, e)[i] = new_arg
         }
     }
 
@@ -15214,7 +15268,7 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     }
     // Trailing default fill: append each missing slot's default expression so
     // codegen sees a fully-saturated arg list. Mirrors fill_default_args.
-    for i := len(call_args(e)); i < len(ft.params); i += 1 {
+    for i := len(call_args(c, e)); i < len(ft.params); i += 1 {
         def := ft.params[i].default_value
         new_arg: Expr
         arg_scope := callee_scope
@@ -15234,12 +15288,12 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         } else {
             check_expr(c, new_arg, arg_scope)
         }
-        append(call_args_mut(e), new_arg)
+        append(call_args_mut(c, e), new_arg)
     }
 
     disp_flat := make_flat_name(resolve_fn_home(c, env, fn_name), fn_name)
-    e.lowered_name = fn_name  // rewrite call target for codegen
-    e.resolved_func = Resolved_Func{name = disp_flat, callee = ft}
+    call_lowered(c, e).name = fn_name  // rewrite call target for codegen
+    call_lowered(c, e).resolved = Resolved_Func{name = disp_flat, callee = ft}
     if fb := fusing(c); fb != nil && b != nil {
         fuse_done(c, {graph_call_op(fb, .Call, w, e.span, ft, fn_primary_return(ft), ..vals[:]), 0})
     }
@@ -15307,7 +15361,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     }
     defer if b := fusing(c); b != nil && place_slot != NO_NODE {
         r := c.fused
-        t := e.type_ if e.type_ != nil else fn_primary_return(e.resolved_func.?.callee) if e.resolved_func != nil && e.resolved_func.?.callee != nil else nil
+        t := e.type_ if e.type_ != nil else fn_primary_return(call_lowered(c, e).resolved.?.callee) if call_lowered(c, e).resolved != nil && call_lowered(c, e).resolved.?.callee != nil else nil
         if !r.ok {
             fuse_fail(c, "a call's place")
         } else {
@@ -15331,7 +15385,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // struct-literal fields) don't pass the call through `e.args`, so they're
     // unaffected. call_return_list returns >0 only for ^Expr_Call, so the arg
     // is safely an ^Expr_Call when the count exceeds one.
-    for arg in call_args(e) {
+    for arg in call_args(c, e) {
         if returns := call_return_list(c, arg, env); len(returns) > 1 {
             check_error(c, arg.(^Expr_Call).span, TYPE_MULTI_RETURN_AS_ARG, len(returns))
         }
@@ -15351,7 +15405,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     qual_fn_type: ^Type_Scope
 
     qual_dispatch_fns: [dynamic]string
-    if call_qualifier(e) != nil {
+    if call_qualifier(c, e) != nil {
         // (Built: a receiver is the first argument, built where it is
         // checked; a qualifier that names a type or a module builds none.)
         mark: Graph_Mark
@@ -15369,14 +15423,14 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
         qual_fn_type = ft
         qual_dispatch_fns = qfns
     } else {
-        for a in call_args(e) { append(&check_args, a) }
+        for a in call_args(c, e) { append(&check_args, a) }
     }
 
     // Phase 2: Check the call — builtins, then user-defined functions.
     if b := fusing(c); b != nil && want != .None {
         c.call = &fc
         // (len and cap take their operand's place: held, when it has none.)
-        fc.want = .Place if call_name(e) == "len" || call_name(e) == "cap" else .Value
+        fc.want = .Place if call_name(c, e) == "len" || call_name(c, e) == "cap" else .Value
         fc.span = e.span
         fc.mark = graph_fuse_mark(b)
     }
@@ -15397,14 +15451,14 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // Only fires for unqualified calls — qualified resolution already picked
     // a specific function.
     if qual_fn_type == nil {
-        if fn_names, is_dispatch := find_dispatch(c, env, call_name(e)); is_dispatch {
+        if fn_names, is_dispatch := find_dispatch(c, env, call_name(c, e)); is_dispatch {
             return check_dispatch_call(c, e, fn_names, check_args[:], env, want, w)
         }
 
         // Generic function instantiation. A clone of a checked call (a
         // broadcast's slots) carries the instance name as its lowered name,
         // which is no declared function: find the template by the source name.
-        gtmpl, gtmpl_ok := &c.table.generic_templates[call_name(e)]
+        gtmpl, gtmpl_ok := &c.table.generic_templates[call_name(c, e)]
         if !gtmpl_ok { gtmpl, gtmpl_ok = &c.table.generic_templates[e.name] }
         if gtmpl_ok {
             return check_generic_call(c, e, gtmpl, check_args[:], env, want, w)
@@ -15417,9 +15471,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
         fun_type = qual_fn_type
         fun_ok = true
     } else {
-        fun_type_raw, ok := type_env_get(env, call_name(e))
+        fun_type_raw, ok := type_env_get(env, call_name(c, e))
         if !ok {
-            check_error(c, e.span, TYPE_UNDEFINED_FUNCTION, call_name(e))
+            check_error(c, e.span, TYPE_UNDEFINED_FUNCTION, call_name(c, e))
             for arg in check_args {
                 check_expr(c, arg, env)
             }
@@ -15434,7 +15488,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
         // type) — the distinct-ness is purely a type-system identity.
         if dt, is_distinct := fun_type_raw.(^Type_Distinct); is_distinct {
             if len(check_args) != 1 {
-                check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, call_name(e), len(check_args))
+                check_error(c, e.span, TYPE_EXPECTS_ARGUMENT_3, call_name(c, e), len(check_args))
                 return Type_Error{}
             }
             saved_hint := c.expected_hint
@@ -15450,23 +15504,23 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             }
             c.expected_hint = saved_hint
             if b := fusing(c); b != nil && want != .None && want != .Place {
-                fuse_done(c, graph_op_value(b, .Cast, w, e.span, dt, call_name(e), arg.v))
+                fuse_done(c, graph_op_value(b, .Cast, w, e.span, dt, call_name(c, e), arg.v))
             }
             if !is_any(arg_type) && !is_infer(arg_type) {
                 if types_incompatible(dt.base_type, arg_type) {
                     check_error(c, e.span,
                         TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE,
-                        call_name(e), type_name(arg_type), type_name(dt.base_type))
+                        call_name(c, e), type_name(arg_type), type_name(dt.base_type))
                 }
             }
             e.type_ = dt
-            e.resolved_func = Resolved_Func{name = dt.name}
+            call_lowered(c, e).resolved = Resolved_Func{name = dt.name}
             return dt
         }
 
         fun_type, fun_ok = fun_type_raw.(^Type_Scope)
         if !fun_ok {
-            check_error(c, e.span, TYPE_FUNCTION, call_name(e))
+            check_error(c, e.span, TYPE_FUNCTION, call_name(c, e))
             return Type_Error{}
         }
     }
@@ -15482,14 +15536,14 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
         // c.declared_funs (the local shadows). Without this, a load-and-call
         // through a function-pointer variable gets miscodegen'd as a direct
         // call to a global that doesn't exist in this binary.
-        if call_name(e) in c.declared_funs && fun_type.name != "" {
-            home, home_ok, ambiguous_owners := resolve_fn_home_with_ambiguity(c, env, call_name(e))
+        if call_name(c, e) in c.declared_funs && fun_type.name != "" {
+            home, home_ok, ambiguous_owners := resolve_fn_home_with_ambiguity(c, env, call_name(c, e))
             if !home_ok && len(ambiguous_owners) > 1 {
                 owner_list := strings.join(ambiguous_owners[:], ", ")
-                check_error(c, e.span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, call_name(e), owner_list, ambiguous_owners[0], call_name(e))
+                check_error(c, e.span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, call_name(c, e), owner_list, ambiguous_owners[0], call_name(c, e))
                 return Type_Error{}
             }
-            flat := make_flat_name(home, call_name(e))
+            flat := make_flat_name(home, call_name(c, e))
             resolution = Resolved_Func{name = flat}
         } else if fun_type.name != "" && fun_type.name in c.declared_funs {
             // Bare name resolved via scope (e.g. sibling function in data fun body)
@@ -15504,9 +15558,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // return earlier and set their own resolved_func.
     if res, res_ok := resolution.?; res_ok {
         res.callee = fun_type
-        e.resolved_func = res
+        call_lowered(c, e).resolved = res
     } else {
-        e.fn_value = fun_type // an indirect call through a function value
+        call_lowered(c, e).fn_value = fun_type // an indirect call through a function value
     }
 
     // Pure data struct construction: args map directly to fields.
@@ -15529,17 +15583,17 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // Substitute before filling tail defaults so the two mechanisms compose
     // (caller wrote some args, asked for defaults at specific slots, omitted
     // trailing args that fall back to defaults via fill_default_args).
-    param_offset := len(check_args) - len(call_args(e))
-    substitute_underscore_args(c, e, fun_type, param_offset, call_name(e))
-    for i in 0..<len(call_args(e)) {
-        check_args[i + param_offset] = call_args(e)[i]
+    param_offset := len(check_args) - len(call_args(c, e))
+    substitute_underscore_args(c, e, fun_type, param_offset, call_name(c, e))
+    for i in 0..<len(call_args(c, e)) {
+        check_args[i + param_offset] = call_args(c, e)[i]
     }
 
     // Args map to params
     if len(check_args) < len(fun_type.params) && has_param_defaults(fun_type) {
         fill_default_args(c, e, fun_type, env)
         clear(&check_args)
-        for a in call_args(e) { append(&check_args, a) }
+        for a in call_args(c, e) { append(&check_args, a) }
     }
 
     fc.params = true
@@ -15556,12 +15610,12 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // there — graph_view's.)
     view_slot := NO_NODE
     ret := fn_primary_return(fun_type) if fun_type.kind == .Fun else nil
-    if b := fusing(c); b != nil && c.call != nil && want == .Into && e.fn_value == nil && ret != nil {
+    if b := fusing(c); b != nil && c.call != nil && want == .Into && call_lowered(c, e).fn_value == nil && ret != nil {
         _, to_slice := distinct_base(graph_dest_type(b, dest)).(^Type_Slice)
         _, from_array := distinct_base(ret).(^Type_Fixed_Array)
         if to_slice && from_array { view_slot = graph_slot(b, "temp", ret, temp_span) }
     }
-    check_call_args(c, check_args[:], fun_type, call_name(e), e.span, env)
+    check_call_args(c, check_args[:], fun_type, call_name(c, e), e.span, env)
     construct: ^Graph_Literal
     construct_at: Dest
     if c.call != nil {
@@ -15572,9 +15626,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
             } else if fun_type.kind == .Struct {
                 construct_at = dest if want == .Into else graph_dest_var("temp", graph_slot(b, "temp", fun_type, e.span), fun_type)
                 construct = graph_fuse_construct(b, fun_type, fun_type, construct_at, fc.ops[:], w, e.span)
-            } else if e.fn_value != nil {
+            } else if call_lowered(c, e).fn_value != nil {
                 // Through a function value: it, read, is the first operand.
-                fuse_done(c, graph_fuse_indirect(b, call_name(e), e.fn_value, fn_primary_return(fun_type), fc.ops[:], w, e.span))
+                fuse_done(c, graph_fuse_indirect(b, call_name(c, e), call_lowered(c, e).fn_value, fn_primary_return(fun_type), fc.ops[:], w, e.span))
             } else if view_slot != NO_NODE {
                 v := Operand{graph_call_op(b, .Call, w, e.span, fun_type, ret, ..fc.ops[:]), 0}
                 graph_fuse_write_at(b, graph_var(b, "temp", view_slot, ret, temp_span), v, temp_span)
@@ -15596,8 +15650,8 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
         // left resolved_func nil — set it here so codegen sees a construction (its
         // callee is a struct) and zero-inits / runs the init fn, rather than
         // emitting a function call to a name with no body (e.g. a fieldless struct).
-        if e.resolved_func == nil && fun_type.name != "" {
-            e.resolved_func = Resolved_Func{name = fun_type.name, callee = fun_type}
+        if call_lowered(c, e).resolved == nil && fun_type.name != "" {
+            call_lowered(c, e).resolved = Resolved_Func{name = fun_type.name, callee = fun_type}
         }
         if e.overrides != nil {
             // (Built: each override written into what it constructed.)
@@ -15620,7 +15674,7 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     }
 
     if e.overrides != nil {
-        check_error(c, e.span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, call_name(e))
+        check_error(c, e.span, TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID, call_name(c, e))
     }
     // Multi-return call in scalar context: caller must destructure via
     // `x, y := f()`. Single-return funs return their one type; void returns nil.
@@ -15645,13 +15699,13 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
 check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Scope, env: ^Type_Scope) -> Type {
     ensure_struct_signature(c, &st.sd)  // resolve fields on demand before construction
     e.type_ = st
-    if e.resolved_func == nil && st.name != "" {
-        e.resolved_func = Resolved_Func{name = st.name, callee = st}
+    if call_lowered(c, e).resolved == nil && st.name != "" {
+        call_lowered(c, e).resolved = Resolved_Func{name = st.name, callee = st}
     }
 
     // `Foo()` (no args) is always valid — equivalent to bare declaration `x : Foo`.
     // Init function applies defaults and zero-inits fields without defaults.
-    if len(call_args(e)) == 0 {
+    if len(call_args(c, e)) == 0 {
         if e.overrides != nil {
             check_struct_literal_fields(c, e.overrides, &st.sd, e.span, env, override = true)
         }
@@ -15660,9 +15714,9 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
 
     // `_` at any positional arg means "use the field's default value here."
     // Mirrors substitute_underscore_args for parameters.
-    for i in 0..<len(call_args(e)) {
+    for i in 0..<len(call_args(c, e)) {
         if i >= len(st.fields) { break }
-        ident, id_ok := call_args(e)[i].(^Expr_Ident)
+        ident, id_ok := call_args(c, e)[i].(^Expr_Ident)
         if !id_ok || ident.name != "_" { continue }
         def := st.fields[i].default_value
         if def == nil {
@@ -15671,12 +15725,12 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
             continue
         }
         if intr, intr_ok := def.(^Expr_Compiler_Intrinsic); intr_ok {
-            call_args_mut(e)[i] = new_clone(Expr_Compiler_Intrinsic{
+            call_args_mut(c, e)[i] = new_clone(Expr_Compiler_Intrinsic{
                 kind = intr.kind,
                 span = ident.span,
             })
         } else {
-            call_args_mut(e)[i] = def
+            call_args_mut(c, e)[i] = def
         }
     }
 
@@ -15684,12 +15738,12 @@ check_pure_struct_construction :: proc(c: ^Checker, e: ^Expr_Call, st: ^Type_Sco
     for f in st.fields {
         if f.default_value == nil { num_required += 1 }
     }
-    if len(call_args(e)) > len(st.fields) {
-        check_error(c, e.span, TYPE_FIELD_ARGUMENT, st.name, len(st.fields), len(call_args(e)))
-    } else if len(call_args(e)) < num_required {
-        check_error(c, e.span, TYPE_REQUIRES_LEAST_ARGUMENT, st.name, num_required, len(call_args(e)))
+    if len(call_args(c, e)) > len(st.fields) {
+        check_error(c, e.span, TYPE_FIELD_ARGUMENT, st.name, len(st.fields), len(call_args(c, e)))
+    } else if len(call_args(c, e)) < num_required {
+        check_error(c, e.span, TYPE_REQUIRES_LEAST_ARGUMENT, st.name, num_required, len(call_args(c, e)))
     }
-    for arg, i in call_args(e) {
+    for arg, i in call_args(c, e) {
         if i < len(st.fields) {
             c.expected_hint = st.fields[i].type_
         }
