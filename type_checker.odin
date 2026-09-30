@@ -1661,6 +1661,7 @@ Checker :: struct {
     // a subscript is the base's own field (`a.fonts[.len]` → `a.fonts.len`),
     // checked and built in the ident's place (lower_subscript_dots).
     dot_refs:        map[^Expr_Ident]Expr,
+    assign_types:    map[^Stmt_Assign]^Assign_Types,   // what each assignment's check found
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -5632,8 +5633,8 @@ check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope)
         // Take-bound views alias existing storage — they don't allocate, so a
         // big viewed type isn't a stack cost.
         if _, is_view := a.value.(^Expr_Take); is_view { return }
-        if routes_to_arena(a.var_type) {
-            check_error(c, a.span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, a.name, checker_type_byte_size(a.var_type))
+        if routes_to_arena(assign_types(c, a).var) {
+            check_error(c, a.span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, a.name, checker_type_byte_size(assign_types(c, a).var))
         }
     }
     for stmt in stmts {
@@ -6122,23 +6123,38 @@ fuse_is_text_constant :: proc(b: ^Graph_Builder, r: Fused) -> bool {
     return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(b.g.type_[op])
 }
 
+// What the checker found of an assignment or declaration: the variable's
+// type (distinct unwrapped) and its env type (distinct kept); a store's
+// target's (a field's, a container's, a pointee's), and the type bytes are
+// written as (a byte buffer's).
+Assign_Types :: struct {
+    var, env, target, value: Type,
+}
+
+assign_types :: proc(c: ^Checker, s: ^Stmt_Assign) -> ^Assign_Types {
+    if t, ok := c.assign_types[s]; ok { return t }
+    t := new(Assign_Types)
+    c.assign_types[s] = t
+    return t
+}
+
 // What a statement declares, as checked (graph_decl_stmt): each name's
 // type, in order, and what it does — a broadcast's statement is its copies'.
-fuse_declared :: proc(s: Stmt) -> Graph_Declared {
+fuse_declared :: proc(c: ^Checker, s: Stmt) -> Graph_Declared {
     d := Graph_Declared{kind = graph_stmt_kind(s), set = true}
     types := make([dynamic]Type, context.temp_allocator)
-    declared :: proc(a: ^Stmt_Assign) -> Type { return a.env_type if a.env_type != nil else a.var_type }
+    declared :: proc(c: ^Checker, a: ^Stmt_Assign) -> Type { at := assign_types(c, a); return at.env if at.env != nil else at.var }
     #partial switch v in s {
     case ^Stmt_Assign:
-        append(&types, declared(v))
+        append(&types, declared(c, v))
     case ^Stmt_Multi_Assign:
-        for a in v.assigns { append(&types, declared(a)) }
+        for a in v.assigns { append(&types, declared(c, a)) }
     case ^Stmt_Multi_Return_Assign:
         if len(v.checked) > 0 {
             d.kind = .Other
             for inner in v.checked {
                 a, _ := inner.(^Stmt_Assign)
-                append(&types, declared(a) if a != nil else nil)
+                append(&types, declared(c, a) if a != nil else nil)
             }
         } else {
             for _, i in v.names { append(&types, v.var_types[i] if i < len(v.var_types) else nil) }
@@ -6272,7 +6288,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
     if b == nil || !fa.on { return }
     _, is_skip := s.value.(^Expr_Skip_Constructor)
     if s.is_decl {
-        t := s.env_type if s.env_type != nil else s.var_type
+        t := assign_types(c, s).env if assign_types(c, s).env != nil else assign_types(c, s).var
         if fa.field { t = b.g.type_[fa.decl] }   // (a field: its struct's type)
         graph_fuse_typed(b, fa.decl, t)
         if is_skip && fa.field {
@@ -6300,10 +6316,10 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         return
     }
     if is_skip || is_void_literal(s.value) {   // `x = void` de-inits
-        graph_fuse_void_assign(b, s.name, s.var_type, s.span, expr_span(s.value)^)
+        graph_fuse_void_assign(b, s.name, assign_types(c, s).var, s.span, expr_span(s.value)^)
         return
     }
-    fuse_store_finish(c, s.value, fa.value_type, fa.value, fuse_parallel_hold(c, graph_dest_var(s.name, NO_NODE, s.var_type), s.span), s.span)
+    fuse_store_finish(c, s.value, fa.value_type, fa.value, fuse_parallel_hold(c, graph_dest_var(s.name, NO_NODE, assign_types(c, s).var), s.span), s.span)
 }
 
 // A dispatch's array literal argument: its position, its nodes, its type.
@@ -7132,7 +7148,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
     for stmt in stmts {
         fs := fuse_stmt(c, stmt)
         defer fuse_stmt_end(fs)
-        defer if c.gb != nil { graph_module_stmt(c.gb, stmt, fuse_declared(stmt)) }   // (a module's, settled: its declarations)
+        defer if c.gb != nil { graph_module_stmt(c.gb, stmt, fuse_declared(c, stmt)) }   // (a module's, settled: its declarations)
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
             // Generic union: registration happens in Pass 1a (template only).
@@ -7659,7 +7675,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 }
                 if main_mod != nil {
                     type_env_set(env, s.name, main_mod)
-                    s.var_type = main_mod
+                    assign_types(c, s).var = main_mod
                     inc.type_ = main_mod
                     if c.mara_env != nil {
                         type_env_set(c.mara_env, inc.path, main_mod)
@@ -7685,7 +7701,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             if s.name == "_" && !s.is_decl {
                 c.expected_hint = nil
                 dt, _ := fuse_expr(c, s.value, env)   // (built: its value, dropped)
-                s.var_type = distinct_base(solidify_type(dt))
+                assign_types(c, s).var = distinct_base(solidify_type(dt))
                 continue
             }
             // Reassigning a by-address param would overwrite the caller's value.
@@ -7769,8 +7785,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 }
                 final_type := ann_type
                 if is_any(ann_type) { final_type = val_type }
-                s.var_type = distinct_base(final_type)
-                s.env_type = final_type
+                assign_types(c, s).var = distinct_base(final_type)
+                assign_types(c, s).env = final_type
                 type_env_set(env, s.name, final_type)
                 continue
             }
@@ -7779,7 +7795,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             if s.value == nil {
                 if _, is_err := ann_type.(Type_Error); is_err {
                     // Type resolution already reported an error — skip further checks
-                    s.var_type = ann_type
+                    assign_types(c, s).var = ann_type
                     type_env_set(env, s.name, ann_type)
                     continue
                 }
@@ -7834,8 +7850,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                         if b := fusing(c); b != nil { graph_fuse_bare(b, bare, ann_type, cap, args, s.span) }
                     }
                 }
-                s.var_type = distinct_base(ann_type)
-                s.env_type = ann_type
+                assign_types(c, s).var = distinct_base(ann_type)
+                assign_types(c, s).env = ann_type
                 type_env_set(env, s.name, ann_type)
                 // (Uninit ptr/slice/field read-before-init tracking now lives in
                 // the post-check flow pass — flow.odin.)
@@ -7993,8 +8009,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     if is_infer(val_type) {
                         check_literal_overflow(c, s.value, ann_type, s.span)
                     }
-                    s.var_type = distinct_base(ann_type)
-                    s.env_type = ann_type
+                    assign_types(c, s).var = distinct_base(ann_type)
+                    assign_types(c, s).env = ann_type
                     type_env_set(env, s.name, ann_type)
                     continue
                 }
@@ -8025,15 +8041,15 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                             }
                         }
                     }
-                    s.var_type = distinct_base(ann_type)
-                    s.env_type = ann_type
+                    assign_types(c, s).var = distinct_base(ann_type)
+                    assign_types(c, s).env = ann_type
                     type_env_set(env, s.name, ann_type)
                     continue
                 }
                 if ut, ok := check_ann.(^Type_Union); ok && value_needs_literal_handling {
                     if !literal_matched(s.value, check_ann) { check_union_literal_assign(c, s.span, s.value, ut, env) }
-                    s.var_type = distinct_base(ann_type)
-                    s.env_type = ann_type
+                    assign_types(c, s).var = distinct_base(ann_type)
+                    assign_types(c, s).env = ann_type
                     type_env_set(env, s.name, ann_type)
                     continue
                 }
@@ -8121,8 +8137,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 if is_infer(val_type) {
                     check_literal_overflow(c, s.value, ann_type, s.span)
                 }
-                s.var_type = distinct_base(ann_type)
-                s.env_type = ann_type
+                assign_types(c, s).var = distinct_base(ann_type)
+                assign_types(c, s).env = ann_type
                 type_env_set(env, s.name, ann_type)
             } else {
                 // No type annotation: variables solidify.
@@ -8143,8 +8159,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     if cs := parent_struct_scope(env); cs != nil {
                         if idx, fm := cs.field_map[s.name]; fm && idx < len(cs.fields) && is_numeric(cs.fields[idx].type_) {
                             lt := cs.fields[idx].type_
-                            s.var_type = distinct_base(lt)
-                            s.env_type = lt
+                            assign_types(c, s).var = distinct_base(lt)
+                            assign_types(c, s).env = lt
                             type_env_set(env, s.name, lt)
                             if is_infer(val_type) {
                                 check_literal_overflow(c, s.value, lt, s.span)
@@ -8232,8 +8248,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                             check_error(c, s.span, TYPE_CSTRING_FOREIGN_ONLY)
                         }
                     }
-                    s.var_type = distinct_base(binding_type)
-                    s.env_type = binding_type
+                    assign_types(c, s).var = distinct_base(binding_type)
+                    assign_types(c, s).env = binding_type
                     type_env_set(env, s.name, binding_type)
                 } else {
                     // Reassignment with `void` DE-INITIALIZES. Scalars and
@@ -8244,8 +8260,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     // non-pointers codegen emits nothing (see gen_stmt);
                     // pointer `p = void` keeps its null store.
                     if is_void_literal(s.value) {
-                        s.var_type = distinct_base(existing_type)
-                        s.env_type = existing_type
+                        assign_types(c, s).var = distinct_base(existing_type)
+                        assign_types(c, s).env = existing_type
                         continue
                     }
                     // Reassigning a slice var with a literal would repoint its
@@ -8264,8 +8280,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     if is_infer(val_type) {
                         check_literal_overflow(c, s.value, existing_type, s.span)
                     }
-                    s.var_type = distinct_base(existing_type)
-                    s.env_type = existing_type
+                    assign_types(c, s).var = distinct_base(existing_type)
+                    assign_types(c, s).env = existing_type
                 }
             }
         case ^Stmt_Multi_Assign:
@@ -9364,13 +9380,13 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
                 case ^Expr_Field_Access:
                     check_field_assign(c, s, env)
                     // The target's own type, for the program graph's place.
-                    if t.type_ == nil { t.type_ = s.target_type }
+                    if t.type_ == nil { t.type_ = assign_types(c, s).target }
                 case ^Expr_Index:        check_index_assign(c, s, env)
                 case ^Expr_Slice:        check_slice_assign(c, s, env)
                 case ^Expr_Unary:
                     if t.op == .Caret {
                         check_deref_assign(c, s, env)
-                        if t.type_ == nil { t.type_ = s.target_type }
+                        if t.type_ == nil { t.type_ = assign_types(c, s).target }
                     } else {
                         check_error(c, s.span, TYPE_INVALID_ASSIGNMENT_TARGET)
                     }
@@ -9389,8 +9405,8 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             // Update the type env sequentially so that re-declared variables
             // (same name, different type) reflect the correct type at each point.
             // Use env_type (preserves distinct) instead of var_type (unwrapped for codegen).
-            if s.env_type != nil && !is_untyped(s.env_type) {
-                type_env_set(env, s.name, s.env_type)
+            if assign_types(c, s).env != nil && !is_untyped(assign_types(c, s).env) {
+                type_env_set(env, s.name, assign_types(c, s).env)
             }
         case ^Stmt_Decl:
             // Already expanded during register_and_check_declarations. Run
@@ -9960,7 +9976,7 @@ check_deref_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     }
     val_type := fuse_store(c, s, place, env)
     if p, ok := ptr_type.(^Type_Ptr); ok {
-        s.target_type = p.elem
+        assign_types(c, s).target = p.elem
         if types_incompatible(p.elem, val_type) {
             check_error(c, s.span, TYPE_CANNOT_ASSIGN_THROUGH_POINTER,
                 type_name(val_type), type_name(p.elem))
@@ -9994,7 +10010,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     // type are a view: the builder's.)
     coll_type, coll := fuse_expr(c, ix.expr, env, .Place, temp_span = ix.span)
     target_type := distinct_base(coll_type)
-    s.target_type = target_type
+    assign_types(c, s).target = target_type
     ix.type_ = index_elem_type(target_type)   // the target names one element
     base := coll.v
     if b := fusing(c); b != nil {
@@ -10025,7 +10041,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     // (Into bytes, the value is written as the type the checker finds it
     // is, below: the element's place is then a view of that.)
     val_type, fs := fuse_store_value(c, s, place, env)
-    defer fuse_store_write(c, s, &fs, s.target_type, s.assign_value_type if is_byte_buffer(coll_type) else nil, ix.is_big_endian)
+    defer fuse_store_write(c, s, &fs, assign_types(c, s).target, assign_types(c, s).value if is_byte_buffer(coll_type) else nil, ix.is_big_endian)
 
     if !is_numeric(idx_type) && !is_any(idx_type) {
         check_error(c, s.span, TYPE_ARRAY_INDEX_NUMBER, type_name(idx_type))
@@ -10066,13 +10082,13 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     // Byte slice reinterpret write: mem[offset] = value
     if is_byte_slice(target_type) {
         solid_val_type := solidify_type(val_type)
-        s.assign_value_type = solid_val_type
+        assign_types(c, s).value = solid_val_type
         return
     }
 
     // Byte partial-array reinterpret write: same semantics as []byte slice.
     if is_byte_partial_array(target_type) {
-        s.assign_value_type = solidify_type(val_type)
+        assign_types(c, s).value = solidify_type(val_type)
         return
     }
 
@@ -10080,7 +10096,7 @@ check_index_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         // Byte fixed-array reinterpret write: buf[i] = value (any type)
         // Mirrors the []byte reinterpret semantics used throughout memory.mara.
         if _, is_byte := fa.elem.(Type_Byte); is_byte {
-            s.assign_value_type = solidify_type(val_type)
+            assign_types(c, s).value = solidify_type(val_type)
             return
         }
     }
@@ -10146,7 +10162,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
         target_type = check_expr(c, sl.expr, env)
     }
     _, is_self := sl.expr.(^Expr_Self)
-    s.target_type = target_type
+    assign_types(c, s).target = target_type
     if elem := index_elem_type(target_type); elem != nil {   // the target names a run of elements
         t := new(Type_Slice)
         t.elem = elem
@@ -10176,11 +10192,11 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
                 fuse_fail(c, "void written into bytes")
             } else {
                 ok: bool
-                fs.place, ok = graph_fuse_span_target_end(b, &st, s.assign_value_type, s.span)
+                fs.place, ok = graph_fuse_span_target_end(b, &st, assign_types(c, s).value, s.span)
                 if !ok { fuse_fail(c, "a span's end that branches, viewed") }
             }
         }
-        fuse_store_write(c, s, &fs, s.target_type)
+        fuse_store_write(c, s, &fs, assign_types(c, s).target)
     }
 
     if !is_numeric(low_type) && !is_any(low_type) {
@@ -10222,7 +10238,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     if is_byte_slice(target_type) {
         if !is_array_shaped(val_type) {
             solid_val_type := solidify_type(val_type)
-            s.assign_value_type = solid_val_type
+            assign_types(c, s).value = solid_val_type
             // Compile-time size check when bounds are constant
             if low_num, low_ok := const_eval_int(sl.low); low_ok {
                 if high_num, high_ok := const_eval_int(sl.high); high_ok {
@@ -10247,7 +10263,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     if is_byte_partial_array(target_type) {
         if !is_array_shaped(val_type) {
             solid_val_type := solidify_type(val_type)
-            s.assign_value_type = solid_val_type
+            assign_types(c, s).value = solid_val_type
             if low_num, low_ok := const_eval_int(sl.low); low_ok {
                 if high_num, high_ok := const_eval_int(sl.high); high_ok {
                     span_size := high_num - low_num
@@ -10270,7 +10286,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     if is_byte_fixed_array(target_type) {
         if !is_array_shaped(val_type) {
             solid_val_type := solidify_type(val_type)
-            s.assign_value_type = solid_val_type
+            assign_types(c, s).value = solid_val_type
             if low_num, low_ok := const_eval_int(sl.low); low_ok {
                 if high_num, high_ok := const_eval_int(sl.high); high_ok {
                     span_size := high_num - low_num
@@ -10349,7 +10365,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     if st != nil {
         ft := resolve_struct_field(st, fa_expr.field, c.table)
         if ft != nil {
-            s.target_type = ft
+            assign_types(c, s).target = ft
             if pname, immut := write_root_immutable_param(s.target, env); immut {
                 check_error(c, s.span,
                     TYPE_CANNOT_WRITE_FIELD_IMMUTABLE_PARAMETER,
@@ -10443,7 +10459,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
             check_error(c, s.span, TYPE_SLICE_TYPE_FIELD, type_name(obj_type), fa_expr.field)
             return
         }
-        s.target_type = field_type
+        assign_types(c, s).target = field_type
         if !coerce_deferred(c, val_type, field_type, s.span) && types_incompatible(field_type, val_type) && !is_infer(val_type) && !value_preserving_widen(val_type, field_type) {
             check_error(c, s.span, TYPE_CANNOT_ASSIGN_FIELD_TYPE,
                 assign_source_desc(s.value, val_type), expr_diag_name(fa_expr), type_name(field_type))

@@ -602,8 +602,6 @@ Stmt_Assign :: struct {
     value:         Expr,
     type_expr:     Type_Expr, // nil if untyped (e.g. x = 10)
     span:          Span,
-    var_type:      Type,       // resolved type (distinct-unwrapped), filled by type checker
-    env_type:      Type,       // full type for env updates (preserves distinct), filled by type checker
     slice_cap_expr: Expr,      // capacity expression for `name : []T(N)` — allocates backing storage + slice header
     is_using:      bool,       // true for `using name := include ...`
     is_decl:       bool,       // true for desugared Stmt_Decl entries; false for reassignment (`x = 10`)
@@ -611,8 +609,6 @@ Stmt_Assign :: struct {
     // `type_expr`, `var_type`, etc. are unused and the check/gen procs pull
     // sub-expressions out of target and operate on it directly.
     target:        Expr,
-    target_type:   Type,       // resolved type of the target (field/container/pointee), filled by type checker
-    assign_value_type:  Type,  // solid RHS type for byte-slice reinterpret writes, filled by type checker
     // True when the parser desugared `lhs op= rhs` into `lhs = lhs op rhs`.
     // `value` is always an Expr_Binary whose `left` is the same AST node as
     // `target` (or, for the simple-name path, a fresh Expr_Ident referring to
@@ -4992,10 +4988,6 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         c := new_clone(v^)
         c.value = clone_expr(v.value)
         c.target = clone_expr(v.target)
-        c.var_type = nil
-        c.env_type = nil
-        c.target_type = nil
-        c.assign_value_type = nil
         return c
     case ^Stmt_Multi_Assign:
         c := new_clone(v^)
@@ -5003,8 +4995,6 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         for a in v.assigns {
             ca := new_clone(a^)
             ca.value = clone_expr(a.value)
-            ca.var_type = nil
-            ca.env_type = nil
             append(&c.assigns, ca)
         }
         return c
@@ -5088,8 +5078,6 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
     case ^Stmt_Define:
         c := new_clone(v^)
         c.value = clone_expr(v.value)
-        c.var_type = nil
-        c.env_type = nil
         return c
     }
     return nil
