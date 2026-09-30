@@ -80,6 +80,30 @@ It keeps the type representation and replaces the checking.
 - Its budget is its own: the old checker grew in layers (two passes, registration pre-passes,
   lowered forms) that the new one has no reason to repeat.
 
+### Its shape (stage 3)
+
+- **What it keeps.** The type representation (`Type_Scope`, the `Type_*` variants, the symbol
+  table) and everything of the old checker that never reads syntax: type equality and names,
+  layout and sizes, numeric widening and the inference cells, environments (`type_env_*`), the
+  graph builder's API. What reads syntax is new: registration, type resolution, statements,
+  expressions, calls, the builder calls, generic instances.
+- **Files and names.** `tc_*.odin`, procs prefixed `tc_` while both checkers exist (renamed
+  plainly at the switch). `MARA_CHECKER=new` runs it in place of the old one.
+- **One walk per body.** A module's definitions are registered from its statements as written;
+  a body is checked once per instance, its statements in order, building its graph as it goes
+  (the builder's fusion calls, unchanged). What it finds about a node — its type, what a name
+  resolved to, a call's callee — is in arrays over the body's node range, made for the
+  instance and dropped once its graph is built.
+- **Generics.** An instance is its template's body range and its bindings (the type params'
+  types, in the instance's env): the same nodes checked again, with fresh arrays. Nothing is
+  cloned, so there are no fresh ids and no instance copies to keep apart.
+- **The builder's keys.** The builder keys statements and expressions by an id of either
+  tree's (`Syntax_Id`): the old checker passes its `Stmt_Id` / `Expr_Id`, the new its node ids.
+- **Order.** Grown by what programs need, simplest first: functions over integers, locals,
+  control flow, calls, print; then structs and fields, arrays and slices, text, constants,
+  unions and match, defaults and constructors, generics, modules and imports, byte views,
+  takes, the arena. Progress is the count of programs whose graph is the old checker's.
+
 ## The proof
 
 - **The tree**: it loses nothing. For every file of the corpus, the tokens the tree accounts for
@@ -138,4 +162,11 @@ It keeps the type representation and replaces the checking.
       labels change with the tree, and the point-query corpus stays a fixed gate through
       stage 3.
 - [ ] 3. The new checker: every program's graph identical
+  - [ ] Scaffolding: `MARA_CHECKER=new`, builder keys neutral, a diff of the two checkers'
+        graphs per program
+  - [ ] Functions over integers, locals, control flow, calls, print
+  - [ ] Structs, fields, arrays, slices, text, constants
+  - [ ] Unions and match, defaults and constructors
+  - [ ] Generics, modules and imports
+  - [ ] Byte views, takes, the arena, the rest
 - [ ] 4. The switch
