@@ -1,0 +1,11 @@
+module generic_local_const
+// A generic fun's instance with definitions of its own: its body and its
+// constants built as each instance is checked.
+//@ expect-output: 42 10
+twice :: fun(x: $T) -> T {
+	K :: 2
+	return x * K
+}
+main :: fun() {
+	print(twice(i64(21)), twice(i32(5)))
+}

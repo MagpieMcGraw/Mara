@@ -3268,10 +3268,10 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     cloned_body := clone_stmts(ast.body)
     cloned_defs := clone_stmts(ast.defs)
 
-    // Type-check the cloned function body, building its graph (the builder
-    // builds an instance's definitions from the template's).
+    // Type-check the cloned function body, building its graph (its
+    // definitions: its own copies).
     f: ^Graph_Fuse
-    if c.gb != nil && len(ast.defs) == 0 { f = graph_fuse_begin(c.gb, fun_type, ast, cloned_body[:], .Synthetic) }
+    if c.gb != nil { f = graph_fuse_begin(c.gb, fun_type, ast, cloned_body[:], .Synthetic) }
     check_scope(c, cloned_body, child, scope_defs = cloned_defs)
     if f != nil { fuse_end(c, f) }
 
@@ -6013,6 +6013,9 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
     register_and_check_declarations(c, defs[:], env, owner, public_env)
     check_bodies(c, defs[:], env)
     fuse_resume(c, fuse)
+    if fuse != nil {
+        for d in defs { graph_fuse_def_settled(c.gb, d) }   // (its constants, settled: built)
+    }
     when ODIN_DEBUG {
         saved_stmt := c.once_stmt   // the enclosing statement's, when this is its block
         defer c.once_stmt = saved_stmt

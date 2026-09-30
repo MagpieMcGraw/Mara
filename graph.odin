@@ -281,6 +281,7 @@ Graph_Builder :: struct {
     // the graph is put together.
     module_stmts: map[rawptr]int,
     module_list:  [dynamic]Graph_Module_Stmt,
+    def_segs:     map[rawptr]Graph_Def_Built,   // a body's constants, built as settled
     // A compound assignment's target (its expression, by identity) and the
     // place already computed for it: its read reuses the place.
     compound:   Graph_Compound,
@@ -3850,11 +3851,38 @@ graph_fuse_place :: proc(b: ^Graph_Builder, si: int, parent: Node_Id, name: stri
     graph_segment_place(b, si, parent, b.stmt, name)
     defs := b.segs[si].defs[:]   // (placing them grows b.segs)
     for d in defs {
+        // (A constant: built as the checker settled it.)
+        if early, settled := b.def_segs[stmt_key(d.s)]; settled {
+            if early.parent != d.parent { graph_fatal(stmt_span(d.s), "a definition built in another block") }
+            b.segs[si].anchors[d.anchor].seg = early.seg
+            continue
+        }
         sub, saved := graph_segment_enter(b)
         b.segs[si].anchors[d.anchor].seg = sub
         graph_decl_stmt(b, d.s, d.parent, {kind = .Local})
         graph_segment_leave(b, saved)
     }
+}
+
+// A body's definition the checker settles — a constant: its declaration,
+// built once its declarations pass has, in the block it is written in, in a
+// segment of its own put where it is when the body is placed.
+Graph_Def_Built :: struct {
+    seg:    int,
+    parent: Node_Id,
+}
+
+graph_fuse_def_settled :: proc(b: ^Graph_Builder, s: Stmt) {
+    if _, is_const := s.(^Stmt_Define); !is_const { return }
+    parent := b.code.block
+    si, saved := graph_segment_enter(b)
+    code, names, base := b.code, len(b.names), b.fn_base
+    b.code, b.fn_base = {}, names
+    graph_decl_stmt(b, s, parent, {kind = .Local})
+    b.code, b.fn_base = code, base
+    resize(&b.names, names)
+    graph_segment_leave(b, saved)
+    b.def_segs[stmt_key(s)] = {si, parent}
 }
 
 // A statement's identity, for the pointer variants.
