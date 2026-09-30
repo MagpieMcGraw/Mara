@@ -55,6 +55,10 @@ defscope
 discard_mixed
 disttest
 emptystruct
+err_bool
+erruse_neg
+erruse_ok
+erruse_shapes_neg
 esc_array_elem_neg
 esc_block_ptr_neg
 esc_call_store_neg
@@ -63,6 +67,7 @@ esc_decay_field_neg
 esc_decay_neg
 esc_defer_join_neg
 esc_defer_neg
+esc_destructure_neg
 esc_flow_ok
 esc_index_param_neg
 esc_local_alias_neg
@@ -100,9 +105,13 @@ init_alias_neg
 init_outparam
 init_shapes_neg
 literal_ctor_args_neg
+localstruct
 mandelbrot
 minu16
 mixwiden
+multi_assign_param_neg
+multiret
+multiret_struct_lit
 multistmt
 negtrap
 nested_array_literals
@@ -138,10 +147,13 @@ slice_loop_view
 slice_param_header_neg
 spantest
 spread_literal
+str64agg
 strfield
 tailfns
 test_match_indexed
 text_constant_views
+text_partial_array
+try_runs_defers
 u64dec
 u8print
 uninitbranch

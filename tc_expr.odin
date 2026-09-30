@@ -85,6 +85,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_assert(k, n, env, want, w)
     case .Size_Of:
         return tc_size_of(k, n, env, want, w)
+    case .Try:
+        return tc_try(k, n, env, want, w)
     case .Dot_Ident:
         name := tc_text(Token_Id(k.t.a[n]))
         hint := k.hint
@@ -1053,4 +1055,34 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
     b := tc_building(k)
     if b == nil || want == .None || want == .Place { return dt, {} }
     return dt, {v = graph_op_value(b, .Cast, w, span, dt, name, r.v), ok = true}
+}
+
+// `f()?`: the call, then the branch on its err (returned, when one) — its
+// value the call's first, or none when it returns only its err.
+tc_try :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+    span := tree_span(k.t, n)
+    inner := Tree_Id(k.t.a[n])
+    if want == .Place { tc_fail(k, "a `?`'s place") }
+    builds := want != .None && want != .Place
+    _, r := tc_expr(k, inner, env, .Value if builds else .None, w)
+    done :: proc(k: ^TC, t: Type, builds: bool, r: Fused, span: Span) -> (Type, Fused) {
+        if b := tc_building(k); b != nil && builds && r.ok { return t, {v = graph_try_after(b, span, r.v), ok = true} }
+        return t, {}
+    }
+    if k.t.tag[tc_unparen(k, inner)] != .Call {
+        tc_error(k, span, TYPE_TRY_OPERAND_MUST_BE_CALL)
+        return done(k, Type_Error{}, builds, r, span)
+    }
+    rets := tc_call_returns(k, inner, env)
+    if len(rets) == 0 || !is_err_type(rets[len(rets) - 1]) {
+        tc_error(k, span, TYPE_TRY_REQUIRES_ERR_RETURN)
+        return done(k, Type_Error{}, builds, r, span)
+    }
+    rts := enclosing_return_types(env)
+    if len(rts) == 0 || !is_err_type(rts[len(rts) - 1]) {
+        tc_error(k, span, TYPE_TRY_OUTSIDE_ERR_FUNCTION)
+        return done(k, Type_Error{}, builds, r, span)
+    }
+    if len(rets) == 1 { return done(k, Type_Void{}, builds, r, span) }
+    return done(k, rets[0], builds, r, span)
 }

@@ -718,3 +718,22 @@ tc_write_root_const :: proc(k: ^TC, n: Tree_Id) -> (string, bool) {
         cur = inner
     }
 }
+
+// `v{ x = 1 }` as a statement, v a variable of a struct: each field given
+// written into v's, in place.
+tc_override :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope) -> bool {
+    tr := k.t
+    if tr.tag[e] != .Literal { return false }
+    ty := Tree_Id(tr.a[e])
+    if ty == 0 || tr.tag[ty] != .Ident { return false }
+    name := tc_name(k, ty)
+    vt, _, found := type_env_locate(env, name)
+    if !found { return false }
+    sd := resolve_to_struct_type(k.c, vt)
+    if sd == nil { return false }
+    tc_set_type(k, e, vt)
+    gl: ^Graph_Literal
+    if b := tc_building(k); b != nil { gl = graph_fuse_override(b, graph_dest_var(name, NO_NODE, vt), sd) }
+    tc_literal_fields(k, e, tree_list(tr, tr.b[e]), sd, env, gl)
+    return true
+}

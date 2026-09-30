@@ -87,6 +87,7 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     #partial switch t.tag[s] {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
+        if tc_override(k, e, env) { return }
         rt, _ := tc_expr(k, e, env, .Value)
         // A call's value, dropped: `_ = f()` says so.
         if t.tag[e] == .Call && rt != nil {
@@ -124,26 +125,60 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
     t := k.t
     span := tree_span(t, s)
     v := decl_view(t, s)
-    switch {
-    case len(v.targets) != 1:
-        tc_unsupported(k, s, "a destructure")
+    for tg in v.targets {
+        if t.tag[tg] != .Ident {
+            tc_unsupported(k, s, "a declaration of no name")
+            return
+        }
+    }
+    if len(v.targets) > 1 && len(v.values) == 1 {
+        if fields_of != nil {
+            tc_unsupported(k, s, "a struct's fields from one call")
+            return
+        }
+        tc_destructure(k, s, v.targets, v.values[0], true, v.type_, env)
         return
-    case len(v.values) > 1 || t.tag[v.targets[0]] != .Ident:
+    }
+    if len(v.values) > 0 && len(v.values) != len(v.targets) {
         tc_unsupported(k, s, "this declaration")
         return
     }
-    target := v.targets[0]
+    // (Several names, each its own declaration — a struct's fields made
+    // first, together.)
+    if len(v.targets) > 1 && fields_of != nil {
+        if v.type_ != 0 {
+            // (Annotated: its fields typed as they are made.)
+            ft := tc_type(k, v.type_, env, span)
+            for tg, i in v.targets { tc_add_field(fields_of, tc_name(k, tg), ft, v.values[i] if i < len(v.values) else 0) }
+        }
+        if b := tc_building(k); b != nil {
+            names := make([]string, len(v.targets), context.temp_allocator)
+            ids := make([]Syntax_Id, len(v.targets), context.temp_allocator)
+            inits := make([]Span, len(v.values), context.temp_allocator)
+            for tg, i in v.targets { names[i], ids[i] = tc_name(k, tg), tc_sid(k, tg) }
+            for val, i in v.values { inits[i] = tree_span(t, val) }
+            graph_fuse_fields(b, names, span, ids, inits, false)
+        }
+    }
+    for tg, i in v.targets {
+        tc_decl_one(k, s, tg, v.values[i] if i < len(v.values) else 0, v.type_, env, fields_of)
+    }
+}
+
+// One name's declaration.
+tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope) {
+    t := k.t
+    span := tree_span(t, s)
     name := tc_name(k, target)
     ann: Type = Type_Any{}
-    if v.type_ != 0 { ann = tc_type(k, v.type_, env, span) }
+    if ann_node != 0 { ann = tc_type(k, ann_node, env, span) }
     if !tc_declarable(k, env, name, span) { return }
-    value := v.values[0] if len(v.values) > 0 else 0
     if value != 0 && t.tag[value] == .Ident && tc_name(k, value) == "void" {
         tc_unsupported(k, s, "a `void` declaration")
         return
     }
     if fields_of != nil && !is_any(ann) { tc_add_field(fields_of, name, ann, value) }
-    if len(v.values) == 0 {
+    if value == 0 {
         tc_decl_bare(k, name, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span))
         return
     }
@@ -265,6 +300,8 @@ tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Sp
     if decl == NO_NODE {
         decl = graph_fuse_decl(b, name, span)
         graph_fuse_typed(b, decl, ann)
+    } else if b.g.type_[decl] == nil {
+        graph_fuse_typed(b, decl, ann)
     }
     graph_fuse_bare(b, decl, ann, nil, args, span)
 }
@@ -283,6 +320,7 @@ tc_bare_struct :: proc(t: Type) -> ^Type_Scope {
 
 // A struct's field, as its declaration finds it.
 tc_add_field :: proc(ts: ^Type_Scope, name: string, t: Type, value: Tree_Id) {
+    if name in ts.field_map { return }   // (added with the others declared with it)
     append(&ts.fields, Struct_Type_Field{name = name, type_ = t, default_node = value})
     build_field_map(&ts.sd)
 }
@@ -293,6 +331,7 @@ tc_field_decl :: proc(k: ^TC, fields_of: ^Type_Scope, name: string, target, valu
     b := tc_building(k)
     if fields_of == nil || b == nil { return NO_NODE }
     key := tc_sid(k, target)
+    if d, made := b.fuse.fields[key]; made { return d }   // (made with the others declared with it)
     inits := []Span{tree_span(k.t, value)} if value != 0 else nil
     graph_fuse_fields(b, {name}, span, {key}, inits, false)
     return b.fuse.fields[key]
@@ -375,6 +414,10 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     span := tree_span(t, s)
     targets := tree_list(t, t.a[s])
     values := tree_list(t, t.b[s])
+    if len(targets) > 1 && len(values) == 1 {
+        tc_destructure(k, s, targets, values[0], false, 0, env)
+        return
+    }
     if len(targets) == 1 && len(values) == 1 {
         target := targets[0]
         #partial switch t.tag[target] {
