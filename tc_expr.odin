@@ -80,6 +80,18 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_call(k, n, env, want, w, dest, temp, temp_span)
     case .Assert:
         return tc_assert(k, n, env, want, w)
+    case .Dot_Ident:
+        name := tc_text(Token_Id(k.t.a[n]))
+        hint := k.hint
+        k.hint = nil
+        et, v, found := tc_variant_ident(k, name, hint, env, true, span)
+        if !found {
+            tc_error(k, span, TYPE_VISIBLE_ENUM_UNION_VARIANT, name)
+            return Type_Error{}, {}
+        }
+        if et == nil { return Type_Error{}, {} }
+        k.variant_nodes[n] = true
+        return et, tc_variant_value(k, et, v, name, span, want, w)
     case .Field:
         return tc_field(k, n, env, want, w)
     case .Literal:
@@ -111,7 +123,16 @@ tc_number :: proc(k: ^TC, n: Tree_Id, span: Span, negate: bool, want: Fuse_Want,
 tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
     name := tc_name(k, n)
     span := tree_span(k.t, n)
+    hint := k.hint
     k.hint = nil
+    // (A variant of the enum expected, first.)
+    if hint != nil {
+        if et, v, found := tc_variant_ident(k, name, hint, env, false, span); found {
+            if et == nil { return Type_Error{}, {} }
+            k.variant_nodes[n] = true
+            return et, tc_variant_value(k, et, v, name, span, want, w)
+        }
+    }
     // (A constant: its own module's, or one it uses' — two is ambiguous.)
     kc, unambiguous := tc_const_ref(k, env, name, span)
     if !unambiguous { return Type_Error{}, {} }
@@ -140,8 +161,13 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     // (A local is found in no scope: what a scope holds is a fun, a type, a
     // constant — a function sees no module's variables.)
     if loc_scope != nil {
-        tc_unsupported(k, n, "a name that is no local")
-        return t, {}
+        if ts, is_scope := t.(^Type_Scope); is_scope && ts.kind == .Fun {
+            tc_unsupported(k, n, "a fun as a value")
+            return t, {}
+        }
+        // (A type's name, a module's: built as the old checker built a name it
+        // resolved to nothing — a variable's — which a field access of it, its
+        // one use, leaves out.)
     }
     if want == .None { return t, {} }
     place := graph_var(b, name, NO_NODE, t, span)
@@ -614,6 +640,7 @@ tc_unparen :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
 // a negated number.
 tc_is_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
     n := tc_unparen(k, n)
+    if n in k.variant_nodes { return true }   // (a variant's name states its value)
     #partial switch k.t.tag[n] {
     case .Number, .True, .False, .Char: return true
     case .Unary:

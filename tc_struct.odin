@@ -1,6 +1,7 @@
 package mara
 
 import "core:fmt"
+import "core:strings"
 
 // Structs in the new checker: a field read or written, a struct built (a
 // literal, a call of its constructor).
@@ -30,15 +31,19 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         mark = graph_fuse_mark(tc_building(k))
     }
     bt, br := tc_expr(k, base, env, ask, w, temp_span = span)
-    t, is_member, const_len := tc_field_type(k, n, bt, field, span)
+    if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
+        return tc_module_member(k, n, sd, field, bt, br, mark, build, want, w)
+    }
+    t, is_member, known, known_ok := tc_field_type(k, n, bt, field, span)
+    if _, is_enum := t.(^Type_Enum); is_enum && known_ok { k.variant_nodes[n] = true }
     if !build || tc_building(k) == nil { return t, {} }
-    if const_len >= 0 {
+    if known_ok {
         // (A length known — a fixed array's, a text constant's: its value;
         // its base, built, left out.)
         b := tc_building(k)
         graph_fuse_drop_since(b, mark)
         if want == .Place { return t, {} }
-        return t, {v = graph_const(b, w, span, t, field, Const_Value{int = i128(const_len)}), ok = true}
+        return t, {v = graph_const(b, w, span, t, field, Const_Value{int = known}), ok = true}
     }
     if !is_member { return t, {} }
     p := tc_member_place(k, n, br, bt, t)
@@ -49,70 +54,94 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
 
 // A field's type: whether it names part of the value (a member), or a
 // fixed array's length (its value, else -1).
-tc_field_type :: proc(k: ^TC, n: Tree_Id, bt: Type, field: string, span: Span) -> (t: Type, member: bool, const_len: int) {
-    const_len = -1
+tc_field_type :: proc(k: ^TC, n: Tree_Id, bt: Type, field: string, span: Span) -> (t: Type, member: bool, known: i128, known_ok: bool) {
+    // (An enum's variant: its value, known. A union's tag or pad: part of the
+    // value; its variant: a value of its own.)
+    #partial switch v in bt {
+    case ^Type_Enum:
+        if val, has := v.variants[field]; has { return v, false, i128(val), true }
+        tc_error(k, span, TYPE_ENUM_VARIANT, v.name, field)
+        return Type_Error{}, false, 0, false
+    case ^Type_Union:
+        switch field {
+        case "tag":
+            if tag_et, found := k.table.enums[strings.concatenate({v.name, "_Tag"})]; found { return tag_et, true, 0, false }
+            tc_error(k, span, TYPE_UNION_TAG_ENUM_INTERNAL_ERROR, v.name)
+            return Type_Error{}, false, 0, false
+        case "pad":
+            if v.tag_pad == nil {
+                tc_error(k, span, TYPE_UNION_PADDING_DECLARE_UNION_PAD, v.name)
+                return Type_Error{}, false, 0, false
+            }
+            return v.tag_pad, true, 0, false
+        }
+        if _, has := v.tag_map[field]; has {
+            tc_unsupported(k, n, "a union's variant as a value")
+            return Type_Error{}, false, 0, false
+        }
+        tc_error(k, span, TYPE_UNION_VARIANT, v.name, field)
+        return Type_Error{}, false, 0, false
+    }
+
     if sd := tc_struct_of(k, bt); sd != nil && len(sd.fields) > 0 {
         if sd_is_module(sd) {
             tc_unsupported(k, n, "a module's member")
-            return Type_Error{}, false, -1
+            return Type_Error{}, false, 0, false
         }
         for f in sd.fields {
             if f.is_using {
                 tc_unsupported(k, n, "a field of a `using` field's struct")
-                return Type_Error{}, false, -1
+                return Type_Error{}, false, 0, false
             }
         }
-        if ft := resolve_struct_field(sd, field, k.table); ft != nil { return ft, true, -1 }
+        if ft := resolve_struct_field(sd, field, k.table); ft != nil { return ft, true, 0, false }
         if sd.functions != nil && field in sd.functions {
             tc_unsupported(k, n, "a struct's function as a value")
-            return Type_Error{}, false, -1
+            return Type_Error{}, false, 0, false
         }
         tc_error(k, span, TYPE_CLASS_FIELD, sd.name, field)
-        return Type_Error{}, false, -1
+        return Type_Error{}, false, 0, false
     }
     obj := bt
     if pt, is_ptr := obj.(^Type_Ptr); is_ptr { obj = pt.elem }
     obj = distinct_base(obj)
     #partial switch v in obj {
-    case ^Type_Enum, ^Type_Union:
-        tc_unsupported(k, n, "a variant or tag")
-        return Type_Error{}, false, -1
     case ^Type_Fixed_Array:
-        if field == "len" || field == "cap" { return Type_Numeric{kind = .Signed, bits = 64}, false, v.size }
+        if field == "len" || field == "cap" { return Type_Numeric{kind = .Signed, bits = 64}, false, i128(v.size), true }
         if is_swizzle_field(field, v.size) {
-            if len(field) == 1 { return v.elem, true, -1 }
-            return new_clone(Type_Fixed_Array{size = len(field), elem = v.elem}), true, -1
+            if len(field) == 1 { return v.elem, true, 0, false }
+            return new_clone(Type_Fixed_Array{size = len(field), elem = v.elem}), true, 0, false
         }
         if is_all_swizzle_chars(field) {
             tc_error(k, span, TYPE_SWIZZLE_COMPONENT_OUT_RANGE_ARRAY, field, v.size)
         } else {
             tc_error(k, span, TYPE_CANNOT_ACCESS_FIELD_ARRAY_TYPE, field, type_name(obj))
         }
-        return Type_Error{}, false, -1
+        return Type_Error{}, false, 0, false
     case ^Type_Slice:
         switch field {
-        case "ptr":        return new_clone(Type_Ptr{elem = v.elem}), true, -1
-        case "len", "cap": return slice_header_width_type, true, -1
+        case "ptr":        return new_clone(Type_Ptr{elem = v.elem}), true, 0, false
+        case "len", "cap": return slice_header_width_type, true, 0, false
         }
         tc_error(k, span, TYPE_SLICE_TYPE_FIELD, type_name(obj), field)
-        return Type_Error{}, false, -1
+        return Type_Error{}, false, 0, false
     case ^Type_Partial_Array:
         switch field {
-        case "ptr":        return new_clone(Type_Ptr{elem = v.elem}), true, -1
+        case "ptr":        return new_clone(Type_Ptr{elem = v.elem}), true, 0, false
         case "len", "cap":
             // (A text constant's: its length, known.)
             if base := tc_unparen(k, Tree_Id(k.t.a[n])); k.t.tag[base] == .Ident {
                 if kc, ok := k.consts[tc_name(k, base)]; ok && k.t.tag[kc.value] == .String {
-                    return slice_header_width_type, false, len(tc_text(k.t.main[kc.value]))
+                    return slice_header_width_type, false, i128(len(tc_text(k.t.main[kc.value]))), true
                 }
             }
-            return slice_header_width_type, true, -1
+            return slice_header_width_type, true, 0, false
         }
         tc_error(k, span, TYPE_PARTIAL_ARRAY_TYPE_FIELD, type_name(obj), field)
-        return Type_Error{}, false, -1
+        return Type_Error{}, false, 0, false
     }
     if !is_any(bt) { tc_error(k, span, TYPE_CANNOT_ACCESS_FIELD_TYPE, field, type_name(bt)) }
-    return Type_Error{}, false, -1
+    return Type_Error{}, false, 0, false
 }
 
 // A member's place: its base's (through a pointer, what it points at), then
@@ -494,4 +523,44 @@ tc_header_assign :: proc(k: ^TC, s, target, value: Tree_Id, bt: Type, br: Fused,
         tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }
     if is_infer(vt) { tc_literal_overflow(k, diag, ft, span) }
+}
+
+// `m.X`, m a module: its constant (a value of its own: the base, built, left
+// out), an enum's variant it holds, or its member (a type, a fun — the base
+// of a further access).
+tc_module_member :: proc(k: ^TC, n: Tree_Id, sd: ^Scope_Body, field: string, bt: Type, br: Fused, mark: Graph_Mark,
+                         build: bool, want: Fuse_Want, w: Written) -> (Type, Fused) {
+    span := tree_span(k.t, n)
+    msc := sd_module_scope(sd)
+    t, found := type_env_get(msc, field)
+    if !found {
+        for _, mt in sd.types {
+            if et, is_enum := mt.(^Type_Enum); is_enum {
+                if val, has := et.variants[field]; has {
+                    k.variant_nodes[n] = true
+                    if b := tc_building(k); build && b != nil { graph_fuse_drop_since(b, mark) }
+                    return et, tc_variant_value(k, et, val, field, span, want if build else .None, w)
+                }
+            } else if ut, is_union := mt.(^Type_Union); is_union {
+                if _, has := ut.tag_map[field]; has {
+                    tc_unsupported(k, n, "a union's variant as a value")
+                    return Type_Error{}, {}
+                }
+            }
+        }
+        tc_error(k, span, TYPE_MODULE_SYMBOL, sd.name, field)
+        return Type_Error{}, {}
+    }
+    if kc, is_const := k.consts[make_flat_name(sd.name, field)]; is_const {
+        b := tc_building(k)
+        if !build || b == nil { return t, {} }
+        graph_fuse_drop_since(b, mark)
+        return t, tc_const_use(k, kc, n, t, want, w)
+    }
+    b := tc_building(k)
+    if !build || b == nil { return t, {} }
+    p := tc_member_place(k, n, br, bt, t)
+    if p == NO_VALUE { return t, {} }
+    if want == .Value { return t, {v = graph_read(b, p, t, span), ok = true} }
+    return t, {v = p, place = true, ok = true}
 }

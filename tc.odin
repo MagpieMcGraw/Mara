@@ -42,6 +42,7 @@ TC :: struct {
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
     callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
+    variant_nodes: map[Tree_Id]bool,  // the names that resolved to an enum's variant
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
 
@@ -220,6 +221,9 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
         envs[i] = fe
     }
     for f, i in files {
+        for s in tree_list(k.t, k.t.a[f]) { tc_register_types(k, s, envs[i], mod) }
+    }
+    for f, i in files {
         for s in tree_list(k.t, k.t.a[f]) { tc_register(k, s, envs[i], mod) }
     }
     mine := list[:]
@@ -258,6 +262,32 @@ tc_struct_ensure :: proc(k: ^TC, ts: ^Type_Scope) {
 }
 
 // A module statement's declaration, registered: a fun's name, its type made.
+// A module statement's names, the first pass (the old checker's 1a): its
+// funs, structs, types and unions declared, its constants listed — before
+// any `use` in the module checks another.
+tc_register_types :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
+    t := k.t
+    if t.tag[s] != .Define { return }
+    value := Tree_Id(t.b[s])
+    if value == 0 { return }
+    if t.a[s] == 0 {
+        #partial switch t.tag[value] {
+        case .Fun_Def, .Struct_Def:
+            tc_register_scope(k, s, value, env, mod)
+            return
+        case .Alias_Def, .Distinct_Def:
+            tc_register_distinct(k, s, value, mod)
+            return
+        case .Union_Def, .Error_Def:
+            tc_register_union(k, s, value, env, mod)
+            return
+        }
+    }
+    if !tc_is_definition(t.tag[value]) { tc_register_const(k, s, value, env, mod) }
+}
+
+// The rest of a module statement, the second pass: a `use`, a dispatch, an
+// overload.
 tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
     t := k.t
     #partial switch t.tag[s] {
@@ -271,31 +301,23 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
         }
     case .Define:
         value := Tree_Id(t.b[s])
-        if t.a[s] == 0 && value != 0 && (t.tag[value] == .Fun_Def || t.tag[value] == .Struct_Def) {
-            tc_register_scope(k, s, value, env, mod)
-            return
-        }
         if value != 0 && t.tag[value] == .Import {
             m := tc_use(k, value, env, mod, alias = tc_name(k, s))
             if k.gb != nil { graph_module_stmt(k.gb, syntax_id(s), {types = slice.clone([]Type{m}), kind = .Other, set = true}) }
             return
         }
-        if t.a[s] == 0 && value != 0 {
-            #partial switch t.tag[value] {
-            case .Alias_Def, .Distinct_Def:
-                tc_register_distinct(k, s, value, mod)
-                return
-            case .Dispatch_Def:
-                // (Its functions are checked to exist once every name is known.)
-                name := tc_name(k, s)
-                if name not_in k.c.dispatch_groups { k.c.dispatch_groups[name] = {} }
-                for f in tree_token_list(t, t.a[value]) { append(&k.c.dispatch_groups[name], tc_text(f)) }
-                return
-            }
-        }
-        if value != 0 && !tc_is_definition(t.tag[value]) {
-            tc_register_const(k, s, value, env, mod)
+        if value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
+            // (Its functions are checked to exist once every name is known.)
+            name := tc_name(k, s)
+            if name not_in k.c.dispatch_groups { k.c.dispatch_groups[name] = {} }
+            for f in tree_token_list(t, t.a[value]) { append(&k.c.dispatch_groups[name], tc_text(f)) }
             return
+        }
+        #partial switch t.tag[value] {
+        case .Fun_Def, .Struct_Def, .Alias_Def, .Distinct_Def, .Union_Def, .Error_Def:
+            if t.a[s] == 0 { return }   // (the first pass's)
+        case:
+            if value != 0 && !tc_is_definition(t.tag[value]) { return }   // (a constant: the first pass's)
         }
         if value != 0 {
             tc_unsupported(k, value, "this module definition")
@@ -343,6 +365,10 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         return
     }
     if t.a[s] != 0 { return }
+    if value != 0 && t.tag[value] == .Union_Def {
+        tc_resolve_union(k, s, value, env)
+        return
+    }
     if value == 0 || (t.tag[value] != .Alias_Def && t.tag[value] != .Distinct_Def) { return }
     if dt, ok := k.table.distinct_types[make_flat_name(k.pkg, tc_name(k, s))]; ok && dt.base_type == nil {
         dt.base_type = tc_type(k, Tree_Id(t.a[value]), env, tree_span(t, s))
