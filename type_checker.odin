@@ -5702,6 +5702,16 @@ fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Valu
     return t, r
 }
 
+// A place however its base is reached (graph_place's): a field, an
+// element, what a pointer points at.
+fuse_is_place_form :: proc(e: Expr) -> bool {
+    #partial switch v in e {
+    case ^Expr_Field_Access, ^Expr_Index: return true
+    case ^Expr_Unary: return v.op == .Caret
+    }
+    return false
+}
+
 // An expression with no place of its own (graph_place's): an operation's
 // value, a `?`'s, a slice, an assert, a take.
 fuse_holds :: proc(e: Expr) -> bool {
@@ -5791,7 +5801,7 @@ fuse_leaf :: proc(c: ^Checker, e: Expr) {
 
 // An argument or a returned value at the type its use takes (graph_value_as):
 // a view where one is taken, else its value, widened.
-fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: Span, w: Graph_Widen) -> Operand {
+fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: Span, w: Graph_Widen, held: ^Graph_Later = nil) -> Operand {
     b := fusing(c)
     if b == nil { return NO_VALUE }
     if to != nil {
@@ -5810,11 +5820,18 @@ fuse_value_as :: proc(c: ^Checker, e: Expr, t: Type, r: Fused, to: Type, span: S
             return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), fuse_value(c, r, e, t))
         }
         if to_slice && from_array {
-            if !r.place {
+            if r.place { return graph_op_value(b, .Slice, .Implied, span, to, "", r.v) }
+            // An array's value: held in a temporary made before it (`held`,
+            // reserved then — graph_place's), seen whole.
+            if held == nil || !held.reserved {
                 fuse_fail(c, "a slice of an array value")
                 return NO_VALUE
             }
-            return graph_op_value(b, .Slice, .Implied, span, to, "", r.v)
+            graph_fuse_later_begin(b, held)
+            slot := graph_slot(b, "temp", t, span)
+            if !graph_fuse_later_end(b, held) { fuse_fail(c, "an array's value across runs") }
+            graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", slot, t, span), r.v)
+            return graph_op_value(b, .Slice, .Implied, span, to, "", graph_var(b, "temp", slot, t, span))
         }
         // Bytes taken as an array (a view, into a temporary); a literal
         // built at its use's type.
@@ -8821,12 +8838,16 @@ check_return_body :: proc(c: ^Checker, s: Stmt_Return, env: ^Type_Scope) {
                 }
             }
             use, at := fuse_use_type(val, expected, s.span)
+            held: Graph_Later
+            if _, to_slice := distinct_base(expected).(^Type_Slice); to_slice {
+                if b := fusing(c); b != nil { held = graph_fuse_later(b) }
+            }
             vt, r := fuse_expr(c, val, env, .Either, dest = use, temp_span = at)
             if k, folds := graph_constant(val).?; folds && k.is_text && is_partial_array(expected) && !text_pa {
                 fuse_fail(c, "a text constant returned as a partial array")
             }
             if fusing(c) != nil && !text_pa {
-                append(&vals, fuse_value_as(c, val, vt, r, expected, s.span, {to = expected}))
+                append(&vals, fuse_value_as(c, val, vt, r, expected, s.span, {to = expected}, &held))
             } else if b := fusing(c); b != nil {
                 // Text returned as a partial array: built into one — a
                 // temporary, zero, then the text — read.
@@ -11920,33 +11941,29 @@ Fuse_If :: struct {
     gi:    Graph_If_Expr,
     widen: [2]int,
     types: [2]Type,   // each branch's
+    prefix: [2][2]Node_Id,   // each branch's zero first, kept when it fills a prefix of a partial array
 }
 
 check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
     want, w := fuse_asked(c)
     fi := Fuse_If{w = w, widen = {-1, -1}}
     if b := fusing(c); b != nil && want != .None {
-        // (A branch built in place, or text, takes the if's type first: the
-        // builder's.)
-        #partial switch _ in e.then_expr { case ^Expr_Array, ^Expr_String: fuse_fail(c, "an if of a literal array or of text") }
-        #partial switch _ in e.else_expr { case ^Expr_Array, ^Expr_String: fuse_fail(c, "an if of a literal array or of text") }
-        if fusing(c) != nil {
-            fi.b = b
-            fi.slot = graph_slot(b, "if", nil, e.span)
-        }
+        fi.b = b
+        fi.slot = graph_slot(b, "if", nil, e.span)
     }
     t := check_if_expr_impl(c, e, env, &fi)
     b := fi.b
     if b == nil || fusing(c) == nil { return t }
     // (A branch the if's type views — a fixed array's place as a slice, a
-    // partial array's header as one — or one filling a prefix of it: the
-    // builder's.)
+    // partial array's header as one: the builder's. One filling a prefix of
+    // a partial array — text — is zero first.)
     for bt, k in fi.types {
         branch := e.then_expr if k == 0 else e.else_expr
-        if fuse_views(t, bt) || is_partial_array(t) && graph_fills_prefix(branch) {
-            fuse_fail(c, "an if's branch viewed, or filling a prefix")
+        if fuse_views(t, bt) {
+            fuse_fail(c, "an if's branch viewed")
             return t
         }
+        if fi.prefix[k] != {} { graph_fuse_prefix_end(b, fi.prefix[k], is_partial_array(t) && graph_fills_prefix(branch), t) }
     }
     for k in fi.widen { if k >= 0 { b.fuse.widens[k].to = t } }
     graph_fuse_typed(b, fi.slot, t)
@@ -11959,10 +11976,22 @@ check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
     return t
 }
 
+// Whether a value may fill only a prefix of a partial array (graph_fills_prefix,
+// before it is checked): what is no number, literal or operation.
+fuse_may_fill_prefix :: proc(e: Expr) -> bool {
+    #partial switch _ in e {
+    case ^Expr_Number, ^Expr_Char, ^Expr_Bool, ^Expr_Array, ^Expr_Struct_Literal, ^Expr_Binary, ^Expr_Unary: return false
+    }
+    return true
+}
+
 // A branch's value, stored in the if's local, in its run.
 fuse_if_branch :: proc(c: ^Checker, e: ^Expr_If, branch: Expr, env: ^Type_Scope, fi: ^Fuse_If, k: int) -> Type {
     if fi.b == nil { return check_expr(c, branch, env) }
     b := fi.b
+    // (Text, a slice's elements: a partial array's prefix, zero first — kept
+    // once the if's type says so. A literal: built in the if's local.)
+    if fuse_may_fill_prefix(branch) { fi.prefix[k] = graph_fuse_prefix(b, "if", fi.slot, e.span) }
     t, r := fuse_expr(c, branch, env, .Into, dest = graph_dest_var("if", fi.slot, nil))
     fi.types[k] = t
     if fusing(c) == nil || r.into { return t }
@@ -14064,8 +14093,11 @@ check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scop
         if arg == sig.params[param].default_value { w = .Implied }   // run at the call, not written there
     }
     use, at := fuse_use_type(arg, pt, span)
+    // (A temporary its value may need, before it: an array's a slice param views.)
+    held: Graph_Later
+    if _, to_slice := distinct_base(pt).(^Type_Slice); to_slice { held = graph_fuse_later(fusing(c)) }
     t, r := fuse_expr(c, arg, env, .Either, w, dest = use, temp_span = at)
-    append(&fc.ops, fuse_value_as(c, arg, t, r, pt, span, {sig = sig, param = param}))
+    append(&fc.ops, fuse_value_as(c, arg, t, r, pt, span, {sig = sig, param = param}, &held))
     return t
 }
 
@@ -15445,11 +15477,19 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
     lower_subscript_dots(e.expr, e.high)
     target_type: Type
     if b := fusing(c); b != nil && fs != nil && !graph_pure_place(e.expr) {
-        // A base that is no plain place (a call's result, text): held in a
-        // temporary, built as it is checked, put after the bounds.
+        // A base that is no plain place, built as it is checked, put after
+        // the bounds: a field's, an element's, a pointer's place (over a
+        // call's result, say) as it is; else — a call's result, text — held
+        // in a temporary.
         fs.held, fs.early = true, graph_fuse_early_begin(b)
         base: Operand
-        target_type, base = fuse_hold(c, e.expr, env, e.span)
+        if fuse_is_place_form(e.expr) {
+            r: Fused
+            target_type, r = fuse_expr(c, e.expr, env, .Place, temp_span = e.span)
+            base = r.v
+        } else {
+            target_type, base = fuse_hold(c, e.expr, env, e.span)
+        }
         if pt, ok := distinct_base(target_type).(^Type_Ptr); ok && base != NO_VALUE {
             base = graph_op_value(b, .Deref, .Implied, e.span, pt.elem, "", base)
         }

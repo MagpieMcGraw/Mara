@@ -3061,6 +3061,7 @@ Graph_Later :: struct {
     si, saved:    int,
     run:          ^Run,
     same:         bool,
+    reserved:     bool,
 }
 
 // What is built before what it follows (checked first, built after): in a
@@ -3088,7 +3089,7 @@ graph_fuse_early_place :: proc(b: ^Graph_Builder, e: ^Graph_Early) -> bool {
 }
 
 graph_fuse_later :: proc(b: ^Graph_Builder) -> Graph_Later {
-    return {seg = b.seg, anchor = graph_anchor_here(b), run = b.code.run}
+    return {seg = b.seg, anchor = graph_anchor_here(b), run = b.code.run, reserved = true}
 }
 
 graph_fuse_later_begin :: proc(b: ^Graph_Builder, l: ^Graph_Later) {
