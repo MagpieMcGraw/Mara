@@ -788,29 +788,46 @@ erroneous program reports, the negative fixtures say so.
       normal one: identical in all 275 programs. (Anchors will need to be positions rather than
       nodes once a scope's contents can come before its node — a nested definition checked
       before its parent's code — and instances will anchor at their template, by name.)
-- [ ] Fusion: the checker builds each body's graph as it checks it — it finishes bodies out of
-      order, the segments put them in place — and the walk builds operations as it checks — an expression gives its operand beside
-      its type, a store builds into its destination — construct by construct, the builder's case
-      deleted as each moves; a body the checker can't build yet is built by the builder, from the
-      annotations, as phase 3 did per function
-      In progress: 2277 of the corpus's fun bodies are built as they are checked (the rest: 46
-      checked with errors, 71 of constructs still the builder's; struct bodies and module-level
-      declarations not started). A segment holds its scope's node and is built in pieces,
-      anchored at a position and placed when the builder meets its scope (graph_fuse_place: its
-      definitions built there). The checker's walk asks each expression what to build (fuse_expr:
-      its value, its place, either, or into a destination — a temporary first where the storage
-      already holds a value) and gets what it built (c.fused). Where the builder decides before
-      something is checked what it decides after, the checker makes the operation where it goes
-      and decides it when the graph is put together, when every width is known: a widening, an
-      operand's view at a param chosen later, a range's bound cast and its check, a partial
-      array's prefix zero, the arena's marks and resets and a big local's space; it is kept or
-      dropped (repl), and what a dropped one began its run with passes to the next.
-      Types settle then too. A field access's base built before it names a type or a module is
-      left out (graph_fuse_drop_since); bytes' element places are retyped into views where their
-      use says so. A body or a construct the checker can't build yet fails the body to the
-      builder (MARA_FUSE=log: why). Graph identical in all 275 programs at every step (shuffled
-      too). test_1M: 33 s vs 28 s with MARA_FUSE=0 (canonicalize 2.7 s is the cost to cut)
-- [ ] The builder deleted: module-level declarations and constants from the checker too
+- [x] Fusion: the checker builds each body's graph as it checks it — it finishes bodies out of
+      order, the segments put them in place — and the walk builds operations as it checks: an
+      expression gives its operand beside its type, a store builds into its destination
+      Every body of the corpus is built as it is checked: 3146 — funs, instances, structs (their
+      code is their fields' values), intrinsics (params and results), generic struct instances
+      and the program's struct. What falls back to the builder is only a body checked with
+      errors, which is never compiled. A segment holds its scope's node and is built in pieces,
+      anchored at a position, placed when the builder meets its scope (graph_fuse_place: its
+      definitions built there). The checker's walk asks each expression what to build
+      (fuse_expr: its value, its place, either, or into a destination — a temporary first where
+      the storage already holds a value, or where a use places it) and gets what it built
+      (c.fused). Where the builder decides before something is checked what the checker learns
+      after, three ways keep the graph the builder's:
+      - Tentative operations, made where they go and kept or dropped when the graph is put
+        together, every width known then: a widening, an operand's view at a param chosen later,
+        a range's bound cast and its check, a partial array's prefix zero, the arena's marks and
+        resets and a big local's space. What a dropped one began its run with passes to the next.
+        A byte span's target (`bytes[lo:hi] = v`: a view at lo when v is no array, else the slice)
+        is both shapes built in one line, one's parts left out.
+      - Asking ahead: a use whose type is known before its value is checked says so — an array
+        literal built at a return's or an argument's type, a slice of it placed at the use, a
+        call whose array a slice views held in a temporary, bytes read as the destination's type
+        built base first. A match's arm values are checked before its arms.
+      - Placing later: a dispatch's default for `_`, known once the function is chosen, is built
+        in a segment anchored where the `_` is. A run's operations are put in the order they are
+        placed (canonicalize), so a segment can sit in the middle of a run.
+      Types settle when the graph is put together too. A field access's base built before it
+      names a type or a module is left out; bytes' element places are retyped into views where
+      their use says so. A generic struct's instance is now checked: its body as its own copy,
+      in its template's scope, its type params bound, once every package is checked (a
+      template's methods still the builder's, from the template: none in the corpus).
+      `MARA_FUSE=log` prints why a body fell back and each body the builder builds. Graph
+      identical in all 275 programs at every step, shuffled too. test_1M: 33 s vs 28 s with
+      `MARA_FUSE=0` (canonicalize 2.7 s is the cost to cut)
+- [ ] The builder deleted: module-level declarations and constants from the checker too. Left
+      to the builder: the module level (the program's root, modules, their declarations,
+      constants, types) and the walk that places each body where its scope is, with a fused
+      body's definitions; and inside fused bodies, the leaves and plain places the fused
+      emitters still build from the syntax tree (graph_value, graph_place, graph_base_place),
+      reading its annotations
 - [ ] The last readers of annotations: `void` into a pointer checked where the store is checked;
       the returned local and the consumed param as graph queries; constant tables from values the
       checker evaluated; hit testing from origins
