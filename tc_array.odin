@@ -323,3 +323,77 @@ tc_is_place_form :: proc(k: ^TC, n: Tree_Id) -> bool {
     }
     return false
 }
+
+// `a[lo:hi] = v`: the target's slice — its collection's place (a plain
+// place, checked first), its bounds — then the value into its elements.
+tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
+    tr := k.t
+    span := tree_span(tr, s)
+    sl_span := tree_span(tr, target)
+    base_n := Tree_Id(tr.a[target])
+    lo_n, hi_n := tree_pair(tr, target)
+    if tc_has_dot_ref(k, lo_n) || tc_has_dot_ref(k, hi_n) {
+        tc_unsupported(k, target, "`.len` in a subscript")
+        return
+    }
+    b := tc_building(k)
+    if b != nil && !tc_pure_place(k, base_n) {
+        tc_fail(k, "a slice of no plain place")
+        b = nil
+    }
+    tt: Type
+    coll := NO_VALUE
+    if b != nil {
+        r: Fused
+        tt, r = tc_expr(k, base_n, env, .Place)
+        coll = r.v
+    } else {
+        tt = tc_check(k, base_n, env)
+    }
+    if is_byte_buffer(tt) {
+        tc_unsupported(k, target, "a write into a span of bytes")
+        return
+    }
+    st: Type
+    if elem := index_elem_type(tt); elem != nil {   // (the target names a run of elements)
+        st = new_clone(Type_Slice{elem = elem})
+        tc_set_type(k, target, st)
+    }
+    build := b != nil
+    lt, ht: Type = Type_Any{}, Type_Any{}
+    lo, hi := NO_VALUE, NO_VALUE
+    if lo_n != 0 { lt, lo = tc_bound(k, lo_n, env, .Explicit, sl_span, build) }
+    if hi_n != 0 { ht, hi = tc_bound(k, hi_n, env, .Explicit, sl_span, build) }
+    place := NO_VALUE
+    if b = tc_building(k); build && b != nil {
+        place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", graph_fuse_base_place(b, coll, tt, false, sl_span), lo, hi)
+    }
+    vt := tc_store_at(k, value, place, env, span)
+    if !is_numeric(lt) && !is_any(lt) {
+        tc_error(k, span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(lt))
+    } else if !coerces_to_slice_width(lt) {
+        tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(lt))
+    }
+    if hi_n != 0 && !is_numeric(ht) && !is_any(ht) {
+        tc_error(k, span, TYPE_SLICE_UPPER_BOUND_NUMBER, type_name(ht))
+    } else if hi_n != 0 && !coerces_to_slice_width(ht) {
+        tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(ht))
+    }
+    if pname, immutable := tc_write_root_param(k, target, env); immutable {
+        tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE, pname)
+    }
+    fa, is_array := tt.(^Type_Fixed_Array)
+    if !is_array { return }
+    #partial switch v in vt {
+    case ^Type_Fixed_Array:
+        if types_incompatible(fa.elem, v.elem) {
+            tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO, v.size, type_name(v.elem), fa.size, type_name(fa.elem))
+        }
+    case ^Type_Slice:
+        if types_incompatible(fa.elem, v.elem) { tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_2, type_name(v.elem), fa.size, type_name(fa.elem)) }
+    case ^Type_Partial_Array:
+        if types_incompatible(fa.elem, v.elem) { tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_2, type_name(v.elem), fa.size, type_name(fa.elem)) }
+    case:
+        if !is_any(vt) { tc_error(k, span, TYPE_SLICE_ASSIGNMENT_REQUIRES_ARRAY_SLICE, type_name(vt)) }
+    }
+}

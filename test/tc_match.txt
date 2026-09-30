@@ -21,7 +21,10 @@ crashfix
 crossfile_fields
 ctor_zero
 defer_changes_returned_neg
+defertest
 discard_mixed
+disttest
+emptystruct
 esc_array_elem_neg
 esc_block_ptr_neg
 esc_call_store_neg
@@ -30,6 +33,7 @@ esc_decay_field_neg
 esc_decay_neg
 esc_defer_join_neg
 esc_defer_neg
+esc_flow_ok
 esc_index_param_neg
 esc_local_alias_neg
 esc_loop_carried_neg
@@ -44,6 +48,7 @@ escape_unknown_neg
 escapeparam
 escapes
 fielddefer
+fixed_decay_neg
 fordo
 idxsafe
 inferconflict
@@ -53,10 +58,13 @@ init_shapes_neg
 literal_ctor_args_neg
 mixwiden
 negtrap
+nested_fwd_field
+nested_fwd_fun
 nrvo_zero
 pa_array_stamp
 pafill
 param_reassign_neg
+parenless_fun
 partial_param_header_neg
 partial_param_write_neg
 patest
@@ -69,6 +77,7 @@ retmiss
 settled_literal_range_neg
 slice_param_header_neg
 spread_literal
+tailfns
 u64dec
 uninitbranch
 uninitfield

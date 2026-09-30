@@ -21,7 +21,12 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
             if name == "uint" { tc_error(k, span, TYPE_TYPE_UINT_RESERVED_USE_U64); return Type_Error{} }
             return p
         }
-        if found, ok := type_env_get(env, name); ok { return found }
+        // (`Self`: the struct or fun the type is written in.)
+        if name == "Self" {
+            if s := enclosing_callable_scope(env); s != nil { return s }
+        } else if found, ok := type_env_get(env, name); ok {
+            return found
+        }
         flat := make_flat_name(k.pkg, name)
         if st, ok := k.table.structs[flat]; ok { return st }
         if st, ok := k.table.funs[flat]; ok { return st }

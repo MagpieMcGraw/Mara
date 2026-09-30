@@ -15,12 +15,16 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     if is_struct { ts.sig_state = .In_Progress }
     hint := k.hint
     defer k.hint = hint
+    tc_register_defs(k, sc)
     f: ^Graph_Fuse
     if k.gb != nil { f = graph_fuse_begin(k.gb, ts, syntax_id(sc.def), span, v.intrinsic != 0, .Explicit) }
+    // (A fun's definitions are checked before its code; a struct's once its
+    // fields are known: its methods read them.)
+    if !is_struct { tc_check_defs(k, sc) }
     if v.intrinsic == 0 {
         body := type_env_block_child(ts)
         for p in ts.params { type_env_set(body, p.name, p.type_) }
-        tc_scope(k, v.body, body, ts if is_struct else nil)
+        tc_scope(k, v.body, body, ts if is_struct else nil, top = true)
     }
     if is_struct {
         // (A field's width its uses left open: settled, as a local's is.)
@@ -31,16 +35,20 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
         if k.c.errors > 0 { graph_fuse_fail(k.gb, f, "errors") }
         graph_fuse_end(k.gb, f)
     }
+    if is_struct { tc_check_defs(k, sc) }
 }
 
 // A block's statements: each checked whole, and built, before the next.
 // `fields_of`: the struct whose top block it is (its declarations are its
 // fields).
-tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil) {
+tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil, top := false) {
     t := k.t
     for s in stmts {
         if t.tag[s] == .Define {
-            tc_unsupported(k, s, "a definition in a body")
+            // (A body's definitions are registered and checked with it: built
+            // by the builder from where each is written.)
+            if !top { tc_unsupported(k, s, "a definition in a block") }
+            if b := tc_building(k); b != nil && top { graph_fuse_def(b, tc_graph_decl(k, s)) }
             continue
         }
         b := tc_building(k)
@@ -350,6 +358,10 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
     if len(targets) == 1 && len(values) == 1 && t.tag[targets[0]] == .Index {
         tc_index_assign(k, s, targets[0], values[0], env)
+        return
+    }
+    if len(targets) == 1 && len(values) == 1 && t.tag[targets[0]] == .Slice {
+        tc_slice_assign(k, s, targets[0], values[0], env)
         return
     }
     if len(targets) != 1 || len(values) != 1 || t.tag[targets[0]] != .Ident {

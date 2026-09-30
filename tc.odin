@@ -2,6 +2,7 @@ package mara
 
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strings"
 
 // The type checker on the flat tree (design/flat_tree.md, stage 3), beside
@@ -27,8 +28,14 @@ TC :: struct {
     shared:        bool,
     types:         [dynamic]Type,     // each node's type, as checked (by its id)
     hint:          Type,              // the type the expression being checked is expected at
-    scopes:        [dynamic]TC_Scope, // the funs and structs registered, to check and extract
+    scopes:        [dynamic]^TC_Scope,   // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type
+    mine:          ^[dynamic]int,     // the ones the module being checked registered
+    by_module:     map[string][]int,  // each module's, once checked
+    checked_modules: map[string]^Type_Scope,
+    in_progress:   map[string]bool,
+    std:           ^Type_Scope,
+    templates:     map[string]TC_Template,   // the generic definitions, by name
     callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
@@ -40,6 +47,8 @@ TC_Scope :: struct {
     def:  Tree_Id,   // its Define
     node: Tree_Id,   // its Fun_Def or Struct_Def
     env:  ^Type_Scope,
+    nested: [dynamic]int,   // the funs and structs defined in its body
+    registered: bool,       // (they are)
 }
 
 tc_error :: proc(k: ^TC, span: Span, msg: string, args: ..any) {
@@ -120,6 +129,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     std_fun.home_package = "std"
     std_fun.kind = .Struct
     type_env_set(main_mod, "std", std_fun)
+    k.std = std_fun
+    k.checked_modules[main_package] = main_mod
 
     k.gb = graph_builder_new(checked, tc_module_graph_decls(k))
     c.gb = k.gb
@@ -147,10 +158,11 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     type_env_set(main_mod, "void", void_type)
 
     k.pkg = main_package
-    tc_check_module_files(k, files, main_mod)
+    main := tc_check_module_files(k, files, main_mod)
 
-    tc_extract(k, checked)
-    tc_validate_main(k, files)
+    tc_extract(k, main, main_package, is_main = true)
+    tc_program_struct(k)
+    tc_validate_main(k, main)
 
     if c.errors == 0 {
         if perf != nil { perf_timer_mark(perf, "graph") }
@@ -173,7 +185,13 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
 // A module's files: each its own scope (its imports its own), chained to the
 // module's, where its definitions are declared; their names registered, then
 // their bodies checked.
-tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) {
+tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []int {
+    // (The scopes this module registers: a `use` in it checks another, whose
+    // own are its.)
+    saved := k.mine
+    list: [dynamic]int
+    k.mine = &list
+    defer k.mine = saved
     envs := make([]^Type_Scope, len(files), context.temp_allocator)
     for f, i in files {
         fe := new(Type_Scope)
@@ -185,16 +203,24 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) {
     for f, i in files {
         for s in tree_list(k.t, k.t.a[f]) { tc_register(k, s, envs[i], mod) }
     }
-    for &sc in k.scopes { tc_signature(k, &sc) }
+    for f, i in files {
+        for s in tree_list(k.t, k.t.a[f]) { tc_resolve(k, s, envs[i]) }
+    }
+    mine := list[:]
+    for i in mine { tc_signature(k, k.scopes[i]) }
+    for f, i in files {
+        for s in tree_list(k.t, k.t.a[f]) { tc_validate(k, s, envs[i]) }
+    }
     // A struct's fields are what its body declares: each struct's body is
     // checked first (or sooner, by what needs its fields), then each fun's.
-    for sc in k.scopes { tc_struct_ensure(k, sc.ts) }
-    for &sc in k.scopes {
-        if sc.ts.kind == .Fun { tc_scope_body(k, &sc) }
+    for i in mine { tc_struct_ensure(k, k.scopes[i].ts) }
+    for i in mine {
+        if ts := k.scopes[i].ts; ts != nil && ts.kind == .Fun { tc_scope_body(k, k.scopes[i]) }
     }
-    for sc in k.scopes {
-        if k.gb != nil { graph_module_stmt(k.gb, syntax_id(sc.def), {kind = .Other, set = true}) }
+    for i in mine {
+        if k.gb != nil { graph_module_stmt(k.gb, syntax_id(k.scopes[i].def), {kind = .Other, set = true}) }
     }
+    return mine
 }
 
 // A struct's body checked, its fields found, when something needs them
@@ -207,7 +233,7 @@ tc_struct_ensure :: proc(k: ^TC, ts: ^Type_Scope) {
         tc_unsupported(k, k.scopes[i].def, "a struct whose fields need its own")
         return
     }
-    tc_scope_body(k, &k.scopes[i])
+    tc_scope_body(k, k.scopes[i])
 }
 
 // A module statement's declaration, registered: a fun's name, its type made.
@@ -218,7 +244,8 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
         return
     case .Expr_Stmt:
         if e := Tree_Id(t.a[s]); t.tag[e] == .Import {
-            tc_unsupported(k, e, "an import")
+            tc_use(k, e, env, mod)
+            if k.gb != nil { graph_module_stmt(k.gb, syntax_id(s), {kind = .Decl, set = true}) }
             return
         }
     case .Define:
@@ -227,12 +254,91 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
             tc_register_scope(k, s, value, env, mod)
             return
         }
+        if value != 0 && t.tag[value] == .Import {
+            m := tc_use(k, value, env, mod, alias = tc_name(k, s))
+            if k.gb != nil { graph_module_stmt(k.gb, syntax_id(s), {types = slice.clone([]Type{m}), kind = .Other, set = true}) }
+            return
+        }
+        if t.a[s] == 0 && value != 0 {
+            #partial switch t.tag[value] {
+            case .Alias_Def, .Distinct_Def:
+                tc_register_distinct(k, s, value, mod)
+                return
+            case .Dispatch_Def:
+                // (Its functions are checked to exist once every name is known.)
+                name := tc_name(k, s)
+                if name not_in k.c.dispatch_groups { k.c.dispatch_groups[name] = {} }
+                for f in tree_token_list(t, t.a[value]) { append(&k.c.dispatch_groups[name], tc_text(f)) }
+                return
+            }
+        }
         if value != 0 {
             tc_unsupported(k, value, "this module definition")
             return
         }
+    case .Overload:
+        op := build_tokens[t.a[s]].kind
+        if op not_in k.c.operator_overloads { k.c.operator_overloads[op] = {} }
+        append(&k.c.operator_overloads[op], tc_text(Token_Id(t.b[s])))
+        return
     }
     tc_unsupported(k, s, "this module statement")
+}
+
+// `T :: type U`, `T :: distinct U`: its name (its base once every name is
+// known: tc_resolve).
+tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
+    name := tc_name(k, def)
+    span := tree_span(k.t, def)
+    alias := k.t.tag[node] == .Alias_Def
+    flat := make_flat_name(k.pkg, name)
+    if flat in k.table.distinct_types {
+        tc_error(k, span, TYPE_ALREADY_DEFINED, "type" if alias else "distinct type", name)
+        return
+    }
+    dt := new(Type_Distinct)
+    dt.name, dt.source_name, dt.span, dt.home_package = flat, name, span, k.pkg
+    dt.is_alias = alias
+    k.table.distinct_types[flat] = dt
+    type_env_set(mod, name, dt)
+}
+
+// What a module statement leaves for every name to be known: a distinct
+// type's base.
+tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+    t := k.t
+    if t.tag[s] != .Define || t.a[s] != 0 { return }
+    value := Tree_Id(t.b[s])
+    if value == 0 || (t.tag[value] != .Alias_Def && t.tag[value] != .Distinct_Def) { return }
+    if dt, ok := k.table.distinct_types[make_flat_name(k.pkg, tc_name(k, s))]; ok && dt.base_type == nil {
+        dt.base_type = tc_type(k, Tree_Id(t.a[value]), env, tree_span(t, s))
+    }
+}
+
+// What a module statement is checked for once its signatures are: a
+// dispatch's functions, an overload's dispatch.
+tc_validate :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+    t := k.t
+    span := tree_span(t, s)
+    #partial switch t.tag[s] {
+    case .Define:
+        value := Tree_Id(t.b[s])
+        if value == 0 || t.tag[value] != .Dispatch_Def { return }
+        name := tc_name(k, s)
+        for tok in tree_token_list(t, t.a[value]) {
+            f := tc_text(tok)
+            if found, ok := type_env_get(env, f); ok {
+                if tf, is_scope := found.(^Type_Scope); !is_scope || len(tf.params) == 0 {
+                    tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION, name, f)
+                }
+            } else if f not_in k.templates {
+                tc_error(k, span, TYPE_DISPATCH_GROUP_FUNCTION_DEFINED, name, f)
+            }
+        }
+    case .Overload:
+        name := tc_text(Token_Id(t.b[s]))
+        if _, ok := find_dispatch(k.c, env, name); !ok { tc_error(k, span, TYPE_OVERLOAD_DISPATCH_GROUP, name) }
+    }
 }
 
 // A fun or a struct: its name declared in its module, its type made (its
@@ -243,10 +349,18 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     span := tree_span(t, def)
     v := scope_view(t, node)
     is_struct := t.tag[node] == .Struct_Def
-    switch {
-    case len(v.generics) > 0:
-        tc_unsupported(k, def, "a generic definition")
+    if tc_is_generic(k, node) {
+        // (A template: checked as each instance.)
+        if name not_in k.templates { k.templates[name] = TC_Template{def = def, node = node, env = env, pkg = k.pkg} }
+        if !is_struct && len(v.params) > 0 { k.c.declared_funs[name] = true }
+        // (Its place in the module's order: a template the module's scope
+        // binds a type to is that type's declaration — mara.core's `Program`
+        // is the compiler's program struct — extracted there: tc_extract.)
+        append(k.mine, len(k.scopes))
+        append(&k.scopes, new_clone(TC_Scope{def = def, node = node, env = env}))
         return
+    }
+    switch {
     case is_struct && len(v.returns) > 0:
         tc_unsupported(k, def, "a struct's results")
         return
@@ -277,12 +391,14 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
         mod.functions[name] = ts
     }
     k.scope_of[ts] = len(k.scopes)
-    append(&k.scopes, TC_Scope{ts = ts, def = def, node = node, env = env})
+    append(k.mine, len(k.scopes))
+    append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node, env = env}))
 }
 
 // A fun's or a struct's params and a fun's results, resolved in the scope
 // it is declared in.
 tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
+    if sc.ts == nil { return }   // (a template: its instances')
     t := k.t
     v := scope_view(t, sc.node)
     ts := sc.ts
@@ -311,12 +427,41 @@ tc_signature :: proc(k: ^TC, sc: ^TC_Scope) {
 
 // Each checked fun, for the emitter: its name (the module's prefix, `main`
 // as itself), its origin, its signature for codegen.
-tc_extract :: proc(k: ^TC, checked: ^Checked_Program) {
-    for &sc in k.scopes {
+tc_extract :: proc(k: ^TC, list: []int, module: string, is_main: bool, nested := false) {
+    checked := k.checked
+    for i in list {
+        sc := k.scopes[i]
         ft := sc.ts
+        if ft == nil {
+            // A template, extracted as the type its module's scope binds its
+            // name to (mara.core's `Program`: the compiler's), when one does.
+            name := tc_name(k, sc.def)
+            found, _ := type_env_get(sc.env, name)
+            if ft = found.(^Type_Scope) or_else nil; ft == nil { continue }
+            key := make_flat_name(module, name)
+            ft.origin = Origin_Source{}
+            ft.body_span = tree_span(k.t, sc.def)
+            populate_cg_signature(ft)
+            _, already := checked.functions[key]
+            ft.name = key
+            checked.functions[key] = ft
+            if !already { append(&checked.function_order, key) }
+            continue
+        }
+        // (Its own definitions first.)
+        tc_extract(k, sc.nested[:], module, is_main, nested = true)
         name := ft.source_name
+        // (`main` is the entry's, its bare name: the main module's only.)
+        if name == "main" && !is_main && !nested { continue }
         key := name
-        if name != "main" && k.main_package != "" { key = make_flat_name(k.main_package, name) }
+        if nested {
+            // (Named for its owner already: `mara_core_Arena_mark`.)
+            key = ft.name
+            flat_pkg, _ := strings.replace_all(module, ".", "_")
+            if module != "" && !strings.has_prefix(key, fmt.tprintf("%s_", flat_pkg)) { key = make_flat_name(module, key) }
+        } else if name != "main" && module != "" {
+            key = make_flat_name(module, name)
+        }
         ft.origin = Origin_Source{}
         v := scope_view(k.t, sc.node)
         if v.intrinsic != 0 {
@@ -327,7 +472,7 @@ tc_extract :: proc(k: ^TC, checked: ^Checked_Program) {
         _, already := checked.functions[key]
         ft.name = key
         checked.functions[key] = ft
-        if !already { append(&checked.function_order, key) }
+        if !already || nested { append(&checked.function_order, key) }
     }
 }
 
@@ -342,11 +487,12 @@ tc_intrinsic_name :: proc(k: ^TC, n: Tree_Id) -> string {
 
 // The main package defines `main`, which returns nothing or an i64 (the
 // exit code) and takes no params.
-tc_validate_main :: proc(k: ^TC, files: []Tree_Id) {
+tc_validate_main :: proc(k: ^TC, main: []int) {
     found := false
-    for &sc in k.scopes {
+    for i in main {
+        sc := k.scopes[i]
         fn := sc.ts
-        if fn.kind != .Fun || fn.source_name != "main" { continue }
+        if fn == nil || fn.kind != .Fun || fn.source_name != "main" { continue }
         found = true
         span := tree_span(k.t, sc.def)
         rts := fn.return_types
@@ -381,7 +527,13 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     t := k.t
     d := Graph_Decl{id = syntax_id(s), span = tree_span(t, s), kind = tc_stmt_kind(k, s)}
     #partial switch t.tag[s] {
-    case .Module, .Expr_Stmt, .Return, .Break, .Continue, .Overload:
+    case .Expr_Stmt:
+        d.form = .None
+        if imp := Tree_Id(t.a[s]); t.tag[imp] == .Import {
+            // (A bare `use m` declares m's last name, as the old tree had it.)
+            d.form, d.settles, d.names = .Names, true, slice.clone([]string{tc_use_name(k, imp)})
+        }
+    case .Module, .Return, .Break, .Continue, .Overload:
         d.form = .None
     case .Define:
         d.settles, d.name = true, tc_name(k, s)
@@ -389,9 +541,25 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
         switch {
         case value != 0 && t.tag[value] == .Fun_Def || value != 0 && t.tag[value] == .Struct_Def:
             d.form, d.settles = .Scope, false
-            d.generic = len(scope_view(t, value).generics) > 0
+            d.generic = tc_is_generic(k, value)
         case value != 0 && t.tag[value] == .Import:
             d.form = .Import
+        case value != 0 && (t.tag[value] == .Alias_Def || t.tag[value] == .Distinct_Def):
+            d.form, d.settles = .Type, false
+        case value != 0 && t.tag[value] == .Dispatch_Def:
+            d.form, d.settles = .Dispatch, false
+        case value != 0 && t.tag[value] == .Union_Def:
+            d.form, d.settles = .Union, false
+            variants := tree_list(t, t.b[value])
+            parts := make([]Graph_Decl_Part, len(variants))
+            for vn, i in variants { parts[i] = {tc_name(k, vn), tree_span(t, vn)} }
+            d.parts = parts
+        case value != 0 && t.tag[value] == .Error_Def:
+            d.form, d.settles = .Union, false
+            names := tree_token_list(t, t.a[value])
+            parts := make([]Graph_Decl_Part, len(names))
+            for tok, i in names { parts[i] = {tc_text(tok), Span{at = tok, tok = tok, end = tok + 1}} }
+            d.parts = parts
         case:
             d.form = .Const
             d.value = syntax_id(value)
@@ -406,6 +574,8 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
 // table has it.
 tc_stmt_kind :: proc(k: ^TC, s: Tree_Id) -> Stmt_Kind {
     #partial switch k.t.tag[s] {
+    case .Expr_Stmt:
+        if k.t.tag[k.t.a[s]] == .Import { return .Decl }
     case .Decl:     return .Decl
     case .Assign:
         targets := tree_list(k.t, k.t.a[s])
