@@ -101,7 +101,7 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
         // in the callee, so it gives no line in the caller.
         if e.written == .Implied { continue }
         edge := Call_Edge{from = caller, to = callee}
-        line := pg.origin[e.from].line
+        line := span_line(pg.origin[e.from])
         if cur, ok := g.edge_line[edge]; !ok || line < cur { g.edge_line[edge] = line }
     }
     for k, id in pg.kind {

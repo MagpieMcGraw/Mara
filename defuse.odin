@@ -62,9 +62,9 @@ Def :: struct {
 // Source order, total: defs that share a span (a fun's params, `a, b := f()`)
 // fall back to creation order, which follows the source within a statement.
 def_less :: proc(a, b: ^Def) -> bool {
-    if a.span.file != b.span.file { return a.span.file < b.span.file }
-    if a.span.line != b.span.line { return a.span.line < b.span.line }
-    if a.span.col != b.span.col { return a.span.col < b.span.col }
+    if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
+    if span_line(a.span) != span_line(b.span) { return span_line(a.span) < span_line(b.span) }
+    if span_col(a.span) != span_col(b.span) { return span_col(a.span) < span_col(b.span) }
     return a.order < b.order
 }
 

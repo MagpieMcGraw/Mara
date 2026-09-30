@@ -38,7 +38,7 @@ emit_match_fail :: proc(g: ^Codegen, span: Span, tag, tag_ir: string, unsigned: 
         wide = fresh_tmp(g)
         emit(g, "  %s = %s %s %s to i64", wide, "zext" if unsigned else "sext", tag_ir, tag)
     }
-    loc_global, _ := get_string_literal(g, format_location(span.file, span.line, span.col))
+    loc_global, _ := get_string_literal(g, span_location(span))
     emit(g, "  call void %s(ptr %s, i64 %s)", __MARA_MATCH_FAIL, loc_global, wide)
     emit(g, "  unreachable")
 }

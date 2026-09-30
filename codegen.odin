@@ -328,8 +328,8 @@ fresh_label :: proc(g: ^Codegen, prefix: string) -> string {
 // cause. Pass `{}` as span when no source location is available.
 codegen_fatal :: proc(g: ^Codegen, span: Span, format: string, args: ..any) -> ! {
     loc := ""
-    if span.file != "" {
-        loc = format_location(span.file, span.line, span.col)
+    if span_file(span) != "" {
+        loc = span_location(span)
     }
     emit_diagnostic(.Codegen_Error, loc, format, ..args)
     flush_diagnostics()
@@ -477,7 +477,7 @@ fun_info_of :: proc(g: ^Codegen, cf: ^Type_Scope) -> Fun_Info {
 
 // Format a span as "[file:line:col]" or "[line:col]" prefix for error messages
 span_loc :: proc(span: Span) -> string {
-    return fmt.tprintf("[%s]", format_location(span.file, span.line, span.col))
+    return fmt.tprintf("[%s]", span_location(span))
 }
 
 // Helper: extract the alloca name (e.g., "%r_36") from a line like "  %r_36 = alloca i32"
@@ -1675,7 +1675,7 @@ emit_bounds_check :: proc(g: ^Codegen, idx: string, len_val: string, name: strin
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     loc_global,  _ := get_string_literal(g, loc)
     name_global, _ := get_string_literal(g, name)
     // __mara_bounds_fail takes i32 idx/len (diagnostic only). When the compare
@@ -1726,7 +1726,7 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: string, ir_type: string, span:
     emit_cond_br(g, cmp, fail_label, ok_label)
 
     emit_label(g, fail_label)
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     loc_global, _ := get_string_literal(g, loc)
     emit(g, "  call void %s(ptr %s)", __MARA_DIVZ_FAIL, loc_global)
     emit(g, "  unreachable")
@@ -1742,7 +1742,7 @@ emit_range_check :: proc(g: ^Codegen, up: string, span: Span) {
 
     emit_label(g, bad_label)
     emit_crash_journal_begin(g)
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     esc_loc, _ := strings.replace_all(loc, "%", "%%")
     msg, _ := get_string_literal(g, strings.concatenate(
         {"Descending range at ", esc_loc, " -- `..` only counts up (low > high); use a C-style for to count down.\n"}))
@@ -1788,7 +1788,7 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: string, left: strin
     emit_cond_br(g, overflow, fail_label, ok_label)
 
     emit_label(g, fail_label)
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     loc_global, _ := get_string_literal(g, loc)
     emit(g, "  call void %s(ptr %s)", __MARA_OVERFLOW_FAIL, loc_global)
     emit(g, "  unreachable")

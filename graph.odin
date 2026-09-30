@@ -953,7 +953,7 @@ graph_close :: proc(b: ^Graph_Builder, id: Node_Id) {
 }
 
 graph_fatal :: proc(span: Span, format: string, args: ..any) -> ! {
-    loc := format_location(span.file, span.line, span.col) if span.file != "" else ""
+    loc := span_location(span) if span_file(span) != "" else ""
     emit_diagnostic(.Graph_Error, loc, format, ..args)
     flush_diagnostics()
     os.exit(1)
@@ -4089,7 +4089,7 @@ graph_check_coverage :: proc(b: ^Graph_Builder) {
     bad := 0
     check :: proc(count: ^map[rawptr]int, bad: ^int, t: Type, span: Span) {
         if n := count[graph_type_ptr(t)]; n != 1 {
-            loc := format_location(span.file, span.line, span.col)
+            loc := span_location(span)
             emit_diagnostic(.Graph_Error, loc, "'%s' is %d nodes of the graph, not 1", ask_type_name(t), n)
             bad^ += 1
         }
@@ -4114,7 +4114,7 @@ graph_check_refers :: proc(b: ^Graph_Builder) {
     for k, id in g.kind {
         if k == .Op && g.op[id] == .Var && g.refers[id] == NO_NODE {
             o := g.origin[id]
-            emit_diagnostic(.Graph_Error, format_location(o.file, o.line, o.col), "'%s' names no declaration", g.name[id])
+            emit_diagnostic(.Graph_Error, span_location(o), "'%s' names no declaration", g.name[id])
             bad += 1
         }
     }
@@ -4150,7 +4150,7 @@ graph_check_runs :: proc(b: ^Graph_Builder) {
     bad := 0
     report :: proc(g: ^Program_Graph, bad: ^int, id: Node_Id, format: string, args: ..any) {
         o := g.origin[id]
-        emit_diagnostic(.Graph_Error, format_location(o.file, o.line, o.col), format, ..args)
+        emit_diagnostic(.Graph_Error, span_location(o), format, ..args)
         bad^ += 1
     }
     for r in 0 ..< n_runs {
@@ -4338,7 +4338,7 @@ graph_depth :: proc(g: ^Program_Graph, id: Node_Id) -> int {
 @(private="file")
 graph_dump_full :: proc(g: ^Program_Graph) {
     span :: proc(s: Span) -> string {
-        return fmt.tprintf("%s:%d:%d", filepath.base(s.file), s.line, s.col) if s.file != "" else "-"
+        return fmt.tprintf("%s:%d:%d", filepath.base(span_file(s)), span_line(s), span_col(s)) if span_file(s) != "" else "-"
     }
     fmt.printf("graph: %d nodes, %d runs, %d edges\n", len(g.kind), len(g.run_first) - 1, len(g.edges))
     for id in 0 ..< len(g.kind) {
@@ -4409,7 +4409,7 @@ graph_dump_node :: proc(g: ^Program_Graph, id: Node_Id, indent: int) {
             if e.kind == .Flows { fmt.sbprintf(&b, "  ⇒ %d@%d", e.to, e.site) }
         }
     }
-    if o := g.origin[id]; o.file != "" { fmt.sbprintf(&b, "   %s:%d", filepath.base(o.file), o.line) }
+    if o := g.origin[id]; span_file(o) != "" { fmt.sbprintf(&b, "   %s:%d", filepath.base(span_file(o)), span_line(o)) }
     if g.written[id] == .Synthetic { strings.write_string(&b, "   (synthetic)") }
     else if g.written[id] == .Implied { strings.write_string(&b, "   (implied)") }
     fmt.println(strings.to_string(b))

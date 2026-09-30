@@ -803,7 +803,7 @@ emit_slice_len_check :: proc(g: ^Codegen, hdr, val: string, span: Span) {
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     loc_global,  _ := get_string_literal(g, loc)
     name_global, _ := get_string_literal(g, "slice")
     emit(g, "  call void %s(ptr %s, %s %s, %s %s, ptr %s)",

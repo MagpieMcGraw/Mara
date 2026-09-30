@@ -185,9 +185,9 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     }
     // In source order, once each (a generic's instances share their spans).
     slice.sort_by(g_esc.diags[:], proc(a, b: Esc_Diag) -> bool {
-        if a.span.file != b.span.file { return a.span.file < b.span.file }
-        if a.span.line != b.span.line { return a.span.line < b.span.line }
-        if a.span.col != b.span.col { return a.span.col < b.span.col }
+        if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
+        if span_line(a.span) != span_line(b.span) { return span_line(a.span) < span_line(b.span) }
+        if span_col(a.span) != span_col(b.span) { return span_col(a.span) < span_col(b.span) }
         return a.msg < b.msg
     })
     for d, i in g_esc.diags {

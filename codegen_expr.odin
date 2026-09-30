@@ -65,7 +65,7 @@ Assert_Side :: struct {
 // printf format assembled here; only the values are runtime arguments.
 emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []Assert_Side, ir_type: string, is_unsigned: bool) {
     emit_crash_journal_begin(g)
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     // Embedded source text must not smuggle conversion specs into the
     // format string (`a % b == 0`), so escape every %.
     esc_cond, _ := strings.replace_all(cond_text, "%", "%%", context.temp_allocator)
@@ -258,7 +258,7 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: string, span:
     emit(g, "  %s = icmp eq i8 %s, 0", ok2, b2)
     emit_cond_br(g, ok2, pass_lbl, crash_lbl)
     emit_label(g, crash_lbl)
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     err_msg := fmt.tprintf("runtime error: cstring() at %s: no terminating 0 in the slice (checked [len] since len < cap, or [cap-1] for a full slice) — append into headroom or zero-pad the buffer\n", loc)
     err_name, err_len := get_string_literal(g, err_msg)
     err_ptr := fresh_tmp(g)
@@ -342,7 +342,7 @@ emit_crash :: proc(g: ^Codegen, span: Span, msg: string) {
     emit_crash_journal_begin(g)
 
     // Location line, same family as the assert message.
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     esc_loc, _ := strings.replace_all(loc, "%", "%%", context.temp_allocator)
     loc_global, _ := get_string_literal(g, strings.concatenate({"Crashed at ", esc_loc, "\n"}, context.temp_allocator))
     emit(g, "  call i32 (ptr, ...) %s(ptr %s)", printf_sym(g), loc_global)

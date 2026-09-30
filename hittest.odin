@@ -16,7 +16,7 @@ import "core:path/filepath"
 // token extent contains that index. Sort by width — containment is nested, so
 // the narrowest match is the innermost node and the list reads outermost-in.
 //
-// Extents come from Span.tok/tok_end, recorded by the parser (see cover_span).
+// Extents come from Span.tok/end, recorded by the parser (see cover_span).
 // That is why this works in token indices rather than (line, col) pairs:
 // containment is an integer compare, and token indices carry no text encoding.
 //
@@ -39,7 +39,7 @@ Hit :: struct {
 
 @(private="file")
 contains :: proc(s: Span, i: int) -> bool {
-    return s.tok_end > s.tok && s.tok <= i && i < s.tok_end
+    return s.end > s.tok && int(s.tok) <= i && i < int(s.end)
 }
 
 @(private="file")
@@ -240,9 +240,9 @@ offset_of :: proc(src: string, line, col: int) -> int {
 
 // The source text a span covers, trimmed to one line for display.
 @(private="file")
-span_text :: proc(src: string, tokens: []Token, s: Span) -> string {
-    if s.tok_end <= s.tok || s.tok_end > len(tokens) { return "" }
-    first, last := tokens[s.tok], tokens[s.tok_end - 1]
+span_text :: proc(src: string, s: Span) -> string {
+    if s.end <= s.tok { return "" }
+    first, last := build_tokens[s.tok], build_tokens[s.end - 1]
     lo := offset_of(src, first.line, first.col)
     if lo < 0 { return "" }
     hi := offset_of(src, last.line, last.col + len(last.text))
@@ -307,11 +307,13 @@ ask_at_point :: proc(programs: map[string]^Program,
     if src_file == nil {
         return fmt.tprintf("mara ask: no source file named '%s'\n", parts[0]), false
     }
-    if src_file.tokens == nil || len(src_file.tokens) == 0 {
+    if src_file.end_token <= src_file.first_token {
         return fmt.tprintf("mara ask: '%s' has no tokens (not part of this build?)\n", want), false
     }
 
-    tokens := src_file.tokens[:]
+    // (Token positions print from the file's first.)
+    base := src_file.first_token
+    tokens := build_tokens[base:src_file.end_token]
     tok_i, found := token_index_at(tokens, line, col)
     if !found {
         return fmt.tprintf("mara ask: nothing at %s:%d:%d\n", want, line, col), false
@@ -320,7 +322,7 @@ ask_at_point :: proc(programs: map[string]^Program,
     hits: [dynamic]Hit
     defer delete(hits)
     for _, prog in programs {
-        for s in prog { if stmt_span(s).file == src_file.path { hit_stmt(s, tok_i, &hits) } }
+        for s in prog { if span_file(stmt_span(s)) == src_file.path { hit_stmt(s, int(base) + tok_i, &hits) } }
     }
     if len(hits) == 0 {
         return fmt.tprintf("%s:%d:%d — token '%s', but no AST node covers it\n",
@@ -331,7 +333,7 @@ ask_at_point :: proc(programs: map[string]^Program,
     for a in 1 ..< len(hits) {
         h := hits[a]
         b := a - 1
-        for b >= 0 && (hits[b].span.tok_end - hits[b].span.tok) < (h.span.tok_end - h.span.tok) {
+        for b >= 0 && (hits[b].span.end - hits[b].span.tok) < (h.span.end - h.span.tok) {
             hits[b + 1] = hits[b]; b -= 1
         }
         hits[b + 1] = h
@@ -339,9 +341,9 @@ ask_at_point :: proc(programs: map[string]^Program,
 
     sb := strings.builder_make()
     fmt.sbprintf(&sb, "%s:%d:%d  token '%s'\n\n", want, line, col, tokens[tok_i].text)
-    prev := Span{tok = -1, tok_end = -1}
+    prev: Span
     for h in hits {
-        if h.span.tok == prev.tok && h.span.tok_end == prev.tok_end { continue }  // defs/body overlap
+        if h.span.tok == prev.tok && h.span.end == prev.end { continue }  // defs/body overlap
         prev = h.span
         t := ""
         if h.expr != nil {
@@ -350,8 +352,8 @@ ask_at_point :: proc(programs: map[string]^Program,
             if try, is_try := h.expr.(^Expr_Try); is_try { at = expr_span(try.inner)^ }
             t = ask_label(hit_type(g, at))
         }
-        fmt.sbprintf(&sb, "  %-24s [%d,%d)  %s", h.label, h.span.tok, h.span.tok_end,
-                     span_text(src_file.source, tokens, h.span))
+        fmt.sbprintf(&sb, "  %-24s [%d,%d)  %s", h.label, h.span.tok - base, h.span.end - base,
+                     span_text(src_file.source, h.span))
         if t != "" { fmt.sbprintf(&sb, "   : %s", t) }
         fmt.sbprint(&sb, "\n")
     }

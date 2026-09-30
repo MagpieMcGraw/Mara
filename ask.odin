@@ -281,7 +281,7 @@ ask_all_definitions :: proc(table: ^SymbolTable, scope_file: string, funcs: map[
         // separately-named data type like the struct `Camera` resolves as itself.
         if ts, ok := t.(^Type_Scope); ok && ts.is_module { return }
         sp := ask_span(t)
-        if scope_file != "" && filepath.base(sp.file) != scope_file { return }
+        if scope_file != "" && filepath.base(span_file(sp)) != scope_file { return }
         // `in <module>` narrows resolution to one module's namespace — the same
         // disambiguation lever as scope_file, one level coarser. The analysis root
         // never moves (always cwd + the stdlib it uses); this only filters which
@@ -782,8 +782,8 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         // map-iteration order, like the edges that `ask_sort_edges` already fixes.
         slice.sort_by(matches[:], proc(a, b: Ask_Match) -> bool {
             if a.label != b.label         { return a.label < b.label }
-            if a.span.file != b.span.file { return a.span.file < b.span.file }
-            return a.span.line < b.span.line
+            if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
+            return span_line(a.span) < span_line(b.span)
         })
         fmt.sbprintf(&b, "mara ask: '%s' is ambiguous — %d definitions in %s (narrow with `in <module|file>`):\n",
                      target, len(matches), scope_desc)
@@ -940,7 +940,7 @@ ask_try_variable :: proc(checked: ^Checked_Program, target, kind, dir, scope, pk
     }
     if len(vars) > 1 {
         // Shadowing: same name, different declarations. Don't guess — list them.
-        slice.sort_by(vars[:], proc(a, b: ^Var_Binding) -> bool { return a.span.line < b.span.line })
+        slice.sort_by(vars[:], proc(a, b: ^Var_Binding) -> bool { return span_line(a.span) < span_line(b.span) })
         sb := strings.builder_make()
         fmt.sbprintf(&sb, "mara ask: '%s' names %d variables in '%s' (shadowing) — pick one with `at <file>:<line>`:\n", target, len(vars), scope)
         for vb in vars {
@@ -963,7 +963,7 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
     }
     // Populate def sites by analyzing the functions declared in that file.
     for _, ft in checked.functions {
-        if ft != nil && ft.kind == .Fun && filepath.base(ft.body_span.file) == file {
+        if ft != nil && ft.kind == .Fun && filepath.base(span_file(ft.body_span)) == file {
             du_fn(checked, ft)
         }
     }
@@ -978,7 +978,7 @@ ask_try_at :: proc(checked: ^Checked_Program, loc, kind, dir, pkg: string, depth
     defer delete(root_of)
     for d in checked.du.defs {
         if d.binding == nil || seen[d.binding] { continue }
-        if d.span.line == line && filepath.base(d.span.file) == file {
+        if span_line(d.span) == line && filepath.base(span_file(d.span)) == file {
             seen[d.binding] = true
             append(&bindings, d.binding)
             root_of[d.binding] = d
@@ -1297,8 +1297,8 @@ ask_edge_word :: proc(k: Ask_Edge_Kind) -> string {
 }
 
 ask_loc :: proc(span: Span) -> string {
-    if span.file == "" { return "?" }
-    return fmt.tprintf("%s:%d", span.file, span.line)
+    if span_file(span) == "" { return "?" }
+    return fmt.tprintf("%s:%d", span_file(span), span_line(span))
 }
 
 // A type's marker as a bracketed suffix (" [synthetic]"), or "" when ordinary.
@@ -1375,8 +1375,8 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: s
         return a.m.label < b.m.label
     })
     slice.sort_by(funs[:], proc(a, b: Ask_Match) -> bool {
-        if a.span.file != b.span.file { return a.span.file < b.span.file }
-        return a.span.line < b.span.line
+        if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
+        return span_line(a.span) < span_line(b.span)
     })
 
     b := strings.builder_make()
@@ -1481,7 +1481,7 @@ ask_module_map :: proc(checked: ^Checked_Program, programs: map[string]^Program,
         if hp == "" { continue }
         c := by_home[hp]
         if m.sub == "fun" { c.funs += 1 } else { c.types += 1 }
-        if c.file == "" { c.file = m.span.file }
+        if c.file == "" { c.file = span_file(m.span) }
         by_home[hp] = c
     }
 

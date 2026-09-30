@@ -166,9 +166,9 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
 
 @(private="file")
 guard_span_less :: proc(a, b: Guard) -> bool {
-    if a.span.file != b.span.file { return a.span.file < b.span.file }
-    if a.span.line != b.span.line { return a.span.line < b.span.line }
-    return a.span.col < b.span.col
+    if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
+    if span_line(a.span) != span_line(b.span) { return span_line(a.span) < span_line(b.span) }
+    return span_col(a.span) < span_col(b.span)
 }
 
 @(private="file")
@@ -487,8 +487,8 @@ flow_record :: proc(by_param: ^map[^Var_Binding]Hop_Landing, L: Hop_Landing, dep
 
 @(private="file")
 landing_site_less :: proc(a, b: Span) -> bool {
-    if a.file != b.file { return a.file < b.file }
-    return a.line < b.line
+    if span_file(a) != span_file(b) { return span_file(a) < span_file(b) }
+    return span_line(a) < span_line(b)
 }
 
 // Sort landings by hop depth first (so the render can bucket "N hops:"), then by
@@ -499,8 +499,8 @@ landing_less :: proc(a, b: Hop_Landing) -> bool {
     la, lb := ask_label(a.callee), ask_label(b.callee)
     if la != lb { return la < lb }
     if a.param.param_index != b.param.param_index { return a.param.param_index < b.param.param_index }
-    if a.site.file != b.site.file { return a.site.file < b.site.file }
-    return a.site.line < b.site.line
+    if span_file(a.site) != span_file(b.site) { return span_file(a.site) < span_file(b.site) }
+    return span_line(a.site) < span_line(b.site)
 }
 
 // A parameter's type as the compiler prints it (`^Megastruct`, `f64`) — the ^ vs
@@ -588,7 +588,7 @@ var_root_def :: proc(checked: ^Checked_Program, b: ^Var_Binding) -> ^Def {
     defer delete(defs)
     best: ^Def
     for d in defs {
-        if best == nil || d.span.line < best.span.line || (d.span.line == best.span.line && d.span.col < best.span.col) {
+        if best == nil || span_line(d.span) < span_line(best.span) || (span_line(d.span) == span_line(best.span) && span_col(d.span) < span_col(best.span)) {
             best = d
         }
     }
@@ -614,7 +614,7 @@ render_var_slice :: proc(checked: ^Checked_Program, b: ^Var_Binding, fn_label, k
     home_pkg := ask_home_package(b.fn)
     if home_pkg == "" { home_pkg = pkg }
     fmt.sbprintf(&bb, "%s — %s in %s  %s   (module %s)\n", b.name, knd, fn_label, ask_loc(b.span), home_pkg)
-    if root_def != nil && (root_def.span.line != b.span.line || root_def.span.file != b.span.file) {
+    if root_def != nil && (span_line(root_def.span) != span_line(b.span) || span_file(root_def.span) != span_file(b.span)) {
         fmt.sbprintf(&bb, "  (flow rooted at the write on %s)\n", ask_loc(root_def.span))
     }
 
@@ -845,8 +845,8 @@ render_var_calls_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
         append(&rows, Row{ callee = callee, recv = recv, span = d.span })
     }
     slice.sort_by(rows[:], proc(x, y: Row) -> bool {
-        if x.span.file != y.span.file { return x.span.file < y.span.file }
-        return x.span.line < y.span.line
+        if span_file(x.span) != span_file(y.span) { return span_file(x.span) < span_file(y.span) }
+        return span_line(x.span) < span_line(y.span)
     })
     fmt.sbprintf(bb, "\nabove (calls) — calls that supply %s  (%s)\n", b.name, ask_plural(len(rows), "call"))
     if len(rows) == 0 {

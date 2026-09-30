@@ -1206,7 +1206,7 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         // scope is left).
         d := pg.refers[ops[0].op]
         if d <= e.node || d > pg.last[e.node] || pg.kind[d] != .Local { return false }
-        e.value[d - e.node] = emit_arena_bump(g, llvm_size(e, pg.type_[op]), pg.name[d], format_location(span.file, span.line, span.col))
+        e.value[d - e.node] = emit_arena_bump(g, llvm_size(e, pg.type_[op]), pg.name[d], span_location(span))
     }
     return true
 }
@@ -2132,7 +2132,7 @@ llvm_sized_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bo
     data, bound := llvm_bytes(e, ops[1].op) or_return
     if hi == "" { hi = bound }
     w := slice_layout.len_ir
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     size := checker_type_byte_size(t)
     n := fresh_tmp(g)
     emit(g, "  %s = sub %s %s, %s", n, w, hi, lo)
@@ -2298,7 +2298,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     fail, ok := fresh_label(g, "take.fail"), fresh_label(g, "take.ok")
     emit_cond_br(g, over, fail, ok)
     emit_label(g, fail)
-    loc := format_location(span.file, span.line, span.col)
+    loc := span_location(span)
     name := graph_place_name(pg, ops[0])
     // What was asked for, as asked (the advance itself may have wrapped).
     msg := fmt.tprintf("%s runtime error: take overflows storage: %%lld of %d bytes at %%lld exceed cap %%lld for '%s'\n", loc, size, name)

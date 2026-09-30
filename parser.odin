@@ -4,9 +4,10 @@ import "core:fmt"
 import "core:strconv"
 import "core:strings"
 
-// A source location. `line`/`col` are the 1-based REPORT POINT every diagnostic
-// prints. `tok`/`tok_end` are a half-open range of indices into the Parser's
-// token array — the EXTENT, which a start point alone cannot express.
+// A source location, as tokens (ids in build_tokens). `at` is the REPORT POINT
+// every diagnostic prints (its file, line and column: span_location). `tok` to
+// `end` is a half-open range of tokens — the EXTENT, which a start point alone
+// cannot express.
 //
 // The two are independent on purpose. A node's report point is not always its
 // first token: Expr_Binary anchors on its operator so an error lands on the
@@ -14,19 +15,34 @@ import "core:strings"
 // leftmost token, so `m == void` reports at the `==` but covers `m`.
 //
 // Extents exist for the editor queries: resolving a cursor to a node means
-// asking which nodes contain a position. With token indices that is integer
-// containment (tok <= i < tok_end) rather than comparing (line, col) pairs,
-// and the innermost node is simply the smallest containing range.
+// asking which nodes contain a position. With token ids that is integer
+// containment (tok <= i < end) rather than comparing (line, col) pairs, and
+// the innermost node is simply the smallest containing range.
 //
-// tok_end <= tok means NO EXTENT RECORDED — a bare Span{} minted by a post-parse
-// pass, which has no tokens behind it at all. Everything the parser produces has
-// a real extent: leaves from token_span, compound nodes from cover_span.
+// A Span{} is no place: no report point (at = 0), and no extent (end <= tok).
+// Everything the parser produces has a real extent: leaves from token_span,
+// compound nodes from cover_span.
 Span :: struct {
-    line:    int,
-    col:     int,
-    file:    string,
-    tok:     int,   // index of the first token
-    tok_end: int,   // one past the last token
+    at:  Token_Id,
+    tok: Token_Id,
+    end: Token_Id,
+}
+
+span_file :: proc(s: Span) -> string {
+    return build_files[build_tokens[s.at].file].path if s.at != 0 else ""
+}
+
+span_line :: proc(s: Span) -> int {
+    return build_tokens[s.at].line if s.at != 0 else 0
+}
+
+span_col :: proc(s: Span) -> int {
+    return build_tokens[s.at].col if s.at != 0 else 0
+}
+
+// "file:line:col" of a span's report point.
+span_location :: proc(s: Span) -> string {
+    return format_location(span_file(s), span_line(s), span_col(s))
 }
 
 // Format a source location as "file:line:col" or "line:col".
@@ -902,8 +918,9 @@ Program :: [dynamic]Stmt
 // ---------------------------------------------------------------------------
 
 Parser :: struct {
-    tokens: []Token,
-    file:   string, // source file these tokens came from; supplies Span.file (was a per-token field)
+    tokens: []Token,   // the build's, to the end of this file (positions are token ids)
+    file:   string,    // source file these tokens came from
+    first:  int,       // its first token
     pos:    int,
     errors: int,
     // Accumulates $T generic param bindings found inside type expressions during function param parsing
@@ -919,10 +936,7 @@ Parser :: struct {
 // leaf node. Nodes that go on to consume more tokens get widened by cover_span
 // at the parse dispatch points; see parse_stmt / parse_expr.
 token_span :: proc(p: ^Parser, tok: Token) -> Span {
-    return Span{
-        line = tok.line, col = tok.col, file = p.file,
-        tok = tok.idx, tok_end = tok.idx + 1,
-    }
+    return Span{at = tok.id, tok = tok.id, end = tok.id + 1}
 }
 
 // Grow a span to cover the token range [start, p.pos) the caller just parsed.
@@ -931,21 +945,21 @@ token_span :: proc(p: ^Parser, tok: Token) -> Span {
 // Moving tok leftward is the part that matters: a node's span is not always
 // anchored at its first token. Expr_Binary anchors on its operator and
 // Expr_Field_Access on its dot, deliberately, so a diagnostic lands on the `==`
-// rather than on the left operand. That makes line/col the node's REPORT POINT
-// and tok/tok_end its EXTENT — two different things that are free to disagree.
+// rather than on the left operand. That makes `at` the node's REPORT POINT
+// and tok/end its EXTENT — two different things that are free to disagree.
 // Hit-testing needs the extent to start at the leftmost token, so `m == void`
 // has to cover `m` even though its report point is the `==`.
 //
-// A span with no extent yet (tok_end <= tok — a bare Span{} from somewhere that
+// A span with no extent yet (end <= tok — a bare Span{} from somewhere that
 // had no token in hand) adopts the parsed range wholesale rather than being
 // treated as a real range starting at token 0.
 cover_span :: proc(p: ^Parser, s: ^Span, start: int) {
-    if s.tok_end <= s.tok {
-        s.tok, s.tok_end = start, p.pos
+    if s.end <= s.tok {
+        s.tok, s.end = Token_Id(start), Token_Id(p.pos)
         return
     }
-    if start < s.tok     { s.tok     = start }
-    if p.pos > s.tok_end { s.tok_end = p.pos }
+    if Token_Id(start) < s.tok { s.tok = Token_Id(start) }
+    if Token_Id(p.pos) > s.end { s.end = Token_Id(p.pos) }
 }
 
 // Writable counterpart to type_checker.odin's read-only stmt_span. Takes ^Stmt
@@ -986,11 +1000,14 @@ stmt_span_mut :: proc(s: ^Stmt) -> ^Span {
 // or re-slicing across the FFI boundary. Returns a heap-allocated Parser so
 // the internal dynamic arrays (dollar_params, return_bindings) stay valid
 // after the call returns.
-parser_init :: proc(tokens: ^[dynamic]Token, file: string) -> ^Parser {
+// A parser over a file's tokens: its range of the build's, positions being
+// token ids.
+parser_init :: proc(f: ^Source_File) -> ^Parser {
     p := new(Parser)
-    p.tokens = tokens^[:]
-    p.file = file
-    p.pos = 0
+    p.tokens = build_tokens[:f.end_token]
+    p.file = f.path
+    p.first = int(f.first_token)
+    p.pos = p.first
     return p
 }
 
@@ -1031,9 +1048,7 @@ current :: proc(p: ^Parser) -> Token {
     if p.pos < len(p.tokens) {
         return p.tokens[p.pos]
     }
-    // Past the end — return EOF
-    last := p.tokens[len(p.tokens) - 1]
-    return Token{kind = .EOF, line = last.line, col = last.col, idx = last.idx}
+    return p.tokens[len(p.tokens) - 1]   // past the end: its EOF
 }
 
 // Peek ahead by offset tokens (0 = current, 1 = next, ...)
@@ -1054,8 +1069,7 @@ peek_token :: proc(p: ^Parser, offset: int = 1) -> Token {
     if i < len(p.tokens) {
         return p.tokens[i]
     }
-    last := p.tokens[len(p.tokens) - 1]
-    return Token{kind = .EOF, line = last.line, col = last.col, idx = last.idx}
+    return p.tokens[len(p.tokens) - 1]   // past the end: its EOF
 }
 
 // Consume the current token and return it
@@ -2964,7 +2978,7 @@ parse_bind_target_chain :: proc(p: ^Parser, first_tok: Token) -> (Expr, bool) {
     // (Each link reported at the chain's first token, covering it all.)
     chain :: proc(p: ^Parser, first_tok: Token) -> Span {
         s := token_span(p, first_tok)
-        s.tok_end = p.pos
+        s.end = Token_Id(p.pos)
         return s
     }
     for {
@@ -3261,7 +3275,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                     // Must be immediately followed by '=' to be a slice assign
                     if current_kind(p) == .Equals {
                         target_span := start
-                        target_span.tok_end = p.pos
+                        target_span.end = Token_Id(p.pos)
                         advance(p) // consume '='
                         value := parse_expr(p)
                         slice_target := new_expr(Expr_Slice{expr = lhs, low = low, high = high, span = target_span})
@@ -3276,7 +3290,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 idx.expr = lhs
                 idx.index = low
                 idx.span = start
-                idx.span.tok_end = p.pos   // (reported at the target's start, covering it)
+                idx.span.end = Token_Id(p.pos)   // (reported at the target's start, covering it)
                 lhs = idx
             } else if current_kind(p) == .Dot {
                 advance(p) // consume '.'
@@ -3285,7 +3299,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 fa.expr = lhs
                 fa.field = field_tok.text
                 fa.span = start
-                fa.span.tok_end = p.pos
+                fa.span.end = Token_Id(p.pos)
                 lhs = fa
             } else if current_kind(p) == .Caret {
                 advance(p) // consume '^'
@@ -3293,7 +3307,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 unary.op = .Caret
                 unary.operand = lhs
                 unary.span = start
-                unary.span.tok_end = p.pos
+                unary.span.end = Token_Id(p.pos)
                 lhs = unary
             }
         }
@@ -3875,7 +3889,7 @@ parse_expr_inner :: proc(p: ^Parser, min_prec: int = 0) -> Expr {
         // reads as a prefix `&`, so reject it here rather than letting it
         // surface as a confusing type error (or, on integer operands,
         // silently compute an AND).
-        if current_kind(p) == .Ampersand && p.pos > 0 {
+        if current_kind(p) == .Ampersand && p.pos > p.first {
             amp := current(p)
             prev := p.tokens[p.pos - 1]
             next := peek_token(p, 1)
@@ -4071,7 +4085,7 @@ parse_postfix :: proc(p: ^Parser, expr: Expr, allow_dot: bool) -> Expr {
     // The operand was parsed by the CALLER, so p.pos is already past it — the
     // range to cover starts at the operand's own first token, not here.
     start := p.pos
-    if isp := expr_span(expr); isp != nil && isp.tok < start { start = isp.tok }
+    if isp := expr_span(expr); isp != nil && int(isp.tok) < start { start = int(isp.tok) }
     e := parse_postfix_inner(p, expr, allow_dot)
     if sp := expr_span(e); sp != nil { cover_span(p, sp, start) }
     return e

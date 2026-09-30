@@ -1,5 +1,7 @@
 package mara
 
+import "core:fmt"
+import "core:os"
 import "core:strings"
 
 Token_Kind :: enum {
@@ -117,9 +119,18 @@ Token :: struct {
     text: string, // slice into the source buffer; only escaped string/char literals own a copy
     line: int,
     col:  int,
-    idx:  int,    // this token's position in the lex_all array — lets token_span record
-                  // an extent (Span.tok) without threading indices through 87 call sites
+    id:   Token_Id,   // its index in build_tokens — lets token_span record an
+                      // extent (Span.tok) without threading ids through 87 call sites
+    file: u16,        // its file's index in build_files
 }
+
+// A token's id: its index in the build's one table of tokens, which every
+// file's join in turn, each file a range of it (Source_File.first_token to
+// end_token). 0 is no token's.
+Token_Id :: distinct u32
+
+build_tokens: [dynamic]Token
+build_files:  [dynamic]^Source_File
 
 Lexer :: struct {
     source: string,
@@ -530,18 +541,24 @@ next_token :: proc(l: ^Lexer) -> Token {
 // Tokenize the entire source into a heap-allocated token array. Returns a
 // pointer so the array lives in the arena (callable from FFI, no by-value
 // dynamic-array return crossing the boundary).
-lex_all :: proc(source: string, file: string = "") -> (tokens: ^[dynamic]Token, errors: int) {
-    l := lexer_init(source, file)
-    tokens = new([dynamic]Token)
+// Lex a file onto the build's tokens: its range is first_token to end_token,
+// ending with its EOF.
+lex_file :: proc(f: ^Source_File) {
+    if len(build_tokens) == 0 { append(&build_tokens, Token{kind = .EOF}) }   // id 0: no token's
+    if len(build_files) > int(max(u16)) { fmt.eprintln("mara: too many source files"); os.exit(1) }
+    file := u16(len(build_files))
+    append(&build_files, f)
+    l := lexer_init(f.source, f.path)
+    f.first_token = Token_Id(len(build_tokens))
     for {
         tok := next_token(&l)
-        tok.idx = len(tokens)   // stamp before append: index is the current length
-        append(tokens, tok)
-        if tok.kind == .EOF {
-            break
-        }
+        tok.id = Token_Id(len(build_tokens))   // stamp before append: its id is the current length
+        tok.file = file
+        append(&build_tokens, tok)
+        if tok.kind == .EOF { break }
     }
-    return tokens, l.errors
+    f.end_token = Token_Id(len(build_tokens))
+    f.lex_errors = l.errors
 }
 
 // Helper: is this an ASCII digit?

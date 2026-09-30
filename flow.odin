@@ -205,7 +205,7 @@ flow_defer_writes :: proc(c: ^Checker, g: ^Program_Graph, ret: Node_Id, block: [
                 span := g.origin[op]
                 if span in seen^ { continue }
                 seen[span] = true
-                check_error(c, span, TYPE_DEFER_CHANGES_RETURNED, g.name[v], g.origin[ret].line)
+                check_error(c, span, TYPE_DEFER_CHANGES_RETURNED, g.name[v], span_line(g.origin[ret]))
             }
         }
     }

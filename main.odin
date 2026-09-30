@@ -76,7 +76,7 @@ Source_File :: struct {
     module:  string,           // declared module name
     source:  string,           // file bytes (kept alive through lex)
     imports: [dynamic]string,  // paths from `use`/`include`/`sealed use`
-    tokens:  ^[dynamic]Token,  // filled by lex_target_files
+    first_token, end_token: Token_Id,   // its range of build_tokens (lex_file)
     lex_errors: int,           // lexical errors (e.g. an unknown escape), counted as parse errors
 }
 
@@ -288,7 +288,7 @@ compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target:
 lex_target_files :: proc(files: map[string][dynamic]^Source_File) {
     for _, module_files in files {
         for f in module_files {
-            f.tokens, f.lex_errors = lex_all(f.source, f.path)
+            lex_file(f)
         }
     }
 }
@@ -307,7 +307,7 @@ parse_target_files :: proc(files: map[string][dynamic]^Source_File) -> (programs
         merged := new(Program)
         module_errors := 0
         for f in ordered {
-            p := parser_init(f.tokens, f.path)
+            p := parser_init(f)
             parsed := parse_program(p)
             for stmt in parsed^ { append(merged, stmt) }
             module_errors += p.errors + f.lex_errors

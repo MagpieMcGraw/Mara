@@ -1828,13 +1828,13 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
 check_error :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
     // Once per place: two checks can reach one node (a declaration's
     // literal is checked as a value and as what the declaration holds).
-    if emit_diagnostic_once(.Type_Error, format_location(span.file, span.line, span.col), msg, ..args) {
+    if emit_diagnostic_once(.Type_Error, span_location(span), msg, ..args) {
         c.errors += 1
     }
 }
 
 check_warning :: proc(c: ^Checker, span: Span, msg: string, args: ..any) {
-    emit_diagnostic(.Warning, format_location(span.file, span.line, span.col), msg, ..args)
+    emit_diagnostic(.Warning, span_location(span), msg, ..args)
 }
 
 // Render a readable source-level name for an expression used in a diagnostic —
@@ -5974,7 +5974,7 @@ fuse_stmt_end :: proc(fs: Fuse_Stmt) {
 // Whether a definition is written before a statement.
 stmt_before :: proc(x, y: Stmt) -> bool {
     a, b := stmt_span(x), stmt_span(y)
-    return a.line < b.line || (a.line == b.line && a.col < b.col)
+    return span_line(a) < span_line(b) || (span_line(a) == span_line(b) && span_col(a) < span_col(b))
 }
 
 // A statement of the code the checker doesn't build yet: its body is the
@@ -8895,7 +8895,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
                 }
             }
             if field.default_value == nil {
-                check_uninitialized_class_decl(c, field.span if field.span.file != "" else s.span, field.name, field_type)
+                check_uninitialized_class_decl(c, field.span if span_file(field.span) != "" else s.span, field.name, field_type)
             } else if is_numeric(field_type) {
                 // Pin earlier deferred fields feeding this annotated field's
                 // default to its width: `per_row : i32 = size / cell` settles
@@ -11000,7 +11000,7 @@ find_matching_modules :: proc(c: ^Checker, path: string) -> [dynamic]string {
 partition_package_files :: proc(stmts: [dynamic]Stmt, pkg_env: ^Type_Scope) ->
     (files_by_src: map[string][dynamic]Stmt, file_order: [dynamic]string, file_envs: map[string]^Type_Scope) {
     for stmt in stmts {
-        src := stmt_span(stmt).file
+        src := span_file(stmt_span(stmt))
         if _, exists := files_by_src[src]; !exists {
             files_by_src[src] = make([dynamic]Stmt)
             append(&file_order, src)
@@ -12016,7 +12016,7 @@ check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             seen := c.once_seen[k]
             if seen[0] == c.once_stmt {
                 seen[1] += 1
-                if seen[1] == 2 { fmt.eprintfln("checked twice: %s", format_location(expr_span(expr).file, expr_span(expr).line, expr_span(expr).col)) }
+                if seen[1] == 2 { fmt.eprintfln("checked twice: %s", span_location(expr_span(expr)^)) }
             } else {
                 seen = {c.once_stmt, 1}
             }
@@ -13157,7 +13157,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         flag: bool
         switch e.kind {
         case .Caller_Name: text = strings.clone(enclosing_fn_name(env))
-        case .Caller_Span: text = strings.clone(format_location(e.span.file, e.span.line, e.span.col))
+        case .Caller_Span: text = strings.clone(span_location(e.span))
         case .Web:         flag = c.target_web
         case .Native:      flag = !c.target_web
         case .Windows:     flag = c.target_os == .Windows
