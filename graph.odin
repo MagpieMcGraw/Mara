@@ -3420,6 +3420,7 @@ graph_scope_node :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, par
         graph_fuse_place(b, si, parent, graph_scope_name(ts, s, written))
         return
     }
+    if b.fuse_log { fmt.eprintfln("fuse builder: %s", graph_scope_name(ts, s, written)) }
     if b.shuffle {
         // In a segment of its own, put in right here: every other scope built
         // now, in the middle of this one's, the rest later, the last first.
@@ -3743,6 +3744,24 @@ graph_fuse_fields :: proc(b: ^Graph_Builder, v: ^Stmt_Decl) {
             f.stmts[key] = b.stmt
             if inits := decl_init(v); i < len(inits) { f.field_inits[key] = inits[i] }
         }
+    }
+}
+
+// The program's struct (fuse_program_struct: main's entry sets up its
+// storage, nothing constructs it): each field mara.core declares for it,
+// typed as the struct's, a statement of its own; no code.
+graph_fuse_program_fields :: proc(b: ^Graph_Builder, body: []Stmt) {
+    f := b.fuse
+    for s in body {
+        v, is_decl := s.(^Stmt_Decl)
+        if !is_decl {
+            graph_fuse_fail(b, f, "the program's struct declares no field")
+            return
+        }
+        graph_fuse_body_stmt(b, s)
+        saved := graph_fuse_stmt(b, s, fresh = true)
+        for name in v.names { graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, v.span) }
+        graph_fuse_stmt_end(b, saved)
     }
 }
 

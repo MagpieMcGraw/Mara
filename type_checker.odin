@@ -624,6 +624,15 @@ Generic_Template :: struct {
     generic_params: [dynamic]Generic_Param,
     ast:            ^Stmt_Scope,
     home_package:   string,
+    env:            ^Type_Scope,   // where it is defined: a struct instance's body is checked there
+}
+
+// A generic struct's instance, its body waiting to be checked
+// (check_struct_instances).
+Struct_Instance :: struct {
+    tmpl:  Generic_Template,
+    st:    ^Type_Scope,
+    subst: map[string]Type,
 }
 
 // Parallel template for `Name :: union($T: type) { ... }`. Kept separate from
@@ -1647,6 +1656,7 @@ Checker :: struct {
     call:            ^Fuse_Call,
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
     byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
+    struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     span_read:       Fuse_Span_Read,   // the span of bytes last built to be read as its destination's type
     table:           ^SymbolTable,
     errors:          int,
@@ -2954,8 +2964,43 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
     if c.top_env != nil {
         type_env_set(c.top_env, mangled, st)
     }
+    append(&c.struct_instances, Struct_Instance{tmpl = tmpl^, st = st, subst = subst})   // (its body: check_struct_instances)
 
     return st
+}
+
+// The program's struct (the compiler's): built from mara.core's declaration
+// of it — its fields, no code — whose body the checker checks for no type.
+fuse_program_struct :: proc(c: ^Checker) {
+    pt := c.table.funs["Program"] or_else nil
+    if c.gb == nil || pt == nil || pt.body_span == {} { return }
+    for _, tmpl in c.table.generic_templates {
+        if tmpl.ast.span != pt.body_span { continue }
+        f := graph_fuse_begin(c.gb, pt, tmpl.ast, tmpl.ast.body[:], .Synthetic)
+        if f == nil { return }
+        graph_fuse_program_fields(c.gb, tmpl.ast.body[:])
+        fuse_end(c, f)
+        return
+    }
+}
+
+// Each generic struct instance's body, checked as its own copy — in its
+// template's scope, its type params bound — its graph built as it is (as a
+// generic fun's instance is). Instances are made as signatures resolve, so
+// their bodies are checked once every package's are; one may make more.
+// (A template's methods: the builder's, from the template.)
+check_struct_instances :: proc(c: ^Checker) {
+    for i := 0; i < len(c.struct_instances); i += 1 {
+        inst := c.struct_instances[i]
+        if len(inst.tmpl.ast.defs) > 0 || inst.tmpl.env == nil { continue }
+        s := new_clone(inst.tmpl.ast^)
+        s.body = clone_stmts(inst.tmpl.ast.body)
+        if inst.st.parent_scope == nil { inst.st.parent_scope = inst.tmpl.env }
+        saved_params, saved_package := c.type_params, c.current_package
+        c.type_params, c.current_package = inst.subst, inst.tmpl.home_package
+        check_scope_body(c, s, inst.tmpl.env, instance = &inst)
+        c.type_params, c.current_package = saved_params, saved_package
+    }
 }
 
 // Instantiate a generic union template with concrete type arguments. Mirrors
@@ -6566,6 +6611,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                     generic_params = s.generic_params,
                     ast            = s,
                     home_package   = c.current_package,
+                    env            = env,
                 }
                 if len(s.typed_params) > 0 { c.declared_funs[scope_name(s)] = true }
                 c.pre_registered_stmts[rawptr(s)] = true
@@ -6913,6 +6959,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     generic_params = s.generic_params,
                     ast            = s,
                     home_package   = c.current_package,
+                    env            = env,
                 }
                 if len(s.typed_params) > 0 { c.declared_funs[scope_name(s)] = true }
                 continue
@@ -8101,8 +8148,8 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
 // from the Phase-2 pre-pass to populate struct fields before any function
 // body is checked, so forward references to structs work regardless of
 // declaration order.
-check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signature_only: bool = false) {
-    if len(s.generic_params) > 0 { return }
+check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signature_only: bool = false, instance: ^Struct_Instance = nil) {
+    if len(s.generic_params) > 0 && instance == nil { return }
     // A scope's body builds its own graph, or none: not its parent's.
     outer := fuse_suspend(c)
     defer fuse_resume(c, outer)
@@ -8113,6 +8160,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
             fun_type_raw, _ := type_env_get(env, scope_name(s))
             if ft, ft_ok := fun_type_raw.(^Type_Scope); ft_ok {
                 check_llvm_intrinsic_signature(c, ft, s.intrinsic_name, s.span)
+                // (Its graph: its params and results, no code.)
+                if c.gb != nil {
+                    if f := graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit); f != nil { fuse_end(c, f) }
+                }
             }
         }
         return
@@ -8126,6 +8177,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     fun_type_raw, _ := type_env_get_owned_first(env, scope_name(s))
 
     ft, ft_ok := fun_type_raw.(^Type_Scope)
+    if instance != nil { ft, ft_ok = instance.st, true }   // (a struct instance: its own)
     if !ft_ok { return }
 
     // On-demand: a fun's body binds its params and reads its returns, so resolve
@@ -8205,6 +8257,9 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     // scope_local_lookup walk reaches every local of the current function and
     // stops at ft (the no-closures boundary).
     child := type_env_block_child(parent_env)
+    if instance != nil {
+        for name, t in instance.subst { type_env_set(child, name, t) }   // (its type params)
+    }
 
     // Pre-register struct params in the field-resolution scope so that
     // field defaults / field types can reference them (e.g.
@@ -8394,8 +8449,9 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     if c.gb != nil && ft.kind == .Fun {
         record_return_bindings(ft, s)   // (its named results are locals)
         f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit)
-    } else if c.gb != nil && ft.kind == .Struct && !ft.is_module && ft != (c.table.funs["Program"] or_else nil) {
-        f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit)   // (its code: its fields' values)
+    } else if c.gb != nil && ft.kind == .Struct && !ft.is_module {
+        // (Its code: its fields' values. An instance's node is the compiler's.)
+        f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Synthetic if instance != nil else .Explicit)
     }
     defer if f != nil { fuse_end(c, f) }
 
@@ -11126,6 +11182,8 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         main_files_by_src, main_file_order, main_file_envs := partition_package_files(main_prog^, env)
         check_package_files(&c, main_files_by_src, main_file_order, main_file_envs, main_mod, env)
     }
+    check_struct_instances(&c)
+    fuse_program_struct(&c)
 
     // Validate scope allocator API after all types are resolved.
     if c.table.has_scope_allocator {
