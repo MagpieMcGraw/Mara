@@ -102,7 +102,7 @@ It keeps the type representation and replaces the checking.
 - **Order.** Grown by what programs need, simplest first: functions over integers, locals,
   control flow, calls, print; then structs and fields, arrays and slices, text, constants,
   unions and match, defaults and constructors, generics, modules and imports, byte views,
-  takes, the arena. Progress is the count of programs whose graph is the old checker's.
+  takes, the arena. Progress is the count of programs whose IR is the old checker's.
 
 ## The proof
 
@@ -110,11 +110,14 @@ It keeps the type representation and replaces the checking.
   — walked in order through its nodes' extents and the tokens each form spells — are the file's
   tokens (newlines aside). Checked on every build under `MARA_TREE=check`; `MARA_TREE=dump`
   prints it.
-- **The checker**: the old checker is the oracle. Under `MARA_CHECKER=new` the new checker runs
-  instead, and graphdiff compares the two programs' graphs — dumps identical, diagnostics
-  identical — on every fixture, the multi-file fixtures, Pounce, `design/all` and test_1M; then
-  irdiff, the suite and the ask corpus as ever. Progress is counted in programs whose graph is
-  identical, as phase 3 counted declines.
+- **The checker**: the old checker is the oracle for what the program means, not for how the
+  graph is built (decided 2026-09-30: take the architectural wins). Under `MARA_CHECKER=new` the
+  new checker runs instead, and the two builds of every fixture, multi-file fixture, Pounce,
+  `design/all` and test_1M must agree on the IR (byte-identical, or modulo naming with each
+  difference explained), on what the programs print when run, and on the diagnostics — then
+  the suite and the ask corpus as ever. Their graphs are compared too, and each difference is
+  either gone or explained: a simpler construction may build a different graph for the same
+  program. Progress is counted in programs whose IR is the old checker's.
 
 ## Stages
 
@@ -126,7 +129,7 @@ It keeps the type representation and replaces the checking.
 2. **The flat tree** beside the pointer tree: a new parser over the same tokens, the views, the
    dump, the no-token-lost check on every build.
 3. **The new checker** beside the old, behind `MARA_CHECKER=new`, grown construct by construct
-   until every program's graph is the old checker's.
+   until every program's IR, runs and diagnostics are the old checker's.
 4. **The switch**: the new checker is the checker; hittest moves onto the flat tree; the old
    parser, the pointer tree, the old checker and the clones are deleted.
 
@@ -161,9 +164,9 @@ It keeps the type representation and replaces the checking.
       words of lists and records, 0 problems. hittest moves at the switch (stage 4): its
       labels change with the tree, and the point-query corpus stays a fixed gate through
       stage 3.
-- [ ] 3. The new checker: every program's graph identical
+- [ ] 3. The new checker: every program's IR, runs and diagnostics identical
   - [ ] Scaffolding: `MARA_CHECKER=new`, builder keys neutral, a diff of the two checkers'
-        graphs per program
+        builds per program (IR, runs, diagnostics; graphs for reference)
   - [ ] Functions over integers, locals, control flow, calls, print
   - [ ] Structs, fields, arrays, slices, text, constants
   - [ ] Unions and match, defaults and constructors
