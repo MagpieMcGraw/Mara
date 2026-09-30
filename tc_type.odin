@@ -21,7 +21,9 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
             if name == "uint" { tc_error(k, span, TYPE_TYPE_UINT_RESERVED_USE_U64); return Type_Error{} }
             return p
         }
-        // (`Self`: the struct or fun the type is written in.)
+        // (A type param, in an instance; `Self`: the struct or fun the type is
+        // written in.)
+        if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
         if name == "Self" {
             if s := enclosing_callable_scope(env); s != nil { return s }
         } else if found, ok := type_env_get(env, name); ok {
@@ -34,6 +36,11 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         if et, ok := k.table.enums[flat]; ok { return et }
         if dt, ok := k.table.distinct_types[flat]; ok { return dt }
         tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
+        return Type_Error{}
+    case .Type_Dollar:
+        name := tc_text(Token_Id(t.a[n]))
+        if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
+        tc_unsupported(k, n, "a type param outside its instance")
         return Type_Error{}
     case .Type_Pointer:
         pt := new(Type_Ptr)

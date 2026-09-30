@@ -120,3 +120,213 @@ tc_program_struct :: proc(k: ^TC) {
         return
     }
 }
+
+// A template's type params, in the old order: those it declares, then each
+// `$T` its params and results introduce, first use first.
+tc_generic_params :: proc(k: ^TC, node: Tree_Id) -> [dynamic]string {
+    t := k.t
+    v := scope_view(t, node)
+    names: [dynamic]string
+    add :: proc(names: ^[dynamic]string, name: string) {
+        for n in names^ { if n == name { return } }
+        append(names, name)
+    }
+    for g in v.generics { add(&names, tc_name(k, g)) }
+    walk :: proc(k: ^TC, n: Tree_Id, names: ^[dynamic]string) {
+        if n == 0 { return }
+        t := k.t
+        #partial switch t.tag[n] {
+        case .Type_Dollar:
+            add(names, tc_text(Token_Id(t.a[n])))
+        case .Type_Pointer, .Type_Paren:
+            walk(k, Tree_Id(t.a[n]), names)
+        case .Type_Slice, .Type_Partial, .Type_Array:
+            walk(k, Tree_Id(t.b[n]), names)
+        case .Type_Generic:
+            for a in tree_list(t, t.a[n]) { walk(k, a, names) }
+        case .Type_Fun:
+            for a in tree_list(t, t.a[n]) { walk(k, a, names) }
+            for a in tree_list(t, t.b[n]) { walk(k, a, names) }
+        }
+    }
+    for g in v.params { walk(k, params_view(t, g).type_, &names) }
+    for r in v.returns { walk(k, params_view(t, r).type_ if t.tag[r] == .Param_Group else r, &names) }
+    return names
+}
+
+// What a param's type as written binds, given the type of the argument
+// passed to it: `^[]$T` given ^[]i64 binds T to i64.
+tc_infer :: proc(k: ^TC, subst: ^map[string]Type, n: Tree_Id, actual_raw: Type) {
+    if n == 0 { return }
+    t := k.t
+    actual := unwrap_alias(actual_raw)
+    name: string
+    #partial switch t.tag[n] {
+    case .Type_Dollar:
+        name = tc_text(Token_Id(t.a[n]))
+    case .Type_Name:
+        parts := tree_token_list(t, t.a[n])
+        if len(parts) == 1 { name = tc_text(parts[0]) }
+    case .Type_Paren:
+        tc_infer(k, subst, Tree_Id(t.a[n]), actual)
+    case .Type_Pointer:
+        if pt, ok := actual.(^Type_Ptr); ok { tc_infer(k, subst, Tree_Id(t.a[n]), pt.elem) }
+    case .Type_Array:
+        if fa, ok := actual.(^Type_Fixed_Array); ok { tc_infer(k, subst, Tree_Id(t.b[n]), fa.elem) }
+    case .Type_Slice:
+        // (An array or a partial array a slice param views drives it too:
+        // `&s + "lit"` binds slice_add's T.)
+        #partial switch a in actual {
+        case ^Type_Slice:         tc_infer(k, subst, Tree_Id(t.b[n]), a.elem)
+        case ^Type_Fixed_Array:   tc_infer(k, subst, Tree_Id(t.b[n]), a.elem)
+        case ^Type_Partial_Array: tc_infer(k, subst, Tree_Id(t.b[n]), a.elem)
+        }
+    case .Type_Partial:
+        if pa, ok := actual.(^Type_Partial_Array); ok { tc_infer(k, subst, Tree_Id(t.b[n]), pa.elem) }
+    case .Type_Fun:
+        if ft, ok := actual.(^Type_Scope); ok {
+            for p, i in tree_list(t, t.a[n]) { if i < len(ft.params) { tc_infer(k, subst, p, ft.params[i].type_) } }
+            for r, i in tree_list(t, t.b[n]) { if i < len(ft.return_types) { tc_infer(k, subst, r, ft.return_types[i]) } }
+        }
+    case .Type_Generic:
+        tc_unsupported(k, n, "a generic instance's type param inferred")
+    }
+    // (An untyped argument binds its settled type, as a declaration would.)
+    if name != "" && name in subst^ && subst[name] == nil { subst[name] = solidify_type(actual) }
+}
+
+// A call of a generic fun: each argument checked and built (at its param's
+// type once the instance is known), the type params bound from them, the
+// instance made once per bindings, then the call.
+tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, args: []Tree_Id, env: ^Type_Scope,
+                        want: Fuse_Want, w: Written) -> (Type, Fused) {
+    tr := k.t
+    span := tree_span(tr, n)
+    b := tc_building(k) if want != .None else nil
+    if b != nil && want == .Place {
+        tc_fail(k, "a call's place")
+        b = nil
+    }
+    if tr.tag[tmpl.node] != .Fun_Def {
+        tc_unsupported(k, n, "a generic struct's construction")
+        return Type_Error{}, {}
+    }
+    vals := make([dynamic]Operand, context.temp_allocator)
+    widens := make([dynamic]int, context.temp_allocator)
+    array_values := make([dynamic]bool, context.temp_allocator)
+    literals := make([dynamic]Fuse_Literal_Arg, context.temp_allocator)
+    arg_types := make([dynamic]Type, context.temp_allocator)
+    for a, i in args {
+        if b != nil && tc_building(k) != nil {
+            from := b.nodes
+            t, r := tc_expr(k, a, env, .Either, w)
+            append(&arg_types, t)
+            if tc_building(k) == nil { continue }
+            _, is_array := distinct_base(t).(^Type_Fixed_Array)
+            if u := tc_unparen(k, a); tr.tag[u] == .Index && is_byte_buffer(tc_node_type(k, Tree_Id(tr.a[u]))) {
+                tc_fail(k, "bytes as a generic's argument")
+                continue
+            }
+            v, wi := graph_fuse_as(b, r.v, r.place, t, tree_span(tr, a), span, {})
+            append(&vals, v)
+            append(&widens, wi)
+            append(&array_values, is_array && !r.place)
+            if tr.tag[tc_unparen(k, a)] == .Array { append(&literals, Fuse_Literal_Arg{i, from, b.nodes, t}) }
+        } else {
+            append(&arg_types, tc_check(k, a, env))
+        }
+    }
+    params := tc_generic_params(k, tmpl.node)
+    subst: map[string]Type
+    for p in params { subst[p] = nil }
+    v := scope_view(tr, tmpl.node)
+    i := 0
+    for g in v.params {
+        pv := params_view(tr, g)
+        for _ in pv.names {
+            if i < len(arg_types) { tc_infer(k, &subst, pv.type_, arg_types[i]) }
+            i += 1
+        }
+    }
+    for p in params {
+        if subst[p] == nil {
+            tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, p, name)
+            return Type_Error{}, {}
+        }
+    }
+    type_args := make([dynamic]Type, context.temp_allocator)
+    for p in params { append(&type_args, subst[p]) }
+    mangled := mangle_generic_name(name, type_args[:])
+    ft := k.instances[mangled] or_else nil
+    if ft == nil { ft = tc_instantiate_fun(k, tmpl, subst, mangled, env) }
+    if len(args) != len(ft.params) {
+        tc_error(k, span, TYPE_EXPECTS_ARGUMENT, name, len(ft.params), len(args))
+    }
+    k.callees[n] = ft
+    ret := fn_primary_return(ft)
+    b = tc_building(k) if b != nil else nil
+    if b == nil { return ret, {} }
+    for wi, j in widens {
+        if wi >= 0 { b.fuse.widens[wi].sig, b.fuse.widens[wi].param = ft, j }
+    }
+    for la in literals {
+        if la.arg >= len(ft.params) { continue }
+        pt := ft.params[la.arg].type_
+        if graph_aggregate(pt) && pt != la.t { graph_fuse_retype_literal(b, la.from, la.to, pt) }
+    }
+    if fuse_views_value(ft, array_values[:]) {
+        tc_fail(k, "an array's value viewed by a generic's param")
+        return ret, {}
+    }
+    return ret, {v = {graph_call_op(b, .Call, w, span, ft, ret, ..vals[:]), 0}, ok = true}
+}
+
+// An instance of a generic fun: its signature at the bindings, its body the
+// template's own checked again with them bound — its scope the call's (as
+// the old checker's instances were), its graph its own.
+tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, mangled: string, env: ^Type_Scope) -> ^Type_Scope {
+    outer: ^Graph_Fuse
+    if k.gb != nil { outer, k.gb.fuse = k.gb.fuse, nil }
+    defer if k.gb != nil { k.gb.fuse = outer }
+    tr := k.t
+    ft := new(Type_Scope)
+    ft.kind = .Fun
+    ft.home_package = tmpl.pkg
+    ft.node = tmpl.node
+    ft.name = make_flat_name(tmpl.pkg, mangled)
+    ft.source_name = mangled
+    saved_subst, saved_pkg := k.subst, k.pkg
+    k.subst, k.pkg = subst, tmpl.pkg
+    defer k.subst, k.pkg = saved_subst, saved_pkg
+    span := tree_span(tr, tmpl.def)
+    v := scope_view(tr, tmpl.node)
+    for g in v.params {
+        pv := params_view(tr, g)
+        if pv.type_ == 0 || len(pv.values) > 0 {
+            tc_unsupported(k, g, "a generic's param with a default")
+            continue
+        }
+        pt := tc_type(k, pv.type_, tmpl.env, span)
+        for pn in pv.names { append(&ft.params, Struct_Type_Field{name = tc_text(pn), type_ = pt}) }
+    }
+    for r in v.returns {
+        if tr.tag[r] == .Param_Group {
+            tc_unsupported(k, r, "a generic's named result")
+            continue
+        }
+        append(&ft.return_types, tc_type(k, r, tmpl.env, span))
+    }
+    build_param_map(ft)
+    type_env_set(k.root, mangled, ft)
+    if env != k.root { type_env_set(env, mangled, ft) }
+    k.instances[mangled] = ft
+    append(&k.instance_order, mangled)
+    ft.parent_scope = env
+    k.scope_of[ft] = len(k.scopes)
+    sc := new_clone(TC_Scope{ts = ft, def = tmpl.def, node = tmpl.node, env = env, subst = subst, synthetic = true})
+    append(&k.scopes, sc)
+    tc_scope_body(k, sc)
+    // (Its own funs, for codegen: extracted as a fun's are.)
+    tc_extract(k, sc.nested[:], tmpl.pkg, false, nested = true)
+    return ft
+}

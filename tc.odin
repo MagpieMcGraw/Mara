@@ -36,6 +36,9 @@ TC :: struct {
     in_progress:   map[string]bool,
     std:           ^Type_Scope,
     templates:     map[string]TC_Template,   // the generic definitions, by name
+    instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
+    instance_order: [dynamic]string,
+    subst:         map[string]Type,   // the type params bound, in an instance being checked
     callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
@@ -48,6 +51,8 @@ TC_Scope :: struct {
     node: Tree_Id,   // its Fun_Def or Struct_Def
     env:  ^Type_Scope,
     nested: [dynamic]int,   // the funs and structs defined in its body
+    subst:  map[string]Type,   // an instance's: its type params bound
+    synthetic: bool,           // an instance: the compiler's, written nowhere
     registered: bool,       // (they are)
 }
 
@@ -161,6 +166,16 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     main := tc_check_module_files(k, files, main_mod)
 
     tc_extract(k, main, main_package, is_main = true)
+    // (Each generic fun's instances, for codegen: in the functions, in no order.)
+    for mangled in k.instance_order {
+        ft := k.instances[mangled]
+        sc := k.scopes[k.scope_of[ft]]
+        key := make_flat_name(ft.home_package, mangled)
+        ft.name, ft.body_span = key, tree_span(k.t, sc.def)
+        ft.origin = Origin_Source{}
+        populate_cg_signature(ft)
+        checked.functions[key] = ft
+    }
     tc_program_struct(k)
     tc_validate_main(k, main)
 

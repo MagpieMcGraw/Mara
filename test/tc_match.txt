@@ -1,6 +1,7 @@
 aliasprobe
 array_field_loop
 array_param_write_neg
+arrayctor
 askmod
 assertb
 assertesc
@@ -12,6 +13,7 @@ audittest
 autowiden
 booltest
 branchok
+bug1
 callgraph_probe
 capsize
 capsize_neg
@@ -50,6 +52,8 @@ escapes
 fielddefer
 fixed_decay_neg
 fordo
+generic_untyped_args
+hoisttest
 idxsafe
 inferconflict
 inferdef
@@ -57,10 +61,12 @@ init_alias_neg
 init_shapes_neg
 literal_ctor_args_neg
 mixwiden
+multistmt
 negtrap
 nested_fwd_field
 nested_fwd_fun
 nrvo_zero
+operator_calls
 pa_array_stamp
 pafill
 param_reassign_neg

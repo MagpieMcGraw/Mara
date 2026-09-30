@@ -17,13 +17,14 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     defer k.hint = hint
     tc_register_defs(k, sc)
     f: ^Graph_Fuse
-    if k.gb != nil { f = graph_fuse_begin(k.gb, ts, syntax_id(sc.def), span, v.intrinsic != 0, .Explicit) }
+    if k.gb != nil { f = graph_fuse_begin(k.gb, ts, syntax_id(sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit) }
     // (A fun's definitions are checked before its code; a struct's once its
     // fields are known: its methods read them.)
     if !is_struct { tc_check_defs(k, sc) }
     if v.intrinsic == 0 {
         body := type_env_block_child(ts)
         for p in ts.params { type_env_set(body, p.name, p.type_) }
+        for name, bt in sc.subst { type_env_set(body, name, bt) }
         tc_scope(k, v.body, body, ts if is_struct else nil, top = true)
     }
     if is_struct {

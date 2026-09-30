@@ -13,8 +13,10 @@ tc_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want := Fuse_Want.Value, w
     b := tc_building(k)
     ask := want if b != nil else .None
     // A compound assignment's target, read in its operation: through the
-    // place already built.
-    if ask != .None && n == k.compound.target && n != 0 {
+    // place already built. (Not in a generic's instance: the old checker
+    // checked a clone of its body, whose operation held a copy of the
+    // target, walked again — the same IR, until the switch.)
+    if ask != .None && n == k.compound.target && n != 0 && k.subst == nil {
         t := tc_check(k, n, env)
         span := tree_span(k.t, n)
         if ask == .Value { return t, {v = graph_read(b, k.compound.place, t, span), ok = true} }
@@ -164,6 +166,22 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
                 return Type_Error{}, {}
             }
         } else if !is_numeric(ot) {
+            // (`overload -`: a function of the one operand, when one fits.)
+            if callee := tc_unary_overload(k, ot, env); callee != nil {
+                ret := fn_primary_return(callee)
+                b := tc_building(k)
+                if want == .None || want == .Place || b == nil { return ret, {} }
+                arg: Operand
+                if len(callee.params) > 0 {
+                    pt := callee.params[0].type_
+                    arg = tc_value_as(k, operand, ot, r, pt, span, {to = pt})
+                } else {
+                    arg = tc_value(k, r, operand, ot)
+                }
+                if b = tc_building(k); b == nil { return ret, {} }
+                kind: Op_Kind = .Construct if callee.kind == .Struct else .Call
+                return ret, {v = {graph_call_op(b, kind, w, span, callee, ret, arg), 0}, ok = true}
+            }
             tc_error(k, span, TYPE_CANNOT_NEGATE, type_name(ot))
         } else if _, kind, k_ok := numeric_info(ot); k_ok && kind == .Unsigned {
             tc_error(k, span, TYPE_CANNOT_NEGATE_UNSIGNED, type_name(ot))
@@ -247,6 +265,7 @@ tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, 
     sides: [2]Operand
     widen := [2]int{-1, -1}
     types: [2]Type
+    arrays: [2]bool   // (a side an array's value, no place)
     and_or := op == .And || op == .Or
     sa: Graph_And
     if build && and_or { sa = graph_fuse_and(b, op == .And, w, span) }
@@ -267,6 +286,13 @@ tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, 
         st, r := tc_expr(k, side, env, .Either, w)
         types[i] = st
         if b = tc_building(k); b == nil { build = false; continue }
+        if tr.tag[tc_unparen(k, side)] == .Array {
+            tc_fail(k, "an array literal as an operand")
+            build = false
+            continue
+        }
+        _, is_array := distinct_base(st).(^Type_Fixed_Array)
+        arrays[i] = is_array && !r.place
         sides[i], widen[i] = graph_fuse_as(b, r.v, r.place, st, tree_span(tr, side), span, {})
     }
     lt, rt := types[0], types[1]
@@ -274,6 +300,25 @@ tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, 
     if wrapping && (!is_wrap_operand(lt) || !is_wrap_operand(rt)) {
         tc_error(k, span, TYPE_WRAPPING_REQUIRES_INTEGER, op_str(op), type_name(lt), type_name(rt))
         return Type_Error{}, {}
+    }
+    // (An operand no number: an `overload`'s function, when one fits.)
+    if !and_or && (!is_numeric(lt) || !is_numeric(rt)) {
+        if callee, found := tc_operator_overload(k, op, lt, rt, env); found {
+            ret := fn_primary_return(callee)
+            if !build { return ret, {} }
+            if b = tc_building(k); b == nil { return ret, {} }
+            for wi, i in widen {
+                if wi >= 0 && i < len(callee.params) { b.fuse.widens[wi].sig, b.fuse.widens[wi].param = callee, i }
+            }
+            for is_array, i in arrays {
+                if is_array && i < len(callee.params) && is_slice_type(callee.params[i].type_) {
+                    tc_fail(k, "an array's value viewed by an operator")
+                    return ret, {}
+                }
+            }
+            kind: Op_Kind = .Construct if callee.kind == .Struct else .Call
+            return ret, {v = {graph_call_op(b, kind, w, span, callee, ret, sides[0], sides[1]), 0}, ok = true}
+        }
     }
     #partial switch op {
     case .And, .Or:
@@ -387,6 +432,12 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         build = false
     }
     if t, r, is_builtin := tc_builtin(k, n, name, args, env, want if build else .None, w); is_builtin { return t, r }
+    if members, is_dispatch := find_dispatch(k.c, env, name); is_dispatch {
+        return tc_dispatch_call(k, n, name, members, args, env, want if build else .None, w)
+    }
+    if tmpl, is_template := k.templates[name]; is_template {
+        return tc_generic_call(k, n, name, tmpl, args, env, want if build else .None, w)
+    }
     ft_raw, found := type_env_get(env, name)
     if !found {
         tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name)
@@ -408,6 +459,15 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
     if b := tc_building(k); build && b != nil && is_struct && want == .Into && temp {
         dest = graph_fuse_temp(b, temp_span, fuse_temp_type(dest))
         into_temp = true
+    }
+    // (A fixed array its destination views as a slice: held in a temporary
+    // made before the arguments, at the store's span — its place, sliced
+    // there.)
+    view_slot := NO_NODE
+    if b := tc_building(k); build && b != nil && !is_struct && want == .Into {
+        if ret := fn_primary_return(ft); ret != nil && is_slice_type(graph_dest_type(b, dest)) {
+            if _, from_array := distinct_base(ret).(^Type_Fixed_Array); from_array { view_slot = graph_slot(b, "temp", ret, temp_span) }
+        }
     }
     ops := make([dynamic]Operand, 0, len(args), context.temp_allocator)
     if len(args) < count_required_params(ft) || len(args) > len(ft.params) {
@@ -453,7 +513,12 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
     if !build { return ret, {} }
     b := tc_building(k)
     if b == nil { return ret, {} }
-    return ret, {v = {graph_call_op(b, .Call, w, span, ft, ret, ..ops[:]), 0}, ok = true}
+    call := Operand{graph_call_op(b, .Call, w, span, ft, ret, ..ops[:]), 0}
+    if view_slot != NO_NODE {
+        graph_fuse_write_at(b, graph_var(b, "temp", view_slot, ret, temp_span), call, temp_span)
+        return ret, {v = graph_var(b, "temp", view_slot, ret, temp_span), place = true, ok = true}
+    }
+    return ret, {v = call, ok = true}
 }
 
 // A literal that doesn't fit the type it is used at (check_literal_overflow's).
