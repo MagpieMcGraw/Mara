@@ -1140,9 +1140,11 @@ skip_newlines :: proc(p: ^Parser) {
     }
 }
 
-// Consume statement separators: newlines and semicolons.
-skip_separator :: proc(p: ^Parser) {
-    for current_kind(p) == .Newline || current_kind(p) == .Semicolon || current_kind(p) == .Comma {
+// Consume statement separators: newlines and semicolons (and, in a list —
+// a dispatch's functions — commas). A comma after a statement is no
+// separator: `a, b = b, a` is one statement, never `a, b = b` and then `a`.
+skip_separator :: proc(p: ^Parser, commas := false) {
+    for current_kind(p) == .Newline || current_kind(p) == .Semicolon || commas && current_kind(p) == .Comma {
         advance(p)
     }
 }
@@ -1197,7 +1199,7 @@ is_scope_def :: proc(s: Stmt) -> bool {
 // parse_block parses `{ stmt* }` into a flat list. The defs/body partition is
 // done later, authoritatively, by fold_comptime_ifs in the checker (it has to
 // run after `#if` folding anyway), so the parser doesn't classify here.
-parse_block :: proc(p: ^Parser) -> [dynamic]Stmt {
+parse_block :: proc(p: ^Parser, commas := false) -> [dynamic]Stmt {
     expect(p, .Left_Brace)
     skip_newlines(p)
 
@@ -1208,7 +1210,7 @@ parse_block :: proc(p: ^Parser) -> [dynamic]Stmt {
         if p.errors > errs_before {
             recover_to_stmt_boundary(p)
         }
-        skip_separator(p)
+        skip_separator(p, commas)
     }
 
     expect(p, .Right_Brace)
@@ -1235,7 +1237,7 @@ is_intrinsic_part_kind :: proc(kind: Token_Kind) -> bool {
 // compiler-generated intrinsic body (returned as an empty stmts list with
 // is_intrinsic=true and the dotted LLVM name in intrinsic_name).
 // Any other body is parsed as a normal block.
-parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: bool, intrinsic_name: string) {
+parse_scope_body :: proc(p: ^Parser, commas := false) -> (stmts: [dynamic]Stmt, is_intrinsic: bool, intrinsic_name: string) {
     if current_kind(p) == .Left_Brace {
         save := p.pos
         advance(p) // consume '{'
@@ -1283,7 +1285,7 @@ parse_scope_body :: proc(p: ^Parser) -> (stmts: [dynamic]Stmt, is_intrinsic: boo
         // Not an intrinsic body — rewind and delegate to parse_block
         p.pos = save
     }
-    stmts = parse_block(p)
+    stmts = parse_block(p, commas)   // (a struct's fields may be separated by commas)
     return stmts, false, ""
 }
 
@@ -1923,7 +1925,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
 
     // Case 1: fun { ... } — data-type fun, no params
     if current_kind(p) == .Left_Brace {
-        body, is_intrinsic, intrinsic_name := parse_scope_body(p)
+        body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
         stmt := new(Stmt_Scope)
         stmt.name = name
         stmt.kind = kind
@@ -1989,7 +1991,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
                 if !already_exists { append(&generic_params, dp) }
             }
             skip_newlines(p)
-            body, is_intrinsic, intrinsic_name := parse_scope_body(p)
+            body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
             stmt := new(Stmt_Scope)
             stmt.name = name
             stmt.kind = kind
@@ -2008,7 +2010,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         if len(generic_params) > 0 {
             // fun($T: type) { fields } — data-type fun with generic params only
             skip_newlines(p)
-            body, is_intrinsic, intrinsic_name := parse_scope_body(p)
+            body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
             stmt := new(Stmt_Scope)
             stmt.name = name
             stmt.kind = kind
@@ -2025,7 +2027,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         return_types: [dynamic]Type_Expr
         parse_optional_return_types(p, &return_types)
         skip_newlines(p)
-        body, is_intrinsic, intrinsic_name := parse_scope_body(p)
+        body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
         stmt := new(Stmt_Scope)
         stmt.name = name
         stmt.kind = kind
@@ -2051,7 +2053,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
     parse_optional_return_types(p, &return_types)
 
     skip_newlines(p)
-    body, is_intrinsic, intrinsic_name := parse_scope_body(p)
+    body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
 
     // For struct/class kind: promote typed_params to generic_params when they're
     // either introduced as type variables (`name: $T`) or referenced in a type
@@ -2344,7 +2346,7 @@ parse_dispatch_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> S
     for current_kind(p) != .Right_Brace && current_kind(p) != .EOF {
         fn_tok := expect(p, .Identifier)
         append(&functions, fn_tok.text)
-        skip_separator(p)
+        skip_separator(p, commas = true)
     }
     expect(p, .Right_Brace)
 
@@ -3349,6 +3351,32 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                         append(&mt_names, "")
                         append(&mt_targets, expr)
                     }
+                }
+                // Parallel RHS (`p.x, p.y = 3, 4`, `a[0], a[1] = a[1], a[0]`):
+                // one assignment per item, assigned together.
+                if current_kind(p) == .Comma {
+                    vals: [dynamic]Expr
+                    append(&vals, rhs)
+                    for current_kind(p) == .Comma {
+                        advance(p) // consume ','
+                        append(&vals, parse_expr(p))
+                    }
+                    if len(vals) != len(lhs_exprs) {
+                        p.pos = saved_pos
+                        return {}, false
+                    }
+                    assigns: [dynamic]^Stmt_Assign
+                    for i in 0 ..< len(vals) {
+                        if mt_names[i] != "" {
+                            append(&assigns, new_clone(Stmt_Assign{name = mt_names[i], value = vals[i], span = start, is_decl = saw_colon}))
+                        } else if assign_stmt, lhs_ok := make_lhs_assign(mt_targets[i], vals[i], start); lhs_ok {
+                            append(&assigns, assign_stmt.(^Stmt_Assign))
+                        } else {
+                            p.pos = saved_pos
+                            return {}, false
+                        }
+                    }
+                    return new_clone(Stmt_Multi_Assign{assigns = assigns, span = start}), true
                 }
                 mt_vals: [dynamic]Expr
                 append(&mt_vals, rhs)

@@ -1662,6 +1662,7 @@ Checker :: struct {
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
     byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
+    parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
     span_read:       Fuse_Span_Read,   // the span of bytes last built to be read as its destination's type
     table:           ^SymbolTable,
@@ -5927,6 +5928,49 @@ fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
     fuse_fail(c, fmt.aprintf("%v", reflect.union_variant_typeid(s)))
 }
 
+// Several reassigned together (`a, b = b, a`, `a[0], a[1] = a[1], a[0]`):
+// each assignment's store held in a temporary at its target's type — its
+// value, and a target's place, built as it is checked — then, every value
+// in, each target written from its own.
+Fuse_Parallel :: struct {
+    held: [dynamic]Fuse_Held,
+}
+
+Fuse_Held :: struct {
+    d:    Dest,
+    slot: Node_Id,
+    t:    Type,
+    span: Span,
+}
+
+fuse_is_parallel :: proc(s: ^Stmt_Multi_Assign) -> bool {
+    if len(s.assigns) < 2 { return false }
+    for a in s.assigns { if a.is_decl { return false } }
+    return true
+}
+
+// The assignment's own store, where several are assigned together: into a
+// temporary of its own (its target's, recorded).
+fuse_parallel_hold :: proc(c: ^Checker, d: Dest, span: Span) -> Dest {
+    b := fusing(c)
+    par := c.parallel
+    if b == nil || par == nil { return d }
+    t := graph_dest_type(b, d)
+    slot := graph_slot(b, "parallel", t, span)
+    append(&par.held, Fuse_Held{d, slot, t, span})
+    return graph_dest_var("parallel", slot, t)
+}
+
+fuse_parallel_end :: proc(c: ^Checker, par: ^Fuse_Parallel) {
+    defer delete(par.held)
+    b := fusing(c)
+    if b == nil { return }
+    for h in par.held {
+        v := graph_read(b, graph_var(b, "parallel", h.slot, h.t, h.span), h.t, h.span)
+        graph_fuse_write_at(b, graph_dest_place(b, h.d, h.span), v, h.span)
+    }
+}
+
 // A declaration or an assignment to a variable, built: the local (made
 // before its value), the value, and — once the statement's check has typed
 // it — the store (graph_init, graph_assign).
@@ -5977,7 +6021,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         graph_fuse_void_assign(b, s.name, s.var_type, s.span)
         return
     }
-    fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, NO_NODE, s.var_type), s.span)
+    fuse_store_finish(c, s.value, fa.value_type, fa.value, fuse_parallel_hold(c, graph_dest_var(s.name, NO_NODE, s.var_type), s.span), s.span)
 }
 
 // A dispatch's array literal argument: its position, its nodes, its type.
@@ -7942,10 +7986,22 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 }
             }
         case ^Stmt_Multi_Assign:
-            // Wrapper of individual assigns — check each one
-            inner: [dynamic]Stmt
-            for a in s.assigns { append(&inner, Stmt(a)) }
-            register_and_check_declarations(c, inner[:], env, public_env = public_env)
+            // Its assignments, each checked whole (both passes: a target's
+            // store is typed by the second) in turn. Several reassigned
+            // together (`a, b = b, a`) take every value first: each held in
+            // a temporary at its target's type, then each target written
+            // from its own (fuse_parallel_end).
+            par: Fuse_Parallel
+            parallel := fusing(c) != nil && fuse_is_parallel(s)
+            saved_parallel := c.parallel
+            if parallel { c.parallel = &par }
+            for a in s.assigns {
+                one := []Stmt{a}
+                register_and_check_declarations(c, one, env, public_env = public_env)
+                check_bodies(c, one, env)
+            }
+            c.parallel = saved_parallel
+            if parallel { fuse_parallel_end(c, &par) }
         case ^Stmt_Multi_Return_Assign:
             ann_type := resolve_type_expr(s.type_expr, c, s.span, env = env)
             // (Built below: one call's outputs. `?` on it, and values
@@ -8996,7 +9052,8 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             }
 
         case ^Stmt_Multi_Assign:
-            // Already checked in register_and_check_declarations (iterates assigns)
+            // Already checked in register_and_check_declarations (each
+            // assignment, both passes)
         case ^Stmt_Multi_Return_Assign:
             // Destructure was fully checked during registration (s.checked empty).
             // Broadcast desugared into s.checked there; run the body pass on those
@@ -13006,7 +13063,7 @@ fuse_store_write :: proc(c: ^Checker, s: ^Stmt_Assign, fs: ^Fuse_Store, dt: Type
         graph_fuse_write_at(b, fs.place, graph_fuse_void(b, dt, s.span), s.span)   // (its value unbuilt)
         return
     }
-    fuse_store_finish(c, s.value, fs.vt, fs.value, Dest{kind = .At, at = fs.place, type_ = dt}, s.span, settle = true)
+    fuse_store_finish(c, s.value, fs.vt, fs.value, fuse_parallel_hold(c, Dest{kind = .At, at = fs.place, type_ = dt}, s.span), s.span, settle = true)
 }
 
 check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_Scope, ff: ^Fuse_Field) -> Type {

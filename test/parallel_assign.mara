@@ -1,0 +1,26 @@
+module parallel_assign
+// Several reassigned together take every value first: `a, b = b, a` swaps
+// (it assigned in turn: b = a, then a = b). Fields and elements too, and a
+// list whose first target is one; `a, arr[0] = 1, 2` stores both (the
+// element was dropped).
+//@ expect-output: names 5 1
+//@ expect-output: fields 4 3
+//@ expect-output: elements 8 7
+//@ expect-output: mixed 9 0
+P :: struct { x: i64, y: i64 }
+main :: fun() {
+	a := 1
+	b := 5
+	b, a = a, b
+	print("names", a, b)
+	p : P
+	p.x, p.y = 3, 4
+	p.x, p.y = p.y, p.x
+	print("fields", p.x, p.y)
+	arr : [2]i64 = [7, 8]
+	arr[0], arr[1] = arr[1], arr[0]
+	print("elements", arr[0], arr[1])
+	c := 0
+	c, arr[0] = 9, c
+	print("mixed", c, arr[0])
+}
