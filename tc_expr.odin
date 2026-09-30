@@ -72,7 +72,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         // (A read of bytes, big-endian: as the read; where it is viewed, the flag.)
         return tc_expr(k, Tree_Id(t.a[n]), env, want, w, dest, temp, temp_span)
     case .Ident:
-        return tc_ident(k, n, env, want, w)
+        return tc_ident(k, n, env, want, w, dest, temp, temp_span)
     case .Unary:
         return tc_unary(k, n, env, want, w)
     case .Deref:
@@ -100,9 +100,9 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         }
         if et == nil { return Type_Error{}, {} }
         k.variant_nodes[n] = true
-        return et, tc_variant_value(k, et, v, name, span, want, w)
+        return et, tc_variant_of(k, et, v, name, span, want, w, dest, temp, temp_span)
     case .Field:
-        return tc_field(k, n, env, want, w)
+        return tc_field(k, n, env, want, w, dest, temp, temp_span)
     case .Literal:
         return tc_literal(k, n, env, want, w, dest, temp, temp_span)
     case .Index:
@@ -129,7 +129,8 @@ tc_number :: proc(k: ^TC, n: Tree_Id, span: Span, negate: bool, want: Fuse_Want,
     return t, {v = v, ok = true}
 }
 
-tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
+                 dest: Dest = {}, temp := false, temp_span := Span{}) -> (Type, Fused) {
     name := tc_name(k, n)
     span := tree_span(k.t, n)
     hint := k.hint
@@ -139,7 +140,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         if et, v, found := tc_variant_ident(k, name, hint, env, false, span); found {
             if et == nil { return Type_Error{}, {} }
             k.variant_nodes[n] = true
-            return et, tc_variant_value(k, et, v, name, span, want, w)
+            return et, tc_variant_of(k, et, v, name, span, want, w, dest, temp, temp_span)
         }
     }
     // (A constant: its own module's, or one it uses' — two is ambiguous.)

@@ -117,6 +117,8 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         tc_compound(k, s, env)
     case .Defer:
         tc_defer(k, s, env)
+    case .Match:
+        tc_match(k, s, env)
     case .Break, .Continue:
         if b := tc_building(k); b != nil { graph_fuse_loop_exit(b, span, is_break = t.tag[s] == .Break) }
     case:
@@ -974,6 +976,161 @@ tc_storage_sizes :: proc(k: ^TC, decls: []TC_Decl_Note) {
     for d in decls {
         if !d.take && routes_to_arena(d.t) {
             tc_error(k, d.span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, d.name, checker_type_byte_size(d.t))
+        }
+    }
+}
+
+// `match x { .A {…}  B b {…}  v {…}  else {…} }`: the subject — a plain
+// place, walked where it is needed; else held in a local made first — then
+// the switch on its tag (a value arm's value built before it), then each
+// arm's block, the payload bound where an arm names it.
+tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
+    tr := k.t
+    span := tree_span(tr, s)
+    subj := Tree_Id(tr.a[s])
+    arms := tree_list(tr, tr.b[s])
+    if subj == 0 { return }
+    b := tc_building(k)
+    prechecked := make([]bool, len(arms), context.temp_allocator)
+    slot := NO_NODE
+    st: Type
+    subject := NO_VALUE
+    if b != nil && !tc_pure_place(k, subj) {
+        slot = graph_slot(b, "subject", nil, span)
+        st = tc_store_into(k, subj, env, graph_dest_var("subject", slot, nil), span)
+        if tc_building(k) != nil { graph_fuse_typed(b, slot, st) }
+    } else if b != nil {
+        r: Fused
+        st, r = tc_expr(k, subj, env, .Place)
+        subject = r.v
+    } else {
+        st = tc_check(k, subj, env)
+    }
+    ut, is_union := st.(^Type_Union)
+    et, is_enum := st.(^Type_Enum)
+    _, is_err := st.(Type_Err)
+    gm: ^Graph_Match
+    if b != nil && tc_building(k) != nil {
+        gm = graph_fuse_match_begin(b, span, len(arms), slot, subject, st, tr.tag[tc_unparen(k, subj)] == .Self)
+        for arm, i in arms {
+            tag := tr.tag[arm]
+            if tag == .Arm_Else { continue }
+            if gm.is_union || tag != .Arm_Value {
+                graph_fuse_match_tag(b, gm, span, i)
+                continue
+            }
+            // (An enum's variant named bare matches as `.Variant` does.)
+            value := Tree_Id(tr.a[arm])
+            if tr.tag[value] == .Ident && is_enum && tc_name(k, value) in et.variants {
+                graph_fuse_match_tag(b, gm, span, i)
+                continue
+            }
+            _, v := tc_expr(k, value, env)
+            if bb := tc_building(k); bb != nil { graph_fuse_match_value(bb, gm, v.v) }
+            prechecked[i] = true
+        }
+        if bb := tc_building(k); bb != nil { graph_fuse_match_switch(bb, gm, span) }
+    }
+    defer if gm != nil { graph_fuse_match_end(b, gm) }
+    if !is_union && !is_enum && !is_err {
+        tc_error(k, span, TYPE_MATCH_REQUIRES_UNION, type_name(st))
+        return
+    }
+    has_else := false
+    for arm in arms { if tr.tag[arm] == .Arm_Else { has_else = true } }
+    if is_err && !has_else { tc_error(k, span, TYPE_MATCH_ERR_REQUIRES_ELSE) }
+    for arm, i in arms {
+        if tr.tag[arm] == .Arm_Else && i != len(arms) - 1 { tc_error(k, span, TYPE_LAST_ARM_MATCH) }
+    }
+    variant_struct :: proc(k: ^TC, ut: ^Type_Union, name: string) -> Type {
+        sn := ut.variant_structs[name] or_else name
+        if vs, ok := k.table.structs[sn]; ok { return vs }
+        if vs, ok := k.table.funs[sn]; ok { return vs }
+        return nil
+    }
+    resolved := make([]Graph_Arm, len(arms), context.temp_allocator)
+    for arm, i in arms {
+        ra := &resolved[i]
+        tag := tr.tag[arm]
+        ra.is_else, ra.is_union = tag == .Arm_Else, tag == .Arm_Variant
+        body_of := Tree_Id(0)
+        body: []Tree_Id
+        child := type_env_block_child(env)
+        #partial switch tag {
+        case .Arm_Dot:
+            name := tc_text(tr.main[arm])
+            ra.variant = name
+            body = tree_list(tr, tr.a[arm])
+            switch {
+            case is_enum:
+                if v, has := et.variants[name]; has { ra.tag = v } else { tc_error(k, span, TYPE_ENUM_VARIANT, et.name, name) }
+            case is_union:
+                if v, has := ut.tag_map[name]; has {
+                    ra.tag = v
+                    ra.payload = variant_struct(k, ut, name)
+                } else {
+                    tc_error(k, span, TYPE_UNION_VARIANT, ut.name, name)
+                }
+            case:
+                tc_error(k, span, TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING, name)
+            }
+        case .Arm_Variant:
+            name := tc_text(tr.main[arm])
+            ra.variant = name
+            body = tree_list(tr, tr.a[arm])
+            if is_union {
+                if v, has := ut.tag_map[name]; has { ra.tag = v } else { tc_error(k, span, TYPE_VARIANT_UNION, name, ut.name) }
+            }
+            // (No binding: a bare subject's own name sees the payload.)
+            if bt := Token_Id(tr.b[arm]); bt != 0 { ra.bound = tc_text(bt) } else if su := tc_unparen(k, subj); tr.tag[su] == .Ident { ra.bound = tc_name(k, su) }
+            if is_union {
+                if vs := variant_struct(k, ut, name); vs != nil {
+                    ra.payload = vs
+                    if ra.bound != "" { type_env_set(child, ra.bound, vs) }
+                }
+            }
+        case .Arm_Else:
+            body = tree_list(tr, tr.a[arm])
+        case .Arm_Value:
+            value := Tree_Id(tr.a[arm])
+            body = tree_list(tr, tr.b[arm])
+            if tr.tag[value] == .Ident {
+                name := tc_name(k, value)
+                if is_enum {
+                    if v, has := et.variants[name]; has { ra.variant, ra.tag = name, v }
+                } else if is_union {
+                    if v, has := ut.tag_map[name]; has {
+                        ra.variant, ra.tag = name, v
+                        ra.payload = variant_struct(k, ut, name)
+                    }
+                }
+            }
+            if ra.variant == "" && !prechecked[i] { tc_check(k, value, env) }
+        }
+        _ = body_of
+        bb := b if gm != nil else nil
+        blk: Graph_Block
+        if bb != nil { blk = graph_fuse_arm(bb, gm, ra^, i) }
+        tc_scope(k, body, child)
+        if bb != nil { graph_fuse_arm_end(bb, gm, blk) }
+    }
+    // (Every variant covered, unless an else says otherwise.)
+    if has_else || !(is_enum || is_union) { return }
+    covered := make(map[string]bool, context.temp_allocator)
+    for arm, i in arms {
+        if resolved[i].variant != "" {
+            covered[resolved[i].variant] = true
+        } else if tr.tag[arm] == .Arm_Value {
+            if v := Tree_Id(tr.a[arm]); tr.tag[v] == .Field { covered[tc_text(Token_Id(tr.b[v]))] = true }
+        }
+    }
+    if is_enum {
+        for name in et.variants {
+            if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, et.name, name) }
+        }
+    } else {
+        for name in ut.variants {
+            if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, ut.name, name) }
         }
     }
 }

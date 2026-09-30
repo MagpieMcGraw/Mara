@@ -18,7 +18,8 @@ tc_struct_of :: proc(k: ^TC, t: Type) -> ^Scope_Body {
 
 // `x.f`: a struct's field (through a pointer, what it points at); an
 // array's length or swizzle; a slice's or partial array's header field.
-tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
+                 dest: Dest = {}, temp := false, temp_span := Span{}) -> (Type, Fused) {
     tr := k.t
     span := tree_span(tr, n)
     base := Tree_Id(tr.a[n])
@@ -41,6 +42,14 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     bt, br := tc_expr(k, base, env, ask, w, temp_span = span)
     if sd := as_scope_body(bt); sd != nil && sd_is_module(sd) {
         return tc_module_member(k, n, sd, field, bt, br, mark, build, want, w)
+    }
+    // (A union's variant: a value of its own — its base, built, left out.)
+    if ut, is_union := bt.(^Type_Union); is_union && field != "tag" && field != "pad" {
+        if _, has := ut.tag_map[field]; has {
+            k.variant_nodes[n] = true
+            if b := tc_building(k); build && b != nil { graph_fuse_drop_since(b, mark) }
+            return ut, tc_union_variant(k, ut, field, span, want if build else .None, w, dest, temp, temp_span)
+        }
     }
     t, is_member, known, known_ok := tc_field_type(k, n, bt, field, span)
     if _, is_enum := t.(^Type_Enum); is_enum && known_ok { k.variant_nodes[n] = true }
@@ -295,6 +304,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     name := tc_name(k, ty) if ty != 0 && tr.tag[ty] == .Ident else ""
     // Its type: written (`Foo{…}`, `[3]f32{…}`, `Vec3{…}`), or its use's.
     t: Type
+    variant: string   // (a union's variant's literal: its name)
     switch {
     case ty == 0:
         hint := k.hint
@@ -306,10 +316,17 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     case tr.tag[ty] == .Ident:
         found, ok := type_env_get(env, name)
         if !ok {
-            tc_unsupported(k, n, "a literal of an unknown name")
-            return Type_Error{}, {}
+            // (A union's variant: the union expected's, or the one union with it.)
+            vut, ambiguous := tc_variant_union(k, name)
+            if ambiguous { return Type_Error{}, {} }
+            if vut == nil {
+                tc_unsupported(k, n, "a literal of an unknown name")
+                return Type_Error{}, {}
+            }
+            t, variant = vut, name
+        } else {
+            t = found
         }
-        t = found
     case tr.tag[ty] == .Field:
         tc_unsupported(k, n, "this literal's type")
         return Type_Error{}, {}
@@ -332,13 +349,17 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     fa: ^Type_Fixed_Array
     if tc_is_fixed_array(t) { fa = distinct_base(t).(^Type_Fixed_Array) }
     ts, is_scope := t.(^Type_Scope)
-    if fa == nil && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0) {
+    vst: ^Type_Scope
+    if variant != "" { vst = k.table.structs[t.(^Type_Union).variant_structs[variant]] }
+    if fa == nil && vst == nil && (!is_scope || ts.kind != .Struct || ts.is_module || ts.node == 0) {
         tc_unsupported(k, n, "a literal of no struct")
         return Type_Error{}, {}
     }
     zero := len(entries) == 1 && tr.tag[entries[0]] == .Number && tc_text(tr.main[entries[0]]) == "0"
     sd: ^Scope_Body
-    if fa == nil {
+    if vst != nil {
+        sd = &vst.sd
+    } else if fa == nil {
         tc_struct_ensure(k, ts)
         sd = &ts.sd
         if !zero {
@@ -365,6 +386,10 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
             // (An array: zero, then each element into its slot; a broadcast,
             // its value then the fill.)
             if !broadcast { gl = graph_fuse_literal(b, span, name, zero, t, d) }
+        } else if vst != nil {
+            // (A variant: its construction, then its defaults the literal doesn't give.)
+            gl = graph_fuse_literal(b, span, name, zero, t, d)
+            if gl != nil { tc_variant_defaults(k, gl.variant, tc_literal_given(k, entries, sd), gl.parent, span) }
         } else {
             // (Its constructor's arguments — its params' defaults — then it.)
             args: []Operand

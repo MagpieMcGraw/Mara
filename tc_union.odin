@@ -132,16 +132,13 @@ tc_resolve_union :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope) {
 // A variant named by itself (`.Red`, or `Red` where an enum is expected):
 // the variant of the enum expected, or — `.Red` — the one enum visible that
 // has it.
-tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot: bool, span: Span) -> (^Type_Enum, int, bool) {
+tc_variant_ident :: proc(k: ^TC, name: string, hint: Type, env: ^Type_Scope, dot: bool, span: Span) -> (Type, int, bool) {
     if hint != nil {
         if et, is_enum := hint.(^Type_Enum); is_enum {
             if v, has := et.variants[name]; has { return et, v, true }
         }
         if ut, is_union := hint.(^Type_Union); is_union {
-            if _, has := ut.tag_map[name]; has {
-                tc_error(k, span, "tc: a union's variant as a value is not supported yet (%s)", name)
-                return nil, 0, true
-            }
+            if v, has := ut.tag_map[name]; has { return ut, v, true }
         }
         if _, is_err := hint.(Type_Err); is_err {
             owners := make([dynamic]string, context.temp_allocator)
@@ -179,4 +176,72 @@ tc_variant_value :: proc(k: ^TC, et: ^Type_Enum, value: int, name: string, span:
     b := tc_building(k)
     if b == nil || want == .None || want == .Place { return {} }
     return {v = graph_const(b, w, span, et, name, Const_Value{int = i128(value)}), ok = true}
+}
+
+// A union's variant as a value (`.Circle`, `Shape.Circle`, `Circle` where a
+// Shape is expected): the variant constructed where it goes — else in a
+// temporary made first, read — then its fields' defaults.
+tc_union_variant :: proc(k: ^TC, ut: ^Type_Union, name: string, span: Span, want: Fuse_Want, w: Written,
+                         dest: Dest, temp: bool, temp_span: Span) -> Fused {
+    b := tc_building(k)
+    if b == nil || want == .None || want == .Place { return {} }
+    if want == .Into {
+        d := dest
+        if temp { d = graph_fuse_temp(b, temp_span, fuse_temp_type(d)) }
+        tc_variant_build(k, ut, name, d, span)
+        return tc_built(k, want, temp, temp, d, ut, temp_span, false)
+    }
+    d := graph_fuse_temp(b, span, ut)
+    tc_variant_build(k, ut, name, d, span)
+    if b = tc_building(k); b == nil { return {} }
+    return {v = graph_read(b, graph_dest_place(b, d, span), ut, span), ok = true}
+}
+
+// A variant built at d: its construction, then its defaults.
+tc_variant_build :: proc(k: ^TC, t: Type, name: string, d: Dest, span: Span) {
+    b := tc_building(k)
+    if b == nil { return }
+    st := graph_fuse_variant(b, t, name, d, span)
+    dd := d
+    tc_variant_defaults(k, st, nil, Dest{kind = .Variant, name = name, type_ = st, parent = &dd}, span)
+}
+
+// A variant's field defaults, each one a literal doesn't give (`given`),
+// written into its place once it's constructed.
+tc_variant_defaults :: proc(k: ^TC, st: ^Type_Scope, given: map[string]bool, d: Dest, span: Span) {
+    if st == nil { return }
+    for f in st.fields {
+        if f.default_node == 0 || f.name in given { continue }
+        v := tc_default(k, f.default_node, f.type_, st, span, {to = f.type_})
+        if b := tc_building(k); b != nil { graph_fuse_field_default(b, d, f.name, f.type_, v, span) }
+    }
+}
+
+// A variant as a value: an enum's its tag; a union's constructed.
+tc_variant_of :: proc(k: ^TC, t: Type, value: int, name: string, span: Span, want: Fuse_Want, w: Written,
+                      dest: Dest, temp: bool, temp_span: Span) -> Fused {
+    if ut, is_union := t.(^Type_Union); is_union { return tc_union_variant(k, ut, name, span, want, w, dest, temp, temp_span) }
+    return tc_variant_value(k, t.(^Type_Enum), value, name, span, want, w)
+}
+
+// The union a literal named by a bare variant builds: the one expected,
+// else the one union with that variant (two such: ambiguous, reported).
+tc_variant_union :: proc(k: ^TC, name: string) -> (^Type_Union, bool) {
+    if ut, is_union := distinct_base(k.hint).(^Type_Union); is_union && name in ut.tag_map { return ut, false }
+    if ut := variant_owner_union(k.c, name); ut != nil { return ut, false }
+    return nil, false
+}
+
+// The fields a literal gives: named, or by position (past a variant's tag).
+tc_literal_given :: proc(k: ^TC, entries: []Tree_Id, sd: ^Scope_Body) -> map[string]bool {
+    given := make(map[string]bool, context.temp_allocator)
+    skip := first_user_field(sd)
+    for e, j in entries {
+        if k.t.tag[e] == .Named_Entry {
+            given[tc_name(k, e)] = true
+        } else if skip + j < len(sd.fields) {
+            given[sd.fields[skip + j].name] = true
+        }
+    }
+    return given
 }
