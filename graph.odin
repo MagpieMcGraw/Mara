@@ -310,7 +310,7 @@ Graph_Builder :: struct {
     const_segs:   map[Stmt_Id]int,               // each constant's code, by its statement (graph_const_begin)
     // Each constant's declaration, by its value's identity, and the table
     // globals waiting to name theirs.
-    const_decls: map[rawptr]Node_Id,
+    const_decls: map[Expr_Id]Node_Id,
     tables:      [dynamic]Graph_Table,
     // Segments: a scope's contents built on their own, at any time, then put
     // where the scope is (graph_canonicalize).
@@ -373,12 +373,12 @@ Graph_Anchor :: struct {
 @(private="file")
 STMT_ANCHOR :: i32(-2)
 
-Graph_Compound :: struct { key: rawptr, place: Operand }
+Graph_Compound :: struct { key: Expr_Id, place: Operand }
 
 @(private="file")
 Graph_Table :: struct {
     global: Node_Id,
-    value:  rawptr,
+    value:  Expr_Id,
 }
 
 @(private="file")
@@ -428,7 +428,7 @@ Code :: struct {
     run:    ^Run,                 // the run being filled; nil after a jump or return
     scopes: [dynamic]Code_Scope,  // open scopes, outermost first
     loops:  [dynamic]Loop,
-    tuples: map[rawptr]Node_Id,   // a default's shared source call → its operation
+    tuples: map[Expr_Id]Node_Id,   // a default's shared source call → its operation
     constructed: Node_Id,         // the last construction's operation (its outputs past Self: a fallible one's err)
     managed: bool,                // Program's: main sets up its storage, its fields build no code
 }
@@ -863,7 +863,7 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
         if kept(new_id, t.global) { b.tables[tables] = {new_id[t.global], t.value}; tables += 1 }
     }
     resize(&b.tables, tables)
-    gone := make([dynamic]rawptr, context.temp_allocator)
+    gone := make([dynamic]Expr_Id, context.temp_allocator)
     for k, id in b.const_decls {
         if kept(new_id, id) { b.const_decls[k] = new_id[id] } else { append(&gone, k) }
     }
@@ -1043,7 +1043,7 @@ graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_
         kind: Node_Kind = .Const
         if _, is_import := v.value.(^Expr_Include); is_import { kind = .Import }   // `core :: include mara.core`
         d := graph_node(b, kind, .Explicit, parent, v.name, t, v.span)
-        if kind == .Const && v.value != nil { b.const_decls[expr_identity(v.value)] = d }
+        if kind == .Const && v.value != nil { b.const_decls[expr_id(v.value)] = d }
     case Stmt_Call, Stmt_Return, Stmt_Break, Stmt_Continue, Stmt_Overload, Stmt_Module:
         // Code outside a body runs nothing here; rules and headers declare
         // nothing.
@@ -1799,7 +1799,7 @@ graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, na
     rc, is_const := r.(Resolved_Constant)
     if !is_const || rc.value_expr == nil { return graph_const(b, w, span, t, name, graph_const_value(r)) }
     o := graph_op_value(b, .Const, w, span, t, name)
-    append(&b.tables, Graph_Table{o.op, expr_identity(rc.value_expr)})
+    append(&b.tables, Graph_Table{o.op, expr_id(rc.value_expr)})
     graph_const_settles(b, o.op, t)
     return o
 }
@@ -1815,7 +1815,7 @@ graph_text :: proc(b: ^Graph_Builder, global: Operand, value: Maybe(Const_Value)
 graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
     o := graph_op_value(b, .Global, w, span, t, name)
     if rc, ok := r.(Resolved_Constant); ok && rc.value_expr != nil {
-        append(&b.tables, Graph_Table{o.op, expr_identity(rc.value_expr)})
+        append(&b.tables, Graph_Table{o.op, expr_id(rc.value_expr)})
     }
     return o
 }
@@ -1986,7 +1986,7 @@ graph_table_names :: proc(b: ^Graph_Builder) {
     g := b.g
     for key, v in b.checked.table.constants {
         if v == nil { continue }
-        d, ok := b.const_decls[expr_identity(v)]
+        d, ok := b.const_decls[expr_id(v)]
         if !ok || d not_in g.tables { continue }
         if name, named := g.table_names[d]; named && (len(name) > len(key) || len(name) == len(key) && name < key) { continue }
         g.table_names[d] = key
@@ -3258,11 +3258,11 @@ graph_fuse_override :: proc(b: ^Graph_Builder, d: Dest, sd: ^Scope_Body) -> ^Gra
 }
 
 // The call the slots of a default share (Code.tuples): made at the first.
-graph_fuse_tuple_set :: proc(b: ^Graph_Builder, key: rawptr, op: Node_Id) {
+graph_fuse_tuple_set :: proc(b: ^Graph_Builder, key: Expr_Id, op: Node_Id) {
     b.code.tuples[key] = op
 }
 
-graph_fuse_tuple_get :: proc(b: ^Graph_Builder, key: rawptr) -> (Node_Id, bool) {
+graph_fuse_tuple_get :: proc(b: ^Graph_Builder, key: Expr_Id) -> (Node_Id, bool) {
     op, ok := b.code.tuples[key]
     return op, ok
 }
@@ -3919,7 +3919,7 @@ graph_const_begin :: proc(b: ^Graph_Builder, s: ^Stmt_Define) -> ^Graph_Fuse {
     append(&b.g.stmts, Graph_Stmt{span = s.span, kind = graph_stmt_kind(s)})
     f.root = graph_node(b, .Const, .Explicit, NO_NODE, s.name, nil, s.span)
     b.segs[f.seg].root = f.root
-    b.const_decls[expr_identity(s.value)] = f.root
+    b.const_decls[expr_id(s.value)] = f.root
     f.contents = Graph_Contents{base = b.fn_base, names = len(b.names), self = b.self, n = f.root, span = s.span}
     b.fn_base, b.self = len(b.names), NO_NODE
     f.contents.code = graph_code_begin(b, f.root)
@@ -3945,15 +3945,8 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, s: ^Stmt_Define, t: T
         return
     }
     if f.failed != "errors" { graph_fatal(s.span, "the checker built no graph of the constant '%s': %s", s.name, f.failed) }
-    delete_key(&b.const_decls, expr_identity(s.value))
+    delete_key(&b.const_decls, expr_id(s.value))
     graph_fuse_free(f)
-}
-
-// An expression's identity: its node (the pointer every Expr variant holds;
-// a union's payload sits at offset 0).
-expr_identity :: proc(e: Expr) -> rawptr {
-    e := e
-    return (^rawptr)(&e)^
 }
 
 

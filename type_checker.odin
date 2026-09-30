@@ -1266,7 +1266,7 @@ evaluate_comptime_int :: proc(c: ^Checker, e: Expr, env: ^Type_Scope = nil) -> (
     case ^Expr_Size_Of:
         // size_of(T) is comptime-known by definition; resolve via the
         // fully-checked size if available, else give up.
-        if t, measured := c.size_of_types[v]; measured {
+        if t, measured := c.size_of_types[v.id]; measured {
             return i64(elem_byte_size(llvm_type_from_checker(t), c.checked)), true
         }
     }
@@ -1626,7 +1626,7 @@ Checker :: struct {
     // walk that builds the graph must meet each once (design/graph_retrofit.md,
     // phase 4).
     once_stmt:       int,
-    once_seen:       map[rawptr][2]int,   // an expression → the statement it was last checked in, and how often
+    once_seen:       map[Expr_Id][2]int,   // an expression → the statement it was last checked in, and how often
     once_on:         bool,
     // A method call's receiver, checked to find its struct: the argument it
     // becomes is not checked again (check_call_args), one check per node.
@@ -1654,24 +1654,24 @@ Checker :: struct {
     fused:           Fused,
     call:            ^Fuse_Call,
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
-    byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
-    size_of_types:   map[^Expr_Size_Of]Type,  // each size_of's measured type, as checked
-    overrides:       map[^Expr_Struct_Literal]bool,   // `var{...}` statements: a variable's fields written in place
+    byte_addrs:      map[Expr_Id][2]Node_Id,   // `&bytes[i]` built: its address and element operations
+    size_of_types:   map[Expr_Id]Type,  // each size_of's measured type, as checked
+    overrides:       map[Expr_Id]bool,   // `var{...}` statements: a variable's fields written in place
     // What a dot-ref stands for when it is not a variant — `.len` / `.cap` in
     // a subscript is the base's own field (`a.fonts[.len]` → `a.fonts.len`),
     // checked and built in the ident's place (lower_subscript_dots).
-    dot_refs:        map[^Expr_Ident]Expr,
+    dot_refs:        map[Expr_Id]Expr,
     assign_types:    map[Stmt_Id]^Assign_Types,   // what each assignment's check found
     define_types:    map[Stmt_Id]^Assign_Types,   // ... each constant's (its var and env types)
     destructure_types: map[Stmt_Id]^[dynamic]Type,   // ... each destructure's, per name
     decls:           map[Stmt_Id]^Decl_Lowered,   // each declaration as the checker reads it
     broadcasts:      map[Stmt_Id]^[dynamic]Stmt,   // a broadcast's copies, one per target
-    calls:           map[^Expr_Call]^Call_Lowered,   // each call as the checker resolved it
-    resolutions:     map[rawptr]Resolved_Name,   // what each name or member access stands for (resolution)
+    calls:           map[Expr_Id]^Call_Lowered,   // each call as the checker resolved it
+    resolutions:     map[Expr_Id]Resolved_Name,   // what each name or member access stands for (resolution)
     types:           [dynamic]Type,   // each expression's type, as checked, by its id (expr_type)
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
-    broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
+    broadcast_fields: map[Expr_Id]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
     span_read:       Fuse_Span_Read,   // the span of bytes last built to be read as its destination's type
     table:           ^SymbolTable,
     errors:          int,
@@ -1738,7 +1738,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
     if hint != nil {
         if et, ok := hint.(^Type_Enum); ok {
             if val, v_ok := et.variants[e.name]; v_ok {
-                c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
+                c.resolutions[e.id] = Resolved_Enum_Variant{
                     enum_name = et.name,
                     variant   = e.name,
                     value     = val,
@@ -1751,7 +1751,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
                 // Data-union variant: the union value holding that variant
                 // with its defaults (`.Rect` == `Rect{}`), as `Shape.Rect`
                 // resolves in check_field_access.
-                c.resolutions[rawptr(e)] = Resolved_Union_Variant{
+                c.resolutions[e.id] = Resolved_Union_Variant{
                     union_name  = ut.name,
                     variant     = e.name,
                     tag_value   = tag_val,
@@ -1784,7 +1784,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
                 ename := err_owners[0]
                 if et, et_ok := c.table.enums[ename]; et_ok {
                     if val, v_ok := et.variants[e.name]; v_ok {
-                        c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
+                        c.resolutions[e.id] = Resolved_Enum_Variant{
                             enum_name = ename,
                             variant   = e.name,
                             value     = val,
@@ -1813,7 +1813,7 @@ resolve_variant_ident :: proc(c: ^Checker, e: ^Expr_Ident, hint: Type, env: ^Typ
         ename := visible_owners[0]
         if et, et_ok := c.table.enums[ename]; et_ok {
             if val, v_ok := et.variants[e.name]; v_ok {
-                c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
+                c.resolutions[e.id] = Resolved_Enum_Variant{
                     enum_name = ename,
                     variant   = e.name,
                     value     = val,
@@ -4432,7 +4432,7 @@ maybe_stamp_byte_view :: proc(c: ^Checker, expected: Type, value: Expr) {
     if !is_byte_buffer(src_type) { return }
     // Built: the address is the view's, of the bytes as that type.
     if b := fusing(c); b != nil {
-        if ops, built := c.byte_addrs[rawptr(addr)]; built {
+        if ops, built := c.byte_addrs[addr.id]; built {
             graph_fuse_view(b, {ops[1], 0}, pt.elem, idx.is_big_endian, addr.span)
             b.g.type_[ops[0]] = new_clone(Type_Ptr{elem = pt.elem})
         }
@@ -5707,7 +5707,7 @@ fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Valu
     if b == nil { return check_expr(c, e, env), {} }
     // A compound assignment's target, read in its value: through the place
     // already built.
-    if c.compound.key != nil && expr_identity(e) == c.compound.key {
+    if c.compound.key != 0 && expr_id(e) == c.compound.key {
         t := check_expr(c, e, env)
         if want == .Value { return t, {graph_read(b, c.compound.place, t, expr_span(e)^), false, true, false, false} }
         return t, {c.compound.place, true, true, false, false}
@@ -6059,7 +6059,7 @@ Fuse_Assign :: struct {
 fuse_pure_place :: proc(c: ^Checker, e: Expr) -> bool {
     #partial switch v in e {
     case ^Expr_Ident:
-        lowered, is_lowered := c.dot_refs[v]
+        lowered, is_lowered := c.dot_refs[v.id]
         return !is_lowered || fuse_pure_place(c, lowered)
     case ^Expr_Self:         return true
     case ^Expr_Field_Access: return fuse_pure_place(c, v.expr)
@@ -6205,31 +6205,31 @@ Call_Lowered :: struct {
 // or a field: a variant, a constant, a function. nil for anything else.
 resolution :: proc(c: ^Checker, e: Expr) -> Resolved_Name {
     #partial switch v in e {
-    case ^Expr_Ident:        return c.resolutions[rawptr(v)]
-    case ^Expr_Field_Access: return c.resolutions[rawptr(v)]
+    case ^Expr_Ident:        return c.resolutions[v.id]
+    case ^Expr_Field_Access: return c.resolutions[v.id]
     }
     return nil
 }
 
 call_lowered :: proc(c: ^Checker, e: ^Expr_Call) -> ^Call_Lowered {
-    if l, ok := c.calls[e]; ok { return l }
+    if l, ok := c.calls[e.id]; ok { return l }
     l := new(Call_Lowered)
-    c.calls[e] = l
+    c.calls[e.id] = l
     return l
 }
 
 call_name :: proc(c: ^Checker, e: ^Expr_Call) -> string {
-    if l, ok := c.calls[e]; ok && l.name != "" { return l.name }
+    if l, ok := c.calls[e.id]; ok && l.name != "" { return l.name }
     return e.name
 }
 
 call_args :: proc(c: ^Checker, e: ^Expr_Call) -> [dynamic]Expr {
-    if l, ok := c.calls[e]; ok && l.args_lowered { return l.args }
+    if l, ok := c.calls[e.id]; ok && l.args_lowered { return l.args }
     return e.args
 }
 
 call_qualifier :: proc(c: ^Checker, e: ^Expr_Call) -> Expr {
-    if l, ok := c.calls[e]; ok && l.qualifier_folded { return nil }
+    if l, ok := c.calls[e.id]; ok && l.qualifier_folded { return nil }
     return e.qualifier
 }
 
@@ -6483,7 +6483,7 @@ fuse_views :: proc(to, from: Type) -> bool {
 // construction, a variant.
 fuse_builds_into :: proc(c: ^Checker, e: Expr) -> bool {
     #partial switch v in e {
-    case ^Expr_Struct_Literal: return v not_in c.overrides
+    case ^Expr_Struct_Literal: return v.id not_in c.overrides
     case ^Expr_Array:          return true
     case ^Expr_Call:
         rf, resolved := call_lowered(c, v).resolved.?
@@ -7950,7 +7950,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                 synth.name = fn_name
                                 synth.span = s.span
                                 set_expr_type(c, synth, ann_type)
-                                c.resolutions[rawptr(synth)] = Resolved_Func{name = fn_name}
+                                c.resolutions[synth.id] = Resolved_Func{name = fn_name}
                                 s.value = synth
                             }
                         }
@@ -8641,7 +8641,7 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
     #partial switch _ in distinct_base(field_type) {
     case ^Type_Fixed_Array, ^Type_Partial_Array:
         set_expr_type(c, lit, field_type)
-        c.broadcast_fields[rawptr(lit)] = {field_name, span}
+        c.broadcast_fields[lit.id] = {field_name, span}
     case:
         check_error(c, span,
             TYPE_BROADCAST_LITERAL_ALL_FIELD_REQUIRES,
@@ -8653,7 +8653,7 @@ expand_broadcast_array_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, f
 // expression checked once against the array's element type — built, then the
 // fill — and each slot given a checked clone.
 check_field_broadcast :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type_Scope, fl: ^Fuse_Lit) {
-    field := c.broadcast_fields[rawptr(lit)]
+    field := c.broadcast_fields[lit.id]
     field_type := expr_type(c, lit)
     size := 0
     elem_type: Type
@@ -9433,7 +9433,7 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
                         }
                         check_struct_literal_fields(c, lit, sd, lit.span, env, override = true)
                         c.lit = saved
-                        c.overrides[lit] = true
+                        c.overrides[lit.id] = true
                         handled_override = true
                     }
                 }
@@ -12012,7 +12012,7 @@ set_expr_type :: proc(c: ^Checker, e: Expr, t: Type) {
 check_expr :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     when ODIN_DEBUG {
         if c.once_on && c.once_stmt > 0 && expr != nil {
-            k := expr_identity(expr)
+            k := expr_id(expr)
             seen := c.once_seen[k]
             if seen[0] == c.once_stmt {
                 seen[1] += 1
@@ -12094,7 +12094,7 @@ check_unary :: proc(c: ^Checker, e: ^Expr_Unary, env: ^Type_Scope) -> Type {
         a := graph_op_value(b, .Address, w, e.span, t, "", fu.operand)
         // Bytes' address: a view of them where its use takes it as another
         // pointer (maybe_stamp_byte_view, once the use is checked).
-        if fuse_byte_index(c, e.operand) { c.byte_addrs[rawptr(e)] = {a.op, fu.operand.op} }
+        if fuse_byte_index(c, e.operand) { c.byte_addrs[e.id] = {a.op, fu.operand.op} }
         fuse_done(c, a)
         return t
     }
@@ -12243,7 +12243,7 @@ check_struct_literal :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Type_Sc
     d, into_temp := c.asked_dest, c.asked_temp
     b := fusing(c)
     if want == .None || b == nil { return check_struct_literal_impl(c, e, env) }
-    if e in c.overrides {
+    if e.id in c.overrides {
         fuse_fail(c, "an override in a value's place")
         return check_struct_literal_impl(c, e, env)
     }
@@ -12540,7 +12540,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
             // A field's (typed in the field pass): its value checked here.
             fl: ^Fuse_Lit
             if c.lit != nil && c.lit.e == e { fl, c.lit = c.lit, nil }
-            if _, is_field := c.broadcast_fields[rawptr(e)]; is_field { check_field_broadcast(c, e, env, fl) }
+            if _, is_field := c.broadcast_fields[e.id]; is_field { check_field_broadcast(c, e, env, fl) }
             return expr_type(c, e)
         }
     }
@@ -12808,7 +12808,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     case ^Expr_Ident:
         // A dot-ref lowered to an expression (`.len` in a subscript) is that
         // expression — typed with the hint still in place, as if written out.
-        if lowered, is_lowered := c.dot_refs[e]; is_lowered {
+        if lowered, is_lowered := c.dot_refs[e.id]; is_lowered {
             c.want, c.want_written, c.asked = c.asked, c.asked_written, .None   // (built as it)
             return check_expr(c, lowered, env)
         }
@@ -12867,7 +12867,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             // expression, so codegen inlines the right value without re-resolving
             // by name (another module out of scope can reuse the name harmlessly).
             if vexpr, vok := c.table.constants[cflat]; vok {
-                c.resolutions[rawptr(e)] = Resolved_Constant{value_expr = vexpr}
+                c.resolutions[e.id] = Resolved_Constant{value_expr = vexpr}
             }
         }
 
@@ -12904,7 +12904,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             } else if !loc_scope.is_module || resolution(c, e) == nil {
                 def = loc_scope.sd.consts[e.name]
             }
-            if def != nil && def.value != nil { c.resolutions[rawptr(e)] = Resolved_Constant{value_expr = def.value} }
+            if def != nil && def.value != nil { c.resolutions[e.id] = Resolved_Constant{value_expr = def.value} }
             // Set variant resolution metadata if this is an enum variant.
             // Only attach when the env binding actually IS the enum — without
             // this guard, any local `N :: 1000` would silently get overridden
@@ -12914,7 +12914,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             if owner_enum, mapped := c.table.variant_to_enum[e.name]; mapped {
                 if et, t_ok := t.(^Type_Enum); t_ok && et.name == owner_enum {
                     if val, v_ok := et.variants[e.name]; v_ok {
-                        c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
+                        c.resolutions[e.id] = Resolved_Enum_Variant{
                             enum_name = owner_enum,
                             variant   = e.name,
                             value     = val,
@@ -12929,7 +12929,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             if tf, is_func := t.(^Type_Scope); is_func && len(tf.params) > 0 && e.name in c.declared_funs {
                 home := resolve_fn_home(c, env,e.name)
                 flat := make_flat_name(home, e.name)
-                c.resolutions[rawptr(e)] = Resolved_Func{name = flat}
+                c.resolutions[e.id] = Resolved_Func{name = flat}
             }
             return t
         }
@@ -12977,7 +12977,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             check_error(c, e.span, TYPE_SIZE_UNKNOWN_TYPE)
         }
         ensure_layout(c, resolved)   // (its size: known now)
-        c.size_of_types[e] = resolved
+        c.size_of_types[e.id] = resolved
         // Built: its size, a constant.
         want, w := fuse_asked(c)
         if b := fusing(c); b != nil && want != .None && want != .Place {
@@ -13115,7 +13115,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             r: Fused
             src_type, r = fuse_expr(c, e.storage, env, .Value if addressed else .Place)
             storage = r.v
-            if u, is_u := e.storage.(^Expr_Unary); is_u { delete_key(&c.byte_addrs, rawptr(u)) }   // (its view: the carve's)
+            if u, is_u := e.storage.(^Expr_Unary); is_u { delete_key(&c.byte_addrs, u.id) }   // (its view: the carve's)
         } else {
             src_type = check_expr(c, e.storage, env)
         }
@@ -13230,9 +13230,9 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             src_type = check_expr(c, e.source, env)
         }
         if b := fusing(c); b != nil && want != .None {
-            key := rawptr(e.source.(^Expr_Call)) if len(call_return_list(c, e.source, env)) > 1 else nil
+            key := expr_id(e.source) if len(call_return_list(c, e.source, env)) > 1 else 0
             switch {
-            case key == nil:  fuse_done(c, src.v)
+            case key == 0:    fuse_done(c, src.v)
             case e.index == 0:
                 graph_fuse_tuple_set(b, key, src.v.op)
                 fuse_done(c, src.v)
@@ -13376,7 +13376,7 @@ check_struct_field_access :: proc(c: ^Checker, e: ^Expr_Field_Access, st: ^Scope
     // Associated function access (function as value)
     if st.functions != nil {
         if fn, found := st.functions[e.field]; found && fn != nil {
-            c.resolutions[rawptr(e)] = Resolved_Func{name = fn.name}
+            c.resolutions[e.id] = Resolved_Func{name = fn.name}
             return fn
         }
     }
@@ -13508,7 +13508,7 @@ fuse_store_value :: proc(c: ^Checker, s: ^Stmt_Assign, place: Operand, env: ^Typ
         return check_expr(c, s.value, env), {on = true, place = place, void = true}
     }
     saved := c.compound
-    if s.is_compound { c.compound = {expr_identity(s.target), place} }
+    if s.is_compound { c.compound = {expr_id(s.target), place} }
     // (What builds in place builds in a temporary, then is written.)
     // (`unplaced`: its target is built once the value is — of no type yet.)
     pt: Type = b.g.type_[place.op] if place.op != NO_NODE else nil
@@ -13545,7 +13545,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
         if const_expr, ce_ok := c.table.constants[flat]; ce_ok {
             // Self-module qualifier (`Pkg.X` inside Pkg): resolve to the value
             // expression — codegen inlines it for any type, scalar or aggregate.
-            c.resolutions[rawptr(e)] = Resolved_Constant{value_expr = const_expr}
+            c.resolutions[e.id] = Resolved_Constant{value_expr = const_expr}
             // Best-effort type: re-check the constant value's expression.
             return check_expr(c, const_expr, env)
         }
@@ -13569,7 +13569,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                 variant   = e.field,
                 value     = val,
             }
-            c.resolutions[rawptr(e)] = resolved
+            c.resolutions[e.id] = resolved
             return et
         }
         check_error(c, e.span, TYPE_ENUM_VARIANT, et.name, e.field)
@@ -13584,7 +13584,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
         if e.field == "tag" {
             tag_enum_name := strings.concatenate({ut.name, "_Tag"})
             if tag_et, found := c.table.enums[tag_enum_name]; found {
-                c.resolutions[rawptr(e)] = Resolved_Union_Tag{union_name = ut.name}
+                c.resolutions[e.id] = Resolved_Union_Tag{union_name = ut.name}
                 return tag_et
             }
             check_error(c, e.span, TYPE_UNION_TAG_ENUM_INTERNAL_ERROR, ut.name)
@@ -13595,7 +13595,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                 check_error(c, e.span, TYPE_UNION_PADDING_DECLARE_UNION_PAD, ut.name)
                 return Type_Error{}
             }
-            c.resolutions[rawptr(e)] = Resolved_Union_Pad{union_name = ut.name}
+            c.resolutions[e.id] = Resolved_Union_Pad{union_name = ut.name}
             return ut.tag_pad
         }
         if tag_val, v_ok := ut.tag_map[e.field]; v_ok {
@@ -13606,7 +13606,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                 tag_value   = tag_val,
                 struct_name = struct_name,
             }
-            c.resolutions[rawptr(e)] = resolved
+            c.resolutions[e.id] = resolved
             return ut
         }
         check_error(c, e.span, TYPE_UNION_VARIANT, ut.name, e.field)
@@ -13644,7 +13644,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                 for _, mt in sd.types {
                     if et, et_ok := mt.(^Type_Enum); et_ok {
                         if val, v_ok := et.variants[e.field]; v_ok {
-                            c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
+                            c.resolutions[e.id] = Resolved_Enum_Variant{
                                 enum_name = et.name,
                                 variant   = e.field,
                                 value     = val,
@@ -13654,7 +13654,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
                     } else if ut, ut_ok := mt.(^Type_Union); ut_ok {
                         if tag_val, v_ok := ut.tag_map[e.field]; v_ok {
                             struct_name := ut.variant_structs[e.field] or_else e.field
-                            c.resolutions[rawptr(e)] = Resolved_Union_Variant{
+                            c.resolutions[e.id] = Resolved_Union_Variant{
                                 union_name  = ut.name,
                                 variant     = e.field,
                                 tag_value   = tag_val,
@@ -13670,7 +13670,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
             // Resolve enum types from this module
             if et, et_ok := t.(^Type_Enum); et_ok {
                 if val, v_ok := et.variants[e.field]; v_ok {
-                    c.resolutions[rawptr(e)] = Resolved_Enum_Variant{
+                    c.resolutions[e.id] = Resolved_Enum_Variant{
                         enum_name = et.name,
                         variant   = e.field,
                         value     = val,
@@ -13682,7 +13682,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
             // codegen inlines it for any type (scalar or aggregate).
             flat := make_flat_name(sd.name, e.field)
             if const_expr, ce_ok := c.table.constants[flat]; ce_ok {
-                c.resolutions[rawptr(e)] = Resolved_Constant{value_expr = const_expr}
+                c.resolutions[e.id] = Resolved_Constant{value_expr = const_expr}
             }
             return t
         }
@@ -13712,7 +13712,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
     if fa, fa_ok := obj_type.(^Type_Fixed_Array); fa_ok {
         // Fixed arrays have no distinct len (cap == len always). Accept both names.
         if e.field == "len" || e.field == "cap" {
-            c.resolutions[rawptr(e)] = Resolved_Constant{int_value = fa.size}
+            c.resolutions[e.id] = Resolved_Constant{int_value = fa.size}
             return Type_Numeric{kind = .Signed, bits = 64}
         }
         if is_swizzle_field(e.field, fa.size) {
@@ -13762,7 +13762,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
             if ident, id_ok := e.expr.(^Expr_Ident); id_ok {
                 if const_expr, ck := c.table.constants[ident.name]; ck {
                     if lit, lit_ok := const_expr.(^Expr_String); lit_ok {
-                        c.resolutions[rawptr(e)] = Resolved_Constant{int_value = len(lit.value)}
+                        c.resolutions[e.id] = Resolved_Constant{int_value = len(lit.value)}
                     }
                 }
             }
@@ -15822,8 +15822,8 @@ lower_subscript_dots :: proc(c: ^Checker, base: Expr, sub: Expr) {
     if sub == nil || !subscript_base_is_pure(base) { return }
     #partial switch n in sub {
     case ^Expr_Ident:
-        if n.is_dot && (n.name == "len" || n.name == "cap") && n not_in c.dot_refs {
-            c.dot_refs[n] = new_expr(Expr_Field_Access{expr = clone_pure_lvalue(base), field = n.name, span = n.span})
+        if n.is_dot && (n.name == "len" || n.name == "cap") && n.id not_in c.dot_refs {
+            c.dot_refs[n.id] = new_expr(Expr_Field_Access{expr = clone_pure_lvalue(base), field = n.name, span = n.span})
         }
     case ^Expr_Binary:
         lower_subscript_dots(c, base, n.left)
