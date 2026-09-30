@@ -74,6 +74,10 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_field(k, n, env, want, w)
     case .Literal:
         return tc_literal(k, n, env, want, w, dest, temp, temp_span)
+    case .Index:
+        return tc_index(k, n, env, want, w)
+    case .Array:
+        return tc_array_literal(k, n, env, want, w, dest, temp, temp_span)
     }
     tc_unsupported(k, n, "this expression")
     return Type_Error{}, {}
@@ -357,6 +361,12 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
     name := tc_name(k, n)
     args := tree_list(tr, tr.a[n])
     build := want != .None && tc_building(k) != nil
+    // (A call of several results, as one argument: its extras would be lost.)
+    for a in args {
+        if returns := tc_call_returns(k, a, env); len(returns) > 1 {
+            tc_error(k, tree_span(tr, tc_unparen(k, a)), TYPE_MULTI_RETURN_AS_ARG, len(returns))
+        }
+    }
     if want == .Place {
         tc_fail(k, "a call's place")
         build = false
@@ -375,10 +385,8 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
     }
     if tr.b[n] != 0 { tc_unsupported(k, n, "an override block") }
     is_struct := ft.kind == .Struct
-    if is_struct {
-        tc_struct_ensure(k, ft)
-        k.constructs[n] = true
-    }
+    k.callees[n] = ft
+    if is_struct { tc_struct_ensure(k, ft) }
     // (Built into storage that holds a value: a temporary made first.)
     dest := dest
     into_temp := false
@@ -400,12 +408,15 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         pt := ft.params[i].type_
         k.hint = pt
         at: Type
-        if build {
+        if b := tc_building(k); build && b != nil {
+            // (A temporary its value may need, before it: an array's a slice
+            // param views.)
+            use, use_at := tc_use_type(k, a, pt, span)
+            held: Graph_Later
+            if is_slice_type(pt) { held = graph_fuse_later(b) }
             r: Fused
-            at, r = tc_expr(k, a, env, .Either, w)
-            if b := tc_building(k); b != nil {
-                append(&ops, graph_fuse_widen(b, tc_value(k, r, a, at), span, {sig = ft, param = i}))
-            }
+            at, r = tc_expr(k, a, env, .Either, w, dest = use, temp_span = use_at)
+            if tc_building(k) != nil { append(&ops, tc_value_as(k, a, at, r, pt, span, {sig = ft, param = i}, &held)) }
         } else {
             at = tc_check(k, a, env)
         }
@@ -611,4 +622,89 @@ tc_print_format :: proc(k: ^TC, args: []Tree_Id, span: Span) {
     if count > 0 && count != len(args) - 1 {
         tc_error(k, span, TYPE_PRINT_FORMAT_STRING_PLACEHOLDER_VALUE, count, len(args) - 1)
     }
+}
+
+// What a call returns, every value (a constructor's: itself, and an err if it
+// can fail); nil for what is no call.
+tc_call_returns :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> []Type {
+    m := tc_unparen(k, n)
+    if k.t.tag[m] != .Call { return nil }
+    callee := k.callees[m] or_else nil
+    if callee == nil && env != nil {
+        // (Not checked yet: the fun its name names.)
+        if t, ok := type_env_get(env, tc_name(k, m)); ok { callee, _ = t.(^Type_Scope) }
+    }
+    if callee == nil { return nil }
+    if list, is_ctor := constructor_effective_returns(callee); is_ctor { return list }
+    if callee.kind == .Fun { return callee.return_types[:] }
+    return nil
+}
+
+// What a use that takes a value at a type asks of it: an array literal is
+// built at that type (a short one's other slots zero); a literal a slice
+// views, in a temporary placed at the use's span — an array's at the slice's
+// element type.
+tc_use_type :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span) -> (Dest, Span) {
+    if t == nil { return {}, {} }
+    e := tc_unparen(k, n)
+    tag := k.t.tag[e]
+    if sl, to_slice := distinct_base(t).(^Type_Slice); to_slice {
+        #partial switch tag {
+        case .Array:
+            count := len(tree_list(k.t, k.t.a[e]))
+            return {type_ = new_clone(Type_Fixed_Array{size = count, elem = sl.elem})}, span
+        case .Literal:
+            return {}, span
+        }
+        return {}, {}
+    }
+    if tag == .Array && graph_aggregate(t) { return {type_ = t}, {} }
+    if _, to_array := distinct_base(t).(^Type_Fixed_Array); to_array && tag == .Slice { return {type_ = t}, {} }
+    return {}, {}
+}
+
+// An argument or a returned value at the type its use takes: a view where
+// one is taken (a partial array's header, an array's slice — its value held
+// in a temporary reserved before it, `held`), else its value, widened.
+tc_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, to: Type, span: Span, w: Graph_Widen,
+                    held: ^Graph_Later = nil) -> Operand {
+    b := tc_building(k)
+    if b == nil { return NO_VALUE }
+    if to != nil {
+        _, to_slice := distinct_base(to).(^Type_Slice)
+        _, from_array := distinct_base(t).(^Type_Fixed_Array)
+        is_literal := k.t.tag[tc_unparen(k, e)] == .Array
+        if _, at := tc_use_type(k, e, to, span); at != {} && !from_array {
+            tc_fail(k, "a literal placed at its use, of no array")
+            return NO_VALUE
+        }
+        _, to_ptr := distinct_base(to).(^Type_Ptr)
+        _, from_ptr := distinct_base(t).(^Type_Ptr)
+        if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(t) {
+            return graph_op_value(b, .Cast, .Implied, span, to, type_name(to), tc_value(k, r, e, t))
+        }
+        if to_slice && from_array {
+            if r.place { return graph_op_value(b, .Slice, .Implied, span, to, "", r.v) }
+            if held == nil || !held.reserved {
+                tc_fail(k, "a slice of an array value")
+                return NO_VALUE
+            }
+            graph_fuse_later_begin(b, held)
+            slot := graph_slot(b, "temp", t, span)
+            if !graph_fuse_later_end(b, held) { tc_fail(k, "an array's value across runs") }
+            graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", slot, t, span), r.v)
+            return graph_op_value(b, .Slice, .Implied, span, to, "", graph_var(b, "temp", slot, t, span))
+        }
+        _, to_array := distinct_base(to).(^Type_Fixed_Array)
+        if u := tc_unparen(k, e); to_array && (k.t.tag[u] == .Slice || k.t.tag[u] == .Index && is_byte_buffer(tc_node_type(k, Tree_Id(k.t.a[u])))) {
+            tc_unsupported(k, e, "bytes taken as an array")
+            return NO_VALUE
+        }
+        if is_literal && graph_aggregate(to) && r.v.op != NO_NODE && b.g.type_[r.v.op] == to { return r.v }
+        if is_literal && graph_aggregate(to) {
+            tc_fail(k, "bytes or a literal at its use's type")
+            return NO_VALUE
+        }
+    }
+    return graph_fuse_widen(b, tc_value(k, r, e, t), span, w)
 }

@@ -1,0 +1,210 @@
+package mara
+
+// Arrays in the new checker: an element read or written, an array literal.
+
+// `a[i]`: the element's place — its collection's (through a pointer, what it
+// points at), the index at the header's width — read, or itself.
+tc_index :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+    tr := k.t
+    span := tree_span(tr, n)
+    base_n, idx_n := Tree_Id(tr.a[n]), Tree_Id(tr.b[n])
+    if tc_has_dot_ref(k, idx_n) {
+        tc_unsupported(k, n, "`.len` in a subscript")
+        return Type_Error{}, {}
+    }
+    build := want != .None && tc_building(k) != nil
+    bt, br := tc_expr(k, base_n, env, .Place if build else .None, temp_span = span)
+    base := br.v
+    if b := tc_building(k); build && b != nil {
+        if pt, is_ptr := distinct_base(bt).(^Type_Ptr); is_ptr {
+            base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", br.v)
+        }
+    }
+    target := distinct_base(bt)
+    if pt, is_ptr := target.(^Type_Ptr); is_ptr {
+        #partial switch inner in distinct_base(pt.elem) {
+        case ^Type_Slice, ^Type_Fixed_Array: target = distinct_base(pt.elem)
+        }
+    }
+    if fa, ok := target.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
+    it, ir := tc_expr(k, idx_n, env, .Value if build else .None, .Explicit)
+    index := NO_VALUE
+    if b := tc_building(k); build && b != nil { index = fuse_index_value(b, ir.v, it, span) }
+    if !is_numeric(it) {
+        tc_error(k, span, TYPE_INDEX_NUMBER, type_name(it))
+    } else if !coerces_to_index_width(it) {
+        tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(it))
+    }
+    t: Type = Type_Error{}
+    #partial switch v in target {
+    case ^Type_Fixed_Array:
+        // (A known index past its end: said so now.)
+        if at, known := tc_comptime_int(k, idx_n, nil); known && (at < 0 || at >= i64(v.size)) {
+            tc_error(k, span, TYPE_INDEX_OUT_OF_BOUNDS_CONST, at, v.size, v.size - 1)
+        }
+        t = v.elem
+    case ^Type_Slice:         t = v.elem
+    case ^Type_Partial_Array: t = v.elem
+    case:
+        if !is_any(target) { tc_error(k, span, TYPE_CANNOT_INDEX_INTO, type_name(target)) }
+    }
+    b := tc_building(k)
+    if !build || b == nil { return t, {} }
+    if _, of_byte := distinct_base(t).(Type_Byte); !of_byte && t != nil && !is_infer(t) && is_byte_buffer(bt) {
+        tc_fail(k, "bytes indexed as another type")
+        return t, {}
+    }
+    p := graph_op_value(b, .Index, .Explicit, span, t, "", base, index)
+    if want == .Value { return t, {v = graph_read(b, p, t, span), ok = true} }
+    return t, {v = p, place = true, ok = true}
+}
+
+// `a[i] = v`: the element's place, then the value into it.
+tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
+    tr := k.t
+    span := tree_span(tr, s)
+    ix_span := tree_span(tr, target)
+    base_n, idx_n := Tree_Id(tr.a[target]), Tree_Id(tr.b[target])
+    if tc_has_dot_ref(k, idx_n) {
+        tc_unsupported(k, target, "`.len` in a subscript")
+        return
+    }
+    if tr.tag[base_n] == .Ident && tc_name(k, base_n) in k.table.constants {
+        name := tc_name(k, base_n)
+        tc_error(k, span, TYPE_CANNOT_WRITE_INDEXED_CONSTANT, name, name)
+        return
+    }
+    b := tc_building(k)
+    ct, cr := tc_expr(k, base_n, env, .Place if b != nil else .None, temp_span = ix_span)
+    if is_byte_buffer(ct) {
+        tc_unsupported(k, target, "a write into bytes")
+        return
+    }
+    tt := distinct_base(ct)
+    elem := index_elem_type(tt)
+    tc_set_type(k, target, elem)
+    base := cr.v
+    if b = tc_building(k); b != nil {
+        if pt, is_ptr := tt.(^Type_Ptr); is_ptr { base = graph_op_value(b, .Deref, .Implied, ix_span, pt.elem, "", cr.v) }
+    }
+    if fa, ok := tt.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
+    it, ir := tc_expr(k, idx_n, env, .Value if tc_building(k) != nil else .None)
+    place := NO_VALUE
+    if b = tc_building(k); b != nil {
+        place = graph_op_value(b, .Index, .Explicit, ix_span, elem, "", base, fuse_index_value(b, ir.v, it, ix_span))
+    }
+    #partial switch v in tt {
+    case ^Type_Fixed_Array:   k.hint = v.elem
+    case ^Type_Partial_Array: if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }
+    case ^Type_Slice:         if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }
+    }
+    vt := tc_store_at(k, value, place, env, span)
+    if !is_numeric(it) && !is_any(it) {
+        tc_error(k, span, TYPE_ARRAY_INDEX_NUMBER, type_name(it))
+    } else if !coerces_to_index_width(it) {
+        tc_error(k, span, TYPE_INDEX_WIDTH, type_name(slice_header_width_type), type_name(it))
+    }
+    if pname, immutable := tc_write_root_param(k, target, env); immutable {
+        tc_error(k, span, TYPE_CANNOT_WRITE_ELEMENT_IMMUTABLE_PARAMETER, pname)
+    }
+    size := -1   // (a fixed array's, for its diagnostic)
+    #partial switch v in tt {
+    case ^Type_Fixed_Array: size = v.size
+    case ^Type_Partial_Array, ^Type_Slice:
+    case:
+        return
+    }
+    if !is_infer(vt) && !buffer_elem_compatible(elem, vt) && !value_preserving_widen(vt, elem) {
+        if size >= 0 {
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_ELEMENT, type_name(vt), size, type_name(elem))
+        } else {
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_ELEMENT_TYPE, type_name(vt), type_name(tt))
+        }
+    }
+    if is_infer(vt) { tc_literal_overflow(k, value, elem, span) }
+}
+
+// Whether a subscript holds a `.len` / `.cap` (its base's).
+tc_has_dot_ref :: proc(k: ^TC, n: Tree_Id) -> bool {
+    if n == 0 { return false }
+    if k.t.tag[n] == .Dot_Ident { return true }
+    #partial switch k.t.tag[n] {
+    case .Binary: return tc_has_dot_ref(k, Tree_Id(k.t.a[n])) || tc_has_dot_ref(k, Tree_Id(k.t.b[n]))
+    case .Unary, .Paren: return tc_has_dot_ref(k, Tree_Id(k.t.a[n]))
+    }
+    return false
+}
+
+// `[a, b, c]`: zero where it goes (else in a temporary), then each element
+// into its slot — the first's type the literal's element type, when where it
+// goes gives none.
+tc_array_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
+                         dest: Dest, temp: bool, temp_span: Span) -> (Type, Fused) {
+    tr := k.t
+    span := tree_span(tr, n)
+    elems := tree_list(tr, tr.a[n])
+    if len(elems) == 0 { return Type_Error{}, {} }   // (typed by where it goes)
+    b := tc_building(k)
+    if want == .None || b == nil {
+        et := tc_check(k, elems[0], env)
+        for e, i in elems[1:] {
+            if t := tc_check(k, e, env); types_incompatible(et, t) {
+                tc_error(k, span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED, i + 1, type_name(t), type_name(et))
+            }
+        }
+        return new_clone(Type_Fixed_Array{size = len(elems), elem = et}), {}
+    }
+    in_temp := want != .Into || temp
+    placed := want != .Into && temp_span != {}
+    at := temp_span if temp || placed else span
+    d := dest
+    if in_temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
+    ga := graph_fuse_array(b, span, d)
+    et: Type
+    if ga.elem_t == nil {
+        r: Fused
+        et, r = tc_expr(k, elems[0], env, .Either)
+        lit_t := new_clone(Type_Fixed_Array{size = len(elems), elem = et})
+        if b = tc_building(k); b != nil { tc_store(k, elems[0], et, r, graph_fuse_array_elem(b, ga, 0, et, lit_t), span) }
+    } else {
+        et = tc_store_into(k, elems[0], env, graph_fuse_array_elem(b, ga, 0, nil, nil), span)
+    }
+    for e, i in elems[1:] {
+        t: Type
+        if b = tc_building(k); b != nil {
+            t = tc_store_into(k, e, env, graph_fuse_array_elem(b, ga, i + 1, nil, nil), span)
+        } else {
+            t = tc_check(k, e, env)
+        }
+        if types_incompatible(et, t) {
+            tc_error(k, span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED, i + 1, type_name(t), type_name(et))
+        }
+    }
+    t := new_clone(Type_Fixed_Array{size = len(elems), elem = et})
+    if b = tc_building(k); b == nil { return t, {} }
+    if b.g.type_[ga.zero] == nil { b.g.type_[ga.zero] = t }
+    return t, tc_built(k, want, in_temp, temp, d, t, at, placed)
+}
+
+// A value stored into a destination: built there, what builds in place;
+// else written at the destination's type.
+tc_store_into :: proc(k: ^TC, e: Tree_Id, env: ^Type_Scope, d: Dest, span: Span, settle := false) -> Type {
+    t, r := tc_expr(k, e, env, .Into, dest = d, temp_span = span)
+    tc_store(k, e, t, r, d, span, settle)
+    return t
+}
+
+// What building a value in place gives its use: nothing more (built into
+// where it goes); else its temporary, typed — read, or its place.
+tc_built :: proc(k: ^TC, want: Fuse_Want, in_temp, into_temp: bool, d: Dest, t: Type, span: Span, placed: bool) -> Fused {
+    b := tc_building(k)
+    if b == nil { return {} }
+    if !in_temp { return {v = NO_VALUE, ok = true, into = true} }
+    tt := d.type_ if d.type_ != nil else t
+    p := graph_fuse_temp_end(b, d, tt, span)
+    switch {
+    case into_temp:                return {v = graph_read(b, p, tt, span), ok = true, temp = true}
+    case want == .Place || placed: return {v = p, place = true, ok = true}
+    }
+    return {v = graph_read(b, p, tt, span), ok = true}
+}

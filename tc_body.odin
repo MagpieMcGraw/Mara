@@ -136,6 +136,12 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
     errors_before := k.c.errors
     want := Fuse_Want.Into if b != nil else .None
     vt, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, decl, nil if is_untyped(ann) else ann), temp_span = span)
+    if returns := tc_call_returns(k, value, env); len(returns) > 1 {
+        // (One name for several results: `a, b := f()` takes them.)
+        tc_error(k, span, TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE, 1, len(returns))
+        type_env_set(env, name, Type_Error{})
+        return
+    }
     final: Type
     if !is_any(ann) {
         if !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) && !value_preserving_widen(vt, ann) {
@@ -334,6 +340,10 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         tc_field_assign(k, s, targets[0], values[0], env)
         return
     }
+    if len(targets) == 1 && len(values) == 1 && t.tag[targets[0]] == .Index {
+        tc_index_assign(k, s, targets[0], values[0], env)
+        return
+    }
     if len(targets) != 1 || len(values) != 1 || t.tag[targets[0]] != .Ident {
         if len(targets) == 1 { tc_unsupported(k, targets[0], "this assignment target"); return }
         tc_unsupported(k, s, "this assignment")
@@ -394,14 +404,27 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     if count_ok {
         for val, i in values {
             want := rts[i]
-            if is_partial_array(want) || is_slice_type(want) {
-                tc_unsupported(k, s, "a return of this type")
-                return
-            }
             k.hint = want
-            vt, r := tc_expr(k, val, env, .Either if tc_building(k) != nil else .None, temp_span = span)
-            if b := tc_building(k); b != nil {
-                append(&vals, graph_fuse_widen(b, tc_value(k, r, val, vt), span, {to = want}))
+            // (Text returned as a partial array: built into a temporary, zero
+            // first, then read.)
+            text, slot := false, NO_NODE
+            if b := tc_building(k); b != nil && is_partial_array(want) {
+                if t.tag[tc_unparen(k, val)] == .String {
+                    text, slot = true, graph_slot(b, "temp", want, span)
+                    graph_fuse_zero_var(b, slot, want, span)
+                } else {
+                    _ = graph_fuse_later(b)   // (where a text constant's would go)
+                }
+            }
+            use, at := tc_use_type(k, val, want, span)
+            held: Graph_Later
+            if b := tc_building(k); b != nil && is_slice_type(want) { held = graph_fuse_later(b) }
+            vt, r := tc_expr(k, val, env, .Either if tc_building(k) != nil else .None, dest = use, temp_span = at)
+            if b := tc_building(k); b != nil && !text {
+                append(&vals, tc_value_as(k, val, vt, r, want, span, {to = want}, &held))
+            } else if b != nil {
+                tc_store(k, val, vt, r, graph_dest_var("temp", slot, want), span)
+                append(&vals, graph_read(b, graph_var(b, "temp", slot, want, span), want, span))
             }
             if !is_any(vt) && !is_any(want) && !coerce_deferred(k.c, vt, want, span) &&
                !types_equal(want, vt) && !value_preserving_widen(vt, want) {
@@ -445,7 +468,8 @@ tc_builds_into :: proc(k: ^TC, e: Tree_Id) -> bool {
     #partial switch k.t.tag[n] {
     case .Literal, .Array: return true
     case .Call:
-        return n in k.constructs
+        callee := k.callees[n] or_else nil
+        return callee != nil && callee.kind == .Struct
     }
     return false
 }

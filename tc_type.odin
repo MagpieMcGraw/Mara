@@ -109,7 +109,12 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, env: ^Type_Scope, span: Spa
         _, i, _ := parse_number_text(tc_text(t.main[n]))
         return int(i), true
     case .Ident:
-        tc_unsupported(k, n, "a size named by a constant")
+        name := tc_name(k, n)
+        if name in k.table.constants {
+            tc_unsupported(k, n, "a size named by a constant")
+            return 0, false
+        }
+        tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, name, type_name(elem))
         return 0, false
     }
     if v, ok := tc_comptime_int(k, n, env); ok { return int(v), true }
@@ -152,6 +157,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
         field := tc_text(Token_Id(t.b[n]))
         base := Tree_Id(t.a[n])
         if (field != "cap" && field != "len") || t.tag[base] != .Ident { return 0, false }
+        if env == nil { return 0, false }
         bt, ok := type_env_get(env, tc_name(k, base))
         if !ok { return 0, false }
         #partial switch v in distinct_base(bt) {
@@ -159,7 +165,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
         case ^Type_Fixed_Array:   if v.size > 0 { return i64(v.size), true }
         }
     case .Ident:
-        tc_unsupported(k, n, "a constant in a size")
+        if tc_name(k, n) in k.table.constants { tc_unsupported(k, n, "a constant's value") }
     }
     return 0, false
 }

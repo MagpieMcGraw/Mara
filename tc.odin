@@ -29,7 +29,7 @@ TC :: struct {
     hint:          Type,              // the type the expression being checked is expected at
     scopes:        [dynamic]TC_Scope, // the funs and structs registered, to check and extract
     scope_of:      map[^Type_Scope]int,   // each one's, by its type
-    constructs:    map[Tree_Id]bool,  // the calls that construct a struct (its constructor's)
+    callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
 }
 
 // A fun or a struct as registered: its type, its definition, the scope its

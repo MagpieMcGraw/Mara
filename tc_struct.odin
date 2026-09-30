@@ -275,14 +275,7 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
     if !zero { tc_literal_fields(k, n, entries, sd, env, gl) }
     b = tc_building(k)
     if !build || b == nil || gl == nil { return t, {} }
-    if !in_temp { return t, {v = NO_VALUE, ok = true, into = true} }
-    tt := d.type_ if d.type_ != nil else t
-    p := graph_fuse_temp_end(b, d, tt, at)
-    switch {
-    case into_temp:                return t, {v = graph_read(b, p, tt, at), ok = true, temp = true}
-    case want == .Place || placed: return t, {v = p, place = true, ok = true}
-    }
-    return t, {v = graph_read(b, p, tt, at), ok = true}
+    return t, tc_built(k, want, in_temp, into_temp, d, t, at, placed)
 }
 
 // A literal's entries against its struct's fields: named, or by position.
@@ -291,13 +284,40 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
     span := tree_span(tr, n)
     if len(entries) == 0 { return }
     if tr.tag[entries[0]] != .Named_Entry {
+        // `Foo{f()}`, f's results Foo's fields: each field its result (the
+        // call built once).
+        gl := gl
+        probed: Type
+        if call := tc_unparen(k, entries[0]); len(entries) == 1 && tr.tag[call] == .Call && len(sd.fields) > 1 {
+            spread: Fused
+            if gl != nil {
+                probed, spread = tc_expr(k, entries[0], env, .Value)
+            } else {
+                probed = tc_check(k, entries[0], env)
+            }
+            returns := tc_call_returns(k, call, env)
+            fits := len(returns) == len(sd.fields)
+            for f, i in sd.fields {
+                if fits && types_incompatible(f.type_, returns[i]) { fits = false }
+            }
+            if fits {
+                if b := tc_building(k); b != nil && gl != nil && !graph_fuse_spread(b, gl, span, spread.v) {
+                    tc_fail(k, "a spread literal of no call")
+                }
+                return
+            }
+            if gl != nil {
+                tc_fail(k, "a spread literal that doesn't match")
+                gl = nil
+            }
+        }
         user := sd.fields[first_user_field(sd):]
         if len(entries) > len(user) {
             tc_error(k, span, TYPE_CLASS_FIELDS_POSITIONAL_VALUES, sd.name, len(user), len(entries))
         }
         for e, i in entries {
             if i >= len(user) { break }
-            tc_literal_field(k, e, user[i], i, "", span, env, gl, positional = true)
+            tc_literal_field(k, e, user[i], i, "", span, env, gl, positional = true, probed = probed if i == 0 else nil)
         }
         return
     }
@@ -313,11 +333,13 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
 }
 
 tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span,
-                         env: ^Type_Scope, gl: ^Graph_Literal, positional := false) {
-    tag := k.t.tag[tc_unparen(k, value)]
-    if tag == .Literal || tag == .Array || tag == .Dot_Ident { k.hint = f.type_ }
+                         env: ^Type_Scope, gl: ^Graph_Literal, positional := false, probed: Type = nil) {
+    // (An anonymous literal takes its shape from the field.)
+    if v := tc_unparen(k, value); k.t.tag[v] == .Literal && k.t.a[v] == 0 && !tc_is_broadcast(k, v) { k.hint = f.type_ }
     vt: Type
-    if gl != nil && tc_building(k) != nil {
+    if probed != nil {
+        vt = probed   // (checked as a spread that wasn't)
+    } else if gl != nil && tc_building(k) != nil {
         d := graph_fuse_literal_field(gl, name, i)
         t, r := tc_expr(k, value, env, .Into, dest = d, temp_span = span)
         tc_store(k, value, t, r, d, span)
@@ -364,4 +386,10 @@ tc_construct :: proc(k: ^TC, n: Tree_Id, ts: ^Type_Scope, ops: []Operand, want: 
         return {v = NO_VALUE, ok = true, into = true}
     }
     return {v = graph_read(b, graph_dest_place(b, at, span), ts, span), ok = true}
+}
+
+// `{all v}`: a literal of one value, every slot's.
+tc_is_broadcast :: proc(k: ^TC, lit: Tree_Id) -> bool {
+    entries := tree_list(k.t, k.t.b[lit])
+    return len(entries) == 1 && k.t.tag[entries[0]] == .Broadcast
 }
