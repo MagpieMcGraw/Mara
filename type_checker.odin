@@ -1593,7 +1593,7 @@ SymbolTable :: struct {
     mono_fun_cache:   map[string]string,
     mono_fun_bodies: map[string][dynamic]Stmt,    // cloned AST bodies per monomorphization
     fun_asts:       map[string]^Stmt_Scope,         // bare name -> AST for auto-monomorphization
-    def_names:      map[rawptr]string,              // a nested def (scope, constant) -> the `<Parent>_<name>` it registers under
+    def_names:      map[Stmt_Id]string,              // a nested def (scope, constant) -> the `<Parent>_<name>` it registers under
     fun_homes:      map[string]string,              // bare name -> home package; used by post-check phases that lack env
 
     // Config
@@ -1661,11 +1661,11 @@ Checker :: struct {
     // a subscript is the base's own field (`a.fonts[.len]` → `a.fonts.len`),
     // checked and built in the ident's place (lower_subscript_dots).
     dot_refs:        map[^Expr_Ident]Expr,
-    assign_types:    map[^Stmt_Assign]^Assign_Types,   // what each assignment's check found
-    define_types:    map[^Stmt_Define]^Assign_Types,   // ... each constant's (its var and env types)
-    destructure_types: map[^Stmt_Multi_Return_Assign]^[dynamic]Type,   // ... each destructure's, per name
-    decls:           map[^Stmt_Decl]^Decl_Lowered,   // each declaration as the checker reads it
-    broadcasts:      map[^Stmt_Multi_Return_Assign]^[dynamic]Stmt,   // a broadcast's copies, one per target
+    assign_types:    map[Stmt_Id]^Assign_Types,   // what each assignment's check found
+    define_types:    map[Stmt_Id]^Assign_Types,   // ... each constant's (its var and env types)
+    destructure_types: map[Stmt_Id]^[dynamic]Type,   // ... each destructure's, per name
+    decls:           map[Stmt_Id]^Decl_Lowered,   // each declaration as the checker reads it
+    broadcasts:      map[Stmt_Id]^[dynamic]Stmt,   // a broadcast's copies, one per target
     calls:           map[^Expr_Call]^Call_Lowered,   // each call as the checker resolved it
     resolutions:     map[rawptr]Resolved_Name,   // what each name or member access stands for (resolution)
     types:           [dynamic]Type,   // each expression's type, as checked, by its id (expr_type)
@@ -1704,7 +1704,7 @@ Checker :: struct {
     checked:              ^Checked_Program,        // output: codegen-ready data
     checked_modules:      map[string]^Type_Scope,  // cache: flat name -> checked module-struct
     modules_in_progress:  map[string]bool,         // circular dependency detection
-    pre_registered_stmts: map[rawptr]bool,         // stmts whose type allocation was done by register_type_names; Pass 1b finds existing entries and skips re-allocation
+    pre_registered_stmts: map[Stmt_Id]bool,         // stmts whose type allocation was done by register_type_names; Pass 1b finds existing entries and skips re-allocation
     programs:             map[string]^Program,     // every parsed module: dotted name -> merged Program
     compiler_dir:         string,                  // compiler exe dir (kept for diagnostics)
     search_dir:           string,                  // user source dir (kept for diagnostics)
@@ -6138,9 +6138,9 @@ Assign_Types :: struct {
 }
 
 assign_types :: proc(c: ^Checker, s: ^Stmt_Assign) -> ^Assign_Types {
-    if t, ok := c.assign_types[s]; ok { return t }
+    if t, ok := c.assign_types[s.id]; ok { return t }
     t := new(Assign_Types)
-    c.assign_types[s] = t
+    c.assign_types[s.id] = t
     return t
 }
 
@@ -6161,24 +6161,24 @@ Decl_Lowered :: struct {
 }
 
 decl_lowered :: proc(c: ^Checker, s: ^Stmt_Decl) -> ^Decl_Lowered {
-    if l, ok := c.decls[s]; ok { return l }
+    if l, ok := c.decls[s.id]; ok { return l }
     l := new(Decl_Lowered)
-    c.decls[s] = l
+    c.decls[s.id] = l
     return l
 }
 
 decl_type :: proc(c: ^Checker, s: ^Stmt_Decl) -> Type_Expr {
-    if l, ok := c.decls[s]; ok && l.type_ != nil { return l.type_ }
+    if l, ok := c.decls[s.id]; ok && l.type_ != nil { return l.type_ }
     return s.type_expr
 }
 
 decl_init :: proc(c: ^Checker, s: ^Stmt_Decl) -> []Expr {
-    if l, ok := c.decls[s]; ok && len(l.init) > 0 { return l.init[:] }
+    if l, ok := c.decls[s.id]; ok && len(l.init) > 0 { return l.init[:] }
     return s.init_values[:]
 }
 
 decl_cap :: proc(c: ^Checker, s: ^Stmt_Decl) -> Expr {
-    if l, ok := c.decls[s]; ok && l.cap != nil { return l.cap }
+    if l, ok := c.decls[s.id]; ok && l.cap != nil { return l.cap }
     return s.slice_cap_expr
 }
 
@@ -6247,23 +6247,23 @@ call_args_mut :: proc(c: ^Checker, e: ^Expr_Call) -> ^[dynamic]Expr {
 
 // A broadcast destructure's copies (`a, b := 0`): one assignment per target.
 broadcast_stmts :: proc(c: ^Checker, s: ^Stmt_Multi_Return_Assign) -> ^[dynamic]Stmt {
-    if l, ok := c.broadcasts[s]; ok { return l }
+    if l, ok := c.broadcasts[s.id]; ok { return l }
     l := new([dynamic]Stmt)
-    c.broadcasts[s] = l
+    c.broadcasts[s.id] = l
     return l
 }
 
 define_types :: proc(c: ^Checker, s: ^Stmt_Define) -> ^Assign_Types {
-    if t, ok := c.define_types[s]; ok { return t }
+    if t, ok := c.define_types[s.id]; ok { return t }
     t := new(Assign_Types)
-    c.define_types[s] = t
+    c.define_types[s.id] = t
     return t
 }
 
 destructure_types :: proc(c: ^Checker, s: ^Stmt_Multi_Return_Assign) -> ^[dynamic]Type {
-    if t, ok := c.destructure_types[s]; ok { return t }
+    if t, ok := c.destructure_types[s.id]; ok { return t }
     t := new([dynamic]Type)
-    c.destructure_types[s] = t
+    c.destructure_types[s.id] = t
     return t
 }
 
@@ -6308,7 +6308,7 @@ fuse_const_begin :: proc(c: ^Checker, s: ^Stmt_Define) -> Fuse_Const {
     b := c.gb
     if b == nil || c.errors > 0 || s.value == nil { return {} }
     if _, is_include := s.value.(^Expr_Include); is_include { return {} }
-    if rawptr(s) in b.const_segs { return {} }
+    if s.id in b.const_segs { return {} }
     return {f = graph_const_begin(b, s)}
 }
 
@@ -6408,7 +6408,7 @@ fuse_variant_value :: proc(c: ^Checker, t: Type, name: string, span: Span) -> Op
 // The node a declaration declares: a struct's field, made with its
 // declaration; else a local, made now.
 fuse_decl_node :: proc(b: ^Graph_Builder, s: ^Stmt_Assign, bound := false) -> (Node_Id, bool) {
-    if d, is_field := b.fuse.fields[rawptr(s)]; is_field { return d, true }
+    if d, is_field := b.fuse.fields[s.id]; is_field { return d, true }
     return graph_fuse_decl(b, s.name, s.span, bound = bound), false
 }
 
@@ -6423,7 +6423,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         if is_skip && fa.field {
             // A field's `= void` is its declaration's, as written: the value
             // stored, unchecked.
-            orig := b.fuse.field_inits[rawptr(s)]
+            orig := b.fuse.field_inits[s.id]
             val := graph_fuse_void(b, t, expr_span(orig)^)
             graph_fuse_write_at(b, graph_var(b, s.name, fa.decl, t, s.span), val, s.span)
             return
@@ -6660,7 +6660,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
         case ^Stmt_Scope:
             bare_name := scope_name(c.table, s)
             mangled := fmt.aprintf("%s_%s", st.name, bare_name)
-            c.table.def_names[s] = mangled
+            c.table.def_names[s.id] = mangled
             // Data/layout vs callable is now determined by the AST kind tag
             // set by the parser from the declaration keyword:
             //   struct / class  → .Struct (data layout)
@@ -6748,7 +6748,7 @@ register_scope_defs :: proc(c: ^Checker, self_type: Type, st: ^Scope_Body, defs:
         case ^Stmt_Define:
             bare_name := define_name(c.table, s)
             mangled := fmt.aprintf("%s_%s", st.name, bare_name)
-            c.table.def_names[s] = mangled
+            c.table.def_names[s.id] = mangled
             // Constants don't have a Type_Scope to point at — track them in a
             // dedicated map so the body-check pass can materialize bare-name
             // aliases (see check_callable_body's consts loop).
@@ -7015,7 +7015,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                         home_package   = c.current_package,
                     }
                 }
-                c.pre_registered_stmts[rawptr(s)] = true
+                c.pre_registered_stmts[s.id] = true
                 continue
             }
             // Determine if pure-enum or data union (matches Phase 1b shape)
@@ -7058,7 +7058,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                     if owner.types == nil { owner.types = make(map[string]Type) }
                     owner.types[s.name] = et
                 }
-                c.pre_registered_stmts[rawptr(s)] = true
+                c.pre_registered_stmts[s.id] = true
             } else {
                 flat := make_flat_name(c.current_package, s.name)
                 if flat in c.table.unions {
@@ -7107,7 +7107,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                     if owner.types == nil { owner.types = make(map[string]Type) }
                     owner.types[s.name] = ut
                 }
-                c.pre_registered_stmts[rawptr(s)] = true
+                c.pre_registered_stmts[s.id] = true
             }
         case ^Stmt_Distinct_Def:
             flat := make_flat_name(c.current_package, s.name)
@@ -7130,7 +7130,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 if owner.types == nil { owner.types = make(map[string]Type) }
                 owner.types[s.name] = dt
             }
-            c.pre_registered_stmts[rawptr(s)] = true
+            c.pre_registered_stmts[s.id] = true
         case ^Stmt_Scope:
             // Already registered by a parent struct's register_scope_defs
             // pass (e.g. AllocHeader inside Arena_Debug). Its s.name has
@@ -7152,7 +7152,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                     env            = env,
                 }
                 if len(s.typed_params) > 0 { c.declared_funs[scope_name(c.table, s)] = true }
-                c.pre_registered_stmts[rawptr(s)] = true
+                c.pre_registered_stmts[s.id] = true
                 continue
             }
             is_struct_type := s.kind == .Struct
@@ -7185,7 +7185,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                     owner.types[scope_name(c.table, s)] = struct_type
                 }
                 pre_register_nested_struct_types(c, struct_type, s.defs)
-                c.pre_registered_stmts[rawptr(s)] = true
+                c.pre_registered_stmts[s.id] = true
             } else {
                 flat_name := make_flat_name(c.current_package, scope_name(c.table, s))
                 if is_struct_type {
@@ -7239,7 +7239,7 @@ register_type_names :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope,
                 // signature when it needs it. (This also dissolved the old
                 // top-level-vs-nested split — top-level Pass 1a couldn't resolve
                 // eagerly anyway because includes weren't processed yet.)
-                c.pre_registered_stmts[rawptr(s)] = true
+                c.pre_registered_stmts[s.id] = true
             }
         }
     }
@@ -7292,13 +7292,13 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                         home_package   = c.current_package,
                     }
                 }
-                delete_key(&c.pre_registered_stmts, rawptr(s))
+                delete_key(&c.pre_registered_stmts, s.id)
                 continue
             }
             // Pre-registered by Pass 1a (multi-file module path): pure-enum
             // case is fully resolved at Pass 1a (no type refs); data-union
             // case still needs tag_pad and variant struct fields resolved.
-            if c.pre_registered_stmts[rawptr(s)] {
+            if c.pre_registered_stmts[s.id] {
                 has_data := false
                 for vdef in s.variants {
                     if len(vdef.fields) > 0 { has_data = true; break }
@@ -7322,7 +7322,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                         finalize_union_variant_headers(c, ut)
                     }
                 }
-                delete_key(&c.pre_registered_stmts, rawptr(s))
+                delete_key(&c.pre_registered_stmts, s.id)
                 continue
             }
             // Determine if pure-enum or data union
@@ -7426,12 +7426,12 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // Pre-registered by Pass 1a (multi-file module path): retrieve
             // the placeholder allocation and just fill in base_type. Single-
             // pass mode (nested scopes): allocate fresh, same as before.
-            if c.pre_registered_stmts[rawptr(s)] {
+            if c.pre_registered_stmts[s.id] {
                 flat := make_flat_name(c.current_package, s.name)
                 if dt, ok := c.table.distinct_types[flat]; ok {
                     dt.base_type = resolve_type_expr(s.base_type, c, s.span)
                 }
-                delete_key(&c.pre_registered_stmts, rawptr(s))
+                delete_key(&c.pre_registered_stmts, s.id)
                 continue
             }
             base := resolve_type_expr(s.base_type, c, s.span)
@@ -7455,8 +7455,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // allocation, table entries, env binding, and owner attachment
             // are already done. Resolve only the deferred body (struct
             // fields via register_scope_defs, fun params, return type).
-            if c.pre_registered_stmts[rawptr(s)] {
-                delete_key(&c.pre_registered_stmts, rawptr(s))
+            if c.pre_registered_stmts[s.id] {
+                delete_key(&c.pre_registered_stmts, s.id)
                 if len(s.generic_params) > 0 { continue }  // generic — nothing more to do
                 is_struct := s.kind == .Struct
                 flat := make_flat_name(c.current_package, scope_name(c.table, s))
@@ -7724,7 +7724,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 inits := decl_init(c, s)
                 if len(inits) == 1 && len(s.names) > 1 {
                     // Multi-return destructure: x, y := call()
-                    mra := new(Stmt_Multi_Return_Assign)
+                    mra := new_stmt(Stmt_Multi_Return_Assign{})
                     mra.span = s.span
                     mra.type_expr = decl_type(c, s)
                     mra.is_decl = true   // derived from a Stmt_Decl — bare names are declared
@@ -7734,7 +7734,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                 } else {
                     // Parallel or single-name: one Stmt_Assign per name
                     for name, i in s.names {
-                        a := new(Stmt_Assign)
+                        a := new_stmt(Stmt_Assign{})
                         a.name = name
                         a.span = s.span
                         a.type_expr = decl_type(c, s)
@@ -8596,7 +8596,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                         // target's is a copy, checked once as its own (the value
                         // itself was checked above, to tell the forms apart).
                         for name, i in s.names {
-                            a := new(Stmt_Assign)
+                            a := new_stmt(Stmt_Assign{})
                             a.span = s.span
                             a.is_decl = s.is_decl
                             a.value = clone_expr(s.values[0])

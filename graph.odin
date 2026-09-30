@@ -304,10 +304,10 @@ Graph_Builder :: struct {
     // Each module's statements, where each goes (graph_modules): built as the
     // checker settles them (graph_module_stmt), or — a scope, a type — when
     // the graph is put together.
-    module_stmts: map[rawptr]int,
+    module_stmts: map[Stmt_Id]int,
     module_list:  [dynamic]Graph_Module_Stmt,
-    def_segs:     map[rawptr]Graph_Def_Built,   // a body's constants, built as settled
-    const_segs:   map[rawptr]int,               // each constant's code, by its statement (graph_const_begin)
+    def_segs:     map[Stmt_Id]Graph_Def_Built,   // a body's constants, built as settled
+    const_segs:   map[Stmt_Id]int,               // each constant's code, by its statement (graph_const_begin)
     // Each constant's declaration, by its value's identity, and the table
     // globals waiting to name theirs.
     const_decls: map[rawptr]Node_Id,
@@ -321,7 +321,7 @@ Graph_Builder :: struct {
     // body being built; MARA_FUSE=log.
     fused:    map[^Type_Scope]int,
     failed:   map[^Type_Scope]string,
-    scope_of: map[rawptr]^Type_Scope,   // each scope statement's, as the checker built it
+    scope_of: map[Stmt_Id]^Type_Scope,   // each scope statement's, as the checker built it
     fuses:    [dynamic]^Graph_Fuse,
     fuse:     ^Graph_Fuse,
     fuse_log: bool,
@@ -516,12 +516,7 @@ graph_modules :: proc(b: ^Graph_Builder, programs: map[string]^Program) {
         // A module is a scope like a struct: its variables are its fields, which
         // no function sees (a function sees only its arguments).
         for s in programs[name]^ {
-            key := stmt_key(s)
-            if key == nil {
-                graph_decl_stmt(b, s, m, {kind = .Field})
-                continue
-            }
-            b.module_stmts[key] = len(b.module_list)
+            b.module_stmts[stmt_id(s)] = len(b.module_list)
             append(&b.module_list, Graph_Module_Stmt{s = s, module = m, anchor = graph_anchor_here(b)})
         }
         graph_close(b, m)
@@ -532,7 +527,7 @@ graph_modules :: proc(b: ^Graph_Builder, programs: map[string]^Program) {
 // destructure: its declarations, in a segment of their own, put where the
 // statement is. (Once: a statement is settled by the first pass over it.)
 graph_module_stmt :: proc(b: ^Graph_Builder, s: Stmt, declared: Graph_Declared) {
-    i, is_module := b.module_stmts[stmt_key(s)]
+    i, is_module := b.module_stmts[stmt_id(s)]
     if !is_module || b.module_list[i].built { return }
     b.module_list[i].declared = declared
     #partial switch _ in s {
@@ -1008,7 +1003,7 @@ graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_
     type_at :: proc(d: Graph_Declared, i: int) -> Type { return d.types[i] if i < len(d.types) else nil }
     // (A constant the checker built: put here.)
     if def, is_def := s.(^Stmt_Define); is_def {
-        if si, built := b.const_segs[rawptr(def)]; built {
+        if si, built := b.const_segs[def.id]; built {
             b.g.parent[b.segs[si].root] = parent
             graph_anchor_here(b, si)
             return
@@ -2296,7 +2291,7 @@ graph_scope_def :: proc(b: ^Graph_Builder, s: ^Stmt_Scope, parent: Node_Id) {
     generic := len(s.generic_params) > 0
     // (One scope, the checker's for this statement — a generic fun's
     // instance's own copy of a nested fun, say, which shares its span.)
-    if ts, built := b.scope_of[rawptr(s)]; built && !generic {
+    if ts, built := b.scope_of[s.id]; built && !generic {
         graph_scope_node(b, ts, s, parent, .Explicit)
         return
     }
@@ -2362,7 +2357,7 @@ Graph_Fuse :: struct {
     outer_fuse: ^Graph_Fuse,
     // Each statement's entry, made the first time the checker meets it (it
     // meets one in each of its passes).
-    stmts:      map[rawptr]i32,
+    stmts:      map[Stmt_Id]i32,
     // Types are settled when the graph is put together, as the builder types
     // what it builds after checking: a `:=` binding's width is the one it
     // adopts from a later use, a param's default's once its fun is checked.
@@ -2378,9 +2373,9 @@ Graph_Fuse :: struct {
     calls:      [dynamic]Pending_Call,   // named by their callees when the graph is put together
     steps:      [dynamic]int,            // its loops' steps' segments
     // A struct's: each field declaration's lowered assignment, and its field.
-    fields:     map[rawptr]Node_Id,
-    field_inits: map[rawptr]Expr,   // (its initializer as written)
-    field_outs: map[rawptr][]Node_Id,   // fields from one call's outputs: their destructure's declarations
+    fields:     map[Stmt_Id]Node_Id,
+    field_inits: map[Stmt_Id]Expr,   // (its initializer as written)
+    field_outs: map[Stmt_Id][]Node_Id,   // fields from one call's outputs: their destructure's declarations
     failed:     string,
 }
 
@@ -2427,7 +2422,7 @@ Graph_Widen :: struct {
 // Start building a fun's body as the checker checks it. `body` is the body
 // checked (an instance's own copy).
 graph_fuse_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, body: []Stmt, written: Written) -> ^Graph_Fuse {
-    b.scope_of[rawptr(s)] = ts
+    b.scope_of[s.id] = ts
     f := new(Graph_Fuse)
     f.ts, f.outer_fuse = ts, b.fuse
     b.fuse = f
@@ -2632,7 +2627,7 @@ graph_fuse_fields :: proc(b: ^Graph_Builder, v: ^Stmt_Decl, lowered: []Stmt, ini
         d := graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, v.span)
         ids[i] = d
         if i < len(lowered) {
-            key := stmt_key(lowered[i])
+            key := stmt_id(lowered[i])
             f.fields[key] = d
             f.stmts[key] = b.stmt
             if i < len(inits) { f.field_inits[key] = inits[i] }
@@ -2642,7 +2637,7 @@ graph_fuse_fields :: proc(b: ^Graph_Builder, v: ^Stmt_Decl, lowered: []Stmt, ini
     // each output written to its field, graph_init_many.)
     if len(v.names) > 1 && len(lowered) == 1 {
         if _, is_mr := lowered[0].(^Stmt_Multi_Return_Assign); is_mr {
-            f.field_outs[stmt_key(lowered[0])] = ids
+            f.field_outs[stmt_id(lowered[0])] = ids
             return
         }
     }
@@ -3055,7 +3050,7 @@ Graph_Destructure :: struct {
 
 graph_fuse_destructure :: proc(b: ^Graph_Builder, v: ^Stmt_Multi_Return_Assign) -> Graph_Destructure {
     // (A struct's fields from one call: declared as its fields.)
-    if ids, of_fields := b.fuse.field_outs[rawptr(v)]; of_fields {
+    if ids, of_fields := b.fuse.field_outs[v.id]; of_fields {
         return Graph_Destructure{on = true, decls = ids}
     }
     mr := Graph_Destructure{on = true, decls = make([]Node_Id, len(v.names), context.temp_allocator)}
@@ -3828,21 +3823,20 @@ graph_fuse_settle :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
 
 // The statement the checker is on, as graph_stmt enters one: its entry, the
 // first time. A statement the checker meets only once is `fresh` (a body's
-// own statements, some of them values without an identity).
+// own statements).
 graph_fuse_stmt :: proc(b: ^Graph_Builder, s: Stmt, fresh := false) -> (saved: i32) {
     f := b.fuse
     saved = b.stmt
-    key := stmt_key(s)
+    id := stmt_id(s)
     if !fresh {
-        if key == nil { return }   // (only a body's own statements are values)
-        if at, seen := f.stmts[key]; seen {
+        if at, seen := f.stmts[id]; seen {
             b.stmt = at
             return
         }
     }
     b.stmt = i32(len(b.g.stmts))
     append(&b.g.stmts, Graph_Stmt{span = stmt_span(s), kind = graph_stmt_kind(s)})
-    if key != nil { f.stmts[key] = b.stmt }
+    f.stmts[id] = b.stmt
     return
 }
 
@@ -3874,7 +3868,7 @@ graph_fuse_place :: proc(b: ^Graph_Builder, si: int, parent: Node_Id, name: stri
     defs := b.segs[si].defs[:]   // (placing them grows b.segs)
     for d in defs {
         // (A constant: built as the checker settled it.)
-        if early, settled := b.def_segs[stmt_key(d.s)]; settled {
+        if early, settled := b.def_segs[stmt_id(d.s)]; settled {
             if early.parent != d.parent { graph_fatal(stmt_span(d.s), "a definition built in another block") }
             b.segs[si].anchors[d.anchor].seg = early.seg
             continue
@@ -3904,7 +3898,7 @@ graph_fuse_def_settled :: proc(b: ^Graph_Builder, s: Stmt) {
     b.code, b.fn_base = code, base
     resize(&b.names, names)
     graph_segment_leave(b, saved)
-    b.def_segs[stmt_key(s)] = {si, parent}
+    b.def_segs[stmt_id(s)] = {si, parent}
 }
 
 // --- constants ------------------------------------------------------------
@@ -3946,7 +3940,7 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, s: ^Stmt_Define, t: T
     delete(f.field_inits)
     delete(f.field_outs)
     if f.failed == "" {
-        b.const_segs[rawptr(s)] = f.seg
+        b.const_segs[s.id] = f.seg
         append(&b.fuses, f)   // settled when the graph is put together
         return
     }
@@ -3960,27 +3954,6 @@ graph_const_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse, s: ^Stmt_Define, t: T
 expr_identity :: proc(e: Expr) -> rawptr {
     e := e
     return (^rawptr)(&e)^
-}
-
-// A statement's identity, for the pointer variants.
-stmt_key :: proc(s: Stmt) -> rawptr {
-    #partial switch v in s {
-    case ^Stmt_Assign:              return v
-    case ^Stmt_Multi_Assign:        return v
-    case ^Stmt_Multi_Return_Assign: return v
-    case ^Stmt_Decl:                return v
-    case ^Stmt_Define:              return v
-    case ^Stmt_If:                  return v
-    case ^Stmt_For:                 return v
-    case ^Stmt_Scope:               return v
-    case ^Stmt_Defer:               return v
-    case ^Stmt_Match:               return v
-    case ^Stmt_Foreign:             return v
-    case ^Stmt_Union_Def:           return v
-    case ^Stmt_Distinct_Def:        return v
-    case ^Stmt_Dispatch_Def:        return v
-    }
-    return nil
 }
 
 

@@ -602,7 +602,55 @@ Stmt :: union {
     Stmt_Module,
 }
 
+// Every statement has an id too, given when it is made (new_stmt, or
+// next_stmt_id for one held by value): what a pass finds about it is kept by
+// it. 0 is no statement's.
+Stmt_Id :: distinct u32
+
+// The last id given.
+last_stmt_id: Stmt_Id
+
+next_stmt_id :: proc() -> Stmt_Id {
+    last_stmt_id += 1
+    return last_stmt_id
+}
+
+// A statement of its own, with the next id: every statement held by pointer
+// is made here, a clone too.
+new_stmt :: proc(v: $T) -> ^T {
+    n := new_clone(v)
+    n.id = next_stmt_id()
+    return n
+}
+
+stmt_id :: proc(s: Stmt) -> Stmt_Id {
+    switch v in s {
+    case ^Stmt_Assign:              return v.id
+    case ^Stmt_Multi_Assign:        return v.id
+    case ^Stmt_Multi_Return_Assign: return v.id
+    case ^Stmt_Decl:                return v.id
+    case ^Stmt_Define:              return v.id
+    case Stmt_Call:                 return v.id
+    case ^Stmt_If:                  return v.id
+    case ^Stmt_For:                 return v.id
+    case ^Stmt_Scope:               return v.id
+    case Stmt_Return:               return v.id
+    case Stmt_Break:                return v.id
+    case Stmt_Continue:             return v.id
+    case ^Stmt_Defer:               return v.id
+    case ^Stmt_Match:               return v.id
+    case ^Stmt_Foreign:             return v.id
+    case ^Stmt_Union_Def:           return v.id
+    case ^Stmt_Distinct_Def:        return v.id
+    case ^Stmt_Dispatch_Def:        return v.id
+    case Stmt_Overload:             return v.id
+    case Stmt_Module:               return v.id
+    }
+    return 0
+}
+
 Stmt_Assign :: struct {
+    id: Stmt_Id,
     name:          string,
     value:         Expr,
     type_expr:     Type_Expr, // nil if untyped (e.g. x = 10)
@@ -628,6 +676,7 @@ Stmt_Assign :: struct {
 //   x, y := f()         -> names=[x,y], type=nil, init=[f()]
 //   x : int             -> names=[x], type=int, init=[]
 Stmt_Decl :: struct {
+    id: Stmt_Id,
     names:         [dynamic]string,
     type_expr:     Type_Expr,       // nil if inferred from init
     init_values:   [dynamic]Expr,   // empty if uninitialized; len 1 for tuple destructure
@@ -639,6 +688,7 @@ Stmt_Decl :: struct {
 // Compile-time constant binding (`x :: 42`). Value is required and must be
 // evaluable at compile time.
 Stmt_Define :: struct {
+    id: Stmt_Id,
     name:      string,
     type_expr: Type_Expr, // nil if untyped
     value:     Expr,
@@ -649,12 +699,14 @@ Stmt_Define :: struct {
 // Wrapper for multi-name syntax: a, b : int  or  a, b := 1, 2
 // Desugared into individual Stmt_Assign nodes; preserves grouping for source tools.
 Stmt_Multi_Assign :: struct {
+    id: Stmt_Id,
     assigns: [dynamic]^Stmt_Assign,
     span:    Span,
 }
 
 // Multi-return function call: x, y := call()  or  frame.x, frame.y = get_pair()
 Stmt_Multi_Return_Assign :: struct {
+    id: Stmt_Id,
     names:     [dynamic]string,
     targets:   [dynamic]Expr,   // parallel to names: non-nil for field/index/deref LHS targets
     values:    [dynamic]Expr,
@@ -666,11 +718,13 @@ Stmt_Multi_Return_Assign :: struct {
 }
 
 Stmt_Call :: struct {
+    id: Stmt_Id,
     expr: Expr, // must be an Expr_Call
     span: Span,
 }
 
 Stmt_If :: struct {
+    id: Stmt_Id,
     condition:   Expr,
     body:        [dynamic]Stmt,
     else_body:   [dynamic]Stmt,
@@ -688,6 +742,7 @@ Stmt_If :: struct {
 Scope_Kind :: enum { Struct, Fun, Block }   // Block = an if/for/defer body — locals only (in .types), no members/params/returns
 
 Stmt_Scope :: struct {
+    id: Stmt_Id,
     name:           string,
     kind:           Scope_Kind,
     generic_params: [dynamic]Generic_Param, // empty for non-generic funs
@@ -711,15 +766,16 @@ Stmt_Scope :: struct {
 // kept in the table); until then, and at top level, that is its source name.
 scope_name :: proc(t: ^SymbolTable, s: ^Stmt_Scope) -> string {
     if t == nil { return s.name }
-    return t.def_names[s] or_else s.name
+    return t.def_names[s.id] or_else s.name
 }
 
 define_name :: proc(t: ^SymbolTable, s: ^Stmt_Define) -> string {
     if t == nil { return s.name }
-    return t.def_names[s] or_else s.name
+    return t.def_names[s.id] or_else s.name
 }
 
 Stmt_Union_Def :: struct {
+    id: Stmt_Id,
     name:           string,
     tag_type:       string,                        // "" = default (i64), or "i32", "i16", etc.
     min_size:       int,                           // 0 = no minimum, otherwise minimum payload size in bytes
@@ -731,6 +787,7 @@ Stmt_Union_Def :: struct {
 }
 
 Stmt_Distinct_Def :: struct {
+    id: Stmt_Id,
     name:             string,
     base_type:        Type_Expr,
     default_cap_expr: Expr,       // for sized-slice aliases — `String :: distinct [, 0]utf8(128)` or `type([, 0]utf8)(128)`
@@ -739,32 +796,38 @@ Stmt_Distinct_Def :: struct {
 }
 
 Stmt_Dispatch_Def :: struct {
+    id: Stmt_Id,
     name:      string,
     functions: [dynamic]string,
     span:      Span,
 }
 
 Stmt_Overload :: struct {
+    id: Stmt_Id,
     op:            Token_Kind,
     dispatch_name: string,
     span:          Span,
 }
 
 Stmt_Module :: struct {
+    id: Stmt_Id,
     name: string,   // e.g. "game"
     span: Span,
 }
 
 Stmt_Return :: struct {
+    id: Stmt_Id,
     values: [dynamic]Expr,   // return values (1 for single, N for tuple)
     span:   Span,
 }
 
 Stmt_Break :: struct {
+    id: Stmt_Id,
     span: Span,
 }
 
 Stmt_Continue :: struct {
+    id: Stmt_Id,
     span: Span,
 }
 
@@ -774,11 +837,13 @@ Stmt_Continue :: struct {
 // pop_scope / emit_return_resets / emit_loop_exit machinery emits them before
 // arena reset.
 Stmt_Defer :: struct {
+    id: Stmt_Id,
     body: [dynamic]Stmt,
     span: Span,
 }
 
 Stmt_For :: struct {
+    id: Stmt_Id,
     init:      Stmt,           // nil for simple `for cond {}`
     condition: Expr,
     post:      Stmt,           // nil for simple `for cond {}`
@@ -808,6 +873,7 @@ Match_Arm :: struct {
 }
 
 Stmt_Match :: struct {
+    id: Stmt_Id,
     subject: Expr,
     arms:    [dynamic]Match_Arm,
     span:    Span,
@@ -821,6 +887,7 @@ Foreign_Fun :: struct {
 }
 
 Stmt_Foreign :: struct {
+    id: Stmt_Id,
     library:    string,              // e.g. "SDL2"
     prefix:     string,              // link prefix: prefix SDL_ → C symbol = "SDL_" + name
     decls:      [dynamic]Foreign_Fun,
@@ -1226,7 +1293,7 @@ parse_module :: proc(p: ^Parser) -> Stmt {
         seg := expect(p, .Identifier).text
         name = strings.concatenate({name, ".", seg})
     }
-    return Stmt_Module{name = name, span = start}
+    return Stmt_Module{id = next_stmt_id(), name = name, span = start}
 }
 
 // Build a single-name Stmt_Decl. Most callers want this shape.
@@ -1237,7 +1304,7 @@ make_single_decl :: proc(name: string, type_expr: Type_Expr, value: Expr, span: 
     if value != nil {
         append(&init_values, value)
     }
-    return new_clone(Stmt_Decl{
+    return new_stmt(Stmt_Decl{
         names          = names,
         type_expr      = type_expr,
         init_values    = init_values,
@@ -1344,7 +1411,7 @@ parse_stmt_inner :: proc(p: ^Parser) -> Stmt {
             // so the user sees a real diagnostic instead of a downstream type
             // error from a malformed Stmt_Decl.
             parse_error(p, current(p), PARSE_MALFORMED_USE_INCLUDE)
-            return Stmt_Call{expr = inc_expr, span = start}
+            return Stmt_Call{id = next_stmt_id(), expr = inc_expr, span = start}
         }
         // Infer name from last segment: "mara.time" → "time", "math" → "math"
         name := inc.path
@@ -1457,7 +1524,7 @@ parse_stmt_inner :: proc(p: ^Parser) -> Stmt {
     if current_kind(p) == .Identifier || current_kind(p) == .Ampersand {
         start := token_span(p,current(p))
         expr := parse_expr(p)
-        return Stmt_Call{expr = expr, span = start}
+        return Stmt_Call{id = next_stmt_id(), expr = expr, span = start}
     }
 
     // Fall through: not a valid statement
@@ -1473,7 +1540,7 @@ parse_stmt_inner :: proc(p: ^Parser) -> Stmt {
         parse_error(p, tok, PARSE_UNEXPECTED_TOKEN_STMT, tok.kind, tok.text)
     }
     advance(p)
-    return Stmt_Call{span = token_span(p,tok)}
+    return Stmt_Call{id = next_stmt_id(), span = token_span(p,tok)}
 }
 
 // ---------------------------------------------------------------------------
@@ -1655,7 +1722,7 @@ parse_return_type_clause :: proc(p: ^Parser, out: ^[dynamic]Type_Expr, fn_type :
 // N names accepts 0, 1, or N RHS values. Anything else is a parse error
 // with an explicit message — surfaces earlier than the type checker would.
 parse_decl_tail :: proc(p: ^Parser, names: [dynamic]string, start: Span, allow_var: bool, allow_defaults: bool, stop_at_group_break: bool) -> ^Stmt_Decl {
-    decl := new(Stmt_Decl)
+    decl := new_stmt(Stmt_Decl{})
     decl.names = names
     decl.span = start
 
@@ -1835,7 +1902,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
     // Case 1: fun { ... } — data-type fun, no params
     if current_kind(p) == .Left_Brace {
         body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
-        stmt := new(Stmt_Scope)
+        stmt := new_stmt(Stmt_Scope{})
         stmt.name = name
         stmt.kind = kind
         stmt.body = body
@@ -1901,7 +1968,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
             }
             skip_newlines(p)
             body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
-            stmt := new(Stmt_Scope)
+            stmt := new_stmt(Stmt_Scope{})
             stmt.name = name
             stmt.kind = kind
             stmt.generic_params = generic_params
@@ -1920,7 +1987,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
             // fun($T: type) { fields } — data-type fun with generic params only
             skip_newlines(p)
             body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
-            stmt := new(Stmt_Scope)
+            stmt := new_stmt(Stmt_Scope{})
             stmt.name = name
             stmt.kind = kind
             stmt.generic_params = generic_params
@@ -1937,7 +2004,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         parse_optional_return_types(p, &return_types)
         skip_newlines(p)
         body, is_intrinsic, intrinsic_name := parse_scope_body(p, commas = kind == .Struct)
-        stmt := new(Stmt_Scope)
+        stmt := new_stmt(Stmt_Scope{})
         stmt.name = name
         stmt.kind = kind
         stmt.return_types = return_types
@@ -2053,7 +2120,7 @@ parse_scope_def :: proc(p: ^Parser, name: string, start: Span, kind: Scope_Kind)
         if !already_exists { append(&generic_params, dp) }
     }
 
-    stmt := new(Stmt_Scope)
+    stmt := new_stmt(Stmt_Scope{})
     stmt.name = name
     stmt.kind = kind
     stmt.generic_params = generic_params
@@ -2205,7 +2272,7 @@ parse_union_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
 
     expect(p, .Right_Brace)
 
-    union_stmt := new(Stmt_Union_Def)
+    union_stmt := new_stmt(Stmt_Union_Def{})
     union_stmt.name = name
     union_stmt.tag_type = tag_type
     union_stmt.min_size = min_size
@@ -2237,7 +2304,7 @@ parse_error_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> Stmt
     }
     expect(p, .Right_Brace)
 
-    s := new(Stmt_Union_Def)
+    s := new_stmt(Stmt_Union_Def{})
     s.name = name
     s.tag_type = "u32"   // packed (set_id, tag) — see type-checker for assignment
     s.variants = variant_defs
@@ -2259,7 +2326,7 @@ parse_dispatch_def_with_name :: proc(p: ^Parser, name: string, start: Span) -> S
     }
     expect(p, .Right_Brace)
 
-    stmt := new(Stmt_Dispatch_Def)
+    stmt := new_stmt(Stmt_Dispatch_Def{})
     stmt.name = name
     stmt.functions = functions
     stmt.span = start
@@ -2283,7 +2350,7 @@ parse_overload :: proc(p: ^Parser) -> Stmt {
     }
 
     dispatch_name := expect(p, .Identifier).text
-    return Stmt_Overload{op = op, dispatch_name = dispatch_name, span = start}
+    return Stmt_Overload{id = next_stmt_id(), op = op, dispatch_name = dispatch_name, span = start}
 }
 
 
@@ -2350,7 +2417,7 @@ parse_foreign :: proc(p: ^Parser) -> Stmt {
 
     expect(p, .Right_Brace)
 
-    stmt := new(Stmt_Foreign)
+    stmt := new_stmt(Stmt_Foreign{})
     stmt.library = lib_tok.text
     stmt.prefix = prefix
     stmt.decls = decls
@@ -2367,26 +2434,26 @@ parse_return :: proc(p: ^Parser) -> Stmt {
     // greedily call parse_expr which errors on the trailing newline.
     kind := current_kind(p)
     if kind == .Newline || kind == .Right_Brace || kind == .Semicolon || kind == .EOF {
-        return Stmt_Return{values = values, span = start}
+        return Stmt_Return{id = next_stmt_id(), values = values, span = start}
     }
     append(&values, parse_expr(p))
     for current_kind(p) == .Comma {
         advance(p) // consume ','
         append(&values, parse_expr(p))
     }
-    return Stmt_Return{values = values, span = start}
+    return Stmt_Return{id = next_stmt_id(), values = values, span = start}
 }
 
 parse_break :: proc(p: ^Parser) -> Stmt {
     start := token_span(p,current(p))
     advance(p)
-    return Stmt_Break{span = start}
+    return Stmt_Break{id = next_stmt_id(), span = start}
 }
 
 parse_continue :: proc(p: ^Parser) -> Stmt {
     start := token_span(p,current(p))
     advance(p)
-    return Stmt_Continue{span = start}
+    return Stmt_Continue{id = next_stmt_id(), span = start}
 }
 
 // `defer <stmt>` or `defer { ... }`. The body runs on enclosing-scope exit
@@ -2410,7 +2477,7 @@ parse_defer :: proc(p: ^Parser) -> Stmt {
         append(&body, parse_stmt(p))
     }
 
-    stmt := new(Stmt_Defer)
+    stmt := new_stmt(Stmt_Defer{})
     stmt.body = body
     stmt.span = start
     return stmt
@@ -2473,7 +2540,7 @@ parse_if :: proc(p: ^Parser, is_comptime := false) -> Stmt {
         advance(p) // consume 'do'
         body: [dynamic]Stmt
         append(&body, parse_stmt(p))
-        stmt := new(Stmt_If)
+        stmt := new_stmt(Stmt_If{})
         stmt.condition = condition
         stmt.body = body
         stmt.is_comptime = is_comptime
@@ -2500,7 +2567,7 @@ parse_if :: proc(p: ^Parser, is_comptime := false) -> Stmt {
 
     expect(p, .Right_Brace)
 
-    stmt := new(Stmt_If)
+    stmt := new_stmt(Stmt_If{})
     stmt.condition = condition
     stmt.body = body
     stmt.else_body = else_body
@@ -2528,7 +2595,7 @@ parse_elif_chain :: proc(p: ^Parser) -> Stmt {
         else_body = parse_if_branch_body(p)
     }
 
-    stmt := new(Stmt_If)
+    stmt := new_stmt(Stmt_If{})
     stmt.condition = condition
     stmt.body = body
     stmt.else_body = else_body
@@ -2726,7 +2793,7 @@ parse_match :: proc(p: ^Parser) -> Stmt {
     }
     expect(p, .Right_Brace)
 
-    stmt := new(Stmt_Match)
+    stmt := new_stmt(Stmt_Match{})
     stmt.subject = subject
     stmt.arms = arms
     stmt.span = start
@@ -2800,7 +2867,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
                 p.no_struct_lit = false
                 body := parse_loop_body(p)
 
-                stmt := new(Stmt_For)
+                stmt := new_stmt(Stmt_For{})
                 stmt.is_range = true
                 stmt.loop_var = first_var
                 stmt.iter_type = iter_type_expr
@@ -2818,7 +2885,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
                 if elem_var == "_" do elem_var = ""
                 if index_var == "_" do index_var = ""
 
-                stmt := new(Stmt_For)
+                stmt := new_stmt(Stmt_For{})
                 stmt.is_collection_for = true
                 stmt.elem_var = elem_var
                 stmt.index_var = index_var
@@ -2847,7 +2914,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
         post_stmt, _ := try_parse_assign(p)
         body := parse_loop_body(p)
 
-        stmt := new(Stmt_For)
+        stmt := new_stmt(Stmt_For{})
         stmt.init = init_stmt
         stmt.condition = condition
         stmt.post = post_stmt
@@ -2863,7 +2930,7 @@ parse_for :: proc(p: ^Parser) -> Stmt {
     p.no_struct_lit = false
     body := parse_loop_body(p)
 
-    stmt := new(Stmt_For)
+    stmt := new_stmt(Stmt_For{})
     stmt.condition = condition
     stmt.body = body
     stmt.span = start
@@ -2877,12 +2944,12 @@ parse_for :: proc(p: ^Parser) -> Stmt {
 make_lhs_assign :: proc(lhs: Expr, value: Expr, start: Span, is_compound: bool = false) -> (Stmt, bool) {
     #partial switch t in lhs {
     case ^Expr_Field_Access:
-        return new_clone(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
+        return new_stmt(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
     case ^Expr_Index:
-        return new_clone(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
+        return new_stmt(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
     case ^Expr_Unary:
         if t.op == .Caret {
-            return new_clone(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
+            return new_stmt(Stmt_Assign{target = lhs, value = value, span = start, is_compound = is_compound}), true
         }
     }
     return {}, false
@@ -2974,7 +3041,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                     advance(p) // consume '='
                     mt_vals: [dynamic]Expr
                     append(&mt_vals, parse_expr(p))
-                    return new_clone(Stmt_Multi_Return_Assign{
+                    return new_stmt(Stmt_Multi_Return_Assign{
                         names   = names,
                         targets = targets,
                         values  = mt_vals,
@@ -2992,7 +3059,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                     // Single RHS (multi-return call or broadcast)
                     mt_vals: [dynamic]Expr
                     append(&mt_vals, first)
-                    return new_clone(Stmt_Multi_Return_Assign{
+                    return new_stmt(Stmt_Multi_Return_Assign{
                         names   = names,
                         targets = targets,
                         values  = mt_vals,
@@ -3009,12 +3076,12 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 assigns: [dynamic]^Stmt_Assign
                 for i := 0; i < len(names) && i < len(vals); i += 1 {
                     if names[i] != "" {
-                        append(&assigns, new_clone(Stmt_Assign{name = names[i], value = vals[i], span = start}))
+                        append(&assigns, new_stmt(Stmt_Assign{name = names[i], value = vals[i], span = start}))
                     } else if assign_stmt, lhs_ok := make_lhs_assign(targets[i], vals[i], start); lhs_ok {
                         append(&assigns, assign_stmt.(^Stmt_Assign))
                     }
                 }
-                return new_clone(Stmt_Multi_Assign{assigns = assigns, span = start}), true
+                return new_stmt(Stmt_Multi_Assign{assigns = assigns, span = start}), true
             }
             p.pos = saved_pos
             return {}, false
@@ -3037,9 +3104,9 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 assigns: [dynamic]^Stmt_Assign
                 for i := 0; i < len(names); i += 1 {
                     v := i == 0 ? val : clone_expr(val)
-                    append(&assigns, new_clone(Stmt_Assign{name = names[i], value = v, span = start}))
+                    append(&assigns, new_stmt(Stmt_Assign{name = names[i], value = v, span = start}))
                 }
-                return new_clone(Stmt_Multi_Assign{assigns = assigns, span = start}), true
+                return new_stmt(Stmt_Multi_Assign{assigns = assigns, span = start}), true
             }
             first := parse_expr(p)
             if current_kind(p) == .Comma {
@@ -3052,14 +3119,14 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                 }
                 assigns: [dynamic]^Stmt_Assign
                 for i := 0; i < len(names) && i < len(vals); i += 1 {
-                    append(&assigns, new_clone(Stmt_Assign{name = names[i], value = vals[i], span = start}))
+                    append(&assigns, new_stmt(Stmt_Assign{name = names[i], value = vals[i], span = start}))
                 }
-                return new_clone(Stmt_Multi_Assign{assigns = assigns, span = start}), true
+                return new_stmt(Stmt_Multi_Assign{assigns = assigns, span = start}), true
             }
             // Single RHS (multi-return call): x, y = call()
             reassign_vals: [dynamic]Expr
             append(&reassign_vals, first)
-            return new_clone(Stmt_Multi_Return_Assign{names = names, values = reassign_vals, span = start}), true
+            return new_stmt(Stmt_Multi_Return_Assign{names = names, values = reassign_vals, span = start}), true
         }
         // Not a multi-assign — restore and fall through to single-assign handling
         p.pos = saved_pos
@@ -3102,7 +3169,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             // Optional sized-slice default cap: `Name :: distinct [, 0]T(N)`.
             // Lets `x : Name` decl form pick up N without writing `Name(N)`.
             default_cap := try_parse_slice_cap_suffix(p, base_type)
-            return new_clone(Stmt_Distinct_Def{name = name_tok.text, base_type = base_type, default_cap_expr = default_cap, span = start}), true
+            return new_stmt(Stmt_Distinct_Def{name = name_tok.text, base_type = base_type, default_cap_expr = default_cap, span = start}), true
         }
 
         // `Name :: type(<type_expr>)` — transparent type alias. `type` is a
@@ -3118,7 +3185,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             base_type := parse_type_expr(p)
             default_cap := try_parse_slice_cap_suffix(p, base_type)
             if has_outer_paren { expect(p, .Right_Paren) }
-            return new_clone(Stmt_Distinct_Def{
+            return new_stmt(Stmt_Distinct_Def{
                 name             = name_tok.text,
                 base_type        = base_type,
                 default_cap_expr = default_cap,
@@ -3128,7 +3195,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         }
         // name :: expr (constant)
         value := parse_expr(p)
-        return new_clone(Stmt_Define{name = name_tok.text, value = value, span = start}), true
+        return new_stmt(Stmt_Define{name = name_tok.text, value = value, span = start}), true
 
     // name : type = expr  OR  name := expr
     case .Colon:
@@ -3151,7 +3218,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
             // x : type : expr — typed comptime constant
             advance(p) // consume ':'
             value := parse_expr(p)
-            return new_clone(Stmt_Define{name = name_tok.text, type_expr = type_expr, value = value, span = start}), true
+            return new_stmt(Stmt_Define{name = name_tok.text, type_expr = type_expr, value = value, span = start}), true
         }
         // No '=' — declaration without initializer (e.g. ev : SDL_Event)
         return make_single_decl(name_tok.text, type_expr, nil, start, slice_cap_expr = slice_cap), true
@@ -3160,7 +3227,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
     case .Equals:
         advance(p) // consume '='
         value := parse_expr(p)
-        return new_clone(Stmt_Assign{name = name_tok.text, value = value, span = start}), true
+        return new_stmt(Stmt_Assign{name = name_tok.text, value = value, span = start}), true
 
     // name += expr  (and other compound assignments)
     case .Plus_Equal, .Minus_Equal, .Mul_Equal, .Div_Equal, .Mod_Equal,
@@ -3173,7 +3240,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
         bin.op = compound_op
         bin.right = rhs
         bin.span = token_span(p,op_tok)
-        return new_clone(Stmt_Assign{name = name_tok.text, value = bin, span = start, is_compound = true}), true
+        return new_stmt(Stmt_Assign{name = name_tok.text, value = bin, span = start, is_compound = true}), true
 
     // name[...] or name.field or name^ — could be index/field/deref assignment
     case .Left_Bracket, .Dot, .Caret:
@@ -3198,7 +3265,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                         advance(p) // consume '='
                         value := parse_expr(p)
                         slice_target := new_expr(Expr_Slice{expr = lhs, low = low, high = high, span = target_span})
-                        return new_clone(Stmt_Assign{target = slice_target, value = value, span = start}), true
+                        return new_stmt(Stmt_Assign{target = slice_target, value = value, span = start}), true
                     }
                     // Not an assignment — can't use slice syntax as an expression statement
                     p.pos = saved_pos
@@ -3288,7 +3355,7 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                     assigns: [dynamic]^Stmt_Assign
                     for i in 0 ..< len(vals) {
                         if mt_names[i] != "" {
-                            append(&assigns, new_clone(Stmt_Assign{name = mt_names[i], value = vals[i], span = start, is_decl = saw_colon}))
+                            append(&assigns, new_stmt(Stmt_Assign{name = mt_names[i], value = vals[i], span = start, is_decl = saw_colon}))
                         } else if assign_stmt, lhs_ok := make_lhs_assign(mt_targets[i], vals[i], start); lhs_ok {
                             append(&assigns, assign_stmt.(^Stmt_Assign))
                         } else {
@@ -3296,11 +3363,11 @@ try_parse_assign :: proc(p: ^Parser) -> (Stmt, bool) {
                             return {}, false
                         }
                     }
-                    return new_clone(Stmt_Multi_Assign{assigns = assigns, span = start}), true
+                    return new_stmt(Stmt_Multi_Assign{assigns = assigns, span = start}), true
                 }
                 mt_vals: [dynamic]Expr
                 append(&mt_vals, rhs)
-                return new_clone(Stmt_Multi_Return_Assign{
+                return new_stmt(Stmt_Multi_Return_Assign{
                     names   = mt_names,
                     targets = mt_targets,
                     values  = mt_vals,
@@ -4906,34 +4973,34 @@ clone_expr :: proc(e: Expr) -> Expr {
 clone_stmt :: proc(s: Stmt) -> Stmt {
     switch v in s {
     case ^Stmt_Assign:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.value = clone_expr(v.value)
         c.target = clone_expr(v.target)
         return c
     case ^Stmt_Multi_Assign:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.assigns = {}
         for a in v.assigns {
-            ca := new_clone(a^)
+            ca := new_stmt(a^)
             ca.value = clone_expr(a.value)
             append(&c.assigns, ca)
         }
         return c
     case ^Stmt_Multi_Return_Assign:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.targets = clone_exprs(v.targets)
         c.values = clone_exprs(v.values)
         return c
     case Stmt_Call:
-        return Stmt_Call{expr = clone_expr(v.expr), span = v.span}
+        return Stmt_Call{id = next_stmt_id(), expr = clone_expr(v.expr), span = v.span}
     case ^Stmt_If:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.condition = clone_expr(v.condition)
         c.body = clone_stmts(v.body)
         c.else_body = clone_stmts(v.else_body)
         return c
     case ^Stmt_For:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.init = clone_stmt(v.init)
         c.condition = clone_expr(v.condition)
         c.post = clone_stmt(v.post)
@@ -4942,24 +5009,24 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         c.range_high = clone_expr(v.range_high)
         return c
     case ^Stmt_Scope:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         // defs and body are disjoint arrays of distinct nodes; clone each so the
-        // clone owns its own nodes (new_clone only shallow-copied the slices).
+        // clone owns its own nodes (new_stmt only shallow-copies the slices).
         c.body = clone_stmts(v.body)
         c.defs = clone_stmts(v.defs)
         return c
     case Stmt_Return:
-        return Stmt_Return{values = clone_exprs(v.values), span = v.span}
+        return Stmt_Return{id = next_stmt_id(), values = clone_exprs(v.values), span = v.span}
     case Stmt_Break:
-        return s
+        return Stmt_Break{id = next_stmt_id(), span = v.span}
     case Stmt_Continue:
-        return s
+        return Stmt_Continue{id = next_stmt_id(), span = v.span}
     case ^Stmt_Defer:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.body = clone_stmts(v.body)
         return c
     case ^Stmt_Match:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.subject = clone_expr(v.subject)
         c.arms = {}
         for arm in v.arms {
@@ -4988,13 +5055,13 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
     case Stmt_Module:
         return s
     case ^Stmt_Decl:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.names = {}
         for n in v.names { append(&c.names, n) }
         c.init_values = clone_exprs(v.init_values)
         return c
     case ^Stmt_Define:
-        c := new_clone(v^)
+        c := new_stmt(v^)
         c.value = clone_expr(v.value)
         return c
     }
