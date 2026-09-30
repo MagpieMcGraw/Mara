@@ -34,7 +34,7 @@ Llvm :: struct {
     by_value: Type,             // a union result: returned as an IR value (a slot like the rest: later)
     rets:    []Type,            // several results: each into the caller's slot for it, %sret.<i>
     slot:    string,            // the result slot: %sret, or a fallible constructor's Self, %sret.0
-    consumed: string,           // a param the result is built from (consumed_param_of): its argument
+    consumed: string,           // a param the result is built from (graph_consumed): its argument
     ctor:  bool,                // a struct's code: it builds Self in %sret, which starts zeroed
     main:  bool,                // main's body: `@main` returns i64, 0 when it falls off its end
     fields: strings.Builder,    // a constructor's field addresses, first in its entry
@@ -151,7 +151,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     // A fun that consumes a param into its result: its opening copy is
     // skipped when the caller passes that storage as the slot.
-    if k, consumes := consumed_param_of(cf).?; consumes { e.consumed = fmt.tprintf("%%%s.arg", cf.cg_params[k].name) }
+    if k, consumes := graph_consumed(e.pg, cf).?; consumes { e.consumed = fmt.tprintf("%%%s.arg", cf.cg_params[k].name) }
     params := make([dynamic]string, 0, len(cf.cg_params), context.temp_allocator)
     for p in cf.cg_params {
         ir, ok := llvm_param_type(p.type_)
@@ -506,7 +506,7 @@ llvm_builds_alone :: proc(e: ^Llvm, before: []Node_Id, t, x: Node_Id) -> bool {
             if len(ops) == 1 || pg.op[ops[0].op] != .Var || pg.refers[ops[0].op] != t { continue }
             callee := graph_called(e.pg, op)
             if callee == nil || llvm_passes_storage(callee) { return false }
-            if _, consumes := consumed_param_of(callee).?; consumes { return false }
+            if _, consumes := graph_consumed(e.pg, callee).?; consumes { return false }
         }
     }
     return true
@@ -2842,7 +2842,7 @@ llvm_result_place :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, result: Ty
 }
 
 // Each functional update `x = f(x, …)` — f consumes that argument (builds its
-// result from it alone, consumed_param_of) and nothing else it's handed can
+// result from it alone, graph_consumed) and nothing else it's handed can
 // reach x: x is both the argument and the result slot, and f skips its
 // opening copy. The argument's place is the destination's, computed before it
 // (a write's place comes first): the same operations, not done again.
@@ -2854,7 +2854,7 @@ llvm_in_place_updates :: proc(e: ^Llvm) {
             if pg.op[op] != .Call { continue }
             callee := graph_called(e.pg, op)
             if callee == nil { continue }
-            k, consumes := consumed_param_of(callee).?
+            k, consumes := graph_consumed(e.pg, callee).?
             u := e.user[op - e.node]
             if !consumes || u < 0 || pg.op[u] != .Write { continue }
             uops := graph_operands(pg, u)

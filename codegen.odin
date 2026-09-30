@@ -174,14 +174,6 @@ Fun_Info :: struct {
     param_types:       [dynamic]string,   // per-param IR types ("i64", "ptr", etc.)
     param_structs:     [dynamic]string,   // "" or struct name per param
     param_arrays:      [dynamic]^Type_Fixed_Array, // non-nil: fixed array, passed by immutable pointer
-    // The param the result is built from and nothing else (consumed_param_of):
-    // `x = f(x, …)` may pass x as both that argument and the result slot.
-    consumed_param:    Maybe(int),
-    // True for struct-returning fns whose body has find_nrvo_candidate hit:
-    // the callee constructs directly into %sret, so any caller-side
-    // sized-slice header re-init after the call would be a redundant
-    // write-of-same-values.
-    uses_struct_nrvo: bool,
 }
 
 Codegen :: struct {
@@ -417,10 +409,6 @@ lookup_fun_info :: proc(g: ^Codegen, fn_name: string) -> (Fun_Info, bool) {
     cf, found := g.checked.functions[fn_name]
     if !found { return {}, false }
     info := fun_info_of(g, cf)
-    // Only a DIRECT call knows which body runs, so only it may use the
-    // consumed-param summary: a function value of this signature could hold
-    // any function of that type (call_fun_info leaves it unset for those).
-    info.consumed_param = consumed_param_of(cf)
     g.fun_info_cache[fn_name] = info
     return info, true
 }
@@ -493,10 +481,6 @@ fun_info_of :: proc(g: ^Codegen, cf: ^Type_Scope) -> Fun_Info {
             append(&info.param_types, llvm_type_from_checker(p.type_))
             append(&info.param_structs, "")
         }
-    }
-
-    if info.ret_struct != "" {
-        info.uses_struct_nrvo = find_nrvo_candidate(cf.body[:]) != ""
     }
 
     return info

@@ -862,6 +862,15 @@ erroneous program reports, the negative fixtures say so.
       was built at its statement's origin, not its own, and an element's at its collection's
       type; a literal passed through a function value was never settled at its param's type
       (so never range-checked). test/void_ptr_store_neg.mara covers every case.
+      The returned local and the consumed param are graph queries: the builder's arena
+      decision takes the local every return of a fun reads whole (its body's returns, listed
+      as built) — no name scan of the syntax tree — and keeps a scope's mark where one of its
+      own locals keeps its space (a scope whose only big local is a `let` marked and reset for
+      nothing: let_big_view, Pounce's game_run). The consumed param is a table the graph
+      finishes with (`consumes`, dumped on the fun's node): the returned local declared as a
+      copy of a param, its one mention, of the result's type. The emitter reads it
+      (graph_consumed); the syntax-tree versions (consumed_param_of, find_nrvo_candidate, the
+      mention walkers) and two Fun_Info fields nothing read are deleted.
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines
