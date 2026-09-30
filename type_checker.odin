@@ -6260,6 +6260,13 @@ define_types :: proc(c: ^Checker, s: ^Stmt_Define) -> ^Assign_Types {
     return t
 }
 
+// Which of a destructure's names are lvalues: stored to, not declared.
+destructure_stores :: proc(s: ^Stmt_Multi_Return_Assign) -> []bool {
+    stores := make([]bool, len(s.names), context.temp_allocator)
+    for t, i in s.targets { if i < len(stores) { stores[i] = t != nil } }
+    return stores
+}
+
 destructure_types :: proc(c: ^Checker, s: ^Stmt_Multi_Return_Assign) -> ^[dynamic]Type {
     if t, ok := c.destructure_types[s.id]; ok { return t }
     t := new([dynamic]Type)
@@ -8453,7 +8460,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     // Built: the names it declares, the call, the branch on
                     // its err, then each other output written in turn.
                     mr: Graph_Destructure
-                    if b := fusing(c); b != nil { mr = graph_fuse_destructure(b, s) }
+                    if b := fusing(c); b != nil { mr = graph_fuse_destructure(b, s.id, s.span, s.names[:], destructure_stores(s), s.is_decl) }
                     // (The call is checked as a call, not an expression: it has
                     // no type of its own here.)
                     if fusing(c) != nil { c.asked, c.asked_written, c.fused = .Value, .Explicit, {} }
@@ -8465,7 +8472,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                             fuse_fail(c, "a `?` on no call built")
                         } else {
                             b.g.type_[call.v.op] = nil
-                            mr.call = graph_try_after(b, try_node, call.v)
+                            mr.call = graph_try_after(b, try_node.span, call.v)
                         }
                     }
                     returns := call_return_list(c, inner_call, env)
@@ -8506,7 +8513,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                     }
                                 }
                                 append(&destructure_types(c, s)^, distinct_base(resolved_type))
-                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i, destructure_types(c, s)^[i] if i < len(destructure_types(c, s)^) else nil) }
+                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, i, destructure_types(c, s)^[i] if i < len(destructure_types(c, s)^) else nil) }
                             }
                         }
                     }
@@ -8523,7 +8530,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                     _, of_call := s.values[0].(^Expr_Call)
                     if b := fusing(c); b != nil {
                         mark = graph_fuse_mark(b)
-                        if of_call { mr = graph_fuse_destructure(b, s) }
+                        if of_call { mr = graph_fuse_destructure(b, s.id, s.span, s.names[:], destructure_stores(s), s.is_decl) }
                     }
                     val_type: Type
                     call: Fused
@@ -8572,7 +8579,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                     }
                                 }
                                 append(&destructure_types(c, s)^, distinct_base(resolved_type))
-                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i, destructure_types(c, s)^[i] if i < len(destructure_types(c, s)^) else nil) }
+                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, i, destructure_types(c, s)^[i] if i < len(destructure_types(c, s)^) else nil) }
                             }
                         }
                     } else if is_any(val_type) {
@@ -8666,7 +8673,7 @@ check_field_broadcast :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, env: ^Type
     if b := fusing(c); b != nil && fl != nil {
         val: Fused
         val_type, val = fuse_expr(c, lit.broadcast_value, env)
-        if b := fusing(c); b != nil { graph_fuse_fill(b, lit, field_type, fl.dest, val.v) }
+        if b := fusing(c); b != nil { graph_fuse_fill(b, lit.span, field_type, fl.dest, val.v) }
         fl.built = true
     } else {
         val_type = check_expr(c, lit.broadcast_value, env)
@@ -9111,8 +9118,13 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
     // Built around its checks (graph_for).
     b := fusing(c)
     fl: Graph_For
-    if b != nil { fl = graph_fuse_for(b, s) }
-    defer if b != nil { graph_fuse_for_end(b, &fl, s) }
+    if b != nil {
+        _, end_literal := s.range_high.(^Expr_Number)
+        fl = graph_fuse_for(b, {span = s.span, var_name = s.loop_var, elem_name = s.elem_var, index_name = s.index_var,
+                                is_range = s.is_range, has_cond = s.condition != nil, has_step = s.post != nil,
+                                end_literal = end_literal})
+    }
+    defer if b != nil { graph_fuse_for_end(b, &fl) }
     if s.is_collection_for {
         // (A plain place: walked where the loop needs it, not here. Anything
         // else is held first, in a local the loop walks: fuse_loop_items.)
@@ -9163,14 +9175,14 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
 
         if fusing(c) != nil {
             _, is_self := s.collection.(^Expr_Self)
-            graph_fuse_for_collection(b, &fl, s, coll, coll_type, is_self, distinct_base(elem_type))
+            graph_fuse_for_collection(b, &fl, coll, coll_type, is_self, distinct_base(elem_type))
         }
         check_scope(c, s.body, child)
     } else if s.is_range {
         // The counter first, then each bound at its type (known once both
         // are checked).
         bounds := [2]int{-1, -1}
-        if b != nil { graph_fuse_range_counter(b, &fl, s) }
+        if b != nil { graph_fuse_range_counter(b, &fl) }
         low_type, lo := fuse_expr(c, s.range_low, child)
         if fusing(c) != nil {
             bounds[0] = len(b.fuse.checks)
@@ -9219,7 +9231,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
 
         type_env_set(child, s.loop_var, iter_type)
 
-        if b != nil { graph_fuse_range(b, &fl, s, bounds, distinct_base(iter_type)) }
+        if b != nil { graph_fuse_range(b, &fl, bounds, distinct_base(iter_type)) }
         check_scope(c, s.body, child)
     } else {
         // C-style for or simple for-condition loop.
@@ -9231,7 +9243,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
             register_and_check_declarations(c, init_stmts[:], child)
             check_bodies(c, init_stmts[:], child)
         }
-        if b != nil { graph_fuse_for_runs(b, &fl, s) }
+        if b != nil { graph_fuse_for_runs(b, &fl) }
         cond_type: Type
         cond: Fused
         if s.condition != nil {
@@ -9239,7 +9251,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         } else {
             cond_type = check_expr(c, s.condition, child)
         }
-        if b != nil && s.condition != nil { graph_fuse_for_cond(b, &fl, s, cond.v) }
+        if b != nil && s.condition != nil { graph_fuse_for_cond(b, &fl, cond.v) }
         if _, ok := cond_type.(Type_Bool); !ok && !is_any(cond_type) {
             check_error(c, s.span, TYPE_CONDITION_BOOL, type_name(cond_type))
         }
@@ -9395,10 +9407,10 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             // Built: the branch, then each block as it is checked.
             b := fusing(c)
             fi: Graph_If
-            if b != nil { fi = graph_fuse_if(b, cond.v, s) }
+            if b != nil { fi = graph_fuse_if(b, cond.v, s.span, len(s.else_body) > 0) }
             child := type_env_block_child(env)
             check_scope(c, s.body, child)
-            if b != nil { graph_fuse_else(b, &fi, s) }
+            if b != nil { graph_fuse_else(b, &fi, s.span) }
             if len(s.else_body) > 0 {
                 else_child := type_env_block_child(env)
                 check_scope(c, s.else_body, else_child)
@@ -9496,7 +9508,7 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             child := type_env_block_child(env)
             b := fusing(c)
             gd: Graph_Defer
-            if b != nil { gd = graph_fuse_defer(b, s) }
+            if b != nil { gd = graph_fuse_defer(b, s.span) }
             check_scope(c, s.body, child)
             if b != nil { graph_fuse_defer_end(b, gd) }
 
@@ -9701,7 +9713,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
             if ts, is_scope := expr_type(c, lit).(^Type_Scope); is_scope && ts.kind == .Struct && !ts.is_module && !lit.zero_init {
                 args = fuse_ctor_args(c, ts, lit.span)
             }
-            if b := fusing(c); b != nil { gl = graph_fuse_literal(b, lit, expr_type(c, lit), fl.dest, args) }
+            if b := fusing(c); b != nil { gl = graph_fuse_literal(b, lit.span, lit.name, lit.zero_init, expr_type(c, lit), fl.dest, args) }
             if gl != nil { fuse_variant_defaults(c, gl.variant, lit, gl.parent, lit.span) }
         }
         fl.built = gl != nil
@@ -9733,7 +9745,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                     }
                 }
                 if all_ok {
-                    if b := fusing(c); b != nil && gl != nil && !graph_fuse_spread(b, gl, lit, spread.v) {
+                    if b := fusing(c); b != nil && gl != nil && !graph_fuse_spread(b, gl, lit.span, spread.v) {
                         fuse_fail(c, "a spread literal of no call")
                     }
                     return
@@ -9946,7 +9958,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
         if lit.is_broadcast {
             fl.built = true   // (its value, then the fill: below)
         } else {
-            gl = graph_fuse_literal(b, lit, lit_t, fl.dest)
+            gl = graph_fuse_literal(b, lit.span, lit.name, lit.zero_init, lit_t, fl.dest)
             fl.built = gl != nil
         }
     }
@@ -9961,7 +9973,7 @@ check_array_struct_literal :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, fa: ^
         val: Fused
         if fl != nil && fl.built && fusing(c) != nil {
             val_type, val = fuse_expr(c, lit.broadcast_value, env)
-            if b := fusing(c); b != nil { graph_fuse_fill(b, lit, lit_t, fl.dest, val.v) }
+            if b := fusing(c); b != nil { graph_fuse_fill(b, lit.span, lit_t, fl.dest, val.v) }
         } else {
             val_type = check_expr(c, lit.broadcast_value, env)
         }
@@ -10647,7 +10659,7 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
 fuse_arm_body :: proc(c: ^Checker, gm: ^Graph_Match, s: ^Stmt_Match, arm: ^Match_Arm, ga: Graph_Arm, i: int, env: ^Type_Scope) {
     b := c.gb if gm != nil else nil
     k: Graph_Block
-    if b != nil { k = graph_fuse_arm(b, gm, s, arm, ga, i) }
+    if b != nil { k = graph_fuse_arm(b, gm, ga, i) }
     check_scope(c, arm.body, env)
     if b != nil { graph_fuse_arm_end(b, gm, k) }
 }
@@ -10684,24 +10696,24 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     _, is_err_match := subj_type.(Type_Err)
     if fusing(c) != nil && b != nil {
         _, is_self := s.subject.(^Expr_Self)
-        gm = graph_fuse_match_begin(b, s, slot, subject, subj_type, is_self)
+        gm = graph_fuse_match_begin(b, s.span, len(s.arms), slot, subject, subj_type, is_self)
         for &arm, i in s.arms {
             if arm.is_else { continue }
             if gm.is_union || arm.value == nil {
-                graph_fuse_match_tag(b, gm, s, i)
+                graph_fuse_match_tag(b, gm, s.span, i)
                 continue
             }
             // (An enum's variant named bare matches as `.Variant` does: its
             // tag, filled in when the arm is resolved.)
             if ident, is_ident := arm.value.(^Expr_Ident); is_ident && is_enum_match && ident.name in et.variants {
-                graph_fuse_match_tag(b, gm, s, i)
+                graph_fuse_match_tag(b, gm, s.span, i)
                 continue
             }
             _, v := fuse_expr(c, arm.value, env)
             graph_fuse_match_value(b, gm, v.v)
             prechecked[i] = true
         }
-        graph_fuse_match_switch(b, gm, s)
+        graph_fuse_match_switch(b, gm, s.span)
     }
     defer if gm != nil { graph_fuse_match_end(b, gm) }
 
@@ -10745,6 +10757,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     resolved := make([]Graph_Arm, len(s.arms), context.temp_allocator)
     for &arm, arm_i in s.arms {
         ra := &resolved[arm_i]
+        ra.is_else, ra.is_union = arm.is_else, arm.is_union_arm
         if arm.dot_shorthand != "" {
             // Dot shorthand arm: .Variant — resolve against subject's enum or union type
             ra.variant = arm.dot_shorthand
@@ -12325,7 +12338,7 @@ check_array_literal :: proc(c: ^Checker, e: ^Expr_Array, env: ^Type_Scope) -> Ty
     placed := want != .Into && c.asked_span != {}
     at := c.asked_span if into_temp || placed else e.span
     if temp { d = graph_fuse_temp(b, at, fuse_temp_type(d)) }
-    ga := graph_fuse_array(b, e, d)
+    ga := graph_fuse_array(b, e.span, d)
     t := check_array_literal_impl(c, e, env, ga)
     if fusing(c) == nil { return t }
     if b.g.type_[ga.zero] == nil { b.g.type_[ga.zero] = t }
@@ -12570,7 +12583,7 @@ check_struct_literal_impl :: proc(c: ^Checker, e: ^Expr_Struct_Literal, env: ^Ty
             // (Built: its zero, where it goes.)
             if fl := c.lit; fl != nil && fl.e == e {
                 c.lit = nil
-                if b := fusing(c); b != nil { fl.built = graph_fuse_literal(b, e, resolved, fl.dest) != nil }
+                if b := fusing(c); b != nil { fl.built = graph_fuse_literal(b, e.span, e.name, e.zero_init, resolved, fl.dest) != nil }
             }
             return resolved
         }
@@ -13001,9 +13014,14 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         }
         set_expr_type(c, e, Type_Void{})
         if b := fusing(c); b != nil && want == .Value {
-            sides: [2]bool
-            if bin, is_bin := e.cond.(^Expr_Binary); is_bin { sides = {assert_side_is_literal(c, bin.left), assert_side_is_literal(c, bin.right)} }
-            graph_assert(b, e, cond.v, w, sides)
+            sides: Maybe([2]string)
+            if bin, is_bin := e.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) && e.lhs_text != "" && e.rhs_text != "" {
+                sides = [2]string{
+                    "" if assert_side_is_literal(c, bin.left) else e.lhs_text,
+                    "" if assert_side_is_literal(c, bin.right) else e.rhs_text,
+                }
+            }
+            graph_assert(b, e.span, e.cond_text, cond.v, w, sides)
             fuse_done(c, NO_VALUE)
         }
         return Type_Void{}
@@ -13143,7 +13161,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         set_expr_type(c, e, resolved)
         if b != nil && fusing(c) != nil {
             _, is_self := e.storage.(^Expr_Self)
-            fuse_done(c, graph_fuse_carve(b, e, resolved, storage, src_type, addressed, is_self, count_op, w))
+            fuse_done(c, graph_fuse_carve(b, e.span, e.keyword, resolved, storage, src_type, addressed, is_self, count_op, w))
         }
         return resolved
     case ^Expr_If:
@@ -15301,7 +15319,7 @@ check_try :: proc(c: ^Checker, e: ^Expr_Try, env: ^Type_Scope) -> Type {
         inner_t = check_expr(c, e.inner, env)
     }
     _ = inner_t
-    defer if b := fusing(c); b != nil && want != .None && want != .Place && inner.ok { fuse_done(c, graph_try_after(b, e, inner.v)) }
+    defer if b := fusing(c); b != nil && want != .None && want != .Place && inner.ok { fuse_done(c, graph_try_after(b, e.span, inner.v)) }
 
     call, is_call := e.inner.(^Expr_Call)
     if !is_call {
