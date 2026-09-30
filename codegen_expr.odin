@@ -42,32 +42,6 @@ emit_number_literal :: proc(target_type: string, value: f64, int_value: i128, is
 // Binary expression codegen
 // ---------------------------------------------------------------------------
 
-// A comparison side whose source text already states its value — a number,
-// bool, or char literal (incl. a negated number), or an enum/union variant
-// reference (.Paused, State.Paused) — is omitted from the assert failure
-// report: `game.running == false` reports only game.running. Named constants
-// are NOT literals: their text doesn't show their value, so they report.
-assert_side_is_literal :: proc(ex: Expr) -> bool {
-    #partial switch v in ex {
-    case ^Expr_Number: return true
-    case ^Expr_Bool:   return true
-    case ^Expr_Char:   return true
-    case ^Expr_Unary:
-        if v.op == .Minus {
-            if _, is_num := v.operand.(^Expr_Number); is_num { return true }
-        }
-    case ^Expr_Ident:
-        #partial switch _ in v.resolved {
-        case Resolved_Enum_Variant, Resolved_Union_Variant: return true
-        }
-    case ^Expr_Field_Access:
-        #partial switch _ in v.resolved {
-        case Resolved_Enum_Variant, Resolved_Union_Variant: return true
-        }
-    }
-    return false
-}
-
 // Whether an assert on a comparison in this IR type reports its sides'
 // values: what printf can carry — bools, ints up to 64 bits, floats.
 assert_reports :: proc(ir_type: string) -> bool {

@@ -288,6 +288,7 @@ Graph_Builder :: struct {
     // The calls waiting for their callee's node: a call can come before its
     // callee in written order.
     calls:      [dynamic]Pending_Call,
+    callee_of:  map[Node_Id]^Type_Scope,   // each call's or construction's, as built
     arena:      bool,    // the program has a scope arena: big values live on it
     runs:       [dynamic]^Run,   // every run made, freed at the end
     nodes:      int,             // how many nodes exist; the columns run ahead
@@ -480,10 +481,20 @@ graph_builder_new :: proc(checked: ^Checked_Program, programs: map[string]^Progr
 // A module's statement, and where it goes: before what its module made after
 // it (an anchor in the program's segment).
 Graph_Module_Stmt :: struct {
-    s:      Stmt,
-    module: Node_Id,
-    anchor: int,
-    built:  bool,
+    s:        Stmt,
+    module:   Node_Id,
+    anchor:   int,
+    built:    bool,
+    declared: Graph_Declared,
+}
+
+// What a statement declares, as the checker settled it: each name's type,
+// in the order it names them, and what it does (graph_stmt_kind's, or the
+// checker's: a broadcast's statement is its copies').
+Graph_Declared :: struct {
+    types: []Type,
+    kind:  Stmt_Kind,
+    set:   bool,
 }
 
 // The program's modules, before anything is checked: the compiler's globals
@@ -520,9 +531,10 @@ graph_modules :: proc(b: ^Graph_Builder, programs: map[string]^Program) {
 // A module's statement the checker has settled — a constant, a variable, a
 // destructure: its declarations, in a segment of their own, put where the
 // statement is. (Once: a statement is settled by the first pass over it.)
-graph_module_stmt :: proc(b: ^Graph_Builder, s: Stmt) {
+graph_module_stmt :: proc(b: ^Graph_Builder, s: Stmt, declared: Graph_Declared) {
     i, is_module := b.module_stmts[stmt_key(s)]
     if !is_module || b.module_list[i].built { return }
+    b.module_list[i].declared = declared
     #partial switch _ in s {
     case ^Stmt_Define, ^Stmt_Assign, ^Stmt_Decl, ^Stmt_Multi_Assign, ^Stmt_Multi_Return_Assign:
         graph_module_build(b, &b.module_list[i])
@@ -537,7 +549,7 @@ graph_module_build :: proc(b: ^Graph_Builder, ms: ^Graph_Module_Stmt) {
     si, saved := graph_segment_enter(b)
     code, names, base := b.code, len(b.names), b.fn_base
     b.code, b.fn_base = {}, names
-    graph_decl_stmt(b, ms.s, ms.module, {kind = .Field})
+    graph_decl_stmt(b, ms.s, ms.module, {kind = .Field}, ms.declared)
     b.code, b.fn_base = code, base
     resize(&b.names, names)
     graph_segment_leave(b, saved)
@@ -548,6 +560,7 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     for _, list in b.by_span { delete(list) }
     delete(b.by_span)
     delete(b.calls)
+    delete(b.callee_of)
     for r in b.runs {
         delete(r.ops)
         delete(r.waiting)
@@ -991,7 +1004,8 @@ graph_index :: proc(b: ^Graph_Builder) {
 // declarations, and no code. (A body's code is the checker's, built as it is
 // checked.)
 @(private="file")
-graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site) {
+graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_Site, declared: Graph_Declared = {}) {
+    type_at :: proc(d: Graph_Declared, i: int) -> Type { return d.types[i] if i < len(d.types) else nil }
     // (A constant the checker built: put here.)
     if def, is_def := s.(^Stmt_Define); is_def {
         if si, built := b.const_segs[rawptr(def)]; built {
@@ -1002,19 +1016,13 @@ graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_
     }
     saved_stmt := b.stmt
     b.stmt = i32(len(b.g.stmts))
-    append(&b.g.stmts, Graph_Stmt{span = stmt_span(s), kind = graph_stmt_kind(s)})
+    append(&b.g.stmts, Graph_Stmt{span = stmt_span(s), kind = declared.kind if declared.set else graph_stmt_kind(s)})
     defer b.stmt = saved_stmt
     #partial switch v in s {
     case ^Stmt_Decl:
-        if site.kind == .Field {
-            for name in v.names { graph_decl(b, site, parent, name, nil, v.span) }
-        } else if len(v.checked) > 0 {
-            for inner in v.checked { graph_decl_stmt(b, inner, parent, site) }
-        } else {
-            graph_fatal(v.span, "declaration of '%s' reached the graph unchecked", v.names[0])
-        }
+        for name, i in v.names { graph_decl(b, site, parent, name, type_at(declared, i), v.span) }
     case ^Stmt_Assign:
-        t := v.env_type if v.env_type != nil else v.var_type
+        t := type_at(declared, 0)
         if _, is_import := v.value.(^Expr_Include); is_import {
             graph_node(b, .Import, .Explicit, parent, v.name, t, v.span)
         } else if v.is_decl && v.target == nil {
@@ -1023,21 +1031,20 @@ graph_decl_stmt :: proc(b: ^Graph_Builder, s: Stmt, parent: Node_Id, site: Decl_
         // (`this_program = Program(…)` names the program's arena, set up at
         // main's entry: it runs nothing here.)
     case ^Stmt_Multi_Assign:
-        for a in v.assigns { graph_decl_stmt(b, a, parent, site) }
-    case ^Stmt_Multi_Return_Assign:
-        if len(v.checked) > 0 {
-            for inner in v.checked { graph_decl_stmt(b, inner, parent, site) }
-            break
+        for a, i in v.assigns {
+            one := declared
+            one.types = declared.types[i:i + 1] if i < len(declared.types) else nil
+            graph_decl_stmt(b, a, parent, site, one)
         }
+    case ^Stmt_Multi_Return_Assign:
         for name, i in v.names {
             if !v.is_decl || name == "" || name == "_" { continue }
             if i < len(v.targets) && v.targets[i] != nil { continue }   // an lvalue stores
-            t: Type = v.var_types[i] if i < len(v.var_types) else nil
-            graph_decl(b, site, parent, name, t, v.span)
+            graph_decl(b, site, parent, name, type_at(declared, i), v.span)
         }
     case ^Stmt_Define:
-        // A constant's value is resolved before the graph: no operations.
-        t := v.env_type if v.env_type != nil else v.var_type
+        // (A constant the checker didn't build — an include: a module.)
+        t := type_at(declared, 0)
         kind: Node_Kind = .Const
         if _, is_import := v.value.(^Expr_Include); is_import { kind = .Import }   // `core :: include mara.core`
         d := graph_node(b, kind, .Explicit, parent, v.name, t, v.span)
@@ -1078,7 +1085,7 @@ graph_stmt_kind :: proc(s: Stmt) -> Stmt_Kind {
         if v.name == "_" || v.name == "this_program" { return .Other }
         return .Assign
     case ^Stmt_Multi_Return_Assign:
-        return .Destructure if len(v.checked) == 0 else .Other
+        return .Destructure   // (a broadcast's is its copies': the checker's)
     case ^Stmt_Decl:  return .Decl   // (a local's is its checked assignments; a field's, itself)
     case ^Stmt_For:   return .Loop
     case ^Stmt_If:    return .If
@@ -1533,22 +1540,6 @@ graph_slot :: proc(b: ^Graph_Builder, name: string, t: Type, span: Span) -> Node
     return graph_node(b, .Local, .Synthetic, b.code.block, name, graph_settled(t, pointee = true), span)
 }
 
-// An expression that names a place without running anything: walking it again
-// gives the same place.
-graph_pure_place :: proc(e: Expr) -> bool {
-    #partial switch v in e {
-    case ^Expr_Ident:        return v.lowered == nil || graph_pure_place(v.lowered)
-    case ^Expr_Self:         return true
-    case ^Expr_Field_Access: return graph_pure_place(v.expr)
-    case ^Expr_Unary:        return v.op == .Caret && graph_pure_place(v.operand)
-    case ^Expr_Index:
-        #partial switch i in v.index {
-        case ^Expr_Number, ^Expr_Ident: return graph_pure_place(v.expr)
-        }
-    }
-    return false
-}
-
 // A plain place walked once more (another run): the operations that name it
 // — a variable, a constant table, a field, an element at a constant or at a
 // variable's value, what a pointer points at, bytes seen as a type — copied.
@@ -1692,9 +1683,10 @@ graph_elem_type :: proc(t: Type) -> Type {
 // `?` after its call is built: a branch on the call's err — its failure
 // returns the err — then the call's value, where it didn't fail.
 graph_try_after :: proc(b: ^Graph_Builder, v: ^Expr_Try, inner: Operand) -> Operand {
-    n := graph_outputs(b, v.inner)
+    outs := graph_outputs_op(b, inner, v.span)
+    n := graph_outputs(b, outs)
     if n == 0 { graph_fatal(v.span, "`?` on a call with no err output") }
-    err := Operand{graph_outputs_op(b, v.inner, inner), i32(n - 1)}
+    err := Operand{outs, i32(n - 1)}
     fail, ok := graph_run_new(b), graph_run_new(b)
     failed := graph_op_value(b, .Cast, .Implied, v.span, Type_Bool{}, "bool", err)   // an error: nonzero
     graph_branch(b, failed, fail, ok, .Implied, v.span)
@@ -1715,24 +1707,24 @@ graph_try_after :: proc(b: ^Graph_Builder, v: ^Expr_Try, inner: Operand) -> Oper
 // The operation whose outputs a call's value `v` is the first of: the call; a
 // fallible construction's, its construct (the value is the built place, read).
 @(private="file")
-graph_outputs_op :: proc(b: ^Graph_Builder, e: Expr, v: Operand) -> Node_Id {
-    if call, is_call := e.(^Expr_Call); is_call {
-        if rf, ok := call.resolved_func.?; ok {
-            if callee := graph_callee(b, rf); callee != nil && callee.kind == .Struct { return b.code.constructed }
-        }
-    }
-    return v.op
+graph_outputs_op :: proc(b: ^Graph_Builder, v: Operand, span: Span) -> Node_Id {
+    if v.op != NO_NODE && b.g.op[v.op] == .Call { return v.op }
+    if v.op != NO_NODE && b.g.op[v.op] == .Read && b.code.constructed != NO_NODE { return b.code.constructed }
+    graph_fatal(span, "a call's outputs, built as no call")
 }
 
 // How many outputs a call has: its callee's return list (a fallible
-// constructor's includes the struct itself).
+// constructor's includes the struct itself); through a function value, its
+// signature's.
 @(private="file")
-graph_outputs :: proc(b: ^Graph_Builder, e: Expr) -> int {
-    call, ok := e.(^Expr_Call)
-    if !ok { return 0 }
-    rf, resolved := call.resolved_func.?
-    if !resolved { return 0 }
-    callee := graph_callee(b, rf)
+graph_outputs :: proc(b: ^Graph_Builder, op: Node_Id) -> int {
+    callee := b.callee_of[op] or_else nil
+    if callee == nil && b.g.op[op] == .Call {
+        ops := graph_built_operands(b, op)
+        if len(ops) > 0 && ops[0].op != NO_NODE {
+            if ft, is_fn := distinct_base(b.g.type_[ops[0].op]).(^Type_Scope); is_fn && ft.kind == .Fun { callee = ft }
+        }
+    }
     if callee == nil { return 0 }
     if list, is_ctor := constructor_effective_returns(callee); is_ctor { return len(list) }
     return len(callee.return_types)
@@ -1754,6 +1746,7 @@ graph_callee :: proc(b: ^Graph_Builder, rf: Resolved_Func) -> ^Type_Scope {
 graph_call_op :: proc(b: ^Graph_Builder, kind: Op_Kind, w: Written, span: Span, callee: ^Type_Scope, t: Type, operands: ..Operand) -> Node_Id {
     op := graph_op(b, kind, w, span, t, graph_call_name(callee), ..operands)
     append(&b.calls, Pending_Call{op = op, callee = callee})
+    b.callee_of[op] = callee
     // (An instance's name is known once checking is done.)
     if f := b.fuse; f != nil { append(&f.calls, Pending_Call{op = op, callee = callee}) }
     return op
@@ -1791,31 +1784,17 @@ graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: st
     return o
 }
 
-// The value a name resolved to a constant stands for: an enum variant's, or a
-// named constant's when it is a literal (or names one). Others have none here.
-graph_const_value :: proc(r: Resolved_Name, checked: ^Checked_Program = nil) -> Maybe(Const_Value) {
+// The value a name resolved to stands for, when the resolution holds it: an
+// enum variant's, an array's length. (A named constant's is its code's:
+// graph_fold_uses.)
+graph_const_value :: proc(r: Resolved_Name) -> Maybe(Const_Value) {
     #partial switch v in r {
     case Resolved_Enum_Variant:
         return Const_Value{int = i128(v.value)}
     case Resolved_Constant:
         if v.value_expr == nil { return Const_Value{int = i128(v.int_value)} }
-        return graph_literal_value(v.value_expr, checked)
     }
     return nil
-}
-
-// Whether a value written into a partial array fills only a prefix of it: a
-// string constant, or a slice.
-graph_fills_prefix :: proc(value: Expr) -> bool {
-    if _, is_slice := distinct_base(expr_type(value)).(^Type_Slice); is_slice { return true }
-    #partial switch v in value {
-    case ^Expr_String:       return true
-    case ^Expr_Ident:
-        if c, ok := graph_const_value(v.resolved).?; ok { return c.is_text }
-    case ^Expr_Field_Access:
-        if c, ok := graph_const_value(v.resolved).?; ok { return c.is_text }
-    }
-    return false
 }
 
 // A named register-value constant where it's used: its declaration's
@@ -1823,7 +1802,7 @@ graph_fills_prefix :: proc(value: Expr) -> bool {
 // (graph_fold_uses). An enum's variant, a length: its value.
 graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
     rc, is_const := r.(Resolved_Constant)
-    if !is_const || rc.value_expr == nil { return graph_const(b, w, span, t, name, graph_const_value(r, b.checked)) }
+    if !is_const || rc.value_expr == nil { return graph_const(b, w, span, t, name, graph_const_value(r)) }
     o := graph_op_value(b, .Const, w, span, t, name)
     append(&b.tables, Graph_Table{o.op, expr_identity(rc.value_expr)})
     graph_const_settles(b, o.op, t)
@@ -1846,55 +1825,6 @@ graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, n
     return o
 }
 
-@(private="file")
-graph_literal_value :: proc(e: Expr, checked: ^Checked_Program = nil) -> Maybe(Const_Value) {
-    #partial switch v in e {
-    case ^Expr_Number: return Const_Value{int = v.int_value, float = v.value, is_float = v.is_float}
-    case ^Expr_Char:   return Const_Value{int = i128(v.value)}
-    case ^Expr_Bool:   return Const_Value{int = 1 if v.value else 0}
-    case ^Expr_String: return Const_Value{text = v.value, is_text = true}
-    case ^Expr_Unary:
-        if v.op != .Minus { return nil }
-        x, ok := graph_literal_value(v.operand, checked).?
-        if !ok { return nil }
-        return Const_Value{int = -x.int, float = -x.float, is_float = x.is_float}
-    case ^Expr_Ident:          return graph_const_value(v.resolved, checked)
-    case ^Expr_Field_Access:   return graph_const_value(v.resolved, checked)
-    case ^Expr_Size_Of:        return graph_size_of(v.resolved_type, checked)   // (a union's, laid out)
-    case ^Expr_Binary:
-        // Integer arithmetic of constants (`KB :: 1 << 10`): its value.
-        if _, overloaded := v.overload_fn.?; overloaded { return nil }
-        l, lok := graph_literal_value(v.left, checked).?
-        r, rok := graph_literal_value(v.right, checked).?
-        if !lok || !rok || l.is_float || r.is_float || l.is_text || r.is_text { return nil }
-        x: i128
-        #partial switch v.op {
-        case .Plus:      x = l.int + r.int
-        case .Minus:     x = l.int - r.int
-        case .Star:      x = l.int * r.int
-        case .Ampersand: x = l.int & r.int
-        case .Pipe:      x = l.int | r.int
-        case .Tilde:     x = l.int ~ r.int
-        case .Slash:     if r.int == 0 { return nil }; x = l.int / r.int   // (truncating, as the code's)
-        case .Modulo:    if r.int == 0 { return nil }; x = l.int % r.int
-        case .Shift_Left, .Shift_Right:
-            if r.int < 0 || r.int > 63 { return nil }
-            x = l.int << uint(r.int) if v.op == .Shift_Left else l.int >> uint(r.int)
-        case:            return nil
-        }
-        if x < -(i128(1) << 63) || x >= i128(1) << 64 { return nil }
-        return Const_Value{int = x}
-    case ^Expr_Call:
-        // A conversion of a constant: its value, when the type holds it.
-        args := call_args(v)
-        if len(args) != 1 || !graph_converts(v) { return nil }
-        x, ok := graph_literal_value(args[0], checked).?
-        if !ok { return nil }
-        return graph_fits(x, v.type_)
-    }
-    return nil
-}
-
 // A type's size in bytes, by Mara's layout (a union's by its variants', which
 // the program's structs give).
 graph_size_of :: proc(t: Type, checked: ^Checked_Program = nil) -> Maybe(Const_Value) {
@@ -1904,33 +1834,6 @@ graph_size_of :: proc(t: Type, checked: ^Checked_Program = nil) -> Maybe(Const_V
         return Const_Value{int = i128(elem_byte_size(llvm_type_from_checker(t), checked))}
     }
     return Const_Value{int = i128(checker_type_byte_size(t))}
-}
-
-// Whether a call converts its argument: a numeric cast, or to a distinct type.
-@(private="file")
-graph_converts :: proc(v: ^Expr_Call) -> bool {
-    name := call_name(v)
-    if _, is_cast := cast_result_type(name); is_cast { return true }
-    rf, resolved := v.resolved_func.?
-    d, is_distinct := v.type_.(^Type_Distinct)
-    return resolved && rf.callee == nil && is_distinct && (d.source_name == name || d.name == name)
-}
-
-// Constant x as a value of type t, when t holds it exactly.
-@(private="file")
-graph_fits :: proc(x: Const_Value, t: Type) -> Maybe(Const_Value) {
-    #partial switch n in distinct_base(t) {
-    case Type_Numeric:
-        if n.kind == .Float { return Const_Value{float = x.float if x.is_float else f64(x.int), is_float = true} }
-        if x.is_float { return nil }
-        lo, hi: i128 = 0, (i128(1) << uint(n.bits)) - 1
-        if n.kind == .Signed { lo, hi = -(i128(1) << uint(n.bits - 1)), (i128(1) << uint(n.bits - 1)) - 1 }
-        if x.int < lo || x.int > hi { return nil }
-        return x
-    case Type_F64:
-        return Const_Value{float = x.float if x.is_float else f64(x.int), is_float = true}
-    }
-    return nil
 }
 
 
@@ -2718,26 +2621,27 @@ graph_fuse_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
 }
 
 // A struct's field declaration (graph_stmt at its field site): its fields,
-// typed as the struct's; each name's lowered assignment stores into its own
-// and is this statement's.
-graph_fuse_fields :: proc(b: ^Graph_Builder, v: ^Stmt_Decl) {
+// typed as the struct's; each name's assignment (`lowered`, the checker's
+// lowering of it; `inits`, the values as written) stores into its own and
+// is this statement's.
+graph_fuse_fields :: proc(b: ^Graph_Builder, v: ^Stmt_Decl, lowered: []Stmt, inits: []Expr) {
     f := b.fuse
     ids := make([]Node_Id, len(v.names))
     for name, i in v.names {
         d := graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, v.span)
         ids[i] = d
-        if i < len(v.checked) {
-            key := stmt_key(v.checked[i])
+        if i < len(lowered) {
+            key := stmt_key(lowered[i])
             f.fields[key] = d
             f.stmts[key] = b.stmt
-            if inits := decl_init(v); i < len(inits) { f.field_inits[key] = inits[i] }
+            if i < len(inits) { f.field_inits[key] = inits[i] }
         }
     }
     // (Several from one call — `a, b := f()`, lowered to its destructure:
     // each output written to its field, graph_init_many.)
-    if len(v.names) > 1 && len(v.checked) == 1 {
-        if _, is_mr := v.checked[0].(^Stmt_Multi_Return_Assign); is_mr {
-            f.field_outs[stmt_key(v.checked[0])] = ids
+    if len(v.names) > 1 && len(lowered) == 1 {
+        if _, is_mr := lowered[0].(^Stmt_Multi_Return_Assign); is_mr {
+            f.field_outs[stmt_key(lowered[0])] = ids
             return
         }
     }
@@ -2834,13 +2738,14 @@ graph_fuse_drop_since :: proc(b: ^Graph_Builder, m: Graph_Mark) {
 }
 
 // An assert of its condition's value; a comparison's sides as written, for
-// its failure's message.
-graph_assert :: proc(b: ^Graph_Builder, v: ^Expr_Assert, cond: Operand, w: Written) {
+// its failure's message — but a side whose text states its value (`literal`,
+// the checker's: assert_side_is_literal).
+graph_assert :: proc(b: ^Graph_Builder, v: ^Expr_Assert, cond: Operand, w: Written, literal: [2]bool) {
     a := graph_op(b, .Assert, w, v.span, nil, v.cond_text, cond)
     if bin, is_bin := v.cond.(^Expr_Binary); is_bin && is_comparison_op(bin.op) && v.lhs_text != "" && v.rhs_text != "" {
         b.g.assert_sides[a] = {
-            "" if assert_side_is_literal(bin.left) else v.lhs_text,
-            "" if assert_side_is_literal(bin.right) else v.rhs_text,
+            "" if literal[0] else v.lhs_text,
+            "" if literal[1] else v.rhs_text,
         }
     }
 }
@@ -3113,19 +3018,19 @@ graph_fuse_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Sp
 // as its address (of type t), else a place — then the carve. It carves from
 // the storage's header: `&s` is s's, a `^[]byte` what it points at; or,
 // positional (`&bytes[i]`), the view of the bytes there as what's taken.
-graph_fuse_carve :: proc(b: ^Graph_Builder, v: ^Expr_Take, storage: Operand, t: Type, addressed, is_self: bool, count: Operand, w: Written) -> Operand {
+graph_fuse_carve :: proc(b: ^Graph_Builder, v: ^Expr_Take, taken: Type, storage: Operand, t: Type, addressed, is_self: bool, count: Operand, w: Written) -> Operand {
     from := storage
     if addressed {
         if storage.op == NO_NODE || b.g.op[storage.op] != .Address { graph_fatal(v.span, "a take's `&` built as no address") }
         from = graph_built_operands(b, storage.op)[0]
         graph_drop(b, storage.op, NO_VALUE)
         if b.g.op[from.op] == .Index && is_byte_buffer(b.g.type_[graph_built_operands(b, from.op)[0].op]) {
-            graph_fuse_view(b, from, v.type_, false, v.span)
+            graph_fuse_view(b, from, taken, false, v.span)
         }
     } else {
         from = graph_base_of(b, storage, t, v.span, is_self)
     }
-    return graph_op_value(b, .Carve, w, v.span, v.type_, v.keyword, from, count)
+    return graph_op_value(b, .Carve, w, v.span, taken, v.keyword, from, count)
 }
 
 // A plain place the checker built where it was checked, walked where it's
@@ -3162,15 +3067,15 @@ graph_fuse_destructure :: proc(b: ^Graph_Builder, v: ^Stmt_Multi_Return_Assign) 
     return mr
 }
 
-graph_fuse_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure, v: ^Stmt_Multi_Return_Assign, i: int) {
+// (`t`: the name's type, the checker's.)
+graph_fuse_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure, v: ^Stmt_Multi_Return_Assign, i: int, t: Type) {
     name := v.names[i]
     target := i < len(v.targets) && v.targets[i] != nil
     if name == "_" || name == "" && !target { return }
     val := mr.call
-    if i > 0 { val = {graph_outputs_op(b, v.values[0], mr.call), i32(i)} }
+    if i > 0 { val = {graph_outputs_op(b, mr.call, v.span), i32(i)} }
     dest := mr.place
     if !target {
-        t: Type = v.var_types[i] if i < len(v.var_types) else nil
         if mr.decls[i] != NO_NODE { graph_fuse_typed(b, mr.decls[i], t) }
         dest = graph_var(b, name, mr.decls[i], t, v.span)
     }
@@ -3242,24 +3147,34 @@ graph_fuse_subject :: proc(b: ^Graph_Builder, v: ^Stmt_Match, gm: ^Graph_Match, 
 
 // An arm, resolved: its tag, its run and block, and — a union's arm that
 // binds its payload — the binding, the payload's place.
-graph_fuse_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, v: ^Stmt_Match, arm: ^Match_Arm, i: int) -> Graph_Block {
+// An arm as the checker resolved it: the variant it matches and its tag,
+// and — a union's arm that binds its payload — the name and the variant's
+// struct.
+Graph_Arm :: struct {
+    variant: string,
+    tag:     int,
+    bound:   string,
+    payload: Type,
+}
+
+graph_fuse_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match, v: ^Stmt_Match, arm: ^Match_Arm, ga: Graph_Arm, i: int) -> Graph_Block {
     if id := gm.tags[i]; id != NO_NODE {
-        b.g.name[id] = arm.variant
-        b.g.consts[id] = Const_Value{int = i128(arm.resolved_tag)}
+        b.g.name[id] = ga.variant
+        b.g.consts[id] = Const_Value{int = i128(ga.tag)}
     }
     span := gm.span
     b.code.run = gm.arms[i]
-    label := "else" if arm.is_else else fmt.aprintf("arm %s", arm.variant)
+    label := "else" if arm.is_else else fmt.aprintf("arm %s", ga.variant)
     k := Graph_Block{n = graph_node(b, .Block, .Explicit, b.code.block, label, nil, span), outer = b.code.block, span = span}
     b.code.block = k.n
     graph_scope_open(b, k.n, span)
-    if arm.is_union_arm && arm.bound_name != "" {
-        t := graph_arm_type(b, arm, span)
-        bound := graph_node(b, .Local, .Explicit, k.n, arm.bound_name, t, span)
+    if arm.is_union_arm && ga.bound != "" {
+        if ga.payload == nil { graph_fatal(span, "match arm '%s' has no resolved variant", ga.variant) }
+        bound := graph_node(b, .Local, .Explicit, k.n, ga.bound, ga.payload, span)
         // The binding is the payload's place, not a copy.
-        payload := graph_op(b, .Variant, .Explicit, span, t, arm.bound_name, graph_fuse_subject(b, v, gm))
+        payload := graph_op(b, .Variant, .Explicit, span, ga.payload, ga.bound, graph_fuse_subject(b, v, gm))
         b.g.refers[payload] = bound
-        graph_bind(b, arm.bound_name, bound)   // after the subject's place: it may reuse the name
+        graph_bind(b, ga.bound, bound)   // after the subject's place: it may reuse the name
     }
     return k
 }
@@ -3374,6 +3289,7 @@ Graph_For :: struct {
     coll:                    Operand,   // a plain place collection's place, the checker's
     coll_t:                  Type,
     coll_self:               bool,
+    elem_t:                  Type,      // a collection loop's element's
     check, body, post, done: ^Run,
     body_block:              Node_Id,
     has_post:                bool,
@@ -3407,8 +3323,7 @@ graph_fuse_range_bound :: proc(b: ^Graph_Builder, v: Operand, t: Type, span: Spa
 // The range's bounds checked: the counter typed, the end held (a literal's
 // is itself), the check that the range counts up — kept when a bound is no
 // constant — and the counter's first value; then the check run.
-graph_fuse_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, bounds: [2]int) {
-    ct := v.var_type
+graph_fuse_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, bounds: [2]int, ct: Type) {
     b.g.type_[fl.counter] = ct
     for k in bounds { if k >= 0 { b.fuse.checks[k].ct = ct } }
     if _, is_lit := v.range_high.(^Expr_Number); !is_lit {
@@ -3425,8 +3340,8 @@ graph_fuse_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, bounds
 // A collection loop, the collection checked (a plain place, `place` of type
 // `t`: walked where the loop needs it): a slice's elements as they are when
 // the loop begins, the element and the index; then the check run.
-graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, place: Operand, t: Type, is_self: bool) {
-    fl.coll, fl.coll_t, fl.coll_self = place, t, is_self
+graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, place: Operand, t: Type, is_self: bool, elem_t: Type) {
+    fl.coll, fl.coll_t, fl.coll_self, fl.elem_t = place, t, is_self, elem_t
     if fl.coll_slot == NO_NODE {
         if view := graph_loop_view_of(t); view != nil {
             fl.coll_slot = graph_slot(b, "items", view, fl.span)
@@ -3437,7 +3352,7 @@ graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_Fo
         }
     }
     if v.elem_var != "" {
-        fl.elem = graph_node(b, .Local, .Explicit, fl.f, v.elem_var, v.elem_type_, fl.span)
+        fl.elem = graph_node(b, .Local, .Explicit, fl.f, v.elem_var, elem_t, fl.span)
         graph_bind(b, v.elem_var, fl.elem)
     }
     index_t := Type(slice_header_width_type)
@@ -3537,9 +3452,10 @@ graph_fuse_for_body :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
         ct := b.g.type_[fl.counter]
         at := graph_read(b, graph_var(b, b.g.name[fl.counter], fl.counter, ct, span), ct, span)
         at = graph_widen(b, at, slice_header_width_type, span)
-        slot := graph_op_value(b, .Index, .Synthetic, span, v.elem_type_, "", graph_coll_place(b, fl, span), at)
-        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.elem_var, fl.elem, v.elem_type_, span),
-                 graph_read(b, slot, v.elem_type_, span))
+        et := fl.elem_t
+        slot := graph_op_value(b, .Index, .Synthetic, span, et, "", graph_coll_place(b, fl, span), at)
+        graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, v.elem_var, fl.elem, et, span),
+                 graph_read(b, slot, et, span))
     }
 }
 
@@ -3661,9 +3577,8 @@ graph_fuse_literal_elem :: proc(gl: ^Graph_Literal, i: int, elem_t: Type) -> Des
 // Where the literal's field goes: named, or its position's (graph_literal_writes).
 // `Foo{call()}` (graph_spread_writes), the call built: each field its
 // result. False when it resolved to no function.
-graph_fuse_spread :: proc(b: ^Graph_Builder, gl: ^Graph_Literal, v: ^Expr_Struct_Literal, call: ^Expr_Call, c: Operand) -> bool {
-    callee: ^Type_Scope
-    if rf, resolved := call.resolved_func.?; resolved { callee = graph_callee(b, rf) }
+graph_fuse_spread :: proc(b: ^Graph_Builder, gl: ^Graph_Literal, v: ^Expr_Struct_Literal, c: Operand) -> bool {
+    callee := b.callee_of[c.op] or_else nil if c.op != NO_NODE else nil
     if callee == nil || gl.sd == nil { return false }
     graph_spread_results(b, v, gl.sd, &gl.parent, callee, c)
     return true
@@ -4190,14 +4105,6 @@ graph_tag_type :: proc(t: Type) -> Type {
     case "i32": return Type_Numeric{.Signed, 32}
     }
     return Type_Numeric{.Signed, 64}
-}
-
-// A union arm's payload: the variant struct the checker resolved.
-@(private="file")
-graph_arm_type :: proc(b: ^Graph_Builder, arm: ^Match_Arm, span: Span) -> Type {
-    if st, ok := b.checked.table.structs[arm.resolved_struct]; ok { return st }
-    if ft, ok := b.checked.table.funs[arm.resolved_struct]; ok    { return ft }
-    graph_fatal(span, "match arm '%s' has no resolved variant", arm.variant)
 }
 
 // --- checks -------------------------------------------------------------------

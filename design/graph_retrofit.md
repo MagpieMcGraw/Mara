@@ -822,7 +822,7 @@ erroneous program reports, the negative fixtures say so.
       `MARA_FUSE=log` prints why a body fell back and each body the builder builds. Graph
       identical in all 275 programs at every step, shuffled too. test_1M: 33 s vs 28 s with
       `MARA_FUSE=0` (canonicalize 2.7 s is the cost to cut)
-- [ ] The builder deleted: module-level declarations and constants from the checker too.
+- [x] The builder deleted: module-level declarations and constants from the checker too.
       Done: fusion is mandatory — the graph is built from a clean check, where the checker
       builds every body, and a body it didn't build is a graph error naming why (`MARA_FUSE=0`
       and the shuffled build are gone). The builder's statement walk and expression walk are
@@ -851,7 +851,7 @@ erroneous program reports, the negative fixtures say so.
       placing of scopes where they are written; the leaves, plain places and defaults rebuilt
       where used (a variant's field defaults, a constructor's param defaults), read from the
       syntax tree's annotations
-- [ ] The last readers of annotations: `void` into a pointer checked where the store is checked;
+- [x] The last readers of annotations: `void` into a pointer checked where the store is checked;
       the returned local and the consumed param as graph queries; constant tables from values the
       checker evaluated; hit testing from origins
       Done: `void` into a pointer is a query over the graph (flow_check_void): a `void` as
@@ -927,6 +927,23 @@ erroneous program reports, the negative fixtures say so.
       emitter's integer evaluator and checked.constant_values are gone. Left: telling text by
       its expression where a value fills a partial array's prefix (graph_fills_prefix) — with
       the leaves.
+      The leaves (2026-09-30): nothing outside the checker reads what the checker wrote on the
+      syntax tree. Plain places the builder walked again — a match's subject, a loop's
+      collection and a range's literal end, a slice's base, a byte span's target, a take's
+      storage — are built by the checker as it checks them; where the builder walked one
+      again (an arm's payload, a fixed array's loop runs, the slice after its bounds) it
+      copies the operations the checker built (graph_place_again) and leaves out the first
+      building when nothing there uses it. The leaf builders (literals, names, #self,
+      constants: fuse_leaf_value, fuse_leaf_place) are the checker's, with the type its check
+      returned; the builder's plain-place walk and the syntax tree's constant folder are gone
+      (graph_plain_place, graph_leaf, graph_literal_value, …). What the builder took from
+      annotations it now takes from the checker: a take's, a loop's counter's and element's
+      types, a match arm's variant, tag and payload (Graph_Arm), what a module's statement
+      declares (Graph_Declared, the statement kind of a broadcast its copies'), a struct's
+      field declarations' lowering, an assert side's literalness; a call's outputs from its
+      callee as built (b.callee_of). The pure-place test and text-filling test are the
+      checker's (fuse_pure_place, fuse_fills_prefix). Graph and IR identical throughout (one
+      field's `= void` now typed; a loop's slot after its collection's place).
 - [ ] Annotations, `lowered_*`, their accessors and `ast_shape.odin` deleted
 
 ## Baselines

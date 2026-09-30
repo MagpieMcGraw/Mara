@@ -5754,7 +5754,7 @@ fuse_hold :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, span: Span) -> (Type, 
     t := fuse_store_into(c, e, env, graph_dest_var("temp", slot, nil), span)
     b = fusing(c)
     if b == nil { return t, NO_VALUE }
-    graph_fuse_prefix_end(b, prefix, is_partial_array(t) && graph_fills_prefix(e), t)
+    graph_fuse_prefix_end(b, prefix, is_partial_array(t) && fuse_fills_prefix(e, t), t)
     graph_fuse_typed(b, slot, t)
     return t, graph_var(b, "temp", slot, t, span)
 }
@@ -6057,6 +6057,70 @@ Fuse_Assign :: struct {
     field:      bool,         // the declaration is a struct's field
 }
 
+// An expression that names a place without running anything: walking it again
+// gives the same place.
+fuse_pure_place :: proc(e: Expr) -> bool {
+    #partial switch v in e {
+    case ^Expr_Ident:        return v.lowered == nil || fuse_pure_place(v.lowered)
+    case ^Expr_Self:         return true
+    case ^Expr_Field_Access: return fuse_pure_place(v.expr)
+    case ^Expr_Unary:        return v.op == .Caret && fuse_pure_place(v.operand)
+    case ^Expr_Index:
+        #partial switch i in v.index {
+        case ^Expr_Number, ^Expr_Ident: return fuse_pure_place(v.expr)
+        }
+    }
+    return false
+}
+
+
+
+// A comparison side whose source text already states its value — a number,
+// bool, or char literal (incl. a negated number), or an enum/union variant
+// reference (.Paused, State.Paused) — is omitted from the assert failure
+// report: `game.running == false` reports only game.running. Named constants
+// are NOT literals: their text doesn't show their value, so they report.
+assert_side_is_literal :: proc(ex: Expr) -> bool {
+    #partial switch v in ex {
+    case ^Expr_Number: return true
+    case ^Expr_Bool:   return true
+    case ^Expr_Char:   return true
+    case ^Expr_Unary:
+        if v.op == .Minus {
+            if _, is_num := v.operand.(^Expr_Number); is_num { return true }
+        }
+    case ^Expr_Ident:
+        #partial switch _ in v.resolved {
+        case Resolved_Enum_Variant, Resolved_Union_Variant: return true
+        }
+    case ^Expr_Field_Access:
+        #partial switch _ in v.resolved {
+        case Resolved_Enum_Variant, Resolved_Union_Variant: return true
+        }
+    }
+    return false
+}
+
+// Whether a value (of type vt) written into a partial array fills only a
+// prefix of it: a slice's elements, or text.
+fuse_fills_prefix :: proc(value: Expr, vt: Type) -> bool {
+    if _, is_slice := distinct_base(vt).(^Type_Slice); is_slice { return true }
+    return fuse_is_text(value)
+}
+
+// Whether an expression is text: a string literal, or a name of a constant
+// whose value is.
+fuse_is_text :: proc(e: Expr) -> bool {
+    r: Resolved_Name
+    #partial switch v in e {
+    case ^Expr_String:       return true
+    case ^Expr_Ident:        r = v.resolved
+    case ^Expr_Field_Access: r = v.resolved
+    }
+    if rc, ok := r.(Resolved_Constant); ok && rc.value_expr != nil { return fuse_is_text(rc.value_expr) }
+    return false
+}
+
 // Whether what was built is a text constant: its global (a table's is no
 // partial array; a string literal is built as one of its own).
 fuse_is_text_constant :: proc(b: ^Graph_Builder, r: Fused) -> bool {
@@ -6064,6 +6128,34 @@ fuse_is_text_constant :: proc(b: ^Graph_Builder, r: Fused) -> bool {
     op := r.v.op
     if !r.place && b.g.op[op] == .Read { op = graph_built_operands(b, op)[0].op }
     return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(b.g.type_[op])
+}
+
+// What a statement declares, as checked (graph_decl_stmt): each name's
+// type, in order, and what it does — a broadcast's statement is its copies'.
+fuse_declared :: proc(s: Stmt) -> Graph_Declared {
+    d := Graph_Declared{kind = graph_stmt_kind(s), set = true}
+    types := make([dynamic]Type, context.temp_allocator)
+    declared :: proc(a: ^Stmt_Assign) -> Type { return a.env_type if a.env_type != nil else a.var_type }
+    #partial switch v in s {
+    case ^Stmt_Assign:
+        append(&types, declared(v))
+    case ^Stmt_Multi_Assign:
+        for a in v.assigns { append(&types, declared(a)) }
+    case ^Stmt_Multi_Return_Assign:
+        if len(v.checked) > 0 {
+            d.kind = .Other
+            for inner in v.checked {
+                a, _ := inner.(^Stmt_Assign)
+                append(&types, declared(a) if a != nil else nil)
+            }
+        } else {
+            for _, i in v.names { append(&types, v.var_types[i] if i < len(v.var_types) else nil) }
+        }
+    case ^Stmt_Define:
+        append(&types, v.env_type if v.env_type != nil else v.var_type)
+    }
+    d.types = types[:]
+    return d
 }
 
 // A constant's value, checked and built: its code (graph_const_begin), the
@@ -6205,7 +6297,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         }
         // (A text written to a new partial array fills a prefix of it.)
         wrote, zeroed := fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, fa.decl, t), s.span, settle = true)
-        if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, zeroed || wrote && is_partial_array(t) && graph_fills_prefix(s.value), t) }
+        if fa.prefixed { graph_fuse_prefix_end(b, fa.prefix, zeroed || wrote && is_partial_array(t) && fuse_fills_prefix(s.value, fa.value_type), t) }
         if zeroed && !fa.prefixed { fuse_fail(c, "a new partial array read from bytes") }
         // (An array of untyped elements held as itself — `a := [1, 2, 3]`,
         // an if of such literals — built at its own type: its nodes, the
@@ -7048,7 +7140,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
     for stmt in stmts {
         fs := fuse_stmt(c, stmt)
         defer fuse_stmt_end(fs)
-        defer if c.gb != nil { graph_module_stmt(c.gb, stmt) }   // (a module's, settled: its declarations)
+        defer if c.gb != nil { graph_module_stmt(c.gb, stmt, fuse_declared(stmt)) }   // (a module's, settled: its declarations)
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
             // Generic union: registration happens in Pass 1a (template only).
@@ -7521,7 +7613,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // struct's), each value stored into one; the declaration is one
             // statement (its lowering's are that one).
             if b := fusing(c); b != nil && b.fuse.ts.kind == .Struct && b.code.block == b.fuse.root {
-                graph_fuse_fields(b, s)
+                graph_fuse_fields(b, s, s.checked[:], decl_init(s)[:])
             }
             register_and_check_declarations(c, s.checked[:], env, owner, public_env)
         case ^Stmt_Assign:
@@ -8277,7 +8369,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                     }
                                 }
                                 append(&s.var_types, distinct_base(resolved_type))
-                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i) }
+                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i, s.var_types[i] if i < len(s.var_types) else nil) }
                             }
                         }
                     }
@@ -8343,7 +8435,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                                     }
                                 }
                                 append(&s.var_types, distinct_base(resolved_type))
-                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i) }
+                                if b := fusing(c); b != nil && mr.on { graph_fuse_destructure_write(b, &mr, s, i, s.var_types[i] if i < len(s.var_types) else nil) }
                             }
                         }
                     } else if is_any(val_type) {
@@ -8378,8 +8470,8 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                             }
                             append(&s.checked, Stmt(a))
                         }
-                        // (Its statement is its copies': graph_stmt_kind's Other.)
-                        if b := fusing(c); b != nil { graph_fuse_stmt_kind(b, graph_stmt_kind(s)) }
+                        // (Its statement is its copies'.)
+                        if b := fusing(c); b != nil { graph_fuse_stmt_kind(b, .Other) }
                         register_and_check_declarations(c, s.checked[:], env, owner, public_env)
                     }
                 }
@@ -8888,7 +8980,7 @@ fuse_loop_items :: proc(c: ^Checker, fl: ^Graph_For, s: ^Stmt_For, env: ^Type_Sc
     if b := fusing(c); b != nil {
         if view := graph_loop_view_of(t); view != nil {
             _, is_self := s.collection.(^Expr_Self)
-            fills := is_partial_array(t) && graph_fills_prefix(s.collection)
+            fills := is_partial_array(t) && fuse_fills_prefix(s.collection, t)
             graph_fuse_items_view(b, fl, &gi, r.v, r.place, t, view, is_self, fills)
         } else {
             graph_fuse_typed(b, fl.coll_slot, t)
@@ -8911,7 +9003,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         // else is held first, in a local the loop walks: fuse_loop_items.)
         coll_type: Type
         coll := NO_VALUE
-        if b != nil && !graph_pure_place(s.collection) {
+        if b != nil && !fuse_pure_place(s.collection) {
             coll_type = fuse_loop_items(c, &fl, s, child)
         } else if b != nil {
             r: Fused
@@ -8957,7 +9049,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
 
         if fusing(c) != nil {
             _, is_self := s.collection.(^Expr_Self)
-            graph_fuse_for_collection(b, &fl, s, coll, coll_type, is_self)
+            graph_fuse_for_collection(b, &fl, s, coll, coll_type, is_self, distinct_base(elem_type))
         }
         check_scope(c, s.body, child)
     } else if s.is_range {
@@ -9014,7 +9106,7 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         type_env_set(child, s.loop_var, iter_type)
         s.var_type = distinct_base(iter_type)
 
-        if b != nil { graph_fuse_range(b, &fl, s, bounds) }
+        if b != nil { graph_fuse_range(b, &fl, s, bounds, distinct_base(iter_type)) }
         check_scope(c, s.body, child)
     } else {
         // C-style for or simple for-condition loop.
@@ -9529,7 +9621,7 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                 }
                 if all_ok {
                     lit.is_spread = true
-                    if b := fusing(c); b != nil && gl != nil && !graph_fuse_spread(b, gl, lit, call, spread.v) {
+                    if b := fusing(c); b != nil && gl != nil && !graph_fuse_spread(b, gl, lit, spread.v) {
                         fuse_fail(c, "a spread literal of no call")
                     }
                     return
@@ -10077,7 +10169,7 @@ check_slice_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
     // known once it is checked: both are built, one left out
     // (graph_fuse_span_target).
     b := fusing(c)
-    if b != nil && !graph_pure_place(sl.expr) {
+    if b != nil && !fuse_pure_place(sl.expr) {
         fuse_fail(c, "a slice of no plain place")
         b = nil
     }
@@ -10447,7 +10539,15 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
 fuse_arm_body :: proc(c: ^Checker, gm: ^Graph_Match, s: ^Stmt_Match, arm: ^Match_Arm, i: int, env: ^Type_Scope) {
     b := c.gb if gm != nil else nil
     k: Graph_Block
-    if b != nil { k = graph_fuse_arm(b, gm, s, arm, i) }
+    if b != nil {
+        ga := Graph_Arm{variant = arm.variant, tag = arm.resolved_tag, bound = arm.bound_name}
+        if st, ok := c.table.structs[arm.resolved_struct]; ok {
+            ga.payload = st
+        } else if ft, ok := c.table.funs[arm.resolved_struct]; ok {
+            ga.payload = ft
+        }
+        k = graph_fuse_arm(b, gm, s, arm, ga, i)
+    }
     check_scope(c, arm.body, env)
     if b != nil { graph_fuse_arm_end(b, gm, k) }
 }
@@ -10468,7 +10568,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     slot := NO_NODE
     subj_type: Type
     subject := NO_VALUE
-    if b != nil && !graph_pure_place(s.subject) {
+    if b != nil && !fuse_pure_place(s.subject) {
         slot = graph_slot(b, "subject", nil, s.span)
         subj_type = fuse_store_into(c, s.subject, env, graph_dest_var("subject", slot, nil), s.span)
         if fusing(c) != nil { graph_fuse_typed(b, slot, subj_type) }
@@ -12276,7 +12376,7 @@ check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
             fuse_fail(c, "an if's branch viewed")
             return t
         }
-        if fi.prefix[k] != {} { graph_fuse_prefix_end(b, fi.prefix[k], is_partial_array(t) && graph_fills_prefix(branch), t) }
+        if fi.prefix[k] != {} { graph_fuse_prefix_end(b, fi.prefix[k], is_partial_array(t) && fuse_fills_prefix(branch, bt), t) }
     }
     for k in fi.widen { if k >= 0 { b.fuse.widens[k].to = t } }
     // (Its local holds its value: an array of untyped elements settled —
@@ -12819,7 +12919,9 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         }
         e.type_ = Type_Void{}
         if b := fusing(c); b != nil && want == .Value {
-            graph_assert(b, e, cond.v, w)
+            sides: [2]bool
+            if bin, is_bin := e.cond.(^Expr_Binary); is_bin { sides = {assert_side_is_literal(bin.left), assert_side_is_literal(bin.right)} }
+            graph_assert(b, e, cond.v, w, sides)
             fuse_done(c, NO_VALUE)
         }
         return Type_Void{}
@@ -12960,7 +13062,7 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
         e.type_ = resolved
         if b != nil && fusing(c) != nil {
             _, is_self := e.storage.(^Expr_Self)
-            fuse_done(c, graph_fuse_carve(b, e, storage, src_type, addressed, is_self, count_op, w))
+            fuse_done(c, graph_fuse_carve(b, e, resolved, storage, src_type, addressed, is_self, count_op, w))
         }
         return resolved
     case ^Expr_If:
@@ -15827,8 +15929,8 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
 // Whether a take's storage is a plain place (`&s`, `&bytes[i]`, `s`): what
 // the builder walks where the carve is.
 fuse_carves_place :: proc(e: ^Expr_Take) -> bool {
-    if u, is_addr := e.storage.(^Expr_Unary); is_addr && u.op == .Ampersand { return graph_pure_place(u.operand) }
-    return graph_pure_place(e.storage)
+    if u, is_addr := e.storage.(^Expr_Unary); is_addr && u.op == .Ampersand { return fuse_pure_place(u.operand) }
+    return fuse_pure_place(e.storage)
 }
 
 // A slice's bound, built: at the header's width (as it is, `raw`).
@@ -15844,7 +15946,7 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
     lower_subscript_dots(e.expr, e.low)
     lower_subscript_dots(e.expr, e.high)
     target_type: Type
-    if b := fusing(c); b != nil && fs != nil && !graph_pure_place(e.expr) {
+    if b := fusing(c); b != nil && fs != nil && !fuse_pure_place(e.expr) {
         // A base that is no plain place, built as it is checked, put after
         // the bounds: a field's, an element's, a pointer's place (over a
         // call's result, say) as it is; else — a call's result, text — held

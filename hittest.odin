@@ -98,7 +98,6 @@ hit_expr :: proc(e: Expr, i: int, out: ^[dynamic]Hit) {
         add_expr(out, "Expr_Struct_Literal", e, i)
         for f in v.fields { hit_expr(f.value, i, out) }
         hit_expr(v.broadcast_value, i, out)
-        for av in v.array_values { hit_expr(av, i, out) }
     case ^Expr_Field_Access:
         add_expr(out, "Expr_Field_Access", e, i)
         hit_expr(v.expr, i, out)
