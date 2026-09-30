@@ -3107,7 +3107,9 @@ infer_type_params :: proc(subst: ^map[string]Type, type_expr: Type_Expr, actual_
             // The caller pre-populates subst with nil values for all generic param names
         }
         if t.name in subst^ && subst[t.name] == nil {
-            subst[t.name] = actual
+            // (An untyped argument — a literal, an open binding — binds its
+            // settled type, as a declaration would; it converts at the call.)
+            subst[t.name] = solidify_type(actual)
         }
     case ^Type_Pointer:
         if pt, ok := actual.(^Type_Ptr); ok {
@@ -3407,24 +3409,30 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     defer delete(as_)
     array_values: [dynamic]bool   // (an argument that is an array's value, no place)
     defer delete(array_values)
+    literal_args: [dynamic]Fuse_Literal_Arg
+    defer delete(literal_args)
     // Step 1: Check all argument types
     arg_types: [dynamic]Type
     defer delete(arg_types)
-    for arg in args {
+    for arg, i in args {
         if b != nil && fusing(c) != nil {
+            from := b.nodes
             t, r := fuse_expr(c, arg, env, .Either, w)
             append(&arg_types, t)
             if fusing(c) == nil { continue }
             _, is_literal := arg.(^Expr_Array)
             _, is_array := distinct_base(t).(^Type_Fixed_Array)
-            if fuse_byte_index(arg) || is_literal {
-                fuse_fail(c, "bytes or a literal as a generic's argument")
+            if fuse_byte_index(arg) {
+                fuse_fail(c, "bytes as a generic's argument")
                 continue
             }
             v, k := graph_fuse_as(b, r.v, r.place, t, expr_span(arg)^, e.span, {})
             append(&vals, v)
             append(&as_, k)
             append(&array_values, is_array && !r.place)
+            // (An array literal: built at its own type, retyped as its
+            // param's once the instance is known.)
+            if is_literal { append(&literal_args, Fuse_Literal_Arg{i, from, b.nodes, t}) }
         } else {
             append(&arg_types, check_expr(c, arg, env))
         }
@@ -3580,6 +3588,11 @@ check_generic_call :: proc(c: ^Checker, e: ^Expr_Call, tmpl: ^Generic_Template, 
     if fb := fusing(c); fb != nil && b != nil {
         for k, i in as_ {
             if k >= 0 { fb.fuse.widens[k].sig, fb.fuse.widens[k].param = fun_type, i }
+        }
+        for la in literal_args {
+            if la.arg >= len(fun_type.params) { continue }
+            pt := fun_type.params[la.arg].type_
+            if graph_aggregate(pt) && pt != la.t { graph_fuse_retype_literal(fb, la.from, la.to, pt) }
         }
         if fuse_views_value(fun_type, array_values[:]) {
             fuse_fail(c, "an array's value viewed by a generic's param")
