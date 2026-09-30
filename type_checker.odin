@@ -5673,6 +5673,7 @@ Fuse_Call :: struct {
     types:  [dynamic]Type,
     want:   Fuse_Want,
     mark:   Graph_Mark,
+    span:   Span,   // the call's: where a builtin's operand with no place is held
 }
 
 // Check an expression, building what it computes, in the order it runs.
@@ -5687,12 +5688,46 @@ fuse_expr :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, want := Fuse_Want.Valu
         if want == .Value { return t, {graph_read(b, c.compound.place, t, expr_span(e)^), false, true, false, false} }
         return t, {c.compound.place, true, true, false, false}
     }
+    // What has no place of its own, asked for one: held (fuse_hold).
+    if want == .Place && fuse_holds(e) {
+        span := temp_span if temp_span != {} else expr_span(e)^
+        t, p := fuse_hold(c, e, env, span)
+        return t, {p, true, p != NO_VALUE, false, false}
+    }
     c.want, c.want_written, c.want_dest, c.want_temp, c.want_span, c.fused = want, w, dest, temp, temp_span, {}
     t := check_expr(c, e, env)
     r := c.fused
     c.fused = {}
     if !r.ok { fuse_fail(c, fmt.aprintf("%v", reflect.union_variant_typeid(e))) }
     return t, r
+}
+
+// An expression with no place of its own (graph_place's): an operation's
+// value, a `?`'s, a slice, an assert, a take.
+fuse_holds :: proc(e: Expr) -> bool {
+    #partial switch v in e {
+    case ^Expr_Binary, ^Expr_Try, ^Expr_Slice, ^Expr_Assert, ^Expr_Take: return true
+    case ^Expr_Unary: return v.op != .Caret
+    }
+    return false
+}
+
+// Its place, when it has none (graph_place's): a temporary made first, the
+// value stored in it — built there, what builds in place — its variable the
+// place, at the use's span.
+fuse_hold :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, span: Span) -> (Type, Operand) {
+    b := fusing(c)
+    if b == nil { return check_expr(c, e, env), NO_VALUE }
+    slot := graph_slot(b, "temp", nil, span)
+    // (Text, or a slice's elements, filling a new partial array: it is zero
+    // first — kept once its type says so.)
+    prefix := graph_fuse_prefix(b, "temp", slot, span)
+    t := fuse_store_into(c, e, env, graph_dest_var("temp", slot, nil), span)
+    b = fusing(c)
+    if b == nil { return t, NO_VALUE }
+    graph_fuse_prefix_end(b, prefix, is_partial_array(t) && graph_fills_prefix(e), t)
+    graph_fuse_typed(b, slot, t)
+    return t, graph_var(b, "temp", slot, t, span)
 }
 
 // What the expression being checked was asked to build, taken by the
@@ -7221,11 +7256,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // struct's), each value stored into one; the declaration is one
             // statement (its lowering's are that one).
             if b := fusing(c); b != nil && b.fuse.ts.kind == .Struct && b.code.block == b.fuse.root {
-                if inits := decl_init(s); len(inits) == 1 && len(s.names) > 1 {
-                    fuse_fail(c, "a struct's fields from one call")
-                } else {
-                    graph_fuse_fields(b, s)
-                }
+                graph_fuse_fields(b, s)
             }
             register_and_check_declarations(c, s.checked[:], env, owner, public_env)
         case ^Stmt_Assign:
@@ -8553,23 +8584,53 @@ all_err_returns :: proc(types: [dynamic]Type) -> bool {
     return true
 }
 
+// A loop's collection that is no plain place (graph_fuse_items): checked
+// into the local the loop walks — a literal built there, text or a call
+// seen through its place's view when it has a header, else its value.
+fuse_loop_items :: proc(c: ^Checker, fl: ^Graph_For, s: ^Stmt_For, env: ^Type_Scope) -> Type {
+    b := fusing(c)
+    gi := graph_fuse_items(b, fl)
+    #partial switch _ in s.collection {
+    case ^Expr_Array, ^Expr_Struct_Literal:
+        d := graph_dest_var("items", fl.coll_slot, nil)
+        t := fuse_store_into(c, s.collection, env, d, fl.span)
+        if b := fusing(c); b != nil {
+            if graph_loop_view_of(t) != nil { fuse_fail(c, "a literal loop over its view") }
+            graph_fuse_typed(b, fl.coll_slot, t)
+        }
+        return t
+    }
+    t, r := fuse_expr(c, s.collection, env, .Either)
+    if b := fusing(c); b != nil {
+        if view := graph_loop_view_of(t); view != nil {
+            _, is_self := s.collection.(^Expr_Self)
+            fills := is_partial_array(t) && graph_fills_prefix(s.collection)
+            graph_fuse_items_view(b, fl, &gi, r.v, r.place, t, view, is_self, fills)
+        } else {
+            graph_fuse_typed(b, fl.coll_slot, t)
+            fuse_store_finish(c, s.collection, t, r, graph_dest_var("items", fl.coll_slot, t), fl.span)
+        }
+    }
+    return t
+}
+
 // Phase-2 checker for a `for` statement: dispatches to collection-for, range-for, or C-style.
 check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
     child := type_env_block_child(env)
-    // Built around its checks (graph_for). A step is checked before the
-    // body but runs after it, and a collection that is no plain place is
-    // held first: those loops are the builder's.
+    // Built around its checks (graph_for).
     b := fusing(c)
-    if b != nil && s.is_collection_for && !graph_pure_place(s.collection) {
-        fuse_fail(c, "a collection that is no place")
-        b = nil
-    }
     fl: Graph_For
     if b != nil { fl = graph_fuse_for(b, s) }
     defer if b != nil { graph_fuse_for_end(b, &fl, s) }
     if s.is_collection_for {
-        // (A plain place: walked where the loop needs it, not here.)
-        coll_type := check_expr(c, s.collection, child)
+        // (A plain place: walked where the loop needs it, not here. Anything
+        // else is held first, in a local the loop walks: fuse_loop_items.)
+        coll_type: Type
+        if b != nil && !graph_pure_place(s.collection) {
+            coll_type = fuse_loop_items(c, &fl, s, child)
+        } else {
+            coll_type = check_expr(c, s.collection, child)
+        }
 
         elem_type: Type
         switch ct in coll_type {
@@ -12937,7 +12998,7 @@ check_field_access_impl :: proc(c: ^Checker, e: ^Expr_Field_Access, env: ^Type_S
         // names Self.)
         _, of_call := e.expr.(^Expr_Call)
         _, of_self := e.expr.(^Expr_Self)
-        obj_type, ff.base = fuse_expr(c, e.expr, env, .Place if of_call || of_self else .Either, temp_span = e.span)
+        obj_type, ff.base = fuse_expr(c, e.expr, env, .Place if of_call || of_self || fuse_holds(e.expr) else .Either, temp_span = e.span)
         ff.base_type = obj_type
     } else {
         obj_type = check_expr(c, e.expr, env)
@@ -13991,7 +14052,7 @@ check_call_arg :: proc(c: ^Checker, arg: Expr, env: ^Type_Scope, sig: ^Type_Scop
     c.call = nil
     defer c.call = fc
     if !fc.params {
-        t, r := fuse_expr(c, arg, env, fc.want, fc.w)
+        t, r := fuse_expr(c, arg, env, fc.want, fc.w, temp_span = fc.span)
         append(&fc.args, r)
         append(&fc.types, t)
         return t
@@ -14774,7 +14835,9 @@ check_call :: proc(c: ^Checker, e: ^Expr_Call, env: ^Type_Scope) -> Type {
     // Phase 2: Check the call — builtins, then user-defined functions.
     if b := fusing(c); b != nil && want != .None {
         c.call = &fc
-        fc.want = .Either if call_name(e) == "len" || call_name(e) == "cap" else .Value
+        // (len and cap take their operand's place: held, when it has none.)
+        fc.want = .Place if call_name(e) == "len" || call_name(e) == "cap" else .Value
+        fc.span = e.span
         fc.mark = graph_fuse_mark(b)
     }
     builtin_result, is_builtin := check_builtin_call(c, e, check_args[:], env)
@@ -15317,6 +15380,8 @@ Fuse_Slice :: struct {
     scalar:  bool,      // … a view of its start (a register value, a use's array): its end unbuilt
     view:    bool,      // asked at a use's type: a read is a view of its start
     base:    Operand,
+    held:    bool,        // its base is no plain place: held (fuse_hold), built early
+    early:   Graph_Early,
 }
 
 // A span of bytes read as its destination's type (graph_store): the bytes'
@@ -15331,10 +15396,6 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
     want, w := fuse_asked(c)
     b := fusing(c)
     if want == .None || b == nil { return check_slice_impl(c, e, env, nil) }
-    if want == .Place || !graph_pure_place(e.expr) {
-        fuse_fail(c, "a slice's place, or a slice of no plain place")
-        return check_slice_impl(c, e, env, nil)
-    }
     fs := Fuse_Slice{w = w, lo = NO_VALUE, hi = NO_VALUE, base = NO_VALUE}
     use := want != .Into && c.asked_dest.type_ != nil   // (fuse_use_type)
     if want == .Into || use { fs.read_as = graph_dest_type(b, c.asked_dest) }
@@ -15347,7 +15408,19 @@ check_slice :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope) -> Type {
         fuse_done(c, v)
         return t
     }
-    fuse_done(c, graph_op_value(b, .Slice, w, e.span, t, "", graph_fuse_base_place(b, e.expr, e.span), fs.lo, fs.hi))
+    base: Operand
+    if fs.held {
+        // (Its base held — built as it was checked — put after its bounds,
+        // as the builder built it.)
+        if !graph_fuse_early_place(b, &fs.early) {
+            fuse_fail(c, "a slice's bounds that branch, of a value")
+            return t
+        }
+        base = fs.base
+    } else {
+        base = graph_fuse_base_place(b, e.expr, e.span)
+    }
+    fuse_done(c, graph_op_value(b, .Slice, w, e.span, t, "", base, fs.lo, fs.hi))
     return t
 }
 
@@ -15370,7 +15443,21 @@ fuse_bound :: proc(c: ^Checker, e: Expr, env: ^Type_Scope, w: Written, span: Spa
 check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fuse_Slice) -> Type {
     lower_subscript_dots(e.expr, e.low)
     lower_subscript_dots(e.expr, e.high)
-    target_type := check_expr(c, e.expr, env)
+    target_type: Type
+    if b := fusing(c); b != nil && fs != nil && !graph_pure_place(e.expr) {
+        // A base that is no plain place (a call's result, text): held in a
+        // temporary, built as it is checked, put after the bounds.
+        fs.held, fs.early = true, graph_fuse_early_begin(b)
+        base: Operand
+        target_type, base = fuse_hold(c, e.expr, env, e.span)
+        if pt, ok := distinct_base(target_type).(^Type_Ptr); ok && base != NO_VALUE {
+            base = graph_op_value(b, .Deref, .Implied, e.span, pt.elem, "", base)
+        }
+        fs.base = base
+        graph_fuse_early_end(b, &fs.early)
+    } else {
+        target_type = check_expr(c, e.expr, env)
+    }
     // Auto-deref: `s[lo:hi]` for `s: ^[]T` or `s: ^[N]T` slices the pointee.
     if pt, ok := target_type.(^Type_Ptr); ok {
         inner := distinct_base(pt.elem)
@@ -15393,7 +15480,9 @@ check_slice_impl :: proc(c: ^Checker, e: ^Expr_Slice, env: ^Type_Scope, fs: ^Fus
     }
     if b := fusing(c); b != nil && fs != nil && fs.read_as != nil && elem_type != nil {
         probe := Type_Slice{elem = elem_type}
-        if byte_flow(fs.read_as, e, &probe) == .Read {
+        if byte_flow(fs.read_as, e, &probe) == .Read && fs.held {
+            fuse_fail(c, "bytes read from a value's span")
+        } else if byte_flow(fs.read_as, e, &probe) == .Read {
             fs.reads, fs.scalar = true, fs.view || !graph_aggregate(fs.read_as)
             fs.base = graph_fuse_base_place(b, e.expr, e.span)
         }

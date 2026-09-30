@@ -1270,7 +1270,11 @@ graph_coll_place :: proc(b: ^Graph_Builder, coll: Expr, slot: Node_Id, span: Spa
 // slice or a partial array, or a pointer to one: a slice of the same elements.
 @(private="file")
 graph_loop_view :: proc(coll: Expr) -> Type {
-    t := expr_type(coll)
+    return graph_loop_view_of(expr_type(coll))
+}
+
+graph_loop_view_of :: proc(t: Type) -> Type {
+    t := t
     if pt, ok := distinct_base(t).(^Type_Ptr); ok { t = pt.elem }
     #partial switch v in distinct_base(t) {
     case ^Type_Slice:
@@ -2548,6 +2552,7 @@ Graph_Fuse :: struct {
     // A struct's: each field declaration's lowered assignment, and its field.
     fields:     map[rawptr]Node_Id,
     field_inits: map[rawptr]Expr,   // (its initializer as written)
+    field_outs: map[rawptr][]Node_Id,   // fields from one call's outputs: their destructure's declarations
     failed:     string,
 }
 
@@ -2625,6 +2630,8 @@ graph_fuse_end :: proc(b: ^Graph_Builder, f: ^Graph_Fuse) {
     delete(f.stmts)
     delete(f.fields)
     delete(f.field_inits)
+    for _, ids in f.field_outs { delete(ids) }
+    delete(f.field_outs)
     if ok {
         b.fused[f.ts] = f.seg
         append(&b.fuses, f)   // settled when the graph is put together
@@ -2792,8 +2799,10 @@ graph_fuse_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
 // and is this statement's.
 graph_fuse_fields :: proc(b: ^Graph_Builder, v: ^Stmt_Decl) {
     f := b.fuse
+    ids := make([]Node_Id, len(v.names))
     for name, i in v.names {
         d := graph_decl(b, {kind = .Field, owner = f.ts}, b.code.block, name, nil, v.span)
+        ids[i] = d
         if i < len(v.checked) {
             key := stmt_key(v.checked[i])
             f.fields[key] = d
@@ -2801,6 +2810,15 @@ graph_fuse_fields :: proc(b: ^Graph_Builder, v: ^Stmt_Decl) {
             if inits := decl_init(v); i < len(inits) { f.field_inits[key] = inits[i] }
         }
     }
+    // (Several from one call — `a, b := f()`, lowered to its destructure:
+    // each output written to its field, graph_init_many.)
+    if len(v.names) > 1 && len(v.checked) == 1 {
+        if _, is_mr := v.checked[0].(^Stmt_Multi_Return_Assign); is_mr {
+            f.field_outs[stmt_key(v.checked[0])] = ids
+            return
+        }
+    }
+    delete(ids)
 }
 
 // The program's struct (fuse_program_struct: main's entry sets up its
@@ -3045,6 +3063,30 @@ Graph_Later :: struct {
     same:         bool,
 }
 
+// What is built before what it follows (checked first, built after): in a
+// segment of its own, put in place later — at the anchor it is placed at.
+// False when the run it was built in is no longer the run.
+Graph_Early :: struct {
+    seg, si, saved: int,
+    run:            ^Run,
+}
+
+graph_fuse_early_begin :: proc(b: ^Graph_Builder) -> Graph_Early {
+    e := Graph_Early{seg = b.seg, run = b.code.run}
+    e.si, e.saved = graph_segment_enter(b)
+    return e
+}
+
+graph_fuse_early_end :: proc(b: ^Graph_Builder, e: ^Graph_Early) {
+    graph_segment_leave(b, e.saved)
+}
+
+graph_fuse_early_place :: proc(b: ^Graph_Builder, e: ^Graph_Early) -> bool {
+    if b.seg != e.seg { return false }
+    graph_anchor_here(b, e.si)
+    return b.code.run == e.run
+}
+
 graph_fuse_later :: proc(b: ^Graph_Builder) -> Graph_Later {
     return {seg = b.seg, anchor = graph_anchor_here(b), run = b.code.run}
 }
@@ -3163,6 +3205,10 @@ Graph_Destructure :: struct {
 }
 
 graph_fuse_destructure :: proc(b: ^Graph_Builder, v: ^Stmt_Multi_Return_Assign) -> Graph_Destructure {
+    // (A struct's fields from one call: declared as its fields.)
+    if ids, of_fields := b.fuse.field_outs[rawptr(v)]; of_fields {
+        return Graph_Destructure{on = true, decls = ids}
+    }
     mr := Graph_Destructure{on = true, decls = make([]Node_Id, len(v.names), context.temp_allocator)}
     for name, i in v.names {
         mr.decls[i] = NO_NODE
@@ -3427,7 +3473,7 @@ graph_fuse_range :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For, bounds
 // loop needs it): a slice's elements as they are when the loop begins, the
 // element and the index; then the check run.
 graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_For) {
-    if view := graph_loop_view(v.collection); view != nil {
+    if view := graph_loop_view(v.collection); view != nil && fl.coll_slot == NO_NODE {
         fl.coll_slot = graph_slot(b, "items", view, fl.span)
         val := graph_op_value(b, .Slice, .Implied, fl.span, view, "", graph_plain_base(b, v.collection, fl.span))
         graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, "items", fl.coll_slot, view, fl.span), val)
@@ -3446,6 +3492,41 @@ graph_fuse_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, v: ^Stmt_Fo
     graph_op(b, .Write, .Synthetic, fl.span, nil, "", graph_var(b, b.g.name[fl.counter], fl.counter, index_t, fl.span),
              graph_const(b, .Synthetic, fl.span, index_t, "0", Const_Value{}))
     graph_fuse_for_runs(b, fl, v)
+}
+
+// A collection that is no plain place (graph_for's): held in a local made
+// before it — its place's view, when it has a header, else itself — which
+// the loop walks. Its local first (typed once it is checked); a temporary its
+// value may need, reserved before it (graph_fuse_later).
+Graph_Items :: struct {
+    temp: Graph_Later,
+}
+
+graph_fuse_items :: proc(b: ^Graph_Builder, fl: ^Graph_For) -> Graph_Items {
+    fl.coll_slot = graph_slot(b, "items", nil, fl.span)
+    return {temp = graph_fuse_later(b)}
+}
+
+// Checked, `t` its type: its view, or it, written to the local.
+graph_fuse_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, gi: ^Graph_Items, place: Operand, is_place: bool, t, view: Type, is_self, fills: bool) {
+    span := fl.span
+    p := place
+    if !is_place {
+        // A value: held in a temporary made before it (graph_place's) —
+        // zero first when it fills a prefix of a partial array.
+        graph_fuse_later_begin(b, &gi.temp)
+        slot := graph_slot(b, "temp", t, span)
+        if fills { graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, "temp", slot, t, span)) }
+        if !graph_fuse_later_end(b, &gi.temp) { graph_fuse_fail(b, b.fuse, "a loop's collection across runs") }
+        graph_op(b, .Write, .Explicit, span, nil, "", graph_var(b, "temp", slot, t, span), place)
+        p = graph_var(b, "temp", slot, t, span)
+    }
+    if pt, ok := distinct_base(t).(^Type_Ptr); ok && !is_self {
+        p = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)   // (through a pointer, what it points at)
+    }
+    val := graph_op_value(b, .Slice, .Implied, span, view, "", p)
+    graph_fuse_typed(b, fl.coll_slot, view)
+    graph_op(b, .Write, .Synthetic, span, nil, "", graph_var(b, "items", fl.coll_slot, view, span), val)
 }
 
 // The loop's runs, into the check: a counter against its bound; else the
