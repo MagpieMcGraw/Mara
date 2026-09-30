@@ -3216,6 +3216,9 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     fun_type.kind = .Fun
     fun_type.home_package = tmpl.home_package
     fun_type.ast = ast  // template AST — structural escape check is clone-invariant
+    // Its name now (its definitions are named inside it: each instance's its
+    // own — `twice__i64_help`).
+    fun_type.name = make_flat_name(tmpl.home_package, mangled)
     for tp in ast.typed_params {
         pt := resolve_type_expr_with_subst(tp.type_expr, c, ast.span, subst)
         append(&fun_type.params, Struct_Type_Field{name = tp.name, type_ = pt, default_value = tp.default_value})
@@ -3275,7 +3278,17 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     // definitions: its own copies).
     f: ^Graph_Fuse
     if c.gb != nil { f = graph_fuse_begin(c.gb, fun_type, ast, cloned_body[:], .Synthetic) }
+    // (Its nested funs and structs registered under it, as a fun's are
+    // before its body — check_scope_body; its constants bind as checked.)
+    nested: [dynamic]Stmt
+    defer delete(nested)
+    for d in cloned_defs {
+        if _, is_scope := d.(^Stmt_Scope); is_scope { append(&nested, d) }
+    }
+    if len(nested) > 0 { register_scope_defs(c, fun_type, &fun_type.sd, nested) }
     check_scope(c, cloned_body, child, scope_defs = cloned_defs)
+    // (Its nested funs, for codegen: extracted as a fun's are.)
+    if c.checked != nil && len(nested) > 0 { extract_scope_fun_defs(c.checked, nested, fun_type, tmpl.home_package) }
     if f != nil { fuse_end(c, f) }
 
     // Store cloned body for codegen extraction

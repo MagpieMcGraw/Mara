@@ -298,6 +298,7 @@ Graph_Builder :: struct {
     // body being built; MARA_FUSE=log.
     fused:    map[^Type_Scope]int,
     failed:   map[^Type_Scope]string,
+    scope_of: map[rawptr]^Type_Scope,   // each scope statement's, as the checker built it
     fuses:    [dynamic]^Graph_Fuse,
     fuse:     ^Graph_Fuse,
     fuse_log: bool,
@@ -545,6 +546,7 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     delete(b.segs)
     delete(b.fused)
     delete(b.failed)
+    delete(b.scope_of)
     for f in b.fuses { graph_fuse_free(f) }
     delete(b.fuses)
     delete(b.repl)
@@ -2473,6 +2475,12 @@ graph_one :: proc(b: ^Graph_Builder, span: Span, name: string) -> Type {
 @(private="file")
 graph_scope_def :: proc(b: ^Graph_Builder, s: ^Stmt_Scope, parent: Node_Id) {
     generic := len(s.generic_params) > 0
+    // (One scope, the checker's for this statement — a generic fun's
+    // instance's own copy of a nested fun, say, which shares its span.)
+    if ts, built := b.scope_of[rawptr(s)]; built && !generic {
+        graph_scope_node(b, ts, s, parent, .Explicit)
+        return
+    }
     list, ok := b.by_span[s.span]
     if !ok {
         if generic { return }   // a generic nothing instantiates: syntax only
@@ -2602,6 +2610,7 @@ Graph_Widen :: struct {
 // Start building a fun's body as the checker checks it. `body` is the body
 // checked (an instance's own copy).
 graph_fuse_begin :: proc(b: ^Graph_Builder, ts: ^Type_Scope, s: ^Stmt_Scope, body: []Stmt, written: Written) -> ^Graph_Fuse {
+    b.scope_of[rawptr(s)] = ts
     f := new(Graph_Fuse)
     f.ts, f.outer_fuse, f.compound = ts, b.fuse, b.compound
     b.fuse, b.compound = f, {}

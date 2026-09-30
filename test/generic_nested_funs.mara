@@ -1,0 +1,21 @@
+module generic_nested_funs
+// A generic fun's nested funs are each instance's own — named inside it,
+// placed and built as it is: the second instance's was never built (a graph
+// error), and one using the type param needs its own copy.
+//@ expect-output: 3
+//@ expect-output: 42 10
+//@ expect-output: 42 5
+twice :: fun(x: $T) -> T {
+	K :: 2
+	help :: fun(n: i64) -> i64 { return n + 1 }
+	if x > 20 do print(help(K))
+	return x * K
+}
+double :: fun(x: $T) -> T {
+	bump :: fun(n: T) -> T { return n + n }
+	return bump(x)
+}
+main :: fun() {
+	print(twice(i64(21)), twice(i32(5)))
+	print(double(i64(21)), double(2.5))
+}
