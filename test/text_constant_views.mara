@@ -1,0 +1,12 @@
+module text_constant_views
+// Text in its global — a constant's — sliced or looped over is its bytes'
+// address and its length: the slice read a header from the bytes (a crash).
+//@ expect-output: el hello
+//@ expect-output: 5 5 e
+GREET :: "hello"
+main :: fun() {
+	print(GREET[1:3], GREET)
+	n : i64 = 0
+	for ch in GREET { n += 1 }
+	print(n, GREET.len, GREET[1])
+}

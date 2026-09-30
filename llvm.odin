@@ -1815,7 +1815,16 @@ llvm_slice_op :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     bt := pg.type_[base]
     at := e.value[base - e.node]
     data: string
-    if fa := llvm_array(bt); fa != nil {
+    if text, is_text := llvm_text(e, base); is_text {
+        // Text in its global (a constant's, a literal's): its bytes' address,
+        // its length known — no header there to read.
+        data = at
+        if hi == "" { hi = fmt.tprintf("%d", len(text)) }
+        if lo != "" {
+            data = fresh_tmp(g)
+            emit_elem_gep(g, data, "i8", at, lo, slice_layout.len_ir)
+        }
+    } else if fa := llvm_array(bt); fa != nil {
         data = at
         if hi == "" { hi = fmt.tprintf("%d", fa.size) }
         if lo != "" {
