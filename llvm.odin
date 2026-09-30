@@ -172,13 +172,15 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         fmt.sbprintf(&e.fields, "  store ptr %%%s.arg, ptr @__mara_program\n", cf.cg_params[0].name)
     }
 
-    // Entry first, then the runs as they were built; each gets its label.
+    // Entry first, then the runs as they were built; each gets its label, by
+    // its place in the fun (not the program's: one fun's IR doesn't change
+    // when another's runs do).
     entry := g.run_starts[llvm_first_then(pg, e.node)]
     for r, i in e.runs {
         if r == entry { e.runs[0], e.runs[i] = e.runs[i], e.runs[0] }
     }
     llvm_sort_runs(e.runs[1:e.own])
-    for r in e.runs[1:e.own] { e.label[r] = fmt.tprintf("run%d", r) }
+    for r, i in e.runs[1:e.own] { e.label[r] = fmt.tprintf("run%d", i + 1) }
 
     llvm_users(e)
     if !llvm_variables(e) { return false }
