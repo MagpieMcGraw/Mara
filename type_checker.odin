@@ -1273,8 +1273,8 @@ evaluate_comptime_int :: proc(c: ^Checker, e: Expr, env: ^Type_Scope = nil) -> (
     case ^Expr_Size_Of:
         // size_of(T) is comptime-known by definition; resolve via the
         // fully-checked size if available, else give up.
-        if v.resolved_type != nil {
-            return i64(elem_byte_size(llvm_type_from_checker(v.resolved_type), c.checked)), true
+        if t, measured := c.size_of_types[v]; measured {
+            return i64(elem_byte_size(llvm_type_from_checker(t), c.checked)), true
         }
     }
     return 0, false
@@ -1661,6 +1661,7 @@ Checker :: struct {
     call:            ^Fuse_Call,
     compound:        Graph_Compound,   // a compound assignment's target and the place built for it
     byte_addrs:      map[rawptr][2]Node_Id,   // `&bytes[i]` built: its address and element operations
+    size_of_types:   map[^Expr_Size_Of]Type,  // each size_of's measured type, as checked
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -5786,7 +5787,7 @@ fuse_leaf :: proc(c: ^Checker, e: Expr, t: Type) {
     b := fusing(c)
     if b == nil || want == .None { return }
     #partial switch v in e {
-    case ^Expr_Number, ^Expr_Char, ^Expr_Bool, ^Expr_Size_Of, ^Expr_Compiler_Intrinsic:
+    case ^Expr_Number, ^Expr_Char, ^Expr_Bool:
         if want == .Place { return }
         fuse_done(c, fuse_leaf_value(b, e, t, w))
     case ^Expr_String:
@@ -5832,14 +5833,6 @@ fuse_leaf_value :: proc(b: ^Graph_Builder, e: Expr, t: Type, w: Written) -> Oper
         return graph_const(b, w, v.span, t, "", Const_Value{int = i128(v.value)})
     case ^Expr_Bool:
         return graph_const(b, w, v.span, t, "", Const_Value{int = 1 if v.value else 0})
-    case ^Expr_Size_Of:
-        return graph_const(b, w, v.span, t, "size_of", graph_size_of(v.resolved_type, b.checked))
-    case ^Expr_Compiler_Intrinsic:
-        // The caller's name or place is text; a target flag, a bool.
-        if v.kind == .Caller_Name || v.kind == .Caller_Span {
-            return graph_text(b, graph_op_value(b, .Global, w, v.span, t), Const_Value{text = v.resolved_value, is_text = true})
-        }
-        return graph_const(b, w, v.span, t, v.resolved_value, Const_Value{int = 1 if v.bool_value else 0})
     case ^Expr_String:
         return graph_text(b, graph_op_value(b, .Global, w, v.span, t), Const_Value{text = v.value, is_text = true})
     case ^Expr_Ident:
@@ -9045,7 +9038,6 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
             type_env_set(child, s.index_var, slice_header_width_type)
         }
 
-        s.elem_type_ = distinct_base(elem_type)
 
         if fusing(c) != nil {
             _, is_self := s.collection.(^Expr_Self)
@@ -9104,7 +9096,6 @@ check_for_body :: proc(c: ^Checker, s: ^Stmt_For, env: ^Type_Scope) {
         }
 
         type_env_set(child, s.loop_var, iter_type)
-        s.var_type = distinct_base(iter_type)
 
         if b != nil { graph_fuse_range(b, &fl, s, bounds, distinct_base(iter_type)) }
         check_scope(c, s.body, child)
@@ -10536,18 +10527,11 @@ check_field_assign :: proc(c: ^Checker, s: ^Stmt_Assign, env: ^Type_Scope) {
 // A match arm's body, checked in its block (graph_match): its run, its
 // block and its binding before, its scope's end and the jump to the join
 // after.
-fuse_arm_body :: proc(c: ^Checker, gm: ^Graph_Match, s: ^Stmt_Match, arm: ^Match_Arm, i: int, env: ^Type_Scope) {
+// (`ga`: the arm as resolved — its variant, tag, binding and payload.)
+fuse_arm_body :: proc(c: ^Checker, gm: ^Graph_Match, s: ^Stmt_Match, arm: ^Match_Arm, ga: Graph_Arm, i: int, env: ^Type_Scope) {
     b := c.gb if gm != nil else nil
     k: Graph_Block
-    if b != nil {
-        ga := Graph_Arm{variant = arm.variant, tag = arm.resolved_tag, bound = arm.bound_name}
-        if st, ok := c.table.structs[arm.resolved_struct]; ok {
-            ga.payload = st
-        } else if ft, ok := c.table.funs[arm.resolved_struct]; ok {
-            ga.payload = ft
-        }
-        k = graph_fuse_arm(b, gm, s, arm, ga, i)
-    }
+    if b != nil { k = graph_fuse_arm(b, gm, s, arm, ga, i) }
     check_scope(c, arm.body, env)
     if b != nil { graph_fuse_arm_end(b, gm, k) }
 }
@@ -10637,24 +10621,31 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     }
 
 
+    // Each arm as resolved: the variant it matches however written (`.Red`,
+    // `Circle c`, a bare variant name in a value arm; none for a value or
+    // else arm), its tag, the name its body sees the payload as — its
+    // binding, or the subject's own name when a union arm wrote none — and
+    // the variant's struct.
+    resolved := make([]Graph_Arm, len(s.arms), context.temp_allocator)
     for &arm, arm_i in s.arms {
+        ra := &resolved[arm_i]
         if arm.dot_shorthand != "" {
             // Dot shorthand arm: .Variant — resolve against subject's enum or union type
-            arm.variant = arm.dot_shorthand
+            ra.variant = arm.dot_shorthand
             if is_enum_match {
                 if tag_val, v_ok := et.variants[arm.dot_shorthand]; v_ok {
-                    arm.resolved_tag = tag_val
+                    ra.tag = tag_val
                 } else {
                     check_error(c, s.span, TYPE_ENUM_VARIANT, et.name, arm.dot_shorthand)
                 }
             } else if is_union_match {
                 if tag_val, v_ok := ut.tag_map[arm.dot_shorthand]; v_ok {
-                    arm.resolved_tag = tag_val
+                    ra.tag = tag_val
                     ds_struct := ut.variant_structs[arm.dot_shorthand] or_else arm.dot_shorthand
                     if arm_st, arm_st_ok := c.table.structs[ds_struct]; arm_st_ok {
-                        arm.resolved_struct = arm_st.name
+                        ra.payload = arm_st
                     } else if arm_st, arm_st_ok := c.table.funs[ds_struct]; arm_st_ok {
-                        arm.resolved_struct = arm_st.name
+                        ra.payload = arm_st
                     }
                 } else {
                     check_error(c, s.span, TYPE_UNION_VARIANT, ut.name, arm.dot_shorthand)
@@ -10663,13 +10654,13 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
                 check_error(c, s.span, TYPE_DOT_SHORTHAND_ONLY_USED_MATCHING, arm.dot_shorthand)
             }
             child := type_env_block_child(env)
-            fuse_arm_body(c, gm, s, &arm, arm_i, child)
+            fuse_arm_body(c, gm, s, &arm, ra^, arm_i, child)
         } else if arm.is_union_arm {
             // Union pattern arm: VariantName [bindingName] { body }
-            arm.variant = arm.variant_name
+            ra.variant = arm.variant_name
             if is_union_match {
                 if tag_val, tv_ok := ut.tag_map[arm.variant_name]; tv_ok {
-                    arm.resolved_tag = tag_val
+                    ra.tag = tag_val
                 } else {
                     check_error(c, s.span, TYPE_VARIANT_UNION, arm.variant_name, ut.name)
                 }
@@ -10682,10 +10673,10 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
             // when the subject is a simple identifier — non-ident subjects
             // have no name to rebind, so the user falls back to the explicit
             // binding form.
-            arm.bound_name = arm.binding_name
-            if arm.bound_name == "" {
+            ra.bound = arm.binding_name
+            if ra.bound == "" {
                 if subj_ident, sok := s.subject.(^Expr_Ident); sok {
-                    arm.bound_name = subj_ident.name
+                    ra.bound = subj_ident.name
                 }
             }
             child := type_env_block_child(env)
@@ -10698,46 +10689,46 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
             }
             // Store flat name for codegen and bind payload variable
             if st, st_ok := c.table.structs[struct_name]; st_ok {
-                arm.resolved_struct = st.name
-                if arm.bound_name != "" {
-                    type_env_set(child, arm.bound_name, st)
+                ra.payload = st
+                if ra.bound != "" {
+                    type_env_set(child, ra.bound, st)
                 }
             } else if st, st_ok := c.table.funs[struct_name]; st_ok {
-                arm.resolved_struct = st.name
-                if arm.bound_name != "" {
-                    type_env_set(child, arm.bound_name, st)
+                ra.payload = st
+                if ra.bound != "" {
+                    type_env_set(child, ra.bound, st)
                 }
             }
-            fuse_arm_body(c, gm, s, &arm, arm_i, child)
+            fuse_arm_body(c, gm, s, &arm, ra^, arm_i, child)
         } else if arm.is_else {
             // Else (wildcard) arm — just type-check the body
             child := type_env_block_child(env)
-            fuse_arm_body(c, gm, s, &arm, arm_i, child)
+            fuse_arm_body(c, gm, s, &arm, ra^, arm_i, child)
         } else {
             // Value match arm — try to infer bare identifiers as enum/union variants
             if ident, ident_ok := arm.value.(^Expr_Ident); ident_ok {
                 if is_enum_match {
                     if tag_val, v_ok := et.variants[ident.name]; v_ok {
                         // A bare variant name matches like `.Variant`
-                        arm.variant = ident.name
-                        arm.resolved_tag = tag_val
+                        ra.variant = ident.name
+                        ra.tag = tag_val
                         child := type_env_block_child(env)
-                        fuse_arm_body(c, gm, s, &arm, arm_i, child)
+                        fuse_arm_body(c, gm, s, &arm, ra^, arm_i, child)
                         continue
                     }
                 } else if is_union_match {
                     if tag_val, v_ok := ut.tag_map[ident.name]; v_ok {
                         // A bare variant name matches like `.Variant`
-                        arm.variant = ident.name
-                        arm.resolved_tag = tag_val
+                        ra.variant = ident.name
+                        ra.tag = tag_val
                         ds_struct := ut.variant_structs[ident.name] or_else ident.name
                         if arm_st, arm_st_ok := c.table.structs[ds_struct]; arm_st_ok {
-                            arm.resolved_struct = arm_st.name
+                            ra.payload = arm_st
                         } else if arm_st, arm_st_ok := c.table.funs[ds_struct]; arm_st_ok {
-                            arm.resolved_struct = arm_st.name
+                            ra.payload = arm_st
                         }
                         child := type_env_block_child(env)
-                        fuse_arm_body(c, gm, s, &arm, arm_i, child)
+                        fuse_arm_body(c, gm, s, &arm, ra^, arm_i, child)
                         continue
                     }
                 }
@@ -10745,7 +10736,7 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
             // Regular value match arm (built before the switch: checked there)
             if !prechecked[arm_i] { check_expr(c, arm.value, env) }
             child := type_env_block_child(env)
-            fuse_arm_body(c, gm, s, &arm, arm_i, child)
+            fuse_arm_body(c, gm, s, &arm, ra^, arm_i, child)
         }
     }
     // An else arm (with or without a body) opts out of the variant-coverage
@@ -10766,9 +10757,9 @@ check_match :: proc(c: ^Checker, s: ^Stmt_Match, env: ^Type_Scope) {
     if !has_wildcard && (is_enum_match || is_union_match) {
         // Collect covered variant names from match arms
         covered: map[string]bool
-        for arm in s.arms {
-            if arm.variant != "" {
-                covered[arm.variant] = true
+        for arm, i in s.arms {
+            if resolved[i].variant != "" {
+                covered[resolved[i].variant] = true
             } else if fa, fa_ok := arm.value.(^Expr_Field_Access); fa_ok {
                 covered[fa.field] = true
             }
@@ -12900,7 +12891,12 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
             check_error(c, e.span, TYPE_SIZE_UNKNOWN_TYPE)
         }
         ensure_layout(c, resolved)   // (its size: known now)
-        e.resolved_type = resolved
+        c.size_of_types[e] = resolved
+        // Built: its size, a constant.
+        want, w := fuse_asked(c)
+        if b := fusing(c); b != nil && want != .None && want != .Place {
+            fuse_done(c, graph_const(b, w, e.span, Type_Infer_Int{}, "size_of", graph_size_of(resolved, b.checked)))
+        }
         return Type_Infer_Int{}
     case ^Expr_Assert:
         // assert(cond) — cond must be boolean; the expression yields no value.
@@ -13024,7 +13020,6 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
                     TYPE_TAKE_COUNT_REQUIRES_SLICE_TYPE, type_name(resolved))
             }
         }
-        e.resolved_type = resolved
         // (Built: `&x` its address, else the place — which the carve takes
         // apart: graph_fuse_carve.)
         src_type: Type
@@ -13068,36 +13063,31 @@ check_expr_impl :: proc(c: ^Checker, expr: Expr, env: ^Type_Scope) -> Type {
     case ^Expr_If:
         return check_if_expr(c, e, env)
     case ^Expr_Compiler_Intrinsic:
+        // Built: the caller's name or place is text; a target flag, a bool.
+        want, w := fuse_asked(c)
+        b := fusing(c)
+        if want == .Place || want == .None { b = nil }
+        text := ""
+        flag: bool
         switch e.kind {
-        case .Caller_Name:
-            e.resolved_value = strings.clone(enclosing_fn_name(env))
-        case .Caller_Span:
-            e.resolved_value = strings.clone(format_location(e.span.file, e.span.line, e.span.col))
-        case .Web:
-            e.bool_value = c.target_web
-            e.type_ = Type_Bool{}
-            return Type_Bool{}
-        case .Native:
-            e.bool_value = !c.target_web
-            e.type_ = Type_Bool{}
-            return Type_Bool{}
-        case .Windows:
-            e.bool_value = c.target_os == .Windows
-            e.type_ = Type_Bool{}
-            return Type_Bool{}
-        case .Linux:
-            e.bool_value = c.target_os == .Linux
-            e.type_ = Type_Bool{}
-            return Type_Bool{}
-        case .Mac:
-            e.bool_value = c.target_os == .Mac
-            e.type_ = Type_Bool{}
-            return Type_Bool{}
+        case .Caller_Name: text = strings.clone(enclosing_fn_name(env))
+        case .Caller_Span: text = strings.clone(format_location(e.span.file, e.span.line, e.span.col))
+        case .Web:         flag = c.target_web
+        case .Native:      flag = !c.target_web
+        case .Windows:     flag = c.target_os == .Windows
+        case .Linux:       flag = c.target_os == .Linux
+        case .Mac:         flag = c.target_os == .Mac
         }
-        // Caller_* intrinsics resolve to string literals but codegen emits a
-        // pointer (GEP). Return ^byte so they can be passed to functions
-        // expecting ^byte.
-        return new_clone(Type_Ptr{elem = Type_Byte{}})
+        if e.kind == .Caller_Name || e.kind == .Caller_Span {
+            // Caller_* intrinsics resolve to string literals but codegen emits a
+            // pointer (GEP). Return ^byte so they can be passed to functions
+            // expecting ^byte.
+            t := new_clone(Type_Ptr{elem = Type_Byte{}})
+            if b != nil { fuse_done(c, graph_text(b, graph_op_value(b, .Global, w, e.span, t), Const_Value{text = text, is_text = true})) }
+            return t
+        }
+        if b != nil { fuse_done(c, graph_const(b, w, e.span, Type_Bool{}, text, Const_Value{int = 1 if flag else 0})) }
+        return Type_Bool{}
     case ^Expr_Include:
         // Scope-based include resolution. The path is the dotted module name;
         // check_module accepts dotted names directly (mara.X submodules and

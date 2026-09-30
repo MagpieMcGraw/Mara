@@ -387,7 +387,6 @@ Expr_Size_Of :: struct {
     type_expr:     Type_Expr,
     span:          Span,
     type_:         Type,
-    resolved_type: Type,      // the resolved type argument (filled by type checker)
 }
 
 // Re-escape processed literal text for display: the lexer stores '\n' as the
@@ -477,7 +476,6 @@ Expr_Take :: struct {
     keyword:       string,    // "let" or "slice" — discriminates value vs slice carve
     span:          Span,
     type_:         Type,
-    resolved_type: Type,      // the resolved type argument (filled by type checker)
     // `[]T(n)` as the checker reads it (the parser takes `T(n)` for a generic
     // instance): type []T, count n. Nil when the source needs no lowering.
     lowered_type:  Type_Expr,
@@ -512,8 +510,6 @@ Intrinsic_Kind :: enum {
 
 Expr_Compiler_Intrinsic :: struct {
     kind:           Intrinsic_Kind,
-    resolved_value: string,   // filled by type checker: "my_func" or "test.mara:42:15"
-    bool_value:     bool,     // for kind = .Web / .Native / .Windows / .Linux / .Mac
     span:           Span,
     type_:          Type,
 }
@@ -871,13 +867,11 @@ Stmt_For :: struct {
     iter_type:  Type_Expr,     // optional type annotation: `for i : i32 in ...`
     range_low:  Expr,
     range_high: Expr,
-    var_type:   Type,          // resolved type, filled by type checker
     // Collection-for fields: `for elem, idx in collection { }`
     is_collection_for: bool,
     elem_var:          string,    // element variable name ("" if `_`)
     index_var:         string,    // index variable name ("" if not provided or `_`)
     collection:        Expr,
-    elem_type_:        Type,      // resolved element type, filled by type checker
 }
 
 Match_Arm :: struct {
@@ -888,14 +882,6 @@ Match_Arm :: struct {
     dot_shorthand:   string,     // for .Variant shorthand in value match (e.g. ".Red")
     is_else:         bool,       // true for wildcard else arm
     body:            [dynamic]Stmt,
-    // Populated by type checker — codegen reads these directly
-    variant:         string,     // the variant this arm matches, however written: `.Red`,
-                                 // `Circle c`, or a bare variant name in a value arm; ""
-                                 // for a value or else arm
-    bound_name:      string,     // the name the body sees the payload as: `binding_name`, or
-                                 // the subject's own name when a union arm wrote none
-    resolved_tag:    int,        // tag value for enum/union variant arms
-    resolved_struct: string,     // variant struct name for union binding arms
 }
 
 Stmt_Match :: struct {
@@ -5005,14 +4991,12 @@ clone_expr :: proc(e: Expr) -> Expr {
     case ^Expr_Size_Of:
         c := new_clone(v^)
         c.type_ = nil
-        c.resolved_type = nil
         return c
     case ^Expr_Take:
         c := new_clone(v^)
         c.storage = clone_expr(v.storage)
         if v.count_expr != nil { c.count_expr = clone_expr(v.count_expr) }
         c.type_ = nil
-        c.resolved_type = nil
         c.lowered_type = nil
         c.lowered_count = nil
         return c
@@ -5026,7 +5010,6 @@ clone_expr :: proc(e: Expr) -> Expr {
     case ^Expr_Compiler_Intrinsic:
         c := new_clone(v^)
         c.type_ = nil
-        c.resolved_value = ""
         return c
     case ^Expr_Include:
         c := new_clone(v^)
@@ -5100,7 +5083,6 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         c.body = clone_stmts(v.body)
         c.range_low = clone_expr(v.range_low)
         c.range_high = clone_expr(v.range_high)
-        c.var_type = nil
         return c
     case ^Stmt_Scope:
         c := new_clone(v^)
