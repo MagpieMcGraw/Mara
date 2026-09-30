@@ -5817,6 +5817,9 @@ fuse_code_stmt :: proc(c: ^Checker, s: Stmt) {
         }
         fuse_fail(c, "a store through a slice")
         return
+    case ^Stmt_Multi_Assign:
+        for a in v.assigns { fuse_code_stmt(c, a) }   // (each in turn)
+        return
     }
     fuse_fail(c, fmt.aprintf("%v", reflect.union_variant_typeid(s)))
 }
