@@ -354,17 +354,6 @@ index_elem_type :: proc(t: Type) -> Type {
     return nil
 }
 
-// The expression an access path (`x.f[i].g`) is rooted at.
-access_root :: proc(e: Expr) -> Expr {
-    cur := e
-    for {
-        #partial switch v in cur {
-        case ^Expr_Field_Access: cur = v.expr
-        case ^Expr_Index:        cur = v.expr
-        case:                    return cur
-        }
-    }
-}
 
 // Generate the IR name for a user-defined function.
 // Names are already flat (e.g., "sdl_Init") — flattened during type-checking

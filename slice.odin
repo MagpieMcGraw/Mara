@@ -373,7 +373,7 @@ collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: ma
     g := &checked.graph
     for op in f.calls {
         callee := du_callee(g, op)
-        followable := callee != nil && callee.kind == .Fun && callee.ast != nil
+        followable := callee != nil && callee.kind == .Fun && scope_is_written(callee)
         args := du_call_args(g, op)
         if g.op[op] == .Print || g.op[op] == .Crash { args = graph_operands(g, op) }
         consuming, landed := false, false

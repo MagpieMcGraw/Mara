@@ -312,6 +312,10 @@ Graph_Builder :: struct {
     // globals waiting to name theirs.
     const_decls: map[Expr_Id]Node_Id,
     tables:      [dynamic]Graph_Table,
+    // Every name the checker's table has a constant under, by its value's id
+    // (a module's constant is there under its flat name and its bare one):
+    // what its table is named (graph_table_names).
+    constant_names: map[string]Expr_Id,
     // Segments: a scope's contents built on their own, at any time, then put
     // where the scope is (graph_canonicalize).
     segs:    [dynamic]Graph_Segment,
@@ -562,6 +566,7 @@ graph_builder_free :: proc(b: ^Graph_Builder) {
     delete(b.names)
     delete(b.frames)
     delete(b.const_decls)
+    delete(b.constant_names)
     delete(b.const_segs)
     delete(b.tables)
     for s in b.segs {
@@ -1571,14 +1576,7 @@ graph_base_of :: proc(b: ^Graph_Builder, p: Operand, t: Type, span: Span, is_sel
 
 
 
-// A tag or padding access names part of the value (a place); variants,
-// constants and functions don't.
-graph_is_member :: proc(r: Resolved_Name) -> bool {
-    #partial switch _ in r {
-    case Resolved_Union_Tag, Resolved_Union_Pad: return true
-    }
-    return false
-}
+
 
 
 graph_pointee :: proc(t: Type) -> Type {
@@ -1762,24 +1760,22 @@ graph_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: st
 // The value a name resolved to stands for, when the resolution holds it: an
 // enum variant's, an array's length. (A named constant's is its code's:
 // graph_fold_uses.)
-graph_const_value :: proc(r: Resolved_Name) -> Maybe(Const_Value) {
-    #partial switch v in r {
-    case Resolved_Enum_Variant:
-        return Const_Value{int = i128(v.value)}
-    case Resolved_Constant:
-        if v.value_expr == nil { return Const_Value{int = i128(v.int_value)} }
-    }
-    return nil
+//
+// What a name that stands for a constant is, as the builder builds it: a
+// declared constant's value (its id — the code its uses are folded from), or
+// a value already known (an enum's variant, a length).
+Graph_Named :: struct {
+    value: Expr_Id,
+    known: Maybe(Const_Value),
 }
 
 // A named register-value constant where it's used: its declaration's
 // value, computed at the use's width once the graph is put together
 // (graph_fold_uses). An enum's variant, a length: its value.
-graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
-    rc, is_const := r.(Resolved_Constant)
-    if !is_const || rc.value_expr == nil { return graph_const(b, w, span, t, name, graph_const_value(r)) }
+graph_named_const :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, n: Graph_Named) -> Operand {
+    if n.value == 0 { return graph_const(b, w, span, t, name, n.known) }
     o := graph_op_value(b, .Const, w, span, t, name)
-    append(&b.tables, Graph_Table{o.op, expr_id(rc.value_expr)})
+    append(&b.tables, Graph_Table{o.op, n.value})
     graph_const_settles(b, o.op, t)
     return o
 }
@@ -1792,11 +1788,9 @@ graph_text :: proc(b: ^Graph_Builder, global: Operand, value: Maybe(Const_Value)
 
 // A named constant held in memory: text, or a table — which names its
 // declaration (once every one is built: a use can come first).
-graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, r: Resolved_Name) -> Operand {
+graph_const_global :: proc(b: ^Graph_Builder, w: Written, span: Span, t: Type, name: string, n: Graph_Named) -> Operand {
     o := graph_op_value(b, .Global, w, span, t, name)
-    if rc, ok := r.(Resolved_Constant); ok && rc.value_expr != nil {
-        append(&b.tables, Graph_Table{o.op, expr_id(rc.value_expr)})
-    }
+    if n.value != 0 { append(&b.tables, Graph_Table{o.op, n.value}) }
     return o
 }
 
@@ -1964,9 +1958,8 @@ graph_resolve_defs :: proc(b: ^Graph_Builder) {
 @(private="file")
 graph_table_names :: proc(b: ^Graph_Builder) {
     g := b.g
-    for key, v in b.checked.table.constants {
-        if v == nil { continue }
-        d, ok := b.const_decls[expr_id(v)]
+    for key, v in b.constant_names {
+        d, ok := b.const_decls[v]
         if !ok || d not_in g.tables { continue }
         if name, named := g.table_names[d]; named && (len(name) > len(key) || len(name) == len(key) && name < key) { continue }
         g.table_names[d] = key
@@ -2525,7 +2518,7 @@ graph_open_width :: proc(t: Type) -> bool {
 graph_param_open :: proc(sig: ^Type_Scope, param: int) -> bool {
     if param < 0 || param >= len(sig.params) { return false }
     p := sig.params[param]
-    return p.default_value != nil && is_infer(p.type_)
+    return field_has_default(p) && is_infer(p.type_)
 }
 
 // A block of code (graph_code_block): opened before its statements are

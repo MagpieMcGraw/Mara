@@ -232,9 +232,9 @@ cg_compute_return_deps :: proc(g: ^Call_Graph, checked: ^Checked_Program) {
 @(private="file")
 cg_return_deps_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
     ts := g.nodes[n]
-    if ts == nil || ts.ast == nil { return false }
+    if ts == nil || !scope_is_written(ts) { return false }
     new_set: []int
-    if ts.kind == .Struct || ts.ast.is_intrinsic {
+    if ts.kind == .Struct || scope_is_intrinsic(ts) {
         count := len(ts.params)
         if ts.kind == .Struct && count == 0 { count = len(ts.fields) }   // positional args are its fields
         if count > 0 {

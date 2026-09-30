@@ -285,6 +285,54 @@ Type_Scope :: struct {
     calling_conv:   Calling_Conv,
 }
 
+// --- what the checker's types say of their source, for the passes after it ---
+
+// Whether a param or a field has a default.
+field_has_default :: proc(f: Struct_Type_Field) -> bool {
+    return f.default_value != nil
+}
+
+// Whether a scope is written in the source — a fun, a struct, an intrinsic, an
+// instance of one: what the analyses can follow into.
+scope_is_written :: proc(ts: ^Type_Scope) -> bool {
+    return ts.ast != nil
+}
+
+// Whether a scope is an intrinsic: its body generated at each call.
+scope_is_intrinsic :: proc(ts: ^Type_Scope) -> bool {
+    return ts.ast != nil && ts.ast.is_intrinsic
+}
+
+// Whether a scope's body is written empty.
+scope_body_is_empty :: proc(ts: ^Type_Scope) -> bool {
+    return len(ts.body) == 0
+}
+
+// Whether a distinct slice type sizes its own storage (`String ::
+// type([, 0]utf8(128))`: its default capacity).
+distinct_is_sized :: proc(dt: ^Type_Distinct) -> bool {
+    return dt.default_cap_expr != nil
+}
+
+// A parameter's default that is `void` where the parameter is a pointer:
+// every call that leaves the argument off would pass it (the void there is
+// implied, reported here once). The spans reported, which the graph's void
+// check then leaves alone (flow_check_void).
+check_void_defaults :: proc(c: ^Checker, checked: ^Checked_Program) -> map[Span]bool {
+    seen: map[Span]bool   // generic instances share their template's spans
+    for ft in flow_functions(checked) {
+        if ft == nil || ft.ast == nil { continue }
+        if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
+        for p, i in ft.ast.typed_params {
+            if i < len(ft.params) && is_void_literal(p.default_value) {
+                void_error(c, &seen, expr_span(p.default_value)^, ft.params[i].type_,
+                    fmt.tprintf("the default of parameter '%s'", p.name))
+            }
+        }
+    }
+    return seen
+}
+
 // True if a callable scope returns more than one value.
 fn_has_multi_return :: proc(ft: ^Type_Scope) -> bool {
     return len(ft.return_types) > 1
@@ -5849,13 +5897,55 @@ fuse_leaf_value :: proc(c: ^Checker, b: ^Graph_Builder, e: Expr, t: Type, w: Wri
     graph_fatal(expr_span(e)^, "the checker built no value here")
 }
 
+// The expression an access path (`x.f[i].g`) is rooted at.
+access_root :: proc(e: Expr) -> Expr {
+    cur := e
+    for {
+        #partial switch v in cur {
+        case ^Expr_Field_Access: cur = v.expr
+        case ^Expr_Index:        cur = v.expr
+        case:                    return cur
+        }
+    }
+}
+
+// A tag or padding access names part of the value (a place); variants,
+// constants and functions don't.
+graph_is_member :: proc(r: Resolved_Name) -> bool {
+    #partial switch _ in r {
+    case Resolved_Union_Tag, Resolved_Union_Pad: return true
+    }
+    return false
+}
+
+// A name that stands for a constant, as the builder builds it (Graph_Named):
+// a declared constant's value; an enum's variant's, a length's, known.
+fuse_named :: proc(r: Resolved_Name) -> Graph_Named {
+    #partial switch v in r {
+    case Resolved_Enum_Variant:
+        return {known = Const_Value{int = i128(v.value)}}
+    case Resolved_Constant:
+        if v.value_expr == nil { return {known = Const_Value{int = i128(v.int_value)}} }
+        return {value = expr_id(v.value_expr)}
+    }
+    return {}
+}
+
+// Every name the table has a constant under, by its value's id, for the
+// builder to name the tables (graph_table_names).
+fuse_constant_names :: proc(c: ^Checker) {
+    for key, v in c.table.constants {
+        if v != nil { c.gb.constant_names[key] = expr_id(v) }
+    }
+}
+
 // A name resolved to no variable, as a value: a constant, an enum's variant,
 // a function. (A union's variant is built where it goes: fuse_variant.)
 fuse_resolved_value :: proc(b: ^Graph_Builder, r: Resolved_Name, name: string, t: Type, span: Span, w: Written) -> Operand {
     #partial switch _ in r {
     case Resolved_Enum_Variant, Resolved_Constant:
-        if graph_aggregate(t) { return graph_read(b, graph_const_global(b, w, span, t, name, r), t, span) }
-        return graph_named_const(b, w, span, t, name, r)
+        if graph_aggregate(t) { return graph_read(b, graph_const_global(b, w, span, t, name, fuse_named(r)), t, span) }
+        return graph_named_const(b, w, span, t, name, fuse_named(r))
     case Resolved_Func:
         return graph_op_value(b, .Global, w, span, t, name)   // a function as a value
     }
@@ -5866,7 +5956,7 @@ fuse_resolved_value :: proc(b: ^Graph_Builder, r: Resolved_Name, name: string, t
 fuse_leaf_place :: proc(b: ^Graph_Builder, name: string, r: Resolved_Name, t: Type, span: Span) -> Operand {
     if r == nil { return graph_var(b, name, NO_NODE, t, span) }
     if _, is_const := r.(Resolved_Constant); is_const && graph_aggregate(t) {
-        return graph_const_global(b, .Explicit, span, t, name, r)   // a constant table
+        return graph_const_global(b, .Explicit, span, t, name, fuse_named(r))   // a constant table
     }
     graph_fatal(span, "'%s' names no place", name)
 }
@@ -12039,6 +12129,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // is an index over its calls, and the summaries on it.
     if c.errors == 0 {
         if perf != nil { perf_timer_mark(perf, "graph") }
+        fuse_constant_names(&c)
         checked.graph = build_program_graph(c.gb)
         if perf != nil { perf_timer_mark(perf, "analysis") }
         checked.call_graph = build_call_graph(checked)
@@ -12048,7 +12139,10 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
         if perf != nil { perf_timer_mark(perf, "analysis") }
     }
     c.gb = nil
-    flow_analyze_program(&c, checked) // post-check intraproc flow (missing return, err use, init)
+    void_defaults: map[Span]bool
+    if len(checked.graph.kind) > 0 { void_defaults = check_void_defaults(&c, checked) }
+    flow_analyze_program(&c, checked, void_defaults) // post-check intraproc flow (missing return, err use, init)
+    delete(void_defaults)
     escape_analyze_program(&c, checked) // post-check escape: the lifetime rule + its call summaries
     // NOTE: the slice analysis (def-use + control dependence on the graph) is
     // built lazily per function by the first `mara ask` flow query — du_fn.

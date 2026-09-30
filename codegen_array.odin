@@ -778,7 +778,7 @@ sized_slice_info :: proc(g: ^Codegen, t: Type) -> (int, ^Type_Slice, bool) {
     if !is_distinct { return 0, nil, false }
     sl, is_slice := dt.base_type.(^Type_Slice)
     if !is_slice { return 0, nil, false }
-    if dt.default_cap_expr == nil { return 0, nil, false }
+    if !distinct_is_sized(dt) { return 0, nil, false }
     return dt.default_cap, sl, true
 }
 

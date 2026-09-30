@@ -516,7 +516,7 @@ du_walk_call :: proc(w: ^Du_Walk, op: Node_Id) {
     g := &w.checked.graph
     args := du_call_args(g, op)
     callee := du_callee(g, op)
-    if w.filtered && callee != nil && callee.ast != nil {
+    if w.filtered && callee != nil && scope_is_written(callee) {
         cg := &w.checked.call_graph
         if !cg.deps_ready { cg_compute_return_deps(cg, w.checked) }
         if n, ok := cg.index_of[callee]; ok && n < len(cg.return_deps) {

@@ -18,10 +18,6 @@ import "core:strings"
 
 Flow_Stats :: struct {
     functions:  int, // source functions walked
-    statements: int, // statements visited (all nesting levels)
-    decls:      int, // Stmt_Decl — what definite-assignment tracks
-    branches:   int, // if / match — the merge points
-    max_depth:  int, // deepest control-flow nesting reached
 
     // Functions flagged for "missing return on all code paths" — the first
     // analysis this pass OWNS (emitted below, not just collected).
@@ -32,7 +28,9 @@ Flow_Stats :: struct {
 // function and raises the intraprocedural diagnostics it owns. Takes the Checker
 // purely as the error sink (check_error); the analysis itself reads only the
 // durable Checked_Program.
-flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
+// (`void_defaults`: the spans of params' `void` defaults the checker reported,
+// check_void_defaults.)
+flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: map[Span]bool) {
     stats: Flow_Stats
     // Missing-return reads the program graph's runs, built from a clean check.
     graphed := len(checked.graph.kind) > 0
@@ -45,16 +43,17 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
         flow_check_unused(c, checked)
         flow_check_init(c, checked, starts)
         flow_check_defer_writes(c, checked, starts)
-        flow_check_void(c, checked)
+        flow_check_void(c, checked, void_defaults)
         flow_check_constants(c, checked)
     }
     for ft in flow_functions(checked) {
         if ft == nil { continue }
-        // Source bodies only: intrinsics/foreigns have no Mara statements to walk.
+        // Source bodies only: intrinsics/foreigns have no Mara statements. An
+        // empty one declares a shape (`Arena`'s methods, which a `~Arena`
+        // param's type must have): nothing to return from.
         if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
-        if len(ft.body) == 0 { continue }
+        if scope_body_is_empty(ft) { continue }
         stats.functions += 1
-        flow_walk_stmts(&stats, ft.body[:], 1)
         if graphed && flow_missing_return(checked, starts, ft) {
             name := ft.source_name if ft.source_name != "" else ft.name
             // Same message + span the inline check used (ft.body_span == s.span).
@@ -311,7 +310,7 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, starts: map[Node_Id]i32, n
             s.keys[Init_Key{id, ""}] = len(s.keys)
         } else if sd := as_scope_body(base); sd != nil {
             for &f in sd.fields {
-                if f.default_value != nil || !flow_field_can_be_unset(f.type_) { continue }
+                if field_has_default(f) || !flow_field_can_be_unset(f.type_) { continue }
                 s.keys[Init_Key{id, f.name}] = len(s.keys)
             }
         }
@@ -410,7 +409,7 @@ flow_can_be_unset :: proc(base: Type) -> bool {
 @(private="file")
 flow_field_can_be_unset :: proc(t: Type) -> bool {
     if dt, ok := t.(^Type_Distinct); ok {
-        if _, sl := dt.base_type.(^Type_Slice); sl && dt.default_cap_expr != nil { return false }
+        if _, sl := dt.base_type.(^Type_Slice); sl && distinct_is_sized(dt) { return false }
     }
     #partial switch _ in distinct_base(t) {
     case ^Type_Ptr, ^Type_Slice: return true
@@ -581,41 +580,11 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
     }
 }
 
-// Recurse the control-flow tree, counting coverage. Descends if/for/defer/match
-// bodies (the .Block scopes) but NOT a nested Stmt_Scope — a nested fun/struct is
-// a separate function with its own checked.functions entry and its own flow, so
-// it is walked on its own, not inlined here.
-flow_walk_stmts :: proc(stats: ^Flow_Stats, stmts: []Stmt, depth: int) {
-    if depth > stats.max_depth { stats.max_depth = depth }
-    for s in stmts {
-        stats.statements += 1
-        #partial switch v in s {
-        case ^Stmt_Decl:
-            stats.decls += 1
-        case ^Stmt_If:
-            stats.branches += 1
-            flow_walk_stmts(stats, v.body[:], depth + 1)
-            flow_walk_stmts(stats, v.else_body[:], depth + 1)
-        case ^Stmt_For:
-            flow_walk_stmts(stats, v.body[:], depth + 1)
-        case ^Stmt_Defer:
-            flow_walk_stmts(stats, v.body[:], depth + 1)
-        case ^Stmt_Match:
-            stats.branches += 1
-            for arm in v.arms {
-                flow_walk_stmts(stats, arm.body[:], depth + 1)
-            }
-        }
-    }
-}
 
 flow_dump_stats :: proc(stats: Flow_Stats) {
     buf: [8]byte
     if os.get_env_buf(buf[:], "MARA_DUMP_FLOW") != "1" { return }
-    fmt.eprintf(
-        "[flow] %d source funcs, %d stmts, %d decls, %d branches, max depth %d\n",
-        stats.functions, stats.statements, stats.decls, stats.branches, stats.max_depth,
-    )
+    fmt.eprintf("[flow] %d source funcs\n", stats.functions)
     fmt.eprintf("[flow] missing-return flagged: %d %v\n",
         len(stats.missing_return), stats.missing_return)
 }
@@ -642,22 +611,12 @@ flow_check_constants :: proc(c: ^Checker, checked: ^Checked_Program) {
 // else a void headed for a pointer — a return, an argument, a field, an element,
 // a store through a field/index/deref, an if-branch, a default — is an error.
 
-flow_check_void :: proc(c: ^Checker, checked: ^Checked_Program) {
+flow_check_void :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: map[Span]bool) {
     g := &checked.graph
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
-    // A parameter's default: every call that leaves the argument off would
-    // pass it (the void there is implied, reported here once).
-    for ft in flow_functions(checked) {
-        if ft == nil || ft.ast == nil { continue }
-        if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
-        for p, i in ft.ast.typed_params {
-            if i < len(ft.params) && is_void_literal(p.default_value) {
-                void_error(c, &seen, expr_span(p.default_value)^, ft.params[i].type_,
-                    fmt.tprintf("the default of parameter '%s'", p.name))
-            }
-        }
-    }
+    // (A parameter's default: the checker's, check_void_defaults.)
+    for sp in void_defaults { seen[sp] = true }
     // Every other: a void as written, where the operation that takes it
     // stores it — its type its use's.
     for i in 0 ..< len(g.kind) {
@@ -675,7 +634,6 @@ flow_check_void :: proc(c: ^Checker, checked: ^Checked_Program) {
 }
 
 // A pointer, or a value that is one underneath (a cstring, a function).
-@(private="file")
 void_is_pointer :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(t) {
     case ^Type_Ptr, Type_CString: return true
@@ -685,7 +643,6 @@ void_is_pointer :: proc(t: Type) -> bool {
 }
 
 // A void stored where a `dest` goes: an error when dest is a pointer.
-@(private="file")
 void_error :: proc(c: ^Checker, seen: ^map[Span]bool, sp: Span, dest: Type, where_: string) {
     if !void_is_pointer(dest) || seen[sp] { return }
     seen[sp] = true
@@ -731,7 +688,6 @@ void_where :: proc(g: ^Program_Graph, op: Node_Id, k: int) -> (string, bool) {
 
 // The checked functions in name order: a map's order changes from run to run,
 // and the diagnostics would follow it.
-@(private="file")
 flow_functions :: proc(checked: ^Checked_Program) -> []^Type_Scope {
     names := make([dynamic]string, 0, len(checked.functions), context.temp_allocator)
     for name in checked.functions { append(&names, name) }
