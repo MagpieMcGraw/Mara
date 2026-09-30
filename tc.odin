@@ -35,9 +35,13 @@ TC :: struct {
     checked_modules: map[string]^Type_Scope,
     in_progress:   map[string]bool,
     std:           ^Type_Scope,
+    salt:          u64,               // the instance being checked's number (0: none): tc_sid
+    salt_lo, salt_hi: Tree_Id,        // its template's body's nodes
+    instance_count: u64,
     templates:     map[string]TC_Template,   // the generic definitions, by name
     consts:        map[string]^TC_Const,     // the constants, by flat name (and bare, unless two modules share it)
     const_owners:  map[string]string,        // each bare name's module ("": more than one)
+    scope_consts:  map[^Type_Scope]map[string]^TC_Const,   // the constants a body, or a struct, defines
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
@@ -56,6 +60,7 @@ TC_Scope :: struct {
     node: Tree_Id,   // its Fun_Def or Struct_Def
     env:  ^Type_Scope,
     nested: [dynamic]int,   // the funs and structs defined in its body
+    consts: [dynamic]^TC_Const,   // the constants defined in its body
     subst:  map[string]Type,   // an instance's: its type params bound
     synthetic: bool,           // an instance: the compiler's, written nowhere
     registered: bool,       // (they are)
@@ -187,7 +192,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     if c.errors == 0 {
         if perf != nil { perf_timer_mark(perf, "graph") }
         // (Each constant's names, by its value, for the builder to name tables.)
-        for key, kc in k.consts { k.gb.constant_names[key] = syntax_id(kc.value) }
+        for key, kc in k.consts { k.gb.constant_names[key] = kc.sid }
         checked.graph = build_program_graph(k.gb)
         if perf != nil { perf_timer_mark(perf, "analysis") }
         checked.call_graph = build_call_graph(checked)
@@ -245,7 +250,7 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
         if ts := k.scopes[i].ts; ts != nil && ts.kind == .Fun { tc_scope_body(k, k.scopes[i]) }
     }
     for i in mine {
-        if k.gb != nil { graph_module_stmt(k.gb, syntax_id(k.scopes[i].def), {kind = .Other, set = true}) }
+        if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, k.scopes[i].def), {kind = .Other, set = true}) }
     }
     return mine
 }
@@ -298,14 +303,14 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
     case .Expr_Stmt:
         if e := Tree_Id(t.a[s]); t.tag[e] == .Import {
             tc_use(k, e, env, mod)
-            if k.gb != nil { graph_module_stmt(k.gb, syntax_id(s), {kind = .Decl, set = true}) }
+            if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, s), {kind = .Decl, set = true}) }
             return
         }
     case .Define:
         value := Tree_Id(t.b[s])
         if value != 0 && t.tag[value] == .Import {
             m := tc_use(k, value, env, mod, alias = tc_name(k, s))
-            if k.gb != nil { graph_module_stmt(k.gb, syntax_id(s), {types = slice.clone([]Type{m}), kind = .Other, set = true}) }
+            if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, s), {types = slice.clone([]Type{m}), kind = .Other, set = true}) }
             return
         }
         if value != 0 && t.tag[value] == .Dispatch_Def && t.a[s] == 0 {
@@ -362,7 +367,7 @@ tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         // (A constant: checked, and built, here in its module's order.)
         if kc, ok := k.consts[make_flat_name(k.pkg, tc_name(k, s))]; ok && kc.def == s {
             tc_check_const(k, kc)
-            if k.gb != nil { graph_module_stmt(k.gb, syntax_id(s), {types = slice.clone([]Type{kc.t}), kind = .Other, set = true}) }
+            if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, s), {types = slice.clone([]Type{kc.t}), kind = .Other, set = true}) }
         }
         return
     }
@@ -413,7 +418,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     is_struct := t.tag[node] == .Struct_Def
     if tc_is_generic(k, node) {
         // (A template: checked as each instance.)
-        if name not_in k.templates { k.templates[name] = TC_Template{def = def, node = node, env = env, pkg = k.pkg} }
+        if name not_in k.templates { k.templates[name] = TC_Template{def = def, node = node, lo = tc_subtree_lo(k, node), env = env, pkg = k.pkg} }
         if !is_struct && len(v.params) > 0 { k.c.declared_funs[name] = true }
         // (Its place in the module's order: a template the module's scope
         // binds a type to is that type's declaration — mara.core's `Program`
@@ -584,7 +589,7 @@ tc_module_graph_decls :: proc(k: ^TC) -> map[string][]Graph_Decl {
 // What a statement outside any body declares, as the builder builds it.
 tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     t := k.t
-    d := Graph_Decl{id = syntax_id(s), span = tree_span(t, s), kind = tc_stmt_kind(k, s)}
+    d := Graph_Decl{id = tc_sid(k, s), span = tree_span(t, s), kind = tc_stmt_kind(k, s)}
     #partial switch t.tag[s] {
     case .Expr_Stmt:
         d.form = .None
@@ -621,7 +626,7 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
             d.parts = parts
         case:
             d.form = .Const
-            d.value = syntax_id(value)
+            d.value = tc_sid(k, value)
         }
     case:
         d.form = .Code
@@ -707,4 +712,24 @@ tc_param_type :: proc(k: ^TC, name: string, type_, def: Tree_Id, env: ^Type_Scop
         return Type_Infer_Int{cell = cell}
     }
     return solidify_type(tc_check(k, def, env))
+}
+
+// A node's id as the builder keys it. In a generic's instance, its
+// template's body is checked again: its nodes are that instance's own (the
+// old checker's clones had ids of their own), salted with the instance's
+// number. (The template's definition itself is the instance's: unsalted.)
+tc_sid :: proc(k: ^TC, n: Tree_Id) -> Syntax_Id {
+    id := Syntax_Id(n)
+    if k.salt != 0 && n >= k.salt_lo && n <= k.salt_hi { id |= Syntax_Id(k.salt) << 32 }
+    return id
+}
+
+// The lowest node of a subtree: its nodes are [it, n] (children are made
+// before their parents).
+tc_subtree_lo :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
+    lo := n
+    kids := make([dynamic]Tree_Id, context.temp_allocator)
+    tree_children(k.t, n, &kids)
+    for c in kids { lo = min(lo, tc_subtree_lo(k, c)) }
+    return lo
 }

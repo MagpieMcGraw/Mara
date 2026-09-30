@@ -22,6 +22,10 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
             tc_register_nested(k, s, value, owner, owner_i)
             continue
         }
+        if value != 0 && !tc_is_definition(t.tag[value]) {
+            tc_register_local_const(k, s, value, sc)
+            continue
+        }
         tc_unsupported(k, s, "a definition in a body")
     }
     for i in k.scopes[owner_i].nested { tc_signature(k, k.scopes[i]) }

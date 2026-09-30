@@ -16,14 +16,18 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     hint := k.hint
     defer k.hint = hint
     tc_register_defs(k, sc)
+    body := type_env_block_child(ts)
+    // (A struct's params its constants may use; its and a fun's constants
+    // checked, and built, before its code.)
+    if is_struct { for p in ts.params { type_env_set(body, p.name, p.type_) } }
+    tc_check_local_consts(k, sc, body)
     f: ^Graph_Fuse
-    if k.gb != nil { f = graph_fuse_begin(k.gb, ts, syntax_id(sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit) }
+    if k.gb != nil { f = graph_fuse_begin(k.gb, ts, tc_sid(k, sc.def), span, v.intrinsic != 0, .Synthetic if sc.synthetic else .Explicit) }
     // (A fun's definitions are checked before its code; a struct's once its
     // fields are known: its methods read them.)
     if !is_struct { tc_check_defs(k, sc) }
     if v.intrinsic == 0 {
-        body := type_env_block_child(ts)
-        for p in ts.params { type_env_set(body, p.name, p.type_) }
+        if !is_struct { for p in ts.params { type_env_set(body, p.name, p.type_) } }
         for name, bt in sc.subst { type_env_set(body, name, bt) }
         tc_scope(k, v.body, body, ts if is_struct else nil, top = true)
     }
@@ -46,6 +50,12 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
 // fields).
 tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil, top := false) {
     t := k.t
+    // (A body's constants, checked with it: their declarations, settled.)
+    if b := tc_building(k); b != nil && top {
+        for s in stmts {
+            if t.tag[s] == .Define && t.b[s] != 0 && !tc_is_definition(t.tag[t.b[s]]) { graph_fuse_def_settled(b, tc_graph_decl(k, s)) }
+        }
+    }
     for s in stmts {
         if t.tag[s] == .Define {
             // (A body's definitions are registered and checked with it: built
@@ -59,7 +69,7 @@ tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Sc
         if b != nil {
             span := tree_span(t, s)
             graph_fuse_body_stmt(b, span, true)
-            saved = graph_fuse_stmt(b, syntax_id(s), span, tc_stmt_kind(k, s), fresh = true)
+            saved = graph_fuse_stmt(b, tc_sid(k, s), span, tc_stmt_kind(k, s), fresh = true)
         }
         if t.tag[s] == .Decl && fields_of != nil {
             tc_decl(k, s, env, fields_of)
@@ -281,7 +291,7 @@ tc_add_field :: proc(ts: ^Type_Scope, name: string, t: Type, value: Tree_Id) {
 tc_field_decl :: proc(k: ^TC, fields_of: ^Type_Scope, name: string, target, value: Tree_Id, span: Span) -> Node_Id {
     b := tc_building(k)
     if fields_of == nil || b == nil { return NO_NODE }
-    key := syntax_id(target)
+    key := tc_sid(k, target)
     inits := []Span{tree_span(k.t, value)} if value != 0 else nil
     graph_fuse_fields(b, {name}, span, {key}, inits, false)
     return b.fuse.fields[key]
@@ -614,7 +624,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 tc_stmt_entry :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     b := tc_building(k)
     saved: i32
-    if b != nil { saved = graph_fuse_stmt(b, syntax_id(s), tree_span(k.t, s), tc_stmt_kind(k, s)) }
+    if b != nil { saved = graph_fuse_stmt(b, tc_sid(k, s), tree_span(k.t, s), tc_stmt_kind(k, s)) }
     tc_stmt(k, s, env)
     if b != nil { graph_fuse_stmt_end(b, saved) }
 }

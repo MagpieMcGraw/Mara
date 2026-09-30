@@ -10,6 +10,9 @@ import "core:strings"
 TC_Const :: struct {
     def, value, ann: Tree_Id,
     name:  string,          // as written
+    mangled: string,        // a body's: named for its owner
+    sid:   Syntax_Id,       // its value's, as the builder keys it (an instance's its own)
+    local: bool,            // a body's (its type its value's, as the old checker had it)
     env:   ^Type_Scope,     // where its value is checked
     pub:   ^Type_Scope,     // where its name is bound
     pkg:   string,
@@ -22,6 +25,7 @@ TC_Const :: struct {
 tc_register_const :: proc(k: ^TC, def, value: Tree_Id, env, mod: ^Type_Scope) {
     name := tc_name(k, def)
     kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, env = env, pub = mod, pkg = k.pkg})
+    kc.sid = tc_sid(k, value)
     k.consts[make_flat_name(k.pkg, name)] = kc
     if owner, mapped := k.const_owners[name]; mapped {
         if owner != k.pkg { k.const_owners[name] = "" }
@@ -40,7 +44,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
     span := tree_span(t, kc.def)
     b := k.gb
     f: ^Graph_Fuse
-    if b != nil && k.c.errors == 0 && syntax_id(kc.def) not_in b.const_segs {
+    if b != nil && k.c.errors == 0 && tc_sid(k, kc.def) not_in b.const_segs {
         f = graph_const_begin(b, tc_graph_decl(k, kc.def))
     }
     hint := k.hint
@@ -57,7 +61,7 @@ tc_check_const :: proc(k: ^TC, kc: ^TC_Const) {
         vt = tc_check(k, kc.value, kc.env)
     }
     final := vt
-    if !is_any(ann) {
+    if !is_any(ann) && !kc.local {
         if types_incompatible(ann, vt) {
             tc_error(k, span, TYPE_CANNOT_ASSIGN_CONSTANT_TYPE, type_name(vt), kc.name, type_name(ann))
         }
@@ -118,7 +122,7 @@ tc_const_use :: proc(k: ^TC, kc: ^TC_Const, n: Tree_Id, t: Type, want: Fuse_Want
     b := tc_building(k)
     if b == nil || want == .None { return {} }
     span := tree_span(k.t, n)
-    named := Graph_Named{value = syntax_id(kc.value)}
+    named := Graph_Named{value = kc.sid}
     if graph_aggregate(t) {
         g := graph_const_global(b, w, span, t, kc.name, named)
         if want == .Value { return {v = graph_read(b, g, t, span), ok = true} }
@@ -141,4 +145,52 @@ tc_const_visible :: proc(k: ^TC, env: ^Type_Scope, name: string) -> bool {
         if s.is_module { break }
     }
     return false
+}
+
+// A body's constant: named for its owner (`main_K`) and by itself, the
+// names the builder's tables take; bound in its owner's body once checked.
+tc_register_local_const :: proc(k: ^TC, def, value: Tree_Id, sc: ^TC_Scope) {
+    name := tc_name(k, def)
+    mangled := strings.concatenate({sc.ts.name, "_", name})
+    kc := new_clone(TC_Const{def = def, value = value, ann = Tree_Id(k.t.a[def]), name = name, mangled = mangled, pkg = k.pkg, local = true})
+    kc.sid = tc_sid(k, value)
+    k.consts[mangled] = kc
+    k.consts[name] = kc
+    append(&sc.consts, kc)
+    // (A use in its owner's methods finds it through its owner: its scope's.)
+    owner := sc.ts
+    if owner not_in k.scope_consts { k.scope_consts[owner] = make(map[string]^TC_Const) }
+    (&k.scope_consts[owner])[name] = kc
+}
+
+// A body's constants, checked in its scope (where its own names are, before
+// its code), each bound there — and in its owner, for its methods.
+tc_check_local_consts :: proc(k: ^TC, sc: ^TC_Scope, body: ^Type_Scope) {
+    if len(sc.consts) == 0 { return }
+    if body not_in k.scope_consts { k.scope_consts[body] = make(map[string]^TC_Const) }
+    for kc in sc.consts {
+        kc.env, kc.pub = body, body
+        tc_check_const(k, kc)
+        type_env_set(body, kc.mangled, kc.t)
+        type_env_set(sc.ts, kc.mangled, kc.t)
+        type_env_set(sc.ts, kc.name, kc.t)
+        (&k.scope_consts[body])[kc.name] = kc
+    }
+}
+
+// The body's constant a name found as a local, or in a scope, names: the
+// blocks out to its fun's body, or the scope it was found in.
+tc_local_const :: proc(k: ^TC, env: ^Type_Scope, loc: ^Type_Scope, name: string) -> ^TC_Const {
+    if loc == nil {
+        for s := env; s != nil; s = s.parent_scope {
+            if cs, ok := k.scope_consts[s]; ok {
+                if kc, has := cs[name]; has { return kc }
+            }
+            if s.kind != .Block { break }
+        }
+        return nil
+    }
+    if loc.is_module { return nil }
+    if cs, ok := k.scope_consts[loc]; ok { return cs[name] or_else nil }
+    return nil
 }

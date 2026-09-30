@@ -997,7 +997,7 @@ graph_index :: proc(b: ^Graph_Builder) {
 // What the builder keys a statement or an expression by: an id of whichever
 // tree the checker reads (the pointer tree's Stmt_Id or Expr_Id, the flat
 // tree's Tree_Id). 0 is none.
-Syntax_Id :: distinct u32
+Syntax_Id :: distinct u64   // (the new checker salts an instance's body ids: tc_sid)
 
 syntax_id :: proc{syntax_of_stmt, syntax_of_expr, syntax_of_node}
 syntax_of_stmt :: proc(id: Stmt_Id) -> Syntax_Id { return Syntax_Id(id) }

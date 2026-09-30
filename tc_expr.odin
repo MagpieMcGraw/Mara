@@ -163,7 +163,11 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         if want == .None || want == .Place { return t, {} }
         return t, {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
     }
-    if kc != nil { return t, tc_const_use(k, kc, n, t, want, w) }
+    if kc == nil { kc = tc_local_const(k, env, loc_scope, name) }
+    if kc != nil {
+        k.const_nodes[n] = true
+        return t, tc_const_use(k, kc, n, t, want, w)
+    }
     // (A local is found in no scope: what a scope holds is a fun, a type, a
     // constant — a function sees no module's variables.)
     if loc_scope != nil {

@@ -8,6 +8,7 @@ package mara
 
 TC_Template :: struct {
     def, node: Tree_Id,
+    lo:        Tree_Id,   // its body's lowest node (its nodes: [lo, node])
     env:       ^Type_Scope,
     pkg:       string,
 }
@@ -102,7 +103,7 @@ tc_program_struct :: proc(k: ^TC) {
         span := tree_span(t, tmpl.def)
         if span != pt.body_span { continue }
         v := scope_view(t, tmpl.node)
-        f := graph_fuse_begin(k.gb, pt, syntax_id(tmpl.def), span, v.intrinsic != 0, .Synthetic)
+        f := graph_fuse_begin(k.gb, pt, tc_sid(k, tmpl.def), span, v.intrinsic != 0, .Synthetic)
         b := k.gb
         for s in v.body {
             if t.tag[s] != .Decl {
@@ -111,7 +112,7 @@ tc_program_struct :: proc(k: ^TC) {
             }
             ss := tree_span(t, s)
             graph_fuse_body_stmt(b, ss, true)
-            saved := graph_fuse_stmt(b, syntax_id(s), ss, tc_stmt_kind(k, s), fresh = true)
+            saved := graph_fuse_stmt(b, tc_sid(k, s), ss, tc_stmt_kind(k, s), fresh = true)
             for target in decl_view(t, s).targets { graph_fuse_program_field(b, tc_name(k, target), ss) }
             graph_fuse_stmt_end(b, saved)
         }
@@ -298,6 +299,11 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
     saved_subst, saved_pkg := k.subst, k.pkg
     k.subst, k.pkg = subst, tmpl.pkg
     defer k.subst, k.pkg = saved_subst, saved_pkg
+    // (Its body's nodes its own: tc_sid.)
+    saved_salt, saved_lo, saved_hi := k.salt, k.salt_lo, k.salt_hi
+    k.instance_count += 1
+    k.salt, k.salt_lo, k.salt_hi = k.instance_count, tmpl.lo, tmpl.node
+    defer k.salt, k.salt_lo, k.salt_hi = saved_salt, saved_lo, saved_hi
     span := tree_span(tr, tmpl.def)
     v := scope_view(tr, tmpl.node)
     for g in v.params {

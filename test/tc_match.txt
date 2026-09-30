@@ -33,6 +33,7 @@ castfield
 cdefer
 cgflat
 chartest
+const_address_neg
 const_qualified_float
 const_runtime_neg
 const_slice_neg
@@ -84,6 +85,8 @@ fielddefer
 fixed_decay_neg
 fixed_to_slice
 fordo
+generic_local_const
+generic_nested_funs
 generic_untyped_args
 hoisttest
 idxelem
