@@ -965,6 +965,22 @@ erroneous program reports, the negative fixtures say so.
       17.2 s (debug), about 2.7M type sets and 0.9M gets, nearly all memory-bound. Phase 5's
       integer ids turn these maps into arrays indexed by the node.
 
+## Phase 5 checklist
+
+The syntax tree made flat: integer ids, token ranges, slim tokens (the table above).
+
+- [x] Expression ids (2026-09-30). Every expression's first field is its id, given when it is
+      made (`new_expr`: the parser's nodes, the checker's, every clone; 0 is no expression's).
+      The checker keeps each expression's type in an array by id, not a map by node: phase 4's
+      map cost test_1M's check 14.4 → 17.2 s, the array brings it back (14.7–15.7 s, noisy).
+      An expression made without an id is a hard error when its type is set. The other
+      checker records keyed by an expression stay maps: they are small (what a name resolved
+      to: 34 entries on test_1M though looked up 4M times; calls: 40k).
+- [ ] Statement ids
+- [ ] Token ranges in place of spans
+- [ ] Slim tokens
+- [ ] The tree in arrays by id
+
 ## Baselines
 
 Recorded at 3c9bbc5, before any change, with the debug compiler (`odin build . -debug`). Peak memory
