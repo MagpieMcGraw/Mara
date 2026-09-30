@@ -3055,13 +3055,15 @@ graph_fuse_span_view :: proc(b: ^Graph_Builder, slice: Operand, t: Type, big: bo
 // What is built after what follows it, where it goes (a dispatch's default
 // for `_`, known once the function is chosen): a place for it, then it, in
 // a segment of its own there. Its operations join the run the place is in:
-// false when that is no longer the run.
+// false when they would and that is no longer the run (declarations alone —
+// a temporary's slot — go anywhere).
 Graph_Later :: struct {
     seg, anchor:  int,
     si, saved:    int,
     run:          ^Run,
     same:         bool,
     reserved:     bool,
+    ops:          int,   // the current run's operations when it began
 }
 
 // What is built before what it follows (checked first, built after): in a
@@ -3094,13 +3096,15 @@ graph_fuse_later :: proc(b: ^Graph_Builder) -> Graph_Later {
 
 graph_fuse_later_begin :: proc(b: ^Graph_Builder, l: ^Graph_Later) {
     l.same = b.code.run == l.run
+    l.ops = len(b.code.run.ops) if b.code.run != nil else 0
     l.si, l.saved = graph_segment_enter(b)
 }
 
 graph_fuse_later_end :: proc(b: ^Graph_Builder, l: ^Graph_Later) -> bool {
     graph_segment_leave(b, l.saved)
     b.segs[l.seg].anchors[l.anchor].seg = l.si
-    return l.same && b.code.run == l.run
+    added := b.code.run != nil && len(b.code.run.ops) > l.ops
+    return !added || l.same && b.code.run == l.run
 }
 
 // `bytes[lo:hi] = v` (graph_stmt): its target is a view of the bytes at lo —
@@ -3749,6 +3753,23 @@ graph_fuse_array_elem :: proc(b: ^Graph_Builder, ga: ^Graph_Array, i: int, first
 graph_fuse_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span) {
     graph_op(b, .Construct, .Explicit, span, t, name, graph_dest_place(b, d, span))
     graph_variant_defaults(b, t, name, nil, d, span)
+}
+
+// An array literal built before the type its use takes it at was known (a
+// dispatch's argument, the function chosen after): its nodes, from `from`,
+// retyped — an array of untyped elements (its own, its temporary's) as that
+// one, an untyped element's slot as that one's element.
+graph_fuse_retype_literal :: proc(b: ^Graph_Builder, from, to: int, new: Type) {
+    new_elem := graph_elem_type(new)
+    for i in from ..< to {
+        t := b.g.type_[i]
+        if t == nil { continue }
+        if fa, is_array := distinct_base(t).(^Type_Fixed_Array); is_array && is_infer(fa.elem) {
+            b.g.type_[i] = new
+        } else if b.g.kind[i] == .Op && b.g.op[i] == .Index && is_infer(t) {
+            b.g.type_[i] = new_elem
+        }
+    }
 }
 
 // An aggregate built where no destination was given: a synthetic local,

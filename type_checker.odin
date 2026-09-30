@@ -5980,6 +5980,12 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
     fuse_store_finish(c, s.value, fa.value_type, fa.value, graph_dest_var(s.name, NO_NODE, s.var_type), s.span)
 }
 
+// A dispatch's array literal argument: its position, its nodes, its type.
+Fuse_Literal_Arg :: struct {
+    arg, from, to: int,
+    t:             Type,
+}
+
 // Whether a function's param would view an argument that is an array's
 // value (graph_view: its place, a temporary) — a slice over it.
 fuse_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {
@@ -11966,10 +11972,11 @@ check_if_expr :: proc(c: ^Checker, e: ^Expr_If, env: ^Type_Scope) -> Type {
     for k in fi.widen { if k >= 0 { b.fuse.widens[k].to = t } }
     graph_fuse_typed(b, fi.slot, t)
     p := graph_var(b, "if", fi.slot, t, e.span)
-    switch {
-    case want == .Value:                        fuse_done(c, graph_read(b, p, t, e.span))
-    case want != .Place || graph_aggregate(t):  fuse_done(c, p, true)
-    case:                                       fuse_fail(c, "an if's place, of no aggregate")
+    // (Its place: its local, a fresh one holding its value.)
+    if want == .Value {
+        fuse_done(c, graph_read(b, p, t, e.span))
+    } else {
+        fuse_done(c, p, true)
     }
     return t
 }
@@ -14534,6 +14541,8 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
     defer delete(as_)
     array_values: [dynamic]bool   // (an argument that is an array's value, no place)
     defer delete(array_values)
+    literal_args: [dynamic]Fuse_Literal_Arg
+    defer delete(literal_args)
     // Mark underscore positions — they can't be typed without knowing which
     // overload (and therefore which default) they'll take. Non-underscore
     // args get typed once; their arg_types slot stays nil for underscores.
@@ -14562,20 +14571,24 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
                 append(&array_values, false)
             }
         } else if b != nil && fusing(c) != nil {
+            from := b.nodes
             t, r := fuse_expr(c, arg, env, .Either, w)
             append(&arg_types, t)
             if fusing(c) == nil { continue }
             _, is_literal := arg.(^Expr_Array)
             _, is_array := distinct_base(t).(^Type_Fixed_Array)
             sl, is_slice := arg.(^Expr_Slice)
-            if fuse_byte_index(arg) || is_slice && is_byte_buffer(expr_type(sl.expr)) || is_literal {
-                fuse_fail(c, "bytes or a literal as a dispatch's argument")
+            if fuse_byte_index(arg) || is_slice && is_byte_buffer(expr_type(sl.expr)) {
+                fuse_fail(c, "bytes as a dispatch's argument")
                 continue
             }
             v, k := graph_fuse_as(b, r.v, r.place, t, expr_span(arg)^, e.span, {})
             append(&vals, v)
             append(&as_, k)
             append(&array_values, is_array && !r.place)
+            // (An array literal: built at its own type, retyped as its param's
+            // once the function is chosen — as the builder built it there.)
+            if is_literal { append(&literal_args, Fuse_Literal_Arg{i, from, b.nodes, t}) }
         } else {
             append(&arg_types, check_expr(c, arg, env))
         }
@@ -14701,6 +14714,11 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             if k >= 0 { b.fuse.widens[k].sig, b.fuse.widens[k].param = ft, i }
         }
         if fuse_views_value(ft, array_values[:]) { fuse_fail(c, "an array's value viewed by a dispatch's param") }
+        for la in literal_args {
+            if la.arg >= len(ft.params) { continue }
+            pt := ft.params[la.arg].type_
+            if graph_aggregate(pt) && pt != la.t { graph_fuse_retype_literal(b, la.from, la.to, pt) }
+        }
     }
     // Trailing default fill: append each missing slot's default expression so
     // codegen sees a fully-saturated arg list. Mirrors fill_default_args.
