@@ -2959,9 +2959,9 @@ fuse_program_struct :: proc(c: ^Checker) {
     if c.gb == nil || pt == nil || pt.body_span == {} { return }
     for _, tmpl in c.table.generic_templates {
         if tmpl.ast.span != pt.body_span { continue }
-        f := graph_fuse_begin(c.gb, pt, tmpl.ast, tmpl.ast.body[:], .Synthetic)
+        f := graph_fuse_begin(c.gb, pt, tmpl.ast.id, tmpl.ast.span, tmpl.ast.is_intrinsic, .Synthetic)
         if f == nil { return }
-        graph_fuse_program_fields(c.gb, tmpl.ast.body[:])
+        fuse_program_fields(c, tmpl.ast.body[:])
         fuse_end(c, f)
         return
     }
@@ -3270,7 +3270,7 @@ instantiate_generic_fun :: proc(c: ^Checker, tmpl: ^Generic_Template, subst: ^ma
     // Type-check the cloned function body, building its graph (its
     // definitions: its own copies).
     f: ^Graph_Fuse
-    if c.gb != nil { f = graph_fuse_begin(c.gb, fun_type, ast, cloned_body[:], .Synthetic) }
+    if c.gb != nil { f = graph_fuse_begin(c.gb, fun_type, ast.id, ast.span, ast.is_intrinsic, .Synthetic) }
     // (Its nested funs and structs registered under it, as a fun's are
     // before its body — check_scope_body; its constants bind as checked.)
     nested: [dynamic]Stmt
@@ -5964,7 +5964,133 @@ Fuse_Stmt :: struct {
 
 fuse_stmt :: proc(c: ^Checker, s: Stmt) -> Fuse_Stmt {
     if c.gb == nil || c.gb.fuse == nil || is_scope_def(s) { return {} }
-    return {c.gb, graph_fuse_stmt(c.gb, s)}
+    return {c.gb, graph_fuse_stmt(c.gb, stmt_id(s), stmt_span(s), fuse_stmt_kind(s))}
+}
+
+// What a statement does to the variables it writes, as the graph's
+// statements table has it (Stmt_Kind).
+fuse_stmt_kind :: proc(s: Stmt) -> Stmt_Kind {
+    #partial switch v in s {
+    case ^Stmt_Assign:
+        if _, is_import := v.value.(^Expr_Include); is_import { return .Other }
+        if v.target != nil { return .Write }
+        if v.is_decl { return .Decl }
+        if v.name == "_" || v.name == "this_program" { return .Other }
+        return .Assign
+    case ^Stmt_Multi_Return_Assign:
+        return .Destructure   // (a broadcast's is its copies': fuse_declared)
+    case ^Stmt_Decl:  return .Decl   // (a local's is its checked assignments; a field's, itself)
+    case ^Stmt_For:   return .Loop
+    case ^Stmt_If:    return .If
+    case ^Stmt_Match: return .Match
+    }
+    return .Other
+}
+
+// Whether a statement is code, not a definition.
+fuse_runs_code :: proc(s: Stmt) -> bool {
+    #partial switch v in s {
+    case ^Stmt_Scope:
+        return v.kind == .Block
+    case ^Stmt_Define, ^Stmt_Union_Def, ^Stmt_Distinct_Def, ^Stmt_Dispatch_Def,
+         Stmt_Overload, Stmt_Module, ^Stmt_Foreign:
+        return false
+    }
+    return true
+}
+
+// What a statement outside any body declares, as the builder builds it
+// (Graph_Decl): this tree's reading.
+stmt_graph_decl :: proc(s: Stmt) -> Graph_Decl {
+    d := Graph_Decl{id = stmt_id(s), span = stmt_span(s), kind = fuse_stmt_kind(s)}
+    #partial switch v in s {
+    case ^Stmt_Decl:
+        d.form, d.settles, d.names = .Names, true, v.names[:]
+    case ^Stmt_Assign:
+        d.settles = true
+        if _, is_import := v.value.(^Expr_Include); is_import {
+            d.form, d.name = .Import, v.name
+        } else if v.is_decl && v.target == nil {
+            d.form, d.names = .Names, slice.clone([]string{v.name})
+        }
+    case ^Stmt_Multi_Assign:
+        d.form, d.settles = .Group, true
+        group := make([]Graph_Decl, len(v.assigns))
+        for a, i in v.assigns { group[i] = stmt_graph_decl(a) }
+        d.group = group
+    case ^Stmt_Multi_Return_Assign:
+        d.form, d.settles = .Names, true
+        names := make([]string, len(v.names))
+        for name, i in v.names {
+            stores := i < len(v.targets) && v.targets[i] != nil   // an lvalue stores
+            if v.is_decl && name != "_" && !stores { names[i] = name }
+        }
+        d.names = names
+    case ^Stmt_Define:
+        d.settles, d.name = true, v.name
+        if _, is_import := v.value.(^Expr_Include); is_import {
+            d.form = .Import   // `core :: include mara.core`
+        } else {
+            d.form = .Const
+            if v.value != nil { d.value = expr_id(v.value) }
+        }
+    case Stmt_Call, Stmt_Return, Stmt_Break, Stmt_Continue, Stmt_Overload, Stmt_Module:
+        d.form = .None
+    case ^Stmt_Scope:
+        if v.kind == .Block {
+            d.form = .Block
+            group := make([]Graph_Decl, len(v.body))
+            for st, i in v.body { group[i] = stmt_graph_decl(st) }
+            d.group = group
+        } else {
+            d.form, d.name, d.generic = .Scope, v.name, len(v.generic_params) > 0
+        }
+    case ^Stmt_Foreign:
+        d.form = .Foreign
+        parts := make([]Graph_Decl_Part, len(v.decls))
+        for f, i in v.decls { parts[i] = {f.name, f.span} }
+        d.parts = parts
+    case ^Stmt_Union_Def:
+        d.form, d.name, d.generic = .Union, v.name, len(v.generic_params) > 0
+        parts := make([]Graph_Decl_Part, len(v.variants))
+        for variant, i in v.variants { parts[i] = {variant.name, variant.span} }
+        d.parts = parts
+    case ^Stmt_Distinct_Def:
+        d.form, d.name = .Type, v.name
+    case ^Stmt_Dispatch_Def:
+        d.form, d.name = .Dispatch, v.name
+    case:
+        d.form = .Code
+    }
+    return d
+}
+
+// Each module's statements, as the builder builds them.
+module_graph_decls :: proc(programs: map[string]^Program) -> map[string][]Graph_Decl {
+    modules := make(map[string][]Graph_Decl, len(programs), context.temp_allocator)
+    for name, prog in programs {
+        decls := make([]Graph_Decl, len(prog))
+        for s, i in prog { decls[i] = stmt_graph_decl(s) }
+        modules[name] = decls
+    }
+    return modules
+}
+
+// The program's struct: its fields, each a declaration (the compiler's:
+// nothing constructs it).
+fuse_program_fields :: proc(c: ^Checker, body: []Stmt) {
+    b := c.gb
+    for s in body {
+        v, is_decl := s.(^Stmt_Decl)
+        if !is_decl {
+            graph_fuse_fail(b, b.fuse, "the program's struct declares no field")
+            return
+        }
+        graph_fuse_body_stmt(b, v.span, true)
+        saved := graph_fuse_stmt(b, v.id, v.span, fuse_stmt_kind(s), fresh = true)
+        for name in v.names { graph_fuse_program_field(b, name, v.span) }
+        graph_fuse_stmt_end(b, saved)
+    }
 }
 
 fuse_stmt_end :: proc(fs: Fuse_Stmt) {
@@ -6277,7 +6403,7 @@ destructure_types :: proc(c: ^Checker, s: ^Stmt_Multi_Return_Assign) -> ^[dynami
 // What a statement declares, as checked (graph_decl_stmt): each name's
 // type, in order, and what it does — a broadcast's statement is its copies'.
 fuse_declared :: proc(c: ^Checker, s: Stmt) -> Graph_Declared {
-    d := Graph_Declared{kind = graph_stmt_kind(s), set = true}
+    d := Graph_Declared{kind = fuse_stmt_kind(s), set = true}
     types := make([dynamic]Type, context.temp_allocator)
     declared :: proc(c: ^Checker, a: ^Stmt_Assign) -> Type { at := assign_types(c, a); return at.env if at.env != nil else at.var }
     #partial switch v in s {
@@ -6316,7 +6442,7 @@ fuse_const_begin :: proc(c: ^Checker, s: ^Stmt_Define) -> Fuse_Const {
     if b == nil || c.errors > 0 || s.value == nil { return {} }
     if _, is_include := s.value.(^Expr_Include); is_include { return {} }
     if s.id in b.const_segs { return {} }
-    return {f = graph_const_begin(b, s)}
+    return {f = graph_const_begin(b, stmt_graph_decl(s))}
 }
 
 fuse_const_value :: proc(c: ^Checker, fc: ^Fuse_Const, s: ^Stmt_Define, env: ^Type_Scope, ann: Type) -> Type {
@@ -6333,7 +6459,7 @@ fuse_const_end :: proc(c: ^Checker, fc: ^Fuse_Const, s: ^Stmt_Define, t: Type) {
     } else if fusing(c) != nil {
         fuse_store_finish(c, s.value, fc.vt, fc.value, graph_dest_var(s.name, fc.f.root, t), s.span, settle = true)
     }
-    graph_const_end(c.gb, fc.f, s, t)
+    graph_const_end(c.gb, fc.f, t)
 }
 
 // A default, where what leaves it off runs it — a construction written
@@ -6430,8 +6556,7 @@ fuse_assign_end :: proc(c: ^Checker, s: ^Stmt_Assign, fa: ^Fuse_Assign) {
         if is_skip && fa.field {
             // A field's `= void` is its declaration's, as written: the value
             // stored, unchecked.
-            orig := b.fuse.field_inits[s.id]
-            val := graph_fuse_void(b, t, expr_span(orig)^)
+            val := graph_fuse_void(b, t, b.fuse.field_inits[s.id])
             graph_fuse_write_at(b, graph_var(b, s.name, fa.decl, t, s.span), val, s.span)
             return
         }
@@ -6550,7 +6675,9 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
     check_bodies(c, defs[:], env)
     fuse_resume(c, fuse)
     if fuse != nil {
-        for d in defs { graph_fuse_def_settled(c.gb, d) }   // (its constants, settled: built)
+        for d in defs {   // (its constants, settled: built)
+            if _, is_const := d.(^Stmt_Define); is_const { graph_fuse_def_settled(c.gb, stmt_graph_decl(d)) }
+        }
     }
     when ODIN_DEBUG {
         saved_stmt := c.once_stmt   // the enclosing statement's, when this is its block
@@ -6562,9 +6689,9 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
         when ODIN_DEBUG { c.once_stmt += 1 }
         saved: i32
         if b != nil {
-            for ; di < len(defs) && stmt_before(defs[di], code[i]); di += 1 { graph_fuse_def(b, defs[di]) }
-            graph_fuse_body_stmt(b, code[i])
-            saved = graph_fuse_stmt(b, code[i], fresh = true)
+            for ; di < len(defs) && stmt_before(defs[di], code[i]); di += 1 { graph_fuse_def(b, stmt_graph_decl(defs[di])) }
+            graph_fuse_body_stmt(b, stmt_span(code[i]), fuse_runs_code(code[i]))
+            saved = graph_fuse_stmt(b, stmt_id(code[i]), stmt_span(code[i]), fuse_stmt_kind(code[i]), fresh = true)
             fuse_code_stmt(c, code[i])
         }
         register_and_check_declarations(c, code[i:i + 1], env, owner, public_env)
@@ -6572,7 +6699,7 @@ check_scope :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope, owner: 
         if b != nil { graph_fuse_stmt_end(b, saved) }
     }
     if b != nil {
-        for ; di < len(defs); di += 1 { graph_fuse_def(b, defs[di]) }
+        for ; di < len(defs); di += 1 { graph_fuse_def(b, stmt_graph_decl(defs[di])) }
     }
 
     // Pass 4 (stack/arena routing) is runtime-only — over the body statements.
@@ -7284,7 +7411,7 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
     for stmt in stmts {
         fs := fuse_stmt(c, stmt)
         defer fuse_stmt_end(fs)
-        defer if c.gb != nil { graph_module_stmt(c.gb, stmt, fuse_declared(c, stmt)) }   // (a module's, settled: its declarations)
+        defer if c.gb != nil { graph_module_stmt(c.gb, stmt_id(stmt), fuse_declared(c, stmt)) }   // (a module's, settled: its declarations)
         #partial switch s in stmt {
         case ^Stmt_Union_Def:
             // Generic union: registration happens in Pass 1a (template only).
@@ -7757,7 +7884,15 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // struct's), each value stored into one; the declaration is one
             // statement (its lowering's are that one).
             if b := fusing(c); b != nil && b.fuse.ts.kind == .Struct && b.code.block == b.fuse.root {
-                graph_fuse_fields(b, s, decl_lowered(c, s).stmts[:], decl_init(c, s)[:])
+                lowered := decl_lowered(c, s).stmts[:]
+                inits := decl_init(c, s)[:]
+                ids := make([]Stmt_Id, len(lowered), context.temp_allocator)
+                spans := make([]Span, len(inits), context.temp_allocator)
+                for l, i in lowered { ids[i] = stmt_id(l) }
+                for e, i in inits { spans[i] = expr_span(e)^ }
+                destructure := false
+                if len(lowered) == 1 { _, destructure = lowered[0].(^Stmt_Multi_Return_Assign) }
+                graph_fuse_fields(b, s.names[:], s.span, ids, spans, destructure)
             }
             register_and_check_declarations(c, decl_lowered(c, s).stmts[:], env, owner, public_env)
         case ^Stmt_Assign:
@@ -8712,7 +8847,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
                 check_llvm_intrinsic_signature(c, ft, s.intrinsic_name, s.span)
                 // (Its graph: its params and results, no code.)
                 if c.gb != nil {
-                    if f := graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit); f != nil { fuse_end(c, f) }
+                    if f := graph_fuse_begin(c.gb, ft, s.id, s.span, s.is_intrinsic, .Explicit); f != nil { fuse_end(c, f) }
                 }
             }
         }
@@ -9000,10 +9135,10 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     f: ^Graph_Fuse
     if c.gb != nil && ft.kind == .Fun {
         record_return_bindings(ft, s)   // (its named results are locals)
-        f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Explicit)
+        f = graph_fuse_begin(c.gb, ft, s.id, s.span, s.is_intrinsic, .Explicit)
     } else if c.gb != nil && ft.kind == .Struct && !ft.is_module {
         // (Its code: its fields' values. An instance's node is the compiler's.)
-        f = graph_fuse_begin(c.gb, ft, s, s.body[:], .Synthetic if instance != nil else .Explicit)
+        f = graph_fuse_begin(c.gb, ft, s.id, s.span, s.is_intrinsic, .Synthetic if instance != nil else .Explicit)
     }
     defer if f != nil { fuse_end(c, f) }
 
@@ -11734,7 +11869,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     }
 
     // The graph is built as the program is checked (its arena known now).
-    c.gb = graph_builder_new(checked, programs)
+    c.gb = graph_builder_new(checked, module_graph_decls(programs))
 
     // Build Context struct: { arena? , args: [..64][]utf8 }
     {
@@ -11904,7 +12039,7 @@ check_program :: proc(programs: map[string]^Program, main_package: string,
     // is an index over its calls, and the summaries on it.
     if c.errors == 0 {
         if perf != nil { perf_timer_mark(perf, "graph") }
-        checked.graph = build_program_graph(c.gb, programs)
+        checked.graph = build_program_graph(c.gb)
         if perf != nil { perf_timer_mark(perf, "analysis") }
         checked.call_graph = build_call_graph(checked)
         c.cg = &checked.call_graph
