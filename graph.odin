@@ -746,29 +746,31 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     for i := len(nodes) - 1; i >= 0; i -= 1 {
         if p := ng.parent[i]; p != NO_NODE && ng.last[i] > ng.last[p] { ng.last[p] = ng.last[i] }
     }
-    // A dropped operation that began its run: what entered it enters the
-    // next one there (none, when there is none).
+    // A run's operations in the order they are placed (a segment built
+    // after what follows it in its run goes before it). What entered the
+    // operation that began it — dropped, or placed after another — enters
+    // the first placed (none, when there is none).
     next_kept := make(map[Node_Id]Node_Id, context.temp_allocator)
     for old in runs {
         append(&ng.run_first, i32(len(ng.run_ops)))
-        waiting := 0
+        start := len(ng.run_ops)
         ops := g.run_ops[g.run_first[old]:g.run_first[old + 1]]
-        for op, k in ops {
-            if graph_dropped(b, op) {
-                if k == waiting { waiting += 1 }
-                continue
-            }
-            for j in 0 ..< waiting { next_kept[ops[j]] = op }
-            waiting = 0
-            append(&ng.run_ops, re(new_id, op))
+        for op in ops {
+            if !graph_dropped(b, op) { append(&ng.run_ops, re(new_id, op)) }
         }
-        for j in 0 ..< waiting { next_kept[ops[j]] = NO_NODE }
+        placed := ng.run_ops[start:]
+        if !slice.is_sorted(placed) { slice.sort(placed) }
+        first := Node_Id(nodes[placed[0]]) if len(placed) > 0 else NO_NODE
+        for op in ops {   // (its leading dropped ones, and the first kept)
+            if op != first { next_kept[op] = first }
+            if !graph_dropped(b, op) { break }
+        }
     }
     append(&ng.run_first, i32(len(ng.run_ops)))
     for e in g.edges {
         if !kept(new_id, e.from) { continue }
         to, written := e.to, e.written
-        if to != NO_NODE && graph_dropped(b, to) {
+        if to != NO_NODE && (graph_dropped(b, to) || to in next_kept) {
             to = next_kept[to] or_else NO_NODE
             if to != NO_NODE { written = g.written[to] }
         }
@@ -3951,6 +3953,32 @@ graph_fuse_span_view :: proc(b: ^Graph_Builder, slice: Operand, t: Type, big: bo
         at = graph_const(b, .Synthetic, span, slice_header_width_type, "0", Const_Value{})
     }
     return graph_op_value(b, .View, .Explicit, span, t, "#big_endian" if big else "", buf, at)
+}
+
+// What is built after what follows it, where it goes (a dispatch's default
+// for `_`, known once the function is chosen): a place for it, then it, in
+// a segment of its own there. Its operations join the run the place is in:
+// false when that is no longer the run.
+Graph_Later :: struct {
+    seg, anchor:  int,
+    si, saved:    int,
+    run:          ^Run,
+    same:         bool,
+}
+
+graph_fuse_later :: proc(b: ^Graph_Builder) -> Graph_Later {
+    return {seg = b.seg, anchor = graph_anchor_here(b), run = b.code.run}
+}
+
+graph_fuse_later_begin :: proc(b: ^Graph_Builder, l: ^Graph_Later) {
+    l.same = b.code.run == l.run
+    l.si, l.saved = graph_segment_enter(b)
+}
+
+graph_fuse_later_end :: proc(b: ^Graph_Builder, l: ^Graph_Later) -> bool {
+    graph_segment_leave(b, l.saved)
+    b.segs[l.seg].anchors[l.anchor].seg = l.si
+    return l.same && b.code.run == l.run
 }
 
 // `bytes[lo:hi] = v` (graph_stmt): its target is a view of the bytes at lo —

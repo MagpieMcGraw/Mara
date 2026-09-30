@@ -14367,15 +14367,20 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
         }
     }
 
-    if has_underscore && b != nil {
-        fuse_fail(c, "a dispatch call with `_`")   // (its defaults are checked after the others)
-        b = nil
-    }
+    // (A `_`'s default, checked once the function is chosen, is built
+    // where the `_` is: graph_fuse_later.)
+    laters := make([]Graph_Later, len(check_args), context.temp_allocator)
     arg_types: [dynamic]Type
     defer delete(arg_types)
     for arg, i in check_args {
         if is_underscore[i] {
             append(&arg_types, nil)
+            if b != nil && fusing(c) != nil {
+                laters[i] = graph_fuse_later(b)
+                append(&vals, NO_VALUE)
+                append(&as_, -1)
+                append(&array_values, false)
+            }
         } else if b != nil && fusing(c) != nil {
             t, r := fuse_expr(c, arg, env, .Either, w)
             append(&arg_types, t)
@@ -14498,7 +14503,15 @@ check_dispatch_call :: proc(c: ^Checker, e: ^Expr_Call, fn_names: [dynamic]strin
             } else {
                 new_arg = def
             }
-            check_expr(c, new_arg, arg_scope)
+            if fusing(c) != nil && b != nil {
+                graph_fuse_later_begin(b, &laters[i])
+                aw := Written.Implied if new_arg == def else w   // (run at the call, not written there)
+                t, r := fuse_expr(c, new_arg, arg_scope, .Either, aw)
+                if fusing(c) != nil { vals[i] = fuse_value_as(c, new_arg, t, r, ft.params[i].type_, e.span, {sig = ft, param = i}) }
+                if !graph_fuse_later_end(b, &laters[i]) { fuse_fail(c, "a default for `_` across runs") }
+            } else {
+                check_expr(c, new_arg, arg_scope)
+            }
             call_args_mut(e)[i] = new_arg
         }
     }
