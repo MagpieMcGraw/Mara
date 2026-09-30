@@ -425,7 +425,7 @@ is_struct_type :: proc(t: Type) -> bool {
 }
 
 // Extract field declarations from a fun body (Stmt_Assign nodes become fields).
-extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding {
+extract_fields_from_body :: proc(c: ^Checker, body: [dynamic]Stmt) -> [dynamic]Scope_Binding {
     fields: [dynamic]Scope_Binding
     for stmt in body {
         #partial switch s in stmt {
@@ -464,7 +464,7 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
             // each binding gets an Expr_Tuple_Default so infer_field_type_from_default
             // unwraps the i-th slot of the call's tuple return type. Same wrapper
             // shape that stmt_decl_to_bindings produces for params/named returns.
-            inits := decl_init(s)
+            inits := decl_init(c, s)
             is_tuple_destructure := len(inits) == 1 && len(s.names) > 1
             for name, i in s.names {
                 val: Expr = nil
@@ -479,7 +479,7 @@ extract_fields_from_body :: proc(body: [dynamic]Stmt) -> [dynamic]Scope_Binding 
                 }
                 append(&fields, Scope_Binding{
                     name          = name,
-                    type_expr     = decl_type(s),
+                    type_expr     = decl_type(c, s),
                     default_value = val,
                     is_using      = s.is_using,
                     span          = s.span,
@@ -1664,6 +1664,8 @@ Checker :: struct {
     assign_types:    map[^Stmt_Assign]^Assign_Types,   // what each assignment's check found
     define_types:    map[^Stmt_Define]^Assign_Types,   // ... each constant's (its var and env types)
     destructure_types: map[^Stmt_Multi_Return_Assign]^[dynamic]Type,   // ... each destructure's, per name
+    decls:           map[^Stmt_Decl]^Decl_Lowered,   // each declaration as the checker reads it
+    broadcasts:      map[^Stmt_Multi_Return_Assign]^[dynamic]Stmt,   // a broadcast's copies, one per target
     struct_instances: [dynamic]Struct_Instance,   // generic struct instances made, their bodies checked last
     parallel:        ^Fuse_Parallel,    // several reassigned together: their stores held (fuse_parallel_hold)
     broadcast_fields: map[rawptr]Broadcast_Field, // a field's `{all <expr>}`: its field, its value checked with the field's
@@ -2026,9 +2028,9 @@ check_early_self_decls :: proc(c: ^Checker, body: [dynamic]Stmt) {
     for stmt, i in body {
         decl, is_decl := stmt.(^Stmt_Decl)
         if !is_decl { continue }
-        if len(decl_init(decl)) == 0 { continue }
+        if len(decl_init(c, decl)) == 0 { continue }
         if !has_decl_after[i] { continue }
-        for init in decl_init(decl) {
+        for init in decl_init(c, decl) {
             if call_name, ok := find_self_call_name(init); ok {
                 check_warning(c, decl.span,
                     TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS,
@@ -2898,7 +2900,7 @@ instantiate_generic_struct :: proc(c: ^Checker, tmpl: ^Generic_Template, type_ar
         append(&st.generic_args, arg)
     }
 
-    tmpl_fields := extract_fields_from_body(tmpl.ast.body)
+    tmpl_fields := extract_fields_from_body(c, tmpl.ast.body)
     for field in tmpl_fields {
         ft := resolve_type_expr_with_subst(field.type_expr, c, span, &subst)
         // Substitute generic value params in default values: a field default
@@ -4579,7 +4581,7 @@ types_incompatible :: proc(a: Type, b: Type) -> bool {
     return !types_equal(a, b)
 }
 
-// Sized-slice declarations, lowered into s.lowered_type / s.lowered_cap. The
+// Sized-slice declarations, lowered into their lowering's type and cap (decl_lowered). The
 // parser reads `Name(args)` greedily as a generic instantiation, so when Name
 // is not a generic, the single argument is a capacity:
 //   `name : String2(N)` on a distinct slice alias → type String2, cap N
@@ -4613,15 +4615,15 @@ lower_sized_slice :: proc(c: ^Checker, s: ^Stmt_Decl, env: ^Type_Scope) {
         return dt, is_slice
     }
 
-    if decl_cap(s) != nil { return }
-    #partial switch t in decl_type(s) {
+    if decl_cap(c, s) != nil { return }
+    #partial switch t in decl_type(c, s) {
     case ^Type_Generic_Instance:
         if len(t.type_args) != 1 { return }
         if _, is_generic := c.table.generic_templates[t.name]; is_generic { return }
         if _, ok := distinct_slice(c, t.name, env); !ok { return }
         if cap := arg_cap(t.type_args[0]); cap != nil {
-            s.lowered_type = Type_Name{name = t.name, span = t.span}
-            s.lowered_cap = cap
+            decl_lowered(c, s).type_ = Type_Name{name = t.name, span = t.span}
+            decl_lowered(c, s).cap = cap
         }
     case ^Type_Slice_Expr:
         gi, gi_ok := t.elem.(^Type_Generic_Instance)
@@ -4630,21 +4632,21 @@ lower_sized_slice :: proc(c: ^Checker, s: ^Stmt_Decl, env: ^Type_Scope) {
         if cap := arg_cap(gi.type_args[0]); cap != nil {
             lowered := new_clone(t^)
             lowered.elem = Type_Name{name = gi.name, span = gi.span}
-            s.lowered_type = lowered
-            s.lowered_cap = cap
+            decl_lowered(c, s).type_ = lowered
+            decl_lowered(c, s).cap = cap
         }
     }
     // A distinct slice alias, bare or just lowered, without a capacity yet.
-    if tn, ok := decl_type(s).(Type_Name); ok && decl_cap(s) == nil {
+    if tn, ok := decl_type(c, s).(Type_Name); ok && decl_cap(c, s) == nil {
         if dt, is_slice := distinct_slice(c, tn.name, env); is_slice && dt.default_cap_expr != nil {
-            s.lowered_cap = dt.default_cap_expr
+            decl_lowered(c, s).cap = dt.default_cap_expr
         }
     }
 }
 
 // Shape shortcut: `p : Foo(Bar(args))` lowers to `p : Foo(Bar)` plus a
-// synthetic `{ field = Bar(args) }` struct literal — s.lowered_type and
-// s.lowered_init; the source declaration is untouched. Fires only when:
+// synthetic `{ field = Bar(args) }` struct literal — its lowering's type and
+// init (decl_lowered); the source declaration is untouched. Fires only when:
 //   - The Stmt_Decl's type annotation is a Type_Generic_Instance.
 //   - The template is a known generic struct.
 //   - At a slot with a `~T` shape constraint, the type-arg is a
@@ -4656,7 +4658,7 @@ lower_sized_slice :: proc(c: ^Checker, s: ^Stmt_Decl, env: ^Type_Scope) {
 // a cloned declaration lowers into nodes of its own.
 desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
     if c == nil { return }
-    if s.lowered_type != nil { return }
+    if decl_lowered(c, s).type_ != nil { return }
     if len(s.init_values) != 0 { return }
     gi, gi_ok := s.type_expr.(^Type_Generic_Instance)
     if !gi_ok { return }
@@ -4672,7 +4674,7 @@ desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
         if !ce_ok { continue }
         call, call_ok := ce.expr.(^Expr_Call)
         if !call_ok { continue }
-        tmpl_fields := extract_fields_from_body(tmpl.ast.body)
+        tmpl_fields := extract_fields_from_body(c, tmpl.ast.body)
         bound_any := false
         for f in tmpl_fields {
             tn, tn_ok := f.type_expr.(Type_Name)
@@ -4694,8 +4696,8 @@ desugar_shape_shortcut :: proc(c: ^Checker, s: ^Stmt_Decl) {
         }
     }
     if lit != nil {
-        s.lowered_type = lowered
-        append(&s.lowered_init, lit)
+        decl_lowered(c, s).type_ = lowered
+        append(&decl_lowered(c, s).init, lit)
     }
 }
 
@@ -5644,7 +5646,7 @@ check_storage_sizes :: proc(c: ^Checker, stmts: [dynamic]Stmt, env: ^Type_Scope)
         case ^Stmt_Assign:
             if s.is_decl { guard(c, s) }
         case ^Stmt_Decl:
-            for inner in s.checked {
+            for inner in decl_lowered(c, s).stmts {
                 if a, ok := inner.(^Stmt_Assign); ok && a.is_decl { guard(c, a) }
             }
         }
@@ -6140,6 +6142,52 @@ assign_types :: proc(c: ^Checker, s: ^Stmt_Assign) -> ^Assign_Types {
     return t
 }
 
+// A declaration as the checker reads it, its sugar resolved — read through
+// decl_type / decl_init / decl_cap, which fall back to the source where
+// nothing was lowered:
+//   p : Foo(Bar(args))  → type Foo(Bar), init `{ field = Bar(args) }`
+//   s : String2(N)      → type String2, cap N   (distinct slice alias)
+//   s : []T(N)          → type []T, cap N
+//   s : String          → cap: String's default capacity
+// — and the statements it is checked as: one Stmt_Assign per name, or a
+// Stmt_Multi_Return_Assign for a tuple destructure.
+Decl_Lowered :: struct {
+    type_: Type_Expr,
+    init:  [dynamic]Expr,
+    cap:   Expr,
+    stmts: [dynamic]Stmt,
+}
+
+decl_lowered :: proc(c: ^Checker, s: ^Stmt_Decl) -> ^Decl_Lowered {
+    if l, ok := c.decls[s]; ok { return l }
+    l := new(Decl_Lowered)
+    c.decls[s] = l
+    return l
+}
+
+decl_type :: proc(c: ^Checker, s: ^Stmt_Decl) -> Type_Expr {
+    if l, ok := c.decls[s]; ok && l.type_ != nil { return l.type_ }
+    return s.type_expr
+}
+
+decl_init :: proc(c: ^Checker, s: ^Stmt_Decl) -> []Expr {
+    if l, ok := c.decls[s]; ok && len(l.init) > 0 { return l.init[:] }
+    return s.init_values[:]
+}
+
+decl_cap :: proc(c: ^Checker, s: ^Stmt_Decl) -> Expr {
+    if l, ok := c.decls[s]; ok && l.cap != nil { return l.cap }
+    return s.slice_cap_expr
+}
+
+// A broadcast destructure's copies (`a, b := 0`): one assignment per target.
+broadcast_stmts :: proc(c: ^Checker, s: ^Stmt_Multi_Return_Assign) -> ^[dynamic]Stmt {
+    if l, ok := c.broadcasts[s]; ok { return l }
+    l := new([dynamic]Stmt)
+    c.broadcasts[s] = l
+    return l
+}
+
 define_types :: proc(c: ^Checker, s: ^Stmt_Define) -> ^Assign_Types {
     if t, ok := c.define_types[s]; ok { return t }
     t := new(Assign_Types)
@@ -6166,9 +6214,9 @@ fuse_declared :: proc(c: ^Checker, s: Stmt) -> Graph_Declared {
     case ^Stmt_Multi_Assign:
         for a in v.assigns { append(&types, declared(c, a)) }
     case ^Stmt_Multi_Return_Assign:
-        if len(v.checked) > 0 {
+        if len(broadcast_stmts(c, v)^) > 0 {
             d.kind = .Other
-            for inner in v.checked {
+            for inner in broadcast_stmts(c, v)^ {
                 a, _ := inner.(^Stmt_Assign)
                 append(&types, declared(c, a) if a != nil else nil)
             }
@@ -7598,38 +7646,38 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             desugar_shape_shortcut(c, s)
 
             // Synth-and-delegate: expand Stmt_Decl into equivalent
-            // Stmt_Assign / Stmt_Multi_Return_Assign nodes stored on s.checked,
+            // Stmt_Assign / Stmt_Multi_Return_Assign nodes kept as its lowering's statements,
             // then run the existing per-assign logic on them. Codegen and
-            // dump iterate s.checked the same way.
+            // dump iterate them the same way.
             //
             // Multi-package builds run the checker once per package, and a
             // shared AST node (e.g. a stdlib decl reached from two packages)
-            // would hit this code twice. Skip the synthesis if s.checked is
+            // would hit this code twice. Skip the synthesis if they are
             // already populated — the prior run did it and the desugared
             // statements still apply.
-            if len(s.checked) == 0 {
-                inits := decl_init(s)
+            if len(decl_lowered(c, s).stmts) == 0 {
+                inits := decl_init(c, s)
                 if len(inits) == 1 && len(s.names) > 1 {
                     // Multi-return destructure: x, y := call()
                     mra := new(Stmt_Multi_Return_Assign)
                     mra.span = s.span
-                    mra.type_expr = decl_type(s)
+                    mra.type_expr = decl_type(c, s)
                     mra.is_decl = true   // derived from a Stmt_Decl — bare names are declared
                     for n in s.names { append(&mra.names, n) }
                     for v in inits { append(&mra.values, v) }
-                    append(&s.checked, Stmt(mra))
+                    append(&decl_lowered(c, s).stmts, Stmt(mra))
                 } else {
                     // Parallel or single-name: one Stmt_Assign per name
                     for name, i in s.names {
                         a := new(Stmt_Assign)
                         a.name = name
                         a.span = s.span
-                        a.type_expr = decl_type(s)
+                        a.type_expr = decl_type(c, s)
                         a.is_using = s.is_using
                         a.is_decl = true
-                        a.slice_cap_expr = decl_cap(s)
+                        a.slice_cap_expr = decl_cap(c, s)
                         if i < len(inits) { a.value = inits[i] }
-                        append(&s.checked, Stmt(a))
+                        append(&decl_lowered(c, s).stmts, Stmt(a))
                     }
                 }
             }
@@ -7637,9 +7685,9 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
             // struct's), each value stored into one; the declaration is one
             // statement (its lowering's are that one).
             if b := fusing(c); b != nil && b.fuse.ts.kind == .Struct && b.code.block == b.fuse.root {
-                graph_fuse_fields(b, s, s.checked[:], decl_init(s)[:])
+                graph_fuse_fields(b, s, decl_lowered(c, s).stmts[:], decl_init(c, s)[:])
             }
-            register_and_check_declarations(c, s.checked[:], env, owner, public_env)
+            register_and_check_declarations(c, decl_lowered(c, s).stmts[:], env, owner, public_env)
         case ^Stmt_Assign:
             // Complex LHS (field / index / slice / deref): registration is a
             // no-op — no new binding enters scope. The typing logic runs in
@@ -8492,11 +8540,11 @@ register_and_check_declarations :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_S
                             } else if i < len(s.targets) && s.targets[i] != nil {
                                 a.target = s.targets[i]
                             }
-                            append(&s.checked, Stmt(a))
+                            append(&broadcast_stmts(c, s)^, Stmt(a))
                         }
                         // (Its statement is its copies'.)
                         if b := fusing(c); b != nil { graph_fuse_stmt_kind(b, .Other) }
-                        register_and_check_declarations(c, s.checked[:], env, owner, public_env)
+                        register_and_check_declarations(c, broadcast_stmts(c, s)^[:], env, owner, public_env)
                     }
                 }
             }
@@ -8758,7 +8806,7 @@ check_scope_body :: proc(c: ^Checker, s: ^Stmt_Scope, env: ^Type_Scope, signatur
     // Phase 2: resolve data fields (Phase 1 may have already registered
     // nested types as pseudo-fields, so append per-field rather than
     // gated on empty .fields).
-    data_fields := extract_fields_from_body(s.body)
+    data_fields := extract_fields_from_body(c, s.body)
     added_any_field := false
     // Register-pass flag: `fn <name>` annotations may reference later locals
     // that haven't been added to env yet. Suppress errors during this scan;
@@ -9361,11 +9409,11 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             // Already checked in register_and_check_declarations (each
             // assignment, both passes)
         case ^Stmt_Multi_Return_Assign:
-            // Destructure was fully checked during registration (s.checked empty).
-            // Broadcast desugared into s.checked there; run the body pass on those
+            // Destructure was fully checked during registration (no copies).
+            // Broadcast desugared into its copies there (broadcast_stmts); run the body pass on those
             // so field/index targets get their per-target check and bare-name env
             // updates apply (same handoff as Stmt_Decl). Empty list → no-op.
-            check_bodies(c, s.checked[:], env)
+            check_bodies(c, broadcast_stmts(c, s)^[:], env)
 
         case Stmt_Return:
             check_return_body(c, s, env)
@@ -9428,7 +9476,7 @@ check_bodies :: proc(c: ^Checker, stmts: []Stmt, env: ^Type_Scope) {
             // Already expanded during register_and_check_declarations. Run
             // check_bodies on the desugared statements so their env updates
             // (e.g. sequential shadowing via Stmt_Assign) are applied.
-            check_bodies(c, s.checked[:], env)
+            check_bodies(c, decl_lowered(c, s).stmts[:], env)
         case ^Stmt_Union_Def:
             // already registered
         case ^Stmt_Foreign:

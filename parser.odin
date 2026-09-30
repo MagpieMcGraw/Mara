@@ -629,34 +629,6 @@ Stmt_Decl :: struct {
     slice_cap_expr: Expr,           // capacity expression for `name : []T(N)`
     is_using:      bool,
     span:          Span,
-    // The declaration as the checker reads it, its sugar resolved — filled by
-    // the type checker, read through decl_type / decl_init / decl_cap. The
-    // fields above stay as written; these stay nil where nothing was lowered.
-    //   p : Foo(Bar(args))  → type Foo(Bar), init `{ field = Bar(args) }`
-    //   s : String2(N)      → type String2, cap N   (distinct slice alias)
-    //   s : []T(N)          → type []T, cap N
-    //   s : String          → cap: String's default capacity
-    lowered_type:  Type_Expr,
-    lowered_init:  [dynamic]Expr,
-    lowered_cap:   Expr,
-    // Type checker fills `checked` with the desugared underlying statements
-    // (one or more Stmt_Assign, or a Stmt_Multi_Return_Assign for tuple
-    // destructure). Codegen and dumps iterate these instead of reprocessing
-    // names/init_values. This lets Stmt_Decl be the public AST shape while
-    // keeping the existing per-assign checker/codegen logic intact.
-    checked:       [dynamic]Stmt,
-}
-
-decl_type :: proc(s: ^Stmt_Decl) -> Type_Expr {
-    return s.lowered_type if s.lowered_type != nil else s.type_expr
-}
-
-decl_init :: proc(s: ^Stmt_Decl) -> []Expr {
-    return s.lowered_init[:] if len(s.lowered_init) > 0 else s.init_values[:]
-}
-
-decl_cap :: proc(s: ^Stmt_Decl) -> Expr {
-    return s.lowered_cap if s.lowered_cap != nil else s.slice_cap_expr
 }
 
 // Compile-time constant binding (`x :: 42`). Value is required and must be
@@ -686,9 +658,6 @@ Stmt_Multi_Return_Assign :: struct {
     is_decl:   bool,            // true for the `:=` forms (`x, y := ...`): bare names
                                 // are DECLARED. False for `=` reassignment, where each
                                 // bare name must already be a binding (else a hard error).
-    checked:   [dynamic]Stmt,   // broadcast desugaring: one Stmt_Assign per target, filled by
-                                // the type checker. Non-empty ⟺ broadcast; codegen iterates it
-                                // instead of special-casing. Empty for destructure (call-once).
 }
 
 Stmt_Call :: struct {
@@ -5068,8 +5037,6 @@ clone_stmt :: proc(s: Stmt) -> Stmt {
         c.names = {}
         for n in v.names { append(&c.names, n) }
         c.init_values = clone_exprs(v.init_values)
-        c.lowered_type, c.lowered_init, c.lowered_cap = nil, {}, nil  // the clone lowers itself
-        c.checked = {}
         return c
     case ^Stmt_Define:
         c := new_clone(v^)

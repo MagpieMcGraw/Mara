@@ -20,10 +20,9 @@ import "core:path/filepath"
 // That is why this works in token indices rather than (line, col) pairs:
 // containment is an integer compare, and token indices carry no text encoding.
 //
-// NOT walked: `Stmt_Decl.checked` and `Stmt_Multi_Return_Assign.checked`. Those hold checker-synthesized replacement nodes, not
-// source the user can point at — the cursor lands on the original, which is
-// what it was aimed at. Some resolved information lives on the desugared node,
-// so a renderer may need to follow those links even though the walk does not.
+// NOT walked: what the checker lowers a declaration into — its copies are
+// checker-synthesized nodes, not source the user can point at; the cursor
+// lands on the original, which is what it was aimed at.
 // Type_Exprs are also skipped: a separate union, and no extents on it yet.
 //
 // An expression's type is the graph's: of the operation built where it is
