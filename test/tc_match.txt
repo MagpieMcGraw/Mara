@@ -33,6 +33,7 @@ castfield
 cdefer
 cgflat
 chartest
+clangfail
 const_address_neg
 const_qualified_float
 const_runtime_neg
@@ -104,6 +105,7 @@ infersites
 init_alias_neg
 init_outparam
 init_shapes_neg
+leak_consumer
 literal_ctor_args_neg
 localstruct
 mandelbrot
@@ -141,6 +143,7 @@ result_slot_alias
 retmiss
 rvalue_access
 scollide
+seektest
 settled_literal_range_neg
 slerp
 slice_loop_view
@@ -150,6 +153,7 @@ spread_literal
 str64agg
 strfield
 tailfns
+test_empty_foreign
 test_match_indexed
 text_constant_views
 text_partial_array
@@ -165,6 +169,7 @@ usedef
 utof
 vec_elements
 void_ptr_deinit_neg
+void_ptr_legal
 widenneg
 wrapfail
 wraptest

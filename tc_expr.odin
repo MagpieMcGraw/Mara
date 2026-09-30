@@ -501,7 +501,8 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_distinct_conversion(k, n, name, dt, args, env, want if build else .None, w)
     }
     ft, is_scope := ft_raw.(^Type_Scope)
-    if !is_scope || ft.is_module || ft.node == 0 {
+    // (A fun written in the program, or a foreign one.)
+    if !is_scope || ft.is_module || ft.node == 0 && ft.calling_conv != .C {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}, {}
     }

@@ -252,6 +252,12 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
     for i in mine {
         if k.gb != nil { graph_module_stmt(k.gb, tc_sid(k, k.scopes[i].def), {kind = .Other, set = true}) }
     }
+    // (Its foreign funs, for the emitter.)
+    for f, i in files {
+        for s in tc_live(k, tree_list(k.t, k.t.a[f])) {
+            if k.t.tag[s] == .Foreign { tc_extract_foreign(k, s, envs[i], k.pkg) }
+        }
+    }
     return mine
 }
 
@@ -330,6 +336,9 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
             tc_unsupported(k, value, "this module definition")
             return
         }
+    case .Foreign:
+        tc_register_foreign(k, s, env, mod)
+        return
     case .Overload:
         op := build_tokens[t.a[s]].kind
         if op not_in k.c.operator_overloads { k.c.operator_overloads[op] = {} }
@@ -599,6 +608,12 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
         }
     case .Module, .Return, .Break, .Continue, .Overload:
         d.form = .None
+    case .Foreign:
+        d.form = .Foreign
+        funs := foreign_view(t, s).funs
+        parts := make([]Graph_Decl_Part, len(funs))
+        for ff, i in funs { parts[i] = {tc_text(foreign_fun_view(t, ff).name), tree_span(t, ff)} }
+        d.parts = parts
     case .Define:
         d.settles, d.name = true, tc_name(k, s)
         value := Tree_Id(t.b[s])
