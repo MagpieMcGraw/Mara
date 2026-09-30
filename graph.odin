@@ -2303,7 +2303,7 @@ graph_scope_def :: proc(b: ^Graph_Builder, s: ^Stmt_Scope, parent: Node_Id) {
     list, ok := b.by_span[s.span]
     if !ok {
         if generic { return }   // a generic nothing instantiates: syntax only
-        graph_fatal(s.span, "'%s' reached the graph unchecked", scope_name(s))
+        graph_fatal(s.span, "'%s' reached the graph unchecked", s.name)
     }
     for t in list {
         ts, is_scope := t.(^Type_Scope)

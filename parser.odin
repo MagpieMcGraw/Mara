@@ -690,7 +690,6 @@ Stmt_Define :: struct {
     span:      Span,
     var_type:  Type,      // resolved type (distinct-unwrapped), filled by checker
     env_type:  Type,      // env type preserving distinct
-    mangled_name: string, // filled by checker for a nested const: `<Parent>_<name>`; read via define_name
 }
 
 // Multiple assignment: x, y := get_pair()  or  x, y := a, b  or  x, y : int = a, b
@@ -756,19 +755,19 @@ Stmt_Scope :: struct {
     is_exposed:    bool,      // `#expose fun ...` — DLL entry point: dllexport linkage, unmangled symbol name
     is_packed:     bool,      // `#packed struct ...` — drop inter-field alignment padding (maps 1:1 to packed binary formats)
     span:           Span,
-    mangled_name:   string,    // filled by type checker for a nested def: `<Parent>_<name>`; read via scope_name
 }
 
 // The name a scope or constant def is registered under. A nested def gets a
-// mangled `<Parent>_<name>` once the checker registers it (register_scope_defs);
-// until then, and at top level, that is its source name. The source `name`
-// itself is never rewritten.
-scope_name :: proc(s: ^Stmt_Scope) -> string {
-    return s.mangled_name if s.mangled_name != "" else s.name
+// mangled `<Parent>_<name>` once the checker registers it (register_scope_defs,
+// kept in the table); until then, and at top level, that is its source name.
+scope_name :: proc(t: ^SymbolTable, s: ^Stmt_Scope) -> string {
+    if t == nil { return s.name }
+    return t.def_names[s] or_else s.name
 }
 
-define_name :: proc(s: ^Stmt_Define) -> string {
-    return s.mangled_name if s.mangled_name != "" else s.name
+define_name :: proc(t: ^SymbolTable, s: ^Stmt_Define) -> string {
+    if t == nil { return s.name }
+    return t.def_names[s] or_else s.name
 }
 
 Stmt_Union_Def :: struct {
