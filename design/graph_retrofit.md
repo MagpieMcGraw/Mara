@@ -833,11 +833,24 @@ erroneous program reports, the negative fixtures say so.
       bare in a match arm was built as a read of a variable of that name (fixed,
       test/match_bare_enum.mara); a constant over a union's size ran its expression at each
       use (it folds now, test/const_union_size.mara; a constant the graph can't fold is an
-      error); a field's broadcast value is checked where the field's value is. Left to the
-      builder: the module level (the program's root, modules, their declarations, constants,
-      types) and the walk that places each body where its scope is, with a fused body's
-      definitions; the leaves, plain places and defaults rebuilt where used (a variant's field
-      defaults, a constructor's param defaults), read from the syntax tree's annotations
+      error); a field's broadcast value is checked where the field's value is. The module
+      level is the checker's too: the modules' nodes and a place for each statement are made
+      before anything is checked, and a constant, a variable or a destructure is built into
+      its place once its declarations pass settles it; a body's constants likewise, put where
+      they are written when the body is placed. Scopes and types are placed when the graph is
+      put together, from the checker's tables (each fused body, each instance). Making the
+      checker's graph mandatory had turned each case it declined into a graph error, and the
+      corpus reached none of them: an audit of every remaining decline, by probes whose graphs
+      were compared with the session's starting compiler's, found and fixed a place asked of
+      what has none (held in a temporary made first, as the builder's graph_place did),
+      loops and slices over values and text, len of a value, a struct's fields from one call,
+      ifs of text and asked for their place, array literals as dispatch arguments (retyped
+      once the function is chosen), text constants returned, swizzles out of order, arrays
+      viewed as slice arguments, a generic fun's instance with definitions of its own
+      (test/checker_builds.mara, test/generic_local_const.mara). Left to the builder: the
+      placing of scopes where they are written; the leaves, plain places and defaults rebuilt
+      where used (a variant's field defaults, a constructor's param defaults), read from the
+      syntax tree's annotations
 - [ ] The last readers of annotations: `void` into a pointer checked where the store is checked;
       the returned local and the consumed param as graph queries; constant tables from values the
       checker evaluated; hit testing from origins
