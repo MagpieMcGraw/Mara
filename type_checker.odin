@@ -9042,14 +9042,16 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
         // array→slice coercion). Codegen detects the same pattern and routes
         // the call's sret args into temps then into the struct.
         // (Only a call can be one; its type is the positional path's too.)
+        // (Built: the call, once, then each field its result.)
         probed: Type
-        if _, is_call := lit.fields[0].value.(^Expr_Call); is_call && len(lit.fields) == 1 && len(st.fields) > 1 {
-            if gl != nil {
-                fuse_fail(c, "a spread literal")
-                gl = nil
-            }
+        if call, is_call := lit.fields[0].value.(^Expr_Call); is_call && len(lit.fields) == 1 && len(st.fields) > 1 {
             single_val := lit.fields[0].value
-            probed = check_expr(c, single_val, env)
+            spread: Fused
+            if gl != nil {
+                probed, spread = fuse_expr(c, single_val, env, .Value)
+            } else {
+                probed = check_expr(c, single_val, env)
+            }
             returns := call_return_list(c, single_val, env)
             if len(returns) == len(st.fields) {
                 all_ok := true
@@ -9061,8 +9063,15 @@ check_struct_literal_fields :: proc(c: ^Checker, lit: ^Expr_Struct_Literal, st: 
                 }
                 if all_ok {
                     lit.is_spread = true
+                    if b := fusing(c); b != nil && gl != nil && !graph_fuse_spread(b, gl, lit, call, spread.v) {
+                        fuse_fail(c, "a spread literal of no call")
+                    }
                     return
                 }
+            }
+            if gl != nil {
+                fuse_fail(c, "a spread literal that doesn't match")   // (its field is checked again)
+                gl = nil
             }
             // Fall through to the regular positional path so the user gets a
             // useful error if the call's return list doesn't match the struct.

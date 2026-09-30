@@ -2496,7 +2496,11 @@ graph_spread_writes :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, sd: ^Sco
         if rf, resolved := call.resolved_func.?; resolved { callee = graph_callee(b, rf) }
     }
     if callee == nil { graph_fatal(v.span, "a spread literal of no call") }
-    c := graph_value(b, call, w)
+    graph_spread_results(b, v, sd, parent, callee, graph_value(b, call, w))
+}
+
+// The call's results, each written to its field (graph_spread_writes).
+graph_spread_results :: proc(b: ^Graph_Builder, v: ^Expr_Struct_Literal, sd: ^Scope_Body, parent: ^Dest, callee: ^Type_Scope, c: Operand) {
     for rt, i in callee.return_types {
         if i >= len(sd.fields) { break }
         f := sd.fields[i]
@@ -4534,6 +4538,16 @@ graph_fuse_literal_elem :: proc(gl: ^Graph_Literal, i: int, elem_t: Type) -> Des
 }
 
 // Where the literal's field goes: named, or its position's (graph_literal_writes).
+// `Foo{call()}` (graph_spread_writes), the call built: each field its
+// result. False when it resolved to no function.
+graph_fuse_spread :: proc(b: ^Graph_Builder, gl: ^Graph_Literal, v: ^Expr_Struct_Literal, call: ^Expr_Call, c: Operand) -> bool {
+    callee: ^Type_Scope
+    if rf, resolved := call.resolved_func.?; resolved { callee = graph_callee(b, rf) }
+    if callee == nil || gl.sd == nil { return false }
+    graph_spread_results(b, v, gl.sd, &gl.parent, callee, c)
+    return true
+}
+
 graph_fuse_literal_field :: proc(gl: ^Graph_Literal, name: string, i: int) -> Dest {
     name := name
     if name == "" && gl.sd != nil && gl.skip + i < len(gl.sd.fields) { name = gl.sd.fields[gl.skip + i].name }
