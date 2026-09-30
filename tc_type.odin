@@ -121,12 +121,23 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, env: ^Type_Scope, span: Spa
         _, i, _ := parse_number_text(tc_text(t.main[n]))
         return int(i), true
     case .Ident:
+        // (A constant, known: its value.)
         name := tc_name(k, n)
-        if name in k.table.constants {
-            tc_unsupported(k, n, "a size named by a constant")
+        if _, is_const := k.const_owners[name]; is_const && !tc_const_visible(k, env, name) {
+            tc_error(k, span, TYPE_UNDEFINED_IDENTIFIER, name)
             return 0, false
         }
-        tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, name, type_name(elem))
+        kc, is_const := k.consts[name]
+        if !is_const {
+            tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, name, type_name(elem))
+            return 0, false
+        }
+        if f, i, lit := tc_literal_value(k, kc.value); lit {
+            _ = f
+            return int(i), true
+        }
+        if v, ok := tc_comptime_int(k, kc.value, nil); ok { return int(v), true }
+        tc_error(k, span, TYPE_ARRAY_SIZE_CONSTANT_COMPILE_TIME, name)
         return 0, false
     }
     if v, ok := tc_comptime_int(k, n, env); ok { return int(v), true }
@@ -177,7 +188,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
         case ^Type_Fixed_Array:   if v.size > 0 { return i64(v.size), true }
         }
     case .Ident:
-        if tc_name(k, n) in k.table.constants { tc_unsupported(k, n, "a constant's value") }
+        if kc, ok := k.consts[tc_name(k, n)]; ok { return tc_comptime_int(k, kc.value, env) }
     }
     return 0, false
 }

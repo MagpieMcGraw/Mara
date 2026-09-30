@@ -36,6 +36,8 @@ TC :: struct {
     in_progress:   map[string]bool,
     std:           ^Type_Scope,
     templates:     map[string]TC_Template,   // the generic definitions, by name
+    consts:        map[string]^TC_Const,     // the constants, by flat name (and bare, unless two modules share it)
+    const_owners:  map[string]string,        // each bare name's module ("": more than one)
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
     instance_order: [dynamic]string,
     subst:         map[string]Type,   // the type params bound, in an instance being checked
@@ -181,6 +183,8 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
 
     if c.errors == 0 {
         if perf != nil { perf_timer_mark(perf, "graph") }
+        // (Each constant's names, by its value, for the builder to name tables.)
+        for key, kc in k.consts { k.gb.constant_names[key] = syntax_id(kc.value) }
         checked.graph = build_program_graph(k.gb)
         if perf != nil { perf_timer_mark(perf, "analysis") }
         checked.call_graph = build_call_graph(checked)
@@ -218,11 +222,13 @@ tc_check_module_files :: proc(k: ^TC, files: []Tree_Id, mod: ^Type_Scope) -> []i
     for f, i in files {
         for s in tree_list(k.t, k.t.a[f]) { tc_register(k, s, envs[i], mod) }
     }
+    mine := list[:]
+    // (Signatures first: a constant's value may call a fun — an error, but
+    // one found at its call, as the old checker's were on demand.)
+    for i in mine { tc_signature(k, k.scopes[i]) }
     for f, i in files {
         for s in tree_list(k.t, k.t.a[f]) { tc_resolve(k, s, envs[i]) }
     }
-    mine := list[:]
-    for i in mine { tc_signature(k, k.scopes[i]) }
     for f, i in files {
         for s in tree_list(k.t, k.t.a[f]) { tc_validate(k, s, envs[i]) }
     }
@@ -287,6 +293,10 @@ tc_register :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, mod: ^Type_Scope) {
                 return
             }
         }
+        if value != 0 && !tc_is_definition(t.tag[value]) {
+            tc_register_const(k, s, value, env, mod)
+            return
+        }
         if value != 0 {
             tc_unsupported(k, value, "this module definition")
             return
@@ -322,8 +332,17 @@ tc_register_distinct :: proc(k: ^TC, def, node: Tree_Id, mod: ^Type_Scope) {
 // type's base.
 tc_resolve :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     t := k.t
-    if t.tag[s] != .Define || t.a[s] != 0 { return }
+    if t.tag[s] != .Define { return }
     value := Tree_Id(t.b[s])
+    if value != 0 && !tc_is_definition(t.tag[value]) {
+        // (A constant: checked, and built, here in its module's order.)
+        if kc, ok := k.consts[make_flat_name(k.pkg, tc_name(k, s))]; ok && kc.def == s {
+            tc_check_const(k, kc)
+            if k.gb != nil { graph_module_stmt(k.gb, syntax_id(s), {types = slice.clone([]Type{kc.t}), kind = .Other, set = true}) }
+        }
+        return
+    }
+    if t.a[s] != 0 { return }
     if value == 0 || (t.tag[value] != .Alias_Def && t.tag[value] != .Distinct_Def) { return }
     if dt, ok := k.table.distinct_types[make_flat_name(k.pkg, tc_name(k, s))]; ok && dt.base_type == nil {
         dt.base_type = tc_type(k, Tree_Id(t.a[value]), env, tree_span(t, s))
@@ -639,3 +658,13 @@ tc_mode :: proc() -> string {
 }
 
 _ :: fmt
+
+// Whether a definition's value is a definition of its own (a fun, a type, an
+// import, …), not a constant's value.
+tc_is_definition :: proc(tag: Tree_Tag) -> bool {
+    #partial switch tag {
+    case .Fun_Def, .Struct_Def, .Import, .Alias_Def, .Distinct_Def, .Dispatch_Def, .Union_Def, .Error_Def, .Intrinsic_Body:
+        return true
+    }
+    return false
+}

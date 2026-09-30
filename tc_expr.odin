@@ -112,7 +112,15 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     name := tc_name(k, n)
     span := tree_span(k.t, n)
     k.hint = nil
+    // (A constant: its own module's, or one it uses' — two is ambiguous.)
+    kc, unambiguous := tc_const_ref(k, env, name, span)
+    if !unambiguous { return Type_Error{}, {} }
     t, loc_scope, ok := type_env_locate(env, name)
+    if !ok && kc != nil {
+        // (Not bound here yet: its value's type.)
+        ct := tc_check(k, kc.value, env)
+        return ct, tc_const_use(k, kc, n, ct, want, w)
+    }
     if !ok {
         // (A type named as a value: said so.)
         flat := resolve_type_name(k.c, name, "", env)
@@ -128,6 +136,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         if want == .None || want == .Place { return t, {} }
         return t, {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
     }
+    if kc != nil { return t, tc_const_use(k, kc, n, t, want, w) }
     // (A local is found in no scope: what a scope holds is a fun, a type, a
     // constant — a function sees no module's variables.)
     if loc_scope != nil {
@@ -523,17 +532,28 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
 
 // A literal that doesn't fit the type it is used at (check_literal_overflow's).
 tc_literal_overflow :: proc(k: ^TC, n: Tree_Id, target: Type, span: Span) {
+    if f, i, lit := tc_literal_value(k, n); lit {
+        check_value_range(k.c, f, i, target, span)
+        return
+    }
+    // (A constant's name: its value's.)
+    if u := tc_unparen(k, n); k.t.tag[u] == .Ident {
+        if kc, ok := k.consts[tc_name(k, u)]; ok { tc_literal_overflow(k, kc.value, target, span) }
+    }
+}
+
+// A number as written, or negated: its value.
+tc_literal_value :: proc(k: ^TC, n: Tree_Id) -> (f64, i128, bool) {
     tr := k.t
     neg := false
     num := tc_unparen(k, n)
     if tr.tag[num] == .Unary && build_tokens[tr.main[num]].kind == .Minus && tr.tag[tc_unparen(k, Tree_Id(tr.a[num]))] == .Number {
         neg, num = true, tc_unparen(k, Tree_Id(tr.a[num]))
     }
-    if tr.tag[num] != .Number { return }
-    text := token_text(build_tokens[tr.main[num]])
-    f, i, _ := parse_number_text(text)
+    if tr.tag[num] != .Number { return 0, 0, false }
+    f, i, _ := parse_number_text(token_text(build_tokens[tr.main[num]]))
     if neg { f, i = -f, -i }
-    check_value_range(k.c, f, i, target, span)
+    return f, i, true
 }
 
 // `assert(c)`: the condition's value, then the assert — with the

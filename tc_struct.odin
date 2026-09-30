@@ -24,14 +24,21 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     field := tc_text(Token_Id(tr.b[n]))
     build := want != .None && tc_building(k) != nil
     ask := Fuse_Want.None
-    if build { ask = .Place if tc_holds(k, base) || tr.tag[tc_unparen(k, base)] == .Call else .Either }
+    mark: Graph_Mark
+    if build {
+        ask = .Place if tc_holds(k, base) || tr.tag[tc_unparen(k, base)] == .Call else .Either
+        mark = graph_fuse_mark(tc_building(k))
+    }
     bt, br := tc_expr(k, base, env, ask, w, temp_span = span)
     t, is_member, const_len := tc_field_type(k, n, bt, field, span)
     if !build || tc_building(k) == nil { return t, {} }
     if const_len >= 0 {
-        // (A fixed array's length: its size; its base, built, stays.)
+        // (A length known — a fixed array's, a text constant's: its value;
+        // its base, built, left out.)
+        b := tc_building(k)
+        graph_fuse_drop_since(b, mark)
         if want == .Place { return t, {} }
-        return t, {v = graph_const(tc_building(k), w, span, t, field, Const_Value{int = i128(const_len)}), ok = true}
+        return t, {v = graph_const(b, w, span, t, field, Const_Value{int = i128(const_len)}), ok = true}
     }
     if !is_member { return t, {} }
     p := tc_member_place(k, n, br, bt, t)
@@ -92,7 +99,14 @@ tc_field_type :: proc(k: ^TC, n: Tree_Id, bt: Type, field: string, span: Span) -
     case ^Type_Partial_Array:
         switch field {
         case "ptr":        return new_clone(Type_Ptr{elem = v.elem}), true, -1
-        case "len", "cap": return slice_header_width_type, true, -1
+        case "len", "cap":
+            // (A text constant's: its length, known.)
+            if base := tc_unparen(k, Tree_Id(k.t.a[n])); k.t.tag[base] == .Ident {
+                if kc, ok := k.consts[tc_name(k, base)]; ok && k.t.tag[kc.value] == .String {
+                    return slice_header_width_type, false, len(tc_text(k.t.main[kc.value]))
+                }
+            }
+            return slice_header_width_type, true, -1
         }
         tc_error(k, span, TYPE_PARTIAL_ARRAY_TYPE_FIELD, type_name(obj), field)
         return Type_Error{}, false, -1

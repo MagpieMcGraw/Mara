@@ -19,6 +19,7 @@ capsize
 capsize_neg
 castfield
 chartest
+const_runtime_neg
 crashfix
 crossfile_fields
 ctor_zero
@@ -55,6 +56,7 @@ fordo
 generic_untyped_args
 hoisttest
 idxsafe
+impprv
 inferconflict
 inferdef
 init_alias_neg
@@ -78,12 +80,14 @@ printcheck
 ptr_slice_uninit_neg
 puretest
 recur
+redundant_cast
 result_slot_alias
 retmiss
 settled_literal_range_neg
 slice_param_header_neg
 spread_literal
 tailfns
+text_constant_views
 u64dec
 uninitbranch
 uninitfield
