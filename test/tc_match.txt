@@ -17,6 +17,7 @@ assertp
 assertu
 audittest
 autowiden
+bigstack_neg
 booltest
 branchok
 broadcast_clones
@@ -97,6 +98,7 @@ generic_untyped_args
 hoisttest
 idxelem
 idxsafe
+ifarm_neg
 impdefault
 impprv
 inferconflict
@@ -111,6 +113,7 @@ localstruct
 mandelbrot
 minu16
 mixwiden
+mret_pa
 multi_assign_param_neg
 multiret
 multiret_struct_lit
@@ -170,6 +173,9 @@ utof
 vec_elements
 void_ptr_deinit_neg
 void_ptr_legal
+void_scalar_deinit_neg
+void_scalar_init
+voidtest
 widenneg
 wrapfail
 wraptest

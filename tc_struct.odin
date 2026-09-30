@@ -241,9 +241,11 @@ tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, sp
         tc_store(k, 0, vt, r, d, span, settle = true)
         return vt
     }
-    if t := k.t.tag[tc_unparen(k, value)]; t == .Ident && tc_name(k, tc_unparen(k, value)) == "void" {
-        tc_unsupported(k, value, "a `void` write")
-        return Type_Error{}
+    if tc_is_void(k, value) {
+        // (`= void`: the uninitialized value written, of the place's type.)
+        vt := tc_check(k, value, env)
+        if b = tc_building(k); b != nil { graph_fuse_write_at(b, place, graph_fuse_void(b, pt, tree_span(k.t, value)), span) }
+        return vt
     }
     vt, r := tc_expr(k, value, env, .Into, dest = d, temp = true, temp_span = span)
     tc_store(k, value, vt, r, d, span, settle = true)

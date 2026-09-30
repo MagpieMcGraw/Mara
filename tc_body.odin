@@ -51,6 +51,14 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
 tc_scope :: proc(k: ^TC, stmts: []Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = nil, top := false) {
     t := k.t
     stmts := tc_live(k, stmts)   // (`#if`: its live arm's, in its place)
+    // (Its declarations, for the stack's size guard at its end.)
+    saved := k.decls
+    decls := make([dynamic]TC_Decl_Note, context.temp_allocator)
+    k.decls = &decls
+    defer {
+        tc_storage_sizes(k, decls[:])
+        k.decls = saved
+    }
     // (A body's constants, checked with it: their declarations, settled.)
     if b := tc_building(k); b != nil && top {
         for s in stmts {
@@ -173,8 +181,11 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     ann: Type = Type_Any{}
     if ann_node != 0 { ann = tc_type(k, ann_node, env, span) }
     if !tc_declarable(k, env, name, span) { return }
-    if value != 0 && t.tag[value] == .Ident && tc_name(k, value) == "void" {
-        tc_unsupported(k, s, "a `void` declaration")
+    // (`x : T = void`, T no pointer: uninitialized — a pointer's void is its
+    // null, a value.)
+    skip := value != 0 && tc_is_void(k, value) && !tc_is_pointer(ann)
+    if skip {
+        tc_decl_void(k, s, target, value, name, ann, env, fields_of)
         return
     }
     if fields_of != nil && !is_any(ann) { tc_add_field(fields_of, name, ann, value) }
@@ -244,6 +255,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         if is_cstring(final) { tc_error(k, span, TYPE_CSTRING_FOREIGN_ONLY) }
     }
     type_env_set(env, name, final)
+    tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
     if fields_of != nil && is_any(ann) { tc_add_field(fields_of, name, final, value) }
     if b = tc_building(k); b == nil { return }
     graph_fuse_typed(b, decl, final)
@@ -286,6 +298,7 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> boo
 // each). `field`: its node, when it is a struct's field.
 tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Span, field := NO_NODE) {
     defer type_env_set(env, name, ann)
+    tc_note_decl(k, name, ann, span, false)
     if _, is_error := ann.(Type_Error); is_error { return }
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
     b := tc_building(k)
@@ -457,6 +470,12 @@ tc_assign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         return
     }
     if is_immutable_param(env, name) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
+    if tc_is_void(k, value) {
+        // (`x = void` de-initializes: the void value written, unchecked.)
+        tc_check(k, value, env)
+        if b := tc_building(k); b != nil { graph_fuse_void_assign(b, name, distinct_base(existing), span, tree_span(t, value)) }
+        return
+    }
     if loc != nil && loc.kind == .Struct {
         tc_unsupported(k, s, "an assignment to a field or module name")
         return
@@ -887,4 +906,69 @@ tc_comptime_bool :: proc(k: ^TC, n: Tree_Id) -> (bool, bool) {
         }
     }
     return false, false
+}
+
+// `void`, written as a value.
+tc_is_void :: proc(k: ^TC, n: Tree_Id) -> bool {
+    return k.t.tag[n] == .Ident && tc_name(k, n) == "void"
+}
+
+tc_is_pointer :: proc(t: Type) -> bool {
+    _, ok := distinct_base(t).(^Type_Ptr)
+    return ok
+}
+
+// `x : T = void`: declared uninitialized (no construction, no stores) —
+// the value where it is written void. Unannotated, there is no type.
+tc_decl_void :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type, env: ^Type_Scope, fields_of: ^Type_Scope) {
+    span := tree_span(k.t, s)
+    if is_any(ann) {
+        if _, shadowed := tc_declared_before(env, name, fields_of != nil); !shadowed {
+            tc_error(k, span, TYPE_VOID_INIT_REQUIRES_EXPLICIT, name, name)
+            type_env_set(env, name, Type_Error{})
+        }
+        return
+    }
+    if fields_of != nil { tc_add_field(fields_of, name, ann, 0) }
+    b := tc_building(k)
+    decl := NO_NODE
+    if b != nil {
+        decl = tc_field_decl(k, fields_of, name, target, value, span)
+        if decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
+    }
+    type_env_set(env, name, ann)
+    tc_note_decl(k, name, ann, span, false)
+    if b = tc_building(k); b == nil { return }
+    graph_fuse_typed(b, decl, ann)
+    if fields_of != nil {
+        // (A field's `= void`: its declaration's, as written — the value
+        // stored, unchecked.)
+        val := graph_fuse_void(b, ann, b.fuse.field_inits[tc_sid(k, target)])
+        graph_fuse_write_at(b, graph_var(b, name, decl, ann, span), val, span)
+        return
+    }
+    graph_fuse_void_decl(b, decl, ann, span, span)
+}
+
+// A declaration of a block, for its size guard.
+TC_Decl_Note :: struct {
+    name: string,
+    t:    Type,
+    span: Span,
+    take: bool,   // (a take binds memory it takes: no storage of its own)
+}
+
+tc_note_decl :: proc(k: ^TC, name: string, t: Type, span: Span, take: bool) {
+    if k.decls != nil { append(k.decls, TC_Decl_Note{name, distinct_base(t), span, take}) }
+}
+
+// A value too big for the stack, with no scope arena to hold it: an error
+// (check_storage_sizes). Analysis alone runs no code.
+tc_storage_sizes :: proc(k: ^TC, decls: []TC_Decl_Note) {
+    if k.c.analysis_only || k.table.has_scope_allocator || k.table.context_expected_at_runtime { return }
+    for d in decls {
+        if !d.take && routes_to_arena(d.t) {
+            tc_error(k, d.span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, d.name, checker_type_byte_size(d.t))
+        }
+    }
 }

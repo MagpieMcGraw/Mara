@@ -48,6 +48,7 @@ TC :: struct {
     callees:       map[Tree_Id]^Type_Scope,   // each call's fun, or struct (its constructor)
     const_nodes:   map[Tree_Id]bool,  // the names that resolved to a constant
     variant_nodes: map[Tree_Id]bool,  // the names that resolved to an enum's variant
+    decls:         ^[dynamic]TC_Decl_Note,   // the block being checked's declarations
     size_of:       map[Tree_Id]Type,  // each size_of's type, as checked
     compound:      struct { target: Tree_Id, place: Operand },   // a compound assignment's target, its place built
 }
