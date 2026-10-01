@@ -345,7 +345,7 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type, ma
 TC_Generic_Param :: struct {
     name:  string,
     value: bool,      // a value (`n: i64`, `$N: int`), not a type
-    shape: bool,      // `~T`
+    shape: string,    // `~T`: T, what its type must have
     def:   Tree_Id,   // its default
 }
 
@@ -368,7 +368,7 @@ tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_P
             def := pv.values[i] if i < len(pv.values) else 0
             #partial switch t.tag[pv.type_] {
             case .Type_Tilde:
-                append(&gps, TC_Generic_Param{name = pn, shape = true, def = def})
+                append(&gps, TC_Generic_Param{name = pn, shape = tc_text(Token_Id(t.a[pv.type_])), def = def})
                 promoted[pn] = true
             case .Type_Dollar:
                 append(&gps, TC_Generic_Param{name = pn})
@@ -421,9 +421,15 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
     for a, i in args {
         if i >= len(gps) { break }
         gp := gps[i]
-        if gp.shape {
-            tc_unsupported(k, a, "a shape's argument")
-            return Type_Error{}
+        if gp.shape != "" {
+            // (A type; a constructor's call, its struct's — its value the
+            // declaration's to build: tc_shape_bindings.)
+            if u := tc_unparen(k, a); tc_is_call(k, u) {
+                append(&targs, tc_type_named(k, tc_call_name(k, u), env, span))
+            } else {
+                append(&targs, tc_type(k, a, env, span))
+            }
+            continue
         }
         if !gp.value {
             append(&targs, tc_type(k, a, env, span))
@@ -450,6 +456,10 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
     for i := len(targs); i < len(gps); i += 1 {
         gp := gps[i]
         if gp.def == 0 { break }
+        if gp.shape != "" && t.tag[gp.def] == .Ident {
+            append(&targs, tc_type_named(k, tc_name(k, gp.def), env, span))   // (`~T = void`)
+            continue
+        }
         if !gp.value {
             tc_unsupported(k, gp.def, "a generic type param's default")
             return Type_Error{}
@@ -464,6 +474,10 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, env: ^Type_Sco
     }
     mangled := mangle_generic_name(name, targs[:])
     if st, made := k.table.mono_cache[mangled]; made { return st }
+    // (A shape's argument has what its constraint has: checked once.)
+    for gp, i in gps {
+        if gp.shape != "" { check_shape_constraint(k.c, Generic_Param{name = gp.name, shape_constraint = gp.shape}, targs[i], tmpl.pkg, span) }
+    }
     subst := make(map[string]Type)
     for gp, i in gps { subst[gp.name] = targs[i] }
     return tc_instantiate_struct(k, tmpl, subst, targs[:], promoted, mangled)

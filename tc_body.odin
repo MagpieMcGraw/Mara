@@ -212,6 +212,10 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
         if cap_n == 0 { cap_n = tc_count_arg(k, Tree_Id(t.b[ann_node])) }   // (`[]T(n)`)
     }
     if value == 0 {
+        if bindings := tc_shape_bindings(k, ann_node); len(bindings) > 0 {
+            tc_decl_shape(k, s, target, name, ann, bindings, env, fields_of)
+            return
+        }
         tc_decl_bare(k, name, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span), cap_n)
         return
     }
@@ -380,6 +384,8 @@ tc_decl_bare :: proc(k: ^TC, name: string, ann: Type, env: ^Type_Scope, span: Sp
 // registration saw them: no nested block's.)
 tc_bare_construction :: proc(k: ^TC, name: string, t: Type, env: ^Type_Scope, span: Span) {
     if env.kind == .Block && env.parent_scope != nil && env.parent_scope.kind == .Block { return }
+    // (A generic struct's instance: its fields made with it, not checked so.)
+    if env.kind == .Block && env.parent_scope != nil && env.parent_scope.generic_base != "" { return }
     elem, is_array := t, false
     for {
         #partial switch v in distinct_base(elem) {
@@ -1402,4 +1408,79 @@ tc_using :: proc(k: ^TC, s: Tree_Id, env, fields_of: ^Type_Scope) {
             tc_error(k, at, TYPE_USING_FIELD_STRUCT_FIXED_ARRAY, f.name)
         }
     }
+}
+
+// The shape shortcut: `h : Holder(Box(5))`, a shape's argument a
+// constructor's call, means `h : Holder(Box) = {inner = Box(5)}` — each field
+// of the shape's type given that call. Its bindings (none: no shortcut).
+TC_Binding :: struct {
+    field: string,
+    call:  Tree_Id,
+}
+
+tc_shape_bindings :: proc(k: ^TC, ann: Tree_Id) -> []TC_Binding {
+    t := k.t
+    if ann == 0 || t.tag[ann] != .Type_Generic { return nil }
+    tmpl, is_template := k.templates[tc_name(k, ann)]
+    if !is_template || t.tag[tmpl.node] != .Struct_Def { return nil }
+    gps, _ := tc_struct_generics(k, tmpl.node)
+    out := make([dynamic]TC_Binding, context.temp_allocator)
+    for a, i in tree_list(t, t.a[ann]) {
+        if i >= len(gps) || gps[i].shape == "" { continue }
+        call := tc_unparen(k, a)
+        if !tc_is_call(k, call) { continue }
+        for s in scope_view(t, tmpl.node).body {
+            if t.tag[s] != .Decl { continue }
+            v := decl_view(t, s)
+            if v.type_ == 0 || t.tag[v.type_] != .Type_Name || tc_name(k, v.type_) != gps[i].name { continue }
+            for tg in v.targets { append(&out, TC_Binding{tc_name(k, tg), call}) }
+        }
+    }
+    return out[:]
+}
+
+// A declaration by the shape shortcut: its local (a struct's field), then its
+// literal built into it.
+tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindings: []TC_Binding, env, fields_of: ^Type_Scope) {
+    span := tree_span(k.t, s)
+    b := tc_building(k)
+    decl := NO_NODE
+    if b != nil {
+        decl = tc_field_decl(k, fields_of, name, target, 0, span)
+        if decl == NO_NODE { decl = graph_fuse_decl(b, name, span) }
+    }
+    k.hint = ann
+    vt, r := tc_shape_literal(k, s, ann, bindings, env, .Into if b != nil else .None, graph_dest_var(name, decl, ann))
+    type_env_set(env, name, ann)
+    tc_note_decl(k, name, ann, span, false)
+    if b = tc_building(k); b == nil { return }
+    graph_fuse_typed(b, decl, ann)
+    tc_store(k, 0, vt, r, graph_dest_var(name, decl, ann), span, settle = true)
+}
+
+// `{inner = Box(5)}` of the shape shortcut, at its type: its construction
+// where it goes, then each field given its call.
+tc_shape_literal :: proc(k: ^TC, s: Tree_Id, t: Type, bindings: []TC_Binding, env: ^Type_Scope, want: Fuse_Want, dest: Dest) -> (Type, Fused) {
+    span := tree_span(k.t, s)
+    ts, is_scope := t.(^Type_Scope)
+    if !is_scope || ts.kind != .Struct {
+        tc_unsupported(k, s, "a shape's shortcut of no struct")
+        return Type_Error{}, {}
+    }
+    tc_struct_ensure(k, ts)
+    sd := &ts.sd
+    gl: ^Graph_Literal
+    if b := tc_building(k); want != .None && b != nil {
+        args := tc_ctor_args(k, ts, span)
+        if b = tc_building(k); b == nil { return t, {} }
+        gl = graph_fuse_literal(b, span, "", false, t, dest, args)
+        if gl == nil { tc_fail(k, "a literal the graph builds no way") }
+    }
+    for bd in bindings {
+        idx, has := sd.field_map[bd.field]
+        if !has { continue }
+        tc_literal_field(k, bd.call, sd.fields[idx], 0, bd.field, span, env, gl)
+    }
+    if b := tc_building(k); want == .None || b == nil || gl == nil { return t, {} }
+    return t, tc_built(k, want, false, false, dest, t, span, false)
 }

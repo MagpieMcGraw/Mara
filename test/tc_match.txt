@@ -223,6 +223,7 @@ scope_constants
 seektest
 selfhelper
 settled_literal_range_neg
+shape_shortcut_decl
 sibling_locals
 slerp
 slice_count_carve

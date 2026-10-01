@@ -18,28 +18,7 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
             tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_dotted(parts))
             return Type_Error{}
         }
-        name := tc_text(parts[0])
-        if p, is_primitive := tc_primitive_named(name); is_primitive {
-            if name == "int" { tc_error(k, span, TYPE_TYPE_INT_RESERVED_USE_I64); return Type_Error{} }
-            if name == "uint" { tc_error(k, span, TYPE_TYPE_UINT_RESERVED_USE_U64); return Type_Error{} }
-            return p
-        }
-        // (A type param, in an instance; `Self`: the struct or fun the type is
-        // written in.)
-        if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
-        if name == "Self" {
-            if s := enclosing_callable_scope(env); s != nil { return s }
-        } else if found, ok := type_env_get(env, name); ok {
-            return found
-        }
-        flat := make_flat_name(k.pkg, name)
-        if st, ok := k.table.structs[flat]; ok { return st }
-        if st, ok := k.table.funs[flat]; ok { return st }
-        if ut, ok := k.table.unions[flat]; ok { return ut }
-        if et, ok := k.table.enums[flat]; ok { return et }
-        if dt, ok := k.table.distinct_types[flat]; ok { return dt }
-        tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
-        return Type_Error{}
+        return tc_type_named(k, tc_text(parts[0]), env, span)
     case .Type_Dollar:
         name := tc_text(Token_Id(t.a[n]))
         if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
@@ -396,4 +375,30 @@ tc_count_arg :: proc(k: ^TC, n: Tree_Id, take := false) -> Tree_Id {
 
 tc_is_type_tag :: proc(tag: Tree_Tag) -> bool {
     return tag >= .Type_Name && tag <= .Type_Paren
+}
+
+// A type by its name: a primitive, a type param bound, `Self`, what the
+// scope names, else the module's.
+tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span) -> Type {
+    if p, is_primitive := tc_primitive_named(name); is_primitive {
+        if name == "int" { tc_error(k, span, TYPE_TYPE_INT_RESERVED_USE_I64); return Type_Error{} }
+        if name == "uint" { tc_error(k, span, TYPE_TYPE_UINT_RESERVED_USE_U64); return Type_Error{} }
+        return p
+    }
+    // (A type param, in an instance; `Self`: the struct or fun the type is
+    // written in.)
+    if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
+    if name == "Self" {
+        if s := enclosing_callable_scope(env); s != nil { return s }
+    } else if found, ok := type_env_get(env, name); ok {
+        return found
+    }
+    flat := make_flat_name(k.pkg, name)
+    if st, ok := k.table.structs[flat]; ok { return st }
+    if st, ok := k.table.funs[flat]; ok { return st }
+    if ut, ok := k.table.unions[flat]; ok { return ut }
+    if et, ok := k.table.enums[flat]; ok { return et }
+    if dt, ok := k.table.distinct_types[flat]; ok { return dt }
+    tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
+    return Type_Error{}
 }
