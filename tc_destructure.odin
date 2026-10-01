@@ -4,7 +4,8 @@ package mara
 // name (declared, or written) or a target's place, in turn — the names it
 // declares made first, then the call, then each output written.
 
-tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool, ann: Tree_Id, env: ^Type_Scope) {
+tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_decl: bool, ann: Tree_Id, env: ^Type_Scope,
+                       fields_of: ^Type_Scope = nil) {
     t := k.t
     span := tree_span(t, s)
     names := make([]string, len(targets))
@@ -92,6 +93,8 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
                 }
             }
             type_env_set(env, name, rt)
+            // (A struct's field: its value its slot of the call's.)
+            if fields_of != nil && name != "_" { tc_add_field(fields_of, name, rt, value, i) }
         } else {
             if !is_try {
                 if pname, immutable := tc_write_root_param(k, tg, env); immutable {
@@ -117,11 +120,13 @@ tc_broadcast :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, is_
     span := tree_span(t, s)
     if b := tc_building(k); b != nil { graph_fuse_stmt_kind(b, .Other) }
     for tg in targets {
-        kind := Stmt_Kind.Decl if is_decl else tc_assign_kind(k, tg)
+        // (A declaration's bare names declared; a place, stored.)
+        declares := is_decl && t.tag[tg] == .Ident
+        kind := Stmt_Kind.Decl if declares else tc_assign_kind(k, tg)
         b := tc_building(k)
         saved: i32
         if b != nil { saved = graph_fuse_stmt(b, tc_sid(k, s), span, kind, fresh = true) }
-        if is_decl { tc_decl_one(k, s, tg, value, 0, env, nil) } else { tc_assign_one(k, s, tg, value, env) }
+        if declares { tc_decl_one(k, s, tg, value, 0, env, nil) } else { tc_assign_one(k, s, tg, value, env) }
         if b != nil { graph_fuse_stmt_end(b, saved) }
     }
 }

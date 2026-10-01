@@ -43,7 +43,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     ask := Fuse_Want.None
     mark: Graph_Mark
     if build {
-        ask = .Place if tc_holds(k, base) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
+        ask = .Place if tc_holds(k, tc_unparen(k, base)) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
         mark = graph_fuse_mark(tc_building(k))
     }
     bt, br := tc_expr(k, base, env, ask, w, temp_span = span)

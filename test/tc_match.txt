@@ -56,6 +56,7 @@ castfield
 cdefer
 cgflat
 chartest
+checker_builds
 clangfail
 const_address_neg
 const_qualified_float
@@ -162,6 +163,7 @@ mandelbrot_bench_simd
 match_bare_enum
 method_alias
 minu16
+mixbind
 mixwiden
 module_locals_neg
 mret_pa

@@ -140,19 +140,22 @@ tc_decl :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, fields_of: ^Type_Scope = n
     t := k.t
     span := tree_span(t, s)
     v := decl_view(t, s)
+    if len(v.targets) > 1 && len(v.values) == 1 {
+        // (Several from one value: its results — bare names declared, places
+        // stored. A struct's fields: made first, the destructure's.)
+        if b := tc_building(k); b != nil && fields_of != nil {
+            names := make([]string, len(v.targets), context.temp_allocator)
+            for tg, i in v.targets { names[i] = tc_name(k, tg) }
+            graph_fuse_fields(b, names, span, {tc_sid(k, s)}, {tree_span(t, v.values[0])}, true)
+        }
+        tc_destructure(k, s, v.targets, v.values[0], true, v.type_, env, fields_of)
+        return
+    }
     for tg in v.targets {
         if t.tag[tg] != .Ident {
             tc_unsupported(k, s, "a declaration of no name")
             return
         }
-    }
-    if len(v.targets) > 1 && len(v.values) == 1 {
-        if fields_of != nil {
-            tc_unsupported(k, s, "a struct's fields from one call")
-            return
-        }
-        tc_destructure(k, s, v.targets, v.values[0], true, v.type_, env)
-        return
     }
     if len(v.values) > 0 && len(v.values) != len(v.targets) {
         tc_unsupported(k, s, "this declaration")
@@ -437,9 +440,9 @@ tc_bare_struct :: proc(t: Type) -> ^Type_Scope {
 }
 
 // A struct's field, as its declaration finds it.
-tc_add_field :: proc(ts: ^Type_Scope, name: string, t: Type, value: Tree_Id) {
+tc_add_field :: proc(ts: ^Type_Scope, name: string, t: Type, value: Tree_Id, slot: Maybe(int) = nil) {
     if name in ts.field_map { return }   // (added with the others declared with it)
-    append(&ts.fields, Struct_Type_Field{name = name, type_ = t, default_node = value})
+    append(&ts.fields, Struct_Type_Field{name = name, type_ = t, default_node = value, default_slot = slot})
     build_field_map(&ts.sd)
 }
 
@@ -631,19 +634,28 @@ tc_return :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
             k.hint = want
             // (Text returned as a partial array: built into a temporary, zero
             // first, then read.)
+            // (Text returned as a partial array — a literal, or a constant,
+            // known once checked: its temporary and zero made before it.)
             text, slot := false, NO_NODE
+            text_held: Graph_Later
             if b := tc_building(k); b != nil && is_partial_array(want) {
                 if t.tag[tc_unparen(k, val)] == .String {
                     text, slot = true, graph_slot(b, "temp", want, span)
                     graph_fuse_zero_var(b, slot, want, span)
                 } else {
-                    _ = graph_fuse_later(b)   // (where a text constant's would go)
+                    text_held = graph_fuse_later(b)
                 }
             }
             use, at := tc_use_type(k, val, want, span)
             held: Graph_Later
             if b := tc_building(k); b != nil && is_slice_type(want) { held = graph_fuse_later(b) }
             vt, r := tc_expr(k, val, env, .Either if tc_building(k) != nil else .None, dest = use, temp_span = at)
+            if b := tc_building(k); b != nil && text_held.reserved && fuse_is_text_constant(b, r) {
+                graph_fuse_later_begin(b, &text_held)
+                text, slot = true, graph_slot(b, "temp", want, span)
+                graph_fuse_zero_var(b, slot, want, span)
+                if !graph_fuse_later_end(b, &text_held) { tc_fail(k, "a text constant returned across runs") }
+            }
             if b := tc_building(k); b != nil && !text {
                 append(&vals, tc_value_as(k, val, vt, r, want, span, {to = want}, &held))
             } else if b != nil {
