@@ -1,0 +1,10 @@
+module and_compare_neg
+//@ expect-fail: did you mean `x == 0 and y == 0`
+
+// `x and y == 0` is `x and (y == 0)`: an error, with the form meant.
+
+main :: fun() {
+	x := 3
+	y := 4
+	if x and y == 0 { print(1) }
+}

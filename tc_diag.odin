@@ -32,6 +32,20 @@ tc_diag_name :: proc(k: ^TC, n: Tree_Id) -> string {
     return ""
 }
 
+// An expression as written: "y == 0".
+tc_written :: proc(k: ^TC, n: Tree_Id) -> string {
+    return token_range_text(int(k.t.first[n]), int(k.t.end[n]))
+}
+
+// Whether `n` is a string literal, or a constant naming one.
+tc_text_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
+    m := tc_unparen(k, n)
+    if k.t.tag[m] == .String { return true }
+    if k.t.tag[m] != .Ident { return false }
+    kc, ok := k.consts[tc_name(k, m)]
+    return ok && k.t.tag[kc.value] == .String
+}
+
 // "p.x (i64), q (i64)": the named operands of `n` too wide for `target`.
 tc_wide_clause :: proc(k: ^TC, target: Type, roots: ..Tree_Id) -> string {
     srcs: [dynamic]string

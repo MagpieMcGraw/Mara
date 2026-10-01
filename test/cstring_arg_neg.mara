@@ -1,0 +1,14 @@
+module cstring_arg_neg
+//@ expect-fail: doesn't convert to `cstring` implicitly
+
+// A runtime string into a `cstring` param must be wrapped: `cstring(s)`
+// copies it and writes the terminator, visibly. Literals pass free.
+
+foreign static_lib "kernel32" {
+	fun lstrlenA(s: cstring) -> i32
+}
+
+main :: fun() {
+	name := "hello"
+	print(lstrlenA(name))
+}

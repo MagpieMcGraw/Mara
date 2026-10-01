@@ -442,7 +442,18 @@ tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, 
     #partial switch op {
     case .And, .Or:
         word := "and" if op == .And else "or"
-        if _, ok := lt.(Type_Bool); !ok && !is_any(lt) { tc_error(k, span, TYPE_LEFT_OPERAND_BOOL, word, type_name(lt)) }
+        if _, ok := lt.(Type_Bool); !ok && !is_any(lt) {
+            tc_error(k, span, TYPE_LEFT_OPERAND_BOOL, word, type_name(lt))
+            // (`x and y == 0` is `x and (y == 0)`: show the form meant.)
+            if r := tc_unparen(k, right); in_range == nil && tr.tag[r] == .Binary && is_numeric(lt) {
+                if cmp := build_tokens[tr.main[r]].kind; is_comparison_op(cmp) {
+                    rhs := tc_written(k, Tree_Id(tr.b[r]))
+                    meant := fmt.tprintf("%s %s %s %s %s %s %s", tc_written(k, left), op_str(cmp), rhs,
+                                         word, tc_written(k, Tree_Id(tr.a[r])), op_str(cmp), rhs)
+                    check_warning(k.c, span, TYPE_DID_MEAN_EACH_OPERAND_NEEDS, meant, word)
+                }
+            }
+        }
         if _, ok := rt.(Type_Bool); !ok && !is_any(rt) { tc_error(k, span, TYPE_RIGHT_OPERAND_BOOL, word, type_name(rt)) }
         t = Type_Bool{}
     case .Equal_Equal, .Not_Equal:
@@ -701,6 +712,12 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
             clause := ""
             if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
             tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at))
+        }
+        // (A runtime string into a `cstring` param: `cstring(s)`, written —
+        // the copy and the terminator seen. A literal, or a constant one,
+        // passes free: rodata carries the \0.)
+        if is_cstring(pt) && !is_cstring(at) && !tc_text_literal(k, a) {
+            tc_error(k, span, TYPE_CSTRING_ARG_EXPLICIT)
         }
         tc_byte_view_address(k, pt, a)
         if is_infer(at) { tc_literal_overflow(k, a, pt, span) }
