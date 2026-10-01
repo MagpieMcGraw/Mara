@@ -43,7 +43,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     ask := Fuse_Want.None
     mark: Graph_Mark
     if build {
-        ask = .Place if tc_holds(k, base) || tc_is_call(k, tc_unparen(k, base)) else .Either
+        ask = .Place if tc_holds(k, base) || tc_is_call(k, tc_unparen(k, base)) || tc_is_self(k, base) else .Either
         mark = graph_fuse_mark(tc_building(k))
     }
     bt, br := tc_expr(k, base, env, ask, w, temp_span = span)
@@ -70,7 +70,7 @@ tc_field :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         return t, {v = graph_const(b, w, span, t, field, Const_Value{int = known}), ok = true}
     }
     if !is_member { return t, {} }
-    p := tc_member_place(k, n, field, br, bt, t)
+    p := tc_member_place(k, n, field, br, bt, t, tc_is_self(k, base))
     if p == NO_VALUE { return t, {} }
     if want == .Value { return t, {v = graph_read(tc_building(k), p, t, span), ok = true} }
     return t, {v = p, place = true, ok = true}
@@ -170,7 +170,7 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
 
 // A member's place: its base's (through a pointer, what it points at), then
 // the field — or an array's swizzle.
-tc_member_place :: proc(k: ^TC, n: Tree_Id, field: string, base: Fused, bt: Type, t: Type) -> Operand {
+tc_member_place :: proc(k: ^TC, n: Tree_Id, field: string, base: Fused, bt: Type, t: Type, self := false) -> Operand {
     b := tc_building(k)
     if b == nil { return NO_VALUE }
     if !base.ok || !base.place {
@@ -179,7 +179,7 @@ tc_member_place :: proc(k: ^TC, n: Tree_Id, field: string, base: Fused, bt: Type
     }
     span := tree_span(k.t, n)
     p := base.v
-    if pt, is_ptr := distinct_base(bt).(^Type_Ptr); is_ptr {
+    if pt, is_ptr := distinct_base(bt).(^Type_Ptr); is_ptr && !self {
         p = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", p)
     }
     _, is_array := distinct_base(graph_pointee(bt)).(^Type_Fixed_Array)

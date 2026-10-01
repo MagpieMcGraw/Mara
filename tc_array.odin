@@ -290,7 +290,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
                 tc_fail(k, "bytes read from a value's span")
             } else if b = tc_building(k); b != nil {
                 reads, scalar = true, view || !graph_aggregate(read_as)
-                base = graph_base_of(b, plain, plain_t, span)
+                base = graph_base_of(b, plain, plain_t, span, tc_is_self(k, base_n))
             }
         }
     }
@@ -327,7 +327,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
             return t, {}
         }
     } else {
-        base = graph_fuse_base_place(b, plain, plain_t, false, span)
+        base = graph_fuse_base_place(b, plain, plain_t, tc_is_self(k, base_n), span)
     }
     return t, {v = graph_op_value(b, .Slice, w, span, t, "", base, lo, hi), ok = true}
 }
@@ -385,7 +385,7 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     build := b != nil
     bytes := build && tc_building(k) != nil && is_byte_buffer(tt)
     gs: Graph_Span_Target
-    if bytes { gs = graph_fuse_span_target(b, coll, tt, false, from, span) }
+    if bytes { gs = graph_fuse_span_target(b, coll, tt, tc_is_self(k, base_n), from, span) }
     lt, ht: Type = Type_Any{}, Type_Any{}
     lo, hi := NO_VALUE, NO_VALUE
     if lo_n != 0 { lt, lo = tc_bound(k, lo_n, env, .Explicit, sl_span, build, raw = bytes) }
@@ -395,7 +395,7 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     if b = tc_building(k); bytes && b != nil {
         graph_fuse_span_target_ops(b, &gs, hi, st, false, sl_span, span)
     } else if build && b != nil {
-        place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", graph_fuse_base_place(b, coll, tt, false, sl_span), lo, hi)
+        place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", graph_fuse_base_place(b, coll, tt, tc_is_self(k, base_n), sl_span), lo, hi)
     }
     vt: Type
     r: Fused

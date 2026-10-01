@@ -730,7 +730,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         if v.elem != 0 { type_env_set(child, tc_text(v.elem), elem) }
         if v.index != 0 { type_env_set(child, tc_text(v.index), slice_header_width_type) }
         if b := tc_building(k); b != nil {
-            graph_fuse_for_collection(b, &fl, coll, ct, false, distinct_base(elem))
+            graph_fuse_for_collection(b, &fl, coll, ct, tc_is_self(k, v.collection), distinct_base(elem))
         }
         tc_scope(k, v.body, child)
     case .For_Range:
@@ -813,7 +813,7 @@ tc_loop_items :: proc(k: ^TC, fl: ^Graph_For, e: Tree_Id, env: ^Type_Scope) -> T
     if b := tc_building(k); b != nil {
         if view := graph_loop_view_of(t); view != nil {
             fills := is_partial_array(t) && (k.t.tag[tc_unparen(k, e)] == .String || is_slice_type(t))
-            graph_fuse_items_view(b, fl, &gi, r.v, r.place, t, view, false, fills)
+            graph_fuse_items_view(b, fl, &gi, r.v, r.place, t, view, tc_is_self(k, e), fills)
         } else {
             graph_fuse_typed(b, fl.coll_slot, t)
             tc_store(k, e, t, r, graph_dest_var("items", fl.coll_slot, t), fl.span)
@@ -828,7 +828,7 @@ tc_pure_place :: proc(k: ^TC, n: Tree_Id) -> bool {
     t := k.t
     #partial switch t.tag[n] {
     case .Paren: return tc_pure_place(k, Tree_Id(t.a[n]))
-    case .Ident: return true
+    case .Ident, .Self: return true
     case .Field, .Deref: return tc_pure_place(k, Tree_Id(t.a[n]))
     case .Index:
         #partial switch t.tag[tc_unparen(k, Tree_Id(t.b[n]))] {

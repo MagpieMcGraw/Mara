@@ -148,6 +148,7 @@ mandelbrot
 mandelbrot_bench
 mandelbrot_bench_simd
 match_bare_enum
+method_alias
 minu16
 mixwiden
 mret_pa
@@ -198,6 +199,7 @@ scollide
 scope
 scope_constants
 seektest
+selfhelper
 settled_literal_range_neg
 sibling_locals
 slerp

@@ -91,6 +91,8 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_take(k, n, env, want, w)
     case .Hash_Name:
         return tc_hash_name(k, n, env, want, w, span)
+    case .Self:
+        return tc_self(k, n, env, want, w)
     case .Size_Of:
         return tc_size_of(k, n, env, want, w)
     case .If_Expr:
@@ -717,6 +719,29 @@ tc_assert :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writ
     return Type_Void{}, {v = NO_VALUE, ok = true}
 }
 
+// `#self`: the address of what a constructor builds (Self, its place) —
+// only a constructor's frame has one.
+tc_self :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
+    span := tree_span(k.t, n)
+    f := enclosing_callable_scope(env)
+    if f == nil || f.kind != .Struct {
+        tc_error(k, span, TYPE_SELF_ONLY_LEGAL_INSIDE_STRUCT)
+        return Type_Error{}, {}
+    }
+    t := new_clone(Type_Ptr{elem = f})
+    b := tc_building(k)
+    if b == nil || want == .None { return t, {} }
+    self := graph_var(b, "Self", b.self, f, span)
+    if want == .Place { return t, {v = self, place = true, ok = true} }
+    return t, {v = graph_op_value(b, .Address, w, span, t, "", self), ok = true}
+}
+
+// Whether an expression is `#self`: what is reached through it is Self's
+// own, no pointer's.
+tc_is_self :: proc(k: ^TC, n: Tree_Id) -> bool {
+    return k.t.tag[tc_unparen(k, n)] == .Self
+}
+
 // An expression without the parens around it.
 tc_unparen :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
     n := n
@@ -1051,7 +1076,7 @@ tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: 
             return t, {}, true
         }
         base := r.v
-        if pt, is_ptr := distinct_base(at).(^Type_Ptr); is_ptr { base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base) }
+        if pt, is_ptr := distinct_base(at).(^Type_Ptr); is_ptr && !tc_is_self(k, args[0]) { base = graph_op_value(b, .Deref, .Implied, span, pt.elem, "", base) }
         field := graph_op_value(b, .Field, w, span, t, name, base)
         return t, {v = graph_read(b, field, t, span), ok = true}, true
     case "slice_from_ptr":
