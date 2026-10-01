@@ -104,7 +104,7 @@ Def_Use :: struct {
     vars:         [dynamic]^Var_Binding,   // every analyzed variable
     defs:         [dynamic]^Def,           // every analyzed variable's definitions
     reaching:     map[Node_Id][]^Def,      // a use (a var operation) → the definitions that may reach it
-    starts:       map[Node_Id]i32,         // each run's first operation → the run
+
     want_control: bool,                    // `control`: guards too (post-dominators)
     order:        int,
 }
@@ -151,7 +151,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     node, ok := g.scope_node[f.ft]
     if !ok { return }   // a template: only its instances have code
     f.node = node
-    if len(du.starts) == 0 { du.starts = graph_run_starts(g) }
+
 
     // Its variables, and the synthetic locals seen through: its own subtree,
     // less the subtrees of what it defines.
@@ -175,7 +175,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     }
 
     // Its runs: its code's, then each defer block's, entered by a run defer.
-    f.main = graph_code_runs(g, du.starts, node, &f.runs)
+    f.main = graph_code_runs(g, node, &f.runs)
 
     // Its definitions: a param's entry, then each statement's writes.
     def_of: map[[2]i32]^Def   // (variable, statement) → its definition
@@ -270,7 +270,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
                     if e.kind != .Runs { continue }
                     for e2 in graph_out(g, e.to) {
                         if e2.kind != .Then { continue }
-                        if di, ok := run_at[du.starts[e2.to]]; ok {
+                        if di, ok := run_at[g.run_starts[e2.to]]; ok {
                             if merge_into(in_state[di], state) || !entered[di] { entered[di] = true; append(&todo, di) }
                         }
                     }
@@ -279,7 +279,7 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         }
         for e in graph_out(g, ops[len(ops) - 1]) {
             if e.kind != .Then { continue }
-            si, ok := run_at[du.starts[e.to]]
+            si, ok := run_at[g.run_starts[e.to]]
             if !ok { continue }
             if merge_into(in_state[si], state) || !entered[si] { entered[si] = true; append(&todo, si) }
         }
@@ -695,7 +695,6 @@ du_return_deps :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> []int {
 du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     f.guarded = true
     g := &checked.graph
-    du := &checked.du
     n := f.main
     if n == 0 { return }
     exit := n
@@ -710,7 +709,7 @@ du_guards :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         if g.op[last] == .Return { append(&succ[i], exit); continue }
         for e in graph_out(g, last) {
             if e.kind != .Then { continue }
-            j, ok := at[du.starts[e.to]]
+            j, ok := at[g.run_starts[e.to]]
             if !ok { continue }
             if g.op[last] == .Branch && g.written[last] == .Implied {
                 // A `?`: only the path that goes on.

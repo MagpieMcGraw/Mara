@@ -115,7 +115,7 @@ Codegen :: struct {
     release: bool,   // -release build mode — -O3; asserts stay ON
     no_assert: bool, // -no assert — compile asserts out entirely
     // Every function's code comes from the program graph (llvm.odin).
-    run_starts:  map[Node_Id]i32,   // the graph's runs by first operation, read-only
+
     // Inside an assert/crash fail block (native builds): print-shaped
     // emissions route through __mara_tee_printf, which mirrors the message
     // into crash.txt (runtime/mara_crash.c). Off everywhere else.
@@ -678,7 +678,7 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.shared             = task.shared_mode
     g.release            = task.main_g.release
     g.no_assert          = task.main_g.no_assert
-    g.run_starts         = task.main_g.run_starts
+
     g.context_enabled    = task.main_g.context_enabled
     g.arena_alloc_name   = task.main_g.arena_alloc_name
     g.arena_mark_name    = task.main_g.arena_mark_name
@@ -1661,7 +1661,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.shared = shared
     g.release = release
     g.no_assert = no_assert
-    g.run_starts = graph_run_starts(&checked.graph)
+
 
     // g.out is now a swap target driven by switch_to_module; each per-module
     // buffer is pre-sized to 4MB on first creation. No global pre-size here.

@@ -83,7 +83,7 @@ llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
     node, ok := pg.scope_node[cf]
     if !ok || (pg.kind[node] != .Fun && pg.kind[node] != .Struct) { codegen_fatal(g, {}, CODE_GRAPH_NO_SCOPE, cf.name) }
     e := Llvm{g = g, pg = pg, ft = cf, node = node, ctor = pg.kind[node] == .Struct, main = main}
-    e.own = graph_code_runs(pg, g.run_starts, node, &e.runs)
+    e.own = graph_code_runs(pg, node, &e.runs)
     if e.own == 0 { codegen_fatal(g, {}, CODE_GRAPH_NO_CODE, cf.name) }
     size := int(pg.last[node] - node) + 1
     e.value = make([]string, size)
@@ -175,7 +175,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     // Entry first, then the runs as they were built; each gets its label, by
     // its place in the fun (not the program's: one fun's IR doesn't change
     // when another's runs do).
-    entry := g.run_starts[llvm_first_then(pg, e.node)]
+    entry := pg.run_starts[llvm_first_then(pg, e.node)]
     for r, i in e.runs {
         if r == entry { e.runs[0], e.runs[i] = e.runs[i], e.runs[0] }
     }
@@ -724,7 +724,7 @@ llvm_dominates :: proc(e: ^Llvm, a, b: int) -> bool {
         ops := graph_run(pg, int(e.runs[i]))
         for edge in graph_out(pg, ops[len(ops) - 1]) {
             if edge.kind != .Then { continue }
-            j, ok := at[e.g.run_starts[edge.to]]
+            j, ok := at[e.pg.run_starts[edge.to]]
             if !ok || seen[j] || j == a { continue }
             seen[j] = true
             append(&todo, j)
@@ -1415,7 +1415,7 @@ llvm_target :: proc(e: ^Llvm, op: Node_Id, k: int) -> i32 {
     n := 0
     for edge in graph_out(e.pg, op) {
         if edge.kind != .Then { continue }
-        if n == k { return e.g.run_starts[edge.to] }
+        if n == k { return e.pg.run_starts[edge.to] }
         n += 1
     }
     return -1
@@ -2498,12 +2498,12 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
     if d == NO_NODE { return false }
     runs: [dynamic]i32
     runs.allocator = context.temp_allocator
-    body := runs[:graph_code_runs(pg, g.run_starts, d, &runs)]
+    body := runs[:graph_code_runs(pg, d, &runs)]
     llvm_sort_runs(body[1:])
     for r in body {
         for o in graph_run(pg, int(r)) {
             for edge in graph_out(pg, o) {
-                if edge.kind == .Then && g.run_starts[edge.to] == body[0] { return false }   // its entry a loop's head: later
+                if edge.kind == .Then && pg.run_starts[edge.to] == body[0] { return false }   // its entry a loop's head: later
             }
         }
     }

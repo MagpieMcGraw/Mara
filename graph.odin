@@ -115,9 +115,11 @@ Program_Graph :: struct {
     operands:      [dynamic]Operand,
     operand_first: [dynamic]i32,
 
-    // Run r is run_ops[run_first[r] : run_first[r+1]], in the order it runs.
-    run_ops:   [dynamic]Node_Id,
-    run_first: [dynamic]i32,
+    // Run r is run_ops[run_first[r] : run_first[r+1]], in the order it runs;
+    // run_starts is each run by its first operation (where a Then edge lands).
+    run_ops:    [dynamic]Node_Id,
+    run_first:  [dynamic]i32,
+    run_starts: map[Node_Id]i32,
 
     // One edge table, sorted by `from`. A node's outgoing edges are
     // edges[out_first[id] : out_first[id+1]]; its incoming ones are the edge
@@ -204,18 +206,19 @@ graph_run :: proc(g: ^Program_Graph, r: int) -> []Node_Id {
     return g.run_ops[g.run_first[r]:g.run_first[r + 1]]
 }
 
-// Each run's first operation → the run: where a Then edge lands.
-graph_run_starts :: proc(g: ^Program_Graph) -> map[Node_Id]i32 {
-    starts := make(map[Node_Id]i32, len(g.run_first))
+// Each run by its first operation (g.run_starts), once the runs are final.
+@(private="file")
+graph_index_runs :: proc(g: ^Program_Graph) {
+    g.run_starts = make(map[Node_Id]i32, len(g.run_first))
     for r in 0 ..< len(g.run_first) - 1 {
-        if ops := graph_run(g, r); len(ops) > 0 { starts[ops[0]] = i32(r) }
+        if ops := graph_run(g, r); len(ops) > 0 { g.run_starts[ops[0]] = i32(r) }
     }
-    return starts
 }
 
 // Whether a fun or struct's code can reach its end without a return: the
 // synthetic return that ends its body, in a run its entry reaches.
-graph_falls_off :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id) -> bool {
+graph_falls_off :: proc(g: ^Program_Graph, scope: Node_Id) -> bool {
+    starts := g.run_starts
     seen: map[i32]bool
     defer delete(seen)
     todo: [dynamic]i32
@@ -236,7 +239,8 @@ graph_falls_off :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_
 // A fun's (or struct's) code as runs: those its entry reaches, then those of
 // each defer block a run defer in them runs. Returns how many are its own
 // code's; each list keeps a run's successors after it.
-graph_code_runs :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32) -> (own: int) {
+graph_code_runs :: proc(g: ^Program_Graph, scope: Node_Id, out: ^[dynamic]i32) -> (own: int) {
+    starts := g.run_starts
     seen: map[i32]bool
     defer delete(seen)
     reach :: proc(g: ^Program_Graph, starts: map[Node_Id]i32, scope: Node_Id, out: ^[dynamic]i32, seen: ^map[i32]bool) {
@@ -622,6 +626,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
     for e in g.edges { if e.to != NO_NODE { g.edges[kept] = e; kept += 1 } }
     resize(&g.edges, kept)
     graph_index_edges(g)
+    graph_index_runs(g)
     graph_fold_uses(g, checked)
     graph_table_names(b)
     when ODIN_DEBUG {

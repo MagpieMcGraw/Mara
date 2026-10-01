@@ -157,7 +157,7 @@ Esc :: struct {
 Esc_Pass :: struct {
     c:        ^Checker,
     graph:    ^Program_Graph,
-    starts:   map[Node_Id]i32,
+
     reported: []bool,
     diags:    [dynamic]Esc_Diag,
 }
@@ -175,7 +175,7 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     g_esc = Esc_Pass{
         c        = c,
         graph    = &checked.graph,
-        starts   = graph_run_starts(&checked.graph),
+
         reported = make([]bool, len(cg.nodes)),
     }
     cg_bottom_up(cg, esc_summary_transfer)
@@ -221,7 +221,7 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
     node, has := g.scope_node[ft]
     if !has { return {}, false }
     e := Esc{c = g_esc.c, cg = cg, g = g, ft = ft, node = node, ctor = g.kind[node] == .Struct, report = report}
-    e.main = graph_code_runs(g, g_esc.starts, node, &e.runs)
+    e.main = graph_code_runs(g, node, &e.runs)
     if len(e.runs) == 0 { return {}, false }
     if len(ft.params) > ESC_MAX_PARAMS {
         fmt.panicf("escape analysis: %s has %d parameters (max %d)", ft.name, len(ft.params), ESC_MAX_PARAMS)
@@ -377,7 +377,7 @@ esc_run :: proc(e: ^Esc, ri: int, state: []Esc_Roots) {
     last := ops[len(ops) - 1]
     for edge in graph_out(g, last) {
         if edge.kind != .Then { continue }
-        if si, ok := e.run_at[g_esc.starts[edge.to]]; ok { esc_flow(e, si, state) }
+        if si, ok := e.run_at[g.run_starts[edge.to]]; ok { esc_flow(e, si, state) }
     }
     // The end of a defer's block: what it leaves joins back in where it ran.
     if g.op[last] == .Return && ri >= e.main {
@@ -410,7 +410,7 @@ esc_run_defer :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
             if !slice.contains(users[:], ri) { append(users, ri) }
             for entry in graph_out(g, d) {
                 if entry.kind != .Then { continue }
-                if si, ok := e.run_at[g_esc.starts[entry.to]]; ok { esc_flow(e, si, state) }
+                if si, ok := e.run_at[g.run_starts[entry.to]]; ok { esc_flow(e, si, state) }
             }
         }
         if exit, ok := e.defer_exit[d]; ok { esc_merge(state, exit) }

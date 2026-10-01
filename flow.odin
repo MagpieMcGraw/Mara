@@ -34,15 +34,12 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, void_defaul
     stats: Flow_Stats
     // Missing-return reads the program graph's runs, built from a clean check.
     graphed := len(checked.graph.kind) > 0
-    starts: map[Node_Id]i32
-    if graphed { starts = graph_run_starts(&checked.graph) }
-    defer delete(starts)
     if graphed {
         flow_check_unreachable(c, checked)
         flow_check_literal_ranges(c, checked)
         flow_check_unused(c, checked)
-        flow_check_init(c, checked, starts)
-        flow_check_defer_writes(c, checked, starts)
+        flow_check_init(c, checked)
+        flow_check_defer_writes(c, checked)
         flow_check_void(c, checked, void_defaults)
         flow_check_constants(c, checked)
     }
@@ -54,7 +51,7 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, void_defaul
         if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
         if scope_body_is_empty(ft) { continue }
         stats.functions += 1
-        if graphed && flow_missing_return(checked, starts, ft) {
+        if graphed && flow_missing_return(checked, ft) {
             name := ft.source_name if ft.source_name != "" else ft.name
             // Same message + span the inline check used (ft.body_span == s.span).
             check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
@@ -67,13 +64,13 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, void_defaul
 // Missing-return: a non-void function whose first return isn't `any` and whose
 // returns aren't all-err must return on every path: no path through its runs
 // reaches the synthetic return that ends its body (graph_falls_off).
-flow_missing_return :: proc(checked: ^Checked_Program, starts: map[Node_Id]i32, ft: ^Type_Scope) -> bool {
+flow_missing_return :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> bool {
     if len(ft.return_types) == 0 { return false }       // void
     if is_any(ft.return_types[0]) { return false }      // unresolved generic return
     if all_err_returns(ft.return_types) { return false } // all-err can fall off (.Ok fill)
     n, ok := checked.graph.scope_node[ft]
     if !ok { fmt.panicf("missing return: '%s' has no node in the program graph", ft.name) }
-    return graph_falls_off(&checked.graph, starts, n)
+    return graph_falls_off(&checked.graph, n)
 }
 
 // Unreachable code: a statement right after a return, break or continue (the
@@ -154,7 +151,7 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
 // or not depending on how the value travels (a copy, or built in place), so
 // it is an error. A value the return computes is no local; a write through a
 // pointer that aliases one is not seen (field-insensitive, like escape).
-flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program, starts: map[Node_Id]i32) {
+flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program) {
     g := &checked.graph
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
@@ -166,7 +163,7 @@ flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program, starts: 
         node, ok := g.scope_node[ft]
         if !ok || g.kind[node] != .Fun { continue }
         clear(&runs)
-        own := graph_code_runs(g, starts, node, &runs)
+        own := graph_code_runs(g, node, &runs)
         for r in runs[:own] {
             ops := graph_run(g, int(r))
             ret := ops[len(ops) - 1]
@@ -178,7 +175,7 @@ flow_check_defer_writes :: proc(c: ^Checker, checked: ^Checked_Program, starts: 
                 for edge in graph_out(g, ops[k]) {
                     if edge.kind != .Runs { continue }
                     clear(&block)
-                    graph_code_runs(g, starts, edge.to, &block)
+                    graph_code_runs(g, edge.to, &block)
                     flow_defer_writes(c, g, ret, block[:], &seen)
                 }
             }
@@ -270,7 +267,7 @@ Init :: struct {
     seen:  ^map[Span]bool,       // reads reported (generic instances share spans)
 }
 
-flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program, starts: map[Node_Id]i32) {
+flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program) {
     g := &checked.graph
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
@@ -279,15 +276,16 @@ flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program, starts: map[Node
         if _, src := ft.origin.(Origin_Source); !src { continue }
         node, ok := g.scope_node[ft]
         if !ok { continue }
-        flow_init_fun(c, g, starts, node, &seen)
+        flow_init_fun(c, g, node, &seen)
     }
 }
 
 @(private="file")
-flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, starts: map[Node_Id]i32, node: Node_Id, seen: ^map[Span]bool) {
+flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[Span]bool) {
+    starts := g.run_starts
     runs: [dynamic]i32
     defer delete(runs)
-    graph_code_runs(g, starts, node, &runs)
+    graph_code_runs(g, node, &runs)
     if len(runs) == 0 { return }
 
     s := Init{g = g, c = c, seen = seen}
