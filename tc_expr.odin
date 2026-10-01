@@ -13,10 +13,8 @@ tc_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want := Fuse_Want.Value, w
     b := tc_building(k)
     ask := want if b != nil else .None
     // A compound assignment's target, read in its operation: through the
-    // place already built. (Not in a generic's instance: the old checker
-    // checked a clone of its body, whose operation held a copy of the
-    // target, walked again — the same IR, until the switch.)
-    if ask != .None && n == k.compound.target && n != 0 && k.subst == nil {
+    // place already built.
+    if ask != .None && n == k.compound.target && n != 0 {
         t := tc_check(k, n, env)
         span := tree_span(k.t, n)
         if ask == .Value { return t, {v = graph_read(b, k.compound.place, t, span), ok = true} }
