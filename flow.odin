@@ -405,12 +405,9 @@ flow_can_be_unset :: proc(base: Type) -> bool {
 }
 
 // A struct's field that a bare construction leaves unset: a pointer or a
-// slice (not a distinct slice that sizes its own storage).
+// slice.
 @(private="file")
 flow_field_can_be_unset :: proc(t: Type) -> bool {
-    if dt, ok := t.(^Type_Distinct); ok {
-        if _, sl := dt.base_type.(^Type_Slice); sl && distinct_is_sized(dt) { return false }
-    }
     #partial switch _ in distinct_base(t) {
     case ^Type_Ptr, ^Type_Slice: return true
     }

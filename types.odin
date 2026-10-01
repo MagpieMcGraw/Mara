@@ -141,11 +141,6 @@ Scope_Body :: struct {
     is_union_variant:  bool,
     union_variant_tag: i64,
 
-    backing_bytes:  int,     // size of hidden trailing buffer for sized-slice fields' backing
-                             // storage. Computed by codegen at register-struct time so the
-                             // backing rides along with the struct on sret/memcpy — slice
-                             // headers point at &struct.backing[offset] using the struct's
-                             // own address (correct under RVO; stale after a downstream copy).
 
     // Its definition in the flat tree (a Fun_Def, a Struct_Def). 0 for types
     // with no single source statement (foreign decls, the synthetic Program
@@ -306,11 +301,6 @@ scope_body_is_empty :: proc(ts: ^Type_Scope) -> bool {
     return ts.node == 0 || len(scope_view(&build_tree, ts.node).body) == 0
 }
 
-// Whether a distinct slice type sizes its own storage (`String ::
-// distinct [:128]utf8`: its default capacity).
-distinct_is_sized :: proc(dt: ^Type_Distinct) -> bool {
-    return dt.default_cap > 0
-}
 
 // Primary return type — the only return for single-return funs, the first for
 // multi-return funs, nil for void. Multi-return callers should iterate the list
@@ -499,7 +489,7 @@ Type_Distinct :: struct {
     home_package:     string,  // owning module flat name (see Scope_Body.home_package)
     span:             Span,    // declaring statement's span (diagnostics / `mara ask` locations)
     base_type:        Type,    // the underlying type (transparent at codegen level)
-    default_cap:      int,     // a sized-slice alias's capacity when a declaration omits `(N)`; 0: none
+
     is_alias:         bool,    // true for `Name :: type(T)` — transparent in types_equal; false for `distinct T` — nominal
 }
 

@@ -1776,9 +1776,6 @@ struct_byte_size_sd :: proc(sd: ^Scope_Body, checked: ^Checked_Program = nil) ->
         }
         offset += elem_byte_size(ft, checked)
     }
-    // Hidden trailing buffer for sized-slice fields' backing storage.
-    // Always byte-typed so no alignment bump needed.
-    offset += sd.backing_bytes
     // Pad to struct alignment (skipped for #packed — alignment is 1)
     if !sd.is_packed && offset % max_align != 0 {
         offset += max_align - (offset % max_align)
@@ -1898,13 +1895,6 @@ register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
     for &f in sd.fields {
         append(&field_types, field_ir_type(&f))
     }
-    // Hidden trailing buffer holds backing storage for any sized-slice fields
-    // (direct or in fixed-array fields). Sized as i8 bytes regardless of slice
-    // elem type — alignment is owner's problem once slice headers point at offsets.
-    sd.backing_bytes = compute_struct_backing(g, sd)
-    if sd.backing_bytes > 0 {
-        append(&field_types, fmt.tprintf("[%d x i8]", sd.backing_bytes))
-    }
     fields_joined := strings.join(field_types[:], ", ")
     // #packed → LLVM packed struct `<{ ... }>` (no inter-field padding), so
     // field indices map 1:1 to byte offsets and #big_endian reads of on-disk
@@ -1918,26 +1908,6 @@ register_struct_decl_sd :: proc(g: ^Codegen, sd: ^Scope_Body) {
     append(&g.struct_decls, type_decl)
 }
 
-// Sum of bytes needed to back this struct's own sized-slice fields.
-// Direct field: alloc_cap * elem_bytes. Fixed-array field [N]Slice: N * that.
-// Nested struct fields have their backing in their own layout — not counted here.
-compute_struct_backing :: proc(g: ^Codegen, sd: ^Scope_Body) -> int {
-    total := 0
-    for &f in sd.fields {
-        if cap_n, sl, ok := sized_slice_info(g, f.type_); ok {
-            elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
-            total += cap_n * elem_bytes
-            continue
-        }
-        if fa, fa_ok := f.type_.(^Type_Fixed_Array); fa_ok {
-            if cap_n, sl, ok := sized_slice_info(g, fa.elem); ok {
-                elem_bytes := elem_byte_size(llvm_type_from_checker(sl.elem), g.checked)
-                total += fa.size * cap_n * elem_bytes
-            }
-        }
-    }
-    return total
-}
 
 register_struct_decl :: proc(g: ^Codegen, st: ^Type_Scope) {
     register_struct_decl_sd(g, &st.sd)

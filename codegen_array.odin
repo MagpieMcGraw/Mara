@@ -771,16 +771,6 @@ parse_array_ir_type :: proc(ir_type: string) -> (cap: int, elem: string, ok: boo
     return n, elem_str, true
 }
 
-// If `t` is a sized-slice type (distinct alias wrapping a slice with a default
-// cap, e.g. `String :: type([, 0]utf8(128))`), return (cap_n, slice, true).
-sized_slice_info :: proc(g: ^Codegen, t: Type) -> (int, ^Type_Slice, bool) {
-    dt, is_distinct := t.(^Type_Distinct)
-    if !is_distinct { return 0, nil, false }
-    sl, is_slice := dt.base_type.(^Type_Slice)
-    if !is_slice { return 0, nil, false }
-    if !distinct_is_sized(dt) { return 0, nil, false }
-    return dt.default_cap, sl, true
-}
 
 // A new `.len` for the slice header at `hdr` is within 0 ..= its cap, or the
 // program stops.

@@ -344,7 +344,7 @@ tc_generic_base :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Typ
     if len(tree_list(t, t.a[n])) == 1 {
         flat := resolve_type_name(k.c, name, "", env)
         if dt, ok := k.table.distinct_types[flat]; ok && is_slice_type(dt.base_type) {
-            tc_unsupported(k, n, "a sized slice alias")
+            tc_error(k, tree_span(t, n), TYPE_SLICE_ALIAS_CAPACITY)
             return Type_Error{}
         }
         if st, ok := k.table.structs[flat]; ok { return st }

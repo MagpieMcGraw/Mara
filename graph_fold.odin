@@ -409,7 +409,7 @@ fold_construct :: proc(fo: ^Folder, fc: ^Fold_Code, id: Node_Id, ops: []Operand)
         return true
     }
     n, placed := g.scope_node[ts]
-    if !placed || ts.sd.backing_bytes > 0 { return fold_fail(fo) != nil }
+    if !placed { return fold_fail(fo) != nil }
     code := Fold_Code{self = n, root = dst, width = .Own}
     defer delete(code.values)
     return fold_run(fo, &code, n)

@@ -1,0 +1,14 @@
+module slice_alias_capacity_neg
+//@ expect-fail: a slice's capacity goes on the declaration that allocates it
+
+// A slice type holds no storage of its own, so a type alias can't carry a
+// capacity: `s : [:128]utf8` sizes one declaration's.
+
+use mara.core
+
+Name :: distinct [:128]utf8
+
+main :: fun() {
+	n : Name
+	print(n.len)
+}

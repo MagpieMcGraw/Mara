@@ -3021,7 +3021,7 @@ llvm_scalar :: proc(t: Type) -> bool {
 // An aggregate — a struct, a fixed array, a slice's header, a partial array, a
 // union — is a value handled by its address: a param is a pointer to the
 // caller's, and reading one yields where it is; a copy re-points the partial
-// arrays in it at its own elements. (One holding a sized slice's backing: later.)
+// arrays in it at its own elements.
 @(private="file")
 llvm_aggregate :: proc(t: Type) -> bool {
     return llvm_struct(t) != nil || llvm_array(t) != nil || llvm_slice(t) != nil || llvm_partial(t) != nil || llvm_union(t) != nil
@@ -3051,7 +3051,7 @@ llvm_union :: proc(t: Type) -> ^Type_Union {
 llvm_partial :: proc(t: Type) -> ^Type_Partial_Array {
     if t == nil || is_infer(t) { return nil }
     pa, ok := distinct_base(t).(^Type_Partial_Array)
-    if !ok || pa.elem == nil || is_infer(pa.elem) || llvm_has_backing(pa.elem) { return nil }
+    if !ok || pa.elem == nil || is_infer(pa.elem) { return nil }
     return pa
 }
 
@@ -3088,7 +3088,6 @@ llvm_header_field :: proc(name: string) -> int {
 llvm_struct :: proc(t: Type) -> ^Scope_Body {
     if t == nil { return nil }
     sd := as_struct_body(distinct_base(t))   // a distinct struct's is its base's
-    if sd == nil || llvm_has_backing(t) { return nil }
     return sd
 }
 
@@ -3097,23 +3096,8 @@ llvm_struct :: proc(t: Type) -> ^Scope_Body {
 llvm_array :: proc(t: Type) -> ^Type_Fixed_Array {
     if t == nil || is_infer(t) { return nil }
     fa, ok := distinct_base(t).(^Type_Fixed_Array)
-    if !ok || llvm_has_backing(t) || (!llvm_scalar(fa.elem) && !llvm_aggregate(fa.elem)) { return nil }
+    if !ok || (!llvm_scalar(fa.elem) && !llvm_aggregate(fa.elem)) { return nil }
     return fa
-}
-
-// Whether a value holds a sized slice's backing storage (later).
-@(private="file")
-llvm_has_backing :: proc(t: Type) -> bool {
-    #partial switch v in distinct_base(t) {
-    case ^Type_Partial_Array: return llvm_has_backing(v.elem)
-    case ^Type_Fixed_Array:   return llvm_has_backing(v.elem)
-    case ^Type_Scope:
-        sd := as_struct_body(v)
-        if sd == nil { return false }
-        if sd.backing_bytes > 0 { return true }
-        for &f in sd.fields { if llvm_has_backing(f.type_) { return true } }
-    }
-    return false
 }
 
 // Whether two types lower to one IR type. An unresolved one matches nothing:
