@@ -7,6 +7,106 @@ import "core:strings"
 // and what it built (tc_expr). `want` is what its use asks of it — its value,
 // its place, either, or to be built into `dest`.
 
+// What checking an expression is to build: its value; its place — a
+// variable, a field, an element; or its place when it has one, else its
+// value (its consumer decides: a view, a read); or it built into a
+// destination.
+Build_Want :: enum u8 { None, Value, Place, Either, Into }
+
+// What the checker built for an expression: a value, or a place — or
+// nothing, built into the destination it was given (.Into: else, as .Either).
+Built :: struct {
+    v:     Operand,
+    place: bool,
+    ok:    bool,
+    into:  bool,
+    temp:  bool,   // built in a temporary, as storage that holds a value is written (read)
+}
+
+// Whether what was built is a text constant: its global (a table's is no
+// partial array; a string literal is built as one of its own).
+built_is_text_constant :: proc(b: ^Graph_Builder, r: Built) -> bool {
+    if b == nil || r.v.op == NO_NODE { return false }
+    op := r.v.op
+    if !r.place && b.g.op[op] == .Read { op = graph_built_operands(b, op)[0].op }
+    return op != NO_NODE && b.g.op[op] == .Global && is_partial_array(b.g.type_[op])
+}
+
+// A dispatch's array literal argument: its position, its nodes, its type.
+Build_Literal_Arg :: struct {
+    arg, from, to: int,
+    t:             Type,
+}
+
+// Whether a function's param would view an argument that is an array's
+// value (its place, or a temporary) — a slice over it.
+build_views_value :: proc(ft: ^Type_Scope, array_values: []bool) -> bool {
+    for is_value, i in array_values {
+        if !is_value || i >= len(ft.params) { continue }
+        if _, to_slice := distinct_base(ft.params[i].type_).(^Type_Slice); to_slice { return true }
+    }
+    return false
+}
+
+// Whether a use of a `from` as a `to` views it: a fixed array as a slice; a
+// partial array, or a pointer to one, as a slice's header.
+build_views :: proc(to, from: Type) -> bool {
+    if to == nil || from == nil { return false }
+    _, to_ptr := distinct_base(to).(^Type_Ptr)
+    _, from_ptr := distinct_base(from).(^Type_Ptr)
+    if to_ptr == from_ptr && graph_header_of(to) && graph_partial_of(from) { return true }
+    _, to_slice := distinct_base(to).(^Type_Slice)
+    _, from_array := distinct_base(from).(^Type_Fixed_Array)
+    return to_slice && from_array
+}
+
+// The type of the temporary a value is built in before it goes to `d`: the
+// destination's, once settled; nil leaves it the value's own.
+build_temp_type :: proc(d: Dest) -> Type {
+    if d.type_ != nil && !is_infer(d.type_) { return d.type_ }
+    return nil
+}
+
+// The type of a written field that is no struct's: a header's len, cap or
+// ptr; an array's swizzle.
+build_target_field_type :: proc(obj_type: Type, field: string) -> Type {
+    t := obj_type
+    if pt, ok := t.(^Type_Ptr); ok { t = pt.elem }
+    t = distinct_base(t)
+    elem: Type
+    #partial switch v in t {
+    case ^Type_Slice:         elem = v.elem
+    case ^Type_Partial_Array: elem = v.elem
+    case ^Type_Fixed_Array:
+        if !is_swizzle_field(field, v.size) { return nil }
+        if len(field) == 1 { return v.elem }
+        return new_clone(Type_Fixed_Array{size = len(field), elem = v.elem})
+    case:
+        return nil
+    }
+    switch field {
+    case "len", "cap": return slice_header_width_type
+    case "ptr":        return new_clone(Type_Ptr{elem = elem})
+    }
+    return nil
+}
+
+// An index at the header's width: an enum's value is its tag, taken as a
+// number; a narrower number widens.
+build_index_value :: proc(b: ^Graph_Builder, at: Operand, t: Type, span: Span) -> Operand {
+    if _, is_enum := distinct_base(t).(^Type_Enum); is_enum {
+        return graph_op_value(b, .Cast, .Implied, span, slice_header_width_type, type_name(slice_header_width_type), at)
+    }
+    return graph_build_widen(b, at, span, {to = slice_header_width_type})
+}
+
+// A span of bytes read as its destination's type: the bytes' place, built
+// first, and whether it is read as a register value (its start only).
+Built_Span_Read :: struct {
+    op:     Node_Id,
+    scalar: bool,
+}
+
 tc_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want := Build_Want.Value, w := Written.Explicit,
                 dest := Dest{}, temp := false, temp_span := Span{}) -> (Type, Built) {
     if n == 0 { return Type_Error{}, {} }
