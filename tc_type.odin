@@ -13,8 +13,9 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         return tc_primitive(k, tc_name(k, n), span)
     case .Type_Name:
         parts := tree_token_list(t, t.a[n])
-        if len(parts) != 1 {
-            tc_unsupported(k, n, "a qualified type name")
+        if len(parts) > 1 {
+            if qt := tc_qualified_type(k, parts, env); qt != nil { return qt }
+            tc_error(k, span, TYPE_UNKNOWN_TYPE, tc_dotted(parts))
             return Type_Error{}
         }
         name := tc_text(parts[0])
@@ -197,7 +198,7 @@ tc_comptime_int :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> (i64, bool) {
     return 0, false
 }
 
-// A number as written — or an operation of numbers — its value: no
+// A number as written â or an operation of numbers â its value: no
 // constant's name (a span's bounds, its size checked when they are numbers).
 tc_number_int :: proc(k: ^TC, n: Tree_Id) -> (int, bool) {
     t := k.t
@@ -235,4 +236,73 @@ tc_number_int :: proc(k: ^TC, n: Tree_Id) -> (int, bool) {
         }
     }
     return 0, false
+}
+
+// `q.T`: a module's type (q its alias), a union's variant's struct, a type a
+// struct holds (`Outer.Inner.Innermost`) or a method of it (as a fun's
+// type), a variable's struct's method; nil when it names none.
+tc_qualified_type :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope) -> Type {
+    alias := tc_text(parts[0])
+    rest := tc_dotted(parts[1:])
+    if flat := resolve_type_name(k.c, rest, alias, env); flat != "" {
+        if st, ok := k.table.structs[flat]; ok { return st }
+        if st, ok := k.table.funs[flat]; ok { return st }
+        if ut, ok := k.table.unions[flat]; ok { return ut }
+        if et, ok := k.table.enums[flat]; ok { return et }
+        if dt, ok := k.table.distinct_types[flat]; ok { return dt }
+    }
+    alias_flat := resolve_type_name(k.c, alias, "", env)
+    if ut, ok := k.table.unions[alias_flat]; ok {
+        if key, has := ut.variant_structs[rest]; has {
+            if st, found := k.table.structs[key]; found { return st }
+            if st, found := k.table.funs[key]; found { return st }
+        }
+    }
+    parent: ^Scope_Body
+    if st, ok := k.table.structs[alias_flat]; ok {
+        parent = &st.sd
+    } else if st, ok := k.table.funs[alias_flat]; ok {
+        parent = &st.sd
+    } else if at, ok := type_env_get(env, alias); ok {
+        parent = as_scope_body(at)   // (a parent a fun's body defines)
+    }
+    if parent != nil {
+        // (Through each type it holds, as far as they go — registered as
+        // they are named, before their holders' bodies are checked.)
+        tc_scope_defs(k, parent)
+        i := 1
+        for ; i < len(parts) - 1; i += 1 {
+            seg, has := parent.types[tc_text(parts[i])]
+            if !has { break }
+            next := as_scope_body(seg)
+            if next == nil { break }
+            parent = next
+            tc_scope_defs(k, parent)
+        }
+        last := tc_dotted(parts[i:])
+        if inner, has := parent.types[last]; has { return inner }
+        if fn, has := parent.functions[last]; has && fn != nil { return fn }
+    }
+    if vt, ok := type_env_get(env, alias); ok {
+        if sd := as_scope_body(vt); sd != nil {
+            if fn, has := sd.functions[rest]; has && fn != nil { return fn }
+        }
+    }
+    return nil
+}
+
+// Name parts, as written: `a.b.c`.
+tc_dotted :: proc(parts: []Token_Id) -> string {
+    sb := strings.builder_make(context.temp_allocator)
+    for p, i in parts {
+        if i > 0 { strings.write_byte(&sb, '.') }
+        strings.write_string(&sb, tc_text(p))
+    }
+    return strings.to_string(sb)
+}
+
+// A scope's own types and funs, registered (once): a struct's, named in a
+// type before its body is checked.
+tc_scope_defs :: proc(k: ^TC, sd: ^Scope_Body) {
+    if i, ok := k.scope_of[sd_type_scope(sd)]; ok { tc_register_defs(k, k.scopes[i]) }
 }

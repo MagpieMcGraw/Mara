@@ -37,6 +37,7 @@ byte_view_negative
 byte_view_wide_neg
 byte_views
 bytewrite_neg
+cachetest
 callgraph_probe
 capsize
 capsize_neg
@@ -148,12 +149,14 @@ multiret
 multiret_struct_lit
 multistmt
 negtrap
+nestdeep
 nested_array_literals
 nested_broadcast
 nested_fun_ctor
 nested_fwd_field
 nested_fwd_fun
 nested_struct_fields
+nestty
 nrvo_zero
 operator_calls
 pa_array_stamp

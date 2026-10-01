@@ -196,7 +196,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     void_type.elem = Type_Any{}
     type_env_set(main_mod, "void", void_type)
 
-    k.pkg = main_package
+    k.pkg, c.current_package = main_package, main_package
     main := tc_check_module_files(k, files, main_mod)
 
     tc_extract(k, main, main_package, is_main = true)
