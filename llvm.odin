@@ -58,7 +58,7 @@ Llvm :: struct {
     out_user: map[Operand]Node_Id,      // each output's user, as `user` is each operation's (-2: several)
     update:  map[Node_Id]bool,          // a call updating its destination in place (llvm_in_place_updates)
     alias:   map[Node_Id]Node_Id,       // an operation that is another, computed already: its value that one's
-    why:     Node_Id,             // where it stopped, when it can't lower something (llvm_decline)
+    stop:     Node_Id,             // where it stopped, when it can't lower something (llvm_unlowered)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
 }
@@ -93,8 +93,8 @@ llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
     // first needs it, the rest into the body's; then the `define`, the entry's
     // field addresses and allocas, and the body.
     begin_alloca_hoist(g)
-    e.why = node
-    if !llvm_emit(&e) { llvm_decline(&e) }
+    e.stop = node
+    if !llvm_emit(&e) { llvm_unlowered(&e) }
     g.hoist_allocas = false
     if !main {
         strings.write_string(&g.out, e.head)
@@ -108,13 +108,13 @@ llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
 // What the graph's emitter doesn't lower: an error at the operation or
 // variable it stopped at (the fun itself for its signature).
 @(private="file")
-llvm_decline :: proc(e: ^Llvm) -> ! {
+llvm_unlowered :: proc(e: ^Llvm) -> ! {
     pg := e.pg
-    at := e.why
+    at := e.stop
     what := graph_kind_word(pg.kind[at])
     if pg.kind[at] == .Op { what = graph_op_word(pg.op[at]) }
     note := fmt.tprintf(" (%s)", e.note) if e.note != "" else ""
-    codegen_fatal(e.g, pg.origin[at], CODE_GRAPH_DECLINED, e.ft.name, what, pg.name[at], note)
+    codegen_fatal(e.g, pg.origin[at], CODE_GRAPH_UNLOWERED, e.ft.name, what, pg.name[at], note)
 }
 
 @(private="file")
@@ -195,7 +195,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         case .Fun, .Struct, .Union, .Enum: id = e.pg.last[id]; continue   // (another scope's)
         }
         if e.pg.kind[id] != .Local || !routes_to_arena(e.pg.type_[id]) || id in e.arena || id in e.in_place || id in e.carved { continue }
-        if e.value[id - e.node] != e.slot { e.why = id; return false }
+        if e.value[id - e.node] != e.slot { e.stop = id; return false }
     }
     for r, i in e.runs[:e.own] {   // (a defer block's: where it runs, llvm_run_defer)
         if i > 0 { emit_label(g, e.label[r]) }
@@ -203,7 +203,7 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
         for op in graph_run(pg, int(r)) {
             if op in e.ahead { delete_key(&e.ahead, op); continue }   // done already
             if d, is := e.alias[op]; is { e.value[op - e.node] = e.value[d - e.node]; continue }
-            e.why = op
+            e.stop = op
             if !llvm_op(e, op) { return false }
         }
     }
@@ -235,7 +235,7 @@ llvm_sort_runs :: proc(runs: []i32) {
 llvm_variables :: proc(e: ^Llvm) -> bool {
     pg := e.pg
     for id := e.node + 1; id <= pg.last[e.node]; id += 1 {
-        e.why = id
+        e.stop = id
         #partial switch pg.kind[id] {
         case .Fun, .Struct, .Union, .Enum:
             id = pg.last[id]
@@ -2525,7 +2525,7 @@ llvm_run_defer :: proc(e: ^Llvm, op: Node_Id) -> bool {
                 continue
             }
             if o in e.ahead { delete_key(&e.ahead, o); continue }
-            e.why = o
+            e.stop = o
             if !llvm_op(e, o) { return false }
         }
     }
@@ -3099,7 +3099,7 @@ llvm_array :: proc(t: Type) -> ^Type_Fixed_Array {
 }
 
 // Whether two types lower to one IR type. An unresolved one matches nothing:
-// the fun is declined rather than guessed at.
+// the fun is refused rather than guessed at.
 @(private="file")
 llvm_same_type :: proc(a, b: Type) -> bool {
     if a == nil || b == nil || is_infer(a) || is_infer(b) { return false }

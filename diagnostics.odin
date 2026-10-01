@@ -442,7 +442,7 @@ CODE_CANNOT_TAKE_ADDRESS_EXPRESSION :: "cannot take the address of this expressi
 CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP :: "cannot take the address of a temporary slice — `buf[a:b]` builds a fresh slice header with no address to point at. To pass it to a `^[]T` parameter, bind it first (`s := buf[a:b]; f(&s)`), or — if the callee only reads it — make the parameter `[]T` and pass the slice directly (no `&`)"
 CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN :: "format string has more `%%` placeholders than args"
 CODE_PRINT_UNSUPPORTED_VALUE :: "print: no print rule for a value of type %s"
-CODE_GRAPH_DECLINED :: "can't lower '%s' from the program graph: its %s '%s'%s"
+CODE_GRAPH_UNLOWERED :: "can't lower '%s' from the program graph: its %s '%s'%s"
 CODE_GRAPH_NO_SCOPE :: "'%s' has no scope in the program graph"
 CODE_GRAPH_NO_CODE :: "'%s' has no code in the program graph"
 CODE_TEXT_LONGER_THAN_ARRAY :: "text of %d bytes into an array of %d"

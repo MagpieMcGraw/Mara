@@ -2008,6 +2008,19 @@ Built_Span_Read :: struct {
     scalar: bool,
 }
 
+// The element type indexing a value of type `t` yields — through one pointer,
+// as indexing auto-derefs; nil when `t` isn't indexable.
+index_elem_type :: proc(t: Type) -> Type {
+    bt := distinct_base(t)
+    if p, ok := bt.(^Type_Ptr); ok { bt = distinct_base(p.elem) }
+    #partial switch v in bt {
+    case ^Type_Slice:         return v.elem
+    case ^Type_Fixed_Array:   return v.elem
+    case ^Type_Partial_Array: return v.elem
+    }
+    return nil
+}
+
 // Resolve a field name on a struct, searching direct fields first, then
 // recursively into using-marked embedded struct fields.
 // Returns the field type, or nil if not found.

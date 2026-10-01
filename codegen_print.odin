@@ -5,16 +5,16 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Expression codegen
+// What the program says: print's lowering (a value of any type, as text),
+// assert's and crash's messages, the runtime checks' — and number literals.
 // ---------------------------------------------------------------------------
 
 // Lower a numeric literal to an LLVM constant for the given IR target type.
 // Floats use the exact IEEE-754 hex bit-pattern (`0x…`) — a decimal print (`%f`)
 // defaults to 3 fractional digits in Odin and silently truncates the value
 // (3.14159… -> 3.142); hex is exact and is how clang itself writes floats.
-// Integers use the exact i128 form (e.value is f64 and loses precision above
-// 2^53). Shared by Expr_Number and module-constant (Resolved_Constant) access so
-// a qualified `math.PI` lowers identically to a bare `PI`.
+// Integers use the exact i128 form (a value as f64 loses precision above
+// 2^53).
 emit_number_literal :: proc(target_type: string, value: f64, int_value: i128, is_float: bool) -> string {
     tt := target_type
     if tt == "" {
@@ -905,4 +905,69 @@ gen_print_array_handle :: proc(g: ^Codegen, h: ^Array_Handle, elem_ty: Type) {
 
     emit_label(g, end_l)
     emit_printf_void(g, emit_fmt_ptr(g, "]"))
+}
+
+// Array_Handle is print's view of "something array-shaped": a fixed array
+// (raw [N x T] storage), a slice (a {len, cap, ptr} header over separate
+// elements) or a partial array (the header and its elements together) —
+// printed alike once the right pointers are in hand.
+//
+// Two pointers live on the handle:
+//   header_ptr   — non-empty for slices and partial arrays; points at a
+//                  `{len, cap, ptr}` header. Verbs load len/cap/data through
+//                  this. Empty for fixed arrays.
+//   fixed_alloca — non-empty for fixed arrays; the raw `[N x T]` alloca that
+//                  is itself the data pointer. Empty for slices/partial
+//                  arrays.
+// Exactly one of the two is set on a valid handle.
+//
+// For fixed arrays, `static_cap` is the capacity. For slices and partial arrays, cap is held in the
+// header and read at runtime — static_cap stays 0.
+Array_Handle :: struct {
+    header_ptr:     string,
+    fixed_alloca:   string,
+    static_cap:     int,
+}
+
+handle_is_fixed :: proc(h: ^Array_Handle) -> bool { return h.fixed_alloca != "" }
+
+// Load (or compute) the current length of the array as an i64 SSA value.
+// Fixed arrays don't have a separate len field — for them len == capacity.
+emit_array_len :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
+    if handle_is_fixed(h) {
+        return fmt.tprintf("%d", h.static_cap)
+    }
+    len_gep := fresh_tmp(g)
+    emit_slice_gep(g, len_gep, h.header_ptr, SLICE.len)
+    out := fresh_tmp(g)
+    emit_typed_load_len(g, out, len_gep)
+    return out
+}
+
+// Return a ptr-typed SSA value pointing at the array's first element.
+// For fixed arrays this is the alloca itself; for slices/partial arrays it
+// is loaded from header.ptr.
+emit_array_data :: proc(g: ^Codegen, h: ^Array_Handle) -> string {
+    if handle_is_fixed(h) { return h.fixed_alloca }
+    data_gep := fresh_tmp(g)
+    emit_slice_gep(g, data_gep, h.header_ptr, SLICE.ptr)
+    out := fresh_tmp(g)
+    emit_load_into(g, out, "ptr", data_gep)
+    return out
+}
+
+// Emit `printf("%.*s", len, data)` for a utf8 array. Bounded printing —
+// works for fixed and dynamic storage. Callers should have already
+// established that the handle is utf8.
+emit_array_print :: proc(g: ^Codegen, h: ^Array_Handle) {
+    fmt_name, fmt_len := get_string_literal(g, "%.*s")
+    fmt_ptr := fresh_tmp(g)
+    emit_string_gep(g, fmt_ptr, fmt_len, fmt_name)
+    data_ptr := emit_array_data(g, h)
+    // C's printf `%.*s` precision is an `int` (i32): the header's i64 length,
+    // narrowed.
+    len_val := emit_array_len(g, h)
+    prec := fresh_tmp(g)
+    emit(g, "  %s = trunc %s %s to i32", prec, SLICE_LEN_IR, len_val)
+    emit(g, "  call i32 (ptr, ...) @printf(ptr %s, i32 %s, ptr %s)", fmt_ptr, prec, data_ptr)
 }

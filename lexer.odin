@@ -666,6 +666,11 @@ span_col :: proc(s: Span) -> int {
     return token_col(build_tokens[s.at]) if s.at != 0 else 0
 }
 
+// A span's location as an error message's prefix: "[file:line:col]".
+span_loc :: proc(span: Span) -> string {
+    return fmt.tprintf("[%s]", span_location(span))
+}
+
 // "file:line:col" of a span's report point.
 span_location :: proc(s: Span) -> string {
     return format_location(span_file(s), span_line(s), span_col(s))
