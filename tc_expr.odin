@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:strings"
 
 // Expressions, checked and built in the order they run: each returns its type
-// and what it built (tc_expr). `want` is what its use asks of it â its value,
+// and what it built (tc_expr). `want` is what its use asks of it Ã¢ÂÂ its value,
 // its place, either, or to be built into `dest`.
 
 tc_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want := Fuse_Want.Value, w := Written.Explicit,
@@ -15,7 +15,7 @@ tc_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want := Fuse_Want.Value, w
     // A compound assignment's target, read in its operation: through the
     // place already built. (Not in a generic's instance: the old checker
     // checked a clone of its body, whose operation held a copy of the
-    // target, walked again â the same IR, until the switch.)
+    // target, walked again Ã¢ÂÂ the same IR, until the switch.)
     if ask != .None && n == k.compound.target && n != 0 && k.subst == nil {
         t := tc_check(k, n, env)
         span := tree_span(k.t, n)
@@ -74,7 +74,7 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
     case .Ident:
         return tc_ident(k, n, env, want, w, dest, temp, temp_span)
     case .Unary:
-        // (`&x.f()`: f's receiver addressed â `f(&x)`.)
+        // (`&x.f()`: f's receiver addressed Ã¢ÂÂ `f(&x)`.)
         if m := Tree_Id(k.t.a[n]); build_tokens[k.t.main[n]].kind == .Ampersand && k.t.tag[m] == .Method_Call {
             return tc_call(k, m, env, want, w, dest, temp, temp_span, addressed = n)
         }
@@ -89,6 +89,9 @@ tc_expr_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
         return tc_assert(k, n, env, want, w)
     case .Take:
         return tc_take(k, n, env, want, w)
+    case .Type_Name:
+        // (A count written where a type's argument goes — `[]T(n)`'s n: the name.)
+        return tc_ident(k, n, env, want, w, dest, temp, temp_span)
     case .Hash_Name:
         return tc_hash_name(k, n, env, want, w, span)
     case .Self:
@@ -154,8 +157,8 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
             return et, tc_variant_of(k, et, v, name, span, want, w, dest, temp, temp_span)
         }
     }
-    // (A constant: the one a scope around it declares â it shadows a
-    // module's â else its own module's, or one it uses' â two is ambiguous.)
+    // (A constant: the one a scope around it declares Ã¢ÂÂ it shadows a
+    // module's Ã¢ÂÂ else its own module's, or one it uses' Ã¢ÂÂ two is ambiguous.)
     t, loc_scope, ok := type_env_locate(env, name)
     kc := tc_local_const(k, env, loc_scope, name) if ok else nil
     if kc == nil {
@@ -185,7 +188,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         return t, {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
     }
     if kc != nil { return t, tc_const_use(k, kc, n, t, want, w) }
-    // (A fun's name, as a value: the fun — one taking params, as the old
+    // (A fun's name, as a value: the fun â one taking params, as the old
     // checker resolved them.)
     if ts, is_scope := t.(^Type_Scope); is_scope && len(ts.params) > 0 && name in k.c.declared_funs {
         if want == .None || want == .Place { return t, {} }
@@ -193,14 +196,14 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         return t, {v = graph_op_value(b, .Global, w, span, t, flat), ok = true}
     }
     // (A local is found in no scope: what a scope holds is a fun, a type, a
-    // constant â a function sees no module's variables.)
+    // constant Ã¢ÂÂ a function sees no module's variables.)
     if loc_scope != nil {
         if ts, is_scope := t.(^Type_Scope); is_scope && ts.kind == .Fun {
             tc_unsupported(k, n, "a fun as a value")
             return t, {}
         }
         // (A type's name, a module's: built as the old checker built a name it
-        // resolved to nothing â a variable's â which a field access of it, its
+        // resolved to nothing Ã¢ÂÂ a variable's Ã¢ÂÂ which a field access of it, its
         // one use, leaves out.)
     }
     if want == .None { return t, {} }
@@ -209,7 +212,7 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     return t, {v = place, place = true, ok = true}
 }
 
-// (`of`: the operand in place of its own â a method call's receiver, where
+// (`of`: the operand in place of its own Ã¢ÂÂ a method call's receiver, where
 // the `&` is written around the call.)
 tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written, of := Tree_Id(0)) -> (Type, Fused) {
     tr := k.t
@@ -271,7 +274,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         }
         if cname, is_const := tc_write_root_const(k, operand); is_const { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_CONSTANT, cname) }
         if tr.tag[operand] == .String { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_STRING_LITERAL) }
-        // (A part of a value â an if's, a literal's â is no storage; a
+        // (A part of a value Ã¢ÂÂ an if's, a literal's Ã¢ÂÂ is no storage; a
         // slice builds a header with nowhere to point.)
         #partial switch tr.tag[tc_access_root(k, operand)] {
         case .If_Expr, .Array, .Literal: tc_error(k, span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
@@ -289,7 +292,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
     if op == .Ampersand {
         a := graph_op_value(b, .Address, w, span, t, "", r.v)
         // (Bytes' address: a view of them where its use takes it as another
-        // pointer â tc_byte_view_address.)
+        // pointer Ã¢ÂÂ tc_byte_view_address.)
         if tc_byte_index(k, operand) { k.byte_addrs[tc_sid(k, n)] = {a.op, r.v.op} }
         return t, {v = a, ok = true}
     }
@@ -510,14 +513,14 @@ tc_call_impl :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: W
     return tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]), env, want, w, dest, temp, temp_span)
 }
 
-// A call of `name` on `args` â or, resolved by its qualifier (a method, a
+// A call of `name` on `args` Ã¢ÂÂ or, resolved by its qualifier (a method, a
 // module's fun: `qual`; a module's dispatch: `qual_dispatch`), of that.
 tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,
                      dest: Dest, temp: bool, temp_span: Span, qual: ^Type_Scope = nil, qual_dispatch: []string = nil) -> (Type, Fused) {
     tr := k.t
     span := tree_span(tr, n)
     build := want != .None && tc_building(k) != nil
-    // (A call of several results, as one argument: its extras would be lost â
+    // (A call of several results, as one argument: its extras would be lost Ã¢ÂÂ
     // a method call's, checked before its receiver.)
     for a in args {
         if tr.tag[n] == .Method_Call { break }
@@ -554,8 +557,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         return tc_distinct_conversion(k, n, name, dt, args, env, want if build else .None, w)
     }
     ft, is_scope := ft_raw.(^Type_Scope)
-    // (A fun written in the program, or a foreign one; else a fun's value — a
-    // name no declared fun has, holding one — called through it.)
+    // (A fun written in the program, or a foreign one; else a fun's value â a
+    // name no declared fun has, holding one â called through it.)
     indirect := is_scope && qual == nil && ft.kind == .Fun && name not_in k.c.declared_funs && (ft.name == "" || ft.name not_in k.c.declared_funs)
     if !is_scope || ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C {
         tc_unsupported(k, n, "a call of this")
@@ -573,7 +576,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         into_temp = true
     }
     // (A fixed array its destination views as a slice: held in a temporary
-    // made before the arguments, at the store's span â its place, sliced
+    // made before the arguments, at the store's span Ã¢ÂÂ its place, sliced
     // there.)
     view_slot := NO_NODE
     if b := tc_building(k); build && b != nil && !is_struct && !indirect && want == .Into {
@@ -631,7 +634,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         } else {
             at = k.recv.t if a == k.recv.node else tc_check(k, a, a_env)
         }
-        // (Bytes read as an array param: `buf[off]`, `buf[lo:hi]` — its size
+        // (Bytes read as an array param: `buf[off]`, `buf[lo:hi]` â its size
         // the param's.)
         reinterpret := false
         if _, to_array := pt.(^Type_Fixed_Array); to_array {
@@ -694,7 +697,7 @@ tc_literal_value :: proc(k: ^TC, n: Tree_Id) -> (f64, i128, bool) {
     return f, i, true
 }
 
-// `assert(c)`: the condition's value, then the assert â with the
+// `assert(c)`: the condition's value, then the assert Ã¢ÂÂ with the
 // condition's text, and a comparison's sides' (a literal's left out: its
 // text is its value).
 tc_assert :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
@@ -730,7 +733,7 @@ tc_assert :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writ
     return Type_Void{}, {v = NO_VALUE, ok = true}
 }
 
-// `#self`: the address of what a constructor builds (Self, its place) —
+// `#self`: the address of what a constructor builds (Self, its place) â
 // only a constructor's frame has one.
 tc_self :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
     span := tree_span(k.t, n)
@@ -904,7 +907,7 @@ tc_call_returns :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope) -> []Type {
 
 // What a use that takes a value at a type asks of it: an array literal is
 // built at that type (a short one's other slots zero); a literal a slice
-// views, in a temporary placed at the use's span â an array's at the slice's
+// views, in a temporary placed at the use's span Ã¢ÂÂ an array's at the slice's
 // element type.
 tc_use_type :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span) -> (Dest, Span) {
     if t == nil { return {}, {} }
@@ -921,14 +924,14 @@ tc_use_type :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span) -> (Dest, Span) {
         return {}, {}
     }
     if tag == .Array && graph_aggregate(t) { return {type_ = t}, {} }
-    // (A span taken as an array: of bytes, read as it â tc_slice.)
+    // (A span taken as an array: of bytes, read as it Ã¢ÂÂ tc_slice.)
     m, _ := tc_byte_node(k, n)
     if _, to_array := distinct_base(t).(^Type_Fixed_Array); to_array && k.t.tag[m] == .Slice { return {type_ = t}, {} }
     return {}, {}
 }
 
 // An argument or a returned value at the type its use takes: a view where
-// one is taken (a partial array's header, an array's slice â its value held
+// one is taken (a partial array's header, an array's slice Ã¢ÂÂ its value held
 // in a temporary reserved before it, `held`), else its value, widened.
 tc_value_as :: proc(k: ^TC, e: Tree_Id, t: Type, r: Fused, to: Type, span: Span, w: Graph_Widen,
                     held: ^Graph_Later = nil) -> Operand {
@@ -990,7 +993,7 @@ TC_Arg :: struct {
     at:   Span,   // (a default the call site gives: the call's)
 }
 
-// `#caller_name`, `#caller_span`: text — the enclosing fun's name, where it
+// `#caller_name`, `#caller_span`: text â the enclosing fun's name, where it
 // is (a default's: the call's, `span`); `#web` and the targets: a bool.
 tc_hash_name :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written, span: Span) -> (Type, Fused) {
     name := tc_text(Token_Id(k.t.a[n]))
@@ -1039,7 +1042,7 @@ tc_default :: proc(k: ^TC, def: Tree_Id, t: Type, owner: ^Type_Scope, span: Span
 }
 
 // The rest of the builtins: print_cstr / print_int / print_float (as print),
-// len and cap (of a place â a fixed array's, its size), slice_from_ptr,
+// len and cap (of a place Ã¢ÂÂ a fixed array's, its size), slice_from_ptr,
 // cstring. `vals`, `types`: its arguments as built.
 tc_builtin_more :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Type_Scope,
                         want: Fuse_Want, w: Written) -> (Type, Fused, bool) {
@@ -1197,7 +1200,7 @@ tc_distinct_conversion :: proc(k: ^TC, n: Tree_Id, name: string, dt: ^Type_Disti
     return dt, {v = graph_op_value(b, .Cast, w, span, dt, name, r.v), ok = true}
 }
 
-// `f()?`: the call, then the branch on its err (returned, when one) â its
+// `f()?`: the call, then the branch on its err (returned, when one) Ã¢ÂÂ its
 // value the call's first, or none when it returns only its err.
 tc_try :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
     span := tree_span(k.t, n)
@@ -1229,7 +1232,7 @@ tc_try :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written
 
 // `if c do a else b` as a value: its local made first (typed once both
 // branches are checked), the condition, each branch's value written to the
-// local in a run of its own â at the if's type â then the local: its place,
+// local in a run of its own Ã¢ÂÂ at the if's type Ã¢ÂÂ then the local: its place,
 // or read.
 tc_if_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written) -> (Type, Fused) {
     tr := k.t
@@ -1254,7 +1257,7 @@ tc_if_expr :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
             types[i] = tc_check(k, branch, env)
             continue
         }
-        // (Text, a slice's elements: a partial array's prefix, zero first â
+        // (Text, a slice's elements: a partial array's prefix, zero first Ã¢ÂÂ
         // kept once the if's type says so. A literal: built in the local.)
         if tc_may_fill_prefix(k, branch) { prefix[i] = graph_fuse_prefix(b, "if", slot, span) }
         t, r := tc_expr(k, branch, env, .Into, dest = graph_dest_var("if", slot, nil))
@@ -1331,7 +1334,7 @@ TC_Recv :: struct {
     r:    Fused,
 }
 
-// An argument, checked and built â or the receiver, as built.
+// An argument, checked and built Ã¢ÂÂ or the receiver, as built.
 tc_arg :: proc(k: ^TC, a: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written, temp_span := Span{}) -> (Type, Fused) {
     if a != 0 && a == k.recv.node {
         if want == .None { return k.recv.t, {} }

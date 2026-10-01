@@ -201,7 +201,10 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     }
     // (`[:n]T`: n its capacity.)
     cap_n := Tree_Id(0)
-    if ann_node != 0 && t.tag[ann_node] == .Type_Slice { cap_n = Tree_Id(t.a[ann_node]) }
+    if ann_node != 0 && t.tag[ann_node] == .Type_Slice {
+        cap_n = Tree_Id(t.a[ann_node])
+        if cap_n == 0 { cap_n = tc_count_arg(k, Tree_Id(t.b[ann_node])) }   // (`[]T(n)`)
+    }
     if value == 0 {
         tc_decl_bare(k, name, ann, env, span, tc_field_decl(k, fields_of, name, target, 0, span), cap_n)
         return

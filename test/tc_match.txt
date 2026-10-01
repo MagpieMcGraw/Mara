@@ -143,6 +143,7 @@ inferdef
 infersites
 init_alias_neg
 init_outparam
+init_shapes
 init_shapes_neg
 leak_consumer
 let_big_view
@@ -209,6 +210,7 @@ selfhelper
 settled_literal_range_neg
 sibling_locals
 slerp
+slice_count_carve
 slice_loop_view
 slice_param_header_neg
 slicefield
@@ -218,6 +220,7 @@ spread_literal
 str64agg
 strfield
 struct_return_shapes
+structlitarg
 tailfns
 temp_address_neg
 ternary_values

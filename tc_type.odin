@@ -53,6 +53,8 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         for r in tree_list(t, t.b[n]) { append(&ft.return_types, tc_type(k, r, env, span)) }
         populate_cg_signature(ft)
         return ft
+    case .Type_Generic:
+        return tc_generic_type(k, n, env, span)
     case .Type_Of:
         return tc_fun_type_of(k, tree_token_list(t, t.a[n]), env, span)
     case .Type_Pointer:
@@ -339,4 +341,61 @@ tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) 
     }
     tc_error(k, span, TYPE_UNKNOWN_FUNCTION_FN, name, name)
     return Type_Error{}
+}
+
+// `Name(args)` as a type: a generic struct's instance (to come); else `T(n)`
+// — `[]T(n)`'s T, n a count its declaration or take reads (tc_count_arg) —
+// or what a constructor's call means, written where a type goes: said so.
+// (Its arguments resolved first: a name, a type; a number or an operation,
+// a size.)
+tc_generic_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+    t := k.t
+    if tc_name(k, n) in k.templates {
+        tc_unsupported(k, n, "a generic struct's instance")
+        return Type_Error{}
+    }
+    for a in tree_list(t, t.a[n]) {
+        if tc_is_type_tag(t.tag[a]) { tc_type(k, a, env, span) }
+    }
+    return tc_generic_base(k, n, env, span)
+}
+
+// `T(n)`'s T, by its name: a struct — n a count; else an error.
+tc_generic_base :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
+    t := k.t
+    name := tc_name(k, n)
+    if len(tree_list(t, t.a[n])) == 1 {
+        flat := resolve_type_name(k.c, name, "", env)
+        if dt, ok := k.table.distinct_types[flat]; ok && is_slice_type(dt.base_type) {
+            tc_unsupported(k, n, "a sized slice alias")
+            return Type_Error{}
+        }
+        if st, ok := k.table.structs[flat]; ok { return st }
+        if found, ok := type_env_get(env, name); ok {
+            if _, is_scope := found.(^Type_Scope); is_scope { return found }
+        }
+    }
+    if found, ok := type_env_get(env, name); ok {
+        if ts, is_scope := found.(^Type_Scope); is_scope && ts.kind == .Struct && len(ts.params) > 0 {
+            tc_error(k, span, TYPE_STRUCT_CLASS_CONSTRUCTOR_PARAMS_GENERIC, name, name, name, name)
+            return Type_Error{}
+        }
+    }
+    tc_error(k, span, TYPE_UNKNOWN_TYPE, name)
+    return Type_Error{}
+}
+
+// `T(n)`, T no generic: n, a count — a number or an operation (a take's, a
+// name too); 0 when it is none.
+tc_count_arg :: proc(k: ^TC, n: Tree_Id, take := false) -> Tree_Id {
+    t := k.t
+    if n == 0 || t.tag[n] != .Type_Generic || tc_name(k, n) in k.templates { return 0 }
+    args := tree_list(t, t.a[n])
+    if len(args) != 1 { return 0 }
+    if tc_is_type_tag(t.tag[args[0]]) && !(take && t.tag[args[0]] == .Type_Name) { return 0 }
+    return args[0]
+}
+
+tc_is_type_tag :: proc(tag: Tree_Tag) -> bool {
+    return tag >= .Type_Name && tag <= .Type_Paren
 }
