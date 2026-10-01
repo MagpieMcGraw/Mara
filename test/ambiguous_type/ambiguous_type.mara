@@ -1,0 +1,12 @@
+module ambiguous_type
+//@ expect-fail: is ambiguous
+
+// Thing is both modules': a bare type name names neither.
+
+use amb_type_a
+use amb_type_b
+
+main :: fun() {
+	t : Thing
+	print(t.v)
+}

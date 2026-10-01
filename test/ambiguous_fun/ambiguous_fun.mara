@@ -1,0 +1,11 @@
+module ambiguous_fun
+//@ expect-fail: is ambiguous
+
+// helper is both modules': a bare call names neither.
+
+use amb_fun_a
+use amb_fun_b
+
+main :: fun() {
+	print(helper())
+}

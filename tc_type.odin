@@ -34,6 +34,11 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         return ft
     case .Type_Generic:
         return tc_generic_type(k, n, env, span)
+    case .Type_Tilde:
+        // (A shape is a struct param's: tc_struct_generics.)
+        name := tc_text(Token_Id(t.a[n]))
+        tc_error(k, span, TYPE_ONLY_VALID_TYPE_GENERIC_PARAMETER, name, name)
+        return Type_Error{}
     case .Type_Of:
         return tc_fun_type_of(k, tree_token_list(t, t.a[n]), env, span)
     case .Type_Pointer:
@@ -390,8 +395,14 @@ tc_type_named :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span) -> Typ
     if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
     if name == "Self" {
         if s := enclosing_callable_scope(env); s != nil { return s }
-    } else if found, ok := type_env_get(env, name); ok {
-        return found
+    } else {
+        // (Its own, else the one a module it uses has — two such: ambiguous.)
+        found, ok, owners := resolve_with_ambiguity(k.c, env, name)
+        if ok { return found }
+        if len(owners) > 1 {
+            tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator))
+            return Type_Error{}
+        }
     }
     flat := make_flat_name(k.pkg, name)
     if st, ok := k.table.structs[flat]; ok { return st }

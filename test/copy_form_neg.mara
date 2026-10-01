@@ -1,0 +1,16 @@
+module copy_form_neg
+//@ expect-fail: copy-with-overrides
+
+// `q := p{y = 5}`, p a struct variable: copying with overrides is not a form
+// the language has (copy, then override in place) - not a new literal.
+
+P :: struct {
+	x: i64
+	y: i64
+}
+
+main :: fun() {
+	p := P{x = 1, y = 2}
+	q := p{y = 5}
+	print(q.x, q.y)
+}

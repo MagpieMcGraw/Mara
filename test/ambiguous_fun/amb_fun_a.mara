@@ -1,0 +1,3 @@
+module amb_fun_a
+
+helper :: fun() -> i64 { return 1 }

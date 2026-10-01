@@ -231,7 +231,9 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     }
     tc_no_literal_slice(k, ft, value, span)
     // (Bytes read as the field's type: no conversion to check.)
-    if tc_check_byte_flow(k, ft, value, vt, span) == .None && !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !value_preserving_widen(vt, ft) {
+    flow := tc_check_byte_flow(k, ft, value, vt, span)
+    if flow == .Read && is_byte_buffer(vt) { tc_span_read_size(k, value, ft, true, span) }
+    if flow == .None && !coerce_deferred(k.c, vt, ft, span) && types_incompatible(ft, vt) && !value_preserving_widen(vt, ft) {
         tc_error(k, span, TYPE_CANNOT_ASSIGN_FIELD_TYPE, tc_source_desc(k, diag, vt), tc_diag_name(k, target), type_name(ft))
     }
     if is_infer(vt) { tc_literal_overflow(k, diag, ft, span) }
@@ -334,6 +336,10 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
         }
     case ty == 0:
         hint := k.hint
+        if ut, is_union := distinct_base(hint).(^Type_Union); is_union {
+            tc_error(k, span, TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT, ut.name)
+            return Type_Error{}, {}
+        }
         if hint == nil || (as_scope_body(distinct_base(hint)) == nil && !tc_is_fixed_array(hint)) {
             tc_unsupported(k, n, "a literal typed by its use")
             return Type_Error{}, {}
@@ -349,6 +355,10 @@ tc_literal :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Wri
                 return tc_unknown_literal(k, n, name, entries, env)
             }
             t, variant = vut, name
+        } else if ts, is_scope := found.(^Type_Scope); is_scope && ts.kind == .Struct && ts.name != name && !strings.has_suffix(ts.name, strings.concatenate({"_", name}, context.temp_allocator)) {
+            // (A struct's variable, not its type: `new := var{…}`.)
+            tc_error(k, span, TYPE_STRUCT_COPY_FORM, name, name, name)
+            return Type_Error{}, {}
         } else {
             t = found
         }

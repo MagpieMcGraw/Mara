@@ -1,0 +1,11 @@
+module tilde_outside_neg
+//@ expect-fail: only valid as the type of a generic parameter
+
+// `~T` is a shape a struct param takes, nothing else.
+
+Foo :: struct { v: i64 }
+
+main :: fun() {
+	x : ~Foo
+	print(1)
+}

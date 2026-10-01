@@ -1,0 +1,11 @@
+module span_read_size_neg
+//@ expect-fail: but slice span is 4 bytes
+
+// Bytes read as a scalar take exactly its size: a 4-byte span is no i64.
+
+main :: fun() {
+	buf : [16]byte
+	b : []byte = buf[:]
+	x : i64 = b[0:4]
+	print(x)
+}

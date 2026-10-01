@@ -589,7 +589,18 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     // (A fun written in the program, or a foreign one; else a fun's value â a
     // name no declared fun has, holding one â called through it.)
     indirect := is_scope && qual == nil && ft.kind == .Fun && name not_in k.c.declared_funs && (ft.name == "" || ft.name not_in k.c.declared_funs)
-    if !is_scope || ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C {
+    if !is_scope {
+        tc_error(k, span, TYPE_FUNCTION, name)
+        return Type_Error{}, {}
+    }
+    // (A fun two modules it uses have: ambiguous.)
+    if qual == nil && name in k.c.declared_funs && ft.name != "" {
+        if _, home_ok, owners := resolve_fn_home_with_ambiguity(k.c, env, name); !home_ok && len(owners) > 1 {
+            tc_error(k, span, TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED, name, strings.join(owners[:], ", ", context.temp_allocator), owners[0], name)
+            return Type_Error{}, {}
+        }
+    }
+    if ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}, {}
     }

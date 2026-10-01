@@ -1,0 +1,12 @@
+module union_literal_unnamed_neg
+//@ expect-fail: requires a named variant
+
+U :: union {
+	A { v: i64 }
+	B
+}
+
+main :: fun() {
+	u : U = {v = 1}
+	print(1)
+}

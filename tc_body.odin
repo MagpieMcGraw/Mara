@@ -265,6 +265,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id, env: ^Type_Scop
     if !is_any(ann) {
         // (Bytes read as the annotation's type: no conversion to check.)
         flow := tc_check_byte_flow(k, ann, value, vt, span)
+        if flow == .Read { tc_span_read_size(k, value, ann, tc_is_distinct(ann), span) }
         fa, to_array := distinct_base(ann).(^Type_Fixed_Array)
         // (A distinct type: matched by name — unless the value is a literal
         // not of it, matched by its shape.)

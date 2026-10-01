@@ -199,3 +199,35 @@ tc_byte_span_write :: proc(k: ^TC, value: Tree_Id, vt: Type, r: Fused, gs: ^Grap
     }
     tc_store(k, value, vt, r, tc_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }
+
+// A span of bytes read as a type, its bounds numbers: as many bytes as the
+// type has — a struct or an array may take fewer (the tail zero), a partial
+// array whole elements up to its size; a distinct type or a field (`exact`),
+// exactly.
+tc_span_read_size :: proc(k: ^TC, value: Tree_Id, ann: Type, exact: bool, span: Span) {
+    m, _ := tc_byte_node(k, value)
+    if k.t.tag[m] != .Slice { return }
+    lo_n, hi_n := tree_pair(k.t, m)
+    lo, lo_ok := tc_number_int(k, lo_n)
+    hi, hi_ok := tc_number_int(k, hi_n)
+    if !lo_ok || !hi_ok { return }
+    n := hi - lo
+    if exact {
+        if size := checker_type_byte_size(ann); n != size { tc_error(k, span, TYPE_BYTE_BUFFER_READ_BYTES_SLICE, type_name(ann), size, n) }
+        return
+    }
+    t := distinct_base(ann)
+    size := checker_type_byte_size(t)
+    sd := as_scope_body(t)
+    switch {
+    case sd != nil && len(sd.fields) > 0, tc_is_fixed_array(t):
+        if n > size { tc_error(k, span, TYPE_BYTE_BUFFER_READ_BYTES_SLICE, type_name(t), size, n) }
+    case is_partial_array(t):
+        pa := t.(^Type_Partial_Array)
+        elem := checker_type_byte_size(pa.elem)
+        backing := pa.size * elem
+        if elem > 0 && n % elem != 0 || n > backing { tc_error(k, span, TYPE_BYTE_BUFFER_READ_BYTES_SLICE, type_name(t), backing, n) }
+    case:
+        if n != size { tc_error(k, span, TYPE_BYTE_BUFFER_READ_BYTES_SLICE, type_name(t), size, n) }
+    }
+}
