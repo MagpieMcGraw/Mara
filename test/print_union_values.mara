@@ -1,0 +1,58 @@
+module print_union_values
+
+//@ expect-output: Rect { w: 4, h: 3 }
+//@ expect-output: Dot {}
+//@ expect-output: coded=Square { s: 6 }
+//@ expect-output: A { x: 9 }
+//@ expect-output: Holder { s: Rect { w: 1, h: 1 }, n: 1 }
+//@ expect-output: [Rect { w: 0, h: 0 }, Rect { w: 2, h: 3 }]
+//@ expect-output: Some { value: 42 }
+//@ expect-output: None {}
+//@ expect-output: niche None {}
+
+// A union value prints the variant it holds, as that variant prints — its
+// tag read when the program runs: explicit tags, a padded tag, a union in a
+// struct or an array (a zeroed one holds its first variant), a generic
+// union, a niche one (Maybe(^T): its pointer's nullness is its tag).
+
+use mara.maybe
+
+Shape :: union {
+	Rect { w: i64 = 2  h: i64 = 3 }
+	Dot
+}
+Coded :: union(tag u32) {
+	Circle = 1 { r: i32 = 7 }
+	Square = 5 { s: i32 }
+}
+Padded :: union(tag u8, pad [7]u8) {
+	A { x: i64 = 9 }
+	B
+}
+Holder :: struct {
+	s: Shape
+	n: i64 = 1
+}
+
+main :: fun() {
+	a : Shape = Rect{w = 4}
+	print(a)
+	b : Shape = Dot{}
+	print(b)
+	c : Coded = Square{s = 6}
+	print("coded=%", c)
+	d : Padded = A{}
+	print(d)
+	h : Holder
+	h.s = Rect{w = 1, h = 1}
+	print(h)
+	arr : [2]Shape
+	arr[1] = Rect{}
+	print(arr)
+	m : Maybe(i64) = Some{value = 42}
+	print(m)
+	z : Maybe(i64) = None{}
+	print(z)
+	q : Maybe(^i64) = None{}
+	print("niche", q)
+}

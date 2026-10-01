@@ -569,6 +569,10 @@ emit_print_value :: proc(g: ^Codegen, val: string, ty: Type) {
 // recurse. This is what lets struct fields and array elements render like a bare
 // print at any nesting depth (struct-in-struct, array-of-structs, ...).
 emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
+    if ut, is_union := distinct_base(ty).(^Type_Union); is_union {
+        gen_print_union(g, addr, ut)
+        return
+    }
     if sd := as_struct_body(distinct_base(ty)); sd != nil {
         if print_st, ok := lookup_struct(g, sd.name); ok {
             gen_print_struct(g, addr, print_st)
@@ -625,9 +629,10 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
     emit_print_value(g, val, ty)
 }
 
-// A struct printed: `P { x: 4, y: 5 }` — its name as written; a union
-// variant's, its tag's (the variant's name), the tag itself not a field.
-gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body) {
+// A struct printed: `P { x: 4, y: 5 }` — its name as written (`name`, when
+// given); a union variant's, its tag's (the variant's name), the tag itself
+// not a field.
+gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body, name := "") {
     say :: proc(g: ^Codegen, text: string) {
         name, n := get_string_literal(g, text)
         ptr := fresh_tmp(g)
@@ -636,7 +641,9 @@ gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body) {
     }
     st_llvm := struct_llvm_name(struct_key(st))
     first := first_user_field(st)
-    if st.is_union_variant {
+    if name != "" {
+        say(g, name)
+    } else if st.is_union_variant {
         tag := fresh_tmp(g)
         emit_field_gep_into(g, tag, st_llvm, addr, 0)
         emit_print_at_addr(g, tag, st.fields[0].type_)
@@ -655,6 +662,46 @@ gen_print_struct :: proc(g: ^Codegen, addr: string, st: ^Scope_Body) {
         emit_print_at_addr(g, gep, f.type_)
     }
     if len(user) > 0 { say(g, " }") }
+}
+
+// A union printed: the variant it holds, as that variant prints — `Rect {
+// w: 3 }` — chosen by its tag when the program runs (a niche union's, its
+// pointer's nullness). A tag no variant has prints `Shape(7)`.
+gen_print_union :: proc(g: ^Codegen, addr: string, ut: ^Type_Union) {
+    tag_ir := union_tag_ir_type(ut)
+    tag := load_union_tag(g, ut, addr)
+    unknown, done := fresh_label(g, "union.unknown"), fresh_label(g, "union.done")
+    arms := make([]string, len(ut.variants), context.temp_allocator)
+    sw := strings.builder_make(context.temp_allocator)
+    fmt.sbprintf(&sw, "  switch %s %s, label %%%s [\n", tag_ir, tag, unknown)
+    for vname, i in ut.variants {
+        arms[i] = fresh_label(g, "union.variant")
+        fmt.sbprintf(&sw, "    %s %d, label %%%s\n", tag_ir, ut.tag_map[vname], arms[i])
+    }
+    strings.write_string(&sw, "  ]")
+    emit_raw(g, strings.to_string(sw))
+    for vname, i in ut.variants {
+        emit_label(g, arms[i])
+        // (Each variant overlays the union's storage at its start.)
+        if vst, found := g.checked.table.structs[ut.variant_structs[vname]]; found {
+            gen_print_struct(g, addr, &vst.sd, vname)
+        } else {
+            codegen_fatal(g, {}, CODE_PRINT_UNSUPPORTED_VALUE, type_name(ut))
+        }
+        emit_br(g, done)
+    }
+    emit_label(g, unknown)
+    emit_print_literal(g, strings.concatenate({type_name(ut), "("}, context.temp_allocator))
+    bits := 64
+    switch tag_ir {
+    case "i8":  bits = 8
+    case "i16": bits = 16
+    case "i32": bits = 32
+    }
+    emit_print_value(g, tag, Type_Numeric{kind = .Unsigned if union_tag_unsigned(ut) else .Signed, bits = bits})
+    emit_print_literal(g, ")")
+    emit_br(g, done)
+    emit_label(g, done)
 }
 
 // A struct's name as print shows it: as written — `P`, `Box(i64)`.
