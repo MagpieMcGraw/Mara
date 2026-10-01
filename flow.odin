@@ -75,15 +75,12 @@ flow_check_unreachable :: proc(c: ^Checker, checked: ^Checked_Program) {
 // (`first := -1` adopting a u16 index's width was 65535, never below 0).
 flow_check_literal_ranges :: proc(c: ^Checker, checked: ^Checked_Program) {
     g := &checked.graph
-    seen: map[Span]bool   // generic instances share their template's spans
-    defer delete(seen)
+    // (Generic instances share their template's spans: an error repeated at
+    // one is reported once, check_error's rule; each instance is checked.)
     for id in g.settled {
         v, ok := g.consts[id]
         if !ok || v.is_text { continue }
-        span := g.origin[id]
-        if span in seen { continue }
-        seen[span] = true
-        check_value_range(c, v.float if v.is_float else f64(v.int), v.int, g.type_[id], span)
+        check_value_range(c, v.float if v.is_float else f64(v.int), v.int, g.type_[id], g.origin[id])
     }
 }
 
@@ -228,21 +225,26 @@ flow_storage_root :: proc(g: ^Program_Graph, p: Node_Id) -> Node_Id {
 // alias is a pointer every write of which is `&x`: `it = &root` makes `it.next`
 // read `root.next`.
 
+// What can be unset in one fun, and who reads what: arrays by `id - node`
+// over the fun's subtree.
 @(private="file")
-Init_Key :: struct {
-    var:   Node_Id,
-    field: string,   // "" for the variable itself
+Init :: struct {
+    g:       ^Program_Graph,
+    node:    Node_Id,
+    own:     []i32,            // a local's own bit; -1 when it can't be unset
+    fields:  [][2]i32,         // a struct local's fields that can be unset: [first, count) of field_of
+    field_of: [dynamic]Init_Field,
+    alias:   map[Node_Id]Node_Id,   // a pointer local → the local it always points at
+    user:    []Node_Id,        // an operation → the one that takes its output (NO_NODE: none)
+    words:   int,
+    c:       ^Checker,
+    seen:    ^map[Span]bool,   // reads reported (generic instances share spans)
 }
 
 @(private="file")
-Init :: struct {
-    g:     ^Program_Graph,
-    keys:  map[Init_Key]int,
-    alias: map[Node_Id]Node_Id,   // a pointer local → the local it always points at
-    user:  map[Node_Id]Node_Id,   // an operation → the one that takes its output
-    words: int,
-    c:     ^Checker,
-    seen:  ^map[Span]bool,       // reads reported (generic instances share spans)
+Init_Field :: struct {
+    name: string,
+    bit:  i32,
 }
 
 flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program) {
@@ -265,11 +267,16 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     graph_code_runs(g, node, &runs)
     if len(runs) == 0 { return }
 
-    s := Init{g = g, c = c, seen = seen}
-    defer { delete(s.keys); delete(s.alias); delete(s.user) }
+    size := int(g.last[node] - node) + 1
+    s := Init{g = g, c = c, seen = seen, node = node}
+    s.own = make([]i32, size)
+    s.fields = make([][2]i32, size)
+    defer { delete(s.own); delete(s.fields); delete(s.field_of); delete(s.alias); delete(s.user) }
+    slice.fill(s.own, -1)
 
     // What can be unset: its locals that are pointers, slices or scalars, and
     // the pointer and slice fields of its struct locals that have no default.
+    bits: i32 = 0
     for id := node + 1; id <= g.last[node]; id += 1 {
         #partial switch g.kind[id] {
         case .Fun, .Struct, .Union, .Enum:
@@ -282,23 +289,31 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
         }
         base := distinct_base(g.type_[id])
         if flow_can_be_unset(base) {
-            s.keys[Init_Key{id, ""}] = len(s.keys)
+            s.own[id - node] = bits
+            bits += 1
         } else if sd := as_scope_body(base); sd != nil {
+            first := i32(len(s.field_of))
             for &f in sd.fields {
                 if field_has_default(f) || !flow_field_can_be_unset(f.type_) { continue }
-                s.keys[Init_Key{id, f.name}] = len(s.keys)
+                append(&s.field_of, Init_Field{f.name, bits})
+                bits += 1
             }
+            s.fields[id - node] = {first, i32(len(s.field_of)) - first}
         }
     }
-    if len(s.keys) == 0 { return }
-    s.words = (len(s.keys) + 63) / 64
+    if bits == 0 { return }
+    s.words = (int(bits) + 63) / 64
 
     // Who takes each operation's output, and which pointers are aliases.
+    s.user = make([]Node_Id, size)
+    slice.fill(s.user, NO_NODE)
     not_alias: map[Node_Id]bool
     defer delete(not_alias)
     for r in runs {
         for op in graph_run(g, int(r)) {
-            for o in graph_operands(g, op) { if o.op != NO_NODE { s.user[o.op] = op } }
+            for o in graph_operands(g, op) {
+                if o.op >= node && o.op <= g.last[node] { s.user[o.op - node] = op }
+            }
             // (A pointer every write of which is `&x`.)
             d := graph_whole_write_dest(g, op)
             if g.op[op] != .Write || d == NO_NODE { continue }
@@ -354,44 +369,72 @@ flow_field_can_be_unset :: proc(t: Type) -> bool {
     return false
 }
 
+// Whether declaration v is one of this fun's own.
 @(private="file")
-flow_set :: proc(s: ^Init, state: []u64, k: Init_Key, unset: bool) {
-    i, ok := s.keys[k]
-    if !ok { return }
-    if unset { bits_set(state, i) } else { bits_clear(state, i) }
+flow_own :: proc(s: ^Init, v: Node_Id) -> bool {
+    return v > s.node && v <= s.g.last[s.node]
+}
+
+// A variable's own bit: -1 when it can't be unset.
+@(private="file")
+flow_var_bit :: proc(s: ^Init, v: Node_Id) -> i32 {
+    return s.own[v - s.node] if flow_own(s, v) else -1
+}
+
+// A struct variable's field's bit: -1 when it can't be unset.
+@(private="file")
+flow_field_bit :: proc(s: ^Init, v: Node_Id, field: string) -> i32 {
+    if !flow_own(s, v) { return -1 }
+    r := s.fields[v - s.node]
+    for f in s.field_of[r[0]:r[0] + r[1]] { if f.name == field { return f.bit } }
+    return -1
 }
 
 @(private="file")
-flow_is_unset :: proc(s: ^Init, state: []u64, k: Init_Key) -> bool {
-    i, ok := s.keys[k]
-    return ok && bits_has(state, i)
+flow_set :: proc(state: []u64, bit: i32, unset: bool) {
+    if bit < 0 { return }
+    if unset { bits_set(state, int(bit)) } else { bits_clear(state, int(bit)) }
 }
 
-// Every field of a struct variable, set or unset (a whole write, `void`).
 @(private="file")
-flow_set_fields :: proc(s: ^Init, state: []u64, v: Node_Id, unset: bool) {
-    for k in s.keys { if k.var == v && k.field != "" { flow_set(s, state, k, unset) } }
+flow_is_unset :: proc(state: []u64, bit: i32) -> bool {
+    return bit >= 0 && bits_has(state, int(bit))
+}
+
+// A variable as a whole, set or unset: itself, and (`fields`) every field.
+@(private="file")
+flow_set_var :: proc(s: ^Init, state: []u64, v: Node_Id, unset, fields_unset: bool) {
+    if !flow_own(s, v) { return }
+    flow_set(state, s.own[v - s.node], unset)
+    r := s.fields[v - s.node]
+    for f in s.field_of[r[0]:r[0] + r[1]] { flow_set(state, f.bit, fields_unset) }
 }
 
 // The struct variable and field a place names: `x.f`, or `p.f` through a
 // pointer that aliases x.
 @(private="file")
-flow_field_place :: proc(s: ^Init, f: Node_Id) -> (key: Init_Key, via: Node_Id, ok: bool) {
+flow_field_place :: proc(s: ^Init, f: Node_Id) -> (var: Node_Id, field: string, via: Node_Id, ok: bool) {
     g := s.g
     if g.op[f] != .Field { return }
     base := graph_operands(g, f)[0].op
     if base == NO_NODE || g.kind[base] != .Op { return }
     #partial switch g.op[base] {
     case .Var:
-        return Init_Key{g.refers[base], g.name[f]}, NO_NODE, true
+        return g.refers[base], g.name[f], NO_NODE, true
     case .Deref:
         p := graph_operands(g, base)[0].op
         if p == NO_NODE || g.op[p] != .Var { return }
         if target, is_alias := s.alias[g.refers[p]]; is_alias {
-            return Init_Key{target, g.name[f]}, g.refers[p], true
+            return target, g.name[f], g.refers[p], true
         }
     }
     return
+}
+
+// Who takes an operation's output; NO_NODE for none.
+@(private="file")
+flow_user :: proc(s: ^Init, op: Node_Id) -> Node_Id {
+    return s.user[op - s.node] if op >= s.node && op <= s.g.last[s.node] else NO_NODE
 }
 
 // Whether a place's output is read: not written to as a whole, not only
@@ -399,8 +442,8 @@ flow_field_place :: proc(s: ^Init, f: Node_Id) -> (key: Init_Key, via: Node_Id, 
 @(private="file")
 flow_read_by :: proc(s: ^Init, op: Node_Id) -> bool {
     g := s.g
-    u, has := s.user[op]
-    if !has { return false }
+    u := flow_user(s, op)
+    if u == NO_NODE { return false }
     #partial switch g.op[u] {
     case .Address, .Arena_Alloc, .Field, .Swizzle, .Variant:
         return false
@@ -421,23 +464,23 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
     }
     #partial switch g.op[op] {
     case .Var:
-        k := Init_Key{g.refers[op], ""}
-        if reporting && flow_is_unset(s, state, k) && flow_read_by(s, op) {
+        if reporting && flow_is_unset(state, flow_var_bit(s, g.refers[op])) && flow_read_by(s, op) {
             report(s, g.origin[op], TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE, g.name[op])
         }
     case .Field:
-        k, via, ok := flow_field_place(s, op)
-        if !ok || !reporting || !flow_is_unset(s, state, k) { break }
-        u, has := s.user[op]
-        if !has { break }
+        if !reporting { break }
+        v, field, via, ok := flow_field_place(s, op)
+        if !ok || !flow_is_unset(state, flow_field_bit(s, v, field)) { break }
+        u := flow_user(s, op)
+        if u == NO_NODE { break }
         if g.op[u] == .Write || g.op[u] == .Fill || g.op[u] == .Zero || g.op[u] == .Construct || g.op[u] == .Byte_Read {
             if graph_operands(g, u)[0].op == op { break }   // written, not read
         }
         if g.op[u] == .Address || g.op[u] == .Field || g.op[u] == .Swizzle { break }
         if via != NO_NODE {
-            report(s, g.origin[op], TYPE_FIELD_ALIASED_VIA_USED_BEFORE, k.field, g.name[k.var], g.name[via])
+            report(s, g.origin[op], TYPE_FIELD_ALIASED_VIA_USED_BEFORE, field, g.name[v], g.name[via])
         } else {
-            report(s, g.origin[op], TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, k.field, g.name[k.var])
+            report(s, g.origin[op], TYPE_FIELD_USED_BEFORE_ASSIGNED_VALUE, field, g.name[v])
         }
     case .Write, .Fill, .Byte_Read, .Zero, .Construct:
         ops := graph_operands(g, op)
@@ -462,10 +505,9 @@ flow_init_op :: proc(s: ^Init, op: Node_Id, state: []u64, reporting: bool) {
                 // (the braces' writes follow); a constructor call may set anything.
                 fields_unset = g.written[op] == .Synthetic || strings.has_suffix(g.name[op], "{}")
             }
-            flow_set(s, state, Init_Key{v, ""}, unset)
-            flow_set_fields(s, state, v, fields_unset)
-        } else if k, _, ok := flow_field_place(s, d); ok {
-            flow_set(s, state, k, false)
+            flow_set_var(s, state, v, unset, fields_unset)
+        } else if v, field, _, ok := flow_field_place(s, d); ok {
+            flow_set(state, flow_field_bit(s, v, field), false)
         }
         if g.op[op] == .Construct { flow_init_out_params(s, op, state) }
     case .Call:
@@ -486,22 +528,19 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
             p := graph_operands(g, x)[0].op
             if p == NO_NODE || g.kind[p] != .Op { continue }
             if g.op[p] == .Var {
-                flow_set(s, state, Init_Key{g.refers[p], ""}, false)
-                flow_set_fields(s, state, g.refers[p], false)
-            } else if k, _, ok := flow_field_place(s, p); ok {
-                flow_set(s, state, k, false)
+                flow_set_var(s, state, g.refers[p], false, false)
+            } else if v, field, _, ok := flow_field_place(s, p); ok {
+                flow_set(state, flow_field_bit(s, v, field), false)
             }
         case .Read:
             p := graph_operands(g, x)[0].op
             if p == NO_NODE || g.op[p] != .Var { continue }
             if target, is_alias := s.alias[g.refers[p]]; is_alias {
-                flow_set(s, state, Init_Key{target, ""}, false)
-                flow_set_fields(s, state, target, false)
+                flow_set_var(s, state, target, false, false)
             }
         }
     }
 }
-
 
 // --- constants -----------------------------------------------------------------
 // A use of a constant whose value can't be known before the program runs

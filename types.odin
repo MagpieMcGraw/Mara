@@ -1594,8 +1594,6 @@ coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> boo
 // Check that a constant's value fits the target type's range (as an integer,
 // i_val; as a float, val).
 check_value_range :: proc(c: ^Checker, val: f64, i_val: i128, target: Type, span: Span) {
-    tn := type_name(target)
-
     #partial switch v in target {
     case Type_Numeric:
         // Word-sized (bits=0): skip — width is decided at codegen, and the 32-bit
@@ -1611,20 +1609,20 @@ check_value_range :: proc(c: ^Checker, val: f64, i_val: i128, target: Type, span
             max_v := (i128(1) << uint(v.bits - 1)) - 1
             min_v := -(i128(1) << uint(v.bits - 1))
             if i_val < min_v || i_val > max_v {
-                check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE, i_val, tn, min_v, max_v)
+                check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE, i_val, type_name(target), min_v, max_v)
             }
         case .Unsigned:
             // For u128, the i128 storage caps at 2^127-1, so the parser's u64
             // ceiling is already much tighter. Just sanity-check non-negative.
             if v.bits == 128 {
                 if i_val < 0 {
-                    check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE_128, i_val, tn)
+                    check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE_128, i_val, type_name(target))
                 }
                 return
             }
             max_v := (i128(1) << uint(v.bits)) - 1
             if i_val < 0 || i_val > max_v {
-                check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE_2, i_val, tn, max_v)
+                check_error(c, span, TYPE_CONSTANT_OVERFLOWS_RANGE_2, i_val, type_name(target), max_v)
             }
         case .Float:
             // f16: ~65504 max magnitude.
