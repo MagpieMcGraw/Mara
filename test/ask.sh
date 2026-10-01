@@ -37,7 +37,7 @@ done < "$QUERIES"
 if [ "$1" = "-u" ]; then
   cp "$actual" "$EXPECTED"
   echo "ASK: recorded $(grep -c '^=== ' "$actual") queries"
-elif diff -u "$EXPECTED" "$actual"; then
+elif diff -u <(tr -d '\r' < "$EXPECTED") "$actual"; then   # (a checkout's CRLF aside)
   echo "ASK: $(grep -c '^=== ' "$actual") queries match"
 else
   echo "ASK: DIFFERENCES"; exit 1
