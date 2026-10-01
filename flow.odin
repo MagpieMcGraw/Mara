@@ -118,13 +118,7 @@ flow_check_unused :: proc(c: ^Checker, checked: ^Checked_Program) {
     defer delete(read)
     for k, id in g.kind {
         if k != .Op { continue }
-        #partial switch g.op[id] {
-        case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Arena_Alloc:
-            ops := graph_operands(g, Node_Id(id))
-            if len(ops) > 0 && ops[0].op != NO_NODE && g.kind[ops[0].op] == .Op && g.op[ops[0].op] == .Var {
-                dest[ops[0].op] = true
-            }
-        }
+        if d := graph_whole_write_dest(g, Node_Id(id)); d != NO_NODE { dest[d] = true }
     }
     for k, id in g.kind {
         if k == .Op && g.op[id] == .Var && !dest[id] && g.refers[id] != NO_NODE { read[g.refers[id]] = true }
@@ -321,8 +315,10 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     for r in runs {
         for op in graph_run(g, int(r)) {
             for o in graph_operands(g, op) { if o.op != NO_NODE { s.user[o.op] = op } }
-            v, whole, is_write := flow_written(g, op)
-            if !is_write || !whole || g.op[op] != .Write { continue }
+            // (A pointer every write of which is `&x`.)
+            d := graph_whole_write_dest(g, op)
+            if g.op[op] != .Write || d == NO_NODE { continue }
+            v := g.refers[d]
             val := graph_operands(g, op)[1].op
             target := NO_NODE
             if val != NO_NODE && g.op[val] == .Address {
@@ -372,21 +368,6 @@ flow_field_can_be_unset :: proc(t: Type) -> bool {
     case ^Type_Ptr, ^Type_Slice: return true
     }
     return false
-}
-
-// The variable a write replaces as a whole: its destination is the variable.
-@(private="file")
-flow_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool, ok: bool) {
-    #partial switch g.op[op] {
-    case .Write, .Fill, .Byte_Read, .Zero, .Construct:
-    case:
-        return
-    }
-    ops := graph_operands(g, op)
-    if len(ops) == 0 || ops[0].op == NO_NODE || g.kind[ops[0].op] != .Op { return }
-    d := ops[0].op
-    if g.op[d] == .Var { return g.refers[d], true, true }
-    return NO_NODE, false, false
 }
 
 @(private="file")

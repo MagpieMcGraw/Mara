@@ -181,9 +181,8 @@ escape_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program) {
     }
     // In source order, once each (a generic's instances share their spans).
     slice.sort_by(g_esc.diags[:], proc(a, b: Esc_Diag) -> bool {
-        if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
-        if span_line(a.span) != span_line(b.span) { return span_line(a.span) < span_line(b.span) }
-        if span_col(a.span) != span_col(b.span) { return span_col(a.span) < span_col(b.span) }
+        if span_before(a.span, b.span) { return true }
+        if span_before(b.span, a.span) { return false }
         return a.msg < b.msg
     })
     for d, i in g_esc.diags {
@@ -415,7 +414,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
             esc_deref(e, r, mem, state)
         }
     case .Call:
-        if callee := esc_callee(e, op); callee != nil {
+        if callee := graph_called(e.g, op); callee != nil {
             esc_call(e, r, op, callee, ops, state)
         } else {
             // Through a function value (the first operand): may view any argument.
@@ -425,7 +424,7 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         // Into its destination (the first operand); a union variant has no
         // constructor and holds nothing yet.
         val: Esc_Roots
-        if callee := esc_callee(e, op); callee != nil { esc_call(e, &val, op, callee, ops[1:], state) }
+        if callee := graph_called(e.g, op); callee != nil { esc_call(e, &val, op, callee, ops[1:], state) }
         esc_write(e, op, ops[0], val, state)
     case .Zero:
         // `s : [:n]T` (a capacity): s views storage that lives as long as s
@@ -680,13 +679,6 @@ esc_value_storage :: proc(e: ^Esc, r: ^Esc_Roots, o: Operand) {
 
 // --- calls ---------------------------------------------------------------------
 
-@(private="file")
-esc_callee :: proc(e: ^Esc, op: Node_Id) -> ^Type_Scope {
-    for edge in graph_out(e.g, op) {
-        if edge.kind == .Calls { return e.g.type_[edge.to].(^Type_Scope) }
-    }
-    return nil
-}
 
 @(private="file")
 esc_summary_of :: proc(e: ^Esc, callee: ^Type_Scope) -> ^Esc_Summary {
@@ -939,7 +931,7 @@ esc_report_call_return :: proc(e: ^Esc, ri: int, ret: Node_Id, o: Operand, state
     call := o.op
     if g.op[call] == .Read { call = esc_built_by(e, ri, ret, call) }
     if call == NO_NODE || (g.op[call] != .Call && g.op[call] != .Construct) { return false }
-    callee := esc_callee(e, call)
+    callee := graph_called(e.g, call)
     sum := esc_summary_of(e, callee)
     if sum == nil { return false }
     args := graph_operands(g, call)

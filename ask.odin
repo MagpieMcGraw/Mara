@@ -782,8 +782,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         // map-iteration order, like the edges that `ask_sort_edges` already fixes.
         slice.sort_by(matches[:], proc(a, b: Ask_Match) -> bool {
             if a.label != b.label         { return a.label < b.label }
-            if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
-            return span_line(a.span) < span_line(b.span)
+            return span_before(a.span, b.span)
         })
         fmt.sbprintf(&b, "mara ask: '%s' is ambiguous — %d definitions in %s (narrow with `in <module|file>`):\n",
                      target, len(matches), scope_desc)
@@ -1374,10 +1373,7 @@ ask_module_surface :: proc(checked: ^Checked_Program, target: string) -> (out: s
         if a.users != b.users { return a.users > b.users }      // most-used first
         return a.m.label < b.m.label
     })
-    slice.sort_by(funs[:], proc(a, b: Ask_Match) -> bool {
-        if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
-        return span_line(a.span) < span_line(b.span)
-    })
+    slice.sort_by(funs[:], proc(a, b: Ask_Match) -> bool { return span_before(a.span, b.span) })
 
     b := strings.builder_make()
     fmt.sbprintf(&b, "%s — module   (%s, %s)\n", canonical, ask_plural(len(types), "type"), ask_plural(len(funs), "fun"))

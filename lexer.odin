@@ -655,6 +655,13 @@ span_line :: proc(s: Span) -> int {
     return token_line(build_tokens[s.at]) if s.at != 0 else 0
 }
 
+// Source order: by file, then line, then column.
+span_before :: proc(a, b: Span) -> bool {
+    if span_file(a) != span_file(b) { return span_file(a) < span_file(b) }
+    if span_line(a) != span_line(b) { return span_line(a) < span_line(b) }
+    return span_col(a) < span_col(b)
+}
+
 span_col :: proc(s: Span) -> int {
     return token_col(build_tokens[s.at]) if s.at != 0 else 0
 }

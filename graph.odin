@@ -184,6 +184,17 @@ graph_operands :: proc(g: ^Program_Graph, id: Node_Id) -> []Operand {
     return g.operands[g.operand_first[id]:g.operand_first[id + 1]]
 }
 
+// Where a whole write lands — `e = f()` writes e, reading nothing — its
+// destination's var operation; NO_NODE for any other operation.
+graph_whole_write_dest :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
+    #partial switch g.op[op] {
+    case .Write, .Fill, .Byte_Read, .Zero, .Construct, .Arena_Alloc:
+        ops := graph_operands(g, op)
+        if len(ops) > 0 && ops[0].op != NO_NODE && g.kind[ops[0].op] == .Op && g.op[ops[0].op] == .Var { return ops[0].op }
+    }
+    return NO_NODE
+}
+
 // The fun or struct a call or construction runs; nil through a function value.
 graph_called :: proc(g: ^Program_Graph, op: Node_Id) -> ^Type_Scope {
     for edge in graph_out(g, op) {
@@ -3944,11 +3955,7 @@ graph_check_refers :: proc(b: ^Graph_Builder) {
 
 // The fun or struct an operation runs in: its nearest callable ancestor.
 graph_caller :: proc(g: ^Program_Graph, id: Node_Id) -> ^Type_Scope {
-    for p := g.parent[id]; p != NO_NODE; p = g.parent[p] {
-        #partial switch g.kind[p] {
-        case .Fun, .Struct: return g.type_[p].(^Type_Scope)
-        }
-    }
+    if n := graph_code_owner(g, id); n != NO_NODE { return g.type_[n].(^Type_Scope) }
     return nil
 }
 

@@ -23,11 +23,15 @@ import "core:strings"
 //
 // With `control`, the branches guarding each contributing statement are
 // contributors too (control dependence), and so are the values they branch on.
+// The params a fun's slice reaches, with control, are its return-dependency
+// summary (slice_return_deps).
 // ---------------------------------------------------------------------------
 
 @(private="file")
 Slice :: struct {
     checked:   ^Checked_Program,
+    f:         ^Du_Fn,
+    control:   bool,                 // follow the guarding branches too
     seen_use:  map[Node_Id]bool,
     seen_def:  map[^Def]bool,
     result:    [dynamic]^Def,
@@ -60,7 +64,7 @@ slice_add_def :: proc(s: ^Slice, d: ^Def) {
     defer delete(uses)
     du_def_uses(s.checked, d, true, &uses)
     for u in uses { slice_use(s, u) }
-    slice_guards(s, d.guards)
+    if s.control { slice_guards(s, du_def_guards(s.checked, d)) }
 }
 
 // Fold control dependence: each guarding predicate is recorded (for the render)
@@ -97,24 +101,47 @@ slice_close :: proc(s: ^Slice) {
 // of a named result (`-> (x, y: f32)`): the body assigns those and returns
 // them implicitly, so their computation is the slice.
 @(private="file")
-slice_seed :: proc(s: ^Slice, f: ^Du_Fn) {
+slice_seed :: proc(s: ^Slice) {
     g := &s.checked.graph
-    for ret in f.returns {
+    for ret in s.f.returns {
         for o in graph_operands(g, ret) { slice_value(s, o) }
-        if s.checked.du.want_control { slice_guards(s, du_return_guards(f, ret)) }
+        if s.control { slice_guards(s, du_return_guards(s.f, ret)) }
     }
-    for d in f.defs {
+    for d in s.f.defs {
         if d.binding != nil && g.kind[d.binding.node] == .Result { slice_add_def(s, d) }
     }
 }
 
 @(private="file")
-slice_run :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> (defs: [dynamic]^Def, ctrl: [dynamic]Guard) {
-    s := Slice{ checked = checked }
+slice_run :: proc(checked: ^Checked_Program, ft: ^Type_Scope, control: bool) -> (defs: [dynamic]^Def, ctrl: [dynamic]Guard) {
+    f := du_fn(checked, ft)
+    if f == nil { return }
+    if control && !f.guarded { du_guards(checked, f) }
+    s := Slice{checked = checked, f = f, control = control}
     defer slice_free(&s)
-    if f := du_fn(checked, ft); f != nil { slice_seed(&s, f) }
+    slice_seed(&s)
     slice_close(&s)
     return s.result, s.ctrl
+}
+
+// Which params a fun's result is computed from: its slice, following the
+// branches that decide the result too — what `find` returns is the position
+// where haystack matched needle, though only `start` flows into it as data.
+// Calls are crossed by their callees' summaries, so the call graph computes
+// these bottom-up (cg_compute_return_deps).
+slice_return_deps :: proc(checked: ^Checked_Program, ft: ^Type_Scope) -> []int {
+    if len(ft.return_types) == 0 { return nil }   // no result to be computed
+    defs, ctrl := slice_run(checked, ft, control = true)
+    defer { delete(defs); delete(ctrl) }
+    params: [dynamic]int
+    defer delete(params)
+    for d in defs { if d.kind == .Param { append(&params, d.binding.param_index) } }
+    if len(params) == 0 { return nil }
+    slice.sort(params[:])
+    out := make([]int, len(params))
+    n := 0
+    for p in params { if n == 0 || out[n - 1] != p { out[n] = p; n += 1 } }
+    return out[:n]
 }
 
 // --- render ----------------------------------------------------------------
@@ -123,7 +150,7 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
     if len(ft.return_types) == 0 {
         return fmt.tprintf("%s returns no value — nothing to slice.\n", label)
     }
-    defs, ctrl := slice_run(checked, ft)
+    defs, ctrl := slice_run(checked, ft, checked.du.want_control)
     defer { delete(defs); delete(ctrl) }
 
     params: [dynamic]^Def
@@ -166,9 +193,7 @@ render_contributors :: proc(checked: ^Checked_Program, ft: ^Type_Scope, label: s
 
 @(private="file")
 guard_span_less :: proc(a, b: Guard) -> bool {
-    if span_file(a.span) != span_file(b.span) { return span_file(a.span) < span_file(b.span) }
-    if span_line(a.span) != span_line(b.span) { return span_line(a.span) < span_line(b.span) }
-    return span_col(a.span) < span_col(b.span)
+    return span_before(a.span, b.span)
 }
 
 @(private="file")
@@ -210,7 +235,7 @@ slice_build_succ :: proc(checked: ^Checked_Program, ft: ^Type_Scope, data_only: 
         if d2.binding == nil { continue }
         deps: [dynamic]Node_Id
         du_def_uses(checked, d2, true, &deps)
-        if !data_only { for g in d2.guards { for c in g.conds { du_value_uses(checked, c, true, &deps) } } }
+        if !data_only { for g in du_def_guards(checked, d2) { for c in g.conds { du_value_uses(checked, c, true, &deps) } } }
         for u in deps {
             for d1 in checked.du.reaching[u] {
                 s := succ[d1]; append(&s, d2); succ[d1] = s
@@ -372,7 +397,7 @@ collect_landings :: proc(checked: ^Checked_Program, fn: ^Type_Scope, targets: ma
     if f == nil { return }
     g := &checked.graph
     for op in f.calls {
-        callee := du_callee(g, op)
+        callee := graph_called(g, op)
         followable := callee != nil && callee.kind == .Fun && scope_is_written(callee)
         args := du_call_args(g, op)
         if g.op[op] == .Print || g.op[op] == .Crash { args = graph_operands(g, op) }
@@ -478,18 +503,13 @@ flow_record :: proc(by_param: ^map[^Var_Binding]Hop_Landing, L: Hop_Landing, dep
     if cur, ok := by_param[L.param]; ok {
         cur.sites += 1
         if depth < cur.depth { cur.depth = depth }
-        if landing_site_less(L.site, cur.site) { cur.site = L.site }
+        if span_before(L.site, cur.site) { cur.site = L.site }
         by_param[L.param] = cur
     } else {
         e := L; e.sites = 1; e.depth = depth; by_param[L.param] = e
     }
 }
 
-@(private="file")
-landing_site_less :: proc(a, b: Span) -> bool {
-    if span_file(a) != span_file(b) { return span_file(a) < span_file(b) }
-    return span_line(a) < span_line(b)
-}
 
 // Sort landings by hop depth first (so the render can bucket "N hops:"), then by
 // callee / parameter / site for stable output within a hop.
@@ -499,8 +519,7 @@ landing_less :: proc(a, b: Hop_Landing) -> bool {
     la, lb := ask_label(a.callee), ask_label(b.callee)
     if la != lb { return la < lb }
     if a.param.param_index != b.param.param_index { return a.param.param_index < b.param.param_index }
-    if span_file(a.site) != span_file(b.site) { return span_file(a.site) < span_file(b.site) }
-    return span_line(a.site) < span_line(b.site)
+    return span_before(a.site, b.site)
 }
 
 // A parameter's type as the compiler prints it (`^Megastruct`, `f64`) — the ^ vs
@@ -656,7 +675,7 @@ render_var_type_graph :: proc(bb: ^strings.Builder, checked: ^Checked_Program, b
 // The backward slice from every definition of `b`.
 @(private="file")
 slice_of_var :: proc(checked: ^Checked_Program, b: ^Var_Binding) -> Slice {
-    s := Slice{ checked = checked }
+    s := Slice{checked = checked, control = checked.du.want_control}
     defs := var_defs(checked, b)
     defer delete(defs)
     for d in defs { slice_add_def(&s, d) }
@@ -1042,7 +1061,7 @@ render_type_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, 
     seeds := type_flow_seeds(checked, T)
     defer delete(seeds)
 
-    s := Slice{ checked = checked }
+    s := Slice{checked = checked, control = checked.du.want_control}
     defer { slice_free(&s); delete(s.result); delete(s.ctrl) }
     for d in checked.du.defs { if d.binding != nil && seeds[d.binding] { slice_add_def(&s, d) } }
     slice_close(&s)
@@ -1179,7 +1198,7 @@ render_fn_flow_above :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
     if len(sites) == 0    { fmt.sbprintf(bb, "\nabove (flow) — %s is never called\n", label); return }
     if len(F.params) == 0 { fmt.sbprintf(bb, "\nabove (flow) — %s takes no arguments  (%s)\n", label, ask_plural(len(sites), "call site")); return }
 
-    s := Slice{ checked = checked }
+    s := Slice{checked = checked, control = checked.du.want_control}
     defer { slice_free(&s); delete(s.result); delete(s.ctrl) }
     for site in sites { for arg in du_call_args(&checked.graph, site.op) { slice_value(&s, arg) } }
     slice_close(&s)
@@ -1226,7 +1245,7 @@ render_fn_flow_below :: proc(bb: ^strings.Builder, checked: ^Checked_Program, F:
     for d in checked.du.defs {
         if len(d.writes) == 0 || g.op[d.writes[0]] != .Write { continue }
         val := graph_operands(g, d.writes[0])[1].op
-        if val != NO_NODE && g.op[val] == .Call && du_callee(g, val) == F { result_defs[d] = true }
+        if val != NO_NODE && g.op[val] == .Call && graph_called(g, val) == F { result_defs[d] = true }
     }
     inline := len(sites) - len(result_defs)
     if inline < 0 { inline = 0 }

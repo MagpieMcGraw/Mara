@@ -175,7 +175,7 @@ cg_purity_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
 @(private="file") g_cg_checked: ^Checked_Program
 
 // Return-dep set: which parameter indices each function's result is computed
-// from (du_return_deps, a data slice over the program graph from its returns).
+// from (slice_return_deps, a slice over the program graph from its returns).
 // A construction's Self is computed from every argument, an intrinsic's result
 // too; a fun with no body in the program (foreign) has none, and its callers
 // take every argument. A summary on the bottom-up framework: callees first,
@@ -202,7 +202,7 @@ cg_return_deps_transfer :: proc(g: ^Call_Graph, n: int) -> bool {
             for &x, i in new_set { x = i }
         }
     } else {
-        new_set = du_return_deps(g_cg_checked, ts)
+        new_set = slice_return_deps(g_cg_checked, ts)
     }
     if slice.equal(g.return_deps[n], new_set) { return false }
     g.return_deps[n] = new_set   // monotone: the set only grows toward its fixpoint
