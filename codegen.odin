@@ -576,18 +576,6 @@ union_llvm_name :: proc(ukey: string) -> string {
     return fmt.tprintf("%%union.%s", ukey)
 }
 
-// The union a `%union.X` IR type names, for the size/alignment tables. A
-// `%union.` type the checked program doesn't know is a compiler bug, not a
-// pointer-sized value.
-ir_union :: proc(ir_type: string, checked: ^Checked_Program) -> (^Type_Union, bool) {
-    if !strings.has_prefix(ir_type, "%union.") { return nil, false }
-    if checked == nil {
-        fmt.panicf("sizing %s needs the checked program", ir_type)
-    }
-    ut, ok := checked.table.unions[ir_type[len("%union."):]]
-    if !ok { fmt.panicf("sizing %s: no such union", ir_type) }
-    return ut, true
-}
 
 // Get the IR type for a union's tag field
 union_tag_ir_type :: proc(ut: ^Type_Union) -> string {
