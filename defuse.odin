@@ -219,31 +219,12 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
     defer delete(index_of)
     for d, i in f.defs { index_of[d] = i }
 
-    run_at: map[i32]int   // a run → its position in f.runs
-    defer delete(run_at)
-    for r, i in f.runs { run_at[r] = i }
-    in_state := make([][]u64, len(f.runs))
-    defer { for s in in_state { delete(s) }; delete(in_state) }
-    for &s in in_state { s = make([]u64, words) }
-    entered := make([]bool, len(f.runs))
-    defer delete(entered)
-
-    // The entry: every param defined.
-    todo: [dynamic]int
-    defer delete(todo)
-    if len(f.runs) > 0 {
-        for d, i in f.defs { if d.kind == .Param { bits_set(in_state[0], i) } }
-        entered[0] = true
-        append(&todo, 0)
-    }
-    state := make([]u64, words)
-    defer delete(state)
     Transfer :: struct {
         g: ^Program_Graph, f: ^Du_Fn, def_of: ^map[[2]i32]^Def, tracked: ^map[Node_Id]int,
         kill: [][]u64, index_of: ^map[^Def]int,
     }
     t := Transfer{g, f, &def_of, &tracked, kill, &index_of}
-    apply :: proc(t: ^Transfer, op: Node_Id, state: []u64) {
+    apply :: proc(t: ^Transfer, ri: int, op: Node_Id, state: []u64) {
         v, whole, is_def := du_written(t.g, op)
         if !is_def { return }
         k, tracked := t.tracked[v]
@@ -252,38 +233,13 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         if whole { bits_clear_mask(state, t.kill[k]) }
         bits_set(state, t.index_of[d])
     }
-    merge_into :: proc(dst, src: []u64) -> bool {
-        changed := false
-        for w, i in src {
-            if dst[i] | w != dst[i] { dst[i] |= w; changed = true }
-        }
-        return changed
-    }
-    for len(todo) > 0 {
-        ri := pop(&todo)
-        copy(state, in_state[ri])
-        ops := graph_run(g, int(f.runs[ri]))
-        for op in ops {
-            apply(&t, op, state)
-            if g.op[op] == .Run_Defer {
-                for e in graph_out(g, op) {
-                    if e.kind != .Runs { continue }
-                    for e2 in graph_out(g, e.to) {
-                        if e2.kind != .Then { continue }
-                        if di, ok := run_at[g.run_starts[e2.to]]; ok {
-                            if merge_into(in_state[di], state) || !entered[di] { entered[di] = true; append(&todo, di) }
-                        }
-                    }
-                }
-            }
-        }
-        for e in graph_out(g, ops[len(ops) - 1]) {
-            if e.kind != .Then { continue }
-            si, ok := run_at[g.run_starts[e.to]]
-            if !ok { continue }
-            if merge_into(in_state[si], state) || !entered[si] { entered[si] = true; append(&todo, si) }
-        }
-    }
+    // The entry: every param defined.
+    fl := run_flow_make(g, f.runs[:], words, bits_copy, bits_union)
+    defer run_flow_free(&fl)
+    state := make([]u64, words)
+    defer delete(state)
+    for d, i in f.defs { if d.kind == .Param { bits_set(state, i) } }
+    run_flow_solve(&fl, state, &t, apply)
 
     // The uses, against the fixpoint: every var operation naming a tracked
     // declaration, less a whole write's own destination.
@@ -299,10 +255,10 @@ du_build :: proc(checked: ^Checked_Program, f: ^Du_Fn) {
         }
     }
     for r, ri in f.runs {
-        copy(state, in_state[ri])
+        if fl.entered[ri] { copy(state, fl.in_state[ri]) } else { slice.zero(state) }
         for op in graph_run(g, int(r)) {
             du_uses_in(g, du, f, op, state, tracked, kill, dest)
-            apply(&t, op, state)
+            apply(&t, ri, op, state)
         }
     }
 }
@@ -325,16 +281,6 @@ du_uses_in :: proc(g: ^Program_Graph, du: ^Def_Use, f: ^Du_Fn, op: Node_Id, stat
 
 
 
-// --- helpers ------------------------------------------------------------------
-
-@(private="file")
-bits_set :: proc(b: []u64, i: int) { b[i / 64] |= 1 << uint(i % 64) }
-
-@(private="file")
-bits_has :: proc(b: []u64, i: int) -> bool { return b[i / 64] & (1 << uint(i % 64)) != 0 }
-
-@(private="file")
-bits_clear_mask :: proc(b, mask: []u64) { for m, i in mask { b[i] &~= m } }
 
 // --- variables and definitions ---------------------------------------------
 

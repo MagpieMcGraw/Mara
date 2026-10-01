@@ -282,7 +282,6 @@ flow_check_init :: proc(c: ^Checker, checked: ^Checked_Program) {
 
 @(private="file")
 flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[Span]bool) {
-    starts := g.run_starts
     runs: [dynamic]i32
     defer delete(runs)
     graph_code_runs(g, node, &runs)
@@ -338,54 +337,17 @@ flow_init_fun :: proc(c: ^Checker, g: ^Program_Graph, node: Node_Id, seen: ^map[
     }
     for v in not_alias { delete_key(&s.alias, v) }
 
-    // The fixpoint: each run's entry state.
-    at: map[i32]int
-    defer delete(at)
-    for r, i in runs { at[r] = i }
-    in_state := make([][]u64, len(runs))
-    defer { for x in in_state { delete(x) }; delete(in_state) }
-    for &x in in_state { x = make([]u64, s.words) }
-    entered := make([]bool, len(runs))
-    defer delete(entered)
+    // The fixpoint: each run's entry state (nothing unset on entry).
+    fl := run_flow_make(g, runs[:], s.words, bits_copy, bits_union)
+    defer run_flow_free(&fl)
     state := make([]u64, s.words)
     defer delete(state)
-    todo: [dynamic]int
-    defer delete(todo)
-    entered[0] = true
-    append(&todo, 0)
-    merge :: proc(dst, src: []u64) -> bool {
-        grew := false
-        for w, i in src { if dst[i] | w != dst[i] { dst[i] |= w; grew = true } }
-        return grew
-    }
-    enter :: proc(i: int, state: []u64, in_state: [][]u64, entered: []bool, todo: ^[dynamic]int) {
-        if merge(in_state[i], state) || !entered[i] { entered[i] = true; append(todo, i) }
-    }
-    for len(todo) > 0 {
-        ri := pop(&todo)
-        copy(state, in_state[ri])
-        ops := graph_run(g, int(runs[ri]))
-        for op in ops {
-            flow_init_op(&s, op, state, false)
-            if g.op[op] != .Run_Defer { continue }
-            for e in graph_out(g, op) {
-                if e.kind != .Runs { continue }
-                for e2 in graph_out(g, e.to) {
-                    if e2.kind != .Then { continue }
-                    if di, ok := at[starts[e2.to]]; ok { enter(di, state, in_state, entered, &todo) }
-                }
-            }
-        }
-        for e in graph_out(g, ops[len(ops) - 1]) {
-            if e.kind != .Then { continue }
-            if si, ok := at[starts[e.to]]; ok { enter(si, state, in_state, entered, &todo) }
-        }
-    }
+    run_flow_solve(&fl, state, &s, proc(s: ^Init, ri: int, op: Node_Id, state: []u64) { flow_init_op(s, op, state, false) })
 
     // The reads, against the fixpoint, in the order the runs list them.
     for r, ri in runs {
-        if !entered[ri] { continue }
-        copy(state, in_state[ri])
+        if !fl.entered[ri] { continue }
+        copy(state, fl.in_state[ri])
         for op in graph_run(g, int(r)) { flow_init_op(&s, op, state, true) }
     }
 }
@@ -431,13 +393,13 @@ flow_written :: proc(g: ^Program_Graph, op: Node_Id) -> (v: Node_Id, whole: bool
 flow_set :: proc(s: ^Init, state: []u64, k: Init_Key, unset: bool) {
     i, ok := s.keys[k]
     if !ok { return }
-    if unset { state[i / 64] |= 1 << uint(i % 64) } else { state[i / 64] &~= 1 << uint(i % 64) }
+    if unset { bits_set(state, i) } else { bits_clear(state, i) }
 }
 
 @(private="file")
 flow_is_unset :: proc(s: ^Init, state: []u64, k: Init_Key) -> bool {
     i, ok := s.keys[k]
-    return ok && state[i / 64] & (1 << uint(i % 64)) != 0
+    return ok && bits_has(state, i)
 }
 
 // Every field of a struct variable, set or unset (a whole write, `void`).

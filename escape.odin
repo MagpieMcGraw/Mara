@@ -133,14 +133,10 @@ Esc :: struct {
     slots:  int,
     runs:   [dynamic]i32,        // its code's runs, then its defer blocks'
     main:   int,                 // how many of `runs` are its code's own
-    run_at: map[i32]int,
     memo:   []Esc_Roots,         // each operation's roots, by id - node
 
     // The fixpoint.
-    in_state:    [][]Esc_Roots,
-    entered:     []bool,
-    queued:      []bool,
-    todo:        [dynamic]int,
+    flow:        Run_Flow(Esc_Roots),
     uses:        map[Node_Id][dynamic]int,    // an operation → the other runs using its value
     used_across: []bool,                      // ... whether it has any, by id - node
     defer_exit:  map[Node_Id][]Esc_Roots,     // a defer block → the state it leaves
@@ -239,10 +235,10 @@ esc_walk :: proc(cg: ^Call_Graph, n: int, report: bool) -> (Esc_Summary, bool) {
 
     e.final = true
     state := make([]Esc_Roots, e.slots)
-    for ri in 0 ..< len(e.runs) {
-        if !e.entered[ri] { continue }
-        esc_state_copy(state, e.in_state[ri])
-        esc_run(&e, ri, state)
+    for r, ri in e.runs {
+        if !e.flow.entered[ri] { continue }
+        esc_state_copy(state, e.flow.in_state[ri])
+        for op in graph_run(g, int(r)) { esc_op(&e, ri, op, state) }
     }
     if report { append(&g_esc.diags, ..e.diags[:]) }
     return e.sum, true
@@ -280,7 +276,6 @@ esc_vars :: proc(e: ^Esc) {
 esc_scan :: proc(e: ^Esc) {
     g := e.g
     for r, ri in e.runs {
-        e.run_at[r] = ri
         for op in graph_run(g, int(r)) { e.run_of[op - e.node] = i32(ri) }
     }
     for r, ri in e.runs {
@@ -324,68 +319,23 @@ esc_scan :: proc(e: ^Esc) {
 
 @(private="file")
 esc_fixpoint :: proc(e: ^Esc) {
-    n := len(e.runs)
-    e.in_state = make([][]Esc_Roots, n)
-    e.entered = make([]bool, n)
-    e.queued = make([]bool, n)
+    e.flow = run_flow_make(e.g, e.runs[:], e.slots, esc_state_copy, esc_merge)
     // The entry: each param holds the caller memory it points at.
     entry := make([]Esc_Roots, e.slots)
     for v in e.vars {
         if v.param >= 0 && v.slot >= 0 && !v.view { entry[v.slot].params = {v.param} }
     }
-    e.in_state[0] = entry
-    e.entered[0] = true
-    esc_queue(e, 0)
-    state := make([]Esc_Roots, e.slots)
-    visits := 0
-    for len(e.todo) > 0 {
-        ri := pop(&e.todo)
-        e.queued[ri] = false
-        esc_state_copy(state, e.in_state[ri])
-        esc_run(e, ri, state)
-        visits += 1
-        if visits > 10_000_000 { fmt.panicf("escape analysis: %s did not converge", e.ft.name) }
-    }
+    run_flow_solve(&e.flow, entry, e, esc_op)
 }
 
+// The end of a defer's block: what it leaves joins back in where it ran
+// (esc_run_defer), and those runs go again when that grows.
 @(private="file")
-esc_queue :: proc(e: ^Esc, ri: int) {
-    if e.queued[ri] { return }
-    e.queued[ri] = true
-    append(&e.todo, ri)
-}
-
-// Join a state into run si's.
-@(private="file")
-esc_flow :: proc(e: ^Esc, si: int, state: []Esc_Roots) {
-    if !e.entered[si] {
-        e.entered[si] = true
-        e.in_state[si] = make([]Esc_Roots, e.slots)
-        esc_state_copy(e.in_state[si], state)
-        esc_queue(e, si)
-        return
-    }
-    if esc_merge(e.in_state[si], state) { esc_queue(e, si) }
-}
-
-@(private="file")
-esc_run :: proc(e: ^Esc, ri: int, state: []Esc_Roots) {
-    g := e.g
-    ops := graph_run(g, int(e.runs[ri]))
-    for op in ops { esc_op(e, ri, op, state) }
-    if e.final { return }
-    last := ops[len(ops) - 1]
-    for edge in graph_out(g, last) {
-        if edge.kind != .Then { continue }
-        if si, ok := e.run_at[g.run_starts[edge.to]]; ok { esc_flow(e, si, state) }
-    }
-    // The end of a defer's block: what it leaves joins back in where it ran.
-    if g.op[last] == .Return && ri >= e.main {
-        d := esc_defer_block(g, last)
-        if d not_in e.defer_exit { e.defer_exit[d] = make([]Esc_Roots, e.slots) }
-        if esc_merge(e.defer_exit[d], state) {
-            for u in e.defer_users[d] { esc_queue(e, u) }
-        }
+esc_defer_end :: proc(e: ^Esc, ret: Node_Id, state: []Esc_Roots) {
+    d := esc_defer_block(e.g, ret)
+    if d not_in e.defer_exit { e.defer_exit[d] = make([]Esc_Roots, e.slots) }
+    if esc_merge(e.defer_exit[d], state) {
+        for u in e.defer_users[d] { run_flow_queue(&e.flow, u) }
     }
 }
 
@@ -398,20 +348,17 @@ esc_defer_block :: proc(g: ^Program_Graph, op: Node_Id) -> Node_Id {
     return NO_NODE
 }
 
+// A run-defer (its block entered with this state: run_flow_solve): what the
+// block leaves joins in, once known; this run goes again when it grows.
 @(private="file")
 esc_run_defer :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
-    g := e.g
-    for edge in graph_out(g, op) {
+    for edge in graph_out(e.g, op) {
         if edge.kind != .Runs { continue }
         d := edge.to
         if !e.final {
             if d not_in e.defer_users { e.defer_users[d] = {} }
             users := &e.defer_users[d]
             if !slice.contains(users[:], ri) { append(users, ri) }
-            for entry in graph_out(g, d) {
-                if entry.kind != .Then { continue }
-                if si, ok := e.run_at[g.run_starts[entry.to]]; ok { esc_flow(e, si, state) }
-            }
         }
         if exit, ok := e.defer_exit[d]; ok { esc_merge(state, exit) }
     }
@@ -505,11 +452,12 @@ esc_op :: proc(e: ^Esc, ri: int, op: Node_Id, state: []Esc_Roots) {
         esc_write(e, op, ops[0], val, state)
     case .Return:
         if e.final && ri < e.main { esc_return_op(e, ri, op, ops, state) }
+        if !e.final && ri >= e.main { esc_defer_end(e, op, state) }
     case .Run_Defer:
         esc_run_defer(e, ri, op, state)
     }
     if watched && !esc_equal(old, r^) {
-        for u in e.uses[op] { esc_queue(e, u) }
+        for u in e.uses[op] { run_flow_queue(&e.flow, u) }
     }
 }
 
