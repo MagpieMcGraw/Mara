@@ -13,14 +13,9 @@ import "core:slice"
 // are computed once here (Tarjan).
 //
 // The SCCs are the prize, not the skeleton: they are the shared cycle/recursion
-// structure every interprocedural summary pass would otherwise hand-roll.
-// The old lazy return-arg-set's pending-set + `-1` return WAS exactly one such ad-hoc SCC
-// check; with this materialized, that becomes "the SCC this node is in".
-//
-// First cut: skeleton + SCCs, over the resolved/monomorphized edge flavor (the
-// `callee` pointer a resolved call carries). The dispatch-set / opaque-indirect
-// edges (§12 "one honest seam") and isolated (call-free) functions as nodes are
-// later additions on the same structure.
+// structure every interprocedural summary pass (escape, purity, return deps)
+// would otherwise hand-roll. Every source function is a node, a call-free one
+// too. A call through a function value is no edge (§12 "one honest seam").
 // ---------------------------------------------------------------------------
 
 // One directed edge of the call graph: `from` calls `to`.
@@ -132,8 +127,7 @@ cg_is_recursive :: proc(g: ^Call_Graph, n: int) -> bool {
 // SCCs are visited callees-first (reverse-topo order Tarjan already produced),
 // so a node's callees are final before it's reached; a non-trivial SCC iterates
 // to a fixpoint. Each analysis supplies a state array on the Call_Graph and a
-// monotone transfer — the recursion/cycle handling the old lazy return-arg-set
-// hand-rolled with its `-1` guard lives here, once.
+// monotone transfer; the recursion and cycle handling lives here, once.
 
 cg_bottom_up :: proc(g: ^Call_Graph, transfer: proc(g: ^Call_Graph, node: int) -> bool) {
     for scc in g.sccs {

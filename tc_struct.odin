@@ -245,7 +245,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope, op_
     if is_infer(vt) { tc_literal_overflow(k, diag, ft, span) }
 }
 
-// A value written into a place its target's check built (graph_assign): built
+// A value written into a place its target's check built: built
 // into a temporary where it builds in place, then written at the place's
 // type.
 tc_store_at :: proc(k: ^TC, value: Tree_Id, place: Operand, env: ^Type_Scope, span: Span,

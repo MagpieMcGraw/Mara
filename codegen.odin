@@ -42,14 +42,9 @@ Codegen :: struct {
     const_tables: map[string]Const_Table,
 
     // Per-module IR buffers. Each function's IR lands in the buffer keyed by
-    // its home_package; g.out is swapped to the right buffer before
-    // gen_scope_def runs and copied back after. module_order tracks first-
-    // seen order for deterministic final concatenation.
-    //
-    // Today the final-assembly step concats every buffer in order into a
-    // single .ll file (preserving current downstream behaviour). The split
-    // exists so a future phase can write each buffer to its own .ll and
-    // run clang on them in parallel.
+    // its home_package (switch_to_module swaps g.out to it); each buffer
+    // becomes its module's .ll, compiled by clang in parallel. module_order
+    // keeps first-seen order, for a deterministic build.
     module_outs:         map[string]strings.Builder,
     module_order:        [dynamic]string,
     current_module_home: string,  // the package whose buffer g.out currently holds (empty = not in a module section)
@@ -123,7 +118,7 @@ Codegen :: struct {
 // Called for every GEP, load, and store-to-tmp in codegen — millions of
 // times on a large module. Returns a slice into a pre-allocated pool of
 // `%t<N>` strings owned by the Codegen. The pool is built once at codegen
-// start (see ensure_tmp_pool); subsequent fresh_tmp calls just index in.
+// start (grow_tmp_pool); subsequent fresh_tmp calls just index in.
 // No per-call allocation, no format parsing.
 fresh_tmp :: proc(g: ^Codegen) -> string {
     g.tmp_counter += 1
@@ -244,8 +239,7 @@ emit :: proc(g: ^Codegen, s: string, args: ..any) {
 // ---------------------------------------------------------------------------
 
 // Pick the builder a non-alloca line should land in, honoring the alloca-
-// hoist mode. Allocas have their own dedup path through emit_line; non-
-// alloca emits can skip that entire branch.
+// hoist mode (allocas go through emit_alloca).
 @(private="file")
 emit_target :: proc(g: ^Codegen) -> ^strings.Builder {
     if g.hoist_allocas { return &g.body_buf }
@@ -265,8 +259,7 @@ emit_store :: proc(g: ^Codegen, ir_type, val, ptr: string) {
 }
 
 // `  <dst> = load <ir_type>, ptr <ptr>\n`
-// Explicit-dst load. Mirror of emit_load (which allocates a fresh tmp)
-// for sites where the caller already has a name picked out.
+// A load into a name the caller has picked out.
 emit_load_into :: proc(g: ^Codegen, dst, ir_type, src_ptr: string) {
     b := emit_target(g)
     strings.write_string(b, "  ")
@@ -279,7 +272,7 @@ emit_load_into :: proc(g: ^Codegen, dst, ir_type, src_ptr: string) {
 }
 
 // `  <dst> = getelementptr <agg_type>, ptr <base>, i32 0, i32 <idx>\n`
-// Explicit-dst struct-field GEP. Mirror of emit_field_gep.
+// A struct field's address, into a name the caller has picked out.
 emit_field_gep_into :: proc(g: ^Codegen, dst, agg_type, base: string, idx: int) {
     b := emit_target(g)
     strings.write_string(b, "  ")
@@ -379,8 +372,7 @@ emit_alloca :: proc(g: ^Codegen, dst, ir_type: string) {
 
 // Whether `name` is already allocated in this function. Reusing a slot is
 // only sound at the same type; a different type means two values would share
-// storage sized for one, so it is a compiler bug. Named locals avoid it by
-// going through emit_local_alloca.
+// storage sized for one, so it is a compiler bug.
 @(private="file")
 alloca_exists :: proc(g: ^Codegen, name, ir_type: string) -> bool {
     have, ok := g.emitted_allocas[name]
@@ -644,8 +636,8 @@ llvm_type_from_checker :: proc(t: Type) -> string {
         switch v.kind {
         case .Signed, .Unsigned:
             // Width comes from a closed set — return interned constants
-            // instead of allocating a fresh "i%d" string each call. This is
-            // a hot path (every expr_ir_type query).
+            // instead of allocating a fresh "i%d" string each call (a hot
+            // path).
             // bits=0 → word-sized (usize/isize); read the module-local flag
             // set by generate_program — wasm32 → i32, x86-64 → i64.
             switch v.bits {
@@ -705,9 +697,7 @@ llvm_type_from_checker :: proc(t: Type) -> string {
     case nil:
         // An unresolved (nil) type reaching type lowering is the same invariant
         // violation as Type_Any above — abort loudly instead of silently sizing
-        // it i64. Callers that legitimately hold a typeless expression (e.g.
-        // gen_expr_coerced, where a constant operand may carry no .type_) must
-        // guard nil themselves before asking for its IR type.
+        // it i64.
         panic("llvm_type_from_checker: nil (unresolved) type reached codegen — the checker left a type unresolved without a diagnostic")
     }
     unreachable()
@@ -794,7 +784,7 @@ __MARA_DIVZ_FAIL      :: "@__mara_divz_fail"
 __MARA_SLICE_LEN_FAIL :: "@__mara_slice_len_fail"
 __MARA_MATCH_FAIL     :: "@__mara_match_fail"
 // (assert has no helper: its failure message is a per-site printf format
-// assembled at codegen time — see Expr_Assert in codegen_expr.odin.)
+// assembled at codegen time — emit_assert_fail.)
 
 runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // Register format strings as deduped globals via the normal literals path.

@@ -253,7 +253,6 @@ lexer_init :: proc(source: string, file: string = "") -> Lexer {
     return Lexer{source = source, pos = 0, line = 1, col = 1, file = file}
 }
 
-// Advance the lexer position by n characters, tracking line/col
 // Strip up to `strip` leading whitespace chars (spaces or tabs) from each
 // line of `buf`, and drop a single leading newline if the buffer starts with
 // one. Used for multi-line text-block-style string literals.
@@ -296,6 +295,7 @@ dedent_multiline_string :: proc(buf: [dynamic]u8, strip: int) -> [dynamic]u8 {
     return out
 }
 
+// Advance the lexer position by n characters, tracking line/col.
 lexer_advance :: proc(l: ^Lexer, n: int = 1) {
     for i := 0; i < n; i += 1 {
         if l.pos < len(l.source) {

@@ -92,8 +92,7 @@ Struct_Type_Field :: struct {
 // fun's params/returns). Unresolved → In_Progress → Resolved. The In_Progress
 // state is the cycle guard: re-entering a scope that's mid-resolution (a type
 // that refers to itself through a value field) is detected here rather than
-// recursing forever. This is the substrate for replacing the fixed signature
-// pre-passes (the old "1a.5"/"2a"/check_bodies hoists) with on-demand resolution.
+// recursing forever.
 Resolution_State :: enum {
     Unresolved,
     In_Progress,
@@ -106,7 +105,7 @@ Resolution_State :: enum {
 //   `fun`               → .Fun
 // Only codegen cares about the distinction — the type checker treats both
 // kinds of scope the same (same field resolution, same name lookup, same
-// Self binding, etc.). See project_mara_history.md for the design rationale.
+// Self binding, etc.).
 Scope_Kind :: enum { Struct, Fun, Block }   // Block = an if/for/defer body — locals only (in .types), no members/params/returns
 
 // The body of a Type_Scope — embedded via `using sd: Scope_Body`.
@@ -128,9 +127,9 @@ Scope_Body :: struct {
     field_map:      map[string]int,  // field name -> index into fields (for O(1) lookup)
 
     // `#packed`: drop inter-field alignment padding so the layout maps 1:1 onto
-    // packed binary formats. Set from the AST decorator in register_scope_defs;
-    // consumed by every layout computation (size/offset/alignment) and by the
-    // LLVM struct-type emission (`<{ ... }>`).
+    // packed binary formats. Set where the struct is registered
+    // (tc_register_scope); read by its layout (layout.odin) and by the LLVM
+    // struct-type emission (`<{ ... }>`).
     is_packed:      bool,
 
     // Union-variant marker. A union's variant struct carries the tag (+pad) as
@@ -147,9 +146,9 @@ Scope_Body :: struct {
     // global, etc.).
     node:           Tree_Id,
 
-    // Signature (field) resolution state — memoizes check_scope_body's
-    // signature pass so it runs exactly once per scope regardless of how many
-    // call sites demand it, and breaks cycles. Zero value Unresolved.
+    // Its body's check (its fields: tc_scope_body) — run once, however many
+    // uses need its fields first, and the guard against a struct whose fields
+    // need its own. Zero value Unresolved.
     sig_state:      Resolution_State,
 
     // The scope it is declared in: its file's, or the body it is nested in.
@@ -342,10 +341,8 @@ as_scope_body :: proc(t: Type) -> ^Scope_Body {
 
 // A Scope_Body is always the offset-0 `sd` head of a Type_Scope (as_scope_body
 // returns &ft.sd; Type_Scope embeds `using sd: Scope_Body`), so we can recover the
-// containing Type_Scope by transmute — the same trick ensure_struct_signature uses.
-// `is_module` (the namespace marker) lives on Type_Scope, so a ^Scope_Body reaches
-// it through here. This replaces the old `sd.scope != nil` test, which used a
-// back-ref env field purely as a "this is a module namespace" proxy.
+// containing Type_Scope by transmute. `is_module` (the namespace marker) lives
+// on Type_Scope, so a ^Scope_Body reaches it through here.
 sd_type_scope :: proc(sd: ^Scope_Body) -> ^Type_Scope {
     return transmute(^Type_Scope)sd if sd != nil else nil
 }
@@ -481,9 +478,8 @@ Target_OS :: enum {
 //   Foreign   → emit `declare`s and call the external symbol via static
 //               import lib (the linker writes the DLL/SO dep into the binary)
 //
-// Foreign-only metadata (library, link_name, prefix) lives in the Foreign
-// variant rather than on Checked_Scope itself, so source funs don't carry
-// empty fields they never use.
+// Foreign-only metadata (library, link_name) lives in the Foreign variant, so
+// source funs don't carry empty fields they never use.
 Function_Origin :: union {
     Origin_Source,
     Origin_Intrinsic,
@@ -1326,8 +1322,7 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
 
     // Resolve the constraint type by name. The bare identifier in `~T` is
     // looked up against the home package of the template that declared the
-    // constraint — that's the only module the parser could have referenced
-    // when stamping `shape_constraint`. We try the flat key first; if that
+    // constraint — the only module its `~T` could name. We try the flat key first; if that
     // misses, fall back to a bare-name search across both tables to cover
     // intrinsic-style types registered without a package prefix.
     flat := make_flat_name(home_package, constraint_name)
@@ -1431,7 +1426,7 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
 //   2. Route it to the right store — routes_to_arena, below.
 //
 // Both the type checker (tc_storage_sizes — the early "declare an allocator"
-// error) and codegen (alloca vs arena_bump) gate on routes_to_arena, so the
+// error) and codegen (alloca vs emit_arena_bump) gate on routes_to_arena, so the
 // threshold lives in exactly one place and the two stages can't drift.
 
 // Values at or above this many bytes route through the scope arena, never the
@@ -1655,11 +1650,11 @@ check_value_range :: proc(c: ^Checker, val: f64, i_val: i128, target: Type, span
 // ---------------------------------------------------------------------------
 
 // Freeze a callable's deferred default-param cells once its body is checked.
-// Each untyped numeric default seeded an Infer_Cell (resolve_param_type); the
+// Each untyped numeric default seeded an Infer_Cell; the
 // body has since pinned it to the width it's used at (arithmetic against a sized
 // operand, an argument, an assignment, a return, a field initializer). Resolve
 // that to a concrete type and write it back into the signature, so callers and
-// codegen (extract_checked_scope) never see an open cell. A FUNCTION param that
+// codegen never see an open cell. A FUNCTION param that
 // flowed into no concrete context falls back to the function's sole numeric
 // return type (the int↔float guard lives in coerce_deferred), then to i64 via
 // solidify_type. Constructors return Self, not a scalar, so they skip that

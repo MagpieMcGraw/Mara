@@ -270,9 +270,6 @@ du_uses_in :: proc(g: ^Program_Graph, du: ^Def_Use, f: ^Du_Fn, op: Node_Id, stat
     if len(reach) > 0 { du.reaching[op] = reach[:] } else { delete(reach) }
 }
 
-
-
-
 // --- variables and definitions ---------------------------------------------
 
 @(private="file")
@@ -521,7 +518,7 @@ du_call_label :: proc(checked: ^Checked_Program, d: ^Def) -> (name: string, ok: 
 }
 
 // A value read out of a temporary it was built in whole — a construction
-// assigned to storage that already holds a value (graph_assign) — is that
+// assigned to storage that already holds a value — is that
 // construction; any other value is itself.
 du_built_in_temp :: proc(g: ^Program_Graph, v: Node_Id) -> Node_Id {
     if g.op[v] != .Read { return v }

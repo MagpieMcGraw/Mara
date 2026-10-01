@@ -122,7 +122,7 @@ tc_program_struct :: proc(k: ^TC) {
     }
 }
 
-// A template's type params, in the old order: those it declares, then each
+// A template's type params, in order: those it declares, then each
 // `$T` its params and results introduce, first use first.
 tc_generic_params :: proc(k: ^TC, node: Tree_Id) -> [dynamic]string {
     t := k.t

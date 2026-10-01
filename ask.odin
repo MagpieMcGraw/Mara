@@ -1,31 +1,19 @@
 package mara
 
 // ---------------------------------------------------------------------------
-// `mara ask` — static type-dependency queries (design/mara_ask.md §4.1)
-//
-// The first ask: a type dependency graph, read straight off the symbol table —
-// no dataflow walk. The target may be a TYPE (struct / enum / union / distinct)
-// or a FUNCTION name.
-//   mara ask <Type|fn> deps    what it pulls in — a type's field/embed types;
-//                              a fun's parameter + return types (and through any
-//                              struct among them).
-//   mara ask <Type|fn> users   who depends on it — who contains / embeds / takes /
-//                              returns it. The "what breaks if I change this"
-//                              query. CAVEAT: call edges are not yet modeled, so
-//                              `users` on a fun does NOT list its callers (only
-//                              type-level references, e.g. a `fn <name>` type).
-//   mara ask <Type|fn> [depth] both directions take an optional hop budget:
-//                              0 = direct edges only, omitted = the full
-//                              transitive closure (the default). Same knob both
-//                              ways — it caps `deps` and expands `users`.
-// Verbs accept singular or plural (`dep`/`deps`, `user`/`users`), in either order;
-// a bare integer anywhere among the tokens is the depth.
-//
-// The engine (`run_ask`) is a PURE function over Checked_Program returning an
-// Ask_Result graph; the renderer is separate (a --json serializer is a trivial
-// later add over the same graph). Output is a deterministic text adjacency dump:
-// each type printed once with its direct typed edges, sorted for stable diffs —
-// AI-readable, greppable, golden-testable. Stops after check_program (no codegen).
+// `mara ask` — the analyzer (design/mara_ask.md): what a name is and how it
+// connects, read off the checked program. A subject — a module, a type, a
+// function, a variable — is shown in its natural view, or the one asked for:
+//   types   a type's fields and embeds, a fun's param and result types
+//           (above), and who contains or takes it (below);
+//   call    a fun's callees (above) and callers (below);
+//   flow    a value's slice: what feeds it (above), what it feeds (below) —
+//           def-use over the program graph (defuse.odin, slice.odin,
+//           lineage.odin); `control` adds the branches that decide it.
+// A depth caps the hops; `in`/`at` narrow where the subject resolves
+// (ask_query.odin parses a query). Output is deterministic text, sorted for
+// stable diffs — AI-readable, greppable, golden-tested (test/ask.sh). It
+// runs after the check: no codegen.
 // ---------------------------------------------------------------------------
 
 import "core:fmt"
@@ -1344,8 +1332,8 @@ ask_user_count :: proc(table: ^SymbolTable, t: Type, funcs: map[string]^Type_Sco
 // --- module surface: what one module declares ------------------------------
 
 // `home_package` is the module name verbatim (`mara.math`, `camera`); the `mara.`
-// prefix is an optional alias (the checker resolves `math` to `mara.math` too —
-// see is_package), so both spellings match here.
+// prefix is an optional alias (the checker resolves `math` to `mara.math` too),
+// so both spellings match here.
 ask_module_name_matches :: proc(home, query: string) -> bool {
     if home == query { return true }
     return strings.has_prefix(home, "mara.") && home[len("mara."):] == query

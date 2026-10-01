@@ -19,7 +19,7 @@ tc_byte_index :: proc(k: ^TC, n: Tree_Id) -> bool {
 }
 
 // How a value moves into a destination of type `dest`: bytes read as it, a
-// range of bytes viewed as a byte slice, or neither (byte_flow's rule).
+// range of bytes viewed as a byte slice, or neither.
 tc_byte_flow :: proc(k: ^TC, dest: Type, value: Tree_Id, vt: Type) -> Byte_Flow {
     index_read := tc_byte_index(k, value)
     if !index_read && !is_byte_buffer(vt) { return .None }

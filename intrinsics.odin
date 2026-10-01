@@ -7,8 +7,8 @@ import "core:strconv"
 //
 // Mara surface syntax: `name :: fun(...) -> T { @llvm.<op>.<suffix> }`.
 // The body string is parsed once at type-check time, validated against the
-// declared signature using the registry below, and stored on the
-// Checked_Scope. Codegen reads the stored name verbatim to emit the call,
+// declared signature using the registry below, and stored on the fun's
+// Type_Scope (Origin_Intrinsic). Codegen reads the stored name verbatim to emit the call,
 // so the registry below is the single source of truth for "which LLVM
 // intrinsics may appear in a Mara intrinsic body."
 //

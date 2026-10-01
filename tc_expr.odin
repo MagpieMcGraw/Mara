@@ -378,9 +378,9 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Build_Want, w: Writ
         // (A part of a value — an if's, a literal's — is no storage; a
         // slice builds a header with nowhere to point.)
         #partial switch tr.tag[tc_access_root(k, operand)] {
-        case .If_Expr, .Array, .Literal: tc_error(k, span, CODE_CANNOT_TAKE_ADDRESS_EXPRESSION)
+        case .If_Expr, .Array, .Literal: tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_EXPRESSION)
         }
-        if tr.tag[tc_unparen(k, operand)] == .Slice { tc_error(k, span, CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP) }
+        if tr.tag[tc_unparen(k, operand)] == .Slice { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_SLICE_TEMP) }
         pt := new(Type_Ptr)
         pt.elem = ot
         t = pt
@@ -838,7 +838,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     return ret, {v = call, ok = true}
 }
 
-// A literal that doesn't fit the type it is used at (check_literal_overflow's).
+// A literal that doesn't fit the type it is used at.
 tc_literal_overflow :: proc(k: ^TC, n: Tree_Id, target: Type, span: Span) {
     if f, i, lit := tc_literal_value(k, n); lit {
         check_value_range(k.c, f, i, target, span)

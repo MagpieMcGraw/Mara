@@ -664,7 +664,7 @@ tc_graph_decl :: proc(k: ^TC, s: Tree_Id) -> Graph_Decl {
     case .Expr_Stmt:
         d.form = .None
         if imp := Tree_Id(t.a[s]); t.tag[imp] == .Import {
-            // (A bare `use m` declares m's last name, as the old tree had it.)
+            // (A bare `use m` declares m's last name.)
             d.form, d.settles, d.names = .Names, true, slice.clone([]string{tc_use_name(k, imp)})
         }
     case .Module, .Return, .Break, .Continue, .Overload:
@@ -827,10 +827,10 @@ tc_subtree_lo :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
 // the state the checker shares with the passes after it (Checker).
 // ---------------------------------------------------------------------------
 
-// The complete output of check_program. Captures everything the type checker
-// knows about the program — type definitions, function signatures, variable
-// types, package info. Downstream consumers (codegen, tools) can read this
-// instead of re-walking the raw AST.
+// The complete output of tc_check_program: everything the type checker knows
+// about the program — type definitions, function signatures, the program
+// graph. What runs after the check (the analyses, `mara ask`, codegen) reads
+// this, never the tree.
 Checked_Program :: struct {
     // Shared symbol table (type definitions, constants, generics, etc.)
     table:          ^SymbolTable,
@@ -838,12 +838,12 @@ Checked_Program :: struct {
     errors:         int,
 
     // Functions — source, foreign, and intrinsic all live here, distinguished
-    // by Checked_Scope.origin. Codegen iterates this map and dispatches on the
+    // by their origin. Codegen iterates this map and dispatches on the
     // origin variant when emitting bodies, declares, and the dynamic loader.
     functions:      map[string]^Type_Scope,
     foreign_libs:   map[string]bool,
 
-    // Ordered list of main-package function names (preserves AST order for emission)
+    // Function names in the order they are written (for emission)
     function_order: [dynamic]string,
 
     // Materialized call graph (nodes = callable scopes, edges = resolved calls,

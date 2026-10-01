@@ -24,13 +24,8 @@ emit_slice_alloca :: proc(g: ^Codegen, result: string) {
     emit_alloca(g, result, SLICE_IR_TYPE)
 }
 
-// Store an i64 value (SSA name or literal like "0", "42") into the slot
-// addressed by `field_gep`, truncating to the layout's storage type if
-// narrower than i64. The caller does the GEP and passes the result here;
-// this lets sites that reuse the gep continue to do so.
-// Store at the slice header's natural len/cap width. Caller must pass
-// the value already at SLICE_LEN_IR / cap_ir width. Integer
-// literals are width-agnostic in IR so they pass through unchanged.
+// A slice header's len or cap stored, at its i64 (SLICE_LEN_IR), into the
+// field `field_gep` addresses — an SSA name, or a literal like "0".
 emit_typed_store_len :: proc(g: ^Codegen, val: string, field_gep: string) {
     emit_store(g, SLICE_LEN_IR, val, field_gep)
 }
@@ -39,10 +34,7 @@ emit_typed_store_cap :: proc(g: ^Codegen, val: string, field_gep: string) {
     emit_store(g, SLICE_LEN_IR, val, field_gep)
 }
 
-// Load len/cap from `field_gep` at natural width — no zext to i64.
-// Callers operate at SLICE_LEN_IR / cap_ir (today: i32). Sites
-// that genuinely need a wider arithmetic context insert an explicit
-// conversion at use rather than paying for the round-trip here.
+// A slice header's len or cap loaded, at its i64 (SLICE_LEN_IR).
 emit_typed_load_len :: proc(g: ^Codegen, result: string, field_gep: string) {
     emit_load_into(g, result, SLICE_LEN_IR, field_gep)
 }
@@ -51,12 +43,6 @@ emit_typed_load_cap :: proc(g: ^Codegen, result: string, field_gep: string) {
     emit_load_into(g, result, SLICE_LEN_IR, field_gep)
 }
 
-// After a raw copy of a `t` value to `ptr`, point every partial array inside it
-// — directly, in a struct field, in an array or partial-array slot, in a
-// union's live variant — back at its own inline elements: the copied header
-// still aims at the SOURCE's. Every copy of such a value goes through here (or
-// emit_value_copy / partial_array_copy, which call it), so
-// structs holding strings copy like any other value.
 // A zeroed value of type `t` at `ptr` made a valid zero value: each partial
 // array in it — through struct fields and array elements — gets its header
 // (ptr → its elements, cap N), since a partial array's zero is not all zeros.
@@ -303,9 +289,8 @@ emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: string, size := 1) 
     return outside
 }
 
-// Bounds check for byte-buffer access at offset [low, low+size). Operates
-// at SLICE_LEN_IR — caller has already normalised low and cap_val
-// to that width via emit_byte_offset_ptr / resolve_byte_target.
+// Bounds check for byte-buffer access at offset [low, low+size), at
+// SLICE_LEN_IR: the caller has low and cap_val at that width.
 emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val: string, low: string, size: int, label: string) {
     w := SLICE_LEN_IR
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
@@ -447,8 +432,8 @@ type_needs_construction :: proc(g: ^Codegen, t: Type) -> bool {
 }
 
 // Emit a call to struct `st_name`'s auto-init on the slot at `addr`, supplying
-// param defaults for a paramized constructor (mirrors the bare-decl path in
-// gen_struct_assign) or just the sret pointer for a pure-data struct. No-op if
+// param defaults for a paramized constructor or just the sret pointer for a
+// pure-data struct. No-op if
 // the struct has no init function (trivial — the zero-fill already finished it).
 // `args`: its constructor's arguments, typed ("i64 6"), the construction's
 // (its params' defaults, which the checker built where it's written).
@@ -542,20 +527,6 @@ emit_each_element :: proc(g: ^Codegen, elements_ptr: string, elem: Type, count: 
     emit_label(g, end_label)
 }
 
-// emit_partial_array_storage binds the SSA name `dst` to a partial array's
-// { ptr, len, cap, [N x elem] } storage. This is the ONE place the stack-vs-
-// arena decision is made for PA storage, so it can't drift between the decl
-// path and the byte-read path (it did: the byte-read path used to always
-// alloca).
-//
-// Big PAs (routes_to_arena: whole-struct bytes >= ARENA_THRESHOLD) bump the
-// struct from the scope arena. There's deliberately no `context_enabled` gate:
-// the type checker (check_storage_sizes) already rejects a big value with no
-// allocator, so a big PA reaching codegen has one — and if some path slips past
-// the guard (e.g. a comptime `#if` arm), emit_arena_bump fatals, the loud
-// backstop, instead of silently putting a big buffer on the stack. Small PAs
-// get a stack alloca; i8 backings are over-aligned to 16 to match the
-// take()/byte-fill alignment policy.
 // A partial array's zero value at `addr`: its elements zeroed (`zero`), and
 // its header over them (`stamp`) — ptr → the elements, len 0, cap N. Returns
 // the elements' address.
@@ -585,9 +556,7 @@ emit_partial_array_zero :: proc(g: ^Codegen, addr: string, pa: ^Type_Partial_Arr
 // byte-span memcpy into the elements area, and optional `#big_endian`
 // per-element bswap. Runtime checks: the span lies within the source's
 // src_cap bytes (it read past them), source bytes is divisible by elem
-// size, and produces count <= cap. The slice-range inverted-bounds check
-// lives in the Expr_Slice entry — the Expr_Index entry uses a static byte
-// count that can't be negative.
+// size, and produces count <= cap.
 gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: string, pa: ^Type_Partial_Array,
                                              src_data_ptr, src_cap, src_low, src_bytes: string,
                                              is_big_endian: bool, span: Span) {
@@ -828,8 +797,7 @@ stamp_partial_array_header :: proc(g: ^Codegen, addr: string, v: ^Type_Partial_A
 // every partial-array field, recursing into nested struct fields. Makes a
 // struct *value* with partial-array fields usable straight out of zero-init —
 // e.g. a function's named struct return, whose %sret the caller zero-filled.
-// The constructor path binds field names AND stamps (via prebind_field_var);
-// this is the stamp-only half, for non-constructor struct returns.
+// (A constructor stamps its own fields as it builds them.)
 fixup_partial_array_fields :: proc(g: ^Codegen, base_ptr: string, sd: ^Scope_Body) {
     st_llvm := struct_llvm_name(sd.name)
     for &f, i in sd.fields {

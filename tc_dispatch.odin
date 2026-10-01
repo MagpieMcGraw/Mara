@@ -234,8 +234,8 @@ tc_unary_overload :: proc(k: ^TC, t: Type, env: ^Type_Scope) -> ^Type_Scope {
 }
 
 // Whether a fun is called with another instance of a generic struct its
-// param points at (`add(^String(256))` given a ^String(64)): what the old
-// checker specialized the fun for.
+// param points at (`add(^String(256))` given a ^String(64)), which would need
+// the fun specialized for it.
 tc_respecializes :: proc(ft: ^Type_Scope, actual: []Type) -> bool {
     for p, i in ft.params {
         if i >= len(actual) { break }

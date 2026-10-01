@@ -292,7 +292,7 @@ lex_target_files :: proc(files: map[string][dynamic]^Source_File) {
 }
 
 // ---------------------------------------------------------------------------
-// Stage 3: parse the cached token streams into per-module merged Programs.
+// Stage 3: parse the token streams into the flat tree.
 // ---------------------------------------------------------------------------
 
 // Every file the build reads, parsed into the flat tree (build_tree: a root
@@ -951,7 +951,7 @@ CLI_Args :: struct {
     ok:           bool,
 
     // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
-    // Runs the front half of the pipeline and stops after check_program.
+    // Runs the front half of the pipeline and stops after the check.
     ask:          bool,
     ask_query:    Ask_Query,  // the one query (ask_parse_query)
     ask_stdin:    bool,       // `--stdin`: the queries come from stdin, one per line
@@ -1078,9 +1078,8 @@ parse_args :: proc() -> CLI_Args {
     // positional[0] is the exe name itself. positional[1] is the subcommand.
     subcmd := positional[1] if len(positional) >= 2 else ""
 
-    // `mara ask <name> [deps|users] [in <module|file>]` — analyze the package in
-    // the cwd (or the `in` scope) and answer a static query about <name>. With no
-    // verb, BOTH deps and users are reported.
+    // `mara ask <name> [types|call|flow] [above|below] …` — analyze the module
+    // in the cwd and answer a static query about <name> (ASK_USAGE).
     if subcmd == "ask" {
         rest := positional[2:]   // tokens after the `ask` subcommand
         // `mara ask --stdin`: check once, then answer each query stdin sends.
@@ -1187,7 +1186,7 @@ main :: proc() {
     when ODIN_OS == .Darwin { target_os = .Mac    }
 
     // Abort early on ANY parse errors — not just in the requested package.
-    // Imported modules with broken parses produce partial ASTs that the
+    // Imported modules with broken parses produce partial trees that the
     // type checker may quietly accept (as Type_Error placeholders) and the
     // codegen then silently fails on. Aborting at the parse phase keeps
     // the failure attributable to the bad source, not a downstream symptom.

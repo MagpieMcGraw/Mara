@@ -1,37 +1,25 @@
 package mara
 
 import "core:fmt"
-import "core:os"
 import "core:slice"
 import "core:strings"
 
 // flow.odin — post-check intraprocedural flow analysis: the diagnostics about
-// how a function's code runs and what it reads.
-//
-// On the program graph (a clean check builds it; design/graph_retrofit.md,
-// phase 2): all-paths-return (a fun whose runs reach the end of its body),
-// unreachable code (a statement right after a return, break or continue),
-// must-use err (an err local nothing reads) and a defer changing what a return
-// returns. Still over each function's body:
-// definite assignment (no read-before-init of a pointer or slice) and the void
-// checks. MARA_DUMP_FLOW=1 dumps coverage and what was flagged.
-
-Flow_Stats :: struct {
-    functions:  int, // source functions walked
-
-    // Functions flagged for "missing return on all code paths" — the first
-    // analysis this pass OWNS (emitted below, not just collected).
-    missing_return: [dynamic]string,
-}
+// how a function's code runs and what it reads, on the program graph (a clean
+// check builds it): all-paths-return (a fun whose runs reach the end of its
+// body), unreachable code (a statement right after a return, break or
+// continue), must-use err (an err local nothing reads), a defer changing what a
+// return returns, definite assignment (no read-before-init of a pointer, a
+// slice or a `void` scalar), the void checks, literal ranges and constants
+// that can't be known before the program runs.
 
 // Entry point — called post-check (after build_call_graph). Walks every source
 // function and raises the intraprocedural diagnostics it owns. Takes the Checker
 // purely as the error sink (check_error); the analysis itself reads only the
 // durable Checked_Program.
 // (`void_defaults`: the spans of params' `void` defaults the checker reported,
-// check_void_defaults.)
+// tc_void_defaults.)
 flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: map[Span]bool) {
-    stats: Flow_Stats
     // Missing-return reads the program graph's runs, built from a clean check.
     graphed := len(checked.graph.kind) > 0
     if graphed {
@@ -50,15 +38,11 @@ flow_analyze_program :: proc(c: ^Checker, checked: ^Checked_Program, void_defaul
         // param's type must have): nothing to return from.
         if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
         if scope_body_is_empty(ft) { continue }
-        stats.functions += 1
         if graphed && flow_missing_return(checked, ft) {
             name := ft.source_name if ft.source_name != "" else ft.name
-            // Same message + span the inline check used (ft.body_span == s.span).
             check_error(c, ft.body_span, TYPE_FUNCTION_MISSING_RETURN_ALL_CODE, name)
-            append(&stats.missing_return, name)
         }
     }
-    flow_dump_stats(stats)
 }
 
 // Missing-return: a non-void function whose first return isn't `any` and whose
@@ -519,14 +503,6 @@ flow_init_out_params :: proc(s: ^Init, op: Node_Id, state: []u64) {
 }
 
 
-flow_dump_stats :: proc(stats: Flow_Stats) {
-    buf: [8]byte
-    if os.get_env_buf(buf[:], "MARA_DUMP_FLOW") != "1" { return }
-    fmt.eprintf("[flow] %d source funcs\n", stats.functions)
-    fmt.eprintf("[flow] missing-return flagged: %d %v\n",
-        len(stats.missing_return), stats.missing_return)
-}
-
 // --- constants -----------------------------------------------------------------
 // A use of a constant whose value can't be known before the program runs
 // (graph_fold_uses: a call in it, a struct's construction with arguments).
@@ -553,7 +529,7 @@ flow_check_void :: proc(c: ^Checker, checked: ^Checked_Program, void_defaults: m
     g := &checked.graph
     seen: map[Span]bool   // generic instances share their template's spans
     defer delete(seen)
-    // (A parameter's default: the checker's, check_void_defaults.)
+    // (A parameter's default: the checker's, tc_void_defaults.)
     for sp in void_defaults { seen[sp] = true }
     // Every other: a void as written, where the operation that takes it
     // stores it — its type its use's.

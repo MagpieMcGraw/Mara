@@ -157,8 +157,8 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
 }
 
 // Capture g.out's current state back to its module slot. Call once after the
-// last gen_scope_def in a phase so the final assembly step sees the latest
-// buffer state.
+// last function in a phase so the final assembly step sees the latest buffer
+// state.
 flush_current_module :: proc(g: ^Codegen) {
     if g.current_module_home != "" {
         g.module_outs[g.current_module_home] = g.out
@@ -435,10 +435,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     slice.sort(fun_keys[:])
     for k in fun_keys {
         st := checked.table.funs[k]
-        // Skip Fun-kind entries: they're callable functions registered for
-        // post-check lookup (e.g. extract_checked_scope finding nested
-        // funs), not data-layout types. Emitting them as LLVM structs
-        // produces invalid IR (void return types end up as struct fields).
+        // Skip Fun-kind entries: they're callable functions, not data-layout
+        // types. Emitting them as LLVM structs produces invalid IR (void
+        // return types end up as struct fields).
         if st.kind == .Fun { continue }
         register_struct_decl(&g, st)
     }
@@ -454,7 +453,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         }
     }
 
-    // Build set of explicitly declared function names (from AST order)
+    // Build set of explicitly declared function names (in written order)
     declared_fns: map[string]bool
     for fn_name in checked.function_order {
         declared_fns[fn_name] = true
@@ -486,11 +485,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         append(&fns_by_module[home], fn_name)
     }
 
-    // Build tasks in a deterministic order so module_order ends up the
-    // same regardless of how the pool schedules workers. Sort by module
-    // name (matches the byte-level layout previous single-threaded runs
-    // produced, modulo AST-order vs alphabetical — close enough for
-    // reproducibility and clang-friendly).
+    // Build tasks in a deterministic order (by module name) so module_order
+    // ends up the same regardless of how the pool schedules workers.
     module_names: [dynamic]string
     defer delete(module_names)
     for k in fns_by_module { append(&module_names, k) }
@@ -951,7 +947,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
 //
 // Why text-based: the alternative is rebuilding the declare from the
 // Type_Scope + signature info via the same code that builds the define
-// header (codegen_fn.odin's `gen_scope_def`). That path is involved
+// header (llvm.odin's). That path is involved
 // enough — sret routing, NRVO, escape args, calling-conv lowering — that
 // reusing it for declares means refactoring it to take a write-target arg.
 // Reading the already-emitted text is simpler and the dependency is just
@@ -1121,8 +1117,6 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
     {
         ctx_alloca := "@__mara_program_storage"
         emit_raw(g, strings.concatenate({"  store ptr ", ctx_alloca, ", ptr @__mara_program"}))
-
-
 
         // Arena init (if scope allocator is active).
         if g.context_enabled {

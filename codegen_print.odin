@@ -247,11 +247,6 @@ emit_cstring_check :: proc(g: ^Codegen, len_val, cap_val, src_ptr: string, span:
     return src_ptr
 }
 
-// (Terminate-in-place cstring conversion used to live here. It's gone: the
-// explicit `cstring(s)` builtin copies into a fresh buffer instead, and the
-// checker rejects implicit runtime-string → cstring arguments, so codegen
-// never converts implicitly. Literals reach cstring params as raw rodata
-// pointers via gen_expr's Expr_String handling.)
 
 // A `byte` element — what makes an array a byte buffer (is_byte_buffer), the
 // only storage take/let and typed `&buf[off]` pointers reinterpret.
@@ -582,7 +577,7 @@ emit_print_at_addr :: proc(g: ^Codegen, addr: string, ty: Type) {
     // A utf8 array (fixed / slice / partial) is a string — print it as bounded
     // text (%.*s) like a bare print(string), not element-by-element. Fixed
     // storage anchors the handle at the data; slice/PA anchor at the {len,cap,ptr}
-    // header sitting at this address (same shapes resolve_array_handle builds).
+    // header sitting at this address.
     #partial switch t in bt {
     case ^Type_Fixed_Array:
         if _, u := distinct_base(t.elem).(Type_Utf8); u {

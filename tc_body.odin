@@ -753,7 +753,7 @@ tc_builds_into :: proc(k: ^TC, e: Tree_Id) -> bool {
 // --- loops ------------------------------------------------------------------
 
 // `for i in lo..hi`, `for e, i in c`, `for init; cond; step`, `for cond`: built
-// around its checks (graph_for) — its block, its variables, then its runs.
+// around its checks — its block, its variables, then its runs.
 tc_for :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     t := k.t
     span := tree_span(t, s)
@@ -1295,7 +1295,7 @@ tc_match :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
 
 // A struct's field initializer handing `#self` to anything — a call, an
 // expression — while field declarations follow it: what it reads may not be
-// written yet. Warned, as the old check_early_self_decls did.
+// written yet: a warning.
 tc_early_self :: proc(k: ^TC, body: []Tree_Id) {
     t := k.t
     stmts := tc_live(k, body)

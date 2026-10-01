@@ -105,7 +105,7 @@ llvm_code :: proc(g: ^Codegen, cf: ^Type_Scope, main: bool) {
     strings.write_string(&g.out, strings.to_string(g.body_buf))
 }
 
-// What the graph's emitter doesn't lower: an error at the operation or
+// What the emitter doesn't lower: an error at the operation or
 // variable it stopped at (the fun itself for its signature).
 @(private="file")
 llvm_unlowered :: proc(e: ^Llvm) -> ! {

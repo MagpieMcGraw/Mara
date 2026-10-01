@@ -7,14 +7,16 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// The program graph (design/program_graph.md): the program's shape, built from
-// the checked syntax tree at the end of a clean check. The analyses after it
-// move onto it one by one (design/graph_retrofit.md, phase 2).
+// The program graph (design/program_graph.md): the program's shape. The
+// checker builds it as it checks each body (Graph_Builder, the graph_build_*
+// procs), and once the check is clean it is put together (build_program_graph)
+// for the analyses, `mara ask` and the emitter to read.
 //
 // Nodes are scopes, the names they declare, and operations (the set in
 // design/program_graph.md § Operations). Each fact is a column indexed by
-// Node_Id. Ids are handed out depth-first in written order, so a scope's
-// subtree is one run of ids: [id, last[id]].
+// Node_Id. Put together, ids run depth-first in written order — bodies are
+// built in pieces as they are checked, and graph_canonicalize puts them in
+// order — so a scope's subtree is one run of ids: [id, last[id]].
 //
 // Execution order is kept apart from the tree: every function's operations
 // are cut into runs, each ending in a jump, branch, switch or return, and a
@@ -495,8 +497,8 @@ Graph_Module_Stmt :: struct {
 }
 
 // What a statement declares, as the checker settled it: each name's type,
-// in the order it names them, and what it does (graph_stmt_kind's, or the
-// checker's: a broadcast's statement is its copies').
+// in the order it names them, and what it does (tc_stmt_kind's: a
+// broadcast's statement is its copies').
 Graph_Declared :: struct {
     types: []Type,
     kind:  Stmt_Kind,
@@ -625,7 +627,7 @@ build_program_graph :: proc(b: ^Graph_Builder) -> Program_Graph {
     graph_resize(g, b.nodes)
     append(&g.operand_first, i32(len(g.operands)))
     append(&g.run_first, i32(len(g.run_ops)))
-    if len(b.segs) > 1 { graph_canonicalize(b) }
+    graph_canonicalize(b)
     graph_link_calls(b)
     graph_link_constants(b)
     graph_settle_literals(b)
@@ -730,8 +732,8 @@ graph_segment_place :: proc(b: ^Graph_Builder, si: int, parent: Node_Id, stmt: i
 // Put every segment where its scope is: the nodes in the order one build in
 // written order makes them — each scope's contents right after its node — and
 // the runs, statements and unreachable spans where they would have come; every
-// id that names one of them renumbered. (A build in written order is already
-// canonical; this is for contents built out of order.)
+// id that names one of them renumbered. (Bodies are built as the checker
+// checks them, out of written order.)
 @(private="file")
 graph_canonicalize :: proc(b: ^Graph_Builder) {
     g := b.g
@@ -776,8 +778,8 @@ graph_canonicalize :: proc(b: ^Graph_Builder) {
     defer for o in order { delete(o) }
     for item in Item { walk(b, 0, item, &order[item]) }
     nodes, runs, stmts, unreach := order[.Node][:], order[.Run][:], order[.Stmt][:], order[.Unreach][:]
-    // What no anchor reaches is left out: a body the checker began and the
-    // builder built. What a dropped operation stood for is used in its place.
+    // What no anchor reaches is left out. What a dropped operation stood for
+    // is used in its place.
     new_id := make([]Node_Id, n)
     defer delete(new_id)
     slice.fill(new_id, NO_NODE)
@@ -1110,8 +1112,6 @@ graph_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
     return graph_op_value(b, .Const, .Explicit, span, t, "void")
 }
 
-
-
 // The struct a bare declaration constructs, or zero for anything else. An
 // array of structs is zeroed, then each element constructed. A struct that
 // can't be built bare stays zero: an array's elements (the checker warns), a
@@ -1155,8 +1155,6 @@ graph_elem_struct :: proc(t: Type) -> ^Type_Scope {
 
 // --- control flow -----------------------------------------------------------
 
-
-
 // A value at the type its use takes: a narrower number widens, implied —
 // sign- or zero-extended by its own signedness, or f32 to f64 — wherever the
 // checker lets a narrower value in (an operation's operands, a store, an
@@ -1177,8 +1175,6 @@ graph_widens :: proc(from, to: Type) -> bool {
     return fok && tok && tb > fb && (fk == .Float) == (tk == .Float)
 }
 
-
-
 // A slice, or a pointer to one.
 graph_header_of :: proc(t: Type) -> bool {
     t := t
@@ -1186,8 +1182,6 @@ graph_header_of :: proc(t: Type) -> bool {
     _, is_slice := distinct_base(t).(^Type_Slice)
     return is_slice
 }
-
-
 
 // A partial array, or a pointer to one.
 graph_partial_of :: proc(t: Type) -> bool {
@@ -1284,10 +1278,6 @@ graph_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
     graph_exit_scopes(b, l.scope, span)
     graph_jump(b, l.done if is_break else l.cont, .Explicit, span)
 }
-
-
-
-
 
 // Enter a scope: an arena mark when it holds a big value. (A struct's
 // declarations are its fields: in Self, not on the arena.) Nor main's body:
@@ -1559,7 +1549,7 @@ graph_drop_place :: proc(b: ^Graph_Builder, p: Operand) {
     graph_drop(b, p.op, NO_VALUE)
 }
 
-// A plain place's base, from its place (graph_plain_base): through a
+// A plain place's base, from its place: through a
 // pointer, what it points at.
 graph_base_of :: proc(b: ^Graph_Builder, p: Operand, t: Type, span: Span, is_self := false) -> Operand {
     if is_self { return p }   // (through `#self` is Self)
@@ -1568,11 +1558,6 @@ graph_base_of :: proc(b: ^Graph_Builder, p: Operand, t: Type, span: Span, is_sel
     }
     return p
 }
-
-
-
-
-
 
 graph_pointee :: proc(t: Type) -> Type {
     if pt, ok := distinct_base(t).(^Type_Ptr); ok { return pt.elem }
@@ -1599,13 +1584,7 @@ graph_dest_type :: proc(b: ^Graph_Builder, d: Dest) -> Type {
     return d.type_
 }
 
-
-
-
-
-
-
-// The call's results, each written to its field (graph_spread_writes).
+// The call's results, each written to its field.
 graph_spread_results :: proc(b: ^Graph_Builder, span: Span, sd: ^Scope_Body, parent: ^Dest, callee: ^Type_Scope, c: Operand) {
     for rt, i in callee.return_types {
         if i >= len(sd.fields) { break }
@@ -1639,12 +1618,6 @@ graph_elem_type :: proc(t: Type) -> Type {
     }
     return nil
 }
-
-
-
-
-
-
 
 // `?` after its call is built: a branch on the call's err — its failure
 // returns the err — then the call's value, where it didn't fail.
@@ -2179,8 +2152,7 @@ Graph_Body :: struct {
     // Each statement's entry, made the first time the checker meets it (it
     // meets one in each of its passes).
     stmts:      map[Syntax_Id]i32,
-    // Types are settled when the graph is put together, as the builder types
-    // what it builds after checking: a `:=` binding's width is the one it
+    // Types are settled when the graph is put together: a `:=` binding's width is the one it
     // adopts from a later use, a param's default's once its fun is checked.
     // Synthetic locals settle as behind a pointer; constants whose width a
     // binding settles are listed in g.settled; a widening is kept or dropped.
@@ -2209,7 +2181,7 @@ Graph_Arena :: struct {
     block:  Node_Id,
 }
 
-// A local's space on the arena (graph_init), made before its value: kept
+// A local's space on the arena, made before its value: kept
 // when its type turns out to route there.
 Graph_Alloc :: struct {
     decl, var, alloc: Node_Id,
@@ -2228,7 +2200,7 @@ Graph_Widen :: struct {
     param:     int,
     work:      Graph_Work,
     binary:    bool,
-    // A value at a param's type chosen after it is built (graph_value_as, for
+    // A value at a param's type chosen after it is built (for
     // a dispatch's or an operator's argument): a view may be taken — its
     // place seen as a slice (slice; read left out), or a partial array's
     // header as one (the cast) — else it widens. t is its type; read and
@@ -2302,7 +2274,7 @@ graph_body_free :: proc(f: ^Graph_Body) {
     free(f)
 }
 
-// A value at a param's type known only later (graph_value_as): a place is
+// A value at a param's type known only later: a place is
 // read, cast (a header's view, a widening), and seen as a slice — whichever
 // its param takes kept; a value, cast. Its index in the body's list, to name
 // the param once it is known.
@@ -2311,7 +2283,7 @@ graph_build_as :: proc(b: ^Graph_Builder, v: Operand, place: bool, t: Type, read
     w.views, w.t, w.read, w.slice = true, t, NO_NODE, NO_NODE
     val := v
     if place {
-        val = graph_read(b, v, t, read_span)   // (at the expression, as graph_value reads it)
+        val = graph_read(b, v, t, read_span)   // (at the expression, as a value is read)
         w.read = val.op
     }
     // A cast only where one can be taken — a number's widening, a partial
@@ -2370,7 +2342,7 @@ graph_param_open :: proc(sig: ^Type_Scope, param: int) -> bool {
     return field_has_default(p) && is_infer(p.type_)
 }
 
-// A block of code (graph_code_block): opened before its statements are
+// A block of code: opened before its statements are
 // checked, closed after.
 Graph_Block :: struct {
     n, outer: Node_Id,
@@ -2390,7 +2362,7 @@ graph_build_block_close :: proc(b: ^Graph_Builder, k: Graph_Block) {
     graph_close(b, k.n)
 }
 
-// An `if` (graph_if): its branch on the condition, then each block between
+// An `if`: its branch on the condition, then each block between
 // its checks.
 Graph_If :: struct {
     then_r, else_r, join: ^Run,
@@ -2426,7 +2398,7 @@ graph_build_if_end :: proc(b: ^Graph_Builder, fi: ^Graph_If) {
     b.code.run = fi.join
 }
 
-// A return (graph_return_stmt), its values built: an implied `Ok` for each
+// A return, its values built: an implied `Ok` for each
 // trailing err left out, the scopes left, the return.
 graph_build_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
     rts := graph_result_types(b)
@@ -2438,14 +2410,14 @@ graph_build_return :: proc(b: ^Graph_Builder, vals: []Operand, span: Span) {
     graph_run_close(b)
 }
 
-// A struct's field declaration (graph_stmt at its field site): its fields,
+// A struct's field declaration: its fields,
 // typed as the struct's; each name's assignment (`lowered`, the checker's
 // lowering of it; `inits`, the values as written) stores into its own and
 // is this statement's.
 // A struct's field declaration: each name a field; `lowered`, the checker's
 // statements that write them — one per name (`inits`, where each one's
 // initializer is written), or one destructure writing them all from one call
-// (`a, b := f()`: each output to its field, graph_init_many).
+// (`a, b := f()`: each output to its field).
 graph_build_fields :: proc(b: ^Graph_Builder, names: []string, span: Span, lowered: []Syntax_Id, inits: []Span, destructure: bool) {
     f := b.body
     ids := make([]Node_Id, len(names))
@@ -2471,7 +2443,7 @@ graph_build_program_field :: proc(b: ^Graph_Builder, name: string, span: Span) {
     graph_decl(b, {kind = .Field, owner = b.body.ts}, b.code.block, name, nil, span)
 }
 
-// The program's struct (fuse_program_struct: main's entry sets up its
+// The program's struct (main's entry sets up its
 // storage, nothing constructs it): each field mara.core declares for it,
 // typed as the struct's, a statement of its own; no code.
 
@@ -2480,7 +2452,7 @@ graph_build_program_field :: proc(b: ^Graph_Builder, name: string, span: Span) {
 // checked (graph_build_typed).
 graph_build_decl :: proc(b: ^Graph_Builder, name: string, span: Span, bound := false) -> Node_Id {
     d := graph_decl(b, {kind = .Local}, b.code.block, name, nil, span)
-    // A big value lives on the arena (graph_init): its space, taken before
+    // A big value lives on the arena: its space, taken before
     // its value — kept once its type says so. (A `let` binds memory it takes.)
     if b.arena && !bound {
         v := graph_var(b, name, d, nil, span)
@@ -2499,7 +2471,7 @@ graph_build_typed :: proc(b: ^Graph_Builder, d: Node_Id, t: Type) {
     }
 }
 
-// `x : T = void` (graph_init) and `x = void` (graph_stmt): the value left
+// `x : T = void` and `x = void`: the value left
 // uninitialized — `void` where it is written, `at`.
 graph_build_void_decl :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span, at: Span) {
     val := graph_void(b, t, at)
@@ -2555,7 +2527,7 @@ graph_assert :: proc(b: ^Graph_Builder, span: Span, text: string, cond: Operand,
     if s, compared := sides.?; compared { b.g.assert_sides[a] = s }
 }
 
-// `a and b`, `a or b` (graph_short_circuit): the result through a synthetic
+// `a and b`, `a or b`: the result through a synthetic
 // local, the right side in a run of its own — begun before the left side,
 // branched on after it, joined after the right.
 Graph_And :: struct {
@@ -2590,7 +2562,7 @@ graph_build_and_end :: proc(b: ^Graph_Builder, sa: ^Graph_And, r: Operand) -> Op
     return graph_read(b, graph_var(b, sa.word, sa.slot, Type_Bool{}, sa.span), Type_Bool{}, sa.span)
 }
 
-// A bare declaration's value (graph_init): its type's construction, or zero;
+// A bare declaration's value: its type's construction, or zero;
 // a sized slice's zero takes its capacity.
 graph_build_bare :: proc(b: ^Graph_Builder, d: Node_Id, t: Type, cap: Maybe(Operand), args: []Operand, span: Span) {
     if c, has := cap.?; has {
@@ -2614,7 +2586,7 @@ graph_build_prefix_end :: proc(b: ^Graph_Builder, p: [2]Node_Id, keep: bool, t: 
     }
 }
 
-// A call through a function value (graph_call's): the arguments, then the
+// A call through a function value: the arguments, then the
 // value, read, then the call.
 graph_build_indirect :: proc(b: ^Graph_Builder, name: string, fn_value: Type, t: Type, args: []Operand, w: Written, span: Span) -> Operand {
     ops := make([dynamic]Operand, 0, len(args) + 1, context.temp_allocator)
@@ -2623,9 +2595,9 @@ graph_build_indirect :: proc(b: ^Graph_Builder, name: string, fn_value: Type, t:
     return graph_op_value(b, .Call, w, span, t, name, ..ops[:])
 }
 
-// Bytes indexed, seen as another type once the use of them says which
-// (graph_view_place): the element's place, built, is that view — the same
-// operands, the bytes at the index.
+// Bytes indexed, seen as another type once the use of them says which: the
+// element's place, built, is that view — the same operands, the bytes at the
+// index.
 graph_build_view :: proc(b: ^Graph_Builder, place: Operand, t: Type, big: bool, span: Span) {
     id := place.op
     b.g.op[id], b.g.type_[id], b.g.origin[id] = .View, t, span
@@ -2638,7 +2610,7 @@ graph_build_view :: proc(b: ^Graph_Builder, place: Operand, t: Type, big: bool, 
     }
 }
 
-// Bytes read by a byte read (graph_store): of the element built, its
+// Bytes read by a byte read: of the element built, its
 // buffer's place (its dereference at the read) and its index as it was
 // before it was widened; the element's operation left out.
 graph_build_byte_operands :: proc(b: ^Graph_Builder, place: Operand, span: Span) -> (Operand, Operand) {
@@ -2655,7 +2627,7 @@ graph_build_byte_operands :: proc(b: ^Graph_Builder, place: Operand, span: Span)
     return buf, off
 }
 
-// A span of bytes read (graph_store): of the slice built, its bytes' place
+// A span of bytes read: of the slice built, its bytes' place
 // (its dereference at the read) and its bounds; the slice left out.
 graph_build_span_operands :: proc(b: ^Graph_Builder, slice: Operand, span: Span) -> (buf, lo, hi: Operand) {
     id := slice.op
@@ -2666,7 +2638,7 @@ graph_build_span_operands :: proc(b: ^Graph_Builder, slice: Operand, span: Span)
     return
 }
 
-// A span of bytes seen as a `t` at its start (graph_view_at): of the slice
+// A span of bytes seen as a `t` at its start: of the slice
 // built, its bytes' place and its start, at the header's width (0 when it
 // has none); the view.
 graph_build_span_view :: proc(b: ^Graph_Builder, slice: Operand, t: Type, big: bool, span: Span) -> Operand {
@@ -2735,7 +2707,7 @@ graph_build_later_end :: proc(b: ^Graph_Builder, l: ^Graph_Later) -> bool {
     return !added || l.same && b.code.run == l.run
 }
 
-// `bytes[lo:hi] = v` (graph_stmt): its target is a view of the bytes at lo —
+// `bytes[lo:hi] = v`: its target is a view of the bytes at lo —
 // their place, lo at the header's width, the view — where v is no array;
 // else the slice (lo, hi, their place, the slice). Which is known once v is
 // checked: both are built before it, in one line — a view's place, lo, hi,
@@ -2811,7 +2783,7 @@ graph_build_span_target_end :: proc(b: ^Graph_Builder, st: ^Graph_Span_Target, v
     return {st.view, 0}, !st.branched
 }
 
-// Bytes taken as an array (graph_value_as): their view, copied into a
+// Bytes taken as an array: their view, copied into a
 // temporary, read.
 graph_build_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: Span) -> Operand {
     slot := graph_slot(b, "temp", t, span)
@@ -2819,7 +2791,7 @@ graph_build_view_temp :: proc(b: ^Graph_Builder, view: Operand, t: Type, span: S
     return graph_read(b, graph_var(b, "temp", slot, t, span), t, span)
 }
 
-// A take (graph_value's): the count, then the storage, the checker's — `&x`
+// A take: the count, then the storage, the checker's — `&x`
 // as its address (of type t), else a place — then the carve. It carves from
 // the storage's header: `&s` is s's, a `^[]byte` what it points at; or,
 // positional (`&bytes[i]`), the view of the bytes there as what's taken.
@@ -2847,7 +2819,7 @@ graph_build_base_place :: proc(b: ^Graph_Builder, p: Operand, t: Type, is_self: 
     return graph_base_of(b, again, t, span, is_self)
 }
 
-// A destructure of a call's outputs (graph_destructure): the names it
+// A destructure of a call's outputs: the names it
 // declares made before the call (typed once checked), then each output
 // written to its name, or to its target's place, in turn. Its names as
 // written; `stores`, which are lvalues, stored to rather than declared.
@@ -2891,7 +2863,7 @@ graph_build_destructure_write :: proc(b: ^Graph_Builder, mr: ^Graph_Destructure,
     graph_op(b, .Write, .Explicit, mr.span, nil, "", dest, val)
 }
 
-// A match (graph_match), its subject checked: the switch on its tag — each
+// A match, its subject checked: the switch on its tag — each
 // arm's tag a constant filled in when the arm is (graph_build_arm) — then,
 // per arm, its block; the code after it joins.
 Graph_Match :: struct {
@@ -2999,7 +2971,7 @@ graph_build_match_end :: proc(b: ^Graph_Builder, gm: ^Graph_Match) {
     b.code.run = gm.join
 }
 
-// A defer's block (graph_defer): its code of its own — a run entered from
+// A defer's block: its code of its own — a run entered from
 // the block, ending in a return — built as its statements are checked, then
 // registered with the scope it is in (Run_Defer runs it at every exit).
 Graph_Defer :: struct {
@@ -3022,7 +2994,7 @@ graph_build_defer_end :: proc(b: ^Graph_Builder, gd: Graph_Defer) {
     graph_close(b, gd.d)
 }
 
-// An `if` expression's runs (graph_if_place): the branch on its condition,
+// An `if` expression's runs: the branch on its condition,
 // each branch's run, and the join.
 Graph_If_Expr :: struct {
     yes, no, join: ^Run,
@@ -3052,7 +3024,7 @@ graph_build_stmt_kind :: proc(b: ^Graph_Builder, kind: Stmt_Kind) {
     b.g.stmts[b.stmt].kind = kind
 }
 
-// A broadcast literal built into d (graph_into): its value at the element
+// A broadcast literal built into d: its value at the element
 // type, then the fill.
 graph_build_fill :: proc(b: ^Graph_Builder, span: Span, t: Type, d: Dest, val: Operand) {
     x := graph_build_widen(b, val, span, {to = graph_elem_type(t)})
@@ -3064,8 +3036,8 @@ graph_build_void :: proc(b: ^Graph_Builder, t: Type, span: Span) -> Operand {
     return graph_void(b, t, span)
 }
 
-// An override block written into a variable's struct (graph_literal_writes
-// at the variable): each field's value into its field.
+// An override block written into a variable's struct: each field's value
+// into its field.
 graph_build_override :: proc(b: ^Graph_Builder, d: Dest, sd: ^Scope_Body) -> ^Graph_Literal {
     gl := new(Graph_Literal, context.temp_allocator)
     gl.d, gl.parent, gl.sd = d, d, sd
@@ -3100,7 +3072,7 @@ Graph_Loop :: struct {
     end_literal: bool,   // a range whose end is a literal
 }
 
-// A loop (graph_for), built around its checks: its block, the loop's
+// A loop, built around its checks: its block, the loop's
 // variables, then its runs — the check, the body, the step — and the code
 // after it.
 Graph_For :: struct {
@@ -3136,7 +3108,7 @@ graph_build_range_counter :: proc(b: ^Graph_Builder, fl: ^Graph_For) {
     graph_bind(b, fl.var_name, fl.counter)
 }
 
-// A range's bound at the counter's type (graph_range_bound): cast when its
+// A range's bound at the counter's type: cast when its
 // own differs — decided when the graph is put together.
 graph_build_range_bound :: proc(b: ^Graph_Builder, v: Operand, t: Type, span: Span) -> Operand {
     id := graph_op(b, .Cast, .Synthetic, span, nil, "", v)
@@ -3191,7 +3163,7 @@ graph_build_for_collection :: proc(b: ^Graph_Builder, fl: ^Graph_For, place: Ope
     graph_build_for_runs(b, fl)
 }
 
-// A collection that is no plain place (graph_for's): held in a local made
+// A collection that is no plain place: held in a local made
 // before it — its place's view, when it has a header, else itself — which
 // the loop walks. Its local first (typed once it is checked); a temporary its
 // value may need, reserved before it (graph_build_later).
@@ -3209,7 +3181,7 @@ graph_build_items_view :: proc(b: ^Graph_Builder, fl: ^Graph_For, gi: ^Graph_Ite
     span := fl.span
     p := place
     if !is_place {
-        // A value: held in a temporary made before it (graph_place's) —
+        // A value: held in a temporary made before it —
         // zero first when it fills a prefix of a partial array.
         graph_build_later_begin(b, &gi.temp)
         slot := graph_slot(b, "temp", t, span)
@@ -3337,7 +3309,7 @@ graph_build_loop_exit :: proc(b: ^Graph_Builder, span: Span, is_break: bool) {
 }
 
 // A range's bound cast or its check that it counts up, decided when the
-// graph is put together (graph_range_bound, graph_for).
+// graph is put together.
 Graph_Check :: struct {
     kind:   enum u8 { Bound, Ascends },
     ids:    [2]Node_Id,   // the cast; the compare and the assert
@@ -3346,7 +3318,7 @@ Graph_Check :: struct {
     lo, hi: Operand,      // the bounds, as the check reads them
 }
 
-// A struct literal built into d (graph_into), before its fields are
+// A struct literal built into d, before its fields are
 // checked: its construction — zero for `Foo{0}`, else its constructor on
 // its params' defaults (a union's variant: its tag, then the field defaults
 // the literal doesn't give) — and where its fields are. Nil when t is no
@@ -3392,13 +3364,13 @@ graph_build_literal :: proc(b: ^Graph_Builder, span: Span, name: string, zero_in
     return gl
 }
 
-// Where an array literal's element goes (graph_literal_writes, array values).
+// Where an array literal's element goes (array values).
 graph_build_literal_elem :: proc(gl: ^Graph_Literal, i: int, elem_t: Type) -> Dest {
     return Dest{kind = .Index, index = i, type_ = elem_t, parent = &gl.parent}
 }
 
-// Where the literal's field goes: named, or its position's (graph_literal_writes).
-// `Foo{call()}` (graph_spread_writes), the call built: each field its
+// Where the literal's field goes: named, or its position's.
+// `Foo{call()}`, the call built: each field its
 // result. False when it resolved to no function.
 graph_build_spread :: proc(b: ^Graph_Builder, gl: ^Graph_Literal, span: Span, c: Operand) -> bool {
     callee := b.callee_of[c.op] or_else nil if c.op != NO_NODE else nil
@@ -3417,7 +3389,7 @@ graph_build_literal_field :: proc(gl: ^Graph_Literal, name: string, i: int) -> D
     return Dest{kind = .Field, name = name, type_ = t, parent = &gl.parent}
 }
 
-// An array literal built into d (graph_into): zero at the destination's
+// An array literal built into d: zero at the destination's
 // type — a short literal leaves the rest zero — or, with none known yet, the
 // literal's (typed once its first element is), then each element into its
 // slot.
@@ -3446,14 +3418,14 @@ graph_build_array_elem :: proc(b: ^Graph_Builder, ga: ^Graph_Array, i: int, firs
     return Dest{kind = .Index, index = i, type_ = ga.elem_t, parent = &ga.d}
 }
 
-// A variant built at d (graph_into, a bare variant): its construction, then
+// A variant built at d (a bare variant): its construction, then
 // its field defaults.
 graph_build_variant :: proc(b: ^Graph_Builder, t: Type, name: string, d: Dest, span: Span) -> ^Type_Scope {
     graph_op(b, .Construct, .Explicit, span, t, name, graph_dest_place(b, d, span))
     return graph_variant_struct(b, t, name)
 }
 
-// A field default a construction writes (fuse_variant_defaults: a variant
+// A field default a construction writes (a variant
 // has no constructor to run them), into the struct at d.
 graph_build_field_default :: proc(b: ^Graph_Builder, d: Dest, name: string, t: Type, v: Operand, span: Span) {
     vd := d
@@ -3479,7 +3451,7 @@ graph_build_retype_literal :: proc(b: ^Graph_Builder, from, to: int, new: Type) 
 }
 
 // An aggregate built where no destination was given: a synthetic local,
-// made before it (graph_temp_place), typed once it is.
+// made before it, typed once it is.
 graph_build_temp :: proc(b: ^Graph_Builder, span: Span, t: Type = nil) -> Dest {
     return graph_dest_var("temp", graph_slot(b, "temp", t, span), t)
 }
@@ -3490,7 +3462,7 @@ graph_build_temp_end :: proc(b: ^Graph_Builder, d: Dest, t: Type, span: Span) ->
     return graph_var(b, "temp", d.decl, t, span)
 }
 
-// A construction's operation into d (graph_call's): its place, the
+// A construction's operation into d: its place, the
 // arguments, then its overrides' writes (graph_build_literal_field over the
 // overrides, with gl.parent = d).
 graph_build_construct :: proc(b: ^Graph_Builder, callee: ^Type_Scope, t: Type, d: Dest, args: []Operand, w: Written, span: Span) -> ^Graph_Literal {
@@ -3509,8 +3481,7 @@ graph_build_zero_var :: proc(b: ^Graph_Builder, decl: Node_Id, t: Type, span: Sp
     graph_op(b, .Zero, .Synthetic, span, t, "", graph_var(b, b.g.name[decl], decl, t, span))
 }
 
-// A body's types, now that its widths are known: as the builder types
-// what it builds after checking.
+// A body's types, now that its widths are known.
 // A node's operands while the graph is being built: they end where the next
 // node's begin — or, the newest, now.
 graph_built_operands :: proc(b: ^Graph_Builder, id: Node_Id) -> []Operand {
@@ -3644,7 +3615,7 @@ graph_body_settle :: proc(b: ^Graph_Builder, f: ^Graph_Body) {
     }
 }
 
-// The statement the checker is on, as graph_stmt enters one: its entry, the
+// The statement the checker is on: its entry, the
 // first time. A statement the checker meets only once is `fresh` (a body's
 // own statements).
 graph_build_stmt :: proc(b: ^Graph_Builder, id: Syntax_Id, span: Span, kind: Stmt_Kind, fresh := false) -> (saved: i32) {
@@ -3668,7 +3639,7 @@ graph_build_stmt_end :: proc(b: ^Graph_Builder, saved: i32) {
 
 // A statement of the body's code, before it is checked — code, not a
 // definition (`runs_code`): one right after a return, break or continue is
-// unreachable, as graph_body_stmt records.
+// unreachable (graph.unreachable).
 graph_build_body_stmt :: proc(b: ^Graph_Builder, span: Span, runs_code: bool) {
     if b.code.active && b.code.run == nil && runs_code {
         append(&b.g.unreachable, span)

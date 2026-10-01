@@ -77,12 +77,12 @@ flush_diagnostics :: proc() {
 // Each constant is the **body** of the message — the location prefix
 // (`[file:line:col] `), the phase tag (`Parse error: `, `Type error: `,
 // `Warning: `, etc.), and the trailing newline are added by the emit
-// helper for that phase (parse_error / check_error / check_warning /
+// helper for that phase (tp_error / check_error / check_warning /
 // codegen_fatal). Format placeholders (%s, %d, %v, ...) are passed
-// positionally at the call site, same as before.
+// positionally at the call site.
 //
 // Naming:
-//   PARSE_<topic>     — parser errors  → parse_error
+//   PARSE_<topic>     — parser errors  → tp_error
 //   TYPE_<topic>      — type-checker errors → check_error
 //   CODE_<topic>      — codegen fatals → codegen_fatal
 //   WARN_<topic>      — warnings (any phase) → check_warning
@@ -432,24 +432,24 @@ TYPE_SLICE_HIGH_BOUND_NUMERIC :: "slice high bound must be numeric, got %s"
 // `len = i64(x)` does not, and the cast site can't distinguish the two.)
 WARN_REDUNDANT_CAST :: "redundant cast to %s — %s already has that type, drop the `%s(...)`"
 
+TYPE_CANNOT_TAKE_ADDRESS_EXPRESSION :: "cannot take the address of this expression — `&` needs a named variable (or a field/element of one), not a temporary value"
+TYPE_CANNOT_TAKE_ADDRESS_SLICE_TEMP :: "cannot take the address of a temporary slice — `buf[a:b]` builds a fresh slice header with no address to point at. To pass it to a `^[]T` parameter, bind it first (`s := buf[a:b]; f(&s)`), or — if the callee only reads it — make the parameter `[]T` and pass the slice directly (no `&`)"
+TYPE_ARENA_SIZE_CONSTANT :: "the program's arena size must be a constant"
+TYPE_CONST_NOT_COMPILE_TIME :: "constant '%s': its value must be known at compile time — literals, other constants and arithmetic on them (a call, or a struct with constructor params or statements in its body, needs code to run)"
+
 // ============================================================
 // Codegen fatals
 // ============================================================
 
 CODE_DLL_EXPOSE_FN_USES_ARENA :: "DLL with #expose fn(s) uses arena-needing code but no allocator type is declared — add `program = Program(ArenaType(<args>))` somewhere in this module to specify the Context layout (must match the host's allocator type)"
 CODE_ARENA_ALLOCATION_REQUESTED_SCOPE_ALLOCATOR :: "arena allocation requested but no scope_allocator declared"
-CODE_CANNOT_TAKE_ADDRESS_EXPRESSION :: "cannot take the address of this expression — `&` needs a named variable (or a field/element of one), not a temporary value"
-CODE_CANNOT_TAKE_ADDRESS_SLICE_TEMP :: "cannot take the address of a temporary slice — `buf[a:b]` builds a fresh slice header with no address to point at. To pass it to a `^[]T` parameter, bind it first (`s := buf[a:b]; f(&s)`), or — if the callee only reads it — make the parameter `[]T` and pass the slice directly (no `&`)"
 CODE_FORMAT_STRING_MORE_PLACEHOLDERS_THAN :: "format string has more `%%` placeholders than args"
 CODE_PRINT_UNSUPPORTED_VALUE :: "print: no print rule for a value of type %s"
 CODE_GRAPH_UNLOWERED :: "can't lower '%s' from the program graph: its %s '%s'%s"
 CODE_GRAPH_NO_SCOPE :: "'%s' has no scope in the program graph"
 CODE_GRAPH_NO_CODE :: "'%s' has no code in the program graph"
 CODE_TEXT_LONGER_THAN_ARRAY :: "text of %d bytes into an array of %d"
-TYPE_ARENA_SIZE_CONSTANT :: "the program's arena size must be a constant"
 CODE_BARE_CONSTRUCTION_ARGUMENT :: "'%s' is built without arguments, but its param '%s' has no default"
-CODE_CONST_NOT_COMPILE_TIME :: "constant '%s': its value must be known at compile time — literals, other constants and arithmetic on them (a call, or a struct with constructor params or statements in its body, needs code to run)"
-TYPE_CONST_NOT_COMPILE_TIME :: CODE_CONST_NOT_COMPILE_TIME
 CODE_CONST_TABLE_UNNAMED :: "internal: aggregate constant has no entry in the constant table"
 CODE_CONST_TABLE_SHAPE :: "internal: a constant table of a shape the emitter can't lay out"
 BUILD_CLANG_FAILED                :: "Error: clang failed to compile '%s'\n"
