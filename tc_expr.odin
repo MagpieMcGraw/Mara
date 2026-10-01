@@ -185,6 +185,13 @@ tc_ident :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Writt
         return t, {v = graph_op_value(b, .Const, w, span, t, "void"), ok = true}
     }
     if kc != nil { return t, tc_const_use(k, kc, n, t, want, w) }
+    // (A fun's name, as a value: the fun — one taking params, as the old
+    // checker resolved them.)
+    if ts, is_scope := t.(^Type_Scope); is_scope && len(ts.params) > 0 && name in k.c.declared_funs {
+        if want == .None || want == .Place { return t, {} }
+        flat := make_flat_name(resolve_fn_home(k.c, env, name), name)
+        return t, {v = graph_op_value(b, .Global, w, span, t, flat), ok = true}
+    }
     // (A local is found in no scope: what a scope holds is a fun, a type, a
     // constant â a function sees no module's variables.)
     if loc_scope != nil {
@@ -547,8 +554,10 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
         return tc_distinct_conversion(k, n, name, dt, args, env, want if build else .None, w)
     }
     ft, is_scope := ft_raw.(^Type_Scope)
-    // (A fun written in the program, or a foreign one.)
-    if !is_scope || ft.is_module || ft.node == 0 && ft.calling_conv != .C {
+    // (A fun written in the program, or a foreign one; else a fun's value — a
+    // name no declared fun has, holding one — called through it.)
+    indirect := is_scope && qual == nil && ft.kind == .Fun && name not_in k.c.declared_funs && (ft.name == "" || ft.name not_in k.c.declared_funs)
+    if !is_scope || ft.is_module || !indirect && ft.node == 0 && ft.calling_conv != .C {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}, {}
     }
@@ -567,7 +576,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     // made before the arguments, at the store's span â its place, sliced
     // there.)
     view_slot := NO_NODE
-    if b := tc_building(k); build && b != nil && !is_struct && want == .Into {
+    if b := tc_building(k); build && b != nil && !is_struct && !indirect && want == .Into {
         if ret := fn_primary_return(ft); ret != nil && is_slice_type(graph_dest_type(b, dest)) {
             if _, from_array := distinct_base(ret).(^Type_Fixed_Array); from_array { view_slot = graph_slot(b, "temp", ret, temp_span) }
         }
@@ -649,6 +658,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, env: ^Ty
     if !build { return ret, {} }
     b := tc_building(k)
     if b == nil { return ret, {} }
+    // (Through a fun's value: it, read, the first operand.)
+    if indirect { return ret, {v = graph_fuse_indirect(b, name, ft, ret, ops[:], w, span), ok = true} }
     call := Operand{graph_call_op(b, .Call, w, span, ft, ret, ..ops[:]), 0}
     if view_slot != NO_NODE {
         graph_fuse_write_at(b, graph_var(b, "temp", view_slot, ret, temp_span), call, temp_span)

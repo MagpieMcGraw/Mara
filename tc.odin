@@ -229,6 +229,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     }
     k.gb, c.gb = nil, nil
     void_defaults: map[Span]bool
+    if len(checked.graph.kind) > 0 { void_defaults = tc_void_defaults(k, checked) }
     flow_analyze_program(c, checked, void_defaults)
     escape_analyze_program(c, checked)
     checked.errors = c.errors

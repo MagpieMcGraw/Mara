@@ -7,6 +7,7 @@ args_value
 array_field_loop
 array_param_swizzle_neg
 array_param_write_neg
+array_params
 array_value_sources
 arrayctor
 askflow
@@ -119,6 +120,7 @@ field_default_types
 fielddefer
 fixed_decay_neg
 fixed_to_slice
+fn_type_values
 font_test
 for_each_elements
 fordo
@@ -132,6 +134,7 @@ ifarm_neg
 iftmp_leak
 impdefault
 impprv
+in_place_update
 inferconflict
 inferdef
 infersites
@@ -219,6 +222,7 @@ test_big_endian
 test_bswap
 test_empty_foreign
 test_fail
+test_fn_type
 test_match_indexed
 test_multi_assign
 text_constant_views
@@ -246,6 +250,7 @@ variant_positional
 vec_elements
 void_ptr_deinit_neg
 void_ptr_legal
+void_ptr_store_neg
 void_scalar_deinit_neg
 void_scalar_init
 voidtest

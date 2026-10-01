@@ -45,6 +45,16 @@ tc_type :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, span: Span) -> Type {
         if bound, is_param := k.subst[name]; is_param && bound != nil { return bound }
         tc_unsupported(k, n, "a type param outside its instance")
         return Type_Error{}
+    case .Type_Fun:
+        // (A fun's type: its params' and results' types.)
+        ft := new(Type_Scope)
+        ft.kind = .Fun
+        for p in tree_list(t, t.a[n]) { append(&ft.params, Struct_Type_Field{type_ = tc_type(k, p, env, span)}) }
+        for r in tree_list(t, t.b[n]) { append(&ft.return_types, tc_type(k, r, env, span)) }
+        populate_cg_signature(ft)
+        return ft
+    case .Type_Of:
+        return tc_fun_type_of(k, tree_token_list(t, t.a[n]), env, span)
     case .Type_Pointer:
         pt := new(Type_Ptr)
         pt.elem = tc_type(k, Tree_Id(t.a[n]), env, span)
@@ -302,4 +312,31 @@ tc_dotted :: proc(parts: []Token_Id) -> string {
 // type before its body is checked.
 tc_scope_defs :: proc(k: ^TC, sd: ^Scope_Body) {
     if i, ok := k.scope_of[sd_type_scope(sd)]; ok { tc_register_defs(k, k.scopes[i]) }
+}
+
+// `fn name`: the type of the fun a name names (a local holding one, too);
+// `fn q.name`, a module's fun or a variable's struct's.
+tc_fun_type_of :: proc(k: ^TC, parts: []Token_Id, env: ^Type_Scope, span: Span) -> Type {
+    name := tc_dotted(parts)
+    if len(parts) == 1 {
+        if vt, ok := type_env_get(env, name); ok {
+            if ft, is_scope := vt.(^Type_Scope); is_scope && ft.kind == .Fun { return ft }
+            tc_error(k, span, TYPE_FN_REQUIRES_FUNCTION_VALUED_NAME, name, name, type_name(vt))
+            return Type_Error{}
+        }
+        if ft, ok := k.table.funs[resolve_type_name(k.c, name, "", env)]; ok && ft.kind == .Fun { return ft }
+        tc_error(k, span, TYPE_UNKNOWN_FUNCTION_FN, name, name)
+        return Type_Error{}
+    }
+    alias, bare := tc_text(parts[0]), tc_dotted(parts[1:])
+    if flat := resolve_type_name(k.c, bare, alias, env); flat != "" {
+        if ft, ok := k.table.funs[flat]; ok && ft.kind == .Fun { return ft }
+    }
+    if vt, ok := type_env_get(env, alias); ok {
+        if sd := as_scope_body(vt); sd != nil {
+            if fn, has := sd.functions[bare]; has && fn != nil && fn.kind == .Fun { return fn }
+        }
+    }
+    tc_error(k, span, TYPE_UNKNOWN_FUNCTION_FN, name, name)
+    return Type_Error{}
 }

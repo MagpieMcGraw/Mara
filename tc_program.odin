@@ -1,5 +1,6 @@
 package mara
 
+import "core:fmt"
 import "core:strings"
 
 // The program's arena: `this_program = Program(Arena_Debug(16 * MB))`, in
@@ -124,4 +125,19 @@ tc_validate_allocator :: proc(k: ^TC) {
     } else {
         tc_error(k, tree_span(k.t, k.arena_size), TYPE_ARENA_SIZE_CONSTANT)
     }
+}
+
+// A param's default of `void` where the param is a pointer: an error (the
+// flow pass's other void stores, through the graph, skip these).
+tc_void_defaults :: proc(k: ^TC, checked: ^Checked_Program) -> map[Span]bool {
+    seen: map[Span]bool   // (a generic's instances share their template's nodes)
+    for ft in flow_functions(checked) {
+        if ft == nil { continue }
+        if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
+        for p in ft.params {
+            if p.default_node == 0 || !tc_is_void(k, p.default_node) { continue }
+            void_error(k.c, &seen, tree_span(k.t, p.default_node), p.type_, fmt.tprintf("the default of parameter '%s'", p.name))
+        }
+    }
+    return seen
 }
