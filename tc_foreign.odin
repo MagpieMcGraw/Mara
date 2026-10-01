@@ -54,7 +54,7 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope, module: string)
             tc_error(k, span, TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY, link, fo.library, span_loc(existing.body_span))
             break
         }
-        ft.origin = Origin_Foreign{library = library, link_name = link, prefix = prefix}
+        ft.origin = Origin_Foreign{library = library, link_name = link}
         ft.body_span = span
         populate_cg_signature(ft)
         k.checked.functions[make_flat_name(module, name)] = ft

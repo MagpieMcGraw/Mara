@@ -499,7 +499,7 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: map[string]Type,
     st.kind, st.node = .Struct, tmpl.node
     st.generic_base = tc_name(k, tmpl.def)
     append(&st.generic_args, ..targs)
-    st.parent_scope, st.decl_env = tmpl.env, tmpl.env
+    st.parent_scope = tmpl.env
     st.has_parens = build_tokens[tr.main[tmpl.node] + 1].kind == .Left_Paren
     st.is_packed = v.packed != 0
     k.table.mono_cache[mangled] = st

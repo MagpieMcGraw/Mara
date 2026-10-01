@@ -152,18 +152,8 @@ Scope_Body :: struct {
     // call sites demand it, and breaks cycles. Zero value Unresolved.
     sig_state:      Resolution_State,
 
-    // The (persistent) env this scope was declared in — the env its field
-    // TYPES resolve against. Captured at registration for top-level structs,
-    // whose file/module env outlives the check, so a use site in another file
-    // can demand this struct's signature on the spot (ensure_struct_signature).
-    // nil for nested scopes (their decl env is transient) — those resolve
-    // through their parent (parent_scope) instead.
-    decl_env:       ^Type_Scope,
-
-    // Enclosing scope for a nested struct (`Inner` inside `Box`). A nested
-    // struct's decl_env is transient, so on-demand resolution walks up to a
-    // parent that has a decl_env and resolves THAT — its signature pass recurses
-    // back down into this one. nil for top-level scopes.
+    // The scope it is declared in: its file's, or the body it is nested in.
+    // Its names resolve through it.
     parent_scope:   ^Type_Scope,
 
     // Associated definitions (scoped :: defs).
@@ -524,7 +514,6 @@ Origin_Intrinsic :: struct {
 Origin_Foreign :: struct {
     library:    string,                // "kernel32", "SDL3", etc.
     link_name:  string,                // C symbol name (prefix + decl name)
-    prefix:     string,                // foreign-block prefix, kept for re-emission/diagnostics
 }
 
 // Build a mangled name for a generic instantiation: "Array" + [int] -> "Array__int"

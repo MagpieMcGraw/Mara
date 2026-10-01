@@ -148,8 +148,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.table = table
     checked.target_os = target_os
     checked.main_package = main_package
-    c.checked = checked
-    c.target_web, c.target_shared, c.target_os, c.analysis_only = web, shared, target_os, analysis_only
+    c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
 
     k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, root = main_mod, main_package = main_package, shared = shared}
     resize(&k.types, len(t.tag))
@@ -493,7 +492,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, env: ^Type_Scope, mod: ^Ty
     ts := new(Type_Scope)
     ts.name, ts.source_name, ts.home_package = flat, name, k.pkg
     ts.kind = .Struct if is_struct else .Fun
-    ts.node, ts.decl_env, ts.parent_scope = node, env, env
+    ts.node, ts.parent_scope = node, env
     ts.has_parens = build_tokens[t.main[node] + 1].kind == .Left_Paren
     ts.is_packed = v.packed != 0
     ts.is_exposed = k.exposed[def]
@@ -924,11 +923,10 @@ SymbolTable :: struct {
 
 Checker :: struct {
     table:           ^SymbolTable,
-    checked:         ^Checked_Program,        // output: codegen-ready data
     errors:          int,
     current_package: string,
     target_web:      bool,                // -web build flag, drives #web / #native intrinsics
-    target_shared:   bool,                // -shared build flag — package compiles to a DLL/SO; no `main` required
+
     target_os:       Target_OS,           // OS target, drives #windows / #linux / #mac intrinsics
     analysis_only:   bool,                // `mara ask` — read-only static analysis; never emits or runs code, so runtime-shape guards (e.g. the arena/stack-size routing check) that assume an executable with a `main` are skipped
     declared_funs:   map[string]bool,  // bare names of fun declarations (direct calls vs variables)
