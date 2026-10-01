@@ -1957,25 +1957,3 @@ tp_postfix :: proc(p: ^Tree_Parser, operand: Tree_Id, allow_dot: bool) -> Tree_I
 
 // --- the build's --------------------------------------------------------------
 
-// Every lexed file into the build's tree, beside the pointer tree
-// (MARA_TREE): dumped, or checked to lose nothing. What the check finds is
-// reported; the build stops there.
-tree_build_and_check :: proc(files: map[string][dynamic]^Source_File, old_errors: map[string]int, mode: string) {
-    errors := 0
-    old := 0
-    for _, n in old_errors { old += n }
-    for f in build_files {
-        _, errs := tree_parse_file(f)
-        errors += errs + f.lex_errors   // (the lexer's count as the file's, as the pointer tree's parser counts them)
-    }
-    if mode == "dump" {
-        tree_dump(&build_tree)
-        return
-    }
-    bad := tree_check(&build_tree)
-    fmt.eprintfln("tree: %d files, %d nodes, %d words of lists and records, %d parse errors (the pointer tree's: %d), %d problems",
-        len(build_files), len(build_tree.tag), len(build_tree.extra), errors, old, bad)
-    // (A file one parser rejects, the other must too.)
-    if bad > 0 || (errors > 0) != (old > 0) { os.exit(1) }
-    os.exit(0)
-}

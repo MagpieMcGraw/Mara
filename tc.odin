@@ -771,10 +771,6 @@ tc_modules :: proc() -> map[string][]Tree_Id {
     return out
 }
 
-tc_mode :: proc() -> string {
-    return os.get_env("MARA_CHECKER", context.temp_allocator)
-}
-
 _ :: fmt
 
 // Whether a definition's value is a definition of its own (a fun, a type, an

@@ -1043,18 +1043,6 @@ ask_parse_at :: proc(loc: string) -> (file: string, line: int, ok: bool) {
     return filepath.base(loc[:idx]), line, true
 }
 
-// Per-package build mode: a package with a top-level `main` is an executable,
-// one without is a DLL (`-shared` forces all-shared). Also feeds the `main`
-// flags in `mara ask`'s module map.
-pkg_has_main :: proc(program: ^Program) -> bool {
-    for stmt in program^ {
-        if scope, ok := stmt.(^Stmt_Scope); ok && scope.name == "main" {
-            return true
-        }
-    }
-    return false
-}
-
 parse_args :: proc() -> CLI_Args {
     args: CLI_Args
     args.compiler_dir = get_compiler_dir()

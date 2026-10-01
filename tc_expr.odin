@@ -517,14 +517,6 @@ tc_binary_op :: proc(k: ^TC, tok: Token_Kind, span: Span, left, right: Tree_Id, 
 
 // --- calls --------------------------------------------------------------------
 
-// A call being built: its operands, each at its param's type (a builtin's as
-// they are).
-TC_Call :: struct {
-    ops:  [dynamic]Operand,
-    args: [dynamic]Fused,
-    types: [dynamic]Type,
-}
-
 // A call; asked for its place, stored in a temporary made first (built there,
 // a construction) at the use's span.
 tc_call :: proc(k: ^TC, n: Tree_Id, env: ^Type_Scope, want: Fuse_Want, w: Written,

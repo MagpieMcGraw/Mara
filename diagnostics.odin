@@ -139,217 +139,6 @@ op_str :: proc(op: Token_Kind) -> string {
     return fmt.tprintf("%v", op)
 }
 
-// Source-level representation of a parser Type_Expr. Recursive — handles
-// arrays, slices, partial arrays, pointers, tuples, generic instances,
-// function types.
-type_expr_str :: proc(te: Type_Expr) -> string {
-    switch v in te {
-    case Type_Name:
-        return v.name
-    case Type_Of_Name:
-        return fmt.tprintf("fn %s", v.name)
-    case ^Type_Array:
-        if v.size_name != "" {
-            return fmt.tprintf("[%s]%s", v.size_name, type_expr_str(v.elem))
-        }
-        return fmt.tprintf("[%d]%s", v.size, type_expr_str(v.elem))
-    case ^Type_Pointer:
-        return fmt.tprintf("^%s", type_expr_str(v.elem))
-    case ^Type_Slice_Expr:
-        return fmt.tprintf("[]%s", type_expr_str(v.elem))
-    case ^Type_Partial_Array_Expr:
-        size_str: string
-        if v.size_name != "" {
-            size_str = v.size_name
-        } else {
-            size_str = fmt.tprintf("%d", v.size)
-        }
-        return fmt.tprintf("[..%s]%s", size_str, type_expr_str(v.elem))
-    case ^Type_Generic_Instance:
-        b: strings.Builder
-        strings.write_string(&b, v.name)
-        strings.write_string(&b, "(")
-        for arg, i in v.type_args {
-            if i > 0 { strings.write_string(&b, ", ") }
-            strings.write_string(&b, type_expr_str(arg))
-        }
-        strings.write_string(&b, ")")
-        return strings.to_string(b)
-    case ^Type_Func_Expr:
-        b: strings.Builder
-        strings.write_string(&b, "fun(")
-        for p, i in v.params {
-            if i > 0 { strings.write_string(&b, ", ") }
-            strings.write_string(&b, type_expr_str(p))
-        }
-        strings.write_string(&b, ")")
-        if len(v.return_types) > 0 {
-            strings.write_string(&b, " -> ")
-            for rt, i in v.return_types {
-                if i > 0 { strings.write_string(&b, ", ") }
-                strings.write_string(&b, type_expr_str(rt))
-            }
-        }
-        return strings.to_string(b)
-    case Type_Const_Value:
-        return fmt.tprintf("%d", v.value)
-    case Type_Const_Expr:
-        return "<expr>"
-    }
-    return "_"
-}
-
-// Walk an Expr (parser AST) and write a readable, source-like form into
-// `b`. The companion to op_str/type_expr_str for expressions.
-dump_parse_expr :: proc(b: ^strings.Builder, expr: Expr) {
-    switch e in expr {
-    case ^Expr_Number:
-        if e.is_float {
-            fmt.sbprintf(b, "%f", e.value)
-        } else {
-            fmt.sbprintf(b, "%d", int(e.value))
-        }
-
-    case ^Expr_String:
-        fmt.sbprintf(b, "\"%s\"", e.value)
-
-    case ^Expr_Assert:
-        fmt.sbprintf(b, "assert(%s)", e.cond_text)
-
-    case ^Expr_Char:
-        if e.value == '\n' { fmt.sbprintf(b, "'\\n'") }
-        else if e.value == '\t' { fmt.sbprintf(b, "'\\t'") }
-        else if e.value == 0 { fmt.sbprintf(b, "'\\0'") }
-        else if e.value == '\\' { fmt.sbprintf(b, "'\\\\'") }
-        else if e.value == '\'' { fmt.sbprintf(b, "'\\''") }
-        else { fmt.sbprintf(b, "'%c'", e.value) }
-
-    case ^Expr_Bool:
-        fmt.sbprintf(b, "%v", e.value)
-
-    case ^Expr_Skip_Constructor:
-        fmt.sbprintf(b, "---")
-
-    case ^Expr_Ident:
-        fmt.sbprintf(b, "%s", e.name)
-
-    case ^Expr_Unary:
-        fmt.sbprintf(b, "(%s ", op_str(e.op))
-        dump_parse_expr(b, e.operand)
-        fmt.sbprintf(b, ")")
-
-    case ^Expr_Binary:
-        fmt.sbprintf(b, "(")
-        dump_parse_expr(b, e.left)
-        fmt.sbprintf(b, " %s ", op_str(e.op))
-        dump_parse_expr(b, e.right)
-        fmt.sbprintf(b, ")")
-
-    case ^Expr_Call:
-        if e.qualifier != nil {
-            dump_parse_expr(b, e.qualifier)
-            fmt.sbprintf(b, ".")
-        }
-        fmt.sbprintf(b, "%s(", e.name)
-        for arg, i in e.args {
-            if i > 0 { fmt.sbprintf(b, ", ") }
-            dump_parse_expr(b, arg)
-        }
-        fmt.sbprintf(b, ")")
-
-    case ^Expr_Array:
-        fmt.sbprintf(b, "[")
-        for elem, i in e.elements {
-            if i > 0 { fmt.sbprintf(b, ", ") }
-            dump_parse_expr(b, elem)
-        }
-        fmt.sbprintf(b, "]")
-
-    case ^Expr_Index:
-        dump_parse_expr(b, e.expr)
-        fmt.sbprintf(b, "[")
-        dump_parse_expr(b, e.index)
-        fmt.sbprintf(b, "]")
-
-    case ^Expr_Slice:
-        dump_parse_expr(b, e.expr)
-        fmt.sbprintf(b, "[")
-        if e.low != nil { dump_parse_expr(b, e.low) }
-        fmt.sbprintf(b, ":")
-        if e.high != nil { dump_parse_expr(b, e.high) }
-        fmt.sbprintf(b, "]")
-
-    case ^Expr_Struct_Literal:
-        if e.name != "" { strings.write_string(b, e.name) }
-        strings.write_string(b, "{")
-        for f, i in e.fields {
-            if i > 0 { strings.write_string(b, ", ") }
-            strings.write_string(b, f.name)
-            strings.write_string(b, ": ")
-            dump_parse_expr(b, f.value)
-        }
-        strings.write_string(b, "}")
-
-    case ^Expr_Field_Access:
-        dump_parse_expr(b, e.expr)
-        fmt.sbprintf(b, ".%s", e.field)
-
-    case ^Expr_Size_Of:
-        fmt.sbprintf(b, "size_of(%s)", type_expr_str(e.type_expr))
-
-    case ^Expr_Take:
-        kw := e.keyword if e.keyword != "" else "let"
-        fmt.sbprintf(b, "%s(%s, ", kw, type_expr_str(e.type_expr))
-        dump_parse_expr(b, e.storage)
-        fmt.sbprintf(b, ")")
-
-    case ^Expr_If:
-        fmt.sbprintf(b, "(if ")
-        dump_parse_expr(b, e.condition)
-        fmt.sbprintf(b, " do ")
-        dump_parse_expr(b, e.then_expr)
-        fmt.sbprintf(b, " else ")
-        dump_parse_expr(b, e.else_expr)
-        fmt.sbprintf(b, ")")
-
-    case ^Expr_Compiler_Intrinsic:
-        switch e.kind {
-        case .Caller_Name: fmt.sbprintf(b, "#caller_name")
-        case .Caller_Span: fmt.sbprintf(b, "#caller_span")
-        case .Web:         fmt.sbprintf(b, "#web")
-        case .Native:      fmt.sbprintf(b, "#native")
-        case .Windows:     fmt.sbprintf(b, "#windows")
-        case .Linux:       fmt.sbprintf(b, "#linux")
-        case .Mac:         fmt.sbprintf(b, "#mac")
-        }
-
-    case ^Expr_Include:
-        fmt.sbprintf(b, "include(%s)", e.path)
-
-    case ^Expr_Type_Name:
-        fmt.sbprintf(b, "type:%v", e.kind)
-
-    case ^Expr_Tuple_Default:
-        fmt.sbprintf(b, "tuple_default[%d](", e.index)
-        dump_parse_expr(b, e.source)
-        fmt.sbprintf(b, ")")
-
-    case ^Expr_Self:
-        fmt.sbprintf(b, "#self")
-
-    case ^Expr_Try:
-        dump_parse_expr(b, e.inner)
-        fmt.sbprintf(b, "?")
-
-    case nil:
-        fmt.sbprintf(b, "<nil>")
-    }
-}
-
-// ============================================================
-// Parser errors
-// ============================================================
-
 PARSE_EXPECTED_TOKEN              :: "expected %v, got %v \"%s\""
 PARSE_EXPECTED_INTRINSIC_AFTER_AT :: "expected intrinsic name part after `@`, got `%s`"
 PARSE_EXPECTED_INTRINSIC_AFTER_DOT :: "expected intrinsic name part after `.`, got `%s`"
@@ -359,7 +148,6 @@ PARSE_EXPOSE_NEEDS_FUN_DECL       :: "`#expose` must precede a `name :: fun(...)
 PARSE_PACKED_NEEDS_STRUCT_DECL    :: "`#packed` goes after '::', as in `Name :: #packed struct`"
 PARSE_SENTINEL_REMOVED            :: "sentinel arrays were removed — use the plain array/slice type; cstring conversion writes the terminator at the FFI boundary"
 PARSE_SKIP_CONSTRUCTOR_REMOVED    :: "`#skip_constructor` was removed — initialize with `void` instead: `x : T = void` declares x uninitialized"
-TYPE_FIELD_TYPE_NOT_INFERRED :: "the type of field '%s' can't be inferred from its default — annotate it: `%s : T = ...`"
 TYPE_VOID_INIT_REQUIRES_EXPLICIT  :: "`%s := void` has no type to infer — annotate it: `%s : T = void` declares uninitialized storage"
 TYPE_CSTRING_FOREIGN_ONLY         :: "`cstring` is the C boundary type — only `foreign` signatures may declare it. Take `[]utf8` and convert at the C call with `cstring(s)`"
 TYPE_CSTRING_ARG_EXPLICIT         :: "a runtime string doesn't convert to `cstring` implicitly — wrap the argument: `cstring(s)` copies it and writes the terminator. String literals pass free"
@@ -414,16 +202,11 @@ TYPE_UNKNOWN_TYPE :: "unknown type '%s'"
 TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE :: "array size must be a compile-time constant (element type %s) — pick a fixed upper bound"
 TYPE_ARRAY_SIZE_CONSTANT_COMPILE_TIME :: "array size constant '%s' is not a compile-time integer"
 TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2 :: "array size '%s' must be a compile-time constant (element type %s) — pick a fixed upper bound"
-TYPE_PARTIAL_ARRAY_SIZE_CONSTANT_COMPILE :: "partial-array size constant '%s' is not a compile-time integer"
 TYPE_EXPECTS_TYPE_ARGUMENT :: "'%s' expects %d type argument(s), got %d"
 TYPE_STRUCT_CLASS_CONSTRUCTOR_PARAMS_GENERIC :: "'%s' is a struct/class with constructor params, not a generic type — construct in expression position instead: `field : %s = %s(...)` or `field := %s(...)`"
 TYPE_FN_REQUIRES_FUNCTION_VALUED_NAME :: "'fn %s' requires a function-valued name; '%s' has type %s"
 TYPE_UNKNOWN_FUNCTION_FN :: "unknown function '%s' in 'fn %s'"
-TYPE_UNKNOWN_GENERIC_TYPE :: "unknown generic type '%s'"
-TYPE_ARGUMENT_CONST_GENERIC_PARAMETER_REQUIRES :: "argument %d to '%s': const generic parameter '%s' requires a compile-time integer"
-TYPE_REQUIRES_GENERIC_PARAMETER_DEFAULT :: "'%s' requires generic parameter '%s' (no default)"
 TYPE_COULD_INFER_TYPE_PARAMETER_CALL :: "could not infer type parameter '$%s' in call to '%s'"
-TYPE_FAILED_INSTANTIATE_GENERIC_FUNCTION :: "failed to instantiate generic function '%s'"
 TYPE_EXPECTS_ARGUMENT :: "'%s' expects %d argument(s), got %d"
 TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD :: "shape constraint '%s' on generic parameter '%s' could not be resolved"
 TYPE_GENERIC_ARGUMENT_CONCRETE_STRUCT_CLASS :: "generic argument for '%s: ~%s' must be a concrete struct/class, got %s"
@@ -449,7 +232,6 @@ TYPE_ENUM_ALREADY_DEFINED :: "enum '%s' already defined"
 TYPE_UNION_ALREADY_DEFINED :: "union '%s' already defined"
 TYPE_ALREADY_DEFINED :: "%s '%s' already defined"
 TYPE_TYPE_ALREADY_DEFINED :: "type '%s' already defined"
-TYPE_PARAM_TYPE_SKIP_CONSTRUCTOR_REQUIRES :: "param '%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)"
 TYPE_FUNCTION_ALREADY_DEFINED :: "function '%s' already defined"
 TYPE_CONDITION_COMPTIME_KNOWN_BOOLEAN :: "#if condition must be a comptime-known boolean"
 TYPE_MODULE_FOUND :: "module '%s' not found"
@@ -470,7 +252,6 @@ TYPE_BYTE_WRITE_REFERENCE :: "cannot write a `%s` into bytes: %s — its bytes a
 TYPE_VOID_INTO_POINTER :: "cannot store `void` in %s, a `%s`: a pointer always points at something — `void` only de-initializes a variable, or passes a C function a null"
 TYPE_BYTE_VIEW_WIDE_ELEM :: "a range of bytes can only be viewed as a slice of byte / utf8 / u8 / i8, not as `%s` — to view the bytes as %s, use slice([:n]%s, &bytes[lo])"
 TYPE_BIG_ENDIAN_NEEDS_BYTE_BUFFER :: "#big_endian requires a byte-buffer source, got `%s`"
-TYPE_FIELD_ASSIGN_THROUGH_RECEIVER :: "'%s' is a field of '%s'; assign through the receiver (e.g. 'a.%s = ...')"
 TYPE_TYPE_SKIP_CONSTRUCTOR_REQUIRES_EXPLICIT :: "'%s' has no type — `#skip_constructor` requires an explicit type annotation (e.g. `%s : T = #skip_constructor`)"
 TYPE_VARIABLE_CONCRETE_TYPE_TYPE_CHECKING :: "variable '%s' has no concrete type (type checking bypassed)"
 TYPE_MULTI_RETURN_ASSIGN_LEFT_SIDE :: "multi-return assign: left side has %d names but right side returns %d values"
@@ -494,7 +275,6 @@ TYPE_RETURN_VALUE_COUNT_MATCH_EXPECTED :: "return value count %d does not match 
 TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED :: "return value %d: type %s does not match expected %s"
 TYPE_RETURN_TYPE_MATCH_EXPECTED :: "return type %s does not match expected %s"
 TYPE_CONDITION_BOOL_2 :: "if condition must be bool, got %s"
-TYPE_INVALID_ASSIGNMENT_TARGET :: "invalid assignment target"
 TYPE_DISCARDED_RETURN :: "return value of '%s' is discarded — capture it (`x := ...`) or discard it explicitly (`_ = ...`)"
 TYPE_UNUSED_ERR :: "error value '%s' is unused — check it, propagate with `?`, or discard with `_`"
 TYPE_DEFER_CHANGES_RETURNED :: "a defer can't change '%s': the return on line %d returns it, and defers run after it takes its value"
@@ -562,7 +342,6 @@ TYPE_EXECUTABLE_STATEMENTS_INSIDE_FUN_MAIN :: "executable statements must be ins
 TYPE_VISIBLE_ENUM_UNION_VARIANT :: "no visible enum or union has variant '.%s'"
 TYPE_CONSTANT_AMBIGUOUS_DEFINED_USE_QUALIFIED :: "constant '%s' is ambiguous (defined in: %s). Use qualified access, e.g. %s.%s"
 TYPE_VARIABLE_USED_BEFORE_ASSIGNED_VALUE :: "variable '%s' is used before being assigned a value"
-TYPE_FIELD_ACCESS_THROUGH_RECEIVER :: "'%s' is a field of '%s'; access it through the receiver (e.g. 'a.%s')"
 TYPE_TYPE_VALUE_DID_MEAN :: "'%s' is a type, not a value. Did you mean ': %s'?"
 TYPE_UNDEFINED_IDENTIFIER :: "undefined identifier '%s'"
 TYPE_LOCAL_OF_ENCLOSING_SCOPE :: "'%s' is a local of '%s': a function sees the outside world only through its arguments; pass it in"
@@ -581,7 +360,6 @@ TYPE_TYPED_ARRAY_LITERAL_TYPE_FIXED :: "typed array literal: type %s is not a fi
 TYPE_SIZE_UNKNOWN_TYPE :: "size_of: unknown type"
 TYPE_TAKE_UNKNOWN_TYPE :: "let/slice: unknown type"
 TYPE_TAKE_COUNT_INTEGER :: "slice count must be an integer, got %s"
-TYPE_TAKE_COUNT_REQUIRES_SLICE_TYPE :: "slice([:N]T, ...) requires a slice type, got %s"
 TYPE_TAKE_REQUIRES_BYTE_CURSOR_FORM :: "let/slice requires ^[]byte (cursor form, pass &slice_var) or ^byte (positional form), got %s"
 TYPE_EXPRESSION_CONDITION_BOOL :: "if-expression condition must be bool, got %s"
 TYPE_EXPRESSION_BRANCHES_INCOMPATIBLE_TYPES_VS :: "if-expression branches have incompatible types: %s vs %s"
@@ -596,7 +374,6 @@ TYPE_CANNOT_ACCESS_FIELD_ARRAY_TYPE :: "cannot access field '%s' on array type %
 TYPE_SLICE_TYPE_FIELD :: "slice type %s has no field '%s'"
 TYPE_PARTIAL_ARRAY_TYPE_FIELD :: "partial array type %s has no field '%s'"
 TYPE_CANNOT_ACCESS_FIELD_TYPE :: "cannot access field '%s' on type %s"
-TYPE_EXPECTS_ARGUMENT_2 :: "%s() expects %d argument%s, got %d"
 TYPE_LEN_EXPECTS_ARGUMENT :: "len() expects 1 argument, got %d"
 TYPE_LEN_REQUIRES_ARRAY_SLICE :: "len() requires array or slice, got %s"
 TYPE_CAP_EXPECTS_ARGUMENT :: "cap() expects 1 argument, got %d"
@@ -641,9 +418,6 @@ TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE :: "cannot construct %s from %s; underlyin
 TYPE_FUNCTION :: "'%s' is not a function"
 TYPE_FUNCTION_AMBIGUOUS_DEFINED_USE_QUALIFIED :: "function '%s' is ambiguous (defined in: %s). Use a qualified call (e.g. `%s.%s(...)`) or seal one of the includes."
 TYPE_FIELD_OVERRIDE_BLOCK_ONLY_VALID :: "'%s' field-override block is only valid on struct construction"
-TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_FIELD :: "argument %d of '%s': '_' requires a default value, but field '%s' has none"
-TYPE_FIELD_ARGUMENT :: "'%s' has %d field(s), got %d argument(s)"
-TYPE_REQUIRES_LEAST_ARGUMENT :: "'%s' requires at least %d argument(s), got %d"
 TYPE_ARRAY_ELEMENT_TYPE_EXPECTED :: "array element %d has type %s, expected %s"
 TYPE_INDEX_NUMBER :: "index must be a number, got %s"
 TYPE_CANNOT_INDEX_INTO :: "cannot index into %s"

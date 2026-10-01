@@ -999,11 +999,6 @@ graph_index :: proc(b: ^Graph_Builder) {
 // tree's Tree_Id). 0 is none.
 Syntax_Id :: distinct u64   // (the new checker salts an instance's body ids: tc_sid)
 
-syntax_id :: proc{syntax_of_stmt, syntax_of_expr, syntax_of_node}
-syntax_of_stmt :: proc(id: Stmt_Id) -> Syntax_Id { return Syntax_Id(id) }
-syntax_of_expr :: proc(id: Expr_Id) -> Syntax_Id { return Syntax_Id(id) }
-syntax_of_node :: proc(id: Tree_Id) -> Syntax_Id { return Syntax_Id(id) }
-
 // What a statement outside any body declares — a module's, a body's
 // definition — as the checker reads it (from whichever tree), for the builder
 // to build where it goes (graph_decl_stmt).
