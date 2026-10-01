@@ -1,0 +1,17 @@
+module destructure_ann_neg
+//@ expect-fail: cannot assign i64 to bool in multi-return
+
+// `a, b : T = f()` declares each name a T: each result must be one. The
+// annotation was read and dropped — `a` was an i64 named as a bool.
+
+use mara.core
+
+two :: fun() -> i64, i64 {
+	return 300, 400
+}
+
+main :: fun() {
+	a, b : bool = two()
+	print(a)
+	print(b)
+}

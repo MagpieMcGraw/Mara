@@ -606,17 +606,8 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         tc_program_assign(k, value, env)
         return
     }
-    existing, loc, found := type_env_locate(env, name)
-    if !found && name not_in k.consts {
-        report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
-        type_env_set(env, name, Type_Error{})
-        return
-    }
-    if (loc == nil || loc.kind == .Struct) && name in k.consts {
-        tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
-        return
-    }
-    if is_immutable_param(env, name) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
+    existing, loc, ok := tc_name_write(k, name, env, span)
+    if !ok { return }
     if tc_is_void(k, value) {
         // (`x = void` de-initializes: the void value written, unchecked.)
         tc_check(k, value, env)
@@ -634,6 +625,25 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
     val_type, r := tc_expr(k, value, env, want, dest = graph_dest_var(name, NO_NODE, vt), temp = true, temp_span = span)
     tc_check_write(k, value, val_type, existing, name, span)
     tc_store(k, value, val_type, r, tc_parallel_hold(k, graph_dest_var(name, NO_NODE, distinct_base(existing)), span), span)
+}
+
+// A write to a bare name, checked: the name is declared, no constant, and no
+// param the fun can't write. Its type and where it is declared; ok false when
+// it can't be written (reported).
+tc_name_write :: proc(k: ^TC, name: string, env: ^Type_Scope, span: Span) -> (existing: Type, loc: ^Type_Scope, ok: bool) {
+    found: bool
+    existing, loc, found = type_env_locate(env, name)
+    if !found && name not_in k.consts {
+        report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
+        type_env_set(env, name, Type_Error{})
+        return nil, nil, false
+    }
+    if (loc == nil || loc.kind == .Struct) && name in k.consts {
+        tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
+        return nil, nil, false
+    }
+    if is_immutable_param(env, name) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
+    return existing, loc, true
 }
 
 // `return a, b`: each value at its result's type (trailing errs implied `.Ok`).
@@ -928,21 +938,12 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
         return
     }
     name := tc_name(k, target)
-    existing, loc, found := type_env_locate(env, name)
-    if !found && name not_in k.consts {
-        report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
-        type_env_set(env, name, Type_Error{})
-        return
-    }
-    if (loc == nil || loc.kind == .Struct) && name in k.consts {
-        tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
-        return
-    }
+    existing, loc, ok := tc_name_write(k, name, env, span)
+    if !ok { return }
     if loc != nil && loc.kind == .Struct {
         tc_unsupported(k, s, "an assignment to a field or module name")
         return
     }
-    if is_immutable_param(env, name) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
     k.hint = existing if !is_untyped(existing) else nil
     vt, fr := tc_compound_value(k, op_tok, target, value, env, .Into if tc_building(k) != nil else .None)
     if !coerce_deferred(k.c, vt, existing, span) && !coerce_deferred(k.c, existing, vt, span) &&

@@ -1,0 +1,26 @@
+module destructure_try_undeclared_neg
+//@ expect-fail: cannot assign to 'nope'
+
+// `a, b = f()?` writes names that must be declared, like any assignment. The
+// `?` form skipped the check: the graph found no declaration instead.
+
+use mara.core
+
+Oops :: error { Bad }
+
+two :: fun(x: i64) -> i64, i64, err {
+	if x < 0 { return 0, 0, Bad }
+	return x, x + 1
+}
+
+run :: fun(k: i64) -> err {
+	a := 0
+	a, nope = two(k)?
+	print(a)
+	return Ok
+}
+
+main :: fun() {
+	e := run(4)
+	print(e)
+}

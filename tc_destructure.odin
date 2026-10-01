@@ -13,9 +13,9 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     for tg, i in targets {
         if t.tag[tg] == .Ident { names[i] = tc_name(k, tg) } else { stores[i] = true }
     }
+    // (`a, b : T = f()`: each result a T.)
     ann_t: Type = Type_Any{}
     if ann != 0 { ann_t = tc_type(k, ann, env, span) }
-    _ = ann_t
     v := tc_unparen(k, value)
     is_try := t.tag[v] == .Try && tc_is_call(k, tc_unparen(k, Tree_Id(t.a[v])))
     of_call := tc_is_call(k, v)
@@ -81,25 +81,27 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     }
     for tg, i in targets {
         rt := solidify_type(returns[i])
+        if !is_any(ann_t) && !is_any(rt) && !types_equal(ann_t, rt) {
+            tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(ann_t))
+        }
         if names[i] != "" {
             name := names[i]
-            if !is_try {
-                if !is_decl && name != "_" && name not_in k.consts {
-                    if _, found := type_env_get(env, name); !found {
-                        report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
-                    } else if is_immutable_param(env, name) {
-                        tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name)
-                    }
+            if !is_decl && name != "_" {
+                // (Written: at the variable's own type — the result's, or a
+                // width still open, settled to it.)
+                existing, _, ok := tc_name_write(k, name, env, span)
+                if !ok { return }
+                if !coerce_deferred(k.c, existing, rt, span) && !is_any(existing) && !is_any(rt) && !types_equal(existing, rt) {
+                    tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(existing))
                 }
+            } else {
+                type_env_set(env, name, rt)
             }
-            type_env_set(env, name, rt)
             // (A struct's field: its value its slot of the call's.)
             if fields_of != nil && name != "_" { tc_add_field(fields_of, name, rt, value, i) }
         } else {
-            if !is_try {
-                if pname, immutable := tc_write_root_param(k, tg, env); immutable {
-                    tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
-                }
+            if pname, immutable := tc_write_root_param(k, tg, env); immutable {
+                tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
             }
             tt, at := tc_expr(k, tg, env, .Place if tc_building(k) != nil else .None)
             mr.place = at.v

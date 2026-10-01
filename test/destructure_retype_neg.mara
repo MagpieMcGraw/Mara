@@ -1,0 +1,22 @@
+module destructure_retype_neg
+//@ expect-fail: cannot assign bool to i64 in multi-return
+
+// A destructure writes an existing variable at its own type. It rebound the
+// name to the result's type instead: `x`, an i64, printed `true`.
+
+use mara.core
+
+Oops :: error { Bad }
+
+two :: fun(x: i64) -> bool, err {
+	if x < 0 { return false, Bad }
+	return true
+}
+
+main :: fun() {
+	x : i64 = 5
+	e: err
+	x, e = two(3)
+	print(x)
+	print(e)
+}

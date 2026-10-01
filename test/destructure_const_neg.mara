@@ -1,0 +1,22 @@
+module destructure_const_neg
+//@ expect-fail: cannot write into constant 'K'
+
+// A destructure writes each name like an assignment does: a constant can't
+// be one. It went through the checker and failed in codegen.
+
+use mara.core
+
+K :: 5
+
+Oops :: error { Bad }
+
+might :: fun(x: i64) -> i64, err {
+	if x < 0 { return 0, Bad }
+	return x
+}
+
+main :: fun() {
+	e: err
+	K, e = might(7)
+	print(e)
+}
