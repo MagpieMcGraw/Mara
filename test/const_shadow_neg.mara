@@ -1,0 +1,11 @@
+module const_shadow_neg
+//@ expect-fail: shadows a constant from an outer scope
+
+// A variable may not take a constant's name: `N` would mean two things.
+
+N :: 5
+
+main :: fun() {
+	N := 3
+	print(N)
+}

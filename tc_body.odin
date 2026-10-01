@@ -343,7 +343,7 @@ tc_declarable :: proc(k: ^TC, env: ^Type_Scope, name: string, span: Span) -> boo
             }
         }
     }
-    if name in k.table.constants {
+    if name in k.consts {
         tc_error(k, span, TYPE_VARIABLE_SHADOWS_CONSTANT_OUTER_SCOPE, name)
         return false
     }
@@ -604,9 +604,13 @@ tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id, env: ^Type_Scope) {
         return
     }
     existing, loc, found := type_env_locate(env, name)
-    if !found && name not_in k.table.constants {
+    if !found && name not_in k.consts {
         report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
         type_env_set(env, name, Type_Error{})
+        return
+    }
+    if (loc == nil || loc.kind == .Struct) && name in k.consts {
+        tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
         return
     }
     if is_immutable_param(env, name) { tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, name) }
@@ -921,9 +925,13 @@ tc_compound :: proc(k: ^TC, s: Tree_Id, env: ^Type_Scope) {
     }
     name := tc_name(k, target)
     existing, loc, found := type_env_locate(env, name)
-    if !found && name not_in k.table.constants {
+    if !found && name not_in k.consts {
         report_unresolved(k.c, span, env, name, TYPE_ASSIGN_UNDECLARED_VARIABLE)
         type_env_set(env, name, Type_Error{})
+        return
+    }
+    if (loc == nil || loc.kind == .Struct) && name in k.consts {
+        tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
         return
     }
     if loc != nil && loc.kind == .Struct {

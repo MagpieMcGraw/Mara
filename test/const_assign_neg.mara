@@ -1,0 +1,11 @@
+module const_assign_neg
+//@ expect-fail: cannot write into constant 'N'
+
+// A constant is read-only: assigning to it is an error, `=` or `+=`.
+
+N :: 5
+
+main :: fun() {
+	N += 1
+	print(N)
+}
