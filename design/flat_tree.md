@@ -126,8 +126,8 @@ It keeps the type representation and replaces the checking.
 
 - **The tree**: it loses nothing. For every file of the corpus, the tokens the tree accounts for
   — walked in order through its nodes' extents and the tokens each form spells — are the file's
-  tokens (newlines aside). Checked on every build under `MARA_TREE=check`; `MARA_TREE=dump`
-  prints it.
+  tokens (newlines aside). Checked on every build under `MARA_TREE=check` until the switch;
+  `MARA_TREE=dump` prints it.
 - **The checker**: the old checker is the oracle for what the program means, not for how the
   graph is built (decided 2026-09-30: take the architectural wins). Under `MARA_CHECKER=new` the
   new checker runs instead, and the two builds of every fixture, multi-file fixture, Pounce,
@@ -202,4 +202,32 @@ It keeps the type representation and replaces the checking.
     defaults. Old-checker quirks mirrored for parity, to revisit after the switch: a
     fun's name is a value only when it has params; a broadcast declaration's copies drop
     its annotation; field-broadcast and `using` errors are said at the struct.
-- [ ] 4. The switch
+- [x] 4. The switch (2026-10-01)
+  - [x] The new checker is the checker (414a7c4); builds parse on the flat tree alone and
+        hittest reads it (a340558): `ask at` lists each node holding the cursor, widest
+        first, labelled by its tag.
+  - [x] Checks the old checker made that no test covered, found by probing every
+        diagnostic only it emitted and restored, each with a test: intrinsic signatures,
+        ambiguous funs and types, the copy form, span read sizes, union literals with no
+        variant, `~T` outside a param, calling a non-function (6f11d5c, 18d6e17), the
+        `cstring` argument rule and the `x and y == 0` hint (1d0c99c). Reading fields
+        only the old checker wrote found three more: shadowing or writing a constant
+        (shadowing compiled, and read the constant: f7d138a) and a `~T` method's
+        defaulted extra params (rejected: 00294bf).
+  - [x] Deleted (fb02cc9, 00294bf, 32527d7): the old parser, the pointer tree, the old
+        checker and its clones — 18k lines; the checker's records hold no AST. What they
+        shared moved: `lexer.odin` (spans, token text, number parsing), `types.odin`
+        (the type model), `scope.odin` (name resolution), `tc.odin` (Checked_Program,
+        SymbolTable, Checker). The migration's scripts went with them (2d33d2e).
+  - [x] Parity quirks revisited: a generic instance's compound target is read through
+        its place (7413926); any fun's name is a value — a body's own, one with no
+        params, a struct's through its type or a value (a5bb97a; the old checker
+        compiled these, the new one had stopped on them). Still as the old checker had
+        them: a broadcast declaration's copies drop its annotation; field-broadcast and
+        `using` errors are said at the struct.
+  - Forms neither checker accepts stay errors saying so (`… is not supported yet`). One
+    the old checker compiled and nothing uses is among them: a sized slice alias
+    (`Str :: distinct [:128]utf8`, `s : Str(16)`). An `#if` whose condition isn't known
+    at compile time, which the old checker compiled as a plain `if`, is an error.
+  - test_1M: IR identical to the old checker's (modulo the stdlib's path in assert
+    messages), runs identical; type check 11.7 s → 8.2 s.
